@@ -11,7 +11,7 @@
 typedef struct {
     const char* title;
     size_t chunk_instrs;
-    int interp_only, quiet;
+    int interp_only, quiet, hook_direct_calls;
     const SnxU64* hints;
     size_t hint_count;
     unsigned abi;

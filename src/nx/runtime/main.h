@@ -11,9 +11,9 @@
 int snx_main(int argc, char** argv);
 /* the menu (src/gui), set by an executable that has one: started with nothing to run, the runtime opens it */
 extern int (*snx_menu)(const char* self);
-/* What a clean exit saves (the recompiler hints, the renderer's pipeline cache). Each clean exit (the main loop, the
-   unattended timer, svcExitProcess) calls it before plat_exit_now: the first does the work, a concurrent one waits for
-   it */
+/* What a clean exit saves (the recompiler hints, the renderer's pipeline cache) and reports (SNX_NVN_TRACE). Each clean
+   exit (the main loop, the unattended timer, svcExitProcess) calls it before plat_exit_now: the first does the work, a
+   concurrent one waits for it */
 void snx_save_before_exit(void);
 extern char g_datadir[1024], g_exename[256], g_exedir[1024];
 /* where the game's settings, its log and threads.txt, and its caches go: g_exedir, or the XDG folders of a game in

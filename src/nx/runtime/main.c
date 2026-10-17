@@ -13,6 +13,7 @@
 #include "nx/runtime/gdbstub.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/services/hid.h"
@@ -250,6 +251,7 @@ void snx_save_before_exit(void) {
         /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline
            cache) here */
         if (g_renderer && g_renderer->save) g_renderer->save();
+        nvn_trace_report();
     }
     pm_unlock(&lock);
 }
@@ -333,6 +335,7 @@ int snx_main(int argc, char** argv) {
     load_hints();
     if (loader_load()) fatal("Could not load the game executables from %sexefs/", g_datadir);
     kernel_load_symbols();
+    nvn_trace_init();
     read_npdm();
     services_init();
     romfs_init();

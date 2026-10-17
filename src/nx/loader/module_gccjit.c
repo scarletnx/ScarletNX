@@ -218,6 +218,7 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         return -1;
+    codegen.hook_direct_calls = options->hook_direct_calls;
     dir = snx_temp_dir(NULL);
     if (!dir) {
         snx_codegen_free(&codegen);

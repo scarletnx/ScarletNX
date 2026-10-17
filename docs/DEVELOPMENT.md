@@ -65,6 +65,10 @@ python3 tools/disasm.py "$work/Game" cf34240 cf343c0
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
   the range is one byte. It finds what produced a wrong intermediate target.
+- `SNX_NVN_TRACE=1`: logs each NVN function the game resolves (`nvn: NAME -> ADDRESS`), the number of GPFIFO
+  submissions (by any thread) during each queue call, and at exit the call count of every function used
+  (`nvn-used:`). Calls by direct branch are counted only in a game recompiled with `--hook-direct-calls`.
+  [NVN_HLE.md](NVN_HLE.md) has what the traces have shown.
 
 ## Shaders
 

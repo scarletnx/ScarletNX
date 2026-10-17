@@ -29,5 +29,7 @@ Commands: [development](DEVELOPMENT.md).
 
 Port upstream releases manually to retain independent component layouts.
 
-NVN HLE remains exploratory: Catherine requests 468 exports and uses ~178. It could replace
-command decoding while retaining shader translation and host1x.
+The GPU is emulated by decoding the Maxwell command buffers NVN writes. NVN already writes a draw as one short macro
+call, so handling NVN's API calls directly would save little. Faster rendering will come from running known macros
+natively and from cheaper work per draw, with the Maxwell decoder kept as the base. `SNX_NVN_TRACE=1` lists the NVN
+functions a game calls. The [NVN reference](NVN_HLE.md) records what an earlier investigation into handling NVN directly found.

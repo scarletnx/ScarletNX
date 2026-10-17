@@ -653,7 +653,8 @@ static void call(FILE* out, const SnxCodegen* codegen, SnxU64 target, int tail) 
     const SnxFunction* function;
     function = snx_codegen_function(codegen, target);
     if (tail) fputs("{ ", out);
-    if (function) {
+    /* --hook-direct-calls: through CPU.disp even to a known function, where runtime wrappers can see the call */
+    if (function && !codegen->hook_direct_calls) {
         function_name(out, target);
         fputs("(c,", out);
     } else

@@ -2,8 +2,10 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* debugging output: guest symbols, backtraces, unresolved calls, register and thread dumps. These run from the crash
-   handler too, where a fault while reading guest memory would end the report: every read is checked first */
+/* debugging output: guest symbols, backtraces, unresolved calls, register and thread dumps, and the lookup of an
+   exported name (kernel_find_symbol_exact). The dumps run from the crash handler too, where a fault while reading
+   guest memory would end the report: every read they make is checked first. The startup lookup relies on each string
+   table's check at load */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/arm.h"
@@ -59,7 +61,8 @@ typedef struct {
 } GSym;
 static GSym* g_gsyms;
 static int g_ngsyms;
-static u64 g_gstr[16];
+static u64 g_gstr[16], g_gstrsz[16]; /* each module's string table and its size (0: unknown, or not mapped at load) */
+static u64 gsym_name(const GSym* g) { return g_gstr[g->mod] + g->name_off; } /* the name's guest address */
 static int gsym_cmp(const void* a, const void* b) {
     u64 x = ((const GSym*)a)->addr, y = ((const GSym*)b)->addr;
     return x < y ? -1 : x > y;
@@ -71,7 +74,7 @@ void kernel_load_symbols(void) {
         if (!base || !mapped(base, 8)) continue;
         u64 mod0 = base + gr32(base + 4);
         if (!mapped(mod0, 8) || gr32(mod0) != 0x30444F4D) continue;
-        u64 dyn = mod0 + (u64)(i64)(i32)gr32(mod0 + 4), symtab = 0, strtab = 0, hash = 0;
+        u64 dyn = mod0 + (u64)(i64)(i32)gr32(mod0 + 4), symtab = 0, strtab = 0, strsz = 0, hash = 0;
         for (int i = 0; i < 256 && mapped(dyn + i * 16, 16); i++) {
             u64 tag = gr64(dyn + i * 16), val = gr64(dyn + i * 16 + 8);
             if (!tag) break;
@@ -81,12 +84,17 @@ void kernel_load_symbols(void) {
                 strtab = val;
             else if (tag == 4)
                 hash = val;
+            else if (tag == 10)
+                strsz = val;
         }
         if (!symtab || !strtab) continue;
         u64 n = hash && mapped(base + hash, 8) ? gr32(base + hash + 4) : (strtab > symtab ? (strtab - symtab) / 24 : 0);
         if (n > 2000000 || !mapped(base + symtab, n * 24)) n = 0;
+        GSym* grown = n ? realloc(g_gsyms, (g_ngsyms + n) * sizeof(GSym)) : g_gsyms;
+        if (n && !grown) continue; /* this module's symbols are left out rather than the ones already read */
+        g_gsyms = grown;
         g_gstr[m] = base + strtab;
-        g_gsyms = realloc(g_gsyms, (g_ngsyms + n) * sizeof(GSym));
+        g_gstrsz[m] = strsz && mapped(base + strtab, strsz) ? strsz : 0;
         for (u64 i = 1; i < n; i++) {
             u64 s = base + symtab + i * 24;
             u64 v = gr64(s + 8);
@@ -99,6 +107,19 @@ void kernel_load_symbols(void) {
         }
     }
     if (g_ngsyms) qsort(g_gsyms, g_ngsyms, sizeof(GSym), gsym_cmp);
+}
+/* the address a module exports a name at (the first by address when several do), for hooking an SDK entry point such
+   as nvnBootstrapLoader (gpu/nvn_trace.c). A linear walk: it runs once at startup. Names inside a string table mapped
+   at load need no check of their own, which would take the memory lock per symbol */
+u64 kernel_find_symbol_exact(const char* name) {
+    size_t len = strlen(name) + 1;
+    for (int i = 0; i < g_ngsyms; i++) {
+        const GSym* g = &g_gsyms[i];
+        u64 addr = gsym_name(g);
+        int inside = g_gstrsz[g->mod] && g->name_off < g_gstrsz[g->mod] && len <= g_gstrsz[g->mod] - g->name_off;
+        if ((inside || mapped(addr, len)) && !memcmp(GP(addr), name, len)) return g->addr;
+    }
+    return 0;
 }
 static const char* gsym(u64 a) {
     static __thread char buf[4][200]; /* a few per thread, so one printf can hold several */
@@ -115,9 +136,12 @@ static const char* gsym(u64 a) {
             hi = mid - 1;
     }
     if (best < 0 || a - g_gsyms[best].addr > 0x20000) return o;
-    u64 name = g_gstr[g_gsyms[best].mod] + g_gsyms[best].name_off;
-    if (!mapped(name, 1)) return o;
-    snprintf(o, 200, " <%.150s+%llx>", (const char*)GP(name), (unsigned long long)(a - g_gsyms[best].addr));
+    const GSym* g = &g_gsyms[best];
+    u64 name = gsym_name(g), strsz = g_gstrsz[g->mod];
+    /* the name is read up to 150 bytes: inside its string table up to the table's end, else only if mapped */
+    int max = strsz && g->name_off < strsz ? (int)(strsz - g->name_off < 150 ? strsz - g->name_off : 150) : 150;
+    if ((!strsz || g->name_off >= strsz) && !mapped(name, 150)) return o;
+    snprintf(o, 200, " <%.*s+%llx>", max, (const char*)GP(name), (unsigned long long)(a - g->addr));
     return o;
 }
 static void guest_backtrace(CPU* c) {

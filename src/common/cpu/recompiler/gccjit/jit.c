@@ -576,7 +576,8 @@ static void call(SnxJit* jit, const SnxCodegen* codegen, SnxU64 target, int is_t
     gcc_jit_rvalue *args[2], *site;
     args[0] = jit->c;
     args[1] = jit_u64(jit, target);
-    if (snx_codegen_function(codegen, target))
+    /* --hook-direct-calls: through CPU.disp even to a known function, where runtime wrappers can see the call */
+    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
         site = gcc_jit_context_new_call(jit->ctx, NULL, snx_jit_guest_function(jit, target, 0), 2, args);
     else
         site = call_dynamic(jit, args[1]);
