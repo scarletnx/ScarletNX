@@ -33,6 +33,7 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t->core = core < 0 ? 0 : core;
     t->ideal_core = t->core;
     t->on_core = -1;
+    t->pinned = -1;
     t->affinity = 1ull << t->core;
     t->tls = alloc_tls();
     pc_init(&t->cv);
@@ -96,6 +97,13 @@ static KThread* g_core_wait[NCORES]; /* the threads waiting for each core, linke
 static int g_core_best[NCORES]; /* the best (lowest) priority waiting, 64 when none: core_preempt and core_yield read it
                                    unlocked */
 static u64 g_core_ticket;
+/* A console core runs nothing but its own threads, so a thread that wakes another core's thread keeps running at once,
+   and the woken one starts beside it. On the host every thread may take any CPU, and the host scheduler may put the
+   woken thread on the waker's CPU and run it there in the waker's place until it blocks or a tick passes: Link's
+   Awakening's job worker then stops right after the unlock that wakes the main thread, which reuses a job the worker
+   is not done with. So each core the game may use gets a share of the host CPUs (every n-th one, n the game's cores),
+   apart from the other cores' shares, and a thread's host thread runs on the share of the core it holds */
+static int g_host_cpu[256], g_host_ncpu;
 /* the holder of core k is asked to let go (CPU.poll, which generated code checks on every backward branch and the
    interpreter on every taken one) while a thread of higher priority waits for the core: the console would have
    preempted it already */
@@ -175,11 +183,29 @@ static void core_wait_nl(KThread* t, int migrate) {
     if (!g_core_owner[k]) core_grant_nl(w, k);
     while (t->on_core < 0) pc_wait(&g_core_cv[k], &g_core_lk, -1); /* k, or a core that took it (core_steal_nl) */
 }
+/* after t took a core: its host thread moves to the core's share of the host CPUs, if it was on another one. Fewer
+   host CPUs than cores leave nothing to share out */
+static void core_pin(KThread* t) {
+    static int said[NCORES];
+    int k = t->on_core, n = __builtin_popcountll(g_core_mask), cpus[256], m = 0, len = 0;
+    char list[256] = "";
+    if (k == t->pinned) return;
+    t->pinned = k;
+    if (g_host_ncpu < n || !((g_core_mask >> k) & 1)) return;
+    for (int i = __builtin_popcountll(g_core_mask & ((1ull << k) - 1)); i < g_host_ncpu; i += n)
+        cpus[m++] = g_host_cpu[i];
+    plat_thread_cpus(cpus, m);
+    if (__atomic_exchange_n(&said[k], 1, __ATOMIC_RELAXED)) return;
+    for (int i = 0; i < m && len < (int)sizeof list - 8; i++)
+        len += snprintf(list + len, sizeof list - len, " %d", cpus[i]);
+    LOG("kernel: core %d runs on host CPUs%s\n", k, list);
+}
 void core_enter(KThread* t) {
     if (!t || t->on_core >= 0) return;
     pm_lock(&g_core_lk);
     core_wait_nl(t, 1);
     pm_unlock(&g_core_lk);
+    core_pin(t);
 }
 void core_leave(KThread* t) {
     if (!t || t->on_core < 0) return;
@@ -194,6 +220,7 @@ void core_preempt(KThread* t) {
     core_release_nl(t);
     core_wait_nl(t, 1);
     pm_unlock(&g_core_lk);
+    core_pin(t);
 }
 void core_poll(KThread* t) {
     if (t) core_preempt(t);
@@ -206,6 +233,7 @@ void core_yield(KThread* t, int migrate) {
     core_release_nl(t);
     core_wait_nl(t, migrate);
     pm_unlock(&g_core_lk);
+    core_pin(t);
 }
 void core_set_prio(KThread* t, int prio) {
     pm_lock(&g_core_lk);
@@ -258,6 +286,7 @@ void kernel_init(void) {
         pc_init(&g_core_cv[k]);
         g_core_best[k] = 64;
     }
+    g_host_ncpu = plat_cpus(g_host_cpu, 256);
 }
 
 /* main thread: stack size from npdm, x0=0, x1=own handle */

@@ -869,6 +869,11 @@ if(UNIX)
     snx_test_target(snx-test-kernel-cores 11)
         add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(snx-test-plat-cpus plat_cpus.c)
+    snx_test_target(snx-test-plat-cpus 11)
+    add_test(NAME plat_cpus COMMAND snx-test-plat-cpus)
+endif()
 
 
 if(UNIX)

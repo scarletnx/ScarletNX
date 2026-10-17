@@ -190,6 +190,11 @@ static void* tstart(void* p) {
         a.fn(a.arg);
     return NULL;
 }
+#if defined(__linux__) && !defined(__ANDROID__)
+/* every CPU the process may use (plat_cpus), which plat_thread gives each thread it starts: one a game thread started
+   would otherwise run only on the share of that thread's core (plat_thread_cpus) */
+static cpu_set_t g_all_cpus;
+#endif
 int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     TArg* a = malloc(sizeof *a);
     if (!a) return -1;
@@ -205,6 +210,9 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     if (stack) stack = (stack + (size_t)sysconf(_SC_PAGESIZE) - 1) & ~((size_t)sysconf(_SC_PAGESIZE) - 1);
 #endif
     if (stack) pthread_attr_setstacksize(&at, stack);
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (CPU_COUNT(&g_all_cpus)) pthread_attr_setaffinity_np(&at, sizeof g_all_cpus, &g_all_cpus);
+#endif
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t t;
     int r = pthread_create(&t, &at, tstart, a);
@@ -216,6 +224,37 @@ void plat_thread_exit(void) {
     altstack_off(); /* pthread_exit unwinds through run_with_altstack's frame, which holds the signal stack */
     pthread_exit(NULL);
 }
+/* Linux only: Android's CPUs differ in speed, so a fixed share of them would make a core slow */
+#if defined(__linux__) && !defined(__ANDROID__)
+int plat_cpus(int* ids, int max) {
+    int c, n = 0;
+    if (sched_getaffinity(0, sizeof g_all_cpus, &g_all_cpus)) {
+        CPU_ZERO(&g_all_cpus);
+        return 0;
+    }
+    for (c = 0; c < CPU_SETSIZE && n < max; c++)
+        if (CPU_ISSET(c, &g_all_cpus)) ids[n++] = c;
+    return n;
+}
+void plat_thread_cpus(const int* ids, int n) {
+    cpu_set_t s;
+    int i;
+    CPU_ZERO(&s);
+    for (i = 0; i < n; i++) CPU_SET(ids[i], &s);
+    if (sched_setaffinity(0, sizeof s, &s))
+        WARN_LIMIT(1, "Could not move a game thread to its CPUs: %s\n", strerror(errno));
+}
+#else
+int plat_cpus(int* ids, int max) {
+    (void)ids;
+    (void)max;
+    return 0;
+}
+void plat_thread_cpus(const int* ids, int n) {
+    (void)ids;
+    (void)n;
+}
+#endif
 void plat_exit_now(int code) {
     fflush(NULL);
     _exit(code);

@@ -183,6 +183,15 @@ void plat_thread_exit(void) {
     sleep_timer_close();
     _endthreadex(0);
 }
+int plat_cpus(int* ids, int max) {
+    (void)ids;
+    (void)max;
+    return 0;
+}
+void plat_thread_cpus(const int* ids, int n) {
+    (void)ids;
+    (void)n;
+}
 /* TerminateProcess rather than _exit: ExitProcess stops the other threads wherever they are and then runs every DLL's
    detach code, which can wait on a lock one of them held (the video driver's) */
 void plat_exit_now(int code) {

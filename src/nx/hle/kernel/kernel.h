@@ -54,6 +54,7 @@ struct KThread {
     int ideal_core;     /* as svcSetThreadCoreMask set it: -1 when the game doesn't care */
     u32 yields;         /* svcSleepThread yields, every 64th of which is a host one */
     int on_core;        /* the core it holds while it runs (core_enter), -2 while it waits for it, -1 otherwise */
+    int pinned;         /* the core whose host CPUs its host thread runs on (core_pin), -1 before it first ran */
     KThread* core_next; /* core_enter's waiting list, under its lock */
     u64 core_ticket;    /* arrival order there */
     u64 affinity;

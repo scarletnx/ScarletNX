@@ -35,6 +35,10 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns); /* 0 woken, 1 timed out */
 typedef void (*PThreadFn)(void* arg);
 int plat_thread(PThreadFn fn, void* arg, size_t stack);
 void plat_thread_exit(void);
+/* the host CPUs the process may run on, at most max of them, into ids; 0 where the runtime doesn't choose them */
+int plat_cpus(int* ids, int max);
+/* the calling thread runs only on the n host CPUs in ids */
+void plat_thread_cpus(const int* ids, int n);
 /* ends the process now, with code: stdio flushed, no atexit handlers, the other threads not joined */
 void plat_exit_now(int code) __attribute__((noreturn));
 void plat_sleep_ns(i64 ns);
