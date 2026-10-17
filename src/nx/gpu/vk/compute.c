@@ -361,8 +361,10 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     for (int i = 0; i < g_nout; i++) {
         CsOut* o = &g_out[i];
         if (gva >= o->addr + o->size || o->addr >= gva + len) {
-            if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
-            else continue;
+            if (vk_backing_overlap(gva, len, o->addr, o->size))
+                cs_land();
+            else
+                continue;
             return 0;
         }
         /* partly covered, or at an offset that suits no use of it (index, storage and uniform buffers): it lands */
@@ -383,8 +385,10 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         for (int i = 0; i < b->nout; i++) {
             CsOut* o = &b->out[i];
             if (gva >= o->addr + o->size || o->addr >= gva + len) {
-                if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
-                else continue;
+                if (vk_backing_overlap(gva, len, o->addr, o->size))
+                    cs_land();
+                else
+                    continue;
                 return 0;
             }
             if (gva < o->addr || gva + len > o->addr + o->size ||
@@ -449,10 +453,10 @@ void vk_compute_mem_need(u64 a, u64 n) {
         }
         while (found && g_ptail != last) cs_land_oldest();
         for (int i = 0; i < g_nout; i++)
-                if (vk_backing_overlap(a, n, g_out[i].addr, g_out[i].size)) {
-                    cs_land();
-                    break;
-                }
+            if (vk_backing_overlap(a, n, g_out[i].addr, g_out[i].size)) {
+                cs_land();
+                break;
+            }
     }
     vk_unlock();
 }
@@ -927,9 +931,8 @@ rebind:
                       : !((p->si.tex_int_mask >> i) & 1) ? 0
                       : ((p->si.tex_sint_mask >> i) & 1) ? 2
                                                          : 1;
-            VkImageView v =
-                t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, tsc, num)
-                                                                : VK_NULL_HANDLE;
+            VkImageView v = t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, tsc, num)
+                                                                            : VK_NULL_HANDLE;
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */

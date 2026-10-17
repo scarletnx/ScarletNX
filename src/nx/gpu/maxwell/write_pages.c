@@ -3,7 +3,7 @@
 #include "nx/gpu/maxwell/write_pages.h"
 #include <stdlib.h>
 
-#define LEAF_PAGES 4096u
+#define LEAF_PAGES  4096u
 #define GROUP_PAGES 64u
 struct WritePageLeaf {
     u64 max;

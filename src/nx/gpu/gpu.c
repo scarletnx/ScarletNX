@@ -388,7 +388,9 @@ static inline u32 pb_walk(PbBatch* b, const u32* w, u32 i, u32 n, u32 chan, int 
                 break;
             /* modes 0/2 (old Fermi), 6, 7 carry no data words (same as DmaPusher). don't treat them as batches,
          a stray one would eat the following methods incl. syncpoint incrs */
-            case 4: if (fn(ctx, sub, m, cnt, 1)) return i; break;
+            case 4:
+                if (fn(ctx, sub, m, cnt, 1)) return i;
+                break;
             default: break;
         }
     }
@@ -436,8 +438,7 @@ static int scan_method(void* ctx, u32 sub, u32 m, u32 v, int last) {
     if ((m & 0x1FF) == 0xC0) dma_snap_launch(s->id, s->job_id, s->launch_index++, s->rdma, v);
     return 0;
 }
-static void scan_submission(const void* entries, u32 n, u32 channel, u64 job_id, const u32* prefetched,
-                            int deferred) {
+static void scan_submission(const void* entries, u32 n, u32 channel, u64 job_id, const u32* prefetched, int deferred) {
     SubmitScan* s = g_scan[channel & 127];
     u32 k;
     if (!s) {
@@ -601,7 +602,7 @@ typedef struct GpuJob {
     u32 k, i; /* where the job goes on: word i of entry k */
     u64 id;
     u32 dma_launch_index;
-    u32 n;    /* GPFIFO entries */
+    u32 n; /* GPFIFO entries */
     u32* prefetched;
     u32* current; /* fetched commands up to the next SYNC entry, retained while parked */
     struct {

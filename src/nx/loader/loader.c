@@ -287,7 +287,6 @@ static int parse_dynamic(Parser* p, size_t offset) {
     relative = p->elf32 ? 23 : 1027;   /* R_ARM_RELATIVE, R_AARCH64_RELATIVE */
     memset(tags, 0, sizeof tags);
     memset(relr, 0, sizeof relr);
-    memset(relr, 0, sizeof relr);
     present = 0;
     terminated = 0;
     while (span(m->image_size, offset, entry)) {
@@ -300,9 +299,6 @@ static int parse_dynamic(Parser* p, size_t offset) {
         }
         if (tag < DYN_TAGS && !(present & ((SnxU64)1 << (unsigned)tag))) {
             tags[(unsigned)tag] = value;
-            present |= (SnxU64)1 << (unsigned)tag;
-        } else if (tag >= 35 && tag <= 37 && !(present & ((SnxU64)1 << (unsigned)tag))) {
-            relr[(unsigned)tag - 35] = value;
             present |= (SnxU64)1 << (unsigned)tag;
         } else if (tag >= 35 && tag <= 37 && !(present & ((SnxU64)1 << (unsigned)tag))) {
             relr[(unsigned)tag - 35] = value; /* DT_RELRSZ, DT_RELR, DT_RELRENT */

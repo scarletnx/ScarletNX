@@ -152,9 +152,8 @@ static int tex_upload(Surf* t) {
     int packed_depth = f->depth && f->stencil;
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
-    VkBufferImageCopy* reg = f->conv == VKC_ASTC
-                                ? NULL
-                                : calloc((size_t)layers * t->levels * (packed_depth ? 2 : 1), sizeof *reg);
+    VkBufferImageCopy* reg =
+        f->conv == VKC_ASTC ? NULL : calloc((size_t)layers * t->levels * (packed_depth ? 2 : 1), sizeof *reg);
     if (f->conv != VKC_ASTC && !reg) return 0;
     u32 nreg = 0;
     int complete = 1;
@@ -212,8 +211,7 @@ static int tex_upload(Surf* t) {
                     level_convert(f, lin, lw, lh, ld, rowb, p);
                 reg[nreg++] = (VkBufferImageCopy){
                     .bufferOffset = off,
-                    .imageSubresource = {f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, l, layer,
-                                         1},
+                    .imageSubresource = {f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
                     .imageExtent = {lw, lh, ld}};
                 if (packed_depth) {
                     reg[nreg] = reg[nreg - 1];

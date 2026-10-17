@@ -19,7 +19,7 @@ typedef struct {
     u8 tex_table[SH_MAXTEX]; /* indexed texture slot to descriptor table */
     u32 tex_func_buffer, tex_func_pointer;
     u32 depth_array, depth_type, depth_sampler;
-    u32 swapped;                      /* 1 + the slot whose sampler is an array element for this instruction */
+    u32 swapped; /* 1 + the slot whose sampler is an array element for this instruction */
     u32 image[8], image_type[8];
     u32 gbuf[16], gbuf_pointer, smap, subgroup_lane_input;
 } DirectCtx;
@@ -88,27 +88,26 @@ static u32 indexed_metadata(DirectCtx* c, int slot) {
     u32 limit = spv_emit_constant_u32(&c->emit, c->u32_type, SNX_TEX_ARRAY - 1);
     u32 index = c->active_index;
     index = spv_emit_select(&c->emit, c->u32_type, spv_emit_u_less(&c->emit, c->bool_type, limit, index), limit, index);
-    u32 element = spv_emit_shift_right_u32(&c->emit, c->u32_type, index,
-                                           spv_emit_constant_u32(&c->emit, c->u32_type, 2));
-    u32 component = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, index,
-                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3));
-    u32 func = spv_emit_uniform_component(&c->emit, c->tex_func_pointer, c->tex_func_buffer, c->zero,
-                                          element, component, c->u32_type);
+    u32 element =
+        spv_emit_shift_right_u32(&c->emit, c->u32_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, 2));
+    u32 component =
+        spv_emit_bitwise_and_u32(&c->emit, c->u32_type, index, spv_emit_constant_u32(&c->emit, c->u32_type, 3));
+    u32 func = spv_emit_uniform_component(&c->emit, c->tex_func_pointer, c->tex_func_buffer, c->zero, element,
+                                          component, c->u32_type);
     return func;
 }
 static u32 indexed_is_depth(DirectCtx* c, int slot) {
     u32 bit = spv_emit_constant_u32(&c->emit, c->u32_type, 8);
     return spv_emit_i_equal(&c->emit, c->bool_type,
-        spv_emit_bitwise_and_u32(&c->emit, c->u32_type, indexed_metadata(c, slot), bit), bit);
+                            spv_emit_bitwise_and_u32(&c->emit, c->u32_type, indexed_metadata(c, slot), bit), bit);
 }
 static u32 dc_compare_indexed(DirectCtx* c, int slot, u32 reference, u32 texel) {
     u32 func = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, indexed_metadata(c, slot),
-                                      spv_emit_constant_u32(&c->emit, c->u32_type, 7));
+                                        spv_emit_constant_u32(&c->emit, c->u32_type, 7));
     u32 result = dc_compare(c, 3, reference, texel);
     for (int i = 0; i < 8; ++i) {
         if (i == 3) continue;
-        u32 selected = spv_emit_i_equal(&c->emit, c->bool_type, func,
-                                        spv_emit_constant_u32(&c->emit, c->u32_type, i));
+        u32 selected = spv_emit_i_equal(&c->emit, c->bool_type, func, spv_emit_constant_u32(&c->emit, c->u32_type, i));
         result = spv_emit_select(&c->emit, c->f32_type, selected, dc_compare(c, i, reference, texel), result);
     }
     return result;
@@ -445,8 +444,8 @@ static u32 float_ftz(DirectCtx* c, u32 value) {
                                             spv_emit_constant_u32(&c->emit, c->u32_type, 0x7f800000u));
     u32 sign = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, bits,
                                         spv_emit_constant_u32(&c->emit, c->u32_type, 0x80000000u));
-    u32 flushed = spv_emit_select(&c->emit, c->u32_type,
-                                  spv_emit_i_equal(&c->emit, c->bool_type, exponent, c->zero), sign, bits);
+    u32 flushed =
+        spv_emit_select(&c->emit, c->u32_type, spv_emit_i_equal(&c->emit, c->bool_type, exponent, c->zero), sign, bits);
     return spv_emit_bitcast(&c->emit, c->f32_type, flushed);
 }
 
@@ -1768,10 +1767,10 @@ static u32 direct_offset_coords(DirectCtx* c, u32 coords, u32 offset, u32 coord_
     u32 size = spv_emit_image_query_size_lod(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32, c->sampled_type[slot],
                                              c->sampler[slot], level);
     if (c->depth_array && c->swapped == (u32)slot + 1) {
-        u32 depth_size = spv_emit_image_query_size_lod(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32,
-                                                     c->depth_type, c->depth_sampler, level);
-        size = spv_emit_select(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32,
-                               indexed_is_depth(c, slot), depth_size, size);
+        u32 depth_size = spv_emit_image_query_size_lod(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32, c->depth_type,
+                                                       c->depth_sampler, level);
+        size = spv_emit_select(&c->emit, coord_count == 3 ? vec3_i32 : vec2_i32, indexed_is_depth(c, slot), depth_size,
+                               size);
     }
     u32 moved[4];
     for (u32 k = 0; k < coord_count; k++) {
@@ -3294,10 +3293,10 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                                                  SNX_TEX_ARRAY, &c->sampled_type[i]);
                 interfaces[count++] = c->texture_array;
                 if (textures[i].shadow) {
-                    c->depth_array = spv_emit_sampler_image_array(
-                        &c->emit, c->f32_type, c->u32_type, shader_vk_set(stage), SNX_VKB_TEXDEPTH,
-                        textures[i].type == 0 ? 1 : textures[i].type, textures[i].array,
-                        1, SNX_TEX_ARRAY, &c->depth_type);
+                    c->depth_array =
+                        spv_emit_sampler_image_array(&c->emit, c->f32_type, c->u32_type, shader_vk_set(stage),
+                                                     SNX_VKB_TEXDEPTH, textures[i].type == 0 ? 1 : textures[i].type,
+                                                     textures[i].array, 1, SNX_TEX_ARRAY, &c->depth_type);
                     interfaces[count++] = c->depth_array;
                 }
             } else
@@ -3732,8 +3731,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                     u32 instance;
                     if (location == 0x2f8) {
                         instance = spv_emit_load(&c->emit, c->u32_type, instance_index);
-                        u32 base_bits = spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, c->zero,
-                                                                     c->f32_type);
+                        u32 base_bits =
+                            spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, c->zero, c->f32_type);
                         u32 base = spv_emit_bitcast(&c->emit, c->u32_type, base_bits);
                         instance = spv_emit_isub_u32(&c->emit, c->u32_type, instance, base);
                     } else
@@ -5285,8 +5284,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             } else if (op == O_FMUL_R || op == O_FMUL_C || op == O_FMUL_I) {
                 right = float_mod(c, right, 0, B(w, 48, 1));
             }
-            u32 mode = op == O_FADD32I ? B(w, 55, 1)
-                       : op == O_FMUL32I ? B(w, 53, 2)
+            u32 mode = op == O_FADD32I                                      ? B(w, 55, 1)
+                       : op == O_FMUL32I                                    ? B(w, 53, 2)
                        : op == O_FADD_R || op == O_FADD_C || op == O_FADD_I ? B(w, 44, 1)
                                                                             : B(w, 44, 2);
             int soft_ftz = (mode & 1) && (!can_flush || fp32_preserve);
@@ -6045,8 +6044,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                                                                       0, sample_mode, level, offset, dynamic_offset),
                                                 0));
             if (indexed_dc) {
-                u32 depth = spv_emit_sample_image(&c->emit, c->f32_type, c->depth_type, c->depth_sampler,
-                                                   coords, dref, sample_mode, level, offset, dynamic_offset);
+                u32 depth = spv_emit_sample_image(&c->emit, c->f32_type, c->depth_type, c->depth_sampler, coords, dref,
+                                                  sample_mode, level, offset, dynamic_offset);
                 sample = spv_emit_select(&c->emit, c->f32_type, indexed_is_depth(c, slot), depth, sample);
             }
             u32 mask = B(w, 31, 4), dst = d;
@@ -6255,17 +6254,18 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 for (u32 tap = 0; tap < 4; tap++) {
                     u32 tap_offset = direct_gather_offset(c, reg_read(c, ptp_source + tap / 2), (tap & 1) * 16,
                                                           type == 0, i32_type, vec2_i32);
-                    u32 sampled = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->sampled_type[slot],
-                                                           c->sampler[slot], coords, component, dc_func < 0 ? dref : 0, tap_offset);
+                    u32 sampled =
+                        spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
+                                                 coords, component, dc_func < 0 ? dref : 0, tap_offset);
                     taps[tap] = spv_emit_vec4_extract(&c->emit, texture_scalar[slot], sampled, 3);
                     if (dc_func >= 0)
                         taps[tap] = indexed_dc ? dc_compare_indexed(c, slot, dref, taps[tap])
                                                : dc_compare(c, dc_func, dref, taps[tap]);
                     if (indexed_dc) {
                         u32 depth = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->depth_type,
-                                                              c->depth_sampler, coords, component, dref, tap_offset);
+                                                             c->depth_sampler, coords, component, dref, tap_offset);
                         taps[tap] = spv_emit_select(&c->emit, c->f32_type, indexed_is_depth(c, slot),
-                            spv_emit_vec4_extract(&c->emit, c->f32_type, depth, 3), taps[tap]);
+                                                    spv_emit_vec4_extract(&c->emit, c->f32_type, depth, 3), taps[tap]);
                     }
                 }
                 gathered = spv_emit_vec4_construct(&c->emit, texture_vec4[slot], taps);
@@ -6276,17 +6276,18 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 if (dc_func >= 0) { /* each gathered first component against the reference */
                     u32 lanes[4];
                     for (u32 lane = 0; lane < 4; lane++)
-                        lanes[lane] = indexed_dc
-                                          ? dc_compare_indexed(c, slot, dref,
-                                                               spv_emit_vec4_extract(&c->emit, c->f32_type, gathered, lane))
-                                          : dc_compare(c, dc_func, dref,
-                                                       spv_emit_vec4_extract(&c->emit, c->f32_type, gathered, lane));
+                        lanes[lane] =
+                            indexed_dc
+                                ? dc_compare_indexed(c, slot, dref,
+                                                     spv_emit_vec4_extract(&c->emit, c->f32_type, gathered, lane))
+                                : dc_compare(c, dc_func, dref,
+                                             spv_emit_vec4_extract(&c->emit, c->f32_type, gathered, lane));
                     gathered = spv_emit_vec4_construct(&c->emit, texture_vec4[slot], lanes);
                 }
             }
             if (indexed_dc && !per_tap_offset) {
-                u32 depth = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->depth_type,
-                                                      c->depth_sampler, coords, component, dref, offset);
+                u32 depth = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->depth_type, c->depth_sampler,
+                                                     coords, component, dref, offset);
                 gathered = spv_emit_select(&c->emit, texture_vec4[slot], indexed_is_depth(c, slot), depth, gathered);
             }
             if (op == O_TLD4S) {

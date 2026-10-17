@@ -124,8 +124,8 @@ int main(void) {
         ndraws = 0;
         maxwell3d_method(&ch, method, word(4, 2, 3), 1);
         expect(1, "each packed indexed opcode draws");
-        if (draws[0].indexed != 1 || draws[0].first != 2 || draws[0].count != 3 ||
-            draws[0].instances != 1 || draws[0].base_instance != (method >= 0x5FC ? 1u : 0u)) {
+        if (draws[0].indexed != 1 || draws[0].first != 2 || draws[0].count != 3 || draws[0].instances != 1 ||
+            draws[0].base_instance != (method >= 0x5FC ? 1u : 0u)) {
             fprintf(stderr, "FAIL: packed indexed opcode %x\n", method);
             failures++;
         }

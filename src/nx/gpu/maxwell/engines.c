@@ -18,8 +18,8 @@ static struct {
 void r3d_pending_flush(void) {
     if (!g_pd.on) return;
     g_pd.on = 0;
-    r3d_draw(g_pd.ch, g_pd.indexed, g_pd.topo, g_pd.first, g_pd.count, g_pd.bv,
-             g_pd.bi + g_pd.first_instance, g_pd.inst);
+    r3d_draw(g_pd.ch, g_pd.indexed, g_pd.topo, g_pd.first, g_pd.count, g_pd.bv, g_pd.bi + g_pd.first_instance,
+             g_pd.inst);
     if (g_pd.indexed == 3) g_pd.ch->inline_n = 0;
 }
 int r3d_pending_on(void) { return g_pd.on; }
@@ -258,9 +258,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         case 0x46: ch->mme_code[ch->mme_upload_ptr++ & 0x1FFF] = v; break;
         case 0x47: ch->mme_start_ptr = v; break;
         case 0x48: ch->mme_start[ch->mme_start_ptr++ & 0xFF] = v; break;
-        case 0x8C4: /* Falcon firmware call 4 signals completion through shadow scratch 0. */
-            R3(0xD00) = 1;
-            break;
+        case 0x8C4: /* Falcon firmware call 4 signals completion through shadow scratch 0. */ R3(0xD00) = 1; break;
         case 0x6C: i2m_launch(ch, ch->r3d, 0x60); break;
         case 0x6D: i2m_data(ch, v); break;
         case 0xB2: /* SyncInfo */

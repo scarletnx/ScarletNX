@@ -578,8 +578,7 @@ static void float_controls(void) {
             if (code) {
                 int flush = i == 0 && available;
                 int soft_ftz = (i == 0 && !available) || i == 1;
-                check(info.fp32_flush == (i == 0 || i == 1) && info.fp32_preserve == (i != 0),
-                      "FP32 modes recorded");
+                check(info.fp32_flush == (i == 0 || i == 1) && info.fp32_preserve == (i != 0), "FP32 modes recorded");
                 check((count_opcode(code, words, 17, 4465) > 0) == flush, "FP32 flush capability");
                 check((count_opcode(code, words, 199, 0xffffffffu) > 0) == soft_ftz,
                       "FTZ instructions use integer-bit fallback when a module mode cannot apply");
@@ -1386,7 +1385,7 @@ static void eden_forms(void) {
             info.rt_int_mask = counts[i];
             memset(info.gp_skip_mask, 0xff, sizeof info.gp_skip_mask);
             info.gp_skip_mask[0] &= ~(15u << 28); /* position */
-            info.gp_skip_mask[1] &= ~5u; /* only x and z of attribute 0 */
+            info.gp_skip_mask[1] &= ~5u;          /* only x and z of attribute 0 */
             code = shader_to_spirv((const u8*)program, sizeof program, ST_GS, &info, &words, 1, 1, 1, 1);
             check_translated(code, &info, "point, line and adjacency passthrough translate");
             if (code) {
@@ -1400,7 +1399,7 @@ static void eden_forms(void) {
             free(code);
         }
         program[11] = 0xeff07f800647ff00ull; /* AST Layer, R0: generated per primitive */
-        program[12] = EXIT & ~(7ull << 16); /* conditional exit */
+        program[12] = EXIT & ~(7ull << 16);  /* conditional exit */
         program[13] = EXIT;
         memset(&info, 0, sizeof info);
         info.rt_int_mask = 3;
@@ -1993,10 +1992,13 @@ static void system_values(void) {
    valid in a single module; the emitted fixtures also run through spirv-val. */
 static void audit_shader_regressions(void) {
     const u64 indexed[] = {
-        0xe003ff870ff7ff00ull, 0x5cb0118000070a00ull, 0x3848000000470000ull,
-        0xef94002000070004ull, 0x5c9807800ff70000ull, 0x5c9807800ff70001ull,
-        0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (4ull << 20) |
-            (1ull << 50) | (1ull << 31),
+        0xe003ff870ff7ff00ull,
+        0x5cb0118000070a00ull,
+        0x3848000000470000ull,
+        0xef94002000070004ull,
+        0x5c9807800ff70000ull,
+        0x5c9807800ff70001ull,
+        0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (4ull << 20) | (1ull << 50) | (1ull << 31),
     };
     ShaderInfo info;
     size_t words = 0;
@@ -2038,8 +2040,7 @@ static void audit_shader_regressions(void) {
     if (code) {
         check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 0,
               "instance uses InstanceIndex and never Vulkan BaseInstance");
-        check(count_opcode(code, words, 130, 0xffffffffu) > 0,
-              "instance subtracts the original guest base");
+        check(count_opcode(code, words, 130, 0xffffffffu) > 0, "instance subtracts the original guest base");
         save_fixture(audit_paths[1], code, words);
     }
     free(code);
