@@ -34,8 +34,12 @@ typedef struct {
     i32 crop[4];   /* the part of the buffer shown (left, top, right, bottom); all 0 for the whole buffer */
     u32 transform; /* the queued frame's Android buffer transform, retained with its crop */
 } Slot;
+/* the buffer queues, one per binder id 1 to VI_QUEUES, each a layer's. Binder 1's is the one the display shows: with
+   no compositor, a frame queued to another one is dropped and its slot comes free at once */
+#define VI_QUEUES 4
 static struct {
-    Slot slots[64]; /* lock */
+    Slot slots[VI_QUEUES][64]; /* [binder - 1], lock */
+    u64 layer_of[VI_QUEUES];   /* the layer id holding each binder, plus 1: 0 for none (lock) */
     KEvent* vsync_ev;
     KEvent* bufavail_ev;
     PMutex lock;
@@ -115,10 +119,11 @@ static void pw_out(PW* w, u64 addr, u64 size) {
 }
 
 /* ============================================================ present */
-/* a slot is free again: after its frame is shown, or cancelled. gen is the dequeue the frame came from */
-static void slot_release(i32 slot, u32 gen) {
+/* a slot of a queue (binder queue + 1) is free again: after its frame is shown, or cancelled. gen is the dequeue the
+   frame came from */
+static void slot_release(u32 queue, i32 slot, u32 gen) {
     pm_lock(&vi.lock);
-    if (slot >= 0 && slot < 64 && vi.slots[slot].gen == gen) vi.slots[slot].queued = 0;
+    if (slot >= 0 && slot < 64 && vi.slots[queue][slot].gen == gen) vi.slots[queue][slot].queued = 0;
     pc_broadcast(&vi.free_cv);
     pm_unlock(&vi.lock);
     kevent_signal(vi.bufavail_ev);
@@ -140,12 +145,14 @@ static void present_queued(void* p) {
     Slot* s = &q->s;
     if (s->used)
         vi_show_buffer(s->nvmap_id, s->offset, s->w, s->h, s->pitch, s->layout, s->bhl, s->afmt, s->crop, s->transform);
-    slot_release(q->slot, s->gen);
+    slot_release(0, q->slot, s->gen);
     free(q);
 }
 
 static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
-    (void)id;
+    /* the binder's queue: one this runtime handed out (layer_binder), else the display's as before */
+    u32 queue = id >= 1 && id <= VI_QUEUES ? id - 1 : 0;
+    Slot* S = vi.slots[queue];
     switch (code) {
         case 10: { /* CONNECT */
             u32 qo[4] = {(u32)vi.width, (u32)vi.height, 0, 0};
@@ -203,8 +210,8 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                         s->layout, s->bhl, s->fmt, s->nvmap_id);
                 }
                 pm_lock(&vi.lock);
-                ns.gen = vi.slots[slot].gen; /* a present still queued from the old buffer mustn't free a new dequeue */
-                vi.slots[slot] = ns;
+                ns.gen = S[slot].gen; /* a present still queued from the old buffer mustn't free a new dequeue */
+                S[slot] = ns;
                 pm_unlock(&vi.lock);
             }
             pw_u32(out, 0);
@@ -213,7 +220,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
         case 1: { /* REQUEST_BUFFER */
             i32 slot = (i32)pr_u32(in);
             pm_lock(&vi.lock);
-            Slot* s = (slot >= 0 && slot < 64) ? &vi.slots[slot] : NULL;
+            Slot* s = (slot >= 0 && slot < 64) ? &S[slot] : NULL;
             if (s && s->used) {
                 pw_u32(out, 1);
                 pw_flat(out, s->raw, s->rawsize);
@@ -233,10 +240,10 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             pm_lock(&vi.lock);
             u32 pace = vi.interval;
             pm_unlock(&vi.lock);
-            present_pace(pace);
+            if (!queue) present_pace(pace); /* only the display's queue waits for the display */
             pm_lock(&vi.lock);
             int k = -1, nused = 0;
-            for (int i = 0; i < 64; i++) nused += vi.slots[i].used;
+            for (int i = 0; i < 64; i++) nused += S[i].used;
             if (!nused) { /* no buffers yet: nothing would ever free one */
                 pm_unlock(&vi.lock);
                 WARN("binder: DEQUEUE_BUFFER before any buffer was set\n");
@@ -247,7 +254,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             }
             for (;;) {
                 for (int i = 0; i < 64; i++)
-                    if (vi.slots[i].used && !vi.slots[i].queued) {
+                    if (S[i].used && !S[i].queued) {
                         k = i;
                         break;
                     }
@@ -256,8 +263,8 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                     u64 held = 0;
                     nused = 0;
                     for (int i = 0; i < 64; i++) {
-                        nused += vi.slots[i].used;
-                        if (vi.slots[i].used && vi.slots[i].queued) held |= 1ull << i;
+                        nused += S[i].used;
+                        if (S[i].used && S[i].queued) held |= 1ull << i;
                     }
                     if (!nused) { /* the buffers were detached meanwhile (SET_PREALLOCATED_BUFFER): none will come */
                         pm_unlock(&vi.lock);
@@ -271,8 +278,8 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                                nused, (unsigned long long)held);
                 }
             }
-            vi.slots[k].queued = 1;
-            vi.slots[k].gen++;
+            S[k].queued = 1;
+            S[k].gen++;
             pm_unlock(&vi.lock);
             pw_u32(out, (u32)k);
             pw_u32(out, 1);
@@ -317,9 +324,19 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             }
             pm_lock(&vi.lock);
             if (slot >= 0 && slot < 64) {
-                q->s = vi.slots[slot];
+                q->s = S[slot];
                 memcpy(q->s.crop, cr, 16);
                 q->s.transform = tr;
+            }
+            if (queue) { /* a layer the display doesn't show: the frame is dropped, as if shown at once */
+                u32 gen = q->s.gen;
+                pm_unlock(&vi.lock);
+                free(q);
+                slot_release(queue, slot, gen);
+                u32 qo[4] = {(u32)vi.width, (u32)vi.height, 0, 0};
+                pw_bytes(out, qo, 16);
+                pw_u32(out, 0);
+                return 0;
             }
             int changed = len >= 0x28 && (vi.crop_transform != tr || memcmp(vi.crop, cr, 16));
             if (changed) {
@@ -343,9 +360,9 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
         case 8: { /* CANCEL_BUFFER: the slot is free again, as after a present */
             i32 slot = (i32)pr_u32(in);
             pm_lock(&vi.lock);
-            u32 gen = slot >= 0 && slot < 64 ? vi.slots[slot].gen : 0;
+            u32 gen = slot >= 0 && slot < 64 ? S[slot].gen : 0;
             pm_unlock(&vi.lock);
-            slot_release(slot, gen);
+            slot_release(queue, slot, gen);
             pw_u32(out, 0);
             return 0;
         }
@@ -465,6 +482,39 @@ static int native_window(IpcBuf b, u32 binder, i64* size) {
     memcpy(p + 0x10, data, 0x28);
     return 0;
 }
+/* the binder of a layer: the one it holds, else the first free one, binder 1 (the display's) first. As on the
+   console, each layer has a buffer queue of its own: a second layer handed binder 1 had its buffers take the game's
+   window's slots */
+static u32 layer_binder(u64 layer_id) {
+    u32 b = 0;
+    pm_lock(&vi.lock);
+    for (u32 i = 0; i < VI_QUEUES && !b; i++)
+        if (vi.layer_of[i] == layer_id + 1) b = i + 1;
+    for (u32 i = 0; i < VI_QUEUES && !b; i++)
+        if (!vi.layer_of[i]) {
+            vi.layer_of[i] = layer_id + 1;
+            b = i + 1;
+        }
+    pm_unlock(&vi.lock);
+    if (!b) {
+        WARN_LIMIT(4, "vi: layer %llu finds no buffer queue free, and shares the display's\n",
+                   (unsigned long long)layer_id);
+        b = 1;
+    }
+    return b;
+}
+/* the layer closed: its binder goes back, so a game that closes its layer and opens another is shown again. Another
+   queue's buffers go with it */
+static void layer_close(u64 layer_id) {
+    pm_lock(&vi.lock);
+    for (u32 i = 0; i < VI_QUEUES; i++)
+        if (vi.layer_of[i] == layer_id + 1) {
+            vi.layer_of[i] = 0;
+            for (int k = 0; i && k < 64; k++) vi.slots[i][k].used = vi.slots[i][k].queued = 0;
+        }
+    pc_broadcast(&vi.free_cv);
+    pm_unlock(&vi.lock);
+}
 static int binder_driver(SvcObj** service) {
     *service = nns_hosbinder_IHOSBinderDriver_new(0);
     return 0;
@@ -517,13 +567,21 @@ static int nn_visrv_sf_IApplicationDisplayService_GetDisplayResolution(SvcObj* s
 static int nn_visrv_sf_IApplicationDisplayService_OpenLayer(SvcObj* self, const nn_vi_DisplayName* display_name,
                                                             u64 layer_id, u64 aruid, IpcBuf native_window_buf,
                                                             i64* native_window_size) {
-    return native_window(native_window_buf, 1, native_window_size);
+    return native_window(native_window_buf, layer_binder(layer_id), native_window_size);
+}
+static int nn_visrv_sf_IApplicationDisplayService_CloseLayer(SvcObj* self, u64 layer_id) {
+    layer_close(layer_id);
+    return 0;
 }
 static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self, u32 layer_flags, u64 display_id,
                                                                    IpcBuf native_window_buf, u64* layer_id,
                                                                    i64* native_window_size) {
     *layer_id = __atomic_fetch_add(&vi.stray_layer, 1, __ATOMIC_RELAXED);
-    return native_window(native_window_buf, 1, native_window_size);
+    return native_window(native_window_buf, layer_binder(*layer_id), native_window_size);
+}
+static int nn_visrv_sf_IApplicationDisplayService_DestroyStrayLayer(SvcObj* self, u64 layer_id) {
+    layer_close(layer_id);
+    return 0;
 }
 /* nn::vi's ScalingMode to the layer's: None, Freeze, ScaleToWindow, ScaleAndCrop, PreserveAspect */
 static int nn_visrv_sf_IApplicationDisplayService_ConvertScalingMode(SvcObj* self, u32 mode, u64* converted) {

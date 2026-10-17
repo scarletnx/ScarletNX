@@ -43,10 +43,10 @@ interface nn::visrv::sf::IApplicationDisplayService {
     [1102] GetDisplayResolution(u64 display_id) -> (i64 width, i64 height);
     [2020] OpenLayer(nn::vi::DisplayName display_name, u64 layer_id, aruid aruid, buffer<u8, 6> native_window)
         -> i64 native_window_size;
-    @stub [2021] CloseLayer(u64 layer_id);
+    [2021] CloseLayer(u64 layer_id);
     [2030] CreateStrayLayer(u32 layer_flags, u64 display_id, buffer<u8, 6> native_window)
         -> (u64 layer_id, i64 native_window_size);
-    @stub [2031] DestroyStrayLayer(u64 layer_id);
+    [2031] DestroyStrayLayer(u64 layer_id);
     @stub [2101] SetLayerScalingMode(u32 scaling_mode, u64 layer_id);
     [2102] ConvertScalingMode(u32 mode) -> u64 converted;
     @stub [2450] GetIndirectLayerImageMap(i64 width, i64 height, u64 consumer_handle, aruid aruid,
