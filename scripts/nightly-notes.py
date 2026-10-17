@@ -32,8 +32,8 @@ RUNNING = {
     'Linux': 'make the AppImage executable and run it. AppImageUpdate takes it to {updates}.',
     'Windows': 'unzip it anywhere and run `bin\\scarletnx.exe`.',
     'Android': 'Android 5.0 and later. The APK is signed with a debug key.',
-    'macOS': "unzip it and open `ScarletNX.app`; signed ad hoc, so a download may need *Open* from the Finder's menu the first time.",
-    'iOS': 'unsigned: AltStore, SideStore or a developer account signs it for the device.',
+    'macOS': "unzip it and open `ScarletNX.app`; signed ad hoc, so a download may need *Open* from the Finder's menu the first time. The menu opens; games do not run on it yet (#328).",
+    'iOS': 'unsigned: AltStore, SideStore or a developer account signs it for the device. The menu opens; games do not run on it yet (#328).',
 }
 MERGE = re.compile(r'Merge pull request #(\d+) from \S+')
 # what text from a commit or a pull request could make of the markdown around it: a link, a tag, a table cell
