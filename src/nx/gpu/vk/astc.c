@@ -16,6 +16,10 @@ static VkBuffer g_astc_scratch;
 static VmaAllocation g_astc_mem;
 static u64 g_astc_cap;
 
+/* astc.comp's push constants: the strip's size in texels, the block footprint, and whether to use the
+   specification's sRGB decode mode, whose R, G and B bytes differ from the UNORM mode's. An SRGB image (the
+   texture header's sRGB bit, vk_tic_format) gets the sRGB mode, so the bytes are those an sRGB ASTC texture
+   decodes to on the console. */
 typedef struct {
     u32 w, h, bw, bh, srgb;
 } AstcParams;

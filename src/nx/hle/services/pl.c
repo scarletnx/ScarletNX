@@ -1,176 +1,182 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* pl: the shared fonts */
-#include "nx/runtime/main.h"
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/core/hle/service/ns/platform_service_manager.cpp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
+/* pl:u and pl:s, the shared fonts: six TrueType fonts in one shared memory, each behind the 8 byte header the SDK
+   reads its size from. A font comes from the game folder's fonts/<Name>.bfttf (the console's file, decrypted here)
+   or fonts/<Name>.ttf, and otherwise from the stand-ins compiled in (cmake/shared_fonts.cmake), the standard one
+   placed once for the five slots that share it */
+#include "nx/hle/services/services_int.h"
 #include "nx/hle/filesystem/fs.h"
-#include "nx/hle/services/services.h"
-#include "nx/hle/kernel/ipc.h"
-#include "hle/services/pl.swipc.inc"
-#include "nx/hle/kernel/kernel.h"
-#include "nx/memory/mem.h"
-#include "nx/runtime/platform/log.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-/* pl:u shared fonts. We don't ship the console's: use GAME_data/fonts/<Name>.bfttf|.ttf if there, else the stand-ins
-   compiled in (cmake/shared_fonts.cmake), as Eden carries them: Open Sans for every slot but FontNintendoExtended,
-   which takes the controller button glyphs yuzu drew. The shared memory holds each font as plain TTF behind the 8
-   byte obfuscated header the SDK reads its size from (a .bfttf is decrypted into it). */
-static const char* g_font_names[6] = {
-    "FontStandard", "FontChineseSimplified", "FontExtendedChineseSimplified", "FontChineseTraditional",
-    "FontKorean",   "FontNintendoExtended"};
-static struct {
-    u32 font_off[6], font_size[6];
-    KShmem* font_shm;
-    PMutex font_lock; /* the first request fills the shared memory, the others wait for it */
-} pl;
-static u8* read_indexed_font(const char* path, u64* size) {
-    u8* d = fs_read_file(path, size);
-    if (d && !*size) {
-        free(d);
-        return NULL;
-    }
-    return d;
-}
-static u32 bswap32_(u32 v) { return (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24); }
+#include "hle/services/pl.swipc.inc"
+
 extern const unsigned char snx_font_standard[], snx_font_extended[];
 extern const size_t snx_font_standard_size, snx_font_extended_size;
-static void fonts_fill(u8* shm, u64 cap) {
-    const u32 RESULT = 0x7f9a0218u, MAGIC = 0x36f81a1eu;
-    u32 key = bswap32_(RESULT ^ MAGIC);
-    u64 off = 0;
-    u32 std_off = 0, std_size = 0; /* the stand-in Open Sans, once in the shared memory for every slot it backs */
-    for (int i = 0; i < 6; i++) {
-        char p[1200];
-        u64 sz = 0;
-        u8* d = NULL;
-        int is_bfttf = 0;
-        snprintf(p, sizeof p, "fonts/%s.bfttf", g_font_names[i]);
-        d = read_indexed_font(p, &sz);
-        if (d) is_bfttf = 1;
-        if (!d) {
-            snprintf(p, sizeof p, "fonts/%s.ttf", g_font_names[i]);
-            d = read_indexed_font(p, &sz);
+
+#define PL_SHM_SIZE   0x1100000u
+#define PL_FONTS      6
+#define PL_MAGIC      0x36f81a1eu /* the first word of a .bfttf, big-endian */
+#define PL_DECRYPTED  0x7f9a0218u /* what it decrypts to: its key is the two XORed */
+#define PL_LOADED     1           /* nn::pl::LoadState */
+
+/* nn::pl::SharedFontType, in order */
+static const char* const pl_names[PL_FONTS] = {"FontStandard",        "FontChineseSimplified",
+                                               "FontExtendedChineseSimplified", "FontChineseTraditional",
+                                               "FontKorean",          "FontNintendoExtended"};
+
+static struct {
+    KShmem* shm;
+    u32 font_off[PL_FONTS], font_size[PL_FONTS]; /* where each font starts (past its header), and its size */
+} pl;
+
+static u32 bswap32_(u32 v) { return v >> 24 | (v >> 8 & 0xff00u) | (v << 8 & 0xff0000u) | v << 24; }
+/* big-endian words, on the little-endian hosts the runtime runs on */
+static u32 rd_be32(const u8* p) {
+    u32 v;
+    memcpy(&v, p, 4);
+    return bswap32_(v);
+}
+static void wr_be32(u8* p, u32 v) {
+    v = bswap32_(v);
+    memcpy(p, &v, 4);
+}
+
+/* a .bfttf into the TrueType font it holds, in place: each big-endian word XORed with the key, the 8 byte header
+   (magic, size) dropped. Returns the font's size, 0 if it isn't one */
+static u64 pl_decrypt(u8* d, u64 size) {
+    u32 key, n;
+    u64 i;
+    if (size < 8 || rd_be32(d) != PL_MAGIC) return 0;
+    key = PL_MAGIC ^ PL_DECRYPTED;
+    n = rd_be32(d + 4) ^ key;
+    if (n > size - 8) n = (u32)(size - 8);
+    for (i = 0; i + 4 <= (u64)n; i += 4) wr_be32(d + i, rd_be32(d + 8 + i) ^ key);
+    for (; i < (u64)n; i++) d[i] = d[8 + i]; /* a tail shorter than a word: there is none in a real .bfttf */
+    return n;
+}
+
+/* a font of the game folder's for slot i, the .bfttf before the .ttf, or NULL */
+static u8* pl_game_font(int i, u64* size) {
+    char path[64];
+    u8* d;
+    sprintf(path, "fonts/%s.bfttf", pl_names[i]);
+    d = fs_read_file(path, size);
+    if (d) {
+        *size = pl_decrypt(d, *size);
+        if (*size) return d;
+        WARN("pl: %s isn't a shared font, the stand-in takes its place\n", path);
+        free(d);
+    }
+    sprintf(path, "fonts/%s.ttf", pl_names[i]);
+    return fs_read_file(path, size);
+}
+
+/* a font at *at with its header: the magic and the size, padded to words, XORed with the key, both big-endian, as
+   the SDK decodes them. Returns 0 if it doesn't fit */
+static int pl_place(u8* shm, u32 shm_size, u32* at, const u8* font, u64 size, int slot) {
+    u32 padded, key = PL_MAGIC ^ PL_DECRYPTED;
+    if (size > shm_size || (size + 3) / 4 * 4 + 8 > shm_size - *at) return 0;
+    padded = (u32)((size + 3) & ~3ull);
+    wr_be32(shm + *at, PL_MAGIC);
+    wr_be32(shm + *at + 4, padded ^ key);
+    memcpy(shm + *at + 8, font, (size_t)size);
+    memset(shm + *at + 8 + size, 0, padded - (u32)size);
+    pl.font_off[slot] = *at + 8;
+    pl.font_size[slot] = (u32)size;
+    *at += 8 + padded;
+    return 1;
+}
+
+/* the six fonts into shm, and where each is into pl */
+static void fonts_fill(u8* shm, u32 shm_size) {
+    u32 at = 0;
+    int i, standard = -1; /* the slot the standard stand-in went into first */
+    memset(pl.font_off, 0, sizeof pl.font_off);
+    memset(pl.font_size, 0, sizeof pl.font_size);
+    for (i = 0; i < PL_FONTS; i++) {
+        u64 size = 0;
+        u8* own = pl_game_font(i, &size);
+        if (own) {
+            if (pl_place(shm, shm_size, &at, own, size, i))
+                LOG("pl: %s from the game folder's fonts/\n", pl_names[i]);
+            else
+                WARN("pl: fonts/%s doesn't fit in the shared memory, the stand-in takes its place\n", pl_names[i]);
+            free(own);
+            if (pl.font_size[i]) continue;
         }
-        int builtin = !d, ext = i == 5;
-        if (builtin) {
-            if (!ext && std_size) {
-                pl.font_off[i] = std_off;
-                pl.font_size[i] = std_size;
-                continue;
-            }
-            d = (u8*)(ext ? snx_font_extended : snx_font_standard);
-            sz = ext ? snx_font_extended_size : snx_font_standard_size;
-        } else
-            LOG("pl: %s <- %s\n", g_font_names[i], p);
-        if (is_bfttf && sz < 8) { /* not even the header */
-            WARN("pl: %s is not a BFTTF font\n", p);
-            free(d);
-            continue;
-        }
-        u64 words = (sz + 3) / 4;
-        if (off + 8 + words * 4 > cap) {
-            WARN("pl: font %s does not fit\n", g_font_names[i]);
-            if (!builtin) free(d);
-            continue;
-        }
-        u32 h0 = bswap32_(MAGIC), h1 = bswap32_((u32)(words * 4)) ^ key;
-        memcpy(shm + off, &h0, 4);
-        memcpy(shm + off + 4, &h1, 4);
-        if (is_bfttf) { /* bfttf -> decrypt, shmem holds plain ttf */
-            u32 w0, w1;
-            memcpy(&w0, d, 4);
-            memcpy(&w1, d + 4, 4);
-            u32 k2 = w0 ^ RESULT;
-            u32 tsz = bswap32_(w1 ^ k2);
-            if (tsz > sz - 8) tsz = (u32)(sz - 8);
-            /* word by word; a last partial word reads only the bytes the file has */
-            for (u64 k = 0; k + 8 < sz; k += 4) {
-                u32 w = 0;
-                memcpy(&w, d + 8 + k, sz - 8 - k < 4 ? sz - 8 - k : 4);
-                w = bswap32_(w ^ k2);
-                memcpy(shm + off + 8 + k, &w, 4);
-            }
-            pl.font_off[i] = (u32)off + 8;
-            pl.font_size[i] = tsz;
-        } else {
-            memcpy(shm + off + 8, d, sz);
-            pl.font_off[i] = (u32)off + 8;
-            pl.font_size[i] = (u32)sz;
-        }
-        if (builtin && !ext) {
-            std_off = pl.font_off[i];
-            std_size = pl.font_size[i];
-        }
-        off = (off + 8 + words * 4 + 0xF) & ~0xFull;
-        if (!builtin) free(d);
+        if (i == PL_FONTS - 1)
+            pl_place(shm, shm_size, &at, snx_font_extended, snx_font_extended_size, i);
+        else if (standard >= 0) {
+            pl.font_off[i] = pl.font_off[standard];
+            pl.font_size[i] = pl.font_size[standard];
+        } else if (pl_place(shm, shm_size, &at, snx_font_standard, snx_font_standard_size, i))
+            standard = i;
     }
 }
-/* the font shared memory, filled the first time a game asks for anything */
-static KShmem* font_shm(void) {
-    pm_lock(&pl.font_lock);
-    KShmem* shm = pl.font_shm;
-    if (!shm) {
-        /* the service keeps it for the whole run: its reference keeps it alive when the game closes its handle */
-        shm = kshmem_new(0x1100000, "font");
-        kobj_ref(&shm->o);
-        fonts_fill(kshmem_ptr(shm), 0x1100000);
-        pl.font_shm = shm;
-    }
-    pm_unlock(&pl.font_lock);
-    return shm;
+
+static SvcObj* pl_new(void) { return nn_pl_detail_IPlatformServiceManager_new(0); }
+void svc_pl_init(void) {
+    pl.shm = kshmem_new(PL_SHM_SIZE, "shared fonts");
+    kobj_ref(&pl.shm->o); /* the service's, for as long as the process runs */
+    fonts_fill(kshmem_ptr(pl.shm), PL_SHM_SIZE);
+    nn_pl_detail_IPlatformServiceManager_register(pl_new);
 }
-static u32 font_index(u32 font_type) { return font_type > 5 ? 0 : font_type; }
+
+/* ============================================================ IPlatformServiceManager */
+/* every font is loaded from the start */
 static int nn_pl_detail_IPlatformServiceManager_RequestLoad(SvcObj* self, u32 font_type) {
-    font_shm();
+    (void)self, (void)font_type;
     return 0;
 }
 static int nn_pl_detail_IPlatformServiceManager_GetLoadState(SvcObj* self, u32 font_type, u32* state) {
-    font_shm();
-    *state = 1; /* loaded */
+    (void)self, (void)font_type;
+    *state = PL_LOADED;
     return 0;
 }
 static int nn_pl_detail_IPlatformServiceManager_GetSize(SvcObj* self, u32 font_type, u32* size) {
-    font_shm();
-    *size = pl.font_size[font_index(font_type)];
+    (void)self;
+    *size = font_type < PL_FONTS ? pl.font_size[font_type] : 0;
     return 0;
 }
-static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(SvcObj* self, u32 font_type, u32* offset) {
-    font_shm();
-    *offset = pl.font_off[font_index(font_type)];
+static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(SvcObj* self, u32 font_type,
+                                                                              u32* offset) {
+    (void)self;
+    *offset = font_type < PL_FONTS ? pl.font_off[font_type] : 0;
     return 0;
 }
 static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
-    *shared_memory = h_new(&font_shm()->o);
+    (void)self;
+    *shared_memory = h_new(&pl.shm->o);
     return 0;
 }
-/* every font, in index order, whatever the language */
-static int fonts_in_order(IpcBuf codes, IpcBuf offsets, IpcBuf sizes, u8* loaded, u32* count) {
-    font_shm();
-    for (u32 i = 0; i < 6; i++) {
-        if (codes.addr && (i + 1) * 4 <= codes.size) gw32(codes.addr + i * 4, i);
-        if (offsets.addr && (i + 1) * 4 <= offsets.size) gw32(offsets.addr + i * 4, pl.font_off[i]);
-        if (sizes.addr && (i + 1) * 4 <= sizes.size) gw32(sizes.addr + i * 4, pl.font_size[i]);
+/* every font, in the order of their types whatever the language, as Eden does: up to 6, or as many as the buffers
+   hold */
+static int pl_in_order(IpcBuf codes, IpcBuf offsets, IpcBuf sizes, u8* loaded, u32* count) {
+    u64 n = PL_FONTS, i;
+    if (codes.size / 4 < n) n = codes.size / 4;
+    if (offsets.size / 4 < n) n = offsets.size / 4;
+    if (sizes.size / 4 < n) n = sizes.size / 4;
+    for (i = 0; i < n; i++) {
+        u32 code = (u32)i;
+        memcpy(GP(codes.addr + 4 * i), &code, 4);
+        memcpy(GP(offsets.addr + 4 * i), &pl.font_off[i], 4);
+        memcpy(GP(sizes.addr + 4 * i), &pl.font_size[i], 4);
     }
     *loaded = 1;
-    *count = 6;
+    *count = (u32)n;
     return 0;
 }
 static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriority(
     SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
     u8* loaded, u32* count) {
-    return fonts_in_order(font_codes, offsets, sizes, loaded, count);
+    (void)self, (void)language_code;
+    return pl_in_order(font_codes, offsets, sizes, loaded, count);
 }
 static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityForSystem(
     SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
     u8* loaded, u32* count) {
-    return fonts_in_order(font_codes, offsets, sizes, loaded, count);
-}
-static SvcObj* new_pl(void) { return nn_pl_detail_IPlatformServiceManager_new(0); }
-void svc_pl_init(void) {
-    pm_init(&pl.font_lock);
-    nn_pl_detail_IPlatformServiceManager_register(new_pl);
+    (void)self, (void)language_code;
+    return pl_in_order(font_codes, offsets, sizes, loaded, count);
 }

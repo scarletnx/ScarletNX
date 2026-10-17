@@ -97,5 +97,10 @@ u32 svc_set_heap_size(u64 size);
 u32 svc_map_physical(u64 addr, u64 size);
 u32 svc_unmap_physical(u64 addr, u64 size);
 u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out);
+u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm);
+u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr);
+u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out); /* the object, for svc.c to give a handle */
+u32 svc_codemem_new(u64 addr, u64 size, KObj** out);
+u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm);
 
 #endif

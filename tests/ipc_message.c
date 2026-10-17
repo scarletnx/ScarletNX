@@ -563,6 +563,32 @@ static void kernel_refusals(u32 h) {
     CHECK(send_to(h, UBUF, 0x1000) == 0 && got.calls == 1 && got.raw_size == 8);
     CmifResponse resp = cmif_parse_response(GP(UBUF), 0, 12);
     CHECK(resp.result == 0 && get32(resp.data) == 3);
+    /* twelve send statics and ten A buffers, more than the arrays hold: the first MAX_BUFS of each are kept, and every
+       one is checked against the address space, past the arrays too */
+    for (int bad = 0; bad < 3; bad++) {
+        clear();
+        r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 9, .num_in_pointers = 12, .num_in_buffers = 10});
+        for (u32 i = 0; i < 12; i++) hipc_send_static(r.hipc.send_statics + 8 * i, 0x10000 + 0x100 * i, 0x10, i);
+        for (u32 i = 0; i < 10; i++) hipc_buffer(r.hipc.send_buffers + 12 * i, 0x20000 + 0x100 * i, 0x10, 0);
+        if (bad == 1) hipc_send_static(r.hipc.send_statics + 8 * 11, 0x7F00000000ull, 0x10, 11);
+        if (bad == 2) hipc_buffer(r.hipc.send_buffers + 12 * 9, 0x7F00000000ull, 0x10, 0);
+        if (bad)
+            CHECK(send(h) == 0xD401 && !got.calls);
+        else
+            CHECK(send(h) == 0 && got.calls == 1 && got.nx == MAX_BUFS && got.na == MAX_BUFS && got.x.addr == 0x10000 &&
+                  got.a.addr == 0x20000);
+    }
+    /* a receive list entry outside the address space: InvalidCurrentMemory too */
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 9, .num_out_fixed_pointers = 2});
+    hipc_recv_static(r.hipc.recv_list, 0x10000, 0x100);
+    hipc_recv_static(r.hipc.recv_list + 8, 0x7F00000000ull, 0x100);
+    CHECK(send(h) == 0xD401 && !got.calls);
+    /* raw data past the server's buffer comes before a move handle: MessageTooLarge */
+    memset(GP(UBUF), 0, 0x1000);
+    hr = hipc_make_request(GP(UBUF), (HipcMetadata){.type = 4, .num_data_words = 0x40, .num_move_handles = 1});
+    put32(hr.move_handles, h);
+    CHECK(send_to(h, UBUF, 0x1000) == 0x20801);
     /* a number that isn't a handle, and a handle that isn't a session */
     CHECK(send(0x55) == 0xE401);
     u32 ev = event_handle();
@@ -914,6 +940,8 @@ static void warn_once(void) {
     CHECK(ipc_warn_once("warn:x", 6) == 1); /* another command counts on its own */
     CHECK(ipc_warn_once(a, 1) == 1 && ipc_warn_once(b, 1) == 1 && ipc_warn_once(a, 1) == 1);
     CHECK(ipc_warn_once(b, 1) == 0); /* the fourth for the same 127 characters */
+    for (int i = 0; i < 100000; i++) ipc_warn_once("warn:x", 7); /* the count stops: no overflow, still quiet */
+    CHECK(ipc_warn_once("warn:x", 7) == 0);
     for (u32 cmd = 1000; cmd < 1600; cmd++) ipc_warn_once("warn:fill", cmd);
     CHECK(ipc_warn_once("warn:new", 1) == 0); /* the table is full */
 }

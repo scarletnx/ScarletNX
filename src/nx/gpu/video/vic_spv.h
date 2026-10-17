@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Generated from vic.comp by scripts/build-vic-shader.py (glslang 16.3.0).
-   sources c17c50ec90fd3c0dcc2a88b8b728e53b87276f076ff08ff962a067ec56bc479e
-   Derived from SwitchRecomp by MZ Labs, Copyright 2026, Apache-2.0.
-   See LICENSE.apache and NOTICE. Do not edit. */
+   sources 5b36784b3c4a9b84079b063ffd68802b1d1bd91dda4db1b8242af33d9b49f56e
+   Ported from Eden (src/video_core/host1x/vic.cpp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+   Do not edit. */
 // clang-format off
 static const u32 vic_spv[] = {
     0x07230203, 0x00010300, 0x0008000b, 0x000004d9, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,

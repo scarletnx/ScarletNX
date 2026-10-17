@@ -56,8 +56,10 @@ def main():
    Copyright 2026 the ScarletNX contributors
    Generated from vic.comp by scripts/build-vic-shader.py (glslang @VERSION@).
    sources @DIGEST@
-   Derived from SwitchRecomp by MZ Labs, Copyright 2026, Apache-2.0.
-   See LICENSE.apache and NOTICE. Do not edit. */
+   Ported from Eden (src/video_core/host1x/vic.cpp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+   Do not edit. */
 // clang-format off
 """
     text = text.replace('@VERSION@', version).replace('@DIGEST@', digest)

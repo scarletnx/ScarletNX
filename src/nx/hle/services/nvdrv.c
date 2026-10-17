@@ -1,9 +1,13 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* nvdrv: nvmap, nvhost-as-gpu, nvhost-ctrl, nvhost-ctrl-gpu, nvhost-gpu, and nvhost-nvdec and nvhost-vic (host1x
-   channels, gpu/video/host1x.c). Enough for NVN and deko3d. */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/core/hle/service/nvdrv/devices/nvmap.cpp, nvhost_as_gpu.cpp, nvhost_ctrl.cpp,
+   nvhost_ctrl_gpu.cpp, nvhost_gpu.cpp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+   SPDX-FileCopyrightText: 2021 yuzu Emulator Project
+   SPDX-FileCopyrightText: 2021 Skyline Team and Contributors */
+/* nvdrv's devices: nvmap, the GPU address space, nvhost-ctrl's syncpoints and events, ctrl-gpu, the GPU channels, and
+   the NVDEC and VIC fds that gpu/video/host1x.c serves */
 #include "nx/hle/services/nvdrv.h"
 #include "nx/gpu/gpu.h"
 #include "nx/hle/kernel/ipc.h"
@@ -18,15 +22,15 @@
 #include <string.h>
 static void nv_events_check(void);
 
-/* ============================================================ nvmap */
+/* an nvmap handle (nv.nvh, by handle number). CREATE and each FROM_ID take a reference, FREE gives one back and the
+   last one ends the handle. allocated: ALLOC gave it guest memory at addr */
 typedef struct {
-    u32 size, align, heap, flags;
-    u8 kind;
     u64 addr;
+    u32 size, align, heap, flags;
     u32 id;
-    int alive;
-    int allocated;
-    u32 refs; /* CREATE and each FROM_ID take one, FREE drops one: the handle dies with the last */
+    u32 refs;
+    int alive, allocated;
+    u8 kind;
 } NvMapH;
 /* what MAP_BUFFER_EX mapped, for UNMAP_BUFFER: [gva, gva+size) maps cpu. base is the address UNMAP_BUFFER names; a
    modify (flag 0x100) or FREE_SPACE splits a mapping into pieces that keep it. va is the VA the mapping took from
@@ -38,16 +42,18 @@ typedef struct {
 typedef struct {
     u64 a, e;
 } VaRange;
-/* nvhost-ctrl events = async syncpoint waits */
+/* an nvhost-ctrl event slot (nv.nvev). ev is made on first use and nvdrv keeps a reference. An armed slot is
+   signaled once syncpoint id reaches thresh; armed changes under nv.nvev_lk */
 typedef struct {
     KEvent* ev;
     u32 id, thresh;
-    volatile int armed;
+    int armed;
 } NvEvent;
+/* an fd (nv.nvf, by number) */
 typedef struct {
-    int dev;
-    u32 syncpt;
-    u64 user_data;
+    int dev;       /* a DEV_* value, DEV_NONE while the entry is free */
+    u32 syncpt;    /* DEV_GPU: the channel's syncpoint, 0 until its first use */
+    u64 user_data; /* DEV_GPU: SET_USER_DATA's value, for GET_USER_DATA */
     /* QueryEvent's events of a channel (1 SM exception, 2 SM pause, 3 error notifier, as Ryujinx numbers them), made
        on first query and never signaled: nothing here raises them */
     KEvent* ev[4];
@@ -84,9 +90,9 @@ static struct {
                                 them (sync_lk) */
     PMutex submit_lk;        /* a submission's promise and its place in the GPU queue, in the same order */
     NvEvent nvev[64];
-    /* arming (game thread) races with nv_events_check (GPU/video threads after an incr).
-       clear the event BEFORE arming and keep both under one lock, otherwise an incr in between
-       signals and the clear wipes it -> lost wakeup, game waits forever. A mutex, not a spin: kevent_signal runs under
+    /* a game thread arms a slot while GPU and video threads run nv_events_check after their increments. Arming
+       clears the event first and does both in one hold: an increment between a separate arm and clear would signal
+       and then lose its wakeup, leaving the game waiting for good. A mutex, not a spin: kevent_signal runs under
        it */
     PMutex nvev_lk;
     NvFile nvf[256];
@@ -115,19 +121,24 @@ u64 nvmap_addr_by_id(u32 id) {
     return a;
 }
 
-/* ============================================================ GPU VA space (40 bit) */
+/* the GPU's 40-bit address space */
 /* two level table, gva -> guest address, 4K granularity. The GPU thread reads it while ioctl_as
    changes it on others: an L2 table is installed with a CAS and loaded with acquire, entries are relaxed atomics */
-#define GPAGE_BITS 12
-#define GL1        (1u << 16) /* 40-12 = 28 bits, split 16 + 12 */
+#define GPAGE_BITS 12 /* 4K GPU pages */
+#define GL2_BITS   12 /* gmmu_l2's tables: 4096 entries */
+/* first-level entries: 16 bits of page number above the 12 a second-level table covers, for 40 bits in all */
+#define GL1 (1u << (40 - GPAGE_BITS - GL2_BITS))
+static u32 gmmu_l1_index(u64 page) { return (u32)(page >> GL2_BITS) & (GL1 - 1); }
+/* the guest address of a GPU address, 0 when its page isn't mapped. On the GPU thread, while ioctl_as maps and unmaps
+   on others. Bits past the 40 the table covers are dropped, as the GPU's MMU does */
 u64 gmmu_translate(u64 gva) {
-    u64 p = gva >> GPAGE_BITS;
-    u32 i = (u32)(p >> 12) & (GL1 - 1), j = (u32)p & 0xFFF;
-    u64* t = __atomic_load_n(&nv.gmmu[i], __ATOMIC_ACQUIRE);
+    u64 page = gva >> GPAGE_BITS;
+    u64* t = __atomic_load_n(&nv.gmmu[gmmu_l1_index(page)], __ATOMIC_ACQUIRE);
+    u64 e;
     if (!t) return 0;
-    u64 e = __atomic_load_n(&t[j], __ATOMIC_RELAXED);
+    e = __atomic_load_n(&t[page & ((1u << GL2_BITS) - 1)], __ATOMIC_RELAXED);
     if (!(e & 1)) return 0;
-    return (e & ~1ull) + (gva & 0xFFF);
+    return (e & ~(u64)0xFFF) | (gva & 0xFFF);
 }
 static u64* gmmu_l2(u32 i) {
     u64* t = __atomic_load_n(&nv.gmmu[i], __ATOMIC_ACQUIRE);
@@ -138,30 +149,48 @@ static u64* gmmu_l2(u32 i) {
     free(n);
     return t;
 }
+/* the renderer's caches may describe what was mapped at [gva, gva+size) before: they hear of every change */
+static void gmmu_change_begin(u64 gva, u64 size) {
+    if (g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
+}
+static void gmmu_change_end(u64 gva, u64 size) {
+    gpu_mem_written(gva, size);
+    if (g_gpu_mapping_end) g_gpu_mapping_end();
+}
+/* points the pages of [gva, gva+size) at cpu onwards */
 static void gmmu_map(u64 gva, u64 cpu, u64 size) {
-    if (size && g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
-    for (u64 o = 0; o < size; o += 0x1000) {
-        u64 p = (gva + o) >> GPAGE_BITS;
-        u32 i = (u32)(p >> 12) & (GL1 - 1), j = (u32)p & 0xFFF;
-        __atomic_store_n(&gmmu_l2(i)[j], (cpu + o) | 1, __ATOMIC_RELAXED);
+    u64 first, last, p;
+    if (!size) return;
+    gmmu_change_begin(gva, size);
+    first = gva >> GPAGE_BITS;
+    last = (gva + size - 1) >> GPAGE_BITS;
+    for (p = first; p <= last; p++) {
+        u64* t = gmmu_l2(gmmu_l1_index(p));
+        u64 e = (cpu + ((p - first) << GPAGE_BITS)) | 1;
+        __atomic_store_n(&t[p & ((1u << GL2_BITS) - 1)], e, __ATOMIC_RELAXED);
     }
-    if (size) gpu_mem_written(gva, size); /* an existing buffer cache may describe the old mapping */
-    if (size && g_gpu_mapping_end) g_gpu_mapping_end();
+    gmmu_change_end(gva, size);
 }
 /* clears the pages of [gva, gva+size). With own set, only the pages still pointing where a mapping of cpu put them:
    unmapping a buffer leaves alone what was mapped over it since */
 static void gmmu_unmap(u64 gva, u64 size, int own, u64 cpu) {
-    if (size && g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
-    for (u64 o = 0; o < size; o += 0x1000) {
-        u64 p = (gva + o) >> GPAGE_BITS;
-        u32 i = (u32)(p >> 12) & (GL1 - 1), j = (u32)p & 0xFFF;
-        u64* t = __atomic_load_n(&nv.gmmu[i], __ATOMIC_ACQUIRE);
-        if (!t) continue;
-        if (!own || __atomic_load_n(&t[j], __ATOMIC_RELAXED) == ((cpu + o) | 1))
-            __atomic_store_n(&t[j], 0, __ATOMIC_RELAXED);
+    u64 first, last, p;
+    if (!size) return;
+    gmmu_change_begin(gva, size);
+    first = gva >> GPAGE_BITS;
+    last = (gva + size - 1) >> GPAGE_BITS;
+    for (p = first; p <= last; p++) {
+        u64* t = __atomic_load_n(&nv.gmmu[gmmu_l1_index(p)], __ATOMIC_ACQUIRE);
+        u64* e;
+        if (!t) { /* nothing was ever mapped in this table's range: skip to the next table */
+            p |= (1u << GL2_BITS) - 1;
+            continue;
+        }
+        e = &t[p & ((1u << GL2_BITS) - 1)];
+        if (own && __atomic_load_n(e, __ATOMIC_RELAXED) != ((cpu + ((p - first) << GPAGE_BITS)) | 1)) continue;
+        __atomic_store_n(e, 0, __ATOMIC_RELAXED);
     }
-    if (size) gpu_mem_written(gva, size);
-    if (size && g_gpu_mapping_end) g_gpu_mapping_end();
+    gmmu_change_end(gva, size);
 }
 static GMap* gmap_add(void) {
     if (nv.ngmaps == nv.capgmaps) {
@@ -273,7 +302,7 @@ static void va_free(u64 a, u64 size) {
 /* 0 when the region has no room */
 static u64 va_alloc(u64 size, u64 align) {
     va_init();
-    if (align < 0x10000) align = 0x10000;
+    align = align > 0x10000 ? align : 0x10000; /* the allocator's unit */
     for (u32 k = 0; k < nv.nvafree; k++) {
         u64 a = (nv.vafree[k].a + align - 1) & ~(align - 1);
         if (a < nv.vafree[k].a || a >= nv.vafree[k].e || va_round(size) > nv.vafree[k].e - a) continue;
@@ -284,7 +313,7 @@ static u64 va_alloc(u64 size, u64 align) {
     return 0;
 }
 
-/* ============================================================ syncpoints */
+/* syncpoints */
 u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? __atomic_load_n(&nv.syncpt[id], __ATOMIC_SEQ_CST) : 0; }
 void syncpt_add(u32 id, u32 n) {
     if (id >= SYNCPT_IDS || !n) return;
@@ -297,28 +326,31 @@ void syncpt_add(u32 id, u32 n) {
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
-int syncpt_wait(u32 id, u32 thresh, i64 timeout) {
+/* whether syncpoint id has reached thresh, counting across the 32-bit wrap */
+static int syncpt_reached(u32 id, u32 thresh) { return (i32)(syncpt_read(id) - thresh) >= 0; }
+/* 1 once id reaches thresh, 0 when the time runs out first. timeout_ns 0 looks once, negative waits for good. The
+   deadline is absolute, so a spurious wakeup doesn't extend it */
+int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
+    u64 deadline;
+    int reached;
     if (id >= SYNCPT_IDS) return 0;
-    pm_lock(&nv.sync_lk);
-    u64 end = plat_ns() + (u64)(timeout < 0 ? 0 : timeout);
-    while ((i32)(syncpt_read(id) - thresh) < 0) {
-        if (timeout == 0) {
-            pm_unlock(&nv.sync_lk);
-            return 0;
-        }
-        i64 rem = -1;
-        if (timeout > 0) {
+    if (syncpt_reached(id, thresh)) return 1;
+    if (!timeout_ns) return 0;
+    deadline = timeout_ns > 0 ? plat_ns() + (u64)timeout_ns : 0;
+    pm_lock(&nv.sync_lk); /* syncpt_add broadcasts under it, so no increment slips between the check and the wait */
+    for (;;) {
+        i64 left = -1;
+        reached = syncpt_reached(id, thresh);
+        if (reached) break;
+        if (timeout_ns > 0) {
             u64 now = plat_ns();
-            if (now >= end) {
-                pm_unlock(&nv.sync_lk);
-                return 0;
-            }
-            rem = (i64)(end - now);
+            if (now >= deadline) break;
+            left = (i64)(deadline - now);
         }
-        pc_wait(&nv.sync_cv, &nv.sync_lk, rem);
+        pc_wait(&nv.sync_cv, &nv.sync_lk, left);
     }
     pm_unlock(&nv.sync_lk);
-    return 1;
+    return reached;
 }
 /* every syncpoint user (GPU channels here, host1x channels in host1x.c) allocates here, so ids stay unique and low.
    NVIDIA's stream library sizes its per-syncpoint tables at 128 (NvRmChannelNumSyncPoints is a stub that fails), and an
@@ -411,660 +443,569 @@ static KEvent* nvev_get(u32 slot) {
     }
     return nv.nvev[slot].ev;
 }
+/* signals the armed event slots whose syncpoint got where they wait for, and disarms them */
 static void nv_events_check(void) {
+    u32 i;
     nvev_lock();
-    for (int i = 0; i < 64; i++)
-        if (nv.nvev[i].armed && (i32)(syncpt_read(nv.nvev[i].id) - nv.nvev[i].thresh) >= 0) {
-            nv.nvev[i].armed = 0;
-            kevent_signal(nv.nvev[i].ev);
-        }
+    for (i = 0; i < 64; i++) {
+        NvEvent* e = &nv.nvev[i];
+        if (!e->armed || !syncpt_reached(e->id, e->thresh)) continue;
+        e->armed = 0;
+        if (e->ev) kevent_signal(e->ev);
+    }
     nvev_unlock();
 }
 
-/* ============================================================ files (fds) */
+/* the devices. Each handler gets the ioctl's argument in d (nv_ioctl's scratch buffer, so reads and writes stay inside
+   it whatever n says), n the bytes the device may use, and answers an NvError: 0 Success, 1 BadValue, 4 BadParameter,
+   5 Timeout, 6 InsufficientMemory (8, a bad fd, is nv_ioctl's). Layouts are Switchbrew's ("NV services") */
 enum { DEV_NONE, DEV_NVMAP, DEV_AS, DEV_CTRL, DEV_CTRLGPU, DEV_GPU, DEV_NVDEC, DEV_VIC, DEV_OTHER };
+static u32 rd32(const u8* d, u32 off) {
+    u32 v;
+    memcpy(&v, d + off, 4);
+    return v;
+}
+static u64 rd64(const u8* d, u32 off) {
+    u64 v;
+    memcpy(&v, d + off, 8);
+    return v;
+}
+static void wr32(u8* d, u32 off, u32 v) { memcpy(d + off, &v, 4); }
+static void wr64(u8* d, u32 off, u64 v) { memcpy(d + off, &v, 8); }
+/* an ioctl's second output (Ioctl3), up to its size */
+static void copy_extra(u8* extra, u32 nextra, const void* src, u32 size) {
+    if (extra) memcpy(extra, src, size < nextra ? size : nextra);
+}
 
+/* /dev/nvmap: handles to guest memory, numbered 1..8191. Every access to a handle is under nv.lock: host1x and vi
+   read them on other threads */
+#define NVMAP_HANDLES 8192
+static NvMapH* nvmap_live(u32 h) { return h && h < NVMAP_HANDLES && nv.nvh[h].alive ? &nv.nvh[h] : NULL; }
 static u32 ioctl_nvmap(u32 cmd, u8* d, u32 n) {
+    u32 h, r = 0;
+    NvMapH* m;
     (void)n;
     switch (cmd & 0xFF) {
-        case 0x01: {
-            u32 size;
-            memcpy(&size, d, 4);
+        case 0x01: /* CREATE {u32 size; out u32 handle} */
             pm_lock(&nv.lock);
-            u32 h = nv.nvh_nfree ? nv.nvh_free[--nv.nvh_nfree] : nv.nvh_next < 8192 ? nv.nvh_next++ : 0;
+            h = nv.nvh_nfree ? nv.nvh_free[--nv.nvh_nfree] : nv.nvh_next < NVMAP_HANDLES ? nv.nvh_next++ : 0;
             if (h) {
-                memset(&nv.nvh[h], 0, sizeof nv.nvh[h]);
-                nv.nvh[h].size = size;
-                nv.nvh[h].id = h;
-                nv.nvh[h].refs = 1;
-                nv.nvh[h].alive = 1;
+                m = &nv.nvh[h];
+                memset(m, 0, sizeof *m);
+                m->size = rd32(d, 0);
+                m->id = h;
+                m->refs = 1;
+                m->alive = 1;
             }
             pm_unlock(&nv.lock);
-            memcpy(d + 4, &h, 4);
+            wr32(d, 4, h);
             if (!h) {
-                WARN("nvmap: all 8191 handles are in use\n");
-                return 6; /* InsufficientMemory */
+                WARN_LIMIT(4, "nvdrv: nvmap has no handle left for %#x bytes\n", rd32(d, 0));
+                return 6;
             }
+            LOGV("nvdrv: nvmap create %#x bytes -> %u\n", rd32(d, 0), h);
             return 0;
-        }
-        case 0x03: { /* FROM_ID: another reference to the same handle */
-            u32 id;
-            memcpy(&id, d, 4);
+        case 0x03: /* FROM_ID {u32 id; out u32 handle} */
             pm_lock(&nv.lock);
-            u32 h = nvmap_from_id(id);
+            h = nvmap_from_id(rd32(d, 0));
             if (h) nv.nvh[h].refs++;
             pm_unlock(&nv.lock);
             if (!h) return 1;
-            memcpy(d + 4, &h, 4);
+            wr32(d, 4, h);
             return 0;
-        }
-        case 0x04: { /* ALLOC: the handle's memory. Under the lock: vi and host1x read the address from their threads */
-            u32 h;
-            u64 addr;
-            memcpy(&h, d, 4);
-            memcpy(&addr, d + 24, 8);
-            if (!h || h >= 8192) return 1;
+        case 0x04: { /* ALLOC {u32 handle, heap_mask, flags, align; u8 kind; u64 addr at 24} */
+            u64 addr = rd64(d, 24);
+            h = rd32(d, 0);
+            if (!h || h >= NVMAP_HANDLES) return 1;
             pm_lock(&nv.lock);
-            NvMapH* m = &nv.nvh[h];
-            int alive = m->alive;
-            int valid = alive && m->size && addr <= AS_SIZE - m->size && !(addr & 0xFFF);
-            if (valid) {
-                memcpy(&m->heap, d + 4, 4);
-                memcpy(&m->flags, d + 8, 4);
-                memcpy(&m->align, d + 12, 4);
+            m = nvmap_live(h);
+            if (!m)
+                r = 1;
+            else if (!m->size || (addr & 0xFFF) || !cpu_ok(addr, m->size))
+                r = 4; /* the handle stays as it was */
+            else {
+                m->heap = rd32(d, 4);
+                m->flags = rd32(d, 8);
+                m->align = rd32(d, 12);
                 m->kind = d[16];
                 m->addr = addr;
                 m->allocated = 1;
             }
             pm_unlock(&nv.lock);
-            if (!valid) return alive ? 4 : 1;
-            LOGV("nvmap alloc h=%u addr=%llx\n", h, (unsigned long long)addr);
-            return 0;
+            if (!r) LOGV("nvdrv: nvmap alloc %u at %llx\n", h, (unsigned long long)addr);
+            return r;
         }
-        case 0x05: {
-            u32 h;
-            memcpy(&h, d, 4);
-            if (!h || h >= 8192) return 1; /* no handle: a bad value, as for ALLOC */
-            {
-                pm_lock(&nv.lock);
-                int last = nv.nvh[h].alive && --nv.nvh[h].refs == 0;
-                u64 a = nv.nvh[h].addr;
-                u32 s = nv.nvh[h].size, f = nv.nvh[h].flags;
-                if (last) nv.nvh[h].alive = 0;
-                pm_unlock(&nv.lock);
-                memcpy(d + 8, &a, 8);
-                memcpy(d + 16, &s, 4);
-                memcpy(d + 20, &f, 4);
-                if (last) {
-                    /* NVDEC and VIC keep a mapping per handle: drop it before the number can name another buffer */
-                    host1x_forget_handle(h);
-                    pm_lock(&nv.lock);
-                    nv.nvh_free[nv.nvh_nfree++] = h;
-                    pm_unlock(&nv.lock);
-                }
-            }
-            return 0;
-        }
-        case 0x09: {
-            u32 h, p, r = 0;
-            memcpy(&h, d, 4);
-            memcpy(&p, d + 4, 4);
-            pm_lock(&nv.lock); /* ALLOC and FREE write the handle under it */
-            int alive = h && h < 8192 && nv.nvh[h].alive;
-            if (alive) {
-                NvMapH* m = &nv.nvh[h];
-                switch (p) {
-                    case 1: r = m->size; break;
-                    case 2: r = m->align ? m->align : 0x1000; break;
-                    case 3: r = (u32)m->addr; break; /* Base: the address, as Ryujinx answers */
-                    case 4: r = 0x40000000; break;
-                    case 5: r = m->kind; break;
-                    case 6: r = 0; break;
-                }
-            }
-            pm_unlock(&nv.lock);
-            memcpy(d + 8, &r, 4);
-            return alive ? 0 : 1;
-        }
-        case 0x0E: {
-            u32 h;
-            memcpy(&h, d + 4, 4);
+        case 0x05: { /* FREE {u32 handle; out u64 addr at 8, u32 size at 16, u32 flags at 20} */
+            int last = 0;
+            h = rd32(d, 0);
+            if (!h || h >= NVMAP_HANDLES) return 1;
             pm_lock(&nv.lock);
-            int alive = h && h < 8192 && nv.nvh[h].alive;
-            u32 id = alive ? nv.nvh[h].id : 0;
+            m = nvmap_live(h);
+            if (m) {
+                wr64(d, 8, m->addr);
+                wr32(d, 16, m->size);
+                wr32(d, 20, m->flags);
+                last = !--m->refs;
+                if (last) m->alive = m->allocated = 0;
+            }
             pm_unlock(&nv.lock);
-            memcpy(d, &id, 4);
-            return alive ? 0 : 1;
-        }
-    }
-    WARN_LIMIT(16, "nvmap ioctl %x not handled\n", cmd);
-    return 0;
-}
-
-static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
-    (void)n;
-    switch (cmd & 0xFF) {
-        case 0x01: return 0;
-        case 0x02: {
-            u32 pages, psz, flags;
-            u64 off;
-            memcpy(&pages, d, 4);
-            memcpy(&psz, d + 4, 4);
-            memcpy(&flags, d + 8, 4);
-            memcpy(&off, d + 16, 8);
-            u64 size = (u64)pages * psz, a = off, align = off > psz ? off : psz;
-            /* fixed (flags bit 0): the field is the address. Otherwise it is the alignment, a power of two */
-            if (!gva_ok(flags & 1 ? a : 0, size) || (!(flags & 1) && (align & (align - 1)))) {
-                WARN_LIMIT(4, "as alloc_space: %u pages of %x at %llx (flags %x) refused\n", pages, psz,
-                           (unsigned long long)off, flags);
-                return 4; /* BadParameter */
-            }
-            if (flags & 1) /* fixed: keep the allocator out of it */
-                va_reserve(a, size);
-            else if (!(a = va_alloc(size, align)))
-                return 6; /* InsufficientMemory */
-            memcpy(d + 16, &a, 8);
-            LOGV("as alloc_space %llx size %llx\n", (unsigned long long)a, (unsigned long long)size);
-            return 0;
-        }
-        case 0x03: {
-            u64 off;
-            u32 pages, psz;
-            memcpy(&off, d, 8);
-            memcpy(&pages, d + 8, 4);
-            memcpy(&psz, d + 12, 4);
-            u64 size = (u64)pages * psz;
-            if (!gva_ok(off, size)) return 4;
-            gmmu_unmap(off, size, 0, 0);
-            gmap_cut(off, size);
-            va_free(off, size);
-            return 0;
-        }
-        case 0x05: { /* UNMAP_BUFFER: every piece of the mapping at off */
-            u64 off, va = 0;
-            memcpy(&off, d, 8);
-            for (u32 k = 0; k < nv.ngmaps;) {
-                if (nv.gmaps[k].base != off) {
-                    k++;
-                    continue;
-                }
-                gmmu_unmap(nv.gmaps[k].gva, nv.gmaps[k].size, 1, nv.gmaps[k].cpu);
-                if (nv.gmaps[k].va) va = nv.gmaps[k].va;
-                nv.gmaps[k] = nv.gmaps[--nv.ngmaps];
-            }
-            if (va) va_free(off, va);
-            return 0;
-        }
-        case 0x06: {
-            u32 flags, kind, h, psz;
-            i64 boff;
-            u64 msize, off;
-            memcpy(&flags, d, 4);
-            memcpy(&kind, d + 4, 4);
-            memcpy(&h, d + 8, 4);
-            memcpy(&psz, d + 12, 4);
-            memcpy(&boff, d + 16, 8);
-            memcpy(&msize, d + 24, 8);
-            memcpy(&off, d + 32, 8);
-            if ((flags & 0x100) && h == 0) return 0; /* just updates kind on an existing map */
-            pm_lock(&nv.lock);                       /* ALLOC and FREE write the handle under it */
-            int alive = h && h < 8192 && nv.nvh[h].alive && nv.nvh[h].allocated;
-            u64 haddr = alive ? nv.nvh[h].addr : 0, hsize = alive ? nv.nvh[h].size : 0;
-            pm_unlock(&nv.lock);
-            if (!alive) {
-                WARN_LIMIT(8, "as map: invalid nvmap handle %u flags=%x kind=%x psz=%x boff=%llx msize=%llx off=%llx\n",
-                           h, flags, kind, psz, (unsigned long long)boff, (unsigned long long)msize,
-                           (unsigned long long)off);
-                return 1;
-            }
-            /* an allocation at address 0 nvservices backs with its own memory (Ryujinx's Alloc): here it maps the
-               guest's lowest pages, so it is logged to see whether a game does it */
-            if (!haddr) WARN_LIMIT(4, "as map: nvmap handle %u has address 0\n", h);
-            u64 size = msize ? msize : hsize;
-            u64 cpu = haddr + (u64)boff;
-            /* PTEs expose complete 4 KiB pages, even when the requested byte count is smaller. */
-            u64 span = size <= AS_SIZE ? (size + 0xFFF) & ~0xFFFull : 0;
-            if (boff < 0 || !span || (cpu & 0xFFF) || !cpu_ok(cpu, span) ||
-                ((flags & 0x101) && ((off & 0xFFF) || !gva_ok(off, span))) ||
-                (!(flags & 0x101) && psz && (psz & (psz - 1)))) {
-                WARN_LIMIT(4, "as map: handle %u offset %llx size %llx at %llx (flags %x) refused\n", h,
-                           (unsigned long long)boff, (unsigned long long)size, (unsigned long long)off, flags);
-                return 4;
-            }
-            if (flags & 0x100) { /* modify: remap inside an existing mapping, whose unmap takes these pages too */
-                u64 base = off, va = 0;
-                for (u32 k = 0; k < nv.ngmaps; k++)
-                    if (nv.gmaps[k].gva <= off && off < nv.gmaps[k].gva + nv.gmaps[k].size) {
-                        base = nv.gmaps[k].base;
-                        va = nv.gmaps[k].va;
-                        break;
-                    }
-                gmmu_map(off, cpu, size);
-                gmap_cut(off, size);
-                GMap* g = gmap_add();
-                g->gva = off;
-                g->size = size;
-                g->cpu = cpu;
-                g->base = base;
-                g->va = va;
-                return 0;
-            }
-            u64 gva = off, va = 0;
-            if (!(flags & 1)) {
-                if (!(gva = va_alloc(size, psz ? psz : 0x10000))) return 6; /* InsufficientMemory */
-                va = size;
-            }
-            gmmu_map(gva, cpu, size);
-            GMap* g = gmap_add();
-            g->gva = gva;
-            g->size = size;
-            g->cpu = cpu;
-            g->base = gva;
-            g->va = va;
-            memcpy(d + 32, &gva, 8);
-            LOGV("as map h=%u cpu=%llx gva=%llx size=%llx\n", h, (unsigned long long)cpu, (unsigned long long)gva,
-                 (unsigned long long)size);
-            return 0;
-        }
-        case 0x08: {
-            u32 bufsz = 2 * 24;
-            memcpy(d + 8, &bufsz, 4);
-            u8* rg = d + 16;
-            u64 o0 = 0x04000000;
-            u32 ps0 = 0x1000;
-            u64 np0 = 0x3FFBFFF;
-            u64 o1 = 0x0400000000ull;
-            u32 ps1 = 1u << nv.big_page_bits;
-            u64 np1 = 0x1BFFF;
-            memcpy(rg, &o0, 8);
-            memcpy(rg + 8, &ps0, 4);
-            memset(rg + 12, 0, 4);
-            memcpy(rg + 16, &np0, 8);
-            memcpy(rg + 24, &o1, 8);
-            memcpy(rg + 32, &ps1, 4);
-            memset(rg + 36, 0, 4);
-            memcpy(rg + 40, &np1, 8);
-            if (extra && nextra) memcpy(extra, rg, nextra < 48 ? nextra : 48);
-            return 0;
-        }
-        case 0x09: { /* ALLOC_AS_EX: {u32 flags, i32 as_fd, u32 big_page_size, u32 pad, u64 va_start, va_end, va_split}
-                    big_page_size 0 means 128K (yuzu DEFAULT_BIG_PAGE_SIZE). REMAP uses big page units */
-            u32 bps;
-            memcpy(&bps, d + 8, 4);
-            if (!bps) bps = 0x20000;
-            if (bps == 0x10000 || bps == 0x20000) nv.big_page_bits = bps == 0x20000 ? 17 : 16;
-            LOG("nvdrv: GPU address space init (big page field %x) -> %u KB big pages\n", bps,
-                (1u << nv.big_page_bits) >> 10);
-            return 0;
-        }
-        case 0x14: { /* REMAP entries: {u16 flags, u16 kind, u32 handle, u32 mem_off, u32 gpu_off, u32 pages}, offsets in big pages */
-            u32 cnt = n / 20;
-            for (u32 i = 0; i < cnt; i++) {
-                u8* e = d + i * 20;
-                u32 h, moff, goff, pages;
-                memcpy(&h, e + 4, 4);
-                memcpy(&moff, e + 8, 4);
-                memcpy(&goff, e + 12, 4);
-                memcpy(&pages, e + 16, 4);
-                /* big page size comes from ALLOC_AS_EX */
-                u64 gva = (u64)goff << nv.big_page_bits, size = (u64)pages << nv.big_page_bits;
-                pm_lock(&nv.lock); /* ALLOC and FREE write the handle under it */
-                int alive = h && h < 8192 && nv.nvh[h].alive && nv.nvh[h].allocated;
-                u64 haddr = alive ? nv.nvh[h].addr : 0;
-                u64 mem_off = (u64)moff << nv.big_page_bits;
-                u64 cpu = haddr + mem_off;
+            if (!m) return 1;
+            if (last) {
+                /* NVDEC and VIC drop what they mapped of it before the number can name another buffer */
+                host1x_forget_handle(h);
+                pm_lock(&nv.lock);
+                nv.nvh_free[nv.nvh_nfree++] = h;
                 pm_unlock(&nv.lock);
-                if (alive && !haddr) /* as for MAP_BUFFER_EX */
-                    WARN_LIMIT(4, "nvdrv: remap of nvmap handle %u, which has address 0\n", h);
-                /* a refused entry is skipped and the ioctl still succeeds: what the SDK does with an error from it
-                   isn't known */
-                if (!gva_ok(gva, size) || (h && (!alive || !cpu_ok(cpu, size)))) {
-                    WARN_LIMIT(4, "nvdrv: remap of handle %u, %llx bytes at gpu %llx, refused\n", h,
-                               (unsigned long long)size, (unsigned long long)gva);
-                    continue;
-                }
-                if (!h)
-                    gmmu_unmap(gva, size, 0, 0);
-                else
-                    gmmu_map(gva, cpu, size);
-                LOG_LIMIT(4, "nvdrv: remap handle %u: %llx bytes at gpu %llx (big page %u KB)\n", h,
-                          (unsigned long long)size, (unsigned long long)gva, (1u << nv.big_page_bits) >> 10);
             }
             return 0;
         }
+        case 0x09: { /* PARAM {u32 handle, u32 param; out u32 value} */
+            u32 v = 0;
+            pm_lock(&nv.lock);
+            m = nvmap_live(rd32(d, 0));
+            if (!m)
+                r = 1;
+            else
+                switch (rd32(d, 4)) {
+                    case 1: v = m->size; break;
+                    case 2: v = m->align ? m->align : 0x1000; break;
+                    case 3: v = (u32)m->addr; break;                       /* as Ryujinx answers Base */
+                    case 4: v = m->allocated ? 0x40000000u : 0; break;     /* Eden's heap */
+                    case 5: v = m->kind; break;
+                    case 6: v = 0; break; /* not compressed */
+                    default: r = 1; break;
+                }
+            pm_unlock(&nv.lock);
+            if (!r) wr32(d, 8, v);
+            return r;
+        }
+        case 0x0E: /* GET_ID {out u32 id; u32 handle at 4} */
+            pm_lock(&nv.lock);
+            m = nvmap_live(rd32(d, 4));
+            if (m) wr32(d, 0, m->id);
+            pm_unlock(&nv.lock);
+            return m ? 0 : 1;
+        default:
+            WARN_LIMIT(16, "nvdrv: nvmap ioctl %08x not implemented\n", cmd);
+            return 0;
     }
-    (void)extra;
-    (void)nextra;
-    WARN_LIMIT(16, "as ioctl %x not handled\n", cmd);
-    return 0;
 }
 
+/* /dev/nvhost-as-gpu. The caller holds nv.aslock, which covers nv.gmaps and the VA allocator */
+static u32 as_alloc_space(u8* d) { /* {u32 pages, u32 page_size, u32 flags; u64 offset or align at 16, out offset} */
+    u64 size = (u64)rd32(d, 0) * rd32(d, 4), field = rd64(d, 16), gva;
+    if (rd32(d, 8) & 1) { /* fixed: the field is the address */
+        gva = field;
+        if (!gva_ok(gva, size)) {
+            WARN_LIMIT(8, "nvdrv: ALLOC_SPACE at %llx of %llx bytes is outside the GPU address space\n",
+                       (unsigned long long)gva, (unsigned long long)size);
+            return 4;
+        }
+        va_reserve(gva, size);
+    } else {
+        u64 align = field > rd32(d, 4) ? field : rd32(d, 4);
+        if (!align || (align & (align - 1)) || !gva_ok(0, size)) {
+            WARN_LIMIT(8, "nvdrv: ALLOC_SPACE of %llx bytes aligned to %llx refused\n", (unsigned long long)size,
+                       (unsigned long long)align);
+            return 4;
+        }
+        gva = va_alloc(size, align);
+        if (!gva) return 6;
+        wr64(d, 16, gva);
+    }
+    LOGV("nvdrv: ALLOC_SPACE %llx bytes at %llx\n", (unsigned long long)size, (unsigned long long)gva);
+    return 0;
+}
+static u32 as_unmap_buffer(u64 base) {
+    u64 va = 0;
+    u32 k = 0;
+    while (k < nv.ngmaps) {
+        GMap g = nv.gmaps[k];
+        if (g.base != base) {
+            k++;
+            continue;
+        }
+        gmmu_unmap(g.gva, g.size, 1, g.cpu);
+        if (g.va) va = g.va;
+        nv.gmaps[k] = nv.gmaps[--nv.ngmaps];
+    }
+    if (va) va_free(base, va);
+    return 0;
+}
+/* {u32 flags, u32 kind, u32 handle, u32 page_size; i64 buffer_offset at 16, u64 mapping_size at 24, u64 offset at 32
+   (in and out)}. Flags: 1 fixed address, 0x100 modify part of an earlier mapping */
+static u32 as_map_buffer(u8* d) {
+    u32 flags = rd32(d, 0), h = rd32(d, 8), page = rd32(d, 12), hsize;
+    i64 boff = (i64)rd64(d, 16);
+    u64 msize = rd64(d, 24), gva = rd64(d, 32), haddr, size, span, cpu, base, va = 0;
+    GMap* g;
+    if ((flags & 0x100) && !h) return 0; /* only the kind changes, which nothing here keeps */
+    if (!nvmap_get(h, &haddr, &hsize)) return 1;
+    if (!haddr) WARN_LIMIT(4, "nvdrv: MAP_BUFFER_EX of nvmap handle %u, which has no address\n", h);
+    size = msize ? msize : hsize;
+    if (boff < 0 || size > ~(u64)0 - 0xFFF) return 4;
+    span = (size + 0xFFF) & ~(u64)0xFFF; /* a page table entry exposes a whole page */
+    if (!span || (u64)boff > AS_SIZE) return 4;
+    cpu = haddr + (u64)boff;
+    if ((cpu & 0xFFF) || !cpu_ok(cpu, span)) return 4;
+    if (flags & 0x101) {
+        if ((gva & 0xFFF) || !gva_ok(gva, span)) return 4;
+    } else if (page & (page - 1))
+        return 4;
+    if (flags & 0x100) { /* the pieces it replaces keep naming the mapping UNMAP_BUFFER will end */
+        u32 k;
+        base = gva;
+        for (k = 0; k < nv.ngmaps; k++)
+            if (gva >= nv.gmaps[k].gva && gva - nv.gmaps[k].gva < nv.gmaps[k].size) {
+                base = nv.gmaps[k].base;
+                va = nv.gmaps[k].va;
+                break;
+            }
+        gmap_cut(gva, span);
+    } else if (flags & 1) {
+        base = gva;
+    } else {
+        gva = va_alloc(span, page ? page : 0x10000);
+        if (!gva) return 6;
+        base = gva;
+        va = span;
+    }
+    gmmu_map(gva, cpu, span);
+    g = gmap_add();
+    g->gva = gva;
+    g->size = span;
+    g->cpu = cpu;
+    g->base = base;
+    g->va = va;
+    wr64(d, 32, gva);
+    LOGV("nvdrv: MAP_BUFFER_EX handle %u +%llx: %llx bytes at %llx -> %llx\n", h, (unsigned long long)boff,
+         (unsigned long long)span, (unsigned long long)gva, (unsigned long long)cpu);
+    return 0;
+}
+/* GET_VA_REGIONS: the small-page region below the big-page one, which starts where the allocator does. The sizes are
+   Eden's defaults (a 2^37 byte space, small pages from big page size << 10) */
+static void as_va_regions(u8* d, u8* extra, u32 nextra) {
+    u32 bits = nv.big_page_bits;
+    u64 big = (u64)1 << bits, start = big << 10, end = (u64)1 << 37;
+    u8 r[48];
+    memset(r, 0, sizeof r);
+    wr64(r, 0, start);
+    wr32(r, 8, 0x1000);
+    wr64(r, 16, (VA_BASE - start) >> 12);
+    wr64(r, 24, VA_BASE);
+    wr32(r, 32, (u32)big);
+    wr64(r, 40, ((end - VA_BASE) >> bits) - (VA_BASE >> bits));
+    wr32(d, 8, sizeof r);
+    memcpy(d + 16, r, sizeof r);
+    copy_extra(extra, nextra, r, sizeof r);
+}
+/* REMAP: entries of {u16 flags, u16 kind, u32 handle, u32 mem_offset, u32 gpu_offset, u32 pages}, in big pages. A
+   bad entry is skipped and the rest go on: what the SDK makes of an error here is unknown */
+static u32 as_remap(const u8* d, u32 n) {
+    u32 bits = nv.big_page_bits, i;
+    for (i = 0; i < n / 20; i++) {
+        const u8* e = d + i * 20;
+        u32 h = rd32(e, 4), hsize;
+        u64 gva = (u64)rd32(e, 12) << bits, size = (u64)rd32(e, 16) << bits, haddr, cpu;
+        if (!gva_ok(gva, size)) {
+            WARN_LIMIT(8, "nvdrv: REMAP at %llx of %llx bytes is outside the GPU address space\n",
+                       (unsigned long long)gva, (unsigned long long)size);
+            continue;
+        }
+        if (!h) {
+            gmmu_unmap(gva, size, 0, 0);
+            LOG_LIMIT(16, "nvdrv: REMAP unmaps %llx bytes at %llx\n", (unsigned long long)size,
+                      (unsigned long long)gva);
+            continue;
+        }
+        if (!nvmap_get(h, &haddr, &hsize)) {
+            WARN_LIMIT(8, "nvdrv: REMAP of nvmap handle %u, which isn't allocated\n", h);
+            continue;
+        }
+        if (!haddr) WARN_LIMIT(4, "nvdrv: REMAP of nvmap handle %u, which has no address\n", h);
+        cpu = haddr + ((u64)rd32(e, 8) << bits);
+        if (!cpu_ok(cpu, size)) {
+            WARN_LIMIT(8, "nvdrv: REMAP of handle %u past guest memory\n", h);
+            continue;
+        }
+        gmmu_map(gva, cpu, size);
+        LOG_LIMIT(16, "nvdrv: REMAP handle %u: %llx bytes at %llx -> %llx\n", h, (unsigned long long)size,
+                  (unsigned long long)gva, (unsigned long long)cpu);
+    }
+    return 0;
+}
+static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
+    switch (cmd & 0xFF) {
+        case 0x01: return 0; /* BIND_CHANNEL */
+        case 0x02: return as_alloc_space(d);
+        case 0x03: { /* FREE_SPACE {u64 offset, u32 pages, u32 page_size} */
+            u64 gva = rd64(d, 0), size = (u64)rd32(d, 8) * rd32(d, 12);
+            if (!gva_ok(gva, size)) return 4;
+            gmmu_unmap(gva, size, 0, 0);
+            gmap_cut(gva, size);
+            va_free(gva, size);
+            return 0;
+        }
+        case 0x05: return as_unmap_buffer(rd64(d, 0)); /* UNMAP_BUFFER {u64 offset} */
+        case 0x06: return as_map_buffer(d);
+        case 0x08: as_va_regions(d, extra, nextra); return 0;
+        case 0x09: { /* ALLOC_AS_EX {u32 flags, i32 as_fd, u32 big_page_size, ...} */
+            u32 big = rd32(d, 8) ? rd32(d, 8) : 0x20000;
+            if (big == 0x10000) nv.big_page_bits = 16;
+            if (big == 0x20000) nv.big_page_bits = 17;
+            LOG("nvdrv: GPU address space with %u KB big pages\n", (1u << nv.big_page_bits) >> 10);
+            return 0;
+        }
+        case 0x14: return as_remap(d, n);
+        default:
+            WARN_LIMIT(16, "nvdrv: nvhost-as-gpu ioctl %08x not implemented\n", cmd);
+            return 0;
+    }
+}
+
+/* /dev/nvhost-ctrl: syncpoints and the event slots NvRm waits on */
+static void nvev_disarm(u32 slot) { /* under nvev_lk; the event stays unsignaled: the wait was canceled */
+    if (!nv.nvev[slot].ev) return;
+    nv.nvev[slot].armed = 0;
+    kevent_clear(nv.nvev[slot].ev);
+}
+/* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, u32 thresh, i32 timeout_ms; u32 value}. The asynchronous one arms the slot
+   value names and answers Timeout with value naming that slot, which the SDK then waits on as an event */
+static u32 ctrl_event_wait(u8* d, int async) {
+    u32 id = rd32(d, 0), thresh = rd32(d, 4), slot = rd32(d, 12) & 63;
+    i32 timeout = (i32)rd32(d, 8);
+    if (syncpt_reached(id, thresh)) {
+        wr32(d, 12, syncpt_read(id));
+        return 0;
+    }
+    if (!async) {
+        if (timeout && syncpt_wait(id, thresh, timeout < 0 ? -1 : (i64)timeout * 1000000)) {
+            wr32(d, 12, syncpt_read(id));
+            return 0;
+        }
+        return 5;
+    }
+    nvev_lock();
+    if (nv.nvev[slot].ev) {
+        kevent_clear(nv.nvev[slot].ev); /* before arming: see nvev_lk */
+        nv.nvev[slot].id = id;
+        nv.nvev[slot].thresh = thresh;
+        nv.nvev[slot].armed = 1;
+    }
+    nvev_unlock();
+    nv_events_check(); /* it may have got there meanwhile */
+    wr32(d, 12, 0x10000000u | ((id & 0xFFF) << 16) | slot);
+    return 5;
+}
 static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
-    u32 nr = cmd & 0xFF;
-    if ((nr >= 0x14 && nr <= 0x1A && nr != 0x17 && nr != 0x18) || nr == 0x1D || nr == 0x1E) {
-        u32 id; /* the syncpoint ioctls name it first */
-        memcpy(&id, d, 4);
+    u32 c = cmd & 0xFF, id = rd32(d, 0), i;
+    if (((c >= 0x14 && c <= 0x1A) && c != 0x17 && c != 0x18) || c == 0x1D || c == 0x1E) {
         if (id >= SYNCPT_IDS) {
-            WARN_LIMIT(4, "ctrl ioctl %x: syncpoint %u, past the %u there are\n", cmd, id, SYNCPT_IDS);
-            return 4; /* BadParameter */
+            WARN_LIMIT(8, "nvdrv: nvhost-ctrl ioctl %08x on syncpoint %u, past the table\n", cmd, id);
+            return 4;
         }
     }
-    switch (nr) {
-        case 0x14: {
-            u32 id;
-            memcpy(&id, d, 4);
-            u32 v = syncpt_read(id);
-            memcpy(d + 4, &v, 4);
-            return 0;
-        }
-        case 0x15: {
-            u32 id;
-            memcpy(&id, d, 4);
-            syncpt_incr(id);
-            return 0;
-        }
-        case 0x16:
-        case 0x19: {
-            u32 id, th;
-            i32 to;
-            memcpy(&id, d, 4);
-            memcpy(&th, d + 4, 4);
-            memcpy(&to, d + 8, 4);
-            int ok = syncpt_wait(id, th, to < 0 ? -1 : (i64)to * 1000000);
-            if (n >= 16) {
-                u32 v = syncpt_read(id);
-                memcpy(d + 12, &v, 4);
-            }
+    switch (c) {
+        case 0x14: wr32(d, 4, syncpt_read(id)); return 0; /* SYNCPT_READ {u32 id; out u32 value} */
+        case 0x15: syncpt_incr(id); return 0;             /* SYNCPT_INCR {u32 id} */
+        case 0x16:                                        /* SYNCPT_WAIT {u32 id, u32 thresh, i32 timeout_ms} */
+        case 0x19: {                                      /* SYNCPT_WAITEX, with the value back at 12 */
+            i32 timeout = (i32)rd32(d, 8);
+            int ok = syncpt_wait(id, rd32(d, 4), timeout < 0 ? -1 : (i64)timeout * 1000000);
+            if (n >= 16) wr32(d, 12, syncpt_read(id));
             return ok ? 0 : 5;
         }
-        case 0x1A: {
-            u32 id;
-            memcpy(&id, d, 4);
-            pm_lock(&nv.sync_lk); /* submissions raise it under the lock */
-            u32 v = nv.syncpt_max[id];
+        case 0x1A: /* SYNCPT_READ_MAX {u32 id; out u32 max}: submissions raise it under sync_lk */
+            pm_lock(&nv.sync_lk);
+            wr32(d, 4, nv.syncpt_max[id]);
             pm_unlock(&nv.sync_lk);
-            memcpy(d + 4, &v, 4);
             return 0;
-        }
-        case 0x1B: { /* GET_CONFIG {char domain[0x41], param[0x41], value[0x101]}: no value */
+        case 0x1B: /* GET_CONFIG {char domain[0x41], param[0x41], value[0x101]}: no setting has a value */
             memset(d + 0x82, 0, 0x101);
             return 0;
-        }
-        case 0x1C: { /* CLEAR_EVENT_WAIT: cancel the pending fence wait and reset its event. */
-            u32 ev;
-            memcpy(&ev, d, 4);
-            u32 slot = ev & 63;
+        case 0x1C: /* CLEAR_EVENT_WAIT {u32 slot}: cancels without signaling */
             nvev_lock();
-            if (nv.nvev[slot].ev) {
-                nv.nvev[slot].armed = 0;
-                kevent_clear(nv.nvev[slot].ev);
-            }
+            nvev_disarm(id & 63);
             nvev_unlock();
-            LOG_LIMIT(2, "nvdrv: event %u wait canceled by the game\n", slot);
+            LOG_LIMIT(8, "nvdrv: event slot %u wait canceled\n", id & 63);
             return 0;
-        }
-        /* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, thresh; i32 timeout; u32 value}. NvRmChannelSyncPointWaitTimeout
-           sends only 0x1E: value is a slot it registered with 0x1F and queried as 0x10000000 | slot, it waits on that
-           event itself on 5, and cancels the wait with 0x1C when its own wait times out */
-        case 0x1D:
-        case 0x1E: {
-            u32 id, th;
-            i32 to;
-            u32 ev;
-            memcpy(&id, d, 4);
-            memcpy(&th, d + 4, 4);
-            memcpy(&to, d + 8, 4);
-            memcpy(&ev, d + 12, 4);
-            if (syncpt_wait(id, th, 0)) {
-                u32 v = syncpt_read(id);
-                memcpy(d + 12, &v, 4);
-                return 0;
-            }
-            if ((cmd & 0xFF) == 0x1D) { /* synchronous: its value field names no event slot to arm */
-                if (to != 0 && syncpt_wait(id, th, to < 0 ? -1 : (i64)to * 1000000)) {
-                    u32 v = syncpt_read(id);
-                    memcpy(d + 12, &v, 4);
-                    return 0;
-                }
-                return 5; /* Timeout */
-            }
-            u32 slot = ev & 63;
+        case 0x1D: return ctrl_event_wait(d, 0);
+        case 0x1E: return ctrl_event_wait(d, 1);
+        case 0x1F: /* EVENT_REGISTER {u32 slot} */
             nvev_lock();
-            int have = nv.nvev[slot].ev != NULL;
-            if (have) {
-                kevent_clear(nv.nvev[slot].ev);
-                nv.nvev[slot].id = id;
-                nv.nvev[slot].thresh = th;
-                nv.nvev[slot].armed = 1;
-            }
+            nvev_get(id & 63);
             nvev_unlock();
-            if (have) nv_events_check();
-            u32 r = 0x10000000u | slot | ((id & 0xFFF) << 16);
-            memcpy(d + 12, &r, 4);
-            return 5;
-        } /* timeout, caller will wait on the event */
-        case 0x1F: {
-            u32 ev;
-            memcpy(&ev, d, 4);
+            return 0;
+        case 0x20: /* EVENT_UNREGISTER {u32 slot} */
             nvev_lock();
-            nvev_get(ev & 63);
+            nvev_disarm(id & 63);
+            nvev_unlock();
+            return 0;
+        case 0x21: { /* EVENT_KILL {u64 mask}, a bit per slot */
+            u64 mask = rd64(d, 0);
+            nvev_lock();
+            for (i = 0; i < 64; i++)
+                if (mask >> i & 1) nvev_disarm(i);
             nvev_unlock();
             return 0;
         }
-        case 0x20:   /* EVENT_UNREGISTER {u32 slot} */
-        case 0x21: { /* EVENT_KILL {u64 slots}: a bit per slot */
-            u64 mask = 0;
-            if (nr == 0x20) {
-                u32 ev;
-                memcpy(&ev, d, 4);
-                mask = 1ull << (ev & 63);
-            } else
-                memcpy(&mask, d, 8);
-            nvev_lock();
-            for (u32 slot = 0; slot < 64; slot++)
-                if (((mask >> slot) & 1) && nv.nvev[slot].ev) {
-                    nv.nvev[slot].armed = 0;
-                    kevent_clear(nv.nvev[slot].ev);
-                }
-            nvev_unlock();
+        default:
+            WARN_LIMIT(16, "nvdrv: nvhost-ctrl ioctl %08x not implemented\n", cmd);
             return 0;
-        }
     }
-    WARN_LIMIT(16, "ctrl ioctl %x not handled\n", cmd);
-    return 0;
 }
 
+/* /dev/nvhost-ctrl-gpu: what a Tegra X1's GM20B reports, values from Eden's nvhost_ctrl_gpu */
+static void gpu_characteristics(u8* c) { /* 0xA0 bytes */
+    static const u32 words[] = {
+        0x120, 0xB, 0xA1, 1,         /* arch GM200, impl GM20B, rev A1, GPCs */
+        0x40000, 0, 0, 0,            /* L2 cache size, on-board video memory (u64s) */
+        2, 0x20, 0x20000, 0x20000,   /* TPCs per GPC, bus AXI, big page size, compression page size */
+        0x1B, 0x30000, 1, 0x503,     /* PDE coverage bits, available big page sizes, GPC mask, SM version */
+        0x503, 0x80, 0x28, 0,        /* SPA version, warp count, GPU VA bits, reserved */
+        0x55, 0,                     /* flags (u64) */
+        0x902D, 0xB197, 0xB1C0, 0xB06F, 0xA140, 0xB0B5, /* 2D, 3D, compute, GPFIFO, I2M and DMA classes */
+        1, 0, 2, 1,                  /* FBPs, FBP enable mask, LTCs per FBP, LTSs per LTC */
+        0, 1, 0x21D70, 0,            /* textures per TPC, GPCs, ROP L2 enable masks */
+        0x30326D67, 0x62,            /* the chip's name, "gm20b" (u64) */
+        0, 0                         /* compression bit store base (u64) */
+    };
+    memcpy(c, words, 0xA0);
+}
 static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
+    static const u8 sms[4] = {0, 0, 0, 1}; /* {gpc, tpc} of each of the two SMs */
     (void)n;
     switch (cmd & 0xFF) {
-        case 0x01: {
-            u32 v = 0x28000;
-            memcpy(d, &v, 4);
+        case 0x01: wr32(d, 0, 1); return 0; /* ZCULL_GET_CTX_SIZE */
+        case 0x02: {                        /* ZCULL_GET_INFO */
+            static const u32 info[10] = {0x20, 0x20, 0x400, 0x800, 0x20, 0x20, 0xC0, 0x20, 0x40, 0x10};
+            memcpy(d, info, sizeof info);
             return 0;
         }
-        case 0x02: {
-            u32 z[10] = {0x20, 0x20, 0x400, 0x800, 0x20, 0x20, 0xC0, 0x20, 0x40, 0x10};
-            memcpy(d, z, 40);
+        case 0x03: /* ZBC_SET_TABLE */
+        case 0x04: /* ZBC_QUERY_TABLE */
+            return 0;
+        case 0x05: { /* GET_CHARACTERISTICS {u64 buf_size, u64 buf_addr (left alone); 0xA0 bytes at 16} */
+            u8 c[0xA0];
+            gpu_characteristics(c);
+            wr64(d, 0, sizeof c);
+            memcpy(d + 16, c, sizeof c);
+            copy_extra(extra, nextra, c, sizeof c);
             return 0;
         }
-        case 0x03:
-        case 0x04: return 0;
-        case 0x05: {
-            u32 w[0xA0 / 4];
-            u8* ch = (u8*)w;
-            memset(w, 0, sizeof w);
-            w[0] = 0x120;
-            w[1] = 0xB;
-            w[2] = 0xA1;
-            w[3] = 1;
-            u64 l2 = 0x40000;
-            memcpy(ch + 0x10, &l2, 8);
-            w[8] = 2;
-            w[9] = 0x20;
-            w[10] = 0x20000;
-            w[11] = 0x20000;
-            w[12] = 0x1B;
-            w[13] = 0x30000;
-            w[14] = 1;
-            w[15] = 0x503;
-            w[16] = 0x503;
-            w[17] = 0x80;
-            w[18] = 0x28;
-            u64 fl = 0x55;
-            memcpy(ch + 0x50, &fl, 8);
-            w[22] = 0x902D;
-            w[23] = 0xB197;
-            w[24] = 0xB1C0;
-            w[25] = 0xB06F;
-            w[26] = 0xA140;
-            w[27] = 0xB0B5;
-            w[28] = 1;
-            w[29] = 0;
-            w[30] = 2;
-            w[31] = 1;
-            w[32] = 0;
-            w[33] = 1;
-            w[34] = 0x21D70;
-            w[35] = 0;
-            u64 cn = 0x6230326D67ull;
-            memcpy(ch + 0x90, &cn, 8);
-            u64 sz = 0xA0;
-            memcpy(d, &sz, 8); /* d + 8, the game's buffer address, goes back as it came */
-            memcpy(d + 16, ch, 0xA0);
-            if (extra && nextra)
-                memcpy(extra, ch, nextra < 0xA0 ? nextra : 0xA0); /* Ioctl3 passes data in the extra buffer */
+        case 0x06: { /* GET_TPC_MASKS {u32 mask_buf_size, pad, u64 mask_buf_addr; u32 mask at 16} */
+            u32 mask = 3;
+            wr32(d, 16, mask);
+            if (nextra >= 4) copy_extra(extra, nextra, &mask, 4);
             return 0;
         }
-        case 0x06: {
-            u32 m = 3;
-            memcpy(d + 16, &m, 4);
-            if (extra && nextra >= 4) memcpy(extra, &m, 4);
+        case 0x13: /* NUM_VSMS {u32 num_vsms, u32 reserved} */
+            wr32(d, 0, 2);
+            wr32(d, 4, 0);
+            copy_extra(extra, nextra, sms, sizeof sms);
             return 0;
-        }
-        case 0x13: { /* NUM_VSMS: GM20B = 2 SMs (1 GPC x 2 TPC). Ioctl3 variant also returns {gpc,tpc} per SM */
-            u32 z[2] = {2, 0};
-            memcpy(d, z, 8);
-            if (extra && nextra) {
-                u8 mp[4] = {0, 0, 0, 1};
-                memcpy(extra, mp, nextra < 4 ? nextra : 4);
-            }
-            return 0;
-        }
         case 0x14:
-            if ((cmd >> 30) == 3) { /* VSMS_MAPPING (0xC0044714): the 4 bytes in place are {gpc,tpc} per SM */
-                u8 mp[4] = {0, 0, 0, 1};
-                memcpy(d, mp, 4);
-                if (extra && nextra) memcpy(extra, mp, nextra < 4 ? nextra : 4);
-                return 0;
+            if (cmd >> 30 == 3) { /* VSMS_MAPPING (0xC0044714): in the ioctl's own buffer */
+                memcpy(d, sms, sizeof sms);
+                copy_extra(extra, nextra, sms, sizeof sms);
+            } else { /* ZBC_GET_ACTIVE_SLOT_MASK {u32 slot, u32 mask} */
+                wr32(d, 0, 7);
+                wr32(d, 4, 1);
             }
-            {
-                u32 z[2] = {7, 1};
-                memcpy(d, z, 8);
-                return 0;
-            } /* GET_ACTIVE_SLOT_MASK */
-        case 0x15: {
-            u32 z[2] = {7, 1};
-            memcpy(d, z, 8);
             return 0;
-        }
-        case 0x1C: {
-            u64 t = guest_ns();
-            memcpy(d, &t, 8);
+        case 0x15: wr32(d, 0, 100); return 0;        /* PMU_GET_GPU_LOAD, as Eden answers */
+        case 0x1C: wr64(d, 0, guest_ns()); return 0; /* GET_GPU_TIME, the system tick's timebase */
+        default:
+            WARN_LIMIT(16, "nvdrv: nvhost-ctrl-gpu ioctl %08x not implemented\n", cmd);
             return 0;
-        } /* GET_GPU_TIME, same timebase as the system tick */
     }
-    WARN_LIMIT(16, "ctrl-gpu ioctl %x not handled\n", cmd);
-    return 0;
 }
 
+/* /dev/nvhost-gpu: a GPU channel. SUBMIT_GPFIFO {u64 gpfifo, u32 num_entries, u32 flags, NvFence {u32 id, value}},
+   its entries after the header (0x08) or in the second input (0x1B, Ioctl2). The GPU thread runs them: the ioctl
+   never waits. Flags: 1 wait for the fence first, 2 the host increments twice after them, 0x100 the entries
+   themselves increment value times */
+static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, u32 nextra) {
+    u32 num = rd32(d, 8), flags = rd32(d, 12), fid = rd32(d, 16), fval = rd32(d, 20);
+    u32 room = (cmd & 0xFF) == 0x1B ? (extra ? nextra / 8 : 0) : (n > 24 ? (n - 24) / 8 : 0);
+    const u8* entries = (cmd & 0xFF) == 0x1B ? extra : d + 24;
+    u32 sp, incs = 0, wait_id = ~0u, cur, promised;
+    if (num > room) {
+        WARN_LIMIT(8, "nvdrv: SUBMIT_GPFIFO of %u entries in a buffer of %u\n", num, room);
+        num = room;
+    }
+    if ((flags & 1) && fid != ~0u) wait_id = fid;
+    if (flags & 2) incs += 2;
+    if (flags & 0x100) incs += fval;
+    sp = gpu_channel_syncpt(f);
+    /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
+    pm_lock(&nv.submit_lk);
+    pm_lock(&nv.sync_lk);
+    cur = syncpt_read(sp);
+    if ((i32)(cur - nv.syncpt_max[sp]) > 0) nv.syncpt_max[sp] = cur;
+    nv.syncpt_max[sp] += incs;
+    promised = nv.syncpt_max[sp];
+    pm_unlock(&nv.sync_lk);
+    gpu_submit(entries, num, sp, incs, wait_id, fval, promised);
+    pm_unlock(&nv.submit_lk);
+    wr32(d, 16, sp);
+    wr32(d, 20, promised);
+    return 0;
+}
 static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     switch (cmd & 0xFF) {
-        case 0x01:
-        case 0x03:
-        case 0x0B:
-        case 0x0C:
-        case 0x0D:
-        case 0x1D:
-        case 0x0A:
-        case 0x17: return 0;
-        case 0x14: memcpy(&f->user_data, d, 8); return 0;
-        case 0x15: memcpy(d, &f->user_data, 8); return 0;
-        case 0x16: memset(d, 0, n); return 0;
-        case 0x09: { /* ALLOC_OBJ_CTX: the object's id is its class */
-            u32 cls;
-            memcpy(&cls, d, 4);
-            u64 id = cls;
-            memcpy(d + 8, &id, 8);
+        case 0x01: /* SET_NVMAP_FD */
+        case 0x03: /* SET_TIMEOUT */
+        case 0x0A: /* SET_PRIORITY */
+        case 0x0B: /* SET_TIMESLICE */
+        case 0x0C: /* GET_ERROR_INFO (nothing went wrong) */
+        case 0x0D: /* ZCULL_BIND */
+        case 0x17: /* SET_ERROR_NOTIFIER */
+        case 0x1D: /* SET_TIMEOUT_EX */
             return 0;
-        }
-        case 0x1A: { /* ALLOC_GPFIFO_EX2 {u32 num_entries, num_jobs, flags, NvFence fence, u32 reserved[3]} */
-            u32 sp = gpu_channel_syncpt(f);
-            u32 fence[2] = {sp, syncpt_read(sp)};
-            memcpy(d + 12, fence, 8);
-            return 0;
-        }
         case 0x08:
-        case 0x1B: {
-            u32 num, flags;
-            memcpy(&num, d + 8, 4);
-            memcpy(&flags, d + 12, 4);
-            u32 fid, fval;
-            memcpy(&fid, d + 16, 4);
-            memcpy(&fval, d + 20, 4);
-            const u8* entries; /* u64 entries at any alignment: gpu_submit copies them */
-            u32 room;
-            if ((cmd & 0xFF) == 0x08) { /* the entries follow the header in the ioctl buffer */
-                entries = d + 24;
-                room = n < 24 ? 0 : (n - 24) / 8;
-            } else {
-                entries = extra;
-                room = nextra / 8;
-            }
-            if (num > room) {
-                WARN_LIMIT(4,
-                           "gpu: a submission of %u GPFIFO entries has room for %u in its buffer, the rest dropped\n",
-                           num, room);
-                num = room;
-            }
+        case 0x1B: return gpu_submit_gpfifo(f, cmd, d, n, extra, nextra);
+        case 0x09: /* ALLOC_OBJ_CTX {u32 class_num, u32 flags; out u64 obj_id}: the class names the object */
+            wr64(d, 8, rd32(d, 0));
+            return 0;
+        case 0x14: /* SET_USER_DATA {u64} */
+            pm_lock(&nv.lock);
+            f->user_data = rd64(d, 0);
+            pm_unlock(&nv.lock);
+            return 0;
+        case 0x15: /* GET_USER_DATA {out u64} */
+            pm_lock(&nv.lock);
+            wr64(d, 0, f->user_data);
+            pm_unlock(&nv.lock);
+            return 0;
+        case 0x16: memset(d, 0, n); return 0; /* GET_ERROR_NOTIFICATION: none */
+        case 0x1A: { /* ALLOC_GPFIFO_EX2 {u32 num_entries, num_jobs, flags; NvFence fence at 12; u32 reserved[3]} */
             u32 sp = gpu_channel_syncpt(f);
-            /* flags bit 0: wait for the fence passed in before running these. It is the stream's first wait (gpu_park),
-               as nvgpu puts a syncpoint wait ahead of the entries and returns at once, whoever increments it */
-            u32 wait_id = (flags & 1) && fid != ~0u ? fid : ~0u;
-            /* the fence promises every increment of this submission. With IncrementWithValue (0x100) the stream
-               increments the syncpoint fval times itself; the host adds 2 after it only for FenceIncrement (2), as
-               Ryujinx's SubmitGpfifo does */
-            u32 host = (flags & 2) ? 2 : 0;
-            u32 incs = host + ((flags & 0x100) ? fval : 0);
-            pm_lock(&nv.submit_lk);
-            pm_lock(&nv.sync_lk);
-            if ((i32)(nv.syncpt_max[sp] - nv.syncpt[sp]) < 0) nv.syncpt_max[sp] = nv.syncpt[sp];
-            nv.syncpt_max[sp] += incs;
-            u32 promised = nv.syncpt_max[sp];
-            pm_unlock(&nv.sync_lk);
-            gpu_submit(entries, num, sp, host, wait_id, fval, promised);
-            pm_unlock(&nv.submit_lk);
-            fid = sp;
-            fval = promised;
-            memcpy(d + 16, &fid, 4);
-            memcpy(d + 20, &fval, 4);
+            wr32(d, 12, sp);
+            wr32(d, 16, syncpt_read(sp));
             return 0;
         }
+        default:
+            WARN_LIMIT(16, "nvdrv: nvhost-gpu ioctl %08x not implemented\n", cmd);
+            return 0;
     }
-    WARN_LIMIT(16, "gpu channel ioctl %x not handled\n", cmd);
-    return 0;
 }
 
 static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32* error) {
-    char name[64] = {0};
-    if (path.addr) memcpy(name, GP(path.addr), path.size < 63 ? path.size : 63);
-    int dev = !strcmp(name, "/dev/nvmap")             ? DEV_NVMAP
-              : !strcmp(name, "/dev/nvhost-as-gpu")   ? DEV_AS
-              : !strcmp(name, "/dev/nvhost-ctrl")     ? DEV_CTRL
-              : !strcmp(name, "/dev/nvhost-ctrl-gpu") ? DEV_CTRLGPU
-              : !strcmp(name, "/dev/nvhost-gpu")      ? DEV_GPU
-              : !strcmp(name, "/dev/nvhost-nvdec")    ? DEV_NVDEC
-              : !strcmp(name, "/dev/nvhost-vic")      ? DEV_VIC
-                                                      : DEV_OTHER;
+    static const struct {
+        const char* path;
+        int dev;
+    } devices[] = {{"/dev/nvmap", DEV_NVMAP},          {"/dev/nvhost-as-gpu", DEV_AS},
+                   {"/dev/nvhost-ctrl", DEV_CTRL},     {"/dev/nvhost-ctrl-gpu", DEV_CTRLGPU},
+                   {"/dev/nvhost-gpu", DEV_GPU},       {"/dev/nvhost-nvdec", DEV_NVDEC},
+                   {"/dev/nvhost-vic", DEV_VIC}};
+    char name[64];
+    int dev = DEV_OTHER; /* opens all the same; its ioctls warn */
+    size_t k;
+    memset(name, 0, sizeof name);
+    if (path.addr) memcpy(name, GP(path.addr), path.size < sizeof name - 1 ? (size_t)path.size : sizeof name - 1);
+    for (k = 0; k < sizeof devices / sizeof devices[0]; k++)
+        if (!strcmp(name, devices[k].path)) dev = devices[k].dev;
     /* an NVDEC or VIC fd is a host1x channel of its own, with its registers, syncpoints and decoder */
     int h1x_dev = dev == DEV_NVDEC || dev == DEV_VIC;
     H1Ch* h1x = h1x_dev ? host1x_open(dev == DEV_VIC) : NULL;
@@ -1098,67 +1039,85 @@ static void nv_release(NvFile* old) {
 /* Ioctl, Ioctl2 (extra is a second input) and Ioctl3 (extra is a second output): the ioctl's in and out buffers go
    through tmp, the extra one straight to the device. A GPU channel takes Ioctl2's and Ioctl3's, as-gpu and ctrl-gpu
    only Ioctl3's. ipc is the command, for the log */
+#define NV_SCRATCH 0x4000
+/* the (device, ioctl) pairs logged already: each is logged on its first use */
+static int nv_first_use(int dev, u32 cmd) {
+    static PMutex lock = PMUTEX_INIT;
+    static struct {
+        int dev;
+        u32 cmd;
+    } seen[256];
+    static u32 nseen;
+    u32 i;
+    int first = 1;
+    pm_lock(&lock);
+    for (i = 0; i < nseen && first; i++)
+        if (seen[i].dev == dev && seen[i].cmd == cmd) first = 0;
+    if (first && nseen < sizeof seen / sizeof seen[0]) {
+        seen[nseen].dev = dev;
+        seen[nseen].cmd = cmd;
+        nseen++;
+    }
+    pm_unlock(&lock);
+    return first;
+}
+/* a guest buffer, or none when it lies outside guest memory */
+static u8* nv_buffer(IpcBuf b) { return b.addr && b.size <= AS_SIZE && b.addr <= AS_SIZE - b.size ? GP(b.addr) : NULL; }
 static u32 nv_ioctl(u32 fd, u32 cmd, IpcBuf in, IpcBuf out, IpcBuf extra, int extra_out, u32 ipc) {
-    u64 ea = extra.addr, es = extra.size;
-    u32 size = (cmd >> 16) & 0x3FFF;
-    u8 tmp[0x4000];
-    memset(tmp, 0, sizeof tmp);
-    u64 isz = in.size, osz = out.size;
-    if (in.addr) memcpy(tmp, GP(in.addr), isz > sizeof tmp ? sizeof tmp : isz);
-    /* nb is what the command's size field (or the larger buffer) says, n what the device may touch: both stay inside
-       tmp */
-    u64 nb64 = size ? size : (isz > osz ? isz : osz);
-    u32 nb = (u32)(nb64 > sizeof tmp ? sizeof tmp : nb64);
-    u32 n = (u32)(isz > nb ? (isz > sizeof tmp ? sizeof tmp : isz) : nb);
+    u8 d[NV_SCRATCH];
+    u8 *src = nv_buffer(in), *dst = nv_buffer(out), *x = NULL;
+    u64 nin = src ? in.size : 0, nout = dst ? out.size : 0, n;
+    u32 nx = 0, r;
+    NvFile* f;
+    NvFile old;
+    int dev, release = 0;
     pm_lock(&nv.lock);
     if (fd >= 256 || !nv.nvf[fd].dev || nv.nvf[fd].closed) {
         pm_unlock(&nv.lock);
         return 8;
     }
-    NvFile* f = &nv.nvf[fd];
-    f->users++;
+    f = &nv.nvf[fd];
+    f->users++; /* the entry and its channel stay until this ioctl leaves (Close) */
+    dev = f->dev;
     pm_unlock(&nv.lock);
-    u32 r = 0;
-    { /* each device's ioctl logged once: game threads issue them at once */
-        static struct {
-            u32 cmd;
-            int dev;
-        } seen[256];
-        static int nseen;
-        static PMutex seen_lk = PMUTEX_INIT;
-        int k, first = 0;
-        pm_lock(&seen_lk);
-        for (k = 0; k < nseen; k++)
-            if (seen[k].cmd == cmd && seen[k].dev == f->dev) break;
-        if (k == nseen && nseen < 256) {
-            seen[nseen].cmd = cmd;
-            seen[nseen++].dev = f->dev;
-            first = 1;
-        }
-        pm_unlock(&seen_lk);
-        if (first)
-            LOG("nvdrv: ioctl %08x (disp %d, ipc %u, in %llu out %llu extra %llu)\n", cmd, f->dev, ipc,
-                (unsigned long long)isz, (unsigned long long)osz, (unsigned long long)es);
+    if (nv_first_use(dev, cmd))
+        LOG("nvdrv: ioctl %08x on device %d (command %u), buffers %llx/%llx/%llx\n", cmd, dev, ipc,
+            (unsigned long long)in.size, (unsigned long long)out.size, (unsigned long long)extra.size);
+    memset(d, 0, sizeof d);
+    if (nin > sizeof d) nin = sizeof d;
+    if (nout > sizeof d) nout = sizeof d;
+    if (nin) memcpy(d, src, (size_t)nin);
+    /* the size the command names, or the larger buffer's without one. as, gpu and the host1x channels read past it,
+       up to the input */
+    n = (cmd >> 16) & 0x3FFF;
+    if (!n) n = in.size > out.size ? in.size : out.size;
+    if (dev == DEV_AS || dev == DEV_GPU || dev == DEV_NVDEC || dev == DEV_VIC) n = n > in.size ? n : in.size;
+    if (n > sizeof d) n = sizeof d;
+    /* Ioctl2's second buffer is an input, Ioctl3's an output: a GPU channel takes both, as-gpu and ctrl-gpu Ioctl3's */
+    if (dev == DEV_GPU || (extra_out && (dev == DEV_AS || dev == DEV_CTRLGPU))) {
+        x = nv_buffer(extra);
+        nx = x ? (extra.size > 0xFFFFFFFFu ? 0xFFFFFFFFu : (u32)extra.size) : 0;
     }
-    switch (f->dev) {
-        case DEV_NVMAP: r = ioctl_nvmap(cmd, tmp, nb); break;
+    switch (dev) {
+        case DEV_NVMAP: r = ioctl_nvmap(cmd, d, (u32)n); break;
         case DEV_AS:
             pm_lock(&nv.aslock);
-            r = ioctl_as(cmd, tmp, n, (extra_out && ea) ? GP(ea) : NULL, (u32)es);
+            r = ioctl_as(cmd, d, (u32)n, x, nx);
             pm_unlock(&nv.aslock);
             break;
-        case DEV_CTRL: r = ioctl_ctrl(cmd, tmp, nb); break;
-        case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, tmp, nb, (extra_out && ea) ? GP(ea) : NULL, (u32)es); break;
-        case DEV_GPU: r = ioctl_gpu(f, cmd, tmp, n, ea ? GP(ea) : NULL, (u32)es); break;
+        case DEV_CTRL: r = ioctl_ctrl(cmd, d, (u32)n); break;
+        case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, d, (u32)n, x, nx); break;
+        case DEV_GPU: r = ioctl_gpu(f, cmd, d, (u32)n, x, nx); break;
         case DEV_NVDEC:
-        case DEV_VIC: r = host1x_ioctl(f->h1x, cmd, tmp, n); break;
-        default: WARN_LIMIT(16, "nvdrv: ioctl %x to unknown device\n", cmd); break;
+        case DEV_VIC: r = host1x_ioctl(f->h1x, cmd, d, (u32)n); break;
+        default:
+            WARN_LIMIT(16, "nvdrv: ioctl %08x on a device that has none\n", cmd);
+            r = 0;
+            break;
     }
-    if (out.addr) memcpy(GP(out.addr), tmp, osz > sizeof tmp ? sizeof tmp : osz);
-    NvFile old;
-    int release = 0;
+    if (nout) memcpy(dst, d, (size_t)nout);
     pm_lock(&nv.lock);
-    if (!--f->users && f->closed) {
+    if (!--f->users && f->closed) { /* closed meanwhile: this was the last one using it */
         old = *f;
         memset(f, 0, sizeof *f);
         release = 1;

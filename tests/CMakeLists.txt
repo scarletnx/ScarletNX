@@ -241,6 +241,11 @@ snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/serv
 add_test(NAME filesystem_raw COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
 
 if(UNIX)
+    # host.c by itself: shared files, folders and the mutex
+    add_executable(snx-test-fs-host filesystem_host.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+    snx_test_target(snx-test-fs-host 11)
+    target_link_libraries(snx-test-fs-host PRIVATE Threads::Threads)
+    add_test(NAME filesystem_host COMMAND snx-test-fs-host WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(snx-test-data-dir data_dir.c)
     snx_test_target(snx-test-data-dir 90)
     target_link_libraries(snx-test-data-dir PRIVATE scarletnx-common)
@@ -436,13 +441,38 @@ if(TARGET OpenSSL::Crypto)
         target_link_libraries(snx-test-misc-service PRIVATE m)
     endif()
     add_test(NAME misc_service COMMAND snx-test-misc-service)
+
+    # time.c's clocks, time zones and shared memory, with the guest clock and the kernel objects stubbed
+    add_executable(snx-test-time-service time_service.c)
+    snx_test_target(snx-test-time-service 23)
+    snx_service_swipc(snx-test-time-service hle/services/time.swipc)
+    target_link_libraries(snx-test-time-service PRIVATE OpenSSL::Crypto)
+    add_test(NAME time_service COMMAND snx-test-time-service)
 endif()
 
 # Inline software keyboard protocol and applet completion events.
-add_executable(snx-test-am-service am_service.c)
+add_executable(snx-test-am-service am_service.c am_service_stubs.c)
 snx_test_target(snx-test-am-service 23)
 snx_service_swipc(snx-test-am-service hle/services/am.swipc)
 add_test(NAME am_service COMMAND snx-test-am-service)
+
+# am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
+add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
+snx_test_target(snx-test-am-nacp 23)
+snx_service_swipc(snx-test-am-nacp hle/services/am.swipc)
+add_test(NAME am_nacp COMMAND snx-test-am-nacp)
+
+# set and set:sys: the firmware version's layout and the language codes (set.c)
+add_executable(snx-test-set-service set_service.c)
+snx_test_target(snx-test-set-service 23)
+snx_service_swipc(snx-test-set-service hle/services/set.swipc)
+add_test(NAME set_service COMMAND snx-test-set-service)
+
+# vi's binder: the native window and the buffer queue's parcels (vi.c), with the GPU thread and the renderer stubbed
+add_executable(snx-test-vi-service vi_service.c)
+snx_test_target(snx-test-vi-service 23)
+snx_service_swipc(snx-test-vi-service hle/services/vi.swipc)
+add_test(NAME vi_service COMMAND snx-test-vi-service)
 
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
 add_executable(snx-test-nvdrv-service nvdrv_service.c)
@@ -517,6 +547,8 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
     add_test(NAME vic_shader_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-vic-shader.py" --check)
+    add_test(NAME astc_shader_current
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-astc-shader.py" --check)
     add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
     # no keys, dumps, stray binaries, piracy sites or the console maker's name in prose among the tracked files: the
     # checks on planted ones (self test), then on the checkout. Skipped (77) without git or outside a checkout
@@ -865,6 +897,9 @@ if(UNIX)
     add_executable(snx-test-kernel-mutex kernel_mutex.c)
     snx_test_target(snx-test-kernel-mutex 11)
         add_test(NAME kernel_mutex COMMAND snx-test-kernel-mutex)
+    add_executable(snx-test-kernel-wait kernel_wait.c)
+    snx_test_target(snx-test-kernel-wait 11)
+        add_test(NAME kernel_wait COMMAND snx-test-kernel-wait)
     add_executable(snx-test-kernel-cores kernel_cores.c)
     snx_test_target(snx-test-kernel-cores 11)
         add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)

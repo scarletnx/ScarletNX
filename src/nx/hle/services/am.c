@@ -1,761 +1,1001 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* am: the applet manager (appletOE, appletAE) and its storages */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/core/hle/service/am/lifecycle_manager.cpp, applet_manager.cpp, am_types.h, am_results.h,
+   service/common_state_getter.cpp, service/lock_accessor.cpp, service/application_functions.cpp,
+   service/storage_accessor.cpp, frontend/applet_controller.h, frontend/applet_profile_select.h,
+   frontend/applet_software_keyboard.cpp, frontend/applet_software_keyboard.h,
+   frontend/applet_software_keyboard_types.h):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project (GPL-2.0-or-later)
+   SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project (GPL-2.0-or-later) */
+/* appletOE and appletAE: the applet manager as the one application sees it. It is in focus from the start, with the
+   focus message queued. Library applets answer what the game asked with the console's one user, the connected
+   players, or the host's text dialog: at once, but for the inline software keyboard, which lives until the game
+   finalizes it and answers its requests through the interactive channels */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/hid.h"
+#include "nx/hle/filesystem/fs.h"
+
 #include "hle/services/am.swipc.inc"
-/* ================================================================ am */
-static struct {
-    KEvent* msg_ev;
-    u32 msgq[16];
-    int nmsg;
-    KEvent* launch_ev;
-    KEvent* res_ev;
-    KEvent* sleep_ev; /* GetAcquiredSleepLockEvent: signaled when a RequestToAcquireSleepLock is granted */
-    u64 layer;        /* the next managed display layer id, CreateManagedDisplayLayer's and SeparableLayer's */
-    int user_given;   /* PreselectedUser was popped: it is there once */
-} am = {.layer = 1};
+
+#define AM_NO_DATA         RC(128, 2)   /* ResultNoDataInChannel */
+#define AM_NO_MESSAGES     RC(128, 3)   /* ResultNoMessages */
+#define AM_INVALID_OFFSET  RC(128, 503) /* ResultInvalidOffset */
+#define AM_INVALID_STORAGE RC(128, 511) /* ResultInvalidStorageType */
+#define AM_OUT_OF_MEMORY   RC(128, 600)
+
+/* nn::am::AppletMessage */
+#define AM_MSG_FOCUS_STATE_CHANGED 15
+#define AM_FOCUS_IN                1 /* nn::am::service::FocusState::InFocus */
+
+/* the AppletIds of the library applets that answer with data */
+#define AM_APPLET_CONTROLLER     0x0c
+#define AM_APPLET_PROFILE_SELECT 0x10
+#define AM_APPLET_SWKBD          0x11
+#define AM_APPLET_WEB            0x13
+#define AM_APPLET_OFFLINE_WEB    0x17
+#define AM_APPLET_WEB_AUTH       0x19
+
+#define AM_PRESELECTED_USER_MAGIC 0xc79497cau /* LaunchParameterAccountPreselectedUser */
+#define AM_PERFORMANCE_CONFIG     0x00020003u /* apm's Config7, as misc.c answers it */
+
+/* the console's one user (acc.c). Fixed: a game may keep it in its saves, and the saves of existing installs
+   belong to this one */
 u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
-static void am_push_msg(u32 m) {
-    pm_lock(&g_klock);
-    int queued = am.nmsg < 16;
-    if (queued) am.msgq[am.nmsg++] = m;
-    pm_unlock(&g_klock);
-    /* a full queue is already signaled, and the message is lost: say so rather than signal for nothing */
-    if (queued)
-        kevent_signal(am.msg_ev);
-    else
-        WARN("am: applet message queue full, message %u dropped\n", m);
-}
+
+/* the application's message queue: a message stays queued until ReceiveMessage takes it, and the event is signaled
+   while one is */
+#define AM_MESSAGES 16
+static struct {
+    PMutex lock;
+    KEvent* msg_event;
+    KEvent* sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
+    u32 msgs[AM_MESSAGES];
+    u32 head, count;
+    int preselected_popped; /* the preselected user launch parameter is given once */
+    u64 next_layer;         /* CreateManagedDisplayLayer's ids, from 1 */
+    u8* nacp;               /* the game's control.nacp in its data folder, read on first use; NULL with none */
+    u64 nacp_size;
+    int nacp_read;
+} am;
+
 void am_init(void) {
-    am.msg_ev = owned_event("applet msg");
-    am.launch_ev = owned_event("launchable");
-    am.res_ev = owned_event("res change");
-    am.sleep_ev = owned_event("sleep lock");
-    am_push_msg(0xF);  /* FocusStateChanged */
-    am_push_msg(0x1F); /* PerformanceModeChanged */
-    kevent_signal(am.launch_ev);
+    pm_init(&am.lock);
+    am.msg_event = owned_event("am:message");
+    am.sleep_lock_event = owned_event("am:sleep lock");
+    am.next_layer = 1;
+    /* the application starts in focus, and is told so */
+    am.msgs[0] = AM_MSG_FOCUS_STATE_CHANGED;
+    am.count = 1;
+    kevent_signal(am.msg_event);
 }
 
-/* IStorage / IStorageAccessor */
+/* ============================================================ storages */
+/* IStorage's data: its bytes in d, or a transfer memory's guest pages */
 typedef struct {
-    u8* d;
     u64 size;
+    u64 guest; /* where the transfer memory's pages are, 0 for bytes kept here */
+    KObj* tmem;
+    int handle_only; /* CreateHandleStorage's: only OpenTransferStorage opens it */
+    int pad_;
+    u8 d[8]; /* size bytes, allocated with the header */
 } StorageData;
-static void storage_destroy(SvcObj* o) { free(((StorageData*)o->data)->d); }
-/* an accessor holds a reference on its storage (u[0]), dropped when the game closes the accessor */
-static void storage_acc_destroy(SvcObj* o) { svcobj_unref((SvcObj*)(size_t)o->u[0]); }
-static StorageData* accessor_storage(SvcObj* accessor) { return ((SvcObj*)(size_t)accessor->u[0])->data; }
+/* IStorageAccessor's and ITransferStorageAccessor's: the storage they hold a reference on */
+typedef struct {
+    SvcObj* storage;
+} AmAccessor;
+
+static void am_storage_destroy(SvcObj* o) {
+    StorageData* s = (StorageData*)o->data;
+    if (s->tmem) kobj_unref(s->tmem);
+}
+static void am_accessor_destroy(SvcObj* o) { svcobj_unref(((AmAccessor*)o->data)->storage); }
+
+static u8* am_storage_bytes(SvcObj* o) {
+    StorageData* s = (StorageData*)o->data;
+    return s->guest ? GP(s->guest) : s->d;
+}
+/* a storage of size bytes, a copy of data's or zeros; NULL if they can't be had */
+static SvcObj* am_storage_new(u64 size, const void* data) {
+    SvcObj* o;
+    size_t head = offsetof(StorageData, d);
+    if (size > 0x10000000u) return NULL;
+    o = nn_am_service_IStorage_new(head + (size > 8 ? (size_t)size : 8));
+    ((StorageData*)o->data)->size = size;
+    if (data && size) memcpy(((StorageData*)o->data)->d, data, (size_t)size);
+    o->destroy = am_storage_destroy;
+    return o;
+}
+/* a storage over a transfer memory's pages: the client's size, within the memory */
+static int am_storage_tmem(i64 size, u32 handle, int handle_only, SvcObj** storage) {
+    KTmem* t = (KTmem*)h_get_ref(handle, KO_TMEM);
+    StorageData* s;
+    if (!t) return RC(1, 114); /* the kernel's InvalidHandle */
+    if (size < 0 || (u64)size > t->size) {
+        kobj_unref(&t->o);
+        return AM_INVALID_OFFSET;
+    }
+    *storage = am_storage_new(0, NULL);
+    s = (StorageData*)(*storage)->data;
+    s->size = (u64)size;
+    s->guest = t->addr;
+    s->tmem = &t->o;
+    s->handle_only = handle_only;
+    return 0;
+}
+
+static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
+    if (((StorageData*)self->data)->handle_only) return AM_INVALID_STORAGE;
+    *accessor = nn_am_service_IStorageAccessor_new(sizeof(AmAccessor));
+    svcobj_ref(self);
+    ((AmAccessor*)(*accessor)->data)->storage = self;
+    (*accessor)->destroy = am_accessor_destroy;
+    return 0;
+}
+static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) {
+    if (!((StorageData*)self->data)->guest) return AM_INVALID_STORAGE;
+    *accessor = nn_am_service_ITransferStorageAccessor_new(sizeof(AmAccessor));
+    svcobj_ref(self);
+    ((AmAccessor*)(*accessor)->data)->storage = self;
+    (*accessor)->destroy = am_accessor_destroy;
+    return 0;
+}
+
 static int nn_am_service_IStorageAccessor_GetSize(SvcObj* self, i64* size) {
-    *size = (i64)accessor_storage(self)->size;
+    *size = (i64)((StorageData*)((AmAccessor*)self->data)->storage->data)->size;
     return 0;
 }
 static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf data) {
-    StorageData* s = accessor_storage(self);
-    u64 off = (u64)offset, n = data.size;
-    /* off + n can wrap: compare against what is left instead */
-    if (off > s->size || n > s->size - off) return RC(128, 503);
-    memcpy(s->d + off, GP(data.addr), n);
+    SvcObj* st = ((AmAccessor*)self->data)->storage;
+    u64 size = ((StorageData*)st->data)->size;
+    if (offset < 0 || (u64)offset > size || data.size > size - (u64)offset) return AM_INVALID_OFFSET;
+    memcpy(am_storage_bytes(st) + offset, GP(data.addr), (size_t)data.size);
     return 0;
 }
 static int nn_am_service_IStorageAccessor_Read(SvcObj* self, i64 offset, IpcBuf data) {
-    StorageData* s = accessor_storage(self);
-    u64 off = (u64)offset, n = data.size;
-    if (off > s->size) return RC(128, 503);
-    if (off + n > s->size) n = s->size - off;
-    memcpy(GP(data.addr), s->d + off, n);
+    SvcObj* st = ((AmAccessor*)self->data)->storage;
+    u64 size = ((StorageData*)st->data)->size, n;
+    if (offset < 0 || (u64)offset > size) return AM_INVALID_OFFSET;
+    n = data.size < size - (u64)offset ? data.size : size - (u64)offset;
+    memcpy(GP(data.addr), am_storage_bytes(st) + offset, (size_t)n);
     return 0;
 }
-static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
-    SvcObj* a = nn_am_service_IStorageAccessor_new(0);
-    a->u[0] = (u64)(size_t)self;
-    svcobj_ref(self);
-    a->destroy = storage_acc_destroy;
-    *accessor = a;
-    return 0;
-}
-/* OpenTransferStorage gives an ITransferStorageAccessor, which only a storage made over transfer memory has. These
-   storages are plain memory (CreateTransferMemoryStorage copies the transfer memory into one) */
-static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) { return RC(128, 503); }
-/* NULL when the guest asks for more than the host can allocate */
-static SvcObj* am_storage_new(u64 size, const void* init) {
-    u8* d = calloc(1, size ? size : 1);
-    if (!d) {
-        WARN("am: no memory for a %llu byte storage\n", (unsigned long long)size);
-        return NULL;
-    }
-    SvcObj* o = nn_am_service_IStorage_new(sizeof(StorageData));
-    StorageData* s = o->data;
-    s->d = d;
-    s->size = size;
-    if (init) memcpy(s->d, init, size);
-    o->destroy = storage_destroy;
-    return o;
-}
-/* the result of a command that makes a storage */
-static int out_storage(SvcObj** storage, u64 size, const void* init) {
-    *storage = am_storage_new(size, init);
-    return *storage ? 0 : RC(128, 503);
-}
-static int is_storage(const SvcObj* o) { return o && o->dispatch == nn_am_service_IStorage_dispatch; }
 
+/* ============================================================ proxies */
+static SvcObj* am_proxy(void) { return nn_am_service_IApplicationProxy_new(0); }
+static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* self, u64 pid, u32 process,
+                                                                      SvcObj** proxy) {
+    (void)self, (void)pid, (void)process;
+    *proxy = am_proxy();
+    return 0;
+}
+static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid,
+                                                                                  u32 process, SvcObj** proxy) {
+    (void)self, (void)pid, (void)process;
+    *proxy = am_proxy();
+    return 0;
+}
+SvcObj* new_appletoe(void) { return nn_am_service_IApplicationProxyService_new(0); }
+SvcObj* new_appletae(void) { return nn_am_service_IAllSystemAppletProxiesService_new(0); }
+
+static int nn_am_service_IApplicationProxy_GetCommonStateGetter(SvcObj* self, SvcObj** getter) {
+    (void)self;
+    *getter = nn_am_service_ICommonStateGetter_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetSelfController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_ISelfController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetWindowController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_IWindowController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetAudioController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_IAudioController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetDisplayController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_IDisplayController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetProcessWindingController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_IProcessWindingController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetLibraryAppletCreator(SvcObj* self, SvcObj** creator) {
+    (void)self;
+    *creator = nn_am_service_ILibraryAppletCreator_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IApplicationFunctions_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IDebugFunctions_new(0);
+    return 0;
+}
+
+/* ============================================================ ICommonStateGetter */
 static int nn_am_service_ICommonStateGetter_GetEventHandle(SvcObj* self, u32* event) {
-    *event = ev_handle(am.msg_ev);
+    (void)self;
+    *event = ev_handle(am.msg_event);
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_AppletMessage* message) {
-    pm_lock(&g_klock);
-    if (!am.nmsg) {
-        am.msg_ev->signaled = 0;
-        pm_unlock(&g_klock);
-        return RC(128, 3);
+    int rc = 0;
+    (void)self;
+    pm_lock(&am.lock);
+    if (!am.count)
+        rc = AM_NO_MESSAGES;
+    else {
+        *message = am.msgs[am.head];
+        am.head = (am.head + 1) % AM_MESSAGES;
+        am.count--;
     }
-    *message = am.msgq[0];
-    memmove(am.msgq, am.msgq + 1, (--am.nmsg) * 4);
-    if (!am.nmsg) am.msg_ev->signaled = 0;
-    pm_unlock(&g_klock);
-    return 0;
+    if (!am.count) kevent_clear(am.msg_event);
+    pm_unlock(&am.lock);
+    return rc;
 }
 static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
-    *mode = (u8)g_opt_docked;
+    (void)self;
+    *mode = g_opt_docked ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
-    *mode = (u32)g_opt_docked;
+    (void)self;
+    *mode = g_opt_docked ? 1 : 0; /* Boost when docked, as apm says */
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
-    *state = 1; /* InFocus */
+    (void)self;
+    *state = AM_FOCUS_IN;
     return 0;
 }
-/* granted at once, there is no sleep here */
 static int nn_am_service_ICommonStateGetter_RequestToAcquireSleepLock(SvcObj* self) {
-    kevent_signal(am.sleep_ev);
+    (void)self;
+    kevent_signal(am.sleep_lock_event);
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(am.sleep_ev);
+    (void)self;
+    *event = ev_handle(am.sleep_lock_event);
     return 0;
 }
-/* a lock accessor's event (u[0]) and whether it is held (u[1], atomic: game threads call at once) */
-static void lock_accessor_destroy(SvcObj* o) { kobj_unref(&((KEvent*)(size_t)o->u[0])->o); }
-static int lock_accessor(SvcObj** accessor) {
-    SvcObj* o = nn_am_service_ILockAccessor_new(0);
-    o->u[0] = (u64)(size_t)owned_event("button lock");
-    o->destroy = lock_accessor_destroy;
-    *accessor = o;
-    return 0;
+
+/* ILockAccessor: granted whenever it is free, with an event signaled when it is released */
+typedef struct {
+    KEvent* event;
+    int locked;
+} AmLock;
+static void am_lock_destroy(SvcObj* o) { kobj_unref(&((AmLock*)o->data)->event->o); }
+static SvcObj* am_lock_new(void) {
+    SvcObj* o = nn_am_service_ILockAccessor_new(sizeof(AmLock));
+    ((AmLock*)o->data)->event = owned_event("am:lock accessor");
+    o->destroy = am_lock_destroy;
+    return o;
 }
 static int nn_am_service_ICommonStateGetter_GetHomeButtonReaderLockAccessor(SvcObj* self, SvcObj** accessor) {
-    return lock_accessor(accessor);
+    (void)self;
+    *accessor = am_lock_new();
+    return 0;
 }
-static int nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(SvcObj* self, u32 button_type, SvcObj** accessor) {
-    return lock_accessor(accessor);
+static int nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(SvcObj* self, u32 button_type,
+                                                                   SvcObj** accessor) {
+    (void)self, (void)button_type;
+    *accessor = am_lock_new();
+    return 0;
 }
-static int nn_am_service_ICommonStateGetter_GetWriterLockAccessorEx(SvcObj* self, u32 button_type, SvcObj** accessor) {
-    return lock_accessor(accessor);
+static int nn_am_service_ICommonStateGetter_GetWriterLockAccessorEx(SvcObj* self, u32 button_type,
+                                                                   SvcObj** accessor) {
+    (void)self, (void)button_type;
+    *accessor = am_lock_new();
+    return 0;
 }
 static int nn_am_service_ILockAccessor_TryLock(SvcObj* self, u8 return_handle, u8* is_locked, u32* event) {
-    __atomic_store_n(&self->u[1], 1, __ATOMIC_RELAXED);
-    *is_locked = 1;
-    if (return_handle) *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&am.lock);
+    *is_locked = (u8)!l->locked;
+    l->locked = 1;
+    pm_unlock(&am.lock);
+    if (return_handle) *event = ev_handle(l->event);
     return 0;
 }
 static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
-    __atomic_store_n(&self->u[1], 0, __ATOMIC_RELAXED);
-    kevent_signal((KEvent*)(size_t)self->u[0]);
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&am.lock);
+    l->locked = 0;
+    pm_unlock(&am.lock);
+    kevent_signal(l->event);
     return 0;
 }
 static int nn_am_service_ILockAccessor_GetEvent(SvcObj* self, u32* event) {
-    *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    *event = ev_handle(((AmLock*)self->data)->event);
     return 0;
 }
 static int nn_am_service_ILockAccessor_IsLocked(SvcObj* self, u8* is_locked) {
-    *is_locked = (u8)__atomic_load_n(&self->u[1], __ATOMIC_RELAXED);
+    AmLock* l = (AmLock*)self->data;
+    pm_lock(&am.lock);
+    *is_locked = (u8)l->locked;
+    pm_unlock(&am.lock);
     return 0;
 }
+
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
+    (void)self;
     *width = g_opt_docked ? 1920 : 1280;
     *height = g_opt_docked ? 1080 : 720;
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(am.res_ev);
-    return 0;
+    (void)self;
+    return new_event(event, "am:display resolution change", 0);
 }
 static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationStateChangeEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(am.res_ev);
-    return 0;
+    (void)self;
+    return new_event(event, "am:hdcp state change", 0);
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(SvcObj* self, u32* configuration) {
-    *configuration = 0x00020003; /* the one apm reports */
+    (void)self;
+    *configuration = AM_PERFORMANCE_CONFIG;
     return 0;
 }
-/* the main loop saves what it keeps and ends the process */
+
+/* ============================================================ ISelfController */
 static int nn_am_service_ISelfController_Exit(SvcObj* self) {
+    (void)self;
+    /* the frontend's loop ends the run, saving what outlives it, as when the window closes */
+    LOG("am: the application exited\n");
     g_quit = 1;
     return 0;
 }
 static int nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(SvcObj* self, u32* event) {
-    *event = ev_handle(am.launch_ev);
-    return 0;
+    (void)self;
+    return new_event(event, "am:library applet launchable", 1);
 }
 static int nn_am_service_ISelfController_CreateManagedDisplayLayer(SvcObj* self, u64* layer_id) {
-    *layer_id = __atomic_fetch_add(&am.layer, 1, __ATOMIC_RELAXED);
+    (void)self;
+    pm_lock(&am.lock);
+    *layer_id = am.next_layer++;
+    pm_unlock(&am.lock);
     return 0;
 }
 static int nn_am_service_ISelfController_CreateManagedDisplaySeparableLayer(SvcObj* self, u64* layer_id,
-                                                                            u64* recording_layer_id) {
-    *layer_id = __atomic_fetch_add(&am.layer, 2, __ATOMIC_RELAXED); /* two layers, never one handed out before */
-    *recording_layer_id = *layer_id + 1;
+                                                                           u64* recording_layer_id) {
+    (void)self;
+    pm_lock(&am.lock);
+    *layer_id = am.next_layer++;
+    *recording_layer_id = am.next_layer++;
+    pm_unlock(&am.lock);
     return 0;
 }
 static int nn_am_service_ISelfController_GetAccumulatedSuspendedTickChangedEvent(SvcObj* self, u32* event) {
-    return new_event(event, "suspend", 0);
+    (void)self;
+    return new_event(event, "am:suspended tick changed", 1);
 }
+
 static int nn_am_service_IWindowController_GetAppletResourceUserId(SvcObj* self,
                                                                    nn_applet_AppletResourceUserId* aruid) {
-    *aruid = 0x1234;
+    (void)self;
+    *aruid = K_PROCESS_ID;
     return 0;
 }
+
+static int nn_am_service_IAudioController_GetMainAppletExpectedMasterVolume(SvcObj* self, float* volume) {
+    (void)self;
+    *volume = 1.0f;
+    return 0;
+}
+static int nn_am_service_IAudioController_GetLibraryAppletExpectedMasterVolume(SvcObj* self, float* volume) {
+    (void)self;
+    *volume = 1.0f;
+    return 0;
+}
+
+/* ============================================================ IApplicationFunctions */
 static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, u32 kind, SvcObj** storage) {
-    u8 buf[0x88];
-    u32 magic = 0xC79497CA, one = 1;
-    /* only the PreselectedUser (2), there once */
-    if (kind != 2 || __atomic_exchange_n(&am.user_given, 1, __ATOMIC_SEQ_CST)) return RC(128, 2);
-    memset(buf, 0, sizeof buf);
-    memcpy(buf, &magic, 4);
-    memcpy(buf + 4, &one, 4);
-    memcpy(buf + 8, g_user_id, 16);
-    return out_storage(storage, sizeof buf, buf);
+    u8* d;
+    u32 v;
+    (void)self;
+    if (kind != 2) return AM_NO_DATA; /* UserChannel: nothing was left there by a previous program */
+    pm_lock(&am.lock);
+    v = (u32)am.preselected_popped;
+    am.preselected_popped = 1;
+    pm_unlock(&am.lock);
+    if (v) return AM_NO_DATA;
+    /* AccountPreselectedUser: the console's user, selected */
+    *storage = am_storage_new(0x88, NULL);
+    d = am_storage_bytes(*storage);
+    v = AM_PRESELECTED_USER_MAGIC;
+    memcpy(d, &v, 4);
+    v = 1;
+    memcpy(d + 4, &v, 4);
+    memcpy(d + 8, g_user_id, 16);
+    return 0;
+}
+
+/* the game's control.nacp (nn::ns::ApplicationControlProperty), as the recompiler staged it beside the game's data:
+   n bytes at off, NULL past its end or without one */
+static const u8* am_nacp(u64 off, u64 n) {
+    pm_lock(&am.lock);
+    if (!am.nacp_read) {
+        am.nacp = fs_read_file("control.nacp", &am.nacp_size);
+        am.nacp_read = 1;
+    }
+    pm_unlock(&am.lock);
+    return am.nacp && off + n <= am.nacp_size ? am.nacp + off : NULL;
+}
+static u64 am_nacp_u64(u64 off) {
+    const u8* p = am_nacp(off, 8);
+    u64 v = 0;
+    if (p) memcpy(&v, p, 8);
+    return v;
+}
+#define NACP_SUPPORTED_LANGUAGES 0x302c
+#define NACP_DISPLAY_VERSION     0x3060
+#define NACP_ACCOUNT_SAVE_SIZE   0x3080 /* and its journal's, then the device save's and its journal's */
+
+/* nn::ns::ApplicationLanguage of each nn::settings::Language, and back (-1: no settings language has it) */
+static const signed char am_app_language[18] = {2, 0, 3, 4, 7, 6, 14, 12, 8, 10, 11, 13, 1, 9, 5, 14, 13, 15};
+static const signed char am_settings_language[18] = {1, 12, 0, 2, 3, 14, 5, 4, 8, 13, 9, 10, 7, 16, 15, 17, -1, -1};
+/* each ApplicationLanguage's fallbacks, in the order ns tries them */
+static const signed char am_priority[16][18] = {
+    {0, 1, 5, 9, 3, 4, 6, 7, 8, 10, 11, 2, 14, 13, 12, 16, 17, -1},
+    {1, 0, 3, 4, 6, 7, 8, 10, 11, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {2, 0, 1, 5, 9, 3, 4, 6, 7, 8, 10, 11, 14, 13, 12, 16, 17, -1},
+    {3, 9, 1, 0, 4, 6, 7, 8, 10, 11, 5, 2, 14, 13, 12, 16, 17, -1},
+    {4, 1, 0, 3, 6, 7, 8, 10, 11, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {5, 6, 0, 1, 10, 9, 3, 7, 4, 8, 11, 2, 14, 13, 12, 16, 17, -1},
+    {6, 5, 1, 0, 3, 4, 7, 8, 10, 11, 9, 2, 14, 13, 12, 16, 17, -1},
+    {7, 1, 0, 3, 4, 6, 8, 10, 11, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {8, 1, 0, 3, 4, 6, 7, 10, 11, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {9, 3, 0, 1, 5, 6, 4, 7, 8, 10, 11, 2, 14, 13, 12, 16, 17, -1},
+    {10, 1, 0, 3, 4, 6, 7, 8, 11, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {11, 1, 0, 3, 4, 6, 7, 8, 10, 5, 9, 2, 14, 13, 12, 16, 17, -1},
+    {12, 0, 1, 5, 9, 3, 4, 6, 7, 8, 10, 11, 2, 14, 13, 16, 17, -1},
+    {13, 14, 0, 1, 2, 5, 9, 3, 4, 6, 7, 8, 10, 11, 12, 16, 17, -1},
+    {14, 13, 0, 1, 2, 5, 9, 3, 4, 6, 7, 8, 10, 11, 12, 16, 17, -1},
+    {15, 10, 5, 0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 14, 13, 16, 17}};
+/* the settings language a game with these SupportedLanguageFlag bits is shown in: the system's when the game has it,
+   else the first of its fallbacks the game has (all of them when the flags are 0), as ns picks it */
+static int am_desired_language(int lang, u32 supported) {
+    const signed char* list;
+    int i, app;
+    if (lang < 0 || lang >= 18) lang = 1;
+    list = am_priority[(int)am_app_language[lang]];
+    for (i = 0; i < 18 && list[i] >= 0; i++) {
+        app = list[i];
+        if (am_settings_language[app] < 0) continue; /* Polish and Thai: no language code here */
+        if (!supported || ((supported >> app) & 1)) return i ? am_settings_language[app] : lang;
+    }
+    return lang;
 }
 static int nn_am_service_IApplicationFunctions_GetDesiredLanguage(SvcObj* self, nn_settings_LanguageCode* code) {
-    set_language_code(g_opt_lang, code->v);
+    const u8* p = am_nacp(NACP_SUPPORTED_LANGUAGES, 4);
+    u32 supported = 0;
+    (void)self;
+    if (p) memcpy(&supported, p, 4);
+    set_language_code(am_desired_language(g_opt_lang, supported), code->v);
     return 0;
 }
+/* the NACP's display version, "1.0.0" for a game without one */
 static int nn_am_service_IApplicationFunctions_GetDisplayVersion(SvcObj* self, nn_oe_DisplayVersion* version) {
-    strcpy((char*)version->v, "1.0.0");
+    const u8* p = am_nacp(NACP_DISPLAY_VERSION, 16);
+    (void)self;
+    if (p)
+        memcpy(version->v, p, 16);
+    else
+        memcpy(version->v, "1.0.0", 6);
+    version->v[15] = 0;
     return 0;
 }
+/* the sizes the NACP gives the account's (type 1) and the device's (3) save data */
 static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 type, const nn_account_Uid* uid,
-                                                               i64* normal_size, i64* journal_size) {
-    *normal_size = 0x4000000;
-    *journal_size = 0x4000000;
+                                                              i64* normal_size, i64* journal_size) {
+    (void)self, (void)uid;
+    if (type == 1 || type == 3) {
+        *normal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + (type == 3 ? 16 : 0));
+        *journal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + 8 + (type == 3 ? 16 : 0));
+    }
     return 0;
 }
-static int nn_am_service_IApplicationFunctions_GetLimitedApplicationLicenseUpgradableEvent(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+static int nn_am_service_IApplicationFunctions_GetLimitedApplicationLicenseUpgradableEvent(SvcObj* self,
+                                                                                          u32* event) {
+    (void)self;
+    return new_event(event, "am:license upgradable", 0);
 }
+/* the same for every run of the game on this machine */
 static int nn_am_service_IApplicationFunctions_GetPseudoDeviceId(SvcObj* self, nn_util_Uuid* id) {
-    static const u64 pseudo[2] = {0x1111222233334444ull, 0x5555666677778888ull};
-    memcpy(id->v, pseudo, 16);
+    (void)self;
+    memcpy(id->v, &g_title_id, 8);
+    memcpy(id->v + 8, g_user_id, 8);
     return 0;
 }
 static int nn_am_service_IApplicationFunctions_GetGpuErrorDetectedSystemEvent(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+    (void)self;
+    return new_event(event, "am:gpu error", 0);
 }
 static int nn_am_service_IApplicationFunctions_GetFriendInvitationStorageChannelEvent(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+    (void)self;
+    return new_event(event, "am:friend invitation", 0);
 }
 static int nn_am_service_IApplicationFunctions_TryPopFromFriendInvitationStorageChannel(SvcObj* self,
-                                                                                        SvcObj** storage) {
-    return RC(128, 2); /* nothing queued */
+                                                                                       SvcObj** storage) {
+    (void)self, (void)storage;
+    return AM_NO_DATA;
 }
 static int nn_am_service_IApplicationFunctions_GetNotificationStorageChannelEvent(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+    (void)self;
+    return new_event(event, "am:notification", 0);
 }
 static int nn_am_service_IApplicationFunctions_TryPopFromNotificationStorageChannel(SvcObj* self, SvcObj** storage) {
-    return RC(128, 2); /* nothing queued */
+    (void)self, (void)storage;
+    return AM_NO_DATA;
 }
 static int nn_am_service_IApplicationFunctions_GetHealthWarningDisappearedSystemEvent(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+    (void)self;
+    return new_event(event, "am:health warning", 0);
 }
 static int nn_am_service_IApplicationFunctions_GetUnknownEvent210(SvcObj* self, u32* event) {
-    return new_event(event, "appfn ev", 0);
+    (void)self;
+    return new_event(event, "am:unknown 210", 0);
 }
-/* Inline swkbd stays alive between text entries, until the client sends Finalize. */
+
+/* ============================================================ library applets */
+#define AM_IN_DATA  4
+#define AM_OUT_DATA 16
+
+/* the inline software keyboard (SwkbdState, SwkbdRequestCommand, SwkbdReplyType) */
+#define SWKBD_NOT_INITIALIZED 0
+#define SWKBD_HIDDEN          1
+#define SWKBD_SHOWN           3
+#define SWKBD_REQ_FINALIZE    4
+#define SWKBD_REQ_CALC        0xa
+#define SWKBD_REQ_UNSET_DICTS 0xc
+#define SWKBD_REQ_USER_WORDS  6
+#define SWKBD_FINISHED_INIT   0
+#define SWKBD_DEFAULT         1
+#define SWKBD_CHANGED         2
+#define SWKBD_ENTER           5
+#define SWKBD_CANCEL          6
+#define SWKBD_CHANGED_UTF8    7
+#define SWKBD_ENTER_UTF8      9
+#define SWKBD_RELEASED_WORDS  0xb
+#define SWKBD_UNSET_DICTS     0xc
+/* SwkbdCalcArgFlags */
+#define SWKBD_SET_INIT   (1u << 0)
+#define SWKBD_APPEAR     (1u << 2)
+#define SWKBD_SET_TEXT   (1u << 3)
+#define SWKBD_SET_CURSOR (1u << 4)
+#define SWKBD_SET_UTF8   (1u << 5)
+#define SWKBD_DISAPPEAR  (1u << 7)
+#define SWKBD_TEXT_CHARS 0x1fa /* the calc argument's input text, UTF-16 */
+#define SWKBD_UTF16_SIZE 0x3ec /* a reply's text, in either encoding */
+#define SWKBD_UTF8_SIZE  0x7d4
+/* where the two SwkbdCalcArg layouts (the request's whole size tells them apart) keep what is read here, from the
+   SwkbdCalcArgCommon at the start: SwkbdCalcArgOld puts the appear argument after the volume and cursor, New first */
+#define SWKBD_CALC_OLD_SIZE 0x4a0
+#define SWKBD_CALC_NEW_SIZE 0x4e8
+
 typedef struct {
-    u32 id, mode;
-    int popped_out, popped_interactive;
-    SvcObj* in[8]; /* the storages PushInData passed, in order, under lib_lock: game threads push and pop at once */
+    u32 applet_id, mode;
+    KEvent *state_ev, *out_ev, *interactive_ev;
+    SvcObj* in[AM_IN_DATA]; /* the storages the game pushed, in order (common arguments first) */
     int nin;
-    KEvent* state_ev;
-    KEvent* interactive_ev;
-    SvcObj* replies[8];
-    int nreplies, completed;
-    u32 keyboard_state;
-    int utf8, changed_v2;
-    u16 text[502];
+    SvcObj* out[AM_OUT_DATA]; /* the interactive replies, oldest first */
+    int nout;
+    int out_popped;
+    int completed;
+    /* the inline keyboard's state, its text (UTF-16) and the reply encoding the game asked for */
+    u32 kb_state, kb_max;
+    i32 kb_cursor;
+    int kb_utf8;
+    u32 kb_len;
+    u16 kb_text[SWKBD_TEXT_CHARS];
 } LibApplet;
-static PMutex lib_lock = PMUTEX_INIT;
-static int inline_keyboard(const LibApplet* la) { return la->id == 0x11 && (la->mode == 1 || la->mode == 3); }
-static void lib_applet_destroy(SvcObj* o) {
-    LibApplet* la = o->data;
-    for (int i = 0; i < la->nin; i++) svcobj_unref(la->in[i]);
-    for (int i = 0; i < la->nreplies; i++) svcobj_unref(la->replies[i]);
-    if (la->state_ev) kobj_unref(&la->state_ev->o);
-    if (la->interactive_ev) kobj_unref(&la->interactive_ev->o);
+
+static int am_is_inline(const LibApplet* a) {
+    return a->applet_id == AM_APPLET_SWKBD && (a->mode == 1 || a->mode == 3); /* PartialForeground(IndirectDisplay) */
 }
-/* the controller applet (ShowControllerSupport) answers ControllerSupportResultInfo {i8 player_count; pad[3];
-   u32 selected_id} and a u32 result, which the SDK turns into success (0) or cancelled (2). The last storage
-   pushed is the ControllerSupportArg, whose byte 0 is min_player_count. */
-static i8 controller_min_players(LibApplet* la) { /* lib_lock held */
-    SvcObj* arg = la->nin ? la->in[la->nin - 1] : NULL;
-    return is_storage(arg) && ((StorageData*)arg->data)->size ? (i8)((StorageData*)arg->data)->d[0] : 0;
+static void am_applet_destroy(SvcObj* o) {
+    LibApplet* a = (LibApplet*)o->data;
+    int i;
+    for (i = 0; i < a->nin; i++) svcobj_unref(a->in[i]);
+    for (i = 0; i < a->nout; i++) svcobj_unref(a->out[i]);
+    kobj_unref(&a->state_ev->o);
+    kobj_unref(&a->out_ev->o);
+    kobj_unref(&a->interactive_ev->o);
 }
-static SvcObj* controller_result(i8 min_players) {
-    u8 r[0xC];
-    u32 selected_id = 0;
-    int players = hid_connected_players(&selected_id);
-    memset(r, 0, sizeof r);
-    u32 result = min_players <= players ? 0 : 2;
-    if (!result) {
-        r[0] = (u8)players;
-        memcpy(r + 4, &selected_id, 4);
-    }
-    memcpy(r + 8, &result, 4);
-    if (result) LOG("applet: controller support asks for %d players, %d connected: cancelled\n", min_players, players);
-    return am_storage_new(sizeof r, r);
+static void am_applet_finish(LibApplet* a) {
+    a->completed = 1;
+    kevent_signal(a->state_ev);
 }
-/* Standard swkbd returns 0x7D8 bytes: u32 close result, then a UTF-16 name. */
-static u32 swkbd_text(u8* out, const char* text, u32 max_chars) {
-    u32 count = 0;
-    const u8* p = (const u8*)text;
-    while (*p && count < max_chars && count < (0x7D8 - 4) / 2 - 1) {
-        u32 cp = *p++;
-        if (cp >= 0xF0 && cp < 0xF5 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 &&
-            !(cp == 0xF0 && p[0] < 0x90) && !(cp == 0xF4 && p[0] >= 0x90)) {
-            cp = ((cp & 7) << 18) | ((p[0] & 0x3F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
-            p += 3;
-        } else if (cp >= 0xE0 && cp < 0xF0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 &&
-                   !(cp == 0xE0 && p[0] < 0xA0) && !(cp == 0xED && p[0] >= 0xA0)) {
-            cp = ((cp & 15) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F);
-            p += 2;
-        } else if (cp >= 0xC2 && cp < 0xE0 && (p[0] & 0xC0) == 0x80) {
-            cp = ((cp & 31) << 6) | (p[0] & 0x3F);
-            p++;
-        } else if (cp >= 0x80) {
-            cp = 0xFFFD;
-        }
-        if (cp >= 0x10000) {
-            if (count + 2 > max_chars || count + 2 >= (0x7D8 - 4) / 2) break;
-            cp -= 0x10000;
-            u16 hi = 0xD800 | (cp >> 10), lo = 0xDC00 | (cp & 0x3FF);
-            memcpy(out + 4 + count++ * 2, &hi, 2);
-            memcpy(out + 4 + count++ * 2, &lo, 2);
-        } else {
-            u16 ch = cp;
-            memcpy(out + 4 + count++ * 2, &ch, 2);
-        }
+/* the applet has finished by the time the game looks, its state changed and its output there; an inline keyboard
+   runs until it is finalized */
+static SvcObj* am_applet_new(u32 applet_id, u32 mode) {
+    SvcObj* o = nn_am_service_ILibraryAppletAccessor_new(sizeof(LibApplet));
+    LibApplet* a = (LibApplet*)o->data;
+    a->applet_id = applet_id;
+    a->mode = mode;
+    a->state_ev = owned_event("am:applet state changed");
+    a->out_ev = owned_event("am:applet out data");
+    a->interactive_ev = owned_event("am:applet interactive out data");
+    a->kb_max = SWKBD_TEXT_CHARS - 1;
+    o->destroy = am_applet_destroy;
+    if (!am_is_inline(a)) {
+        am_applet_finish(a);
+        kevent_signal(a->out_ev);
     }
-    return count;
+    LOG("am: library applet %#x (mode %u)\n", applet_id, mode);
+    return o;
 }
-#define SWKBD_MAX_CHARS ((0x7D8 - 4) / 2 - 1)
-/* the text length limits of the config the game pushed second (lib_lock held) */
-static void swkbd_limits(LibApplet* la, u32* max_chars, u32* min_chars) {
-    StorageData* cfg = la->nin > 1 && is_storage(la->in[1]) ? la->in[1]->data : NULL;
-    *max_chars = SWKBD_MAX_CHARS;
-    *min_chars = 0;
-    if (cfg && cfg->size >= 0x3B4) {
-        u32 limit;
-        memcpy(&limit, cfg->d + 0x3AC, 4);
-        if (limit && limit < *max_chars) *max_chars = limit;
-        memcpy(min_chars, cfg->d + 0x3B0, 4);
-    }
+static int nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(SvcObj* self, u32 applet_id,
+                                                                   u32 library_applet_mode, SvcObj** accessor) {
+    (void)self;
+    *accessor = am_applet_new(applet_id, library_applet_mode);
+    return 0;
 }
-/* asks the host for the text, which can take as long as the player types: no lock held */
-static SvcObj* swkbd_result(u32 max_chars, u32 min_chars) {
-    u8 r[0x7D8] = {0};
-    if (min_chars > max_chars) {
-        WARN("applet: swkbd minimum text length %u exceeds maximum %u\n", min_chars, max_chars);
-        min_chars = max_chars;
-    }
-    char input[4096];
-    int result;
-    u32 chars = 0;
-    const char* preset = getenv("SNX_SWKBD_TEXT");
-    if (preset) {
-        chars = swkbd_text(r, preset, max_chars);
-        result = chars < min_chars ? 1 : 0;
-    } else {
-        do {
-            result = plat_text_input(input, sizeof input, "");
-            if (result) break;
-            memset(r + 4, 0, sizeof r - 4);
-            chars = swkbd_text(r, input, max_chars);
-        } while (chars < min_chars);
-    }
-    LOG("applet: swkbd %s with %u UTF-16 code units\n", result ? "cancelled" : "accepted", chars);
-    if (result) {
-        u32 cancelled = 1;
-        memcpy(r, &cancelled, 4);
-        if (result < 0) WARN("applet: host software keyboard unavailable (install zenity or kdialog on POSIX)\n");
-    }
-    return am_storage_new(sizeof r, r);
+static int nn_am_service_ILibraryAppletCreator_CreateLibraryAppletEx(SvcObj* self, u32 applet_id,
+                                                                     u32 library_applet_mode, u64 thread_id,
+                                                                     SvcObj** accessor) {
+    (void)self, (void)thread_id;
+    *accessor = am_applet_new(applet_id, library_applet_mode);
+    return 0;
 }
-/* The inline protocol has an eight-byte state/type header. Its fixed string fields and
-   trailing length are different from the foreground keyboard's close result. */
-static u32 swkbd_utf8(char* out, const u16* text) {
-    u32 i = 0, n = 0;
-    while (i < 501 && text[i]) {
-        u32 cp = text[i++];
-        if (cp >= 0xD800 && cp <= 0xDBFF && i < 501 && text[i] >= 0xDC00 && text[i] <= 0xDFFF)
-            cp = 0x10000 + ((cp - 0xD800) << 10) + text[i++] - 0xDC00;
-        else if (cp >= 0xD800 && cp <= 0xDFFF)
-            cp = 0xFFFD;
-        if (cp < 0x80)
-            out[n++] = (char)cp;
-        else {
-            if (cp < 0x800)
-                out[n++] = (char)(0xC0 | (cp >> 6));
-            else {
-                if (cp < 0x10000)
-                    out[n++] = (char)(0xE0 | (cp >> 12));
-                else {
-                    out[n++] = (char)(0xF0 | (cp >> 18));
-                    out[n++] = (char)(0x80 | ((cp >> 12) & 63));
-                }
-                out[n++] = (char)(0x80 | ((cp >> 6) & 63));
-            }
-            out[n++] = (char)(0x80 | (cp & 63));
-        }
-    }
-    out[n] = 0;
-    return i;
+static int nn_am_service_ILibraryAppletCreator_CreateStorage(SvcObj* self, i64 size, SvcObj** storage) {
+    (void)self;
+    if (size < 0) return AM_INVALID_OFFSET;
+    *storage = am_storage_new((u64)size, NULL);
+    return *storage ? 0 : AM_OUT_OF_MEMORY;
 }
-/* lib_lock held. The queue owns each storage until PopInteractiveOutData transfers it. */
-static int inline_reply(LibApplet* la, u32 type) {
-    u8 packet[0x7ED];
-    u32 bytes = 8, len = 0, field = la->utf8 ? 0x7D4 : 0x3EC;
-    SvcObj* reply;
-    if (la->nreplies == 8) return RC(128, 503);
-    memset(packet, 0, sizeof packet);
-    memcpy(packet, &la->keyboard_state, 4);
-    memcpy(packet + 4, &type, 4);
-    if (type == 0) bytes++; /* FinishedInitialize carries a one-byte result. */
-    if (type == 2 || type == 7 || type == 0xD || type == 0xF || type == 5 || type == 9) {
-        while (len < 501 && la->text[len]) len++;
-        if (la->utf8)
-            swkbd_utf8((char*)packet + 8, la->text);
-        else
-            memcpy(packet + 8, la->text, sizeof la->text);
-        memcpy(packet + 8 + field, &len, 4);
-        bytes += field + 4;
-        if (type != 5 && type != 9) {
-            memset(packet + 8 + field + 4, 0xFF, 8); /* no active dictionary selection */
-            memcpy(packet + 8 + field + 12, &len, 4);
-            bytes += 12;
-            if (type == 0xD || type == 0xF) bytes++;
-        }
-    }
-    reply = am_storage_new(bytes, packet);
-    if (!reply) return RC(128, 503);
-    la->replies[la->nreplies++] = reply;
-    kevent_signal(la->interactive_ev);
+static int nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(SvcObj* self, u8 is_writable, i64 size,
+                                                                           u32 transfer_memory, SvcObj** storage) {
+    (void)self, (void)is_writable;
+    return am_storage_tmem(size, transfer_memory, 0, storage);
+}
+static int nn_am_service_ILibraryAppletCreator_CreateHandleStorage(SvcObj* self, i64 size, u32 transfer_memory,
+                                                                   SvcObj** storage) {
+    (void)self;
+    return am_storage_tmem(size, transfer_memory, 1, storage);
+}
+
+static int nn_am_service_ILibraryAppletAccessor_GetAppletStateChangedEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(((LibApplet*)self->data)->state_ev);
+    return 0;
+}
+static int nn_am_service_ILibraryAppletAccessor_IsCompleted(SvcObj* self, u8* completed) {
+    LibApplet* a = (LibApplet*)self->data;
+    pm_lock(&am.lock);
+    *completed = (u8)a->completed;
+    pm_unlock(&am.lock);
     return 0;
 }
 static int nn_am_service_ILibraryAppletAccessor_RequestExit(SvcObj* self) {
-    LibApplet* la = self->data;
-    pm_lock(&lib_lock);
-    la->completed = 1;
-    if (la->state_ev) kevent_signal(la->state_ev);
-    pm_unlock(&lib_lock);
+    LibApplet* a = (LibApplet*)self->data;
+    pm_lock(&am.lock);
+    am_applet_finish(a);
+    pm_unlock(&am.lock);
     return 0;
 }
 static int nn_am_service_ILibraryAppletAccessor_Terminate(SvcObj* self) {
     return nn_am_service_ILibraryAppletAccessor_RequestExit(self);
 }
-static int nn_am_service_ILibraryAppletAccessor_PushInteractiveInData(SvcObj* self, SvcObj* storage) {
-    LibApplet* la = self->data;
-    StorageData* data;
-    u32 request, max_chars = 501, min_chars = 0, len;
-    u32 text_offset, appear_offset;
-    u64 flags;
-    int result = 0, dialog;
-    char input[4096], initial[2004];
-    u8 converted[0x7D8];
-    const char* preset;
-    const u8* calc;
-    if (!inline_keyboard(la)) return 0;
-    if (!is_storage(storage)) return RC(128, 503);
-    data = storage->data;
-    if (data->size < 4) return RC(128, 503);
-    memcpy(&request, data->d, 4);
-    if (request == 4) return nn_am_service_ILibraryAppletAccessor_RequestExit(self);
-    pm_lock(&lib_lock);
-    if (la->completed) goto done;
-    if (request == 0xD) {
-        if (data->size < 5)
-            result = RC(128, 503);
-        else
-            la->changed_v2 = data->d[4] != 0;
-        goto done;
+static int nn_am_service_ILibraryAppletAccessor_PushInData(SvcObj* self, SvcObj* storage) {
+    LibApplet* a = (LibApplet*)self->data;
+    if (!storage) return 0;
+    pm_lock(&am.lock);
+    if (a->nin < AM_IN_DATA) {
+        svcobj_ref(storage);
+        a->in[a->nin++] = storage;
     }
-    if (request != 0xA) {
-        /* Dictionaries are not used by the host dialog, so release their guest storage. */
-        if (request == 6) result = inline_reply(la, 0xB);
-        if (request == 7) result = inline_reply(la, 0xA);
-        if (request == 0xC) result = inline_reply(la, 0xC);
-        goto done;
-    }
-    if (data->size < 4 + 0x45D || la->nreplies > 3) {
-        result = RC(128, 503);
-        goto done;
-    }
-    calc = data->d + 4;
-    /* The 0x4E8 SDK packet moves AppearArg before volume/cursor and extends it
-       to 0x70 bytes. SetInputText and SetUtf8Mode address 0x90 and 0x484. */
-    text_offset = data->size >= 4 + 0x4E8 ? 0x90 : 0x68;
-    appear_offset = data->size >= 4 + 0x4E8 ? 0x18 : 0x20;
-    memcpy(&flags, calc + 8, 8);
-    if (flags & 0x20) la->utf8 = calc[text_offset + 0x3F4] != 0;
-    if (flags & 8) {
-        memcpy(la->text, calc + text_offset, sizeof la->text);
-        la->text[501] = 0;
-    }
-    if (flags & 1) {
-        la->keyboard_state = 1;
-        result = inline_reply(la, 0);
-        if (result) goto done;
-    }
-    if (flags & 0x80) {
-        la->keyboard_state = 1;
-        result = inline_reply(la, 1);
-    }
-    if (!(flags & 4) || result || la->keyboard_state == 3) goto done;
-    memcpy(&max_chars, calc + appear_offset + 0x20, 4);
-    memcpy(&min_chars, calc + appear_offset + 0x24, 4);
-    if (!max_chars || max_chars > 501) max_chars = 501;
-    if ((i32)min_chars < 0) min_chars = 0;
-    if (min_chars > max_chars) min_chars = max_chars;
-    la->keyboard_state = 3;
-    result = inline_reply(la, 1);
-    if (result) goto done;
-    swkbd_utf8(initial, la->text);
-    /* The host dialog may wait for the player. Other applets and RequestExit must
-       still be able to run, and an exit during the dialog must not revive swkbd. */
-    pm_unlock(&lib_lock);
-    preset = getenv("SNX_SWKBD_TEXT");
-    do {
-        dialog = preset ? 0 : plat_text_input(input, sizeof input, initial);
-        memset(converted, 0, sizeof converted);
-        len = dialog ? 0 : swkbd_text(converted, preset ? preset : input, max_chars);
-        if (preset && len < min_chars) dialog = 1;
-    } while (!dialog && len < min_chars);
-    pm_lock(&lib_lock);
-    if (la->completed) goto done;
-    LOG("applet: inline swkbd %s with %u UTF-16 code units\n", dialog ? "cancelled" : "accepted", len);
-    if (dialog)
-        result = inline_reply(la, 6);
-    else {
-        memcpy(la->text, converted + 4, sizeof la->text);
-        result = inline_reply(la, la->changed_v2 ? (la->utf8 ? 0xF : 0xD) : (la->utf8 ? 7 : 2));
-        if (!result) result = inline_reply(la, la->utf8 ? 9 : 5);
-    }
-    la->keyboard_state = 1;
-    if (!result) result = inline_reply(la, 1);
-done:
-    pm_unlock(&lib_lock);
-    return result;
+    pm_unlock(&am.lock);
+    return 0;
 }
 
-static int nn_am_service_ILibraryAppletAccessor_GetAppletStateChangedEvent(SvcObj* self, u32* event) {
-    LibApplet* la = self->data;
-    if (!inline_keyboard(la)) return new_event(event, "applet state", 1);
-    *event = ev_handle(la->state_ev);
-    return 0;
-}
-static int nn_am_service_ILibraryAppletAccessor_IsCompleted(SvcObj* self, u8* completed) {
-    LibApplet* la = self->data;
-    pm_lock(&lib_lock);
-    *completed = !inline_keyboard(la) || la->completed;
-    pm_unlock(&lib_lock);
-    return 0;
-}
-/* the controller applet's answer depends on what was pushed */
-static int nn_am_service_ILibraryAppletAccessor_PushInData(SvcObj* self, SvcObj* storage) {
-    LibApplet* la = self->data;
-    pm_lock(&lib_lock);
-    if (storage && la->nin < 8) {
-        svcobj_ref(storage);
-        la->in[la->nin++] = storage;
-    }
-    pm_unlock(&lib_lock);
-    return 0;
-}
-/* PopOutData and PopInteractiveOutData are separate channels, each with one storage. Web applets (Web, Shop,
-   OfflineWeb, LoginShare, WifiWebAuth) return a 0x1010 byte WebCommonReturnValue (exit reason 0, last url, url size),
-   whose size callers check. PlayerSelect returns UiReturnArg {u64 result; Uid uid}: the one user, selected */
-static int pop_data(LibApplet* la, int interactive, SvcObj** storage) {
-    if (inline_keyboard(la)) {
-        int result = RC(128, 2);
-        pm_lock(&lib_lock);
-        if (interactive && la->nreplies) {
-            *storage = la->replies[0];
-            la->nreplies--;
-            memmove(la->replies, la->replies + 1, la->nreplies * sizeof la->replies[0]);
-            if (!la->nreplies) kevent_clear(la->interactive_ev);
-            result = 0;
+/* UTF-16 (n units at in, stopping at a 0) to UTF-8, at most cap - 1 bytes and a terminator */
+static void am_utf16_to_8(const u16* in, u64 n, char* out, size_t cap) {
+    size_t k = 0;
+    u64 i;
+    for (i = 0; i < n && in[i]; i++) {
+        u32 c = in[i];
+        if (c >= 0xd800 && c < 0xdc00 && i + 1 < n && in[i + 1] >= 0xdc00 && in[i + 1] < 0xe000) {
+            c = 0x10000 + ((c - 0xd800) << 10) + (in[i + 1] - 0xdc00u);
+            i++;
         }
-        pm_unlock(&lib_lock);
-        return result;
+        if (c < 0x80) {
+            if (k + 1 >= cap) break;
+            out[k++] = (char)c;
+        } else if (c < 0x800) {
+            if (k + 2 >= cap) break;
+            out[k++] = (char)(0xc0 | c >> 6);
+            out[k++] = (char)(0x80 | (c & 0x3f));
+        } else if (c < 0x10000) {
+            if (k + 3 >= cap) break;
+            out[k++] = (char)(0xe0 | c >> 12);
+            out[k++] = (char)(0x80 | (c >> 6 & 0x3f));
+            out[k++] = (char)(0x80 | (c & 0x3f));
+        } else {
+            if (k + 4 >= cap) break;
+            out[k++] = (char)(0xf0 | c >> 18);
+            out[k++] = (char)(0x80 | (c >> 12 & 0x3f));
+            out[k++] = (char)(0x80 | (c >> 6 & 0x3f));
+            out[k++] = (char)(0x80 | (c & 0x3f));
+        }
     }
-    u32 id = la->id;
-    u64 n = 0x10;
-    /* Standard swkbd has no interactive output unless it requests application text validation. */
-    if (id == 0x11 && interactive) return RC(128, 2);
-    if (__atomic_exchange_n(interactive ? &la->popped_interactive : &la->popped_out, 1, __ATOMIC_SEQ_CST))
-        return RC(128, 2);
-    SvcObj* st;
-    if (id == 0x0C && !interactive) {
-        pm_lock(&lib_lock);
-        i8 min_players = controller_min_players(la);
-        pm_unlock(&lib_lock);
-        st = controller_result(min_players);
-        n = 0xC;
-    } else if (id == 0x11 && !interactive) {
-        u32 max_chars, min_chars;
-        pm_lock(&lib_lock);
-        swkbd_limits(la, &max_chars, &min_chars);
-        pm_unlock(&lib_lock);
-        st = swkbd_result(max_chars, min_chars);
-        n = 0x7D8;
-    } else if (id == 0x10) {
-        u8 r[0x18];
-        memset(r, 0, sizeof r);
-        memcpy(r + 8, g_user_id, 16);
-        n = sizeof r;
-        st = am_storage_new(n, r);
-    } else {
-        if (id == 0x13 || id == 0x14 || id == 0x17 || id == 0x18 || id == 0x19) n = 0x1010;
-        st = am_storage_new(n, NULL);
+    out[k] = 0;
+}
+/* UTF-8 to UTF-16, at most max units (a surrogate pair is never split); returns the units written */
+static u32 am_utf8_to_16(const char* in, u16* out, u32 max) {
+    const unsigned char* s = (const unsigned char*)in;
+    u32 n = 0, c;
+    while (*s) {
+        if (*s < 0x80)
+            c = *s++;
+        else if ((*s & 0xe0) == 0xc0 && s[1]) {
+            c = (u32)(*s & 0x1f) << 6 | (s[1] & 0x3fu);
+            s += 2;
+        } else if ((*s & 0xf0) == 0xe0 && s[1] && s[2]) {
+            c = (u32)(*s & 0x0f) << 12 | (u32)(s[1] & 0x3f) << 6 | (s[2] & 0x3fu);
+            s += 3;
+        } else if ((*s & 0xf8) == 0xf0 && s[1] && s[2] && s[3]) {
+            c = (u32)(*s & 0x07) << 18 | (u32)(s[1] & 0x3f) << 12 | (u32)(s[2] & 0x3f) << 6 | (s[3] & 0x3fu);
+            s += 4;
+        } else {
+            s++;
+            continue;
+        }
+        if (c >= 0x10000) {
+            if (n + 2 > max) break;
+            c -= 0x10000;
+            out[n++] = (u16)(0xd800 | c >> 10);
+            out[n++] = (u16)(0xdc00 | (c & 0x3ff));
+        } else {
+            if (n + 1 > max) break;
+            out[n++] = (u16)c;
+        }
     }
-    if (!st) return RC(128, 503);
-    if (id != 0x11)
-        LOG_LIMIT(4, "applet: library applet %02x closed right away (no applet UI here), %llu bytes of output\n", id,
-                  (unsigned long long)n);
-    *storage = st;
+    return n;
+}
+static void am_put32(u8* p, u32 v) { memcpy(p, &v, 4); }
+
+/* the software keyboard as a whole applet: the host's text dialog with the game's initial text. KeyboardConfig
+   (SwkbdConfigCommon, the second storage) gives the length limit, whether the answer is UTF-8, and where the initial
+   text is in the work buffer (the third) */
+#define AM_SWKBD_OUT 0x7d8 /* SwkbdResult and the 0x7d4 byte string buffer */
+static SvcObj* am_swkbd(LibApplet* a) {
+    char text[SWKBD_UTF8_SIZE], initial[SWKBD_UTF8_SIZE];
+    u16 wide[SWKBD_UTF8_SIZE / 2];
+    u32 max = SWKBD_UTF8_SIZE / 2 - 1, off = 0, len = 0, n;
+    int utf8 = 0, r;
+    SvcObj* out;
+    u8* d;
+    initial[0] = 0;
+    if (a->nin > 1 && ((StorageData*)a->in[1]->data)->size >= 0x3d4) {
+        const u8* cfg = am_storage_bytes(a->in[1]);
+        memcpy(&n, cfg + 0x3ac, 4); /* max_text_length */
+        if (n && n < max) max = n;
+        utf8 = cfg[0x3bd];
+        memcpy(&off, cfg + 0x3c0, 4); /* initial_string_offset and _length, in the work buffer */
+        memcpy(&len, cfg + 0x3c4, 4);
+    }
+    if (len && a->nin > 2) {
+        u64 size = ((StorageData*)a->in[2]->data)->size;
+        if (off < size && len <= (size - off) / 2 && len <= SWKBD_UTF8_SIZE / 2) {
+            memcpy(wide, am_storage_bytes(a->in[2]) + off, (size_t)len * 2);
+            am_utf16_to_8(wide, len, initial, sizeof initial);
+        }
+    }
+    r = plat_text_input(text, sizeof text, initial);
+    if (r < 0) { /* no dialog on this host: the initial text is accepted */
+        LOG("am: no text dialog on this host, the software keyboard answers \"%s\"\n", initial);
+        memcpy(text, initial, sizeof text);
+        r = 0;
+    }
+    out = am_storage_new(AM_SWKBD_OUT, NULL);
+    d = am_storage_bytes(out);
+    am_put32(d, r ? 1 : 0); /* SwkbdResult: Ok, Cancel */
+    if (!r) {
+        if (utf8) {
+            size_t i = 0;
+            while (text[i] && i < AM_SWKBD_OUT - 5) i++;
+            memcpy(d + 4, text, i);
+        } else {
+            n = am_utf8_to_16(text, wide, max);
+            memcpy(d + 4, wide, (size_t)n * 2);
+        }
+    }
+    return out;
+}
+
+/* ------------------------------------------------------------ the inline keyboard */
+/* a reply (SwkbdState, SwkbdReplyType, then size - 8 bytes) queued for PopInteractiveOutData; its body to fill */
+static u8* kb_reply(LibApplet* a, u32 type, u32 size) {
+    SvcObj* s;
+    u8* d;
+    if (a->nout >= AM_OUT_DATA) return NULL;
+    s = am_storage_new(size, NULL);
+    d = am_storage_bytes(s);
+    am_put32(d, a->kb_state);
+    am_put32(d + 4, type);
+    a->out[a->nout++] = s;
+    kevent_signal(a->interactive_ev);
+    return d + 8;
+}
+static void kb_show(LibApplet* a, u32 state) {
+    a->kb_state = state;
+    kb_reply(a, SWKBD_DEFAULT, 8);
+}
+/* the text, in the encoding the game asked for, ahead of its arguments (SwkbdChangedStringArg: the length,
+   no dictionary range, the cursor; SwkbdDecidedEnterArg: the length) */
+static void kb_text_reply(LibApplet* a, int decided) {
+    u32 type = a->kb_utf8 ? (decided ? SWKBD_ENTER_UTF8 : SWKBD_CHANGED_UTF8) : (decided ? SWKBD_ENTER : SWKBD_CHANGED);
+    u32 text = a->kb_utf8 ? SWKBD_UTF8_SIZE : SWKBD_UTF16_SIZE;
+    u8* d = kb_reply(a, type, 8 + text + (decided ? 4 : 16));
+    if (!d) return;
+    if (a->kb_utf8)
+        am_utf16_to_8(a->kb_text, a->kb_len, (char*)d, SWKBD_UTF8_SIZE);
+    else
+        memcpy(d, a->kb_text, (size_t)(a->kb_len < SWKBD_UTF16_SIZE / 2 ? a->kb_len : SWKBD_UTF16_SIZE / 2 - 1) * 2);
+    am_put32(d + text, a->kb_len);
+    if (!decided) {
+        am_put32(d + text + 4, ~0u);
+        am_put32(d + text + 8, ~0u);
+        am_put32(d + text + 12, (u32)a->kb_cursor);
+    }
+}
+/* Appear: shown, then the host's dialog decides at once, and the keyboard hides again */
+static void kb_appear(LibApplet* a) {
+    char text[SWKBD_UTF8_SIZE], initial[SWKBD_UTF8_SIZE];
+    int r;
+    kb_show(a, SWKBD_SHOWN);
+    am_utf16_to_8(a->kb_text, a->kb_len, initial, sizeof initial);
+    r = plat_text_input(text, sizeof text, initial);
+    if (r < 0) {
+        LOG("am: no text dialog on this host, the inline keyboard answers \"%s\"\n", initial);
+        memcpy(text, initial, sizeof text);
+        r = 0;
+    }
+    if (r)
+        kb_reply(a, SWKBD_CANCEL, 8);
+    else {
+        a->kb_len = am_utf8_to_16(text, a->kb_text, a->kb_max);
+        a->kb_cursor = (i32)a->kb_len;
+        kb_text_reply(a, 0);
+        kb_text_reply(a, 1);
+    }
+    kb_show(a, SWKBD_HIDDEN);
+}
+/* Calc: the SwkbdCalcArg after the command word, either layout */
+static void kb_calc(LibApplet* a, const u8* req, u64 size) {
+    const u8* arg = req + 4;
+    u64 flags;
+    u32 appear, cursor, text, max, i;
+    if (size < 4 + 0x18) return;
+    memcpy(&flags, arg + 8, 8);
+    if (size >= 4 + SWKBD_CALC_NEW_SIZE) {
+        appear = 0x18; /* SwkbdCalcArgNew: appear argument, volume, cursor, text, utf8 mode */
+        cursor = 0x8c;
+        text = 0x90;
+    } else if (size >= 4 + SWKBD_CALC_OLD_SIZE) {
+        appear = 0x20; /* SwkbdCalcArgOld: volume, cursor, appear argument, text, utf8 mode */
+        cursor = 0x1c;
+        text = 0x68;
+    } else
+        return;
+    if (flags & SWKBD_SET_TEXT) {
+        for (i = 0; i < SWKBD_TEXT_CHARS - 1; i++) {
+            memcpy(&a->kb_text[i], arg + text + 2 * i, 2);
+            if (!a->kb_text[i]) break;
+        }
+        a->kb_len = i;
+    }
+    if (flags & SWKBD_SET_CURSOR) memcpy(&a->kb_cursor, arg + cursor, 4);
+    if (flags & SWKBD_SET_UTF8) a->kb_utf8 = arg[text + 2 * SWKBD_TEXT_CHARS] != 0;
+    if (a->kb_state == SWKBD_NOT_INITIALIZED && (flags & SWKBD_SET_INIT)) {
+        a->kb_state = SWKBD_HIDDEN;
+        kb_reply(a, SWKBD_FINISHED_INIT, 9);
+    }
+    if (!(flags & SWKBD_SET_INIT) && (flags & (SWKBD_SET_TEXT | SWKBD_SET_CURSOR)) && a->kb_state != SWKBD_NOT_INITIALIZED)
+        kb_text_reply(a, 0);
+    if (a->kb_state == SWKBD_HIDDEN && (flags & SWKBD_APPEAR)) {
+        memcpy(&max, arg + appear + 0x20, 4); /* max_text_length */
+        a->kb_max = max && max < SWKBD_TEXT_CHARS - 1 ? max : SWKBD_TEXT_CHARS - 1;
+        kb_appear(a);
+    } else if (a->kb_state == SWKBD_SHOWN && (flags & SWKBD_DISAPPEAR))
+        kb_show(a, SWKBD_HIDDEN);
+}
+static int nn_am_service_ILibraryAppletAccessor_PushInteractiveInData(SvcObj* self, SvcObj* storage) {
+    LibApplet* a = (LibApplet*)self->data;
+    StorageData* s;
+    const u8* req;
+    u32 cmd;
+    if (!storage || !am_is_inline(a)) return 0;
+    s = (StorageData*)storage->data;
+    if (s->size < 4) return 0;
+    req = am_storage_bytes(storage);
+    memcpy(&cmd, req, 4);
+    pm_lock(&am.lock);
+    switch (cmd) {
+    case SWKBD_REQ_FINALIZE:
+        a->kb_state = SWKBD_NOT_INITIALIZED;
+        am_applet_finish(a);
+        break;
+    case SWKBD_REQ_CALC: kb_calc(a, req, s->size); break;
+    case SWKBD_REQ_USER_WORDS: kb_reply(a, SWKBD_RELEASED_WORDS, 8); break;
+    case SWKBD_REQ_UNSET_DICTS: kb_reply(a, SWKBD_UNSET_DICTS, 8); break;
+    default: break; /* the dictionaries and the V2 reply flags change nothing here */
+    }
+    pm_unlock(&am.lock);
     return 0;
 }
+
 static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj** storage) {
-    return pop_data(self->data, 0, storage);
+    LibApplet* a = (LibApplet*)self->data;
+    u8* d;
+    u32 first = 0;
+    int popped;
+    pm_lock(&am.lock);
+    popped = a->out_popped || am_is_inline(a);
+    a->out_popped = 1;
+    pm_unlock(&am.lock);
+    if (popped) return AM_NO_DATA;
+    switch (a->applet_id) {
+    case AM_APPLET_CONTROLLER: /* ControllerSupportResultInfo: the players connected and the first of them */
+        *storage = am_storage_new(0xc, NULL);
+        d = am_storage_bytes(*storage);
+        d[0] = (u8)hid_connected_players(&first);
+        memcpy(d + 4, &first, 4);
+        break;
+    case AM_APPLET_PROFILE_SELECT: /* UiReturnArg: success, the console's user */
+        *storage = am_storage_new(0x18, NULL);
+        memcpy(am_storage_bytes(*storage) + 8, g_user_id, 16);
+        break;
+    case AM_APPLET_SWKBD: *storage = am_swkbd(a); break;
+    case AM_APPLET_WEB:
+    case AM_APPLET_OFFLINE_WEB:
+    case AM_APPLET_WEB_AUTH: /* WebCommonReturnValue: the page was closed (0), no last URL */
+        *storage = am_storage_new(0x1010, NULL);
+        break;
+    default: return AM_NO_DATA;
+    }
+    kevent_clear(a->out_ev);
+    return 0;
 }
 static int nn_am_service_ILibraryAppletAccessor_PopInteractiveOutData(SvcObj* self, SvcObj** storage) {
-    return pop_data(self->data, 1, storage);
+    LibApplet* a = (LibApplet*)self->data;
+    int rc = 0;
+    pm_lock(&am.lock);
+    if (!a->nout)
+        rc = AM_NO_DATA;
+    else {
+        *storage = a->out[0];
+        a->nout--;
+        memmove(a->out, a->out + 1, (size_t)a->nout * sizeof a->out[0]);
+    }
+    if (!a->nout) kevent_clear(a->interactive_ev);
+    pm_unlock(&am.lock);
+    return rc;
 }
 static int nn_am_service_ILibraryAppletAccessor_GetPopOutDataEvent(SvcObj* self, u32* event) {
-    return new_event(event, "applet data", 1);
+    *event = ev_handle(((LibApplet*)self->data)->out_ev);
+    return 0;
 }
-/* Foreground swkbd has no interactive output. Inline swkbd signals while replies are queued. */
 static int nn_am_service_ILibraryAppletAccessor_GetPopInteractiveOutDataEvent(SvcObj* self, u32* event) {
-    LibApplet* la = self->data;
-    if (!inline_keyboard(la)) return new_event(event, "applet data", la->id != 0x11);
-    *event = ev_handle(la->interactive_ev);
+    *event = ev_handle(((LibApplet*)self->data)->interactive_ev);
     return 0;
 }
 static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* self,
-                                                                     nn_am_service_LibraryAppletInfo* info) {
-    LibApplet* la = self->data;
-    info->applet_id = la->id;
-    info->library_applet_mode = la->mode;
+                                                                    nn_am_service_LibraryAppletInfo* info) {
+    LibApplet* a = (LibApplet*)self->data;
+    info->applet_id = a->applet_id;
+    info->library_applet_mode = a->mode;
     return 0;
 }
-static int nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(SvcObj* self, u32 applet_id, u32 library_applet_mode,
-                                                                   SvcObj** accessor) {
-    SvcObj* a = nn_am_service_ILibraryAppletAccessor_new(sizeof(LibApplet));
-    ((LibApplet*)a->data)->id = applet_id;
-    ((LibApplet*)a->data)->mode = library_applet_mode;
-    if (inline_keyboard(a->data)) {
-        LibApplet* la = a->data;
-        la->state_ev = owned_event("inline keyboard state");
-        la->interactive_ev = owned_event("inline keyboard reply");
-    }
-    a->destroy = lib_applet_destroy;
-    *accessor = a;
-    return 0;
-}
-/* the thread id names the caller's thread for the applet's scheduling: nothing to schedule here */
-static int nn_am_service_ILibraryAppletCreator_CreateLibraryAppletEx(SvcObj* self, u32 applet_id,
-                                                                     u32 library_applet_mode, u64 thread_id,
-                                                                     SvcObj** accessor) {
-    return nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(self, applet_id, library_applet_mode, accessor);
-}
-static int nn_am_service_ILibraryAppletCreator_CreateStorage(SvcObj* self, i64 size, SvcObj** storage) {
-    return out_storage(storage, (u64)size, NULL);
-}
-/* a storage holding what the transfer memory holds. A copy is enough: the library applets here finish at once and
-   only read what was pushed */
-static int nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(SvcObj* self, u8 is_writable, i64 size,
-                                                                           u32 transfer_memory, SvcObj** storage) {
-    KTmem* m = (KTmem*)h_get_ref(transfer_memory, KO_TMEM);
-    if (!m) return out_storage(storage, (u64)size, NULL);
-    SvcObj* st = am_storage_new((u64)size, NULL);
-    if (st) memcpy(((StorageData*)st->data)->d, GP(m->addr), (u64)size < m->size ? (u64)size : m->size);
-    kobj_unref(&m->o);
-    if (!st) return RC(128, 503);
-    *storage = st;
-    return 0;
-}
-/* a handle storage is transfer memory the caller doesn't map: the applet reads it the same way */
-static int nn_am_service_ILibraryAppletCreator_CreateHandleStorage(SvcObj* self, i64 size, u32 transfer_memory,
-                                                                   SvcObj** storage) {
-    return nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(self, 0, size, transfer_memory, storage);
-}
-static int nn_am_service_IAudioController_GetMainAppletExpectedMasterVolume(SvcObj* self, float* volume) {
-    *volume = 1.0f;
-    return 0;
-}
-static int nn_am_service_IAudioController_GetLibraryAppletExpectedMasterVolume(SvcObj* self, float* volume) {
-    *volume = 1.0f;
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetCommonStateGetter(SvcObj* self, SvcObj** getter) {
-    *getter = nn_am_service_ICommonStateGetter_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetSelfController(SvcObj* self, SvcObj** controller) {
-    *controller = nn_am_service_ISelfController_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetWindowController(SvcObj* self, SvcObj** controller) {
-    *controller = nn_am_service_IWindowController_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetAudioController(SvcObj* self, SvcObj** controller) {
-    *controller = nn_am_service_IAudioController_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetDisplayController(SvcObj* self, SvcObj** controller) {
-    *controller = nn_am_service_IDisplayController_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetProcessWindingController(SvcObj* self, SvcObj** controller) {
-    *controller = nn_am_service_IProcessWindingController_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetLibraryAppletCreator(SvcObj* self, SvcObj** creator) {
-    *creator = nn_am_service_ILibraryAppletCreator_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self, SvcObj** functions) {
-    *functions = nn_am_service_IApplicationFunctions_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
-    *functions = nn_am_service_IDebugFunctions_new(0);
-    return 0;
-}
-static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* self, u64 pid, u32 process,
-                                                                       SvcObj** proxy) {
-    *proxy = nn_am_service_IApplicationProxy_new(0);
-    return 0;
-}
-static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid, u32 process,
-                                                                                   SvcObj** proxy) {
-    *proxy = nn_am_service_IApplicationProxy_new(0);
-    return 0;
-}
-SvcObj* new_appletoe(void) { return nn_am_service_IApplicationProxyService_new(0); }
-SvcObj* new_appletae(void) { return nn_am_service_IAllSystemAppletProxiesService_new(0); }

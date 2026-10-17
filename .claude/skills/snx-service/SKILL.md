@@ -34,7 +34,7 @@ description: "Implement or fix a high-level-emulated Switch service or device (I
    `ldr:ro`). An undeclared command is logged by the interface's fallback, the first three times: `[undeclared] I cmd N
    -> ok` from `stub_ok` (success with no outputs: for a command that gives an object or a handle the game ends up
    calling through null), `[unknown]` from `ipc_unknown`, `[not implemented]` from bsd's, nothing from `quiet_ok`.
-   `[not implemented] NAME cmd N -> ok` also comes from sm's stand-in for a service the runtime doesn't have. A
+   `[undeclared] NAME cmd N -> ok` also comes from sm's stand-in for a service the runtime doesn't have. A
    `[bad request] I cmd N: pid .., A .., ... -> InvalidCmifRequest` means the declaration doesn't match what the SDK
    sends (step 2): the game gets an error, and often aborts on it. `[bad request] ... -> InvalidNumInObjects` is the
    same for a domain request's objects, and `... takes objects, on a session that isn't a domain -> NotSupported` a

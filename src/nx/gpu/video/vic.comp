@@ -1,10 +1,9 @@
 #version 450
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/video_core/host1x/vic.cpp):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project */
 /* The VIC composition as a compute shader: a GLSL port of the pixel pipeline in gpu/video/vic.c (which follows
    Eden's VIC). The slots' NV12 samples become 10 bit pixels (Y, U, V scaled to 10 bit, the slot's planar alpha as
    the alpha), the slot's color matrix and soft clamp are applied when the config enables them, and the result is

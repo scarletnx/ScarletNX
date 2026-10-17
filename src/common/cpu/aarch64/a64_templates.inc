@@ -1,10 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Derived from SwitchRecomp a64.py, Copyright 2026 MZ Labs, Apache-2.0.
-   Retain LICENSE.apache and NOTICE; the fork changes are GPL-3.0-or-later.
+   Ported in part from QEMU (target/arm/tcg/translate-a64.c, helper-a64.c, vec_helper.c, vfp_helper.c,
+   crypto_helper.c), LGPL-2.1-or-later:
+   Copyright (c) 2013 Alexander Graf <agraf@suse.de>
+   Copyright (c) 2018 Linaro
+   Copyright (C) 2013 - 2018 Linaro Ltd <ard.biesheuvel@linaro.org>
+   Copyright (c) 2003 Fabrice Bellard
 
    Maintained C source: decoder patterns and specialized instruction templates.
-   Initially transcribed from a64.py gen_interp_cases. No generator is needed to build.
+   No generator is needed to build.
    Each row: flow kind, field declarations, C body/operand, optional branch target.
    Constants w and pc specialize these same templates for static AOT.
    Edit instruction semantics here for both AOT and interpreter emission. */

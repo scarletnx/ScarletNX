@@ -32,10 +32,17 @@ a source keep that source's copyright lines and license, most with the revision 
 | `cmake/hactool-libhac.patch` (the storages it adds to hactool) | LibHac, as Ryubing maintains it | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c` | Azahar (Citra) | GPL-2.0-or-later |
 | `src/3ds/gpu/shader.c` and `shader.h` (the instruction fields) | nihstro | BSD-3-Clause |
+| `src/common/cpu/` (the recompiler's instruction semantics: `a64.c`, `a64_templates.inc`, the LLVM emitters and the libgccjit emitters derived from them, the A32/T32 block compiler) | QEMU's `target/arm/tcg/` | LGPL-2.1-or-later |
+| `src/nx/hle/kernel/` (`kernel.c`, `sync.c`, `debug.c`) | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/common/network/`, `src/nx/hle/services/network/` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/video/vp9_rebuild.cpp` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/gpu/texture/astc.comp` (the ASTC decoder shader, compiled into `astc_spv.h`) | Eden and yuzu (`astc_decoder.comp`) | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/gpu/texture/astc.c` and `astc.h` (the CPU ASTC decoder the tests check the shader against) | Eden and yuzu (`textures/astc.cpp`), with the University of North Carolina at Chapel Hill's FasTC decoder in it | GPL-3.0-or-later, GPL-2.0-or-later, Apache 2.0 |
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
 | `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
+
+Dynarmic (0BSD) and its GPL-3.0-or-later fork were consulted for the recompiler's instruction semantics. No code was
+ported from them.
 
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.

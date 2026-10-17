@@ -1,9 +1,9 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* fs: RomFS (built on the fly from an extracted romfs/ folder, or a romfs.bin), plus save data
-   and SD card mapped to normal folders. */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/core/file_sys/fsmitm_romfsbuild.cpp):
+   SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
+/* fsp-srv over the game's indexed data folder: the RomFS (a romfs.bin, or an image made up from the romfs/ folder),
+   save data, the SD card and the system archives */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
 #include "nx/runtime/main.h"
@@ -40,26 +40,21 @@
 #define FS_READ_NOT_PERMITTED  RC(2, 6202)
 #define FS_WRITE_NOT_PERMITTED RC(2, 6203)
 
-/* ============================================================ RomFS virtual */
+/* RomFS. With no romfs.bin, the image is made up from the romfs/ folder: its header and tables in memory (rmeta), the
+   files' data read from the files themselves when the game reads that part of the image */
+typedef struct {
+    FsNode* node; /* retained for the run: the image keeps its files */
+    u64 off;      /* where its data starts in the image */
+    int logged;   /* its first read was logged, and its first failure warned (atomics: game threads read at once) */
+    int warned;
+} RFile;
+/* unmapped RomFS files open on the host, least recently used closed first */
+#define NOPEN 48
 typedef struct {
     FsNode* node;
-    u64 off, size;
-    int logged;
-} RFile;
-typedef struct DNode {
-    char* name;
-    int parent;
-    int first_child, next_sib, first_file;
-    u32 off;
-} DNode;
-typedef struct FNode {
-    char* name;
-    int parent, next_sib;
-    u32 off;
-    u64 size;
-    FsNode* node;
-} FNode;
-#define NOPEN 48
+    FILE* f;
+    u64 used; /* the clock when it was last read */
+} ROpen;
 static struct {
     FsTree tree;
     RFile* rfiles; /* in offset order: romfs_build lays the files out in this order */
@@ -69,16 +64,7 @@ static struct {
     u64 rdata_off, rtotal;
     FILE* rraw;     /* plain romfs.bin, when it couldn't be mapped */
     FsNode* rimage; /* plain romfs.bin, mapped */
-    DNode* dn;
-    int ndn, capdn;
-    FNode* fn;
-    int nfn, capfn;
-    /* cache of open host files */
-    struct {
-        FsNode* node;
-        FILE* f;
-        u64 last;
-    } openf[NOPEN];
+    ROpen openf[NOPEN]; /* rf_open's files, under tree.lock */
     u64 openclk;
     u8 emptyrom[0x200]; /* the empty RomFS of the system archives (emptyrom_init) */
 } fsp;
@@ -195,155 +181,175 @@ int fs_add_virtual_file(const char* path, const void* data, u64 size) {
     return r ? -1 : 0;
 }
 
-static int add_dir(const char* name, int parent) {
-    if (fsp.ndn == fsp.capdn) {
-        if (fsp.capdn > INT32_MAX / 2) fatal("Too many RomFS directories");
-        fsp.capdn = fsp.capdn ? fsp.capdn * 2 : 256;
-        fsp.dn = realloc(fsp.dn, sizeof(DNode) * fsp.capdn);
-        if (!fsp.dn) fatal("Could not allocate RomFS directories");
-    }
-    DNode* d = &fsp.dn[fsp.ndn];
-    d->name = strdup(name);
-    if (!d->name) fatal("Could not allocate RomFS directory name");
-    d->parent = parent;
-    d->first_child = -1;
-    d->next_sib = -1;
-    d->first_file = -1;
-    return fsp.ndn++;
-}
-static int add_file(const char* name, int parent, FsNode* node) {
-    if (fsp.nfn == fsp.capfn) {
-        if (fsp.capfn > INT32_MAX / 2) fatal("Too many RomFS files");
-        fsp.capfn = fsp.capfn ? fsp.capfn * 2 : 1024;
-        fsp.fn = realloc(fsp.fn, sizeof(FNode) * fsp.capfn);
-        if (!fsp.fn) fatal("Could not allocate RomFS files");
-    }
-    FNode* f = &fsp.fn[fsp.nfn];
-    f->name = strdup(name);
-    if (!f->name) fatal("Could not allocate RomFS file name");
-    f->parent = parent;
-    f->next_sib = -1;
-    f->size = node->size;
-    f->node = node;
-    fs_tree_retain(node);
-    return fsp.nfn++;
-}
-/* The startup index already has a stable, sorted directory order. */
-static void scan(FsNode* dir, int di) {
-    for (int pass = 0; pass < 2; pass++) {
-        int last = -1;
-        for (FsNode* node = dir->children; node; node = node->next) {
-            if (node->is_dir != (pass == 0)) continue;
-            if (node->is_dir) {
-                int child = add_dir(node->name, di);
-                if (last < 0)
-                    fsp.dn[di].first_child = child;
-                else
-                    fsp.dn[last].next_sib = child;
-                last = child;
-                scan(node, child);
-            } else {
-                int file = add_file(node->name, di, node);
-                if (last < 0)
-                    fsp.dn[di].first_file = file;
-                else
-                    fsp.fn[last].next_sib = file;
-                last = file;
-            }
-        }
-    }
-}
-static u32 rhash(u32 parent, const char* s) {
+/* The RomFS image's layout (Switchbrew's "RomFS"; the hash and bucket count as Eden's fsmitm_romfsbuild): a header of
+   ten u64s, then the directory hash table, the directory table, the file hash table and the file table, padded to
+   0x200, then the file data. Table entries refer to each other by their offset in their table */
+#define ROM_NONE      0xFFFFFFFFu
+#define ROM_DIR_ENTRY 0x18 /* parent, sibling, first child, first file, next in bucket, name length; the name */
+#define ROM_FILE_ENTRY                                                                                                 \
+    0x20 /* parent, sibling, u64 data offset, u64 size, next in bucket, name length; the name */
+static void put32(u8* p, u32 v) { memcpy(p, &v, 4); }
+static void put64(u8* p, u64 v) { memcpy(p, &v, 8); }
+/* the bucket of an entry named name in the directory at table offset parent. The name's bytes count unsigned */
+static u32 rhash(u32 parent, const char* name) {
+    const unsigned char* p = (const unsigned char*)name;
     u32 h = parent ^ 123456789u;
-    for (; *s; s++) {
+    while (*p) {
         h = (h >> 5) | (h << 27);
-        h ^= (u8)*s;
+        h ^= *p++;
     }
     return h;
 }
+/* the buckets of a hash table for n entries */
 static u32 hcount(u32 n) {
+    u32 c = n;
     if (n < 3) return 3;
     if (n < 19) return n | 1;
-    u32 c = n;
-    while (!(c % 2) || !(c % 3) || !(c % 5) || !(c % 7) || !(c % 11) || !(c % 13) || !(c % 17)) c++;
+    while (c % 2 == 0 || c % 3 == 0 || c % 5 == 0 || c % 7 == 0 || c % 11 == 0 || c % 13 == 0 || c % 17 == 0) c++;
     return c;
 }
+static u64 entry_size(u32 fixed, const char* name) { return fixed + ((strlen(name) + 3) & ~(size_t)3); }
+/* adds the folders and files under dir to the counts and table sizes */
+static void scan(const FsNode* dir, u32* ndirs, u32* nfiles, u64* dir_bytes, u64* file_bytes) {
+    const FsNode* c;
+    for (c = dir->children; c; c = c->next) {
+        if (*ndirs >= INT32_MAX || *nfiles >= INT32_MAX) fatal("RomFS: too many entries in romfs/\n");
+        if (c->is_dir) {
+            ++*ndirs;
+            *dir_bytes += entry_size(ROM_DIR_ENTRY, c->name);
+            scan(c, ndirs, nfiles, dir_bytes, file_bytes);
+        } else {
+            ++*nfiles;
+            *file_bytes += entry_size(ROM_FILE_ENTRY, c->name);
+        }
+    }
+}
+/* a folder while the image is made: its table offset and its entry's links */
+typedef struct {
+    const FsNode* node;
+    u32 parent; /* index in the folder list */
+    u32 off, child, file;
+} RDir;
 
+/* Makes the image from the folder tree under dir (tree.lock held). Folders are listed breadth first, so each folder's
+   subfolders are consecutive and chain as siblings, then each folder's files, folder by folder, in the index's strcmp
+   order. File data follows the file table's order, each file at a multiple of 16: the file list is in offset order as
+   it is made, and must not be sorted (a zero-size file shares its offset with the next file) */
 static void romfs_build(FsNode* dir) {
-    add_dir("", 0);
-    fsp.dn[0].parent = 0;
-    scan(dir, 0);
-    /* table offsets */
-    u32 doff = 0;
-    for (int i = 0; i < fsp.ndn; i++) {
-        fsp.dn[i].off = doff;
-        size_t entry = 0x18 + ((strlen(fsp.dn[i].name) + 3) & ~(size_t)3);
-        if (entry > UINT32_MAX - doff) fatal("RomFS directory table is too large");
-        doff += (u32)entry;
+    u32 ndirs = 1, nfiles = 0, i, nd, nf, dbuckets, fbuckets;
+    u64 dir_bytes = ROM_DIR_ENTRY, file_bytes = 0, dhash, dtab, fhash, ftab, end, data = 0;
+    RDir* dirs;
+    u8* m;
+    scan(dir, &ndirs, &nfiles, &dir_bytes, &file_bytes);
+    if (dir_bytes >= ROM_NONE || file_bytes >= ROM_NONE) fatal("RomFS: the tables of romfs/ are too large\n");
+    dbuckets = hcount(ndirs);
+    fbuckets = hcount(nfiles);
+    dhash = 0x50;
+    dtab = dhash + (u64)dbuckets * 4;
+    fhash = dtab + dir_bytes;
+    ftab = fhash + (u64)fbuckets * 4;
+    end = ftab + file_bytes;
+    if (end > SIZE_MAX) fatal("RomFS: the tables of romfs/ are too large\n");
+    if ((u64)ndirs * sizeof(RDir) > SIZE_MAX || (u64)nfiles * sizeof(RFile) > SIZE_MAX)
+        fatal("RomFS: too many entries in romfs/\n");
+    dirs = malloc(ndirs * sizeof *dirs);
+    fsp.rfiles = malloc((nfiles ? nfiles : 1) * sizeof *fsp.rfiles);
+    m = calloc(1, (size_t)end);
+    if (!dirs || !fsp.rfiles || !m) fatal("RomFS: out of memory for the image of romfs/\n");
+    memset(m + dhash, 0xFF, (size_t)dbuckets * 4);
+    memset(m + fhash, 0xFF, (size_t)fbuckets * 4);
+
+    /* the folders, breadth first, with their table offsets */
+    dirs[0].node = dir;
+    dirs[0].parent = 0;
+    dirs[0].off = 0;
+    nd = 1;
+    {
+        u32 off = ROM_DIR_ENTRY;
+        for (i = 0; i < nd; i++) {
+            const FsNode* c;
+            dirs[i].child = dirs[i].file = ROM_NONE;
+            for (c = dirs[i].node->children; c; c = c->next) {
+                if (!c->is_dir) continue;
+                if (dirs[i].child == ROM_NONE) dirs[i].child = off;
+                dirs[nd].node = c;
+                dirs[nd].parent = i;
+                dirs[nd].off = off;
+                nd++;
+                off += (u32)entry_size(ROM_DIR_ENTRY, c->name);
+            }
+        }
     }
-    u32 foff = 0;
-    for (int i = 0; i < fsp.nfn; i++) {
-        fsp.fn[i].off = foff;
-        size_t entry = 0x20 + ((strlen(fsp.fn[i].name) + 3) & ~(size_t)3);
-        if (entry > UINT32_MAX - foff) fatal("RomFS file table is too large");
-        foff += (u32)entry;
+    /* the files, folder by folder, with their data offsets */
+    nf = 0;
+    {
+        u32 off = 0;
+        for (i = 0; i < nd; i++) {
+            FsNode* c;
+            u8* e = NULL;
+            for (c = dirs[i].node->children; c; c = c->next) {
+                u32 len = (u32)strlen(c->name), b;
+                if (c->is_dir) continue;
+                if (e) put32(e + 4, off); /* the previous file's sibling */
+                if (dirs[i].file == ROM_NONE) dirs[i].file = off;
+                data = (data + 15) & ~(u64)15;
+                if (data > (u64)INT64_MAX - c->size) fatal("RomFS: romfs/ is too large\n");
+                e = m + ftab + off;
+                put32(e, dirs[i].off);
+                put32(e + 4, ROM_NONE);
+                put64(e + 8, data);
+                put64(e + 16, c->size);
+                b = rhash(dirs[i].off, c->name) % fbuckets;
+                memcpy(e + 24, m + fhash + (u64)b * 4, 4);
+                put32(m + fhash + (u64)b * 4, off);
+                put32(e + 28, len);
+                memcpy(e + ROM_FILE_ENTRY, c->name, len);
+                fsp.rfiles[nf].node = c;
+                fsp.rfiles[nf].off = data; /* relative for now */
+                fsp.rfiles[nf].logged = fsp.rfiles[nf].warned = 0;
+                fs_tree_retain(c);
+                nf++;
+                data += c->size;
+                off += (u32)entry_size(ROM_FILE_ENTRY, c->name);
+            }
+        }
     }
-    u32 dhc = hcount(fsp.ndn), fhc = hcount(fsp.nfn);
-    u64 hdr = 0x50, dht = hdr, dmt = dht + dhc * 4ull, fht = dmt + doff, fmt = fht + fhc * 4ull, end = fmt + foff;
-    fsp.rdata_off = (end + 0x1FF) & ~0x1FFull;
-    fsp.rmeta_size = fsp.rdata_off;
-    fsp.rmeta = calloc(1, fsp.rmeta_size);
-    if (!fsp.rmeta) fatal("Could not allocate RomFS metadata");
-    u64 H[10] = {0x50, dht, dhc * 4ull, dmt, doff, fht, fhc * 4ull, fmt, foff, fsp.rdata_off};
-    memcpy(fsp.rmeta, H, 0x50);
-    u32* dh = (u32*)(fsp.rmeta + dht);
-    for (u32 i = 0; i < dhc; i++) dh[i] = 0xFFFFFFFFu;
-    u32* fh = (u32*)(fsp.rmeta + fht);
-    for (u32 i = 0; i < fhc; i++) fh[i] = 0xFFFFFFFFu;
-    u64 data = 0;
-    fsp.rfiles = calloc(fsp.nfn ? fsp.nfn : 1, sizeof(RFile));
-    if (!fsp.rfiles) fatal("Could not allocate RomFS file index");
-    for (int i = 0; i < fsp.nfn; i++) {
-        if (data > UINT64_MAX - 0xF) fatal("RomFS data is too large");
-        data = (data + 0xF) & ~0xFull;
-        if (data > UINT64_MAX - fsp.rdata_off || fsp.fn[i].size > UINT64_MAX - fsp.rdata_off - data)
-            fatal("RomFS data is too large");
-        fsp.rfiles[fsp.nrfiles].node = fsp.fn[i].node;
-        fsp.rfiles[fsp.nrfiles].off = fsp.rdata_off + data;
-        fsp.rfiles[fsp.nrfiles].size = fsp.fn[i].size;
-        fsp.nrfiles++;
-        u8* e = fsp.rmeta + fmt + fsp.fn[i].off;
-        u32 w[2] = {fsp.dn[fsp.fn[i].parent].off,
-                    fsp.fn[i].next_sib >= 0 ? fsp.fn[fsp.fn[i].next_sib].off : 0xFFFFFFFFu};
-        memcpy(e, w, 8);
-        memcpy(e + 8, &data, 8);
-        memcpy(e + 16, &fsp.fn[i].size, 8);
-        u32 h = rhash(fsp.dn[fsp.fn[i].parent].off, fsp.fn[i].name) % fhc;
-        u32 nl = (u32)strlen(fsp.fn[i].name);
-        memcpy(e + 0x18, &fh[h], 4);
-        fh[h] = fsp.fn[i].off;
-        memcpy(e + 0x1C, &nl, 4);
-        memcpy(e + 0x20, fsp.fn[i].name, nl);
-        data += fsp.fn[i].size;
+    /* the folder entries, now that their first files are known */
+    for (i = 0; i < nd; i++) {
+        u8* e = m + dtab + dirs[i].off;
+        const char* name = i ? dirs[i].node->name : "";
+        u32 len = (u32)strlen(name), b, parent = dirs[dirs[i].parent].off;
+        int last = i + 1 == nd || dirs[i + 1].parent != dirs[i].parent || !i;
+        put32(e, parent);
+        put32(e + 4, last ? ROM_NONE : dirs[i + 1].off);
+        put32(e + 8, dirs[i].child);
+        put32(e + 12, dirs[i].file);
+        b = rhash(parent, name) % dbuckets;
+        memcpy(e + 16, m + dhash + (u64)b * 4, 4);
+        put32(m + dhash + (u64)b * 4, dirs[i].off);
+        put32(e + 20, len);
+        memcpy(e + ROM_DIR_ENTRY, name, len);
     }
-    for (int i = 0; i < fsp.ndn; i++) {
-        u8* e = fsp.rmeta + dmt + fsp.dn[i].off;
-        u32 w[4] = {fsp.dn[fsp.dn[i].parent].off,
-                    fsp.dn[i].next_sib >= 0 ? fsp.dn[fsp.dn[i].next_sib].off : 0xFFFFFFFFu,
-                    fsp.dn[i].first_child >= 0 ? fsp.dn[fsp.dn[i].first_child].off : 0xFFFFFFFFu,
-                    fsp.dn[i].first_file >= 0 ? fsp.fn[fsp.dn[i].first_file].off : 0xFFFFFFFFu};
-        memcpy(e, w, 16);
-        u32 h = rhash(i ? fsp.dn[fsp.dn[i].parent].off : 0, fsp.dn[i].name) % dhc;
-        u32 nl = (u32)strlen(fsp.dn[i].name);
-        memcpy(e + 16, &dh[h], 4);
-        dh[h] = fsp.dn[i].off;
-        memcpy(e + 20, &nl, 4);
-        memcpy(e + 24, fsp.dn[i].name, nl);
-    }
+    free(dirs);
+
+    fsp.rmeta = m;
+    fsp.rmeta_size = end;
+    fsp.rdata_off = (end + 0x1FF) & ~(u64)0x1FF;
+    if (data > (u64)INT64_MAX - fsp.rdata_off) fatal("RomFS: romfs/ is too large\n");
+    for (i = 0; i < nf; i++) fsp.rfiles[i].off += fsp.rdata_off;
+    fsp.nrfiles = (int)nf;
     fsp.rtotal = fsp.rdata_off + data;
-    /* rfiles is already in offset order (offsets grow with i). No sort: one without a tie-break could put a zero
-       size file after the file that starts at the same offset, and romfs_read would then find the empty one */
-    LOG("RomFS: %d folders, %d files, %.1f MB\n", fsp.ndn, fsp.nfn, (double)fsp.rtotal / 1048576.0);
+    put64(m, 0x50);
+    put64(m + 8, dhash);
+    put64(m + 16, (u64)dbuckets * 4);
+    put64(m + 24, dtab);
+    put64(m + 32, dir_bytes);
+    put64(m + 40, fhash);
+    put64(m + 48, (u64)fbuckets * 4);
+    put64(m + 56, ftab);
+    put64(m + 64, file_bytes);
+    put64(m + 72, fsp.rdata_off);
+    LOG("RomFS: built from romfs/ (%u folders, %u files, %.1f MB)\n", nd, nf, (double)fsp.rtotal / 1048576.0);
 }
 
 void romfs_init(void) {
@@ -366,119 +372,127 @@ void romfs_init(void) {
     pm_unlock(&fsp.tree.lock);
 }
 
-static FILE* rf_open(FsNode* node) { /* tree.lock held */
+/* an unmapped RomFS file open for reading (tree.lock held), NULL when it can't be: a node deleted from the index
+   isn't opened, and a failed open isn't kept */
+static FILE* rf_open(FsNode* node) {
+    ROpen* slot = &fsp.openf[0];
+    FILE* f;
+    unsigned i;
     if (!node->attached) return NULL;
-    int lru = 0;
-    for (int i = 0; i < NOPEN; i++) {
-        if (fsp.openf[i].node == node) {
-            fsp.openf[i].last = ++fsp.openclk;
+    for (i = 0; i < NOPEN; i++) {
+        if (fsp.openf[i].f && fsp.openf[i].node == node) {
+            fsp.openf[i].used = ++fsp.openclk;
             return fsp.openf[i].f;
         }
-        if (fsp.openf[i].last < fsp.openf[lru].last) lru = i;
+        if (slot->f && (!fsp.openf[i].f || fsp.openf[i].used < slot->used)) slot = &fsp.openf[i];
     }
-    if (fsp.openf[lru].f) fclose(fsp.openf[lru].f);
-    fsp.openf[lru].f = node_open(node, "rb");
-    fsp.openf[lru].node = fsp.openf[lru].f ? node : NULL;
-    fsp.openf[lru].last = fsp.openf[lru].f ? ++fsp.openclk : 0;
-    return fsp.openf[lru].f;
+    f = node_open(node, "rb");
+    if (!f) return NULL;
+    if (slot->f) fclose(slot->f);
+    slot->node = node;
+    slot->f = f;
+    slot->used = ++fsp.openclk;
+    return f;
 }
-/* -1 when a host file couldn't be read (that part is zeros) */
+/* size bytes of the file at offset rel into dst: 0, or -1 with the part that couldn't be read zeroed */
+static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size) {
+    FsNode* node = rf->node;
+    i64 got = (i64)size;
+    if (!__atomic_exchange_n(&rf->logged, 1, __ATOMIC_RELAXED))
+        LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
+    if (node->fd >= 0) { /* mapped for the whole run, and never changes */
+        memcpy(dst, node->map + rel, (size_t)size);
+        return 0;
+    }
+    pm_lock(&fsp.tree.lock);
+    if (node->is_virtual && node->attached)
+        memcpy(dst, node->virtual_data + rel, (size_t)size);
+    else {
+        FILE* f = rf_open(node);
+        got = f ? plat_pread(f, dst, size, rel) : -1;
+    }
+    pm_unlock(&fsp.tree.lock);
+    if (got == (i64)size) return 0;
+    if (got < 0) got = 0;
+    memset(dst + got, 0, (size_t)(size - (u64)got));
+    if (!__atomic_exchange_n(&rf->warned, 1, __ATOMIC_RELAXED))
+        WARN("RomFS: could not read %s at %llx (%llx bytes): the game gets zeros\n", node->name,
+             (unsigned long long)rel, (unsigned long long)size);
+    return -1;
+}
+/* size bytes of the image at off into dst. The caller checked the range against rtotal. 0, or -1 when part of it
+   couldn't be read from the host, that part zeroed */
 static int romfs_read(u64 off, void* dst, u64 size) {
-    u8* d = dst;
-    if (fsp.rimage) { /* IStorage_Read keeps off and size within rtotal, the mapping's length */
-        memcpy(d, fsp.rimage->map + off, (size_t)size);
+    u8* out = dst;
+    int rc = 0;
+    int lo, hi, k;
+    if (fsp.rimage) {
+        memcpy(out, fsp.rimage->map + off, (size_t)size);
         return 0;
     }
     if (fsp.rraw) {
+        i64 got;
         pm_lock(&fsp.tree.lock);
-        i64 r = plat_pread(fsp.rraw, d, size, off);
+        got = plat_pread(fsp.rraw, out, size, off);
         pm_unlock(&fsp.tree.lock);
-        return r < 0 || (u64)r < size ? -1 : 0;
+        if (got == (i64)size) return 0;
+        if (got < 0) got = 0;
+        memset(out + got, 0, (size_t)(size - (u64)got));
+        return -1;
     }
     if (off < fsp.rmeta_size) {
-        u64 n = fsp.rmeta_size - off;
-        if (n > size) n = size;
-        memcpy(d, fsp.rmeta + off, n);
-        d += n;
+        u64 n = size < fsp.rmeta_size - off ? size : fsp.rmeta_size - off;
+        memcpy(out, fsp.rmeta + off, (size_t)n);
+        out += n;
         off += n;
         size -= n;
     }
-    /* rfiles doesn't change after romfs_build, and its nodes are readonly: only a file that isn't mapped needs the lock */
-    int rc = 0;
+    /* the last file starting at or before off; a zero-size file comes before the one sharing its offset */
+    lo = 0;
+    hi = fsp.nrfiles;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (fsp.rfiles[mid].off <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    k = lo - 1;
     while (size) {
-        int lo = 0, hi = fsp.nrfiles - 1, k = -1;
-        while (lo <= hi) {
-            int m = (lo + hi) / 2;
-            if (fsp.rfiles[m].off <= off) {
-                k = m;
-                lo = m + 1;
-            } else
-                hi = m - 1;
-        }
-        if (k < 0) {
-            memset(d, 0, size);
-            break;
-        }
-        RFile* f = &fsp.rfiles[k];
-        if (off >= f->off + f->size) { /* inter-file padding */
-            u64 nx = k + 1 < fsp.nrfiles ? fsp.rfiles[k + 1].off : fsp.rtotal;
-            u64 n = nx > off ? nx - off : size;
+        u64 n;
+        while (k + 1 < fsp.nrfiles && fsp.rfiles[k + 1].off <= off) k++; /* past the end of file k */
+        if (k >= 0 && off - fsp.rfiles[k].off < fsp.rfiles[k].node->size) { /* inside file k */
+            RFile* rf = &fsp.rfiles[k];
+            n = rf->off + rf->node->size - off;
             if (n > size) n = size;
-            if (!n) n = size;
-            memset(d, 0, n);
-            d += n;
-            off += n;
-            size -= n;
-            continue;
+            if (rfile_read(rf, off - rf->off, out, n)) rc = -1;
+        } else { /* padding up to the next file, or past the last */
+            n = k + 1 < fsp.nrfiles ? fsp.rfiles[k + 1].off - off : size;
+            if (n > size) n = size;
+            memset(out, 0, (size_t)n);
         }
-        u64 n = f->off + f->size - off;
-        if (n > size) n = size;
-        int unlogged = 0;
-        if (__atomic_compare_exchange_n(&f->logged, &unlogged, 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
-            LOG("romfs: %s (%.1f KB)\n", f->node->name, (double)f->size / 1024.0);
-        i64 got;
-        if (f->node->fd >= 0) {
-            memcpy(d, f->node->map + (off - f->off), (size_t)n);
-            got = (i64)n;
-        } else {
-            pm_lock(&fsp.tree.lock);
-            if (f->node->is_virtual && f->node->attached) {
-                memcpy(d, f->node->virtual_data + off - f->off, n);
-                got = (i64)n;
-            } else {
-                FILE* fp = rf_open(f->node);
-                got = fp ? plat_pread(fp, d, n, off - f->off) : -1;
-            }
-            pm_unlock(&fsp.tree.lock);
-        }
-        if (got < 0 || (u64)got < n) {
-            if (__atomic_load_n(&f->logged, __ATOMIC_RELAXED) < 2) {
-                __atomic_store_n(&f->logged, 2, __ATOMIC_RELAXED);
-                WARN("romfs: could not read %s (at %llu, %llu bytes), the game gets zeros\n", f->node->name,
-                     (unsigned long long)(off - f->off), (unsigned long long)n);
-            }
-            memset(d, 0, n);
-            rc = -1;
-        }
-        d += n;
+        out += n;
         off += n;
         size -= n;
     }
     return rc;
 }
 /* ============================================================ IStorage: the RomFS (no data) or a system archive */
+/* an IFileSystem's root folder, retained */
 typedef struct {
     FsNode* root;
 } FsData;
+/* an IFile, or a system archive's IStorage (the RomFS's has no data). f is NULL for a node held in memory */
 typedef struct {
     FILE* f;
     FsNode* node;
     u32 mode; /* OpenMode: 1 read, 2 write, 4 allow append */
 } FileData;
+/* an IDirectory: the entries filter picks (1 folders, 2 files), after the name last listed, until done */
 typedef struct {
     FsNode* node;
     u32 filter;
-    char last[FS_TREE_PATH_MAX]; /* names survive deletion/rename of the previous entry */
+    char last[FS_TREE_PATH_MAX]; /* a name, not a node: the entry may be deleted or renamed meanwhile */
     int done;
 } DirData;
 
@@ -651,10 +665,10 @@ static int file_disp(SvcObj* o, IpcCtx* c) {
     return r;
 }
 static void file_destroy(SvcObj* o) {
-    FileData* f = o->data;
+    FileData* data = o->data;
     pm_lock(&fsp.tree.lock);
-    if (f->f) fclose(f->f);
-    fs_tree_release(f->node);
+    if (data->f != NULL) fclose(data->f);
+    fs_tree_release(data->node);
     pm_unlock(&fsp.tree.lock);
 }
 /* an IFile on the node, or an IStorage for a system archive */
@@ -699,13 +713,13 @@ static int nn_fssrv_sf_IDirectory_Read(SvcObj* self, IpcBuf entries, i64* count)
     while (node && n < max && !d->done) {
         strcpy(d->last, node->name);
         if (node->is_dir ? (d->filter & 1) : (d->filter & 2)) {
-            u8* e = GP(a + n * 0x310);
-            memset(e, 0, 0x310);
-            strncpy((char*)e, node->name, 0x300);
-            e[0x304] = node->is_dir ? 0 : 1;
+            /* a 0x310-byte DirectoryEntry: the name (0x300 at most), the type at 0x304, the size at 0x308 */
+            u8* entry = GP(a) + n++ * 0x310;
             u64 size = node->is_dir ? 0 : node->size;
-            memcpy(e + 0x308, &size, 8);
-            n++;
+            memset(entry, 0, 0x310);
+            strncpy((char*)entry, node->name, 0x300);
+            entry[0x304] = node->is_dir ? 0 : 1;
+            memcpy(entry + 0x308, &size, 8);
         }
         node = node->next;
     }
@@ -856,17 +870,30 @@ static SvcObj* hostfs_new(const char* root, u32* rc) { /* tree.lock held */
     return o;
 }
 
-/* system archives (NgWord, fonts...) aren't available, hand out an empty but valid RomFS */
+/* the system archives' stand-in: a RomFS with an empty root folder and nothing else, 0x200 bytes */
 static void emptyrom_init(void) {
-    u8* b = fsp.emptyrom;
-    u64 H[10] = {0x50, 0x50, 4, 0x54, 0x18, 0x6C, 4, 0x70, 0, 0x200};
-    memcpy(b, H, 0x50);
-    u32 dh = 0;
-    memcpy(b + 0x50, &dh, 4);
-    u32 root[6] = {0, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0};
-    memcpy(b + 0x54, root, 0x18);
-    u32 fh = 0xFFFFFFFFu;
-    memcpy(b + 0x6C, &fh, 4);
+    u8* m = fsp.emptyrom;
+    u32 dbuckets = hcount(1), fbuckets = hcount(0);
+    u64 dtab = 0x50 + (u64)dbuckets * 4, fhash = dtab + ROM_DIR_ENTRY, ftab = fhash + (u64)fbuckets * 4;
+    memset(m + 0x50, 0xFF, (size_t)(dtab - 0x50));
+    memset(m + fhash, 0xFF, (size_t)(ftab - fhash));
+    put32(m + 0x50 + (u64)(rhash(0, "") % dbuckets) * 4, 0); /* the root, at offset 0 */
+    put32(m + dtab, 0);                                       /* its own parent */
+    put32(m + dtab + 4, ROM_NONE);
+    put32(m + dtab + 8, ROM_NONE);
+    put32(m + dtab + 12, ROM_NONE);
+    put32(m + dtab + 16, ROM_NONE);
+    put32(m + dtab + 20, 0);
+    put64(m, 0x50);
+    put64(m + 8, 0x50);
+    put64(m + 16, (u64)dbuckets * 4);
+    put64(m + 24, dtab);
+    put64(m + 32, ROM_DIR_ENTRY);
+    put64(m + 40, fhash);
+    put64(m + 48, (u64)fbuckets * 4);
+    put64(m + 56, ftab);
+    put64(m + 64, 0);
+    put64(m + 72, sizeof fsp.emptyrom);
 }
 /* save data folders, by SaveDataType */
 static const char* const g_save_kinds[] = {"system", "user", "bcat", "device", "temp", "cache", "sysbcat"};
@@ -1012,7 +1039,7 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenSaveDataInfoReaderOnlyCacheStorage(S
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(SvcObj* self, SvcObj** storage) {
     if (!fsp.rtotal)
-        WARN("fs: the game requests the RomFS but there is none (put the romfs folder in %s)\n", g_datadir);
+        WARN("fs: the game opens its RomFS, and %s has none (extract it into romfs/ there)\n", g_datadir);
     *storage = nn_fssrv_sf_IStorage_new(0);
     return 0;
 }

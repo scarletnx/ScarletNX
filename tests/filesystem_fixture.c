@@ -29,6 +29,10 @@ static const Fixture files[] = {{"data/drive/seed.bin", "initial", 7},
                                 {"service-data/romfs/asset.bin", "romfs test", 10},
                                 {"service-data/romfs/empty.bin", "", 0},
                                 {"service-data/romfs/zulu.bin", "tail", 4},
+#if !defined(_WIN32) /* names past ASCII: the RomFS name hash takes their bytes unsigned */
+                                {"service-data/romfs/dir/\xc3\xa9t\xc3\xa9.bin", "summer", 6},
+                                {"service-data/romfs/mu/\xce\xbc.bin", "mu", 2},
+#endif
                                 {"service-data/root/root.txt", "root", 4},
                                 {"raw-data/romfs.bin", "RAW\0ROMFS\xff bytes", 16}};
 

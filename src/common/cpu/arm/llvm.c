@@ -1,5 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors */
+   Copyright 2026 the ScarletNX contributors
+   Ported in part from QEMU (target/arm/tcg/translate.c, vec_helper.c, vfp_helper.c, crypto_helper.c),
+   LGPL-2.1-or-later:
+   Copyright (c) 2003 Fabrice Bellard
+   Copyright (c) 2005-2007 CodeSourcery
+   Copyright (c) 2007 OpenedHand, Ltd.
+   Copyright (c) 2018 Linaro
+   Copyright (C) 2013 - 2018 Linaro Ltd <ard.biesheuvel@linaro.org> */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
 #include <limits.h>

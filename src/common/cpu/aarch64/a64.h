@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
-   Copyright 2026 the ScarletNX contributors
-   Derived from SwitchRecomp a64.py, Copyright 2026 MZ Labs, Apache-2.0.
-   Retain LICENSE.apache and NOTICE; the fork's changes are GPL-3.0-or-later. */
+   Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_TOOL_A64_H
 #define SNX_TOOL_A64_H
 

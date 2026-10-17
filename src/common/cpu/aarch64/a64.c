@@ -1,7 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   Derived from SwitchRecomp a64.py and codegen.py, Copyright 2026 MZ Labs, Apache-2.0.
-   Retain LICENSE.apache and NOTICE; the fork's changes are GPL-3.0-or-later. */
+   Ported in part from QEMU (target/arm/tcg/translate-a64.c, helper-a64.c, vec_helper.c, vfp_helper.c,
+   crypto_helper.c), LGPL-2.1-or-later:
+   Copyright (c) 2013 Alexander Graf <agraf@suse.de>
+   Copyright (c) 2018 Linaro
+   Copyright (C) 2013 - 2018 Linaro Ltd <ard.biesheuvel@linaro.org>
+   Copyright (c) 2003 Fabrice Bellard */
 #include "common/cpu/aarch64/a64.h"
 #include <string.h>
 

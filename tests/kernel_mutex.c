@@ -173,6 +173,79 @@ int main(void) {
           g_slept);
     CHECK(g_joining == 82, "the joining thread names thread %lu, not 82", (unsigned long)g_joining);
 
+    /* a join on several objects names the thread when it is the first of them */
+    t = reset(start_prio);
+    a = &t[0], b = &t[1];
+    b->id = 83;
+    b->o.is_signaled = ended_after_a_sleep;
+    t[2].o.is_signaled = ended_after_a_sleep;
+    u32 two[2] = {handle(b), handle(&t[2])};
+    memcpy(g_mem + 0x400, two, 8);
+    g_slept = 0;
+    CHECK(svc_wait_sync(a, 0x400, 2, -1, &at) == 0 && at == 0 && g_joining == 83, "join of two: thread %lu",
+          (unsigned long)g_joining);
+
+    /* ArbitrateLock answers as the console: a word that changed meanwhile succeeds without a wait, an owner handle
+       that names no thread (the current-thread pseudo-handle, a closed handle) is InvalidHandle, and the address must
+       be word-aligned */
+    t = reset(start_prio);
+    a = &t[0], b = &t[1];
+    g_slept = 0;
+    u32 v = handle(a);
+    memcpy(g_mem + SNX_KMT_M, &v, 4); /* no waiters bit: it was unlocked and taken again */
+    CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_M, handle(b)) == 0 && !g_slept && !g_mwait, "word changed");
+    v = 0xFFFF8000u | HANDLE_WAIT;
+    memcpy(g_mem + SNX_KMT_M, &v, 4);
+    CHECK(svc_arbitrate_lock(b, 0xFFFF8000u, SNX_KMT_M, handle(b)) == R_BADHANDLE && !g_slept, "pseudo-handle owner");
+    v = 0x999u | HANDLE_WAIT;
+    memcpy(g_mem + SNX_KMT_M, &v, 4);
+    CHECK(svc_arbitrate_lock(b, 0x999u, SNX_KMT_M, handle(b)) == R_BADHANDLE && !g_slept, "closed handle owner");
+    CHECK(svc_arbitrate_lock(b, handle(a), SNX_KMT_M + 2, handle(b)) == R_BADADDR, "unaligned mutex");
+
+    /* a condition variable waiter signalled into a mutex whose word names no thread is woken with InvalidState */
+    t = reset(start_prio);
+    a = &t[0], b = &t[1];
+    g_cvwait = NULL;
+    mine = handle(b);
+    memcpy(g_mem + SNX_KMT_M, &mine, 4);
+    CHECK(svc_wait_cv(b, SNX_KMT_M, SNX_KMT_CV, handle(b), -1) == 0, "wait on the condition variable");
+    v = 0x999u;
+    memcpy(g_mem + SNX_KMT_M, &v, 4);
+    b->woken = 0;
+    svc_signal_cv(SNX_KMT_CV, 1);
+    CHECK(b->woken && b->wait_result == R_BADSTATE && !g_mwait, "woken with %x", b->wait_result);
+
+    /* SignalToAddress type 2 (SignalAndModifyByWaitingCountIfEqual): the new value as the console computes it, by
+       whether this signal leaves waiters behind */
+    {
+        static const struct {
+            int waiters, count;
+            u32 now;
+        } k[] = {{0, 1, 6}, {2, 1, 5}, {2, 2, 4}, {2, 3, 4}, {2, -1, 3}, {0, -1, 6}};
+        enum { SNX_KMT_ARB = 0x500 };
+        for (unsigned i = 0; i < sizeof k / sizeof *k; i++) {
+            u32 five = 5;
+            t = reset(start_prio);
+            g_arbwait = NULL;
+            memcpy(g_mem + SNX_KMT_ARB, &five, 4);
+            for (int w = 0; w < k[i].waiters; w++)
+                CHECK(svc_wait_addr(&t[w], SNX_KMT_ARB, 0, 6, -1) == 0, "waiter %d", w);
+            for (int w = 0; w < k[i].waiters; w++) t[w].woken = 0;
+            CHECK(svc_signal_addr(SNX_KMT_ARB, 2, 5, k[i].count) == 0 && word(SNX_KMT_ARB) == k[i].now,
+                  "%d waiters, count %d: word %u, not %u", k[i].waiters, k[i].count, word(SNX_KMT_ARB), k[i].now);
+            CHECK(!k[i].waiters || t[1].woken, "the best waiter (44) is woken");
+            CHECK(!k[i].waiters || t[0].woken == (k[i].count != 1), "the other one only when the count allows");
+        }
+        u32 seven = 7;
+        t = reset(start_prio);
+        g_arbwait = NULL;
+        memcpy(g_mem + SNX_KMT_ARB, &seven, 4);
+        CHECK(svc_wait_addr(&t[0], SNX_KMT_ARB, 2, 7, -1) == 0, "wait if equal");
+        t[0].woken = 0;
+        CHECK(svc_signal_addr(SNX_KMT_ARB, 2, 5, 1) == R_BADSTATE && !t[0].woken && word(SNX_KMT_ARB) == 7,
+              "another value: InvalidState, nobody woken");
+    }
+
     printf("%u checks, %u failed\n", checks, failures);
     free(g_mem);
     return failures != 0;

@@ -419,7 +419,7 @@ static void test_renderer(void) {
     params.mix_buffer_count = 6;
     params.voice_count = 24;
     params.sink_count = 1;
-    params.revision = 0x52455638; /* REV8 */
+    params.revision = 0x38564552; /* REV8: "REV8" in memory */
     memcpy(raw, &params, sizeof params);
     u64 work = 0x20000;
     memcpy(raw + 0x38, &work, sizeof work);

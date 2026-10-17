@@ -399,6 +399,14 @@ static void test_ioctl3(u32 ctrlgpu) {
     ctx.a[1] = buf(IN1, 0xA0);
     ctx.b[0] = buf(OUT0, 0xB0);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0 && GP(IN1)[0] == 0xCC);
+    /* VSMS_MAPPING writes {gpc, tpc} of each SM into its own buffer, never to an address taken from it */
+    u8 d[8], mapping[4];
+    const u8 sms[4] = {0, 0, 0, 1};
+    memset(d, 0xCC, sizeof d);
+    memset(mapping, 0xCC, sizeof mapping);
+    CHECK(ioctl_ctrlgpu(0xC0044714u, d, 4, mapping, 4) == 0 && !memcmp(d, sms, 4) && !memcmp(mapping, sms, 4));
+    CHECK(d[4] == 0xCC);
+    CHECK(ioctl_ctrlgpu(0xC0084714u & ~0x40000000u, d, 8, NULL, 0) == 0 && d[0] == 7 && d[4] == 1); /* slot mask */
 }
 
 /* QueryEvent (4) {fd, event id}: the NvError, then the event as a copy handle */
@@ -441,6 +449,141 @@ static void test_close_during_ioctl(void) {
     CHECK(!error && again == race_fd); /* free now: the lowest fd again */
     CHECK(nv_close(again) == 0 && nv_close(race_other_fd) == 0);
     CHECK(test_channels[1].closed && test_channels[2].closed);
+}
+
+/* nvmap's handle lifetime and parameters, and the address space's allocator, pieces, REMAP and regions, through the
+   device handlers */
+static u32 nvmap_call(u32 cmd, u8* d) { return ioctl_nvmap(cmd, d, 32); }
+static u32 nvmap_new(u32 size, u64 addr) {
+    u8 d[32] = {0};
+    u32 h;
+    memcpy(d, &size, 4);
+    CHECK(nvmap_call(0x01, d) == 0);
+    memcpy(&h, d + 4, 4);
+    memset(d, 0, sizeof d);
+    memcpy(d, &h, 4);
+    memcpy(d + 24, &addr, 8);
+    CHECK(nvmap_call(0x04, d) == 0);
+    return h;
+}
+static u32 nvmap_param(u32 h, u32 param, u32* value) {
+    u8 d[32] = {0};
+    u32 r;
+    memcpy(d, &h, 4);
+    memcpy(d + 4, &param, 4);
+    r = nvmap_call(0x09, d);
+    memcpy(value, d + 8, 4);
+    return r;
+}
+static u32 as_call(u32 cmd, u8* d, u32 n) { return ioctl_as(cmd, d, n, NULL, 0); }
+static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) {
+    u8 d[40] = {0};
+    memcpy(d, &flags, 4);
+    memcpy(d + 8, &h, 4);
+    memcpy(d + 24, &size, 8);
+    memcpy(d + 32, &gva, 8);
+    CHECK(as_call(0x06, d, sizeof d) == 0);
+    memcpy(&gva, d + 32, 8);
+    return gva;
+}
+static void test_nvmap_as(void) {
+    u8 d[64] = {0};
+    u32 h, again, v, one = 1;
+    u64 gva, fixed, addr, size;
+    /* CREATE and FROM_ID take a reference each, FREE gives one back; the number is handed out again after the last */
+    h = nvmap_new(0x2000, 0x8000);
+    memcpy(d, &h, 4);
+    CHECK(nvmap_call(0x03, d) == 0 && !memcmp(d + 4, &h, 4)); /* FROM_ID: the id is the handle's number */
+    memset(d, 0, sizeof d);
+    memcpy(d, &h, 4);
+    CHECK(nvmap_call(0x05, d) == 0); /* FREE reports the address, size and flags */
+    memcpy(&addr, d + 8, 8);
+    memcpy(&v, d + 16, 4);
+    CHECK(addr == 0x8000 && v == 0x2000 && nv.nvh[h].alive);
+    CHECK(nvmap_param(h, 4, &v) == 0 && v == 0x40000000u); /* Eden's heap for an allocated handle */
+    CHECK(nvmap_param(h, 3, &v) == 0 && v == 0x8000);       /* Base: the address's low bits */
+    CHECK(nvmap_param(h, 2, &v) == 0 && v == 0x1000);       /* no alignment given */
+    CHECK(nvmap_param(h, 1, &v) == 0 && v == 0x2000);
+    memset(d, 0, sizeof d);
+    memcpy(d + 4, &h, 4);
+    CHECK(nvmap_call(0x0E, d) == 0 && !memcmp(d, &h, 4)); /* GET_ID */
+    memset(d, 0, sizeof d);
+    memcpy(d, &h, 4);
+    CHECK(nvmap_call(0x05, d) == 0 && !nv.nvh[h].alive);
+    CHECK(nvmap_call(0x05, d) == 1 && nvmap_param(h, 1, &v) == 1);
+    memset(d, 0, sizeof d);
+    memcpy(d + 4, &h, 4);
+    CHECK(nvmap_call(0x0E, d) == 1);
+    memcpy(d, &h, 4);
+    CHECK(nvmap_call(0x03, d) == 1); /* no live handle with that id */
+    again = nvmap_new(0x3000, 0x9000);
+    CHECK(again == h);
+
+    /* ALLOC_SPACE: allocator VA at a multiple of the alignment, from VA_BASE up */
+    memset(d, 0, sizeof d);
+    v = 4;
+    memcpy(d, &v, 4);
+    v = 0x10000;
+    memcpy(d + 4, &v, 4);
+    CHECK(as_call(0x02, d, 24) == 0);
+    memcpy(&gva, d + 16, 8);
+    CHECK(gva >= VA_BASE && !(gva & 0xFFFF));
+    v = 3; /* a page size that isn't a power of two */
+    memcpy(d + 4, &v, 4);
+    memset(d + 16, 0, 8);
+    CHECK(as_call(0x02, d, 24) == 4);
+
+    /* a mapping from the allocator, a fixed one over its second page, then UNMAP_BUFFER of the first: only the pages
+       still its own are cleared, and its VA goes back */
+    gva = as_map(0, again, 0x2000, 0);
+    CHECK(gva >= VA_BASE && gmmu_translate(gva) == 0x9000 && gmmu_translate(gva + 0x1FFF) == 0xAFFF);
+    h = nvmap_new(0x1000, 0xC000);
+    fixed = as_map(1, h, 0x1000, gva + 0x1000);
+    CHECK(fixed == gva + 0x1000 && gmmu_translate(fixed) == 0xC000);
+    memset(d, 0, sizeof d);
+    memcpy(d, &gva, 8);
+    CHECK(as_call(0x05, d, 8) == 0);
+    CHECK(!gmmu_translate(gva) && gmmu_translate(fixed) == 0xC000);
+    CHECK(as_map(0, again, 0x1000, 0) == gva); /* first fit takes the freed VA again */
+    /* FREE_SPACE clears every page of its range */
+    memset(d, 0, sizeof d);
+    memcpy(d, &gva, 8);
+    v = 2;
+    memcpy(d + 8, &v, 4);
+    v = 0x1000;
+    memcpy(d + 12, &v, 4);
+    CHECK(as_call(0x03, d, 16) == 0 && !gmmu_translate(gva) && !gmmu_translate(fixed));
+    addr = VA_END - 0x1000;
+    memcpy(d, &addr, 8);
+    CHECK(as_call(0x03, d, 16) == 4); /* past the 40-bit space */
+
+    /* REMAP in big pages: map, a bad handle skipped, then handle 0 unmaps */
+    memset(d, 0, sizeof d);
+    v = (u32)((VA_BASE + 0x1000000) >> 16);
+    memcpy(d + 4, &h, 4);
+    memcpy(d + 12, &v, 4);
+    memcpy(d + 16, &one, 4);
+    v = 0x1FFF; /* no such handle */
+    memcpy(d + 24, &v, 4);
+    CHECK(as_call(0x14, d, 40) == 0 && gmmu_translate(VA_BASE + 0x1000000) == 0xC000);
+    memset(d + 4, 0, 4);
+    CHECK(as_call(0x14, d, 20) == 0 && !gmmu_translate(VA_BASE + 0x1000000));
+
+    /* GET_VA_REGIONS: the big-page region starts where the allocator does */
+    memset(d, 0, sizeof d);
+    CHECK(as_call(0x08, d, 64) == 0);
+    memcpy(&v, d + 8, 4);
+    memcpy(&addr, d + 40, 8);
+    memcpy(&size, d + 16, 8);
+    CHECK(v == 48 && addr == VA_BASE && size == 0x10000ull << 10);
+    memcpy(&v, d + 48, 4);
+    CHECK(v == 0x10000);
+    /* ALLOC_AS_EX: 0 is 128K big pages */
+    memset(d, 0, sizeof d);
+    CHECK(as_call(0x09, d, 24) == 0 && nv.big_page_bits == 17);
+    v = 0x10000;
+    memcpy(d + 8, &v, 4);
+    CHECK(as_call(0x09, d, 24) == 0 && nv.big_page_bits == 16);
 }
 
 int main(void) {
@@ -507,6 +650,7 @@ int main(void) {
         CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 0);
         CHECK(gmmu_translate(gva) == addr && gmmu_translate(gva + 0xFFF) == AS_SIZE - 1);
     }
+    test_nvmap_as();
     nvdrv = new_nvdrv();
     u32 error;
 

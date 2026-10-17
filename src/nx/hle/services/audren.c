@@ -1,111 +1,93 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the audio renderer's service side: each IAudioRenderer keeps an ARState (audren_dsp.c) that RequestUpdate
-   fills, and the audio clock renders a frame of every started one each 5 ms, before it signals the renderer
-   event, sending the device sink's output to the host */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/audio_core/renderer/system_manager.cpp, renderer/system.cpp, errors in
+   src/core/hle/service/audio/errors.h):
+   SPDX-FileCopyrightText: Copyright 2025-2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2019-2022 yuzu Emulator Project (GPL-2.0-or-later) */
+/* the audio renderers' side that audren_dsp.c doesn't do: each open renderer's state and host output, RequestUpdate
+   handed to the state under its lock, and the clock's frame of every started renderer (audio.c's audio_clock) queued
+   to the host. The update's parsing, the output buffer's layout and the frame itself are audren_dsp.c's */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/audren_dsp.h"
-#include "nx/hle/kernel/ipc.h"
-#include "nx/memory/mem.h"
-#include "nx/runtime/platform/log.h"
-#include <stdlib.h>
-#include <string.h>
 
-typedef struct ARHost {
-    struct ARHost* next;
-    SvcObj* obj;
-    ARState* st;
-    PMutex lk;      /* the state, between RequestUpdate and the clock's frame */
-    PAudio* out;    /* the host output, opened by the first frame with a device sink */
-    int out_failed; /* it couldn't be opened: the frames aren't heard, and it isn't tried every 5 ms */
-    i16* stereo;
-} ARHost;
-static PMutex ar_lk = PMUTEX_INIT; /* the list, and a host's removal from it */
-static ARHost* ar_list;
+/* an open renderer, found from its object's u[1]; the object's u[0] is its play state, which audio.c sets */
+typedef struct ARRen {
+    struct ARRen* next; /* in the list the clock renders */
+    SvcObj* o;
+    ARState* s;
+    PAudio* out;   /* NULL without a host device */
+    int out_started;
+} ARRen;
 
-static void ar_destroy(SvcObj* o) {
-    ARHost* h = (ARHost*)(size_t)o->u[4];
-    if (!h) return;
-    pm_lock(&ar_lk);
-    for (ARHost** at = &ar_list; *at; at = &(*at)->next)
-        if (*at == h) {
-            *at = h->next;
+/* the renderers, and every renderer's state: an update and a frame never run at once */
+static PMutex audren_lk = PMUTEX_INIT;
+static ARRen* audren_list;
+
+/* host output queued past this many ms is dropped, so the latency stays bounded when the host plays a little slower
+   than the clock renders */
+#define AUDREN_MAX_QUEUED_MS 60
+
+static void audren_destroy(SvcObj* o) {
+    ARRen* r = (ARRen*)(size_t)o->u[1];
+    ARRen** p;
+    pm_lock(&audren_lk);
+    for (p = &audren_list; *p; p = &(*p)->next)
+        if (*p == r) {
+            *p = r->next;
             break;
         }
-    pm_unlock(&ar_lk);
-    if (h->out) plat_audio_close(h->out);
-    audren_state_free(h->st);
-    free(h->stereo);
-    free(h);
-    o->u[4] = 0;
+    pm_unlock(&audren_lk);
+    plat_audio_close(r->out);
+    audren_state_free(r->s);
+    free(r);
 }
 
-/* OpenAudioRenderer's AudioRendererParameter (0x34 bytes): the sample rate and the samples a frame are its first two
-   u32s */
 int audren_open(SvcObj* o, const u8* params) {
-    ARHost* h = calloc(1, sizeof *h);
-    if (!h) return 0;
-    h->obj = o;
-    h->st = audren_state_new(params);
-    h->stereo = h->st ? calloc((size_t)h->st->frame * 2, sizeof *h->stereo) : NULL;
-    if (!h->st || !h->stereo) {
-        u32 rate, frame;
-        memcpy(&rate, params, 4);
-        memcpy(&frame, params + 4, 4);
-        WARN("audren: no renderer state for these parameters (rate %u, %u samples a frame)\n", rate, frame);
-        audren_state_free(h->st);
-        free(h->stereo);
-        free(h);
+    ARRen* r = calloc(1, sizeof *r);
+    if (!r) return 0;
+    r->s = audren_state_new(params);
+    if (!r->s) {
+        free(r);
         return 0;
     }
-    pm_init(&h->lk);
-    o->u[4] = (u64)(size_t)h;
-    o->destroy = ar_destroy;
-    pm_lock(&ar_lk);
-    h->next = ar_list;
-    ar_list = h;
-    pm_unlock(&ar_lk);
-    LOG("audren: opened at %u Hz, %u samples a frame, %u mix buffers, %u voices, %u effects, %u sinks\n", h->st->rate,
-        h->st->frame, h->st->buffers, h->st->nvoices, h->st->neffects, h->st->nsinks);
+    r->o = o;
+    r->out = plat_audio_open(r->s->rate, 2);
+    o->u[1] = (u64)(size_t)r;
+    o->destroy = audren_destroy;
+    pm_lock(&audren_lk);
+    r->next = audren_list;
+    audren_list = r;
+    pm_unlock(&audren_lk);
     return 1;
 }
 
+/* RequestUpdate: the input read into the state and the output written by audren_state_update, whose failures are
+   the renderer's result descriptions (InvalidUpdateInfo 41, InsufficientBuffer 4) */
 int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
-    if (!in.addr || !out.addr || in.size < 0x40) return RC(153, 41); /* InvalidUpdateInfo */
-    ARHost* h = (ARHost*)(size_t)o->u[4];
-    if (!h) return RC(153, 2);
-    pm_lock(&h->lk);
-    int rc = audren_state_update(h->st, GP(in.addr), in.size, GP(out.addr), out.size);
-    pm_unlock(&h->lk);
-    if (rc == -41) return RC(153, 41);
-    if (rc == -4) return RC(153, 4);
-    if (rc) return RC(153, 2);
-    LOG_LIMIT(1, "audren: rendering, revision %d\n", (int)((h->st->rev >> 24) & 0xFF) - '0');
-    return 0;
+    ARRen* r = (ARRen*)(size_t)o->u[1];
+    int rc;
+    if (!in.addr || !out.addr) return RC(153, 41);
+    pm_lock(&audren_lk);
+    rc = audren_state_update(r->s, GP(in.addr), in.size, GP(out.addr), out.size);
+    pm_unlock(&audren_lk);
+    return rc < 0 ? RC(153, -rc) : 0;
 }
 
-/* the audio clock's 5 ms: a frame of each started renderer (u[3] 0), its device sink queued for the host. A host
-   queue past 100 ms means the device takes less than the clock gives: that frame is dropped, so the delay stays
-   bounded */
 void audren_tick(void) {
-    pm_lock(&ar_lk);
-    for (ARHost* h = ar_list; h; h = h->next) {
-        if (__atomic_load_n(&h->obj->u[3], __ATOMIC_ACQUIRE) != 0) continue;
-        pm_lock(&h->lk);
-        int device = audren_frame(h->st, h->stereo);
-        pm_unlock(&h->lk);
-        if (!device) continue;
-        if (!h->out && !h->out_failed) {
-            h->out = plat_audio_open(h->st->rate, 2);
-            if (h->out)
-                plat_audio_start(h->out, 1);
-            else
-                h->out_failed = 1;
+    static i16 stereo[2 * 1024]; /* a frame is at most 1024 samples (audren_state_new); only the clock's thread */
+    ARRen* r;
+    pm_lock(&audren_lk);
+    for (r = audren_list; r; r = r->next) {
+        u32 bytes;
+        if (__atomic_load_n(&r->o->u[0], __ATOMIC_ACQUIRE) != SNX_AUDREN_STARTED) continue;
+        if (!audren_frame(r->s, stereo) || !r->out) continue;
+        bytes = r->s->frame * 4;
+        if (plat_audio_queued(r->out) > r->s->rate * 4 / 1000 * AUDREN_MAX_QUEUED_MS) continue;
+        plat_audio_queue(r->out, stereo, bytes);
+        if (!r->out_started) {
+            r->out_started = 1;
+            plat_audio_start(r->out, 1);
         }
-        u32 bytes = h->st->frame * 4;
-        if (h->out && plat_audio_queued(h->out) <= h->st->rate / 10 * 4) plat_audio_queue(h->out, h->stereo, bytes);
     }
-    pm_unlock(&ar_lk);
+    pm_unlock(&audren_lk);
 }

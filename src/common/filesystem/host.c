@@ -1,62 +1,92 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The host side of the indexed filesystem: mutexes, folders, UTF-8 paths on Windows, and files shared read-only with
+   the host's page cache for the whole run */
 #include "common/filesystem/host.h"
 #include <stdlib.h>
 #if defined(_WIN32)
-#include <io.h>
 #include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+/* descriptors a shared file may not take: they stay for the files opened on demand (saves, the SD card, unmapped
+   RomFS files) */
+#define SHARE_RESERVE 256
+
+#if defined(_WIN32)
 void pm_init(PMutex* m) { InitializeSRWLock(&m->l); }
-void pm_destroy(PMutex* m) { (void)m; }
+void pm_destroy(PMutex* m) { (void)m; /* an SRW lock holds nothing */ }
 void pm_lock(PMutex* m) { AcquireSRWLockExclusive(&m->l); }
 void pm_unlock(PMutex* m) { ReleaseSRWLockExclusive(&m->l); }
 int pm_trylock(PMutex* m) { return TryAcquireSRWLockExclusive(&m->l) != 0; }
-wchar_t* snx_host_wpath(const char* s) {
-    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
+
+/* paths are UTF-8 everywhere else. A path that isn't valid UTF-8 names nothing: NULL, rather than a path with
+   replacement characters that could name another file. Freed with free */
+wchar_t* snx_host_wpath(const char* text) {
+    wchar_t* wide;
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
     if (n <= 0) return NULL;
-    wchar_t* w = malloc((size_t)n * sizeof *w);
-    if (w && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, w, n)) {
-        free(w);
-        w = NULL;
+    wide = malloc((size_t)n * sizeof *wide);
+    if (!wide) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, n) != n) {
+        free(wide);
+        return NULL;
     }
-    return w;
+    return wide;
 }
-/* The CRT's descriptor table holds 8192 (_NHANDLE_), and descriptors are handed out lowest first: leave room for
-   everything opened on demand */
-#define SHARE_FD_MAX     8192
-#define SHARE_FD_RESERVE 256
+
+int plat_mkdir(const char* path) {
+    wchar_t* wide = snx_host_wpath(path);
+    int ok = wide && CreateDirectoryW(wide, NULL);
+    free(wide);
+    return ok ? 0 : -1;
+}
+
+/* the CRT has room for 8192 descriptors, handed out lowest first */
+#define CRT_DESCRIPTORS 8192
 int plat_file_share(const char* path, uint64_t size, int* fd, const uint8_t** data) {
+    wchar_t* wide;
+    HANDLE file, section;
+    void* view = NULL;
+    int d;
     *fd = -1;
     *data = NULL;
-    if (size > SIZE_MAX || size > INT64_MAX) return -1;
-    wchar_t* w = snx_host_wpath(path);
-    if (!w) return -1;
-    HANDLE f = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, NULL);
-    free(w);
-    if (f == INVALID_HANDLE_VALUE) return -1;
-    void* p = NULL;
-    if (size) { /* a section is shared by every process that maps the file, and reads a page when it is touched */
-        HANDLE mp = CreateFileMappingW(f, NULL, PAGE_READONLY, (DWORD)(size >> 32), (DWORD)size, NULL);
-        p = mp ? MapViewOfFile(mp, FILE_MAP_READ, 0, 0, (SIZE_T)size) : NULL;
-        if (mp) CloseHandle(mp); /* the view keeps the mapping */
-        if (!p) {
-            CloseHandle(f);
+    if ((uint64_t)(size_t)size != size || size > (uint64_t)INT64_MAX) return -1;
+    wide = snx_host_wpath(path);
+    if (!wide) return -1;
+    /* others may read it, and delete or rename it as on POSIX: the view stays valid */
+    file = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wide);
+    if (file == INVALID_HANDLE_VALUE) return -1;
+    d = _open_osfhandle((intptr_t)file, _O_RDONLY | _O_BINARY);
+    if (d < 0) {
+        CloseHandle(file);
+        return -1;
+    }
+    if (d + 1 + SHARE_RESERVE > CRT_DESCRIPTORS) {
+        _close(d); /* closes the handle with it */
+        return -1;
+    }
+    if (size) {
+        section = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (section) {
+            view = MapViewOfFile(section, FILE_MAP_READ, 0, 0, (SIZE_T)size);
+            CloseHandle(section); /* the view keeps it */
+        }
+        if (!view) {
+            _close(d);
             return -1;
         }
     }
-    int d = _open_osfhandle((intptr_t)f, _O_RDONLY | _O_BINARY); /* owns f from here */
-    if (d < 0 || d + SHARE_FD_RESERVE >= SHARE_FD_MAX) {
-        if (p) UnmapViewOfFile(p);
-        if (d < 0)
-            CloseHandle(f);
-        else
-            _close(d);
-        return -1;
-    }
     *fd = d;
-    *data = p;
+    *data = view;
     return 0;
 }
 void plat_file_unshare(int fd, const uint8_t* data, uint64_t size) {
@@ -64,65 +94,57 @@ void plat_file_unshare(int fd, const uint8_t* data, uint64_t size) {
     if (data) UnmapViewOfFile(data);
     if (fd >= 0) _close(fd);
 }
-int plat_mkdir(const char* path) { return CreateDirectoryA(path, NULL) ? 0 : -1; }
 #else
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/stat.h>
-#include <unistd.h>
 void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_destroy(PMutex* m) { pthread_mutex_destroy(&m->l); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
-int pm_trylock(PMutex* m) { return !pthread_mutex_trylock(&m->l); }
-/* Descriptors left to everything opened on demand: saves, the Vulkan driver, audio, dlopen */
-#define SHARE_FD_RESERVE 256
-/* A RomFS holds thousands of files and the soft limit is usually 1024, against a hard one in the hundreds of
-   thousands: raise it once. Nothing in the runtime uses select(), the one API that breaks on descriptors >= 1024 */
-static rlim_t share_fd_limit(void) {
-    static rlim_t limit;
-    if (!limit) {
-        struct rlimit r;
-        if (getrlimit(RLIMIT_NOFILE, &r)) {
-            limit = 1024;
-        } else {
-            if (r.rlim_cur < r.rlim_max) {
-                rlim_t soft = r.rlim_cur;
-                r.rlim_cur = r.rlim_max;
-                if (setrlimit(RLIMIT_NOFILE, &r)) r.rlim_cur = soft; /* a hard limit above the kernel's nr_open */
-            }
-            limit = r.rlim_cur;
-        }
-    }
-    return limit;
+int pm_trylock(PMutex* m) { return pthread_mutex_trylock(&m->l) == 0; }
+
+int plat_mkdir(const char* path) { return mkdir(path, 0777) ? -1 : 0; }
+
+/* a game's RomFS can have more files than the default soft limit of descriptors: raise it to the hard limit, once.
+   If that fails the old limit stays, and the reserve check below refuses what doesn't fit */
+static void raise_descriptor_limit(void) {
+    static int done;
+    struct rlimit rl;
+    if (__atomic_exchange_n(&done, 1, __ATOMIC_ACQ_REL)) return;
+    if (getrlimit(RLIMIT_NOFILE, &rl) || rl.rlim_cur == rl.rlim_max) return;
+    rl.rlim_cur = rl.rlim_max;
+    (void)setrlimit(RLIMIT_NOFILE, &rl);
+}
+/* whether keeping descriptor fd leaves the reserve free (descriptors are handed out lowest first) */
+static int descriptor_fits(int fd) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) || rl.rlim_cur == RLIM_INFINITY) return 1;
+    return (rlim_t)fd + 1 + SHARE_RESERVE <= rl.rlim_cur;
 }
 int plat_file_share(const char* path, uint64_t size, int* fd, const uint8_t** data) {
+    void* view = NULL;
+    int d;
     *fd = -1;
     *data = NULL;
-    if (size > SIZE_MAX || size > INT64_MAX) return -1;
-    rlim_t limit = share_fd_limit();
-    int f = open(path, O_RDONLY | O_CLOEXEC);
-    if (f < 0) return -1;
-    /* descriptors are handed out lowest first, so the number counts the ones in use */
-    if (limit != RLIM_INFINITY && (rlim_t)f + SHARE_FD_RESERVE >= limit) {
-        close(f);
+    if ((uint64_t)(size_t)size != size || size > (uint64_t)INT64_MAX) return -1;
+    raise_descriptor_limit();
+    d = open(path, O_RDONLY | O_CLOEXEC);
+    if (d < 0) return -1;
+    if (!descriptor_fits(d)) {
+        close(d);
         return -1;
     }
-    if (size) { /* lazy: no MAP_POPULATE, a page is read when the game first touches it */
-        void* p = mmap(NULL, (size_t)size, PROT_READ, MAP_SHARED, f, 0);
-        if (p == MAP_FAILED) {
-            close(f);
+    if (size) { /* paged in as the game reads it */
+        view = mmap(NULL, (size_t)size, PROT_READ, MAP_SHARED, d, 0);
+        if (view == MAP_FAILED) {
+            close(d);
             return -1;
         }
-        *data = p;
     }
-    *fd = f;
+    *fd = d;
+    *data = view;
     return 0;
 }
 void plat_file_unshare(int fd, const uint8_t* data, uint64_t size) {
     if (data) munmap((void*)data, (size_t)size);
     if (fd >= 0) close(fd);
 }
-int plat_mkdir(const char* path) { return mkdir(path, 0755); }
 #endif

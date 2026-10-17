@@ -9,6 +9,8 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/texture/astc.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include <time.h>
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
@@ -43,6 +45,12 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     (void)frame;
 }
 VkPipelineCache vk_pipeline_cache(void) { return VK_NULL_HANDLE; }
+/* cmd.c times its waits */
+u64 plat_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000u + (u64)ts.tv_nsec;
+}
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     sz[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, sets * 2};
     sz[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets};
@@ -139,7 +147,10 @@ static u8* blocks_new(u32 w, u32 h, u32 depth, u32 bw, u32 bh) {
     return (u8*)blocks;
 }
 
-static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels, int grow) {
+/* uploads random blocks into a UNORM or SRGB image and compares the readback with the CPU decoder in the same
+   decode mode. keep, when given, receives the checked bytes (the caller frees them) */
+static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels, int grow, u8** keep,
+                size_t* kept) {
     Surf t = {.w = w,
               .h = h,
               .layers = layers,
@@ -198,12 +209,40 @@ static void run(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u
             if (actual[i] != expected[i])
                 fatal("%ux%u srgb=%d: byte %zu expected %u got %u\n", bw, bh, srgb, i, expected[i], actual[i]);
     }
-    free(expected);
+    if (keep) {
+        *keep = expected;
+        *kept = offset;
+    } else {
+        free(expected);
+    }
     free(copies);
     vmaDestroyImage(g_vk.vma, t.img, t.mem);
     printf("PASS %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u (%zu bytes)\n", bw, bh, srgb, w, h, depth, layers,
            levels, offset);
     fflush(stdout);
+}
+
+/* The same blocks in both decode modes: each matches the CPU decoder in its own mode (run checks that), alpha
+   is the same in both, and R, G and B differ by at most one step (the sRGB mode's endpoints sit half a step
+   higher, and it truncates where UNORM rounds), in some texels and not all. */
+static void both_modes(u32 bw, u32 bh) {
+    u8 *unorm, *srgb;
+    size_t n, n2, differ = 0;
+    rng = 0x2468ace1;
+    run(bw, bh, 0, 97, 61, 1, 1, 1, 0, &unorm, &n);
+    rng = 0x2468ace1;
+    run(bw, bh, 1, 97, 61, 1, 1, 1, 0, &srgb, &n2);
+    if (n != n2) fatal("both modes: sizes differ\n");
+    for (size_t i = 0; i < n; i++) {
+        int d = (int)srgb[i] - (int)unorm[i];
+        if (i % 4 == 3 && d) fatal("both modes %ux%u: alpha byte %zu differs (%u, %u)\n", bw, bh, i, unorm[i], srgb[i]);
+        if (d < -1 || d > 1) fatal("both modes %ux%u: byte %zu differs by %d\n", bw, bh, i, d);
+        differ += d != 0;
+    }
+    if (!differ || differ == n / 4 * 3) fatal("both modes %ux%u: %zu of %zu bytes differ\n", bw, bh, differ, n);
+    printf("PASS both decode modes %ux%u: %zu of %zu color bytes differ\n", bw, bh, differ, n / 4 * 3);
+    free(unorm);
+    free(srgb);
 }
 
 int main(void) {
@@ -219,13 +258,14 @@ int main(void) {
     for (u32 i = 0; i < sizeof footprints / sizeof footprints[0]; i++)
         for (int srgb = 0; srgb < 2; srgb++) {
             u32 bw = footprints[i][0], bh = footprints[i][1];
-            run(bw, bh, srgb, bw * 67 - 1, bh * 123 - 2, 1, 1, 1, 0);
-            run(bw, bh, srgb, 17, 13, 1, 6, 5, 0);
-            run(bw, bh, srgb, 17, 13, 5, 1, 5, 0);
+            run(bw, bh, srgb, bw * 67 - 1, bh * 123 - 2, 1, 1, 1, 0, NULL, NULL);
+            run(bw, bh, srgb, 17, 13, 1, 6, 5, 0, NULL, NULL);
+            run(bw, bh, srgb, 17, 13, 5, 1, 5, 0, NULL, NULL);
         }
+    for (u32 i = 0; i < sizeof footprints / sizeof footprints[0]; i++) both_modes(footprints[i][0], footprints[i][1]);
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
-    run(4, 4, 0, 2051, 1055, 1, 1, 1, 1);
-    run(12, 12, 1, 2051, 1055, 1, 1, 1, 0);
+    run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
+    run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);
     if (errors) fatal("%u validation errors\n", errors);
     puts("All ASTC Vulkan comparisons passed (zero validation errors).");
     /* The backend's internal pipelines/rings have device lifetime, as in the

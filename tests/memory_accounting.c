@@ -81,10 +81,9 @@ void fatal(const char* fmt, ...) {
 u64 plat_ns(void) { return 1; }
 u64 guest_ticks(void) { return 1; }
 int kthread_live_count(void) { return 1; }
+static KObj* test_handle; /* what handle 0x1234 names, for the shared memory test */
 KObj* h_get_ref(u32 h, int type) {
-    (void)h;
-    (void)type;
-    return NULL;
+    return h == 0x1234 && test_handle && test_handle->type == type ? test_handle : NULL;
 }
 void kobj_unref(KObj* o) { (void)o; }
 
@@ -263,6 +262,65 @@ static void test_mapping_boundary(void) {
     g_gpu_mapping_begin = NULL;
     g_gpu_mapping_end = NULL;
 }
+/* MapMemory's view is a copy of the locked source, copied back on unmap; QueryMemory reports it */
+static void test_map_memory(void) {
+    u64 src, dst = STACK_BASE + 0x10000, info = STACK_BASE;
+    base_process();
+    CHECK(svc_set_heap_size(2 * MIB) == 0);
+    src = HEAP_BASE + 0x3000;
+    CHECK(mem_map(info, 0x1000, MS_STACK, PERM_RW) == 0);
+    gw32(src, 0xCAFE);
+    CHECK(svc_map_memory(dst + 1, src, 0x1000) == R_BADADDR);
+    CHECK(svc_map_memory(dst, src, 0) == R_BADSIZE);
+    CHECK(svc_map_memory(HEAP_BASE, src, 0x1000) == R_BADREGION);
+    CHECK(svc_map_memory(dst, src, 0x2000) == 0);
+    CHECK(gr32(dst) == 0xCAFE && state(dst) == MS_STACK);
+    CHECK(svc_query(info, src) == 0);
+    CHECK(gr64(info) == src && gr64(info + 8) == 0x2000 && gr32(info + 16) == (MS_NORMAL & 0xFF));
+    CHECK(gr32(info + 20) == 1 && gr32(info + 24) == PERM_NONE); /* locked, no permission */
+    CHECK(svc_map_memory(dst + 0x4000, src, 0x1000) == R_BADMEMSTATE);
+    CHECK(svc_set_heap_size(0) == R_BADMEMSTATE);
+    gw32(dst + 0x1000, 0xBEEF);
+    CHECK(svc_unmap_memory(dst, src, 0x2000) == 0);
+    CHECK(gr32(src + 0x1000) == 0xBEEF && state(dst) == MS_FREE);
+    /* the alias region takes the view too, as normal memory */
+    CHECK(svc_map_memory(ALIAS_BASE, src, 0x1000) == 0 && state(ALIAS_BASE) == MS_NORMAL && gr32(ALIAS_BASE) == 0xCAFE);
+    CHECK(svc_unmap_memory(dst, src, 0x1000) == R_BADMEMSTATE); /* not where it is mapped */
+    CHECK(svc_unmap_memory(ALIAS_BASE, src, 0x1000) == 0 && state(ALIAS_BASE) == MS_FREE && state(src) == MS_NORMAL);
+    CHECK(svc_query(info, AS_END + 5) == 0 && gr64(info) == AS_END && gr32(info + 16) == MS_INACCESSIBLE);
+    CHECK(svc_query(0, HEAP_BASE) == 0xE601);
+    CHECK(svc_set_mem_perm(src, 0x1000, PERM_RX) == 0xD801);
+    CHECK(svc_set_mem_perm(src, 0x1000, PERM_R) == 0);
+    CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == R_BADCOMBO);
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
+    CHECK(mem_unmap(info, 0x1000) == 0);
+    CHECK(svc_set_heap_size(0) == 0);
+}
+/* a service's shared memory: its host buffer until the game maps it, the guest's pages while mapped */
+static void test_shared_memory(void) {
+    KShmem* s = kshmem_new(0x2000, "test");
+    u64 a = ALIAS_BASE - 0x100000;
+    base_process();
+    test_handle = &s->o;
+    kshmem_ptr(s)[0] = 7;
+    CHECK(svc_map_shm(0x1234, HEAP_BASE, 0x2000, PERM_R) == R_BADREGION);
+    /* another size than the object's (InvalidSize on the console) maps the whole object, and unmaps all of it */
+    CHECK(svc_map_shm(0x1234, a, 0x1000, PERM_R) == 0 && s->gsize == 0x2000 && state(a + 0x1000) == MS_SHARED);
+    CHECK(svc_unmap_shm(0x1234, a, 0x1000) == 0 && state(a) == MS_FREE && state(a + 0x1000) == MS_FREE);
+    CHECK(svc_map_shm(0x1234, a, 0x2000, PERM_RX) == 0xD801);
+    CHECK(svc_map_shm(0x1235, a, 0x2000, PERM_R) == R_BADHANDLE);
+    CHECK(svc_map_shm(0x1234, a, 0x2000, PERM_R) == 0);
+    CHECK(GP(a)[0] == 7 && kshmem_ptr(s) == GP(a) && state(a) == MS_SHARED);
+    CHECK(svc_map_shm(0x1234, a + 0x10000, 0x2000, PERM_R) == R_BADSTATE);
+    kshmem_ptr(s)[1] = 9;
+    CHECK(svc_unmap_shm(0x1234, a + 0x1000, 0x2000) == R_BADMEMSTATE);
+    CHECK(svc_unmap_shm(0x1234, a, 0x2000) == 0);
+    CHECK(kshmem_ptr(s) == s->host && s->host[1] == 9 && state(a) == MS_FREE);
+    test_handle = NULL;
+    s->o.destroy(&s->o);
+}
 int main(void) {
     /* guest memory is mapped and protected in the Switch's 4 KiB pages, which a host with bigger ones (16 KiB on
        Apple silicon) can't do: what plat_posix.c stops the runtime for there (docs/APPLE.md) */
@@ -276,7 +334,9 @@ int main(void) {
     test_rollback();
     test_locked_shrink();
     test_shared_budget();
-    test_mapping_boundary();
+    test_map_memory();
+    test_shared_memory();
+    test_mapping_boundary(); /* last: every commit after it must be inside a mapping */
     CHECK(munmap(g_mem, AS_SIZE) == 0);
     printf("memory accounting: %u checks passed\n", checks);
     return 0;

@@ -1,94 +1,141 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* acc: user accounts */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   Ported from Eden (src/core/hle/service/acc/acc.cpp, errors.h):
+   SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+   SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
+/* acc: the console's one user (g_user_id, am.c), open since the game started, with no network service account */
 #include "nx/hle/services/services_int.h"
+
 #include "hle/services/acc.swipc.inc"
-/* ================================================================ acc */
-/* the one user's profile: no image, so its nickname and id only */
-static void profile_base(nn_account_profile_ProfileBase* base) {
-    memcpy(base->uid.v, g_user_id, 16);
-    base->last_edit_timestamp = 1600000000;
-    strcpy((char*)base->nickname, "Player");
+
+#define ACC_INVALID_USER_ID RC(124, 20)
+#define ACC_NOT_CONNECTED   RC(110, 300) /* nifm's: there is no network to reach the account server */
+#define ACC_NICKNAME        "Player"
+#define ACC_LAST_EDIT       1546300800 /* the user's profile was last changed on the first day of 2019 */
+
+static int acc_is_user(const nn_account_Uid* uid) { return !memcmp(uid->v, g_user_id, 16); }
+
+/* the user, then zeros (no user) in the rest of the list */
+static void acc_list(IpcBuf users) {
+    memset(GP(users.addr), 0, (size_t)users.size);
+    if (users.size >= 16) memcpy(GP(users.addr), g_user_id, 16);
 }
-static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
-    if (user_data.addr) memset(GP(user_data.addr), 0, user_data.size);
-    profile_base(base);
-    return 0;
+
+/* an object that keeps the user it was made for */
+static SvcObj* acc_for_user(SvcObj* o, const nn_account_Uid* uid) {
+    memcpy(o->data, uid->v, 16);
+    return o;
 }
-static int nn_account_profile_IProfile_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
-    profile_base(base);
-    return 0;
-}
-/* the account list of the user commands (ListAllUsers, ListOpenUsers, ListQualifiedUsers...): the one user */
-static int list_users(IpcBuf users) {
-    if (users.addr) {
-        memset(GP(users.addr), 0, users.size);
-        if (users.size >= 16) memcpy(GP(users.addr), g_user_id, 16);
-    }
-    return 0;
-}
-static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
-    return new_event(event, "acc async", 1);
-}
-static int nn_account_detail_IAsyncContext_HasDone(SvcObj* self, u8* done) {
-    *done = 1;
-    return 0;
-}
-static int nn_account_detail_IAsyncContext_GetResult(SvcObj* self) { return RC(110, 300); }
-static int nn_account_baas_IManagerForApplication_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
-    *id = 0x0123456789ABCDEFull;
-    return 0;
-}
-static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
-    *context = nn_account_detail_IAsyncContext_new(0);
-    return 0;
-}
+
+/* ============================================================ IAccountServiceForApplication */
 static int nn_account_IAccountServiceForApplication_GetUserCount(SvcObj* self, i32* count) {
+    (void)self;
     *count = 1;
     return 0;
 }
 static int nn_account_IAccountServiceForApplication_GetUserExistence(SvcObj* self, const nn_account_Uid* uid,
-                                                                     u8* exists) {
-    *exists = 1;
+                                                                    u8* exists) {
+    (void)self;
+    *exists = (u8)acc_is_user(uid);
     return 0;
 }
 static int nn_account_IAccountServiceForApplication_ListAllUsers(SvcObj* self, IpcBuf users) {
-    return list_users(users);
+    (void)self;
+    acc_list(users);
+    return 0;
 }
 static int nn_account_IAccountServiceForApplication_ListOpenUsers(SvcObj* self, IpcBuf users) {
-    return list_users(users);
+    (void)self;
+    acc_list(users);
+    return 0;
 }
 static int nn_account_IAccountServiceForApplication_GetLastOpenedUser(SvcObj* self, nn_account_Uid* uid) {
+    (void)self;
     memcpy(uid->v, g_user_id, 16);
     return 0;
 }
 static int nn_account_IAccountServiceForApplication_GetProfile(SvcObj* self, const nn_account_Uid* uid,
-                                                               SvcObj** profile) {
-    *profile = nn_account_profile_IProfile_new(0);
+                                                              SvcObj** profile) {
+    (void)self;
+    if (!acc_is_user(uid)) return ACC_INVALID_USER_ID;
+    *profile = acc_for_user(nn_account_profile_IProfile_new(16), uid);
     return 0;
 }
+/* with one user, that user, chosen without asking */
 static int nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteraction(
     SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    (void)self, (void)is_network_service_account_required;
     memcpy(uid->v, g_user_id, 16);
     return 0;
 }
 static int nn_account_IAccountServiceForApplication_GetBaasAccountManagerForApplication(SvcObj* self,
-                                                                                        const nn_account_Uid* uid,
-                                                                                        SvcObj** manager) {
-    *manager = nn_account_baas_IManagerForApplication_new(0);
+                                                                                       const nn_account_Uid* uid,
+                                                                                       SvcObj** manager) {
+    (void)self;
+    if (!acc_is_user(uid)) return ACC_INVALID_USER_ID;
+    *manager = acc_for_user(nn_account_baas_IManagerForApplication_new(16), uid);
     return 0;
 }
 static int nn_account_IAccountServiceForApplication_LoadOpenContext(SvcObj* self, const nn_account_Uid* uid,
-                                                                    SvcObj** manager) {
-    *manager = nn_account_baas_IManagerForApplication_new(0);
-    return 0;
+                                                                   SvcObj** manager) {
+    return nn_account_IAccountServiceForApplication_GetBaasAccountManagerForApplication(self, uid, manager);
 }
 static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(SvcObj* self, IpcBuf users) {
-    return list_users(users);
+    (void)self;
+    acc_list(users);
+    return 0;
 }
 static int nn_account_IAccountServiceForApplication_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
-    return list_users(users);
+    (void)self;
+    acc_list(users);
+    return 0;
 }
+
+/* ============================================================ IProfile */
+static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    memcpy(base->uid.v, self->data, 16);
+    base->last_edit_timestamp = ACC_LAST_EDIT;
+    memcpy(base->nickname, ACC_NICKNAME, sizeof ACC_NICKNAME);
+}
+/* the user data (icon, colors) is all zeros: the default icon */
+static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
+    memset(GP(user_data.addr), 0, (size_t)user_data.size);
+    acc_profile_base(self, base);
+    return 0;
+}
+static int nn_account_profile_IProfile_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    acc_profile_base(self, base);
+    return 0;
+}
+
+/* ============================================================ IManagerForApplication */
+/* the id the account would have, made from the user's */
+static int nn_account_baas_IManagerForApplication_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
+    u64 a, b;
+    memcpy(&a, self->data, 8);
+    memcpy(&b, (u8*)self->data + 8, 8);
+    *id = a ^ b;
+    return 0;
+}
+static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
+    (void)self;
+    *context = nn_account_detail_IAsyncContext_new(0);
+    return 0;
+}
+
+/* ============================================================ IAsyncContext: done at once, failed */
+static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
+    (void)self;
+    return new_event(event, "acc async context", 1);
+}
+static int nn_account_detail_IAsyncContext_HasDone(SvcObj* self, u8* done) {
+    (void)self;
+    *done = 1;
+    return 0;
+}
+static int nn_account_detail_IAsyncContext_GetResult(SvcObj* self) {
+    (void)self;
+    return ACC_NOT_CONNECTED;
+}
+
 SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(0); }

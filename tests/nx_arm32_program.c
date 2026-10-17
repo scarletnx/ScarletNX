@@ -122,7 +122,7 @@ void nx_arm32_start(void) {
     u32 heap, tls, handle, *shared, r;
     volatile Op op;
     print("A32: started");
-    if (get_info(4, 0, 0, &info) || info != 0x80000000ull) fail("A32: GetInfo HeapRegionAddress is wrong");
+    if (get_info(4, 0xFFFF8001u, 0, &info) || info != 0x80000000ull) fail("A32: GetInfo HeapRegionAddress is wrong");
     if (get_info(11, 0, 3, &info) || !info) fail("A32: GetInfo RandomEntropy 3 is wrong");
     print_hex("A32: heap region ", 0x80000000ull);
     if (set_heap_size(0x200000, &heap) || heap != 0x80000000u) fail("A32: SetHeapSize failed");

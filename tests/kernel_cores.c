@@ -14,6 +14,7 @@ MemLayout g_layout = {0x08000000ull,   0x2000000000ull, 0x100000000ull, 0x200000
                       0x1000000000ull, 0x1300000000ull, 0x100000000ull, 0x1400000000ull, 0x1800000000ull};
 GuestFn* g_disp;
 u64 g_code_lo, g_code_hi, g_core_mask = 7, g_prio_mask, g_code_memory, g_main_stack_size, g_next_tid;
+u64 g_sysres_size;
 int g_verbose;
 PMutex g_klock = PMUTEX_INIT;
 const Renderer* g_renderer;
@@ -239,6 +240,23 @@ int main(void) {
     core_leave(w);
     pthread_join(h2, NULL);
     core_leave(a);
+
+    /* the thread table: 256 slots, an exited thread's slot taken once they are all used, and with 256 live threads
+       a new one left out (not fatal); the live count leaves exited threads out */
+    {
+        KThread* first[256];
+        KThread* t;
+        for (int i = 0; i < 256; i++) first[i] = kthread_create(0x1000, 0, 0x2000, 44, 0);
+        CHECK(g_nthreads == 256 && kthread_live_count() == 256, "%d threads, %d live", g_nthreads, kthread_live_count());
+        first[7]->state = 2;
+        CHECK(kthread_live_count() == 255, "one exited: %d live", kthread_live_count());
+        t = kthread_create(0x1000, 0, 0x2000, 44, 0);
+        CHECK(g_nthreads == 256 && g_threads[7] == t && kthread_live_count() == 256, "slot 7 holds the new thread");
+        t = kthread_create(0x1000, 0, 0x2000, 44, 0);
+        CHECK(g_nthreads == 256 && t && t->id == first[255]->id + 2, "left out of a full table, thread %llu",
+              (unsigned long long)t->id);
+        for (int i = 0; i < 256; i++) CHECK(g_threads[i] != t, "the thread left out is in slot %d", i);
+    }
 
     printf("%u checks, %u failed\n", checks, failures);
     return failures != 0;

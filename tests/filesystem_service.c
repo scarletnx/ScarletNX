@@ -644,6 +644,27 @@ static void test_storage_contracts(SvcObj* storage, u64 size) {
     CHECK(get_size(storage) == size);
 }
 
+/* finds a RomFS entry the way the SDK does: hash its parent's table offset and its name (bytes unsigned), then walk
+   that bucket's chain */
+static u32 romfs_find(const u8* image, const u64* header, int dir, u32 parent, const char* name) {
+    const unsigned char* p = (const unsigned char*)name;
+    u64 table = dir ? header[3] : header[7], buckets = (dir ? header[2] : header[6]) / 4;
+    u32 fixed = dir ? 0x18 : 0x20, hash = parent ^ 123456789u, entry;
+    while (*p) {
+        hash = (hash >> 5) | (hash << 27);
+        hash ^= *p++;
+    }
+    memcpy(&entry, image + (dir ? header[1] : header[5]) + (hash % buckets) * 4, 4);
+    while (entry != UINT32_MAX) {
+        const u8* e = image + table + entry;
+        u32 entry_parent, length;
+        memcpy(&entry_parent, e, 4);
+        memcpy(&length, e + fixed - 4, 4);
+        if (entry_parent == parent && length == strlen(name) && !memcmp(e + fixed, name, length)) return entry;
+        memcpy(&entry, e + fixed - 8, 4);
+    }
+    return UINT32_MAX;
+}
 static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     u8 bytes[] = {1, 0, 3, 0xff, 5};
     CHECK(!fs_add_virtual_file("sdmc/virtual.bin", bytes, sizeof bytes));
@@ -675,6 +696,16 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     u64 header_size;
     memcpy(&header_size, GP(0x5000), sizeof header_size);
     CHECK(header_size == 0x50);
+    {
+        /* a valid empty image: the root alone, in its bucket, with no folders or files under it */
+        u64 header[10];
+        u32 links[3];
+        memcpy(header, GP(0x5000), sizeof header);
+        CHECK(header[9] == 0x200 && header[4] == 0x18 && header[8] == 0 && header[7] <= 0x200);
+        CHECK(romfs_find(GP(0x5000), header, 1, 0, "") == 0);
+        memcpy(links, GP(0x5000) + header[3] + 4, sizeof links);
+        CHECK(links[0] == UINT32_MAX && links[1] == UINT32_MAX && links[2] == UINT32_MAX);
+    }
     request(&r, 1); /* Write (offset 0, size at 8) of one byte from its A buffer: the archive's backend refuses it */
     argument64(&r, 8, 1);
     r.c.a[0] = (IpcBuf){0x3000, 1, 0};
@@ -683,6 +714,36 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     svcobj_unref(archive);
     puts("PASS HLE readonly virtual files and synthetic system archive");
 }
+
+#if !defined(_WIN32)
+/* the folders past the root, found through the hash tables and linked as siblings, and their non-ASCII files */
+static void test_romfs_names(const u8* image, const u64* header) {
+    u32 root = romfs_find(image, header, 1, 0, ""), dir, mu, file, link;
+    u64 offset, size;
+    CHECK(root == 0);
+    dir = romfs_find(image, header, 1, 0, "dir");
+    mu = romfs_find(image, header, 1, 0, "mu");
+    CHECK(dir != UINT32_MAX && mu != UINT32_MAX);
+    memcpy(&link, image + header[3] + 8, 4); /* the root's first folder, then its sibling */
+    CHECK(link == dir);
+    memcpy(&link, image + header[3] + dir + 4, 4);
+    CHECK(link == mu);
+    memcpy(&link, image + header[3] + mu + 4, 4);
+    CHECK(link == UINT32_MAX);
+    file = romfs_find(image, header, 0, dir, "\xc3\xa9t\xc3\xa9.bin");
+    CHECK(file != UINT32_MAX);
+    memcpy(&link, image + header[3] + dir + 12, 4);
+    CHECK(link == file);
+    memcpy(&offset, image + header[7] + file + 8, 8);
+    memcpy(&size, image + header[7] + file + 16, 8);
+    CHECK(offset == 32 && size == 6 && !memcmp(image + header[9] + offset, "summer", 6));
+    file = romfs_find(image, header, 0, mu, "\xce\xbc.bin");
+    CHECK(file != UINT32_MAX);
+    memcpy(&offset, image + header[7] + file + 8, 8);
+    CHECK(offset == 48 && !memcmp(image + header[9] + offset, "mu", 2));
+    CHECK(romfs_find(image, header, 0, dir, "\xce\xbc.bin") == UINT32_MAX);
+}
+#endif
 
 static void test_extracted_romfs(SvcObj* proxy) {
     Request r;
@@ -726,6 +787,9 @@ static void test_extracted_romfs(SvcObj* proxy) {
     CHECK(!memcmp(image + header[9], "romfs test", 10));
     for (u64 i = 10; i < 16; i++) CHECK(image[header[9] + i] == 0);
     CHECK(!memcmp(image + header[9] + data_offsets[2], "tail", 4));
+#if !defined(_WIN32)
+    test_romfs_names(image, header);
+#endif
     request(&r, 0);
     argument64(&r, 0, header[9] + 7);
     argument64(&r, 8, 13);
@@ -929,15 +993,9 @@ static void cleanup_service(void) {
     for (unsigned i = 0; i < NOPEN; i++)
         if (fsp.openf[i].f) fclose(fsp.openf[i].f);
     if (fsp.rraw) fclose(fsp.rraw);
-    for (int i = 0; i < fsp.ndn; i++) free(fsp.dn[i].name);
-    for (int i = 0; i < fsp.nfn; i++) {
-        free(fsp.fn[i].name);
-        fs_tree_release(fsp.fn[i].node);
-    }
+    for (int i = 0; i < fsp.nrfiles; i++) fs_tree_release(fsp.rfiles[i].node);
     free(fsp.rmeta);
     free(fsp.rfiles);
-    free(fsp.dn);
-    free(fsp.fn);
     fs_tree_destroy(&fsp.tree);
     pm_unlock(&fsp.tree.lock);
     CHECK(test_shared == 0);
