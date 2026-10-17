@@ -337,14 +337,14 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
     put(0, 40);
     put(4, 2);
-    put(8, 0);
+    put(8, 100);
     put(12, 9);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && nv.nvev[9].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && nv.ctrl_ev[ctrl][9].armed);
     CHECK((gr32(OUT0 + 12) & 0xF000FFFFu) == 0x10000009u && ((gr32(OUT0 + 12) >> 16) & 0xFFF) == 40);
     put(0, 9);
-    CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !nv.nvev[9].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !nv.ctrl_ev[ctrl][9].armed);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.nvev[9].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.ctrl_ev[ctrl][9].ev->signaled);
     /* Canceling a timed-out wait must not report an unfinished fence as complete. Reusing the event
        must still wait for the new threshold, and cancellation also clears a previously signaled event. */
     put(0, 10);
@@ -353,21 +353,55 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     put(4, 4);
     put(8, 100);
     put(12, 10);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && nv.nvev[10].armed);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && nv.ctrl_ev[ctrl][10].armed);
     put(0, 10);
     CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0);
-    CHECK(!nv.nvev[10].armed && !nv.nvev[10].ev->signaled && syncpt_read(40) == 2);
+    CHECK(!nv.ctrl_ev[ctrl][10].armed && !nv.ctrl_ev[ctrl][10].ev->signaled && syncpt_read(40) == 2);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.nvev[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.ctrl_ev[ctrl][10].ev->signaled);
     put(0, 40);
     put(4, 4);
     put(8, 100);
     put(12, 10);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && !nv.nvev[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && !nv.ctrl_ev[ctrl][10].ev->signaled);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && nv.nvev[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && nv.ctrl_ev[ctrl][10].ev->signaled);
     put(0, 10);
-    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !nv.nvev[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !nv.ctrl_ev[ctrl][10].ev->signaled);
+}
+
+/* an async wait on ctrl fd fd's slot for syncpoint id to reach th, with a timeout in ms */
+static u32 event_wait(u32 fd, u32 id, u32 th, u32 to, u32 slot) {
+    put(0, id);
+    put(4, th);
+    put(8, to);
+    put(12, slot);
+    return nv_ioctl1(fd, EVENT_WAIT_AS, 16);
+}
+/* each ctrl fd has slots of its own, as on the console: the game's GPU fence waits and its movie player use slot 0 of
+   two fds, and the player resetting its event must not take the other's wake. A wait with no time only asks */
+static void test_ctrl_event_fds(u32 ctrl) {
+    u32 error;
+    u32 other = nv_open("/dev/nvhost-ctrl", &error);
+    CHECK(!error && other != ctrl);
+    put(0, 0);
+    CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
+    put(0, 0);
+    CHECK(nv_ioctl1(other, EVENT_REG, 4) == 0);
+    NvEvent* a = &nv.ctrl_ev[ctrl][0];
+    NvEvent* b = &nv.ctrl_ev[other][0];
+    CHECK(a->ev && b->ev && a->ev != b->ev);
+    u32 base = syncpt_read(41);
+    CHECK(event_wait(ctrl, 41, base + 1, 100, 0) == 5 && a->armed && !b->armed);
+    CHECK(event_wait(other, 41, base + 2, 100, 0) == 5 && a->armed && b->armed && a->thresh == base + 1);
+    put(0, 41);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && a->ev->signaled && !a->armed && !b->ev->signaled && b->armed);
+    /* polling the other fd's fence leaves its armed wait, and this fd's signal, as they were */
+    CHECK(event_wait(other, 41, base + 2, 0, 0) == 5 && b->armed && a->ev->signaled);
+    CHECK(event_wait(ctrl, 41, base + 2, 0, 0) == 5 && a->ev->signaled && !a->armed);
+    put(0, 41);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && b->ev->signaled && !b->armed);
+    CHECK(nv_close(other) == 0 && !nv.ctrl_ev[other]); /* its slots go with it */
 }
 
 /* Ioctl3 (12): ctrl-gpu's GET_CHARACTERISTICS writes the characteristics to the inline output, B1 or C1 */
@@ -528,12 +562,13 @@ int main(void) {
     test_ioctl2(gpu);
     test_ioctl3(ctrlgpu);
     test_ctrl_syncpoints(ctrl);
+    test_ctrl_event_fds(ctrl);
 
     /* a channel's own events (1 to 3), made on first query and kept by the fd; the ctrl fd's ids name event slots */
     KEvent* sm = query_event(gpu, 1);
     CHECK(query_event(gpu, 1) == sm && query_event(gpu, 3) != sm);
     KEvent* slot = query_event(ctrl, 0x10000005u);
-    CHECK(slot == nv.nvev[5].ev && query_event(ctrl, 5) == slot);
+    CHECK(slot == nv.ctrl_ev[ctrl][5].ev && query_event(ctrl, 5) == slot);
 
     /* closing the GPU channel retires its syncpoint once the GPU thread has run what was queued on it: a call after
        the channel's jobs */
@@ -544,16 +579,14 @@ int main(void) {
     CHECK(nv_ioctl1(gpu, SUBMIT_GPFIFO_EX, 0x18) == 8);
     CHECK(nv_close(gpu) == 8 && nv_close(0) == 8 && nv_close(0xFFFF) == 8); /* not open: as an ioctl to it */
     /* QueryEvent on an fd that isn't open: the bad-fd NvError, no handle, and no event slot of the ctrl device */
-    CHECK(!nv.nvev[6].ev);
+    CHECK(!nv.ctrl_ev[ctrl][6].ev);
     request(4, gpu, 6);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 8 && ctx.nout_copy == 1 && ctx.out_copy[0] == 0);
-    CHECK(!nv.nvev[6].ev);
+    CHECK(!nv.ctrl_ev[ctrl][6].ev);
     test_close_during_ioctl();
 
     CHECK(nv_close(ctrlgpu) == 0 && nv_close(ctrl) == 0);
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
-    for (int i = 0; i < 64; i++)
-        if (nv.nvev[i].ev) kobj_unref(&nv.nvev[i].ev->o);
     CHECK(test_kobjs == 0 && test_locks == 0);
     svcobj_unref(nvdrv);
     for (u32 i = 0; i < GL1; i++) free(nv.gmmu[i]);

@@ -83,7 +83,10 @@ static struct {
     u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
                                 them (sync_lk) */
     PMutex submit_lk;        /* a submission's promise and its place in the GPU queue, in the same order */
-    NvEvent nvev[64];
+    /* each ctrl fd's 64 event slots, made on first use and dropped with the fd, under nvev_lk: as on the console, the
+       slots are the fd's. The game's GPU fence waits (one fd) and its movie player (another) both use slot 0, and
+       with one table between them a thread resetting its event took the other's wake, which then waited for good */
+    NvEvent* ctrl_ev[256];
     /* arming (game thread) races with nv_events_check (GPU/video threads after an incr).
        clear the event BEFORE arming and keep both under one lock, otherwise an incr in between
        signals and the clear wipes it -> lost wakeup, game waits forever. A mutex, not a spin: kevent_signal runs under
@@ -402,21 +405,41 @@ static void gpu_channel_retire(void* p) {
 
 static void nvev_lock(void) { pm_lock(&nv.nvev_lk); }
 static void nvev_unlock(void) { pm_unlock(&nv.nvev_lk); }
+/* ctrl fd fd's event slot, its table made if make is set (NULL without memory, or when it isn't made). Called with the
+   lock held, for an fd that stays open meanwhile */
+static NvEvent* nvev_slot(u32 fd, u32 slot, int make) {
+    if (!nv.ctrl_ev[fd] && make) nv.ctrl_ev[fd] = calloc(64, sizeof(NvEvent));
+    return nv.ctrl_ev[fd] ? &nv.ctrl_ev[fd][slot & 63] : NULL;
+}
 /* the KEvent of an event slot, made on first use. nvdrv keeps a reference of its own, so the game closing its
    handle doesn't free an event a later syncpoint increment signals. Called with the lock held */
-static KEvent* nvev_get(u32 slot) {
-    if (!nv.nvev[slot].ev) {
-        nv.nvev[slot].ev = kevent_new("nvhost event");
-        kobj_ref(&nv.nvev[slot].ev->o);
+static KEvent* nvev_get(u32 fd, u32 slot) {
+    NvEvent* e = nvev_slot(fd, slot, 1);
+    if (!e) return NULL;
+    if (!e->ev) {
+        e->ev = kevent_new("nvhost event");
+        kobj_ref(&e->ev->o);
     }
-    return nv.nvev[slot].ev;
+    return e->ev;
+}
+/* the fd's slots, taken from the table when its entry is cleared (with nv.lock held, so a new fd with the number
+   doesn't meet them); nv_release drops them */
+static NvEvent* nvev_detach(u32 fd) {
+    nvev_lock();
+    NvEvent* t = nv.ctrl_ev[fd];
+    nv.ctrl_ev[fd] = NULL;
+    nvev_unlock();
+    return t;
 }
 static void nv_events_check(void) {
     nvev_lock();
-    for (int i = 0; i < 64; i++)
-        if (nv.nvev[i].armed && (i32)(syncpt_read(nv.nvev[i].id) - nv.nvev[i].thresh) >= 0) {
-            nv.nvev[i].armed = 0;
-            kevent_signal(nv.nvev[i].ev);
+    for (int fd = 0; fd < 256; fd++)
+        for (int i = 0; nv.ctrl_ev[fd] && i < 64; i++) {
+            NvEvent* e = &nv.ctrl_ev[fd][i];
+            if (e->armed && (i32)(syncpt_read(e->id) - e->thresh) >= 0) {
+                e->armed = 0;
+                kevent_signal(e->ev);
+            }
         }
     nvev_unlock();
 }
@@ -739,7 +762,7 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     return 0;
 }
 
-static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
+static u32 ioctl_ctrl(u32 fd, u32 cmd, u8* d, u32 n) {
     u32 nr = cmd & 0xFF;
     if ((nr >= 0x14 && nr <= 0x1A && nr != 0x17 && nr != 0x18) || nr == 0x1D || nr == 0x1E) {
         u32 id; /* the syncpoint ioctls name it first */
@@ -795,9 +818,10 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             memcpy(&ev, d, 4);
             u32 slot = ev & 63;
             nvev_lock();
-            if (nv.nvev[slot].ev) {
-                nv.nvev[slot].armed = 0;
-                kevent_clear(nv.nvev[slot].ev);
+            NvEvent* e = nvev_slot(fd, slot, 0);
+            if (e && e->ev) {
+                e->armed = 0;
+                kevent_clear(e->ev);
             }
             nvev_unlock();
             LOG_LIMIT(2, "nvdrv: event %u wait canceled by the game\n", slot);
@@ -805,7 +829,9 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
         }
         /* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, thresh; i32 timeout; u32 value}. NvRmChannelSyncPointWaitTimeout
            sends only 0x1E: value is a slot it registered with 0x1F and queried as 0x10000000 | slot, it waits on that
-           event itself on 5, and cancels the wait with 0x1C when its own wait times out */
+           event itself on 5, and cancels the wait with 0x1C when its own wait times out. A timeout of 0 only asks:
+           5 without arming the slot or clearing its event, which another wait on the fd's slot may hold signaled,
+           as Ryujinx's EventWait answers it */
         case 0x1D:
         case 0x1E: {
             u32 id, th;
@@ -820,8 +846,9 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
                 memcpy(d + 12, &v, 4);
                 return 0;
             }
+            if (to == 0) return 5;
             if ((cmd & 0xFF) == 0x1D) { /* synchronous: its value field names no event slot to arm */
-                if (to != 0 && syncpt_wait(id, th, to < 0 ? -1 : (i64)to * 1000000)) {
+                if (syncpt_wait(id, th, to < 0 ? -1 : (i64)to * 1000000)) {
                     u32 v = syncpt_read(id);
                     memcpy(d + 12, &v, 4);
                     return 0;
@@ -830,12 +857,13 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             }
             u32 slot = ev & 63;
             nvev_lock();
-            int have = nv.nvev[slot].ev != NULL;
+            NvEvent* e = nvev_slot(fd, slot, 0);
+            int have = e && e->ev;
             if (have) {
-                kevent_clear(nv.nvev[slot].ev);
-                nv.nvev[slot].id = id;
-                nv.nvev[slot].thresh = th;
-                nv.nvev[slot].armed = 1;
+                kevent_clear(e->ev);
+                e->id = id;
+                e->thresh = th;
+                e->armed = 1;
             }
             nvev_unlock();
             if (have) nv_events_check();
@@ -847,9 +875,9 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             u32 ev;
             memcpy(&ev, d, 4);
             nvev_lock();
-            nvev_get(ev & 63);
+            KEvent* k = nvev_get(fd, ev & 63);
             nvev_unlock();
-            return 0;
+            return k ? 0 : 6; /* InsufficientMemory */
         }
         case 0x20:   /* EVENT_UNREGISTER {u32 slot} */
         case 0x21: { /* EVENT_KILL {u64 slots}: a bit per slot */
@@ -861,11 +889,13 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             } else
                 memcpy(&mask, d, 8);
             nvev_lock();
-            for (u32 slot = 0; slot < 64; slot++)
-                if (((mask >> slot) & 1) && nv.nvev[slot].ev) {
-                    nv.nvev[slot].armed = 0;
-                    kevent_clear(nv.nvev[slot].ev);
+            for (u32 slot = 0; slot < 64; slot++) {
+                NvEvent* e = ((mask >> slot) & 1) ? nvev_slot(fd, slot, 0) : NULL;
+                if (e && e->ev) {
+                    e->armed = 0;
+                    kevent_clear(e->ev);
                 }
+            }
             nvev_unlock();
             return 0;
         }
@@ -1088,12 +1118,15 @@ static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32
 /* what goes with a closed fd: the channel and its syncpoint once the GPU thread has run the jobs queued on it (freed
    now, the id could go to a new channel those jobs would then increment), an NVDEC or VIC channel with its decoder
    and syncpoints, and the fd's references to its events */
-static void nv_release(NvFile* old) {
+static void nv_release(NvFile* old, NvEvent* slots) {
     if (old->dev == DEV_GPU && old->syncpt)
         gpu_call(gpu_channel_retire, (void*)(uintptr_t)old->syncpt, &old->syncpt, 1);
     host1x_close(old->h1x);
     for (int k = 0; k < 4; k++)
         if (old->ev[k]) kobj_unref(&old->ev[k]->o);
+    for (int k = 0; slots && k < 64; k++) /* a ctrl fd's events: the game's handles keep them as long as they need */
+        if (slots[k].ev) kobj_unref(&slots[k].ev->o);
+    free(slots);
 }
 /* Ioctl, Ioctl2 (extra is a second input) and Ioctl3 (extra is a second output): the ioctl's in and out buffers go
    through tmp, the extra one straight to the device. A GPU channel takes Ioctl2's and Ioctl3's, as-gpu and ctrl-gpu
@@ -1147,7 +1180,7 @@ static u32 nv_ioctl(u32 fd, u32 cmd, IpcBuf in, IpcBuf out, IpcBuf extra, int ex
             r = ioctl_as(cmd, tmp, n, (extra_out && ea) ? GP(ea) : NULL, (u32)es);
             pm_unlock(&nv.aslock);
             break;
-        case DEV_CTRL: r = ioctl_ctrl(cmd, tmp, nb); break;
+        case DEV_CTRL: r = ioctl_ctrl(fd, cmd, tmp, nb); break;
         case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, tmp, nb, (extra_out && ea) ? GP(ea) : NULL, (u32)es); break;
         case DEV_GPU: r = ioctl_gpu(f, cmd, tmp, n, ea ? GP(ea) : NULL, (u32)es); break;
         case DEV_NVDEC:
@@ -1156,15 +1189,17 @@ static u32 nv_ioctl(u32 fd, u32 cmd, IpcBuf in, IpcBuf out, IpcBuf extra, int ex
     }
     if (out.addr) memcpy(GP(out.addr), tmp, osz > sizeof tmp ? sizeof tmp : osz);
     NvFile old;
+    NvEvent* slots = NULL;
     int release = 0;
     pm_lock(&nv.lock);
     if (!--f->users && f->closed) {
         old = *f;
         memset(f, 0, sizeof *f);
+        slots = nvev_detach(fd);
         release = 1;
     }
     pm_unlock(&nv.lock);
-    if (release) nv_release(&old);
+    if (release) nv_release(&old, slots);
     return r;
 }
 static int nns_nvdrv_INvDrvServices_Ioctl(SvcObj* self, u32 fd, u32 request, IpcBuf in, IpcBuf out, u32* error) {
@@ -1184,6 +1219,7 @@ static int nns_nvdrv_INvDrvServices_Ioctl3(SvcObj* self, u32 fd, u32 request, Ip
 }
 static int nns_nvdrv_INvDrvServices_Close(SvcObj* self, u32 fd, u32* error) {
     NvFile old;
+    NvEvent* slots = NULL;
     int release = 0, open = 0;
     pm_lock(&nv.lock);
     if (fd < 256 && nv.nvf[fd].dev && !nv.nvf[fd].closed) {
@@ -1193,11 +1229,12 @@ static int nns_nvdrv_INvDrvServices_Close(SvcObj* self, u32 fd, u32* error) {
         } else {
             old = nv.nvf[fd];
             memset(&nv.nvf[fd], 0, sizeof nv.nvf[fd]);
+            slots = nvev_detach(fd);
             release = 1;
         }
     }
     pm_unlock(&nv.lock);
-    if (release) nv_release(&old);
+    if (release) nv_release(&old, slots);
     *error = open ? 0 : 8; /* an fd that isn't open, or closed already: the NvError the ioctls answer for it */
     return 0;
 }
@@ -1216,12 +1253,16 @@ static int nns_nvdrv_INvDrvServices_QueryEvent(SvcObj* self, u32 fd, u32 event_i
         kobj_ref(&e->o); /* a Close before h_new would drop the last reference */
         held = 1;
     }
-    pm_unlock(&nv.lock);
     if (!e && dev == DEV_CTRL && (((event_id >> 28) & 0xF) == 1 || event_id < 64)) {
-        nvev_lock();
-        e = nvev_get(event_id & 63);
+        nvev_lock(); /* with nv.lock held: a Close meanwhile would leave the fd's new table behind */
+        e = nvev_get(fd, event_id & 63);
+        if (e) {
+            kobj_ref(&e->o); /* the fd's reference goes when it closes, which can come before h_new */
+            held = 1;
+        }
         nvev_unlock();
     }
+    pm_unlock(&nv.lock);
     LOG_LIMIT(8, "nvdrv: QueryEvent fd %u (device %d) id %x\n", fd, dev, event_id);
     if (dev == DEV_NONE) { /* an fd that isn't open: the NvError the ioctls answer for it, and no handle to leak */
         *event = 0;
