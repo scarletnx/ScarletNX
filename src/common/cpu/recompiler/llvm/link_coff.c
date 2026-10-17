@@ -457,7 +457,6 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             uint32_t at = rd32(r), type = rd16(r + 8), P = s->rva + at;
             uint64_t S;
             int absolute, target_section;
-            int64_t relative;
             if (type == REL_ABSOLUTE) continue;
             if (at + 4 > s->size || (type == REL_ADDR64 && at + 8 > s->size)) {
                 snprintf(error, error_size, "%s: relocation outside section %s", o->input->name, s->name);
@@ -493,12 +492,11 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
                     break;
                 default:
                     if (type >= REL_REL32 && type <= REL_REL32_5) {
-                        relative = (int64_t)S + (int32_t)rd32(p) - ((int64_t)P + 4 + (type - REL_REL32));
-                        if (relative != (int32_t)relative) {
+                        /* the addend is the field's signed value, relative to the end of the instruction */
+                        if (snx_link_rel32(p, S + (uint64_t)(int64_t)(int32_t)rd32(p), P + 4 + (type - REL_REL32))) {
                             snprintf(error, error_size, "%s: relocation out of range", o->input->name);
                             goto done;
                         }
-                        wr32(p, (uint32_t)relative);
                         break;
                     }
                     snprintf(error, error_size, "%s: unsupported relocation type %u", o->input->name, type);

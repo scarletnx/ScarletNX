@@ -86,9 +86,19 @@ SnxIr* snx_ir_new_target(const char* name, char opt, const char* target_triple, 
         free(ir);
         return NULL;
     }
-    /* -march=native -mtune=native, -fPIC (toolchain.c) */
-    cpu = target_triple ? LLVMCreateMessage("x86-64") : LLVMGetHostCPUName();
-    features = target_triple ? LLVMCreateMessage("+cx16") : LLVMGetHostCPUFeatures();
+    /* -march=native -mtune=native, -fPIC (toolchain.c). Another triple gets its baseline: x86-64 with CMPXCHG16B as
+       rtlib is built, anything else (AArch64) the generic CPU, since an x86 CPU name crashes another target's
+       instruction selection */
+    if (!target_triple) {
+        cpu = LLVMGetHostCPUName();
+        features = LLVMGetHostCPUFeatures();
+    } else if (!strncmp(triple, "x86_64", 6)) {
+        cpu = LLVMCreateMessage("x86-64");
+        features = LLVMCreateMessage("+cx16");
+    } else {
+        cpu = LLVMCreateMessage("generic");
+        features = LLVMCreateMessage("");
+    }
     ir->tm =
         LLVMCreateTargetMachine(target, triple, cpu, features, codegen_level(opt), LLVMRelocPIC, LLVMCodeModelDefault);
 #ifdef __ANDROID__

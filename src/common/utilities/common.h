@@ -128,6 +128,16 @@ int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
 /* seconds on a monotonic clock, for durations */
 double snx_seconds(void);
+/* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.
+   snx_vm_protect commits the pages it makes accessible and decommits them with SNX_VM_NONE on Windows. 0 or -1 */
+enum { SNX_VM_NONE, SNX_VM_READ, SNX_VM_READ_WRITE, SNX_VM_READ_EXECUTE };
+size_t snx_vm_page_size(void);
+void* snx_vm_reserve(size_t size); /* NULL when the system refuses */
+int snx_vm_protect(void* p, size_t size, int access);
+void snx_vm_release(void* p, size_t size);
+/* Makes instructions written to [p, p + size) visible to instruction fetch, once the pages are executable. Another
+   core needs nothing more when the pages were never executable before: it cannot hold old instructions for them */
+void snx_vm_flush_code(void* p, size_t size);
 void snx_tool_console(void);
 char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.

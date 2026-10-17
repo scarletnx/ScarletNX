@@ -110,3 +110,23 @@ void snx_link_names_free(SnxLinkNames* names) {
     free(names->keys);
     memset(names, 0, sizeof(*names));
 }
+
+void snx_link_put32(unsigned char* p, uint32_t value) {
+    p[0] = (unsigned char)value;
+    p[1] = (unsigned char)(value >> 8);
+    p[2] = (unsigned char)(value >> 16);
+    p[3] = (unsigned char)(value >> 24);
+}
+
+void snx_link_put64(unsigned char* p, uint64_t value) {
+    snx_link_put32(p, (uint32_t)value);
+    snx_link_put32(p + 4, (uint32_t)(value >> 32));
+}
+
+int snx_link_rel32(unsigned char* p, uint64_t target, uint64_t place) {
+    /* in unsigned arithmetic, then read as signed: the difference wraps where a signed one would overflow */
+    uint64_t difference = target - place;
+    if (difference + 0x80000000u > 0xFFFFFFFFu) return SNX_LINK_RANGE;
+    snx_link_put32(p, (uint32_t)difference);
+    return 0;
+}
