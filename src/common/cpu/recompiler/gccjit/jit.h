@@ -33,6 +33,8 @@ typedef struct SnxJit {
     /* the host's fused multiply-add and round-to-integral instructions, as -march=native resolves them: the FP fast
        paths need them to be instructions, never calls into a C library the module doesn't link */
     int fma, round;
+    /* AES's S-box and its inverse (aes_tables.h), each a global of this context made on first use (jit_simd.c) */
+    gcc_jit_lvalue* aes_tables[2];
     /* the function being emitted: CPU* c (restrict) and the guest memory base M=c->mem */
     gcc_jit_function* fn;
     gcc_jit_rvalue *c, *M;

@@ -4,9 +4,10 @@
    semantics), and snx_simd itself for the rest. Written a lane at a time, as the templates' C is: every source lane is
    read before the first result is written (Vd may be Vn), and GCC's vectorizer turns the lanes into the host's
    vector instructions. ir_simd.c's x86-only forms (AES-NI, PCLMULQDQ, GFNI, VPTERNLOG) have no counterpart here: their
-   encodings take the generic lanes (PMULL 1Q its portable product) or snx_simd (AES). */
+   encodings take the generic lanes (PMULL 1Q its portable product, AES its table lookups). */
 #include "common/cpu/recompiler/gccjit/jit.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/recompiler/aes_tables.h"
 #include <string.h>
 
 typedef gcc_jit_rvalue* V;
@@ -1254,6 +1255,79 @@ static int table_lookup(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
+/* the S-box (inverse 0) or its inverse (1) as unsigned char[256]: an internal constant global of the context, or,
+   with a libgccjit older than global initializers (GCC 10), a local copy written a byte at a time */
+static V aes_table(SnxJit* j, unsigned inverse) {
+    const unsigned char* bytes = inverse ? AES_ISBOX : AES_SBOX;
+    T type = gcc_jit_context_new_array_type(j->ctx, NULL, j->t_u8, 256);
+#ifdef LIBGCCJIT_HAVE_gcc_jit_global_set_initializer
+    if (!j->aes_tables[inverse]) {
+        /* not const: libgccjit (GCC 16.2) gets a const array's size wrong (65 bytes for unsigned char[256]) and
+           refuses the initializer */
+        j->aes_tables[inverse] = gcc_jit_context_new_global(j->ctx, NULL, GCC_JIT_GLOBAL_INTERNAL, type,
+                                                            inverse ? "snx_aes_isbox" : "snx_aes_sbox");
+        gcc_jit_global_set_initializer(j->aes_tables[inverse], bytes, 256);
+    }
+    return gcc_jit_lvalue_as_rvalue(j->aes_tables[inverse]);
+#else
+    gcc_jit_lvalue* table = jit_local(j, type);
+    unsigned i;
+    for (i = 0; i < 256; ++i)
+        gcc_jit_block_add_assignment(
+            j->block, NULL,
+            gcc_jit_context_new_array_access(j->ctx, NULL, gcc_jit_lvalue_as_rvalue(table), jit_int(j, (int)i)),
+            klane(j, 0, bytes[i]));
+    return gcc_jit_lvalue_as_rvalue(table);
+#endif
+}
+/* x * 2 in GF(2^8) */
+static V aes_xtime(SnxJit* j, V x) {
+    return jit_val(j, XOR(SHL(x, klane(j, 0, 1)), jit_sel(j, NE(AND(x, klane(j, 0, 0x80)), klane(j, 0, 0)),
+                                                          klane(j, 0, 0x1b), klane(j, 0, 0))));
+}
+/* crypto.c's v_aes and v_aesmc on the bytes, as ir_simd.c's aes_portable: AESE/AESD (op 4, 5) Vd =
+   ShiftRows(SubBytes(Vd ^ Vn)) and the inverse, AESMC/AESIMC (6, 7) Vd = MixColumns(Vn) and the inverse. Byte
+   (col, row) of the state is byte col*4 + row */
+static int aes(SnxJit* j, SnxU32 w) {
+    unsigned op = (w >> 12) & 31, rn = (w >> 5) & 31, rd = w & 31, col, row, i;
+    V n[16], d[16], x[16], r[16];
+    if (op < 4 || op > 7) return 0;
+    read_lanes(j, rn, 0, 16, n);
+    if (op < 6) {
+        V table = aes_table(j, op == 5);
+        read_lanes(j, rd, 0, 16, d);
+        for (i = 0; i < 16; ++i) x[i] = jit_val(j, XOR(d[i], n[i]));
+        for (col = 0; col < 4; ++col)
+            for (row = 0; row < 4; ++row) {
+                /* AESE's ShiftRows takes column (col + row) % 4, AESD's (col - row) % 4 */
+                unsigned from = (op == 4 ? (col + row) % 4 : (col + 4 - row) % 4) * 4 + row;
+                r[col * 4 + row] = jit_val(j, gcc_jit_lvalue_as_rvalue(gcc_jit_context_new_array_access(
+                                                  j->ctx, NULL, table, jit_cast(j, x[from], j->t_int))));
+            }
+    } else {
+        V x2[16], x4[16], x8[16];
+        for (i = 0; i < 16; ++i) {
+            x2[i] = aes_xtime(j, n[i]);
+            if (op == 7) {
+                x4[i] = aes_xtime(j, x2[i]);
+                x8[i] = aes_xtime(j, x4[i]);
+            }
+        }
+        for (col = 0; col < 4; ++col)
+            for (row = 0; row < 4; ++row) {
+                unsigned a = col * 4 + row, b = col * 4 + (row + 1) % 4, c = col * 4 + (row + 2) % 4,
+                         e = col * 4 + (row + 3) % 4;
+                if (op == 6) /* 2a ^ 3b ^ c ^ e */
+                    r[a] = jit_val(j, XOR(XOR(x2[a], XOR(x2[b], n[b])), XOR(n[c], n[e])));
+                else /* 14a ^ 11b ^ 13c ^ 9e */
+                    r[a] = jit_val(j, XOR(XOR(XOR(XOR(x8[a], x4[a]), x2[a]), XOR(XOR(x8[b], x2[b]), n[b])),
+                                          XOR(XOR(XOR(x8[c], x4[c]), n[c]), XOR(x8[e], n[e]))));
+            }
+    }
+    write_q(j, rd, 0, 16, r, 1);
+    return 1;
+}
+
 /* LD2-4/ST2-4 (multiple structures): element e of register s is at byte (e*sel + s)*esize. As LD1 here, guest memory
    moves as 8-byte accesses in address order, each assembled from or split into its elements */
 static int ld_structures(SnxJit* j, SnxU32 w) {
@@ -1794,7 +1868,7 @@ int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(j, w);
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(j, w);
     if ((w & 0xBFE08C00UL) == 0x0E000000UL) return table_lookup(j, w);
-    if ((w & 0xFFFF0C00UL) == 0x4E280800UL) return 0; /* AES: snx_simd (ir_simd.c's is AES-NI only) */
+    if ((w & 0xFFFF0C00UL) == 0x4E280800UL) return aes(j, w);
     if ((w & 0xFFE08C00UL) == 0x5E000000UL) return sha(j, w, (w >> 12) & 7);
     if ((w & 0xFFFF0C00UL) == 0x5E280800UL) return ((w >> 12) & 31) < 3 && sha(j, w, 0x10 + ((w >> 12) & 31));
     return 0;

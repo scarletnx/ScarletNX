@@ -3,6 +3,7 @@
 /* AdvSIMD: snx_a64_fast_simd's shortcuts (a64.c), emitted inline as the C it prints, and the SIMD patterns, whose
    template hands the word to snx_simd (cpu_helpers.c, in the runtime library) */
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/aes_tables.h"
 #include <string.h>
 
 typedef LLVMValueRef V;
@@ -587,14 +588,86 @@ static int modified_immediate(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
-/* AESE/AESD/AESMC/AESIMC with AES-NI (x86, CPUID aes). Arm's AESE is ShiftRows(SubBytes(d^k)), x86's AESENCLAST
+/* the module's copy of a table, made once: a private constant */
+static V aes_table(SnxIr* ir, const unsigned char* bytes, const char* name) {
+    V table = LLVMGetNamedGlobal(ir->mod, name), values[256];
+    unsigned i;
+    if (table) return table;
+    for (i = 0; i < 256; ++i) values[i] = ir_i8(ir, bytes[i]);
+    table = LLVMAddGlobal(ir->mod, LLVMArrayType(ir->t_i8, 256), name);
+    LLVMSetInitializer(table, LLVMConstArray(ir->t_i8, values, 256));
+    LLVMSetGlobalConstant(table, 1);
+    LLVMSetLinkage(table, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(table, LLVMGlobalUnnamedAddr);
+    return table;
+}
+/* a <16 x i8> of b */
+static V aes_splat(SnxIr* ir, unsigned b) {
+    V v[16];
+    unsigned i;
+    for (i = 0; i < 16; ++i) v[i] = ir_i8(ir, b);
+    return LLVMConstVector(v, 16);
+}
+/* xtime on each byte: x*2 in GF(2^8), x << 1 ^ (x's top bit ? 0x1b : 0) */
+static V aes_xtime(SnxIr* ir, V x) {
+    V top = LLVMBuildICmp(B, LLVMIntSLT, x, aes_splat(ir, 0), "");
+    return LLVMBuildXor(B, LLVMBuildShl(B, x, aes_splat(ir, 1), ""),
+                        LLVMBuildSelect(B, top, aes_splat(ir, 0x1b), aes_splat(ir, 0), ""), "");
+}
+/* each column's bytes rotated by n: byte col*4+row takes byte col*4+(row+n)%4 */
+static V aes_rotate(SnxIr* ir, V x, unsigned n) {
+    unsigned indices[16], i;
+    for (i = 0; i < 16; ++i) indices[i] = (i & ~3u) | ((i + n) & 3);
+    return shuffle(ir, x, x, indices, 16);
+}
+/* crypto.c's v_aes and v_aesmc on the bytes: AESE/AESD (op 4, 5) Vd = ShiftRows(SubBytes(Vd ^ Vn)) and the inverse,
+   AESMC/AESIMC (6, 7) Vd = MixColumns(Vn) and the inverse */
+static int aes_portable(SnxIr* ir, unsigned op, unsigned rn, unsigned rd) {
+    LLVMTypeRef t8 = LLVMVectorType(ir->t_i8, 16), t_table = LLVMArrayType(ir->t_i8, 256);
+    V d = ir_load(ir, t8, vreg(ir, rd)), x = ir_load(ir, t8, vreg(ir, rn)), r;
+    unsigned i;
+    LLVMSetAlignment(d, 8);
+    LLVMSetAlignment(x, 8);
+    if (op < 6) {
+        V table = op == 4 ? aes_table(ir, AES_SBOX, "snx_aes_sbox") : aes_table(ir, AES_ISBOX, "snx_aes_isbox");
+        V state = LLVMBuildXor(B, d, x, "");
+        r = LLVMGetUndef(t8);
+        for (i = 0; i < 16; ++i) {
+            /* byte (col, row) of the result: AESE's ShiftRows takes column (col + row) % 4, AESD's (col - row) % 4 */
+            unsigned col = i / 4, row = i % 4, from = (op == 4 ? (col + row) % 4 : (col + 4 - row) % 4) * 4 + row;
+            V index[2], byte = LLVMBuildExtractElement(B, state, ir_i32(ir, from), "");
+            index[0] = ir_i64(ir, 0);
+            index[1] = LLVMBuildZExt(B, byte, ir->t_i64, "");
+            byte = LLVMBuildLoad2(B, ir->t_i8, LLVMBuildInBoundsGEP2(B, t_table, table, index, 2, ""), "");
+            r = LLVMBuildInsertElement(B, r, byte, ir_i32(ir, i), "");
+        }
+    } else {
+        V x2 = aes_xtime(ir, x);
+        if (op == 6) /* 2a ^ rot1(3a) ^ rot2(a) ^ rot3(a) */
+            r = LLVMBuildXor(B, LLVMBuildXor(B, x2, aes_rotate(ir, LLVMBuildXor(B, x2, x, ""), 1), ""),
+                             LLVMBuildXor(B, aes_rotate(ir, x, 2), aes_rotate(ir, x, 3), ""), "");
+        else { /* 14a ^ rot1(11a) ^ rot2(13a) ^ rot3(9a) */
+            V x4 = aes_xtime(ir, x2), x8 = aes_xtime(ir, x4), x9 = LLVMBuildXor(B, x8, x, "");
+            V x11 = LLVMBuildXor(B, x9, x2, ""), x13 = LLVMBuildXor(B, x9, x4, "");
+            V x14 = LLVMBuildXor(B, LLVMBuildXor(B, x8, x4, ""), x2, "");
+            r = LLVMBuildXor(B, LLVMBuildXor(B, x14, aes_rotate(ir, x11, 1), ""),
+                             LLVMBuildXor(B, aes_rotate(ir, x13, 2), aes_rotate(ir, x9, 3), ""), "");
+        }
+    }
+    LLVMSetAlignment(LLVMBuildStore(B, r, vreg(ir, rd)), 8);
+    return 1;
+}
+
+/* AESE/AESD/AESMC/AESIMC. With AES-NI (x86, CPUID aes): Arm's AESE is ShiftRows(SubBytes(d^k)), x86's AESENCLAST
    ShiftRows(SubBytes(s))^rk: AESENCLAST(d^k, 0). MixColumns alone is AESENC(AESDECLAST(x, 0), 0), the inverse
-   steps cancelling */
+   steps cancelling. Elsewhere crypto.c's: SubBytes and ShiftRows as one lookup per byte in the module's S-box,
+   MixColumns as xtime on the vector of bytes and rotations of each column */
 static int aes(SnxIr* ir, SnxU32 w) {
     unsigned op = (w >> 12) & 31, rn = (w >> 5) & 31, rd = w & 31;
     LLVMTypeRef t = LLVMVectorType(ir->t_i64, 2);
     V args[2], zero = LLVMConstNull(t), x, r;
-    if (!ir->features->x86 || !ir->features->aes || op < 4 || op > 7) return 0;
+    if (op < 4 || op > 7) return 0;
+    if (!ir->features->x86 || !ir->features->aes) return aes_portable(ir, op, rn, rd);
     x = ir_load(ir, t, vreg(ir, rn));
     LLVMSetAlignment(x, 8);
     if (op < 6) {
