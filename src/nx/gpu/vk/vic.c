@@ -38,16 +38,19 @@ typedef struct {
     int mat[12]; /* the color matrix rows: c00 c01 c02 c03 c10 ... c23 */
     u32 mat_shift, mat_enable;
     u32 alpha, clamp_lo, clamp_hi;
+    u32 vu; /* NV21 input: V in each chroma pair's even byte */
     GpuPlane iy, ic;
 } GpuSlot;
 typedef struct {
     u32 fmt, sw, sh, nslots;
     GpuPlane ol, oc;
+    u32 tx0, ty0, tw, th; /* the target rectangle the background fills, tw 0 for none */
+    u32 bg[4];            /* the background colour, R G B A, 10 bit */
     GpuSlot slots[8];
 } GpuParams;
 _Static_assert(sizeof(GpuPlane) == 24, "GpuPlane disagrees with the shader");
-_Static_assert(sizeof(GpuSlot) == 144, "GpuSlot disagrees with the shader");
-_Static_assert(sizeof(GpuParams) == 64 + 8 * 144, "GpuParams disagrees with the shader");
+_Static_assert(sizeof(GpuSlot) == 148, "GpuSlot disagrees with the shader");
+_Static_assert(sizeof(GpuParams) == 96 + 8 * 148, "GpuParams disagrees with the shader");
 
 static PMutex g_vic_lock = PMUTEX_INIT; /* a job at a time: the buffer and the objects below are the job's */
 static VkDescriptorSetLayout g_vic_ds;
@@ -247,6 +250,11 @@ static int compose(const VicJob* j) {
     p.nslots = 8;
     p.ol = plane_desc(&j->oy, 0);
     p.oc = plane_desc(&j->oc, 0);
+    p.tx0 = j->tx0;
+    p.ty0 = j->ty0;
+    p.tw = j->tw;
+    p.th = j->th;
+    memcpy(p.bg, j->bg, sizeof p.bg);
     for (int s = 0; s < 8; s++) {
         const VicSlot* sl = &j->slots[s];
         GpuSlot* g = &p.slots[s];
@@ -264,6 +272,7 @@ static int compose(const VicJob* j) {
         g->alpha = sl->alpha;
         g->clamp_lo = sl->clamp_lo;
         g->clamp_hi = sl->clamp_hi;
+        g->vu = sl->vu;
         if (!sl->on) continue;
         g->iy = plane_desc(&sl->iy, in_offs[s][0]);
         g->ic = plane_desc(&sl->ic, in_offs[s][1]);

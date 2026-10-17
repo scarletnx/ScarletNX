@@ -109,11 +109,14 @@ typedef struct VicSlot {
     u32 sx0, sy0, dx0, dy0, w, h;         /* the resolved rectangles: source start, destination start and size */
     int mat[3][4], mat_shift, mat_enable; /* the color matrix, out = (R*c0 + G*c1 + B*c2) >> shift, + c3, >> 8 */
     u32 alpha, clamp_lo, clamp_hi;        /* the planar alpha and the soft clamp range (10 bit) */
+    u32 vu; /* input format 0x43 (Y8___U8V8_N420): V in each chroma pair's even byte, U in the odd one */
     VicPlane iy, ic;
 } VicSlot;
 typedef struct VicJob {
     u32 fmt, sw, sh;
-    VicPlane oy, oc; /* oc.p is NULL when the format has no chroma */
+    u32 tx0, ty0, tw, th; /* the target rectangle the background colour fills, in the surface; tw 0: none */
+    u32 bg[4];            /* the background colour: R, G, B, A, 10 bit */
+    VicPlane oy, oc;      /* oc.p is NULL when the format has no chroma */
     VicSlot slots[8];
 } VicJob;
 int gmem_read(u64 gva, void* dst, u64 size);

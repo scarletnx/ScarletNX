@@ -18,12 +18,16 @@
 /* The config struct (its iova in register 0x708) as the game's TVMR and NvDdkVic libraries build it: 0x610 bytes,
    the output surface config at +0x20, 8 slots of 0xB0 bytes from +0x90.
    Surface config u64 (output at +0x20, a slot's at slot+0x40): 0-6 format (0x1F A8B8G8R8, 0x20 A8R8G8B8,
-   0x23 X8B8G8R8, 0x44 NV12), 11-14 block kind (0 pitch linear), 15-18 block height log2, 32-45 width-1,
-   46-59 height-1. Its other u64s name the luma and chroma planes' padded sizes (width-1 in bits 0-13,
-   height-1 in bits 14-27).
-   The output config (at +0x10) carries the target rectangle, inclusive pixel coordinates: left 0-13 and right
-   16-29 of the u32 at +0x18, top 0-13 and bottom 16-29 of the one at +0x1C. The slots' destination rectangles
-   are clipped to it.
+   0x23 X8B8G8R8, 0x43 Y8___U8V8_N420 (NV21: V in each chroma pair's even byte), 0x44 Y8___V8U8_N420 (NV12, U
+   there): NVIDIA names the bytes from the high one down), 11-14 block kind (0 pitch linear), 15-18 block height
+   log2, 32-45 width-1, 46-59 height-1. Its other u64s name the luma and chroma planes' padded sizes (width-1 in
+   bits 0-13, height-1 in bits 14-27).
+   The output config (u64 at +0x10) has the background colour, 10 bit each: alpha in bits 6-15, R 16-25, G 26-35,
+   B 36-45 (libdrm's tests/tegra/vic40.h, edenprobe's vicref.c). The target rectangle follows, inclusive pixel
+   coordinates: left 0-13 and right 16-29 of the u32 at +0x18, top 0-13 and bottom 16-29 of the one at +0x1C. The
+   background fills the target rectangle, with or without a slot enabled (libdrm's vic40_fill clears a surface that
+   way), the slots compose over it, and the surface outside it is left alone (libdrm's vic-flip fills half a surface
+   with a half-height rectangle). The slots' destination rectangles are clipped to it.
    A slot's config u64 at slot+0: bit 0 enable. Its source rectangle is 16.16 fixed point, right and bottom inclusive:
    left bits 0-29 and right 32-61 of the u64 at slot+0x20, top and bottom of the one at +0x28. Its target rectangle,
    u64 at slot+0x30: left 0-13, right 16-29, top 32-45, bottom 48-61, also inclusive.
@@ -140,11 +144,50 @@ static void pixels_convert(const VicSlot* sl, VicPixel* px, u32 n) {
         px[i].b = (u16)clampi(b, lo, hi);
     }
 }
+static int fmt_yuv(u32 fmt) { return fmt == 0x43 || fmt == 0x44; }
+/* w 10 bit pixels into row out_y of the output surface from column dx0, in its format */
+static void row_write(const VicPixel* px, u32 w, u32 fmt, const VicPlane* oy, const VicPlane* oc, u32 dx0, u32 out_y) {
+    if (!fmt_yuv(fmt)) {
+        int swap = fmt == 0x20; /* A8R8G8B8 stores R and B the other way around than A8B8G8R8 does */
+        /* the 10 bit channels back to 8 bit, as Eden's WriteABGR writes them */
+        for (u32 k = 0; k < w; k++) {
+            u8* o = g_rowo + k * 4;
+            u8 rr = (u8)(px[k].r >> 2), gg = (u8)(px[k].g >> 2);
+            u8 bb = (u8)(px[k].b >> 2), aa = (u8)(px[k].a >> 2);
+            o[0] = swap ? bb : rr;
+            o[1] = gg;
+            o[2] = swap ? rr : bb;
+            o[3] = aa;
+        }
+        plane_row(oy, dx0 * 4, out_y, g_rowo, w * 4, 1);
+        return;
+    }
+    /* NV12 or NV21 out: luma from R, chroma from G and B of the pixel pairs */
+    u32 wc = (w + 1) & ~1u, vu = fmt == 0x43; /* chroma bytes: whole U, V pairs */
+    for (u32 k = 0; k < w; k++) g_rowo[k] = (u8)(px[k].r >> 2);
+    plane_row(oy, dx0, out_y, g_rowo, w, 1);
+    /* the chroma rows follow the luma pairs; the row keeps the chroma of its even row */
+    if (oc->p && !(out_y & 1)) { /* no chroma plane mapped (vic_execute logs it) */
+        for (u32 k = 0; k < wc; k += 2) {
+            g_rowo[k + vu] = (u8)(px[k].g >> 2);
+            g_rowo[k + 1 - vu] = (u8)(px[k].b >> 2);
+        }
+        plane_row(oc, dx0, out_y / 2, g_rowo, wc, 1);
+    }
+}
+/* the job's target rectangle in its background colour, before the slots compose over it */
+static void background_cpu(const VicJob* j) {
+    for (u32 k = 0; k < j->tw; k++) {
+        g_slotrow[k].r = (u16)j->bg[0];
+        g_slotrow[k].g = (u16)j->bg[1];
+        g_slotrow[k].b = (u16)j->bg[2];
+        g_slotrow[k].a = (u16)j->bg[3];
+    }
+    for (u32 y = 0; y < j->th; y++) row_write(g_slotrow, j->tw, j->fmt, &j->oy, &j->oc, j->tx0, j->ty0 + y);
+}
 /* a prepared slot into the output surface: what compose_slot below does per row */
 static void compose_cpu(const VicSlot* sl, u32 fmt, const VicPlane* oy, const VicPlane* oc) {
     u32 w = sl->w, h = sl->h, sx0 = sl->sx0, sy0 = sl->sy0, dx0 = sl->dx0, dy0 = sl->dy0;
-    u32 wc = (w + 1) & ~1u; /* chroma bytes: whole U, V pairs */
-    int swap = fmt == 0x20; /* A8R8G8B8 stores R and B the other way around than A8B8G8R8 does */
     for (u32 y = 0; y < h; y++) {
         /* the slot's row as 10 bit pixels, as Eden's ReadProgressiveY8__V8U8_N420 builds them: the samples
            scaled to 10 bit (chroma samples duplicated over the pixel pairs), the planar alpha as the alpha */
@@ -154,37 +197,12 @@ static void compose_cpu(const VicSlot* sl, u32 fmt, const VicPlane* oy, const Vi
         for (u32 k = 0; k < w; k++) {
             u32 cb = ((sx0 + k) & ~1u) - csx;
             g_slotrow[k].r = (u16)(g_rowy[k] << 2);
-            g_slotrow[k].g = (u16)(g_rowc[cb] << 2);
-            g_slotrow[k].b = (u16)(g_rowc[cb + 1] << 2);
+            g_slotrow[k].g = (u16)(g_rowc[cb + sl->vu] << 2);
+            g_slotrow[k].b = (u16)(g_rowc[cb + 1 - sl->vu] << 2);
             g_slotrow[k].a = (u16)sl->alpha;
         }
         pixels_convert(sl, g_slotrow, w);
-        u32 out_y = dy0 + y;
-        if (fmt != 0x44) {
-            /* the 10 bit channels back to 8 bit, as Eden's WriteABGR writes them */
-            for (u32 k = 0; k < w; k++) {
-                u8* o = g_rowo + k * 4;
-                u8 rr = (u8)(g_slotrow[k].r >> 2), gg = (u8)(g_slotrow[k].g >> 2);
-                u8 bb = (u8)(g_slotrow[k].b >> 2), aa = (u8)(g_slotrow[k].a >> 2);
-                o[0] = swap ? bb : rr;
-                o[1] = gg;
-                o[2] = swap ? rr : bb;
-                o[3] = aa;
-            }
-            plane_row(oy, dx0 * 4, out_y, g_rowo, w * 4, 1);
-        } else {
-            /* NV12 out: luma from R, chroma from G and B of the pixel pairs */
-            for (u32 k = 0; k < w; k++) g_rowo[k] = (u8)(g_slotrow[k].r >> 2);
-            plane_row(oy, dx0, out_y, g_rowo, w, 1);
-            /* the chroma rows follow the luma pairs; the row keeps the chroma of its even row */
-            if (oc->p && !(out_y & 1)) { /* no chroma plane mapped (vic_execute logs it) */
-                for (u32 k = 0; k < wc; k += 2) {
-                    g_rowo[k] = (u8)(g_slotrow[k].g >> 2);
-                    g_rowo[k + 1] = (u8)(g_slotrow[k].b >> 2);
-                }
-                plane_row(oc, dx0, out_y / 2, g_rowo, wc, 1);
-            }
-        }
+        row_write(g_slotrow, w, fmt, oy, oc, dx0, dy0 + y);
     }
 }
 
@@ -196,10 +214,11 @@ static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, u32 f
     u64 sc = rd64(sl, 0x40);
     u32 ifmt = (u32)(sc & 0x7F), iblk = (u32)((sc >> 11) & 15), ibh = (u32)((sc >> 15) & 15);
     u32 iw = (u32)((sc >> 32) & 0x3FFF) + 1, ih = (u32)((sc >> 46) & 0x3FFF) + 1;
-    if (ifmt != 0x44) {
-        LOG_LIMIT(4, "video: VIC slot %d input format %x isn't handled (NV12 is), slot skipped\n", s, ifmt);
+    if (!fmt_yuv(ifmt)) {
+        LOG_LIMIT(4, "video: VIC slot %d input format %x isn't handled (NV12 and NV21 are), slot skipped\n", s, ifmt);
         return 0;
     }
+    out->vu = ifmt == 0x43;
     u64 src_x = rd64(sl, 0x20), src_y = rd64(sl, 0x28), dst = rd64(sl, 0x30);
     u32 sx0 = (u32)(src_x & 0x3FFFFFFF) >> 16, sx1 = (u32)((src_x >> 32) & 0x3FFFFFFF) >> 16;
     u32 sy0 = (u32)(src_y & 0x3FFFFFFF) >> 16, sy1 = (u32)((src_y >> 32) & 0x3FFFFFFF) >> 16;
@@ -265,7 +284,7 @@ static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, u32 f
         return 0;
     }
     /* NV12 chroma is written by pixel pairs; RGBA keeps odd starts, or an odd target would shift */
-    if (fmt == 0x44) {
+    if (fmt_yuv(fmt)) {
         sx0 &= ~1u;
         sy0 &= ~1u;
         dx0 &= ~1u;
@@ -332,14 +351,14 @@ void vic_execute(const u32* r) {
         fmt_env = e ? (int)(strtoul(e, 0, 0) & 0x7F) : -2;
     }
     if (fmt_env >= 0) fmt = (u32)fmt_env;
-    if (fmt != 0x1F && fmt != 0x20 && fmt != 0x23 && fmt != 0x44) {
+    if (fmt != 0x1F && fmt != 0x20 && fmt != 0x23 && !fmt_yuv(fmt)) {
         LOG_LIMIT(4, "video: VIC output format %x isn't handled, job skipped\n", fmt);
         return;
     }
     LOG_LIMIT(3, "video: VIC config %016llx: format %x, %s (block height %u), surface %ux%u\n", (unsigned long long)cfg,
               fmt, blk ? "block linear" : "pitch linear", 1u << bh, sw, sh);
     /* the output planes' rows are as wide as their padded widths name (the chroma width counts U, V pairs) */
-    u32 bpp = fmt == 0x44 ? 1 : 4;
+    u32 bpp = fmt_yuv(fmt) ? 1 : 4;
     u32 oyrows = lh > sh ? lh : sh, ocrows = och > (sh + 1) / 2 ? och : (sh + 1) / 2;
     VicJob job = {0};
     job.fmt = fmt;
@@ -349,18 +368,40 @@ void vic_execute(const u32* r) {
         LOG_LIMIT(4, "video: VIC output at iova %llx not mapped\n", (unsigned long long)ly);
         return;
     }
-    if (fmt == 0x44 && !plane_map(&job.oc, lc, blk, bh, plane_rowbytes(ocw * 2, (sw + 1) & ~1u, blk), ocrows))
+    if (fmt_yuv(fmt) && !plane_map(&job.oc, lc, blk, bh, plane_rowbytes(ocw * 2, (sw + 1) & ~1u, blk), ocrows))
         LOG_LIMIT(4, "video: VIC output chroma at iova %llx not mapped, the picture has no color\n",
                   (unsigned long long)lc);
+    /* the background colour over the target rectangle, clipped to the surface (whole pixel pairs in NV12, as the
+       slots start) */
+    u64 ocfg = rd64(cs, 0x10);
+    job.bg[0] = (u32)(ocfg >> 16) & 0x3FF;
+    job.bg[1] = (u32)(ocfg >> 26) & 0x3FF;
+    job.bg[2] = (u32)(ocfg >> 36) & 0x3FF;
+    job.bg[3] = (u32)(ocfg >> 6) & 0x3FF;
+    u32 tgt0 = rd32(cs, 0x18), tgt1 = rd32(cs, 0x1C);
+    u32 tx0 = tgt0 & 0x3FFF, tx1 = (tgt0 >> 16) & 0x3FFF, ty0 = tgt1 & 0x3FFF, ty1 = (tgt1 >> 16) & 0x3FFF;
+    if (tx0 <= tx1 && ty0 <= ty1 && tx0 < sw && ty0 < sh) {
+        if (tx1 >= sw) tx1 = sw - 1;
+        if (ty1 >= sh) ty1 = sh - 1;
+        if (fmt_yuv(fmt)) {
+            tx0 &= ~1u;
+            ty0 &= ~1u;
+        }
+        job.tx0 = tx0;
+        job.ty0 = ty0;
+        job.tw = tx1 - tx0 + 1;
+        job.th = ty1 - ty0 + 1;
+    }
     /* the slots in order, a later one over an earlier one (no blending) */
     int any = 0;
     for (int s = 0; s < VIC_NUM_SLOTS; s++)
         if (rd64(cs, 0x90 + s * 0xB0) & 1) any |= slot_prepare(r, cs, s, sw, sh, fmt, &job.slots[s]);
-    if (!any) {
-        LOG_LIMIT(4, "video: VIC job with no slot it could compose\n");
+    if (!any && !job.tw) {
+        LOG_LIMIT(4, "video: VIC job with no slot it could compose and no target rectangle\n");
         return;
     }
     if (g_renderer_up && g_renderer->vic_compose(&job)) return; /* the compute shader composed the picture */
+    background_cpu(&job);
     for (int s = 0; s < VIC_NUM_SLOTS; s++)
         if (job.slots[s].on) compose_cpu(&job.slots[s], fmt, &job.oy, &job.oc);
 }

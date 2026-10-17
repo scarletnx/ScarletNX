@@ -344,7 +344,8 @@ static int check_direct_spirv(void) {
     return 0;
 }
 
-/* VIC through the compute shader: raw YUV and alpha, odd starts kept, luma-only NV12, bytes outside untouched */
+/* VIC through the compute shader: raw YUV and alpha, odd starts kept, luma-only NV12, an NV21 slot over the background
+   colour, the background with no slot, bytes outside the target and the slots untouched */
 static int check_vic(void) {
     enum { W = 32, H = 16, SENTINEL = 0xA5 };
     static u8 y[W * H], uv[W * H / 2], out[W * 4 * H];
@@ -356,8 +357,14 @@ static int check_vic(void) {
             uv[j * W + i * 2 + 1] = (u8)(240 - i - 8 * j);
         }
     static const struct {
-        u32 fmt, sx0, sy0, dx0, dy0, w, h;
-    } cases[] = {{0x1F, 0, 0, 0, 0, W, H}, {0x1F, 3, 1, 5, 3, 10, 7}, {0x44, 0, 0, 0, 0, W, H}};
+        u32 fmt, sx0, sy0, dx0, dy0, w, h; /* w 0: no slot */
+        u32 vu, tx0, ty0, tw, th;          /* an NV21 slot, the target rectangle the background fills */
+    } cases[] = {{0x1F, 0, 0, 0, 0, W, H, 0, 0, 0, 0, 0},
+                 {0x1F, 3, 1, 5, 3, 10, 7, 0, 0, 0, 0, 0},
+                 {0x44, 0, 0, 0, 0, W, H, 0, 0, 0, 0, 0},
+                 {0x1F, 3, 1, 5, 3, 10, 7, 1, 2, 1, 20, 12},
+                 {0x1F, 0, 0, 0, 0, 0, 0, 0, 4, 2, 6, 9}};
+    static const u32 bg[4] = {1023, 512, 0, 1023}; /* 8 bit 255, 128, 0, 255 */
     for (u32 c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
         const int rgba = cases[c].fmt != 0x44;
         const u32 bpp = rgba ? 4 : 1;
@@ -368,8 +375,14 @@ static int check_vic(void) {
         job.sw = W;
         job.sh = H;
         job.oy = (VicPlane){out, (u64)W * bpp * H, W * bpp, H, 0, 0};
+        job.tx0 = cases[c].tx0;
+        job.ty0 = cases[c].ty0;
+        job.tw = cases[c].tw;
+        job.th = cases[c].th;
+        memcpy(job.bg, bg, sizeof job.bg);
         VicSlot* sl = &job.slots[0];
-        sl->on = 1;
+        sl->on = cases[c].w != 0;
+        sl->vu = cases[c].vu;
         sl->sx0 = cases[c].sx0;
         sl->sy0 = cases[c].sy0;
         sl->dx0 = cases[c].dx0;
@@ -385,14 +398,17 @@ static int check_vic(void) {
             for (u32 i = 0; i < W; ++i) {
                 const u8* o = out + (j * W + i) * bpp;
                 const int in = i >= sl->dx0 && i < sl->dx0 + sl->w && j >= sl->dy0 && j < sl->dy0 + sl->h;
+                const int target = i >= job.tx0 && i < job.tx0 + job.tw && j >= job.ty0 && j < job.ty0 + job.th;
                 const u32 sx = sl->sx0 + i - sl->dx0, sy = sl->sy0 + j - sl->dy0;
-                if (!in) {
+                if (!in && !target) {
                     CHECK(o[0] == SENTINEL);
+                } else if (!in) {
+                    CHECK(o[0] == 255 && o[1] == 128 && o[2] == 0 && o[3] == 255);
                 } else if (!rgba) {
                     CHECK(o[0] == y[sy * W + sx]);
                 } else {
                     const u8* p = uv + (sy / 2) * W + (sx & ~1u);
-                    CHECK(o[0] == y[sy * W + sx] && o[1] == p[0] && o[2] == p[1] && o[3] == 255);
+                    CHECK(o[0] == y[sy * W + sx] && o[1] == p[sl->vu] && o[2] == p[1 - sl->vu] && o[3] == 255);
                 }
             }
     }

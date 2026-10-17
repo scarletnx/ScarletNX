@@ -71,10 +71,13 @@ typedef struct {
     u32 clo, chi, alpha;    /* the soft clamp and the planar alpha, 10 bit */
     int matrix;             /* the BT.601 matrix below */
     int no_out_chroma;      /* the output chroma register left at 0 */
+    u32 bg[4];              /* the background colour, R G B A, 10 bit */
+    int slot_off;           /* the slot isn't enabled */
+    u32 in_fmt;             /* the input's format: 0 for NV12 (0x44) */
 } Job;
 /* a 16x16 A8B8G8R8 surface, all of it the target, a 16x16 picture onto all of it */
 static Job job16(void) {
-    Job j = {0x1F, 16, 16, 0, 15, 0, 15, 16, 16, 0, 15, 0, 15, 0, 15, 0, 15, 0, 0x3FF, 0x3FF, 0, 0};
+    Job j = {0x1F, 16, 16, 0, 15, 0, 15, 16, 16, 0, 15, 0, 15, 0, 15, 0, 15, 0, 0x3FF, 0x3FF, 0, 0, {0}, 0, 0};
     return j;
 }
 /* BT.601 limited range in the 10 bit domain, S12.8, shift 0: out = (Y*c0 + U*c1 + V*c2 + c3) >> 8 */
@@ -88,19 +91,21 @@ static u64 f20(int v) { return (u64)(u32)v & 0xFFFFF; }
 static void job_setup(const Job* j) {
     memset(arena, 0, ARENA);
     memset(regs, 0, sizeof regs);
+    w64(CFG + 0x10, (u64)j->bg[3] << 6 | (u64)j->bg[0] << 16 | (u64)j->bg[1] << 26 | (u64)j->bg[2] << 36);
     w32(CFG + 0x18, j->tl | j->tr << 16);
     w32(CFG + 0x1C, j->tt | j->tb << 16);
     w64(CFG + 0x20, (u64)j->fmt | (u64)(j->sw - 1) << 32 | (u64)(j->sh - 1) << 46);
     /* the padded sizes are the strides, as libdrm's vic40 writes them: OutLumaWidth = stride - 1, in pixels */
-    u32 bpp = j->fmt == 0x44 ? 1 : 4, olw = pitch(j->sw * bpp) / bpp, ocw = pitch(j->sw) / 2;
+    int yuv = j->fmt == 0x43 || j->fmt == 0x44;
+    u32 bpp = yuv ? 1 : 4, olw = pitch(j->sw * bpp) / bpp, ocw = pitch(j->sw) / 2;
     w64(CFG + 0x28, (u64)(olw - 1) | (u64)(j->sh - 1) << 14 | (u64)(ocw - 1) << 32 | (u64)((j->sh + 1) / 2 - 1) << 46);
     u32 sl = CFG + 0x90;
-    w64(sl + 0x00, 1);
+    w64(sl + 0x00, !j->slot_off);
     w64(sl + 0x10, (u64)j->clo | (u64)j->chi << 10 | (u64)j->alpha << 32);
     w64(sl + 0x20, (u64)(j->sx0 << 16) | (u64)(j->sx1 << 16) << 32);
     w64(sl + 0x28, (u64)(j->sy0 << 16) | (u64)(j->sy1 << 16) << 32);
     w64(sl + 0x30, (u64)j->dx0 | (u64)j->dx1 << 16 | (u64)j->dy0 << 32 | (u64)j->dy1 << 48);
-    w64(sl + 0x40, 0x44 | (u64)(j->iw - 1) << 32 | (u64)(j->ih - 1) << 46);
+    w64(sl + 0x40, (j->in_fmt ? j->in_fmt : 0x44) | (u64)(j->iw - 1) << 32 | (u64)(j->ih - 1) << 46);
     w64(sl + 0x48, (u64)(pitch(j->iw) - 1) | (u64)(j->ih - 1) << 14 | (u64)(pitch(j->iw) / 2 - 1) << 32 |
                        (u64)((j->ih + 1) / 2 - 1) << 46);
     if (j->matrix) {
@@ -115,7 +120,7 @@ static void job_setup(const Job* j) {
     regs[0x400 / 4] = (u32)((BASE + IN_Y) >> 8);
     regs[0x404 / 4] = (u32)((BASE + IN_C) >> 8);
     memset(arena + OUT_Y, SENT, (size_t)pitch(j->sw * bpp) * j->sh);
-    if (j->fmt == 0x44) memset(arena + OUT_C, SENT, (size_t)pitch(j->sw) * ((j->sh + 1) / 2));
+    if (yuv) memset(arena + OUT_C, SENT, (size_t)pitch(j->sw) * ((j->sh + 1) / 2));
 }
 static void in_fill(const Job* j, u8 y, u8 u, u8 v) {
     for (u32 row = 0; row < j->ih; row++) memset(arena + IN_Y + row * pitch(j->iw), y, j->iw);
@@ -231,12 +236,58 @@ static void target_odd_left(void) {
 }
 /* a target wholly right of a 64x4 surface: nothing is written, no row lands a row down */
 static void target_outside(void) {
-    Job j = {0x1F, 64, 4, 80, 120, 0, 3, 128, 4, 0, 127, 0, 3, 0, 127, 0, 3, 0, 0x3FF, 0x3FF, 0, 0};
+    Job j = {0x1F, 64, 4, 80, 120, 0, 3, 128, 4, 0, 127, 0, 3, 0, 127, 0, 3, 0, 0x3FF, 0x3FF, 0, 0, {0}, 0, 0};
     job_setup(&j);
     for (u32 row = 0; row < 4; row++) memset(arena + IN_Y + row * pitch(128), 100 + 20 * (int)row, 128);
     memset(arena + IN_C, 128, pitch(128) * 2);
     vic_execute(regs);
     CHECK(count_written(&j) == 0);
+}
+/* with no slot enabled, the target rectangle 2..13 takes the background colour (10 bit 1023, 512, 0, 1023 is 8 bit
+   255, 128, 0, 255) and the surface around it is left alone */
+static const u32 ORANGE[4] = {1023, 512, 0, 1023};
+static void background_without_slot(void) {
+    Job j = job16();
+    j.tl = j.tt = 2, j.tr = j.tb = 13;
+    j.slot_off = 1;
+    memcpy(j.bg, ORANGE, sizeof j.bg);
+    job_setup(&j);
+    vic_execute(regs);
+    const u8* p = px(&j, 2, 2);
+    CHECK(p[0] == 255 && p[1] == 128 && p[2] == 0 && p[3] == 255);
+    CHECK(count_written(&j) == 12 * 12 && !written(&j, 1, 2) && written(&j, 13, 13) && !written(&j, 14, 13));
+}
+/* a slot onto 4..11 of a 0..15 target: the background around it, the picture inside */
+static void background_ring(void) {
+    Job j = job16();
+    j.sx1 = j.sy1 = 7;
+    j.dx0 = j.dy0 = 4, j.dx1 = j.dy1 = 11;
+    memcpy(j.bg, ORANGE, sizeof j.bg);
+    job_setup(&j);
+    in_fill(&j, 100, 110, 120);
+    vic_execute(regs);
+    CHECK(px(&j, 0, 0)[0] == 255 && px(&j, 3, 4)[1] == 128 && px(&j, 12, 11)[2] == 0);
+    CHECK(px(&j, 4, 4)[0] == 100 && px(&j, 11, 11)[1] == 110 && px(&j, 11, 11)[2] == 120);
+    CHECK(count_written(&j) == 16 * 16);
+}
+/* input format 0x43 (NV21): V in each chroma pair's even byte, U in the odd one */
+static void nv21_in(void) {
+    Job j = job16();
+    j.in_fmt = 0x43;
+    job_setup(&j);
+    in_fill(&j, 100, 110, 120);
+    vic_execute(regs);
+    const u8* p = px(&j, 5, 5);
+    CHECK(p[0] == 100 && p[1] == 120 && p[2] == 110);
+}
+/* output format 0x43 (NV21): V written to each chroma pair's even byte */
+static void nv21_out(void) {
+    Job j = job16();
+    j.fmt = 0x43;
+    job_setup(&j);
+    in_fill(&j, 100, 110, 120);
+    vic_execute(regs);
+    CHECK(arena[OUT_Y] == 100 && arena[OUT_C] == 120 && arena[OUT_C + 1] == 110);
 }
 /* the renderer is handed the job only once it is up; before, the CPU composes it */
 static void gpu_only_once_up(void) {
@@ -264,6 +315,10 @@ int main(void) {
     target_odd_left();
     target_outside();
     gpu_only_once_up();
+    background_without_slot();
+    background_ring();
+    nv21_in();
+    nv21_out();
     printf("vic_compose: %u checks passed\n", checks);
     return 0;
 }

@@ -18,12 +18,14 @@
    cooperatively, one aligned word per load, into shared memory. The per pixel work then reads the window through
    shared memory instead of walking the block linear layout one byte at a time per texel.
 
+   The background colour fills the output config's target rectangle, and the slots compose over it.
+
    An invocation owns four output pixels in a row and writes their words (A8B8G8R8, X8B8G8R8 and A8R8G8B8: one
-   word per pixel; NV12: one luma word and, on even rows, one chroma word). Each output word has exactly one
-   owning invocation, so words are written without atomics: bytes an invocation does not own (outside the slot
-   rectangles, past the width) keep the values the host round-tripped through the buffer, exactly what the CPU
-   path leaves in guest memory. The planes are byte mirrors of guest memory, so the address math (pitch linear
-   rows or block linear GOBs) is the same as gpu/gpu.c's bl_offset.
+   word per pixel; NV12 and NV21: one luma word and, on even rows, one chroma word). Each output word has exactly
+   one owning invocation, so words are written without atomics: bytes an invocation does not own (outside the
+   target and slot rectangles, past the width) keep the values the host round-tripped through the buffer, exactly
+   what the CPU path leaves in guest memory. The planes are byte mirrors of guest memory, so the address math
+   (pitch linear rows or block linear GOBs) is the same as gpu/gpu.c's bl_offset.
 
    This shader is built twice (scripts/build-vic-shader.py). The default build is the happy path: the planes'
    rows are word aligned (the host checks every plane's pitch and block kind before it picks the pipeline), so
@@ -48,11 +50,14 @@ struct SlotDesc {
     int mat[12]; /* the color matrix rows: c00 c01 c02 c03 c10 ... c23 */
     uint mat_shift, mat_enable;
     uint alpha, clamp_lo, clamp_hi;
+    uint vu; /* NV21 input (0x43): V in each chroma pair's even byte */
     PlaneDesc iy, ic;
 };
 struct JobDesc {
     uint fmt, sw, sh, nslots;
-    PlaneDesc ol, oc; /* oc.lim is 0 when the format has no chroma */
+    PlaneDesc ol, oc;     /* oc.lim is 0 when the format has no chroma */
+    uint tx0, ty0, tw, th; /* the target rectangle the background fills, tw 0 for none */
+    uint bg[4];            /* the background colour, R G B A, 10 bit */
 };
 
 layout(std430, binding = 0) readonly buffer Params {
@@ -195,15 +200,20 @@ void main() {
     }
     barrier();
 
-    /* the pixels this invocation owns: the last slot in slot order that covers one composes it */
-    bool nv12 = ps.job.fmt == 0x44u;
+    /* the pixels this invocation owns: the last slot in slot order that covers one composes it, over the
+       background inside the target rectangle */
+    bool nv12 = ps.job.fmt == 0x43u || ps.job.fmt == 0x44u;
+    uint vu = ps.job.fmt == 0x43u ? 1u : 0u; /* NV21 out: V in each chroma pair's even byte */
     uint px = x0 + gl_LocalInvocationID.x * 4u, py = y0 + gl_LocalInvocationID.y;
     uint luma = 0u, luma_mask = 0u;     /* the luma word bytes this invocation owns */
     uint chroma = 0u, chroma_mask = 0u; /* the chroma word bytes, for even rows */
     for (uint i = 0u; i < 4u; i++) {
         if (px + i >= ps.job.sw || py >= ps.job.sh) break;
-        bool covered = false;
-        uvec4 pix = uvec4(0); /* 10 bit channels: R, G, B hold the Y, U, V samples, A the planar alpha */
+        uint x = px + i;
+        bool covered =
+            x >= ps.job.tx0 && x - ps.job.tx0 < ps.job.tw && py >= ps.job.ty0 && py - ps.job.ty0 < ps.job.th;
+        /* 10 bit channels: R, G, B hold the Y, U, V samples, A the planar alpha */
+        uvec4 pix = uvec4(ps.job.bg[0], ps.job.bg[1], ps.job.bg[2], ps.job.bg[3]);
         for (uint s = 0u; s < 8u; s++) {
             if ((lmask & (1u << s)) == 0u) continue;
             SlotDesc sl = lslots[s];
@@ -215,8 +225,8 @@ void main() {
             uint k = sx - base;
             uint kc = (sx & ~1u) - base; /* 4:2:0 chroma covers pixel pairs */
             uint Y = win_byte(lwin_y[s][row][k >> 2], k);
-            uint U = win_byte(lwin_c[s][row][kc >> 2], kc);
-            uint V = win_byte(lwin_c[s][row][kc >> 2], kc + 1u);
+            uint U = win_byte(lwin_c[s][row][kc >> 2], kc + sl.vu); /* kc is even: the pair is in one word */
+            uint V = win_byte(lwin_c[s][row][kc >> 2], kc + 1u - sl.vu);
             ivec4 q = ivec4(int(Y << 2), int(U << 2), int(V << 2), int(sl.alpha));
             if (sl.mat_enable != 0u) {
                 int r = q.r * sl.mat[0] + q.g * sl.mat[1] + q.b * sl.mat[2];
@@ -248,7 +258,8 @@ void main() {
             /* chroma from G and B of the pixel pairs, on even rows only (a pair starts on an even pixel) */
             if ((py & 1u) == 0u && (i & 1u) == 0u) {
                 uint j = i; /* chroma bytes i and i + 1 hold the pair of pixel i */
-                chroma |= (((pix.g >> 2) & 0xFFu) << (j * 8u)) | (((pix.b >> 2) & 0xFFu) << ((j + 1u) * 8u));
+                chroma |= (((pix.g >> 2) & 0xFFu) << ((j + vu) * 8u)) |
+                          (((pix.b >> 2) & 0xFFu) << ((j + 1u - vu) * 8u));
                 chroma_mask |= (0xFFu << (j * 8u)) | (0xFFu << ((j + 1u) * 8u));
             }
         }
