@@ -40,18 +40,37 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void pc_init(PCond* c) { (void)c; }
 void pc_broadcast(PCond* c) { (void)c; }
-int pc_wait(PCond* c, PMutex* m, i64 n) { (void)c; (void)m; (void)n; abort(); }
-int plat_thread(PThreadFn fn, void* arg, size_t stack) { (void)fn; (void)arg; (void)stack; return 0; }
-void fatal(const char* fmt, ...) { (void)fmt; abort(); }
+int pc_wait(PCond* c, PMutex* m, i64 n) {
+    (void)c;
+    (void)m;
+    (void)n;
+    abort();
+}
+int plat_thread(PThreadFn fn, void* arg, size_t stack) {
+    (void)fn;
+    (void)arg;
+    (void)stack;
+    return 0;
+}
+void fatal(const char* fmt, ...) {
+    (void)fmt;
+    abort();
+}
 void vk_lock(void) { lock_depth++; }
-void vk_unlock(void) { assert(lock_depth); lock_depth--; }
+void vk_unlock(void) {
+    assert(lock_depth);
+    lock_depth--;
+}
 u64 gmmu_translate(u64 address) {
     if (address >= 0x10000 && address < 0x11000) return mapping + (address & 4095);
     if (address >= 0x20000 && address < 0x21000) return 4096 + (address & 4095);
     return 0;
 }
 u32 syncpt_read(u32 id) { return id < 128 ? completed[id] : 0; }
-void syncpt_incr(u32 id) { assert(lock_depth && vk_result_landing()); completed[id]++; }
+void syncpt_incr(u32 id) {
+    assert(lock_depth && vk_result_landing());
+    completed[id]++;
+}
 int gmem_write(u64 address, const void* data, u64 size) {
     assert(lock_depth && vk_result_landing());
     vk_release_need(address, size); /* the real memory layer reenters here */
@@ -61,14 +80,24 @@ int gmem_write(u64 address, const void* data, u64 size) {
     payload_writes++;
     return 1;
 }
-u8* gmem_ptr(u64 address, u64 size) { (void)address; (void)size; return NULL; }
+u8* gmem_ptr(u64 address, u64 size) {
+    (void)address;
+    (void)size;
+    return NULL;
+}
 int gmem_read(u64 address, void* data, u64 size) {
     vk_release_need(address, size);
     memcpy(data, memory + gmmu_translate(address), size);
     return 1;
 }
-void gpu_mem_written_shader(u64 address, u64 size) { (void)address; (void)size; }
-void vk_rt_before_write(u64 address, u64 size) { (void)address; (void)size; }
+void gpu_mem_written_shader(u64 address, u64 size) {
+    (void)address;
+    (void)size;
+}
+void vk_rt_before_write(u64 address, u64 size) {
+    (void)address;
+    (void)size;
+}
 void vk_compute_land_through(u64 gate) {
     assert(lock_depth && vk_result_landing());
     assert(waited_compute >= gate);
@@ -81,13 +110,25 @@ void vk_compute_land_through(u64 gate) {
     }
 }
 void vk_land_through(u64 gate) { assert(waited_graphics >= gate); }
-void vk_wait_submit(u64 gate) { if (gate > waited_graphics) waited_graphics = gate; }
-void vk_compute_wait(u64 gate) { if (gate > waited_compute) waited_compute = gate; }
+void vk_wait_submit(u64 gate) {
+    if (gate > waited_graphics) waited_graphics = gate;
+}
+void vk_compute_wait(u64 gate) {
+    if (gate > waited_compute) waited_compute = gate;
+}
 void vk_gfx_image_land(void) {}
-u64 vk_compute_put_aside(void) { u64 value = next_compute; next_compute = 0; return value; }
+u64 vk_compute_put_aside(void) {
+    u64 value = next_compute;
+    next_compute = 0;
+    return value;
+}
 int vk_buf_pending_any(void) { return pending; }
 int vk_buf_pending_unsubmitted(void) { return 0; }
-void vk_submit(u64 a, u64 b, u64 c) { (void)a; (void)b; (void)c; }
+void vk_submit(u64 a, u64 b, u64 c) {
+    (void)a;
+    (void)b;
+    (void)c;
+}
 u64 vk_last_submit(void) { return next_graphics; }
 
 int main(void) {
