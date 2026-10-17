@@ -109,6 +109,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT SNX_HACTOOL_ONLY)
                   URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
                   URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
                   DOWNLOAD_ONLY YES)
+    # RenderDoc's in-application API, one header (SNX_RENDERDOC, gpu/vk/renderdoc.c), from the release tag
+    CPMAddPackage(NAME renderdoc_app VERSION 1.46
+                  URL https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
+                  URL_HASH SHA256=b7005e7dc34c3635046868bbd76d81b9b055aede0f56daa0bd39fedee0639ffb
+                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
 endif()
 
 set(SNX_SDL3_FROM_SOURCE OFF)

@@ -12,6 +12,7 @@
 int unattended_ini(const char* k, const char* v); /* 1 when k is one of the options */
 int unattended_known(const char* k);              /* the same, nothing set */
 void unattended_start(void);                      /* time zero for seconds, press_at and the script */
+u64 unattended_ms(void);                          /* milliseconds since then */
 int unattended_active(void);                      /* seconds or frames is set: nobody is at the screen */
 /* the buttons the options hold now: HidNpadButton bits, and 40..47 for the stick directions (as keys, see
    input_key_sticks) */

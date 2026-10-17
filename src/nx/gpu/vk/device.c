@@ -607,6 +607,7 @@ int vk_init(void) {
         }
         volkInitializeCustom(gipa);
     }
+    vk_renderdoc_load(); /* its capture layer is enabled when the instance is created */
     if (!create_instance()) return 0;
     if (!g_opt_headless && !backend_vk_surface(g_vk.instance, &g_vk.surface)) {
         WARN("vulkan: the window backend could not create a surface\n");

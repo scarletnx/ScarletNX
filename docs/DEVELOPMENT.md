@@ -53,7 +53,7 @@ python3 tools/disasm.py "$work/Game" cf34240 cf343c0
 ```
 
 - Runtime: `--seconds=N` / `--frames=N`; `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
-  `--script=ms:hexbuttons,...`, `--press_len=ms` (default 300).
+  `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
   Masks: A/B/X/Y `1/2/4/8`, L/R `40/80`, ZL/ZR `100/200`, Plus/Minus `400/800`,
   left/up/right/down `1000/2000/4000/8000`.
 - `run_game.py`: Catherine New Game sequence by default; **`--script ""` disables it**.
@@ -61,6 +61,10 @@ python3 tools/disasm.py "$work/Game" cf34240 cf343c0
   Summary: exit, PC/symbol (`--dump`), frames/FPS. Unknown args pass through, e.g. `--fps_limit=0`.
 - Guest VAs: hex; disasm function queries: substrings. Disasm requires `llvm-objcopy` + `llvm-objdump`.
   `--log=2`: verbose; Windows `--profile=1`: `profile.txt` every 10 s.
+- `SNX_GPU_TRACE_TARGET=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
+  and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
+  shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
+  the range is one byte. It finds what produced a wrong intermediate target.
 
 ## Shaders
 

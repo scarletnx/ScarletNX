@@ -33,7 +33,7 @@ The runtime options behind it, for a run by hand from `games/<id>/` (`./<id> --s
 | `--frames=N` | Exit after N presented frames |
 | `--shot=PATH` | Screenshot to `PATH.ppm` at exit |
 | `--shot_every=N` | Also a numbered screenshot every N frames (`PATH_0000.ppm`, ...), needs `--shot` |
-| `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it) |
+| `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it). `Nf:hex` presses at present N instead, which a loaded machine (or RenderDoc's layer) doesn't shift for a game that advances one step per frame |
 | `--press=hex --press_at=ms` | One press, held `--press_len` ms too |
 | `-v` | Log every IPC call (`IPC <interface> cmd N`, `nn::audio::detail::IAudioOut` for an audout): huge, grep it |
 | `--fps_limit=0` | Unlimited frame rate |
@@ -67,6 +67,15 @@ The game's log, `games/<id>/<id>.log` in a checkout (a data folder keeps it in i
 - `threads.txt`, next to the game's log: every guest thread's state and wait, rewritten every 15 s. A hang is read from here.
 - `diag=1` in the game's `.ini` saves the QMD and program of each new compute shader (the first 32) to
   `games/<id>/captures/compute/`. F5 writes every game thread's state to the log at any time.
+- RenderDoc (installed by the user): `SNX_RENDERDOC=$SCRATCH/cap SNX_RENDERDOC_FRAMES=500,800` captures those
+  presents (one guest frame each; `45s` is the first frame after 45 s on the `--script` clock, steadier on a loaded machine) to `$SCRATCH/cap_capture*.rdc`, and the log says `renderdoc: captured present N`.
+  Run it with `SDL_VIDEO_DRIVER=x11`: RenderDoc has no Wayland surface, and on Wayland `vkCreateInstance` fails with
+  VK_ERROR_EXTENSION_NOT_PRESENT. The capture layer slows the game (to about 20 fps in one test), so pick presents the run
+  reaches, and expect a few hundred MB per capture. Captures hold the game's textures and buffers: they stay local.
+  A capture stops the GPU thread for seconds. A game that waits only 1 s for its frame fences and then goes on can
+  crash a little after a capture (one test game's arena deleter lists were overwritten): that crash is the capture's.
+  Replay from scripts with RenderDoc's Python module (not in the Arch package): build it from the same tag with
+  `-DENABLE_QRENDERDOC=OFF -DENABLE_PYRENDERDOC=ON` outside the repo and put its `lib/` on `sys.path`.
 
 Crash reports are handled with the `snx-crash` skill.
 

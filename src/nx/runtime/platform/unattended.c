@@ -7,8 +7,6 @@
 #include "nx/runtime/ini.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
-#include "nx/runtime/rtapi.h"
-#include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <limits.h>
@@ -105,6 +103,7 @@ int unattended_ini(const char* k, const char* v) {
 }
 int unattended_known(const char* k) { return ini_find(INI, k) != NULL; }
 void unattended_start(void) { g_start = plat_ns(); }
+u64 unattended_ms(void) { return (plat_ns() - g_start) / 1000000ull; }
 int unattended_active(void) { return g_seconds || g_maxframes >= 0; }
 u64 unattended_buttons(void) {
     u64 el = (plat_ns() - g_start) / 1000000ull, b = 0;

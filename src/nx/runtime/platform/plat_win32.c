@@ -264,6 +264,7 @@ int plat_vm_commit(u8* p, u64 size) {
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, size, MEM_DECOMMIT); }
 void* plat_dl_open(const char* path) { return (void*)LoadLibraryA(path); }
 void* plat_dl_sym(void* h, const char* n) { return (void*)GetProcAddress((HMODULE)h, n); }
+int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
 const char* plat_dl_error(void) {
     static __thread char buf[300];
     DWORD e = GetLastError();

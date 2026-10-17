@@ -11,9 +11,8 @@
 static u64 g_now;
 u64 test_ns(void) { return g_now; }
 int g_frames;
-const Renderer* g_renderer;
 void snx_save_before_exit(void) {}
-void ini_poll(int final) { (void)final; }
+void ini_poll(int final) { (void) final; }
 void plat_exit_now(int code) { exit(code); }
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
@@ -57,6 +56,7 @@ int main(void) {
     /* a present skipped over (frames go by two at a time) still presses */
     CHECK(at(5000, 21) == 0x400, "Plus once past present 20: %llx", (unsigned long long)at(5000, 21));
     CHECK(at(9000, 400) == 0, "each press once: %llx", (unsigned long long)at(9000, 400));
+    CHECK(unattended_ms() == 9000, "the clock --script counts from: %llu", (unsigned long long)unattended_ms());
     unattended_ini("script", "1000:1,5f:2,20f:400");
     CHECK(at(9001, 401) == 0, "reloading unchanged script does not replay completed presses");
     unattended_ini("script", "402f:1");

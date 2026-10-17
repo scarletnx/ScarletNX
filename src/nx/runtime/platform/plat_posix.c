@@ -347,6 +347,7 @@ const char* plat_dl_error(void) {
     const char* e = dlerror();
     return e ? e : "no error reported";
 }
+int plat_setenv(const char* name, const char* value) { return setenv(name, value, 1); }
 int plat_is_dir(const char* p) {
     struct stat s;
     return !stat(p, &s) && S_ISDIR(s.st_mode);

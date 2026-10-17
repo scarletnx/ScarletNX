@@ -177,6 +177,12 @@ install(FILES "${Vulkan-Headers_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/
 install(DIRECTORY "${Vulkan-Headers_SOURCE_DIR}/LICENSES" DESTINATION ${licenses}/Vulkan-Headers)
 install(FILES "${volk_SOURCE_DIR}/LICENSE.md" DESTINATION ${licenses}/volk)
 install(FILES "${VulkanMemoryAllocator_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/VulkanMemoryAllocator)
+# renderdoc_app.h's license is the comment at the top of the header
+file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)
+string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)
+string(SUBSTRING "${renderdoc_app}" 0 ${renderdoc_app_end} renderdoc_app)
+file(WRITE "${CMAKE_BINARY_DIR}/renderdoc_app-LICENSE.txt" "${renderdoc_app}*/\n")
+install(FILES "${CMAKE_BINARY_DIR}/renderdoc_app-LICENSE.txt" DESTINATION ${licenses}/renderdoc_app RENAME LICENSE.txt)
 install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/OpenSSL)
 # lib/LICENSE is the library's BSD-2-Clause. The top-level LICENSE covers the rest of LZ4 (GPL-2.0-or-later), none
 # of which is built here

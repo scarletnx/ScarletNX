@@ -63,7 +63,8 @@ int plat_vm_commit(u8* p, u64 size);
 void plat_vm_decommit(u8* p, u64 size);
 void* plat_dl_open(const char* path);
 void* plat_dl_sym(void* h, const char* name);
-const char* plat_dl_error(void); /* why the last plat_dl_open or plat_dl_sym failed */
+const char* plat_dl_error(void);                      /* why the last plat_dl_open or plat_dl_sym failed */
+int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
 int plat_is_dir(const char* path);
 typedef struct {
     void* h;
