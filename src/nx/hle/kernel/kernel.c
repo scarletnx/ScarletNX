@@ -106,8 +106,14 @@ void wake(KThread* t, int result) {
     t->wait_result = result;
     pc_signal(&t->cv);
 }
+/* as on the console, the signal itself ends the waits: each waiter returns with the object as signaled, even when a
+   thread that ran first clears it (an event's ResetSignal) before the waiter looks. The first signal names the object */
 void kobj_signal_nl(KObj* o) {
-    for (int i = 0; i < o->nwait; i++) wake(o->waiters[i], 0);
+    for (int i = 0; i < o->nwait; i++) {
+        KThread* t = o->waiters[i];
+        if (!t->woken) t->wait_obj = o;
+        wake(t, 0);
+    }
 }
 /* call with the lock held. 1 = woken, 0 = timeout */
 int sleep_nl(KThread* t, i64 timeout) {

@@ -72,6 +72,7 @@ struct KThread {
     u32 wait_tag;
     KThread* lock_owner; /* while it waits on a mutex (wait_kind 2): the mutex's owner, who inherits its priority */
     int wait_result;
+    KObj* wait_obj; /* the object whose signal ended its WaitSynchronization (kobj_signal_nl), NULL for other wakes */
     KThread* next_waiter;
     char name[32];
     const char* wait_name;

@@ -315,6 +315,7 @@ static u32 wait_sync_nl(KThread* t, KObj** objs, u32 n, i64 timeout, u32* out_id
             rem = (i64)(end - now);
         }
         t->woken = 0;
+        t->wait_obj = NULL;
         t->wait_kind = 1;
         t->wait_name = n ? objs[0]->name : "no handles";
         t->wait_tid = n && objs[0]->type == KO_THREAD ? ((KThread*)objs[0])->id : 0;
@@ -323,6 +324,13 @@ static u32 wait_sync_nl(KThread* t, KObj** objs, u32 n, i64 timeout, u32* out_id
         sleep_nl(t, rem);
         for (u32 i = 0; i < n; i++) waiter_del(objs[i], t);
         t->wait_kind = 0;
+        /* a signal ended the wait: that object, whatever its state now. Looking again lost the wake when another
+           waiter on the event ran first and reset it (ResetSignal), and this one waited for good */
+        for (u32 i = 0; t->wait_obj && i < n; i++)
+            if (objs[i] == t->wait_obj) {
+                *out_idx = i;
+                return 0;
+            }
         if (t->cancel) { /* svcCancelSynchronization ended this wait */
             t->cancel = 0;
             return R_CANCELLED;
