@@ -13,6 +13,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*), size_t d
     o->name = name;
     o->dispatch = dispatch;
     o->refs = 1;
+    o->ptrbuf = 0x8000;
     if (ds) o->data = calloc(1, ds);
     return o;
 }
@@ -533,7 +534,7 @@ static void control(IpcCtx* c, KSession* s) {
             out_move_h(c, h_new(&ns->o));
             break;
         }
-        case 3: out32(c, 0x8000); break; /* QueryPointerBufferSize */
+        case 3: out32(c, s->obj->ptrbuf); break; /* QueryPointerBufferSize */
         default:
             if (ipc_warn_once("IPC control", c->cmd)) WARN("IPC: control command %u not handled\n", c->cmd);
             c->rc = RC(10, 221); /* sf::cmif UnknownCommandId */

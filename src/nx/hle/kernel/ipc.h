@@ -56,6 +56,9 @@ typedef struct SvcObj {
     int (*dispatch)(struct SvcObj* self, IpcCtx* ctx);
     void (*destroy)(struct SvcObj* self);
     int refs;
+    /* its server's pointer buffer, which QueryPointerBufferSize answers: 0x8000 unless the service sets another. libnx
+       sends an AutoSelect buffer through the pointer buffer when it fits there, and mapped otherwise */
+    u32 ptrbuf;
     void* data;
     u64 u[8];
 } SvcObj;
@@ -118,13 +121,20 @@ static inline IpcBuf ipc_buf_auto(const IpcBuf* map, int nmap, int i, const IpcB
     IpcBuf b = ipc_buf(map, nmap, i);
     return b.addr ? b : ipc_buf(ptr, nptr, j);
 }
+/* whether the X descriptors past the first nx carry nothing: the empty half of an AutoSelect buffer that libnx sends
+   beside the mapped one a command takes, which the console takes (edenprobe's nsd Resolve) */
+static inline int ipc_x_extra_empty(const IpcCtx* c, int nx) {
+    for (int i = nx; i < c->nx; i++)
+        if (c->x[i].size) return 0;
+    return 1;
+}
 /* whether a request sends what its command declares, as sf's HipcCommandProcessor checks it: the pid flag, the A, B
-   and X descriptors (an AutoSelect buffer counts in both of its lists), no exchange buffer, the copy handles, and at
-   least the command's raw data: raw bytes, or tipc_raw for a TIPC request, whose pid has no raw slot. C
-   descriptors aren't checked */
+   and X descriptors (an AutoSelect buffer counts in both of its lists, and an X descriptor past them must be empty),
+   no exchange buffer, the copy handles, and at least the command's raw data: raw bytes, or tipc_raw for a TIPC
+   request, whose pid has no raw slot. C descriptors aren't checked */
 static inline int ipc_counts(const IpcCtx* c, int pid, int na, int nb, int nx, int ncopy, u32 raw, u32 tipc_raw) {
-    return c->has_pid == pid && c->na == na && c->nb == nb && c->nx == nx && !c->nw && c->ncopy == ncopy &&
-           c->raw_size >= (c->tipc ? tipc_raw : raw);
+    return c->has_pid == pid && c->na == na && c->nb == nb && c->nx >= nx && ipc_x_extra_empty(c, nx) && !c->nw &&
+           c->ncopy == ncopy && c->raw_size >= (c->tipc ? tipc_raw : raw);
 }
 /* and a domain request, the objects it declares (sf's DomainServiceObjectProcessor, which checks them first) */
 static inline int ipc_objects(const IpcCtx* c, int nobj) { return !c->is_domain || c->nin_objs == nobj; }

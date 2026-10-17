@@ -303,6 +303,14 @@ int main(void) {
     request(3);
     ctx.na = 2, ctx.nx = 3, ctx.nb = 3, ctx.nw = 1;
     CHECK(thing->dispatch(thing, &ctx) == 0x3480B && bad_requests == 2);
+    /* an X descriptor past the declared ones: taken when it is empty, as the console takes the empty half of a libnx
+       AutoSelect buffer beside the mapped one a command declares, refused when it carries something */
+    request(3);
+    ctx.na = 2, ctx.nx = 4, ctx.nb = 3, ctx.x[3] = buf(0, 0);
+    CHECK(thing->dispatch(thing, &ctx) == 0);
+    request(3);
+    ctx.na = 2, ctx.nx = 4, ctx.nb = 3, ctx.x[3] = buf(0x9000, 4);
+    CHECK(thing->dispatch(thing, &ctx) == 0x3480B && bad_requests == 3);
 
     /* [4] objects in (a domain request) and out, handles out */
     request(4);

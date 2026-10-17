@@ -86,7 +86,9 @@ only read):
   is where to check a declaration.
 - Each buffer's attributes give its descriptor list: A, B, X or C, or A and X (B and C) for AutoSelect. Each list is
   numbered in declaration order, and an AutoSelect buffer takes the next index in both of its lists. The server uses
-  its mapped half when that has an address.
+  its mapped half when that has an address. Which half a libnx client fills depends on the server's pointer buffer,
+  which QueryPointerBufferSize answers: 0x8000, or what the service sets in its object's `ptrbuf` (nsd's is 0, as
+  the console's is).
 - Copy handles in come in declaration order. Out copy and move handles too, each kind numbered on its own, and out
   objects become move handles (sessions) ahead of the declared move handles on a plain session, and object ids after the
   data on a domain. An out object a handler leaves NULL is handle 0 or id 0 (`respond` in `ipc.c`).
@@ -104,8 +106,9 @@ only read):
   page-aligned (InvalidAddress), whole pages (InvalidSize), and memory that allows IPC user buffers, read-write with no
   attribute, with one state and permission across the range (InvalidCurrentMemory): `ipc_user_buffer`.
 - A request has to send what its command declares: the pid flag when it takes `pid` or `aruid`, as many A, B and X
-  descriptors (an AutoSelect buffer counts in both of its lists), no exchange (W) buffer, as many copy handles, and at
-  least the command's raw data. Otherwise it is answered with sf's InvalidCmifRequest, RC(11, 420), before the handler
+  descriptors (an AutoSelect buffer counts in both of its lists, and X descriptors past them must be empty: the
+  console takes the empty half of a libnx AutoSelect buffer beside the mapped one a command declares), no exchange (W)
+  buffer, as many copy handles, and at least the command's raw data. Otherwise it is answered with sf's InvalidCmifRequest, RC(11, 420), before the handler
   runs, and logged as `[bad request]` (`ipc_counts` and `ipc_bad_request`), as Atmosphère's HipcCommandProcessor checks
   it. C descriptors aren't counted. A domain request with another number of objects is answered InvalidNumInObjects
   (`ipc_objects`), checked before the rest as sf's DomainServiceObjectProcessor does, and a command that takes objects

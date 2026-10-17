@@ -260,9 +260,22 @@ static int nn_socket_resolver_IResolver_GetCancelHandleRequest(SvcObj* self, u64
 }
 SvcObj* new_sfdnsres(void) { return nn_socket_resolver_IResolver_new(0); }
 
+#define NSD_ENVIRONMENT "lp1" /* the retail network environment, GetEnvironmentIdentifier's */
+/* the name with each '%', the console's placeholder (accounts.%.ndas.srv.nintendo.net), replaced by the environment,
+   as the console's nsd does (edenprobe: probe-%.edenprobe.invalid comes back probe-lp1.edenprobe.invalid). A name
+   too long for the 0x100 bytes is cut there */
 static int resolve(IpcBuf fqdn_in, IpcBuf fqdn_out) {
-    char fqdn[0x100];
-    buf_string(fqdn_in, fqdn, sizeof fqdn);
+    char name[0x100], fqdn[0x100];
+    buf_string(fqdn_in, name, sizeof name);
+    size_t n = 0;
+    for (const char* p = name; *p && n + 1 < sizeof fqdn; p++) {
+        if (*p != '%') {
+            fqdn[n++] = *p;
+            continue;
+        }
+        for (const char* e = NSD_ENVIRONMENT; *e && n + 1 < sizeof fqdn; e++) fqdn[n++] = *e;
+    }
+    fqdn[n] = 0;
     if (fqdn_out.addr) {
         u64 s = fqdn_out.size;
         memset(GP(fqdn_out.addr), 0, s < sizeof fqdn ? s : sizeof fqdn);
@@ -277,11 +290,22 @@ static int nn_nsd_detail_IManager_ResolveEx(SvcObj* self, IpcBuf fqdn_in, IpcBuf
     return resolve(fqdn_in, fqdn_out);
 }
 static int nn_nsd_detail_IManager_GetEnvironmentIdentifier(SvcObj* self, IpcBuf identifier) {
-    if (identifier.addr && identifier.size >= 8) memcpy(GP(identifier.addr), "lp1\0\0\0\0\0", 8);
+    if (identifier.addr && identifier.size >= 8) {
+        memset(GP(identifier.addr), 0, 8);
+        memcpy(GP(identifier.addr), NSD_ENVIRONMENT, sizeof NSD_ENVIRONMENT);
+    }
     return 0;
 }
 static int nn_nsd_detail_IManager_GetApplicationServerEnvironmentType(SvcObj* self, u8* type) {
     *type = 1; /* Lp (nn::oe's Dd is 0) */
     return 0;
 }
-SvcObj* new_nsd(void) { return nn_nsd_detail_IManager_new(0); }
+/* nsd's server has no pointer buffer to speak of: a libnx client sending its buffers AutoSelect, edenprobe's, gets its
+   8 byte environment identifier through B and a 0x100 byte name through A on the console, as the SDK's client sends
+   them (Diablo III's nn::nsd proxies: BufferArgumentInfo<0, 22, 8> and <1, 21, 256>), which libnx does only when they
+   don't fit the server's pointer buffer */
+SvcObj* new_nsd(void) {
+    SvcObj* o = nn_nsd_detail_IManager_new(0);
+    if (o) o->ptrbuf = 0;
+    return o;
+}
