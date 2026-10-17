@@ -293,13 +293,22 @@ void syncpt_add(u32 id, u32 n) {
     if (id >= SYNCPT_IDS || !n) return;
     pm_lock(&nv.sync_lk);
     u32 v = __atomic_add_fetch(&nv.syncpt[id], n, __ATOMIC_SEQ_CST);
-    if ((i32)(v - nv.syncpt_max[id]) > 0) nv.syncpt_max[id] = v; /* host1x and the CPU promise nothing first */
+    if ((i32)(v - nv.syncpt_max[id]) > 0) nv.syncpt_max[id] = v; /* the CPU promises nothing first */
     pc_broadcast(&nv.sync_cv);
     pm_unlock(&nv.sync_lk);
     nv_events_check();
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
+u32 syncpt_promise(u32 id, u32 n) {
+    if (id >= SYNCPT_IDS) return 0;
+    pm_lock(&nv.sync_lk);
+    if ((i32)(nv.syncpt_max[id] - nv.syncpt[id]) < 0) nv.syncpt_max[id] = nv.syncpt[id];
+    nv.syncpt_max[id] += n;
+    u32 v = nv.syncpt_max[id];
+    pm_unlock(&nv.sync_lk);
+    return v;
+}
 int syncpt_wait(u32 id, u32 thresh, i64 timeout) {
     if (id >= SYNCPT_IDS) return 0;
     pm_lock(&nv.sync_lk);
@@ -1066,11 +1075,7 @@ static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
             u32 host = (flags & 2) ? 2 : 0;
             u32 incs = host + ((flags & 0x100) ? fval : 0);
             pm_lock(&nv.submit_lk);
-            pm_lock(&nv.sync_lk);
-            if ((i32)(nv.syncpt_max[sp] - nv.syncpt[sp]) < 0) nv.syncpt_max[sp] = nv.syncpt[sp];
-            nv.syncpt_max[sp] += incs;
-            u32 promised = nv.syncpt_max[sp];
-            pm_unlock(&nv.sync_lk);
+            u32 promised = syncpt_promise(sp, incs);
             gpu_submit(entries, num, sp, host, wait_id, fval, promised);
             pm_unlock(&nv.submit_lk);
             fid = sp;

@@ -26,7 +26,8 @@ static IoMap g_iom[1024];
 static int g_niom;
 /* PMUTEX_INIT, not pm_init: nvmap's FREE can get here before any channel opens, from any thread. g_iomlk keeps the
    table, held only to look it up or change it, so a FREE doesn't wait for a decode; g_hlk keeps the engines, held
-   around a job. The order: g_hlk, then g_iomlk, then nvdrv's nv.lock */
+   around a job's commands on its channel's worker, but not across a syncpoint wait in them (a VIC job waits there
+   for the NVDEC job before it). The order: a channel's lock or g_hlk, then g_iomlk, then nvdrv's locks */
 static PMutex g_iomlk = PMUTEX_INIT;
 static PMutex g_hlk = PMUTEX_INIT;
 static u64 iova_span(u32 size) { return (((u64)size + 0xFFFFu) & ~0xFFFFull) + IOVA_GUARD; }
@@ -103,14 +104,34 @@ u8* iova_ptr(u64 iova, u64 len) {
 /* A channel is one nvdrv fd, as on the console: the game opens two NVDEC and two VIC fds per movie and sends a
    stream's jobs through one of them, so the registers and the decoder (its reference pictures and headers) stay with
    their stream. The engines only meet in guest memory: NVDEC writes each picture into the surface its job names, and
-   VIC reads its input slot from there */
+   VIC reads its input slot from there.
+   As on the console, SUBMIT returns before the engine runs the job: the fences it hands back are the values its
+   syncpoint increments are promised to reach, and the channel's worker thread runs its jobs in order and makes the
+   increments after each. A VIC job's stream waits for the NVDEC picture it composes with the host class's syncpoint
+   wait. Run inside the ioctl, a job held the game's submitting thread for the whole decode or composition, and with
+   it whatever lock the game held around the submit */
 #define H1_NSYNCPT 16 /* the syncpoint indexes GET_SYNCPOINT takes, nvhost's NVHOST_MODULE_MAX_SYNCPTS */
+#define H1_QUEUE   64 /* jobs submitted and not run yet, at most: a submit past them waits for room */
+/* a submitted job, one allocation: w holds ncb command buffer lengths, nsp {syncpoint id, increments} pairs, then the
+   command buffers' words, copied at the submit */
+typedef struct {
+    u32 ncb, nsp;
+    u32 w[];
+} H1Job;
 struct H1Ch {
     int is_vic;
     u32 syncpt[H1_NSYNCPT]; /* 0 until GET_SYNCPOINT asks for it */
+    NvdecCtx* dec;          /* NVDEC channels only */
+    /* lk: the ioctls' state above and the queue. The worker alone touches the engine state below it */
+    PMutex lk;
+    PCond cv; /* a job queued, a job done, the worker gone */
+    H1Job* q[H1_QUEUE];
+    u32 head, tail; /* jobs queued, jobs done */
+    int worker;     /* the worker thread runs */
+    int closing;    /* the fd closed: the worker ends once the queue is empty */
     u32 regs[0x1000 / 4];
     u32 method;
-    NvdecCtx* dec; /* NVDEC channels only */
+    u32 payload; /* the host class's LOAD_SYNCPT_PAYLOAD_32, the threshold of its WAIT_SYNCPT_32 */
 };
 static void dev_method(H1Ch* ch, u32 m, u32 v) {
     if (m >= 0x1000 / 4) return; /* past the register file: m << 2 would wrap onto a real register, even 0x300 */
@@ -123,10 +144,28 @@ static void dev_method(H1Ch* ch, u32 m, u32 v) {
             nvdec_execute(ch->dec, ch->regs);
     }
 }
+/* the host class's syncpoint wait, without the engines' lock: the job it waits for may be another channel's. The
+   console waits as long as it takes. Here a wait gives up after two seconds, as the GPU's stream waits do (gpu_park),
+   so a fence nothing reaches can't stop the channel for good */
+static void wait_syncpt(H1Ch* ch, u32 id, u32 thresh) {
+    pm_unlock(&g_hlk);
+    if (!syncpt_wait(id, thresh, 2000000000))
+        WARN_LIMIT(8, "video: %s job waited 2 s for syncpoint %u to reach %u (it is at %u), and goes on\n",
+                   ch->is_vic ? "vic" : "nvdec", id, thresh, syncpt_read(id));
+    pm_lock(&g_hlk);
+}
 static void reg_write(H1Ch* ch, u32 cls, u32 off, u32 v) {
-    /* the host1x class itself: its increments are counted from the submit, and its waits are dropped. One on an NVDEC
-       or VIC syncpoint is met already (the engines run inside the ioctl), one on any other fence isn't honored */
-    if (cls == 0x1) return;
+    /* the host class: its waits are honored (host1x's WAIT_SYNCPT, LOAD_SYNCPT_PAYLOAD_32 and WAIT_SYNCPT_32), and
+       its increments come from the submit's list once the job has run */
+    if (cls == 0x1) {
+        if (off == 0x08)
+            wait_syncpt(ch, v >> 24, v & 0xFFFFFF);
+        else if (off == 0x4E)
+            ch->payload = v;
+        else if (off == 0x50)
+            wait_syncpt(ch, v, ch->payload);
+        return;
+    }
     if (off == 0x10)
         ch->method = v;
     else if (off == 0x11)
@@ -184,10 +223,49 @@ H1Ch* host1x_open(int is_vic) {
         free(ch);
         return NULL;
     }
+    pm_init(&ch->lk);
+    pc_init(&ch->cv);
     return ch;
+}
+/* a job's command buffers, then the syncpoint increments that say it is done */
+static void job_run(H1Ch* ch, const H1Job* j) {
+    const u32* inc = j->w + j->ncb;
+    const u32* words = inc + (u64)j->nsp * 2;
+    pm_lock(&g_hlk);
+    for (u32 i = 0; i < j->ncb; i++) {
+        run_words(ch, words, j->w[i]);
+        words += j->w[i];
+    }
+    pm_unlock(&g_hlk);
+    for (u32 i = 0; i < j->nsp; i++) syncpt_add(inc[i * 2], inc[i * 2 + 1]);
+}
+/* the channel's worker: its jobs in order, until the fd closes and the queue is empty */
+static void ch_worker(void* p) {
+    H1Ch* ch = p;
+    pm_lock(&ch->lk);
+    for (;;) {
+        while (ch->head == ch->tail && !ch->closing) pc_wait(&ch->cv, &ch->lk, -1);
+        if (ch->head == ch->tail) break;
+        H1Job* j = ch->q[ch->tail % H1_QUEUE];
+        pm_unlock(&ch->lk);
+        job_run(ch, j);
+        free(j);
+        pm_lock(&ch->lk);
+        ch->tail++;
+        pc_broadcast(&ch->cv); /* room for a submit, or the close waiting for the queue */
+    }
+    ch->worker = 0;
+    pc_broadcast(&ch->cv);
+    pm_unlock(&ch->lk);
 }
 void host1x_close(H1Ch* ch) {
     if (!ch) return;
+    /* the jobs queued run first: the game may still wait for their increments, and the syncpoints go back below */
+    pm_lock(&ch->lk);
+    ch->closing = 1;
+    pc_broadcast(&ch->cv);
+    while (ch->worker) pc_wait(&ch->cv, &ch->lk, -1);
+    pm_unlock(&ch->lk);
     pm_lock(&g_hlk);
     for (int i = 0; i < H1_NSYNCPT; i++)
         if (ch->syncpt[i]) syncpt_free(ch->syncpt[i]);
@@ -208,67 +286,93 @@ static int ch_owns(const H1Ch* ch, u32 id) {
         if (ch->syncpt[i] == id) return 1;
     return 0;
 }
+/* SUBMIT: counts, cmdbufs {memid, offset, words}, relocs, reloc shifts, syncpt incrs {id, n, ?x3}, fence thresholds
+   (u32 each, written back). The job is copied and queued for the channel's worker, with ch->lk held */
+static u32 ch_submit(H1Ch* ch, u8* d, u32 n) {
+    const char* eng = ch->is_vic ? "vic" : "nvdec";
+    u32 ncb = rd32(d, 0), nrel = rd32(d, 4), nsp = rd32(d, 8), nfe = rd32(d, 12);
+    /* in 64 bits: counts from the game can wrap a u32 sum back under n */
+    u64 cbo = 16, spo = cbo + (u64)ncb * 12 + (u64)nrel * 16 + (u64)nrel * 4, feo = spo + (u64)nsp * 20;
+    if (feo > n) return 4; /* BadParameter */
+    /* an increment of a syncpoint the channel doesn't own refuses the whole submit, before it runs */
+    u32 k = 0;
+    while (k < nsp && ch_owns(ch, rd32(d, (u32)(spo + (u64)k * 20)))) k++;
+    if (k < nsp) {
+        WARN_LIMIT(4, "video: %s submit increments syncpoint %u, not one of its channel's, refused\n", eng,
+                   rd32(d, (u32)(spo + (u64)k * 20)));
+        return 4;
+    }
+    if (nrel) LOG_LIMIT(1, "video: %s submit has %u relocations, which aren't applied\n", eng, nrel);
+    /* the command buffers' words: a buffer that can't be read is left out (length 0), and the job's increments still
+       happen so the game doesn't wait forever on them. src keeps where each lies in guest memory (0 left out): a second
+       nvmap_get could find the handle freed or changed by another thread meanwhile. The memory stays guest memory */
+    u64* src = malloc((ncb ? ncb : 1) * sizeof *src);
+    if (!src) return 6; /* InsufficientMemory */
+    u64 words = 0;
+    for (u32 i = 0; i < ncb; i++) {
+        u32 cb = (u32)(cbo + (u64)i * 12);
+        u32 mem = rd32(d, cb), off = rd32(d, cb + 4), wc = rd32(d, cb + 8);
+        u64 a;
+        u32 msz;
+        nvmap_get(mem, &a, &msz);
+        /* host1x gathers words: an offset that isn't one would read u32s at a misaligned address */
+        if (!a || !wc || wc > 0x100000 || (off & 3) || (u64)off + (u64)wc * 4 > msz) {
+            LOG_LIMIT(4, "video: %s command buffer skipped (nvmap %u, offset %x, %u words, buffer %u bytes)\n", eng,
+                      mem, off, wc, msz);
+            src[i] = 0;
+            continue;
+        }
+        src[i] = a + off;
+        words += wc;
+    }
+    u64 nw = (u64)ncb + (u64)nsp * 2 + words;
+    H1Job* j = nw > (1u << 24) ? NULL : malloc(sizeof *j + nw * sizeof j->w[0]); /* 64 MB of commands is no job */
+    if (!j) {
+        WARN_LIMIT(4, "video: %s submit of %llu words refused\n", eng, (unsigned long long)nw);
+        free(src);
+        return nw > (1u << 24) ? 4 : 6;
+    }
+    j->ncb = ncb;
+    j->nsp = nsp;
+    u32* inc = j->w + ncb;
+    u32* w = inc + (u64)nsp * 2;
+    for (u32 i = 0; i < ncb; i++) {
+        u32 wc = src[i] ? rd32(d, (u32)(cbo + (u64)i * 12) + 8) : 0;
+        if (wc) memcpy(w, GP(src[i]), (size_t)wc * 4);
+        j->w[i] = wc;
+        w += wc;
+    }
+    free(src);
+    while (ch->head - ch->tail == H1_QUEUE) pc_wait(&ch->cv, &ch->lk, -1);
+    /* each fence is the value its syncpoint reaches with this job's increments, promised in the order the jobs run */
+    for (u32 i = 0; i < nsp; i++) {
+        u32 sp = (u32)(spo + (u64)i * 20);
+        u32 id = rd32(d, sp), v = syncpt_promise(id, rd32(d, sp + 4));
+        inc[i * 2] = id;
+        inc[i * 2 + 1] = rd32(d, sp + 4);
+        if (i < nfe && feo + (u64)i * 4 + 4 <= n) memcpy(d + feo + (u64)i * 4, &v, 4);
+    }
+    ch->q[ch->head % H1_QUEUE] = j;
+    ch->head++;
+    if (!ch->worker) {
+        ch->worker = 1;
+        if (plat_thread(ch_worker, ch, (size_t)1 << 20)) fatal("could not start a video engine's thread");
+    }
+    pc_broadcast(&ch->cv);
+    LOG_LIMIT(3, "video: %s submit: %u command buffers, %u relocs, %u syncpoint increments, %u fences (%u bytes)\n",
+              eng, ncb, nrel, nsp, nfe, n);
+    return 0;
+}
 u32 host1x_ioctl(H1Ch* ch, u32 cmd, u8* d, u32 n) {
     int is_vic = ch->is_vic;
-    pm_lock(&g_hlk);
+    pm_lock(&ch->lk);
     u32 r = 0, grp = (cmd >> 8) & 0xFF, nr = cmd & 0xFF;
     if (grp == 0x48) {
         if (nr != 0x01) /* SET_NVMAP_FD: nvmap is one device here */
             LOG_LIMIT(8, "video: %s ioctl %08x not handled\n", is_vic ? "vic" : "nvdec", cmd);
     } else if (grp == 0)
         switch (nr) {
-            case 0x01: { /* SUBMIT: counts, cmdbufs {memid, offset, words}, relocs, reloc shifts, syncpt incrs {id, n, ?x3}, fence thresholds (u32 each, written back) */
-                u32 ncb = rd32(d, 0), nrel = rd32(d, 4), nsp = rd32(d, 8), nfe = rd32(d, 12);
-                /* in 64 bits: counts from the game can wrap a u32 sum back under n */
-                u64 cbo = 16, spo = cbo + (u64)ncb * 12 + (u64)nrel * 16 + (u64)nrel * 4, feo = spo + (u64)nsp * 20;
-                if (feo > n) {
-                    r = 4; /* BadParameter */
-                    break;
-                }
-                /* an increment of a syncpoint the channel doesn't own refuses the whole submit, before it runs */
-                u32 k = 0;
-                while (k < nsp && ch_owns(ch, rd32(d, (u32)(spo + (u64)k * 20)))) k++;
-                if (k < nsp) {
-                    WARN_LIMIT(4, "video: %s submit increments syncpoint %u, not one of its channel's, refused\n",
-                               is_vic ? "vic" : "nvdec", rd32(d, (u32)(spo + (u64)k * 20)));
-                    r = 4;
-                    break;
-                }
-                if (nrel)
-                    LOG_LIMIT(1, "video: %s submit has %u relocations, which aren't applied\n",
-                              is_vic ? "vic" : "nvdec", nrel);
-                for (u32 i = 0; i < ncb; i++) {
-                    u32 cb = (u32)(cbo + (u64)i * 12);
-                    u32 mem = rd32(d, cb), off = rd32(d, cb + 4), wc = rd32(d, cb + 8);
-                    u64 a;
-                    u32 msz;
-                    nvmap_get(mem, &a, &msz);
-                    /* host1x gathers words: an offset that isn't one would read u32s at a misaligned address */
-                    if (!a || !wc || wc > 0x100000 || (off & 3) || (u64)off + (u64)wc * 4 > msz) {
-                        /* the job is lost, but its syncpoint increments below still happen so the game doesn't wait
-                           forever on them */
-                        LOG_LIMIT(4,
-                                  "video: %s command buffer skipped (nvmap %u, offset %x, %u words, buffer %u bytes)\n",
-                                  is_vic ? "vic" : "nvdec", mem, off, wc, msz);
-                        continue;
-                    }
-                    run_words(ch, (const u32*)GP(a + off), wc);
-                }
-                for (u32 i = 0; i < nsp; i++) {
-                    u32 sp = (u32)(spo + (u64)i * 20);
-                    u32 id = rd32(d, sp), inc = rd32(d, sp + 4);
-                    syncpt_add(id, inc);
-                    if (i < nfe && feo + (u64)i * 4 + 4 <= n) {
-                        u32 v = syncpt_read(id);
-                        memcpy(d + feo + (u64)i * 4, &v, 4);
-                    }
-                }
-                LOG_LIMIT(
-                    3,
-                    "video: %s submit: %u command buffers, %u relocs, %u syncpoint increments, %u fences (%u bytes)\n",
-                    is_vic ? "vic" : "nvdec", ncb, nrel, nsp, nfe, n);
-                break;
-            }
+            case 0x01: r = ch_submit(ch, d, n); break;
             case 0x02: { /* GET_SYNCPOINT: {u32 index, u32 id} */
                 u32 i = rd32(d, 0);
                 if (i >= H1_NSYNCPT) {
@@ -304,6 +408,6 @@ u32 host1x_ioctl(H1Ch* ch, u32 cmd, u8* d, u32 n) {
             }
         }
     else { LOG_LIMIT(8, "video: %s ioctl %08x not handled\n", is_vic ? "vic" : "nvdec", cmd); }
-    pm_unlock(&g_hlk);
+    pm_unlock(&ch->lk);
     return r;
 }

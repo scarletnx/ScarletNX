@@ -20,6 +20,9 @@ void syncpt_free(u32 id); /* the id can be handed out again */
 u32 syncpt_read(u32 id);
 void syncpt_incr(u32 id);
 void syncpt_add(u32 id, u32 n); /* n increments at once, with one wake of whoever waits */
+/* n increments a channel will make (a GPU submission's, a host1x job's), promised in the order it makes them: the
+   value they bring the syncpoint to, which the ioctl hands back as the fence and nvhost-ctrl's max reads */
+u32 syncpt_promise(u32 id, u32 n);
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
 /* queues fn(arg) on the GPU thread for vi's presents, after the submissions that promised the fences id[0..n) (n at
    most 4): a GPU channel's promised fence is reached by then unless a stream fell short (fn checks it). Any other
