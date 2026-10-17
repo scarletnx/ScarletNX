@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The core model of thread.c against the console's scheduler: a ready thread that would wait behind its core's holder
    runs on an idle core its mask allows, a core that falls idle takes a thread waiting for another one, a thread of
-   better priority stays and flags the holder, and only svcSleepThread(0) keeps a yielding thread on its core. The
+   better priority stays and flags the holder, and only svcSleepThread(0) keeps a yielding thread on its core. A yield
+   hands the core to a thread of the same priority or a better one, and only svcSleepThread(-2) to a worse one. The
    threads here are bare KThreads; each one that has to wait for a core waits on a host thread of its own */
 #include "nx/hle/kernel/thread.c"
 #include <stdarg.h>
@@ -131,11 +132,11 @@ static void* enter_body(void* p) {
 }
 typedef struct {
     KThread* t;
-    int migrate;
+    int migrate, any;
 } SnxKctYield;
 static void* yield_body(void* p) {
     SnxKctYield* y = (SnxKctYield*)p;
-    core_yield(y->t, y->migrate);
+    core_yield(y->t, y->migrate, y->any);
     return NULL;
 }
 
@@ -209,16 +210,16 @@ int main(void) {
     CHECK(b->on_core == 0, "45 got core %d", b->on_core);
     core_leave(b);
 
-    /* svcSleepThread(0) hands the core over and waits for it again, other cores idle or not */
+    /* svcSleepThread(0) hands the core to a thread of its priority and waits for it again, other cores idle or not */
     reset();
-    a = thread(0, 44, 0, 7), w = thread(3, 50, 0, 1);
+    a = thread(0, 44, 0, 7), w = thread(3, 44, 0, 1);
     core_enter(a);
     pthread_create(&h, NULL, enter_body, w);
-    CHECK(settle(w, -2) == -2, "50 with mask 1 waits: on core %d", w->on_core);
-    SnxKctYield y = {a, 0};
+    CHECK(settle(w, -2) == -2, "44 with mask 1 waits: on core %d", w->on_core);
+    SnxKctYield y = {a, 0, 0};
     pthread_create(&h2, NULL, yield_body, &y);
     pthread_join(h, NULL);
-    CHECK(w->on_core == 0 && settle(a, -2) == -2 && a->core == 0, "yield 0: 50 on %d, 44 on %d for %d", w->on_core,
+    CHECK(w->on_core == 0 && settle(a, -2) == -2 && a->core == 0, "yield 0: 44 on %d, 44 on %d for %d", w->on_core,
           on_core(a), a->core);
     core_leave(w);
     pthread_join(h2, NULL);
@@ -227,14 +228,34 @@ int main(void) {
 
     /* svcSleepThread(-1) hands it over and runs on an idle core */
     reset();
+    a = thread(0, 44, 0, 7), w = thread(3, 44, 0, 1);
+    core_enter(a);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "44 with mask 1 waits: on core %d", w->on_core);
+    y.t = a, y.migrate = 2;
+    pthread_create(&h2, NULL, yield_body, &y);
+    CHECK(settle(a, 1) == 1 && a->core == 1 && settle(w, 0) == 0, "yield -1: 44 on %d, 44 on %d", on_core(w),
+          on_core(a));
+    pthread_join(h, NULL);
+    core_leave(w);
+    pthread_join(h2, NULL);
+    core_leave(a);
+
+    /* neither svcSleepThread(0) nor (-1) lets a worse priority run: the yielding thread keeps its core */
+    reset();
     a = thread(0, 44, 0, 7), w = thread(3, 50, 0, 1);
     core_enter(a);
     pthread_create(&h, NULL, enter_body, w);
     CHECK(settle(w, -2) == -2, "50 with mask 1 waits: on core %d", w->on_core);
-    y.t = a, y.migrate = 2;
+    core_yield(a, 0, 0);
+    CHECK(on_core(a) == 0 && on_core(w) == -2, "yield 0 to 50: 44 on %d, 50 on %d", on_core(a), on_core(w));
+    core_yield(a, 2, 0);
+    CHECK(on_core(a) == 0 && on_core(w) == -2, "yield -1 to 50: 44 on %d, 50 on %d", on_core(a), on_core(w));
+
+    /* svcSleepThread(-2) does, and runs on an idle core */
+    y.t = a, y.migrate = 2, y.any = 1;
     pthread_create(&h2, NULL, yield_body, &y);
-    CHECK(settle(a, 1) == 1 && a->core == 1 && settle(w, 0) == 0, "yield -1: 50 on %d, 44 on %d", on_core(w),
-          on_core(a));
+    CHECK(settle(a, 1) == 1 && settle(w, 0) == 0, "yield -2: 50 on %d, 44 on %d", on_core(w), on_core(a));
     pthread_join(h, NULL);
     core_leave(w);
     pthread_join(h2, NULL);

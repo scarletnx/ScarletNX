@@ -87,8 +87,9 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
    core_poll), so a thread spinning in a loop lets go of its core within one round of it. A ready thread that would wait
    behind its core's holder runs on an idle core its mask allows instead, and a core that falls idle takes a thread
    waiting for another one, as the console's scheduler moves threads to idle cores (Ender Magnolia's threads all take
-   cores 0 to 2, and boot only when one runs beside a spinning one). A yield hands the core to any waiting thread, even
-   one of lower priority; only svcSleepThread(0) keeps the yielding thread on its core */
+   cores 0 to 2, and boot only when one runs beside a spinning one). A yield hands the core to a waiting thread of the
+   same priority or a better one, and only svcSleepThread(-2) to one of lower priority; only svcSleepThread(0) keeps
+   the yielding thread on its core */
 static PMutex g_core_lk;
 static PCond g_core_cv[NCORES];
 static KThread* g_core_owner[NCORES];
@@ -198,10 +199,15 @@ void core_preempt(KThread* t) {
 void core_poll(KThread* t) {
     if (t) core_preempt(t);
 }
-void core_yield(KThread* t, int migrate) {
-    int k = t->on_core;
-    /* nobody waits, and svcSetThreadCoreMask didn't move it meanwhile */
-    if (k < 0 || (__atomic_load_n(&g_core_best[k], __ATOMIC_RELAXED) == 64 && t->core == k)) return;
+void core_yield(KThread* t, int migrate, int any) {
+    int k = t->on_core, best;
+    if (k < 0) return;
+    /* svcSetThreadCoreMask didn't move it meanwhile, and nobody it yields to waits: only a thread of its own priority
+       (or a better one) unless the yield is to any thread. On the console a yield without or with core migration moves
+       the thread behind its own priority's queue (Atmosphère's KScheduler::YieldWithoutCoreMigration), so a thread of
+       lower priority never runs while this one could */
+    best = __atomic_load_n(&g_core_best[k], __ATOMIC_RELAXED);
+    if (t->core == k && (best == 64 || (!any && best > t->prio))) return;
     pm_lock(&g_core_lk);
     core_release_nl(t);
     core_wait_nl(t, migrate);

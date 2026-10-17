@@ -70,8 +70,9 @@ extern KThread* g_main;
 void process_exit(int code);
 extern int g_default_core; /* the main thread's core, which core -2 means in svcCreateThread and svcSetThreadCoreMask */
 void core_preempt(KThread* t); /* gives the core to a waiting thread of higher priority, then waits for it again */
-void core_yield(KThread* t, int migrate); /* gives the core to a waiting thread of any priority, then waits for it
-                                             again (migrate 2: or runs on an idle core of its mask) */
+/* gives the core to a waiting thread of the same or better priority (any: of any priority, svcSleepThread(-2)), then
+   waits for it again (migrate 2: or runs on an idle core of its mask) */
+void core_yield(KThread* t, int migrate, int any);
 void core_set_prio(KThread* t, int prio); /* the effective priority, which the core waiting lists pick by */
 
 /* sync.c */

@@ -301,8 +301,9 @@ static void snx_svc_(CPU* c, u32 imm) {
                    loading take minutes. A yield here hands the guest core to a waiting thread, if one waits, and
                    returns once it has the core back. Every 64th yield of a thread is still a host one, so a spin loop
                    can't starve a thread on its host CPU */
-                core_yield(t, ns ? 2 : 0); /* threads waiting for this core go first; 0 is the console's yield
-                                              without core migration, -1 and -2 may move it to an idle core */
+                /* 0 is the console's yield without core migration, -1 with it, -2 to any thread, of lower priority
+                   too; -1 and -2 may move it to an idle core */
+                core_yield(t, ns ? 2 : 0, ns == -2);
                 if (!(++t->yields & 63)) plat_yield();
             } else {
                 core_leave(t);

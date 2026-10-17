@@ -150,7 +150,8 @@ Guest thread = host thread + `CPU` + TLS. `hle/kernel/thread.c`: one owner/core,
 sleep/yield, IPC, WFE. Waiters: priority then FIFO; a waiter of higher priority takes the core at the holder's next SVC
 or backward branch, any taken branch in the interpreter (`CPU.poll`, `RtAPI.poll`). A ready thread that would wait
 behind its core's holder runs on an idle core of its mask, and an idle core takes such a waiter (only
-`svcSleepThread(0)` keeps a yielding thread on its core). A mutex owner runs at its best waiter's priority
+`svcSleepThread(0)` keeps a yielding thread on its core). A yield gives the core only to a waiter of the same or better
+priority, except `svcSleepThread(-2)`, which gives it to any waiter. A mutex owner runs at its best waiter's priority
 (`hle/kernel/sync.c`).
 
 `memory/mem.c`: one guest VA reservation; `GP(addr) = g_mem + addr`, accessed directly by generated code.
