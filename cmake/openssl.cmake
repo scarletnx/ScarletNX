@@ -112,9 +112,11 @@ else()
         INSTALL_DIR "${snx_openssl_prefix}"
         CONFIGURE_COMMAND ${snx_openssl_env} "${PERL_EXECUTABLE}" "${snx_openssl_src}/Configure"
                           --prefix=${snx_openssl_prefix} ${snx_openssl_args}
+        # install_dev, the headers and libraries without the programs and manuals, is part of the build step: the
+        # libraries below are its byproducts, which Ninja checks again as soon as the step ends (cmake/ffmpeg.cmake)
         BUILD_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" -j${snx_openssl_jobs} build_libs ${snx_openssl_make_cc}
-        # install_dev: the headers and libraries, without the programs and manuals
-        INSTALL_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" install_dev
+        COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" install_dev
+        INSTALL_COMMAND ""
         BUILD_BYPRODUCTS "${snx_openssl_prefix}/lib/libcrypto.a" "${snx_openssl_prefix}/lib/libssl.a"
         LOG_CONFIGURE ON
         LOG_BUILD ON

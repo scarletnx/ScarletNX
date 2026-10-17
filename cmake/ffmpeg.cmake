@@ -138,8 +138,12 @@ else()
         INSTALL_DIR "${snx_ffmpeg_prefix}"
         CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" --prefix=${snx_ffmpeg_prefix}
                           ${snx_ffmpeg_args}
+        # make install is part of the build step: the libraries below are its byproducts, which Ninja checks again as
+        # soon as the step ends. Installed by a later step, a rebuilt FFmpeg still looked unchanged then, and the
+        # runtime kept its link to the old one until the next build
         BUILD_COMMAND "${SNX_FFMPEG_MAKE}" -j${snx_ffmpeg_jobs} ${snx_ffmpeg_make_cc}
-        INSTALL_COMMAND "${SNX_FFMPEG_MAKE}" install
+        COMMAND "${SNX_FFMPEG_MAKE}" install
+        INSTALL_COMMAND ""
         BUILD_BYPRODUCTS "${snx_ffmpeg_prefix}/lib/libavcodec.a" "${snx_ffmpeg_prefix}/lib/libswresample.a"
                          "${snx_ffmpeg_prefix}/lib/libavutil.a"
         # configure and make print a lot: keep it in log files, shown when a step fails
