@@ -26,11 +26,12 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 void vk_rt_before_write(u64, u64);
+u64 vk_query_value(u64, u64);
 #include "nx/gpu/vk/release.c"
 #include "nx/gpu/vk/writeback.c"
 
 int g_gpu_releases;
-static unsigned lock_depth, landing_calls, payload_writes;
+static unsigned lock_depth, landing_calls, payload_writes, submits, query_reads;
 static u64 next_compute, next_graphics = 1, waited_compute, waited_graphics;
 static int pending, landing_probe;
 static u32 completed[128];
@@ -128,6 +129,13 @@ void vk_submit(u64 a, u64 b, u64 c) {
     (void)a;
     (void)b;
     (void)c;
+    submits++;
+}
+/* a made-up count of query.c's segments, read under the lock when a report is performed */
+u64 vk_query_value(u64 first, u64 end) {
+    assert(lock_depth && !vk_result_landing());
+    query_reads++;
+    return (end - first) * 100 + first;
 }
 u64 vk_last_submit(void) { return next_graphics; }
 
@@ -157,6 +165,21 @@ int main(void) {
     vk_release_incr(5);
     vk_release_retire(5);
     assert(completed[5] == 1 && g_rhead == g_rtail);
+    /* a samples-passed report waits behind a submit of its own even with nothing pending, and its count is read when
+       it is performed: the count, then the ticks, or the count's low word alone */
+    pending = 0;
+    unsigned before = submits;
+    vk_release_samples(0x10010, 16, 2, 5, 0x77);
+    assert(submits == before + 1 && g_rhead == g_rtail + 1 && query_reads == 0);
+    vk_release_need(0x10010, 16);
+    u64 report[2];
+    memcpy(report, memory + 1 + 0x10, 16);
+    assert(query_reads == 1 && report[0] == 302 && report[1] == 0x77 && g_rhead == g_rtail);
+    vk_release_samples(0x10030, 4, 7, 9, 0x99);
+    vk_release_drain();
+    u32 word;
+    memcpy(&word, memory + 1 + 0x30, 4);
+    assert(query_reads == 2 && word == 207 && memory[1 + 0x34] == 0);
     assert(lock_depth == 0);
     return 0;
 }

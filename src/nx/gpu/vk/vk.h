@@ -333,10 +333,23 @@ int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since t
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
 void vk_release_write(u64 gva, const void* data, u32 len);
 void vk_release_incr(u32 id);
+/* a samples-passed report: len bytes at gva (4, or 16 with ticks after the count), the count of query.c's segments
+   [first, end), once the GPU has done the submit it forces now */
+void vk_release_samples(u64 gva, u32 len, u64 first, u64 end, u64 ticks);
 void vk_release_need(u64 gva, u64 len);
 u32 vk_release_value(u32 id);
 void vk_release_retire(u32 id);
 void vk_release_drain(void);
+/* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
+   a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
+   (render.c), vk_query_flush outside a pass before a submit (cmd.c) */
+void vk_query_draw(VkCommandBuffer cb);
+void vk_query_pass_end(VkCommandBuffer cb);
+void vk_query_flush(VkCommandBuffer cb);
+void vk_query_reset(void);
+void vk_query_enable(int on);
+int vk_query_report(u64 gva, u32 len, u64 ticks);
+u64 vk_query_value(u64 first, u64 end); /* a report performed (release.c): the count of segments [first, end) */
 void vk_buf_mem_need_map(u64 gva, u64 len);
 void vk_buf_before_write(u64 gva, u64 len);
 void vk_buf_land(void);

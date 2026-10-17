@@ -76,6 +76,12 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
         gpu_park(ch, GPU_PARK_REPORT, addr, seq, (v >> 16) & 1);
     } else if (op == 2) { /* counter */
         u32 sel = (v >> 23) & 31;
+        /* samples passed is counted by the renderer once the game has reset it, and is a real value then */
+        if (sel == 0x15 && g_renderer_up && g_renderer->samples_report &&
+            g_renderer->samples_report(addr, ((v >> 28) & 1) ? 4 : 16, gpu_ticks())) {
+            fake_report_mark(addr, 0);
+            return;
+        }
         u64 val = sel == 0 ? 0 : (sel == 1 ? g_draws * 3 : 1000);
         if (ch && (ch->r3d_counter_reset_mask & (1u << sel))) {
             u64 draws = g_draws - ch->r3d_counter_base[sel];
@@ -221,6 +227,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             case 0x509:
             case 0x50A:
             case 0x54C:
+            case 0x545: /* SampleCounterEnable: the draw is counted as it was before */
             case 0x42B: /* DRAW_TEXTURE acts even when its argument repeats. */
             case 0x556: /* A repeated condition still rereads guest memory. */
             case 0x651:
@@ -238,7 +245,13 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     R3(m) = v;
     switch (m) {
         case 0x49: ch->r3d_shadow_mode = raw & 3; break;
-        case 0x54C: counter_reset(ch, v); break;
+        case 0x54C:
+            counter_reset(ch, v);
+            if (v == 1 && g_renderer_up && g_renderer->samples_reset) g_renderer->samples_reset(); /* samples passed */
+            break;
+        case 0x545: /* SampleCounterEnable */
+            if (g_renderer_up && g_renderer->samples_enable) g_renderer->samples_enable(v & 1);
+            break;
         case 0x44: /* WAIT_FOR_IDLE */
             gpu_signal_point();
             if (g_renderer_up && g_renderer->method_barrier) g_renderer->method_barrier(4);

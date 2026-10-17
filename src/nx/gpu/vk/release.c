@@ -22,6 +22,10 @@ typedef struct {
     u64 gva;   /* the payload's address, or 0 for a syncpoint increment */
     u32 id, len;
     u8 data[16];
+    /* samples: a samples-passed report (query.c), whose value is the count of segments [qfirst, qend), known once the
+       gate is done. data holds the timestamp after it */
+    int samples;
+    u64 qfirst, qend;
 } Release;
 #define RQ_N   1024 /* queued releases at most: a full queue performs its oldest at once */
 #define SYNC_N 128  /* nvdrv's syncpoint ids */
@@ -33,7 +37,15 @@ static PMutex g_rlock = PMUTEX_INIT;
 static PCond g_rcv;
 static int g_rthread;
 
-static void perform(const Release* r) {
+static void perform(Release* r) {
+    if (r->samples) { /* the count, as the report's structure size says: one word, or the value and the timestamp */
+        u64 v = vk_query_value(r->qfirst, r->qend);
+        u32 w = (u32)v;
+        if (r->len == 4)
+            memcpy(r->data, &w, 4);
+        else
+            memcpy(r->data, &v, 8);
+    }
     vk_result_begin();
     if (r->gva)
         gmem_write(r->gva, r->data, r->len);
@@ -93,13 +105,14 @@ static void release(Release* r) {
     pm_lock(&g_rlock);
     queued = g_rtail != g_rhead;
     pm_unlock(&g_rlock);
-    if (!vk_buf_pending_any() && !r->cgate && !queued) {
+    /* a samples-passed report always waits for the GPU: its count is the draws' */
+    if (!r->samples && !vk_buf_pending_any() && !r->cgate && !queued) {
         perform(r);
         vk_unlock();
         return;
     }
     /* the work before it, submitted so its completion can be waited for; results of earlier submits are older */
-    if (vk_buf_pending_unsubmitted()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (r->samples || vk_buf_pending_unsubmitted()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     r->gate = vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now */
@@ -137,6 +150,17 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
     r.gva = gva;
     r.len = len < sizeof r.data ? len : (u32)sizeof r.data;
     memcpy(r.data, data, r.len);
+    release(&r);
+}
+void vk_release_samples(u64 gva, u32 len, u64 first, u64 end, u64 ticks) {
+    Release r;
+    memset(&r, 0, sizeof r);
+    r.gva = gva;
+    r.len = len == 4 ? 4 : 16;
+    r.samples = 1;
+    r.qfirst = first;
+    r.qend = end;
+    memcpy(r.data + 8, &ticks, 8);
     release(&r);
 }
 void vk_release_incr(u32 id) {

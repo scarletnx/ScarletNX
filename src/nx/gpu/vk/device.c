@@ -261,6 +261,7 @@ static int create_device(void) {
     WANT(wideLines);
     WANT(largePoints);
     WANT(samplerAnisotropy);
+    WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
     WANT(textureCompressionBC);
     WANT(vertexPipelineStoresAndAtomics);

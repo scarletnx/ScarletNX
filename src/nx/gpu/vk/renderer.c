@@ -97,6 +97,22 @@ static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 c
     vk_render_draw(ch, indexed, topology, first, count, bv, bi, instances);
     vk_unlock();
 }
+static void vkr_samples_reset(void) {
+    vk_lock();
+    vk_query_reset();
+    vk_unlock();
+}
+static void vkr_samples_enable(int on) {
+    vk_lock();
+    vk_query_enable(on);
+    vk_unlock();
+}
+static int vkr_samples_report(u64 gva, u32 len, u64 ticks) {
+    vk_lock();
+    int r = vk_query_report(gva, len, ticks);
+    vk_unlock();
+    return r;
+}
 static void vkr_method_barrier(int kind) {
     vk_lock();
     if (kind == 3) {
@@ -537,6 +553,9 @@ const Renderer vk_renderer = {
     .release_need = vk_release_need,
     .release_value = vk_release_value,
     .release_retire = vk_release_retire,
+    .samples_reset = vkr_samples_reset,
+    .samples_enable = vkr_samples_enable,
+    .samples_report = vkr_samples_report,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
     .refresh = vkr_refresh,

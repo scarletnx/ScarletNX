@@ -42,7 +42,13 @@ typedef struct Renderer {
     void (*release_write)(u64 gva, const void* data, u32 len);
     /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
     void (*release_need)(u64 a, u64 n);
-    u32 (*release_value)(u32 id);   /* completed and queued increments, read consistently */
+    u32 (*release_value)(u32 id); /* completed and queued increments, read consistently */
+    /* the 3D engine's samples-passed counter (occlusion queries): it counts from its reset, while SampleCounterEnable
+       is on. A report writes the count at gva as a release, len 4 (the count's low word) or 16 (the count, then ticks).
+       samples_report 0: no count to give (no reset yet), and the caller writes a value of its own */
+    void (*samples_reset)(void);
+    void (*samples_enable)(int on);
+    int (*samples_report)(u64 gva, u32 len, u64 ticks);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */

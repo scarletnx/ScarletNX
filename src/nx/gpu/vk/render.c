@@ -32,7 +32,9 @@ static struct {
 void vk_render_end(void) {
     if (!g_rp.open) return;
     g_rp.open = 0;
-    vkCmdEndRendering(vk_cmd());
+    VkCommandBuffer cb = vk_cmd();
+    vk_query_pass_end(cb); /* a query begun in the pass ends in it */
+    vkCmdEndRendering(cb);
 }
 
 /* the targets the registers name, without opening anything */
@@ -216,6 +218,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     pc[0] = layer;
     memcpy(&pc[4], cc, 16); /* the register bits, read as the shader's vec4, uvec4 or ivec4 */
     vkCmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 32, pc);
+    vk_query_pass_end(cb); /* a clear passes no samples on the console: its draw here isn't counted */
     vkCmdDraw(cb, 3, 1, 0, 0);
     return 1;
 }
@@ -1788,6 +1791,7 @@ retry:
     }
     vkCmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, 32, pc);
 
+    vk_query_draw(cb); /* counted by the samples-passed counter when it runs */
     if (indexed) {
         vkCmdBindIndexBuffer(cb, ibuf, ioff, itype);
         /* quads made from guest indices keep the base vertex, quads made from vertex numbers have it in them */
