@@ -41,7 +41,8 @@ get wrong and points to the skills that carry the procedures.
 - Temporary files go in the session scratchpad, never in the repo root. Long runs use `run_in_background`.
 - Never `pkill`/`killall`, or a `kill $(pgrep -f PATTERN)` loop: they match the shell running the command, whose
   command line contains the pattern (twice that killed the session's own shell). List with `pgrep -a NAME` (or
-  `pgrep -x cc1`, by process name), then `kill PID` with the numbers in a separate command.
+  `pgrep -x cc1`, by process name), then `kill PID` with the numbers in a separate command. The same goes for waiting:
+  `until ! pgrep -f PATTERN` matches its own shell and never ends. Wait on a file the job writes, or `pgrep -x NAME`.
 - Don't build while a timing-sensitive test runs: the build deploys a new runtime into `games/` and loads the CPU.
 - No `sudo` and no system packages: the user installs those. `uvx` fetches ruff on its own.
 - Context is scarce. Never print a whole log (a game's `<id>.log` grows to megabytes), a whole disassembly or a
@@ -84,7 +85,7 @@ silently. Bumping `SNX_ABI` makes the runtime refuse every module built before i
 | Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `debug.c` (backtraces, dumps), `ipc.c` (HIPC/CMIF parsing and replies, sessions, domains, the service registry); `src/nx/hle/svc/`: `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo); `src/nx/memory/mem.c` |
 | IPC interfaces | Every service interface is declared in a `.swipc` file beside its C file (SwIPC's language, `docs/IPC.md`). `tools/swipc/swipc.c` (C90) generates the dispatchers into the build folder (`snx_swipc` in `cmake/swipc.cmake`, the list in `src/nx/CMakeLists.txt`). A service's C file includes its generated `.swipc.inc` and defines one static handler per command that isn't a `@stub`, `nn_ns_IFoo_Command(SvcObj* self, args..., outs...)`. A new command goes in the `.swipc` file first |
 | Services | `src/nx/hle/services/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c` (hwopus decodes with FFmpeg), `misc.c` for the small ones, `services.c` registers them), `audren.c` (the audio renderer's update), `pl.c` (shared fonts), `hid.c`, `vi.c`, `ldr.c`, `network/` (bsd, nifm, dns), `nvdrv.c` (nvhost devices, syncpoints); `src/nx/hle/filesystem/` (`fs.c`, `fs_tree.c`) |
-| GPU | `src/nx/gpu/`: `gpu.c` (GPFIFO, the GPU thread), `maxwell/` (`engines.c` 3D engine methods, `mme.c` macros, `compute.c`, `fermi2d.c`, `dma.c`, `maxwell3d.c`), `renderer.h` (the `Renderer` table for Vulkan, `g_renderer`), `renderer.c` (shared renderer state), `shader/` (Maxwell to SPIR-V: `shader.c` handles program hashing and flow, `decode.c` the instruction table, `spirv_translate.c` and `spirv_compute.c` emit stages through `spirv_emit.c`, `corpus.c` records shaders), `texture/` (`astc.c` CPU reference for tests, `etc2.c`) |
+| GPU | `src/nx/gpu/`: `gpu.c` (GPFIFO, the GPU thread), `maxwell/` (`engines.c` 3D engine methods, `mme.c` macros, `compute.c`, `fermi2d.c`, `dma.c`, `maxwell3d.c`, `write_pages.c`: the last GPU-side write to each page), `renderer.h` (the `Renderer` table for Vulkan, `g_renderer`), `renderer.c` (shared renderer state), `shader/` (Maxwell to SPIR-V: `shader.c` handles program hashing and flow, `decode.c` the instruction table, `spirv_translate.c` and `spirv_compute.c` emit stages through `spirv_emit.c`, `corpus.c` records shaders), `texture/` (`astc.c` CPU reference for tests, `etc2.c`, `depth.c`: packed depth/stencil texels), `nvn_trace.c` (`SNX_NVN_TRACE`: the NVN functions a game resolves and calls), `nvn_control.c` and `nvn_command_gap.c` (decoders of NVN's macro calls and Maxwell methods' write effects, built into their tests; `docs/NVN_HLE.md`) |
 | Vulkan renderer | `src/nx/gpu/vk/`: `vk.h` (lists the parts), `device.c` (instance, device, queues, swapchain, VMA), `cmd.c` (frames in flight, staging), `surface.c` and `format.c` (render targets, formats), `texture.c` (textures, samplers), `astc.c` (ASTC compute uploads), `buffer.c` (guest memory as buffers), `pipeline.c` (shader modules, pipelines), `render.c` (rendering passes, clears, draws), `compute.c` (compute on the compute queue, results landing in guest memory), `renderer.c` (its side of the renderer interface, presenting), `vma.cpp` (VMA's implementation); Vulkan-Headers, volk and VMA are CPM packages (`cmake/dependencies.cmake`) |
 | Shader corpus | `SNX_SHADER_CORPUS=dir` records each translated shader; `build/snx-shaderc dir --validate` translates it directly to SPIR-V and validates it with `spirv-val`, which must be on PATH (`--out DIR` from two builds, diffed, shows a translator change kept the output) |
 | Video | `src/nx/gpu/video/`: `host1x.c` (IOVA, ioctls, a channel per nvdrv NVDEC or VIC fd, each NVDEC one with its own decoder), `nvdec.c` (H.264 with FFmpeg's libavcodec, the picture written into the surface its job names), `vic.c` (composes from those surfaces in guest memory) |
@@ -155,9 +156,10 @@ comments and developer docs under `.claude/` are out of scope.
   Maxwell shaders rely on them (NVIDIA's compiler makes -inf with `MUFU.LG2` of zero). Without it, lighting came out
   as NaN blocks. The direct SPIR-V emitter declares the float controls requested by `spirv_translate.c` for
   supported shader modules.
-- Nothing in a draw's setup may submit or wait for the GPU (`vk_finish`, a readback like `vk_rt_flush`): the frame's
-  descriptor pools and staging reset after it, and the draw's sets already allocated turn to garbage. Copy on the GPU
-  instead.
+- Nothing in a draw's setup should submit or wait for the GPU (`vk_finish`, a readback like `vk_rt_flush`). A frame's
+  descriptor pools and staging live until its next present now, but a wait lands storage results into guest memory
+  the setup may already have read, so the draw starts its setup over when `vk_submit_number()` changed. Copy on the
+  GPU instead.
 - Submodule pins went wrong for a week of commits (a `git submodule add` records the default branch's tip, not the
   tag checked out afterwards). The libraries are CPM packages now (`cmake/dependencies.cmake`), each a release URL with
   its SHA-256: a bump changes both, and the hash is checked against the download. CPM's `OPTIONS` become cache
