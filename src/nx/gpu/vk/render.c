@@ -929,13 +929,13 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
         smp = vk_tex_bind_sampler(x.tsc, &plain, num, color_view != none ? x.t : NULL, want);
         if (!smp) return 0;
         d->table[k] = (VkDescriptorImageInfo){smp, color_view,
-            color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                                              color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
         if (st->shadow) {
             VkImageView depth_view = depth && view != none ? view : far;
             VkSampler compare = vk_tex_bind_sampler(x.tsc, st, 0, depth_view != far ? x.t : NULL, want);
             if (!compare) return 0;
-            d->depth_table[k] = (VkDescriptorImageInfo){compare, depth_view,
-                depth_view == far ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+            d->depth_table[k] = (VkDescriptorImageInfo){
+                compare, depth_view, depth_view == far ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
         }
     }
     w = &d->w[d->n++];
@@ -1275,14 +1275,14 @@ retry:
     /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set, in the last
        stage before rasterization */
     clip = r[0x544] & 0xFF;
-    VkSh* vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                             tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0);
+    VkSh* vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0,
+                             0, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0);
     tcs = tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0) : NULL;
-    tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0, gs_on ? SNX_SH_NOT_LAST : clip,
-                                 0, 0, 0)
+    tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0,
+                                 gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0)
                  : NULL;
-    gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]), 0, clip,
-                               0, 0, 0)
+    gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]), 0,
+                               clip, 0, 0, 0)
                : NULL;
     if ((tcs_on && (!tcs || tcs->failed)) || (tes_on && (!tes || tes->failed)) || (gs_on && (!gs || gs->failed))) {
         g_vk_skipped++;
@@ -1800,7 +1800,8 @@ retry:
     if (fs)
         for (u32 i = 0; i < n; i++)
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
-    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) target_written(zt);
+    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF))))))
+        target_written(zt);
     g_vk_drawn++;
 }
 
