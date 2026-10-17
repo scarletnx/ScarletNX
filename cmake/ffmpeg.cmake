@@ -147,6 +147,9 @@ else()
         LOG_BUILD ON
         LOG_INSTALL ON
         LOG_OUTPUT_ON_FAILURE ON)
+    # a changed patch rewrites the patched file at configure time, which the build step doesn't see on its own: an
+    # existing tree kept linking the FFmpeg built from the old one
+    ExternalProject_Add_StepDependencies(ffmpeg_build build "${snx_ffmpeg_src}/libavcodec/vp9.c")
     snx_deps_publish(ffmpeg_build ffmpeg "${snx_ffmpeg_prefix}" "${snx_ffmpeg_cache_DIR}")
 endif()
 
