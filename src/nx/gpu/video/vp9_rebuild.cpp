@@ -220,7 +220,7 @@ struct EntropyProbs {
     std::array<u8, 6> reserved_03fa{};                 ///< 0x03FA
     std::array<u8, 28> inter_mode_prob;                ///< 0x0400
     std::array<u8, 4> intra_inter_prob;                ///< 0x041C
-    std::array<u8, 80> reserved_0420{};                ///< 0x0420
+    std::array<u8, 80> uv_mode_prob_e0e7{};            ///< 0x0420 (FFmpeg takes them from the table: no header syntax)
     std::array<u8, 2> tx_8x8_prob;                     ///< 0x0470
     std::array<u8, 4> tx_16x16_prob;                   ///< 0x0472
     std::array<u8, 6> tx_32x32_prob;                   ///< 0x0476
@@ -228,7 +228,7 @@ struct EntropyProbs {
     std::array<std::array<u8, 8>, 4> y_mode_prob_e0e7; ///< 0x0480
     std::array<u8, 64> reserved_04a0{};                ///< 0x04A0
     std::array<u8, 64> partition_prob;                 ///< 0x04E0
-    std::array<u8, 10> reserved_0520{};                ///< 0x0520
+    std::array<u8, 10> uv_mode_prob_e8{};              ///< 0x0520
     std::array<u8, 8> switchable_interp_prob;          ///< 0x052A
     std::array<u8, 5> comp_inter_prob;                 ///< 0x0532
     std::array<u8, 3> skip_probs;                      ///< 0x0537

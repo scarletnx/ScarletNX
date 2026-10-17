@@ -178,9 +178,11 @@ typedef struct {
 } PicOut;
 struct NvdecCtx {
     /* first, where FFmpeg's patched VP9 decoder reads them through the context's opaque (cmake/ffmpeg-vp9-nvdec.patch):
-       0x534e5856 ("SNXV"), and whether the picture before this one was hidden, which NVDEC says only in the next one */
+       0x534e5856 ("SNXV"), whether the picture before this one was hidden, which NVDEC says only in the next one, and
+       the job's probability table (nvdec_vp9EntropyProbs_t), for what its rebuilt compressed header can't carry */
     u32 vp9_hint_magic;
     u32 vp9_previous_invisible;
+    u8 vp9_probs[0xEA0];
     u32 app;            /* the codec the decoder was opened for (SET_APPLICATION_ID): 3 H.264, 9 VP9 */
     SnxVp9Builder* vp9; /* VP9's headers rebuilt from each job, with the reference state they carry */
     AVCodecContext* dec;
@@ -462,6 +464,7 @@ static void vp9_execute(NvdecCtx* d, const u32* r) {
     if (err >= 0) {
         memcpy(d->pkt->data, packet.data, packet.size);
         d->vp9_previous_invisible = !packet.previous_visible;
+        memcpy(d->vp9_probs, probs, sizeof d->vp9_probs); /* the packet is decoded within submit_packet */
         err = submit_packet(d);
     }
     av_packet_unref(d->pkt);

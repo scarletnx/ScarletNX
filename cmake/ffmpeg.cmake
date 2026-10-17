@@ -22,7 +22,7 @@ set(snx_ffmpeg_patch "${CMAKE_SOURCE_DIR}/cmake/ffmpeg-vp9-nvdec.patch")
 file(SHA256 "${snx_ffmpeg_patch}" snx_ffmpeg_patch_sha256)
 include("${CMAKE_SOURCE_DIR}/cmake/patched_copy.cmake")
 snx_patched_copy(SOURCE "${FFmpeg_SOURCE_DIR}" DEST "${snx_ffmpeg_src}" PATCHES "${snx_ffmpeg_patch}"
-                 FILES libavcodec/vp9.c 69bcc226b8d240fb21ea5cfa071c101ed451409bf80368ec26d5664c9fc2ab6c)
+                 FILES libavcodec/vp9.c 459e8ca79e45680c98ba70ac574172e2389b177c6d19e5466fa63c3f0ff652e1)
 # sh before bash: on Windows a bash.exe in System32 is WSL's launcher, and w64devkit's sh is the one to use
 find_program(SNX_FFMPEG_SH NAMES sh bash)
 find_program(SNX_FFMPEG_MAKE NAMES gmake make)

@@ -5,7 +5,9 @@
 # the next job's setup, and hands each picture its whole probability table. A context whose opaque starts with the u32
 # 0x534e5856 ("SNXV", NvdecCtx) takes the previous picture's visibility from the u32 after it, which the picture's
 # motion vector prediction depends on, and starts each picture from the default probabilities, which the rebuilt
-# compressed header moves to NVDEC's table. Any other context decodes as released.
+# compressed header moves to NVDEC's table. The table itself follows those two words: an inter frame takes its uv_mode
+# and motion vector probabilities from it, which the compressed header can't carry (it has no uv_mode syntax and codes
+# motion vector probabilities odd only). Any other context decodes as released.
 #
 # cmake/ffmpeg.cmake applies it to a copy of the release and checks the result. To change it, edit a copy of the
 # pristine file, rebuild the hunks with `diff -u --label a/<file> --label b/<file>`, and update the hash there.
@@ -35,3 +37,33 @@
      // next 16 bits is size of the rest of the header (arith-coded)
      s->s.h.compressed_header_size = size2 = get_bits(&s->gb, 16);
      s->s.h.uncompressed_header_size = (get_bits_count(&s->gb) + 7) / 8;
+@@ -1104,6 +1114,29 @@
+                         (vp89_rac_get_uint(&s->c, 7) << 1) | 1;
+             }
+         }
++
++        if (avctx->opaque && ((const unsigned int *)avctx->opaque)[0] == 0x534e5856) {
++            /* NVDEC's probability table follows the two words. The compressed header has no syntax for the
++               uv_mode probabilities and codes mv ones odd only, so a context adapted by an earlier inter frame
++               reaches the decoder only from the table. Its uv_mode rows are in libvpx's mode order */
++            static const uint8_t snx_mode[10] = { 2, 0, 1, 3, 4, 5, 6, 8, 7, 9 };
++            const uint8_t *snx_t = (const uint8_t *)avctx->opaque + 8;
++            for (i = 0; i < 10; i++) {
++                memcpy(s->prob.p.uv_mode[snx_mode[i]], snx_t + 0x420 + i * 8, 8);
++                s->prob.p.uv_mode[snx_mode[i]][8] = snx_t[0x520 + i];
++            }
++            memcpy(s->prob.p.mv_joint, snx_t + 0x53B, 3);
++            for (i = 0; i < 2; i++) {
++                s->prob.p.mv_comp[i].sign      = snx_t[0x53E + i];
++                s->prob.p.mv_comp[i].class0    = snx_t[0x540 + i];
++                memcpy(s->prob.p.mv_comp[i].fp, snx_t + 0x542 + i * 3, 3);
++                s->prob.p.mv_comp[i].class0_hp = snx_t[0x548 + i];
++                s->prob.p.mv_comp[i].hp        = snx_t[0x54A + i];
++                memcpy(s->prob.p.mv_comp[i].classes, snx_t + 0x54C + i * 10, 10);
++                memcpy(s->prob.p.mv_comp[i].class0_fp, snx_t + 0x560 + i * 6, 6);
++                memcpy(s->prob.p.mv_comp[i].bits, snx_t + 0x56C + i * 10, 10);
++            }
++        }
+     }
+ 
+     return (data2 - data) + size2;
