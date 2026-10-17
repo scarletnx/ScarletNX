@@ -224,8 +224,12 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             return 0;
         }
         case 3: { /* DEQUEUE_BUFFER */
-            /* Held until its frame is shown or cancelled; never recycle a buffer still in use.
-               Wait out the display interval first, without vi's lock. */
+            /* a slot is held from DEQUEUE until its frame is shown or cancelled, and with every buffer held this waits
+               for one, as the console's buffer queue does. Handing out a held buffer instead lets the game draw into
+               a frame the GPU thread has yet to show. The wait ends: the GPU thread reaches every queued present,
+               since each of its stream waits gives up after a few seconds (gpu_park). A long one means the GPU
+               thread is behind, and the log says so with the slots held. First the last frame's turn on the display
+               is waited out, without vi's lock */
             pm_lock(&vi.lock);
             u32 pace = vi.interval;
             pm_unlock(&vi.lock);
@@ -262,9 +266,9 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                         pw_u32(out, (u32)-19); /* NO_INIT */
                         return 0;
                     }
-                    WARN_LIMIT(
-                        8, "binder: DEQUEUE_BUFFER found all %d buffers held (slots %llx) for 1 s: still waiting\n",
-                        nused, (unsigned long long)held);
+                    WARN_LIMIT(8,
+                               "binder: DEQUEUE_BUFFER found all %d buffers held (slots %llx) for 1 s: still waiting\n",
+                               nused, (unsigned long long)held);
                 }
             }
             vi.slots[k].queued = 1;
