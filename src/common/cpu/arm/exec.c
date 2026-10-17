@@ -1,24 +1,29 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+/* AArch32 blocks compiled while a program runs: each block is emitted into a module of the executor's LLVM context,
+   compiled to an object with its target machine (snx_ir_module_object) and loaded into a code arena by the runtime
+   JIT's loader (code_loader.c), as the A64 JIT's units are. The objects call the runtime library's helpers, which the
+   loader is given by name: no MCJIT, and no symbols the program must export */
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
-#include <llvm-c/Support.h>
-#include <llvm-c/ExecutionEngine.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/Core.h>
+#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/llvm/ir.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* a block's -O level, the A64 JIT's default */
+#define BLOCK_OPT '2'
+
 typedef struct {
-    uint64_t key; /* pc<<1 | thumb */
+    uint64_t key; /* (pc << 1 | thumb) + 1, 0 for an empty slot */
     SnxArmBlock fn;
 } CachedBlock;
 struct SnxArmExec {
-    LLVMContextRef ctx;
-    LLVMExecutionEngineRef jit;
-    CachedBlock* blocks;
+    SnxIr* ir; /* the context and target machine every block's module is made with */
+    SnxCodeLoader* loader;
+    CachedBlock* blocks; /* open addressing, a power of two slots, at most half full */
     size_t count, capacity;
 };
 
@@ -30,33 +35,62 @@ static size_t code_span(const SnxArmExecRange* ranges, size_t n, uint32_t pc, un
     return 0;
 }
 
+static size_t slot_of(const SnxArmExec* e, uint64_t key) {
+    size_t i = (size_t)((key * 0x9E3779B97F4A7C15ULL) >> 20) & (e->capacity - 1);
+    while (e->blocks[i].key && e->blocks[i].key != key) i = (i + 1) & (e->capacity - 1);
+    return i;
+}
+
+/* room for one more block: 0, or -1 out of memory */
+static int reserve(SnxArmExec* e) {
+    CachedBlock* old = e->blocks;
+    size_t old_capacity = e->capacity, i;
+    if (e->count + 1 <= e->capacity / 2) return 0;
+    e->capacity = old_capacity ? old_capacity * 2 : 256;
+    e->blocks = calloc(e->capacity, sizeof *e->blocks);
+    if (!e->blocks) {
+        e->blocks = old;
+        e->capacity = old_capacity;
+        return -1;
+    }
+    for (i = 0; i < old_capacity; i++)
+        if (old[i].key) e->blocks[slot_of(e, old[i].key)] = old[i];
+    free(old);
+    return 0;
+}
+
 SnxArmBlock snx_arm_exec_block(SnxArmExec* e, const SnxArmExecRange* ranges, size_t nranges, uint32_t pc, int thumb,
                                const unsigned char* base) {
-    uint64_t key = ((uint64_t)pc << 1) | (unsigned)thumb;
-    for (size_t i = 0; i < e->count; i++)
-        if (e->blocks[i].key == key) return e->blocks[i].fn;
-    size_t consumed = 0, span = code_span(ranges, nranges, pc, thumb ? 2 : 4);
-    if (!span) return NULL;
+    uint64_t key = (((uint64_t)pc << 1) | (unsigned)thumb) + 1;
+    if (e->capacity && e->blocks[slot_of(e, key)].key == key) return e->blocks[slot_of(e, key)].fn;
+    size_t consumed = 0, span = code_span(ranges, nranges, pc, thumb ? 2 : 4), size = 0;
+    if (!span || reserve(e)) return NULL;
     if (span > 65536) span = 65536; /* the block compiler's limit */
-    char name[40];
+    char name[40], error[512];
     snprintf(name, sizeof name, "a32_%08x_%d", pc, thumb);
-    LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ctx);
+    LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ir->ctx);
+    LLVMSetTarget(module, LLVMGetTarget(e->ir->mod));
+    LLVMSetDataLayout(module, LLVMGetDataLayoutStr(e->ir->mod));
     LLVMValueRef fn = thumb ? snx_thumb_llvm_block(module, name, (const uint16_t*)(base + pc), span, pc, &consumed)
                             : snx_arm_llvm_block(module, name, (const uint32_t*)(base + pc), span, pc, &consumed);
-    if (!fn) {
-        LLVMDisposeModule(module);
-        return NULL;
-    }
-    LLVMAddModule(e->jit, module); /* MCJIT takes ownership */
-    uint64_t address = LLVMGetFunctionAddress(e->jit, name);
-    if (!address) return NULL;
-    if (e->count == e->capacity) {
-        e->capacity = e->capacity ? e->capacity * 2 : 64;
-        e->blocks = realloc(e->blocks, e->capacity * sizeof *e->blocks);
-    }
+    unsigned char* object = NULL;
+    int rc = fn ? snx_ir_module_object(e->ir, module, BLOCK_OPT, &object, &size, error, sizeof error) : -1;
+    LLVMDisposeModule(module);
+    if (rc) return NULL;
+    SnxLinkInput input;
+    const char* names[1] = {name};
+    SnxU64 address = 0;
+    input.data = object;
+    input.size = size;
+    input.name = name;
+    rc = snx_code_load(e->loader, &input, 1, names, 1, &address, error, sizeof error);
+    free(object);
+    if (rc || !address) return NULL;
     SnxArmBlock block = (SnxArmBlock)(uintptr_t)address;
-    e->blocks[e->count].key = key;
-    e->blocks[e->count++].fn = block;
+    size_t slot = slot_of(e, key);
+    e->blocks[slot].key = key;
+    e->blocks[slot].fn = block;
+    e->count++;
     return block;
 }
 
@@ -68,36 +102,23 @@ static int run_syscall(SnxArmSyscallFn syscall, void* context, SnxArmCPU* cpu, u
     return syscall(context, imm, cpu->r[7], arguments);
 }
 
-void snx_arm_exec_symbols(void) {
-    LLVMAddSymbol("snx_arm_fp", (void*)(uintptr_t)snx_arm_fp);
-    LLVMAddSymbol("snx_arm_crypto", (void*)(uintptr_t)snx_arm_crypto);
-    LLVMAddSymbol("snx_arm_undefined", (void*)(uintptr_t)snx_arm_undefined);
-    LLVMAddSymbol("snx_arm_coproc", (void*)(uintptr_t)snx_arm_coproc);
-}
-
 SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
     if (error_size) error[0] = 0;
-    if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) {
-        snprintf(error, error_size, "native LLVM target unavailable");
-        return NULL;
-    }
-    LLVMLinkInMCJIT();
-    snx_arm_exec_symbols();
+    if (snx_ir_init(error, error_size)) return NULL;
     SnxArmExec* e = calloc(1, sizeof *e);
     if (!e) {
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
-    e->ctx = LLVMContextCreate();
-    LLVMModuleRef initial = LLVMModuleCreateWithNameInContext("a32exec", e->ctx);
-    struct LLVMMCJITCompilerOptions options;
-    LLVMInitializeMCJITCompilerOptions(&options, sizeof options);
-    char* jit_error = NULL;
-    if (LLVMCreateMCJITCompilerForModule(&e->jit, initial, &options, sizeof options, &jit_error)) {
-        snprintf(error, error_size, "cannot create ARM code cache: %s", jit_error ? jit_error : "");
-        LLVMDisposeMessage(jit_error);
-        LLVMContextDispose(e->ctx);
-        free(e);
+    e->ir = snx_ir_new("a32exec", BLOCK_OPT, error, error_size);
+    if (e->ir) e->loader = snx_code_loader_new(0, error, error_size);
+    /* the runtime library's functions blocks call (simd.h, arm.h), by the names the block compiler declares */
+    if (!e->loader || snx_code_define(e->loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
+        snx_code_define(e->loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
+        snx_code_define(e->loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
+        snx_code_define(e->loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc)) {
+        if (error_size && !error[0]) snprintf(error, error_size, "cannot name the runtime library's functions");
+        snx_arm_exec_free(e);
         return NULL;
     }
     return e;
@@ -105,8 +126,8 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
 
 void snx_arm_exec_free(SnxArmExec* e) {
     if (!e) return;
-    LLVMDisposeExecutionEngine(e->jit);
-    LLVMContextDispose(e->ctx);
+    snx_code_loader_free(e->loader);
+    snx_ir_free(e->ir);
     free(e->blocks);
     free(e);
 }

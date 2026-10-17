@@ -1,71 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gnuabi/runtime/arm_exec.h"
-#include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/exec.h"
 #include "gnuabi/abi/syscalls/syscalls.h"
 #include "gnuabi/abi/errno/errno.h"
-#include <llvm-c/ExecutionEngine.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/Core.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
-    uint64_t key; /* pc<<1 | thumb */
-    SnxArmBlock fn;
-} ArmBlock;
-struct GnuArmExec {
-    LLVMContextRef ctx;
-    LLVMExecutionEngineRef jit;
-    ArmBlock* blocks;
-    size_t count, capacity;
-};
-
-/* Halfwords/words of guest code from pc to the end of its executable range.
-   The values are decoded at compile time only; generated code never reads them. */
-static size_t code_span(GnuProcess* p, uint32_t pc, unsigned unit) {
-    for (size_t i = 0; i < p->elf.code_count; i++) {
-        uint64_t lo = p->elf.code[i].address, hi = lo + p->elf.code[i].size;
-        if (pc >= lo && pc < hi) return (size_t)((hi - pc) / unit);
-    }
-    return 0;
-}
-
-static SnxArmBlock arm_block(GnuArmExec* e, GnuProcess* p, uint32_t pc, int thumb) {
-    uint64_t key = ((uint64_t)pc << 1) | (unsigned)thumb;
-    for (size_t i = 0; i < e->count; i++)
-        if (e->blocks[i].key == key) return e->blocks[i].fn;
-    char name[40];
-    snprintf(name, sizeof name, "a32_%08x_%d", pc, thumb);
-    LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ctx);
-    size_t consumed = 0;
-    if (thumb) {
-        size_t n = code_span(p, pc, 2);
-        if (n && !snx_thumb_llvm_block(module, name, (const uint16_t*)(p->memory.base + pc), n, pc, &consumed)) {
-            LLVMDisposeModule(module);
-            return NULL;
-        }
-    } else {
-        size_t n = code_span(p, pc, 4);
-        if (n && !snx_arm_llvm_block(module, name, (const uint32_t*)(p->memory.base + pc), n, pc, &consumed)) {
-            LLVMDisposeModule(module);
-            return NULL;
-        }
-    }
-    LLVMAddModule(e->jit, module); /* MCJIT takes ownership */
-    uint64_t address = LLVMGetFunctionAddress(e->jit, name);
-    if (!address) return NULL;
-    if (e->count == e->capacity) {
-        e->capacity = e->capacity ? e->capacity * 2 : 64;
-        e->blocks = realloc(e->blocks, e->capacity * sizeof *e->blocks);
-    }
-    e->blocks[e->count].key = key;
-    SnxArmBlock fn = (SnxArmBlock)(uintptr_t)address;
-    e->blocks[e->count++].fn = fn;
-    return fn;
-}
+/* The ELF's code ranges are the executor's: the same fields, so the blocks read the program's ranges as they are */
+static_assert(sizeof(GnuElfRange) == sizeof(SnxArmExecRange), "GnuElfRange is SnxArmExecRange");
+static_assert(offsetof(GnuElfRange, address) == offsetof(SnxArmExecRange, address), "GnuElfRange.address");
+static_assert(offsetof(GnuElfRange, data) == offsetof(SnxArmExecRange, data), "GnuElfRange.data");
+static_assert(offsetof(GnuElfRange, size) == offsetof(SnxArmExecRange, size), "GnuElfRange.size");
 
 /* AArch32 (ARM EABI) syscall numbers differ from AArch64 asm-generic. Map the
    set the GNU ABI implements; anything else reports ENOSYS. */
@@ -102,20 +50,10 @@ static void arm_syscall(GnuProcess* p) {
 }
 
 int gnu_arm_run(GnuProcess* p) {
-    GnuArmExec e;
-    memset(&e, 0, sizeof e);
-    if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return 4;
-    LLVMLinkInMCJIT();
-    snx_arm_exec_symbols(); /* the runtime library's functions blocks call */
-    e.ctx = LLVMContextCreate();
-    LLVMModuleRef initial = LLVMModuleCreateWithNameInContext("gnuarm", e.ctx);
-    struct LLVMMCJITCompilerOptions options;
-    LLVMInitializeMCJITCompilerOptions(&options, sizeof options);
-    char* error = NULL;
-    if (LLVMCreateMCJITCompilerForModule(&e.jit, initial, &options, sizeof options, &error)) {
-        fprintf(stderr, "gnuabi: %s\n", error ? error : "cannot create ARM code cache");
-        LLVMDisposeMessage(error);
-        LLVMContextDispose(e.ctx);
+    char error[512];
+    SnxArmExec* exec = snx_arm_exec_new(error, sizeof error);
+    if (!exec) {
+        fprintf(stderr, "gnuabi: cannot compile ARM code: %s\n", error);
         return 4;
     }
     if (!setjmp(p->exit_target)) {
@@ -123,7 +61,8 @@ int gnu_arm_run(GnuProcess* p) {
         while (!p->exited) {
             uint32_t pc = p->arm.r[15];
             int thumb = (p->arm.cpsr & SNX_ARM_T) != 0;
-            SnxArmBlock block = arm_block(&e, p, pc, thumb);
+            SnxArmBlock block = snx_arm_exec_block(exec, (const SnxArmExecRange*)p->elf.code, p->elf.code_count, pc,
+                                                   thumb, p->memory.base);
             if (!block) {
                 gnu_process_fault(p, 4, "Cannot compile an ARM guest block");
                 break;
@@ -148,8 +87,6 @@ int gnu_arm_run(GnuProcess* p) {
         if (!p->exited) gnu_process_fault(p, 4, "Guest entry returned without exit/exit_group");
     }
     p->running = 0;
-    LLVMDisposeExecutionEngine(e.jit);
-    LLVMContextDispose(e.ctx);
-    free(e.blocks);
+    snx_arm_exec_free(exec);
     return p->exit_code;
 }

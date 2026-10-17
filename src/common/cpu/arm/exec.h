@@ -20,10 +20,6 @@ typedef int (*SnxArmSyscallFn)(void* context, uint32_t imm, uint64_t number, con
 
 typedef struct SnxArmExec SnxArmExec;
 
-/* Names the runtime library's functions blocks call (snx_arm_fp, snx_arm_crypto, snx_arm_undefined,
-   snx_arm_coproc) to LLVM's JIT in this process, which a program that doesn't export its symbols needs. Idempotent;
-   snx_arm_exec_new calls it */
-void snx_arm_exec_symbols(void);
 /* Returns NULL with a bounded error on failure. */
 SnxArmExec* snx_arm_exec_new(char* error, size_t error_size);
 void snx_arm_exec_free(SnxArmExec* exec);

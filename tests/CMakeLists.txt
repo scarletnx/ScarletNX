@@ -276,7 +276,7 @@ snx_test_target(snx-test-arm-decode 11)
 add_test(NAME arm_decode COMMAND snx-test-arm-decode)
 add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec 11)
-target_link_libraries(snx-test-arm-exec PRIVATE snx_arm_llvm)
+target_link_libraries(snx-test-arm-exec PRIVATE snx_llvm)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
 
 # Small architectural witnesses need neither game assets nor an emulator.

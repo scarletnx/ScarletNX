@@ -37,7 +37,7 @@ Generated code doesn't decide two things itself. It calls the runtime library, w
 - An instruction the block compiler doesn't implement, or can't with the block's memory model, calls `snx_arm_undefined(cpu, word, reason)`. The backend runs it and returns with `exit` clear, and the block goes on after it, or it sets `exit` and the block stops at it. Without a backend, `exit` is `reason` (`SNX_ARM_UNDEFINED`, `SNX_ARM_BACKEND_UNSUPPORTED`) and `syndrome` the word, as before.
 - MRC, MCR, MRRC and MCRR to coprocessors 14 and 15 call `snx_arm_coproc(cpu, word)`: which system registers user mode reaches, and what they hold, is the system's. The NX runtime gives the generic timer's CNTPCT, CNTVCT and CNTFRQ (the SDK's system tick) and the CP15 barriers. Without a backend, `snx_arm_coproc_user` gives TPIDRURW and TPIDRURO from the CPU's fields, and anything else is `SNX_ARM_UNDEFINED`.
 
-Programs linking blocks link `snx_arm_rt`; LLVM's JIT finds its functions through `snx_arm_exec_symbols` (`exec.h`).
+Programs linking blocks link `snx_arm_rt`. The executor (`exec.h`, built into `snx_llvm`) compiles each block to an object and loads it with the runtime JIT's loader (`recompiler/llvm/code_loader.c`), which it gives those functions by name.
 
 ## Thumb32 instructions with A32 twins
 

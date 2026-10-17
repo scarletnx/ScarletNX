@@ -54,8 +54,8 @@ framework.
 - **Game modules.** The recompiler links ELF and PE only (`src/common/cpu/recompiler/llvm/link.c`). macOS needs a
   Mach-O dylib, signed. iOS loads no code it did not ship with, so its games would have to be linked into the app
   (`snx_module_static`, `src/nx/runtime/main.c`) or loaded into JIT memory on a device that allows it.
-- **32-bit games on iOS.** Their blocks are compiled at run time with LLVM's MCJIT (`src/nx/runtime/arm.c`), which
-  needs memory that becomes executable. iOS gives that only to an app that may JIT.
+- **32-bit games on iOS.** Their blocks are compiled at run time (`src/nx/runtime/arm.c`,
+  `src/common/cpu/arm/exec.c`), which needs memory that becomes executable. iOS gives that only to an app that may JIT.
 - **Preparing on iOS**, for the reasons above, until the driver runs in the app's process.
 - **The 3DS and Linux drivers** are not built for iOS (`SNX_BUILD_3DS`, `SNX_BUILD_GNUABI`), nor the Linux one for
   macOS.

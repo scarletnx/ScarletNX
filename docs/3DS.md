@@ -461,7 +461,7 @@ Remaining requirements beyond the initial native bootstrap pipeline:
 The page controller is now connected through an opt-in `SnxArmCheckedCPU`
 callback ABI, while the original CPU block/state ABI is deliberately unchanged.
 The adapter is not linked to the legacy execution runner. The A32 runner in
-`src/common/cpu/arm/exec.c` uses MCJIT and is **not** used by this pipeline.
+`src/common/cpu/arm/exec.c` compiles blocks while a program runs and is **not** used by this pipeline.
 `SNX_3DS_AOT` selects the separate offline compiler and ARM11/checked codegen
 options; shared A57 emission and CPU ABI defaults remain unchanged.
 

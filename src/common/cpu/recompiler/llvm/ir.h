@@ -104,6 +104,11 @@ SnxIr* snx_ir_new_target(const char* name, char opt, const char* triple, char* e
 void snx_ir_free(SnxIr* ir);
 /* Optimizes the module as Clang does at the -O level and returns the host object file (malloc'd) */
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size);
+/* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
+   blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
+   caller's */
+int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
+                         size_t error_size);
 /* The runtime library (rtlib.c) as a host object file (malloc'd): its bitcode, embedded when the recompiler was
    built, compiled for this machine like the generated code */
 int snx_ir_rtlib_object(char opt, unsigned char** data, size_t* size, char* error, size_t error_size);
