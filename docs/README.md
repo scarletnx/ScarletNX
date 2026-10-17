@@ -6,6 +6,7 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
 
 - **[Build](./BUILD.md)** - prerequisites and builds on each platform
 - **[Usage](./USAGE.md)** - extract, recompile and play; settings and folders
+- **[Troubleshooting](./TROUBLESHOOTING.md)** - errors a game or the driver prints
 - **[GUI launcher](./GUI.md)** - the menu and its themes
 - **[Android](./ANDROID.md)**
 - **[macOS and iOS](./APPLE.md)**
