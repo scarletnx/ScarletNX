@@ -96,12 +96,14 @@ static int check_packed_depth(void) {
             vk_depth_unpack(&f, (const u8*)src, 3, (u8*)depth, stencil);
             for (u32 k = 0; k < 3; k++) {
                 CHECK(stencil[k] == (formats[i] == 0x2A ? 0 : 0x51 + k));
-                if (floating) CHECK(depth[k] == src[k * 2]);
+                if (floating)
+                    CHECK(depth[k] == src[k * 2]);
                 else if (fallback) {
                     float value;
                     memcpy(&value, &depth[k], 4);
                     CHECK(value == (float)z[k] / 16777215.0f);
-                } else CHECK(depth[k] == z[k]);
+                } else
+                    CHECK(depth[k] == z[k]);
             }
         }
     }
@@ -115,9 +117,9 @@ static int check_depth_array(void) {
     u32* r = ch->r3d;
     r[0x54E] = 1;
     r[0x3F9] = 0x100000;
-    r[0x3FA] = 0x0A; /* Z32F */
+    r[0x3FA] = 0x0A;   /* Z32F */
     r[0x3FB] = 0x1000; /* pitch linear */
-    r[0x3FC] = 1024; /* 4096 byte layer stride */
+    r[0x3FC] = 1024;   /* 4096 byte layer stride */
     r[0x48A] = r[0x48B] = 16;
     r[0x48C] = 3;
     for (u32 layer = 0; layer < 3; layer++) {
@@ -422,7 +424,7 @@ int main(int argc, char** argv) {
     u32 epoch = g_vk_epoch;
     u64 finishes = g_vk_finishes;
     for (int kind = 0; kind <= 4; kind++) g_renderer->method_barrier(kind);
-    CHECK(g_vk_epoch == epoch + 2); /* data and descriptor invalidation each expire cached reads */
+    CHECK(g_vk_epoch == epoch + 2);   /* data and descriptor invalidation each expire cached reads */
     CHECK(g_vk_finishes == finishes); /* method barriers order GPU work without forcing a host wait */
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */

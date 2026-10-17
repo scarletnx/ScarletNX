@@ -32,9 +32,9 @@
    A slot's color matrix, four u64s at slot+0x60, has three signed 20 bit coefficients per u64 (S12.8), the right
    shift in bits 60-63 of the first u64 and the enable bit at bit 63 of the second (Eden's MatrixStruct).
    A slot's surface 0 (the current frame) is at registers 0x400 + slot * 0x60 (luma) and +4 (chroma), iova >> 8 */
-#define VIC_CFG_SIZE 0x610
+#define VIC_CFG_SIZE  0x610
 #define VIC_NUM_SLOTS 8
-#define VIC_MAX_ROW 0x4000 /* one row of 14 bit widths: the largest a surface config names */
+#define VIC_MAX_ROW   0x4000 /* one row of 14 bit widths: the largest a surface config names */
 
 /* a 10 bit pixel as Eden's Pixel: R, G, B hold the slot's Y, U, V samples scaled to 10 bit, A the planar alpha */
 typedef struct {
@@ -209,7 +209,7 @@ static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, u32 f
         LOG_LIMIT(4, "video: VIC slot %d rectangles are empty or outside the surfaces, slot skipped\n", s);
         return 0;
     }
-    u32 w = sx1 - sx0 + 1, h = sy1 - sy0 + 1; /* the source rectangle */
+    u32 w = sx1 - sx0 + 1, h = sy1 - sy0 + 1;   /* the source rectangle */
     u32 dw = dx1 - dx0 + 1, dh = dy1 - dy0 + 1; /* the destination rectangle */
     if (w != dw || h != dh)
         LOG_LIMIT(2, "video: VIC slot %d scales %ux%u to %ux%u, which isn't done: the picture is cropped\n", s, w, h,

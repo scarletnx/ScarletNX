@@ -27,8 +27,8 @@ typedef struct GpuChannel {
     u32 id;
     u32 sub_class[8];
     u32 puller[0x40];
-    u32 r3d[0x1000]; /* 3D engine regs, 0xE00+ are MME macro calls */
-    u32 r3d_shadow[0xE00]; /* SET_MME_SHADOW_RAM_CONTROL track/replay state */
+    u32 r3d[0x1000];            /* 3D engine regs, 0xE00+ are MME macro calls */
+    u32 r3d_shadow[0xE00];      /* SET_MME_SHADOW_RAM_CONTROL track/replay state */
     u8 r3d_shadow_valid[0xE00]; /* methods observed in track mode, for replay after incomplete guest setup */
     u32 r3d_shadow_mode;
     u64 r3d_counter_base[32]; /* draw-count baselines for estimated Maxwell counter reports */
@@ -71,7 +71,7 @@ typedef struct GpuChannel {
     u32 dma_launch_index;
     u32* inline_indices; /* 3D inline index methods, widened to u32 until END draws them */
     u32 inline_n, inline_cap;
-    GpuMme mme;         /* the macro running, or one a wait stopped after the method that asked for it */
+    GpuMme mme; /* the macro running, or one a wait stopped after the method that asked for it */
     /* what the stream waits for before its next method (gpu_park): the GPU thread runs other channels' work meanwhile,
        as the GPU's Host unit (PFIFO) switches channels on a semaphore acquire that fails */
     u32 park;      /* GPU_PARK_*, or 0 */
@@ -105,10 +105,10 @@ typedef struct VicPlane {
     u32 pitch, h, blk, bh;
 } VicPlane;
 typedef struct VicSlot {
-    int on; /* the slot composes */
-    u32 sx0, sy0, dx0, dy0, w, h; /* the resolved rectangles: source start, destination start and size */
+    int on;                               /* the slot composes */
+    u32 sx0, sy0, dx0, dy0, w, h;         /* the resolved rectangles: source start, destination start and size */
     int mat[3][4], mat_shift, mat_enable; /* the color matrix, out = (R*c0 + G*c1 + B*c2) >> shift, + c3, >> 8 */
-    u32 alpha, clamp_lo, clamp_hi; /* the planar alpha and the soft clamp range (10 bit) */
+    u32 alpha, clamp_lo, clamp_hi;        /* the planar alpha and the soft clamp range (10 bit) */
     VicPlane iy, ic;
 } VicSlot;
 typedef struct VicJob {
@@ -145,7 +145,7 @@ void dma_method(GpuChannel* ch, u32 m, u32 v);
    in the channel's submit order, for every launch the stream will run (gpu_submit) */
 void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v);
 void dma_snap_finish(u32 channel, u64 job_id);
-void dma_snap_reset(u32 channel);                                 /* the channel closed: what it queued goes */
+void dma_snap_reset(u32 channel); /* the channel closed: what it queued goes */
 void gpu_mem_written(u64 gva, u64 size);
 void gpu_mem_written_shader(u64 gva, u64 size); /* shader writeback tracks both GPU VA and guest backing */
 void gpu_signal_point(void);                    /* the GPU is about to do something the game can observe */
@@ -161,7 +161,7 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
-void gpu_channel_close(u32 channel); /* nvdrv closed the channel: a new one with the same id starts from reset */
+void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
    or reach it (geq), before its next method. Met already, nothing waits. Otherwise the method that asked returns and
