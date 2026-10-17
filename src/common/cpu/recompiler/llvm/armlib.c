@@ -7,4 +7,4 @@
 #include "common/cpu/arm/crypto_helpers.c"
 #include "common/cpu/arm/rt_helpers.c"
 
-#include "libc.inc"
+#include "common/cpu/recompiler/llvm/libc.inc"

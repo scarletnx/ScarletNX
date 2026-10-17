@@ -24,6 +24,7 @@ static void unlock(void) {}
 #endif
 
 const char* snx_jit_compile_to_file(SnxJit* jit, enum gcc_jit_output_kind kind, const char* path) {
+    if (jit->fallbacks) return snx_jit_error(jit); /* not worth compiling */
     lock();
     gcc_jit_context_compile_to_file(jit->ctx, kind, path);
     unlock();
@@ -32,6 +33,7 @@ const char* snx_jit_compile_to_file(SnxJit* jit, enum gcc_jit_output_kind kind, 
 
 gcc_jit_result* snx_jit_compile(SnxJit* jit) {
     gcc_jit_result* result;
+    if (jit->fallbacks) return NULL; /* snx_jit_error says why */
     lock();
     result = gcc_jit_context_compile(jit->ctx);
     unlock();

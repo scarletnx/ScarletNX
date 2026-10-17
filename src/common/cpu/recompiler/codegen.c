@@ -201,6 +201,18 @@ static void add_function(SnxCodegen* codegen, SnxU64 start, SnxU64 end, Addresse
         f->count = (size_t)((end - start + 3) / 4);
 }
 
+/* What explore stops at besides the function's own start: the starts found so far and, for the runtime JIT, code that
+   exists already (snx_codegen_discover's callback) */
+typedef struct {
+    const AddressSet* set;
+    SnxCodegenKnown callback;
+    void* user;
+} Known;
+
+static int is_known(const Known* known, SnxU64 address) {
+    return set_has(known->set, address) || (known->callback && known->callback(known->user, address));
+}
+
 /* whether a BR on reg follows within a few instructions of address: the address taken there is a jump table's base,
    a place in the function its cases are reached from, not a function */
 static int jump_table_base(SnxCodegen* codegen, SnxU64 address, SnxU32 reg) {
@@ -257,11 +269,9 @@ static int sorted_has(const Addresses* sorted, SnxU64 address) {
     return lo < sorted->count && sorted->values[lo] == address;
 }
 
-/* The function at start: what its branches reach. BL targets go to work. With inner, the addresses its code takes
-   (taken_address) outside the function go to work too, and those it takes inside it, the base of a jump table for one,
-   to inner, as leaders */
-static Addresses explore(SnxCodegen* codegen, SnxU64 start, const AddressSet* known, Addresses* work,
-                         Addresses* inner) {
+/* The function at start: what its branches reach. BL targets, and the addresses its code takes (taken_address) outside
+   the function, go to work; those it takes inside it, the base of a jump table for one, to inner, as leaders */
+static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, Addresses* work, Addresses* inner) {
     Addresses result, todo, taken;
     AddressSet seen;
     SnxU64 address, target, distance;
@@ -276,7 +286,7 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const AddressSet* kn
     while (todo.count && seen.count <= 200000) {
         address = todo.values[--todo.count];
         for (;;) {
-            if (set_has(&seen, address) || (address != start && set_has(known, address))) break;
+            if (set_has(&seen, address) || (address != start && is_known(known, address))) break;
             if (!snx_codegen_word(codegen, address, &word)) break;
             set_add(&seen, address);
             push(&result, address);
@@ -288,7 +298,7 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const AddressSet* kn
                     if (snx_codegen_module(codegen, target)) push(&todo, target);
                 } else if (kind == SNX_FLOW_B) {
                     distance = target > start ? target - start : start - target;
-                    if (snx_codegen_module(codegen, target) && !set_has(known, target) && distance < 0x100000UL)
+                    if (snx_codegen_module(codegen, target) && !is_known(known, target) && distance < 0x100000UL)
                         push(&todo, target);
                     break;
                 } else if (work && snx_codegen_module(codegen, target))
@@ -389,6 +399,7 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
     Addresses work, found, fresh, inner;
     AddressSet known, seen_seed, extra, hint_set, seeds, fde_starts;
     size_t* explored;
+    Known stop;
     SnxCodeImage* m;
     SnxU64 a, end, text_end, target;
     SnxU32 word;
@@ -407,6 +418,9 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
     memset(&hint_set, 0, sizeof(hint_set));
     memset(&seeds, 0, sizeof(seeds));
     memset(&fde_starts, 0, sizeof(fde_starts));
+    stop.set = &known;
+    stop.callback = NULL;
+    stop.user = NULL;
     ranges = NULL;
     nranges = 0;
     capranges = 0;
@@ -467,7 +481,7 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
             set_add(&extra, a);
             continue;
         }
-        found = explore(codegen, a, &known, &work, &inner);
+        found = explore(codegen, a, &stop, &work, &inner);
         if (found.count) {
             explored_add(codegen, explored, &found);
             add_function(codegen, a, 0, &found);
@@ -519,7 +533,7 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
                 set_add(&extra, a);
                 continue;
             }
-            found = explore(codegen, a, &known, NULL, NULL);
+            found = explore(codegen, a, &stop, NULL, NULL);
             if (found.count) {
                 explored_add(codegen, explored, &found);
                 add_function(codegen, a, 0, &found);
@@ -549,6 +563,82 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
     return 0;
 }
 
+int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* roots,
+                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget) {
+    Addresses work, found, inner;
+    AddressSet local, seen_seed, entries, inside, none;
+    Known stop;
+    size_t next, total, i, searched;
+    SnxU64 a;
+    memset(codegen, 0, sizeof(*codegen));
+    codegen->modules = (SnxCodeImage*)snx_alloc((module_count ? module_count : 1) * sizeof(*modules));
+    memcpy(codegen->modules, modules, module_count * sizeof(*modules));
+    codegen->module_count = module_count;
+    memset(&work, 0, sizeof(work));
+    memset(&inner, 0, sizeof(inner));
+    memset(&local, 0, sizeof(local));
+    memset(&seen_seed, 0, sizeof(seen_seed));
+    memset(&entries, 0, sizeof(entries));
+    memset(&inside, 0, sizeof(inside));
+    memset(&none, 0, sizeof(none));
+    stop.set = &local;
+    stop.callback = known;
+    stop.user = user;
+    /* The roots first, by address, then the functions they call in the order they turn up, nearest first: a call left
+       out once the budget is spent goes through CPU.disp and misses on its own. A root inside a function found before
+       it (a pc in the middle of a function that missed on its own, where a thread came back from other code) is a
+       leader of that function, not a function of its own, so the function stays whole */
+    for (i = 0; i < root_count; ++i)
+        if (!(roots[i] & 3) && snx_codegen_module(codegen, roots[i])) {
+            push(&work, roots[i]);
+            set_add(&entries, roots[i]);
+        }
+    searched = work.count; /* the roots in work: searched whatever the budget and whatever known says */
+    if (searched) qsort(work.values, searched, sizeof(*work.values), compare_address);
+    total = 0;
+    for (next = 0; next < work.count; ++next) {
+        a = work.values[next];
+        if ((a & 3) || !set_add(&seen_seed, a)) continue;
+        if (next < searched) {
+            if (set_has(&inside, a)) continue;
+        } else {
+            if (total >= budget) break;
+            if (is_known(&stop, a) || !snx_codegen_module(codegen, a)) continue;
+        }
+        found = explore(codegen, a, &stop, &work, &inner);
+        if (found.count) {
+            total += found.count;
+            for (i = 0; i < found.count; ++i) set_add(&inside, found.values[i]);
+            add_function(codegen, a, 0, &found);
+            set_add(&local, a);
+        }
+        free(found.values);
+    }
+    if (codegen->function_count)
+        qsort(codegen->functions, codegen->function_count, sizeof(*codegen->functions), compare_function);
+    for (i = 0; i < inner.count; ++i) set_add(&entries, inner.values[i]); /* leaders, not roots */
+    free(inner.values);
+    leaders(codegen, &entries, &none);
+    free(work.values);
+    set_free(&local);
+    set_free(&seen_seed);
+    set_free(&entries);
+    set_free(&inside);
+    for (i = 0; i < root_count; ++i)
+        if (snx_codegen_entry(codegen, roots[i])) return 0;
+    return -1;
+}
+
+const SnxFunction* snx_codegen_entry(const SnxCodegen* codegen, SnxU64 address) {
+    const SnxFunction* f = snx_codegen_function(codegen, address);
+    size_t i, index;
+    for (i = 0; !f && i < codegen->function_count; ++i) {
+        index = function_index(&codegen->functions[i], address);
+        if (index < codegen->functions[i].count && codegen->functions[i].leaders[index]) f = &codegen->functions[i];
+    }
+    return f;
+}
+
 /* instructions of one function of a just-in-time step: the backends' time grows faster than a function's size, and a
    program's largest (a compiler's generated recognizers) would take minutes */
 #define SNX_JIT_FUNCTION_INSTRUCTIONS 4096
@@ -561,6 +651,7 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
                              void* context) {
     Addresses work, found, calls;
     AddressSet known, seen, extra, hint_set;
+    Known stop;
     size_t i, j, next, total;
     SnxU64 a;
     memset(codegen, 0, sizeof(*codegen));
@@ -572,6 +663,9 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
     memset(&seen, 0, sizeof(seen));
     memset(&extra, 0, sizeof(extra));
     memset(&hint_set, 0, sizeof(hint_set));
+    stop.set = &known;
+    stop.callback = NULL;
+    stop.user = NULL;
     for (i = 0; i < hint_count; ++i) {
         set_add(&hint_set, hints[i]);
         push(&work, hints[i]);
@@ -582,7 +676,7 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
         if ((a & 3) || !set_add(&seen, a) || set_has(&known, a) || !snx_codegen_module(codegen, a)) continue;
         if (next >= hint_count && skip && skip(context, a)) continue;
         memset(&calls, 0, sizeof(calls));
-        found = explore(codegen, a, &known, &calls, NULL);
+        found = explore(codegen, a, &stop, &calls, NULL);
         if (found.count) {
             total += found.count;
             set_add(&known, a);

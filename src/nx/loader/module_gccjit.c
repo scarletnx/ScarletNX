@@ -32,13 +32,12 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
     gcc_jit_context* x = jit->ctx;
     SnxModuleEntry* entries;
     size_t count, arraysize, i, j, nfns = codegen->function_count ? codegen->function_count : 1;
-    gcc_jit_rvalue **values, *interp_address, *index, *e;
+    gcc_jit_rvalue **values, *index, *e;
     gcc_jit_type *t_fns, *t_u32s, *t_addrs, *t_ptrs, *t_info, *t_mods, *t_id, *t_mod, *t_cstr;
     gcc_jit_field* fields[12];
-    gcc_jit_lvalue *fns, *ent_off, *ent_fn, *ent_addr, *ent_ptr, *mods, *mod, *interp_entry, *loop_i;
-    gcc_jit_function *interp, *fn;
+    gcc_jit_lvalue *fns, *ent_off, *ent_fn, *ent_addr, *ent_ptr, *mods, *mod, *loop_i;
+    gcc_jit_function* fn;
     gcc_jit_block *start, *head, *body, *done;
-    gcc_jit_param* interp_params[2];
     SnxU64 lo = ~(SnxU64)0, hi = 0;
     const SnxNpdm* npdm = &loaded->npdm;
     entries = snx_module_entries(codegen, &count);
@@ -118,12 +117,6 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
     /* static SnxModule MOD; as 8-byte words, written field by field at module_abi.h's offsets */
     t_mod = gcc_jit_context_new_array_type(x, NULL, jit->t_u64, (int)((sizeof(SnxModule) + 7) / 8));
     mod = gcc_jit_context_new_global(x, NULL, GCC_JIT_GLOBAL_INTERNAL, t_mod, "MOD");
-    interp_params[0] = gcc_jit_context_new_param(x, NULL, jit->t_ptr, "c");
-    interp_params[1] = gcc_jit_context_new_param(x, NULL, jit->t_u64, "e");
-    interp = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_IMPORTED, jit->t_void, "snx_interp", 2,
-                                          interp_params, 0);
-    interp_entry = gcc_jit_context_new_global(x, NULL, GCC_JIT_GLOBAL_IMPORTED, jit->t_guest_ptr, "snx_interp_entry");
-    interp_address = gcc_jit_context_new_cast(x, NULL, gcc_jit_function_get_address(interp, NULL), jit->t_guest_ptr);
     /* SNX_EXPORT const SnxModule* snx_module(void) */
     fn = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_EXPORTED, jit->t_ptr, "snx_module", 0, NULL, 0);
     jit->fn = fn;
@@ -157,11 +150,11 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
                                          x, NULL, gcc_jit_lvalue_as_rvalue(ent_fn), index)))));
     gcc_jit_block_add_assignment_op(body, NULL, loop_i, GCC_JIT_BINARY_OP_PLUS, jit_u32(jit, 1));
     gcc_jit_block_end_with_jump(body, NULL, head);
-    /* snx_interp_entry=snx_interp; MOD.abi=...; ... return &MOD; */
+    /* MOD.abi=...; ... return &MOD; MOD.interp stays NULL (SNX_ABI 8's layout): there is no interpreter, and what the
+       module lacks is the runtime JIT's to compile */
     {
         gcc_jit_rvalue* base = gcc_jit_lvalue_get_address(mod, NULL);
         jit->block = done;
-        gcc_jit_block_add_assignment(done, NULL, interp_entry, interp_address);
 #define FIELD(member, type, value)                                                                                     \
     gcc_jit_block_add_assignment(done, NULL, jit_at(jit, base, offsetof(SnxModule, member), type), value)
         FIELD(abi, jit->t_u32, jit_u32(jit, options->abi));
@@ -172,7 +165,7 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
               gcc_jit_context_new_cast(x, NULL, gcc_jit_lvalue_get_address(ent_addr, NULL), jit->t_ptr));
         FIELD(entry_fn, jit->t_ptr,
               gcc_jit_context_new_cast(x, NULL, gcc_jit_lvalue_get_address(ent_ptr, NULL), jit->t_ptr));
-        FIELD(interp, jit->t_guest_ptr, interp_address);
+        FIELD(interp, jit->t_guest_ptr, gcc_jit_context_null(x, jit->t_guest_ptr));
         FIELD(code_lo, jit->t_u64, jit_u64(jit, lo));
         FIELD(code_hi, jit->t_u64, jit_u64(jit, hi));
         FIELD(title, jit->t_ptr,
@@ -280,7 +273,6 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
     if (!options->quiet) {
         printf("libgccjit module: %.1f MB, %lu entries\n", (double)snx_file_size(build->output) / 1000000.0,
                (unsigned long)entry_count);
-        if (units.fallbacks) printf("libgccjit: %lu instructions run through the interpreter step\n", units.fallbacks);
         puts("note: libgccjit is the backend for DEC Alpha EV67 hosts; elsewhere --backend=llvm (the default) is "
              "the recommended one");
     }

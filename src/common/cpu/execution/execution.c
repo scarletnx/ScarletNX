@@ -89,9 +89,6 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         fputs("(CPU* RESTRICT c,u64 e);\n", file);
     }
     snx_a64_interp_checked(file);
-    fputs("GuestFn snx_interp_entry=snx_interp;\n"
-          "SNX_EXPORT void snx_set_fallback(GuestFn f){snx_interp_entry=f?f:snx_interp;}\n",
-          file);
     for (i = 0; i < codegen.function_count; ++i) snx_codegen_emit(file, &codegen, &codegen.functions[i]);
     fputs("typedef struct{u64 address;GuestFn function;} ExecutionEntry;\nstatic const ExecutionEntry entries[]={",
           file);
@@ -158,7 +155,6 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         get_entries = (EntriesFn)(void*)GetProcAddress((HMODULE)e->module, "snx_entries");
         e->entry = (GuestFn)(void*)GetProcAddress((HMODULE)e->module, "snx_execute");
         e->set_fetch = (void (*)(SnxFetchFn))(void*)GetProcAddress((HMODULE)e->module, "snx_set_fetch");
-        e->set_fallback = (void (*)(GuestFn))(void*)GetProcAddress((HMODULE)e->module, "snx_set_fallback");
     } else
         get_entries = NULL;
 #else
@@ -167,7 +163,6 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         get_entries = (EntriesFn)dlsym(e->module, "snx_entries");
         e->entry = (GuestFn)dlsym(e->module, "snx_execute");
         e->set_fetch = (void (*)(SnxFetchFn))dlsym(e->module, "snx_set_fetch");
-        e->set_fallback = (void (*)(GuestFn))dlsym(e->module, "snx_set_fallback");
     } else
         get_entries = NULL;
 #endif

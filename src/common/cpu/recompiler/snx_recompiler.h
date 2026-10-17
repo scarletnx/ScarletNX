@@ -13,7 +13,7 @@
      snx_recompiled_bind(m, &cpu);
      snx_recompiled_run(m, &cpu, 0x1000, 0);
    The guest memory is flat: guest address a is host byte cpu.mem[a] (cpu.h), and the code must be present in it at
-   its address, where the interpreter reads instructions the recompiler did not reach. Every recompiled function is a
+   its address. Every recompiled function is a
    host function F(CPU*, entry) that returns when the guest function returns (its RET sets cpu->pc to x30), or after
    an undefined instruction word or BRK (cpu->pc at the instruction, after the rt->undef or rt->brk call). The
    generated code's contract with the caller is cpu.h (the CPU state, SNX_ABI) and runtime/interface.h (RtAPI).
@@ -88,7 +88,9 @@ SNX_RECOMPILER_API int snx_recompiler_set_cache(struct snx_recompiler* r, const 
 typedef void (*snx_svc_call64)(CPU* cpu, uint32_t imm);
 
 /* Fills every hook of an RtAPI with a default the generated code can call: ticks counts a monotonic clock at the
-   console's 19.2 MHz, fpcr_changed, sev, wfe, poll and note_hint do nothing. svc, undef and brk are set to NULL: the
+   console's 19.2 MHz, fpcr_changed, sev, wfe, poll and note_hint do nothing, miss runs the code the module the CPU is
+   bound to (snx_recompiled_bind) compiles for a pc it has no function for, waiting for the compile (its JIT, started
+   by the first miss), and calls undef for a pc it can't compile (outside the code ranges, a host without the JIT). svc, undef and brk are set to NULL: the
    caller supplies all three (snx_recompiled_bind refuses a CPU whose table lacks one). brk(cpu, pc, imm) is called
    with cpu->pc at the instruction and the host function returns right after, so a handler that wants the run to end
    sets cpu->pc to the stop address. undef(cpu, pc, word) is called the same way for an instruction word that decodes
@@ -97,7 +99,7 @@ typedef void (*snx_svc_call64)(CPU* cpu, uint32_t imm);
    there records the fault for the caller, or longjmps out */
 SNX_RECOMPILER_API void snx_runtime_defaults(RtAPI* rt);
 
-/* A range of guest code: size bytes at guest address address, read from code (which the call does not keep). A64:
+/* A range of guest code: size bytes at guest address address, read from code (which the call copies). A64:
    address and size are multiples of 4, and code is required. A32: multiples of 2 (Thumb), the range ends at or below
    4 GiB, and code is unused (the blocks decode from cpu->mem) */
 struct snx_code_range {
@@ -110,7 +112,7 @@ struct snx_recompiled;
 
 /* Recompiles the A64 code in buffer code (size bytes), as it will be found at guest address address, and loads the
    result into this process. Functions are found by exploring calls and branches from the start of the buffer and
-   from the hints; what the exploration does not reach runs in the interpreter at run time. NULL with the reason in
+   from the hints; what the exploration does not reach is compiled when first reached. NULL with the reason in
    snx_recompiler_error (except out of memory, which ends the process, as everywhere in this recompiler) */
 SNX_RECOMPILER_API struct snx_recompiled* snx_recompile(struct snx_recompiler* r, uint64_t address, const void* code,
                                                         size_t size);
@@ -132,20 +134,23 @@ SNX_RECOMPILER_API struct snx_recompiled* snx_recompile_from(struct snx_recompil
 SNX_RECOMPILER_API void snx_recompiled_free(struct snx_recompiled* m);
 /* The guest address range the module's dispatch table covers (code_lo inclusive, code_hi exclusive) */
 SNX_RECOMPILER_API void snx_recompiled_range(const struct snx_recompiled* m, uint64_t* code_lo, uint64_t* code_hi);
-/* Functions recompiled, and instructions the backend left to the interpreter's step (unimplemented patterns) */
+/* Functions recompiled, and instructions without an emitter: always 0, as a module with one fails to build (kept so
+   callers of earlier versions still link) */
 SNX_RECOMPILER_API size_t snx_recompiled_functions(const struct snx_recompiled* m);
 SNX_RECOMPILER_API size_t snx_recompiled_fallbacks(const struct snx_recompiled* m);
 /* Points cpu at the module: its dispatch table and code range (cpu->disp, code_lo, code_hi). cpu->mem and cpu->rt
-   are the caller's and must be set before, cpu->rt with svc, undef and brk. 0, or -1 when cpu->rt lacks a hook */
+   are the caller's and must be set before, cpu->rt with svc, undef, brk and miss (snx_runtime_defaults' miss compiles
+   what the bound module lacks). 0, or -1 when cpu->rt lacks a hook */
 SNX_RECOMPILER_API int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu);
 /* The host function for guest address pc: the recompiled function (also for a pc inside one, at a leader), or the
-   module's interpreter for any other pc. Never NULL */
-SNX_RECOMPILER_API GuestFn snx_recompiled_lookup(const struct snx_recompiled* m, uint64_t pc);
+   one the module's JIT compiles for any other pc, waiting for it. NULL when pc can't be compiled */
+SNX_RECOMPILER_API GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc);
 /* The recompiled function entered at pc (a leader), NULL for any other pc */
 SNX_RECOMPILER_API GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc);
-/* What the module's generated code calls for a pc its CPU's dispatch table has no function for, instead of the
-   interpreter: a just-in-time compiler's handler, which compiles the code at that pc and runs it. NULL restores the
-   interpreter */
+/* What a miss in the module runs (snx_runtime_defaults' RtAPI.miss, snx_recompiled_lookup and _call) instead of the
+   module's JIT: a caller's own just-in-time compiler, called as the guest function at the pc, which compiles the code
+   there and runs it. NULL restores the module's JIT. A caller with its own RtAPI.miss and dispatch table (gnuabi)
+   doesn't need it */
 SNX_RECOMPILER_API void snx_recompiled_set_fallback(struct snx_recompiled* m, GuestFn fallback);
 /* Calls the guest function at pc (snx_recompiled_lookup) and returns when that host function returns: at the guest
    function's RET, with cpu->pc its return address, or after rt->undef or rt->brk */

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Build-time helper for the LLVM backend's runtime library (rtlib.c):
-     snx-rtlib-gen interp OUT       the interpreter and step function, as module.c and the audit tools get them
+     snx-rtlib-gen interp OUT       the interpreter of the templates' C, for tests (tests/ldr_interp.c): no module or
+                                    runtime has one any more
      snx-rtlib-gen embed IN OUT SYM the compiled rtlib object as a C array the recompiler links into each module */
 #include "common/cpu/aarch64/a64.h"
 #include <stdio.h>
@@ -43,7 +44,6 @@ static int interp(const char* path) {
     fwrite(text, 1, (size_t)(at - text), out);
     fputs(at + strlen("static "), out);
     free(text);
-    snx_a64_interp(out, 1);
     return fclose(out) != 0;
 }
 

@@ -72,7 +72,7 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 
 - `driver.c`: CLI dispatch only; `extract.c` and `recompile.c` own their workflows.
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
-- `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
+- `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for the backends, gnuabi's C path and the tests' reference interpreter.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
   table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000 (20000 on Android).
@@ -81,10 +81,10 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
   one; `src/common/cpu/recompiler/llvm/`, LLVM a required dependency) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
   `a64_templates.inc` case as the IR of the C it holds, `ir_codegen.c` the functions of `codegen.c`, and
   `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
-  `link_coff.c`) with `rtlib.c`, the helpers and interpreter compiled when the recompiler is built, into a module
+  `link_coff.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
   with no imports, for the host it runs on: x86-64 (ELF or COFF) or AArch64 (ELF, with a veneer for a branch past
   128 MiB). `tests/llvm_differential.c` runs both backends' step functions on random
-  states (every pattern, failing if any instruction falls back to the interpreter's `snx_step`), `tests/llvm_module.c`
+  states (every pattern, failing if any instruction has no emitter: a backend refuses such a module), `tests/llvm_module.c`
   a whole program built by both, `tests/llvm_bench.c` times both on assembly kernels. `gcc` (libgccjit,
   optional, built when libgccjit is found: `cmake/gccjit.cmake`, `SNX_GCCJIT_ROOT`) is for DEC Alpha EV67 hosts,
   which LLVM doesn't generate code for; everywhere else `llvm` is the backend to use. Ported on x86-64 for now:
@@ -98,7 +98,7 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
   libgccjit compiles one context at a time per process (GCC's state is global, behind one lock), so
   `gccjit/jit_units.c` compiles the chunks `--jobs` at a time in processes of their own (one after another in the
   recompiler's process with one job, and on Windows, which has no `fork`).
-  `llvm_differential --gccjit` (also failing on any `snx_step` fallback) and `llvm_module` check it against the
+  `llvm_differential --gccjit` (also failing on any instruction without an emitter) and `llvm_module` check it against the
   other backends. On `llvm_bench` it matches LLVM on integer, FP and calls; SIMD is several times slower (scalar
   lanes, GCC's SLP vectorizer off: it packs scalar code's CPU fields into vectors).
 - Both backends poll `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
@@ -120,8 +120,21 @@ Host tooling uses C90 syntax with SDK fixed-width types, formatting and OS APIs.
 The runtime and generated guest code retain their existing Clang/ABI requirements.
 Normal builds link the driver into the runtime; `SNX_TOOLS_ONLY` builds the same CLI independently.
 
-Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches, with interpreter fallback.
-`CPU.rt` supplies `RtAPI` callbacks: SVC, UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE; no named runtime imports.
+Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches
+through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
+goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC, UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
+miss; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code
+(`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`). There is no interpreter: a pc
+without code yet is queued at the front and its thread waits for the compile off its guest core, and a pc the JIT
+can't compile (or a host where it can't start: Windows before 10 1803) ends the game with the reason. Compile
+threads (host threads, not guest threads) take the queued pcs in batches: the functions at them and their callees
+found by `snx_codegen_discover`, emitted by the LLVM backend into one module, loaded into a code arena with a copy of
+`rtlib.c` (`code_loader.c`, packed into shared memory mapped once executable and once writable) and published into
+`CPU.disp`. At start the hints of earlier runs are queued behind every miss. The pc is recorded as a hint either way,
+so the next recompile has it. Each unit compiled is appended to `<game>.jitcache` in the cache folder, and a later run
+loads it instead of compiling when the guest code it came from is the same byte for byte and the file was written with
+the same ABI, LLVM, runtime library, host CPU and settings. Its calls into the AOT module go through `snx_aot_<pc>`
+symbols that the loader resolves at each load, so the object holds no host address.
 `cpu_helpers.c` + `helpers/`: SIMD, crypto, FP.
 
 GNU supplies an optional fetch callback that checks execute permissions and

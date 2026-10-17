@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
-    puts("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include \"a64_audit_state.h\"\nGuestFn snx_interp_entry;");
+    puts("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include \"a64_audit_state.h\"");
     puts("static int trapped;static void undef(CPU*c,u64 p,u32 w){(void)c;(void)p;(void)w;trapped=1;}");
     snx_a64_interp(stdout, 1);
     for (i = 1; i < argc; ++i) {

@@ -89,6 +89,13 @@ static void put32(unsigned char* p, size_t off, unsigned long n) {
     for (i = 0; i < 4; ++i) p[off + i] = (unsigned char)(n >> (8 * i));
 }
 
+/* RtAPI.miss: none is expected, the kernels are whole functions the recompiler finds */
+static void no_miss(CPU* c, u64 pc) {
+    (void)c;
+    fprintf(stderr, "llvm_bench: unexpected miss at %llx\n", (unsigned long long)pc);
+    exit(1);
+}
+
 static int run(const char* path, const unsigned char* image, size_t image_size, u64 iterations, CPU* out,
                double* seconds) {
     typedef const SnxModule* (*ModuleFn)(void);
@@ -110,6 +117,7 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
     mod = get();
     memset(out, 0, sizeof(*out));
     memset(&rt, 0, sizeof(rt));
+    rt.miss = no_miss; /* every kernel is found whole */
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
     out->disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
     memcpy(memory + mod->mods[0].base, image, image_size);

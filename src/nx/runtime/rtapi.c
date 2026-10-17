@@ -5,6 +5,8 @@
 /* what the game module calls through RtAPI: undefined instructions, BRK, hints, ticks, FPCR */
 #include "nx/runtime/rtapi.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/guest_jit.h"
+#include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/log.h"
@@ -47,14 +49,17 @@ static int hset_add(u64 pc) { /* 1 when pc is new. Hints are never 0 */
     g_hints[g_nhints++] = pc;
     return 1;
 }
-static void rt_note_hint(u64 pc) {
-    if (!pc) return;
+/* 1 when pc is a new hint */
+static int hint_add(u64 pc) {
+    int added;
     pm_lock(&g_hint_lock);
-    if (hset_add(pc)) {
-        g_hints_dirty = 1;
-        LOGV("interpreter: entering %llx (not recompiled)\n", (unsigned long long)pc);
-    }
+    added = hset_add(pc);
+    if (added) g_hints_dirty = 1;
     pm_unlock(&g_hint_lock);
+    return added;
+}
+static void rt_note_hint(u64 pc) {
+    if (pc && hint_add(pc)) LOGV("interpreter: entering %llx (not recompiled)\n", (unsigned long long)pc);
 }
 /* the hints file, <Game>.hints next to the executable */
 void hints_init(void) {
@@ -72,6 +77,15 @@ void save_hints(void) {
         g_hints_dirty = 0;
     }
     pm_unlock(&g_hint_lock);
+}
+/* the JIT's warm start (jit.c) */
+u64* hints_copy(size_t* count) {
+    pm_lock(&g_hint_lock);
+    u64* copy = g_nhints ? malloc(8 * (size_t)g_nhints) : NULL;
+    *count = copy ? (size_t)g_nhints : 0;
+    if (copy) memcpy(copy, g_hints, 8 * (size_t)g_nhints);
+    pm_unlock(&g_hint_lock);
+    return copy;
 }
 void load_hints(void) {
     FILE* f = fopen(g_hints_path, "r");
@@ -114,4 +128,22 @@ static void rt_wfe(CPU* c) { /* a spin wait: let another thread on this core run
     if (t) core_enter(t);
 }
 static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
-const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe, rt_poll};
+/* snx_lookup found no function for pc: the JIT's code, which a call into code the game mapped (an NRO) finds without a
+   wait once compiled. A pc without code yet waits for its compile off its guest core, so the core's other threads run
+   meanwhile. It is noted as a hint, so the next recompile has the function in the module: not code the game mapped,
+   which the module never holds and which lands elsewhere next time */
+static void rt_miss(CPU* c, u64 pc) {
+    GuestFn f = jit_resolve(pc);
+    if (!f) {
+        KThread* t = kthread_cur();
+        if (t) core_leave(t);
+        f = jit_wait(pc);
+        if (t) core_enter(t);
+        if (!f)
+            fatal("The game reached code at %llx that the recompiler missed, and %s", (unsigned long long)pc,
+                  jit_failure());
+    }
+    if (pc - g_code_lo < g_code_hi - g_code_lo) hint_add(pc);
+    f(c, pc);
+}
+const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe, rt_poll, rt_miss};

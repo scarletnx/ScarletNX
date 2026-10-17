@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Synthetic NRO -> CLI -> module -> AOT/interpreter execution. No game data.
+/* Synthetic NRO -> CLI -> module -> AOT execution, and an --interp-only module that holds no code (the runtime JIT
+   compiles all of it: modules carry no interpreter any more). No game data.
    A fourth argument names the backend (llvm by default, gcc). */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -60,6 +61,12 @@ static void undefined(CPU* c, u64 pc, u32 word) {
     (void)word;
     check(0, "unexpected UNDEF");
 }
+/* RtAPI.miss: every function of the fixture is found, so none is missed */
+static void unexpected_miss(CPU* c, u64 pc) {
+    (void)pc;
+    check(0, "unexpected miss");
+    c->pc = 0;
+}
 static void execute_module(const char* path, const unsigned char* image, int interp) {
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
@@ -83,10 +90,13 @@ static void execute_module(const char* path, const unsigned char* image, int int
     if (!get) goto done;
     mod = get();
     check(mod->abi == SNX_ABI && mod->nmods == 1, "module ABI/metadata");
-    check(interp ? mod->nentries == 0 : mod->nentries >= 1, "AOT/interpreter entry tables");
+    check(interp ? mod->nentries == 0 : mod->nentries >= 1, "AOT/--interp-only entry tables");
+    check(!mod->interp, "no interpreter in the module");
+    if (interp) goto done; /* nothing in it to run */
     memset(&cpu, 0, sizeof(cpu));
     memset(&rt, 0, sizeof(rt));
     rt.undef = undefined;
+    rt.miss = unexpected_miss;
     cpu.rt = &rt;
     cpu.code_lo = mod->code_lo;
     cpu.code_hi = mod->code_hi;
@@ -96,12 +106,8 @@ static void execute_module(const char* path, const unsigned char* image, int int
     if (cpu.mem && cpu.disp) {
         memcpy(cpu.mem + mod->mods[0].base, image, 0x200);
         for (i = 0; i < mod->nentries; ++i) cpu.disp[(mod->entry_addr[i] - mod->code_lo) / 4] = mod->entry_fn[i];
-        if (interp)
-            mod->interp(&cpu, mod->mods[0].base);
-        else {
-            check(cpu.disp[0] != NULL, "entry point discovered");
-            if (cpu.disp[0]) cpu.disp[0](&cpu, mod->mods[0].base);
-        }
+        check(cpu.disp[0] != NULL, "entry point discovered");
+        if (cpu.disp[0]) cpu.disp[0](&cpu, mod->mods[0].base);
         check(cpu.x[0] == 42 && cpu.pc == 0, "MOV/ADD/RET result");
     }
     free(cpu.mem);
@@ -217,7 +223,7 @@ int main(int argc, char** argv) {
         if (pass == 4)
             check(rc != 0, "link output replacement failure");
         else
-            check(!rc, pass == 2 ? "interpreter CLI build" : "AOT CLI build");
+            check(!rc, pass == 2 ? "--interp-only CLI build" : "AOT CLI build");
         data_file = snx_path_join(out, "Native Fixture/Native Fixture.abi");
         check(snx_is_file(data_file) == !rc, "ABI checkpoint published only after a successful build");
         if (!rc) { /* what the driver takes for this build's: the ABI and the commit */

@@ -6,6 +6,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "nx/loader/module_abi.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,6 @@ typedef struct {
     size_t first, last; /* functions */
     unsigned char* object;
     size_t size;
-    unsigned long fallbacks;
 } Unit;
 
 typedef struct {
@@ -72,7 +72,6 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     ir = snx_ir_new(name, q->build->opt, error, error_size);
     if (!ir) return -1;
     for (i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
-    u->fallbacks = ir->fallbacks;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
     if (!rc) rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
@@ -258,7 +257,7 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
                        size_t* entry_count, char* error, size_t error_size) {
     SnxModuleEntry* entries;
     size_t count, arraysize, i, nfns = codegen->function_count ? codegen->function_count : 1;
-    LLVMValueRef *values, fns, ent_off, ent_fn, ent_addr, ent_ptr, mods, mod, interp, entry, fn, loop_i, phi_values[2];
+    LLVMValueRef *values, fns, ent_off, ent_fn, ent_addr, ent_ptr, mods, mod, fn, loop_i, phi_values[2];
     LLVMTypeRef info, t_fns, t_u32s, t_addrs, t_ptrs;
     LLVMBasicBlockRef start, head, body, done, phi_blocks[2];
     SnxU64 lo = ~(SnxU64)0, hi = 0;
@@ -305,10 +304,6 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     /* static SnxModule MOD; */
     mod = global(ir, LLVMArrayType(ir->t_i8, sizeof(SnxModule)), "MOD", NULL, 0);
     LLVMSetAlignment(mod, 8);
-    interp = LLVMAddFunction(ir->mod, "snx_interp", ir->t_guest); /* the interpreter, in rtlib.c */
-    LLVMSetVisibility(interp, LLVMHiddenVisibility);
-    entry = LLVMAddGlobal(ir->mod, ir->t_ptr, "snx_interp_entry"); /* GuestFn snx_interp_entry, in rtlib.c */
-    LLVMSetVisibility(entry, LLVMHiddenVisibility);
     /* SNX_EXPORT const SnxModule* snx_module(void) */
     fn = LLVMAddFunction(ir->mod, "snx_module", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
     if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
@@ -340,14 +335,15 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     phi_blocks[1] = body;
     LLVMAddIncoming(loop_i, phi_values, phi_blocks, 2);
     LLVMPositionBuilderAtEnd(ir->b, done);
-    ir_store(ir, interp, entry);
     field(ir, mod, offsetof(SnxModule, abi), ir_i32(ir, options->abi));
     field(ir, mod, offsetof(SnxModule, nmods), ir_i32(ir, (SnxU32)loaded->module_count));
     field(ir, mod, offsetof(SnxModule, mods), mods);
     field(ir, mod, offsetof(SnxModule, nentries), ir_i32(ir, (SnxU32)count));
     field(ir, mod, offsetof(SnxModule, entry_addr), ent_addr);
     field(ir, mod, offsetof(SnxModule, entry_fn), ent_ptr);
-    field(ir, mod, offsetof(SnxModule, interp), interp);
+    /* no interpreter any more: the runtime's JIT compiles what the module lacks. The field stays (the layout since
+       SNX_ABI 8) */
+    field(ir, mod, offsetof(SnxModule, interp), LLVMConstNull(ir->t_ptr));
     field(ir, mod, offsetof(SnxModule, code_lo), ir_i64(ir, lo));
     field(ir, mod, offsetof(SnxModule, code_hi), ir_i64(ir, hi));
     field(ir, mod, offsetof(SnxModule, title), snx_module_string(ir, options->title ? options->title : "Game"));
@@ -377,7 +373,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     SnxLinkOutput linked;
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, n = 0;
-    unsigned long fallbacks = 0;
     const char* exports[1];
     char error[1024], *tmp = NULL;
     double start;
@@ -411,7 +406,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", q.error);
         goto done;
     }
-    for (i = 0; i < q.count; ++i) fallbacks += q.units[i].fallbacks;
     /* the module descriptor */
     start = snx_seconds();
     ir = snx_ir_new("module", build->opt, error, sizeof(error));
@@ -456,7 +450,6 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     if (!options->quiet) {
         printf("LLVM module: %.1f MB, %lu entries\n", (double)linked.size / 1000000.0, (unsigned long)entry_count);
-        if (fallbacks) printf("LLVM: %lu instructions run through the interpreter step\n", fallbacks);
     }
     rc = 0;
 done:

@@ -37,6 +37,7 @@ renderer=opengl
 | `.ini` keys `touch_controls`, `touch_controls_opacity` | [runtime] Isolate shared core and NX runtime | `controls`, `controls_opacity` | the same |
 | `.ini` keys `modo_tv`, `idioma`, `resolucion`, `sombras`, `perfil` (SwitchRecomp's) | #185 | `docked`, `language`, `resolution`, `shadows`, `profile` | the same |
 | `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
+| `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
 | `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
 | An installed copy's files in `~/.local/share/scarletnx` on Linux: `gui/last-run.log`, `gui/recent.txt`, `games/<Game>.ini`, `games/<Game>.log`, `games/threads.txt`, `games/shader_cache/vk_pipelines.bin`, `work/` | #212 | the config, state and cache folders ([USAGE](USAGE.md#folders)) | the launcher lists their folders as it opens |
 | A game laid out beside the others: `games/<Game>`, `<Game>_code.so`, `<Game>.abi`, `<Game>_data/`, `<Game>.ini`, `<Game>.log` | [driver, runtime, gui] Keep each game in a folder of its own | `games/<id>/`, its settings, log and caches in their folders ([USAGE](USAGE.md#folders)) | it runs where it is, each run naming its folder now; the launcher lists it as it opens |

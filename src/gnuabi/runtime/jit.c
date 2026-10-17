@@ -78,8 +78,6 @@ static void add_module(GnuJit* jit, struct snx_recompiled* m) {
     jit->modules[jit->module_count++] = m;
 }
 
-static void miss(CPU* c, u64 pc);
-
 static int compiled(void* context, uint64_t address) {
     GnuJit* jit = context;
     return address < GNU_ADDRESS_LIMIT && jit->table[address >> 2] != NULL;
@@ -107,11 +105,10 @@ static int compile(GnuProcess* p, uint64_t pc) {
     writable = (memory->pages[pc / GNU_PAGE_SIZE] & GNU_PROT_WRITE) != 0;
     m = snx_recompile_from(jit->recompiler, &range, 1, &pc, 1, writable ? 1 : jit->step, compiled, jit);
     if (!m) {
-        snprintf(p->diagnostic, sizeof p->diagnostic, "Cannot compile guest code at 0x%llx: %s",
-                 (unsigned long long)pc, snx_recompiler_error(jit->recompiler));
+        snprintf(p->diagnostic, sizeof p->diagnostic, "Cannot compile guest code at 0x%llx: %s", (unsigned long long)pc,
+                 snx_recompiler_error(jit->recompiler));
         return -1;
     }
-    snx_recompiled_set_fallback(m, miss);
     snx_recompiled_range(m, &lo, &hi);
     for (a = lo; a < hi; a += 4) {
         GuestFn f = snx_recompiled_function(m, a);
@@ -126,8 +123,8 @@ static int compile(GnuProcess* p, uint64_t pc) {
     return jit->table[pc >> 2] ? 0 : -1;
 }
 
-/* every module's lookup fallback: a pc the table has no function for */
-static void miss(CPU* c, u64 pc) {
+/* gnu_rtapi's RtAPI.miss: a pc the table has no function for */
+void gnu_jit_miss(CPU* c, u64 pc) {
     GnuProcess* p = c->thread;
     GuestFn f;
     if ((pc & 3) || !gnu_memory_access(&p->memory, pc, 4, GNU_PROT_EXEC)) {
@@ -157,8 +154,8 @@ int gnu_jit_init(GnuJit* jit, int mode, const char* cc, const char* cache, char*
 #ifdef _WIN32
     jit->table = VirtualAlloc(NULL, (SIZE_T)TABLE_BYTES, MEM_RESERVE, PAGE_NOACCESS);
 #else
-    jit->table = mmap(NULL, (size_t)TABLE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                      -1, 0);
+    jit->table =
+        mmap(NULL, (size_t)TABLE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (jit->table == MAP_FAILED) jit->table = NULL;
 #endif
     if (!jit->table) {
@@ -219,7 +216,6 @@ int gnu_jit_prepare(GnuJit* jit, const SnxExecRange* ranges, size_t count, uint6
     if (snx_execution_compile(&jit->aot, ranges, count, entry, jit->cc, error, error_size)) return -1;
     jit->aot.fetch = aot_fetch;
     if (jit->aot.set_fetch) jit->aot.set_fetch(aot_fetch);
-    if (jit->aot.set_fallback) jit->aot.set_fallback(miss);
     for (a = jit->aot.code_lo; a < jit->aot.code_hi; a += 4) {
         GuestFn f = jit->aot.dispatch[(a - jit->aot.code_lo) / 4];
         if (f && a < GNU_ADDRESS_LIMIT) table_set(jit, a, f);
@@ -235,7 +231,7 @@ void gnu_jit_bind(GnuJit* jit, CPU* cpu) {
 
 void gnu_jit_call(GnuJit* jit, CPU* cpu, uint64_t pc) {
     GuestFn f = pc < GNU_ADDRESS_LIMIT && !(pc & 3) ? jit->table[pc >> 2] : NULL;
-    (f ? f : miss)(cpu, pc);
+    (f ? f : gnu_jit_miss)(cpu, pc);
 }
 
 void gnu_jit_install(GnuJit* jit, uint64_t pc, GuestFn function) { table_set(jit, pc, function); }

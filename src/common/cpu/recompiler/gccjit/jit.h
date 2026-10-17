@@ -3,8 +3,8 @@
 /* The libgccjit backend (--backend=gcc), for hosts LLVM doesn't generate code for (DEC Alpha EV67); elsewhere the
    LLVM backend is the one to use. It mirrors the LLVM backend: the control flow of ir_codegen.c (labels, the D_
    dispatch, required tail calls, CALLDYN, BL's return check, polls on backward branches) and instruction bodies that
-   build the C of a64_templates.inc for a constant word (jit_a64.c, jit_fp.c, jit_simd.c). Patterns without an
-   emitter call the interpreter's snx_step, in the runtime library.
+   build the C of a64_templates.inc for a constant word (jit_a64.c, jit_fp.c, jit_simd.c). Every pattern has an
+   emitter: an instruction without one fails its unit (snx_jit_error).
    Nothing here is specific to a host: SIMD is written lane by lane, as the templates' C is, for GCC's vectorizer, and
    host instructions only come from GCC's code generator with -march=native (build == host == target). */
 #ifndef SNX_RECOMPILER_GCCJIT_JIT_H
@@ -23,7 +23,6 @@ typedef struct SnxJit {
     gcc_jit_type *t_void, *t_ptr, *t_char_ptr, *t_bool, *t_int, *t_guest, *t_guest_ptr;
     gcc_jit_type *t_u8, *t_u16, *t_u32, *t_u64, *t_u128, *t_s8, *t_s16, *t_s32, *t_s64, *t_s128, *t_f32, *t_f64;
     gcc_jit_function* lookup; /* snx_lookup */
-    gcc_jit_lvalue* interp_entry;
     /* out-of-line functions of the runtime library and GCC builtins, declared on first use */
     SnxJitExtern externs[64];
     size_t extern_count;
@@ -39,14 +38,18 @@ typedef struct SnxJit {
     gcc_jit_rvalue *c, *M;
     gcc_jit_block* block; /* NULL after a terminator, until the next label */
     unsigned long names;
-    /* PLAIN instructions emitted as a call to snx_step, for patterns without an emitter */
+    /* PLAIN instructions no emitter covers, the first of them, and the error that names it: snx_jit_error reports
+       it, so the unit fails (every pattern has an emitter, and the interpreter's step function is gone) */
     unsigned long fallbacks;
+    SnxU32 fallback_word;
+    SnxU64 fallback_pc;
+    char fallback_error[160];
 } SnxJit;
 
 /* opt: the -O letter */
 SnxJit* snx_jit_new(char opt);
 void snx_jit_free(SnxJit* jit);
-/* NULL, or the context's first error */
+/* NULL, or the first instruction without an emitter, or the context's first error */
 const char* snx_jit_error(SnxJit* jit);
 
 /* F_<address>: exported (defined in this context) when define, imported otherwise; declare defined ones first */
@@ -83,7 +86,7 @@ const char* snx_jit_compile_to_file(SnxJit* jit, enum gcc_jit_output_kind kind, 
 gcc_jit_result* snx_jit_compile(SnxJit* jit);
 
 /* ---- instructions (jit_a64.c, jit_fp.c, jit_simd.c), as ir.h's ---- */
-/* The body of a PLAIN instruction; 0 when no emitter covers the pattern: the caller then calls snx_step */
+/* The body of a PLAIN instruction; 0 when no emitter covers the pattern: the unit then fails (SnxJit.fallbacks) */
 int snx_jit_plain(SnxJit* jit, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction);
 /* the bool condition of BC, the u64 target of BR/BLR/RET, the u32 immediate of SVC/BRK */
 gcc_jit_rvalue* snx_jit_flow_operand(SnxJit* jit, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction);

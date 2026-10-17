@@ -25,7 +25,7 @@ static void check(int ok, const char* what) {
            svc #0x42                                   (the handler checks x0 and sets it to 7)
            str x0,[x2]; mov x30,x3; ret
    helper: add x0,x0,#1000; ret
-   far:    mov x0,#99; brk #7; ret                     (reached by no call: a hint, or the interpreter) */
+   far:    mov x0,#99; brk #7; ret                     (reached by no call: a hint, or the JIT) */
 #define CODE64 0x1000u
 #define FAR    (CODE64 + 13 * 4)
 #define UNDEF  (CODE64 + 20 * 4) /* zero words: UDF #0 */
@@ -111,7 +111,6 @@ static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, c
              (unsigned long)snx_recompiled_functions(m));
     check(snx_recompiled_functions(m) == 2, what);
     check(snx_recompiled_fallbacks(m) == 0, "every instruction has an emitter");
-    check(snx_recompiled_lookup(m, CODE64) != snx_recompiled_lookup(m, FAR), "far is the interpreter's without a hint");
     if (keep_ir) {
         char* path = snx_path_join(keep_ir, backend[0] == 'l' ? "code_000.ll" : "code_000.c");
         check(snx_is_file(path), "keep_ir saved the first code unit");
@@ -138,14 +137,17 @@ static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, c
     check(seen.svcs == 1 && seen.svc_imm == 0x42 && seen.svc_x0 == 1055, what);
     check(cpu.x[0] == 7 && read64(mem + STORE) == 7, "the SVC's result reached x0 and guest memory");
     check(cpu.pc == STOP && !seen.brks && !seen.undefs, "the entry returned to STOP");
-    /* the interpreter path: far was never found, its BRK comes through the interpreter */
+    /* the JIT path: far was never found, so the miss compiles it, and its BRK comes from that code */
     memset(&seen, 0, sizeof(seen));
     cpu.x[0] = 0;
     cpu.x[30] = STOP;
     snx_recompiled_run(m, &cpu, FAR, STOP);
-    snprintf(what, sizeof(what), "%s: BRK #7 at far through the interpreter (brks %u imm %u pc %#llx x0 %llu)", backend,
+    snprintf(what, sizeof(what), "%s: BRK #7 at far, compiled at its miss (brks %u imm %u pc %#llx x0 %llu)", backend,
              seen.brks, seen.brk_imm, (unsigned long long)seen.brk_pc, (unsigned long long)cpu.x[0]);
     check(seen.brks == 1 && seen.brk_imm == 7 && seen.brk_pc == FAR + 4 && cpu.x[0] == 99, what);
+    check(snx_recompiled_lookup(m, FAR) && snx_recompiled_lookup(m, FAR) != snx_recompiled_lookup(m, CODE64),
+          "far has code of its own, the JIT's");
+    check(!snx_recompiled_lookup(m, CODE64 + A64_SIZE + 0x100000), "nothing compiles outside the code ranges");
     /* an undefined word */
     memset(&seen, 0, sizeof(seen));
     snx_recompiled_run(m, &cpu, UNDEF, STOP);
@@ -162,8 +164,8 @@ static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, c
     check(snx_recompiled_lookup(m, FAR) != snx_recompiled_lookup(m, UNDEF), "far is recompiled now");
     check(snx_recompiled_lookup(m, CODE64) != snx_recompiled_lookup(first, CODE64),
           "the second module has code of its own, not the first module's");
-    check(snx_recompiled_lookup(first, FAR) == snx_recompiled_lookup(first, UNDEF),
-          "the first module still leaves far to its interpreter");
+    check(snx_recompiled_lookup(first, FAR) != snx_recompiled_lookup(m, FAR),
+          "the first module's far is its JIT's, the second's recompiled");
     snx_recompiled_free(first);
     check(snx_recompiled_bind(m, &cpu) == 0, "bind the second module");
     memset(&seen, 0, sizeof(seen));

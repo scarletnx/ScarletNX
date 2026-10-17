@@ -33,15 +33,20 @@ The service does **not** relocate the NRO or resolve its ELF symbols. The guest 
 LoadNro returns. It also manages constructors/destructors. Pre-relocating in the service would change bytes the
 client expects to receive untouched. The caller's BSS backing is preserved, not silently zeroed.
 
-NRO instructions run through the existing generated AArch64 interpreter (`snx_lookup`'s fallback). It fetches from
-guest memory at the mapped address and can call back into AOT code using the existing CPU dispatch. This needs no
-ABI bump, recompilation of the main game, host toolchain at runtime, or guessed native `.so` filename.
+NRO code is compiled by the runtime JIT. When LoadNro maps an NRO, its text joins
+the JIT's images (`jit_code_added` in `src/nx/runtime/guest_jit.c`, `snx_jit_add_image` in
+`src/common/cpu/recompiler/llvm/jit_service.c`). Its pcs lie outside `CPU.disp`, so a call into it misses in
+`snx_lookup` and reaches `RtAPI.miss`. There `snx_jit_resolve` reads the JIT's own table for that image without a lock:
+once a function is compiled, a call costs the miss and that load. The first call to a function waits for its compile,
+as for any code the AOT module lacks. JIT code for the NRO
+calls the module's functions directly and other code through the dispatch. UnloadNro, and the end of the session,
+remove the image before unmapping its memory: `snx_jit_remove_image` waits for the compiles reading it and forgets
+its code, so an NRO mapped at the same place later is compiled afresh. NRO pcs are not written to `.hints`, since the
+next run maps the NRO elsewhere. Without the JIT (a system it can't start on), NRO code can't run.
 
 A host `dlopen()` alone cannot execute ARM64 NRO bytes on another host architecture. Nor can an existing fixed-base
 ScarletNX AOT module be relocated just by moving its dispatch entries: generated PC-relative addresses and direct
-calls use its original guest addresses. A native/AOT fast path for dynamic NROs would need a separately designed
-recompilation/cache and safe dispatch-publication/unload protocol. This implementation deliberately does not add
-an unsafe native-library lookup path; dynamically loaded NROs currently run interpreted.
+calls use its original guest addresses. The JIT compiles the NRO at the address it is mapped at, so neither is needed.
 
 `mem_map_code` / `mem_unmap_code` in `src/nx/memory/mem.c`:
 

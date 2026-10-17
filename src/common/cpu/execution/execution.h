@@ -17,8 +17,6 @@ typedef struct {
     char* temporary;
     SnxFetchFn fetch;
     void (*set_fetch)(SnxFetchFn fetch);
-    /* what the module's lookups call for a pc it has no function for, instead of its interpreter (a JIT's handler) */
-    void (*set_fallback)(GuestFn fallback);
 } SnxExecution;
 /* Translate executable ranges with the existing ARM64-to-C compiler and load the
    resulting host module. cc=NULL uses the configured build compiler. */

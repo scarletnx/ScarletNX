@@ -45,6 +45,20 @@ void plat_vm_decommit(u8* p, u64 size) {
     CHECK(!madvise(p, size, MADV_DONTNEED));
     CHECK(!mprotect(p, size, PROT_NONE));
 }
+/* runtime/guest_jit.c: what ldr:ro tells the JIT. -1: no JIT here, the NRO stays the interpreter's */
+static u64 jit_base, jit_text, jit_removed_base;
+static int jit_added, jit_removed;
+int jit_code_added(u64 base, u64 text_size, u64 size) {
+    (void)size;
+    jit_base = base;
+    jit_text = text_size;
+    ++jit_added;
+    return -1;
+}
+void jit_code_removed(u64 base) {
+    jit_removed_base = base;
+    ++jit_removed;
+}
 void gpu_mem_changed(u64 a, u64 size) {
     (void)a;
     (void)size;
@@ -193,10 +207,11 @@ static void execute(u64 base) {
     cpu.disp = dispatch;
     cpu.code_lo = 0;
     cpu.code_hi = 4;
-    const RtAPI rt = {0};
+    /* RtAPI.miss: the reference interpreter (ldr_interp.c), standing in for the runtime JIT */
+    const RtAPI rt = {.miss = snx_interp};
     cpu.rt = &rt;
     cpu.x[30] = 0x1234;
-    CHECK(snx_lookup(&cpu, base + 0x80) == snx_interp_entry);
+    CHECK(snx_lookup(&cpu, base + 0x80) == snx_interp);
     snx_lookup(&cpu, base + 0x80)(&cpu, base + 0x80);
     CHECK(cpu.x[0] == 42 && cpu.pc == 0x1234);
     /* NRO -> AOT dispatch -> NRO -> caller, with a saved link register. */
@@ -405,6 +420,7 @@ int main(void) {
     GP(SRC + 0x180)[0] = 0;
     u64 base = load(o);
     CHECK(base != SRC && !memcmp(GP(base), GP(SRC), 0x3000));
+    CHECK(jit_added == 1 && jit_base == base && jit_text == 0x1000 && !jit_removed); /* its text joins the JIT */
     CHECK(gr64(base + 0x2000) == 0x80 && GP(base + 0x3000)[0] == 0xa5);
     block_is(base, MS_ALIASCODE, PERM_RX, 0);
     block_is(base + 0x1000, MS_ALIASCODE, PERM_R, 0);
@@ -429,6 +445,7 @@ int main(void) {
     CHECK(!call(o)); /* unloading NRR must not unload NRO */
     request(1, base, 0, 0, 0);
     CHECK(!call(o));
+    CHECK(jit_removed == 1 && jit_removed_base == base); /* before the unmap */
     CHECK(call(o) == RO(1028));
     block_is(base, MS_FREE, PERM_NONE, 0);
     block_is(SRC, MS_NORMAL, PERM_RW, 0);
@@ -440,6 +457,7 @@ int main(void) {
     CHECK(!call(o));
     base = load(o);
     svcobj_unref(o);
+    CHECK(jit_removed == 2 && jit_removed_base == base); /* the session's end unmaps it, and tells the JIT first */
     block_is(base, MS_FREE, PERM_NONE, 0);
     block_is(BSS, MS_NORMAL, PERM_RW, 0);
     o = new_ro1();

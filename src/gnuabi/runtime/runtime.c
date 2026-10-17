@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gnuabi/process/process.h"
 #include "gnuabi/abi/errno/errno.h"
+#include "gnuabi/runtime/jit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #ifndef _WIN32
@@ -53,7 +54,8 @@ static void poll(CPU* c) {
             (unsigned long long)c->pc, (unsigned long long)c->x[30], (unsigned long long)c->x[31],
             (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
 }
-const RtAPI gnu_rtapi = {syscall_entry, undefined, hint, ticks, breakpoint, fpcr, event, wait_event, poll};
+const RtAPI gnu_rtapi = {syscall_entry, undefined, hint,       ticks, breakpoint,
+                         fpcr,          event,     wait_event, poll,  gnu_jit_miss};
 
 /* SNX_GNU_SAMPLE=1: once a second, the guest's pc on stderr (poll above), for a loop that makes no syscall. A forked
    child has no watchdog thread, so it starts its own at its next exec */

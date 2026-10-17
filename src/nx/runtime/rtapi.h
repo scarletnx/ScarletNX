@@ -11,6 +11,8 @@ extern const RtAPI g_rtapi;
 void hints_init(void);
 void load_hints(void);
 void save_hints(void); /* <Game>.hints: code addresses the recompiler should know about, from this run */
+/* the hints so far, loaded and found, in the order they were found: malloc'd (the caller frees), NULL when none */
+u64* hints_copy(size_t* count);
 void snx_fpcr_apply(CPU* c);
 
 #endif

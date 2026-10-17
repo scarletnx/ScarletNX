@@ -20,6 +20,10 @@ typedef struct RtAPI {
     void (*wfe)(struct CPU* c);
     /* CPU.poll was set: a loop that makes no SVC lets the runtime take the thread off its core here */
     void (*poll)(struct CPU* c);
+    /* snx_lookup's answer for a pc without code in CPU.disp, called as the guest function at pc (a GuestFn): the
+       runtime runs it in the interpreter or compiles it first. The module no longer carries its own fallback, so the
+       runtime decides what a miss does */
+    void (*miss)(struct CPU* c, uint64_t pc);
 } RtAPI;
 
 #endif

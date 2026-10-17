@@ -84,8 +84,15 @@ typedef struct SnxIr {
     /* alias scopes: guest memory (through M) and the CPU structure never overlap */
     unsigned kind_scope, kind_noalias;
     LLVMValueRef scope_cpu, scope_guest;
-    /* PLAIN instructions emitted as a call to the interpreter's snx_step, for patterns without an emitter */
+    /* PLAIN instructions no emitter covers, and the first of them: snx_ir_object refuses a module with any (every
+       pattern has an emitter, and the interpreter's step function is gone from the runtime library) */
     unsigned long fallbacks;
+    SnxU32 fallback_word;
+    SnxU64 fallback_pc;
+    /* the runtime JIT's: nonzero when a target outside the codegen has an AOT module's function, called directly as
+       snx_aot_<target> (the JIT's loader resolves it), 0 for CALLDYN. NULL in the AOT build */
+    SnxU64 (*direct)(void* user, SnxU64 target);
+    void* direct_user;
 } SnxIr;
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
@@ -116,7 +123,7 @@ void snx_ir_begin(SnxIr* ir, LLVMValueRef function);
 
 /* ---- instructions (ir_a64.c, ir_simd.c, ir_fp.c) ---- */
 /* The body of a PLAIN instruction (snx_a64_body with "c->rt->undef(c,pc,w)" for UNDEF, after snx_a64_fast_simd).
-   0 when no emitter covers the pattern yet: the caller then calls snx_step */
+   0 when no emitter covers the pattern: the module then fails (SnxIr.fallbacks) */
 int snx_ir_plain(SnxIr* ir, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction);
 /* The case's first operand of a flow instruction: the i1 condition of BC, the i64 target of BR/BLR/RET, the i32
    immediate of SVC/BRK */
@@ -269,6 +276,7 @@ size_t ir_rt_brk(void);
 size_t ir_rt_sev(void);
 size_t ir_rt_wfe(void);
 size_t ir_rt_poll(void);
+size_t ir_rt_miss(void);
 size_t ir_off_poll(void);                         /* CPU.poll */
 void ir_undef(SnxIr* ir, SnxU64 pc, SnxU32 word); /* c->rt->undef(c,pc,w) */
 void ir_fence(SnxIr* ir);                         /* SNX_FENCE() */

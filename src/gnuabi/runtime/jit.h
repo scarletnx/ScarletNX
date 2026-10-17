@@ -6,8 +6,8 @@
 #include "common/cpu/execution/execution.h"
 #include <stddef.h>
 /* How guest A64 code becomes host code. Both modes share one dispatch table over the whole guest address space
-   (cpu->disp with code_lo 0): an empty slot sends the generated code to gnu_jit_miss (each module's lookup fallback,
-   snx_recompiled_set_fallback), which compiles the code there in this process with the LLVM backend and runs it.
+   (cpu->disp with code_lo 0): an empty slot sends the generated code to gnu_jit_miss (gnu_rtapi's RtAPI.miss), which
+   compiles the code there in this process with the LLVM backend and runs it.
      JIT: everything is compiled that way, as execution reaches it.
      AOT: the main executable is compiled before it starts, with the host compiler (common/cpu/execution); the code
           the program maps later (the dynamic linker, shared libraries) still comes through gnu_jit_miss. */
@@ -23,7 +23,7 @@ typedef struct GnuJit {
     size_t module_count, module_capacity;
     SnxExecution aot;
     int verbose;
-    size_t step; /* instructions a just-in-time step compiles */
+    size_t step;                     /* instructions a just-in-time step compiles */
     uint64_t changed_lo, changed_hi; /* what gnu_jit_invalidate took since the last gnu_jit_changed */
 } GnuJit;
 /* cache: the folder of compiled modules (snx_recompiler_set_cache), NULL for none */
@@ -39,6 +39,9 @@ void gnu_jit_bind(GnuJit* jit, CPU* cpu);
 void gnu_jit_call(GnuJit* jit, CPU* cpu, uint64_t pc);
 /* a host function for guest address pc (tests) */
 void gnu_jit_install(GnuJit* jit, uint64_t pc, GuestFn function);
+/* RtAPI.miss (gnu_rtapi): a pc the table has no function for, compiled from the executable mapping around it and run,
+   or a fault when it isn't executable */
+void gnu_jit_miss(CPU* c, u64 pc);
 /* the guest code in [address, address + length) changed or went: its host code is not entered again */
 void gnu_jit_invalidate(GnuJit* jit, uint64_t address, uint64_t length);
 /* whether code at pc went since the last call (a syscall's mprotect, munmap or mmap over it) */

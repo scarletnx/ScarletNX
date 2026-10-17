@@ -232,7 +232,7 @@ static void emit_semantic_fixture(FILE* out) {
     };
     size_t i;
     char function[32];
-    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include <stdio.h>\nGuestFn snx_interp_entry;\n", out);
+    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include <stdio.h>\n", out);
     for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) {
         sprintf(function, "step_%lu", (unsigned long)i);
         snx_a64_static_step(out, words[i], 0x1000, function);
@@ -457,7 +457,7 @@ static void poll_test(const char* compiler, const char* repo, const char* direct
     file = function ? snx_fopen(source, "wb") : NULL;
     check(file != NULL, "open the poll fixture");
     if (!file) goto done;
-    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include <stdio.h>\nGuestFn snx_interp_entry;\n", file);
+    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\n#include <stdio.h>\n", file);
     snx_codegen_emit(file, &codegen, function);
     snx_a64_interp(file, 0);
     fputs("static int polls;\nstatic void poll(CPU* c){ ++polls; __atomic_store_n(&c->poll,0,__ATOMIC_RELAXED); }\n",
@@ -472,7 +472,7 @@ static void poll_test(const char* compiler, const char* repo, const char* direct
     /* the loop's words in guest memory at 0x1000, no dispatch table: every lookup lands in the interpreter */
     fputs("static int interp(u64 count, u32 flag){ static u32 mem[0x1000]; CPU c; RtAPI rt;\n"
           " memset(&c,0,sizeof c); memset(&rt,0,sizeof rt); mem[0x400]=0xF1000400u; mem[0x401]=0x54FFFFE1u;\n"
-          " mem[0x402]=0xD65F03C0u; snx_interp_entry=snx_interp; rt.poll=poll; c.rt=&rt; c.mem=(u8*)mem;\n"
+          " mem[0x402]=0xD65F03C0u; rt.miss=snx_interp; rt.poll=poll; c.rt=&rt; c.mem=(u8*)mem;\n"
           " c.x[0]=count; c.x[30]=0x2000; c.poll=flag; polls=0; snx_interp(&c,0x1000);\n"
           " return c.x[0]==0 && c.pc==0x2000 ? polls : -1; }\n",
           file);

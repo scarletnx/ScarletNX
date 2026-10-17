@@ -34,7 +34,8 @@ extern int g_opt_diag, g_opt_shadows, g_opt_prof;
 /* auto_stub_ipc: 1 = a service command the runtime doesn't declare answers success with no outputs, 0 = the
    console's UnknownCommandId (hle/kernel/ipc.c's stub_ok, sm's stand-in for a service there isn't) */
 extern int g_opt_auto_stub_ipc;
-extern int g_opt_network; /* network: 1 = the game is online through the host (hle/services/network) */
+extern int g_opt_network;     /* network: 1 = the game is online through the host (hle/services/network) */
+extern int g_opt_jit_threads; /* jit_threads: the runtime JIT's compile threads, 0 by the CPUs. Startup only */
 extern float g_opt_resf;
 extern int g_opt_vsync; /* vsync: 1 = presents wait for the display's refresh (FIFO) */
 extern int g_opt_aniso; /* anisotropy: 0 = the game's, else at least that much for mipmapped 2D textures */

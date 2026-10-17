@@ -2,10 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* ldr:ro / ro:1, IRoInterface. Behavioral reference: Eden's service/ro/ro.cpp and
    cmif_serialization.h (see docs/LDR_RO.md). The guest nn::ro linker, not this service, resolves symbols,
-   applies relocations and calls constructors. NRO code runs through the existing interpreter fallback;
-   fixed-address AOT functions cannot safely be rebased by changing their dispatch entries. */
+   applies relocations and calls constructors. NRO code is the runtime JIT's (runtime/guest_jit.c: its text joins the
+   JIT's images while it is mapped), and the interpreter's without a JIT; fixed-address AOT functions cannot safely be
+   rebased by changing their dispatch entries. */
 #include "nx/hle/services/services_int.h"
 #include "hle/services/ldr.swipc.inc"
+#include "nx/runtime/guest_jit.h"
 #include <openssl/evp.h>
 
 #define RO_ERROR(d) RC(22, d)
@@ -148,8 +150,8 @@ static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, 
     slot->map = m;
     memcpy(slot->id, GP(m.base + 0x40), 32);
     *address = m.base;
-    LOG("ldr:ro: mapped NRO at %llx (%llu bytes, interpreter)\n", (unsigned long long)m.base,
-        (unsigned long long)(m.size + m.bss_size));
+    LOG("ldr:ro: mapped NRO at %llx (%llu bytes, %s)\n", (unsigned long long)m.base,
+        (unsigned long long)(m.size + m.bss_size), jit_code_added(m.base, text, m.size) ? "interpreter" : "JIT");
     return 0;
 }
 static int ro_unload_nro(RoState* s, u64 base) {
@@ -157,6 +159,7 @@ static int ro_unload_nro(RoState* s, u64 base) {
     for (int i = 0; i < RO_LIMIT; i++) {
         RoNro* n = &s->nro[i];
         if (!n->map.base || n->map.base != base) continue;
+        jit_code_removed(base); /* before its memory goes: a compile may be reading it */
         if (mem_unmap_code(&n->map)) return RO_ERROR(1027);
         memset(n, 0, sizeof *n);
         return 0;
@@ -213,6 +216,7 @@ static void ro_destroy(SvcObj* o) {
     pm_lock(&ro_lock);
     for (int i = 0; i < RO_LIMIT; i++) {
         free(s->nrr[i].hashes);
+        if (s->nro[i].map.base) jit_code_removed(s->nro[i].map.base);
         if (s->nro[i].map.base && mem_unmap_code(&s->nro[i].map))
             WARN("ldr:ro: could not release NRO on session close\n");
     }

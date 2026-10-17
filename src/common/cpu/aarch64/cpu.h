@@ -33,8 +33,11 @@ typedef double f64;
 /* the version of the contract between a game module and the runtime (this header, cpu_helpers.c, RtAPI and the
    module descriptor). The recompiler stamps it into each module, the runtime refuses a module with another one */
 /* 7: CPU.poll and RtAPI.poll, checked on the backward branches of generated code.
-   8: recompile game modules for the FP/SIMD emitters and discovery changes. */
-#define SNX_ABI 8
+   8: RtAPI.miss replaces the module's own snx_interp_entry as snx_lookup's fallback, and CPU.disp's slots are read
+      with relaxed atomic loads, since the runtime JIT fills them while guest threads run (the GPU pipeline branch).
+      Main used 8 too, for its standalone FP/SIMD emitter and discovery changes, without RtAPI.miss.
+   9: the two 8s merged, so a module built by either is refused. */
+#define SNX_ABI 9
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -96,15 +99,18 @@ typedef struct CPU {
 #define WRQ(a, src) memcpy(MP(a), &(src), 16)
 
 /* ---- calls ---- */
+/* A slot goes from NULL to a function while other threads read it (the runtime JIT publishes with release ordering,
+   gpu/nvn_trace.c installs wrappers): a relaxed load, which costs a plain one, makes that no data race. The code and
+   data behind a published address were written before the release store, and reaching them depends on the loaded
+   address, which orders them on every host the backends target */
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc);
-extern GuestFn snx_interp_entry;
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc) {
     u64 o = pc - c->code_lo;
     if (LIKELY(o < c->code_hi - c->code_lo && !(pc & 3))) {
-        GuestFn f = c->disp[o >> 2];
+        GuestFn f = __atomic_load_n(&c->disp[o >> 2], __ATOMIC_RELAXED);
         if (LIKELY(f != 0)) return f;
     }
-    return snx_interp_entry;
+    return c->rt->miss;
 }
 #define CALLDYN(t)                                                                                                     \
     do {                                                                                                               \

@@ -95,17 +95,19 @@ is freed on Windows, where a loaded DLL keeps its file. `snx_recompile_ranges` t
 several ranges (the `.text` of several modules) and hints: known function addresses,
 such as the entry point or a symbol table. Functions are found by exploring calls and branches from the
 start of each range and from the hints, as the game workflow does. Code the
-exploration does not reach is not lost: the module carries the interpreter, which runs
-any address the dispatch table has no function for, reading the instructions from the
-CPU's memory. This is why the code must be present in guest memory too.
-`snx_recompiled_functions` and `snx_recompiled_fallbacks` report what was recompiled and
-how many instructions the backend left to the interpreter's step function.
+exploration does not reach is not lost: the module keeps a copy of its code ranges, and
+its JIT (`jit_service.c`, started by the first miss) compiles any address of them the
+dispatch table has no function for when a CPU reaches it, which waits for the compile.
+An address it can't compile (outside the ranges, or on a host without the JIT) is an
+undefined instruction. `snx_recompiled_functions` reports what was recompiled, and
+`snx_recompiled_fallbacks` is always 0: an instruction without an emitter fails the build.
 
 The contract between the generated code and the caller is `cpu.h` (the `CPU` state,
 versioned by `SNX_ABI`, which `snx_recompiler_abi` reports) and
 `runtime/interface.h` (`RtAPI`). `snx_runtime_defaults` fills every hook but `svc`,
 `undef` and `brk`, which the caller writes, and `snx_recompiled_bind` refuses a CPU
-without them. `snx_svc_call64` is the type of the SVC hook: the generated code calls
+without them. Its `miss` runs the code the module a CPU is bound to compiles for a pc
+it has no function for. `snx_svc_call64` is the type of the SVC hook: the generated code calls
 it with `cpu->pc` past the SVC instruction, and the handler reads and writes the
 registers. `snx_recompiled_bind` points a CPU at the module's dispatch table and code
 range. Any number of CPUs, run by any number of threads, may be bound to one module.
@@ -128,10 +130,11 @@ only the functions at its hints and the functions they call, breadth first, unti
 a given number of instructions, skipping call targets a callback says are compiled
 already, and splits a function longer than 4096 instructions into pieces. Its module's
 table covers just what it found. `snx_recompiled_function` gives the function a module
-has for an address (NULL for any other), for the caller's own dispatch table, and
-`snx_recompiled_set_fallback` replaces the interpreter the module's lookups fall back to
-with the caller's handler, which compiles the code at that address and runs it. The Linux
-runtime (`src/gnuabi/runtime/jit.c`) works this way. `snx_recompiler_set_cache` names a
+has for an address (NULL for any other), for the caller's own dispatch table. A caller with
+its own table also gives `RtAPI.miss` its own handler, which compiles the code at that
+address and runs it, as the Linux runtime (`src/gnuabi/runtime/jit.c`) does. A caller that
+keeps `snx_runtime_defaults`' miss can instead name that handler with
+`snx_recompiled_set_fallback`, which the module's misses then run instead of its own JIT. `snx_recompiler_set_cache` names a
 folder that keeps linked modules (LLVM) by a hash of everything they are made from, and
 the compiled runtime library: a module found there is loaded instead of compiled.
 
@@ -164,4 +167,4 @@ backend, and a libgccjit recompiler refuses A32 code with a reason.
 
 The test `tests/recompiler_library.c` is a complete example: hand-assembled A64 and A32
 programs recompiled on each backend, with SVC, BRK and undefined-instruction hooks,
-hints, and the interpreter fallback.
+hints, and code compiled at its miss.

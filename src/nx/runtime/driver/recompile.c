@@ -32,7 +32,7 @@ static void usage(void) {
            SNX_CHUNK_INSTRUCTIONS);
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
          "  --no-build             Stage data/INI only, generate no code");
-    puts("  --interp-only          Generate fallback interpreter only\n"
+    puts("  --interp-only          Generate no code: the runtime JIT compiles all of it\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
          "  --hook-direct-calls    Route calls and branches between functions through dispatch (SNX_NVN_TRACE)\n"
          "  --keep-ir              Save the generated code (LLVM IR, libgccjit dumps) in <NAME>/<NAME>_build\n"

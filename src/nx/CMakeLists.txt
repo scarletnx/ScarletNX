@@ -27,7 +27,7 @@ function(snx_component name)
 endfunction()
 
 snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c
-              runtime/ini.c runtime/startup.c runtime/gdbstub.c runtime/present.c)
+              runtime/ini.c runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4)
 if(APPLE)
     # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,

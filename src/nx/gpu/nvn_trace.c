@@ -105,7 +105,7 @@ static void trace_proc(u64 addr, const char* name) {
         u32 i = slot_hash(addr);
         while (procs[i].addr) i = (i + 1) & (NVN_PROC_SLOTS - 1);
         p = &procs[i];
-        p->original = *dispatch ? *dispatch : snx_interp_entry; /* what snx_lookup gives an empty slot */
+        p->original = *dispatch ? *dispatch : g_rtapi.miss; /* what snx_lookup gives an empty slot */
         memcpy(p->name, name, strlen(name) + 1);
         p->queue_op = !strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnQueueFlush") ||
                       !strcmp(name, "nvnQueueFenceSync") || !strcmp(name, "nvnQueuePresentTexture") ||

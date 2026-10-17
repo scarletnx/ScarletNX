@@ -103,6 +103,7 @@ static const struct {
                       {"sombras", "now shadows"},
                       {"perfil", "now profile"},
                       {"gamepad_buttons", "now gamepad_swap_ab; gamepad_map always applies"},
+                      {"cpu_fallback", "the runtime JIT compiles the code the recompiler missed"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;

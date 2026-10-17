@@ -11,6 +11,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/gdbstub.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn_trace.h"
@@ -32,7 +33,6 @@
 
 const SnxModule* g_mod;
 GuestFn* g_disp;
-GuestFn snx_interp_entry;
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 volatile int g_quit;
 int g_frames;
@@ -143,7 +143,6 @@ static void build_dispatch(void) {
         u64 a = g_mod->entry_addr[i];
         if (a >= g_code_lo && a < g_code_hi) g_disp[(a - g_code_lo) / 4] = g_mod->entry_fn[i];
     }
-    snx_interp_entry = g_mod->interp;
 }
 
 static void services_init(void) {
@@ -252,6 +251,7 @@ void snx_save_before_exit(void) {
            cache) here */
         if (g_renderer && g_renderer->save) g_renderer->save();
         nvn_trace_report();
+        jit_report();
     }
     pm_unlock(&lock);
 }
@@ -336,6 +336,9 @@ int snx_main(int argc, char** argv) {
     if (loader_load()) fatal("Could not load the game executables from %sexefs/", g_datadir);
     kernel_load_symbols();
     nvn_trace_init();
+    /* after the trace, which says whether calls must go through the slots it wraps. The JIT compiles A64: a 32-bit
+       game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
+    if (!g_arm_mod) jit_init();
     read_npdm();
     services_init();
     romfs_init();

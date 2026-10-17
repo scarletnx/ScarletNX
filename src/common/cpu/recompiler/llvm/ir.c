@@ -166,6 +166,14 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
     LLVMMemoryBufferRef buffer;
     *data = NULL;
     *size = 0;
+    if (ir->fallbacks) {
+        size_t index;
+        const SnxA64Pattern* pattern = snx_a64_case_pattern(snx_a64_decode(ir->fallback_word), &index);
+        snprintf(error, error_size, "no IR emitter for %s (%08lx at %llx), %lu instruction%s in all",
+                 pattern ? pattern->name : "?", (unsigned long)ir->fallback_word, (unsigned long long)ir->fallback_pc,
+                 ir->fallbacks, ir->fallbacks == 1 ? "" : "s");
+        return -1;
+    }
     if (LLVMVerifyModule(ir->mod, LLVMReturnStatusAction, &message)) {
         snprintf(error, error_size, "invalid IR: %.900s", message ? message : "");
         LLVMDisposeMessage(message);
@@ -422,6 +430,7 @@ size_t ir_rt_brk(void) { return offsetof(RtAPI, brk); }
 size_t ir_rt_sev(void) { return offsetof(RtAPI, sev); }
 size_t ir_rt_wfe(void) { return offsetof(RtAPI, wfe); }
 size_t ir_rt_poll(void) { return offsetof(RtAPI, poll); }
+size_t ir_rt_miss(void) { return offsetof(RtAPI, miss); }
 size_t ir_off_poll(void) { return offsetof(CPU, poll); }
 
 LLVMValueRef ir_rt_call(SnxIr* ir, size_t offset, LLVMTypeRef ret, LLVMTypeRef* params, LLVMValueRef* args,
@@ -1026,7 +1035,7 @@ static void build_stxp(SnxIr* ir, LLVMValueRef function) {
 }
 /* snx_lookup(c,pc) */
 static void build_lookup(SnxIr* ir, LLVMValueRef function) {
-    LLVMValueRef pc = P(1), lo, hi, o, inside, f, index, entry;
+    LLVMValueRef pc = P(1), lo, hi, o, inside, f, index, slot;
     LLVMBasicBlockRef table = ir_block(ir, "table"), found = ir_block(ir, "found"), none = ir_block(ir, "none");
     ir->c = P(0);
     lo = ir_cpu_load(ir, ir->t_i64, offsetof(CPU, code_lo));
@@ -1037,18 +1046,20 @@ static void build_lookup(SnxIr* ir, LLVMValueRef function) {
     LLVMBuildCondBr(B, inside, table, none);
     LLVMPositionBuilderAtEnd(B, table);
     index = LLVMBuildLShr(B, o, ir_i64(ir, 2), "");
-    f = ir_load(ir, ir->t_ptr,
-                LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, ""));
+    /* __atomic_load_n(&c->disp[o>>2],__ATOMIC_RELAXED): the runtime JIT fills slots while this runs (cpu.h) */
+    slot = LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, "");
+    f = LLVMBuildLoad2(B, ir->t_ptr, slot, "");
+    LLVMSetOrdering(f, LLVMAtomicOrderingMonotonic);
+    LLVMSetAlignment(f, sizeof(void*));
     LLVMBuildCondBr(B, LLVMBuildIsNotNull(B, f, ""), found, none);
     LLVMPositionBuilderAtEnd(B, found);
     LLVMBuildRet(B, f);
     LLVMPositionBuilderAtEnd(B, none);
-    entry = LLVMGetNamedGlobal(ir->mod, "snx_interp_entry");
-    if (!entry) {
-        entry = LLVMAddGlobal(ir->mod, ir->t_ptr, "snx_interp_entry");
-        LLVMSetVisibility(entry, LLVMHiddenVisibility);
-    }
-    LLVMBuildRet(B, ir_load(ir, ir->t_ptr, entry));
+    /* c->rt->miss */
+    index = ir_i64(ir, ir_rt_miss());
+    LLVMBuildRet(
+        B, ir_load(ir, ir->t_ptr,
+                   LLVMBuildInBoundsGEP2(B, ir->t_i8, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, rt)), &index, 1, "")));
 }
 /* dc_zva(M,a): memset(MP(a & ~63), 0, 64) */
 static void build_dc_zva(SnxIr* ir, LLVMValueRef function) {

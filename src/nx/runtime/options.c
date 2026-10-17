@@ -32,6 +32,7 @@ int g_opt_shadows = 1;
 int g_opt_vsync = 1, g_opt_aniso = 0;
 int g_opt_prof = 0;
 int g_opt_network = 0;
+int g_opt_jit_threads;
 /* the variables above hold until ini_open, which applies the file's values, or the tables' defaults for keys it
    lacks (the logging before it needs g_verbose's) */
 /* everything we read, so the rewrite keeps unknown keys. A value is under INI_LINE bytes */
@@ -161,6 +162,10 @@ static const IniOpt INI_PERF[] = {
      INI_INT, INI_STARTUP, &g_opt_mem_gb, 0, 8, NULL, NULL, NULL, 0, 0},
     {"heap_max_mb", "0", "The most heap the game can allocate, in MB: 0 = as much as the memory allows", INI_TEXT,
      INI_STARTUP, NULL, 0, 0, heap_max_set, NULL, NULL, 0, 0},
+    {"jit_threads", "0",
+     "Threads compiling the code the recompiler missed: 0 = every CPU the game may use but two (at most 8).\n"
+     ";   They yield to the game",
+     INI_INT, INI_STARTUP, &g_opt_jit_threads, 0, 8, NULL, NULL, NULL, 0, 0}, /* SNX_JIT_THREADS */
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0}};
 static const IniOpt INI_NETWORK[] = {
     {"network", "0",
