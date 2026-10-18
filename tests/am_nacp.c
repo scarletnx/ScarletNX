@@ -33,7 +33,7 @@ int main(void) {
     CHECK(am_desired_language(1, 1u << 16) == 1);    /* only Polish, which has no code here: the system's */
     CHECK(am_desired_language(99, 1u << 2) == 0);    /* an index out of range is American English's list */
 
-    /* GetDisplayVersion and GetSaveDataSize from the NACP, and without one */
+    /* GetDisplayVersion from the NACP; directory-backed save capacity is synthetic. */
     memcpy(nacp + 0x3060, "2.0.0", 6);
     flags = 1u << 2;
     memcpy(nacp + 0x302c, &flags, 4);
@@ -48,9 +48,9 @@ int main(void) {
     CHECK(nn_am_service_IApplicationFunctions_GetDisplayVersion(NULL, &version) == 0);
     CHECK(!strcmp((char*)version.v, "2.0.0"));
     CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 1, NULL, &normal, &journal) == 0);
-    CHECK(normal == 0x4000000 && journal == 0x1000000);
+    CHECK(normal == 1073741824 && journal == 1073741824);
     CHECK(nn_am_service_IApplicationFunctions_GetSaveDataSize(NULL, 3, NULL, &normal, &journal) == 0);
-    CHECK(normal == 0x200000 && journal == 0);
+    CHECK(normal == 1073741824 && journal == 1073741824);
     nacp_reset();
     g_test_nacp = NULL;
     CHECK(nn_am_service_IApplicationFunctions_GetDisplayVersion(NULL, &version) == 0);
