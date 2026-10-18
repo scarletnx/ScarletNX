@@ -433,15 +433,8 @@ static const u8* am_nacp(u64 off, u64 n) {
     pm_unlock(&am.lock);
     return am.nacp && off + n <= am.nacp_size ? am.nacp + off : NULL;
 }
-static u64 am_nacp_u64(u64 off) {
-    const u8* p = am_nacp(off, 8);
-    u64 v = 0;
-    if (p) memcpy(&v, p, 8);
-    return v;
-}
 #define NACP_SUPPORTED_LANGUAGES 0x302c
 #define NACP_DISPLAY_VERSION     0x3060
-#define NACP_ACCOUNT_SAVE_SIZE   0x3080 /* and its journal's, then the device save's and its journal's */
 
 /* nn::ns::ApplicationLanguage of each nn::settings::Language, and back (-1: no settings language has it) */
 static const signed char am_app_language[18] = {2, 0, 3, 4, 7, 6, 14, 12, 8, 10, 11, 13, 1, 9, 5, 14, 13, 15};
@@ -497,13 +490,15 @@ static int nn_am_service_IApplicationFunctions_GetDisplayVersion(SvcObj* self, n
     version->v[15] = 0;
     return 0;
 }
-/* the sizes the NACP gives the account's (type 1) and the device's (3) save data */
+/* Directory-backed saves have no fixed allocation, so the NACP's initial sizes are not a useful capacity limit.
+   Report a synthetic 1 GiB for data and journal; the host filesystem remains the actual storage limit. */
+#define AM_DIRECTORY_SAVE_SIZE 1073741824
 static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 type, const nn_account_Uid* uid,
                                                               i64* normal_size, i64* journal_size) {
     (void)self, (void)uid;
     if (type == 1 || type == 3) {
-        *normal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + (type == 3 ? 16 : 0));
-        *journal_size = (i64)am_nacp_u64(NACP_ACCOUNT_SAVE_SIZE + 8 + (type == 3 ? 16 : 0));
+        *normal_size = AM_DIRECTORY_SAVE_SIZE;
+        *journal_size = AM_DIRECTORY_SAVE_SIZE;
     }
     return 0;
 }
