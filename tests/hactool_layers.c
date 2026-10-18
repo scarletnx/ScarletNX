@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#include <sys/resource.h>
+#endif
 #if defined(_WIN32)
 #include <direct.h>
 #else
@@ -807,12 +811,123 @@ static void in_place(const update_t* u) {
     CHECK(!rmdir(dir));
 }
 
+/* A RomFS of many small files, an empty one and one of 20 MB, past the 4 MB hactool saves a file through, extracted as
+   scarletnx --extract extracts it: each file's bytes come out whole. On glibc, told to hand every block of 128 KiB or
+   more out of fresh memory as Windows' heap does with 4 MB, a 4 MB buffer filled per file is 1024 pages faulted in
+   each time: the extraction stays under four times that, where a buffer per small file, or one the size of the large
+   file, is many times it. First in main, set before its own blocks come and go: glibc takes a block out of fresh
+   memory only when none it freed fits, and the setting stays for the tests after it. A probe block counts the pages
+   of 4 MB here; under huge pages the count proves nothing, and is said to be skipped */
+#define SMALL_FILES 64
+#define LARGE_FILE  0x1400031
+static void small_files(void) {
+    static romfs_file_t files[SMALL_FILES + 2];
+    static char names[SMALL_FILES][8];
+    const char* dir = "hactool_small.tmp";
+    char a[80], b[80], path[128];
+    hactool_ctx_t tool = {0};
+    nca_header_t header = {0};
+    nca_fs_header_t* fs = &header.fs_headers[0];
+    unsigned char iv[8];
+    unsigned i;
+#if defined(__GLIBC__)
+    struct rusage before, after;
+    long probe_pages;
+    CHECK(mallopt(M_MMAP_THRESHOLD, 128 * 1024) == 1);
+    CHECK(!getrusage(RUSAGE_SELF, &before));
+    unsigned char* probe = malloc(0x400000);
+    CHECK(probe != NULL);
+    memset(probe, 0xCC, 0x400000);
+    __asm__ volatile("" : : "r"(probe) : "memory"); /* the fill is what is counted: kept */
+    CHECK(!getrusage(RUSAGE_SELF, &after));
+    free(probe);
+    probe_pages = after.ru_minflt - before.ru_minflt;
+#endif
+    for (i = 0; i < SMALL_FILES; i++) {
+        sprintf(names[i], "f%02u.bin", i); /* 7 characters: hactool reads past a name of a multiple of 4 */
+        files[i].name = names[i];
+        files[i].content.size = 100 + i;
+        files[i].content.data = zalloc(files[i].content.size);
+        noise(files[i].content.data, files[i].content.size, 1000 + i);
+    }
+    files[SMALL_FILES].name = "empty.bin";
+    files[SMALL_FILES].content.size = 0;
+    files[SMALL_FILES].content.data = zalloc(0);
+    files[SMALL_FILES + 1].name = "large.bin";
+    files[SMALL_FILES + 1].content.size = LARGE_FILE;
+    files[SMALL_FILES + 1].content.data = zalloc(LARGE_FILE);
+    noise(files[SMALL_FILES + 1].content.data, LARGE_FILE, 77);
+    synthetic_keys(&tool);
+    blob_t image = romfs_build(files, SMALL_FILES + 2);
+    blob_t section = ivfc_build(&image, &fs->romfs_superblock.ivfc_header);
+    free(image.data);
+    fs->_0x0 = 2;
+    fs->partition_type = PARTITION_ROMFS;
+    fs->fs_type = FS_TYPE_ROMFS;
+    fs->crypt_type = CRYPT_CTR;
+    put64(fs->section_ctr, 0x0000003300000001ULL);
+    section_entry(&header, 0, 0xC00, section.size);
+    upper_iv(iv, fs, 0, 0);
+    ctr_crypt(iv, 0xC00, section.data, section.size);
+    romfs_file_t ncas[1] = {{"program.nca", nca_build(&header, &section)}};
+    free(section.data);
+    blob_t nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
+    free(ncas[0].content.data);
+#if defined(_WIN32)
+    _mkdir(dir);
+#else
+    mkdir(dir, 0700);
+#endif
+    sprintf(path, "%s/game.nsp", dir);
+    write_file(path, nsp.data, nsp.size);
+    free(nsp.data);
+    SnxHac* hac = snx_hac_new();
+    CHECK(hac != NULL);
+    hex(a, header_key, sizeof(header_key));
+    hex(b, key_area_key, sizeof(key_area_key));
+    CHECK(snx_hac_set_key(hac, "header_key", a) && snx_hac_set_key(hac, "key_area_key_application_00", b));
+    CHECK(snx_hac_open(hac, path, 0) == 0);
+    sprintf(path, "%s/romfs", dir);
+#if defined(__GLIBC__)
+    CHECK(!getrusage(RUSAGE_SELF, &before));
+#endif
+    CHECK(!snx_hac_extract(hac, 0, 0, -1, 0, NULL, path));
+#if defined(__GLIBC__)
+    CHECK(!getrusage(RUSAGE_SELF, &after));
+    printf("hactool layers: %ld pages faulted in saving %u files, %ld in filling one 4 MB block\n",
+           after.ru_minflt - before.ru_minflt, SMALL_FILES + 2, probe_pages);
+    if (probe_pages >= 512)
+        CHECK(after.ru_minflt - before.ru_minflt < 4 * probe_pages);
+    else
+        printf("hactool layers: skipped the page count: 4 MB filled in %ld pages, huge ones\n", probe_pages);
+#endif
+    snx_hac_free(hac);
+    for (i = 0; i < SMALL_FILES + 2; i++) {
+        sprintf(path, "%s/romfs/%s", dir, files[i].name);
+        FILE* file = fopen(path, "rb");
+        CHECK(file != NULL);
+        unsigned char* got = zalloc(files[i].content.size + 1);
+        CHECK(fread(got, 1, files[i].content.size + 1, file) == files[i].content.size);
+        CHECK(!memcmp(got, files[i].content.data, files[i].content.size));
+        CHECK(!fclose(file));
+        CHECK(!remove(path));
+        free(got);
+        free(files[i].content.data);
+    }
+    sprintf(path, "%s/romfs", dir);
+    CHECK(!rmdir(path));
+    sprintf(path, "%s/game.nsp", dir);
+    CHECK(!remove(path));
+    CHECK(!rmdir(dir));
+}
+
 int main(void) {
     CHECK(sizeof(nca_fs_header_t) == 0x200);
     CHECK(sizeof(nca_sparse_info_t) == 0x30 && sizeof(nca_compression_info_t) == 0x28);
     CHECK(offsetof(nca_fs_header_t, sparse_info) == 0x148);
     CHECK(offsetof(nca_fs_header_t, compression_info) == 0x178);
     CHECK(offsetof(nca_fs_header_t, metadata_hash_info) == 0x1A0);
+    small_files();
     make_files();
     compressed_romfs();
     update_t update = update_build();
