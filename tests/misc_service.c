@@ -1383,6 +1383,27 @@ static void test_mii_latest(void) {
 }
 
 
+/* pctl's play timer display, GetPlayTimerRemainingTimeDisplayInfo (1459) and 1460 {u8}: NotConfigured (7) in the
+   first of 0x18 bytes, the rest zero */
+static void test_pctl_play_timer(void) {
+    SvcObj* factory = new_pctl();
+    Request r;
+    request(&r, 0);
+    argument64(&r, 0, 0);
+    r.c.has_pid = 1;
+    call(factory, &r);
+    CHECK(r.c.nout_objs == 1);
+    SvcObj* pctl = r.c.out_objs[0];
+    for (u32 cmd = 1459; cmd <= 1460; cmd++) {
+        request(&r, cmd);
+        call(pctl, &r);
+        CHECK(r.c.out_size == 0x18 && r.c.out[0] == 7);
+        for (u32 i = 1; i < 0x18; i++) CHECK(r.c.out[i] == 0);
+    }
+    svcobj_unref(pctl);
+    svcobj_unref(factory);
+}
+
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
@@ -1408,6 +1429,7 @@ int main(void) {
     test_acc_resource_cache();
     test_prepo_reports();
     test_mii_latest();
+    test_pctl_play_timer();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
     printf("misc_service: %u checks passed\n", test_checks);
