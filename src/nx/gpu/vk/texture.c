@@ -790,8 +790,8 @@ VkImageView vk_null_view(VkImageViewType type, int num) {
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkImageSubresourceRange all = {vk_aspect(&s->f), 0, 1, 0, s->layers};
         if (num == 3) {
-            VkClearDepthStencilValue far = {1.0f, 0};
-            rec_CmdClearDepthStencilImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1, &all);
+            VkClearDepthStencilValue farthest = {1.0f, 0}; /* not far: windef.h defines it away */
+            rec_CmdClearDepthStencilImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farthest, 1, &all);
         } else {
             VkClearColorValue z = {{0, 0, 0, 0}};
             rec_CmdClearColorImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &all);

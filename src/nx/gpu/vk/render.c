@@ -1065,8 +1065,9 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
     ShTex plain = *kind;
     if (kind->shadow) plain.shadow = 0;
     VkImageView none = vk_null_view(want, num);
-    VkImageView far = kind->shadow ? vk_null_view(want, 3) : VK_NULL_HANDLE;
-    if (!none || (kind->shadow && !far)) return 0;
+    /* not far: windef.h defines it away */
+    VkImageView farthest = kind->shadow ? vk_null_view(want, 3) : VK_NULL_HANDLE;
+    if (!none || (kind->shadow && !farthest)) return 0;
     u32 handles[SNX_TEX_ARRAY] = {0};
     u32 null_tsc[8] = {0};
     u32 funcs[SNX_TEX_ARRAY] = {0};
@@ -1083,7 +1084,7 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
     if (kind->shadow) {
         VkSampler null_compare = vk_tex_bind_sampler(null_tsc, kind, 0, NULL, want);
         if (!null_compare) return 0;
-        null_depth = (VkDescriptorImageInfo){null_compare, far, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        null_depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     }
     for (int table = 0; table < count; table++) {
         const ShTex* st = &s->si.tex[first[table]];
@@ -1135,11 +1136,12 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
                 d->table[id] = (VkDescriptorImageInfo){
                     smp, color_view, color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
-                    VkImageView depth_view = depth && view != none ? view : far;
-                    VkSampler compare = vk_tex_bind_sampler(x.tsc, kind, 0, depth_view != far ? x.t : NULL, want);
+                    VkImageView depth_view = depth && view != none ? view : farthest;
+                    VkSampler compare = vk_tex_bind_sampler(x.tsc, kind, 0, depth_view != farthest ? x.t : NULL, want);
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
-                        compare, depth_view, depth_view == far ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                        compare, depth_view,
+                        depth_view == farthest ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 }
             }
             map[table * SNX_TEX_ARRAY + k] = id;
