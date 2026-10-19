@@ -5,9 +5,9 @@
    textures of that memory at its Mii selection, a minute later. Not a target already written back, one whose memory
    the game wrote after the draw, nor a parked one (its address is the newer target's), and not one never drawn; of two
    that overlap, the one drawn last is what memory keeps; those of one sweep wait for the GPU once. A drawn target
-   memory can't take (a depth one, or a format that isn't the guest's bytes) stays: Mario Kart 8 Deluxe draws depth
-   targets as a course loads and reads them through the race. The GPU side is stubbed: an image's pixels read back as
-   the low byte of its handle */
+   memory can't take (a depth one, or a format that isn't the guest's bytes) stays: a game may draw depth targets as
+   a level loads and read them until it ends. The GPU side is stubbed: an image's pixels read back as the low byte of
+   its handle */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
