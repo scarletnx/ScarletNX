@@ -707,6 +707,14 @@ static u32 evict_flush_all(Surf** s, u32 n, u64* bytes) {
     free(copy);
     return kept;
 }
+/* a target whose pixels memory can't take (a depth one, or a format or scale that doesn't copy out as the guest's
+   bytes) and that holds a draw: it stays while its address is its own, as freeing it would lose what it drew (Mario
+   Kart 8 Deluxe draws depth targets as a course loads and reads them through the race). Depth draws aren't tracked:
+   a depth target holds one once anything left its layout defined */
+static int keeps_unsaved(Surf* s) {
+    if (!s->is_rt || (s->gva >> 63) || vk_surf_can_writeback(s)) return 0;
+    return s->f.depth ? s->layout != VK_IMAGE_LAYOUT_UNDEFINED : vk_rt_drawn_fresh(s);
+}
 void vk_surf_evict(u32 before) {
     static Surf** gone;
     static u32 cap;
@@ -722,7 +730,7 @@ void vk_surf_evict(u32 before) {
     for (int k = 0; k < SURFH; k++)
         for (Surf** pp = &g_surfh[k]; *pp;) {
             Surf* s = *pp;
-            if ((i32)((u32)s->last_used - before) >= 0) {
+            if ((i32)((u32)s->last_used - before) >= 0 || keeps_unsaved(s)) {
                 pp = &s->next;
                 continue;
             }

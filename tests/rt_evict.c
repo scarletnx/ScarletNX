@@ -4,8 +4,10 @@
    first, as on the console, where draws land in memory: Mario Kart 8 Deluxe draws its Mii icons at boot and makes
    textures of that memory at its Mii selection, a minute later. Not a target already written back, one whose memory
    the game wrote after the draw, nor a parked one (its address is the newer target's), and not one never drawn; of two
-   that overlap, the one drawn last is what memory keeps; those of one sweep wait for the GPU once. The GPU side is
-   stubbed: an image's pixels read back as the low byte of its handle */
+   that overlap, the one drawn last is what memory keeps; those of one sweep wait for the GPU once. A drawn target
+   memory can't take (a depth one, or a format that isn't the guest's bytes) stays: Mario Kart 8 Deluxe draws depth
+   targets as a course loads and reads them through the race. The GPU side is stubbed: an image's pixels read back as
+   the low byte of its handle */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,10 +157,10 @@ u64 vk_hash(const void* p, u64 size) {
     return size;
 }
 static const VkFmt rgba8 = {.vk = VK_FORMAT_R8G8B8A8_UNORM, .bpp = 4, .bw = 1, .bh = 1, .raw = 1};
-VkFmt vk_rt_format(u32 fmt) {
-    (void)fmt;
-    return rgba8;
-}
+/* a color format whose Vulkan bytes aren't the guest's, as the packed float ones */
+#define NOT_RAW 0xe0
+static const VkFmt packed = {.vk = VK_FORMAT_B10G11R11_UFLOAT_PACK32, .bpp = 4, .bw = 1, .bh = 1};
+VkFmt vk_rt_format(u32 fmt) { return fmt == NOT_RAW ? packed : rgba8; }
 VkFmt vk_zt_format(u32 fmt) {
     VkFmt f = {.vk = VK_FORMAT_D32_SFLOAT, .bpp = 4, .bw = 1, .bh = 1, .depth = 1};
     (void)fmt;
@@ -268,6 +270,37 @@ int main(void) {
     ten_seconds();
     CHECK(g_finishes == finishes + 1 && g_readbacks == readbacks + 3 && g_went == 3);
     for (int i = 0; i < 3; i++) CHECK(filled(GVA + 0x60000 + (u64)i * 0x1000, W * H * 4, three[i]));
+    /* a drawn depth target: memory can't take its pixels, so it stays, and memory is left as it was */
+    g_vk_present = 0;
+    Surf* z = vk_rt(GVA + 0x70000, W, H, 0x13, 0x1000, 1, W * 4);
+    CHECK(z != NULL && z->f.depth);
+    z->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    ten_seconds();
+    CHECK(vk_rt_find(GVA + 0x70000) == z && filled(GVA + 0x70000, W * H * 4, 0));
+    /* one never drawn, its layout undefined: nothing to lose, it goes */
+    g_vk_present = 0;
+    CHECK(vk_rt(GVA + 0x78000, W, H, 0x13, 0x1000, 1, W * 4) != NULL);
+    ten_seconds();
+    CHECK(vk_rt_find(GVA + 0x78000) == NULL);
+    /* a parked depth target goes: its address is the newer one's, which stays */
+    g_vk_present = 0;
+    Surf* zold = vk_rt(GVA + 0x7c000, 8, 8, 0x13, 0x1000, 1, 8 * 4);
+    zold->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    Surf* znow = vk_rt(GVA + 0x7c000, W, H, 0x13, 0x1000, 1, W * 4);
+    znow->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    CHECK(zold != znow && (zold->gva >> 63));
+    ten_seconds();
+    CHECK(vk_rt_find(GVA + 0x7c000) == znow);
+    for (Surf* s = vk_surf_first(GVA + 0x7c000); s; s = s->next) CHECK(s->gva != ((GVA + 0x7c000) | 1ull << 63));
+    /* a drawn color target in a format memory can't take as is: it stays too */
+    g_vk_present = 0;
+    Surf* hdr = vk_rt(GVA + 0x80000, W, H, NOT_RAW, 0x1000, 0, W * 4);
+    CHECK(hdr != NULL && !hdr->f.raw);
+    hdr->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    hdr->wgen++;
+    vk_rt_drawn(hdr);
+    ten_seconds();
+    CHECK(vk_rt_find(GVA + 0x80000) == hdr && filled(GVA + 0x80000, W * H * 4, 0));
     free(g_mem);
     printf("rt_evict: %u checks passed\n", checks);
     return 0;
