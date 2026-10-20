@@ -201,6 +201,18 @@ int main(void) {
     assert(!strcmp(e.text, "ab"));
     for (r = 0; r < 100; ++r) gui_editor_type(&e, "z");
     assert(strlen(e.text) == sizeof e.text - 1);
+    /* a character the room has not all of stays out whole: two bytes left take the a with a tilde, not U+83DC's three
+       (an input method's Chinese), and of "ab" and U+83DC the room keeps "ab" */
+    type("");
+    for (r = 0; r < (int)sizeof e.text - 3; ++r) gui_editor_type(&e, "z");
+    gui_editor_type(&e, "\xe8\x8f\x9c");
+    assert(strlen(e.text) == sizeof e.text - 3);
+    gui_editor_type(&e, "\xc3\xa3");
+    assert(strlen(e.text) == sizeof e.text - 1 && !strcmp(e.text + sizeof e.text - 3, "\xc3\xa3"));
+    type("");
+    for (r = 0; r < (int)sizeof e.text - 4; ++r) gui_editor_type(&e, "z");
+    gui_editor_type(&e, "ab\xe8\x8f\x9c");
+    assert(strlen(e.text) == sizeof e.text - 2 && !strcmp(e.text + sizeof e.text - 4, "ab"));
     gui_editor_key(&e, GUI_CANCEL);
     /* the folder: a name every system takes */
     e.row = GUI_EDITOR_FOLDER;

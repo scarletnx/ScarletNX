@@ -194,6 +194,7 @@ void gui_editor_type(GuiEditor* editor, const char* text) {
     size_t n = strlen(editor->text), add = strlen(text);
     if (!editor->typing || strchr(text, '\n')) return;
     if (n + add >= sizeof editor->text) add = sizeof editor->text - 1 - n;
+    while (add && ((unsigned char)text[add] & 0xC0) == 0x80) --add; /* a UTF-8 character whole, or none of it */
     memcpy(editor->text + n, text, add);
     editor->text[n + add] = 0;
 }
