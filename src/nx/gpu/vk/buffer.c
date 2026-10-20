@@ -748,15 +748,27 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
 }
 
 /* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
-   that result's buffer itself in *buf, *off when one result covers the range, unchanged since, at an offset bindings
-   accept, from this submit when the reader writes it (its copy back for landing was recorded at its submit's end) or
-   this frame otherwise. Returns 2 when pending results cover the range and can all be copied over guest memory on the
-   GPU (gfx_overlay), 0 when none do, or after landing them because one can't: it maps the range through another
-   virtual address, or the guest wrote its original bytes since. A result of the frame before is read where it is too
-   (transform feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held
-   until the reader is done (vk_frame_hold) */
+   that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
+   at an offset bindings accept, from this submit when the reader writes it (its copy back for landing was recorded at
+   its submit's end) or this frame otherwise. Returns 2 when pending results cover the range and can all be copied over
+   guest memory on the GPU (gfx_overlay), 0 when none do, or after landing them because one can't: it maps the range
+   through another virtual address, or the guest wrote its original bytes since. A result of the frame before is read
+   where it is too (transform feedback captures the same buffers every frame, over the last frame's capture), its
+   frame's rings held until the reader is done (vk_frame_hold) */
+/* o has bytes of [gva, gva + len): at the same GPU address, or on the same guest pages (q) */
+static int out_meets_range(const GfxOut* o, u64 gva, u64 len, const RangePages* q) {
+    u64 lo = gva > o->addr ? gva : o->addr, hi = gva + len < o->addr + o->size ? gva + len : o->addr + o->size;
+    return lo < hi || backing_overlap(q, o);
+}
+/* whether the guest still holds o's original bytes in [gva, gva + len) (rmap: made on first use) */
+static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64 local[16]) {
+    Copyable c = {o, gva, o->frame_id + 1 >= vk_frame_id()};
+    if (c.ok && !*rmap && !(*rmap = range_map(gva, len, local))) c.ok = 0;
+    if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
+    return c.ok;
+}
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable) {
-    GfxOut* match = NULL;
+    GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
     RangePages q;
     u64 local[16], *rmap = NULL;
@@ -764,22 +776,37 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable) 
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
-    for (GfxOut* o = g_out; o; o = o->next) {
-        u64 lo = gva > o->addr ? gva : o->addr, hi = gva + len < o->addr + o->size ? gva + len : o->addr + o->size;
-        if (lo >= hi && !backing_overlap(&q, o)) continue;
-        Copyable c = {o, gva, o->frame_id + 1 >= vk_frame_id()};
-        if (c.ok && !rmap && !(rmap = range_map(gva, len, local))) c.ok = 0;
-        if (c.ok) out_spans(o, gva, len, rmap, copyable_span, &c);
-        if (!c.ok) {
-            if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
+    for (GfxOut* o = g_out; o; o = o->next)
+        if (out_meets_range(o, gva, len, &q)) newest = o;
+    if (!newest) return 0;
+    /* The newest result over the range was composed over the older ones when it was made (gfx_overlay, through any
+       address), and its draw ran after theirs: when it covers the whole range at this address, its buffer holds every
+       byte as all of them left it, and the older ones need no check. Requiring a single result made every binding
+       after a second one compose again: in one game each storage range was copied, written back and landed about 16
+       times a frame (114,000 compositions in 600 frames, against 3,600 for an offset or a submit) */
+    if (gva >= newest->addr && gva + len <= newest->addr + newest->size) {
+        if (!out_still_copyable(newest, gva, len, &rmap, local)) {
+            if (copy_stats_on()) g_wb_draw_miss[newest->frame_id != vk_frame_id() ? 0 : 2]++;
             if (rmap && rmap != local) free(rmap);
             land_reason(WB_DRAW);
             return 0;
         }
-        match = o;
-        count++;
-        before |= o->frame_id != vk_frame_id();
-    }
+        match = newest;
+        count = 1;
+        before = newest->frame_id != vk_frame_id();
+    } else
+        for (GfxOut* o = g_out; o; o = o->next) {
+            if (!out_meets_range(o, gva, len, &q)) continue;
+            if (!out_still_copyable(o, gva, len, &rmap, local)) {
+                if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
+                if (rmap && rmap != local) free(rmap);
+                land_reason(WB_DRAW);
+                return 0;
+            }
+            match = o;
+            count++;
+            before |= o->frame_id != vk_frame_id();
+        }
     if (rmap && rmap != local) free(rmap);
     if (!count) return 0;
     if (before) vk_frame_hold(vk_frame_id() - 1);
