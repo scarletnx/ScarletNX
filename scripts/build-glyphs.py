@@ -183,10 +183,10 @@ def main():
         kept.write_text(latin)
         wide_kept.write_text(wide)
         return 0
-    glyphs = read_hex(kept.read_text().splitlines(), kept)
-    wide = read_hex(wide_kept.read_text().splitlines(), wide_kept)
+    glyphs = read_hex(kept.read_text().splitlines(), KEPT)
+    wide = read_hex(wide_kept.read_text().splitlines(), WIDE_KEPT)
     if args.check:  # a glyph missing or of the other width stops kept_lines; one more, or out of order, makes it differ
-        if kept.read_text().replace('\r\n', '\n') != kept_lines(glyphs, wanted(args.root), kept):
+        if kept.read_text().replace('\r\n', '\n') != kept_lines(glyphs, wanted(args.root), KEPT):
             raise SystemExit(f'{KEPT} is not the glyphs of {RANGES} CP437 lacks, in order: run build-glyphs.py --from')
         points = wide_wanted(args.root)
         extra = sorted(set(wide) - set(points))
@@ -195,7 +195,7 @@ def main():
                 f'{WIDE_KEPT}: U+{extra[0]:04X} is in it, which no language shows: run build-glyphs.py --from'
             )
         have = wide_kept.read_text().replace('\r\n', '\n').splitlines()
-        want = wide_lines(wide, points, wide_kept).splitlines()
+        want = wide_lines(wide, points, WIDE_KEPT).splitlines()
         for number, (line, cp) in enumerate(zip(have + [''] * len(want), points), 1):
             if line != want[number - 1]:
                 raise SystemExit(

@@ -193,7 +193,10 @@ class Glyphs(unittest.TestCase):
             [glyph(points[0], True)] + lines[1:],  # one 16 wide
         ):
             kept.write_text(''.join(broken))
-            self.refused(bg.KEPT, '--check')
+            run = self.run_script('--check')
+            self.assertNotEqual(run.returncode, 0)
+            # the file by its path in the repository, the same on every system (a folder's own has \\ on Windows)
+            self.assertTrue(run.stderr.decode().startswith(bg.KEPT), run.stderr.decode())
 
     def test_from_refuses(self):
         points = bg.wanted(self.root)
