@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* thumb_emit HALFWORDS OUTPUT.o [OPT]: each input line is PC followed by up to
+/* thumb_emit HALFWORDS OUTPUT.o [OPT [a57|arm7tdmi]]: each input line is PC followed by up to
    64 hexadecimal halfwords. Exports block_0, block_1, ... (SnxArmBlock ABI). */
 #include "common/cpu/arm/llvm.h"
 #include <llvm-c/Analysis.h>
@@ -23,7 +23,14 @@ int main(int argc, char** argv) {
     char *triple, *error = NULL, line[2048];
     unsigned index = 0;
     FILE* input;
-    if (argc < 3 || argc > 4) return 2;
+    SnxArmCodegenOptions codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT};
+    if (argc < 3 || argc > 5) return 2;
+    if (argc == 5) {
+        if (!strcmp(argv[4], "arm7tdmi"))
+            codegen.profile = SNX_ARM_PROFILE_ARM7TDMI;
+        else if (strcmp(argv[4], "a57"))
+            return 2;
+    }
     input = fopen(argv[1], "r");
     if (!input) return 2;
     if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return 2;
@@ -48,14 +55,17 @@ int main(int argc, char** argv) {
             halfwords[n++] = (uint16_t)strtoul(token, NULL, 16);
         }
         snprintf(name, sizeof(name), "block_%u", index++);
-        if (!snx_thumb_llvm_block(mod, name, halfwords, n, pc, &consumed) || !consumed) return 2;
+        if (!(argc == 5 ? snx_thumb_llvm_block_ex(mod, name, halfwords, n, pc, &consumed, &codegen)
+                        : snx_thumb_llvm_block(mod, name, halfwords, n, pc, &consumed)) ||
+            !consumed)
+            return 2;
     }
     fclose(input);
     if (LLVMVerifyModule(mod, LLVMReturnStatusAction, &error)) goto fail;
     LLVMDisposeMessage(error);
     error = NULL;
     options = LLVMCreatePassBuilderOptions();
-    err = LLVMRunPasses(mod, argc == 4 && !strcmp(argv[3], "0") ? "default<O0>" : "default<O2>", tm, options);
+    err = LLVMRunPasses(mod, argc >= 4 && !strcmp(argv[3], "0") ? "default<O0>" : "default<O2>", tm, options);
     if (err) {
         char* message = LLVMGetErrorMessage(err);
         fprintf(stderr, "%s\n", message);

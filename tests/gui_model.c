@@ -34,6 +34,11 @@ int main(void) {
     assert(menu.active == GUI_3DS && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_GBA);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
+    gui_menu_key(&menu, GUI_CANCEL);
+    gui_menu_key(&menu, GUI_DOWN);
     assert(menu.selected == GUI_KEYS);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.view == GUI_LOAD_KEYS && !menu.running);

@@ -56,6 +56,16 @@ if(SNX_BUILD_NX)
     snx_quiet(snx_lz4)
 endif()
 
+# jsmolka's gba-tests (MIT), ROMs that check the ARM7TDMI, the BIOS's open bus, the memory map, the save memory and
+# the display, each leaving the number of its first failed test in a register. The AGB board's tests run them
+# (tests/agb_gba_tests.py). Test data, not shipped
+if(SNX_BUILD_AGB AND BUILD_TESTING)
+    CPMAddPackage(NAME gba-tests VERSION 2025.04.19
+                  URL https://github.com/jsmolka/gba-tests/archive/a7113b67e63f83a9b321696ddd7042ccfad6c881.tar.gz
+                  URL_HASH SHA256=b9373ef18700c48ccab0940ec480517fba47accc86516df5fd43ed9ec6cdf082
+                  DOWNLOAD_ONLY YES)
+endif()
+
 # ENet (MIT) and zstd (BSD-3-Clause) for ldn's rooms (src/common/network/net_room.c): an Eden room is ENet on UDP,
 # and a game's datagrams in it are zstd frames. ENet's own sources, with the POSIX calls every target but Windows
 # has; zstd's compressor and decompressor alone, in C (no assembly, so every target builds the same). The tests of

@@ -6,7 +6,7 @@
 
 Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like good people?)
 
-A GPLv3 static ARM64 to x86 recompiler with a Switch translation layer for Linux, Windows, FreeBSD and Android.
+A GPLv3 static ARM64 to x86 recompiler with a Switch, GBA and GNU/Linux ABI translation layer for Solaris, Linux, Windows, FreeBSD and Android.
 
 ## Quick start
 
@@ -40,7 +40,8 @@ It runs static and dynamically linked programs, which start other processes, tal
 through pipes and read and write files through a sysroot, as QEMU's `-L` gives one
 (`linux/` of the data folder by default). See [Linux ABI execution and QEMU validation](docs/GNUABI.md)
 for the sysroot, the JIT and AOT modes, supported syscalls, and current limits. The NX executable is
-also installed as `scarletnx-switch`.
+also installed as `scarletnx-switch`. Game Boy Advance ROMs run under the `scarletnx-agb` system type,
+on the emulated AGB board being built under `src/agb/` (licensed under MPL-2.0), see [AGB board](docs/AGB.md).
 
 The recompiler is also a library on its own, `libscarletnx-recompiler`: a program hands
 it ARM64 or AArch32 code in memory and runs the result in its own process with its own
@@ -119,5 +120,6 @@ see [Android](./docs/ANDROID.md). macOS and iOS build in CI, but no game runs on
 - [NeXium](https://nexium-emu.org/) for research and development.
 - [Switchbrew](https://switchbrew.org) for research.
 - [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
+- [mGBA](https://github.com/mgba-emu/mgba) as a direct reference for the AGB board.
 
 Wimsy, the mascot and the runtime's icon (`dist/wimsy.svg`) was drawn by Liz.

@@ -123,6 +123,10 @@ msgid "Load 3DS CIA"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Load GBA ROM"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Setup device keys"
 msgstr ""
 
@@ -559,6 +563,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Opens a 3DS .cia"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c

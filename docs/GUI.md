@@ -51,8 +51,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   turns the pages of `games/`; a tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF** and **Load 3DS CIA** open a screen as the
-  keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS CIA** and **Load GBA ROM** open a
+  screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
   and takes no room, unless *Extract game container* is on. Then one not extracted yet takes about its size, a Switch
@@ -70,7 +70,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Full HLE/devices remain incomplete. Like the Switch driver, it uses an
   extraction (or the CIA itself) and a compiled module already there, and recompiles only when needed.
   See [3DS port](3DS.md) for limits.
-- **Setup device keys**, immediately after the three load entries, blinks red (the theme's `failure` colour, at its
+- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime: see [AGB board](AGB.md).
+- **Setup device keys**, immediately after the four load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no `prod.keys` is in use. It prompts you to
   pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
   the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. It installs the file to `~/.switch/prod.keys`, or

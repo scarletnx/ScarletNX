@@ -31,9 +31,12 @@ typedef struct {
 
 static int options_valid(const SnxArmCodegenOptions* o) {
     return !o || (o->abi == SNX_ARM_CODEGEN_OPTIONS_ABI &&
-                  (o->profile == SNX_ARM_PROFILE_A57 || o->profile == SNX_ARM_PROFILE_ARM11) &&
+                  (o->profile == SNX_ARM_PROFILE_A57 || o->profile == SNX_ARM_PROFILE_ARM11 ||
+                   (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->memory == SNX_ARM_MEMORY_FLAT)) &&
                   (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED));
 }
+/* the AGB board's rules (arm.h's SNX_ARM_PROFILE_ARM7TDMI), which no other profile follows */
+static int arm7tdmi(const ArmIR* a) { return a->profile == SNX_ARM_PROFILE_ARM7TDMI; }
 static LLVMValueRef host_order(ArmIR* a, LLVMValueRef v, unsigned bytes);
 
 static LLVMValueRef c32(ArmIR* a, uint32_t n) { return LLVMConstInt(a->i32, n, 0); }
@@ -344,24 +347,170 @@ static LLVMValueRef memptr(ArmIR* a, LLVMValueRef addr) {
     return LLVMBuildGEP2(a->b, a->i8, a->memory == SNX_ARM_MEMORY_CHECKED ? a->transfer_buffer : a->mem, &offset, 1,
                          "");
 }
+/* The bus hook (SnxArmCPU.io): the BIOS, the I/O window, the palette, VRAM, OAM and the save memory have
+   bus rules a plain access cannot follow (the BIOS's open bus, mirrors finer than a page, byte write
+   widths). The runtime registers a hook the way the A64 side registers a fetch callback; without one every
+   access is direct. The regions are the AGB board's: 0x00 to 0x01 the BIOS, 0x04 to 0x07 the I/O
+   window and video memory, 0x0E and 0x0F the save memory. */
+#define SNX_ARM_IO_REGIONS (1u << 0x00 | 1u << 0x01 | 1u << 0x04 | 1u << 0x05 | 1u << 0x06 | 1u << 0x07 | \
+                            1u << 0x0E | 1u << 0x0F)
+static LLVMValueRef io_route(ArmIR* a, LLVMValueRef addr, LLVMValueRef fn) {
+    LLVMValueRef top = lsr(a, addr, 24);
+    LLVMValueRef route = band(a, LLVMBuildLShr(a->b, c32(a, SNX_ARM_IO_REGIONS), band(a, top, c32(a, 31)), ""),
+                              z32(a, cmp(a, LLVMIntULT, top, c32(a, 32))));
+    route = band(a, route, c32(a, 1));
+    return band(a, route, z32(a, cmp(a, LLVMIntNE, fn, LLVMConstNull(a->ptr))));
+}
+static LLVMTypeRef io_type(ArmIR* a) {
+    LLVMTypeRef params[4] = {a->ptr, a->i32, a->i32, a->i32};
+    return LLVMFunctionType(a->i32, params, 4, 0);
+}
+/* The GBA's ARM7TDMI rotates a misaligned load's aligned data into place in the 32 bit register instead
+   of reading across the boundary (ARMv8-A would read the unaligned bytes directly). The zero
+   misalignment selects the value unchanged through the shift arithmetic itself. */
+static LLVMValueRef rotated_load(ArmIR* a, LLVMValueRef value, LLVMValueRef addr, unsigned bytes) {
+    LLVMValueRef mis = band(a, addr, c32(a, bytes - 1));
+    LLVMValueRef amount = shl(a, mis, 3);
+    LLVMValueRef top = LLVMBuildLShr(a->b, value, amount, "");
+    LLVMValueRef bottom = LLVMBuildShl(a->b, value, band(a, sub(a, c32(a, 32), amount), c32(a, 31)), "");
+    return bor(a, top, bottom);
+}
 /* Normal memory permits unaligned single-register transfers. Do not give LLVM
    its default ABI alignment, and do not split aligned words into byte stores. */
 static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sign) {
     LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
-    LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, addr), "");
-    LLVMSetAlignment(value, 1);
-    value = host_order(a, value, bytes);
-    if (bytes < 4) value = sign ? LLVMBuildSExt(a->b, value, a->i32, "") : z32(a, value);
-    return value;
+    if (!arm7tdmi(a)) {
+        LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, addr), "");
+        LLVMSetAlignment(value, 1);
+        value = host_order(a, value, bytes);
+        if (bytes < 4) value = sign ? LLVMBuildSExt(a->b, value, a->i32, "") : z32(a, value);
+        return value;
+    }
+    LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
+    LLVMValueRef aligned = band(a, addr, c32(a, ~(uint32_t)(bytes - 1)));
+    LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "read");
+    LLVMValueRef incoming[2], joined;
+    LLVMBasicBlockRef from[2];
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMPositionBuilderAtEnd(a->b, mem);
+    {
+        LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, aligned), "");
+        LLVMSetAlignment(value, 1);
+        value = host_order(a, value, bytes);
+        if (sign && bytes == 2) {
+            /* ARMv4T: a misaligned LDRSH reads a sign extended byte instead */
+            LLVMValueRef wide = LLVMBuildSExt(a->b, value, a->i32, "");
+            LLVMValueRef narrow =
+                LLVMBuildSExt(a->b, LLVMBuildLoad2(a->b, a->i8, memptr(a, addr), ""), a->i32, "");
+            incoming[0] = LLVMBuildSelect(a->b, cmp(a, LLVMIntNE, band(a, addr, c32(a, 1)), c32(a, 0)), narrow, wide,
+                                         "");
+        } else
+            incoming[0] = bytes < 4 ? z32(a, value) : value;
+        from[0] = mem;
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, io);
+    {
+        LLVMValueRef args[4] = {a->cpu, aligned, c32(a, (sign && bytes == 2 ? 0x200 : 0) | bytes), c32(a, 0)};
+        incoming[1] = LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
+        from[1] = io;
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, done);
+    joined = LLVMBuildPhi(a->b, a->i32, "");
+    LLVMAddIncoming(joined, incoming, from, 2);
+    if (sign && bytes == 2) return joined; /* the quirk value is already the result */
+    /* both paths carry the aligned data zero extended; a signed load narrows back and widens again */
+    if (bytes > 1) joined = rotated_load(a, joined, addr, bytes);
+    return sign && bytes < 4 ? LLVMBuildSExt(a->b, LLVMBuildTrunc(a->b, joined, type, ""), a->i32, "") : joined;
 }
 static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef value) {
-    LLVMValueRef store;
-    if (bytes < 4) value = LLVMBuildTrunc(a->b, value, LLVMIntTypeInContext(a->ctx, bytes * 8), "");
-    store = LLVMBuildStore(a->b, host_order(a, value, bytes), memptr(a, addr));
-    LLVMSetAlignment(store, 1);
-    /* A local ordinary store may clear the monitor. Clearing on every local
-       store is a permitted spurious exclusive failure. */
+    LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
+    if (!arm7tdmi(a)) {
+        LLVMValueRef store;
+        if (bytes < 4) value = LLVMBuildTrunc(a->b, value, type, "");
+        store = LLVMBuildStore(a->b, host_order(a, value, bytes), memptr(a, addr));
+        LLVMSetAlignment(store, 1);
+        /* A local ordinary store may clear the monitor. Clearing on every local
+           store is a permitted spurious exclusive failure. */
+        PUT(a, exclusive_valid, c32(a, 0));
+        return;
+    }
+    LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
+    LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "written");
     PUT(a, exclusive_valid, c32(a, 0));
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMPositionBuilderAtEnd(a->b, mem);
+    {
+        LLVMValueRef narrow = bytes < 4 ? LLVMBuildTrunc(a->b, value, type, "") : value;
+        /* a misaligned store lands in the aligned unit on the GBA, without the load rotation */
+        LLVMValueRef store =
+            LLVMBuildStore(a->b, host_order(a, narrow, bytes), memptr(a, band(a, addr, c32(a, ~(uint32_t)(bytes - 1)))));
+        LLVMSetAlignment(store, 1);
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, io);
+    {
+        /* the hook sees the raw address: the save memory's 8 bit bus picks the lane from it */
+        LLVMValueRef args[4] = {a->cpu, addr, c32(a, 0x100 | bytes), value};
+        LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, done);
+}
+/* LDM and STM move raw words at the exact addresses: the GBA's single transfer rotation and
+   alignment do not apply to the list transfers. The bus hook still sees them. */
+static LLVMValueRef readmem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
+    if (!arm7tdmi(a)) return readmem(a, addr, bytes, 0);
+    LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
+    LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
+    LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "read");
+    LLVMValueRef incoming[2], joined;
+    LLVMBasicBlockRef from[2];
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMPositionBuilderAtEnd(a->b, mem);
+    {
+        LLVMValueRef value = LLVMBuildLoad2(a->b, type, memptr(a, addr), "");
+        LLVMSetAlignment(value, 1);
+        incoming[0] = host_order(a, value, bytes);
+        from[0] = mem;
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, io);
+    {
+        LLVMValueRef args[4] = {a->cpu, addr, c32(a, bytes), c32(a, 0)};
+        incoming[1] = LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
+        from[1] = io;
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, done);
+    joined = LLVMBuildPhi(a->b, a->i32, "");
+    LLVMAddIncoming(joined, incoming, from, 2);
+    return bytes < 4 ? z32(a, joined) : joined;
+}
+static void writemem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef value) {
+    if (!arm7tdmi(a)) {
+        writemem(a, addr, bytes, value);
+        return;
+    }
+    LLVMTypeRef type = LLVMIntTypeInContext(a->ctx, bytes * 8);
+    LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
+    LLVMBasicBlockRef io = block(a, "io"), mem = block(a, "mem"), done = block(a, "written");
+    LLVMBuildCondBr(a->b, cmp(a, LLVMIntNE, io_route(a, addr, fn), c32(a, 0)), io, mem);
+    LLVMPositionBuilderAtEnd(a->b, mem);
+    {
+        LLVMValueRef narrow = bytes < 4 ? LLVMBuildTrunc(a->b, value, type, "") : value;
+        LLVMValueRef store = LLVMBuildStore(a->b, host_order(a, narrow, bytes), memptr(a, addr));
+        LLVMSetAlignment(store, 1);
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, io);
+    {
+        LLVMValueRef args[4] = {a->cpu, addr, c32(a, 0x100 | bytes), value};
+        LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
+    }
+    LLVMBuildBr(a->b, done);
+    LLVMPositionBuilderAtEnd(a->b, done);
 }
 static void memory(ArmIR* a, SnxA32Kind kind) {
     uint32_t w = a->word;
@@ -402,7 +551,8 @@ static void memory(ArmIR* a, SnxA32Kind kind) {
             setreg(a, d, value);
         if (pair) setreg(a, d + 1, second);
     } else {
-        value = reg(a, d); /* Cortex-A57's PCStoreValue is instruction address + 8 */
+        value = reg(a, d); /* Cortex-A57's PCStoreValue is instruction address + 8, the ARM7TDMI's + 12 */
+        if (d == 15 && arm7tdmi(a)) value = c32(a, a->pc + 12);
         if (pair) second = reg(a, d + 1);
         writemem(a, addr, bytes, value);
         if (pair) writemem(a, add(a, addr, c32(a, 4)), 4, second);
@@ -414,15 +564,23 @@ static void multiple(ArmIR* a) {
     uint32_t w = a->word;
     unsigned n = (w >> 16) & 15, count = 0, i, index = 0;
     int pre = !!(w & (1u << 24)), up = !!(w & (1u << 23)), load = !!(w & (1u << 20));
+    int quirks = arm7tdmi(a);
     LLVMValueRef base = reg(a, n), start, adjusted, values[16] = {0};
     for (i = 0; i < 16; ++i) count += (w >> i) & 1;
     adjusted = up ? add(a, base, c32(a, count * 4)) : sub(a, base, c32(a, count * 4));
     start = up ? add(a, base, c32(a, pre ? 4 : 0)) : add(a, adjusted, c32(a, pre ? 0 : 4));
-    transfer_begin(a, start, count * 4, 4, !load, 1);
+    /* The GBA's ARM7TDMI transfers at an unaligned base instead of faulting */
+    transfer_begin(a, start, count * 4, quirks ? 1 : 4, !load, 1);
     /* Snapshot all sources before updates, particularly SP and the PC. */
     for (i = 0; i < 16; ++i)
         if (w & (1u << i)) {
-            values[i] = load ? readmem(a, add(a, start, c32(a, index * 4)), 4, 0) : reg(a, i);
+            /* the ARM7TDMI stores the written back base when the base is not the first in the list */
+            int first = !(w & ((1u << i) - 1));
+            values[i] = load      ? readmem_list(a, add(a, start, c32(a, index * 4)), 4)
+                        : !quirks ? reg(a, i)
+                                  : (i == 15  ? c32(a, a->pc + 12)
+                                     : i == n ? ((w & (1u << 21)) && !first ? adjusted : reg(a, i))
+                                              : reg(a, i));
             ++index;
         }
     if (load && values[15]) branch_exchange(a, values[15]);
@@ -432,7 +590,7 @@ static void multiple(ArmIR* a) {
             if (load) {
                 if (i != 15) setreg(a, i, values[i]);
             } else
-                writemem(a, add(a, start, c32(a, index * 4)), 4, values[i]);
+                writemem_list(a, add(a, start, c32(a, index * 4)), 4, values[i]);
             ++index;
         }
     if (!load) transfer_commit(a);

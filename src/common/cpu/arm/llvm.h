@@ -29,7 +29,8 @@ LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const 
    condition-failed instructions. Permission faults report PREFETCH_ABORT;
    changed bytes report CODE_CHANGED without executing the stale instruction.
    The runtime must return to its dispatcher on either exit, never re-enter
-   stale code or silently compile at runtime. ARM11 VFPv2 emission is pending. */
+   stale code or silently compile at runtime. ARM11 VFPv2 emission is pending.
+   ARM7TDMI takes flat memory only: its bus hook reads cpu->io and cpu->mem. */
 typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED } SnxArmMemoryMode;
 #define SNX_ARM_CODEGEN_OPTIONS_ABI 1u
 typedef struct {

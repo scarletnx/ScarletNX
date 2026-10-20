@@ -41,15 +41,25 @@ int main(void) {
     /* A57: a CP15 barrier is a coprocessor access, which the backend allows or refuses (SnxArmRt.coproc) */
     assert(snx_a32_decode(0xee070fba) == SNX_A32_COPROC);
     assert(snx_a32_decode_profile((SnxArmProfile)99, 0xe1a00000) == SNX_A32_UNDEFINED);
+    /* ARM7TDMI: A57's decoder, but for an MSR that writes the control or extension byte, a mode switch the AGB board
+       runs (msr cpsr_c, #0xd2; msr cpsr_fc, r0); the flags alone stay an MSR (msr cpsr_f, r0) */
+    assert(snx_a32_decode(0xe321f0d2) == SNX_A32_MSR && snx_a32_decode(0xe129f000) == SNX_A32_MSR);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe321f0d2) == SNX_A32_UNDEFINED);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe129f000) == SNX_A32_UNDEFINED);
+    assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, 0xe128f000) == SNX_A32_MSR);
     uint32_t state = 1234;
     for (unsigned i = 0; i < 100000; ++i) {
         state = state * 1664525u + 1013904223u;
         assert(snx_a32_decode_profile(SNX_ARM_PROFILE_A57, state) == snx_a32_decode(state));
+        if (snx_a32_decode(state) != SNX_A32_MSR || !((state >> 16) & 3))
+            assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, state) == snx_a32_decode(state));
     }
     for (unsigned i = 0; i <= 65535; ++i) {
         SnxThumb a = {0}, b = {0};
         unsigned x = snx_thumb_decode((uint16_t)i, 0xf800, &a);
         unsigned y = snx_thumb_decode_profile(SNX_ARM_PROFILE_A57, (uint16_t)i, 0xf800, &b);
+        assert(x == y && !memcmp(&a, &b, sizeof a));
+        y = snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM7TDMI, (uint16_t)i, 0xf800, &b);
         assert(x == y && !memcmp(&a, &b, sizeof a));
         y = snx_thumb_decode_profile(SNX_ARM_PROFILE_ARM11, (uint16_t)i, 0xf800, &b);
         assert(y <= TH_F16); /* never accidentally decode Thumb-2 */

@@ -1121,6 +1121,10 @@ int main(int argc, char** argv) {
     shows(&app, "- Load 3DS CIA", yellow);
     shows(&app, "- Load Switch NSP/XCI/NRO", normal);
     key(&app, SDLK_RIGHT);
+    assert(app.menu.selected == GUI_GBA);
+    render(&app);
+    shows(&app, "- Load GBA ROM", yellow);
+    key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_KEYS);
     /* Never touch the real user's keys: exercise installation in a private home. */
     free(app.keys_path);
@@ -2214,6 +2218,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
+    key(&app, SDLK_LEFT);
     /* a load opens the screen its file is picked on at once: games/ is Games' now, not an option under it */
     assert(app.menu.selected == GUI_SWITCH);
     pump(&app);
@@ -3125,10 +3130,10 @@ int main(int argc, char** argv) {
             assert(app.menu.selected == GUI_LINUX);
             e.tfinger.y = 0.2f + 3.2f * row;
             event(&app, &e);
-            assert(app.menu.selected == GUI_KEYS);
+            assert(app.menu.selected == GUI_GBA);
             e.type = SDL_EVENT_FINGER_UP;
             event(&app, &e);
-            assert(app.menu.selected == GUI_KEYS && !app.finger);
+            assert(app.menu.selected == GUI_GBA && !app.finger);
             app.menu.selected = GUI_SWITCH;
             render(&app);
         }
@@ -3138,7 +3143,7 @@ int main(int argc, char** argv) {
             e.type = SDL_EVENT_MOUSE_WHEEL;
             e.wheel.integer_y = -3;
             event(&app, &e);
-            assert(app.menu.selected == GUI_KEYS);
+            assert(app.menu.selected == GUI_GBA);
             e.wheel.integer_y = 3;
             event(&app, &e);
             assert(app.menu.selected == GUI_SWITCH);

@@ -8,7 +8,7 @@
 
 /* Default: Cortex-A57, ARMv8-A AArch32 user mode, little-endian guest memory.
    Separate from the A64 module ABI: never cast CPU* to SnxArmCPU*. */
-#define SNX_ARM_ABI 3 /* 2: shared S/D/Q register bank and FPSCR; 3: the backend's rt */
+#define SNX_ARM_ABI 4 /* 2: shared S/D/Q register bank and FPSCR; 3: the backend's rt; 4: the bus hook */
 #define SNX_ARM_T   (1u << 5)
 #define SNX_ARM_E   (1u << 9)
 
@@ -29,12 +29,17 @@ typedef enum {
 } SnxArmExit;
 
 struct SnxArmRt;
-typedef struct {
+typedef struct SnxArmCPU {
     uint32_t r[16];          /* r15 is the current instruction address, not the pipelined PC */
     uint32_t cpsr;           /* initialize to USR (0x10); NZCV, Q, GE and T are preserved */
     uint32_t exit, syndrome; /* SVC/BKPT immediate, fault address, or unsupported word */
     uint8_t* mem;
     uint64_t mem_size; /* flat mapping, at most 2^32 bytes; no MMIO */
+    /* An optional bus hook for the regions whose bus rules a plain access cannot follow: mirrors
+       finer than a page, byte write widths. Reads return the value with size_write = the width;
+       writes pass size_write = 0x100 | width and value. Like the fetch callback, none is needed by
+       default: without one every access goes straight to mem. */
+    uint32_t (*io)(struct SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value);
     uint64_t exclusive_value;
     uint32_t exclusive_address, exclusive_size, exclusive_valid;
     uint32_t tpidrurw, tpidruro; /* AArch32 user TLS registers, initialized by the runtime */
@@ -119,8 +124,12 @@ typedef enum {
 SnxA32Kind snx_a32_decode(uint32_t word);
 
 /* Opt-in ISA profiles. Existing decode/emission APIs remain Cortex-A57.
-   ARM11 is an integer ARMv6K user-mode subset, not a full ARM11 implementation. */
-typedef enum { SNX_ARM_PROFILE_A57, SNX_ARM_PROFILE_ARM11 } SnxArmProfile;
+   ARM11 is an integer ARMv6K user-mode subset, not a full ARM11 implementation.
+   ARM7TDMI is the AGB board's CPU on flat memory: misaligned loads rotate and stores align, stores of the PC write
+   PC + 12, STM writes the written back base unless it comes first, Thumb's POP {pc} keeps the state, LDM and STM
+   take an unaligned base, and SnxArmCPU.io sees the board's I/O regions. It decodes as A57, but for an MSR that
+   writes the mode, which is UNDEFINED for the board's runtime to run */
+typedef enum { SNX_ARM_PROFILE_A57, SNX_ARM_PROFILE_ARM11, SNX_ARM_PROFILE_ARM7TDMI } SnxArmProfile;
 SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t word);
 
 /* ---- Thumb16/Thumb32 ----

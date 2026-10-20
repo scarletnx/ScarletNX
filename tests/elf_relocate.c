@@ -292,11 +292,11 @@ static void riscv_relocations(void) {
     /* a low half's HI20, found by its label's offset */
     memset(rela, 0, sizeof(rela));
     rela[0].r_offset = 0x10;
-    rela[0].r_info = ELF64_R_INFO(1, SNX_RV_PCREL_HI20);
+    rela[0].r_info = ELF64_R_INFO(1ull, SNX_RV_PCREL_HI20);
     rela[1].r_offset = 0x14;
-    rela[1].r_info = ELF64_R_INFO(2, SNX_RV_PCREL_LO12_I);
+    rela[1].r_info = ELF64_R_INFO(2ull, SNX_RV_PCREL_LO12_I);
     rela[2].r_offset = 0x20;
-    rela[2].r_info = ELF64_R_INFO(1, SNX_RV_GOT_HI20);
+    rela[2].r_info = ELF64_R_INFO(1ull, SNX_RV_GOT_HI20);
     check(snx_elf_riscv_hi20(rela, 3, 0x10) == 0 && snx_elf_riscv_hi20(rela, 3, 0x20) == 2 &&
               snx_elf_riscv_hi20(rela, 3, 0x14) == -1,
           "RISC-V HI20 found by its offset");

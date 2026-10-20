@@ -31,7 +31,8 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
             switch (menu->selected) {
                 case GUI_SWITCH:
                 case GUI_LINUX:
-                case GUI_3DS: menu->view = GUI_LOAD_DROP; break;
+                case GUI_3DS:
+                case GUI_GBA: menu->view = GUI_LOAD_DROP; break;
                 case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
                 case GUI_LOG: return GUI_MENU_LOG;

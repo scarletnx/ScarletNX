@@ -45,8 +45,9 @@ Many Thumb32 instructions are A32 ones with their fields elsewhere: coprocessor,
 
 ## Opt-in ARM11 profile and checked memory
 
-The existing APIs still select **A57 + flat memory**; `SnxArmCPU` (`SNX_ARM_ABI=3`,
-which added `rt` after the register file) and its field offsets are shared by both. No board-specific compile definition
+The existing APIs still select **A57 + flat memory**; `SnxArmCPU` (`SNX_ARM_ABI=4`: 3
+added `rt` after the register file, 4 the ARM7TDMI profile's `io` after `mem_size`) and its field offsets are shared by
+both. No board-specific compile definition
 changes shared code generation. Other boards opt in through the `_ex` APIs:
 
 ```c
@@ -138,6 +139,20 @@ HLE transcript, not independent hardware validation of kernel policy. Neither
 reference is an execution fallback. Broader target coverage, full ARM11 semantics and
 cache/resume still need work; none of these are shared A57 defaults.
 
+## Opt-in ARM7TDMI profile
+
+`SNX_ARM_PROFILE_ARM7TDMI` is the AGB board's CPU (`src/agb/cpu/recomp.c`), on flat memory only. It decodes as A57
+does, but for an MSR that writes the control or extension byte (a mode switch, with its banked registers), which is
+UNDEFINED; what the board's runtime refuses there it interprets. Its blocks follow the ARM7TDMI where ARMv8-A differs:
+a misaligned load reads the aligned unit and rotates it (a misaligned LDRSH reads the byte, sign extended), a
+misaligned store writes the aligned unit, STR and STM of the PC store PC + 12, STM stores the written back base when
+the base is in the list after its first register, LDM, STM, PUSH and POP take an unaligned base, and Thumb's POP {pc}
+keeps the Thumb state. Accesses to the regions whose top byte is 0x00, 0x01, 0x04, 0x05, 0x06, 0x07, 0x0E or 0x0F (the
+BIOS, the I/O window, the palette, VRAM, OAM and the save memory) call `SnxArmCPU.io` when it is set: reads pass the
+width (0x200 | 2 for LDRSH)
+and return the value, writes pass 0x100 | width and the value. No other profile reads `io`. `tests/arm7tdmi_test.py`
+runs each rule under both profiles.
+
 ## Implemented instructions (default A57/flat configuration)
 
 - Word/byte LDR and STR, immediate and shifted-register offsets, positive/negative offsets, pre/post indexing, writeback and unprivileged aliases. Stores, like loads, take the PC (PC+8) as their base without writeback.
@@ -180,7 +195,7 @@ flush-to-zero, default-NaN, and alternate-half-precision modes. Rounding modes R
 per lane. Reciprocal step instructions round the product before subtracting, as ARMv8-A specifies, which is
 not the same as a fused step.
 
-Thumb16 and Thumb32 are supported (see `thumb_decode.c`, `llvm_thumb.inc`): integer data processing, loads/stores (immediate, register, pre/post-indexed, unprivileged), push/pop, LDM/STM, branches (B/Bcc/BL/BLX/BX, CBZ/CBNZ, TBB/TBH), bitfield (SBFX/UBFX/BFI/BFC), extends, MOVW/MOVT/ADDW/SUBW, MUL/MLA/MLS, wide data-processing with shifted and modified-immediate operands, and IT blocks (conditions applied per instruction against current flags, as ARMv8-A specifies). Thumb32 coprocessor (VFP/NEON) shares the A32 vector emitter.
+Thumb16 and Thumb32 are supported (see `thumb_decode.c`, `llvm_thumb.inc`): integer data processing, loads/stores (immediate, literal, register, pre/post-indexed, unprivileged), push/pop, LDM/STM, branches (B/Bcc/BL/BLX/BX, CBZ/CBNZ, TBB/TBH), bitfield (SBFX/UBFX/BFI/BFC), extends, MOVW/MOVT/ADDW/SUBW, MUL/MLA/MLS, wide data-processing with shifted and modified-immediate operands, and IT blocks (conditions applied per instruction against current flags, as ARMv8-A specifies). Thumb32 coprocessor (VFP/NEON) shares the A32 vector emitter.
 
 ## Limits and memory model
 

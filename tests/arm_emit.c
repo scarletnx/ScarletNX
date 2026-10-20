@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* arm_emit WORDS OUTPUT.o [OPT [a57|arm11 [flat|checked]]]: PC followed by up to 64
+/* arm_emit WORDS OUTPUT.o [OPT [a57|arm11|arm7tdmi [flat|checked]]]: PC followed by up to 64
    hexadecimal words. Exports block_0, block_1, ... with the SnxArmBlock ABI. */
 #include "common/cpu/arm/llvm.h"
 #include <llvm-c/Analysis.h>
@@ -28,6 +28,8 @@ int main(int argc, char** argv) {
     if (argc >= 5) {
         if (!strcmp(argv[4], "arm11"))
             codegen.profile = SNX_ARM_PROFILE_ARM11;
+        else if (!strcmp(argv[4], "arm7tdmi"))
+            codegen.profile = SNX_ARM_PROFILE_ARM7TDMI;
         else if (strcmp(argv[4], "a57"))
             return 2;
     }

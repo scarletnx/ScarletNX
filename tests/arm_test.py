@@ -23,6 +23,7 @@ class CPU(C.Structure):
         ('syndrome', C.c_uint32),
         ('mem', C.POINTER(C.c_uint8)),
         ('mem_size', C.c_uint64),
+        ('io', C.c_void_p),  # the ARM7TDMI profile's bus hook: no other profile reads it
         ('exclusive_value', C.c_uint64),
         ('exclusive_address', C.c_uint32),
         ('exclusive_size', C.c_uint32),

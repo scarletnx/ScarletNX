@@ -249,6 +249,7 @@ typedef struct {
 static const char* const items[] = {SNX_TR_NOOP("Load Switch NSP/XCI/NRO"),
                                     SNX_TR_NOOP("Load Linux ARM ELF"),
                                     SNX_TR_NOOP("Load 3DS CIA"),
+                                    SNX_TR_NOOP("Load GBA ROM"),
                                     SNX_TR_NOOP("Setup device keys"),
                                     SNX_TR_NOOP("Settings"),
                                     SNX_TR_NOOP("Share log"),
@@ -2071,8 +2072,9 @@ typedef struct {
 static const char* item_about(const App* app, int item) {
     static const char* const loads[] = {SNX_TR_NOOP("Recompiles a game's .nsp, .xci or .nro, then runs it"),
                                         SNX_TR_NOOP("Runs an ARM64 Linux program on the CPU"),
-                                        SNX_TR_NOOP("Opens a 3DS .cia")};
-    if (item >= GUI_SWITCH && item <= GUI_3DS) return snx_tr(loads[item - GUI_SWITCH]);
+                                        SNX_TR_NOOP("Opens a 3DS .cia"),
+                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board")};
+    if (item >= GUI_SWITCH && item <= GUI_GBA) return snx_tr(loads[item - GUI_SWITCH]);
     if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
     if (item == GUI_EXIT) return snx_tr("Closes ScarletNX");
     {
@@ -2412,6 +2414,7 @@ static const char* driver_name(int item) {
         case GUI_SWITCH: return "scarletnx";
         case GUI_LINUX: return "scarletnx-gnuabi";
         case GUI_3DS: return "scarletnx-3ds";
+        case GUI_GBA: return "scarletnx-agb";
 #endif
         default: return NULL;
     }
