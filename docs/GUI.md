@@ -518,10 +518,13 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
 - changes the keys of a foot's sentences (`#, snx-keys`, "Key: what it does."): each key stays as it is, or as the
   same file translates it (`#, snx-key`, as `Back`), since a click on the foot finds a key by its word, and a sentence
   greyed (`~`, one its screen cannot do now) stays greyed;
-- has a letter the menu's font does not draw, which would show as `?`: the font is CP437 and the Latin letters of
-  U+00A0 to U+024F past it, GNU Unifont's (`src/gui/unifont-latin.hex`, which `scripts/build-glyphs.py --from` keeps
-  from a Unifont `.hex`, and the build draws with the VGA font's stems and baseline; the `gui_glyphs_kept` test checks
-  it holds each of them once);
+- has a letter the menu's font does not draw, which would show as `?`: the font is CP437, the Latin letters of
+  U+00A0 to U+024F past it and the wide letters the languages show, GNU Unifont's. `scripts/build-glyphs.py --from`
+  keeps them from a Unifont `.hex` (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in
+  `src/gui/unifont-latin.hex`, which the build draws with the VGA font's stems and baseline, and in
+  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese. A
+  language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files hold each of them once,
+  and no other;
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from

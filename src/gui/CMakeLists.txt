@@ -21,20 +21,22 @@ function(snx_gui_languages target folder out)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" --out "${out}" ${pos}
         DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-languages.py" "${PROJECT_SOURCE_DIR}/po/scarletnx.pot" ${pos}
                 "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-                "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
+                "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex" "${PROJECT_SOURCE_DIR}/src/common/utilities/font.c"
         COMMENT "The menu's languages from ${folder}" VERBATIM)
     add_library(${target} STATIC "${out}")
 endfunction()
 snx_gui_languages(snx_gui_languages "${PROJECT_SOURCE_DIR}/po" "${CMAKE_BINARY_DIR}/generated/gui_languages.c")
-# The Latin letters past the VGA font's CP437 (latin.h): GNU Unifont's, kept in unifont-latin.hex
-add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/generated/gui_latin.c"
+# The letters past the VGA font's CP437: GNU Unifont's, the Latin ones (latin.h) kept in unifont-latin.hex and the wide
+# ones the languages show (wide.h) in unifont-wide.hex
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/generated/gui_glyphs.c"
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py"
-            --out "${CMAKE_BINARY_DIR}/generated/gui_latin.c"
+            --out "${CMAKE_BINARY_DIR}/generated/gui_glyphs.c"
     DEPENDS "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" "${CMAKE_CURRENT_SOURCE_DIR}/unifont-latin.hex"
-    COMMENT "The menu's Latin glyphs" VERBATIM)
+            "${CMAKE_CURRENT_SOURCE_DIR}/unifont-wide.hex"
+    COMMENT "The menu's Latin and wide glyphs" VERBATIM)
 add_library(snx_gui_support STATIC model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
             latin.c ${gui_process}
-            "${CMAKE_BINARY_DIR}/generated/gui_themes.c" "${CMAKE_BINARY_DIR}/generated/gui_latin.c")
+            "${CMAKE_BINARY_DIR}/generated/gui_themes.c" "${CMAKE_BINARY_DIR}/generated/gui_glyphs.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_i18n snx_settings)
 target_include_directories(snx_gui_support PRIVATE "${CMAKE_BINARY_DIR}/generated")
 set_target_properties(snx_gui_support PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -162,7 +164,8 @@ if(BUILD_TESTING)
     add_test(NAME gui_languages_pot COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-languages.py"
              --check)
     add_test(NAME gui_languages_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/languages_test.py")
-    # unifont-latin.hex holds the Latin letters CP437 lacks, each once, in order
+    # unifont-latin.hex holds the Latin letters CP437 lacks, unifont-wide.hex the wide ones the languages show, each
+    # once, in order
     add_test(NAME gui_glyphs_kept COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" --check)
     add_test(NAME gui_glyphs_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/glyphs_test.py")
     add_executable(snx-test-gui-process "${PROJECT_SOURCE_DIR}/tests/gui_process.c")

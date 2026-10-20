@@ -217,6 +217,13 @@ class Files(unittest.TestCase):
         self.assertIn(0x00E3, DRAWN)
         self.assertIn(0x00E9, DRAWN)
         self.assertNotIn(0x2026, DRAWN)
+        # a wide letter a language shows (tests/po/xx.po's), kept by scripts/build-glyphs.py; one none shows is refused,
+        # saying how it gets its glyph
+        self.compile(entry('Settings', '\u83dc\u5355'))
+        self.assertIn(0x83DC, DRAWN)
+        self.assertNotIn(0x9F8D, DRAWN)
+        with self.assertRaisesRegex(bl.Refused, r'\(U\+9F8D\).*build-glyphs\.py --from'):
+            self.compile(entry('Settings', '\u83dc\u9f8d'))
 
     def test_refused_headers_and_names(self):
         with self.assertRaises(bl.Refused):

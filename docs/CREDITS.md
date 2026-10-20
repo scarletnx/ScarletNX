@@ -23,6 +23,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
+| GUI wide letters the languages show, as Chinese (GNU Unifont 18.0.01's 16x16 glyphs, `src/gui/unifont-wide.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
 
 The GUI fonts' notices and pinned sources are preserved in
 [`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).

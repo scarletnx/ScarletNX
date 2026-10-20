@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # A language for the tests (tests/gui_i18n.c, tests/gui_sdl.c), not the menu's: a few phrases of po/scarletnx.pot,
-# a plain one, one not ASCII, formats, a foot's keys and a key of theirs.
+# a plain one, one not ASCII, formats, a foot's keys and a key of theirs, and wide letters (two columns each): a tab, a
+# row of App and keys.
 msgid ""
 msgstr ""
 "Project-Id-Version: ScarletNX\n"
@@ -35,6 +36,20 @@ msgstr "Up/Down: linha. Left/Right: muda. Enter: muda ou abre. ESC: volta."
 #, snx-keys
 msgid "Tab: screen."
 msgstr "Tab: tela."
+
+msgid "Menu"
+msgstr "菜单"
+
+msgid "Theme"
+msgstr "主题"
+
+#, snx-key
+msgid "Up"
+msgstr "上"
+
+#, snx-key
+msgid "Down"
+msgstr "下"
 
 # not translated yet: English
 msgid "Exit"

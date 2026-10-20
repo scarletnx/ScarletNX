@@ -21,6 +21,14 @@ Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-1
 SHA-256: e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d, signed by Paul Hardy
 https://unifoundry.com/unifont/
 
+The wide letters the menu's languages show past CP437 and the Latin letters (src/gui/unifont-wide.hex: Chinese, as
+po/*.po and tests/po/*.po use them) are the 16x16 glyphs of the same GNU Unifont 18.0.01, kept and compiled in as
+they are in that file, unaltered.
+
+Source: https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont_all-18.0.01.hex.gz
+SHA-256: 14c96e497466a82e46cf20032ce510e186bdc8658c9158e2290f452cda9bc498, signed by Paul Hardy; every glyph it
+shares with unifont-18.0.01.hex above is the same
+
 Unifont's fonts are licensed under the SIL Open Font License 1.1, and under the GNU General Public License version 2
 or (at your option) a later version with the GNU font embedding exception; ScarletNX takes them under the GPL. The
 exception, as Unifont states it:
