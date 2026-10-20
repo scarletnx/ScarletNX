@@ -1111,8 +1111,29 @@ static int draw_has_writable(const VkDrawStorage* draw) {
             if (draw->b[s][i].addr && draw->b[s][i].writable) return 1;
     return 0;
 }
+/* Whether the draw's bindings may share a guest page with a writable one: 0 when each binding is one run of guest
+   memory and their page ranges, compared pairwise, meet no writable one's, 1 otherwise (the page list decides). Every
+   draw with storage asked the page list, allocated and sorted, twice: a twentieth of the GPU thread in one game */
+static int draw_may_alias(const VkDrawStorage* draw) {
+    u64 lo[32], hi[32];
+    int w[32], k = 0;
+    for (int s = 0; s < 2; s++)
+        for (int i = 0; i < draw->n[s]; i++) {
+            const VkDrawGbuf* b = &draw->b[s][i];
+            u64 cpu = 0;
+            if (!b->addr) continue;
+            if (!b->size || gmmu_run(b->addr, b->size, &cpu) != b->size) return 1;
+            lo[k] = cpu >> 12;
+            hi[k] = (cpu + b->size - 1) >> 12;
+            w[k] = b->writable;
+            for (int j = 0; j < k; j++)
+                if ((w[j] || w[k]) && lo[j] <= hi[k] && lo[k] <= hi[j]) return 1;
+            k++;
+        }
+    return 0;
+}
 int vk_buf_draw_has_alias(const VkDrawStorage* draw) {
-    if (!draw_has_writable(draw)) return 0;
+    if (!draw_has_writable(draw) || !draw_may_alias(draw)) return 0;
     size_t n;
     DrawPage* p = draw_pages(draw, &n);
     if (!p) return -1;
@@ -1225,7 +1246,7 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
    word index is translated through its binding's page list, so a write through either VA reaches the same word. */
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
     size_t n = 0;
-    int writable = draw_has_writable(draw);
+    int writable = draw_has_writable(draw) && draw_may_alias(draw);
     DrawPage* p = writable ? draw_pages(draw, &n) : NULL;
     if (writable && !p) return 0;
     u8 active[32] = {0};
