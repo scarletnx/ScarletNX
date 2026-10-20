@@ -322,7 +322,7 @@ void snx_save_before_exit(void) {
     pm_lock(&lock);
     if (!saved) {
         save_hints();
-        if (g_renderer && g_renderer->save) g_renderer->save();
+        if (g_renderer && g_renderer->save) g_renderer->save(1);
         svc_core_exit();
         jit_report();
         saved = 1;
@@ -361,7 +361,7 @@ static void frontend_loop(void) {
         /* here and not on the GPU thread, where writing the pipeline cache would hold up every channel */
         if (tick % 300 == 0) {
             save_hints();
-            if (g_renderer->save) g_renderer->save();
+            if (g_renderer->save) g_renderer->save(0);
         }
         if (tick % 900 == 0) write_threads(tick / VI_REFRESH_HZ);
         now = plat_ns();

@@ -88,9 +88,10 @@ typedef struct Renderer {
     /* the window again, its last frame (or black) under the on-screen controls and the game's menu, for when the game
        has shown nothing for a while: the frontend's loop calls it while either shows. NULL when there is no window */
     void (*refresh)(void);
-    /* writes what should outlive the process (the pipeline cache): every 5 s from the frontend loop, and before an exit
-       that skips the normal shutdown. Any thread, while the others still run. NULL when the renderer keeps nothing */
-    void (*save)(void);
+    /* writes what should outlive the process (the pipeline cache): asked every 5 s from the frontend loop, where it may
+       wait for a quiet moment, and before an exit (at_exit), which writes it now. Any thread, while the others still
+       run. NULL when the renderer keeps nothing */
+    void (*save)(int at_exit);
     /* the window given up for a fatal error's screen (plat.c's fatal, backend/sdl3.c): the swapchain and the surface go,
        as nothing else can draw in a window something presents to. Called on the failing thread, which never returns to
        its callers, so it keeps no lock. 0 when another thread held the renderer too long. NULL without a window */

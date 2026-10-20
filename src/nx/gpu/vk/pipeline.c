@@ -26,6 +26,11 @@
 /* The caches live in shader_cache/ next to the games, shared by all of them, wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
 static int g_pcache_dirty; /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
+static u64 g_pcache_used;  /* plat_ns when a pipeline last went into the cache (atomic) */
+static void pcache_note(void) {
+    __atomic_store_n(&g_pcache_used, plat_ns(), __ATOMIC_RELAXED);
+    __atomic_store_n(&g_pcache_dirty, 1, __ATOMIC_RELAXED);
+}
 
 VkPipelineLayout g_vk_playout;
 VkDescriptorSetLayout g_vk_dslayout[2][5];
@@ -764,7 +769,7 @@ static VkPipeline pipe_create(const Pipe* e) {
 static VkPipeline pipe_make(const Pipe* e, int record) {
     u64 t0 = plat_ns();
     VkPipeline p = pipe_create(e);
-    __atomic_store_n(&g_pcache_dirty, 1, __ATOMIC_RELAXED);
+    pcache_note();
     if (e->prewarm)
         __atomic_add_fetch(&g_pf.made, 1, __ATOMIC_RELAXED);
     else {
@@ -992,14 +997,19 @@ void vk_pipeline_stats(u64* pipes, u64* hits, u64* make_ms, u64* wait_ms, u64* s
 }
 
 VkPipelineCache vk_pipeline_cache(void) {
-    __atomic_store_n(&g_pcache_dirty, 1, __ATOMIC_RELAXED);
+    pcache_note();
     return g_pcache;
 }
-/* writes the pipeline cache when pipelines were made since the last write. Called every few seconds and at exit
-   (the renderer's save), outside vk_lock: the driver synchronizes the cache itself. Saves one at a time, so the one
-   at exit waits for a periodic one in progress to finish its file before the process ends */
+/* writes the pipeline cache when pipelines were made since the last write. Asked every few seconds and at exit (the
+   renderer's save), outside vk_lock: the driver synchronizes the cache itself. The driver holds the cache's lock while
+   it copies the cache out, so a pipeline made meanwhile waits for the whole copy, and the copies came every five seconds
+   while pipelines were being made: a pipeline once waited 3.2 s with recording stopped behind it. So the asking every
+   few seconds writes it only after PCACHE_QUIET_NS without a new pipeline, and at exit it is written regardless. Saves
+   one at a time, so the one at exit waits for one in progress to finish its file before the process ends */
+#define PCACHE_QUIET_NS 20000000000ull
 static PMutex g_psave = PMUTEX_INIT;
-void vk_pipeline_save(void) {
+void vk_pipeline_save(int at_exit) {
+    if (!at_exit && plat_ns() - __atomic_load_n(&g_pcache_used, __ATOMIC_RELAXED) < PCACHE_QUIET_NS) return;
     pm_lock(&g_psave);
     if (!g_pcache || !__atomic_exchange_n(&g_pcache_dirty, 0, __ATOMIC_RELAXED)) {
         pm_unlock(&g_psave);
