@@ -132,8 +132,13 @@ static void splash_drawn(App* app, const SDL_Rect* view, const SnxSplashSvg* svg
     free(drawing);
     SDL_DestroySurface(image);
 }
-/* the 16 rows of the menu font's glyph c: CP437's, then the Latin letters past it (gui_menu_glyph) */
-static const uint8_t* font_rows(int c) { return c < 256 ? gui_vga_font + c * 16 : gui_latin_font + (c - 256) * 16; }
+/* the 16 rows of the menu font's glyph c: CP437's, then the Latin letters past it, then the wide letters' halves
+   (gui_menu_glyph) */
+static const uint8_t* font_rows(int c) {
+    return c < 256                     ? gui_vga_font + c * 16
+           : c < 256 + gui_latin_count ? gui_latin_font + (c - 256) * 16
+                                       : gui_wide_font + (c - 256 - gui_latin_count) * 16;
+}
 /* n glyphs in color anywhere on the render: their ink pixels in color, the others not (a box's frame may cross the
    font's last row, which is empty); 1 and where they start, else 0 */
 static int find_glyphs(App* app, const int* text, int n, SDL_Color color, int size, int* at_x, int* at_y) {
@@ -184,12 +189,15 @@ static int find_text(App* app, const char* text, SDL_Color color, int size, int*
     }
     return find_glyphs(app, glyphs, n, color, size, at_x, at_y);
 }
-/* UTF-8 text in color, a glyph each letter as the menu draws it (gui_menu_glyph), size times the text's letters */
+/* UTF-8 text in color, a glyph each letter as the menu draws it (gui_menu_glyph; a wide one's two halves), size times
+   the text's letters */
 static int find_letters(App* app, const char* text, SDL_Color color, int size, int* at_x, int* at_y) {
     int glyphs[256], n = 0;
     while (*text) {
-        assert(n < 256);
-        glyphs[n++] = gui_menu_glyph(SDL_StepUTF8(&text, NULL));
+        int c = gui_menu_glyph(gui_utf8_step(&text));
+        assert(n + 2 <= 256);
+        glyphs[n++] = c;
+        if (gui_glyph_cols(c) == 2) glyphs[n++] = c + 1;
     }
     return find_glyphs(app, glyphs, n, color, size, at_x, at_y);
 }
@@ -855,6 +863,14 @@ static void step_line(void) {
     s.state = GUI_STEP_ACTIVE;
     step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
     assert(!runs[2][0] && !lengths[2]);
+    /* a detail of wide letters (tests/po/xx.po's Menu twice) in columns, cut to those left: none crossing them, its
+       length the columns it keeps */
+    snprintf(s.detail, sizeof s.detail, "\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c\xe5\x8d\x95");
+    s.state = GUI_STEP_DONE;
+    step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
+    assert(lengths[0] == 8 && lengths[1] == 9 && lengths[2] == 5);
+    clip_row(runs, lengths, 0, 17); /* 4 columns left for the detail: the second letter would end on the 5th */
+    assert(!strcmp(runs[1], " \xe8\x8f\x9c") && lengths[1] == 3 && lengths[0] == 8 && lengths[2] == 5);
 }
 static int SDLCALL hang(void* unused) {
     (void)unused;
@@ -1643,6 +1659,22 @@ int main(int argc, char** argv) {
         shows_foot(&app, "linha", normal);
         shows_foot(&app, "tela", normal);
         hides_foot(&app, "change or open", normal);
+        /* xx's wide letters, two columns each: the Menu tab (U+83DC U+5355) as wide as they are, the Theme row's value
+           (U+4E3B U+9898) lined up with the others, a foot's keys (Up/Down as U+4E0A/U+4E0B) found by their columns */
+        {
+            GuiRect none = {0, 0, 0, 0};
+            int x, y, up = hint_word("Up", 2), down = hint_word("Down", 4);
+            assert(tab_rect(&app, none, GUI_TAB_MENU).w == 6 * cell_w(&app));
+            assert(tab_rect(&app, none, GUI_TAB_GAMES).x == 7 * cell_w(&app));
+            assert(find_letters(&app, "\xe8\x8f\x9c\xe5\x8d\x95", normal, 1, &x, &y));
+            snprintf(line, sizeof line, "- \xe4\xb8\xbb\xe9\xa2\x98%14s %.4s", "", app.app_form.theme);
+            assert(find_letters(&app, line, normal, 1, &x, &y));
+            assert(hint_width("\xe4\xb8\x8a/\xe4\xb8\x8b", "linha") == 11 && up >= 0 && down >= 0 && up != down);
+            assert(hint_pick("\xe4\xb8\x8a/\xe4\xb8\x8b", 1) == up && hint_pick("\xe4\xb8\x8a/\xe4\xb8\x8b", 2) == up);
+            assert(hint_pick("\xe4\xb8\x8a/\xe4\xb8\x8b", 3) == down &&
+                   hint_pick("\xe4\xb8\x8a/\xe4\xb8\x8b", 4) == down);
+            assert(hint_pick("\xe4\xb8\x8a/\xe4\xb8\x8b", 5) == -1); /* past them: no one key for both */
+        }
         key(&app, SDLK_RIGHT);
         assert(!app.language && snx_tr_language() == 0); /* Auto again: English */
         key(&app, SDLK_LEFT);
@@ -1695,6 +1727,78 @@ int main(int argc, char** argv) {
         SDL_RenderClear(app.renderer);
         big_text(&app, gui_rect(0, 0, 60 * w, 6 * h), w, h, words, 2, white);
         assert(find_letters(&app, words, white, 2, &x, &y) && x == w && y == h);
+    }
+    /* the wide letters (tests/po/xx.po's, Unifont's 16x16) two columns each, by each way the menu draws a line: at a
+       cell, in a box, in the title's bigger letters and a column count at a time; none drawn across an edge, a row
+       wrapped after one */
+    {
+        static const char menu[] = "\xe8\x8f\x9c\xe5\x8d\x95" /* U+83DC U+5355, then A: 5 columns */ "A";
+        static const char cai[] = "\xe8\x8f\x9c", dan[] = "\xe5\x8d\x95";
+        SDL_Color white = {255, 255, 255, 255};
+        int x, y, w = cell_w(&app), h = cell_h(&app);
+        SDL_SetRenderDrawColor(app.renderer, 0, 0, 0, 255);
+        SDL_RenderClear(app.renderer);
+        text(&app, 2, 1, menu, white);
+        assert(find_letters(&app, menu, white, 1, &x, &y) && x == 2 * w && y == h);
+        { /* over its row by 2 columns, slid by 1: past the first letter whole, the second at the row's start */
+            Uint32 scroll = app.theme.scroll_ms;
+            Uint64 clock = app.clock;
+            app.theme.scroll_ms = 100;
+            for (app.clock = 1; gui_slide(2, app.clock, app.theme.scroll_ms) != 1;) app.clock += 100;
+            SDL_RenderClear(app.renderer);
+            text(&app, app.cols - 4, 1, menu, white);
+            assert(find_letters(&app, menu + 3, white, 1, &x, &y) && x == (app.cols - 4) * w && y == h);
+            app.theme.scroll_ms = scroll;
+            app.clock = clock;
+        }
+        SDL_RenderClear(app.renderer);
+        text_in(&app, gui_rect(0, 0, 6 * w, 4 * h), 3 * w, 2 * h, menu, white); /* 3 columns: the first alone */
+        assert(find_letters(&app, cai, white, 1, &x, &y) && x == 3 * w && y == 2 * h);
+        assert(!find_letters(&app, dan, white, 1, &x, &y));
+        SDL_RenderClear(app.renderer);
+        big_text(&app, gui_rect(0, 0, 60 * w, 6 * h), w, h, menu, 2, white);
+        assert(find_letters(&app, menu, white, 2, &x, &y) && x == w && y == h);
+        SDL_RenderClear(app.renderer);
+        big_text(&app, gui_rect(0, 0, 7 * w, 6 * h), w, h, menu, 2, white); /* 6 columns at twice the size: one */
+        assert(find_letters(&app, cai, white, 2, &x, &y) && x == w && !find_letters(&app, dan, white, 2, &x, &y));
+        SDL_RenderClear(app.renderer);
+        assert(text_px(&app, (float)w, (float)h, menu, 3, white, 1) == (float)(3 * w));
+        assert(find_letters(&app, cai, white, 1, &x, &y) && x == w && !find_letters(&app, dan, white, 1, &x, &y));
+        assert(text_px(&app, (float)w, (float)h, menu, 5, white, 1) == (float)(6 * w));
+        /* widths in columns: the cursor's margin, the user's box, a question's box */
+        {
+            char cursor[sizeof app.theme.cursor], name[sizeof app.user_name], room[sizeof app.room_line];
+            int user = app.user, side = 3 * h;
+            GuiAsk ask = app.confirm.ask;
+            GuiPicture picture = app.theme.picture;
+            GuiList l, choices;
+            GuiRect asked, ascii;
+            memcpy(cursor, app.theme.cursor, sizeof cursor);
+            memcpy(name, app.user_name, sizeof name);
+            memcpy(room, app.room_line, sizeof room);
+            snprintf(app.theme.cursor, sizeof app.theme.cursor, "%s", cai);
+            list_place(&app, &l, gui_rect(0, 0, 40 * w, 10 * h), 3, 0);
+            assert(l.margin == 2 * w);
+            app.user = 1;
+            app.theme.picture = GUI_PICTURE_SQUARE;
+            snprintf(app.user_name, sizeof app.user_name, "%s", menu);
+            assert(user_width(&app, side) == 7 * w + user_side(&app, side) + 2 * app.scale);
+            app.confirm.ask = GUI_ASK_ROOM;
+            snprintf(app.room_line, sizeof app.room_line, "%s%s%s%s%s", menu, menu, menu, menu, menu); /* 25 columns */
+            ask_boxes(&app, &asked, &choices);
+            snprintf(app.room_line, sizeof app.room_line, "%25s", "");
+            ask_boxes(&app, &ascii, &choices);
+            assert(asked.w == ascii.w && asked.w == 27 * w && asked.h == ascii.h); /* on one row, wrapped at 25 */
+            memcpy(app.theme.cursor, cursor, sizeof cursor);
+            memcpy(app.user_name, name, sizeof name);
+            memcpy(app.room_line, room, sizeof room);
+            app.user = user;
+            app.confirm.ask = ask;
+            app.theme.picture = picture;
+        }
+        /* a line wraps after a wide letter as at a space: "U+83DC U+5355 U+83DC" in 7 columns */
+        assert(wrap_at("\xe8\x8f\x9c\xe5\x8d\x95 \xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c\xe5\x8d\x95", 7, 0) == 10);
+        assert(wrap_at("\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c", 5, 0) == 6 && wrap_at("ab cd", 4, 0) == 2);
     }
     /* Clean old settings, Enter twice: the first says what it would do, another key in between starts again, the
        second does it and shows what it did over the screen, until a key closes it; then there is nothing left */
@@ -4010,8 +4114,17 @@ int main(int argc, char** argv) {
             form_boxes(&app, &f);
             b = list_box(&f.left, row);
             {
-                int room = (b.w - cw * 3 / 2) / cw, end = b.x + cw / 2 + (room - 2) * cw;
+                int room = (b.w - cw * 3 / 2) / cw, end = b.x + cw / 2 + (room - 2) * cw, x, y;
                 text_px_is(&app, end, item_text_y(&app, b), "e_", yellow, black); /* its end, and the cursor */
+                /* wide letters typed in its place (tests/po/xx.po's Menu, 52 columns in 78 bytes): the end still in
+                   view, the last letter's two columns and the cursor's within the box, a column short of it at most */
+                for (x = 0; x < 80; ++x) key(&app, SDLK_BACKSPACE);
+                assert(!app.editor.text[0]);
+                for (x = 0; x < 13; ++x) typed(&app, "\xe8\x8f\x9c\xe5\x8d\x95");
+                assert(strlen(app.editor.text) == 78);
+                render(&app);
+                assert(find_letters(&app, "\xe5\x8d\x95_", yellow, 1, &x, &y) && y == item_text_y(&app, b));
+                assert(x <= b.x + cw / 2 + (room - 3) * cw && x >= b.x + cw / 2 + (room - 4) * cw);
             }
             key(&app, SDLK_ESCAPE);
             key(&app, SDLK_ESCAPE);

@@ -14,6 +14,7 @@
 #include "gui/gui.h"
 #include "gui/i18n.h"
 #include "gui/latin.h"
+#include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
 #include "gui/gui_process.h"
@@ -326,16 +327,24 @@ static int keys_left(App* app) {
     return (int)((shown - (now - app->keys_done) + 999) / 1000);
 }
 static void glyph(App* app, float x, float y, int c);
-/* the font's glyphs 16 to a row: CP437's 256, then the Latin letters past it (gui_menu_glyph) */
+/* the glyphs a row of the font's texture: 512 pixels wide, so 8192 of them (CP437's, the Latin letters and 3780 wide
+   ones) fit 2048 high, where 16 a row would take 8192 */
+#define GUI_FONT_ROW 64
+/* the font's glyphs: CP437's 256, then the Latin letters past it, then each wide letter's two halves
+   (gui_menu_glyph) */
 static SDL_Texture* create_font(SDL_Renderer* renderer) {
-    int glyphs = 256 + gui_latin_count;
-    SDL_Surface* surface = SDL_CreateSurface(128, (glyphs + 15) / 16 * 16, SDL_PIXELFORMAT_RGBA32);
+    int glyphs = 256 + gui_latin_count + 2 * gui_wide_count;
+    SDL_Surface* surface =
+        SDL_CreateSurface(GUI_FONT_ROW * 8, (glyphs + GUI_FONT_ROW - 1) / GUI_FONT_ROW * 16, SDL_PIXELFORMAT_RGBA32);
     if (!surface) return NULL;
     for (int glyph = 0; glyph < glyphs; ++glyph) {
-        const uint8_t* rows = glyph < 256 ? gui_vga_font + glyph * 16 : gui_latin_font + (glyph - 256) * 16;
+        const uint8_t* rows = glyph < 256                     ? gui_vga_font + glyph * 16
+                              : glyph < 256 + gui_latin_count ? gui_latin_font + (glyph - 256) * 16
+                                                              : gui_wide_font + (glyph - 256 - gui_latin_count) * 16;
         for (int y = 0; y < 16; ++y) {
-            Uint32* line = (Uint32*)((char*)surface->pixels + ((glyph / 16) * 16 + y) * surface->pitch);
-            for (int x = 0; x < 8; ++x) line[(glyph % 16) * 8 + x] = (rows[y] & (0x80 >> x)) ? 0xffffffffu : 0;
+            Uint32* line = (Uint32*)((char*)surface->pixels + ((glyph / GUI_FONT_ROW) * 16 + y) * surface->pitch);
+            for (int x = 0; x < 8; ++x)
+                line[(glyph % GUI_FONT_ROW) * 8 + x] = (rows[y] & (0x80 >> x)) ? 0xffffffffu : 0;
         }
     }
     SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
@@ -346,30 +355,40 @@ static SDL_Texture* create_font(SDL_Renderer* renderer) {
     }
     return texture;
 }
-/* the font's glyph c (gui_menu_glyph's, or a CP437 byte), its corner at x, y in pixels */
-static void glyph(App* app, float x, float y, int c) {
-    SDL_FRect source = {(float)(c % 16 * 8), (float)(c / 16 * 16), 8, 16};
-    SDL_FRect destination = {x, y, 8.0f * (float)app->scale, 16.0f * (float)app->scale};
-    SDL_RenderTexture(app->renderer, app->font, &source, &destination);
+/* the font's glyph c (gui_menu_glyph's, or a CP437 byte), its corner at x, y in pixels, w by h a column: a wide one's
+   halves side by side */
+static void glyph_sized(App* app, float x, float y, int c, float w, float h) {
+    for (int half = 0; half < gui_glyph_cols(c); ++half) {
+        SDL_FRect source = {(float)((c + half) % GUI_FONT_ROW * 8), (float)((c + half) / GUI_FONT_ROW * 16), 8, 16};
+        SDL_FRect destination = {x + (float)half * w, y, w, h};
+        SDL_RenderTexture(app->renderer, app->font, &source, &destination);
+    }
 }
-/* text from a pixel position, chars at most, alpha its opacity, cut at the last column; where it ends */
-static float text_px(App* app, float x, float y, const char* value, size_t chars, SDL_Color color, float alpha) {
-    size_t i;
+static void glyph(App* app, float x, float y, int c) {
+    glyph_sized(app, x, y, c, 8.0f * (float)app->scale, 16.0f * (float)app->scale);
+}
+/* text from a pixel position, cols columns of it at most (a wide letter that would cross them left out), alpha its
+   opacity, cut at the last column; where it ends */
+static float text_px(App* app, float x, float y, const char* value, size_t cols, SDL_Color color, float alpha) {
+    size_t used = 0;
     float w = 8.0f * (float)app->scale, limit = (float)(app->cols - 1) * w;
     SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
     SDL_SetTextureAlphaMod(app->font, (Uint8)(alpha * 255));
-    for (i = 0; *value && i < chars; ++i, x += w) {
-        int c = gui_menu_glyph(SDL_StepUTF8(&value, NULL));
-        if (x + w <= limit) glyph(app, x, y, c);
+    while (*value) {
+        int c = gui_menu_glyph(gui_utf8_step(&value)), n = gui_glyph_cols(c);
+        if (used + (size_t)n > cols) break;
+        if (x + (float)n * w <= limit) glyph(app, x, y, c);
+        used += (size_t)n;
+        x += (float)n * w;
     }
     SDL_SetTextureAlphaMod(app->font, 255);
     return x;
 }
 /* text at a cell, a line too long for its row sliding as the theme says */
 static void text(App* app, int x, int y, const char* value, SDL_Color color) {
-    int skip = gui_slide((int)SDL_utf8strlen(value) - (app->cols - 1 - x), now_ms(app), app->theme.scroll_ms);
-    while (skip-- > 0 && *value) SDL_StepUTF8(&value, NULL);
-    text_px(app, (float)(x * 8 * app->scale), (float)(y * 16 * app->scale), value, SIZE_MAX, color, 1);
+    int skip = gui_slide(gui_text_cols(value) - (app->cols - 1 - x), now_ms(app), app->theme.scroll_ms);
+    text_px(app, (float)(x * 8 * app->scale), (float)(y * 16 * app->scale), gui_cols_skip(value, skip), SIZE_MAX, color,
+            1);
 }
 static int cell_h(const App* app) { return 16 * app->scale; }
 static int cell_w(const App* app) { return 8 * app->scale; }
@@ -510,7 +529,7 @@ static void footer(App* app, int row, int rows, GuiRgb page, GuiRgb ink, GuiRgb 
     if (disk[0]) snprintf(usage + n, sizeof usage - n, "  %s", disk);
     text(app, 1, row, usage, rgb(bar ? page : soft));
     text(app, 1, row + 1, snx_tr("CWD:"), rgb(bar ? page : soft));
-    text(app, 2 + (int)SDL_utf8strlen(snx_tr("CWD:")), row + 1, app->cwd ? app->cwd : snx_tr("(unavailable)"),
+    text(app, 2 + gui_text_cols(snx_tr("CWD:")), row + 1, app->cwd ? app->cwd : snx_tr("(unavailable)"),
          rgb(bar ? page : ink));
 }
 /* the screen a file is picked or dropped on: the keys', and a load option's */
@@ -784,13 +803,12 @@ static const char* screen_keys(const App* app, const char* keys, char* out, size
 }
 static void games_place(App* app, GuiPlace* p) {
     size_t i;
-    int longest = (int)SDL_utf8strlen(snx_tr("Recent games"));
+    int longest = gui_text_cols(snx_tr("Recent games"));
     char keys[256];
-    for (i = 0; i < app->games.count; ++i) longest = SDL_max(longest, (int)SDL_utf8strlen(app->games.shown[i]));
-    for (i = 0; i < (size_t)recent_shown(app); ++i)
-        longest = SDL_max(longest, (int)SDL_utf8strlen(app->recent.game[i].name));
+    for (i = 0; i < app->games.count; ++i) longest = SDL_max(longest, gui_text_cols(app->games.shown[i]));
+    for (i = 0; i < (size_t)recent_shown(app); ++i) longest = SDL_max(longest, gui_text_cols(app->recent.game[i].name));
     place_screen(app, p, shown_keys(app, keys, sizeof keys),
-                 longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor),
+                 longest + 2 + gui_text_cols(app->theme.marker) + gui_text_cols(app->theme.cursor),
                  GUI_SHOWS_STATUS | GUI_SHOWS_TABS);
 }
 /* a list entry's box: its text under a frame's width, the frame at its foot over the font's last row, which is empty,
@@ -801,7 +819,7 @@ static void list_place(const App* app, GuiList* l, GuiRect at, int count, int fo
     l->at = at;
     l->count = count;
     l->focus = focus;
-    l->margin = app->theme.cursor[0] ? ((int)SDL_utf8strlen(app->theme.cursor) * cell_w(app)) : 0;
+    l->margin = app->theme.cursor[0] ? (gui_text_cols(app->theme.cursor) * cell_w(app)) : 0;
     l->item = item_h(app);
     l->pitch = gui_place_pitch(at.h, count, l->item + 2 * s, l->item + 14 * s);
     l->shown = gui_place_list(at.h, l->item, l->pitch, count, focus, &l->first);
@@ -930,28 +948,25 @@ static size_t step_runs(const GuiStep* s, int how, Uint64 now, char run[3][112],
         snprintf(run[2], 112, "%s%s", progress[0] ? " " : "", progress);
     }
     total = 0;
-    for (r = 0; r < 3; ++r) total += length[r] = SDL_utf8strlen(run[r]);
+    for (r = 0; r < 3; ++r) total += length[r] = (size_t)gui_text_cols(run[r]);
     return total;
 }
 /* a row cut to the columns it has: a step's detail, keeping its label and state, or a line, ending in "..." */
 static void clip_row(char run[3][112], size_t length[3], int note, int room) {
     int cut;
-    size_t marker, other, left, i, at;
-    const char* end;
+    size_t marker, other, left, at;
     size_t total = length[0] + length[1] + length[2];
     if (room < 8 || total <= (size_t)room) return;
     cut = note ? 0 : 1;
     marker = note ? 3 : 0;
     other = total - length[cut];
     left = (size_t)room > other + marker ? (size_t)room - other - marker : 0;
-    end = run[cut];
-    for (i = 0; i < left; ++i) SDL_StepUTF8(&end, NULL);
-    at = (size_t)(end - run[cut]);
+    at = gui_cols_fit(run[cut], (int)left);
     snprintf(run[cut] + at, 112 - at, "%s", note ? "..." : "");
-    length[cut] = left + marker;
+    length[cut] = (size_t)gui_text_cols(run[cut]);
 }
-/* how far each of rows rows has typed at now, total[r] characters that came at shown[r]: async, each from when it came;
-   sync, one after the other. A slow row types a character every typing_ms, any other the whole row in typing_ms, and
+/* how far each of rows rows has typed at now, total[r] columns that came at shown[r]: async, each from when it came;
+   sync, one after the other. A slow row types a column every typing_ms, any other the whole row in typing_ms, and
    one above first, off the screen, at once. Returns the row being typed, -1 for none */
 static int type_rows(const GuiTheme* theme, int rows, int first, const size_t* total, const Uint64* shown,
                      const int* slow, Uint64 now, size_t* typed) {
@@ -1005,11 +1020,11 @@ static void render_steps(App* app) {
     run_name(app, name, sizeof name);
     col = theme->ring == GUI_RING_LEFT ? 4 : 1;
     title = theme->title[screen(app)];
-    name_col = col + (int)SDL_utf8strlen(title) + (title[0] ? 1 : 0);
+    name_col = col + gui_text_cols(title) + (title[0] ? 1 : 0);
     if (theme->ring == GUI_RING_LEFT) ring(app, cw * 2, ch * 1.5f);
     if (theme->ring == GUI_RING_RIGHT) ring(app, (float)width - cw * 2, ch * 1.5f);
     if (theme->ring == GUI_RING_NEAR_TEXT) /* after the name and the dots' whole width, so it stays put */
-        ring(app, cw * (float)(name_col + (int)SDL_utf8strlen(name) + 4) + 7.0f * (float)app->scale, ch * 1.5f);
+        ring(app, cw * (float)(name_col + gui_text_cols(name) + 4) + 7.0f * (float)app->scale, ch * 1.5f);
     text(app, col, 1, title, ink);
     snprintf(head, sizeof head, "%s%s", name, dots(app));
     text(app, name_col, 1, head, soft);
@@ -1034,7 +1049,7 @@ static void render_steps(App* app) {
             shown[rows] = SDL_max(notes[k]->shown_ms, since);
             snprintf(runs[rows][0], sizeof runs[rows][0], "%s", notes[k]->text);
             runs[rows][1][0] = runs[rows][2][0] = 0;
-            lengths[rows][0] = SDL_utf8strlen(runs[rows][0]);
+            lengths[rows][0] = (size_t)gui_text_cols(runs[rows][0]);
             lengths[rows][1] = lengths[rows][2] = 0;
             clip_row(runs[rows], lengths[rows], 1, app->cols - 5);
         }
@@ -1176,11 +1191,16 @@ static void outline(App* app, GuiRect r, GuiRgb c) {
 static void text_in(App* app, GuiRect r, int x, int y, const char* value, SDL_Color color) {
     int w = cell_w(app), room = (r.x + r.w - x) / w, skip;
     if (room <= 0) return;
-    skip = gui_slide((int)SDL_utf8strlen(value) - room, now_ms(app), app->theme.scroll_ms);
-    while (skip-- > 0 && *value) SDL_StepUTF8(&value, NULL);
+    skip = gui_slide(gui_text_cols(value) - room, now_ms(app), app->theme.scroll_ms);
+    value = gui_cols_skip(value, skip);
     SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
-    for (; *value && room > 0; --room, x += w)
-        glyph(app, (float)x, (float)y, gui_menu_glyph(SDL_StepUTF8(&value, NULL)));
+    while (*value) {
+        int c = gui_menu_glyph(gui_utf8_step(&value)), n = gui_glyph_cols(c);
+        if (n > room) break;
+        glyph(app, (float)x, (float)y, c);
+        room -= n;
+        x += n * w;
+    }
 }
 /* a box framed in the dim colour, filled with the page's (fill) or the frame alone (line); with a head when label is
    not NULL, its label on a band of ink (fill) or over a rule (line). Where its text starts */
@@ -1207,14 +1227,18 @@ static GuiRect over_rect(const App* app, int cols, int h) {
     w = SDL_min((cols + 2) * cell_w(app), width - 2 * cell_w(app));
     return gui_rect((width - w) / 2, SDL_max(0, (height - h) / 2), w, h);
 }
-/* the bytes of s's first row at width columns: a path's up to a slash (gui_wrap), other text's up to a space */
+/* the bytes of s's first row at width columns: a path's up to a slash (gui_wrap), other text's up to a space or after a
+   wide letter, as Chinese breaks between any two */
 static size_t wrap_at(const char* s, int width, int path) {
     const char *p = s, *space = NULL;
-    int n;
+    int n = 0;
     if (path) return gui_wrap(s, width);
-    for (n = 0; *p && n < width; ++n) {
-        SDL_StepUTF8(&p, NULL);
-        if (*p == ' ') space = p;
+    while (*p) {
+        const char* next = p;
+        int cols = gui_glyph_cols(gui_menu_glyph(gui_utf8_step(&next)));
+        if ((n += cols) > width) break;
+        p = next;
+        if (*p == ' ' || cols == 2) space = p;
     }
     return !*p ? strlen(s) : space ? (size_t)(space - s) : gui_wrap(s, width);
 }
@@ -1341,9 +1365,9 @@ static void render_files(App* app, int report) {
 static void ask_boxes(App* app, GuiRect* r, GuiList* choices) {
     int s = app->scale, item = item_h(app), choices_h = 2 * (item + 6 * s), rows;
     const char* question = ask_question(app);
-    *r = over_rect(app, SDL_max((int)SDL_utf8strlen(question), 16), 0);
+    *r = over_rect(app, SDL_max(gui_text_cols(question), 16), 0);
     rows = wrap_rows(app, question, inner(app, *r).w / cell_w(app), 0);
-    *r = over_rect(app, SDL_max((int)SDL_utf8strlen(question), 16), rows * cell_h(app) + choices_h + 12 * s);
+    *r = over_rect(app, SDL_max(gui_text_cols(question), 16), rows * cell_h(app) + choices_h + 12 * s);
     list_place(app, choices,
                gui_rect(r->x + cell_w(app), r->y + rows * cell_h(app) + 10 * s, r->w - 2 * cell_w(app), choices_h), 2,
                app->confirm.selected);
@@ -1570,7 +1594,7 @@ static int hint_off(const char* s) {
     return *s == '~';
 }
 static int hint_width(const char* key, const char* what) {
-    return (int)SDL_utf8strlen(key) + (key[0] ? 1 : 0) + (int)SDL_utf8strlen(what);
+    return gui_text_cols(key) + (key[0] ? 1 : 0) + gui_text_cols(what);
 }
 /* a click or a tap, for hints() to say which sentence with keys it is on: their keys, and how many columns into the
    sentence (-1: the margin before it); key empty for none */
@@ -1598,7 +1622,7 @@ static int hints(App* app, const char* keys, int width, GuiRect r, int y, int dr
         if (end == row) break;
         for (x = r.x + r.w - used * cell_w(app);
              (draw || hit) && u != end && (off = hint_off(u), hint_next(&u, key, what, sizeof key));) {
-            int cy = y + rows * cell_h(app), k = (int)SDL_utf8strlen(key), w = hint_width(key, what) * cell_w(app);
+            int cy = y + rows * cell_h(app), k = gui_text_cols(key), w = hint_width(key, what) * cell_w(app);
             if (hit && k && !off && hit->y >= (float)cy && hit->y < (float)(cy + cell_h(app)) &&
                 hit->x >= (float)(x - cell_w(app)) && hit->x < (float)(x + w + cell_w(app))) {
                 snprintf(hit->key, sizeof hit->key, "%s", key);
@@ -1796,7 +1820,7 @@ static void draw_user(App* app, GuiRect r, int band) {
    show */
 static int user_width(const App* app, int h) {
     if (!app->user || app->theme.picture == GUI_PICTURE_NONE || user_side(app, h) <= 0) return 0;
-    return ((int)SDL_utf8strlen(app->user_name) + 2) * cell_w(app) + user_side(app, h) + 2 * app->scale;
+    return (gui_text_cols(app->user_name) + 2) * cell_w(app) + user_side(app, h) + 2 * app->scale;
 }
 /* ---- the box of users a click on the head's opens: each user of users.ini, the one picked games' user ---- */
 static void users_close(App* app) {
@@ -1818,10 +1842,9 @@ static void users_open(App* app) {
 #define SAY_USERS_TITLE SNX_TR_NOOP("Who plays the games")
 static void users_boxes(App* app, GuiRect* r, GuiList* rows) {
     int i, s = app->scale, item = item_h(app), h = g_user_count * (item + 6 * s);
-    int longest = SDL_max(16, (int)SDL_utf8strlen(snx_tr(SAY_USERS_TITLE)) + 2);
+    int longest = SDL_max(16, gui_text_cols(snx_tr(SAY_USERS_TITLE)) + 2);
     for (i = 0; i < g_user_count; ++i)
-        longest =
-            SDL_max(longest, (int)SDL_utf8strlen(g_users[i].nickname) + (int)SDL_utf8strlen(app->theme.marker) + 4);
+        longest = SDL_max(longest, gui_text_cols(g_users[i].nickname) + gui_text_cols(app->theme.marker) + 4);
     *r = over_rect(app, longest, head_h(app) + h + 12 * s);
     list_place(app, rows, gui_rect(r->x + cell_w(app), r->y + head_h(app) + 6 * s, r->w - 2 * cell_w(app), h),
                g_user_count, app->users_focus);
@@ -1897,10 +1920,11 @@ static int title_size(const App* app) { return (int)SDL_clamp(app->theme.title_s
 static void big_text(App* app, GuiRect r, int x, int y, const char* value, int size, SDL_Color color) {
     float w = 8.0f * (float)(app->scale * size), h = 16.0f * (float)(app->scale * size);
     SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
-    for (; *value && (float)x + w <= (float)(r.x + r.w); x += (int)w) {
-        int c = gui_menu_glyph(SDL_StepUTF8(&value, NULL));
-        SDL_FRect source = {(float)(c % 16 * 8), (float)(c / 16 * 16), 8, 16}, at = {(float)x, (float)y, w, h};
-        SDL_RenderTexture(app->renderer, app->font, &source, &at);
+    while (*value) {
+        int c = gui_menu_glyph(gui_utf8_step(&value)), n = gui_glyph_cols(c);
+        if ((float)x + (float)n * w > (float)(r.x + r.w)) break;
+        glyph_sized(app, (float)x, (float)y, c, w, h);
+        x += n * (int)w;
     }
 }
 static const char* screen_title(const App* app, char* out, size_t size) {
@@ -1954,8 +1978,8 @@ static int tab_shown(const App* app) {
 /* tab i in the row of tabs: two columns wider than its name, a column after the one before it */
 static GuiRect tab_rect(const App* app, GuiRect row, int i) {
     int x = row.x, k;
-    for (k = 0; k < i; ++k) x += ((int)SDL_utf8strlen(snx_tr(tab_names[k])) + 3) * cell_w(app);
-    return gui_rect(x, row.y, ((int)SDL_utf8strlen(snx_tr(tab_names[i])) + 2) * cell_w(app), row.h);
+    for (k = 0; k < i; ++k) x += (gui_text_cols(snx_tr(tab_names[k])) + 3) * cell_w(app);
+    return gui_rect(x, row.y, (gui_text_cols(snx_tr(tab_names[i])) + 2) * cell_w(app), row.h);
 }
 /* the tabs, the one shown as the focused box is; on the head's band in its colours swapped */
 static void draw_tabs(App* app, GuiRect row, int band) {
@@ -2026,7 +2050,7 @@ static void place_screen(App* app, GuiPlace* p, const char* keys, int list_cols,
     if (title[0]) {
         int shadow = t->title_shadow ? size * s : 0;
         in.title = size * cell_h(app) + shadow;
-        in.title_w = (int)SDL_utf8strlen(title) * size * cell_w(app) + shadow;
+        in.title_w = gui_text_cols(title) * size * cell_w(app) + shadow;
         in.title_beside = t->head_place == GUI_HEAD_TABS;
     }
     /* the user as high as the head's row: the title's, or the tabs' with none */
@@ -2086,10 +2110,10 @@ static void menu_boxes(App* app, GuiMenuBoxes* m) {
     char label[160], keys[256];
     for (i = 0; i < GUI_ITEM_COUNT; ++i) {
         menu_label(app, i, label, sizeof label);
-        longest = SDL_max(longest, (int)SDL_utf8strlen(label));
+        longest = SDL_max(longest, gui_text_cols(label));
     }
-    place_screen(app, &m->place, shown_keys(app, keys, sizeof keys),
-                 longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), GUI_SHOWS_STATUS | GUI_SHOWS_TABS);
+    place_screen(app, &m->place, shown_keys(app, keys, sizeof keys), longest + 2 + gui_text_cols(app->theme.cursor),
+                 GUI_SHOWS_STATUS | GUI_SHOWS_TABS);
     list_place(app, &m->list, m->place.list, GUI_ITEM_COUNT, app->menu.selected);
 }
 /* the last run's output, under what the side box says */
@@ -2269,7 +2293,7 @@ static void prompt_in(App* app, GuiRect r, int y, GuiPromptLine line, const char
         if (p->blink && app->theme.blink_ms && (now_ms(app) / app->theme.blink_ms) % 2) return;
         snprintf(framed, sizeof framed, "%s%s%s", p->open, value, p->close);
         value = framed;
-        w = (int)SDL_utf8strlen(framed) * cell_w(app);
+        w = gui_text_cols(framed) * cell_w(app);
         if (p->align == GUI_ALIGN_CENTER) x = r.x + (r.w - w) / 2;
         if (p->align == GUI_ALIGN_RIGHT) x = r.x + r.w - w;
     }
@@ -2376,8 +2400,8 @@ static void draw_run(App* app) {
         prompt_in(app, text, text.y, line, app->finished ? snx_tr(SAY_DONE) : snx_tr("Aborting process tree..."),
                   rgb(t->failure));
     else
-        text_in(app, text, text.x + text.w - (int)SDL_utf8strlen(snx_tr(SAY_ABORT)) * cell_w(app), text.y,
-                snx_tr(SAY_ABORT), rgb(t->failure));
+        text_in(app, text, text.x + text.w - gui_text_cols(snx_tr(SAY_ABORT)) * cell_w(app), text.y, snx_tr(SAY_ABORT),
+                rgb(t->failure));
     app->scale = s;
 }
 /* the menu's screen or a run's, in app->theme, on the render target as it is; the boxes over it */
@@ -3966,7 +3990,7 @@ static int form_labels(const GuiEditor* e) {
     int r, labels = 8;
     for (r = 0; r < gui_editor_rows(e); ++r) {
         gui_editor_label(e, r, label, sizeof label);
-        labels = SDL_max(labels, (int)SDL_utf8strlen(label));
+        labels = SDL_max(labels, gui_text_cols(label));
     }
     return labels;
 }
@@ -3984,12 +4008,12 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     char keys[256];
     int rows, top, back;
     int theme = app->form == GUI_FORM_THEME, width, height, g;
-    int longest = (int)SDL_utf8strlen(snx_tr("Reset all to the defaults"));
+    int longest = gui_text_cols(snx_tr("Reset all to the defaults"));
     area(app, &width, &height);
-    for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, (int)SDL_utf8strlen(snx_tr(app->group_keys[g].key)));
+    for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, gui_text_cols(snx_tr(app->group_keys[g].key)));
     place_screen(app, &f->place, shown_keys(app, keys, sizeof keys),
                  theme ? width / cell_w(app)
-                       : longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor),
+                       : longest + 2 + gui_text_cols(app->theme.marker) + gui_text_cols(app->theme.cursor),
                  GUI_SHOWS_TABS);
     f->rows = &app->editor;
     if (app->form == GUI_FORM_SETTINGS) { /* the focused group's rows, to see before opening it */
@@ -4053,23 +4077,21 @@ static void form_row(App* app, const GuiList* l, const GuiEditor* e, int r, int 
                      app->settings.values[row].text[0] ? snx_tr("Its own >") : snx_tr("As All >"));
     } else
         gui_editor_value(e, r, value, sizeof value);
-    pad = SDL_max(labels - (int)SDL_utf8strlen(label), 0); /* the labels' columns, not their bytes */
+    pad = SDL_max(labels - gui_text_cols(label), 0); /* the labels' columns, not their bytes */
     if (value[0])
         snprintf(line, sizeof line, "%s%s%*s %s", app->theme.marker, label, pad, "", value);
     else /* no value to line up: padding would make a short row too long for its box, and slide */
         snprintf(line, sizeof line, "%s%s", app->theme.marker, label);
-    n = SDL_utf8strlen(line);
+    n = (size_t)gui_text_cols(line);
     if (typing && room > 4 && n > (size_t)room) { /* the typed end in view */
-        const char* tail = value;
-        size_t skip = n - (size_t)room + 3;
-        while (skip-- && *tail) SDL_StepUTF8(&tail, NULL);
+        const char* tail = gui_cols_skip(value, (int)(n - (size_t)room + 3));
         snprintf(line, sizeof line, "%s%s%*s ...%s", app->theme.marker, label, pad, "", tail);
     }
     list_item(app, l, r, line, focused, marked);
     if (k && k->type == GUI_KEY_COLOUR) { /* its colour, framed in soft so a page-coloured one shows */
         GuiRect b = list_box(l, r);
         const GuiRgb* c = (const GuiRgb*)((const char*)(e->object ? e->object : (const char*)&e->theme) + k->at);
-        int x = b.x + cell_w(app) / 2 + (int)SDL_utf8strlen(line) * cell_w(app) + cell_w(app), s = app->scale;
+        int x = b.x + cell_w(app) / 2 + gui_text_cols(line) * cell_w(app) + cell_w(app), s = app->scale;
         if (x + 2 * cell_w(app) <= b.x + b.w) {
             fill_rect(app, gui_rect(x, b.y + 3 * s, 2 * cell_w(app), b.h - 6 * s), app->theme.soft);
             fill_rect(app, gui_rect(x + s, b.y + 4 * s, 2 * cell_w(app) - 2 * s, b.h - 8 * s), *c);
@@ -4207,7 +4229,7 @@ static void draw_picker(App* app) {
                 gui_editor_value(e, e->row, line, sizeof line);
             text_in(app, r, r.x + cw / 2, y, line, ink);
             x = r.x + cw / 2 + 10 * cw;
-            was = (int)SDL_utf8strlen(snx_tr("was"));
+            was = gui_text_cols(snx_tr("was"));
             if (x + 4 * cw <= r.x + r.w) swatch(app, gui_rect(x, y, 4 * cw, cell_h(app)), *c);
             if (x + (10 + was) * cw <= r.x + r.w) {
                 text_in(app, r, x + 5 * cw, y, snx_tr("was"), band ? ink : rgb(t->soft));
@@ -5486,10 +5508,7 @@ static int hint_word(const char* word, size_t n) {
 static int text_cols(const char* s, size_t n) {
     const char* end = s + n;
     int cols = 0;
-    while (s < end && *s) {
-        SDL_StepUTF8(&s, NULL);
-        ++cols;
-    }
+    while (s < end && *s) cols += gui_glyph_cols(gui_menu_glyph(gui_utf8_step(&s)));
     return cols;
 }
 /* the hint_keys entry a click or a tap col columns into the foot's sentence of key (hints()) presses, -1 for none: the
@@ -5497,7 +5516,7 @@ static int text_cols(const char* s, size_t n) {
    margin after it, what every word does when they all do one thing */
 static int hint_pick(const char* key, int col) {
     const char *word = key, *end;
-    int k = (int)SDL_utf8strlen(key), pick = -1, first = 1, w;
+    int k = gui_text_cols(key), pick = -1, first = 1, w;
     for (;; word = end + 1) {
         end = strchr(word, '/');
         if (!end) end = word + strlen(word);

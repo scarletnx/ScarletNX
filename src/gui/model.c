@@ -4,6 +4,8 @@
 #include "common/utilities/common.h"
 #include "common/utilities/font.h"
 #include "gui/i18n.h"
+#include "gui/latin.h"
+#include "gui/wide.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,15 +142,17 @@ int gui_slide(int over, uint64_t ms, uint32_t step_ms) {
     return over - (int)(t - 2 * GUI_SLIDE_WAIT - over);
 }
 size_t gui_wrap(const char* s, int width) {
-    size_t at = 0, slash = 0, space = 0;
-    int chars;
-    for (chars = 0; s[at]; ++chars) {
-        if (chars == (width < 1 ? 1 : width)) return slash ? slash : space ? space : at;
-        while ((s[++at] & 0xC0) == 0x80) {} /* a character's other bytes */
-        if (s[at - 1] == '/' || s[at - 1] == '\\') slash = at;
-        if (s[at - 1] == ' ') space = at;
+    const char* p = s;
+    size_t slash = 0, space = 0;
+    int cols = 0;
+    while (*p) {
+        const char* at = p;
+        cols += gui_glyph_cols(gui_menu_glyph(gui_utf8_step(&p)));
+        if (cols > (width < 1 ? 1 : width) && at > s) return slash ? slash : space ? space : (size_t)(at - s);
+        if (p[-1] == '/' || p[-1] == '\\') slash = (size_t)(p - s);
+        if (p[-1] == ' ') space = (size_t)(p - s);
     }
-    return at;
+    return (size_t)(p - s);
 }
 size_t gui_browser_pages(const GuiBrowser* browser) {
     if (!browser->count || !browser->page_size) return 1;

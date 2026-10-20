@@ -75,8 +75,9 @@ bool gui_room(uint64_t dump, bool copy, uint64_t work_free, uint64_t games_free,
 void gui_usage_text(char* out, size_t size, bool available, uint64_t memory_bytes, double cpu_percent, int cores);
 /* how many columns a line over columns too many has slid at ms, a column every step_ms: it waits at each end */
 int gui_slide(int over, uint64_t ms, uint32_t step_ms);
-/* the bytes of s's first row when it is wrapped at width characters (at least 1): all of it when it fits, else up to
-   the last slash or backslash that fits, else the last space, else width characters */
+/* the bytes of s's first row when it is wrapped at width columns (at least 1; a wide letter's two, gui_text_cols): all
+   of it when it fits, else up to the last slash or backslash that fits, else the last space, else the characters that
+   fit, one at least */
 size_t gui_wrap(const char* s, int width);
 
 typedef struct {

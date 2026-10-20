@@ -3,6 +3,7 @@
 #include "gui/model.h"
 #include "gui/browser.h"
 #include "gui/latin.h"
+#include "gui/wide.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,6 +125,9 @@ int main(void) {
     assert(gui_wrap("abc/", 4) == 4 && gui_wrap("abc/def", 4) == 4 && gui_wrap("abcdefghij", 4) == 4);
     assert(gui_wrap("ab", 0) == 1 && gui_wrap("ab", -3) == 1);
     assert(gui_wrap("\xc3\xa9\xc3\xa9\xc3\xa9", 2) == 4); /* characters, not bytes */
+    /* columns, a wide letter's two (tests/po/xx.po's Menu, U+83DC U+5355): what fits, a path's slash, one at least */
+    assert(gui_wrap("\xe8\x8f\x9c\xe5\x8d\x95\xe8\x8f\x9c", 5) == 6 && gui_wrap("\xe8\x8f\x9c\xe5\x8d\x95", 4) == 6);
+    assert(gui_wrap("a/\xe8\x8f\x9c", 3) == 2 && gui_wrap("\xe8\x8f\x9c\xe5\x8d\x95", 1) == 3);
 
     /* the head (Add a folder and two recent games) over each page of the games, one ring with the page */
     GuiBrowser browser = {.count = 23, .head = 3};
@@ -206,8 +210,48 @@ int main(void) {
         for (i = 0; i < (size_t)gui_latin_count; ++i) assert(gui_glyph(gui_latin_points[i]) == '?'); /* CP437's own */
     }
     assert(gui_menu_glyph('?') == '?' && gui_menu_glyph(0x9f) == '?' && gui_menu_glyph(0xad) == '?');
-    assert(gui_menu_glyph(0x250) == '?' && gui_menu_glyph(0x2026) == '?' && gui_menu_glyph(0x4e00) == '?');
+    assert(gui_menu_glyph(0x250) == '?' && gui_menu_glyph(0x2026) == '?' && gui_menu_glyph(0x9f98) == '?');
     assert(gui_menu_glyph(0x1f600) == '?');
+    /* the wide letters the languages show, two halves each after the Latin ones: tests/po/xx.po's U+83DC, U+5355 */
+    {
+        size_t i;
+        int c = gui_menu_glyph(0x83dc), d = gui_menu_glyph(0x5355);
+        assert(c >= 256 + gui_latin_count && (c - 256 - gui_latin_count) % 2 == 0 && c != d);
+        assert(gui_wide_points[(c - 256 - gui_latin_count) / 2] == 0x83dc && gui_glyph_cols(c) == 2);
+        assert(gui_glyph_cols('a') == 1 && gui_glyph_cols(gui_menu_glyph(0xe3)) == 1 && gui_glyph_cols('?') == 1);
+        assert(gui_glyph_cols(256 + gui_latin_count - 1) == 1);
+        for (i = 1; i < (size_t)gui_wide_count; ++i) assert(gui_wide_points[i - 1] < gui_wide_points[i]);
+        for (i = 0; i < (size_t)gui_wide_count; ++i)
+            assert(gui_menu_glyph(gui_wide_points[i]) == 256 + gui_latin_count + 2 * (int)i);
+    }
+    /* UTF-8 a character a step; U+FFFD and a byte for what no character is (overlong, a surrogate, past U+10FFFF, cut
+       short, a stray byte), 0 at the end */
+    {
+        const char *s = "a\xc3\xa3\xe8\x8f\x9c\xf0\x9f\x98\x80",
+                   *bad[] = {"\x80", "\xc0\xaf", "\xe0\x80\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+                             "\xff", "\xe8\x8f", "\xc3",         "\xe8\x41\x9c", "\xc3\xc3"};
+        size_t i;
+        assert(gui_utf8_step(&s) == 'a' && gui_utf8_step(&s) == 0xe3 && gui_utf8_step(&s) == 0x83dc);
+        assert(gui_utf8_step(&s) == 0x1f600 && !*s && !gui_utf8_step(&s) && !*s);
+        for (i = 0; i < sizeof bad / sizeof *bad; ++i) {
+            const char* at = bad[i];
+            assert(gui_utf8_step(&at) == 0xfffd && at == bad[i] + 1);
+        }
+    }
+    /* the columns text takes, fits and skips: a wide letter two, crossing none */
+    {
+        const char* menu = "\xe8\x8f\x9c\xe5\x8d\x95"
+                           "A"; /* xx's Menu then A: 5 columns in 7 bytes */
+        assert(gui_text_cols(menu) == 5 && gui_text_cols("\xc3\xa3o") == 2 && gui_text_cols("") == 0);
+        assert(gui_text_cols("\xe9\xbe\x98\xff") == 2); /* none of the font's: a '?' each */
+        assert(gui_cols_fit(menu, 1) == 0 && gui_cols_fit(menu, 2) == 3 && gui_cols_fit(menu, 3) == 3);
+        assert(gui_cols_fit(menu, 4) == 6 && gui_cols_fit(menu, 5) == 7 && gui_cols_fit(menu, 9) == 7);
+        assert(gui_cols_fit(menu, 0) == 0 && gui_cols_fit(menu, -1) == 0);
+        assert(gui_cols_skip(menu, 0) == menu && gui_cols_skip(menu, 1) == menu + 3 &&
+               gui_cols_skip(menu, 2) == menu + 3);
+        assert(gui_cols_skip(menu, 3) == menu + 6 && gui_cols_skip(menu, 5) == menu + 7 &&
+               gui_cols_skip(menu, 9) == menu + 7);
+    }
     for (int i = 0; i < 1000000; ++i) gui_console_feed(&screen, "z", 1);
     assert(screen.row < screen.rows && screen.col <= screen.cols);
     gui_console_resize(&screen, 3, 1);

@@ -10,6 +10,7 @@ extern const int gui_latin_count;
 extern const uint16_t gui_latin_points[]; /* their code points, ascending */
 extern const uint8_t gui_latin_font[];    /* 16 rows of each, as gui_vga_font's */
 /* the menu font's glyph of a code point: CP437's (0 to 255, as gui_glyph) when it has one, else 256 and the Latin
-   glyph's index, else '?' */
+   glyph's index, else 256 + gui_latin_count and twice the wide letter's (wide.h: its left half, the right one after),
+   else '?' */
 int gui_menu_glyph(uint32_t codepoint);
 #endif

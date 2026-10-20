@@ -15,8 +15,9 @@
 name beside it, opens its launcher: a small SDL3 menu for the command-line drivers. A copy named
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
-lacks, and nearest-neighbor integer scaling; its words are English or a language compiled into it
-([Languages](#languages)). No font files or localization packages are needed.
+lacks and its 16x16 ones, two columns each, for the wide letters a language shows (Chinese), and nearest-neighbor
+integer scaling; its words are English or a language compiled into it ([Languages](#languages)). No font files or
+localization packages are needed.
 
 ```sh
 ./build/scarletnx
@@ -522,9 +523,10 @@ brings a translation up to the code; a phrase it leaves empty, or marks `fuzzy`,
   U+00A0 to U+024F past it and the wide letters the languages show, GNU Unifont's. `scripts/build-glyphs.py --from`
   keeps them from a Unifont `.hex` (`unifont-<version>.hex` or `unifont_all-<version>.hex`): the Latin ones in
   `src/gui/unifont-latin.hex`, which the build draws with the VGA font's stems and baseline, and in
-  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese. A
-  language that shows a new letter runs it again; the `gui_glyphs_kept` test checks the files hold each of them once,
-  and no other;
+  `src/gui/unifont-wide.hex` the 16x16 glyphs of every other letter of `po/*.po` and `tests/po/*.po`, as Chinese,
+  which the menu draws two columns wide: every width, cut, wrap and slide of its text counts them so (`src/gui/wide.h`),
+  and a row breaks after one as at a space. A language that shows a new letter runs it again; the `gui_glyphs_kept`
+  test checks the files hold each of them once, and no other;
 - has contexts (`msgctxt`), plurals (`msgid_plural`), a phrase twice, or is not UTF-8.
 
 The runtime's settings stay as the runtime names them (their groups, names, help and words come from
@@ -562,8 +564,10 @@ Key setup tests cover installation, replacement, invalid drops, failed writes,
 self-copy safety, cancellation, and the bright-red overwrite warning.
 Language tests cover a catalog's search in either byte order, catalogs cut or pointing out of themselves, the language
 Auto picks from the system's locales, English where a language has none, the Language row and `app.ini`'s key, and
-the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin letters'
-lookup, each way the menu draws a line with them, and the script that keeps them.
+the script's refusals; they use a language of their own, `tests/po/xx.po`. Glyph tests cover the Latin and the wide
+letters' lookup, each way the menu draws a line with them (a wide one's two columns in widths, cuts, wraps, slides, a
+foot's keys and typed text), UTF-8 read with a `?` for each byte no character starts, and the script that keeps
+them.
 Settings tests cover the runtime's list read into rows, picks, the options each combination
 passes, and the screens of its groups and App; menu tests cover mouse hover versus explicit
 activation, the menu without the games and Games with Add a folder and the recent games' show-more row,
