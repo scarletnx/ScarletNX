@@ -504,13 +504,13 @@ jobs:
       - name: Install the packaging tools
         uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
         env:
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/get-debloated-pkgs.sh
-          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/make-aur-package.sh
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c9079a3c4a2af6ff86262dbbd794753aa0c38768/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c9079a3c4a2af6ff86262dbbd794753aa0c38768/useful-tools/get-debloated-pkgs.sh
+          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c9079a3c4a2af6ff86262dbbd794753aa0c38768/useful-tools/make-aur-package.sh
       - name: Check the packaging tools
         run: |
           sha256sum -c <<'EOF'
-          b38ac233f0b56a03bb10565f6b074a43ce016939faee44ae8bb23d6e66c2d553  /usr/local/bin/quick-sharun
+          238a5c2a1d8833ab4a94fe9c91b8ff5eb92b0c35119fa8c2e9f5b25cdb71e979  /usr/local/bin/quick-sharun
           217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
@@ -562,20 +562,26 @@ jobs:
             dist/*.AppImage*
             dist/appinfo
 
-  # The AppImages of hosts no GitHub runner is, cross-built on x86-64 with their linux-<arch>-cross preset
-  # (cmake/cross.cmake) against an Arch system root of the architecture, then packaged as the appimage job packages its
-  # own (scripts/make-appimage.sh with SYSROOT). The system root is pkgforge's Arch image of the architecture, unpacked
-  # with the runner's Docker (its files only: it never runs), so the job runs on the runner and enters pkgforge's x86-64
-  # container with docker exec, the workspace mounted at /src. platform is Docker's name of the architecture (loong64
-  # for LoongArch). No POWER, RISC-V or LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they
-  # may fail without failing the run (scripts/publish-builds.py, OPTIONAL). Big-endian ppc64's is the Linux runtime alone
-  # (linux-only, its preset's runtimes), as the Switch and 3DS ones need a little-endian host: Arch POWER's glibc there
-  # is ELFv2, not Debian ports' ELFv1, which the linux-ppc64 job tests
+  # The AppImages of hosts no GitHub runner is: cross-built on x86-64 with their linux-<arch>-cross preset
+  # (cmake/cross.cmake) against the system root of pkgforge's Arch image of the architecture, then bundled in a
+  # container of that image, whose / holds the runtime, and made on the build machine. The build container is
+  # pkgforge's x86-64 image with the workspace at /src; platform is Docker's name of the architecture (loong64 for
+  # LoongArch). Big-endian ppc64's is the Linux runtime alone (linux-only, its preset's runtimes), as the Switch and
+  # 3DS ones need a little-endian host: Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which the
+  # linux-ppc64 job tests. No POWER, RISC-V or LoongArch machine has run the AppImages yet, so like the macOS and iOS
+  # jobs they may fail without failing the run (scripts/publish-builds.py, OPTIONAL)
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     continue-on-error: true
+    env:
+      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c9079a3c4a2af6ff86262dbbd794753aa0c38768/useful-tools/quick-sharun.sh
+      QUICK_SHARUN_SHA: 238a5c2a1d8833ab4a94fe9c91b8ff5eb92b0c35119fa8c2e9f5b25cdb71e979
+      APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.3/appimagetool-full-x86_64-linux
+      APPIMAGETOOL_SHA: 9a6fd46ee6bc5910e7acfa68f9d8090f3751e956840b90304ef57d64321a530d
+      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/c9079a3c4a2af6ff86262dbbd794753aa0c38768/useful-tools/get-debloated-pkgs.sh
+      DEBLOATED_PACKAGES_SHA: 217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f
     strategy:
       fail-fast: false
       matrix:
@@ -608,8 +614,6 @@ jobs:
         with:
           path: .cache/cpm
           key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
-      # The script's checks run the AppImage it made: the kernel runs the target's programs through qemu once their
-      # binfmt handlers are registered, in the container too
       - name: Set up qemu emulation for ${{ matrix.arch }}
         if: matrix.platform != 'ppc64'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -622,86 +626,84 @@ jobs:
         if: matrix.platform == 'ppc64'
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
-          # the build container has none of the runner's libraries: its qemu has to be static, as Debian's is since 9.2
+          # the containers have none of the runner's libraries: its qemu has to be static, as Debian's is since 9.2
           ! ldd "$(command -v qemu-ppc64)" 2>&1 | grep -q '=>' ||
-            { echo "the runner's qemu-ppc64 is dynamically linked, which the build container cannot run" >&2; exit 1; }
+            { echo "the runner's qemu-ppc64 is dynamically linked, which the containers cannot run" >&2; exit 1; }
           printf ':qemu-ppc64:M::%s:%s:%s:POCF\n' \
             '\x7f\x45\x4c\x46\x02\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x15' \
             '\xff\xff\xff\xff\xff\xff\xff\xfc\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff' \
             "$(command -v qemu-ppc64)" | sudo tee /proc/sys/fs/binfmt_misc/register
           head -n 3 /proc/sys/fs/binfmt_misc/qemu-ppc64
-      # Started before the target's image is pulled, which takes the same tag
-      - name: Start the build container
-        run: docker run --detach --name build --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
-      - name: Unpack the ${{ matrix.arch }} system root
+      # The target container is where the packages and then the runtime go: / is the image, so pacman, quick-sharun
+      # and get-debloated-pkgs work unmodified
+      - name: Start the build and target containers
         run: |
-          set -euo pipefail
-          image=ghcr.io/pkgforge-dev/archlinux:latest
-          docker pull --platform linux/${{ matrix.platform }} "$image"
-          docker exec build mkdir -p /src/sysroot
-          docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
-      # pkgforge's setup action runs pacman, which the runner lacks: its pinned script runs in the container, fetched
-      # with curl (the container has no wget until that script installs it). quick-sharun fetches the target's
-      # appimagetool, checked against its own sha256, with that target's runtime and mkdwarfs inside: the binfmt
-      # handler registered above runs them
-      - name: Install the packaging tools
-        env:
-          ANYLINUX_SETUP: https://raw.githubusercontent.com/pkgforge-dev/anylinux-setup-action/b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5/setup.sh
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/get-debloated-pkgs.sh
-          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/make-aur-package.sh
-        run: |
-          docker exec -i -e ANYLINUX_SETUP -e QUICK_SHARUN -e DEBLOATED_PACKAGES -e MAKE_AUR_PACKAGE build sh -s <<'EOF'
-          set -eu
-          curl -fsSL --retry 3 -o /tmp/anylinux-setup.sh "$ANYLINUX_SETUP"
-          echo '4e97072095e80a46203a1cd711eface00de1b028be3e66ef30cc9ccd728501e5  /tmp/anylinux-setup.sh' | sha256sum -c
-          sh /tmp/anylinux-setup.sh
-          EOF
-      - name: Check the packaging tools
-        run: |
-          docker exec -i build sh -s <<'EOF'
-          set -eu
-          sha256sum -c <<'SUMS'
-          b38ac233f0b56a03bb10565f6b074a43ce016939faee44ae8bb23d6e66c2d553  /usr/local/bin/quick-sharun
-          217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f  /usr/local/bin/get-debloated-pkgs
-          86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
-          SUMS
-          EOF
-      # The build machine's: Clang and LLD build for the target (cmake/cross.cmake), glslang the shaders, qemu-user runs
-      # the target's llvm-config (scripts/cross-llvm-config.sh) and its loader behind the packaging's ldd, wayland's
-      # wayland-scanner the protocols SDL3 builds (appimagetool brings its own compressor, as in the appimage job). The
-      # target's: the libraries the runtime links and bundles, gcc for the crt files, libgcc and libstdc++ Clang links
-      # the target's programs with, and what the pinned SDL3's build needs, as Arch POWER's SDL3 is older than the pin
-      # (its X11, Wayland and audio backends). The Linux runtime alone needs LLVM and the GCC runtime only.
-      # They go into the system root by its own pacman.conf (its architecture, repositories and mirrors, under the root)
-      # and its own keys; install scriptlets are the target's programs, left out. Each pacman is tried 3 times, as in
-      # the linux job
-      - name: Install the build tools and the target's libraries
+          docker run --detach --name build --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+          docker run --detach --name target --platform linux/${{ matrix.platform }} \
+            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+      # The pinned Anylinux-AppImages tools, then the target's libraries the runtime links and bundles: gcc for the crt
+      # files, libgcc and libstdc++ Clang links the target's programs with, and what the pinned SDL3's build needs, as
+      # Arch POWER's SDL3 is older than the pin (its X11, Wayland and audio backends). The Linux runtime alone needs
+      # LLVM and the GCC runtime only. binutils and patchelf are what quick-sharun needs on PATH.
+      # get-debloated-pkgs then replaces the full Mesa (its libgallium links libLLVM), ICU and Opus, so it runs last.
+      # Each pacman is tried 3 times, as in the linux job
+      - name: Install the packaging tools and the target's libraries
         env:
           LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
         run: |
-          docker exec -i -e LINUX_ONLY build sh -s <<'EOF'
+          docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e DEBLOATED_PACKAGES -e DEBLOATED_PACKAGES_SHA \
+            -e LINUX_ONLY target sh -s <<'EOF'
           set -eu
-          libraries="gcc llvm llvm-libs"
+          libraries="gcc llvm llvm-libs patchelf binutils"
           [ -n "$LINUX_ONLY" ] || libraries="$libraries libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
             libxext libxcursor libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland
             wayland-protocols libdecor alsa-lib libpulse libpipewire hidapi libusb"
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
-          retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
-            patchelf wayland
-          root=/src/sysroot
-          mkdir -p /tmp/target-pkg
-          sed "s#/etc/pacman.d/#$root/etc/pacman.d/#g" "$root/etc/pacman.conf" >/tmp/target-pacman.conf
-          pacman-key --gpgdir "$root/etc/pacman.d/gnupg" --init
-          pacman-key --gpgdir "$root/etc/pacman.d/gnupg" --populate-from "$root/usr/share/pacman/keyrings" --populate
-          retry pacman --root "$root" --dbpath "$root/var/lib/pacman" --config /tmp/target-pacman.conf \
-            --gpgdir "$root/etc/pacman.d/gnupg" --cachedir /tmp/target-pkg --noscriptlet -Syu --noconfirm --needed \
-            $libraries
-          # without them CMake's first test link fails, its message deep in the configure's output
-          ls "$root"/usr/lib/gcc/*/*/crtbeginS.o >/dev/null 2>&1 ||
-            { echo "the system root has no GCC runtime (crtbeginS.o, libgcc) for Clang to link with" >&2; exit 1; }
+          retry pacman -Syu --noconfirm --needed $libraries
+          curl -fsSL --retry 3 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
+          curl -fsSL --retry 3 -o /usr/local/bin/get-debloated-pkgs "$DEBLOATED_PACKAGES"
+          chmod +x /usr/local/bin/quick-sharun /usr/local/bin/get-debloated-pkgs
+          printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
+                           "$DEBLOATED_PACKAGES_SHA" /usr/local/bin/get-debloated-pkgs | sha256sum -c
+          debloated="opus-mini icu-mini"
+          [ -n "$LINUX_ONLY" ] || debloated="mesa-nano $debloated"
+          get-debloated-pkgs $debloated
+          pacman -Scc --noconfirm
           EOF
-      - name: Cross-build and install into the system root
+      - name: Unpack the ${{ matrix.arch }} system root
+        run: |
+          set -euo pipefail
+          docker exec build mkdir -p /src/sysroot
+          docker export target | docker exec -i build tar -x -C /src/sysroot
+          # without them CMake's first test link fails, its message deep in the configure's output
+          docker exec build sh -c 'ls /src/sysroot/usr/lib/gcc/*/*/crtbeginS.o >/dev/null' || {
+            echo "the system root has no GCC runtime (crtbeginS.o, libgcc) for Clang to link with" >&2
+            exit 1
+          }
+      # The build machine's: Clang and LLD build for the target (cmake/cross.cmake), glslang the shaders, qemu-user runs
+      # the target's llvm-config (scripts/cross-llvm-config.sh) and its loader behind the packaging's ldd, wayland's
+      # wayland-scanner the protocols SDL3 builds. Each pacman is tried 3 times, as in the linux job
+      - name: Install the build tools
+        run: |
+          docker exec -i build sh -s <<'EOF'
+          set -eu
+          retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
+          retry pacman -Syu --noconfirm --needed cmake ninja make patch perl python clang lld llvm glslang qemu-user \
+            git pkgconf wayland
+          EOF
+      # The build machine's packaging tools: quick-sharun makes the AppImage, and its appimagetool compresses natively
+      # and takes the target's runtime from APPIMAGE_ARCH
+      - name: Install the packaging tools
+        run: |
+          docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
+          set -eu
+          curl -fsSL --retry 3 -o /usr/local/bin/quick-sharun "$QUICK_SHARUN"
+          curl -fsSL --retry 3 -o /usr/local/bin/appimagetool "$APPIMAGETOOL_URL"
+          chmod +x /usr/local/bin/quick-sharun /usr/local/bin/appimagetool
+          printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
+                           "$APPIMAGETOOL_SHA" /usr/local/bin/appimagetool | sha256sum -c
+          EOF
+      - name: Cross-build and install
         run: |
           docker exec -i build sh -s <<'EOF'
           set -eu
@@ -709,13 +711,30 @@ jobs:
           export SNX_SYSROOT=/src/sysroot
           cmake --preset ${{ matrix.preset }} -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)"
-          DESTDIR=/src/sysroot cmake --install build/${{ matrix.preset }}
+          DESTDIR=/src/stage cmake --install build/${{ matrix.preset }}
+          EOF
+      # Packaging runs where / is the target's system root, so quick-sharun reads it and the licenses' packages come
+      # from its pacman database; the AppImage itself is compressed on the build machine
+      - name: Bundle the AppImage
+        run: |
+          docker exec -i target sh -s <<'EOF'
+          set -eu
+          cp -a /src/stage/. /
+          SKIP_APPIMAGE=1 scripts/make-appimage.sh
           EOF
       - name: Make the AppImage
         run: |
-          docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE build sh -s <<'EOF'
+          docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
+            -e MAKE_APPIMAGE_ONLY=1 -e ARCH=${{ matrix.arch }} -e APPIMAGETOOL=/usr/local/bin/appimagetool \
+            build sh -s <<'EOF'
           set -eu
-          SYSROOT=/src/sysroot ARCH=${{ matrix.arch }} scripts/make-appimage.sh
+          scripts/make-appimage.sh
+          EOF
+      - name: Check the AppImage
+        run: |
+          docker exec -i -e ARCH=${{ matrix.arch }} build sh -s <<'EOF'
+          set -eu
+          scripts/check-appimage.sh
           EOF
       # Only what the script made: dist/ also holds the tracked desktop entry and icon
       - uses: actions/upload-artifact@v7
