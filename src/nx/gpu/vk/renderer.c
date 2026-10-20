@@ -523,14 +523,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
     if (game) vk_renderdoc_present(g_vk_present);
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
-        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                               .waitSemaphoreCount = 1,
-                               .pWaitSemaphores = &signal,
-                               .swapchainCount = 1,
-                               .pSwapchains = &g_vk.swapchain,
-                               .pImageIndices = &idx};
-        vk_rec_queue(g_vk.gfx); /* the present waits on the frame's submission's semaphore */
-        VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
+        /* after the frame's submission, whose semaphore it waits on, without waiting for its recording */
+        VkResult r = vk_rec_present(g_vk.swapchain, idx, signal);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || (r == VK_SUBOPTIMAL_KHR && !g_vk.sc_turned))
             recreate = 1;
         else if (r == VK_ERROR_SURFACE_LOST_KHR)

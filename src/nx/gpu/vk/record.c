@@ -7,10 +7,10 @@
 
    Only the frame's command buffer (vk_cmd) goes through the ring. A command for any other one (compute's, VIC's)
    is made at once, as are commands while SNX_VK_RECORD=0. Whoever adds to the ring holds vk_lock, so there is one
-   producer at a time. What has to happen after the queued commands are recorded and submitted waits for the ring to
-   drain (vk_rec_sync): a present waiting on a submission's semaphore, a new command buffer from the frame's pool,
-   a device wait. Waits on the graphics timeline need none, as a timeline value can be waited for before its
-   submission. */
+   producer at a time. A present goes through the ring too, after the submission whose semaphore it waits on. What
+   else has to happen after the queued commands are recorded and submitted waits for the ring to drain
+   (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics timeline need
+   none, as a timeline value can be waited for before its submission. */
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -211,6 +211,39 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
     }
     *(Submit*)rec_push(submit_run, sizeof x) = x;
     publish(); /* the timeline value is waited for by whoever needs the work done */
+}
+
+/* A present, after the frame's submission. The GPU thread waited for the ring to drain before presenting, and so
+   for the recording of its whole frame: a sixth of its time in one game, where it could have gone on with the next
+   frame. Its result comes back at a later present (vk_rec_present) */
+typedef struct {
+    VkSwapchainKHR sc;
+    VkSemaphore wait;
+    u32 idx;
+} Present;
+static VkResult g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
+static VkResult present_run(const Present* x) {
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                           .waitSemaphoreCount = 1,
+                           .pWaitSemaphores = &x->wait,
+                           .swapchainCount = 1,
+                           .pSwapchains = &x->sc,
+                           .pImageIndices = &x->idx};
+    return vkQueuePresentKHR(g_vk.gfx, &pi);
+}
+static void present_queued(const void* p) {
+    VkResult r = present_run(p);
+    if (r != VK_SUCCESS) __atomic_store_n(&g_present_result, r, __ATOMIC_RELEASE);
+}
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait) {
+    Present x = {sc, wait, idx};
+    if (g_rec <= 0) return present_run(&x);
+    *(Present*)rec_push(present_queued, sizeof x) = x;
+    publish();
+    return vk_rec_present_result();
+}
+VkResult vk_rec_present_result(void) {
+    return g_rec > 0 ? __atomic_exchange_n(&g_present_result, VK_SUCCESS, __ATOMIC_ACQ_REL) : VK_SUCCESS;
 }
 
 /* ------------------------------------------------------------ commands of scalar arguments */

@@ -711,7 +711,9 @@ int vk_swapchain_create(int srgb) {
             if (ms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = ms[i];
     free(ms);
 
-    u32 count = caps.minImageCount + 1;
+    /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring
+       (vk_rec_present) while the next frame acquires, which takes no wait, so with one image fewer it found none */
+    u32 count = caps.minImageCount + VK_FRAMES;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > VK_SC_MAX) count = VK_SC_MAX > caps.minImageCount ? VK_SC_MAX : caps.minImageCount;
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -727,6 +729,7 @@ int vk_swapchain_create(int srgb) {
         vk_rec_sync();
         vkDeviceWaitIdle(g_vk.dev);
     }
+    vk_rec_present_result(); /* the old swapchain's presents, all made (a retire drained the ring), say nothing of it */
     VkSwapchainCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                                    .surface = g_vk.surface,
                                    .minImageCount = count,

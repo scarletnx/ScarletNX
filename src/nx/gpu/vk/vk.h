@@ -207,6 +207,12 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);        /* until everything queued is recorded and submitted */
 void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
+   result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
+   or VK_SUCCESS: a swapchain out of date shows a frame later */
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait);
+/* takes the queued presents' result that wasn't VK_SUCCESS, if any (after a drain: a new swapchain drops the old's) */
+VkResult vk_rec_present_result(void);
 /* a new descriptor set of layout with those writes, for commands of the frame's command buffer only: allocated and
    written on the recording thread, a stand-in handle until then (vk_lock) */
 VkDescriptorSet vk_rec_new_set(VkDescriptorSetLayout layout, u32 n, const VkWriteDescriptorSet* w);
