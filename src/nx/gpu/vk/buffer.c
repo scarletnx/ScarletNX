@@ -16,7 +16,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 
-typedef struct Vb {
+typedef struct {
     u64 start, len, hash, shash;
     u32 epoch, strict_epoch, chk_epoch, schk, stable, used;
     u64 gw;    /* GPU-side write generation at the last check */
@@ -27,34 +27,124 @@ typedef struct Vb {
     VkBuffer buf;
     VmaAllocation mem;
     u64 off;
-    struct Vb* next;
-    struct Vb *own_prev, *own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim) */
+    u32 own_prev, own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim); a free entry's
+                               next free one in own_next */
 } Vb;
-/* buckets of the cache of guest ranges as buffers. Entries live twenty seconds after their last use, and draws make new
-   ranges all the time: at 4096 buckets the chain walk was most of buf_get's time in one game */
-#define VBH (1u << 16)
-static Vb* g_vbh[VBH];
+/* The cache of guest ranges as buffers: its entries in one array by index (0 is none), and an index of them by range,
+   open addressed. Entries live twenty seconds after their last use, and draws make new ranges all the time (constant
+   buffers streamed through a ring, vertices at new offsets): chained buckets of separately allocated entries grew
+   long, and walking them, a cache miss an entry, was a twentieth of the GPU thread in one game. A lookup reads one
+   slot of the index, rarely two */
+static Vb* g_vb;
+static u32 g_nvb, g_capvb, g_vbfree, g_vblive;
+typedef struct {
+    u64 start;
+    u32 len, idx; /* idx 0: an empty slot */
+} VbSlot;
+static VbSlot* g_vbi;
+static u32 g_vbimask; /* the index's size less one, a power of two; at most half its slots are used */
+static u64 g_vb_lookups, g_vb_probes;
+static int copy_stats_on(void);
+static u32 vb_home(u64 start, u32 len) {
+    /* every bit of the range, mixed by multiplying: constant buffers are 256-byte aligned and buffers often 4K */
+    return (u32)((((start ^ ((u64)len << 40)) * 0x9E3779B97F4A7C15ull) >> 32) & g_vbimask);
+}
+/* the slot holding the range, or the empty one where it would go */
+static u32 vb_slot(u64 start, u32 len) {
+    u32 i = vb_home(start, len);
+    if (copy_stats_on()) g_vb_lookups++;
+    while (g_vbi[i].idx && (g_vbi[i].start != start || g_vbi[i].len != len)) {
+        i = (i + 1) & g_vbimask;
+        if (copy_stats_on()) g_vb_probes++;
+    }
+    return i;
+}
+/* room in the index for one more range: 0 when none could be made */
+static int vb_index_room(void) {
+    u32 cap = g_vbi ? g_vbimask + 1 : 0, ncap = cap ? cap * 2 : 1u << 16;
+    VbSlot *old = g_vbi, *n;
+    if (cap && (g_vblive + 1) * 2 <= cap) return 1;
+    n = calloc(ncap, sizeof *n);
+    if (!n) return cap && g_vblive + 1 < cap; /* fuller than meant, but still a free slot */
+    g_vbi = n;
+    g_vbimask = ncap - 1;
+    for (u32 i = 0; i < cap; i++)
+        if (old[i].idx) g_vbi[vb_slot(old[i].start, old[i].len)] = old[i];
+    free(old);
+    return 1;
+}
+/* the range's slot emptied, the entries after it in its run moved back over it (no tombstones) */
+static void vb_index_remove(u64 start, u32 len) {
+    u32 i = vb_slot(start, len), j = i;
+    if (!g_vbi[i].idx) return;
+    for (;;) {
+        g_vbi[i].idx = 0;
+        for (;;) {
+            j = (j + 1) & g_vbimask;
+            if (!g_vbi[j].idx) return;
+            u32 h = vb_home(g_vbi[j].start, g_vbi[j].len);
+            /* j's entry can move to i when its home isn't in (i, j], cyclically */
+            if (i <= j ? (h <= i || h > j) : (h <= i && h > j)) break;
+        }
+        g_vbi[i] = g_vbi[j];
+        i = j;
+    }
+}
+/* a new entry for the range, indexed: its index, 0 out of memory */
+static u32 vb_new(u64 start, u32 len) {
+    u32 idx;
+    if (!vb_index_room()) return 0;
+    if (g_vbfree) {
+        idx = g_vbfree;
+        g_vbfree = g_vb[idx].own_next;
+    } else {
+        if (g_nvb + 1 >= g_capvb) {
+            u32 cap = g_capvb ? g_capvb * 2 : 4096;
+            Vb* n = realloc(g_vb, (size_t)cap * sizeof *n);
+            if (!n) return 0;
+            g_vb = n;
+            g_capvb = cap;
+            if (!g_nvb) g_nvb = 1; /* entry 0 is none */
+        }
+        idx = g_nvb++;
+    }
+    memset(&g_vb[idx], 0, sizeof g_vb[idx]);
+    g_vb[idx].start = start;
+    g_vb[idx].len = len;
+    g_vbi[vb_slot(start, len)] = (VbSlot){start, len, idx};
+    g_vblive++;
+    return idx;
+}
+static void vb_free(u32 idx) {
+    vb_index_remove(g_vb[idx].start, (u32)g_vb[idx].len);
+    g_vb[idx].len = 0; /* free: the sweep skips it */
+    g_vb[idx].own_next = g_vbfree;
+    g_vbfree = idx;
+    g_vblive--;
+}
 static struct {
-    Vb *head, *tail;
+    u32 head, tail;
     u32 n;
     u64 bytes;
 } g_own;
-static void own_link(Vb* e) {
-    e->own_next = NULL;
+static void own_link(u32 i) {
+    Vb* e = &g_vb[i];
+    e->own_next = 0;
     e->own_prev = g_own.tail;
     if (e->own_prev)
-        e->own_prev->own_next = e;
+        g_vb[e->own_prev].own_next = i;
     else
-        g_own.head = e;
-    g_own.tail = e;
+        g_own.head = i;
+    g_own.tail = i;
 }
-static void own_unlink(Vb* e) {
+static void own_unlink(u32 i) {
+    Vb* e = &g_vb[i];
     if (e->own_prev)
-        e->own_prev->own_next = e->own_next;
+        g_vb[e->own_prev].own_next = e->own_next;
     else
         g_own.head = e->own_next;
     if (e->own_next)
-        e->own_next->own_prev = e->own_prev;
+        g_vb[e->own_next].own_prev = e->own_prev;
     else
         g_own.tail = e->own_prev;
 }
@@ -1326,22 +1416,24 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
 }
 
 /* the entry's data where draws read it */
-static void use(Vb* e, VkBuffer* buf, u64* off) {
+static void use(u32 i, VkBuffer* buf, u64* off) {
+    Vb* e = &g_vb[i];
     if (e->used != g_vk_present) {
         e->used = g_vk_present;
         if (e->own) { /* to the recent end */
-            own_unlink(e);
-            own_link(e);
+            own_unlink(i);
+            own_link(i);
         }
     }
     if (copy_stats_on()) g_read_bound += e->len;
     *buf = e->buf;
     *off = e->off;
 }
-static void drop_own(Vb* e) {
+static void drop_own(u32 i) {
+    Vb* e = &g_vb[i];
     if (e->own) {
         vk_defer_buffer(e->buf, e->mem);
-        own_unlink(e);
+        own_unlink(i);
         g_own.n--;
         g_own.bytes -= e->len;
     }
@@ -1352,7 +1444,8 @@ static void drop_own(Vb* e) {
    memory for it is the BAR's window on most GPUs (256 MB, which VMA prefers for host writes), and thousands of own
    buffers there crowded out the staging rings: one game's rings, made again in the window as they grew after loading,
    took writes at a twentieth of their speed for minutes (18 to 25 fps against 43) */
-static int make_own(Vb* e, const u8* src) {
+static int make_own(u32 i, const u8* src) {
+    Vb* e = &g_vb[i];
     u64 len = e->len;
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = len,
@@ -1378,13 +1471,13 @@ static int make_own(Vb* e, const u8* src) {
     rec_CmdCopyBuffer(vk_cmd(), sb, b, 1, &r);
     copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT);
-    drop_own(e);
+    drop_own(i);
     e->own = 1;
     e->buf = b;
     e->mem = m;
     e->off = 0;
     e->used = g_vk_present;
-    own_link(e);
+    own_link(i);
     g_own.n++;
     g_own.bytes += len;
     return 1;
@@ -1392,22 +1485,15 @@ static int make_own(Vb* e, const u8* src) {
 
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
     int pending;
-    if (!len) return 0;
-    /* every bit of the range, mixed by multiplying: constant buffers are 256-byte aligned and buffers often 4K, which
-       a shift and xor of the address spread over a fraction of the buckets */
-    u32 k = (u32)((((gva ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 48) & (VBH - 1));
-    Vb* e;
-    for (Vb** pp = &g_vbh[k]; (e = *pp); pp = &e->next)
-        if (e->start == gva && e->len == len) {
-            if (pp != &g_vbh[k]) { /* to the front: a range used every draw is found first */
-                *pp = e->next;
-                e->next = g_vbh[k];
-                g_vbh[k] = e;
-            }
-            break;
-        }
+    u32 i = 0;
+    Vb* e = NULL;
+    if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
+    if (g_vbi) {
+        u32 sl = vb_slot(gva, (u32)len);
+        if ((i = g_vbi[sl].idx)) e = &g_vb[i];
+    }
     /* Pending results over the range, unless none was added since they were last checked for here (only the sweep in
-       vk_buf_frame frees entries, so e stays good meanwhile) */
+       vk_buf_frame frees entries, and only this function adds them, so e stays good meanwhile) */
     if (!e || e->cs_adds != vk_compute_adds() || e->gfx_adds != vk_buf_adds()) {
         pending = gfx_gpu_src(gva, len, buf, off, 0);
         if (pending == 1) return 1;
@@ -1425,7 +1511,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == g_vk_epoch && (!strict || e->strict_epoch == g_vk_epoch)) {
-            use(e, buf, off);
+            use(i, buf, off);
             return 1;
         }
         /* with write tracking, an own buffer is checked only when its memory was written */
@@ -1433,7 +1519,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
         if (w == 0) {
             e->epoch = g_vk_epoch;
             if (strict) e->strict_epoch = g_vk_epoch;
-            use(e, buf, off);
+            use(i, buf, off);
             return 1;
         }
         /* without it: own buffers that stayed the same for long are checked every few submits, big ones sampled in
@@ -1441,12 +1527,12 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
            once (gpu_mem_dirty_since above) */
         if (!strict && w < 0 && e->own && e->stable >= 16 && len >= (64u << 10) && g_vk_epoch - e->chk_epoch < 8) {
             e->epoch = g_vk_epoch;
-            use(e, buf, off);
+            use(i, buf, off);
             return 1;
         }
         if (!strict && w < 0 && e->own && e->stable >= 32 && len < (64u << 10) && g_vk_epoch - e->chk_epoch < 4) {
             e->epoch = g_vk_epoch;
-            use(e, buf, off);
+            use(i, buf, off);
             return 1;
         }
         if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 &&
@@ -1454,7 +1540,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
             if (g_vk_epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
                 if (g_vk_epoch - e->schk >= 4) e->schk = g_vk_epoch;
                 e->epoch = g_vk_epoch;
-                use(e, buf, off);
+                use(i, buf, off);
                 return 1;
             }
         }
@@ -1464,22 +1550,18 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
     if (!src) return 0;
     u64 h = vk_hash(src, len);
     if (!e) {
-        e = calloc(1, sizeof *e);
-        if (!e) return 0;
-        e->start = gva;
-        e->len = len;
+        if (!(i = vb_new(gva, (u32)len))) return 0;
+        e = &g_vb[i];
         e->hash = h ^ 1;
         e->cs_adds = vk_compute_adds(); /* checked for pending results above */
         e->gfx_adds = vk_buf_adds();
-        e->next = g_vbh[k];
-        g_vbh[k] = e;
     }
     if (e->hash == h && e->stable < 100000)
         e->stable++;
     else if (e->hash != h) {
         e->hash = h;
         e->stable = 0;
-        drop_own(e);
+        drop_own(i);
     }
     e->epoch = e->chk_epoch = g_vk_epoch;
     if (strict) e->strict_epoch = g_vk_epoch;
@@ -1489,7 +1571,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
         e->shash = vk_sample_hash(gva, len);
         e->schk = g_vk_epoch;
     }
-    if (!e->own && !(e->stable >= 2 && make_own(e, src))) {
+    if (!e->own && !(e->stable >= 2 && make_own(i, src))) {
         /* changing (or new) data: this frame's staging ring */
         e->buf = VK_NULL_HANDLE; /* a failed allocation must not leave the old snapshot reusable */
         u8* p = vk_stage(len, vk_stage_align(), &e->buf, &e->off);
@@ -1498,7 +1580,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
         if (copy_stats_on()) g_copy_stage += len;
         e->frame = vk_submit_number();
     }
-    use(e, buf, off);
+    use(i, buf, off);
     return 1;
 }
 
@@ -1508,11 +1590,11 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) { return buf_ge
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;
-    while (g_own.head && freed < want && (i32)(g_own.head->used - before) < 0) {
-        Vb* e = g_own.head;
-        freed += e->len;
-        drop_own(e); /* the entry stays: its range is copied into a buffer again when next read */
-        vk_defer_bytes(e->len);
+    while (g_own.head && freed < want && (i32)(g_vb[g_own.head].used - before) < 0) {
+        u32 i = g_own.head;
+        freed += g_vb[i].len;
+        drop_own(i); /* the entry stays: its range is copied into a buffer again when next read */
+        vk_defer_bytes(g_vb[i].len);
     }
     return freed;
 }
@@ -1540,8 +1622,11 @@ void vk_buf_frame(void) {
             (unsigned long long)g_wb_reason[WB_MAP], (unsigned long long)(g_wb_reason_ns[WB_MAP] / 1000000),
             (unsigned long long)g_wb_draw_miss[0], (unsigned long long)g_wb_draw_miss[2],
             (unsigned long long)g_wb_draw_miss[1], (unsigned long long)g_wb_draw_miss[3]);
-        LOG("vulkan: aliased storage draws=%llu pages=%llu\n", (unsigned long long)g_alias_draws,
-            (unsigned long long)g_alias_pages);
+        LOG("vulkan: aliased storage draws=%llu pages=%llu; buffer cache entries=%u, lookups=%llu probing %llu more "
+            "slots\n",
+            (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
+            (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
+        g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound = 0;
         g_wb_outputs = g_wb_bytes = g_wb_waits = g_wb_wait_ns = g_wb_reuses = 0;
         g_alias_draws = g_alias_pages = 0;
@@ -1549,19 +1634,18 @@ void vk_buf_frame(void) {
         memset(g_wb_reason_ns, 0, sizeof g_wb_reason_ns);
         memset(g_wb_draw_miss, 0, sizeof g_wb_draw_miss);
     }
-    /* a sixteenth of the buckets every fourth present: an entry goes at most 64 presents after its time */
+    /* a sixteenth of the entries every fourth present: an entry goes at most 64 presents after its time. One with a
+       buffer of its own goes after twenty seconds unused. One without holds only what its next check compares with:
+       ranges read once (constants streamed through a ring, vertices at new offsets) made most of the entries, and the
+       lookups of the ones in use missed the cache over them, so those go after two seconds */
     static u32 sweep;
-    u32 before = vk_present_before(20000000000ull, 120);
-    if (!before) return;
-    for (u32 k = (sweep++ & 15) * (VBH / 16), kend = k + VBH / 16; k < kend; k++)
-        for (Vb** pp = &g_vbh[k]; *pp;) {
-            Vb* e = *pp;
-            if ((i32)(e->used - before) >= 0) {
-                pp = &e->next;
-                continue;
-            }
-            *pp = e->next;
-            drop_own(e);
-            free(e);
-        }
+    u32 before = vk_present_before(20000000000ull, 120), before_copy = vk_present_before(2000000000ull, 12);
+    if ((!before && !before_copy) || !g_nvb) return;
+    u32 chunk = (g_nvb + 15) / 16, from = (sweep++ & 15) * chunk;
+    for (u32 i = from ? from : 1; i < from + chunk && i < g_nvb; i++) {
+        u32 by = g_vb[i].own ? before : before_copy;
+        if (!g_vb[i].len || !by || (i32)(g_vb[i].used - by) >= 0) continue; /* free, or used since */
+        drop_own(i);
+        vb_free(i);
+    }
 }
