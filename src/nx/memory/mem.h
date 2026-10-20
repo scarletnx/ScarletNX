@@ -90,6 +90,9 @@ int mem_heap_set(u64 size, u64 budget);
 int mem_map_code(MemCodeMap* m);
 int mem_unmap_code(const MemCodeMap* m);
 void mem_query(u64 addr, MemBlock* out);
+/* the bytes of [addr, addr + size) still mapped, up to the first free or inaccessible page: what a GPU mapping older
+   than the guest's frees may read (gpu.c's copy_runs). All of them before mem_init, with no block list */
+u64 mem_mapped_run(u64 addr, u64 size);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
 int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);
 /* Called with no memory lock held after a mapping change that can make compiled guest code stale: an unmap, a state

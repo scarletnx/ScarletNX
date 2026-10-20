@@ -522,6 +522,27 @@ void mem_query(u64 addr, MemBlock* out) {
     *out = g_blk[blk_index_nl(addr)];
     mem_unlock();
 }
+u64 mem_mapped_run(u64 addr, u64 size) {
+    u64 end, lim = addr, run;
+    u32 i;
+    int mine = !t_mem_held; /* a crash report's queries come from the thread that holds the lock */
+    if (!size) return 0;
+    if (mine) mem_lock();
+    if (!g_nblk)
+        run = size;
+    else if (addr >= AS_END)
+        run = 0;
+    else {
+        end = size < AS_END - addr ? addr + size : AS_END;
+        for (i = blk_index_nl(addr); i < g_nblk && lim < end; i++) {
+            if (g_blk[i].state == MS_FREE || g_blk[i].state == MS_INACCESSIBLE) break;
+            lim = blk_end(&g_blk[i]);
+        }
+        run = (lim < end ? lim : end) - addr;
+    }
+    if (mine) mem_unlock();
+    return run;
+}
 /* the state and permission of mapped memory (the loader's sections, ldr's code views, the memory SVCs) */
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm) {
     int r = 0;
