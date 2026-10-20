@@ -368,14 +368,16 @@ static void test_host_pages(void) {
     CHECK(mem_unmap(b, 0x1000) == 0);
 }
 /* the runs a GPU read keeps to (mem_mapped_run): mapped pages up to the first free one across blocks of other states,
-   none from a free one, none at the address space's end */
+   none from a free one, none at the address space's end; a run the thread kept is dropped when a page of it goes */
 static void test_mapped_runs(void) {
     u64 a = ALIAS_BASE + 0x400000;
     base_process();
     CHECK(mem_map(a, 0x2000, MS_SHARED, PERM_RW) == 0 && mem_map(a + 0x2000, 0x1000, MS_STACK, PERM_RW) == 0);
     CHECK(mem_mapped_run(a, 0x3000) == 0x3000 && mem_mapped_run(a + 0x10, 0x100) == 0x100);
     CHECK(mem_mapped_run(a + 0x2000, 0x2000) == 0x1000 && mem_mapped_run(a, 0) == 0);
+    CHECK(mem_mapped_run(a, 0x3000) == 0x3000); /* the run this thread keeps, until a page of it goes */
     CHECK(mem_unmap(a + 0x1000, 0x1000) == 0);
+    CHECK(mem_mapped_run(a + 0x1000, 0x10) == 0);
     CHECK(mem_mapped_run(a, 0x3000) == 0x1000 && mem_mapped_run(a + 0x1000, 0x2000) == 0);
     CHECK(mem_mapped_run(a + 0x2000, 0x1000) == 0x1000);
     CHECK(mem_mapped_run(AS_END, 0x1000) == 0 && mem_mapped_run(AS_END - 0x1000, ~0ull) <= 0x1000);

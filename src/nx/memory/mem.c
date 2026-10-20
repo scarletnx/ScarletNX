@@ -73,6 +73,12 @@ static void mem_unlock(void) {
     pm_unlock(&g_mem_lk);
 }
 
+/* bumped under g_mem_lk before guest pages lose their host memory or turn free or inaccessible, and by mem_init:
+   until it moves, a run mem_mapped_run found mapped stays mapped, so each thread keeps its last one */
+static u64 g_unmap_gen = 1;
+static __thread u64 t_run_lo, t_run_hi, t_run_gen;
+static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
+
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_code_invalidate = fn; }
 /* no memory lock held: the hook takes the JIT's */
@@ -150,6 +156,7 @@ typedef struct {
 } Change;
 static void blk_change_nl(u64 a, u64 size, const Change* c) {
     u32 i = blk_split_nl(a), j = blk_split_nl(a + size), k;
+    if (c->set_state && (c->state == MS_FREE || c->state == MS_INACCESSIBLE)) runs_stale_nl();
     for (k = i; k < j; k++) {
         MemBlock* b = &g_blk[k];
         if (c->set_pool) b->pool = c->pool ? c->pool + (b->addr - a) : 0;
@@ -193,6 +200,7 @@ static int commit_nl(u64 a, u64 size) {
 static void decommit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
     int i, n = 0;
+    runs_stale_nl();
     own_drop(a, size);
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
         plat_vm_decommit(GP(a), size);
@@ -348,6 +356,7 @@ static void pool_set_nl(u64 a, u64 size, u64 pool) {
 static void unmap_nl(u64 a, u64 size) {
     u64 end = a + size;
     u32 i;
+    runs_stale_nl(); /* before the pages go, not with the state after them */
     own_drop(a, size); /* what the GPU held there goes with the mapping */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
@@ -367,6 +376,7 @@ static void unmap_nl(u64 a, u64 size) {
    without off. Also what a failed MAP_FIXED needs, as it may have taken the old pages with it; a host that can't do
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
+    runs_stale_nl();
     if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
         fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
 }
@@ -469,6 +479,7 @@ void mem_init(void) {
     memset(&g_blk[0], 0, sizeof *g_blk);
     g_blk[0].size = AS_END;
     g_nblk = 1;
+    runs_stale_nl();
     mem_unlock();
     /* a view shares pages only at the same place in a host page as its source, which a game picking addresses in
        4 KiB steps leaves to chance with larger pages: they copy, as hosts without a pool do */
@@ -523,22 +534,33 @@ void mem_query(u64 addr, MemBlock* out) {
     mem_unlock();
 }
 u64 mem_mapped_run(u64 addr, u64 size) {
-    u64 end, lim = addr, run;
+    u64 end, lo, lim = addr, run, gen;
     u32 i;
     int mine = !t_mem_held; /* a crash report's queries come from the thread that holds the lock */
     if (!size) return 0;
+    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_run_gen && addr >= t_run_lo && addr < t_run_hi &&
+        size <= t_run_hi - addr)
+        return size;
     if (mine) mem_lock();
+    gen = __atomic_load_n(&g_unmap_gen, __ATOMIC_RELAXED);
     if (!g_nblk)
         run = size;
     else if (addr >= AS_END)
         run = 0;
     else {
         end = size < AS_END - addr ? addr + size : AS_END;
-        for (i = blk_index_nl(addr); i < g_nblk && lim < end; i++) {
+        i = blk_index_nl(addr);
+        lo = g_blk[i].addr;
+        for (; i < g_nblk && lim < end; i++) {
             if (g_blk[i].state == MS_FREE || g_blk[i].state == MS_INACCESSIBLE) break;
             lim = blk_end(&g_blk[i]);
         }
         run = (lim < end ? lim : end) - addr;
+        if (lim > addr) {
+            t_run_lo = lo;
+            t_run_hi = lim;
+            t_run_gen = gen;
+        }
     }
     if (mine) mem_unlock();
     return run;
