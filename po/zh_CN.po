@@ -1,0 +1,1945 @@
+# Simplified Chinese for the ScarletNX menu: po/scarletnx.pot translated.
+# SPDX-License-Identifier: GPL-3.0-or-later
+msgid ""
+msgstr ""
+"Project-Id-Version: ScarletNX\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"PO-Revision-Date: 2026-10-20 12:00-0300\n"
+"Last-Translator: AO55 <AO55@reden-emu.dev>\n"
+"Language-Team: ScarletNX <https://github.com/scarletnx/ScarletNX>\n"
+"X-Language-Name: 简体中文\n"
+
+
+#: src/gui/android.c
+msgid "No Android activity to ask."
+msgstr "没有可调用的 Android 活动。"
+
+#: src/gui/android.c
+#, c-format
+msgid "MainActivity.%s did not run."
+msgstr "MainActivity.%s 未运行。"
+
+#: src/gui/apple.m
+msgid "The document picker did not open."
+msgstr "文档选择器未能打开。"
+
+#: src/gui/apple.m
+msgid "No window to show the picker over."
+msgstr "没有可显示选择器的窗口。"
+
+#: src/gui/apple.m
+#, c-format
+msgid "The log could not be shown: it is at %s"
+msgstr "无法显示日志：它位于 %s"
+
+#: src/gui/browser.c
+#, c-format
+msgid "Cannot open %s: %s"
+msgstr "无法打开 %s：%s"
+
+#: src/gui/browser.c
+#, c-format
+msgid "Not enough memory to list %s."
+msgstr "内存不足，无法列出 %s。"
+
+#: src/gui/clean.c
+#, c-format
+msgid "Not read: %s"
+msgstr "未读取：%s"
+
+#: src/gui/clean.c
+#, c-format
+msgid "Not written without [Deprecated]: %s"
+msgstr "去掉 [Deprecated] 后未能写入：%s"
+
+#: src/gui/clean.c
+msgid "[Deprecated] taken out"
+msgstr "已去掉 [Deprecated]"
+
+#: src/gui/editor.c
+msgid "Select to pick it, or type it as #RRGGBB"
+msgstr "选中以选取，或输入为 #RRGGBB"
+
+#: src/gui/editor.c
+msgid "Select to type it: its text"
+msgstr "选中以输入：其文字"
+
+#: src/gui/editor.c
+msgid "Select to type it: #RRGGBB"
+msgstr "选中以输入：#RRGGBB"
+
+#: src/gui/editor.c
+msgid "A folder name: letters, digits, spaces, - _ and ., not starting with ."
+msgstr "文件夹名：字母、数字、空格、- _ 和 .，不以 . 开头"
+
+#: src/gui/editor.c
+#, c-format
+msgid "At most %u bytes"
+msgstr "最多 %u 字节"
+
+#: src/gui/editor.c
+msgid "A colour: #RRGGBB, as #1A2B3C"
+msgstr "颜色：#RRGGBB，如 #1A2B3C"
+
+#: src/gui/editor.c
+msgid "A whole number, 0 to 10000"
+msgstr "整数，0 到 10000"
+
+#: src/gui/editor.c
+msgid "Not saved: ESC again leaves without it, Save keeps it"
+msgstr "未保存：再按 ESC 不保存离开，「保存」则保留"
+
+#: src/gui/editor.c
+msgid "Folder"
+msgstr "文件夹"
+
+#: src/gui/editor.c
+msgid "Save"
+msgstr "保存"
+
+#: src/gui/editor.c src/gui/main.c
+#, c-format
+msgid "Not saved: %s could not be written"
+msgstr "未保存：无法写入 %s"
+
+#: src/gui/editor.c
+msgid "the themes folder"
+msgstr "主题文件夹"
+
+#: src/gui/editor.c
+#, c-format
+msgid "Saved in %s"
+msgstr "已保存到 %s"
+
+#: src/gui/main.c
+msgid "Load Switch NSP/XCI/NRO"
+msgstr "载入 Switch NSP/XCI/NRO"
+
+#: src/gui/main.c
+msgid "Load Linux ARM ELF"
+msgstr "载入 Linux ARM ELF"
+
+#: src/gui/main.c
+msgid "Load 3DS CIA"
+msgstr "载入 3DS CIA"
+
+#: src/gui/main.c
+msgid "Setup device keys"
+msgstr "设置设备密钥"
+
+#: src/gui/main.c
+msgid "Settings"
+msgstr "设置"
+
+#: src/gui/main.c
+msgid "Share log"
+msgstr "分享日志"
+
+#: src/gui/main.c
+msgid "Open data folder"
+msgstr "打开数据文件夹"
+
+#: src/gui/main.c
+msgid "Exit"
+msgstr "退出"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: select. Back: go back."
+msgstr "轻触: 选择. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: open. Swipe across: turn the page. Recompile: tap it. Back: go back."
+msgstr "轻触: 打开. 横向滑动: 翻页. 重新编译: 轻触它. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Back: go back."
+msgstr "返回: 后退."
+
+#: src/gui/main.c
+msgid "Pick prod.keys"
+msgstr "选取 prod.keys"
+
+#: src/gui/main.c
+msgid "tap the box to open the file picker"
+msgstr "轻触此框打开文件选择器"
+
+#: src/gui/main.c
+msgid "Pick a file"
+msgstr "选取文件"
+
+#: src/gui/main.c
+msgid "Tap to return to menu"
+msgstr "轻触返回菜单"
+
+#: src/gui/main.c
+msgid "Tap here to abort and return to menu"
+msgstr "轻触此处中止并返回菜单"
+
+#: src/gui/main.c
+msgid "No games in games/: put a game's .nro, .xci or .nsp there."
+msgstr "games/ 中没有游戏：请把游戏的 .nro、.xci 或 .nsp 放进去。"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap a key to change, type or pick it. Back: go back."
+msgstr "轻触一项以更改、输入或选取. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Drag a bar, or tap #RRGGBB to type it. Tap outside: keep. Back: put back."
+msgstr "拖动滑条，或轻触 #RRGGBB 输入. 轻触外面: 保留. 返回: 还原."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap a group to open it. Back: go back."
+msgstr "轻触一个分组以打开. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap a row to change or open it. Back: go back."
+msgstr "轻触一行以更改或打开. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Add a folder: tap it. Tap a folder twice to take it off. Back: go back."
+msgstr "添加文件夹: 轻触它. 轻触文件夹两次将其移除. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: pick where games go. Add a folder: tap it. ~Tap a folder twice to take it off. Back: go back."
+msgstr "轻触: 选择游戏存放处. 添加文件夹: 轻触它. ~轻触文件夹两次将其移除. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap a folder to pick another. Back: go back."
+msgstr "轻触文件夹以另选一个. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap a control; tap it again for a press. Back: go back."
+msgstr "轻触一个控件；再轻触一次即为按下. 返回: 后退."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Arrows/mouse: move. Space/Enter/click: select."
+msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: select. Enter/Space: open. R: recompile. Left/Right/PgUp/PgDown: page."
+msgstr "上/下: 选择. Enter/空格: 打开. R: 重新编译. 左/右/PgUp/PgDown: 翻页."
+
+#: src/gui/main.c
+msgid "click the box (or Enter) to open the file picker"
+msgstr "点击此框（或按 Enter）打开文件选择器"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Ctrl+V: paste a path, or drop the file on the window. ESC: back."
+msgstr "Ctrl+V: 粘贴路径，或把文件拖到窗口上. ESC: 返回."
+
+#: src/gui/main.c
+msgid "Pick or drop prod.keys"
+msgstr "选取或拖入 prod.keys"
+
+#: src/gui/main.c
+msgid "Pick or drop a file"
+msgstr "选取或拖入文件"
+
+#: src/gui/main.c
+msgid "Press [ESC] to return to menu"
+msgstr "按 [ESC] 返回菜单"
+
+#: src/gui/main.c
+msgid "Press [ESC] to abort and return to menu"
+msgstr "按 [ESC] 中止并返回菜单"
+
+#: src/gui/main.c
+msgid "No games in games/ or the folders of Settings > App."
+msgstr "games/ 和「设置 > 应用」的文件夹中都没有游戏。"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: key. Left/Right: change. Enter: edit. Ctrl+S: save. ESC: back."
+msgstr "上/下: 选项. 左/右: 更改. Enter: 编辑. Ctrl+S: 保存. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Left/Right: 1. PgUp/PgDn: 16. Enter: keep. ESC: put back."
+msgstr "上/下: 行. 左/右: 1. PgUp/PgDn: 16. Enter: 保留. ESC: 还原."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: setting. Left/Right: change. Enter: type. Del: default. ESC: back."
+msgstr "上/下: 设置项. 左/右: 更改. Enter: 输入. Del: 默认. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: group. Enter: open. ESC: back."
+msgstr "上/下: 分组. Enter: 打开. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Left/Right: change. Enter: change or open. ESC: back."
+msgstr "上/下: 行. 左/右: 更改. Enter: 更改或打开. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Add a folder: pick, drop or paste one. Del: take one off. ESC: back."
+msgstr "添加文件夹: 选取、拖入或粘贴一个. Del: 移除一个. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Enter: pick where games go. Add a folder: pick, drop or paste one. ~Del: take one off. ESC: back."
+msgstr "Enter: 选择游戏存放处. 添加文件夹: 选取、拖入或粘贴一个. ~Del: 移除一个. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Enter: pick where games go. Del: back to the default. Add a folder: pick, drop or paste one. ESC: back."
+msgstr "Enter: 选择游戏存放处. Del: 恢复默认. 添加文件夹: 选取、拖入或粘贴一个. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: folder. Enter: pick another. Del: the default. ESC: back."
+msgstr "上/下: 文件夹. Enter: 另选一个. Del: 默认. ESC: 返回."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Arrows/pad: move, change. Enter/A: select. Del: the .ini's. ESC: back."
+msgstr "方向键/手柄: 移动、更改. Enter/A: 选择. Del: 用 .ini 的. ESC: 返回."
+
+#: src/gui/main.c
+#, c-format
+msgid "Disk: %s, %s free"
+msgstr "磁盘：%s，可用 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Disk: counting, %s free"
+msgstr "磁盘：统计中，可用 %s"
+
+#: src/gui/main.c
+msgid "CWD:"
+msgstr "工作目录:"
+
+#: src/gui/main.c
+msgid "(unavailable)"
+msgstr "（不可用）"
+
+#: src/gui/main.c
+msgid "Data"
+msgstr "数据"
+
+#: src/gui/main.c
+msgid "Games"
+msgstr "游戏"
+
+#: src/gui/main.c
+msgid "Extractions"
+msgstr "提取"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept for the next start: %s could not be written"
+msgstr "下次启动时不保留：无法写入 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not used from %s: %s"
+msgstr "%s 中未使用：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Recent games not kept: %s could not be written."
+msgstr "最近的游戏未保存：无法写入 %s。"
+
+#: src/gui/main.c
+msgid "...show more"
+msgstr "...显示更多"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tab: screen."
+msgstr "Tab: 切换画面."
+
+#: src/gui/main.c
+msgid "Recent games"
+msgstr "最近的游戏"
+
+#: src/gui/main.c
+msgid "...FAILED"
+msgstr "...失败"
+
+#: src/gui/main.c
+msgid "...OK"
+msgstr "...成功"
+
+#: src/gui/main.c
+msgid "Aborting process tree..."
+msgstr "正在中止进程树..."
+
+#: src/gui/main.c
+msgid "List the games in its subfolders too?"
+msgstr "也列出其子文件夹中的游戏吗？"
+
+#: src/gui/main.c
+msgid "Exit ScarletNX?"
+msgstr "退出 ScarletNX？"
+
+#: src/gui/main.c
+msgid "Outside the app, Android checks every file access: games may run slower."
+msgstr "在应用之外，Android 会检查每次文件访问：游戏可能运行得更慢。"
+
+#: src/gui/main.c
+msgid "Abort the recompile? Its work is lost."
+msgstr "中止重新编译？已完成的工作将丢失。"
+
+#: src/gui/main.c
+msgid "Abort the run?"
+msgstr "中止运行？"
+
+#: src/gui/main.c
+msgid "Left by older versions"
+msgstr "旧版本留下的文件"
+
+#: src/gui/main.c
+msgid "While the app is in testing, Android's Settings > Apps > ScarletNX > Storage > Clear storage takes the menu's files above, with every game, save and key in the app"
+msgstr "应用测试期间，Android 的「设置 > 应用 > ScarletNX > 存储 > 清除存储」会删除上面这些菜单文件，以及应用中的所有游戏、存档和密钥"
+
+#: src/gui/main.c
+msgid "counting"
+msgstr "统计中"
+
+#: src/gui/main.c
+#, c-format
+msgid "Clean old settings: %d done, %d not"
+msgstr "清理旧设置：%d 项完成，%d 项未完成"
+
+#: src/gui/main.c
+#, c-format
+msgid "Clean old settings: %d done"
+msgstr "清理旧设置：%d 项完成"
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more, which Share log lists"
+msgstr "还有 %d 项，「分享日志」中会列出"
+
+#: src/gui/main.c
+msgid "OK"
+msgstr "确定"
+
+#: src/gui/main.c
+msgid "tap again"
+msgstr "再轻触一次"
+
+#: src/gui/main.c
+msgid "press again"
+msgstr "再按一次"
+
+#: src/gui/main.c
+msgid "Keep going"
+msgstr "继续"
+
+#: src/gui/main.c
+msgid "Abort"
+msgstr "中止"
+
+#: src/gui/main.c
+msgid "Stay"
+msgstr "留下"
+
+#: src/gui/main.c
+msgid "Only this folder"
+msgstr "仅此文件夹"
+
+#: src/gui/main.c
+msgid "With subfolders"
+msgstr "包括子文件夹"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Back"
+msgstr "返回"
+
+#: src/gui/main.c
+msgid "Use it"
+msgstr "使用"
+
+#: src/gui/main.c
+msgid "Run anyway"
+msgstr "仍然运行"
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Arrows/mouse: move. Space/Enter/click: select. ESC: exit."
+msgstr "方向键/鼠标: 移动. 空格/Enter/点击: 选择. ESC: 退出."
+
+#: src/gui/main.c
+#, c-format
+msgid "No user shown: %s"
+msgstr "未显示用户：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s's picture could not be drawn: Wimsy shows"
+msgstr "无法绘制 %s 的头像：改为显示 Wimsy"
+
+#: src/gui/main.c
+msgid "Who plays the games"
+msgstr "谁在玩"
+
+#: src/gui/main.c
+msgid "No user picked: the Settings have no user"
+msgstr "未选择用户：「设置」中没有用户"
+
+#: src/gui/main.c
+#, c-format
+msgid "THEME EDITOR  /  %s"
+msgstr "主题编辑器  /  %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "SETTINGS  /  %s  /  PLAYER %d  /  %s"
+msgstr "设置  /  %s  /  玩家 %d  /  %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "SETTINGS  /  %s  /  %s"
+msgstr "设置  /  %s  /  %s"
+
+#: src/gui/main.c
+msgid "SETTINGS"
+msgstr "设置"
+
+#: src/gui/main.c
+msgid "Menu"
+msgstr "菜单"
+
+#: src/gui/main.c
+msgid "Status"
+msgstr "状态"
+
+#: src/gui/main.c
+msgid "Recompiles a game's .nsp, .xci or .nro, then runs it"
+msgstr "重新编译游戏的 .nsp、.xci 或 .nro，然后运行它"
+
+#: src/gui/main.c
+msgid "Runs an ARM64 Linux program on the CPU"
+msgstr "在 CPU 上运行 ARM64 Linux 程序"
+
+#: src/gui/main.c
+msgid "Opens a 3DS .cia"
+msgstr "打开 3DS 的 .cia"
+
+#: src/gui/main.c
+msgid "Installs prod.keys, which games are extracted with"
+msgstr "安装用于提取游戏的 prod.keys"
+
+#: src/gui/main.c
+msgid "Closes ScarletNX"
+msgstr "关闭 ScarletNX"
+
+#: src/gui/main.c
+msgid "Last output (no scrollback):"
+msgstr "上次输出（不可回滚）："
+
+#: src/gui/main.c
+#, c-format
+msgid "In use: %s"
+msgstr "使用中：%s"
+
+#: src/gui/main.c
+msgid "none"
+msgstr "无"
+
+#: src/gui/main.c
+msgid "Pick a folder of games, listed after games/"
+msgstr "选取一个游戏文件夹，列在 games/ 之后"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Add a folder"
+msgstr "添加文件夹"
+
+#: src/gui/main.c
+msgid "ready to run"
+msgstr "可以运行"
+
+#: src/gui/main.c
+msgid "prepared when it runs"
+msgstr "运行时准备"
+
+#: src/gui/main.c
+msgid "The recent games not shown"
+msgstr "未显示的最近游戏"
+
+#: src/gui/main.c
+msgid "3DS CIA, opened with scarletnx-3ds"
+msgstr "3DS CIA，用 scarletnx-3ds 打开"
+
+#: src/gui/main.c
+msgid "A dump, prepared when it runs"
+msgstr "转储，运行时准备"
+
+#: src/gui/main.c
+msgid "Ready to run"
+msgstr "可以运行"
+
+#: src/gui/main.c
+#, c-format
+msgid "Page %zu/%zu, %zu game(s)"
+msgstr "第 %zu/%zu 页，%zu 个游戏"
+
+#: src/gui/main.c
+#, c-format
+msgid "Installs to: %s"
+msgstr "安装到：%s"
+
+#: src/gui/main.c
+msgid "Home directory unavailable."
+msgstr "主目录不可用。"
+
+#: src/gui/main.c
+msgid "Installed"
+msgstr "已安装"
+
+#: src/gui/main.c
+msgid "Not installed"
+msgstr "未安装"
+
+#: src/gui/main.c
+#, c-format
+msgid "Back to the menu in %d s"
+msgstr "%d 秒后返回菜单"
+
+#: src/gui/main.c
+#, c-format
+msgid "Back to the menu in %d s, or pick another file"
+msgstr "%d 秒后返回菜单，或选取另一个文件"
+
+#: src/gui/main.c
+msgid "Keys already setup. This will overwrite the previous ones"
+msgstr "密钥已设置。这将覆盖之前的密钥"
+
+#: src/gui/main.c
+#, c-format
+msgid "Keys in use: %s. Keys dropped here are read before them"
+msgstr "使用中的密钥：%s。拖到这里的密钥会先于它们读取"
+
+#: src/gui/main.c
+msgid "Back [ESC]"
+msgstr "返回 [ESC]"
+
+#: src/gui/main.c
+msgid "Output"
+msgstr "输出"
+
+#: src/gui/main.c
+msgid "Theme"
+msgstr "主题"
+
+#: src/gui/main.c
+msgid "Built-in themes, then each themes/<name>/theme.ini"
+msgstr "内置主题，然后是每个 themes/<名称>/theme.ini"
+
+#: src/gui/main.c
+msgid "Text size"
+msgstr "文字大小"
+
+#: src/gui/main.c
+msgid "Bigger letters scroll the menu. Auto fits the screen"
+msgstr "字越大，菜单越要滚动。「自动」则适应屏幕"
+
+#: src/gui/main.c
+msgid "Language"
+msgstr "语言"
+
+#: src/gui/main.c
+msgid "The menu's words. Auto: the system's language, English when the menu has none of its"
+msgstr "菜单的文字。自动：系统的语言，菜单没有时用英语"
+
+#: src/gui/main.c
+msgid "Theme editor"
+msgstr "主题编辑器"
+
+#: src/gui/main.c
+msgid "This theme's keys with a preview, saved as themes/<name>/theme.ini"
+msgstr "此主题的各项及预览，保存为 themes/<名称>/theme.ini"
+
+#: src/gui/main.c
+msgid "Library"
+msgstr "游戏库"
+
+#: src/gui/main.c
+msgid "The folders Games lists, games/ first"
+msgstr "「游戏」页列出的文件夹，games/ 在最前"
+
+#: src/gui/main.c
+msgid "Folders"
+msgstr "文件夹"
+
+#: src/gui/main.c
+msgid "Where the data, the games and the extractions are"
+msgstr "数据、游戏和提取文件所在的位置"
+
+#: src/gui/main.c
+msgid "Clean old settings"
+msgstr "清理旧设置"
+
+#: src/gui/main.c
+msgid "The settings the runtime and the launcher no longer read: Enter twice"
+msgstr "运行时和启动器不再读取的设置：按两次 Enter"
+
+#: src/gui/main.c
+msgid "Auto"
+msgstr "自动"
+
+#: src/gui/main.c
+#, c-format
+msgid "Auto: %s"
+msgstr "自动：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "games/ and %d more"
+msgstr "games/ 及另外 %d 个"
+
+#: src/gui/main.c
+#, c-format
+msgid "%d picked"
+msgstr "已选 %d 个"
+
+#: src/gui/main.c
+msgid "Defaults"
+msgstr "默认"
+
+#: src/gui/main.c
+msgid "Where recompiled games go: tap to pick another. It stays on the list"
+msgstr "重新编译的游戏存放处：轻触以另选一个。它仍留在列表中"
+
+#: src/gui/main.c
+msgid "Where recompiled games go: tap to pick another. Folders puts back the default"
+msgstr "重新编译的游戏存放处：轻触以另选一个。「文件夹」中可恢复默认"
+
+#: src/gui/main.c
+msgid "Where recompiled games go: Enter picks another. It stays on the list"
+msgstr "重新编译的游戏存放处：Enter 另选一个。它仍留在列表中"
+
+#: src/gui/main.c
+msgid "Where recompiled games go: Enter picks another, Del twice puts back the default"
+msgstr "重新编译的游戏存放处：Enter 另选一个，按两次 Del 恢复默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not a folder: %s"
+msgstr "不是文件夹：%s"
+
+#: src/gui/main.c
+msgid "(none)"
+msgstr "（无）"
+
+#: src/gui/main.c
+#, c-format
+msgid "Already listed: %s"
+msgstr "已在列表中：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "At most %d folders"
+msgstr "最多 %d 个文件夹"
+
+#: src/gui/main.c
+msgid "Added, with its subfolders"
+msgstr "已添加，包括子文件夹"
+
+#: src/gui/main.c
+msgid "Added"
+msgstr "已添加"
+
+#: src/gui/main.c
+#, c-format
+msgid "Library: %s"
+msgstr "游戏库：%s"
+
+#: src/gui/main.c
+msgid "Taken off the list; the folder stays"
+msgstr "已从列表移除；文件夹本身保留"
+
+#: src/gui/main.c
+msgid "Not added"
+msgstr "未添加"
+
+#: src/gui/main.c
+msgid "App"
+msgstr "应用"
+
+#: src/gui/main.c
+msgid "The theme, the menu's letters, the theme editor and the folders"
+msgstr "主题、菜单文字、主题编辑器和文件夹"
+
+#: src/gui/main.c
+msgid "Reset all to the defaults"
+msgstr "全部恢复默认"
+
+#: src/gui/main.c
+msgid "Del, or Enter twice: take it off the list; the folder stays"
+msgstr "Del，或按两次 Enter：从列表移除；文件夹本身保留"
+
+#: src/gui/main.c
+msgid "not found"
+msgstr "未找到"
+
+#: src/gui/main.c
+msgid "+ subfolders"
+msgstr "+ 子文件夹"
+
+#: src/gui/main.c
+msgid "is not there"
+msgstr "不存在"
+
+#: src/gui/main.c
+msgid "is not a folder"
+msgstr "不是文件夹"
+
+#: src/gui/main.c
+msgid "cannot be written"
+msgstr "无法写入"
+
+#: src/gui/main.c
+msgid "is on a disk that runs no programs (noexec)"
+msgstr "位于不能运行程序的磁盘上（noexec）"
+
+#: src/gui/main.c
+msgid "games/, themes/ and prod.keys"
+msgstr "games/、themes/ 和 prod.keys"
+
+#: src/gui/main.c
+msgid "The recompiled games"
+msgstr "重新编译后的游戏"
+
+#: src/gui/main.c
+msgid "Each dump's extraction"
+msgstr "每个转储的提取文件"
+
+#: src/gui/main.c
+msgid "Tap: pick another. The last row: all back to the defaults"
+msgstr "轻触：另选一个。最后一行：全部恢复默认"
+
+#: src/gui/main.c
+msgid "Enter: pick another. Del: the default"
+msgstr "Enter：另选一个。Del：默认"
+
+#: src/gui/main.c
+msgid "outside the app"
+msgstr "在应用之外"
+
+#: src/gui/main.c
+msgid "picked"
+msgstr "已选"
+
+#: src/gui/main.c
+msgid "default"
+msgstr "默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s free. %s"
+msgstr "%s，可用 %s。%s"
+
+#: src/gui/main.c
+msgid "All back to the defaults"
+msgstr "全部恢复默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "Folders: %s"
+msgstr "文件夹：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Used, not kept for the next start: %s could not be written"
+msgstr "已使用，但下次启动不保留：无法写入 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. The folder before keeps what it has"
+msgstr "%s：%s。之前的文件夹保留其内容"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s, the default"
+msgstr "%s：%s，默认"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not changed: %s %s"
+msgstr "未更改：%s %s"
+
+#: src/gui/main.c
+msgid "Not changed"
+msgstr "未更改"
+
+#: src/gui/main.c
+msgid "They are the defaults"
+msgstr "已是默认"
+
+#: src/gui/main.c
+msgid "All back to the defaults. The folders before keep what they have"
+msgstr "全部恢复默认。之前的文件夹保留其内容"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s folder %s %s. Settings > App > Folders picks another."
+msgstr "%s文件夹 %s %s。可在「设置 > 应用 > 文件夹」中另选。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Needs about %s, %s free."
+msgstr "约需 %s，可用 %s。"
+
+#: src/gui/main.c
+#, c-format
+msgid "The folder picker could not open: %s"
+msgstr "文件夹选择器无法打开：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Library: the folder picker could not open: %s"
+msgstr "游戏库：文件夹选择器无法打开：%s"
+
+#: src/gui/main.c
+msgid "Enter again takes it off the list"
+msgstr "再按 Enter 将其从列表移除"
+
+#: src/gui/main.c
+#, c-format
+msgid "Del again: Games goes back to the default, %s. The folder keeps what it has"
+msgstr "再按 Del：「游戏」恢复为默认的 %s。该文件夹保留其内容"
+
+#: src/gui/main.c src/gui/settings.c
+msgid "All"
+msgstr "全部"
+
+#: src/gui/main.c
+msgid "Each player's own, as Eden's tabs: Left/Right go round All and players 1 to 8"
+msgstr "每位玩家各自的设置，同 Eden 的标签页：左/右 在「全部」和玩家 1 到 8 之间切换"
+
+#: src/gui/main.c
+#, c-format
+msgid "gamepad_map's \"%s\" is not a control and the button it sends (south:B)"
+msgstr "gamepad_map 的 \"%s\" 不是一个控件加它发出的按键（south:B）"
+
+#: src/gui/main.c
+#, c-format
+msgid "SDL mappings could not be read: %s"
+msgstr "无法读取 SDL 映射：%s"
+
+#: src/gui/main.c
+msgid "Any [default]"
+msgstr "任意 [默认]"
+
+#: src/gui/main.c
+#, c-format
+msgid "Controllers cannot be read: %s"
+msgstr "无法读取手柄：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Press a button on player %d's controller. ESC keeps %s"
+msgstr "请按玩家 %d 手柄上的一个按钮。ESC 保留 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Player %d: %s"
+msgstr "玩家 %d：%s"
+
+#: src/gui/main.c
+msgid "the controller pressed"
+msgstr "所按的手柄"
+
+#: src/gui/main.c
+#, c-format
+msgid "Player %d keeps %s"
+msgstr "玩家 %d 保留 %s"
+
+#: src/gui/main.c
+msgid "Looking for controllers..."
+msgstr "正在查找手柄..."
+
+#: src/gui/main.c
+msgid "Paste one local folder's path"
+msgstr "粘贴一个本地文件夹的路径"
+
+#: src/gui/main.c
+msgid "Data, games and extractions"
+msgstr "数据、游戏和提取文件"
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
+msgstr "用于之后的运行。[默认]：按游戏的 .ini"
+
+#: src/gui/main.c
+msgid "The runtime listed no settings"
+msgstr "运行时未列出任何设置"
+
+#: src/gui/main.c
+msgid "Its own >"
+msgstr "独立设置 >"
+
+#: src/gui/main.c
+msgid "As All >"
+msgstr "同「全部」>"
+
+#: src/gui/main.c
+msgid "Every setting back to its default"
+msgstr "每项设置恢复默认"
+
+#: src/gui/main.c
+msgid "Pick, drop or paste a folder of games"
+msgstr "选取、拖入或粘贴一个游戏文件夹"
+
+#: src/gui/main.c
+msgid "Each folder back to its default. What is in them stays"
+msgstr "每个文件夹恢复默认。其中的内容保留"
+
+#: src/gui/main.c
+msgid "The folder of themes/ it is saved in"
+msgstr "保存它的 themes/ 中的文件夹"
+
+#: src/gui/main.c
+msgid "Ctrl+S saves too"
+msgstr "Ctrl+S 也可保存"
+
+#: src/gui/main.c
+msgid "Preview"
+msgstr "预览"
+
+#: src/gui/main.c
+msgid "A run (Ctrl+P: the menu)"
+msgstr "运行画面（Ctrl+P：菜单）"
+
+#: src/gui/main.c
+msgid "The menu (Ctrl+P: a run)"
+msgstr "菜单（Ctrl+P：运行画面）"
+
+#: src/gui/main.c
+#, c-format
+msgid "Saves in %s"
+msgstr "保存到 %s"
+
+#: src/gui/main.c
+msgid "(no themes folder)"
+msgstr "（没有主题文件夹）"
+
+#: src/gui/main.c
+msgid "was"
+msgstr "原为"
+
+#: src/gui/main.c
+#, c-format
+msgid "Not written without %s"
+msgstr "去掉 %s 后未能写入"
+
+#: src/gui/main.c
+#, c-format
+msgid "Took out %s"
+msgstr "已去掉 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cleaned: %d done, %d not"
+msgstr "已清理：%d 项完成，%d 项未完成"
+
+#: src/gui/main.c
+msgid "Nothing to clean: no [Deprecated] in a game's .ini, no old keys"
+msgstr "无需清理：游戏的 .ini 中没有 [Deprecated]，也没有旧键"
+
+#: src/gui/main.c
+#, c-format
+msgid "Enter again to clean: [Deprecated] in %d .ini, %d old keys"
+msgstr "再按 Enter 清理：%d 个 .ini 中的 [Deprecated]，%d 个旧键"
+
+#: src/gui/main.c
+#, c-format
+msgid "Enter again to clean: [Deprecated] in %d .ini, %d old key"
+msgstr "再按 Enter 清理：%d 个 .ini 中的 [Deprecated]，%d 个旧键"
+
+#: src/gui/main.c
+#, c-format
+msgid "Enter again to clean: [Deprecated] in %d .ini"
+msgstr "再按 Enter 清理：%d 个 .ini 中的 [Deprecated]"
+
+#: src/gui/main.c
+#, c-format
+msgid "Enter again to clean: %d old keys"
+msgstr "再按 Enter 清理：%d 个旧键"
+
+#: src/gui/main.c
+#, c-format
+msgid "Enter again to clean: %d old key"
+msgstr "再按 Enter 清理：%d 个旧键"
+
+#: src/gui/main.c
+msgid "Program ended abnormally (force-terminated by ESC)."
+msgstr "程序异常结束（被 ESC 强制终止）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Program ended abnormally (status %d)."
+msgstr "程序异常结束（状态 %d）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Driver exited with status %d."
+msgstr "驱动程序以状态 %d 退出。"
+
+#: src/gui/main.c
+msgid "Failed"
+msgstr "失败"
+
+#: src/gui/main.c
+msgid "Ready"
+msgstr "就绪"
+
+#: src/gui/main.c
+msgid "That path is not a readable file. Try again or press ESC."
+msgstr "该路径不是可读的文件。请重试或按 ESC。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find %s beside the GUI or on PATH."
+msgstr "在 GUI 旁边或 PATH 中找不到 %s。"
+
+#: src/gui/main.c
+msgid "the selected driver"
+msgstr "所选的驱动程序"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is gone (%s): it left the recent games."
+msgstr "%s 已不存在（%s）：已从最近的游戏中移除。"
+
+#: src/gui/main.c
+msgid "No game in focus to recompile."
+msgstr "没有选中要重新编译的游戏。"
+
+#: src/gui/main.c
+msgid "R recompiles Switch games only."
+msgstr "R 只能重新编译 Switch 游戏。"
+
+#: src/gui/main.c
+msgid "Cannot install prod.keys: neither USERPROFILE nor HOME is set"
+msgstr "无法安装 prod.keys：USERPROFILE 和 HOME 都未设置"
+
+#: src/gui/main.c
+msgid "Cannot install prod.keys: HOME is not set"
+msgstr "无法安装 prod.keys：HOME 未设置"
+
+#: src/gui/main.c
+msgid "prod.keys installed: games can be extracted now."
+msgstr "prod.keys 已安装：现在可以提取游戏了。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot install %s: %s"
+msgstr "无法安装 %s：%s"
+
+#: src/gui/main.c
+msgid "Please drop a readable file named prod.keys."
+msgstr "请拖入一个名为 prod.keys 的可读文件。"
+
+#: src/gui/main.c
+#, c-format
+msgid "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
+msgstr "无法读取此文件。请从设备存储中重新选取 prod.keys（%s）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "This file is not a prod.keys. Pick the prod.keys file (%s)."
+msgstr "此文件不是 prod.keys。请选取 prod.keys 文件（%s）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, then pick it from the device's storage (%s)."
+msgstr "无法通过路径读取此文件。请在 Android 设置中确认 ScarletNX 可以访问设备上的文件，然后从设备存储中选取它（%s）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "The picked file could not be read as prod.keys (%s)."
+msgstr "所选文件无法作为 prod.keys 读取（%s）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "The picked file is not a prod.keys (%s)."
+msgstr "所选文件不是 prod.keys（%s）。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Pick the file from this computer's storage (%s)."
+msgstr "请从这台电脑的存储中选取文件（%s）。"
+
+#: src/gui/main.c
+msgid "Drop one local file path, not a list or remote URL."
+msgstr "请拖入一个本地文件的路径，不要拖入列表或远程 URL。"
+
+#: src/gui/main.c
+msgid "The log could not be saved: no working folder"
+msgstr "无法保存日志：没有工作目录"
+
+#: src/gui/main.c
+#, c-format
+msgid "The log could not be saved to %s: %s"
+msgstr "无法将日志保存到 %s：%s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Log saved to %s"
+msgstr "日志已保存到 %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Log saved to %s (path copied)"
+msgstr "日志已保存到 %s（已复制路径）"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s It is in Settings > App > Library."
+msgstr "%s 它在「设置 > 应用 > 游戏库」中。"
+
+#: src/gui/main.c
+msgid "Not saved: Ctrl+S saves it, ESC twice leaves without it"
+msgstr "未保存：Ctrl+S 保存，按两次 ESC 不保存离开"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "ESC"
+msgstr "ESC"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Tab"
+msgstr "Tab"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Enter"
+msgstr "Enter"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Space"
+msgstr "空格"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "click"
+msgstr "点击"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Tap"
+msgstr "轻触"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "A"
+msgstr "A"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Up"
+msgstr "上"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Down"
+msgstr "下"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Left"
+msgstr "左"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Right"
+msgstr "右"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "PgUp"
+msgstr "PgUp"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "PgDn"
+msgstr "PgDn"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "PgDown"
+msgstr "PgDown"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Swipe across"
+msgstr "横向滑动"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Del"
+msgstr "Del"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "R"
+msgstr "R"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Recompile"
+msgstr "重新编译"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Ctrl+S"
+msgstr "Ctrl+S"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Ctrl+V"
+msgstr "Ctrl+V"
+
+#: src/gui/main.c
+msgid "No file was picked."
+msgstr "未选取文件。"
+
+#: src/gui/main.c
+msgid "Drop one local folder"
+msgstr "请拖入一个本地文件夹"
+
+#: src/gui/main.c
+msgid "Drop it on the folder it takes the place of"
+msgstr "把它拖到要替换的文件夹上"
+
+#: src/gui/main.c
+msgid "no reason given"
+msgstr "未给出原因"
+
+#: src/gui/main.c
+msgid "No folder was picked."
+msgstr "未选取文件夹。"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot make the menu's font: %s"
+msgstr "无法创建菜单字体：%s"
+
+#: src/gui/main.c
+msgid "Cannot start the menu: out of memory"
+msgstr "无法启动菜单：内存不足"
+
+#: src/gui/main.c
+msgid "Cannot find the folder of the app's libraries"
+msgstr "找不到应用的库文件夹"
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot find the folder ScarletNX runs from: %s"
+msgstr "找不到 ScarletNX 运行所在的文件夹：%s"
+
+#: src/gui/main.c
+msgid "No user shown: out of memory"
+msgstr "未显示用户：内存不足"
+
+#: src/gui/model.c
+msgid "GUI + children: resource usage unavailable"
+msgstr "GUI + 子进程：资源占用不可用"
+
+#: src/gui/model.c
+#, c-format
+msgid "GUI + children: RAM %s  CPU %.0f%% (%.1f cores)"
+msgstr "GUI + 子进程：内存 %s  CPU %.0f%%（%.1f 核）"
+
+#: src/gui/model.c
+msgid "The game's .ini settings, the launcher's for the next runs, and its theme"
+msgstr "游戏 .ini 中的设置、启动器用于之后运行的设置，以及主题"
+
+#: src/gui/model.c
+msgid "Saves the last run's output and game log to scarletnx.log in the data folder, then shares it"
+msgstr "把上次运行的输出和游戏日志保存到数据文件夹中的 scarletnx.log，然后分享"
+
+#: src/gui/model.c
+msgid "Saves the last run's output and game log to scarletnx.log in the working folder (an installed copy's: its state folder), path copied"
+msgstr "把上次运行的输出和游戏日志保存到工作目录（已安装的版本则为其状态文件夹）中的 scarletnx.log，并复制路径"
+
+#: src/gui/model.c
+msgid "Saves the last run's output and game log to scarletnx.log in the working folder, path copied"
+msgstr "把上次运行的输出和游戏日志保存到工作目录中的 scarletnx.log，并复制路径"
+
+#: src/gui/model.c
+msgid "Opens the data folder, games/ and the keys among them, in the system's Files app"
+msgstr "在系统的「文件」应用中打开数据文件夹（含 games/ 和密钥）"
+
+#: src/gui/process_posix.c src/gui/process_win32.c
+msgid "A driver is already running"
+msgstr "已有驱动程序在运行"
+
+#: src/gui/process_posix.c
+msgid "iOS runs no other programs: prepare games on a computer, then copy them to games/"
+msgstr "iOS 不能运行其他程序：请在电脑上准备好游戏，再复制到 games/"
+
+#: src/gui/process_posix.c
+#, c-format
+msgid "Cannot launch driver: %s"
+msgstr "无法启动驱动程序：%s"
+
+#: src/gui/process_win32.c
+#, c-format
+msgid "Cannot launch driver (Windows error %lu)"
+msgstr "无法启动驱动程序（Windows 错误 %lu）"
+
+#: src/gui/settings.c
+msgid "Its own page, as in the game's menu"
+msgstr "独立的页面，如同游戏菜单中"
+
+#: src/gui/settings.c
+msgid "Every row of this page at once"
+msgstr "一次设置此页的所有行"
+
+#: src/gui/settings.c
+msgid "Mixed"
+msgstr "混合"
+
+#: src/gui/settings.c
+msgid "[default]"
+msgstr "[默认]"
+
+#: src/gui/steps.c
+msgid "EXTRACT"
+msgstr "提取"
+
+#: src/gui/steps.c
+msgid "RECOMPILE"
+msgstr "重新编译"
+
+#: src/gui/steps.c
+msgid "BUILT"
+msgstr "已编译"
+
+#: src/gui/steps.c
+msgid "LAUNCH"
+msgstr "启动"
+
+#: src/gui/steps.c
+msgid "READY"
+msgstr "就绪"
+
+#: src/gui/steps.c
+msgid "GPU"
+msgstr "GPU"
+
+#: src/gui/steps.c
+msgid "--:-- left"
+msgstr "剩余 --:--"
+
+#: src/gui/steps.c
+#, c-format
+msgid "%u:%02u:%02u left"
+msgstr "剩余 %u:%02u:%02u"
+
+#: src/gui/steps.c
+#, c-format
+msgid "%02u:%02u left"
+msgstr "剩余 %02u:%02u"
+
+#: src/gui/theme.c
+msgid "the name the menu's Theme item shows"
+msgstr "菜单的「主题」项显示的名称"
+
+#: src/gui/theme.c
+msgid "who made it"
+msgstr "作者"
+
+#: src/gui/theme.c
+msgid "the background"
+msgstr "背景"
+
+#: src/gui/theme.c
+msgid "text; the head's and footer's bar"
+msgstr "文字；页头和页脚的横条"
+
+#: src/gui/theme.c
+msgid "hints, secondary text, rules"
+msgstr "提示、次要文字、分隔线"
+
+#: src/gui/theme.c
+msgid "the focused line, or its band"
+msgstr "焦点行，或其色带"
+
+#: src/gui/theme.c
+msgid "the item chosen, the run's head"
+msgstr "已选的项目，运行画面的页头"
+
+#: src/gui/theme.c
+msgid "warnings, the ESC line, a failed run, missing keys"
+msgstr "警告、ESC 行、失败的运行、缺少的密钥"
+
+#: src/gui/theme.c
+msgid "the boxes' frames, a filled box, the grid and the title's shadow"
+msgstr "框的边线、填充的框、网格和标题的阴影"
+
+#: src/gui/theme.c
+msgid "the abort question in the console layout"
+msgstr "控制台布局中的中止提问"
+
+#: src/gui/theme.c
+msgid "a diff's added lines, as failure its removed ones; no screen uses it yet"
+msgstr "diff 中新增的行，如同 failure 之于删除的行；还没有画面使用它"
+
+#: src/gui/theme.c
+msgid "bar: the tabs and the title on a band of ink"
+msgstr "bar：标签页和标题位于 ink 色带上"
+
+#: src/gui/theme.c
+msgid "a line under the head"
+msgstr "页头下方的一条线"
+
+#: src/gui/theme.c
+msgid "the title after the tabs, or on a row of its own under them"
+msgstr "标题位于标签页之后，或在其下方单独一行"
+
+#: src/gui/theme.c
+msgid "the title's letters, times the text's, 1 to 3"
+msgstr "标题文字的大小，为正文的倍数，1 到 3"
+
+#: src/gui/theme.c
+msgid "a shadow under the title's letters, in the dim colour"
+msgstr "标题文字下的阴影，使用 dim 色"
+
+#: src/gui/theme.c
+msgid "the user at the head's right, their nickname and picture in a box: none, square or round"
+msgstr "页头右侧的用户，昵称和头像在框中：none、square 或 round"
+
+#: src/gui/theme.c
+msgid "the menu's title"
+msgstr "菜单的标题"
+
+#: src/gui/theme.c
+msgid "the games/ list's title"
+msgstr "games/ 列表的标题"
+
+#: src/gui/theme.c
+msgid "the keys screen's title"
+msgstr "密钥画面的标题"
+
+#: src/gui/theme.c
+msgid "a run's title until the game loads"
+msgstr "游戏载入前运行画面的标题"
+
+#: src/gui/theme.c
+msgid "a run's title once the runner's banner came"
+msgstr "运行器的横幅出现后运行画面的标题"
+
+#: src/gui/theme.c
+msgid "before each item"
+msgstr "每个项目之前"
+
+#: src/gui/theme.c
+msgid "the focused box in the focus colour, or on a band of it"
+msgstr "焦点框使用 focus 色，或位于其色带上"
+
+#: src/gui/theme.c
+msgid "the boxes outlined or filled"
+msgstr "框为描边或填充"
+
+#: src/gui/theme.c
+msgid "fixed: the list two fifths of every screen, alone on a narrow one; adaptive: as wide as its entries"
+msgstr "fixed：列表占每个画面的五分之二，窄画面上单独显示；adaptive：与条目同宽"
+
+#: src/gui/theme.c
+msgid "a text too long for its box over its rows, or on one that slides"
+msgstr "文字超出框时分多行显示，或单行滚动"
+
+#: src/gui/theme.c
+msgid "in the margin, beside the focused box"
+msgstr "在边距中，焦点框旁边"
+
+#: src/gui/theme.c
+msgid "a faint grid on the page, in the dim colour"
+msgstr "页面上的淡网格，使用 dim 色"
+
+#: src/gui/theme.c
+msgid "in a box at the foot beside the keys, or on a row under the head"
+msgstr "在页脚按键旁的框中，或在页头下方一行"
+
+#: src/gui/theme.c
+msgid "in a box with a bar at its left, or on the page"
+msgstr "在左侧带竖条的框中，或直接在页面上"
+
+#: src/gui/theme.c
+msgid "over the foot's rows, or on one row that slides"
+msgstr "占用页脚的多行，或单行滚动"
+
+#: src/gui/theme.c
+msgid "bar: on a band of ink; none: no Status box"
+msgstr "bar：位于 ink 色带上；none：没有「状态」框"
+
+#: src/gui/theme.c
+msgid "a line over the foot"
+msgstr "页脚上方的一条线"
+
+#: src/gui/theme.c
+msgid "the keys in a box with a bar at its left, or on the page"
+msgstr "按键在左侧带竖条的框中，或直接在页面上"
+
+#: src/gui/theme.c
+msgid "steps: the loading screen; the keys below but colours are its"
+msgstr "steps：载入画面；下面除颜色外的各项都属于它"
+
+#: src/gui/theme.c
+msgid "the loading screen's background"
+msgstr "载入画面的背景"
+
+#: src/gui/theme.c
+msgid "its text, the cursor, the ring's turning bar"
+msgstr "其文字、光标、圆环上转动的条"
+
+#: src/gui/theme.c
+msgid "older steps, the name, the inner ring"
+msgstr "较早的步骤、名称、内圈"
+
+#: src/gui/theme.c
+msgid "the outer ring, the bar's empty segments"
+msgstr "外圈、进度条的空段"
+
+#: src/gui/theme.c
+msgid "a failed step, a failed run"
+msgstr "失败的步骤、失败的运行"
+
+#: src/gui/theme.c
+msgid "a run being aborted, the question"
+msgstr "正在中止的运行、提问"
+
+#: src/gui/theme.c
+msgid "faint lines over the page"
+msgstr "页面上的淡线"
+
+#: src/gui/theme.c
+msgid "the progress bar and its percentage"
+msgstr "进度条及其百分比"
+
+#: src/gui/theme.c
+msgid "each step's other lines under it"
+msgstr "每个步骤下方的其他行"
+
+#: src/gui/theme.c
+msgid "a done step's lines folded away"
+msgstr "已完成步骤的行被折叠"
+
+#: src/gui/theme.c
+msgid "the turning ring"
+msgstr "转动的圆环"
+
+#: src/gui/theme.c
+msgid "a running step's progress: amount (1.2 / 4.0 GB), percent, time left"
+msgstr "进行中步骤的进度：数量（1.2 / 4.0 GB）、百分比、剩余时间"
+
+#: src/gui/theme.c
+msgid "on its row"
+msgstr "在其所在行"
+
+#: src/gui/theme.c
+msgid "before the line"
+msgstr "在该行之前"
+
+#: src/gui/theme.c
+msgid "after it"
+msgstr "在其之后"
+
+#: src/gui/theme.c
+msgid "blinking at blink_ms"
+msgstr "按 blink_ms 闪烁"
+
+#: src/gui/theme.c
+msgid "the keys screen's drop line"
+msgstr "密钥画面的拖入提示行"
+
+#: src/gui/theme.c
+msgid "the ESC line after a run"
+msgstr "运行结束后的 ESC 行"
+
+#: src/gui/theme.c
+msgid "the ESC line after a failed run"
+msgstr "运行失败后的 ESC 行"
+
+#: src/gui/theme.c
+msgid "a run being aborted"
+msgstr "正在中止的运行"
+
+#: src/gui/theme.c
+msgid "what comes after a fade out, from black"
+msgstr "淡出之后从黑色出现的内容"
+
+#: src/gui/theme.c
+msgid "the menu as a run starts, a run ESC leaves"
+msgstr "运行开始时的菜单，按 ESC 离开的运行"
+
+#: src/gui/theme.c
+msgid "how a step's line comes in"
+msgstr "步骤的行如何出现"
+
+#: src/gui/theme.c
+msgid "slide and fade's length"
+msgstr "slide 和 fade 的时长"
+
+#: src/gui/theme.c
+msgid "a character of the running line, any other line whole"
+msgstr "进行中的行逐字出现，其他行整行出现"
+
+#: src/gui/theme.c
+msgid "sync: one line at a time"
+msgstr "sync：一次一行"
+
+#: src/gui/theme.c
+msgid "the cursor's, the prompt's and Setup device keys' blink"
+msgstr "光标、提示和「设置设备密钥」的闪烁"
+
+#: src/gui/theme.c
+msgid "a line too long for its row slides a column each"
+msgstr "超出一行的文字每隔此时间滚动一列"
+
+#: src/gui/theme.c
+msgid "behind the drawing"
+msgstr "图画后方"
+
+#: src/gui/theme.c
+msgid "how long; 0: none"
+msgstr "持续时间；0：无"
+
+#: src/gui/theme.c
+msgid "the boots in 100 that show this theme's, the default's the others"
+msgstr "每 100 次启动中显示此主题启动图的次数，其余显示默认的"
+
+#: src/nx/runtime/settings.txt
+msgid "gdbstub"
+msgstr "gdbstub"
+
+#: src/nx/runtime/settings.txt
+msgid "Enables gdbstub on port 1234"
+msgstr "在端口 1234 上启用 gdbstub"
+
+#: src/nx/runtime/settings.txt
+msgid "Extract to tmpfs"
+msgstr "提取到 tmpfs"
+
+#: src/nx/runtime/settings.txt
+msgid "Extract to tmpfs, in memory (the temporary folder's scarletnx/work/<title ID>), which the game reads its RomFS from"
+msgstr "提取到内存中的 tmpfs（临时文件夹的 scarletnx/work/<title ID>），游戏从这里读取其 RomFS"
+
+#: src/nx/runtime/settings.txt
+msgid "Extract game container"
+msgstr "提取游戏容器"
+
+#: src/nx/runtime/settings.txt
+msgid "Extract a dump's ExeFS and RomFS into its game's folder. Off, the game reads them from the dump"
+msgstr "把转储的 ExeFS 和 RomFS 提取到游戏文件夹中。关闭时游戏直接从转储读取"
+
+#: src/nx/runtime/settings.txt
+msgid "Optimization level"
+msgstr "优化级别"
+
+#: src/nx/runtime/settings.txt
+msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled"
+msgstr "LLVM 在重新编译时对游戏代码的优化：0 不优化，3 最高，z 体积最小。已编译的游戏在重新编译前保持原代码"
+
+#: src/nx/runtime/settings.txt
+msgid "AOT threads"
+msgstr "AOT 线程数"
+
+#: src/nx/runtime/settings.txt
+msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
+msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"
+
+#: src/nx/runtime/settings.txt
+msgid "Instruction combining"
+msgstr "指令合并"
+
+#: src/nx/runtime/settings.txt
+msgid "Combines instructions into fewer, simpler ones (instcombine)"
+msgstr "把指令合并为更少、更简单的指令（instcombine）"
+
+#: src/nx/runtime/settings.txt
+msgid "Inlining"
+msgstr "内联"
+
+#: src/nx/runtime/settings.txt
+msgid "Inlines calls into their callers (inline)"
+msgstr "把调用内联到调用者中（inline）"
+
+#: src/nx/runtime/settings.txt
+msgid "Scalar replacement of aggregates"
+msgstr "聚合体标量替换"
+
+#: src/nx/runtime/settings.txt
+msgid "Splits stack objects into values kept in registers (sroa)"
+msgstr "把栈上的对象拆分为保存在寄存器中的值（sroa）"
+
+#: src/nx/runtime/settings.txt
+msgid "Global value numbering"
+msgstr "全局值编号"
+
+#: src/nx/runtime/settings.txt
+msgid "Removes redundant computations and loads (gvn)"
+msgstr "删除冗余的计算和加载（gvn）"
+
+#: src/nx/runtime/settings.txt
+msgid "Control flow simplification"
+msgstr "控制流简化"
+
+#: src/nx/runtime/settings.txt
+msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
+msgstr "合并、删除并简化基本块（simplifycfg）"
+
+#: src/nx/runtime/settings.txt
+msgid "Loop unrolling"
+msgstr "循环展开"
+
+#: src/nx/runtime/settings.txt
+msgid "Unrolls loops with known trip counts (loop-unroll)"
+msgstr "展开迭代次数已知的循环（loop-unroll）"
+
+#: src/nx/runtime/settings.txt
+msgid "Loop vectorization pass"
+msgstr "循环向量化 pass"
+
+#: src/nx/runtime/settings.txt
+msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
+msgstr "用 SIMD 指令向量化循环（loop-vectorize）"
+
+#: src/nx/runtime/settings.txt
+msgid "SLP vectorization pass"
+msgstr "SLP 向量化 pass"
+
+#: src/nx/runtime/settings.txt
+msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
+msgstr "把独立的标量指令打包为 SIMD 指令（slp-vectorizer）"
+
+#: src/nx/runtime/settings.txt
+msgid "Loop invariant code motion"
+msgstr "循环不变量外提"
+
+#: src/nx/runtime/settings.txt
+msgid "Hoists computations that do not change across a loop out of it (licm)"
+msgstr "把在循环中不变的计算移到循环外（licm）"
+
+#: src/nx/runtime/settings.txt
+msgid "Loop vectorization"
+msgstr "循环向量化"
+
+#: src/nx/runtime/settings.txt
+msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
+msgstr "优化管线是否向量化循环（LLVMPassBuilderOptionsSetLoopVectorization）"
+
+#: src/nx/runtime/settings.txt
+msgid "SLP vectorization"
+msgstr "SLP 向量化"
+
+#: src/nx/runtime/settings.txt
+msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
+msgstr "优化管线是否把标量指令打包为 SIMD 指令（LLVMPassBuilderOptionsSetSLPVectorization）"
+
+#: src/nx/runtime/settings.txt
+msgid "Loop unrolling option"
+msgstr "循环展开选项"
+
+#: src/nx/runtime/settings.txt
+msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
+msgstr "优化管线是否展开循环（LLVMPassBuilderOptionsSetLoopUnrolling）"
+
+#: src/nx/runtime/settings.txt
+msgid "Fast instruction selection"
+msgstr "快速指令选择"
+
+#: src/nx/runtime/settings.txt
+msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
+msgstr "代码生成是否用 FastISel 选择指令，更快但更差（LLVMSetTargetMachineFastISel）"
+
+#: src/nx/runtime/settings.txt
+msgid "Global instruction selection"
+msgstr "全局指令选择"
+
+#: src/nx/runtime/settings.txt
+msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
+msgstr "代码生成是否用 GlobalISel 选择指令（LLVMSetTargetMachineGlobalISel）"
+
+#: src/nx/runtime/settings.txt
+msgid "Inliner threshold"
+msgstr "内联阈值"
+
+#: src/nx/runtime/settings.txt
+msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
+msgstr "内联器内联的函数大小上限；未设置时由 LLVM 按优化级别选择（LLVMPassBuilderOptionsSetInlinerThreshold）"
+
+#: src/nx/runtime/settings.txt
+msgid "Launch"
+msgstr "启动"
+
+#: src/nx/runtime/settings.txt
+msgid "LLVM Internals"
+msgstr "LLVM 内部选项"
