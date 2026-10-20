@@ -43,12 +43,6 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     for (want = *cpu + n; n < max && gmmu_translate(gva + n) == want; want += 0x1000) n += 0x1000;
     return n < max ? n : max;
 }
-/* a guest page freed after the GPU mapped it, [freed, freed + 0x1000) (none while 0): mem_mapped_run's runs stop there */
-static u64 freed;
-u64 mem_mapped_run(u64 addr, u64 size) {
-    if (!freed || addr + size <= freed || addr >= freed + 0x1000) return size;
-    return addr < freed ? freed - addr : 0;
-}
 void mem_query(u64 addr, MemBlock* out) {
     memset(out, 0, sizeof *out);
     out->size = sizeof guest;
@@ -543,24 +537,6 @@ int main(void) {
     took = wait_marks(1);
     expect(marks() == 1 && took >= 900000000ull && warned == 1, "a wait nothing ends times out after 1 s and warns");
 
-    /* a GPU mapping the guest's memory outlived: the freed page reads as zero and takes no write, as an unmapped one,
-       and gives no pointer; the pages around it are read and written */
-    {
-        u8 got[0x3000], want[0x3000];
-        memset(g_mem + 0xD000, 0xAA, 0x3000);
-        memset(want, 0xAA, sizeof want);
-        memset(want + 0x1000, 0, 0x1000);
-        freed = 0xE000;
-        expect(gmem_read(0xD000, got, sizeof got) == -1 && !memcmp(got, want, sizeof got),
-               "a freed page reads as zero between mapped ones");
-        memset(got, 0x55, sizeof got);
-        expect(gmem_write(0xD000, got, sizeof got) == -1 && g_mem[0xD000] == 0x55 && g_mem[0xE000] == 0xAA &&
-                   g_mem[0xF000] == 0x55,
-               "a freed page takes no write");
-        expect(!gmem_ptr_untracked(0xD000, 0x2000) && gmem_ptr_untracked(0xD000, 0x1000) == g_mem + 0xD000,
-               "a run over a freed page gives no pointer");
-        freed = 0;
-    }
     if (!failures) printf("gpu_park: ok\n");
     return failures != 0;
 }

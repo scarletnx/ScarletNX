@@ -38,14 +38,12 @@ void (*g_gpu_mapping_end)(void);
 
 /* ------------------------------------------------------------ guest memory through the GPU's address space */
 /* the runs of guest memory behind [gva, gva + size), copied in or out: 1 when every page was mapped. An unmapped
-   page reads as zero and takes no write, as does one the guest freed after mapping it here: a game's GPU mappings
-   can outlive the memory behind them, which has no host memory left. What the GPU holds of a run lands first
-   (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then */
+   page, or one the guest freed after mapping it here (gmmu_run), reads as zero and takes no write. What the GPU holds of a run lands first (memory/own.c): the caller may hold
+   the renderer's lock, and a trap can't be answered then */
 static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
     int all = 1;
     while (size) {
         u64 cpu = 0, n = gmmu_run(gva, size, &cpu);
-        if (n) n = mem_mapped_run(cpu, n);
         if (!n) {
             n = 0x1000 - (gva & 0xFFF);
             if (n > size) n = size;
@@ -119,7 +117,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 u8* gmem_ptr_untracked(u64 gva, u64 size) {
     u64 cpu = 0;
     if (!size) size = 1;
-    if (gmmu_run(gva, size, &cpu) != size || mem_mapped_run(cpu, size) != size) return NULL;
+    if (gmmu_run(gva, size, &cpu) != size) return NULL;
     if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, size);
     return GP(cpu);
 }

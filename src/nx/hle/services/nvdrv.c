@@ -65,7 +65,8 @@ u64 gmmu_translate(u64 gva) {
     if (!t) return 0;
     e = __atomic_load_n(&t[page & ((1u << GL2_BITS) - 1)], __ATOMIC_RELAXED);
     if (!(e & 1)) return 0;
-    return (e & ~(u64)0xFFF) | (gva & 0xFFF);
+    e = (e & ~(u64)0xFFF) | (gva & 0xFFF);
+    return mem_mapped_run(e, 1) ? e : 0; /* a page the guest freed after mapping it here: as unmapped */
 }
 /* An entry's bits 1 to 11 count the pages after it, in its table, that are mapped and follow on in guest memory: a
    lower bound, so gmmu_run steps over a run of them in one load instead of one per page. A map writes its pages from the
@@ -103,7 +104,9 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
         n += 0x1000;
         want += 0x1000;
     }
-    return n < max ? n : max;
+    /* a game's GPU mappings can outlive the guest memory behind them, which has no host memory left: the run stops
+       there, as at a page with no entry */
+    return mem_mapped_run(*cpu, n < max ? n : max);
 }
 static u64* gmmu_l2(u32 i) {
     u64* t = __atomic_load_n(&g_hle.nvdrv.gmmu[i], __ATOMIC_ACQUIRE);

@@ -642,6 +642,28 @@ int kobj_never_signaled(KObj* o) {
     return 0;
 }
 
+/* guest memory the guest freed after the GPU mapped it, [freed, freed + freed_size) (none while freed_size is 0):
+   mem_mapped_run's runs stop there */
+static u64 freed, freed_size;
+u64 mem_mapped_run(u64 addr, u64 size) {
+    if (!freed_size || addr + size <= freed || addr >= freed + freed_size) return size;
+    return addr < freed ? freed - addr : 0;
+}
+/* a page the guest freed after the GPU mapped it ends a run there and translates to none, as one with no entry */
+static void test_gmmu_freed(void) {
+    const u64 g = 0x7100000000ull;
+    u64 cpu = 0;
+    gmmu_map(g, 0xA0000000ull, 0x4000);
+    freed = 0xA0002000ull;
+    freed_size = 0x1000;
+    CHECK(gmmu_run(g, ~0ull, &cpu) == 0x2000 && cpu == 0xA0000000ull);
+    CHECK(!gmmu_run(g + 0x2000, ~0ull, &cpu) && !gmmu_translate(g + 0x2000));
+    CHECK(gmmu_translate(g + 0x1FFF) == 0xA0001FFFull && gmmu_translate(g + 0x3000) == 0xA0003000ull);
+    CHECK(gmmu_run(g + 0x3000, ~0ull, &cpu) == 0x1000 && cpu == 0xA0003000ull);
+    freed_size = 0;
+    CHECK(gmmu_run(g, ~0ull, &cpu) == 0x4000);
+    gmmu_unmap(g, 0x4000, 0, 0);
+}
 /* gmmu_run against gmmu_translate page by page: runs longer than an entry's count, across a table's end, broken by a
    page mapped elsewhere, and what an own unmap keeps */
 static u64 run_by_pages(u64 gva, u64 max, u64* cpu) {
@@ -741,6 +763,7 @@ int main(void) {
         CHECK(gmmu_translate(gva) == addr && gmmu_translate(gva + 0xFFF) == AS_SIZE - 1);
     }
     test_nvmap_as();
+    test_gmmu_freed();
     test_gmmu_runs();
     nvdrv = new_nvdrv();
     u32 error;
