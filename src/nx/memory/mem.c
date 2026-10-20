@@ -74,9 +74,16 @@ static void mem_unlock(void) {
 }
 
 /* bumped under g_mem_lk before guest pages lose their host memory or turn free or inaccessible, and by mem_init:
-   until it moves, a run mem_mapped_run found mapped stays mapped, so each thread keeps its last one */
+   until it moves, a run mem_mapped_run found mapped stays mapped, so each thread keeps the runs it found, one per
+   megabyte granule of the address they were found for (direct mapped). The GPU thread asks this of every buffer and
+   page run it touches, about two million times a second in one game, across more blocks than a few kept runs held:
+   with one run kept, or a handful searched, it took g_mem_lk and searched the blocks for most of them */
 static u64 g_unmap_gen = 1;
-static __thread u64 t_run_lo, t_run_hi, t_run_gen;
+#define MEM_RUNS 64
+#define MEM_RUN_SLOT(a) (((a) >> 20) & (MEM_RUNS - 1))
+static __thread struct {
+    u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
+} t_runs;
 static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
 
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
@@ -538,8 +545,9 @@ u64 mem_mapped_run(u64 addr, u64 size) {
     u32 i;
     int mine = !t_mem_held; /* a crash report's queries come from the thread that holds the lock */
     if (!size) return 0;
-    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_run_gen && addr >= t_run_lo && addr < t_run_hi &&
-        size <= t_run_hi - addr)
+    i = MEM_RUN_SLOT(addr);
+    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_runs.gen && addr >= t_runs.lo[i] &&
+        addr < t_runs.hi[i] && size <= t_runs.hi[i] - addr)
         return size;
     if (mine) mem_lock();
     gen = __atomic_load_n(&g_unmap_gen, __ATOMIC_RELAXED);
@@ -549,17 +557,23 @@ u64 mem_mapped_run(u64 addr, u64 size) {
         run = 0;
     else {
         end = size < AS_END - addr ? addr + size : AS_END;
-        i = blk_index_nl(addr);
-        lo = g_blk[i].addr;
-        for (; i < g_nblk && lim < end; i++) {
-            if (g_blk[i].state == MS_FREE || g_blk[i].state == MS_INACCESSIBLE) break;
-            lim = blk_end(&g_blk[i]);
+        /* the run kept goes on past the request over the mapped blocks after it (up to 16 MB more), where the next
+           lookups of this granule usually land */
+        u64 reach = end < AS_END - (16u << 20) ? end + (16u << 20) : AS_END;
+        u32 b = blk_index_nl(addr);
+        lo = g_blk[b].addr;
+        for (; b < g_nblk && lim < reach; b++) {
+            if (g_blk[b].state == MS_FREE || g_blk[b].state == MS_INACCESSIBLE) break;
+            lim = blk_end(&g_blk[b]);
         }
         run = (lim < end ? lim : end) - addr;
         if (lim > addr) {
-            t_run_lo = lo;
-            t_run_hi = lim;
-            t_run_gen = gen;
+            if (t_runs.gen != gen) { /* the runs kept are of an older generation */
+                memset(&t_runs, 0, sizeof t_runs);
+                t_runs.gen = gen;
+            }
+            t_runs.lo[i] = lo;
+            t_runs.hi[i] = lim;
         }
     }
     if (mine) mem_unlock();
