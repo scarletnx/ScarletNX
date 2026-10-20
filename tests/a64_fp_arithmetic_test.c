@@ -179,7 +179,20 @@ static void integers(void) {
         result(&c, got, t[i].out, t[i].flags, t[i].control, "integer conversion");
     }
 }
+/* RecipSqrtEstimate as the Arm ARM's pseudocode computes it, one step of b at a time: the oracle for the table
+   fp_arithmetic.c reads */
+static u32 rsqrt_estimate_search(u32 a) {
+    u32 b = 512;
+    if (a < 256)
+        a = a * 2 + 1;
+    else
+        a = ((a >> 1) << 1) * 2 + 2;
+    while ((u64)a * (b + 1) * (b + 1) < ((u64)1 << 28)) ++b;
+    return (b + 1) / 2;
+}
 static void vector_and_state(void) {
+    /* every input of the estimate, through URSQRTE (its 9 top bits, 128..511) */
+    for (u32 a = 128; a < 512; a++) check(ursqrte32(a << 23), (u64)rsqrt_estimate_search(a) << 23, "URSQRTE estimate");
     check(urecpe32(0x7FFFFFFFu), 0xFFFFFFFFu, "URECPE saturation");
     check(urecpe32(0x80000000u), 0xFF800000u, "URECPE first estimate bin");
     check(urecpe32(0xFFFFFFFFu), 0x80000000u, "URECPE last estimate bin");
