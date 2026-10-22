@@ -6,6 +6,8 @@
    was at the path */
 #define _POSIX_C_SOURCE 200809L /* pread, fileno, ftruncate */
 #include "nx/runtime/state_file.h"
+#include "nx/runtime/platform/plat.h"
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,48 @@ int plat_replace_file(const char* tmp, const char* dst) {
     if (!rename(tmp, dst)) return 0;
     remove(tmp);
     return -1;
+}
+/* the writer's workers: pthreads, four CPUs */
+void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
+void pm_destroy(PMutex* m) { pthread_mutex_destroy(&m->l); }
+void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
+void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
+void pc_init(PCond* c) { pthread_cond_init(&c->c, NULL); }
+void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
+void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
+int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
+    (void)timeout_ns; /* the writer waits without limit */
+    pthread_cond_wait(&c->c, &m->l);
+    return 0;
+}
+typedef struct {
+    PThreadFn fn;
+    void* arg;
+} Start;
+static void* start(void* p) {
+    Start s = *(Start*)p;
+    free(p);
+    s.fn(s.arg);
+    return NULL;
+}
+int plat_thread(PThreadFn fn, void* arg, size_t stack) {
+    pthread_t t;
+    Start* s = (Start*)malloc(sizeof *s);
+    (void)stack;
+    if (!s) return -1;
+    s->fn = fn;
+    s->arg = arg;
+    if (pthread_create(&t, NULL, start, s)) {
+        free(s);
+        return -1;
+    }
+    pthread_detach(t);
+    return 0;
+}
+int plat_cpus(int* ids, int max) {
+    int i;
+    for (i = 0; i < 4 && i < max; i++) ids[i] = i;
+    return i;
 }
 
 static unsigned checks, failures;
@@ -32,7 +76,7 @@ static unsigned checks, failures;
 
 int main(int argc, char** argv) {
     char path[512], why[256] = "";
-    static u8 big[3 << 20], back[3 << 20];
+    static u8 big[10 << 20], back[10 << 20]; /* two and a half of the writer's 4 MiB frames */
     u8 thumb[4 * 4 * 4], *t = NULL;
     SnxStateHeader h, got;
     StateWriter* w;
@@ -53,7 +97,7 @@ int main(int argc, char** argv) {
     snprintf(h.runtime, sizeof h.runtime, "test build");
     snprintf(h.game, sizeof h.game, "A game");
 
-    /* two sections, the big one put in pieces */
+    /* two sections, the big one put in pieces, compressed as frames side by side */
     w = sw_open(path, &h, thumb, why, sizeof why);
     CHECK(w != NULL);
     CHECK(!sw_begin(w, "SMALL", 7) && !sw_put(w, &small, sizeof small) && !sw_end(w));
