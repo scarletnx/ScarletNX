@@ -186,12 +186,33 @@ void core_poll(KThread* t) {
     core_preempt(t);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
 }
-/* svcSleepThread's yields. With nobody waiting for its core the thread goes on at once, as on the console. Otherwise
-   the core goes to the best waiter, whatever its priority, and t lines up behind the waiters of its own priority. A
-   waiter of worse priority that took the core gives it back at its next poll: a yield doesn't hand a better thread's
-   time to a worse one. migrate (2, for -1 and -2) also lets it run on an idle core of its mask meanwhile */
+/* the thread a yield with core migration moves to core k on the console (Mesosphère's
+   KScheduler::YieldWithCoreMigration): one waiting for another core that core k is in the mask of, of the yielding
+   thread's priority or better, the best first. Not from a core whose holder is of priority 0 or 1, which nothing is
+   moved away from (HighestCoreMigrationAllowedPriority). NULL for none, else its core in *from */
+static KThread* core_suggested_nl(const KThread* t, int k, int* from) {
+    KThread *best = NULL, *w;
+    int j;
+    for (j = 0; j < NCORES; j++) {
+        if (j == k || (g_hle.thread.core_owner[j] && kt_at(g_hle.thread.core_owner[j])->prio < 2)) continue;
+        for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
+            if (((w->affinity >> k) & 1) && w->prio <= t->prio && (!best || core_before(w, best))) {
+                best = w;
+                *from = j;
+            }
+    }
+    return best;
+}
+/* svcSleepThread's yields. With waiters for its core, the core goes to the best of them, whatever its priority, and t
+   lines up behind the waiters of its own priority. A waiter of worse priority that took the core gives it back at its
+   next poll: a yield doesn't hand a better thread's time to a worse one. migrate (2, for -1 and -2) also lets it run
+   on an idle core of its mask meanwhile. With none, a migrating yield takes a thread waiting for another core onto
+   this one and lines up behind it, as the console does: a thread that polls with svcSleepThread(-1) lends its core to
+   threads its core could run, which otherwise wait for a busy core of their own. Without that either, t goes on at
+   once */
 void core_yield(KThread* t, int migrate) {
     int k, j;
+    KThread* w;
     if (!t) return;
     pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
@@ -201,6 +222,13 @@ void core_yield(KThread* t, int migrate) {
             core_give_nl(j, t);
         else
             core_wait_nl(t, k);
+    } else if (k >= 0 && migrate && (w = core_suggested_nl(t, k, &j))) {
+        core_unlink_nl(j, w);
+        core_flag_nl(j);
+        t->on_core = -1;
+        __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        core_give_nl(k, w); /* not core_release_nl: its hand-off could pick another thread */
+        core_wait_nl(t, k);
     }
     pm_unlock(&g_host.thread.core_lk);
     core_pin(t);
