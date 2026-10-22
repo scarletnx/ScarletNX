@@ -33,15 +33,14 @@ enum {
 typedef struct KThread KThread;
 
 /* Every kernel object starts with a KObj, as its first member: code holding a KObj* casts it to the object its type
-   names (KEvent, KThread, KShmem, KTmem, KSession), so the KObj must sit at offset 0 of each */
+   names (KEvent, KThread, KShmem, KTmem, KSession), so the KObj must sit at offset 0 of each. What an object does as
+   its last reference goes, and whether it can be waited on and is signaled, follow from its type (kernel.c's
+   kobj_destroy and kobj_signaled). The threads waiting on it name it in their waits (KThread.waits) */
 typedef struct KObj {
     int type;
-    int refs; /* changed with __atomic operations; destroy, when set, runs as it reaches 0 */
-    void (*destroy)(struct KObj*);
-    int (*is_signaled)(struct KObj*); /* NULL for an object that can't be waited on */
-    KThread** waiters;
-    int nwait, capwait;
-    const char* name;
+    int refs;      /* changed with __atomic operations; the object is destroyed as it reaches 0 */
+    int nwait;     /* the waits that name it now, under g_klock: none, and a signal looks for no waiter */
+    char name[24]; /* for the logs and the thread dump */
 } KObj;
 
 typedef struct KEvent {
@@ -80,13 +79,17 @@ struct KThread {
        ends (sleep_nl, kthread_wait, a JIT compile), 2 stopped at a hold point, 0 neither */
     int stopped;
     int wait_kind; /* 0 none, 1 objects, 2 mutex, 3 condition variable, 4 address, 5 being paused */
+    /* kinds 1 and 5: the objects it waits on (kobj_id), as many times as it named each; kind 1's wait_key is the one
+       whose signal woke it, 0 before */
+    u32 waits[64];
+    int nwaits;
     u64 wait_addr, wait_key;
     u32 wait_tag;
     KThread* lock_owner; /* the mutex's owner while it waits on one (kind 2) */
     int wait_result;
     KThread* next_waiter;
     char name[32];
-    const char* wait_name;
+    char wait_name[24];
     u64 wait_tid; /* the thread a join waits for, for the thread dump */
     i64 wait_timeout;
     u64 sleep_lr, sleep_n, sleep_x[31]; /* where a sleep loop sleeps from, for diagnostics */
@@ -110,6 +113,16 @@ typedef struct KTmem {
 
 void kernel_init(void);
 u32 h_new(KObj* o); /* a new handle to o, which takes a reference */
+/* an object as a number, which a save state can hold: its type and its slot in its type's pool, 0 for none. kobj_at
+   is the object again, NULL for 0 */
+u32 kobj_id(const KObj* o);
+KObj* kobj_at(u32 id);
+/* a new object's name, cut to fit */
+static inline void kobj_set_name(KObj* o, const char* name) {
+    size_t i;
+    for (i = 0; name && name[i] && i + 1 < sizeof o->name; i++) o->name[i] = name[i];
+    o->name[i] = 0;
+}
 void kobj_ref(KObj* o);
 void kobj_unref(KObj* o);
 /* the object h names, of type t (0 for any), with a reference the caller drops with kobj_unref. NULL when none */

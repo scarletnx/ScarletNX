@@ -20,6 +20,10 @@ void logf_(int lvl, const char* fmt, ...) {
 u64 plat_ns(void) { return 0; }
 void kobj_ref(KObj* o) { (void)o; }
 void kobj_unref(KObj* o) { (void)o; }
+/* kernel.c's, for the threads a join waits on: signaled once exited */
+int kobj_waitable(const KObj* o) { return o->type == KO_EVENT || o->type == KO_THREAD || o->type == KO_PROCESS; }
+int kobj_signaled(const KObj* o) { return o->type == KO_THREAD && ((const KThread*)o)->state == 2; }
+u32 kobj_id(const KObj* o) { return (u32)(size_t)o; } /* tells the test's objects apart */
 void waiter_add(KObj* o, KThread* t) {
     (void)o;
     (void)t;
@@ -30,10 +34,13 @@ void waiter_del(KObj* o, KThread* t) {
 }
 static unsigned g_slept;
 static u64 g_joining;
+static KThread* g_ends[2]; /* the threads a join's sleep sees exit */
 int sleep_nl(KThread* t, i64 timeout) {
     (void)timeout;
     g_slept++;
     g_joining = t->wait_tid;
+    for (int i = 0; i < 2; i++)
+        if (g_ends[i]) g_ends[i]->state = 2;
     return 1;
 }
 /* the word at g_watch when a thread is woken */
@@ -54,10 +61,6 @@ KObj* h_get_nl(u32 h) {
 }
 static u32 handle(KThread* t) { return SNX_KMT_HANDLE + (u32)(t - snx_kmt_thread); }
 /* ends once the waiter sleeps, like a joined thread */
-static int ended_after_a_sleep(KObj* o) {
-    (void)o;
-    return g_slept > 0;
-}
 
 static unsigned checks, failures;
 #define CHECK(expr, ...)                                                                                               \
@@ -94,10 +97,6 @@ static void lock(KThread* t, KThread* owner, u64 addr) {
     CHECK(svc_arbitrate_lock(t, handle(owner), addr, handle(t)) == 0, "lock");
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
@@ -173,7 +172,7 @@ int main(void) {
     t = reset(start_prio);
     a = &t[0], b = &t[1];
     b->id = 82;
-    b->o.is_signaled = ended_after_a_sleep;
+    g_ends[0] = b;
     u32 joined = handle(b), at = 9;
     snx_st_le32(g_mem + 0x400, joined);
     g_slept = 0;
@@ -185,13 +184,14 @@ int main(void) {
     t = reset(start_prio);
     a = &t[0], b = &t[1];
     b->id = 83;
-    b->o.is_signaled = ended_after_a_sleep;
-    t[2].o.is_signaled = ended_after_a_sleep;
+    g_ends[0] = b;
+    g_ends[1] = &t[2];
     u32 two[2] = {handle(b), handle(&t[2])};
     snx_st_le32(g_mem + 0x400, two[0]), snx_st_le32(g_mem + 0x404, two[1]);
     g_slept = 0;
     CHECK(svc_wait_sync(a, 0x400, 2, -1, &at) == 0 && at == 0 && g_joining == 83, "join of two: thread %lu",
           (unsigned long)g_joining);
+    g_ends[0] = g_ends[1] = NULL;
 
     /* ArbitrateLock answers as the console: a word that changed meanwhile succeeds without a wait, an owner handle
        that names no thread (the current-thread pseudo-handle, a closed handle) is InvalidHandle, and the address must

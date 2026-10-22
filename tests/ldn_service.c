@@ -106,7 +106,6 @@ void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
-    if (o->destroy) o->destroy(o);
     free(o);
     test_kobjs--;
 }
@@ -114,7 +113,7 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -345,10 +344,6 @@ static void in_a_room(SvcObj* creator, SvcObj* bsd) {
     fake_room_stop(room);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

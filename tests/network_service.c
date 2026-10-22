@@ -106,7 +106,7 @@ void kobj_unref(KObj* o) {
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -352,10 +352,6 @@ static void test_nifm_room(void) {
     fake_room_stop(room);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

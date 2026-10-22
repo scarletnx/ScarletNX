@@ -126,10 +126,6 @@ static void stops(void) {
     g_opt_ldn = SNX_OPT_LDN_LAN;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

@@ -122,7 +122,7 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -667,10 +667,6 @@ static void test_nvmap_as(void) {
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 16);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 /* guest memory the guest freed after the GPU mapped it, [freed, freed + freed_size) (none while freed_size is 0):
    mem_mapped_run's runs stop there */

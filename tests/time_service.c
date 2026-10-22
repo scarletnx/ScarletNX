@@ -29,7 +29,7 @@ static u8 shm_host[0x1000];
 static KShmem shm_obj;
 KShmem* kshmem_new(u64 size, const char* name) {
     CHECK(size == sizeof shm_host);
-    shm_obj.o.name = name;
+    kobj_set_name(&shm_obj.o, name);
     shm_obj.size = size;
     shm_obj.host = shm_host;
     return &shm_obj;
@@ -129,10 +129,6 @@ static nn_time_CalendarTime calendar(int y, int mo, int d, int h, int mi, int s)
 }
 static i64 rd64(const u8* p) { return (i64)snx_ld_le64(p); }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

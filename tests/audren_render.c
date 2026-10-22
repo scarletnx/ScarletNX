@@ -1131,10 +1131,6 @@ static void update_voice_rev14(void) {
     audren_state_free(state);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

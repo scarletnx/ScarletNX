@@ -406,11 +406,7 @@ static void test_shared_memory(void) {
     CHECK(svc_unmap_shm(0x1234, a, 0x2000) == 0);
     CHECK(kshmem_ptr(s) == s->host && s->host[1] == 9 && state(a) == MS_FREE);
     test_handle = NULL;
-    s->o.destroy(&s->o);
-}
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
+    kshmem_destroy(&s->o);
 }
 
 int main(void) {

@@ -21,9 +21,8 @@
 /* ============================================================ objects only the SVCs make */
 /* svcCreateEvent's writable end (KWEvent), from g_hle.svc.wevents (KHANDLED_MAX). The process's resource limit, for
    GetInfo 9, is g_hle.svc.reslimit: one object, never destroyed */
-static void wevent_destroy(KObj* o) {
+void kwevent_destroy(KObj* o) {
     kobj_unref(&((KWEvent*)o)->r->o);
-    free(o->waiters);
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT((KWEvent*)o);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -33,7 +32,7 @@ static void wevent_destroy(KObj* o) {
 static u32 give_handle(KObj* o, u32* out) {
     u32 h = h_new(o);
     if (!h) {
-        if (o->destroy) o->destroy(o);
+        kobj_destroy(o);
         R_THROW(R_OUTOFHANDLES);
     }
     *out = h;
@@ -49,13 +48,11 @@ static int valid_prio(i32 p) { return p >= 0 && p < 64 && ((g_hle.svcmem.prio_ma
    one it is in (2), off its core, until it is resumed. A thread blocked inside an SVC runs no game code, which is
    paused enough for GetThreadContext3 */
 static int pause_point(KThread* t, int where) {
-    int i;
     if (!__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) return 0;
     core_leave(t);
     pm_lock(&g_hle.kernel.klock);
     t->pause_at = where;
-    for (i = 0; i < t->o.nwait; i++)
-        if (t->o.waiters[i]->wait_kind == 5) wake(t->o.waiters[i], 0);
+    kobj_wake_nl(&t->o, 5);
     while (t->suspended) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
     t->pause_at = 0;
     pm_unlock(&g_hle.kernel.klock);
@@ -223,10 +220,8 @@ static u32 set_thread_activity(KThread* cur, u32 h, u32 act) {
     else {
         __atomic_store_n(&t->suspended, (int)act, __ATOMIC_SEQ_CST);
         if (!act) {
-            int i;
             pc_broadcast(&t->cv);
-            for (i = 0; i < t->o.nwait; i++) /* a GetThreadContext3 waiting for it to pause has its answer */
-                if (t->o.waiters[i]->wait_kind == 5) wake(t->o.waiters[i], 0);
+            kobj_wake_nl(&t->o, 5); /* a GetThreadContext3 waiting for it to pause has its answer */
         } else
             pause_settle_nl(cur, t);
     }
@@ -336,8 +331,7 @@ static u32 create_event(u32* wh, u32* rh) {
     w = (KWEvent*)POOL_TAKE(g_hle.svc.wevents, g_hle.svc.wevent_next, "writable events");
     w->o.type = KO_WEVENT;
     pm_unlock(&g_hle.kernel.pool_lk);
-    w->o.destroy = wevent_destroy;
-    w->o.name = "writable event";
+    kobj_set_name(&w->o, "writable event");
     w->r = r;
     kobj_ref(&r->o);
     R_TRY(give_handle(&w->o, wh));

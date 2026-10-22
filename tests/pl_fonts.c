@@ -83,10 +83,6 @@ static int contains(const u8* data, size_t size, const char* text) {
     return 0;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

@@ -78,10 +78,6 @@ static void play(SvcObj* o) {
     audren_tick();
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

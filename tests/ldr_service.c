@@ -27,10 +27,6 @@ static int fail_commit;
 void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { CHECK(!pthread_mutex_init(&m->l, NULL)); }
 void pm_lock(PMutex* m) { CHECK(!pthread_mutex_lock(&m->l)); }
 void pm_unlock(PMutex* m) { CHECK(!pthread_mutex_unlock(&m->l)); }

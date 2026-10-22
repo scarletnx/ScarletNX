@@ -230,15 +230,11 @@ static void* yield_body(void* p) {
     return NULL;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void kobj_ref(KObj* o) {
     if (o) o->refs++;
 }
 void kobj_unref(KObj* o) {
-    if (o && --o->refs == 0 && o->destroy) o->destroy(o);
+    if (o && --o->refs == 0 && o->type == KO_THREAD) kthread_destroy(o);
 }
 
 int main(void) {
@@ -435,7 +431,7 @@ int main(void) {
               kthread_live_count());
         first[7]->state = 2;
         CHECK(kthread_live_count() == KTHREAD_MAX - 1, "one exited: %d live", kthread_live_count());
-        thread_destroy(&first[7]->o); /* its last reference */
+        kthread_destroy(&first[7]->o); /* its last reference */
         CHECK(first[7]->o.type == 0 && kthread_live_count() == KTHREAD_MAX - 1, "the exited thread's slot is free");
         t = kthread_create(0x1000, 0, 0x2000, 44, 0);
         CHECK(t == first[7] && t->id == first[KTHREAD_MAX - 1]->id + 1 && kthread_live_count() == KTHREAD_MAX,

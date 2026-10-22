@@ -111,10 +111,6 @@ static void sockaddr_lo(u64 at, u16 port_be) {
     memcpy(GP(at), s, 16);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

@@ -176,11 +176,10 @@ static SvcObj* domain_take(Domain* d, u32 id) {
 }
 
 /* ============================================================ sessions */
-static void session_destroy(KObj* o) {
+void ksession_destroy(KObj* o) {
     KSession* s = (KSession*)o;
     svcobj_unref(s->obj);
     domain_unref(s->domain);
-    free(o->waiters);
     pm_lock(&g_hle.ipc.lk);
     POOL_PUT(s);
     pm_unlock(&g_hle.ipc.lk);
@@ -192,8 +191,7 @@ static u32 session_make(SvcObj* obj, Domain* d) {
     pm_lock(&g_hle.ipc.lk);
     s = (KSession*)POOL_TAKE(g_hle.ipc.sessions, g_hle.ipc.session_next, "sessions");
     s->o.type = KO_SESSION;
-    s->o.destroy = session_destroy;
-    s->o.name = obj ? obj->name : "session";
+    kobj_set_name(&s->o, obj ? obj->name : "session");
     s->obj = obj;
     s->domain = d;
     pm_unlock(&g_hle.ipc.lk);

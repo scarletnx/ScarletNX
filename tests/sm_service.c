@@ -69,10 +69,6 @@ static nn_sm_ServiceName name_of(const char* s, size_t n) {
     return name;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

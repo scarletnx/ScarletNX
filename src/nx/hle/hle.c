@@ -38,11 +38,10 @@ void hle_init(void) {
     g_hle.kernel.hlinear = 1;
     g_hle.kernel.process.type = KO_PROCESS;
     g_hle.kernel.process.refs = 1;
-    g_hle.kernel.process.is_signaled = kobj_never_signaled;
-    g_hle.kernel.process.name = "process";
+    kobj_set_name(&g_hle.kernel.process, "process");
     g_hle.svc.reslimit.type = KO_RESLIMIT;
     g_hle.svc.reslimit.refs = 1;
-    g_hle.svc.reslimit.name = "resource limit";
+    kobj_set_name(&g_hle.svc.reslimit, "resource limit");
     for (i = 0; i < NCORES; i++) g_hle.thread.core_best[i] = 64; /* no thread waits for a core */
     g_hle.thread.tls_used = 8;
     /* an application's cores and priorities, until the npdm says (main.c) */

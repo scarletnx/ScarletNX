@@ -334,13 +334,12 @@ u32 svc_query(u64 info, u64 addr) {
    the game maps it, once: the mapping is a copy, kshmem_ptr gives the service the guest's pages while it lasts, and
    unmapping copies them back */
 static u64 shm_whole(const KShmem* s) { return (s->size + 0xFFF) & ~0xFFFull; }
-static void shm_destroy(KObj* o) {
+void kshmem_destroy(KObj* o) {
     KShmem* s = (KShmem*)o;
     if (s->pool)
         mem_pool_host_free(s->host, s->pool - 1, shm_whole(s));
     else
         free(s->host);
-    free(o->waiters);
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT(s);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -359,8 +358,7 @@ KShmem* kshmem_new(u64 size, const char* name) {
         s->pool = off + 1;
     else if (!(s->host = (u8*)calloc(1, (size_t)shm_whole(s))))
         fatal("Out of memory for the shared memory %s", name);
-    s->o.destroy = shm_destroy;
-    s->o.name = name;
+    kobj_set_name(&s->o, name);
     s->perm = PERM_RW;
     return s;
 }
@@ -472,8 +470,7 @@ u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out) {
     m = (KTmem*)POOL_TAKE(g_hle.svcmem.tmems, g_hle.svcmem.tmem_next, "transfer memories");
     m->o.type = KO_TMEM;
     pm_unlock(&g_hle.kernel.pool_lk);
-    m->o.destroy = tmem_destroy;
-    m->o.name = "transfer memory";
+    kobj_set_name(&m->o, "transfer memory");
     m->addr = addr;
     m->size = size;
     m->perm = perm;
@@ -486,7 +483,6 @@ void tmem_destroy(KObj* o) {
     KTmem* m = (KTmem*)o;
     mem_set_attr(m->addr, m->size, MA_LOCKED, 0);
     set_perm(m->addr, m->size, PERM_RW);
-    free(o->waiters);
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT(m);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -498,14 +494,13 @@ void tmem_destroy(KObj* o) {
    pages, so code the game writes through the owner is in the slave at once. Without the pool they are copies, the
    slave of the owner when it is mapped, and code written after the slave is mapped doesn't reach it. A KCodeMem, from
    g_hle.svcmem.codemems (KHANDLED_MAX) */
-static void codemem_destroy(KObj* o) {
+void kcodemem_destroy(KObj* o) {
     KCodeMem* c = (KCodeMem*)o;
     if (c->owner) mem_alias_unmap(c->owner, c->size, c->addr);
     if (c->slave) mem_alias_unmap(c->slave, c->size, 0);
     mem_alias_end(c->addr, c->size);
     mem_set_attr(c->addr, c->size, MA_LOCKED, 0);
     set_perm(c->addr, c->size, PERM_RW);
-    free(o->waiters);
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT(c);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -520,8 +515,7 @@ u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
     c = (KCodeMem*)POOL_TAKE(g_hle.svcmem.codemems, g_hle.svcmem.codemem_next, "code memories");
     c->o.type = KO_CODEMEM;
     pm_unlock(&g_hle.kernel.pool_lk);
-    c->o.destroy = codemem_destroy;
-    c->o.name = "code memory";
+    kobj_set_name(&c->o, "code memory");
     c->addr = addr;
     c->size = size;
     set_perm(addr, size, PERM_NONE);

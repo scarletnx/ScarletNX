@@ -96,7 +96,7 @@ void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
-    if (o->destroy) o->destroy(o);
+    if (o->type == KO_SHMEM) free(((KShmem*)o)->host); /* as kshmem_destroy lets go of its pages */
     free(o);
     test_kobjs--;
 }
@@ -104,18 +104,16 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-static void shm_destroy(KObj* o) { free(((KShmem*)o)->host); }
 KShmem* kshmem_new(u64 size, const char* name) {
     KShmem* s = calloc(1, sizeof *s);
     CHECK(s != NULL);
     s->o.type = KO_SHMEM;
-    s->o.name = name;
-    s->o.destroy = shm_destroy;
+    kobj_set_name(&s->o, name);
     s->size = size;
     s->host = calloc(1, size);
     CHECK(s->host != NULL);
@@ -595,10 +593,6 @@ static void test_self_settings(void) {
     CHECK(nn_am_service_ISelfController_IsAutoSleepDisabled(NULL, &disabled) == 0 && disabled == 1);
     CHECK(nn_am_service_ISelfController_SetAutoSleepDisabled(NULL, 0) == 0);
     CHECK(nn_am_service_ISelfController_IsAutoSleepDisabled(NULL, &disabled) == 0 && disabled == 0);
-}
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
 }
 
 int main(void) {

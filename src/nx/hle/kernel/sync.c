@@ -361,7 +361,7 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
     pm_lock(&g_hle.kernel.klock);
     for (i = 0; i < n; i++) {
         objs[i] = h_get_nl(hs[i]);
-        if (!objs[i] || !objs[i]->is_signaled) {
+        if (!objs[i] || !kobj_waitable(objs[i])) {
             u32 k = g_hle.sync.bad_waits++, bad = hs[i];
             pm_unlock(&g_hle.kernel.klock);
             while (i--) kobj_unref(objs[i]);
@@ -374,7 +374,7 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         kobj_ref(objs[i]);
     }
     for (i = 0; i < n; i++)
-        if (objs[i]->is_signaled(objs[i])) break;
+        if (kobj_signaled(objs[i])) break;
     if (i < n)
         *out_idx = i;
     else if (!timeout)
@@ -387,7 +387,10 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         t->woken = 0;
         t->wait_kind = 1;
         t->wait_key = 0; /* kobj_signal_nl names the object here */
-        t->wait_name = n == 1 ? objs[0]->name : n ? "several objects" : "no handles";
+        snprintf(t->wait_name, sizeof t->wait_name, "%s",
+                 n == 1 ? objs[0]->name
+                 : n    ? "several objects"
+                        : "no handles");
         t->wait_tid = n && objs[0]->type == KO_THREAD ? ((KThread*)objs[0])->id : 0; /* a join */
         for (i = 0; i < n; i++) waiter_add(objs[i], t);
         woke = sleep_nl(t, timeout);
@@ -402,11 +405,9 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         }
         i = n;
         if (R_SUCCEEDED(r)) {
-            for (i = 0; i < n && (u64)(size_t)objs[i] != t->wait_key; i++) {
-            }
+            for (i = 0; i < n && kobj_id(objs[i]) != t->wait_key; i++) {}
             if (i == n) /* woken without being told by which object */
-                for (i = 0; i < n && !objs[i]->is_signaled(objs[i]); i++) {
-                }
+                for (i = 0; i < n && !kobj_signaled(objs[i]); i++) {}
         }
         *out_idx = i < n ? i : ~0u;
     }

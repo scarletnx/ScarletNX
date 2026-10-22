@@ -16,18 +16,69 @@ void kobj_ref(KObj* o) {
 /* the last reference destroys the object. Never called with g_klock held where a destroy may take it (a session's
    service objects do) */
 void kobj_unref(KObj* o) {
-    if (o && __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL) == 0 && o->destroy) o->destroy(o);
+    if (o && __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL) == 0) kobj_destroy(o);
+}
+static void kevent_destroy(KObj* o) {
+    pm_lock(&g_hle.kernel.pool_lk);
+    POOL_PUT((KEvent*)o);
+    pm_unlock(&g_hle.kernel.pool_lk);
+}
+/* the process and the resource limit are never destroyed */
+void kobj_destroy(KObj* o) {
+    switch (o->type) {
+        case KO_EVENT: kevent_destroy(o); break;
+        case KO_THREAD: kthread_destroy(o); break;
+        case KO_SESSION: ksession_destroy(o); break;
+        case KO_SHMEM: kshmem_destroy(o); break;
+        case KO_TMEM: tmem_destroy(o); break;
+        case KO_CODEMEM: kcodemem_destroy(o); break;
+        case KO_WEVENT: kwevent_destroy(o); break;
+        default: break;
+    }
+}
+int kobj_waitable(const KObj* o) { return o->type == KO_EVENT || o->type == KO_THREAD || o->type == KO_PROCESS; }
+int kobj_signaled(const KObj* o) {
+    switch (o->type) {
+        case KO_EVENT: return ((const KEvent*)o)->signaled;
+        case KO_THREAD: return ((const KThread*)o)->state == 2;
+        default: return 0;
+    }
+}
+
+/* ============================================================ objects as numbers */
+/* the type in the top byte, the slot below */
+#define KOBJ_ID(type, slot) ((u32)(type) << 24 | (u32)(slot))
+u32 kobj_id(const KObj* o) {
+    if (!o) return 0;
+    switch (o->type) {
+        case KO_EVENT: return KOBJ_ID(KO_EVENT, POOL_INDEX(g_hle.kernel.events, (const KEvent*)o));
+        case KO_THREAD: return KOBJ_ID(KO_THREAD, POOL_INDEX(g_hle.thread.threads, (const KThread*)o));
+        case KO_SESSION: return KOBJ_ID(KO_SESSION, POOL_INDEX(g_hle.ipc.sessions, (const KSession*)o));
+        case KO_SHMEM: return KOBJ_ID(KO_SHMEM, POOL_INDEX(g_hle.svcmem.shmems, (const KShmem*)o));
+        case KO_TMEM: return KOBJ_ID(KO_TMEM, POOL_INDEX(g_hle.svcmem.tmems, (const KTmem*)o));
+        case KO_CODEMEM: return KOBJ_ID(KO_CODEMEM, POOL_INDEX(g_hle.svcmem.codemems, (const KCodeMem*)o));
+        case KO_WEVENT: return KOBJ_ID(KO_WEVENT, POOL_INDEX(g_hle.svc.wevents, (const KWEvent*)o));
+        default: return KOBJ_ID(o->type, 0); /* the process and the resource limit, one of each */
+    }
+}
+KObj* kobj_at(u32 id) {
+    u32 slot = id & 0xFFFFFF;
+    switch (id >> 24) {
+        case KO_EVENT: return &g_hle.kernel.events[slot].o;
+        case KO_THREAD: return &g_hle.thread.threads[slot].o;
+        case KO_SESSION: return &g_hle.ipc.sessions[slot].o;
+        case KO_SHMEM: return &g_hle.svcmem.shmems[slot].o;
+        case KO_TMEM: return &g_hle.svcmem.tmems[slot].o;
+        case KO_CODEMEM: return &g_hle.svcmem.codemems[slot].o;
+        case KO_WEVENT: return &g_hle.svc.wevents[slot].o;
+        case KO_PROCESS: return &g_hle.kernel.process;
+        case KO_RESLIMIT: return &g_hle.svc.reslimit;
+        default: return NULL;
+    }
 }
 
 /* ============================================================ the handle table */
 /* g_hle.kernel.htab, whose comment says how a handle is made: 1024 entries, the most the console's table holds */
-
-/* the one process, for the pseudo-handle (g_hle.kernel.process): never destroyed, and never signaled, as the game
-   never ends it */
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 u32 h_new(KObj* o) {
     int i;
@@ -111,26 +162,42 @@ int h_close(u32 h) {
 
 /* ============================================================ waiting and waking */
 /* an object's waiters: the threads in WaitSynchronization on it (wait_kind 1) and those waiting for a thread to pause
-   (5, svc.c). A thread waiting on the same handle twice is in the list twice, and leaves it twice */
+   (5, svc.c), each naming it in its waits. A thread waiting on the same handle twice names it twice, and leaves it
+   twice */
 void waiter_add(KObj* o, KThread* t) {
-    if (o->nwait == o->capwait) {
-        int cap = o->capwait ? o->capwait * 2 : 4;
-        KThread** w = realloc(o->waiters, sizeof *w * (size_t)cap);
-        if (!w) fatal("Out of memory for the waiters of a %s", o->name);
-        o->waiters = w;
-        o->capwait = cap;
-    }
-    o->waiters[o->nwait++] = t;
+    if (t->nwaits == (int)(sizeof t->waits / sizeof *t->waits)) fatal("A thread waits on more than 64 objects");
+    t->waits[t->nwaits++] = kobj_id(o);
+    o->nwait++;
 }
 void waiter_del(KObj* o, KThread* t) {
+    u32 id = kobj_id(o);
     int i;
-    for (i = 0; i < o->nwait; i++)
-        if (o->waiters[i] == t) {
-            memmove(o->waiters + i, o->waiters + i + 1, sizeof *o->waiters * (size_t)(o->nwait - i - 1));
+    for (i = 0; i < t->nwaits; i++)
+        if (t->waits[i] == id) {
+            memmove(t->waits + i, t->waits + i + 1, sizeof *t->waits * (size_t)(t->nwaits - i - 1));
+            t->nwaits--;
             o->nwait--;
             return;
         }
 }
+/* the waiters are found among the threads: few objects have any, and those with one have a handful */
+static void wake_waiters_nl(KObj* o, int kind) {
+    u32 id;
+    int i, k;
+    if (!o->nwait) return;
+    id = kobj_id(o);
+    for (i = 0; i < KTHREAD_MAX; i++) {
+        KThread* w = &g_hle.thread.threads[i];
+        if (w->o.type != KO_THREAD || !w->nwaits ||
+            (kind ? w->wait_kind != kind : w->wait_kind != 1 && w->wait_kind != 5))
+            continue;
+        for (k = 0; k < w->nwaits && w->waits[k] != id; k++) {}
+        if (k == w->nwaits) continue;
+        if (w->wait_kind == 1 && !w->woken) w->wait_key = id;
+        wake(w, 0);
+    }
+}
+void kobj_wake_nl(KObj* o, int kind) { wake_waiters_nl(o, kind); }
 /* ends t's wait with result. Only the first wake of a wait counts: a thread signaled by an object and then cancelled
    before it runs again returns the signal, as the console's NotifyAvailable makes the thread no longer cancellable */
 void wake(KThread* t, int result) {
@@ -142,13 +209,8 @@ void wake(KThread* t, int result) {
 /* wakes the threads waiting on o, if it is signaled. A WaitSynchronization waiter is told which object it was (in
    wait_key, which its wait doesn't use otherwise): by the time it runs, another thread may have cleared the event */
 void kobj_signal_nl(KObj* o) {
-    int i;
-    if (o->is_signaled && !o->is_signaled(o)) return;
-    for (i = 0; i < o->nwait; i++) {
-        KThread* w = o->waiters[i];
-        if (w->wait_kind == 1 && !w->woken) w->wait_key = (u64)(size_t)o;
-        wake(w, 0);
-    }
+    if (kobj_waitable(o) && !kobj_signaled(o)) return;
+    wake_waiters_nl(o, 0);
 }
 /* t (the calling thread, with g_klock held) blocks until it is woken or timeout ns pass (negative: none, 0: it only
    checks). It lets go of its core first, as a console thread leaves the CPU when it blocks: the SVC takes it back on
@@ -182,13 +244,6 @@ int sleep_nl(KThread* t, i64 timeout) {
 }
 
 /* ============================================================ events */
-static int ev_signaled(KObj* o) { return ((KEvent*)o)->signaled; }
-static void ev_destroy(KObj* o) {
-    free(o->waiters);
-    pm_lock(&g_hle.kernel.pool_lk);
-    POOL_PUT((KEvent*)o);
-    pm_unlock(&g_hle.kernel.pool_lk);
-}
 /* the readable end, with no reference: the first handle takes one, or the service that keeps it. From
    g_hle.kernel.events (KEVENT_MAX) */
 KEvent* kevent_new(const char* name) {
@@ -197,9 +252,7 @@ KEvent* kevent_new(const char* name) {
     e = (KEvent*)POOL_TAKE(g_hle.kernel.events, g_hle.kernel.event_next, "events");
     e->o.type = KO_EVENT;
     pm_unlock(&g_hle.kernel.pool_lk);
-    e->o.is_signaled = ev_signaled;
-    e->o.destroy = ev_destroy;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     return e;
 }
 /* An event stays signaled until it is cleared, waking every waiter. The console notifies only when the event was

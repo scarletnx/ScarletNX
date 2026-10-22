@@ -50,7 +50,20 @@ typedef struct {
 KObj* h_get_nl(u32 h);
 /* no reference taken: only for an object that is never freed (the resource limit) */
 KObj* h_get_type(u32 h, int t);
-int kobj_never_signaled(KObj* o); /* the process's is_signaled: it never ends while the game runs */
+/* whether o can be waited on (WaitSynchronization), and whether it is signaled: an event while it is set, a thread
+   once it has exited, the process never (the game never ends it) */
+int kobj_waitable(const KObj* o);
+int kobj_signaled(const KObj* o);
+/* the last reference went: what each type does then (kobj_unref), and the destroys of the types kernel.c doesn't
+   make itself */
+void kobj_destroy(KObj* o);
+void kthread_destroy(KObj* o);
+void ksession_destroy(KObj* o);
+void kwevent_destroy(KObj* o);
+void kshmem_destroy(KObj* o);
+void kcodemem_destroy(KObj* o);
+/* wakes the threads whose wait of this kind (1 objects, 5 a pause) names o, under g_klock */
+void kobj_wake_nl(KObj* o, int kind);
 int h_close(u32 h);
 void waiter_add(KObj* o, KThread* t);
 void waiter_del(KObj* o, KThread* t);

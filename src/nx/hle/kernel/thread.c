@@ -212,9 +212,6 @@ void kernel_init(void) {
     g_hle.thread.host_ncpu = plat_cpus(g_hle.thread.host_cpu, 256);
 }
 
-/* the thread can be waited on: it is signaled once it has exited (a join) */
-static int thread_signaled(KObj* o) { return ((KThread*)o)->state == 2; }
-
 /* Each thread's thread-local storage is 0x200 bytes (the IPC message buffer in the first 0x100), eight to a page, as
    the console hands them out; TPIDRRO_EL0 (TPIDRURO for a 32-bit thread) points at it. Under g_klock. A freed
    thread's TLS isn't handed out again, as it wasn't while threads were never freed */
@@ -244,8 +241,7 @@ int kthread_live_count(void) {
    started. Nothing else can reach it: every wait on it held a reference (WaitSynchronization's, a mutex waiter's on its
    owner, a pause's through its handle), it holds no core and waits on nothing. It may come with g_klock held (a mutex
    waiter's reference to its owner goes as the mutex changes hands), so it takes only the pool's lock */
-static void thread_destroy(KObj* o) {
-    free(o->waiters);
+void kthread_destroy(KObj* o) {
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT((KThread*)o);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -259,9 +255,7 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t = (KThread*)POOL_TAKE(g_hle.thread.threads, g_hle.thread.thread_next, "threads");
     t->o.type = KO_THREAD;
     pm_unlock(&g_hle.kernel.pool_lk);
-    t->o.is_signaled = thread_signaled;
-    t->o.destroy = thread_destroy;
-    t->o.name = "thread";
+    kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
     t->core = t->ideal_core = core;
     t->affinity = 1ull << core;

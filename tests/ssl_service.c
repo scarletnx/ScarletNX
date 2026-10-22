@@ -313,10 +313,6 @@ static int ssl_read(SvcObj* c, u32 cmd, u32 size, u32* n) {
     return r;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

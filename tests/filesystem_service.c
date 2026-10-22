@@ -1720,10 +1720,6 @@ static void cleanup_service(void) {
     CHECK(test_shared == 0);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 /* rhash against the RomFS format's definition, worked by hand: the seed is the parent's offset xor 123456789
    (0x075BCD15), each byte rotates right by 5 then xors in. "a": 0x075BCD15 ror 5 = 0xA83ADE68, xor 0x61 = 0xA83ADE09.

@@ -504,10 +504,6 @@ static void test_refused(void) {
     puts("PASS every users.ini that is no list of users refused");
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

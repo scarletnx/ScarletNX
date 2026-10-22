@@ -82,7 +82,7 @@ void kobj_unref(KObj* o) {
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -158,10 +158,6 @@ static u32 transact(u32 code, const void* payload, u32 n) {
     return rd32(0x4000); /* the data's size; it starts at 0x4010 and ends with the status */
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
