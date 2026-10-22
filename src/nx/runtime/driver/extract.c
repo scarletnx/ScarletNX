@@ -11,6 +11,7 @@
 
 typedef struct {
     const char *base, *update, *name, *out, *keys, *title_keys;
+    int icon; /* --icon: the game's icon alone */
 } ExtractOptions;
 
 typedef struct {
@@ -31,6 +32,7 @@ static void extract_help(void) {
          "  --out DIR           Output directory (default: REPO/work/NAME)\n"
          "  --keys FILE         prod.keys (default: REPO, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
+         "  --icon              The game's icon alone, icon.jpg into --out DIR (what Games shows), nothing extracted\n"
          "  --help              Show this help");
     puts("REPO is the data folder: --repo, else a portable copy's or the user's (scarletnx --help).");
 #ifdef SNX_XDG
@@ -69,6 +71,10 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
         }
         if (!positional && !strcmp(argv[i], "--")) {
             positional = 1;
+            continue;
+        }
+        if (!positional && !strcmp(argv[i], "--icon")) {
+            options->icon = 1;
             continue;
         }
         if (positional || argv[i][0] != '-' || !argv[i][1]) {
@@ -411,6 +417,11 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
     result = parse_options(argc, argv, &options);
     if (result) return result == 2 ? 0 : 1;
     if (!paths || !paths->repo) return snx_error("Extraction requires the repository path");
+    if (options.icon) { /* nothing else read or written */
+        if (!options.out) return snx_error("--icon writes icon.jpg into --out DIR, and none is given");
+        if (snx_mkdirs(options.out)) return snx_error("cannot create %s for the icon", options.out);
+        return snx_extract_icon(options.base, paths, options.out) ? 1 : 0;
+    }
     memset(&state, 0, sizeof state);
     result = prepare_paths(&state, &options, paths);
     if (!result) {

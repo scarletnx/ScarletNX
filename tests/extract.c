@@ -234,6 +234,19 @@ static int in_place(const char* base, const SnxPaths* paths) {
         CHECK(out && !snx_mkdirs(out) && !snx_extract_icon(base, paths, out));
         CHECK(file_is(out, "icon.jpg", picture.data, picture.size));
         CHECK(snx_extract_icon(base, paths, "/nonexistent/folder") != 0); /* said, nothing written */
+        { /* -x --icon, as the launcher asks for a dump's: the icon into --out, made, and nothing else */
+            char *by_cli = snx_path_join(dir, "icon by cli/deeper"), *args[5] = {"--icon", "--out", by_cli, "--", NULL};
+            char* exefs = snx_path_join(by_cli, "exefs");
+            args[4] = (char*)base;
+            CHECK(by_cli && exefs && !snx_extract(5, args, paths) &&
+                  file_is(by_cli, "icon.jpg", picture.data, picture.size));
+            CHECK(!snx_path_exists(exefs));
+            args[1] = "--";
+            args[2] = (char*)base;
+            CHECK(snx_extract(3, args + 0, paths) != 0); /* no --out: said */
+            free(exefs);
+            free(by_cli);
+        }
         free(picture.data);
         free(out);
         free(dir);
