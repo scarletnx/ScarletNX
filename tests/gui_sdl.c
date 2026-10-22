@@ -869,6 +869,18 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     snx_test_crash_said();
 #endif
+    if (argc == 9 && !strcmp(argv[3], "-x") && !strcmp(argv[4], "--icon")) { /* a dump's icon, as -x --icon writes it */
+        IconJpeg jpeg = {{0}, 0};
+        char* to = snx_path_join(argv[6], "icon.jpg");
+        int rc = 1;
+        if (strstr(argv[8], "no icon"))
+            printf("Games shows no icon for %s: it has no Control NCA\n", argv[8]);
+        else
+            rc = snx_splash_jpeg("wimsy-fuddles", 32, 90, icon_jpeg_write, &jpeg) ||
+                 snx_write_file(to, jpeg.data, (size_t)jpeg.size);
+        free(to);
+        return rc;
+    }
     if (argc == 2 && !strcmp(argv[1], "--settings")) { /* as the runtime lists its settings */
         fputs("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
               "Graphics\tresolution\t1\tfloat\t0.25\t4\tInternal 3D resolution\t\t\n"
@@ -3376,6 +3388,61 @@ int main(int argc, char** argv) {
                 icons_free(&app);
                 assert(!remove(icon));
                 free(icon);
+            }
+            { /* a dump's icon, asked of the driver (-x --icon) into the menu's cache: none until it answers, once, then
+                 its row's; one it has none for keeps what the driver said and is not asked again */
+                char* cache_was = getenv("XDG_CACHE_HOME") ? snx_strdup(getenv("XDG_CACHE_HOME")) : NULL;
+                char *cache = snx_path_join(temporary, "icon cache"), *with = snx_path_join(temporary, "with icon.nsp");
+                char *without = snx_path_join(temporary, "no icon.nsp"), *dir, *why;
+                char* said;
+                size_t said_size = 0;
+                unsigned answered;
+                set_env("XDG_CACHE_HOME", cache);
+                assert(!snx_write_file(with, "x", 1) && !snx_write_file(without, "x", 1));
+                icons_free(&app);
+                dump_icons_pass(&app.dump_icons); /* the dumps Games' rows asked for before this */
+                pump(&app);
+                icons_free(&app);
+                answered = app.dump_icons.answered;
+                assert(!game_icon(&app, with) && app.dump_icons.count == 1 && !app.dump_icons.thread);
+                icons_free(&app);
+                assert(!game_icon(&app, with) && app.dump_icons.count == 1); /* asked once */
+                dump_icons_pass(&app.dump_icons);
+                assert(!app.dump_icons.count && app.dump_icons.answered == answered + 1 &&
+                       game_icon(&app, with) == NULL);
+                pump(&app); /* an answer: the rows without one look again */
+                assert(app.dump_icons_seen == answered + 1 && game_icon(&app, with));
+                assert(!game_icon(&app, without));
+                dump_icons_pass(&app.dump_icons);
+                pump(&app);
+                assert(!game_icon(&app, without));
+                dir = dump_icon_dir(&app, without);
+                why = snx_path_join(dir, "why.txt");
+                said = (char*)snx_read_file(why, &said_size);
+                assert(said && strstr(said, "no icon.nsp: it has no Control NCA"));
+                icons_free(&app);
+                assert(!game_icon(&app, without) && !app.dump_icons.count); /* said once: not asked again */
+                { /* keys put in: a dump the driver could not read is asked again */
+                    char* keys_was = app.keys_path;
+                    app.keys_path = snx_path_join(temporary, "icon cache keys");
+                    assert(!snx_write_file(app.keys_path, "keys", 4));
+                    icons_free(&app);
+                    assert(!game_icon(&app, without) && app.dump_icons.count == 1);
+                    dump_icons_pass(&app.dump_icons);
+                    assert(!remove(app.keys_path));
+                    free(app.keys_path);
+                    app.keys_path = keys_was;
+                }
+                dump_icons_stop(&app);
+                set_env("XDG_CACHE_HOME", cache_was);
+                icons_free(&app);
+                free(said);
+                free(why);
+                free(dir);
+                free(without);
+                free(with);
+                free(cache);
+                free(cache_was);
             }
             app.recent = was;
             recent_changed(&app);

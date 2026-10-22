@@ -552,6 +552,9 @@ msgstr "无法绘制 %s 的头像：改为显示 Wimsy"
 msgid "%s could not be drawn: the game shows no icon"
 msgstr "无法绘制 %s：该游戏不显示图标"
 
+msgid "The dumps' icons are not asked for (%s)"
+msgstr "未能读取转储的图标（%s）"
+
 #: src/gui/main.c
 msgid "Who plays the games"
 msgstr "谁在玩"

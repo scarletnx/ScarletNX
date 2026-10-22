@@ -552,6 +552,9 @@ msgstr "Não foi possível desenhar a foto de %s: aparece a Wimsy"
 msgid "%s could not be drawn: the game shows no icon"
 msgstr "Não foi possível desenhar %s: o jogo fica sem ícone"
 
+msgid "The dumps' icons are not asked for (%s)"
+msgstr "Os ícones dos dumps não são pedidos (%s)"
+
 #: src/gui/main.c
 msgid "Who plays the games"
 msgstr "Quem joga"

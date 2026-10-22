@@ -608,6 +608,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "The dumps' icons are not asked for (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s could not be drawn: the game shows no icon"
 msgstr ""
 
