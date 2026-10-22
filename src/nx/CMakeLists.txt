@@ -33,10 +33,10 @@ function(snx_component name)
     target_link_libraries(snx_${name} PUBLIC snx_nx_flags)
 endfunction()
 
-snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/pause.c runtime/crash.c runtime/options.c
+snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/pause.c runtime/state_file.c runtime/crash.c runtime/options.c
               runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
               runtime/cheats.c)
-target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_build_info)
+target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
 if(APPLE)
     # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,
