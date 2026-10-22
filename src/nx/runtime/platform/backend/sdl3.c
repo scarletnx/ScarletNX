@@ -168,14 +168,14 @@ static u64 g_touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid
    the touch screen under (hid_take_input) */
 enum { TOUCH_DOWN, TOUCH_MOVE, TOUCH_UP };
 static void touch_set(int how, u64 id, const int picture[4], float px, float py) {
-    pm_lock(&g_hle.hid.input_lock);
+    pm_lock(&g_host.hid.input_lock);
     if (how == TOUCH_DOWN)
         touch_down(&g_hle.hid.touch, g_touch_ids, id, picture, px, py);
     else if (how == TOUCH_MOVE)
         touch_move(&g_hle.hid.touch, g_touch_ids, id, picture, px, py);
     else
         touch_up(&g_hle.hid.touch, g_touch_ids, id);
-    pm_unlock(&g_hle.hid.input_lock);
+    pm_unlock(&g_host.hid.input_lock);
 }
 
 /* the touch screen's setting changed (the .ini's setter, on the main thread): the fingers or the mouse it no longer
@@ -1218,7 +1218,7 @@ void video_poll(void) {
     u64 pb;
     input_key_sticks(k, st);
     i32 lx = st[0], ly = st[1], rx = st[2], ry = st[3];
-    pm_lock(&g_hle.hid.input_lock);
+    pm_lock(&g_host.hid.input_lock);
     touch_lift();
     /* Each SDL slot is one guest Npad. Keyboard, scripted and on-screen input also drive No1. */
     static u32 previous_ids[SNX_GAMEPADS];
@@ -1328,7 +1328,7 @@ void video_poll(void) {
         vpad_showcase_input(b, shown);
         ui_unlock();
     }
-    pm_unlock(&g_hle.hid.input_lock);
+    pm_unlock(&g_host.hid.input_lock);
 }
 
 char* backend_launcher_folder(void) {

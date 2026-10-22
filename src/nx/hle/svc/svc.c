@@ -23,9 +23,9 @@
    GetInfo 9, is g_hle.svc.reslimit: one object, never destroyed */
 void kwevent_destroy(KObj* o) {
     kobj_unref(kobj_at(((KWEvent*)o)->r));
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT((KWEvent*)o);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 
 /* a handle for o, which has no reference yet: the handle's is its only one. With the table full it is destroyed */
@@ -50,12 +50,12 @@ static int valid_prio(i32 p) { return p >= 0 && p < 64 && ((g_hle.svcmem.prio_ma
 static int pause_point(KThread* t, int where) {
     if (!__atomic_load_n(&t->suspended, __ATOMIC_SEQ_CST)) return 0;
     core_leave(t);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     t->pause_at = where;
     kobj_wake_nl(&t->o, 5);
-    while (t->suspended) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
+    while (t->suspended) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
     t->pause_at = 0;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     return 1;
 }
 /* cur (with g_klock held) waits until t, asked to pause, runs no game code: it is inside an SVC, stopped at a pause
@@ -118,9 +118,9 @@ static u32 start_thread(u32 h) {
     KThread* t = thread_of(h);
     int st;
     R_UNLESS(t, R_BADHANDLE);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     st = t->state;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     if (st == 0) kthread_start(t);
     thread_put(t);
     R_UNLESS(st == 0, R_BADSTATE);
@@ -139,10 +139,10 @@ static void sleep_thread(KThread* t, i64 ns) {
         memcpy(t->sleep_x, t->cpu.x, sizeof t->sleep_x);
     }
     if (ns > 0) {
-        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_host.kernel.klock);
         t->woken = 0;
         sleep_nl(t, ns);
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
         return;
     }
     if (ns != 0 && ns != -1 && ns != -2) return;
@@ -155,9 +155,9 @@ static u32 set_thread_priority(u32 h, i32 prio) {
     R_UNLESS(valid_prio(prio), R_BADPRIO);
     t = thread_of(h);
     R_UNLESS(t, R_BADHANDLE);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     prio_set_base_nl(t, prio);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     thread_put(t);
     R_SUCCEED();
 }
@@ -178,11 +178,11 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     }
     t = thread_of(h);
     R_UNLESS(t, R_BADHANDLE);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     if (core == -3) {
         core = t->ideal_core;
         if (core >= 0 && !((mask >> core) & 1)) {
-            pm_unlock(&g_hle.kernel.klock);
+            pm_unlock(&g_host.kernel.klock);
             thread_put(t);
             R_THROW(R_BADCOMBO);
         }
@@ -190,7 +190,7 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     __atomic_store_n(&t->ideal_core, core, __ATOMIC_RELAXED);
     __atomic_store_n(&t->affinity, mask, __ATOMIC_RELAXED);
     if (t->state == 0) t->core = core_allowed(t); /* not started: on no core's list yet */
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     if (t == cur) {
         int k = core >= 0 ? core : (mask >> t->core) & 1 ? t->core : core_allowed(t);
         if (k != t->core) { /* the caller holds its core: nothing else changes its core field meanwhile */
@@ -214,18 +214,18 @@ static u32 set_thread_activity(KThread* cur, u32 h, u32 act) {
         thread_put(t);
         R_THROW(R_BUSY);
     }
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     if (t->state != 1 || t->suspended == (int)act)
         r = R_BADSTATE;
     else {
         __atomic_store_n(&t->suspended, (int)act, __ATOMIC_SEQ_CST);
         if (!act) {
-            pc_broadcast(&t->cv);
+            pc_broadcast(kt_cv(t));
             kobj_wake_nl(&t->o, 5); /* a GetThreadContext3 waiting for it to pause has its answer */
         } else
             pause_settle_nl(cur, t);
     }
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     thread_put(t);
     return r;
 }
@@ -252,10 +252,10 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
         thread_put(t);
         return r;
     }
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     pause_settle_nl(cur, t);
     if (t->state != 2 && (t->state != 1 || !t->suspended)) {
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
         thread_put(t);
         R_THROW(R_BADSTATE);
     }
@@ -304,7 +304,7 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
         snx_st_le32(ctx + 0x314, c->fpsr);
         put64(ctx + 0x318, c->tpidr);
     }
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     thread_put(t);
     memcpy(GP(out), ctx, sizeof ctx);
     R_SUCCEED();
@@ -313,12 +313,12 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
 static u32 cancel_sync(u32 h) {
     KThread* t = thread_of(h);
     R_UNLESS(t, R_BADHANDLE);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     if (t->wait_kind == 1 && !t->woken)
         wake(t, R_CANCELLED);
     else
         t->cancel = 1;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     thread_put(t);
     R_SUCCEED();
 }
@@ -327,10 +327,10 @@ static u32 cancel_sync(u32 h) {
 static u32 create_event(u32* wh, u32* rh) {
     KEvent* r = kevent_new("event");
     KWEvent* w;
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     w = (KWEvent*)POOL_TAKE(g_hle.svc.wevents, g_hle.svc.wevent_next, "writable events");
     w->o.type = KO_WEVENT;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     kobj_set_name(&w->o, "writable event");
     w->r = kobj_id(&r->o);
     kobj_ref(&r->o);
@@ -362,12 +362,12 @@ static u32 clear_event(u32 h, int reset) {
     else if (o->type != KO_PROCESS || !reset)
         r = R_BADHANDLE;
     if (R_SUCCEEDED(r)) {
-        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_host.kernel.klock);
         if (reset && (!e || !e->signaled))
             r = R_BADSTATE;
         else
             e->signaled = 0;
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
     }
     kobj_unref(o);
     return r;

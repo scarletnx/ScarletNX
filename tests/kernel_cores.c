@@ -140,7 +140,7 @@ static KThread* thread(int i, int prio, int core, u64 mask) {
     memset(t, 0, sizeof *t);
     /* a thread waits for its core on its own cv, as kthread_create sets it up: all zeros is a valid condition
        variable on glibc but not on macOS */
-    pc_init(&t->cv);
+    pc_init(kt_cv(t));
     t->prio = t->base_prio = prio;
     t->core = core;
     t->affinity = mask;
@@ -156,9 +156,9 @@ static void reset(void) {
     }
 }
 static int on_core(KThread* t) {
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     int k = t->on_core;
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
     return k;
 }
 /* until t holds a core, or waits for one (-2), for up to 2 s; the core it ends on */
@@ -289,10 +289,10 @@ int main(void) {
     CHECK(settle(b, -2) == -2 && b->core == 0, "cores 0 and 1 busy: on core %d", b->on_core);
     core_leave(c);
     CHECK(settle(b, 1) == 1 && b->core == 1, "core 1 fell idle: 46 on core %d", on_core(b));
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     CHECK(!g_hle.thread.core_wait[0] && g_hle.thread.core_best[0] == 64 && !a->cpu.poll, "core 0 still has a waiter, best %d",
           g_hle.thread.core_best[0]);
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
     core_leave(a);
     pthread_join(h, NULL);
     core_leave(b);

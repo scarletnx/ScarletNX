@@ -58,7 +58,7 @@ static void core_give_nl(int k, KThread* t) {
     t->on_core = k;
     __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
     core_flag_nl(k);
-    pc_signal(&t->cv);
+    pc_signal(kt_cv(t));
 }
 /* core k has just fallen free: its best waiter takes it. With none, it takes the best thread waiting for another core
    that its mask lets run here, unless that thread is about to preempt its own core's holder, as the console's
@@ -100,7 +100,7 @@ static void core_wait_nl(KThread* t, int k) {
     g_hle.thread.core_wait[k] = kt_ix(t);
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
-    while (t->on_core == -2) pc_wait(&t->cv, &g_hle.thread.core_lk, -1);
+    while (t->on_core == -2) pc_wait(kt_cv(t), &g_host.thread.core_lk, -1);
 }
 /* t (holding no core) takes one: its own if free; with a holder it would preempt, it waits there and flags the holder;
    otherwise an idle core of its mask, or a place in its own core's line */
@@ -142,30 +142,30 @@ static void core_pin(KThread* t) {
 }
 void core_enter(KThread* t) {
     if (!t) return;
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     if (t->on_core < 0) core_take_nl(t);
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
     core_pin(t);
 }
 void core_leave(KThread* t) {
     if (!t) return;
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     if (t->on_core >= 0) core_release_nl(t);
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
 }
 /* every waiter that would preempt t has flagged it, so an unflagged holder has nothing to do here: that is the path of
    every SVC */
 void core_preempt(KThread* t) {
     int k;
     if (!t || !__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED)) return;
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
         core_release_nl(t);
         core_take_nl(t);
     } else
         __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
     core_pin(t);
 }
 void core_poll(KThread* t) {
@@ -179,7 +179,7 @@ void core_poll(KThread* t) {
 void core_yield(KThread* t, int migrate) {
     int k, j;
     if (!t) return;
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_wait[k]) {
         core_release_nl(t);
@@ -188,13 +188,13 @@ void core_yield(KThread* t, int migrate) {
         else
             core_wait_nl(t, k);
     }
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
     core_pin(t);
 }
 /* a waiter whose priority changes goes behind the waiters of its new priority, as a thread is requeued on the
    console; a holder is flagged if a waiter now beats it */
 void core_set_prio(KThread* t, int prio) {
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     t->prio = prio;
     if (t->on_core == -2) {
         int k = core_of(t);
@@ -203,7 +203,7 @@ void core_set_prio(KThread* t, int prio) {
         core_flag_nl(k);
     } else if (t->on_core >= 0)
         core_flag_nl(t->on_core);
-    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_host.thread.core_lk);
 }
 
 /* ============================================================ threads */
@@ -230,12 +230,12 @@ static u64 tls_alloc_nl(void) {
    so no slot is freed or taken meanwhile */
 int kthread_live_count(void) {
     int i, n = 0;
-    pm_lock(&g_hle.kernel.klock);
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.klock);
+    pm_lock(&g_host.kernel.pool_lk);
     for (i = 0; i < KTHREAD_MAX; i++)
         if (g_hle.thread.threads[i].o.type == KO_THREAD && g_hle.thread.threads[i].state != 2) n++;
-    pm_unlock(&g_hle.kernel.pool_lk);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.klock);
     return n;
 }
 
@@ -244,19 +244,19 @@ int kthread_live_count(void) {
    owner, a pause's through its handle), it holds no core and waits on nothing. It may come with g_klock held (a mutex
    waiter's reference to its owner goes as the mutex changes hands), so it takes only the pool's lock */
 void kthread_destroy(KObj* o) {
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT((KThread*)o);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 
 /* a thread that hasn't started, entering at entry with arg in x0 (r0) and sp at stack_top, its return address 0, from
    g_hle.thread.threads (KTHREAD_MAX). It stays valid while a reference to it is held */
 KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     KThread* t;
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     t = (KThread*)POOL_TAKE(g_hle.thread.threads, g_hle.thread.thread_next, "threads");
     t->o.type = KO_THREAD;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
     t->core = t->ideal_core = core;
@@ -266,11 +266,11 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t->entry = entry;
     t->arg = arg;
     t->stack_top = stack_top;
-    pc_init(&t->cv);
-    pm_lock(&g_hle.kernel.klock);
+    pc_init(kt_cv(t));
+    pm_lock(&g_host.kernel.klock);
     t->id = g_hle.kernel.next_tid++;
     t->tls = tls_alloc_nl();
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     if (kthread_live_count() > THREAD_MAX)
         WARN_LIMIT(1, "kernel: more than %d threads, the console's limit\n", THREAD_MAX);
 
@@ -322,9 +322,9 @@ static void thread_main(void* p) {
 /* the host thread holds a reference from here until svc_exit_thread */
 void kthread_start(KThread* t) {
     kobj_ref(&t->o);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     t->state = 1;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     LOGV("StartThread %llu entry=%llx prio=%d core=%d\n", (unsigned long long)t->id, (unsigned long long)t->entry,
          t->prio, t->core);
     if (plat_thread(thread_main, t, HOST_STACK))
@@ -333,10 +333,10 @@ void kthread_start(KThread* t) {
 /* svcExitThread: the thread's waiters (joins) are woken, and its core goes to the next thread. Then its host thread
    lets go of it: its last use of the KThread, which may be freed with that reference */
 void svc_exit_thread(KThread* t) {
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     t->state = 2;
     kobj_signal_nl(&t->o);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     LOGV("ExitThread %llu\n", (unsigned long long)t->id);
     core_leave(t);
     kobj_unref(&t->o);
@@ -354,11 +354,11 @@ void svc_exit_thread(KThread* t) {
 int kthread_hold_point(KThread* t) {
     if (!t || !__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return 0;
     core_leave(t);
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     __atomic_store_n(&t->stopped, 2, __ATOMIC_SEQ_CST);
-    while (g_hle.thread.hold) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
+    while (g_hle.thread.hold) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     return 1;
 }
 void kthread_block(KThread* t) {
@@ -390,19 +390,19 @@ int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 int kernel_hold(int timeout_ms) {
     u64 t0 = plat_ns();
     int k;
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     __atomic_store_n(&g_hle.thread.hold, 1, __ATOMIC_SEQ_CST);
     /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
-    pm_lock(&g_hle.thread.core_lk);
+    pm_lock(&g_host.thread.core_lk);
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
-    pm_unlock(&g_hle.thread.core_lk);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.thread.core_lk);
+    pm_unlock(&g_host.kernel.klock);
     for (;;) {
         char name[sizeof g_hle.thread.threads[0].name] = "";
         u64 id = 0;
         int late = 0;
-        pm_lock(&g_hle.kernel.klock);
-        pm_lock(&g_hle.kernel.pool_lk);
+        pm_lock(&g_host.kernel.klock);
+        pm_lock(&g_host.kernel.pool_lk);
         FOR_LIVE_THREADS(t) {
             if (__atomic_load_n(&t->stopped, __ATOMIC_SEQ_CST) || (t->suspended && t->pause_at)) continue;
             late = 1;
@@ -410,8 +410,8 @@ int kernel_hold(int timeout_ms) {
             memcpy(name, t->name, sizeof name);
             break;
         }
-        pm_unlock(&g_hle.kernel.pool_lk);
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.pool_lk);
+        pm_unlock(&g_host.kernel.klock);
         if (!late) return 0;
         if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
             name[sizeof name - 1] = 0;
@@ -425,12 +425,12 @@ int kernel_hold(int timeout_ms) {
     }
 }
 void kernel_release(void) {
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     __atomic_store_n(&g_hle.thread.hold, 0, __ATOMIC_SEQ_CST);
-    pm_lock(&g_hle.kernel.pool_lk);
-    FOR_LIVE_THREADS(t) pc_broadcast(&t->cv);
-    pm_unlock(&g_hle.kernel.pool_lk);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.pool_lk);
+    FOR_LIVE_THREADS(t) pc_broadcast(kt_cv(t));
+    pm_unlock(&g_host.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.klock);
 }
 #undef FOR_LIVE_THREADS
 

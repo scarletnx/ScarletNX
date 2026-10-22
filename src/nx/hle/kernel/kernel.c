@@ -19,9 +19,9 @@ void kobj_unref(KObj* o) {
     if (o && __atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL) == 0) kobj_destroy(o);
 }
 static void kevent_destroy(KObj* o) {
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT((KEvent*)o);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 /* the process and the resource limit are never destroyed */
 void kobj_destroy(KObj* o) {
@@ -84,14 +84,14 @@ u32 h_new(KObj* o) {
     int i;
     u16 lin;
     if (!o) return 0;
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     if (g_hle.kernel.hfree >= 0) {
         i = g_hle.kernel.hfree;
         g_hle.kernel.hfree = g_hle.kernel.htab[i].next;
     } else if (g_hle.kernel.htop < H_MAX)
         i = g_hle.kernel.htop++;
     else {
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
         WARN_LIMIT(4, "kernel: the handle table is full (%d handles), %s gets none\n", H_MAX, o->name);
         return 0;
     }
@@ -100,7 +100,7 @@ u32 h_new(KObj* o) {
     g_hle.kernel.htab[i].obj = kobj_id(o);
     g_hle.kernel.htab[i].linear = lin;
     kobj_ref(o);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     return ((u32)lin << 15) | (u32)i;
 }
 /* the table's entry for h, or -1. Pseudo-handles have the reserved bits set, so they are never in it */
@@ -128,34 +128,34 @@ static KObj* h_resolve_nl(u32 h, int t) {
 }
 KObj* h_get_type(u32 h, int t) {
     KObj* o;
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     o = h_resolve_nl(h, t);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     return o;
 }
 KObj* h_get_ref(u32 h, int t) {
     KObj* o;
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     o = h_resolve_nl(h, t);
     kobj_ref(o);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     return o;
 }
 /* the table's reference goes after the lock is dropped: closing the last handle to a session destroys its service */
 int h_close(u32 h) {
     KObj* o;
     int i;
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     i = h_index_nl(h);
     if (i < 0) {
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
         R_THROW(R_BADHANDLE);
     }
     o = kobj_at(g_hle.kernel.htab[i].obj);
     g_hle.kernel.htab[i].obj = 0;
     g_hle.kernel.htab[i].next = (i16)g_hle.kernel.hfree;
     g_hle.kernel.hfree = i;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
     kobj_unref(o);
     R_SUCCEED();
 }
@@ -204,7 +204,7 @@ void wake(KThread* t, int result) {
     if (t->woken) return;
     t->woken = 1;
     t->wait_result = result;
-    pc_broadcast(&t->cv);
+    pc_broadcast(kt_cv(t));
 }
 /* wakes the threads waiting on o, if it is signaled. A WaitSynchronization waiter is told which object it was (in
    wait_key, which its wait doesn't use otherwise): by the time it runs, another thread may have cleared the event */
@@ -236,9 +236,9 @@ int sleep_nl(KThread* t, i64 timeout) {
             }
             left = (i64)(end - now);
         }
-        pc_wait(&t->cv, &g_hle.kernel.klock, left);
+        pc_wait(kt_cv(t), &g_host.kernel.klock, left);
     }
-    while (g_hle.thread.hold) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
+    while (g_hle.thread.hold) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     return r;
 }
@@ -248,10 +248,10 @@ int sleep_nl(KThread* t, i64 timeout) {
    g_hle.kernel.events (KEVENT_MAX) */
 KEvent* kevent_new(const char* name) {
     KEvent* e;
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     e = (KEvent*)POOL_TAKE(g_hle.kernel.events, g_hle.kernel.event_next, "events");
     e->o.type = KO_EVENT;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     kobj_set_name(&e->o, name);
     return e;
 }
@@ -259,13 +259,13 @@ KEvent* kevent_new(const char* name) {
    clear, when no thread can be waiting on it; the waiters are woken either way here, in case a service set the flag
    by itself */
 void kevent_signal(KEvent* e) {
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     e->signaled = 1;
     kobj_signal_nl(&e->o);
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
 }
 void kevent_clear(KEvent* e) {
-    pm_lock(&g_hle.kernel.klock);
+    pm_lock(&g_host.kernel.klock);
     e->signaled = 0;
-    pm_unlock(&g_hle.kernel.klock);
+    pm_unlock(&g_host.kernel.klock);
 }

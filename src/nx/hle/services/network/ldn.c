@@ -96,18 +96,18 @@ static Ldn* ldn_at(u32 i) { return i ? &g_hle.ldn.ldn[i - 1] : NULL; } /* the in
 static void ldn_destroy(SvcObj* o) {
     Ldn* d = o->data;
     u32 *p, self = POOL_INDEX(g_hle.ldn.ldn, d) + 1;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     for (p = &g_hle.ldn.ldns; *p && *p != self; p = &ldn_at(*p)->next) {}
     if (*p) *p = d->next;
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
     ldn_teardown(d);
     kobj_unref(kobj_at(d->ev));
 }
 void ldn_exit(void) {
     Ldn* d;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     for (d = ldn_at(g_hle.ldn.ldns); d; d = ldn_at(d->next)) ldn_teardown(d);
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
 }
 
 /* ============================================================ the console's address */
@@ -147,10 +147,10 @@ static int nn_ldn_detail_IUserServiceCreator_CreateUserLocalCommunicationService
     pm_init(&d->lk);
     d->ev = owned_event("ldn state change");
     o->destroy = ldn_destroy;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     d->next = g_hle.ldn.ldns;
     g_hle.ldn.ldns = POOL_INDEX(g_hle.ldn.ldn, d) + 1;
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
     *service = o;
     R_SUCCEED();
 }

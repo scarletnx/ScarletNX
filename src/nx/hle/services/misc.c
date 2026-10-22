@@ -331,7 +331,7 @@ static int nn_spl_detail_IGeneralInterface_GenerateRandomBytes(SvcObj* self, Ipc
 /* ============================================================ mm:u */
 /* the clock requests of a session: each Initialize a new one, by request id (from 1) or, in the old commands, by
    module. Setting one keeps its minimum, which is the clock it gets; one never set reads 0. A session's are an Mm
-   (services_int.h), guarded by g_hle.misc.mm_lock */
+   (services_int.h), guarded by g_host.misc.mm_lock */
 
 static MmRequest* mm_find(SvcObj* self, int by_module, u32 key) {
     Mm* mm = (Mm*)self->data;
@@ -344,7 +344,7 @@ static u32 mm_initialize(SvcObj* self, u32 module) {
     Mm* mm = (Mm*)self->data;
     u32 id;
     int i;
-    pm_lock(&g_hle.misc.mm_lock);
+    pm_lock(&g_host.misc.mm_lock);
     id = ++mm->next_id; /* the client gets its id even when the request can't be kept: it reads back 0 */
     for (i = 0; i < MM_REQUESTS && mm->req[i].used; i++) {
     }
@@ -355,30 +355,30 @@ static u32 mm_initialize(SvcObj* self, u32 module) {
         mm->req[i].current = 0;
     } else
         WARN_LIMIT(4, "mm:u: more than %d clock requests, request %u isn't kept\n", MM_REQUESTS, id);
-    pm_unlock(&g_hle.misc.mm_lock);
+    pm_unlock(&g_host.misc.mm_lock);
     return id;
 }
 static void mm_finalize(SvcObj* self, int by_module, u32 key) {
     MmRequest* r;
-    pm_lock(&g_hle.misc.mm_lock);
+    pm_lock(&g_host.misc.mm_lock);
     r = mm_find(self, by_module, key);
     if (r) r->used = 0;
-    pm_unlock(&g_hle.misc.mm_lock);
+    pm_unlock(&g_host.misc.mm_lock);
 }
 static void mm_set(SvcObj* self, int by_module, u32 key, u32 min) {
     MmRequest* r;
-    pm_lock(&g_hle.misc.mm_lock);
+    pm_lock(&g_host.misc.mm_lock);
     r = mm_find(self, by_module, key);
     if (r) r->current = min;
-    pm_unlock(&g_hle.misc.mm_lock);
+    pm_unlock(&g_host.misc.mm_lock);
 }
 static u32 mm_get(SvcObj* self, int by_module, u32 key) {
     MmRequest* r;
     u32 v;
-    pm_lock(&g_hle.misc.mm_lock);
+    pm_lock(&g_host.misc.mm_lock);
     r = mm_find(self, by_module, key);
     v = r ? r->current : 0;
-    pm_unlock(&g_hle.misc.mm_lock);
+    pm_unlock(&g_host.misc.mm_lock);
     return v;
 }
 static int nn_mmnv_IRequest_InitializeOld(SvcObj* self, nn_mmnv_Module module, nn_mmnv_Priority priority,
@@ -749,7 +749,7 @@ static void aoc_scan(void) {
     char path[64];
     FILE* f;
     i32 i;
-    pm_lock(&g_hle.misc.aoc_lock);
+    pm_lock(&g_host.misc.aoc_lock);
     if (!g_hle.misc.aoc_scanned) {
         for (i = 1; i <= AOC_MAX; i++) {
             snprintf(path, sizeof path, "system/archives/%016llx.romfs", (unsigned long long)(base + (u64)i));
@@ -761,7 +761,7 @@ static void aoc_scan(void) {
         }
         g_hle.misc.aoc_scanned = 1;
     }
-    pm_unlock(&g_hle.misc.aoc_lock);
+    pm_unlock(&g_host.misc.aoc_lock);
 }
 /* the running game's; another application has none here */
 static i32 aoc_count_of(u64 application_id) {
@@ -872,12 +872,12 @@ static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfoWithUid(SvcObj* se
 #define IRS_SHM_SIZE 0x8000
 static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* self, u64 aruid, u32* shared_memory) {
     (void)self, (void)aruid;
-    pm_lock(&g_hle.misc.irs_lock);
+    pm_lock(&g_host.misc.irs_lock);
     if (!g_hle.misc.irs_shm) {
         g_hle.misc.irs_shm = kobj_id(&kshmem_new(IRS_SHM_SIZE, "irs")->o);
         kobj_ref(kobj_at(g_hle.misc.irs_shm)); /* the service's, for as long as the process runs */
     }
-    pm_unlock(&g_hle.misc.irs_lock);
+    pm_unlock(&g_host.misc.irs_lock);
     *shared_memory = h_new(kobj_at(g_hle.misc.irs_shm));
     R_SUCCEED();
 }

@@ -75,22 +75,25 @@ typedef struct Bsd {
 typedef struct {
     /* the Eden room the console joined with ldn=room (room.c) */
     SnxRoom* room;
-    /* network_interface's host interface, read again after two seconds: when it was read, whether there is one */
-    PMutex iface_lk;
     time_t iface_when;
     int iface_have;
     SnxNetInterface iface;
-    /* bsd_set_bind_address's: whether it is set, the console's address and its subnet's broadcast address */
-    PMutex bind_lk;
     int bind_set;
     u8 bind_ip[4], bind_bcast[4];
-    /* the session a process registered (RegisterClient), not referenced, and its process */
-    PMutex client_lk;
     SvcObj* client;
     u64 client_pid;
     Bsd bsds[BSD_MAX];
     u32 bsd_next;
 } HleBsd;
+/* bsd's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    /* network_interface's host interface, read again after two seconds: when it was read, whether there is one */
+    PMutex iface_lk;
+    /* bsd_set_bind_address's: whether it is set, the console's address and its subnet's broadcast address */
+    PMutex bind_lk;
+    /* the session a process registered (RegisterClient), not referenced, and its process */
+    PMutex client_lk;
+} HostBsd;
 
 /* ldn.c */
 typedef struct Ldn {
@@ -105,12 +108,15 @@ typedef struct Ldn {
 } Ldn;
 #define LDN_MAX 8 /* IUserLocalCommunicationServices: a game makes one for its local play */
 typedef struct {
-    /* every ldn:u, for ldn_exit to close their networks: the first's index + 1, linked through next */
-    PMutex ldns_lk;
     u32 ldns;
     Ldn ldn[LDN_MAX];
     u32 ldn_next;
 } HleLdn;
+/* ldn's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    /* every ldn:u, for ldn_exit to close their networks: the first's index + 1, linked through next */
+    PMutex ldns_lk;
+} HostLdn;
 
 /* nifm.c: IRequest's data, the two events (u[0] holds the state) */
 typedef struct {
@@ -163,8 +169,6 @@ typedef struct SslConn {
 #define SSL_CONN_MAX (SSL_CONTEXT_MAX * SSL_CONTEXT_CONNECTIONS) /* ISslConnections: as many as the contexts take */
 typedef struct {
     int contexts; /* GetContextCount */
-    /* the host's roots, read once under init_lk */
-    PMutex init_lk;
     int init_done;
     struct stack_st_X509* roots; /* from a bundle file or the Windows store */
     char roots_dir[4096];        /* a hashed directory (or a list), which OpenSSL reads as it needs */
@@ -173,4 +177,9 @@ typedef struct {
     SslConn conns[SSL_CONN_MAX];
     u32 ctx_next, conn_next;
 } HleSsl;
+/* ssl's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    /* the host's roots, read once under init_lk */
+    PMutex init_lk;
+} HostSsl;
 #endif

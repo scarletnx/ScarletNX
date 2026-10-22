@@ -35,10 +35,13 @@ typedef struct {
     ViSlot slot[VI_SLOTS];
 } ViLayer;
 typedef struct {
-    PMutex lock;
-    PCond freed; /* a slot came free */
     u32 vsync;
     u64 next_stray, frees;
     ViLayer layer[VI_LAYERS];
 } HleVi;
+/* vi's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock;
+    PCond freed; /* a slot came free */
+} HostVi;
 #endif

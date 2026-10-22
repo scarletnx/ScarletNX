@@ -13,7 +13,7 @@
 #include "nx/hle/hle.h"
 
 /* the open renderers (ARRen, services_int.h), each found from its object's u[1], its slot in g_hle.audren.rens plus
-   1; the object's u[0] is its play state, which audio.c sets. g_hle.audren.lk guards the renderers and every
+   1; the object's u[0] is its play state, which audio.c sets. g_host.audren.lk guards the renderers and every
    renderer's state (an update and a frame never run at once) */
 
 /* a frame is dropped while the host holds more than this many ms, so the latency stays bounded when the host plays a
@@ -25,11 +25,11 @@ static ARRen* audren_of(const SvcObj* o) { return &g_hle.audren.rens[o->u[1] - 1
 static void audren_destroy(SvcObj* o) {
     ARRen* r = audren_of(o);
     PAudio* out;
-    pm_lock(&g_hle.audren.lk);
+    pm_lock(&g_host.audren.lk);
     out = r->out;
     audren_state_free(r->s); /* under the lock: its compressors go back to their pool */
     POOL_PUT(r);
-    pm_unlock(&g_hle.audren.lk);
+    pm_unlock(&g_host.audren.lk);
     plat_audio_close(out);
 }
 
@@ -38,25 +38,25 @@ int audren_open(SvcObj* o, const u8* params) {
     ARState* s = audren_state_new(params);
     ARRen* r;
     if (!announced && __atomic_exchange_n(&announced, 1, __ATOMIC_ACQ_REL) == 0)
-        pm_lock_announce(&g_hle.audren.lk, "audren"); /* the renderers' table, the game's threads and the audio's */
+        pm_lock_announce(&g_host.audren.lk, "audren"); /* the renderers' table, the game's threads and the audio's */
     if (!s) return 0;
-    pm_lock(&g_hle.audren.lk);
+    pm_lock(&g_host.audren.lk);
     r = POOL_TAKE(g_hle.audren.rens, g_hle.audren.ren_next, "audio renderers");
     r->o = o;
     r->s = s;
     o->u[1] = (u64)POOL_INDEX(g_hle.audren.rens, r) + 1;
-    pm_unlock(&g_hle.audren.lk);
+    pm_unlock(&g_host.audren.lk);
     o->destroy = audren_destroy;
     return 1;
 }
 
 void audren_volume(float gain) {
     u32 i;
-    pm_lock(&g_hle.audren.lk);
+    pm_lock(&g_host.audren.lk);
     g_hle.audren.gain = gain;
     for (i = 0; i < SNX_AUDREN_MAX; i++)
         if (g_hle.audren.rens[i].out) plat_audio_volume(g_hle.audren.rens[i].out, gain);
-    pm_unlock(&g_hle.audren.lk);
+    pm_unlock(&g_host.audren.lk);
 }
 
 /* RequestUpdate: the input read into the state and the output written by audren_state_update, whose failures are
@@ -66,9 +66,9 @@ int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
     int rc;
     u32 rev;
     R_UNLESS(in.addr && out.addr && in.size >= 0x40, RC(153, 41)); /* not even an update's header */
-    pm_lock(&g_hle.audren.lk);
+    pm_lock(&g_host.audren.lk);
     rc = audren_state_update(r->s, GP(in.addr), in.size, GP(out.addr), out.size);
-    pm_unlock(&g_hle.audren.lk);
+    pm_unlock(&g_host.audren.lk);
     if (rc == -41 || rc == -4) R_THROW(RC(153, -rc));
     R_UNLESS(rc >= 0, RC(153, 2)); /* OperationFailed */
     rev = snx_ld_le32(GP(in.addr));
@@ -81,7 +81,7 @@ int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
 void audren_tick(void) {
     i16* stereo = g_hle.audren.stereo;
     u32 i;
-    pm_lock(&g_hle.audren.lk);
+    pm_lock(&g_host.audren.lk);
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* r = &g_hle.audren.rens[i];
         u32 bytes;
@@ -107,5 +107,5 @@ void audren_tick(void) {
             plat_audio_start(r->out, 1);
         }
     }
-    pm_unlock(&g_hle.audren.lk);
+    pm_unlock(&g_host.audren.lk);
 }

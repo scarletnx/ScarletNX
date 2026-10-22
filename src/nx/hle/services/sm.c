@@ -33,11 +33,11 @@ static int sm_name(const nn_sm_ServiceName* in, char out[9]) {
 static const char* stand_in_name(const char* name) {
     const char* r = "(a service missing from the runtime)";
     int i;
-    pm_lock(&g_hle.sm.lk);
+    pm_lock(&g_host.sm.lk);
     for (i = 0; i < g_hle.sm.n && strcmp(g_hle.sm.name[i], name); i++) {}
     if (i == g_hle.sm.n && i < STAND_IN_NAMES) strcpy(g_hle.sm.name[g_hle.sm.n++], name);
     if (i < g_hle.sm.n) r = g_hle.sm.name[i];
-    pm_unlock(&g_hle.sm.lk);
+    pm_unlock(&g_host.sm.lk);
     return r;
 }
 static SvcObj* sm_stand_in(const char* name) { return svcobj_new(stand_in_name(name), stub_ok); }

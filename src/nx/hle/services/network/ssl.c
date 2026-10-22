@@ -148,9 +148,9 @@ static long bio_ctrl(BIO* b, int cmd, long num, void* ptr);
 static int bio_create(BIO* b);
 static void ssl_init(void) {
     const char *file, *dir, *from = "nowhere";
-    pm_lock(&g_hle.ssl.init_lk);
+    pm_lock(&g_host.ssl.init_lk);
     if (g_hle.ssl.init_done) {
-        pm_unlock(&g_hle.ssl.init_lk);
+        pm_unlock(&g_host.ssl.init_lk);
         return;
     }
     file = getenv("SSL_CERT_FILE");
@@ -168,7 +168,7 @@ static void ssl_init(void) {
         !BIO_meth_set_ctrl(g_hle.ssl.bio, bio_ctrl) || !BIO_meth_set_create(g_hle.ssl.bio, bio_create))
         fatal("ssl: OpenSSL can't make a BIO method\n");
     g_hle.ssl.init_done = 1;
-    pm_unlock(&g_hle.ssl.init_lk);
+    pm_unlock(&g_host.ssl.init_lk);
 }
 /* a context's store: the roots, with any certificate in it an anchor (PARTIAL_CHAIN), since the console's
    ImportServerPki takes CAs and servers' own certificates alike */

@@ -69,7 +69,6 @@ struct KThread {
     u64 tls;
     u64 entry, arg, stack_top;
     int state; /* 0 created, 1 running, 2 exited */
-    PCond cv;
     int woken, cancel;
     /* svcSetThreadActivity: suspended and in_svc (inside an SVC, running no game code) are read with __atomic loads
        without the lock. pause_at is where a paused thread waits: 0 blocked inside the SVC or not paused, 1 before
@@ -172,7 +171,7 @@ void kernel_dump_regs(CPU* c);
 void kernel_dump_threads(void);
 void mem_report(char* out, int n);
 
-/* g_klock, the kernel lock, is g_hle.kernel.klock (hle.h): every list a waiter or signaller touches is under it */
+/* g_klock, the kernel lock, is g_host.kernel.klock (hle.h): every list a waiter or signaller touches is under it */
 /* svc_mem.c, for RtAPI.code_changed (runtime/rtapi.c): IC IVAU of the 64-byte line at addr, in a view of code
    (svcMapProcessMemory) or in the code a view shows. Its code address into *code, and 1 when its bytes differ from
    what the view kept of them (which then takes them), 0 when they are the same. -1 for a line no view knows, which may

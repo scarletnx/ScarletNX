@@ -221,7 +221,6 @@ typedef struct {
 /* ipc.c's. lk guards the pools (taking and freeing, and every domain's objects), every service's pool of object data
    (svcobj_new_data), the warned pairs and the registry: none of them is held long */
 typedef struct {
-    PMutex lk;
     SvcObj svcobjs[SVCOBJ_MAX];
     KSession sessions[SESSION_MAX];
     Domain domains[DOMAIN_MAX];
@@ -241,4 +240,8 @@ typedef struct {
     char apart[64];
     u32 ring_n;
 } HleIpc;
+/* ipc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk;
+} HostIpc;
 #endif

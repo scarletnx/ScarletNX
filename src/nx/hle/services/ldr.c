@@ -191,14 +191,14 @@ static int nn_ro_detail_IRoInterface_RegisterProcessModuleInfo(SvcObj* self, u64
     return ro_register_nrr(s, nrr_address, nrr_size, s->kind);
 }
 static int ro_dispatch(SvcObj* o, IpcCtx* c) {
-    pm_lock(&g_hle.ldr.lock);
+    pm_lock(&g_host.ldr.lock);
     int r = nn_ro_detail_IRoInterface_dispatch(o, c);
-    pm_unlock(&g_hle.ldr.lock);
+    pm_unlock(&g_host.ldr.lock);
     return r;
 }
 static void ro_destroy(SvcObj* o) {
     RoState* s = o->data;
-    pm_lock(&g_hle.ldr.lock);
+    pm_lock(&g_host.ldr.lock);
     for (int i = 0; i < RO_LIMIT; i++) {
         free(s->nrr[i].hashes);
         if (s->nro[i].map.base) jit_code_removed(s->nro[i].map.base);
@@ -207,7 +207,7 @@ static void ro_destroy(SvcObj* o) {
                  (unsigned long long)s->nro[i].map.base, (unsigned long long)s->nro[i].map.size);
     }
     if (g_hle.ldr.owner == s->obj) g_hle.ldr.owner = 0;
-    pm_unlock(&g_hle.ldr.lock);
+    pm_unlock(&g_host.ldr.lock);
 }
 static SvcObj* ro_new(const char* name, int kind) {
     SvcObj* o = SVCOBJ_NEW_DATA(name, ro_dispatch, g_hle.ldr.states, g_hle.ldr.state_next, "ldr:ro sessions");

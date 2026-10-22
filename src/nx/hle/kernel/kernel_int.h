@@ -116,7 +116,7 @@ u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out);
 u32 svc_codemem_new(u64 addr, u64 size, KObj** out);
 u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm);
 /* ---- HLE state in g_hle (hle.h) */
-/* The kernel objects each come from a pool (hle.h) guarded by g_hle.kernel.pool_lk, a lock of its own that is only
+/* The kernel objects each come from a pool (hle.h) guarded by g_host.kernel.pool_lk, a lock of its own that is only
    held to take or free a slot and is taken last, under g_klock or not: an object's last reference may go with g_klock
    held (a mutex waiter's on its owner thread). Ipc.c's sessions are its own pool's */
 #define KTHREAD_MAX 256 /* threads not yet freed: the console's 96 live ones (THREAD_MAX), and room for those exited
@@ -153,8 +153,6 @@ typedef struct {
 
 /* kernel.c */
 typedef struct {
-    PMutex klock;   /* g_klock: every list a waiter or signaller touches */
-    PMutex pool_lk; /* the kernel objects' pools, here and in thread.c, svc.c and svc_mem.c */
     u64 title_id;
     u64 sysres_size; /* the npdm's system resource size */
     u64 next_tid;    /* the next thread's id, under g_klock */
@@ -172,6 +170,11 @@ typedef struct {
     KEvent events[KEVENT_MAX];
     u32 event_next;
 } HleKernel;
+/* kernel's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex klock;   /* g_klock: every list a waiter or signaller touches */
+    PMutex pool_lk; /* the kernel objects' pools, here and in thread.c, svc.c and svc_mem.c */
+} HostKernel;
 /* thread.c */
 typedef struct {
     /* The threads, under pool_lk. A thread's slot is freed with its last reference: its handles' and the one its host
@@ -186,7 +189,6 @@ typedef struct {
        earliest), never to whichever host thread wakes first. Every field below and each thread's on_core, core,
        core_next and core_ticket change under core_lk, which is taken after g_klock when both are held (sleep_nl lets
        go of its core with g_klock held), and never the other way round */
-    PMutex core_lk;
     u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
     u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
@@ -201,8 +203,13 @@ typedef struct {
     u64 tls_page;
     int tls_used;
 } HleThread;
+/* thread's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PCond cv[KTHREAD_MAX]; /* each thread's, which it waits on (kt_cv) */
+    PMutex core_lk;
+} HostThread;
 /* sync.c: the threads blocked in each kind of wait, in arrival order, linked by next_waiter (sync.c says how the
-   lists are kept: one for mutexes, one per bucket of the word for the others). Under g_hle.kernel.klock */
+   lists are kept: one for mutexes, one per bucket of the word for the others). Under g_host.kernel.klock */
 #define WAIT_BUCKETS 256
 typedef struct {
     u32 mwait;                      /* wait_kind 2: on the mutex at wait_addr, for lock_owner to hand it over */
@@ -245,8 +252,11 @@ typedef struct {
     u64 entropy[4];
     int entropy_made;
     u64 local_region; /* UserExceptionContextAddress's page, 0 until made */
-    KCodeView views[KCODEVIEW_MAX]; /* under views_lk: a free one has size 0 */
-    PMutex views_lk;
+    KCodeView views[KCODEVIEW_MAX]; /* under g_host.svcmem.views_lk: a free one has size 0 */
 } HleSvcMem;
+/* svc_mem's host side: the views' lock, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex views_lk;
+} HostSvcMem;
 /* until the npdm says (main.c): an application's */
 #endif

@@ -246,7 +246,7 @@ u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
         return r;
     }
     /* the view of code keeps src as it is now, before anything is written through it (svc_code_line) */
-    pm_lock(&g_hle.svcmem.views_lk);
+    pm_lock(&g_host.svcmem.views_lk);
     for (i = 0; i < KCODEVIEW_MAX && g_hle.svcmem.views[i].size; i++) {}
     if (i < KCODEVIEW_MAX) {
         KCodeView* v = &g_hle.svcmem.views[i];
@@ -258,7 +258,7 @@ u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     } else
         WARN_LIMIT(1, "kernel: more than %d views of code at once: their flushes recompile what they cover\n",
                    KCODEVIEW_MAX);
-    pm_unlock(&g_hle.svcmem.views_lk);
+    pm_unlock(&g_host.svcmem.views_lk);
     R_SUCCEED();
 }
 u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
@@ -268,14 +268,14 @@ u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size) {
     R_UNLESS(range_ok(src, size, 0, MSF_CAN_MAP_PROCESS, ANY, ~0u, 0), R_BADMEMSTATE);
     mem_alias_unmap(dst, size, src);
     mem_alias_end(src, size);
-    pm_lock(&g_hle.svcmem.views_lk);
+    pm_lock(&g_host.svcmem.views_lk);
     for (i = 0; i < KCODEVIEW_MAX; i++)
         if (g_hle.svcmem.views[i].size && g_hle.svcmem.views[i].dst == dst) {
             free(g_hle.svcmem.views[i].snap);
             memset(&g_hle.svcmem.views[i], 0, sizeof g_hle.svcmem.views[i]);
             break;
         }
-    pm_unlock(&g_hle.svcmem.views_lk);
+    pm_unlock(&g_host.svcmem.views_lk);
     R_SUCCEED();
 }
 /* A line a flush names through a view or in the code it shows changed when its bytes differ from the view's
@@ -285,7 +285,7 @@ int svc_code_line(u64 addr, u64* code) {
     int i, r = -1;
     addr &= ~(u64)63;
     *code = addr;
-    pm_lock(&g_hle.svcmem.views_lk);
+    pm_lock(&g_host.svcmem.views_lk);
     for (i = 0; i < KCODEVIEW_MAX; i++) {
         KCodeView* v = &g_hle.svcmem.views[i];
         u64 at;
@@ -302,7 +302,7 @@ int svc_code_line(u64 addr, u64* code) {
         if (r) memcpy(v->snap + at, GP(*code), 64);
         break;
     }
-    pm_unlock(&g_hle.svcmem.views_lk);
+    pm_unlock(&g_host.svcmem.views_lk);
     return r;
 }
 
@@ -340,19 +340,19 @@ void kshmem_destroy(KObj* o) {
         mem_pool_host_free(s->host, s->pool - 1, shm_whole(s));
     else
         free(s->host);
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT(s);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 /* with no reference: the first handle takes one, or the service that keeps it. The object is from g_hle.svcmem.shmems
    (KSHMEM_MAX), its pages (host) of the size the service asks for its own */
 KShmem* kshmem_new(u64 size, const char* name) {
     KShmem* s;
     u64 off;
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     s = (KShmem*)POOL_TAKE(g_hle.svcmem.shmems, g_hle.svcmem.shmem_next, "shared memories");
     s->o.type = KO_SHMEM;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     s->size = size;
     if ((s->host = mem_pool_host(shm_whole(s), &off)) != NULL)
         s->pool = off + 1;
@@ -414,10 +414,10 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm) {
         r = m == -2 ? R_OUTOFMEM : R_BADMEMSTATE;
         __atomic_store_n(&s->gsize, 0, __ATOMIC_RELEASE);
     } else {
-        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_host.kernel.klock);
         memcpy(GP(addr), s->host, (size_t)s->size);
         __atomic_store_n(&s->gaddr, addr, __ATOMIC_RELEASE);
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
     }
     kobj_unref(&s->o);
     return r;
@@ -446,10 +446,10 @@ u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
     } else if (__atomic_load_n(&s->gaddr, __ATOMIC_ACQUIRE) != addr)
         r = R_BADMEMSTATE;
     else {
-        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_host.kernel.klock);
         memcpy(s->host, GP(addr), (size_t)s->size);
         __atomic_store_n(&s->gaddr, 0, __ATOMIC_RELEASE);
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
         mem_unmap(addr, __atomic_load_n(&s->gsize, __ATOMIC_ACQUIRE));
         __atomic_store_n(&s->gsize, 0, __ATOMIC_RELEASE);
     }
@@ -466,10 +466,10 @@ u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out) {
     if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_TRANSFER, PERM_RW, ~0u, 0))
         R_THROW(R_BADMEMSTATE);
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     m = (KTmem*)POOL_TAKE(g_hle.svcmem.tmems, g_hle.svcmem.tmem_next, "transfer memories");
     m->o.type = KO_TMEM;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     kobj_set_name(&m->o, "transfer memory");
     m->addr = addr;
     m->size = size;
@@ -483,9 +483,9 @@ void tmem_destroy(KObj* o) {
     KTmem* m = (KTmem*)o;
     mem_set_attr(m->addr, m->size, MA_LOCKED, 0);
     set_perm(m->addr, m->size, PERM_RW);
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT(m);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 
 /* ============================================================ code memory */
@@ -501,9 +501,9 @@ void kcodemem_destroy(KObj* o) {
     mem_alias_end(c->addr, c->size);
     mem_set_attr(c->addr, c->size, MA_LOCKED, 0);
     set_perm(c->addr, c->size, PERM_RW);
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     POOL_PUT(c);
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
 }
 u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
     KCodeMem* c;
@@ -511,10 +511,10 @@ u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CODE_MEMORY, PERM_RW, ~0u, 0))
         R_THROW(R_BADMEMSTATE);
     R_TRY(mem_result(mem_alias_begin(addr, size)));
-    pm_lock(&g_hle.kernel.pool_lk);
+    pm_lock(&g_host.kernel.pool_lk);
     c = (KCodeMem*)POOL_TAKE(g_hle.svcmem.codemems, g_hle.svcmem.codemem_next, "code memories");
     c->o.type = KO_CODEMEM;
-    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_host.kernel.pool_lk);
     kobj_set_name(&c->o, "code memory");
     c->addr = addr;
     c->size = size;
@@ -562,12 +562,12 @@ static u64 entropy(u32 i) {
             z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
             v[k] = (z ^ (z >> 31)) | 1;
         }
-        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_host.kernel.klock);
         if (!*made) {
             memcpy(e, v, sizeof v);
             __atomic_store_n(made, 1, __ATOMIC_RELEASE);
         }
-        pm_unlock(&g_hle.kernel.klock);
+        pm_unlock(&g_host.kernel.klock);
     }
     return e[i];
 }

@@ -187,7 +187,7 @@ static void dump_open(const char* keys, const char* title_keys) {
     g_hle.fs.dfs = snx_dump_fs(&g_hle.fs.dump);
     if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
     snx_hac_on_exit(NULL, NULL);
-    pm_init(&g_hle.fs.dlock);
+    pm_init(&g_host.fs.dlock);
     if (kind == SNX_ADDON_UPDATE) {
         LOG("fs: ExeFS and RomFS read from the update %s over the game's dump %s (%.1f MB mapped)\n", addon, source,
             (double)(g_hle.fs.dmap.size + g_hle.fs.amap.size) / 1048576.0);
@@ -263,7 +263,7 @@ static void dlcs_open(const char* keys, const char* title_keys) {
         free(ini);
         free(dump);
     }
-    if (g_hle.fs.naocs && !g_hle.fs.dfs) pm_init(&g_hle.fs.dlock); /* dump_open, before this, made it for the game */
+    if (g_hle.fs.naocs && !g_hle.fs.dfs) pm_init(&g_host.fs.dlock); /* dump_open, before this, made it for the game */
     free(ids);
     free(data);
     free(folder);
@@ -344,9 +344,9 @@ static u8* dump_exefs(const char* path, u64* size) {
     if (i == count || files[i].size > SIZE_MAX) return NULL;
     data = malloc(files[i].size ? (size_t)files[i].size : 1);
     if (!data) return NULL;
-    pm_lock(&g_hle.fs.dlock);
+    pm_lock(&g_host.fs.dlock);
     failed = snx_hac_fs_read(g_hle.fs.dfs, i, 0, data, (size_t)files[i].size);
-    pm_unlock(&g_hle.fs.dlock);
+    pm_unlock(&g_host.fs.dlock);
     if (failed) {
         WARN("fs: could not read %s from the game's dump\n", path);
         free(data);
@@ -362,13 +362,13 @@ u8* fs_html_document(const char* path, u64* size) {
     if (!g_hle.fs.dfs) return NULL;
     full = snx_format("html-document/%s", path);
     if (!full) return NULL;
-    pm_lock(&g_hle.fs.dlock);
+    pm_lock(&g_host.fs.dlock);
     if (!g_hle.fs.html_tried) { /* opened when a page is first asked for, and kept, as the program's is */
         g_hle.fs.html_tried = 1;
         g_hle.fs.hfs = snx_dump_html_fs(&g_hle.fs.dump);
     }
     if (g_hle.fs.hfs) data = snx_romfs_file(g_hle.fs.hfs, full, &n);
-    pm_unlock(&g_hle.fs.dlock);
+    pm_unlock(&g_host.fs.dlock);
     free(full);
     if (data) *size = n;
     return data;
@@ -771,9 +771,9 @@ static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
         return 0;
     }
     if (g_hle.fs.dfs) {
-        pm_lock(&g_hle.fs.dlock);
+        pm_lock(&g_host.fs.dlock);
         rc = size > SIZE_MAX ? -1 : snx_hac_fs_read_romfs(g_hle.fs.dfs, off, out, (size_t)size);
-        pm_unlock(&g_hle.fs.dlock);
+        pm_unlock(&g_host.fs.dlock);
         if (rc) {
             memset(out, 0, (size_t)size);
             if (!quiet)
@@ -1180,9 +1180,9 @@ static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i6
         u64 total = snx_hac_fs_romfs_size(fs);
         R_UNLESS(sz <= (u64)INT64_MAX - off && off <= total && sz <= total - off, FS_OUT_OF_RANGE);
         R_UNLESS(buffer_valid(a, sz) && sz <= SIZE_MAX, FS_OUT_OF_RANGE);
-        pm_lock(&g_hle.fs.dlock);
+        pm_lock(&g_host.fs.dlock);
         rc = snx_hac_fs_read_romfs(fs, off, GP(a), (size_t)sz);
-        pm_unlock(&g_hle.fs.dlock);
+        pm_unlock(&g_host.fs.dlock);
         return rc ? FS_OUT_OF_RANGE : 0;
     }
     if (!data) { /* the RomFS */

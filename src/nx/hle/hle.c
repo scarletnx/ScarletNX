@@ -6,30 +6,31 @@
 
 /* zero, in .bss: hle_init sets what starts out non-zero */
 Hle g_hle;
+HleHost g_host;
 
 void hle_init(void) {
     int i;
     /* every lock: PMUTEX_INIT's value isn't all zero on every platform */
-    pm_init(&g_hle.kernel.klock);
-    pm_init(&g_hle.kernel.pool_lk);
-    pm_init(&g_hle.svcmem.views_lk);
-    pm_init(&g_hle.thread.core_lk);
-    pm_init(&g_hle.ipc.lk);
-    pm_init(&g_hle.acc.pic.lk);
-    pm_init(&g_hle.audio.lk);
-    pm_init(&g_hle.audren.lk);
-    pm_init(&g_hle.ldr.lock);
-    pm_init(&g_hle.misc.mm_lock);
-    pm_init(&g_hle.misc.aoc_lock);
-    pm_init(&g_hle.misc.irs_lock);
-    pm_init(&g_hle.hid.input_lock);
-    pm_init(&g_hle.nvdrv.seen_lock);
-    pm_init(&g_hle.bsd.iface_lk);
-    pm_init(&g_hle.bsd.bind_lk);
-    pm_init(&g_hle.bsd.client_lk);
-    pm_init(&g_hle.ldn.ldns_lk);
-    pm_init(&g_hle.ssl.init_lk);
-    pm_init(&g_hle.sm.lk);
+    pm_init(&g_host.kernel.klock);
+    pm_init(&g_host.kernel.pool_lk);
+    pm_init(&g_host.svcmem.views_lk);
+    pm_init(&g_host.thread.core_lk);
+    pm_init(&g_host.ipc.lk);
+    pm_init(&g_host.acc.pic_lk);
+    pm_init(&g_host.audio.lk);
+    pm_init(&g_host.audren.lk);
+    pm_init(&g_host.ldr.lock);
+    pm_init(&g_host.misc.mm_lock);
+    pm_init(&g_host.misc.aoc_lock);
+    pm_init(&g_host.misc.irs_lock);
+    pm_init(&g_host.hid.input_lock);
+    pm_init(&g_host.nvdrv.seen_lock);
+    pm_init(&g_host.bsd.iface_lk);
+    pm_init(&g_host.bsd.bind_lk);
+    pm_init(&g_host.bsd.client_lk);
+    pm_init(&g_host.ldn.ldns_lk);
+    pm_init(&g_host.ssl.init_lk);
+    pm_init(&g_host.sm.lk);
     /* the kernel: the title until the module names its own, the first thread id, the handle table's empty free list,
        and the process and resource limit objects, which live as long as the program */
     g_hle.kernel.title_id = 0x0100000000001000ull;

@@ -115,7 +115,6 @@ typedef struct {
 typedef struct {
     /* the picture of a user with none of its own, drawn at the first ask and kept */
     struct {
-        PMutex lk;
         u32 size;
         int made, overflow; /* made: drawn or tried; overflow: more than SNX_ACC_PICTURE_MAX came */
         u8 d[SNX_ACC_PICTURE_MAX];
@@ -123,6 +122,10 @@ typedef struct {
     AccUser users[ACC_USERS];
     u32 user_next;
 } HleAcc;
+/* acc's host side: the picture's lock (hle.h's g_host) */
+typedef struct {
+    PMutex pic_lk;
+} HostAcc;
 
 /* ---- am.c */
 #define AM_MESSAGES     16 /* the application's message queue */
@@ -184,7 +187,6 @@ typedef struct {
 typedef struct {
     /* the application's message queue: a message stays queued until ReceiveMessage takes it, and the event is
        signaled while one is */
-    PMutex lock;
     u32 msg_event;
     u32 sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
     u32 launchable_event; /* library applets can be launched from the start */
@@ -214,6 +216,10 @@ typedef struct {
     LibApplet applets[AM_APPLETS];
     u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next;
 } HleAm;
+/* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock;
+} HostAm;
 
 /* ---- audio.c */
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
@@ -272,7 +278,6 @@ typedef struct {
     u32 queued, cap, phase, ntaps, hpos;
 } HwOpus;
 typedef struct {
-    PMutex lk;           /* the audio outs, and the device's volume */
     u32 ev;              /* the renderers' system event, every frame */
     AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
@@ -282,10 +287,14 @@ typedef struct {
     AudDevice devices[AUDDEV_MAX];
     HwOpus opus[HWOPUS_POOL];
     u32 out_next, ren_next, device_next, opus_next;
-    /* a game pause: hold asks the clock's thread to stop at the top of its turn, held says it has, both under lk */
-    PCond hold_cv;
     int hold, held;
 } HleAudio;
+/* audio's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk; /* the audio outs, and the device's volume */
+    /* a game pause: hold asks the clock's thread to stop at the top of its turn, held says it has, both under lk */
+    PCond hold_cv;
+} HostAudio;
 
 /* ---- audren.c */
 /* an open renderer, its object's u[1] its slot plus 1 */
@@ -299,12 +308,15 @@ typedef struct {
 typedef struct {
     /* the renderers, and every renderer's state: an update and a frame never run at once; and the output device's
        volume (audio.c) on each renderer's host output */
-    PMutex lk;
     ARRen rens[SNX_AUDREN_MAX];
     u32 ren_next;
     float gain;
     i16 stereo[2 * 1024]; /* a frame is at most 1024 samples (audren_state_new); only the clock's thread */
 } HleAudren;
+/* audren's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk;
+} HostAudren;
 
 /* ---- ldr.c */
 #define RO_LIMIT    64
@@ -325,11 +337,14 @@ typedef struct {
     RoNrr nrr[RO_LIMIT];
 } RoState;
 typedef struct {
-    PMutex lock; /* also serializes cloned/domain sessions and initialization across ldr:ro and ro:1 */
     u32 owner;   /* the obj of the session that initialized, 0 for none */
     RoState states[RO_SESSIONS];
     u32 state_next;
 } HleLdr;
+/* ldr's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock; /* also serializes cloned/domain sessions and initialization across ldr:ro and ro:1 */
+} HostLdr;
 
 /* ---- misc.c */
 #define APM_CONFIGURATION 0x00020003u /* Config7, the default of both modes */
@@ -356,19 +371,22 @@ typedef struct {
 } NfcUser;
 typedef struct {
     u32 apm_config[APM_MODES]; /* each mode's configuration, as a session or SetCpuBoostMode last set it */
-    PMutex mm_lock;
     Mm mms[MM_SESSIONS];
     u32 mm_next;
     NfcUser nfc_users[NFC_USERS];
     u32 nfc_user_next;
-    /* the add-on contents installed, scanned once */
-    PMutex aoc_lock;
     int aoc_scanned;
     i32 aoc_count, aoc_index[AOC_MAX];
-    /* irs's shared memory, made at the first ask */
-    PMutex irs_lock;
     u32 irs_shm;
 } HleMisc;
+/* misc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex mm_lock;
+    /* the add-on contents installed, scanned once */
+    PMutex aoc_lock;
+    /* irs's shared memory, made at the first ask */
+    PMutex irs_lock;
+} HostMisc;
 
 /* ---- pl.c */
 #define PL_FONTS 6
@@ -390,10 +408,13 @@ typedef struct {
    keeps the names of objects already gone) */
 #define STAND_IN_NAMES 256 /* more names than Horizon has services */
 typedef struct {
-    PMutex lk;
     char name[STAND_IN_NAMES][9];
     int n;
 } HleSm;
+/* sm's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk;
+} HostSm;
 
 /* ---- time.c */
 #define TIME_OBJS 1024 /* time's objects: a service per session, and the clocks and time zone services it hands out */

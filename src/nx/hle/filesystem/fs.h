@@ -120,7 +120,6 @@ typedef struct {
     SnxDump dump;
     SnxHacFs* dfs;
     PFileMap dmap;
-    PMutex dlock;
     SnxHacFs* hfs;  /* its HtmlDocument content, read under dlock too (fs_html_document) */
     int html_tried; /* hfs looked for */
     /* the update's dump read in place (dump_open), read with the game's in dump; and the checked DLCs read from their
@@ -140,5 +139,9 @@ typedef struct {
     size_t npatches;
     int rlayered; /* the RomFS image is made up with the mods' over the game's (romfs_init) */
 } HleFs;
+/* fs's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex dlock;
+} HostFs;
 /* all zero: fs_init sets the tree up */
 #endif

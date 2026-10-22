@@ -52,9 +52,6 @@ typedef struct {
     PadState pad1;          /* player 1 */
     PadState pad_extra[7];  /* players 2 to 8, in Npad id order */
     TouchState touch;
-    PMutex input_lock;
-    /* hid's own, under lock */
-    PMutex lock;
     u32 shm, xpad_shm, six_shm, joysix_shm; /* kernel object ids */
     u32 style_ev[HID_ENTRIES];
     u64 samp;    /* the sampling number of the latest states */
@@ -71,4 +68,10 @@ typedef struct {
     HidFingers fingers;
     HidVibration vibration[HID_PADS][2];
 } HleHid;
+/* hid's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex input_lock;
+    /* hid's own, under lock */
+    PMutex lock;
+} HostHid;
 #endif

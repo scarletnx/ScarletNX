@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The HLE's state: every variable of static duration the kernel, the SVCs, the services and the file system keep is a
    member of g_hle, one struct per file (g_hle.ipc is ipc.c's), whose type is declared in the header beside that file.
+   g_hle is what the game's state is made of, which a save state writes as it is (tests/hle_flat.c keeps pointers and
+   host objects out of it); the locks and condition variables are g_host's, the same way.
    g_hle has no initializer, so it is all zero in .bss: hle_init sets what starts out otherwise (the locks, the
    defaults), first thing in the program, before anything reads or writes g_hle. Only .c files include this header: the owners' headers never do, so they can't form a cycle.
 
@@ -55,11 +57,35 @@ typedef struct {
 } Hle;
 
 extern Hle g_hle;
+/* The HLE's host side: what g_hle's members keep that a save state never holds, the locks and condition variables,
+   one struct per file as g_hle's, beside it in .bss. hle_init sets them up */
+typedef struct {
+    HostKernel kernel;
+    HostThread thread;
+    HostSvcMem svcmem;
+    HostIpc ipc;
+    HostAcc acc;
+    HostAm am;
+    HostAudio audio;
+    HostAudren audren;
+    HostLdr ldr;
+    HostMisc misc;
+    HostSm sm;
+    HostHid hid;
+    HostVi vi;
+    HostNvdrv nvdrv;
+    HostBsd bsd;
+    HostLdn ldn;
+    HostSsl ssl;
+    HostFs fs;
+} HleHost;
+extern HleHost g_host;
 void hle_init(void);
 
 /* a thread as a number, which the kernel's lists hold: its slot in g_hle.thread.threads plus 1, 0 for none */
 static inline u32 kt_ix(const KThread* t) { return t ? (u32)(t - g_hle.thread.threads) + 1 : 0; }
 static inline KThread* kt_at(u32 i) { return i ? &g_hle.thread.threads[i - 1] : NULL; }
+static inline PCond* kt_cv(const KThread* t) { return &g_host.thread.cv[t - g_hle.thread.threads]; }
 
 /* a free slot of the count at base, each size bytes, searched from *next on and wrapping: the slot, *next past it.
    The caller holds the lock that guards the pool, and makes the slot non-zero before it lets go of it */
