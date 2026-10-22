@@ -223,11 +223,14 @@ int sleep_nl(KThread* t, i64 timeout) {
     if (timeout > ((i64)1 << 62)) timeout = -1; /* centuries: no deadline the clock could reach */
     t->wait_timeout = timeout;
     if (timeout > 0) end = guest_ns() + (u64)timeout;
+    t->wait_end = end;
     if (t->woken || !timeout) return t->woken;
     core_leave(t);
+    t->park = PARK_WAIT;
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
     while (!t->woken) {
         i64 left = -1;
+        kthread_retire_check(&g_host.kernel.klock);
         if (timeout > 0 && !g_hle.thread.hold) {
             u64 now = guest_ns();
             if (now >= end) {
@@ -238,7 +241,10 @@ int sleep_nl(KThread* t, i64 timeout) {
         }
         pc_wait(kt_cv(t), &g_host.kernel.klock, left);
     }
-    while (g_hle.thread.hold) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    while (g_hle.thread.hold) {
+        kthread_retire_check(&g_host.kernel.klock);
+        pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    }
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     return r;
 }

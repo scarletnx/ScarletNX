@@ -56,6 +56,7 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
 u64 plat_ns(void) { return 0; }
 u64 guest_ns(void) { return 0; }
+KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;

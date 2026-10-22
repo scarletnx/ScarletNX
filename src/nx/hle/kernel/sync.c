@@ -9,6 +9,8 @@
 /* mutexes with priority inheritance, condition variables, address arbitration and WaitSynchronization */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/arm.h"
+#include "nx/runtime/clock.h"
 
 #define R_BADPOINTER 0xE601 /* InvalidPointer */
 
@@ -164,6 +166,7 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     t->woken = 0;
     t->wait_addr = addr;
     t->wait_tag = tag;
+    t->wait_svc = WAIT_SVC_LOCK;
     mutex_wait_nl((KThread*)o, t);
     sleep_nl(t, -1); /* until it is handed the mutex: nothing cancels this wait */
     r = (u32)t->wait_result;
@@ -203,6 +206,17 @@ static void cv_take_mutex_nl(KThread* w) {
     else
         wake(w, R_BADSTATE); /* the mutex names no thread */
 }
+/* the end of a condition variable's wait, woken or timed out (woke 0): timed out waiting for the signal, or after it
+   for the mutex, the game takes the mutex itself */
+static u32 cv_finish_nl(KThread* t, int woke) {
+    if (woke) return (u32)t->wait_result;
+    if (t->wait_kind == 3) {
+        list_del(wait_list(t), t);
+        t->wait_kind = 0;
+    } else if (t->wait_kind == 2)
+        mutex_unwait_nl(t);
+    return R_TIMEOUT;
+}
 /* svcWaitProcessWideKeyAtomic (Eden's KConditionVariable::Wait): t unlocks the mutex at maddr, handing it to its best
    waiter, marks the condition variable as waited on, and waits for a signal and then for the mutex. The mark is set
    before the mutex changes hands, so the thread that takes the mutex sees it and signals */
@@ -227,17 +241,9 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     t->wait_addr = maddr;
     t->wait_key = key;
     t->wait_tag = tag;
+    t->wait_svc = WAIT_SVC_CV;
     list_add(wait_list(t), t);
-    if (sleep_nl(t, timeout))
-        r = (u32)t->wait_result;
-    else { /* timed out waiting for the signal, or after it for the mutex: the game takes the mutex itself then */
-        if (t->wait_kind == 3) {
-            list_del(wait_list(t), t);
-            t->wait_kind = 0;
-        } else if (t->wait_kind == 2)
-            mutex_unwait_nl(t);
-        r = R_TIMEOUT;
-    }
+    r = cv_finish_nl(t, sleep_nl(t, timeout));
     pm_unlock(&g_host.kernel.klock);
     return r;
 }
@@ -262,6 +268,14 @@ u32 svc_signal_cv(u64 key, i32 count) {
 }
 
 /* ============================================================ address arbitration */
+static u32 addr_finish_nl(KThread* t, int woke) {
+    if (woke) return (u32)t->wait_result;
+    if (t->wait_kind == 4) {
+        list_del(wait_list(t), t);
+        t->wait_kind = 0;
+    }
+    return R_TIMEOUT;
+}
 /* svcWaitForAddress (Eden's KAddressArbiter::WaitIfLessThan and WaitIfEqual). type 0: wait if the word is less than
    value; 1: the same, decrementing it first; 2: wait if it equals value */
 u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
@@ -286,16 +300,9 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
     t->woken = 0;
     t->wait_kind = 4;
     t->wait_addr = addr;
+    t->wait_svc = WAIT_SVC_ADDR;
     list_add(wait_list(t), t);
-    if (sleep_nl(t, timeout))
-        r = (u32)t->wait_result;
-    else {
-        if (t->wait_kind == 4) {
-            list_del(wait_list(t), t);
-            t->wait_kind = 0;
-        }
-        r = R_TIMEOUT;
-    }
+    r = addr_finish_nl(t, sleep_nl(t, timeout));
     pm_unlock(&g_host.kernel.klock);
     return r;
 }
@@ -346,6 +353,28 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
 }
 
 /* ============================================================ WaitSynchronization */
+/* the end of a WaitSynchronization's wait, woken or timed out (woke 0): the result, and the index of the object that
+   woke it in *out_idx (-1 for none) */
+static u32 sync_finish_nl(KThread* t, KObj* const* objs, u32 n, int woke, u32* out_idx) {
+    u32 i, r;
+    for (i = 0; i < n; i++) waiter_del(objs[i], t);
+    t->wait_kind = 0;
+    t->wait_tid = 0;
+    if (!woke)
+        r = R_TIMEOUT;
+    else {
+        r = (u32)t->wait_result;
+        if (r == R_CANCELLED) t->cancel = 0; /* CancelSynchronization latches it too, for a thread not waiting */
+    }
+    i = n;
+    if (R_SUCCEEDED(r)) {
+        for (i = 0; i < n && kobj_id(objs[i]) != t->wait_key; i++) {}
+        if (i == n) /* woken without being told by which object */
+            for (i = 0; i < n && !kobj_signaled(objs[i]); i++) {}
+    }
+    *out_idx = i < n ? i : ~0u;
+    return r;
+}
 /* svcWaitSynchronization (Eden's svc WaitSynchronization and KSynchronizationObject::Wait): up to 64 handles, none
    being a plain sleep. The lowest index already signaled returns at once; otherwise a timeout of 0 times out, a
    CancelSynchronization that came before the wait cancels it, and the thread waits on every object for the first to be
@@ -386,9 +415,9 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         t->cancel = 0;
         r = R_CANCELLED;
     } else {
-        int woke;
         t->woken = 0;
         t->wait_kind = 1;
+        t->wait_svc = WAIT_SVC_SYNC;
         t->wait_key = 0; /* kobj_signal_nl names the object here */
         snprintf(t->wait_name, sizeof t->wait_name, "%s",
                  n == 1 ? objs[0]->name
@@ -396,25 +425,54 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
                         : "no handles");
         t->wait_tid = n && objs[0]->type == KO_THREAD ? ((KThread*)objs[0])->id : 0; /* a join */
         for (i = 0; i < n; i++) waiter_add(objs[i], t);
-        woke = sleep_nl(t, timeout);
-        for (i = 0; i < n; i++) waiter_del(objs[i], t);
-        t->wait_kind = 0;
-        t->wait_tid = 0;
-        if (!woke)
-            r = R_TIMEOUT;
-        else {
-            r = (u32)t->wait_result;
-            if (r == R_CANCELLED) t->cancel = 0; /* CancelSynchronization latches it too, for a thread not waiting */
-        }
-        i = n;
-        if (R_SUCCEEDED(r)) {
-            for (i = 0; i < n && kobj_id(objs[i]) != t->wait_key; i++) {}
-            if (i == n) /* woken without being told by which object */
-                for (i = 0; i < n && !kobj_signaled(objs[i]); i++) {}
-        }
-        *out_idx = i < n ? i : ~0u;
+        r = sync_finish_nl(t, objs, n, sleep_nl(t, timeout), out_idx);
     }
     pm_unlock(&g_host.kernel.klock);
     for (i = 0; i < n; i++) kobj_unref(objs[i]);
     return r;
+}
+
+/* ============================================================ a restored thread's wait */
+/* A thread a save state restarts while it was blocked in one of these waits (thread_resume_main, through svc_resume):
+   what it waits on is as it was in g_hle (the wait lists, its waits), so it sleeps for what was left of its timeout
+   and ends the SVC as the SVC would have, its result (and WaitSynchronization's index) in its registers */
+void sync_resume(KThread* t) {
+    KObj* objs[64];
+    u32 r = 0, idx = 0, i, n = 0;
+    int outputs = 1;
+    i64 left = -1;
+    pm_lock(&g_host.kernel.klock);
+    if (t->wait_end) {
+        u64 now = guest_ns();
+        left = t->wait_end > now ? (i64)(t->wait_end - now) : 0;
+    } else if (t->wait_timeout >= 0)
+        left = t->wait_timeout;
+    switch (t->wait_svc) {
+        case WAIT_SVC_SLEEP:
+            if (left) sleep_nl(t, left);
+            outputs = 0; /* svcSleepThread has none */
+            break;
+        case WAIT_SVC_LOCK:
+            sleep_nl(t, -1);
+            r = (u32)t->wait_result;
+            break;
+        case WAIT_SVC_CV: r = cv_finish_nl(t, sleep_nl(t, left)); break;
+        case WAIT_SVC_ADDR: r = addr_finish_nl(t, sleep_nl(t, left)); break;
+        case WAIT_SVC_SYNC:
+            n = (u32)t->nwaits; /* the objects in the order the game named them, each with the wait's reference */
+            for (i = 0; i < n; i++) objs[i] = kobj_at(t->waits[i]);
+            r = sync_finish_nl(t, objs, n, sleep_nl(t, left), &idx);
+            break;
+        default: outputs = 0; break;
+    }
+    pm_unlock(&g_host.kernel.klock);
+    for (i = 0; i < n; i++) kobj_unref(objs[i]);
+    if (!outputs) return;
+    if (g_arm_mod) {
+        t->arm.r[0] = r;
+        if (t->wait_svc == WAIT_SVC_SYNC) t->arm.r[1] = idx;
+    } else {
+        t->cpu.x[0] = r;
+        if (t->wait_svc == WAIT_SVC_SYNC) t->cpu.x[1] = idx;
+    }
 }

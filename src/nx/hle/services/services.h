@@ -20,6 +20,11 @@ u64 am_aoc_base_id(void);
 /* a game pause: the audio clock's thread stops, audio_hold returning once it has, until audio_release (audio.c) */
 void audio_hold(void);
 void audio_release(void);
+/* save states (runtime/state.c): the host's side of the audio outs and the Opus decoders (their streams, FFmpeg's
+   decoders) goes before a load writes g_hle over it, and is made again for what the loaded state holds */
+void audio_state_drop(void);
+void audren_state_drop(void); /* the renderers' states and host outputs, which a load makes again from the state's */
+void audio_state_rebuild(void);
 /* how many nn::settings::Language values set knows, to check the language the settings file names */
 int set_language_count(void);
 #include "common/utilities/users.h" /* SNX_USERS_MAX, the .ini's user at most */

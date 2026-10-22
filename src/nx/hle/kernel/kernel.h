@@ -32,6 +32,10 @@ enum {
 
 typedef struct KThread KThread;
 
+/* KThread.park and wait_svc */
+enum { PARK_RUN, PARK_ENTER, PARK_WAIT, PARK_SERVICE };
+enum { WAIT_SVC_SLEEP, WAIT_SVC_SYNC, WAIT_SVC_LOCK, WAIT_SVC_CV, WAIT_SVC_ADDR, WAIT_SVC_SETTLE };
+
 /* Every kernel object starts with a KObj, as its first member: code holding a KObj* casts it to the object its type
    names (KEvent, KThread, KShmem, KTmem, KSession), so the KObj must sit at offset 0 of each. What an object does as
    its last reference goes, and whether it can be waited on and is signaled, follow from its type (kernel.c's
@@ -77,6 +81,15 @@ struct KThread {
     /* what a game pause (kernel_hold) counts on, with __atomic stores: 1 blocked in a wait that runs nothing until it
        ends (sleep_nl, kthread_wait, a JIT compile), 2 stopped at a hold point, 0 neither */
     int stopped;
+    /* where it stopped, which is how a thread a save state restarts goes on (thread_resume): PARK_RUN at its pc,
+       PARK_ENTER the SVC before its pc again (it hadn't begun), PARK_WAIT the rest of its SVC's wait (wait_svc), and
+       PARK_SERVICE the SVC again, as its request (a service's wait, kthread_wait) never got its answer */
+    int park;
+    int wait_svc; /* the SVC whose wait sleep_nl blocks in: WAIT_SVC_* */
+    u64 wait_end; /* that wait's deadline in guest time (guest_ns), 0 for none */
+    /* what an IPC request it is in holds: its session's reference (kobj_id) and an nvdrv ioctl's use of its fd (the fd
+       plus 1), which a request a restored thread makes again lets go of first (svc_service_retry) */
+    u32 req_session, req_nvfd;
     int wait_kind; /* 0 none, 1 objects, 2 mutex, 3 condition variable, 4 address, 5 being paused */
     /* kinds 1 and 5: the objects it waits on (kobj_id), as many times as it named each; kind 1's wait_key is the one
        whose signal woke it, 0 before */
@@ -142,9 +155,15 @@ void core_poll(KThread* t);
    timeout_ms. kernel_release lets them go on. The frontend's thread calls both */
 int kernel_hold(int timeout_ms);
 void kernel_release(void);
-/* a guest thread's hold point outside an SVC (a poll, the end of a JIT compile): off its core while the game is paused.
+/* a guest thread's hold point: off its core while the game is paused, park saying how it would go on (KThread.park).
    1 when it stopped, and the caller takes its core again */
-int kthread_hold_point(KThread* t);
+int kthread_hold_point(KThread* t, int park);
+/* A save state's load (state.c), with the game held: kernel_retire ends every guest thread's host thread where it
+   stopped, 0 once they have, -1 when some are left after timeout_ms. Then, g_hle restored, kthread_resume starts a
+   new host thread for each thread that had started, which goes on as it stopped (KThread.park) when the game is let
+   go */
+int kernel_retire(int timeout_ms);
+void kthread_resume(KThread* t);
 /* pc_wait for a guest thread blocked in a service on the service's own lock m: it counts as stopped for a game pause,
    and a wake during one waits for the pause to end, m let go of meanwhile (returning 0, as a spurious wake). Another
    thread just waits */

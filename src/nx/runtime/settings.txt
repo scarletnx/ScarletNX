@@ -720,6 +720,20 @@ setting Pauses
     once
     help Pauses of the whole game, a comma between: at:length pauses it at that many ms of the scripted input's clock
     help for length ms. Each checks that guest memory doesn't change while the game is paused, and logs the result
+setting State saves
+    key state_save
+    text 512
+    default ""
+    once
+    help Save states the run writes, a comma between: at:slot saves to that slot at that many ms of the scripted
+    help input's clock
+setting State loads
+    key state_load
+    text 512
+    default ""
+    once
+    help Save states the run loads, a comma between: at:slot loads that slot at that many ms of the scripted input's
+    help clock
 
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 

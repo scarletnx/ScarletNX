@@ -170,7 +170,7 @@ void core_preempt(KThread* t) {
 }
 void core_poll(KThread* t) {
     core_preempt(t);
-    if (kthread_hold_point(t)) core_enter(t);
+    if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
 }
 /* svcSleepThread's yields. With nobody waiting for its core the thread goes on at once, as on the console. Otherwise
    the core goes to the best waiter, whatever its priority, and t lines up behind the waiters of its own priority. A
@@ -305,11 +305,7 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
    c->pc against pc + 4 after each BL), so a return past the host frames, like libnx's exit resetting the stack and
    returning to the LR crt0 saved, comes back here with the pc where the guest goes on. Only 0, the entry's own return
    address, means the entry function returned */
-static void thread_main(void* p) {
-    KThread* t = (KThread*)p;
-    u64 pc = t->entry;
-    tls_thread = t;
-    SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
+static void thread_run(KThread* t, u64 pc) {
     core_enter(t);
     snx_fpcr_apply(&t->cpu);
     if (g_arm_mod)
@@ -318,6 +314,13 @@ static void thread_main(void* p) {
         do snx_lookup(&t->cpu, pc)(&t->cpu, pc);
         while ((pc = t->cpu.pc) != 0);
     svc_exit_thread(t); /* its entry function returned: there is nothing to return to */
+}
+static void thread_main(void* p) {
+    KThread* t = (KThread*)p;
+    tls_thread = t;
+    SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
+    __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    thread_run(t, t->entry);
 }
 /* the host thread holds a reference from here until svc_exit_thread */
 void kthread_start(KThread* t) {
@@ -340,6 +343,7 @@ void svc_exit_thread(KThread* t) {
     LOGV("ExitThread %llu\n", (unsigned long long)t->id);
     core_leave(t);
     kobj_unref(&t->o);
+    __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     plat_thread_exit();
 }
 
@@ -351,12 +355,16 @@ void svc_exit_thread(KThread* t) {
    runs game code has its poll set until it gets to a hold point; one inside an SVC gets to svc_leave's, or blocks.
    stopped is stored before hold is read on the thread's side, and hold before stopped is read on the pauser's (all
    sequentially consistent), so a thread whose wait ends as the pause begins is never counted stopped while it goes on */
-int kthread_hold_point(KThread* t) {
+int kthread_hold_point(KThread* t, int park) {
     if (!t || !__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return 0;
     core_leave(t);
     pm_lock(&g_host.kernel.klock);
+    t->park = park;
     __atomic_store_n(&t->stopped, 2, __ATOMIC_SEQ_CST);
-    while (g_hle.thread.hold) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    while (g_hle.thread.hold) {
+        kthread_retire_check(&g_host.kernel.klock);
+        pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    }
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     pm_unlock(&g_host.kernel.klock);
     return 1;
@@ -367,20 +375,114 @@ void kthread_block(KThread* t) {
 void kthread_unblock(KThread* t) {
     if (!t) return;
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
-    kthread_hold_point(t);
+    kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     KThread* t = kthread_cur();
+    u32 slot;
     int r;
     if (!t) return pc_wait(c, m, timeout_ns);
+    slot = kt_ix(t) - 1;
+    g_host.thread.waiting_on[slot].c = c; /* where kernel_retire wakes it */
+    g_host.thread.waiting_on[slot].m = m;
+    t->park = PARK_SERVICE;
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
     r = pc_wait(c, m, timeout_ns);
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
-    if (!__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return r;
-    pm_unlock(m);
-    kthread_hold_point(t);
-    pm_lock(m);
+    kthread_retire_check(m);
+    if (__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) {
+        pm_unlock(m);
+        kthread_hold_point(t, PARK_SERVICE);
+        pm_lock(m);
+        r = 0;
+    }
+    g_host.thread.waiting_on[slot].c = NULL;
+    g_host.thread.waiting_on[slot].m = NULL;
+    return r;
+}
+
+/* ============================================================ a save state's load */
+/* The old guest threads end where they stopped, each on its own host thread (they are detached, so nothing joins
+   them): the load raises retire, wakes every one, and counts them gone (nhost). What a thread held of g_hle (references,
+   a pool slot) goes with the g_hle the load writes over, so a thread only lets go of the host lock it holds */
+void kthread_retire_check(PMutex* held) {
+    if (!__atomic_load_n(&g_host.thread.retire, __ATOMIC_ACQUIRE)) return;
+    if (held) pm_unlock(held);
+    __atomic_sub_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    plat_thread_exit();
+}
+int kernel_retire(int timeout_ms) {
+    u64 t0 = plat_ns();
+    u32 i;
+    pm_lock(&g_host.kernel.klock);
+    __atomic_store_n(&g_host.thread.retire, 1, __ATOMIC_RELEASE);
+    for (i = 0; i < KTHREAD_MAX; i++) pc_broadcast(&g_host.thread.cv[i]);
+    pm_unlock(&g_host.kernel.klock);
+    for (i = 0; i < KTHREAD_MAX; i++) {
+        PCond* c = g_host.thread.waiting_on[i].c;
+        PMutex* m = g_host.thread.waiting_on[i].m;
+        if (!c || !m) continue;
+        pm_lock(m); /* so the wake can't come before the thread waits */
+        pc_broadcast(c);
+        pm_unlock(m);
+    }
+    while (__atomic_load_n(&g_host.thread.nhost, __ATOMIC_ACQUIRE) > 0) {
+        if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
+            WARN("state: %d guest threads didn't end within %d ms\n",
+                 __atomic_load_n(&g_host.thread.nhost, __ATOMIC_ACQUIRE), timeout_ms);
+            return -1;
+        }
+        plat_sleep_ns(1000000);
+    }
+    __atomic_store_n(&g_host.thread.retire, 0, __ATOMIC_RELEASE);
+    memset(g_host.thread.waiting_on, 0, sizeof g_host.thread.waiting_on);
     return 0;
+}
+/* A restored thread, on a host thread of its own: it waits for the load to let the game go, then goes on as it
+   stopped. An SVC it had yet to begin, or whose request a service never answered, runs again from its svc
+   instruction (the argument registers are as they were: the SVC writes its outputs only as it returns); a wait it
+   was blocked in goes on (svc_resume), and code at its pc runs on */
+static void thread_resume_main(void* p) {
+    KThread* t = (KThread*)p;
+    int park = t->park;
+    tls_thread = t;
+    __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
+    kthread_hold_point(t, park);
+    if (park == PARK_ENTER || park == PARK_SERVICE) {
+        if (g_arm_mod)
+            t->arm.r[15] -= t->arm.cpsr & SNX_ARM_T ? 2u : 4u;
+        else
+            t->cpu.pc -= 4;
+        if (park == PARK_SERVICE) svc_service_retry(t);
+        __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
+    } else if (park == PARK_WAIT)
+        svc_resume(t);
+    else if (__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST))
+        svc_resume_leave(t); /* stopped on its way out of an SVC, its outputs written */
+    thread_run(t, g_arm_mod ? t->arm.r[15] : t->cpu.pc);
+}
+void kthread_resume(KThread* t) {
+    t->cpu.mem = g_mem;
+    t->cpu.disp = g_disp;
+    t->cpu.code_lo = g_code_lo;
+    t->cpu.code_hi = g_code_hi;
+    t->cpu.rt = &g_rtapi;
+    t->cpu.thread = t;
+    t->cpu.poll = 0;
+    t->cpu.excl_on = 0; /* the monitor the old thread armed: its store-exclusive fails, and the game tries again */
+    if (g_arm_mod) {
+        t->arm.mem = g_mem;
+        t->arm.mem_size = 1ull << 32;
+        t->arm.rt = &g_arm_rt;
+    }
+    t->on_core = -1;
+    t->pinned = -1;
+    t->core_next = 0;
+    t->stopped = 0;
+    t->pause_at = 0;
+    pc_init(kt_cv(t));
+    if (plat_thread(thread_resume_main, t, HOST_STACK))
+        fatal("Could not start a host thread for guest thread %llu", (unsigned long long)t->id);
 }
 
 /* each thread that has started and not exited, with g_klock and the pool's lock held */

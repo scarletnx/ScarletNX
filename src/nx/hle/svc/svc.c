@@ -52,8 +52,12 @@ static int pause_point(KThread* t, int where) {
     core_leave(t);
     pm_lock(&g_host.kernel.klock);
     t->pause_at = where;
+    t->park = where == 1 ? PARK_ENTER : PARK_RUN;
     kobj_wake_nl(&t->o, 5);
-    while (t->suspended) pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    while (t->suspended) {
+        kthread_retire_check(&g_host.kernel.klock);
+        pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+    }
     t->pause_at = 0;
     pm_unlock(&g_host.kernel.klock);
     return 1;
@@ -64,6 +68,7 @@ static void pause_settle_nl(KThread* cur, KThread* t) {
     while (t->suspended && t->state == 1 && !t->pause_at && !__atomic_load_n(&t->in_svc, __ATOMIC_SEQ_CST)) {
         cur->woken = 0;
         cur->wait_kind = 5;
+        cur->wait_svc = WAIT_SVC_SETTLE;
         waiter_add(&t->o, cur);
         sleep_nl(cur, -1);
         waiter_del(&t->o, cur);
@@ -83,7 +88,7 @@ static int core_allowed(const KThread* t) {
 static void svc_enter(KThread* t) {
     __atomic_store_n(&t->in_svc, 1, __ATOMIC_SEQ_CST);
     pause_point(t, 1);
-    kthread_hold_point(t); /* a game pause, before the SVC does anything */
+    kthread_hold_point(t, PARK_ENTER); /* a game pause, before the SVC does anything */
     core_enter(t);
     core_preempt(t); /* a waiter of better priority takes the core at the holder's next SVC */
 }
@@ -101,7 +106,38 @@ static void svc_leave(KThread* t) {
     core_preempt(t);
     __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
     if (pause_point(t, 2)) core_enter(t);
-    if (kthread_hold_point(t)) core_enter(t);
+    if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
+}
+
+/* ============================================================ a restored thread */
+/* thread.c's thread_resume_main, for a thread a save state restarts: the rest of the wait it was in, which ends the
+   SVC; a wait for another thread to pause (SetThreadActivity's, GetThreadContext3's) runs again instead, from its svc
+   instruction, as the thread it waits for is restarted too */
+void svc_resume(KThread* t) {
+    if (t->wait_svc == WAIT_SVC_SETTLE) {
+        KObj* o = t->nwaits ? kobj_at(t->waits[0]) : NULL;
+        pm_lock(&g_host.kernel.klock);
+        if (o) waiter_del(o, t);
+        t->wait_kind = 0;
+        pm_unlock(&g_host.kernel.klock);
+        kobj_unref(o); /* the reference the SVC took (thread_of) */
+        if (g_arm_mod)
+            t->arm.r[15] -= t->arm.cpsr & SNX_ARM_T ? 2u : 4u;
+        else
+            t->cpu.pc -= 4;
+        __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
+        return;
+    }
+    sync_resume(t);
+    svc_leave(t);
+}
+void svc_resume_leave(KThread* t) { svc_leave(t); }
+/* an IPC request a service never answered, which the thread makes again: the session's reference and the nvdrv fd's
+   use the old one counted go */
+void svc_service_retry(KThread* t) {
+    if (t->req_session) kobj_unref(kobj_at(t->req_session));
+    if (t->req_nvfd) nv_ioctl_abandon(t->req_nvfd - 1);
+    t->req_session = t->req_nvfd = 0;
 }
 
 /* ============================================================ threads */
@@ -141,6 +177,7 @@ static void sleep_thread(KThread* t, i64 ns) {
     if (ns > 0) {
         pm_lock(&g_host.kernel.klock);
         t->woken = 0;
+        t->wait_svc = WAIT_SVC_SLEEP;
         sleep_nl(t, ns);
         pm_unlock(&g_host.kernel.klock);
         return;

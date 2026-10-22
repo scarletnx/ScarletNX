@@ -7,6 +7,7 @@
    A field a load sets again from the host (state.c's fixups) is one of those exceptions; the others are the work
    left. --list prints every member's fields, and --report the exceptions that are no longer needed */
 #include "nx/hle/hle.h"
+#include "nx/hle/hle_walk.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,21 @@ static void parse(const char* root) {
     } while (0)
 
 static Hle h;
+
+/* a walk's name as the paths have it: an array of an unnamed struct, walked as its first element (debug_sleeps_slot),
+   is the array's path with "[]" (debug.sleeps[]) */
+static const char* walk_name(const char* name) {
+    size_t n = strlen(name);
+    char* s;
+    if (n < 5 || strcmp(name + n - 5, "_slot")) return name;
+    s = malloc(n);
+    if (!s) abort();
+    memcpy(s, name, n - 5);
+    s[n - 5] = 0;
+    s[strcspn(s, "_")] = '.';
+    strcat(s, "[]");
+    return s;
+}
 
 /* the fields known not to be flat yet, or set again by a load: a path, or a prefix ending in '*' */
 static const char* const KNOWN[] = {
@@ -230,89 +246,9 @@ int main(int argc, char** argv) {
     int list = argc > 1 && !strcmp(argv[1], "--list"), report = argc > 1 && !strcmp(argv[1], "--report");
     int bad = 0, i;
     /* the pools' slots and the structs arrays hold, walked by their types first */
-    WALK("KThread", h.thread.threads[0]);
-    WALK("KEvent", h.kernel.events[0]);
-    WALK("HEntry", h.kernel.htab[0]);
-    WALK("SvcRec", h.kernel.svc_ring[0]);
-    WALK("KWEvent", h.svc.wevents[0]);
-    WALK("KShmem", h.svcmem.shmems[0]);
-    WALK("KTmem", h.svcmem.tmems[0]);
-    WALK("KCodeMem", h.svcmem.codemems[0]);
-    WALK("KCodeView", h.svcmem.views[0]);
-    WALK("debug.sleeps[]", h.debug.sleeps[0]);
-    WALK("SvcObj", h.ipc.svcobjs[0]);
-    WALK("KSession", h.ipc.sessions[0]);
-    WALK("Domain", h.ipc.domains[0]);
-    WALK("ipc.seen[]", h.ipc.seen[0]);
-    WALK("SvcReg", h.ipc.reg[0]);
-    WALK("IpcRec", h.ipc.ring[0]);
-    WALK("AccUser", h.acc.users[0]);
-    WALK("StorageData", h.am.storages[0]);
-    WALK("AmAccessor", h.am.accessors[0]);
-    WALK("AmVolumes", h.am.volumes[0]);
-    WALK("AmLock", h.am.lock_objs[0]);
-    WALK("LibApplet", h.am.applets[0]);
-    WALK("AudOut", h.audio.outs_pool[0]);
-    WALK("AudRen", h.audio.rens[0]);
-    WALK("AudDevice", h.audio.devices[0]);
-    WALK("HwOpus", h.audio.opus[0]);
-    WALK("ARRen", h.audren.rens[0]);
-    WALK("ARCompressor", h.audren_dsp.compressors[0]);
-    WALK("PadMotion", h.hid.pad1.motion[0]);
-    WALK("PadState", h.hid.pad[0]);
-    WALK("HidMotionState", h.hid.motion[0][0]);
-    WALK("HidVibration", h.hid.vibration[0][0]);
-    WALK("RoState", h.ldr.states[0]);
-    WALK("RoNro", h.ldr.states[0].nro[0]);
-    WALK("RoNrr", h.ldr.states[0].nrr[0]);
-    WALK("MmRequest", h.misc.mms[0].req[0]);
-    WALK("NvEvent", h.nvdrv.ctrl_evt[0].slot[0]);
-    WALK("ViSlot", h.vi.layer[0].slot[0]);
-    WALK("BsdFd", h.bsd.bsds[0].fd[0]);
-    WALK("Mm", h.misc.mms[0]);
-    WALK("NfcUser", h.misc.nfc_users[0]);
-    WALK("NvMapH", h.nvdrv.nvh[0]);
-    WALK("NvEventTable", h.nvdrv.ctrl_evt[0]);
-    WALK("NvFile", h.nvdrv.nvf[0]);
-    WALK("NvSeen", h.nvdrv.seen[0]);
-    WALK("TimeObj", h.time.objs[0]);
-    WALK("ViLayer", h.vi.layer[0]);
-    WALK("Bsd", h.bsd.bsds[0]);
-    WALK("Ldn", h.ldn.ldn[0]);
-    WALK("NifmRequest", h.nifm.reqs[0]);
-    WALK("SslContext", h.ssl.ctxs[0]);
-    WALK("SslConn", h.ssl.conns[0]);
-    WALK("ROpen", h.fs.openf[0]);
-    WALK("FsData", h.fs.fss[0]);
-    WALK("FileData", h.fs.files[0]);
-    WALK("DirData", h.fs.dirs[0]);
-    /* then g_hle's members */
-    WALK("kernel", h.kernel);
-    WALK("thread", h.thread);
-    WALK("sync", h.sync);
-    WALK("debug", h.debug);
-    WALK("svc", h.svc);
-    WALK("svcmem", h.svcmem);
-    WALK("ipc", h.ipc);
-    WALK("acc", h.acc);
-    WALK("am", h.am);
-    WALK("audio", h.audio);
-    WALK("audren", h.audren);
-    WALK("audren_dsp", h.audren_dsp);
-    WALK("hid", h.hid);
-    WALK("ldr", h.ldr);
-    WALK("misc", h.misc);
-    WALK("nvdrv", h.nvdrv);
-    WALK("pl", h.pl);
-    WALK("set", h.set);
-    WALK("sm", h.sm);
-    WALK("time", h.time);
-    WALK("vi", h.vi);
-    WALK("bsd", h.bsd);
-    WALK("ldn", h.ldn);
-    WALK("nifm", h.nifm);
-    WALK("ssl", h.ssl);
-    WALK("fs", h.fs);
+#define FLAT_WALK(name, obj) WALK(walk_name(#name), obj);
+    HLE_WALKS(FLAT_WALK, h)
+#undef FLAT_WALK
     for (i = 0; i < g_nfields; i++) {
         const char* why = problem(g_fields[i].path, g_fields[i].type);
         if (list) printf("%s %s%s%s\n", g_fields[i].path, g_fields[i].type, why ? "  <- " : "", why ? why : "");

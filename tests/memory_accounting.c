@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Exercise the production memory SVCs and block list without game files. The POSIX backing is sparse, with
    injectable commit failures. Thread/handle/GPU services are stubs, not the code under test. */
+#include "nx/memory/own.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
@@ -90,6 +91,10 @@ void plat_alias_host_free(u8* p, u64 size) { (void)p, (void)size; }
 /* memory/own.c and the freeze its pages need: nothing is GPU-owned here */
 void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 void own_drop(u64 addr, u64 size) { (void)addr, (void)size; }
+u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the GPU's here */
+    (void)addr, (void)size, (void)out, (void)max;
+    return 0;
+}
 void plat_freeze(u8* p, u64 size) { (void)p, (void)size; }
 void plat_thaw(void) {}
 void gpu_mem_changed(u64 a, u64 size) {

@@ -66,6 +66,8 @@ void mem_query(u64 a, MemBlock* o) {
     o->size = 0x1000;
     o->state = MS_FREE;
 }
+#include "kobj_ids.h"                       /* the sessions as ids */
+KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
 void kobj_ref(KObj* o) { o->refs++; }
 static void event_destroy(KObj* o);
 /* what each type does as its last reference goes, as kernel.c's kobj_destroy */

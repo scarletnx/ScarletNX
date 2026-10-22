@@ -139,6 +139,11 @@ enum { SNX_AUDREN_SINK_DEVICE = 1, SNX_AUDREN_SINK_CIRCULAR = 2 };
    the state's sizes. NULL when they are out of range */
 ARState* audren_state_new(const u8* params);
 void audren_state_free(ARState* s);
+/* save states: the state as audren_state_size bytes with no host pointer in them (pack), and a new state from such
+   bytes (unpack, NULL when they don't hold one). Effects' lines start again empty */
+u64 audren_state_size(const ARState* s);
+void audren_state_pack(const ARState* s, u8* out);
+ARState* audren_state_unpack(const u8* in, u64 size);
 /* RequestUpdate's input into the state, and its output written: 0, or the result code to return */
 int audren_state_update(ARState* s, const u8* in, u64 in_size, u8* out, u64 out_size);
 /* one frame. The device sink's first two channels go to stereo (frame samples, interleaved); returns 1 when a

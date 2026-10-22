@@ -29,6 +29,14 @@ void clock_resume(void) {
     __atomic_store_n(&g_clock.frozen, 0, __ATOMIC_RELEASE);
 }
 
+/* a save state's load: guest time is the state's, stopped there while the game is paused */
+void clock_set(u64 ns) {
+    if (__atomic_load_n(&g_clock.frozen, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_clock.frozen, ns + 1, __ATOMIC_RELEASE);
+    else
+        __atomic_store_n(&g_clock.start, plat_ns() - ns, __ATOMIC_RELEASE);
+}
+
 /* 19.2 MHz is 192 ticks every 10 us: whole 10 us steps, then the rest, so neither part overflows or rounds the way
    a double would after a few hours */
 u64 guest_ticks(void) {

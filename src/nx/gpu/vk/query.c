@@ -520,3 +520,6 @@ int vk_query_pred_flush(void) {
     rec_CmdPipelineBarrier2(cb, &d);
     return 1;
 }
+
+/* a save state's load: the counters start over, their reports the made-up value until the game resets them */
+void vk_query_forget_all(void) { memset(g_qc, 0, sizeof g_qc); }

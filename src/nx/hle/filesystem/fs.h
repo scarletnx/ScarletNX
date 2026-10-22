@@ -14,6 +14,12 @@ void fs_init(const char* keys, const char* title_keys);
 extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
+/* save states (runtime/state.c): the open file systems, files and folders by path into the state; what is open let go
+   of before a load writes g_hle over it; and the loaded state's found and opened again (0, or -1 with why) */
+struct StateIo;
+int fs_state_save(struct StateIo* io);
+void fs_state_drop(void);
+int fs_state_reopen(struct StateIo* io, char* why, size_t whysize);
 int fs_map_file(const char* path, PFileMap* map); /* 0, or -1 */
 /* the mods' patches the program was recompiled with (HleFs' patches), which the loader writes over the modules they
    are for: their count, and their paths in *paths */

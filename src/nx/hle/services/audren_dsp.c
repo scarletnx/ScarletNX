@@ -2113,3 +2113,65 @@ int audren_frame(ARState* s, i16* stereo) {
     s->frames++;
     return device;
 }
+
+/* ------------------------------------------------------------ save states */
+/* The state as one block of bytes, its pointers into itself made offsets, and back into a new allocation. A
+   compressor's state is a slot of g_hle's pool, kept as its index plus 1. The other effects' lines (the limiter's
+   look-ahead, the delay's and the reverbs') aren't kept: they start again empty, as an effect's first update makes
+   them */
+u64 audren_state_size(const ARState* s) { return (u64)(s->seen - (const u8*)s) + 2u * (u64)s->nmix; }
+#define AR_TO_OFF(c, s, f)   ((c)->f = (void*)(uintptr_t)((s)->f ? (u64)((const u8*)(s)->f - (const u8*)(s)) : 0))
+#define AR_FROM_OFF(s, f, T) ((s)->f = (uintptr_t)(s)->f ? (T)(void*)((u8*)(s) + (uintptr_t)(s)->f) : NULL)
+void audren_state_pack(const ARState* s, u8* out) {
+    ARState* c = (ARState*)(void*)out;
+    AREffect* e = (AREffect*)(void*)(out + ((const u8*)s->effect - (const u8*)s));
+    u32 i;
+    memcpy(out, s, (size_t)audren_state_size(s));
+    AR_TO_OFF(c, s, voice);
+    AR_TO_OFF(c, s, chan);
+    AR_TO_OFF(c, s, mix);
+    AR_TO_OFF(c, s, effect);
+    AR_TO_OFF(c, s, sink);
+    AR_TO_OFF(c, s, split);
+    AR_TO_OFF(c, s, dest);
+    AR_TO_OFF(c, s, stack);
+    AR_TO_OFF(c, s, seen);
+    AR_TO_OFF(c, s, buf);
+    AR_TO_OFF(c, s, temp);
+    AR_TO_OFF(c, s, order);
+    for (i = 0; i < s->neffects; i++) {
+        const AREffect* f = &s->effect[i];
+        e[i].look = NULL;
+        e[i].look_len = 0;
+        e[i].fx = f->fx && f->type == SNX_AUDREN_EFFECT_COMPRESSOR
+                      ? (void*)(uintptr_t)(POOL_INDEX(g_hle.audren_dsp.compressors, (ARCompressor*)f->fx) + 1)
+                      : NULL;
+    }
+}
+ARState* audren_state_unpack(const u8* in, u64 size) {
+    ARState* s;
+    u32 i;
+    if (size < sizeof *s || !(s = (ARState*)calloc(1, (size_t)size))) return NULL;
+    memcpy(s, in, (size_t)size);
+    AR_FROM_OFF(s, voice, ARVoice*);
+    AR_FROM_OFF(s, chan, ARChannel*);
+    AR_FROM_OFF(s, mix, ARMix*);
+    AR_FROM_OFF(s, effect, AREffect*);
+    AR_FROM_OFF(s, sink, ARSink*);
+    AR_FROM_OFF(s, split, ARSplitter*);
+    AR_FROM_OFF(s, dest, ARDest*);
+    AR_FROM_OFF(s, stack, i32*);
+    AR_FROM_OFF(s, seen, u8*);
+    AR_FROM_OFF(s, buf, float*);
+    AR_FROM_OFF(s, temp, i16*);
+    AR_FROM_OFF(s, order, i32*);
+    if (audren_state_size(s) != size) {
+        free(s);
+        return NULL;
+    }
+    for (i = 0; i < s->neffects; i++) {
+        uintptr_t k = (uintptr_t)s->effect[i].fx;
+        s->effect[i].fx = k && k <= SNX_AUDREN_COMPRESSORS ? &g_hle.audren_dsp.compressors[k - 1] : NULL;
+    }
+    return s;
+}

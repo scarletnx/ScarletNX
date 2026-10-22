@@ -266,6 +266,10 @@ typedef struct {
 typedef struct {
     u32 obj;
     u32 rate, channels, step;
+    /* how it was opened, for a save state's load to open it again: the streams and their channels' places, mapped
+       set for a multistream decoder */
+    u32 streams, stereo_streams, mapped;
+    u8 mapping[255];
     PMutex lk;
 #ifndef SNX_NO_H264
     struct AVCodecContext* dec;

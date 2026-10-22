@@ -7,6 +7,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/filesystem/fs_tree.h"
 #include "nx/runtime/main.h"
+#include "nx/runtime/state_io.h"
 #include "nx/runtime/options.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/services_int.h"
@@ -1940,4 +1941,101 @@ void svc_fs_init(void) {
     nn_fssrv_sf_IFileSystemProxy_register(new_fsp);
     nn_fssrv_sf_IProgramRegistry_register(new_fsppr);
     nn_fssrv_sf_IFileSystemProxyForLoader_register(new_fspldr);
+}
+
+/* ============================================================ save states */
+/* The open file systems, files and folders are their nodes in the tree, which a load finds again by path: each one's
+   path from the data folder, tree.lock held. 0, or -1 when it doesn't fit */
+static int node_path(const FsNode* node, char* out, size_t cap) {
+    const FsNode* n;
+    size_t len = 0;
+    for (n = node; n && n != g_hle.fs.tree.root; n = n->parent) len += strlen(n->name) + 1;
+    if (!n || len >= cap) return -1;
+    out[len ? len - 1 : 0] = 0;
+    for (n = node; n != g_hle.fs.tree.root; n = n->parent) {
+        size_t k = strlen(n->name);
+        len -= k + 1;
+        memcpy(out + len, n->name, k);
+        if (len) out[len - 1] = '/';
+    }
+    return 0;
+}
+static int put_node(StateIo* io, u32 kind, u32 slot, const FsNode* node) {
+    char path[FS_TREE_PATH_MAX];
+    u32 n;
+    if (!node || node_path(node, path, sizeof path)) return -1;
+    n = (u32)strlen(path);
+    return io_put32(io, kind) | io_put32(io, slot) | io_put32(io, n) | io_put(io, path, n);
+}
+int fs_state_save(StateIo* io) {
+    u32 i;
+    int r = 0;
+    pm_lock(&g_hle.fs.tree.lock);
+    for (i = 0; i < FS_FS_MAX && !r; i++)
+        if (g_hle.fs.fss[i].obj) r |= put_node(io, 1, i, g_hle.fs.fss[i].root);
+    for (i = 0; i < FS_FILE_MAX && !r; i++)
+        if (g_hle.fs.files[i].obj) r |= put_node(io, 2, i, g_hle.fs.files[i].node);
+    for (i = 0; i < FS_DIR_MAX && !r; i++)
+        if (g_hle.fs.dirs[i].obj) r |= put_node(io, 3, i, g_hle.fs.dirs[i].node);
+    r |= io_put32(io, 0);
+    pm_unlock(&g_hle.fs.tree.lock);
+    return r ? -1 : 0;
+}
+/* what the game had open goes, and the RomFS's open files (a cache), before the load writes g_hle over them */
+void fs_state_drop(void) {
+    u32 i;
+    pm_lock(&g_hle.fs.tree.lock);
+    for (i = 0; i < FS_FS_MAX; i++)
+        if (g_hle.fs.fss[i].obj) fs_tree_release(g_hle.fs.fss[i].root);
+    for (i = 0; i < FS_FILE_MAX; i++)
+        if (g_hle.fs.files[i].obj) {
+            if (g_hle.fs.files[i].f) fclose(g_hle.fs.files[i].f);
+            fs_tree_release(g_hle.fs.files[i].node);
+        }
+    for (i = 0; i < FS_DIR_MAX; i++)
+        if (g_hle.fs.dirs[i].obj) fs_tree_release(g_hle.fs.dirs[i].node);
+    for (i = 0; i < NOPEN; i++)
+        if (g_hle.fs.openf[i].f) fclose(g_hle.fs.openf[i].f);
+    memset(g_hle.fs.openf, 0, sizeof g_hle.fs.openf);
+    pm_unlock(&g_hle.fs.tree.lock);
+}
+/* the loaded state's open file systems, files and folders found again by path and opened: 0, or -1 (with the path in
+   why) when one isn't there any more. Files are opened as the game opened them (FileData.mode) */
+int fs_state_reopen(StateIo* io, char* why, size_t whysize) {
+    char path[FS_TREE_PATH_MAX];
+    u32 kind, slot, n;
+    int r = 0;
+    pm_lock(&g_hle.fs.tree.lock);
+    for (;;) {
+        FsNode* node = NULL;
+        if (io_get32(io, &kind) ||
+            (kind && (io_get32(io, &slot) || io_get32(io, &n) || n >= sizeof path || io_get(io, path, n)))) {
+            r = -1;
+            snprintf(why, whysize, "its list of open files is damaged");
+            break;
+        }
+        if (!kind) break;
+        path[n] = 0;
+        if (n ? fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) != FS_TREE_OK : !(node = g_hle.fs.tree.root)) {
+            snprintf(why, whysize, "the game had %s open, which isn't there any more", path);
+            r = -1;
+            continue;
+        }
+        fs_tree_retain(node);
+        if (kind == 1 && slot < FS_FS_MAX)
+            g_hle.fs.fss[slot].root = node;
+        else if (kind == 3 && slot < FS_DIR_MAX)
+            g_hle.fs.dirs[slot].node = node;
+        else if (kind == 2 && slot < FS_FILE_MAX) {
+            FileData* d = &g_hle.fs.files[slot];
+            d->node = node;
+            d->f = node_in_memory(node) ? NULL : node_open(node, (d->mode & 2) ? "rb+" : "rb");
+            if (!node_in_memory(node) && !d->f) {
+                snprintf(why, whysize, "%s can't be opened again", path);
+                r = -1;
+            }
+        }
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+    return r;
 }

@@ -10,6 +10,7 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/services/audren_dsp.h"
+#include "nx/hle/services/services.h"
 #include "nx/hle/hle.h"
 
 /* the open renderers (ARRen, services_int.h), each found from its object's u[1], its slot in g_hle.audren.rens plus
@@ -106,6 +107,21 @@ void audren_tick(void) {
             r->out_started = 1;
             plat_audio_start(r->out, 1);
         }
+    }
+    pm_unlock(&g_host.audren.lk);
+}
+
+/* ============================================================ save states */
+void audren_state_drop(void) {
+    u32 i;
+    pm_lock(&g_host.audren.lk);
+    for (i = 0; i < SNX_AUDREN_MAX; i++) {
+        ARRen* r = &g_hle.audren.rens[i];
+        if (!r->o) continue;
+        audren_state_free(r->s);
+        plat_audio_close(r->out);
+        r->s = NULL;
+        r->out = NULL;
     }
     pm_unlock(&g_host.audren.lk);
 }

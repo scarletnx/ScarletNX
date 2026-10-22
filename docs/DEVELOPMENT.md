@@ -88,6 +88,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of opening the host's dialog.
   `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
   guest memory and guest time stayed unchanged while it held (`pause:` lines).
+  `--state_save=at:slot,...` and `--state_load=at:slot,...` save the game to a save state slot and load one at those
+  times (`state:` lines); the files are `<game folder>/states/<id>.<slot>.snxstate`.
   Masks: A/B/X/Y `1/2/4/8`, L/R `40/80`, ZL/ZR `100/200`, Plus/Minus `400/800`,
   left/up/right/down `1000/2000/4000/8000`.
 - `run_game.py`: Catherine New Game sequence by default; **`--script ""` disables it**.

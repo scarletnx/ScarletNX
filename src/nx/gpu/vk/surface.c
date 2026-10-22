@@ -1375,3 +1375,33 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     vk_surf_touch(dt);
     return 1;
 }
+
+/* a save state's load: every texture and render target goes, as guest memory under them is the state's now */
+void vk_surf_forget_all(void) {
+    u32 k;
+    for (k = 0; k < SURFH; k++)
+        while (g_surfh[k]) surf_evict(g_surfh[k]);
+}
+
+/* a save state's save: every render target whose pixels memory doesn't hold yet writes them back, so the state's guest
+   memory has them (one a format the CPU can't take, a depth target or a scaled one, can't: it has none to write) */
+static int flush_wanted(const Surf* s) {
+    return s->is_rt && !(s->gva >> 63) && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && s->mem_wgen != s->wgen &&
+           flush_bytes(s);
+}
+u32 vk_rt_flush_all(void) {
+    u32 n = 0, i;
+    int list;
+    Surf** all;
+    /* gathered first: a write-back moves its target in the lists */
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next) n += flush_wanted(s);
+    if (!n || !(all = (Surf**)malloc(sizeof *all * n))) return 0;
+    n = 0;
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
+            if (flush_wanted(s)) all[n++] = s;
+    for (i = 0; i < n; i++) vk_surf_flush(all[i], NULL);
+    free(all);
+    return n;
+}

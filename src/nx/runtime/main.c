@@ -27,6 +27,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
+#include "nx/runtime/state.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/runtime/startup.h"
 #include "nx/runtime/platform/backend.h"
@@ -542,6 +543,7 @@ static void frontend_loop(void) {
         }
 #endif
         pause_unattended();
+        state_unattended();
         /* here and not on the GPU thread, where writing the pipeline cache would hold up every channel */
         if (tick % 300 == 0) {
             save_hints();

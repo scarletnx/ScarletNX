@@ -11,6 +11,8 @@
 #define SYNCPT_IDS 256
 
 void nv_init(void);
+/* an ioctl on fd that a restored thread makes again (svc_service_retry): the use of the fd the old one counted goes */
+void nv_ioctl_abandon(u32 fd);
 
 /* A live, allocated handle's address and size, read together under nvdrv's lock from any thread. 1, or 0 (both
    outputs 0) for a dead handle */

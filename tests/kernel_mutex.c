@@ -19,6 +19,13 @@ void logf_(int lvl, const char* fmt, ...) {
 }
 u64 plat_ns(void) { return 0; }
 void kobj_ref(KObj* o) { (void)o; }
+/* a restored thread's wait (sync_resume), which nothing here does */
+const SnxArmModule* g_arm_mod;
+u64 guest_ns(void) { return 0; }
+KObj* kobj_at(u32 id) {
+    (void)id;
+    return NULL;
+}
 void kobj_unref(KObj* o) { (void)o; }
 /* kernel.c's, for the threads a join waits on: signaled once exited */
 int kobj_waitable(const KObj* o) { return o->type == KO_EVENT || o->type == KO_THREAD || o->type == KO_PROCESS; }

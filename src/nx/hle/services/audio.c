@@ -786,6 +786,10 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     size_t qsize, fsize;
     if (!opus_rate_ok(rate) || !channels || channels > 255) return 0;
     if (!mapping ? channels > 2 : !streams || stereo_streams > streams || streams + stereo_streams > 255) return 0;
+    h->streams = streams;
+    h->stereo_streams = stereo_streams;
+    h->mapped = mapping != NULL;
+    if (mapping) memcpy(h->mapping, mapping, channels);
     ffmpeg_log_init();
     codec = avcodec_find_decoder(AV_CODEC_ID_OPUS);
     if (!codec) return 0;
@@ -1094,3 +1098,40 @@ static int nn_codec_detail_IHardwareOpusDecoderManager_OpenHardwareOpusDecoderFo
 }
 
 SvcObj* new_hwopus(void) { return nn_codec_detail_IHardwareOpusDecoderManager_new(); }
+
+/* ============================================================ save states */
+void audio_state_drop(void) {
+    u32 i;
+    for (i = 0; i < AUDOUT_MAX; i++) {
+        AudOut* q = &g_hle.audio.outs_pool[i];
+        if (q->obj && q->output) plat_audio_close(q->output);
+        q->output = NULL;
+    }
+    for (i = 0; i < HWOPUS_POOL; i++)
+        if (g_hle.audio.opus[i].obj) hwopus_free(&g_hle.audio.opus[i]);
+}
+/* the outs play from the loaded state's clock, their host streams empty: what was queued there is the old game's */
+void audio_state_rebuild(void) {
+    u32 i;
+    for (i = 0; i < AUDOUT_MAX; i++) {
+        AudOut* q = &g_hle.audio.outs_pool[i];
+        if (!q->obj) continue;
+        q->output = plat_audio_open(AUDIO_RATE, q->channels);
+        plat_audio_volume(q->output, q->volume * g_hle.audio.device_volume);
+        if (q->started) plat_audio_start(q->output, 1);
+    }
+    for (i = 0; i < HWOPUS_POOL; i++) {
+        HwOpus* h = &g_hle.audio.opus[i];
+        u8 mapping[255];
+        if (!h->obj) continue;
+        memcpy(mapping, h->mapping, sizeof mapping);
+#ifndef SNX_NO_H264
+        h->dec = NULL;
+        h->pkt = NULL;
+        h->frame = NULL;
+#endif
+        h->queue = NULL;
+        if (!hwopus_open(h, h->rate, h->channels, h->streams, h->stereo_streams, h->mapped ? mapping : NULL))
+            WARN("state: an Opus decoder (%u Hz, %u channels) couldn't be made again\n", h->rate, h->channels);
+    }
+}

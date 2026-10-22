@@ -59,6 +59,7 @@ void mem_query(u64 addr, MemBlock* out) {
     (void)addr;
 }
 u64 guest_ns(void) { return 0; }
+void io_anchor(void) {} /* save states' code offsets, which nothing here takes */
 /* Keep the compute report path identical to compute.c, using the real shared report handler. */
 void query_get(GpuChannel* ch, u32* r, int base, u32 v);
 void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {

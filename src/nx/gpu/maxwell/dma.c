@@ -9,6 +9,7 @@
    copies between pitch linear and block linear surfaces, with the remap of components and its constant fills, and
    the completion semaphore, done on the GPU (vk/dma.c). Also the copies of linear sources read at submission
    (dma_snap_*) */
+#include "nx/runtime/state_io.h"
 #include "nx/gpu/maxwell/engines_int.h"
 
 #define DMA_MAX_BYTES (256u << 20) /* a launch past this is a bad register value */
@@ -234,4 +235,57 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     if (m >= 0x200) return;
     ch->rdma[m] = v;
     if (m == 0xC0) dma_launch(ch, v);
+}
+
+/* ------------------------------------------------------------ save states */
+/* the snapshots still to be used, ring by ring in order: the jobs a load puts back in the queue take them */
+int dma_snap_save(StateIo* io) {
+    u32 c, i;
+    int r = 0;
+    pm_lock(&g_snap_lk);
+    for (c = 0; c < 128 && !r; c++) {
+        DmaSnapRing* q = g_snaps[c];
+        if (!q || q->tail == q->head) continue;
+        r |= io_put32(io, c + 1) | io_put32(io, q->head - q->tail);
+        for (i = q->tail; i != q->head && !r; i++) {
+            const DmaSnap* e = &q->e[i % SNAP_RING];
+            r |= io_put64(io, e->job) | io_put64(io, e->src) | io_put64(io, e->len) | io_put32(io, e->launch);
+            r |= io_put(io, e->data, e->len);
+        }
+    }
+    r |= io_put32(io, 0);
+    pm_unlock(&g_snap_lk);
+    return r;
+}
+int dma_snap_load(StateIo* io) {
+    u32 c, n, i;
+    u64 gen = gpu_mem_generation(); /* the guest memory they were read from is the state's, as new as any */
+    for (c = 0; c < 128; c++) dma_snap_reset(c);
+    for (;;) {
+        DmaSnapRing* q;
+        if (io_get32(io, &c)) return -1;
+        if (!c) return 0;
+        if (c > 128 || io_get32(io, &n) || n > SNAP_RING) return -1;
+        q = (DmaSnapRing*)calloc(1, sizeof *q);
+        if (!q) return -1;
+        for (i = 0; i < n; i++) {
+            DmaSnap* e = &q->e[i];
+            if (io_get64(io, &e->job) || io_get64(io, &e->src) || io_get64(io, &e->len) || io_get32(io, &e->launch) ||
+                e->len > SNAP_TOTAL || !(e->data = (u8*)malloc(e->len ? (size_t)e->len : 1)) ||
+                io_get(io, e->data, e->len)) {
+                q->head = i + 1;
+                pm_lock(&g_snap_lk);
+                while (q->tail != q->head) snap_drop(q);
+                pm_unlock(&g_snap_lk);
+                free(q);
+                return -1;
+            }
+            e->gen = gen;
+            q->head = i + 1;
+        }
+        pm_lock(&g_snap_lk);
+        g_snaps[c - 1] = q;
+        for (i = 0; i < n; i++) g_snap_bytes += q->e[i].len;
+        pm_unlock(&g_snap_lk);
+    }
 }

@@ -563,9 +563,11 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
     Hipc h;
     u32 seq = ring_claim();
     KSession* s = (KSession*)h_get_ref(handle, KO_SESSION);
+    KThread* t = kthread_cur();
     Domain* d;
     const char* name;
     u32 rc = 0;
+    if (t && s) t->req_session = kobj_id(&s->o);
     if (!s) {
         ring_set(seq, IPC_REC_NOT_SESSION, NULL, 0, handle, NULL, R_BADHANDLE, NULL);
         WARN_LIMIT(8, "ipc: a request on handle %x, which isn't a session: InvalidHandle\n", handle);
@@ -617,6 +619,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         else
             answer(&c, RC_UNKNOWNCOMMAND, seq, name, "command");
     }
+    if (t) t->req_session = 0;
     kobj_unref(&s->o);
     return rc;
 }

@@ -64,6 +64,15 @@ void kshmem_destroy(KObj* o);
 void kcodemem_destroy(KObj* o);
 /* wakes the threads whose wait of this kind (1 objects, 5 a pause) names o, under g_klock */
 void kobj_wake_nl(KObj* o, int kind);
+/* a save state's load: a thread asked to end does, letting go of held (thread.c) */
+void kthread_retire_check(PMutex* held);
+/* svc.c's side of a restored thread (thread.c's thread_resume_main): the rest of the wait it was blocked in, or its
+   way out of an SVC it stopped on the way out of, and what an SVC a service never answered held */
+void svc_resume(KThread* t);
+void svc_resume_leave(KThread* t);
+void svc_service_retry(KThread* t);
+/* sync.c's: the rest of a wait that a restored thread was blocked in, the SVC's result and outputs in its registers */
+void sync_resume(KThread* t);
 int h_close(u32 h);
 void waiter_add(KObj* o, KThread* t);
 void waiter_del(KObj* o, KThread* t);
@@ -207,6 +216,13 @@ typedef struct {
 typedef struct {
     PCond cv[KTHREAD_MAX]; /* each thread's, which it waits on (kt_cv) */
     PMutex core_lk;
+    /* a save state's load (thread.c): the guest threads' host threads running, retire asking them to end, and the
+       service wait each is in (kthread_wait), where it is woken to */
+    int nhost, retire;
+    struct {
+        PCond* c;
+        PMutex* m;
+    } waiting_on[KTHREAD_MAX];
 } HostThread;
 /* sync.c: the threads blocked in each kind of wait, in arrival order, linked by next_waiter (sync.c says how the
    lists are kept: one for mutexes, one per bucket of the word for the others). Under g_host.kernel.klock */

@@ -34,6 +34,9 @@ void core_set_prio(KThread* t, int prio) { t->prio = prio; }
 static u64 g_now;
 u64 plat_ns(void) { return g_now; }
 u64 guest_ns(void) { return g_now; } /* the waits' deadlines: no pause here */
+/* a save state's load, which nothing here does */
+const SnxArmModule* g_arm_mod;
+void kthread_retire_check(PMutex* held) { (void)held; }
 void pc_broadcast(PCond* c) { (void)c; }
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);

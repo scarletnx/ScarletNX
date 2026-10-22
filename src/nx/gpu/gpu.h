@@ -274,6 +274,13 @@ void dma_method(GpuChannel* ch, u32 m, u32 v);
 void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v);
 void dma_snap_finish(u32 channel, u64 job_id); /* the job ended: what it left goes */
 void dma_snap_reset(u32 channel);              /* the channel closed: what it queued goes */
+/* save states (runtime/state.c), with the GPU thread held: the channels, the queue, the scans and the copy snapshots
+   into the state, and back, every channel and queued item there was dropped first. 0, or -1 */
+struct StateIo;
+int gpu_state_save(struct StateIo* io);
+int gpu_state_load(struct StateIo* io);
+int dma_snap_save(struct StateIo* io);
+int dma_snap_load(struct StateIo* io);
 
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
@@ -283,6 +290,7 @@ void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in 
    picture, published over them, memory/own.c): what is built from them checks them again */
 void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
+void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */

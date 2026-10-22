@@ -767,8 +767,35 @@ static void vk_report_stall(void) {
 }
 static void vkr_idle(void) {
     vk_lock();
+    vk_buf_land_syncwait(); /* results recorded since the last release, which a finish alone leaves pending */
+    vk_gfx_image_land();
+    vk_compute_land();
     vk_finish();
     vk_release_drain();
+    vk_unlock();
+}
+static void vkr_flush_targets(void) {
+    u32 n;
+    vk_lock();
+    n = vk_rt_flush_all();
+    vk_finish();
+    vk_unlock();
+    LOG("vulkan: %u render targets written back for a save state\n", n);
+}
+static void vkr_reset(void) {
+    vk_lock();
+    vk_render_end();
+    vk_render_forget_state();
+    vk_surf_forget_all();
+    vk_buf_forget_all();
+    vk_query_forget_all();
+    if (g_cpu_img) {
+        vk_defer_image(g_cpu_img->img, g_cpu_img->mem, VK_NULL_HANDLE, g_cpu_img->att);
+        free(g_cpu_img);
+        g_cpu_img = NULL;
+    }
+    g_last = NULL;
+    g_vk.shader_generation++; /* the shaders found at guest addresses: the code there is the state's */
     vk_unlock();
 }
 const Renderer vk_renderer = {
@@ -803,6 +830,8 @@ const Renderer vk_renderer = {
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
     .idle = vkr_idle,
+    .reset = vkr_reset,
+    .flush_targets = vkr_flush_targets,
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,

@@ -1323,3 +1323,125 @@ int mem_unmap_code(const MemCodeMap* m) {
     }
     return r;
 }
+
+/* ============================================================ save states */
+u32 mem_blocks(MemBlock* out, u32 max) {
+    u32 n;
+    mem_lock();
+    n = g_nblk;
+    if (out) memcpy(out, g_blk, sizeof *out * (size_t)(n < max ? n : max));
+    mem_unlock();
+    return n;
+}
+/* each run of g_run cut where a host view begins or ends inside it, under g_mem_lk: the count, out filled up to max */
+static u32 spans_nl(MemSpan* out, u32 max) {
+    u32 i, k, n = 0;
+    for (i = 0; i < g_nrun; i++) {
+        u64 at = g_run[i].off, end = at + g_run[i].size;
+        while (at < end) {
+            u64 cut = end;
+            int host = 0;
+            for (k = 0; k < g_nhostrun; k++) {
+                u64 lo = g_hostrun[k].off, hi = lo + g_hostrun[k].size;
+                if (lo <= at && at < hi) {
+                    host = 1;
+                    cut = hi < cut ? hi : cut;
+                } else if (lo > at && lo < cut)
+                    cut = lo;
+            }
+            if (out && n < max) {
+                out[n].off = at;
+                out[n].size = cut - at;
+                out[n].host = host;
+            }
+            n++;
+            at = cut;
+        }
+    }
+    return n;
+}
+u32 mem_spans(MemSpan* out, u32 max) {
+    u32 n;
+    mem_lock();
+    n = spans_nl(out, max);
+    mem_unlock();
+    return n;
+}
+int mem_pool_read(u64 off, void* dst, u64 size) { return g_pool_on ? plat_alias_read(off, dst, size) : -1; }
+
+int mem_restore_begin(void) {
+    u32 i, n;
+    MemSpan* s;
+    OwnRange own[64];
+    mapping_begin();
+    /* without landing: the state's bytes replace it all. Range by range: own_drop over the whole address space would
+       let go of the traps on all of it, page by page */
+    while ((n = own_lookup(AS_BASE, AS_END - AS_BASE, own, 64)) != 0)
+        for (i = 0; i < n && i < 64; i++) own_drop(own[i].addr, own[i].size);
+    mem_lock();
+    if (!g_pool_on) return -1;
+    /* everything mapped goes but the modules' code, from the top so the indices below stay put */
+    for (i = g_nblk; i-- > 0;)
+        if (g_blk[i].state != MS_FREE && g_blk[i].state != MS_CODE) unmap_nl(g_blk[i].addr, g_blk[i].size);
+    /* and the pool's pages but the services' host views */
+    n = spans_nl(NULL, 0);
+    s = (MemSpan*)malloc(sizeof *s * (size_t)(n ? n : 1));
+    if (!s) return -1;
+    spans_nl(s, n);
+    for (i = 0; i < n; i++)
+        if (!s[i].host) pool_free_nl(s[i].off, s[i].size);
+    free(s);
+    return 0;
+}
+u64 mem_restore_alloc(u64 size) {
+    u64 off;
+    return pool_alloc_nl(size, &off) ? ~0ull : off;
+}
+int mem_restore_write(u64 off, const void* p, u64 size) { return plat_alias_write(off, p, size) ? -1 : 0; }
+int mem_restore_blocks(const MemBlock* blk, u32 n) {
+    u32 i, k;
+    u64 at = 0;
+    /* the state's list covers the address space in order, and its code is the code mapped now */
+    for (i = 0; i < n; i++) {
+        if (blk[i].addr != at || !blk[i].size || (blk[i].addr & (PAGE - 1)) || (blk[i].size & (PAGE - 1))) return -1;
+        at += blk[i].size;
+    }
+    if (at != AS_END) return -1;
+    for (i = 0, k = 0;;) {
+        while (i < g_nblk && g_blk[i].state != MS_CODE) i++;
+        while (k < n && blk[k].state != MS_CODE) k++;
+        if ((i < g_nblk) != (k < n)) return -1;
+        if (i == g_nblk) break;
+        if (g_blk[i].addr != blk[k].addr || g_blk[i].size != blk[k].size || g_blk[i].perm != blk[k].perm) return -1;
+        i++;
+        k++;
+    }
+    for (i = 0; i < n; i++) {
+        const MemBlock* b = &blk[i];
+        if (b->state == MS_FREE || b->state == MS_CODE) continue;
+        if (b->pool ? plat_alias_map(GP(b->addr), b->pool - 1, b->size) != 0 : commit_nl(b->addr, b->size) != 0)
+            return -1;
+    }
+    if (n > g_nblk) blk_reserve_nl(n - g_nblk);
+    memcpy(g_blk, blk, sizeof *blk * (size_t)n);
+    g_nblk = n;
+    return 0;
+}
+void mem_restore_end(u64 heap_size, u64 phys_mapped) {
+    MemBlock* b;
+    u32 i, n;
+    __atomic_store_n(&g_heap_size, heap_size, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_phys_mapped, phys_mapped, __ATOMIC_RELEASE);
+    runs_stale_nl();
+    n = g_nblk;
+    b = (MemBlock*)malloc(sizeof *b * (size_t)n);
+    if (b) memcpy(b, g_blk, sizeof *b * (size_t)n);
+    mem_unlock();
+    mapping_end();
+    /* what the JIT compiled and the renderer keeps of every block is stale: not the modules' code, whose entries the
+       game module filled in once (dispatch_init) */
+    for (i = 0; b && i < n; i++)
+        if (b[i].state != MS_FREE && b[i].state != MS_CODE) code_invalidate(b[i].addr, b[i].size);
+    free(b);
+    gpu_mem_changed(AS_BASE, AS_END - AS_BASE);
+}

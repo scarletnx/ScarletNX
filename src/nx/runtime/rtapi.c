@@ -191,6 +191,7 @@ static void rt_miss(CPU* c, u64 pc) {
     if (!f) {
         KThread* t = kthread_cur();
         if (t) core_leave(t);
+        c->pc = pc;       /* where a thread a save state stopped here goes on */
         kthread_block(t); /* a game pause waits for no compile: the thread stops at the end of it */
         f = jit_wait(pc);
         kthread_unblock(t);
