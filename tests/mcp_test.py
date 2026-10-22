@@ -377,6 +377,8 @@ def main():
             call('symbolize', 'game_outside', game=str(outside / 'secret.nro'), addresses=['8000000']),
             call('find_game', title_id='0100aaaabbbb0000'),
             call('find_game', 'find_none', title_id='0100000000000001'),
+            call('state_info', title_id='0100AAAABBBB0000'),
+            call('state_info', 'states_none', title_id='0100000000000001'),
             call('symbolize', game=str(nro), addresses=['8000080', 'zz']),
             call('disassemble', game=str(nro), start='8000000', end='8000094'),
             call('disassemble', 'no_range', game=str(nro)),
@@ -411,6 +413,15 @@ def main():
             call('nope'),
             {'jsonrpc': '2.0', 'id': 'method', 'method': 'resources/list'},
         ]
+        # a save state of the game in the data folder's games/, from a runtime of another SNX_ABI
+        # (common/utilities/state_header.c's header)
+        states = data / 'games' / '0100AAAABBBB0000' / 'states'
+        states.mkdir(parents=True)
+        header = bytearray(512)
+        header[0:8] = b'SNXSTATE'
+        struct.pack_into('<IIQQQII', header, 8, 1, 0, 0x0100AAAABBBB0000, 1700000000, 90 * 10**9, 0, 0)
+        header[64:69] = b'older'
+        (states / '0100AAAABBBB0000.3.snxstate').write_bytes(bytes(header))
         stdin = ''.join(json.dumps(r) + '\n' for r in requests) + 'not json\n'
         run = subprocess.run(
             [runtime, '--mcp', '--repo', str(data)],
@@ -451,6 +462,7 @@ def main():
             'scan_log',
             'read_log',
             'find_game',
+            'state_info',
             'symbolize',
             'disassemble',
             'edenprobe_scaffold',
@@ -490,6 +502,17 @@ def main():
         f'find_game: {games}',
     )
     check(json.loads(text('find_none')) == [], 'find_game with another title ID')
+    states = json.loads(text('state_info'))
+    check(
+        len(states) == 1
+        and states[0]['slot'] == '3'
+        and states[0]['program'] == '0100AAAABBBB0000'
+        and states[0]['play_time_s'] == 90
+        and states[0]['runtime'] == 'older'
+        and 'SNX_ABI' in (states[0]['cannot_load'] or ''),
+        f'state_info: {states}',
+    )
+    check(json.loads(text('states_none')) == [], 'state_info with another title ID')
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')

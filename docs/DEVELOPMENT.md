@@ -66,7 +66,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   opened in the checkout (`build/scarletnx --mcp --data .`). Its tools: `scan_log` (the summary above), `read_log`
   (a log's lines holding a text, `|` between alternatives, with context, or a range, or its last lines, only under
   the data folder and its state, cache and settings folders), `find_game` (the extracted games in `work/` with their
-  title IDs and versions), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
+  title IDs and versions), `state_info` (a recompiled game's save states: slot, program, when, play time, the build
+  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
   LLVM's disassembler where LLVM has the AArch64 target). The last game loaded stays loaded for the next call. Its
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
   (`mcp_gdb.c`, [USAGE.md](USAGE.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
