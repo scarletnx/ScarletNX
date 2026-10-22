@@ -40,6 +40,8 @@ typedef struct {
     size_t symbol_count;
     SnxU64 *functions, *relptrs; /* discovery seeds, both sorted without duplicates */
     size_t function_count, relptr_count;
+    SnxU64* exported; /* the functions its dynamic symbols define, sorted without duplicates (in the functions' block) */
+    size_t exported_count;
     SnxFde* fde;
     size_t fde_count;
     char** imports; /* undefined symbols' names */
