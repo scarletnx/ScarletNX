@@ -13,6 +13,8 @@ H1Ch* host1x_open(int is_vic); /* NULL when out of memory */
 void host1x_close(H1Ch* ch);
 /* An ioctl on the channel's fd, with its buffer d of n bytes. Returns the NvError */
 u32 host1x_ioctl(H1Ch* ch, u32 cmd, u8* d, u32 n);
+/* a game pause: 0 once every channel's queued jobs have run, -1 when some are left after timeout_ms */
+int host1x_drain(int timeout_ms);
 /* nvmap freed handle h: whatever the engines mapped of it is unmapped, its IOVA range free again */
 void host1x_forget_handle(u32 h);
 /* Routes FFmpeg's log (warnings and worse, a limited number) into the game log. nvdec.c defines it; every user of

@@ -53,6 +53,7 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     test_fail("nothing here waits for a syncpoint", __LINE__);
     return 1;
 }
+int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
 u64 plat_ns(void) { return 0; }
 u64 guest_ns(void) { return 0; }
 void logf_(int level, const char* format, ...) {

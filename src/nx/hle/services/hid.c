@@ -14,6 +14,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/services/hid_layout.h"
 #include "nx/hle/services/hid_motion.h"
+#include "nx/runtime/clock.h"
 
 #include "hle/services/hid.swipc.inc"
 
@@ -375,7 +376,7 @@ void hid_update(void) {
     TouchState touch;
     u8 state[HS_HidNpadCommonState], none[HS_HidNpadCommonState], other[HS_HidTouchScreenState];
     u8* shm;
-    u64 now = plat_ns(), dt;
+    u64 now = guest_ns(), dt; /* the motion sensors integrate guest time: none passes while paused */
     int e, i;
     pm_lock(&g_hle.hid.lock);
     hid_take_input(&touch);

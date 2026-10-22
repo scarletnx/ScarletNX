@@ -32,6 +32,7 @@ void core_leave(KThread* t) { (void)t; }
 void core_set_prio(KThread* t, int prio) { t->prio = prio; }
 static u64 g_now;
 u64 plat_ns(void) { return g_now; }
+u64 guest_ns(void) { return g_now; } /* the waits' deadlines: no pause here */
 void pc_broadcast(PCond* c) { (void)c; }
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);

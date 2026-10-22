@@ -105,6 +105,10 @@ typedef struct Renderer {
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     void (*report_stall)(void); /* the stall watchdog: what the renderer holds back. Any thread, unlocked */
+    /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
+       release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
+       jobs. NULL when the renderer has nothing in flight */
+    void (*idle)(void);
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */

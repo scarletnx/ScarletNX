@@ -86,6 +86,7 @@ static int core_allowed(const KThread* t) {
 static void svc_enter(KThread* t) {
     __atomic_store_n(&t->in_svc, 1, __ATOMIC_SEQ_CST);
     pause_point(t, 1);
+    kthread_hold_point(t); /* a game pause, before the SVC does anything */
     core_enter(t);
     core_preempt(t); /* a waiter of better priority takes the core at the holder's next SVC */
 }
@@ -103,6 +104,7 @@ static void svc_leave(KThread* t) {
     core_preempt(t);
     __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
     if (pause_point(t, 2)) core_enter(t);
+    if (kthread_hold_point(t)) core_enter(t);
 }
 
 /* ============================================================ threads */

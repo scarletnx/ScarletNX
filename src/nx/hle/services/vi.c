@@ -326,7 +326,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             gen = l->gen;
             /* every buffer the game gave is in use: wait for one, never taking one back from the display */
             while ((slot = vi_free_slot(l)) < 0 && l->gen == gen)
-                if (pc_wait(&g_hle.vi.freed, &g_hle.vi.lock, 1000000000ll))
+                if (kthread_wait(&g_hle.vi.freed, &g_hle.vi.lock, 1000000000ll))
                     WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", ++waits);
             if (l->gen != gen) { /* the layer closed while it waited */
                 status = BQ_NO_INIT;

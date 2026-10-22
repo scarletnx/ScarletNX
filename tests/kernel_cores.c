@@ -67,6 +67,17 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     return -1;
 }
 void plat_thread_exit(void) { pthread_exit(NULL); }
+/* a game pause's clock, and its report of a thread that didn't stop */
+u64 plat_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (u64)t.tv_sec * 1000000000u + (u64)t.tv_nsec;
+}
+void plat_sleep_ns(i64 ns) {
+    struct timespec t = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    nanosleep(&t, NULL);
+}
+void kernel_dump_threads(void) {}
 void save_hints(void) {}
 void snx_save_before_exit(void) {}
 void snx_fpcr_apply(CPU* c) { (void)c; }
@@ -179,6 +190,33 @@ static void host(const int* ids, int n) {
 static void* enter_body(void* p) {
     snx_kct_who = (int)((KThread*)p - snx_kct_thread);
     core_enter((KThread*)p);
+    return NULL;
+}
+/* a thread for a game pause: mode 0 runs game code that polls (counting steps), 1 game code that never polls, 2 is
+   blocked in a service's wait until signaled, then takes a step */
+typedef struct {
+    KThread* t;
+    int mode, stop, signaled;
+    u64 steps;
+    PMutex m;
+    PCond cv;
+} SnxKctGame;
+static void* game_body(void* p) {
+    SnxKctGame* g = (SnxKctGame*)p;
+    tls_thread = g->t;
+    if (g->mode == 2) {
+        pm_lock(&g->m);
+        while (!g->signaled) kthread_wait(&g->cv, &g->m, -1);
+        pm_unlock(&g->m);
+        __atomic_add_fetch(&g->steps, 1, __ATOMIC_SEQ_CST);
+        return NULL;
+    }
+    core_enter(g->t);
+    while (!__atomic_load_n(&g->stop, __ATOMIC_SEQ_CST)) {
+        __atomic_add_fetch(&g->steps, 1, __ATOMIC_SEQ_CST);
+        if (g->mode == 0 && __atomic_load_n(&g->t->cpu.poll, __ATOMIC_RELAXED)) core_poll(g->t);
+    }
+    core_leave(g->t);
     return NULL;
 }
 typedef struct {
@@ -402,6 +440,76 @@ int main(void) {
         t = kthread_create(0x1000, 0, 0x2000, 44, 0);
         CHECK(t == first[7] && t->id == first[KTHREAD_MAX - 1]->id + 1 && kthread_live_count() == KTHREAD_MAX,
               "the freed slot holds the new thread, %llu", (unsigned long long)t->id);
+    }
+
+    /* a game pause: two threads running game code on one core both stop at a poll, the second once the first lets go
+       of the core it waits for; a thread blocked in a service's wait counts as stopped, and when its wait ends during
+       the pause it runs nothing until the pause ends. Nothing moves while the pause holds, and everything goes on
+       after it */
+    {
+        static SnxKctGame g[4];
+        pthread_t gh[4];
+        u64 seen[3];
+        reset();
+        for (int i = 0; i < 4; i++) {
+            g[i].t = &g_hle.thread.threads[i];
+            g[i].t->state = 1; /* started: the pause counts it */
+            pm_init(&g[i].m);
+            pc_init(&g[i].cv);
+        }
+        g[2].mode = 2;
+        pthread_create(&gh[0], NULL, game_body, &g[0]);
+        CHECK(settle(g[0].t, 0) == 0, "the first runs on core 0: %d", on_core(g[0].t));
+        pthread_create(&gh[1], NULL, game_body, &g[1]);
+        CHECK(settle(g[1].t, -2) == -2, "the second waits for core 0: %d", on_core(g[1].t));
+        pthread_create(&gh[2], NULL, game_body, &g[2]);
+        while (!__atomic_load_n(&g[2].t->stopped, __ATOMIC_SEQ_CST)) sched_yield();
+        g[3].t->state = 0; /* the fourth isn't started yet */
+        CHECK(kernel_hold(2000) == 0, "the pause holds");
+        CHECK(g[0].t->stopped == 2 && g[1].t->stopped == 2 && g[2].t->stopped == 1,
+              "stopped at a poll, at a poll, blocked: %d %d %d", g[0].t->stopped, g[1].t->stopped, g[2].t->stopped);
+        for (int i = 0; i < 3; i++) seen[i] = __atomic_load_n(&g[i].steps, __ATOMIC_SEQ_CST);
+        pm_lock(&g[2].m); /* the blocked one's wait ends */
+        g[2].signaled = 1;
+        pc_broadcast(&g[2].cv);
+        pm_unlock(&g[2].m);
+        {
+            struct timespec pause = {0, 30000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(seen[0] && seen[1] && seen[0] == g[0].steps && seen[1] == g[1].steps && !g[2].steps,
+              "nothing ran while paused: %llu %llu %llu", (unsigned long long)g[0].steps,
+              (unsigned long long)g[1].steps, (unsigned long long)g[2].steps);
+        CHECK(g[2].t->stopped == 2, "the woken one waits at a hold point: %d", g[2].t->stopped);
+        kernel_release();
+        for (int i = 0; i < 2000 && !(__atomic_load_n(&g[2].steps, __ATOMIC_SEQ_CST) &&
+                                      __atomic_load_n(&g[0].steps, __ATOMIC_SEQ_CST) +
+                                              __atomic_load_n(&g[1].steps, __ATOMIC_SEQ_CST) >
+                                          seen[0] + seen[1]);
+             i++) {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(g[2].steps == 1 && g[0].steps + g[1].steps > seen[0] + seen[1], "everything goes on after the pause");
+        for (int i = 0; i < 3; i++) __atomic_store_n(&g[i].stop, 1, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 3; i++) pthread_join(gh[i], NULL);
+        for (int i = 0; i < 3; i++) g[i].t->state = 2;
+
+        /* a thread that never polls: the pause gives up, and the game goes on */
+        g[3].t->state = 1;
+        g[3].mode = 1;
+        pthread_create(&gh[3], NULL, game_body, &g[3]);
+        CHECK(settle(g[3].t, 0) == 0, "it runs on core 0: %d", on_core(g[3].t));
+        CHECK(kernel_hold(50) == -1 && !g_hle.thread.hold, "the pause gives up and lets go");
+        seen[0] = __atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST);
+        {
+            struct timespec pause = {0, 5000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(__atomic_load_n(&g[3].steps, __ATOMIC_SEQ_CST) > seen[0], "it goes on");
+        __atomic_store_n(&g[3].stop, 1, __ATOMIC_SEQ_CST);
+        pthread_join(gh[3], NULL);
+        g[3].t->state = 2;
     }
 
     printf("%u checks, %u failed\n", checks, failures);

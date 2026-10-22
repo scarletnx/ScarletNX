@@ -21,14 +21,15 @@
 
 /* the core a thread would run on, kept within the cores the runtime has */
 static int core_of(const KThread* t) { return t->core >= 0 && t->core < NCORES ? t->core : 0; }
-/* the holder of core k is asked to let go (CPU.poll, read by generated code) when a waiter would preempt it */
+/* the holder of core k is asked to let go (CPU.poll, read by generated code) when a waiter would preempt it, and while
+   the game is paused, so that it reaches a hold point */
 /* stored only when it changes: the holder's code reads poll at each backward branch, and a store of the same value
    still takes its cache line away from the holder's core */
 static void core_flag_nl(int k) {
     KThread* o = g_hle.thread.core_owner[k];
     u32 v;
     if (!o) return;
-    v = g_hle.thread.core_best[k] < o->prio ? 1u : 0u;
+    v = __atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED) || g_hle.thread.core_best[k] < o->prio ? 1u : 0u;
     if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) != v) __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
 }
 static void core_rebest_nl(int k) {
@@ -165,7 +166,10 @@ void core_preempt(KThread* t) {
     pm_unlock(&g_hle.thread.core_lk);
     core_pin(t);
 }
-void core_poll(KThread* t) { core_preempt(t); }
+void core_poll(KThread* t) {
+    core_preempt(t);
+    if (kthread_hold_point(t)) core_enter(t);
+}
 /* svcSleepThread's yields. With nobody waiting for its core the thread goes on at once, as on the console. Otherwise
    the core goes to the best waiter, whatever its priority, and t lines up behind the waiters of its own priority. A
    waiter of worse priority that took the core gives it back at its next poll: a yield doesn't hand a better thread's
@@ -342,6 +346,97 @@ void svc_exit_thread(KThread* t) {
     kobj_unref(&t->o);
     plat_thread_exit();
 }
+
+/* ============================================================ game pauses */
+/* A game pause is not svcSetThreadActivity's: the game's own pause (suspended) stays as the game set it underneath,
+   and a thread is stopped for a game pause when it runs nothing until the pause ends. That is a thread at a hold point
+   (here, at a poll, at either end of an SVC, after a JIT compile), one blocked in a wait whose wake during the pause
+   waits for its end too (sleep_nl, kthread_wait), and one the game paused itself, at its pause point. A thread that
+   runs game code has its poll set until it gets to a hold point; one inside an SVC gets to svc_leave's, or blocks.
+   stopped is stored before hold is read on the thread's side, and hold before stopped is read on the pauser's (all
+   sequentially consistent), so a thread whose wait ends as the pause begins is never counted stopped while it goes on */
+int kthread_hold_point(KThread* t) {
+    if (!t || !__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return 0;
+    core_leave(t);
+    pm_lock(&g_hle.kernel.klock);
+    __atomic_store_n(&t->stopped, 2, __ATOMIC_SEQ_CST);
+    while (g_hle.thread.hold) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
+    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    pm_unlock(&g_hle.kernel.klock);
+    return 1;
+}
+void kthread_block(KThread* t) {
+    if (t) __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+}
+void kthread_unblock(KThread* t) {
+    if (!t) return;
+    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    kthread_hold_point(t);
+}
+int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
+    KThread* t = kthread_cur();
+    int r;
+    if (!t) return pc_wait(c, m, timeout_ns);
+    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
+    r = pc_wait(c, m, timeout_ns);
+    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    if (!__atomic_load_n(&g_hle.thread.hold, __ATOMIC_SEQ_CST)) return r;
+    pm_unlock(m);
+    kthread_hold_point(t);
+    pm_lock(m);
+    return 0;
+}
+
+/* each thread that has started and not exited, with g_klock and the pool's lock held */
+#define FOR_LIVE_THREADS(t)                                                                                            \
+    for (KThread* t = g_hle.thread.threads; t < g_hle.thread.threads + KTHREAD_MAX; t++)                               \
+        if (t->o.type == KO_THREAD && t->state == 1)
+int kernel_hold(int timeout_ms) {
+    u64 t0 = plat_ns();
+    int k;
+    pm_lock(&g_hle.kernel.klock);
+    __atomic_store_n(&g_hle.thread.hold, 1, __ATOMIC_SEQ_CST);
+    /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
+    pm_lock(&g_hle.thread.core_lk);
+    for (k = 0; k < NCORES; k++) core_flag_nl(k);
+    pm_unlock(&g_hle.thread.core_lk);
+    pm_unlock(&g_hle.kernel.klock);
+    for (;;) {
+        char name[sizeof g_hle.thread.threads[0].name] = "";
+        u64 id = 0;
+        int late = 0;
+        pm_lock(&g_hle.kernel.klock);
+        pm_lock(&g_hle.kernel.pool_lk);
+        FOR_LIVE_THREADS(t) {
+            if (__atomic_load_n(&t->stopped, __ATOMIC_SEQ_CST) || (t->suspended && t->pause_at)) continue;
+            late = 1;
+            id = t->id;
+            memcpy(name, t->name, sizeof name);
+            break;
+        }
+        pm_unlock(&g_hle.kernel.pool_lk);
+        pm_unlock(&g_hle.kernel.klock);
+        if (!late) return 0;
+        if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
+            name[sizeof name - 1] = 0;
+            WARN("pause: thread %llu (%s) still runs after %d ms, so the game goes on unpaused. The threads:\n",
+                 (unsigned long long)id, name[0] ? name : "unnamed", timeout_ms);
+            kernel_dump_threads();
+            kernel_release();
+            return -1;
+        }
+        plat_sleep_ns(1000000);
+    }
+}
+void kernel_release(void) {
+    pm_lock(&g_hle.kernel.klock);
+    __atomic_store_n(&g_hle.thread.hold, 0, __ATOMIC_SEQ_CST);
+    pm_lock(&g_hle.kernel.pool_lk);
+    FOR_LIVE_THREADS(t) pc_broadcast(&t->cv);
+    pm_unlock(&g_hle.kernel.pool_lk);
+    pm_unlock(&g_hle.kernel.klock);
+}
+#undef FOR_LIVE_THREADS
 
 /* the main thread, as the console starts an application: its stack mapped in the stack region between two free guard
    pages, x0 0 and x1 its own handle, on the core the npdm names, which becomes the process's default core. The

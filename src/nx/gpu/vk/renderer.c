@@ -765,6 +765,12 @@ static void vk_report_stall(void) {
          (unsigned long long)gsub, (unsigned long long)cdone, (unsigned long long)csub,
          (unsigned long long)vk_rec_behind());
 }
+static void vkr_idle(void) {
+    vk_lock();
+    vk_finish();
+    vk_release_drain();
+    vk_unlock();
+}
 const Renderer vk_renderer = {
     .name = "Vulkan",
     .start = vkr_start,
@@ -796,6 +802,7 @@ const Renderer vk_renderer = {
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
+    .idle = vkr_idle,
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,

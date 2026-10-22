@@ -21,6 +21,7 @@ u64 plat_ns(void) {
     static u64 now;
     return now += 16666666ull;
 }
+u64 guest_ns(void) { return plat_ns(); } /* hid's motion steps: no pause here */
 
 static void test_fail(const char* expression, int line) {
     fprintf(stderr, "misc_service.c:%d: check failed: %s\n", line, expression);

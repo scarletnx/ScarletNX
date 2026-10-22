@@ -76,6 +76,9 @@ struct KThread {
        without the lock. pause_at is where a paused thread waits: 0 blocked inside the SVC or not paused, 1 before
        the SVC, 2 after it */
     int suspended, in_svc, pause_at;
+    /* what a game pause (kernel_hold) counts on, with __atomic stores: 1 blocked in a wait that runs nothing until it
+       ends (sleep_nl, kthread_wait, a JIT compile), 2 stopped at a hold point, 0 neither */
+    int stopped;
     int wait_kind; /* 0 none, 1 objects, 2 mutex, 3 condition variable, 4 address, 5 being paused */
     u64 wait_addr, wait_key;
     u32 wait_tag;
@@ -122,6 +125,22 @@ KThread* kthread_cur(void);
 void core_enter(KThread* t);
 void core_leave(KThread* t);
 void core_poll(KThread* t);
+/* A game pause (pause.c): kernel_hold stops every guest thread where it runs nothing (at a hold point, or blocked in a
+   wait), 0 once they all are, -1 (after logging the late thread, and letting the others go again) when one isn't within
+   timeout_ms. kernel_release lets them go on. The frontend's thread calls both */
+int kernel_hold(int timeout_ms);
+void kernel_release(void);
+/* a guest thread's hold point outside an SVC (a poll, the end of a JIT compile): off its core while the game is paused.
+   1 when it stopped, and the caller takes its core again */
+int kthread_hold_point(KThread* t);
+/* pc_wait for a guest thread blocked in a service on the service's own lock m: it counts as stopped for a game pause,
+   and a wake during one waits for the pause to end, m let go of meanwhile (returning 0, as a spurious wake). Another
+   thread just waits */
+int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns);
+/* around a guest thread's wait for the host off its core (a JIT compile): stopped as far as a game pause goes, and its
+   end a hold point */
+void kthread_block(KThread* t);
+void kthread_unblock(KThread* t);
 void kernel_run_main(u64 entry, u64 stack_size, int prio, int core);
 /* SVC #imm of a 64-bit thread (RtAPI.svc) and of a 32-bit one: g_svc64[imm] and svc.c's g_svc32[imm], each SVC's
    own entry, which takes its registers in that ABI (svcgen, hle/svc/hos.svc). The NX modules call g_svc64 by number

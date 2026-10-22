@@ -191,7 +191,9 @@ static void rt_miss(CPU* c, u64 pc) {
     if (!f) {
         KThread* t = kthread_cur();
         if (t) core_leave(t);
+        kthread_block(t); /* a game pause waits for no compile: the thread stops at the end of it */
         f = jit_wait(pc);
+        kthread_unblock(t);
         if (t) core_enter(t);
         if (!f)
             fatal("The game reached code at %llx that the recompiler missed, and %s", (unsigned long long)pc,

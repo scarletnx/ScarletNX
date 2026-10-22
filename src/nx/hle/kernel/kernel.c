@@ -7,6 +7,7 @@
 /* kernel objects and their references, the handle table, waiting on objects and waking, events */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/clock.h"
 
 /* ============================================================ references */
 void kobj_ref(KObj* o) {
@@ -151,23 +152,33 @@ void kobj_signal_nl(KObj* o) {
 }
 /* t (the calling thread, with g_klock held) blocks until it is woken or timeout ns pass (negative: none, 0: it only
    checks). It lets go of its core first, as a console thread leaves the CPU when it blocks: the SVC takes it back on
-   the way out (svc_leave), never here, where it would wait for a core with g_klock held. 1 when woken, 0 timed out */
+   the way out (svc_leave), never here, where it would wait for a core with g_klock held. 1 when woken, 0 timed out.
+   The deadline is in guest time, which stops while the game is paused (clock.c), and the thread counts as stopped for
+   a game pause while it waits: a wake or a timeout during one waits for its end */
 int sleep_nl(KThread* t, i64 timeout) {
     u64 end = 0;
+    int r = 1;
     if (timeout > ((i64)1 << 62)) timeout = -1; /* centuries: no deadline the clock could reach */
     t->wait_timeout = timeout;
-    if (timeout > 0) end = plat_ns() + (u64)timeout;
-    if (!t->woken && timeout) core_leave(t);
+    if (timeout > 0) end = guest_ns() + (u64)timeout;
+    if (t->woken || !timeout) return t->woken;
+    core_leave(t);
+    __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
     while (!t->woken) {
         i64 left = -1;
-        if (timeout >= 0) {
-            u64 now = plat_ns();
-            if (!timeout || now >= end) return 0;
+        if (timeout > 0 && !g_hle.thread.hold) {
+            u64 now = guest_ns();
+            if (now >= end) {
+                r = 0;
+                break;
+            }
             left = (i64)(end - now);
         }
         pc_wait(&t->cv, &g_hle.kernel.klock, left);
     }
-    return 1;
+    while (g_hle.thread.hold) pc_wait(&t->cv, &g_hle.kernel.klock, -1);
+    __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
+    return r;
 }
 
 /* ============================================================ events */

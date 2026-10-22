@@ -585,6 +585,7 @@ static u32 g_qtotal;
 static u8 g_qparked[128];    /* the channel's oldest job waits (gpu_park) */
 static u8 g_scan_stale[128]; /* the channel closed: its submission scan starts again from reset */
 static u64 g_job_ids;
+static int g_hold_want, g_hold_at; /* a game pause asked the GPU thread to hold, and it holds (gpu_hold) */
 /* for the stall report: whether this is the GPU thread, the channel whose job runs (its id + 1, 0 between jobs) and
    since when, and the blocking wait it is in (gpu_wait_note) */
 static _Thread_local int t_gpu;
@@ -933,6 +934,62 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     pm_lock(&g_qlk);
     queue_init();
     queue_append(it);
+    pm_unlock(&g_qlk);
+}
+
+/* A game pause: the GPU thread gets here once the jobs queued before it have run or wait (a channel waiting on the CPU
+   stays parked, its deadline moved on by the time held, as nothing the CPU does can happen meanwhile), the renderer
+   finishes what it has in flight, and the thread waits until gpu_release. One that gpu_hold gave up on goes past */
+static void hold_here(void* arg) {
+    u64 held;
+    u32 c;
+    (void)arg;
+    if (g_renderer->idle) g_renderer->idle();
+    pm_lock(&g_qlk);
+    if (g_hold_want) {
+        g_hold_at = 1;
+        pc_broadcast(&g_qcv);
+        held = plat_ns();
+        while (g_hold_want) pc_wait(&g_qcv, &g_qlk, -1);
+        g_hold_at = 0;
+        held = plat_ns() - held;
+        for (c = 0; c < 128; c++)
+            if (g_qparked[c] && g_gpu.chan[c]) g_gpu.chan[c]->park_end += held;
+    }
+    pm_unlock(&g_qlk);
+}
+int gpu_hold(int timeout_ms) {
+    u64 end = plat_ns() + (u64)timeout_ms * 1000000u;
+    int r = 0;
+    pm_lock(&g_qlk);
+    if (!g_qthread) { /* nothing was ever submitted: there is no GPU thread to hold */
+        pm_unlock(&g_qlk);
+        return 0;
+    }
+    g_hold_want = 1;
+    pm_unlock(&g_qlk);
+    gpu_call(hold_here, NULL, NULL, 0);
+    pm_lock(&g_qlk);
+    while (!g_hold_at) {
+        u64 now = plat_ns();
+        if (now >= end) {
+            g_hold_want = 0;
+            r = -1;
+            break;
+        }
+        pc_wait(&g_qcv, &g_qlk, (i64)(end - now));
+    }
+    pm_unlock(&g_qlk);
+    if (r) {
+        WARN("pause: the GPU thread didn't get to the pause within %d ms\n", timeout_ms);
+        gpu_report_stall();
+    }
+    return r;
+}
+void gpu_release(void) {
+    pm_lock(&g_qlk);
+    g_hold_want = 0;
+    pc_broadcast(&g_qcv);
     pm_unlock(&g_qlk);
 }
 

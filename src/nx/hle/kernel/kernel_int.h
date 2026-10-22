@@ -181,6 +181,9 @@ typedef struct {
     /* each core's share of the host CPUs (thread.c's core_pin), and whether it was logged */
     int host_cpu[256], host_ncpu;
     int pin_said[NCORES];
+    /* a game pause is in force (kernel_hold): set and cleared under g_klock, read with __atomic loads, and every
+       holder's poll stays set meanwhile so that its game code reaches a hold point */
+    int hold;
     /* the TLS page being handed out, eight threads to a page, and how many have it. Under g_klock */
     u64 tls_page;
     int tls_used;

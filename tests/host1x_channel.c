@@ -39,6 +39,16 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
     deadline(&t, ns);
     return pthread_cond_timedwait(&c->c, &m->l, &t) != 0;
 }
+/* host1x_drain's clock, which nothing here calls */
+u64 plat_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (u64)t.tv_sec * 1000000000u + (u64)t.tv_nsec;
+}
+void plat_sleep_ns(i64 ns) {
+    struct timespec t = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    nanosleep(&t, NULL);
+}
 typedef struct {
     PThreadFn fn;
     void* arg;

@@ -52,6 +52,7 @@ static PMutex g_iova_lk = PMUTEX_INIT;
 static IovaMap g_iova[IOVA_SLOTS]; /* sorted by iova */
 static u32 g_niova;
 static PMutex g_engine_lk = PMUTEX_INIT;
+static u32 g_jobs; /* queued or running on any channel, with __atomic operations: what host1x_drain waits for */
 
 /* A job is one block of words: the command buffer count, the increment count, each command buffer as its length and
    words (length 0 for one that was refused), then each increment as (syncpoint id, count) */
@@ -249,6 +250,7 @@ static void worker(void* arg) {
         run_job(ch, job);
         SNX_ZONE_END(z_job);
         free(job);
+        __atomic_sub_fetch(&g_jobs, 1, __ATOMIC_RELEASE);
         pm_lock(&ch->lk);
         ch->head = (ch->head + 1) % H1_QUEUE;
         ch->count--;
@@ -341,6 +343,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     ch->queue[(ch->head + ch->count) % H1_QUEUE] = job;
     ch->count++;
+    __atomic_add_fetch(&g_jobs, 1, __ATOMIC_RELAXED);
     pc_broadcast(&ch->cv);
     if (!ch->started) {
         ch->started = 1;
@@ -348,6 +351,19 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     pm_unlock(&ch->lk);
     return NV_OK;
+}
+/* a game pause, with no guest thread left to submit: polled, as pauses are rare and the jobs take milliseconds */
+int host1x_drain(int timeout_ms) {
+    u64 t0 = plat_ns();
+    while (__atomic_load_n(&g_jobs, __ATOMIC_ACQUIRE)) {
+        if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
+            WARN("pause: host1x still has %u jobs after %d ms\n", __atomic_load_n(&g_jobs, __ATOMIC_RELAXED),
+                 timeout_ms);
+            return -1;
+        }
+        plat_sleep_ns(1000000);
+    }
+    return 0;
 }
 /* GET_SYNCPOINT {u32 index; out u32 id}: the channel's syncpoint at that index, allocated when first asked for */
 static u32 get_syncpt(H1Ch* ch, u8* d, u32 n) {

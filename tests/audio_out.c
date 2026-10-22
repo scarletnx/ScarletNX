@@ -36,6 +36,14 @@ void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return test_now; }
+u64 guest_ns(void) { return test_now; } /* the outs play in guest time: no pause here */
+/* the audio clock's pause, whose thread never runs here */
+void pc_init(PCond* c) { (void)c; }
+void pc_broadcast(PCond* c) { (void)c; }
+int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
+    (void)c, (void)m, (void)timeout_ns;
+    return 0;
+}
 void plat_sleep_ns(i64 ns) {
     (void)ns;
     test_fail("the test must not start the audio clock thread", __LINE__);

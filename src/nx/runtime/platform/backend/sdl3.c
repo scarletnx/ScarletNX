@@ -5,6 +5,7 @@
    options (seconds, frames, shot, shot_every, press_len, script: platform/unattended.c). */
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/pause.h"
 #include "nx/hle/hle.h" /* g_hle.hid: the players and the touch screen hid samples */
 #include "nx/hle/services/hid.h"
 #include "nx/hle/kernel/kernel.h"
@@ -415,6 +416,7 @@ static const char* HELP =
 #if defined(SNX_TRACY)
     "  F7  record a 60 second Tracy capture\n"
 #endif
+    "  Pause  pause the whole game, and resume it\n"
     "  F11 or Alt+Enter  switch fullscreen\n"
     "  Esc  quit the game";
 
@@ -772,6 +774,18 @@ void win_fatal_box(const char* msg) {
 #endif
 }
 
+/* the window's title says so while the player has the game paused */
+static void title_paused(int paused) {
+    static const char mark[] = " (paused)";
+    const char* t = g_win ? SDL_GetWindowTitle(g_win) : NULL;
+    char title[1024];
+    size_t n;
+    if (!t) return;
+    n = strlen(t);
+    if (n >= sizeof mark - 1 && !strcmp(t + n - (sizeof mark - 1), mark)) n -= sizeof mark - 1;
+    snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
+    SDL_SetWindowTitle(g_win, title);
+}
 static void hotkey(SDL_Keycode k) {
     switch (k) {
         case SDLK_F1: {
@@ -817,6 +831,10 @@ static void hotkey(SDL_Keycode k) {
         case SDLK_F7: snx_tracy_capture_now(); break;
 #endif
         case SDLK_F11: set_fullscreen(!g_fullscreen); break;
+        case SDLK_PAUSE:
+            game_pause_toggle();
+            title_paused(game_paused());
+            break;
     }
 }
 
@@ -1346,9 +1364,10 @@ void frontend_frame(void) {
     char p[1200];
     g_press.listening = 0; /* the game's first thread runs: its presses are its own */
     g_press.kind = PRESS_NONE;
-    /* the controls and the menu stay on the window while the game shows nothing new */
+    /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
+       it is paused */
     if (g_renderer->refresh &&
-        (overlay_shown() || vpad_shown() || __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)))
+        (overlay_shown() || vpad_shown() || game_paused() || __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)))
         g_renderer->refresh();
     if (g_shot_req) {
         g_shot_req = 0;

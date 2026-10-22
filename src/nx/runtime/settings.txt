@@ -713,6 +713,13 @@ setting Keyboard text
     default ""
     once
     help The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled)
+setting Pauses
+    key pause
+    text 512
+    default ""
+    once
+    help Pauses of the whole game, a comma between: at:length pauses it at that many ms of the scripted input's clock
+    help for length ms. Each checks that guest memory doesn't change while the game is paused, and logs the result
 
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 

@@ -583,14 +583,14 @@ u32 syncpt_promise(u32 id, u32 n) {
 /* whether syncpoint id has reached thresh, counting across the 32-bit wrap */
 static int syncpt_reached(u32 id, u32 thresh) { return (i32)(syncpt_read(id) - thresh) >= 0; }
 /* 1 once id reaches thresh, 0 when the time runs out first. timeout_ns 0 looks once, negative waits for good. The
-   deadline is absolute, so a spurious wakeup doesn't extend it */
+   deadline is absolute, so a spurious wakeup doesn't extend it, and in guest time, which a game pause stops */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     u64 deadline;
     int reached;
     if (id >= SYNCPT_IDS) return 0;
     if (syncpt_reached(id, thresh)) return 1;
     if (!timeout_ns) return 0;
-    deadline = timeout_ns > 0 ? plat_ns() + (u64)timeout_ns : 0;
+    deadline = timeout_ns > 0 ? guest_ns() + (u64)timeout_ns : 0;
     /* syncpt_bump broadcasts under it, so no increment slips between the check and the wait */
     pm_lock(&g_hle.nvdrv.sync_lk);
     for (;;) {
@@ -598,11 +598,11 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
         reached = syncpt_reached(id, thresh);
         if (reached) break;
         if (timeout_ns > 0) {
-            u64 now = plat_ns();
+            u64 now = guest_ns();
             if (now >= deadline) break;
             left = (i64)(deadline - now);
         }
-        pc_wait(&g_hle.nvdrv.sync_cv, &g_hle.nvdrv.sync_lk, left);
+        kthread_wait(&g_hle.nvdrv.sync_cv, &g_hle.nvdrv.sync_lk, left);
     }
     pm_unlock(&g_hle.nvdrv.sync_lk);
     return reached;

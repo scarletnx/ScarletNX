@@ -13,6 +13,8 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/audren_dsp.h"
+#include "nx/hle/services/services.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
 #include <math.h>
 #ifndef SNX_NO_H264
@@ -155,7 +157,7 @@ static void audout_tick(u64 now) {
 static AudOut* audout_lock(SvcObj* self) {
     AudOut* q = self->data;
     pm_lock(&g_hle.audio.lk);
-    if (audout_advance(q, plat_ns())) kevent_signal(q->ev);
+    if (audout_advance(q, guest_ns())) kevent_signal(q->ev);
     return q;
 }
 
@@ -174,7 +176,7 @@ static int nn_audio_detail_IAudioOut_Start(SvcObj* self) {
         R_THROW(AUDIO_OPERATION_FAILED);
     }
     q->started = 1;
-    q->t0 = plat_ns();
+    q->t0 = guest_ns();
     q->t0_frames = 0;
     plat_audio_start(q->output, 1);
     pm_unlock(&g_hle.audio.lk);
@@ -212,7 +214,7 @@ static int audout_append(SvcObj* self, u64 tag, IpcBuf b) {
         R_THROW(AUDIO_BUFFER_COUNT_FULL);
     }
     if (q->started && !q->nqueued) { /* idle until now */
-        q->t0 = plat_ns();
+        q->t0 = guest_ns();
         q->t0_frames = 0;
     }
     i = (q->first + q->nreleased + q->nqueued) % AUDOUT_BUFFERS;
@@ -300,7 +302,7 @@ static int nn_audio_detail_IAudioOut_FlushAudioOutBuffers(SvcObj* self, u8* flus
     *flushed = (u8)q->started;
     if (q->started) {
         if (audout_release_all(q)) kevent_signal(q->ev);
-        q->t0 = plat_ns();
+        q->t0 = guest_ns();
         q->t0_frames = 0;
     }
     pm_unlock(&g_hle.audio.lk);
@@ -650,26 +652,52 @@ static int nn_audio_detail_IAudioDevice_QueryAudioDeviceOutputEvent(SvcObj* self
 SvcObj* new_audren(void) { return nn_audio_detail_IAudioRendererManager_new(); }
 
 /* ============================================================ the clock */
-void audio_init(void) { g_hle.audio.ev = owned_event("IAudioRenderer"); }
+void audio_init(void) {
+    g_hle.audio.ev = owned_event("IAudioRenderer");
+    pc_init(&g_hle.audio.hold_cv);
+}
 
 /* every 5 ms of host time: the renderers' frames, their event, the audio outs' buffers. Behind by more than a few
-   frames (the host stalled), it starts over from now instead of rendering the backlog at once */
+   frames (the host stalled), it starts over from now instead of rendering the backlog at once. The audio outs play in
+   guest time, which a game pause stops: the clock itself stops at the top of its turn while one is in force */
 void audio_clock(void* arg) {
     u64 next = plat_ns(), now;
     (void)arg;
     SNX_THREAD_NAME("audio");
     for (;;) {
+        pm_lock(&g_hle.audio.lk);
+        if (g_hle.audio.hold) {
+            g_hle.audio.held = 1;
+            pc_broadcast(&g_hle.audio.hold_cv);
+            while (g_hle.audio.hold) pc_wait(&g_hle.audio.hold_cv, &g_hle.audio.lk, -1);
+            g_hle.audio.held = 0;
+            next = plat_ns();
+        }
+        pm_unlock(&g_hle.audio.lk);
         SNX_ZONE(z_audio, "audio tick");
         audren_tick();
         kevent_signal(g_hle.audio.ev);
         now = plat_ns();
         SNX_ZONE_VALUE(z_audio, now > next ? (u64)(now - next) / AUDIO_FRAME_NS : 0);
-        audout_tick(now);
+        audout_tick(guest_ns());
         SNX_ZONE_END(z_audio);
         next += AUDIO_FRAME_NS;
         if (now > next + 10 * (u64)AUDIO_FRAME_NS) next = now + AUDIO_FRAME_NS;
         if (next > now) plat_sleep_ns((i64)(next - now));
     }
+}
+
+void audio_hold(void) {
+    pm_lock(&g_hle.audio.lk);
+    g_hle.audio.hold = 1;
+    while (!g_hle.audio.held) pc_wait(&g_hle.audio.hold_cv, &g_hle.audio.lk, -1);
+    pm_unlock(&g_hle.audio.lk);
+}
+void audio_release(void) {
+    pm_lock(&g_hle.audio.lk);
+    g_hle.audio.hold = 0;
+    pc_broadcast(&g_hle.audio.hold_cv);
+    pm_unlock(&g_hle.audio.lk);
 }
 
 /* ============================================================ hwopus */

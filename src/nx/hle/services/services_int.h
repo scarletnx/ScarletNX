@@ -231,7 +231,7 @@ typedef struct AudOut {
     u32 frames[AUDOUT_BUFFERS];
     u32 first, nreleased, nqueued;
     u32 head_played; /* frames of the first queued buffer already played */
-    u64 t0;          /* when the clock started counting the queued buffers */
+    u64 t0;          /* the guest time (guest_ns) the clock started counting the queued buffers at */
     u64 t0_frames;   /* frames played since t0 */
     u64 played;      /* GetAudioOutPlayedSampleCount */
 } AudOut;
@@ -275,6 +275,9 @@ typedef struct {
     AudDevice devices[AUDDEV_MAX];
     HwOpus opus[HWOPUS_POOL];
     u32 out_next, ren_next, device_next, opus_next;
+    /* a game pause: hold asks the clock's thread to stop at the top of its turn, held says it has, both under lk */
+    PCond hold_cv;
+    int hold, held;
 } HleAudio;
 
 /* ---- audren.c */
