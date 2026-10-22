@@ -1893,17 +1893,17 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDeviceOperator(SvcObj* self, SvcObj*
     *device_operator = nn_fssrv_sf_IDeviceOperator_new();
     R_SUCCEED();
 }
-/* a notifier keeps one event (u[0]), which GetEventHandle gives each time. The card is always there, no game card
+/* a notifier keeps one event (its id in u[0]), which GetEventHandle gives each time. The card is always there, no game card
    comes or goes and system data never updates, so it is never signaled */
-static void notifier_destroy(SvcObj* o) { kobj_unref(&((KEvent*)(size_t)o->u[0])->o); }
+static void notifier_destroy(SvcObj* o) { kobj_unref(kobj_at((u32)o->u[0])); }
 static SvcObj* notifier_new(const char* name) {
     SvcObj* o = nn_fssrv_sf_IEventNotifier_new();
-    o->u[0] = (u64)(size_t)owned_event(name);
+    o->u[0] = owned_event(name);
     o->destroy = notifier_destroy;
     return o;
 }
 static int nn_fssrv_sf_IEventNotifier_GetEventHandle(SvcObj* self, u32* event) {
-    *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    *event = ev_handle((u32)self->u[0]);
     R_SUCCEED();
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenSdCardDetectionEventNotifier(SvcObj* self, SvcObj** notifier) {

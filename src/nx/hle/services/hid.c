@@ -50,7 +50,7 @@ static int hid_entry(u32 npad_id) {
 }
 static u32 hid_npad_id(int e) { return e < 8 ? (u32)e : e == 8 ? 0x20u : 0x10u; }
 static u8* hid_npad(int e) {
-    return kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + (u64)e * HS_HidNpadSharedMemoryEntry;
+    return shm_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + (u64)e * HS_HidNpadSharedMemoryEntry;
 }
 static int hid_connected(int p) { return p == 0 || g_hle.hid.pad[p].connected; } /* player 1 is the keyboard's too */
 static int hid_single(int p) {
@@ -206,7 +206,7 @@ static void hid_layout(void) {
         }
         g_hle.hid.style[e] = style;
         hid_write_header(e, style);
-        kevent_signal(g_hle.hid.style_ev[e]);
+        ev_signal(g_hle.hid.style_ev[e]);
     }
 }
 
@@ -385,7 +385,7 @@ void hid_update(void) {
     g_hle.hid.samp++;
     dt = g_hle.hid.last_ns ? now - g_hle.hid.last_ns : 0;
     g_hle.hid.last_ns = now;
-    shm = kshmem_ptr(g_hle.hid.shm);
+    shm = shm_ptr(g_hle.hid.shm);
     for (e = 0; e < HID_ENTRIES; e++) {
         u32 style = g_hle.hid.style[e];
         u8* n = hid_npad(e);
@@ -457,7 +457,7 @@ static int nn_hid_IHidServer_CreateAppletResource(SvcObj* self, u64 aruid, SvcOb
 }
 static int nn_hid_IAppletResource_GetSharedMemoryHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
-    *shared_memory = h_new(&g_hle.hid.shm->o);
+    *shared_memory = h_new(kobj_at(g_hle.hid.shm));
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_AcquireXpadIdEventHandle(SvcObj* self, u64 unknown, u32* event) {
@@ -466,17 +466,17 @@ static int nn_hid_IHidServer_AcquireXpadIdEventHandle(SvcObj* self, u64 unknown,
 }
 static int nn_hid_IHidServer_GetJoyXpadLifoHandle(SvcObj* self, nn_hid_JoyXpadId id, u32* lifo) {
     (void)self, (void)id;
-    *lifo = h_new(&g_hle.hid.xpad_shm->o);
+    *lifo = h_new(kobj_at(g_hle.hid.xpad_shm));
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_GetSixAxisSensorLifoHandle(SvcObj* self, nn_hid_BasicXpadId id, u32* lifo) {
     (void)self, (void)id;
-    *lifo = h_new(&g_hle.hid.six_shm->o);
+    *lifo = h_new(kobj_at(g_hle.hid.six_shm));
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_GetJoySixAxisSensorLifoHandle(SvcObj* self, nn_hid_JoyXpadId id, u32* lifo) {
     (void)self, (void)id;
-    *lifo = h_new(&g_hle.hid.joysix_shm->o);
+    *lifo = h_new(kobj_at(g_hle.hid.joysix_shm));
     R_SUCCEED();
 }
 static int nn_hid_IHidServer_IsSixAxisSensorFusionEnabled(SvcObj* self, nn_hid_SixAxisSensorHandle handle, u64 aruid,
@@ -782,10 +782,10 @@ static int nn_hid_IHidServer_GetNpadCommunicationMode(SvcObj* self, nn_hid_NpadC
 /* ============================================================ init */
 static SvcObj* new_hid(void) { return nn_hid_IHidServer_new(); }
 static SvcObj* new_hid_sys(void) { return nn_hid_IHidSystemServer_new(); }
-static KShmem* hid_shm(u64 size, const char* name) {
+static u32 hid_shm(u64 size, const char* name) {
     KShmem* s = kshmem_new(size, name);
     kobj_ref(&s->o); /* the service's, for as long as it runs */
-    return s;
+    return kobj_id(&s->o);
 }
 void svc_hid_init(void) {
     int e, p;
@@ -797,7 +797,7 @@ void svc_hid_init(void) {
     /* signaled at first, so the game reads the styles it finds */
     for (e = 0; e < HID_ENTRIES; e++) {
         g_hle.hid.style_ev[e] = owned_event("hid:npad style set update");
-        kevent_signal(g_hle.hid.style_ev[e]);
+        ev_signal(g_hle.hid.style_ev[e]);
     }
     for (p = 0; p < HID_PADS; p++)
         for (e = 0; e < 2; e++) {

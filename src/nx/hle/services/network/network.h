@@ -98,7 +98,7 @@ typedef struct Ldn {
     PMutex lk;
     u32 next; /* the next ldn:u in HleLdn's list, its index + 1, or 0 */
     SnxLdn* lan;
-    KEvent* ev;
+    u32 ev;
     u32 state;
     i16 reason;
     u8 ip[4], mask[4];
@@ -115,7 +115,7 @@ typedef struct {
 /* nifm.c: IRequest's data, the two events (u[0] holds the state) */
 typedef struct {
     u32 obj;
-    KEvent* ev[2];
+    u32 ev[2];
 } NifmRequest;
 #define NIFM_REQUEST_MAX 64 /* IRequests: the SDK makes one per network use it submits, and closes it after */
 typedef struct {

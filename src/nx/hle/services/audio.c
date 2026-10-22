@@ -141,7 +141,7 @@ static void audout_destroy(SvcObj* o) {
         }
     pm_unlock(&g_hle.audio.lk);
     plat_audio_close(q->output);
-    kobj_unref(&q->ev->o);
+    kobj_unref(kobj_at(q->ev));
 }
 
 /* the clock's turn: every started out played up to now */
@@ -149,7 +149,7 @@ static void audout_tick(u64 now) {
     AudOut* q;
     pm_lock(&g_hle.audio.lk);
     for (q = g_hle.audio.outs; q; q = q->next)
-        if (audout_advance(q, now)) kevent_signal(q->ev);
+        if (audout_advance(q, now)) ev_signal(q->ev);
     pm_unlock(&g_hle.audio.lk);
 }
 
@@ -157,7 +157,7 @@ static void audout_tick(u64 now) {
 static AudOut* audout_lock(SvcObj* self) {
     AudOut* q = self->data;
     pm_lock(&g_hle.audio.lk);
-    if (audout_advance(q, guest_ns())) kevent_signal(q->ev);
+    if (audout_advance(q, guest_ns())) ev_signal(q->ev);
     return q;
 }
 
@@ -190,7 +190,7 @@ static int nn_audio_detail_IAudioOut_Stop(SvcObj* self) {
         q->started = 0;
         plat_audio_start(q->output, 0);
         audout_release_all(q);
-        kevent_signal(q->ev);
+        ev_signal(q->ev);
     }
     pm_unlock(&g_hle.audio.lk);
     R_SUCCEED();
@@ -301,7 +301,7 @@ static int nn_audio_detail_IAudioOut_FlushAudioOutBuffers(SvcObj* self, u8* flus
     AudOut* q = audout_lock(self);
     *flushed = (u8)q->started;
     if (q->started) {
-        if (audout_release_all(q)) kevent_signal(q->ev);
+        if (audout_release_all(q)) ev_signal(q->ev);
         q->t0 = guest_ns();
         q->t0_frames = 0;
     }
@@ -545,7 +545,7 @@ static int nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(
    AudDevice (services_int.h) */
 static void device_destroy(SvcObj* o) {
     int i;
-    for (i = 0; i < 3; i++) kobj_unref(&((AudDevice*)o->data)->ev[i]->o);
+    for (i = 0; i < 3; i++) kobj_unref(kobj_at(((AudDevice*)o->data)->ev[i]));
 }
 
 static SvcObj* new_device(void) {
@@ -554,7 +554,7 @@ static SvcObj* new_device(void) {
     int i;
     for (i = 0; i < 3; i++) {
         ((AudDevice*)o->data)->ev[i] = owned_event(names[i]);
-        kevent_signal(((AudDevice*)o->data)->ev[i]);
+        ev_signal(((AudDevice*)o->data)->ev[i]);
     }
     o->destroy = device_destroy;
     return o;
@@ -635,8 +635,8 @@ static int nn_audio_detail_IAudioDevice_GetActiveChannelCount(SvcObj* self, u32*
 }
 /* the system event is signaled again when it is asked for, as Eden does */
 static int nn_audio_detail_IAudioDevice_QueryAudioDeviceSystemEvent(SvcObj* self, u32* event) {
-    KEvent* e = ((AudDevice*)self->data)->ev[0];
-    kevent_signal(e);
+    u32 e = ((AudDevice*)self->data)->ev[0];
+    ev_signal(e);
     *event = ev_handle(e);
     R_SUCCEED();
 }
@@ -676,7 +676,7 @@ void audio_clock(void* arg) {
         pm_unlock(&g_hle.audio.lk);
         SNX_ZONE(z_audio, "audio tick");
         audren_tick();
-        kevent_signal(g_hle.audio.ev);
+        ev_signal(g_hle.audio.ev);
         now = plat_ns();
         SNX_ZONE_VALUE(z_audio, now > next ? (u64)(now - next) / AUDIO_FRAME_NS : 0);
         audout_tick(guest_ns());

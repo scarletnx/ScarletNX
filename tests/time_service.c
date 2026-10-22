@@ -54,6 +54,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return o;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 static void test_free(SvcObj* o) {
     test_svcobj_data_free(o);
     free(o);

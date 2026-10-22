@@ -22,7 +22,7 @@
 /* svcCreateEvent's writable end (KWEvent), from g_hle.svc.wevents (KHANDLED_MAX). The process's resource limit, for
    GetInfo 9, is g_hle.svc.reslimit: one object, never destroyed */
 void kwevent_destroy(KObj* o) {
-    kobj_unref(&((KWEvent*)o)->r->o);
+    kobj_unref(kobj_at(((KWEvent*)o)->r));
     pm_lock(&g_hle.kernel.pool_lk);
     POOL_PUT((KWEvent*)o);
     pm_unlock(&g_hle.kernel.pool_lk);
@@ -332,7 +332,7 @@ static u32 create_event(u32* wh, u32* rh) {
     w->o.type = KO_WEVENT;
     pm_unlock(&g_hle.kernel.pool_lk);
     kobj_set_name(&w->o, "writable event");
-    w->r = r;
+    w->r = kobj_id(&r->o);
     kobj_ref(&r->o);
     R_TRY(give_handle(&w->o, wh));
     *rh = h_new(&r->o);
@@ -345,7 +345,7 @@ static u32 create_event(u32* wh, u32* rh) {
 static u32 signal_event(u32 h) {
     KWEvent* w = (KWEvent*)h_get_ref(h, KO_WEVENT);
     R_UNLESS(w, R_BADHANDLE);
-    kevent_signal(w->r);
+    kevent_signal((KEvent*)kobj_at(w->r));
     kobj_unref(&w->o);
     R_SUCCEED();
 }
@@ -356,7 +356,7 @@ static u32 clear_event(u32 h, int reset) {
     u32 r = 0;
     R_UNLESS(o, R_BADHANDLE);
     if (o->type == KO_WEVENT && !reset)
-        e = ((KWEvent*)o)->r;
+        e = (KEvent*)kobj_at(((KWEvent*)o)->r);
     else if (o->type == KO_EVENT)
         e = (KEvent*)o;
     else if (o->type != KO_PROCESS || !reset)

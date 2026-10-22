@@ -433,7 +433,7 @@ static u32 nfc_state(SvcObj* self) { return __atomic_load_n(&((NfcUser*)self->da
 static void nfc_set_state(SvcObj* self, u32 state) {
     __atomic_store_n(&((NfcUser*)self->data)->state, state, __ATOMIC_RELEASE);
 }
-static void nfc_user_destroy(SvcObj* o) { kobj_unref(&((NfcUser*)o->data)->availability->o); }
+static void nfc_user_destroy(SvcObj* o) { kobj_unref(kobj_at(((NfcUser*)o->data)->availability)); }
 static SvcObj* nfc_user(SvcObj* o, const char* name) {
     ((NfcUser*)o->data)->availability = owned_event(name);
     o->destroy = nfc_user_destroy;
@@ -874,11 +874,11 @@ static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* sel
     (void)self, (void)aruid;
     pm_lock(&g_hle.misc.irs_lock);
     if (!g_hle.misc.irs_shm) {
-        g_hle.misc.irs_shm = kshmem_new(IRS_SHM_SIZE, "irs");
-        kobj_ref(&g_hle.misc.irs_shm->o); /* the service's, for as long as the process runs */
+        g_hle.misc.irs_shm = kobj_id(&kshmem_new(IRS_SHM_SIZE, "irs")->o);
+        kobj_ref(kobj_at(g_hle.misc.irs_shm)); /* the service's, for as long as the process runs */
     }
     pm_unlock(&g_hle.misc.irs_lock);
-    *shared_memory = h_new(&g_hle.misc.irs_shm->o);
+    *shared_memory = h_new(kobj_at(g_hle.misc.irs_shm));
     R_SUCCEED();
 }
 

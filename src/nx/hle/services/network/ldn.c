@@ -62,7 +62,7 @@ enum {
 
 static void set_state(Ldn* d, u32 state) {
     d->state = state;
-    kevent_signal(d->ev);
+    ev_signal(d->ev);
 }
 /* the transport's thread: a station or the host came or went. A Finalize under way has taken the transport away
    under the lock and is waiting for this thread, so the callback leaves at once then */
@@ -74,7 +74,7 @@ static void ldn_changed(void* arg) {
         d->reason = (i16)snx_ldn_disconnect_reason(d->lan);
         set_state(d, LDN_STATION_OPENED);
     } else
-        kevent_signal(d->ev);
+        ev_signal(d->ev);
     pm_unlock(&d->lk);
 }
 /* takes the transport away under the lock and closes it outside: closing waits for its thread, which may be in
@@ -101,7 +101,7 @@ static void ldn_destroy(SvcObj* o) {
     if (*p) *p = d->next;
     pm_unlock(&g_hle.ldn.ldns_lk);
     ldn_teardown(d);
-    kobj_unref(&d->ev->o);
+    kobj_unref(kobj_at(d->ev));
 }
 void ldn_exit(void) {
     Ldn* d;

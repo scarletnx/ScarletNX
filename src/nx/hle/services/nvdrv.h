@@ -109,7 +109,7 @@ typedef struct {
 /* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot is signaled once
    syncpoint id reaches thresh; armed changes under nvev_lk */
 typedef struct {
-    struct KEvent* ev;
+    u32 ev; /* its kernel object id */
     u32 id, thresh;
     int armed;
 } NvEvent;
@@ -125,7 +125,7 @@ typedef struct {
     u64 user_data; /* DEV_GPU: SET_USER_DATA's value, for GET_USER_DATA */
     /* QueryEvent's events of a channel (1 SM exception, 2 SM pause, 3 error notifier, as Ryujinx numbers them), made
        on first query and never signaled: nothing here raises them */
-    struct KEvent* ev[4];
+    u32 ev[4];
     struct H1Ch* h1x; /* DEV_NVDEC, DEV_VIC: the fd's host1x channel (host1x_open) */
     /* the ioctls running on the fd. Close during one only marks it closed, and the last ioctl to leave releases it:
        the entry and its channel stay while an ioctl uses them, and Open doesn't hand the fd out again meanwhile */

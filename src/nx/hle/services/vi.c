@@ -69,7 +69,7 @@ static int vi_layer_open(u64 layer_id) {
     if (free_i < 0) return 0;
     if (!g_hle.vi.layer[free_i].event) {
         g_hle.vi.layer[free_i].event = owned_event("vi:buffer queue");
-        kevent_signal(g_hle.vi.layer[free_i].event);
+        ev_signal(g_hle.vi.layer[free_i].event);
     }
     g_hle.vi.layer[free_i].layer_id = layer_id;
     g_hle.vi.layer[free_i].width = VI_WIDTH;
@@ -92,7 +92,7 @@ static void vi_layer_close(u64 layer_id) {
         l->max_buffer_count = 2;
         l->gen++;
         memset(l->slot, 0, sizeof l->slot);
-        kevent_signal(l->event); /* as when a buffer comes free: the waiter finds the queue gone */
+        ev_signal(l->event); /* as when a buffer comes free: the waiter finds the queue gone */
         pc_broadcast(&g_hle.vi.freed);
         return;
     }
@@ -247,7 +247,7 @@ static void vi_present(void* arg) {
         s->freed = ++g_hle.vi.frees;
     }
     pm_unlock(&g_hle.vi.lock);
-    kevent_signal(l->event);
+    ev_signal(l->event);
     pc_broadcast(&g_hle.vi.freed);
 }
 /* QueueBuffer's input: the timestamp, crop, scaling, transform, swap interval and the fence, laid out packed. A
@@ -358,7 +358,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             if (slot >= 0 && slot < VI_SLOTS && l->slot[slot].state == SLOT_DEQUEUED) {
                 l->slot[slot].state = SLOT_FREE;
                 l->slot[slot].freed = ++g_hle.vi.frees;
-                kevent_signal(l->event);
+                ev_signal(l->event);
                 pc_broadcast(&g_hle.vi.freed);
             }
             break;
@@ -407,7 +407,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
                 if (v < 0x84 || in.pos + 0x84 > in.size) { /* short of the first plane's fields */
                     WARN_LIMIT(4, "vi: slot %d's graphic buffer has 0x%x bytes, too few: the slot is cleared\n",
                                (int)slot, v);
-                    kevent_signal(l->event);
+                    ev_signal(l->event);
                     pc_broadcast(&g_hle.vi.freed);
                     break;
                 }
@@ -417,7 +417,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
                 l->height = gb32(&l->slot[slot], 0x08);
                 l->format = gb32(&l->slot[slot], 0x10);
             }
-            kevent_signal(l->event);
+            ev_signal(l->event);
             pc_broadcast(&g_hle.vi.freed);
             break;
         case BQ_GET_BUFFER_HISTORY: /* no history is kept */
@@ -706,7 +706,7 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 /* ============================================================ the display */
 /* the main loop's 60 Hz: the display's vsync */
 void vi_vsync_tick(void) {
-    if (g_hle.vi.vsync) kevent_signal(g_hle.vi.vsync);
+    if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }

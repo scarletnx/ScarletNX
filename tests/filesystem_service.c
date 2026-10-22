@@ -23,6 +23,7 @@
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
 #include "nx/hle/filesystem/fs.c"
 #include "nx/hle/hle.c"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
@@ -208,13 +209,13 @@ void svcobj_unref(SvcObj* obj) {
 }
 /* the notifiers' events: counted, so the test sees each one dropped with its notifier */
 static int test_events;
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* event = calloc(1, sizeof *event);
     CHECK(event != NULL);
     (void)name;
     event->o.refs = 1;
     test_events++;
-    return event;
+    return kobj_id(&event->o);
 }
 void kobj_unref(KObj* o) {
     if (--o->refs) return;
@@ -223,7 +224,8 @@ void kobj_unref(KObj* o) {
 }
 static KEvent* test_handles[32]; /* handle 0x100 + i is a reference on test_handles[i], as the kernel's would be */
 static unsigned test_nhandles;
-u32 ev_handle(KEvent* event) {
+u32 ev_handle(u32 ev) {
+    KEvent* event = kev(ev);
     CHECK(test_nhandles < sizeof test_handles / sizeof test_handles[0]);
     event->o.refs++;
     test_handles[test_nhandles] = event;

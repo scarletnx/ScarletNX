@@ -167,7 +167,7 @@ static void put_context(u8* p, const nn_time_SystemClockContext* c) {
 /* one of the shared memory's values the SDK reads without locks: a counter, and two copies the counter's parity
    picks between, at value bytes in */
 static void shm_write(u32 at, u32 value, const void* v, u32 size) {
-    u8* p = kshmem_ptr(g_hle.time.shm) + at;
+    u8* p = shm_ptr(g_hle.time.shm) + at;
     u32 counter;
     counter = snx_ld_le32(p) + 1;
     memcpy(p + value + (counter % 2) * size, v, size);
@@ -203,8 +203,8 @@ void time_init(void) {
 
     /* the steady clock's base (ns), the system clock contexts, automatic correction, and the continuous adjustment
        newer SDKs compute the steady clock from (Eden's StandardSteadyClockCore: no drift) */
-    g_hle.time.shm = kshmem_new(0x1000, "time");
-    kobj_ref(&g_hle.time.shm->o);
+    g_hle.time.shm = kobj_id(&kshmem_new(0x1000, "time")->o);
+    kobj_ref(kobj_at(g_hle.time.shm));
     {
         nn_time_SteadyClockTimePoint base;
         base.value = g_hle.time.base_ns;
@@ -415,7 +415,7 @@ static int nn_timesrv_detail_service_IStaticService_GetEphemeralNetworkSystemClo
 }
 static int nn_timesrv_detail_service_IStaticService_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
-    *shared_memory = h_new(&g_hle.time.shm->o);
+    *shared_memory = h_new(kobj_at(g_hle.time.shm));
     R_SUCCEED();
 }
 static int nn_timesrv_detail_service_IStaticService_GetStandardNetworkClockOperationEventReadableHandle(SvcObj* self,

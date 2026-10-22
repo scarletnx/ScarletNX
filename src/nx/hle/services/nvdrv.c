@@ -706,10 +706,11 @@ static KEvent* nvev_get(u32 fd, u32 slot) {
     NvEvent* e = nvev_slot(fd, slot, 1);
     if (!e) return NULL;
     if (!e->ev) {
-        e->ev = kevent_new("nvhost event");
-        kobj_ref(&e->ev->o);
+        KEvent* k = kevent_new("nvhost event");
+        kobj_ref(&k->o);
+        e->ev = kobj_id(&k->o);
     }
-    return e->ev;
+    return kev(e->ev);
 }
 /* the fd's slots, copied into out[64] and their table given back when its entry is cleared (with nv.lock held, so a
    new fd with the number doesn't meet them): out, or NULL when the fd had none. nv_release drops them */
@@ -734,7 +735,7 @@ static void nv_events_check(void) {
             NvEvent* e = &g_hle.nvdrv.ctrl_evt[t].slot[i];
             if (!e->armed || !syncpt_reached(e->id, e->thresh)) continue;
             e->armed = 0;
-            if (e->ev) kevent_signal(e->ev);
+            if (e->ev) kevent_signal(kev(e->ev));
         }
     nvev_unlock();
 }
@@ -1043,7 +1044,7 @@ static void nvev_disarm(u32 fd, u32 slot) { /* under nvev_lk; the event stays un
     NvEvent* e = nvev_slot(fd, slot, 0);
     if (!e || !e->ev) return;
     e->armed = 0;
-    kevent_clear(e->ev);
+    kevent_clear(kev(e->ev));
 }
 /* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, u32 thresh, i32 timeout_ms; u32 value}. The asynchronous one arms the slot
    of fd's that value names and answers Timeout with value naming that slot, which the SDK then waits on as an event.
@@ -1068,7 +1069,7 @@ static u32 ctrl_event_wait(u32 fd, u8* d, int async) {
     nvev_lock();
     e = nvev_slot(fd, slot, 0);
     if (e && e->ev) {
-        kevent_clear(e->ev); /* before arming: see nvev_lk */
+        kevent_clear(kev(e->ev)); /* before arming: see nvev_lk */
         e->id = id;
         e->thresh = thresh;
         e->armed = 1;
@@ -1306,9 +1307,9 @@ static void nv_release(NvFile* old, NvEvent* slots) {
         gpu_call(gpu_channel_retire, (void*)(uintptr_t)old->syncpt, &old->syncpt, 1);
     host1x_close(old->h1x);
     for (int k = 0; k < 4; k++)
-        if (old->ev[k]) kobj_unref(&old->ev[k]->o);
+        if (old->ev[k]) kobj_unref(kobj_at(old->ev[k]));
     for (int k = 0; slots && k < 64; k++) /* a ctrl fd's events: the game's handles keep them as long as they need */
-        if (slots[k].ev) kobj_unref(&slots[k].ev->o);
+        if (slots[k].ev) kobj_unref(kobj_at(slots[k].ev));
 }
 /* Ioctl, Ioctl2 (extra is a second input) and Ioctl3 (extra is a second output): the ioctl's in and out buffers go
    through tmp, the extra one straight to the device. A GPU channel takes Ioctl2's and Ioctl3's, as-gpu and ctrl-gpu
@@ -1448,10 +1449,11 @@ static int nns_nvdrv_INvDrvServices_QueryEvent(SvcObj* self, u32 fd, u32 event_i
     int dev = fd < 256 && !g_hle.nvdrv.nvf[fd].closed ? g_hle.nvdrv.nvf[fd].dev : DEV_NONE;
     if (dev != DEV_NONE && dev != DEV_CTRL && event_id >= 1 && event_id <= 3) {
         if (!g_hle.nvdrv.nvf[fd].ev[event_id]) {
-            g_hle.nvdrv.nvf[fd].ev[event_id] = kevent_new("nv channel event");
-            kobj_ref(&g_hle.nvdrv.nvf[fd].ev[event_id]->o); /* the fd's reference, dropped on close */
+            KEvent* k = kevent_new("nv channel event");
+            kobj_ref(&k->o); /* the fd's reference, dropped on close */
+            g_hle.nvdrv.nvf[fd].ev[event_id] = kobj_id(&k->o);
         }
-        e = g_hle.nvdrv.nvf[fd].ev[event_id];
+        e = kev(g_hle.nvdrv.nvf[fd].ev[event_id]);
         kobj_ref(&e->o); /* a Close before h_new would drop the last reference */
         held = 1;
     }

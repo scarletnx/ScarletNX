@@ -56,6 +56,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     if (obj->destroy) obj->destroy(obj);
@@ -111,15 +112,16 @@ KEvent* kevent_new(const char* name) {
     return e;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 /* the reply's handles name their events: the test drops them like the game closing its handles */
 static KEvent* test_handles[16];
 static u32 test_nhandles;
-u32 ev_handle(KEvent* e) {
+u32 ev_handle(u32 ev) {
+    KEvent* e = kev(ev);
     CHECK(test_nhandles < 16);
     kobj_ref(&e->o);
     test_handles[test_nhandles++] = e;
@@ -128,7 +130,7 @@ u32 ev_handle(KEvent* e) {
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
-    *event = ev_handle(e);
+    *event = ev_handle(kobj_id(&e->o));
     return 0;
 }
 

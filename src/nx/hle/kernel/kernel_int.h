@@ -132,14 +132,14 @@ u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm);
 
 /* the handle table's entries (kernel.c) */
 typedef struct {
-    KObj* obj;
+    u32 obj; /* the object's id (kobj_id), 0 for a free entry */
     u16 linear;
     i16 next;
 } HEntry;
 /* svcCreateEvent's writable end: it signals and clears the readable end it holds a reference to (svc.c) */
 typedef struct {
     KObj o;
-    KEvent* r;
+    u32 r; /* the readable end's id */
 } KWEvent;
 /* svcCreateCodeMemory's object (svc_mem.c) */
 typedef struct {

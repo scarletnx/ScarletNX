@@ -55,8 +55,8 @@ typedef struct {
     PMutex input_lock;
     /* hid's own, under lock */
     PMutex lock;
-    KShmem *shm, *xpad_shm, *six_shm, *joysix_shm;
-    KEvent* style_ev[HID_ENTRIES];
+    u32 shm, xpad_shm, six_shm, joysix_shm; /* kernel object ids */
+    u32 style_ev[HID_ENTRIES];
     u64 samp;    /* the sampling number of the latest states */
     u64 last_ns; /* when they were taken */
     u32 supported_styles, supported_ids; /* the game's: styles, and Npads by entry index */

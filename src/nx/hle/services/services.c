@@ -18,7 +18,7 @@
 
 /* ============================================================ events */
 /* a handle to e for a reply: the handle takes its own reference */
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(&kev(ev)->o); }
 
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
@@ -31,10 +31,10 @@ int new_event(u32* event, const char* name, int signaled) {
     R_SUCCEED();
 }
 
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 
 /* ============================================================ registration */

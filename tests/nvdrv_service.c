@@ -77,6 +77,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     test_svcobj_data_free(obj);
@@ -364,7 +365,7 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     put(0, 9);
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !CTRL_EV(ctrl)[9].armed);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !CTRL_EV(ctrl)[9].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !kev(CTRL_EV(ctrl)[9].ev)->signaled);
     /* Canceling a timed-out wait must not report an unfinished fence as complete. Reusing the event
        must still wait for the new threshold, and cancellation also clears a previously signaled event. */
     put(0, 10);
@@ -376,18 +377,18 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && CTRL_EV(ctrl)[10].armed);
     put(0, 10);
     CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0);
-    CHECK(!CTRL_EV(ctrl)[10].armed && !CTRL_EV(ctrl)[10].ev->signaled && syncpt_read(40) == 2);
+    CHECK(!CTRL_EV(ctrl)[10].armed && !kev(CTRL_EV(ctrl)[10].ev)->signaled && syncpt_read(40) == 2);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !CTRL_EV(ctrl)[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !kev(CTRL_EV(ctrl)[10].ev)->signaled);
     put(0, 40);
     put(4, 4);
     put(8, 100);
     put(12, 10);
-    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && !CTRL_EV(ctrl)[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && !kev(CTRL_EV(ctrl)[10].ev)->signaled);
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && CTRL_EV(ctrl)[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(CTRL_EV(ctrl)[10].ev)->signaled);
     put(0, 10);
-    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !CTRL_EV(ctrl)[10].ev->signaled);
+    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !kev(CTRL_EV(ctrl)[10].ev)->signaled);
 }
 
 /* an async wait on ctrl fd fd's slot for syncpoint id to reach th, with a timeout in ms */
@@ -415,12 +416,13 @@ static void test_ctrl_event_fds(u32 ctrl) {
     CHECK(event_wait(ctrl, 41, base + 1, 100, 0) == 5 && a->armed && !b->armed);
     CHECK(event_wait(other, 41, base + 2, 100, 0) == 5 && a->armed && b->armed && a->thresh == base + 1);
     put(0, 41);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && a->ev->signaled && !a->armed && !b->ev->signaled && b->armed);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(a->ev)->signaled && !a->armed && !kev(b->ev)->signaled &&
+          b->armed);
     /* polling the other fd's fence leaves its armed wait, and this fd's signal, as they were */
-    CHECK(event_wait(other, 41, base + 2, 0, 0) == 5 && b->armed && a->ev->signaled);
-    CHECK(event_wait(ctrl, 41, base + 2, 0, 0) == 5 && a->ev->signaled && !a->armed);
+    CHECK(event_wait(other, 41, base + 2, 0, 0) == 5 && b->armed && kev(a->ev)->signaled);
+    CHECK(event_wait(ctrl, 41, base + 2, 0, 0) == 5 && kev(a->ev)->signaled && !a->armed);
     put(0, 41);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && b->ev->signaled && !b->armed);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && kev(b->ev)->signaled && !b->armed);
     CHECK(nv_close(other) == 0 && !g_hle.nvdrv.ctrl_ev[other]); /* its slots go with it */
 }
 
@@ -433,19 +435,19 @@ static void test_quiet_increments(u32 ctrl) {
     u32 base = syncpt_read(42), kicks = test_gpu.kicks;
     CHECK(event_wait(ctrl, 42, base + 1, 100, 11) == 5 && e->armed);
     syncpt_add_quiet(42, 1);
-    CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && e->armed && !e->ev->signaled);
+    CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && e->armed && !kev(e->ev)->signaled);
     syncpt_events();
-    CHECK(!e->armed && e->ev->signaled);
+    CHECK(!e->armed && kev(e->ev)->signaled);
     /* armed again where it already is, so only a check of the slots signals it: none is due */
-    kevent_clear(e->ev);
+    kevent_clear(kev(e->ev));
     e->armed = 1;
     syncpt_events();
-    CHECK(e->armed && !e->ev->signaled);
+    CHECK(e->armed && !kev(e->ev)->signaled);
     syncpt_add_quiet(42, 0);
     syncpt_events();
-    CHECK(e->armed && !e->ev->signaled && syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1);
+    CHECK(e->armed && !kev(e->ev)->signaled && syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1);
     syncpt_add(42, 1); /* checks at once */
-    CHECK(!e->armed && e->ev->signaled);
+    CHECK(!e->armed && kev(e->ev)->signaled);
     put(0, 11);
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0);
 }
@@ -951,7 +953,7 @@ int main(void) {
     KEvent* sm = query_event(gpu, 1);
     CHECK(query_event(gpu, 1) == sm && query_event(gpu, 3) != sm);
     KEvent* slot = query_event(ctrl, 0x10000005u);
-    CHECK(slot == CTRL_EV(ctrl)[5].ev && query_event(ctrl, 5) == slot);
+    CHECK(slot == kev(CTRL_EV(ctrl)[5].ev) && query_event(ctrl, 5) == slot);
 
     /* closing the GPU channel retires its syncpoint once the GPU thread has run what was queued on it: a call after
        the channel's jobs */

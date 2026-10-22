@@ -97,7 +97,7 @@ u32 h_new(KObj* o) {
     }
     lin = g_hle.kernel.hlinear;
     g_hle.kernel.hlinear = lin == 0x7FFF ? 1 : (u16)(lin + 1);
-    g_hle.kernel.htab[i].obj = o;
+    g_hle.kernel.htab[i].obj = kobj_id(o);
     g_hle.kernel.htab[i].linear = lin;
     kobj_ref(o);
     pm_unlock(&g_hle.kernel.klock);
@@ -113,7 +113,7 @@ static int h_index_nl(u32 h) {
 }
 KObj* h_get_nl(u32 h) {
     int i = h_index_nl(h);
-    return i < 0 ? NULL : g_hle.kernel.htab[i].obj;
+    return i < 0 ? NULL : kobj_at(g_hle.kernel.htab[i].obj);
 }
 static KObj* h_resolve_nl(u32 h, int t) {
     KObj* o;
@@ -151,8 +151,8 @@ int h_close(u32 h) {
         pm_unlock(&g_hle.kernel.klock);
         R_THROW(R_BADHANDLE);
     }
-    o = g_hle.kernel.htab[i].obj;
-    g_hle.kernel.htab[i].obj = NULL;
+    o = kobj_at(g_hle.kernel.htab[i].obj);
+    g_hle.kernel.htab[i].obj = 0;
     g_hle.kernel.htab[i].next = (i16)g_hle.kernel.hfree;
     g_hle.kernel.hfree = i;
     pm_unlock(&g_hle.kernel.klock);

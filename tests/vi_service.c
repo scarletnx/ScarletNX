@@ -47,6 +47,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     test_svcobj_data_free(obj);
@@ -91,7 +92,7 @@ u32 h_new(KObj* o) {
     kobj_ref(o);
     return test_next_handle++;
 }
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(kobj_at(ev)); }
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
@@ -100,10 +101,10 @@ int new_event(u32* event, const char* name, int signaled) {
     test_kobjs--;
     return 0;
 }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 
 /* the GPU thread runs the present at once, or keeps it for later while hold is set (a frame whose fences are still

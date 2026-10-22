@@ -17,7 +17,7 @@ enum { REQ_INVALID = 1, REQ_ON_HOLD = 2, REQ_ACCEPTED = 3 }; /* nn::nifm::Reques
 /* IRequest: u[0] the state (an atomic: game threads submit and poll at once), data the two events (NifmRequest) */
 static void nifm_req_destroy(SvcObj* o) {
     NifmRequest* r = o->data;
-    for (int i = 0; i < 2; i++) kobj_unref(&r->ev[i]->o);
+    for (int i = 0; i < 2; i++) kobj_unref(kobj_at(r->ev[i]));
 }
 static int nn_nifm_detail_IRequest_GetRequestState(SvcObj* self, i32* state) {
     *state = network_online() ? (i32)__atomic_load_n(&self->u[0], __ATOMIC_RELAXED) : REQ_INVALID;
@@ -40,7 +40,7 @@ static int nn_nifm_detail_IRequest_Cancel(SvcObj* self) {
    so either way, as it does when the network went down after the request was made */
 static int nn_nifm_detail_IRequest_Submit(SvcObj* self) {
     __atomic_store_n(&self->u[0], network_online() ? REQ_ACCEPTED : REQ_INVALID, __ATOMIC_RELAXED);
-    kevent_signal(((NifmRequest*)self->data)->ev[0]);
+    ev_signal(((NifmRequest*)self->data)->ev[0]);
     R_SUCCEED();
 }
 static SvcObj* nifm_req_new(void) {
@@ -49,7 +49,7 @@ static SvcObj* nifm_req_new(void) {
     r->ev[0] = owned_event("nifm0");
     r->ev[1] = owned_event("nifm1");
     /* offline the state event starts signaled: the SDK reads the state, which says the request was refused */
-    if (!network_online()) r->ev[0]->signaled = 1;
+    if (!network_online()) kev(r->ev[0])->signaled = 1;
     o->u[0] = REQ_INVALID;
     o->destroy = nifm_req_destroy;
     return o;
