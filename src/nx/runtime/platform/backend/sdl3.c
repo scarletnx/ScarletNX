@@ -6,6 +6,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/pause.h"
+#include "nx/runtime/state.h"
 #include "nx/hle/hle.h" /* g_hle.hid: the players and the touch screen hid samples */
 #include "nx/hle/services/hid.h"
 #include "nx/hle/kernel/kernel.h"
@@ -413,8 +414,11 @@ static const char* HELP =
     "  F4  turn the FPS limit off or back on\n"
     "  F5  write every thread's state to the log\n"
     "  F6  turn showcase mode on or off\n"
+    "  F7  save the game's state to the selected slot\n"
+    "  F8  load the selected slot's state\n"
+    "  F9  select the next save state slot\n"
 #if defined(SNX_TRACY)
-    "  F7  record a 60 second Tracy capture\n"
+    "  F10 record a 60 second Tracy capture\n"
 #endif
     "  Pause  pause the whole game, and resume it\n"
     "  F11 or Alt+Enter  switch fullscreen\n"
@@ -827,8 +831,11 @@ static void hotkey(SDL_Keycode k) {
                 LOG("showcase: off\n");
             break;
         }
+        case SDLK_F7: state_ask(STATE_SAVE, -1); break;
+        case SDLK_F8: state_ask(STATE_LOAD, -1); break;
+        case SDLK_F9: state_slot_next(); break;
 #if defined(SNX_TRACY)
-        case SDLK_F7: snx_tracy_capture_now(); break;
+        case SDLK_F10: snx_tracy_capture_now(); break;
 #endif
         case SDLK_F11: set_fullscreen(!g_fullscreen); break;
         case SDLK_PAUSE:
@@ -856,6 +863,13 @@ static void menu_open(int open) {
 static void overlay_do(int action) {
     if (action == OVERLAY_EXIT) g_quit = 1;
     if (action == OVERLAY_CLOSE) menu_open(0);
+    /* the frontend's loop does them (state_poll), the menu closed first for a load: the game it goes back to shows */
+    if (action == OVERLAY_SAVE) state_ask(STATE_SAVE, overlay_slot());
+    if (action == OVERLAY_DELETE) state_ask(STATE_DELETE, overlay_slot());
+    if (action == OVERLAY_LOAD) {
+        menu_open(0);
+        state_ask(STATE_LOAD, overlay_slot());
+    }
     if (action == OVERLAY_EDIT) {
         menu_open(0);
         vpad_edit(1);
@@ -1212,7 +1226,14 @@ void video_poll(void) {
     }
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
+    static u64 script_was; /* the scripted buttons of the last poll: a Home press opens or closes the menu */
     u64 s = unattended_buttons(), k = keys_held | s;
+    if (s & ~script_was & SNX_SCRIPT_HOME) {
+        ui_lock();
+        menu_open(!overlay_shown());
+        ui_unlock();
+    }
+    script_was = s;
     u64 nonpad = (k & 0xFFFFull) | (s & 0xFF0000ull), b;
     i32 st[4], pad[4], pad0[4];
     u64 pb;
@@ -1274,7 +1295,7 @@ void video_poll(void) {
         acts = vpad_actions();
         if (acts & SNX_VPAD_DO_MENU) menu_open(1);
         /* with the menu open, the pads move it: the on-screen controls' and the connected ones', sticks too */
-        overlay_do(overlay_controls(vb | pb, vs[0] || vs[1] ? vs : pad, SDL_GetTicks()));
+        overlay_do(overlay_controls(vb | pb | (s & 0xFFFFFull), vs[0] || vs[1] ? vs : pad, SDL_GetTicks()));
         ui_unlock();
         nonpad |= vb;
         if (vs[0] || vs[1]) {
@@ -1366,8 +1387,8 @@ void frontend_frame(void) {
     g_press.kind = PRESS_NONE;
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
-    if (g_renderer->refresh &&
-        (overlay_shown() || vpad_shown() || game_paused() || __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)))
+    if (g_renderer->refresh && (overlay_shown() || vpad_shown() || game_paused() || overlay_toasting(plat_ns()) ||
+                                __atomic_load_n(&g_settings.showcase, __ATOMIC_RELAXED)))
         g_renderer->refresh();
     if (g_shot_req) {
         g_shot_req = 0;
@@ -1383,6 +1404,9 @@ void frontend_frame(void) {
         snprintf(p, sizeof p, "%scaptures/screenshot_%04d%02d%02d_%02d%02d%02d", g_exedir, t.tm_year + 1900,
                  t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
         g_renderer->screenshot(p);
+        ui_lock();
+        overlay_toast("Screenshot saved in captures", plat_ns());
+        ui_unlock();
     }
     if (unattended_periodic_shot(p, sizeof p)) g_renderer->screenshot(p);
     if (unattended_done()) {

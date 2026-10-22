@@ -48,7 +48,8 @@ when the desktop has it. `SDL_VIDEO_DRIVER=x11` runs it on X11 instead: test a p
 Buttons (hex): A 1, B 2, X 4, Y 8, L 40, R 80, ZL 100, ZR 200, Plus 400, Minus 800, Left 1000, Up 2000, Right 4000,
 Down 8000. Combine by adding. The values are 64-bit, and bits 40 to 47 push the sticks all the way: 40 left stick
 left (`10000000000`), 41 up, 42 right, 43 down, then 44 to 47 the same for the right stick (`800000000000` is right
-stick down).
+stick down). Bit 48 (`1000000000000`) is Home: it opens the game's menu (and closes it), and while the menu is open the
+scripted A, B and D-pad move it, as a pad's do. The menu's Save states page holds the game while it shows.
 
 `run_game.py`'s default script was written for one game's boot to its first cutscene: Plus at 15 s, A at 16 s, Plus
 at 18 s, then A at 21, 31, 36, 40 and 44 s. Any other game needs its own `--script`. With save data from earlier runs the screens come

@@ -118,7 +118,7 @@ The game's `[Debug]` settings ([USAGE.md](USAGE.md#settings--input)) are for inv
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
 Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
 build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
-The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F7`.
+The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F10`.
 Without one, a run does not connect.
 
 A game runs profiled from the terminal, the runtime's own flags and nothing else:
@@ -173,7 +173,7 @@ without a capture and says why in the log: a setting does not cost the game its 
 own, so an earlier capture (or a GUI) on 8086 is not in the way, and the run waits for the capture before it starts
 the game: the handshake needs an answer, and a game loading a dump starves it.
 
-To capture only a later part of a run, leave that setting off and press `F7` in the game: it starts the client and
+To capture only a later part of a run, leave that setting off and press `F10` in the game: it starts the client and
 a 60-second capture beside the game, and logs its path. Run it again after it finishes for another segment. A
 connected GUI and `tracy-capture` are both viewers of the same one-connection client, so disconnect the GUI first
 if it is open.

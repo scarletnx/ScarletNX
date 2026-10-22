@@ -27,7 +27,9 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/state_io.h"
@@ -806,6 +808,7 @@ int state_save(const char* path, char* why, size_t whysize) {
     StateIo gio = buf_io(&gpu);
     char folder[sizeof g_exedir + 16];
     u64 t0 = plat_ns();
+    u8* thumb = NULL;
     int r = -1;
     why[0] = 0;
     if (game_pause()) {
@@ -813,18 +816,26 @@ int state_save(const char* path, char* why, size_t whysize) {
         return -1;
     }
     if (savable(why, whysize)) goto resume;
+    /* the frame the player sees, the game held: what the menu and the launcher show of the state */
+    thumb = (u8*)malloc((size_t)SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4);
+    if (thumb && (!g_renderer->thumbnail || g_renderer->thumbnail(thumb, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H))) {
+        free(thumb);
+        thumb = NULL;
+    }
     /* what the GPU holds of guest memory lands, and stays landed while the state is written: the GPU is held */
     if (g_renderer->flush_targets) g_renderer->flush_targets();
     if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, 0, 1);
     own_land_all();
     header_make(&h);
+    h.thumb_w = SNX_UI_IMAGE_W;
+    h.thumb_h = SNX_UI_IMAGE_H;
     if (save_hle(&hle, &heap) || gpu_state_save(&gio)) {
         snprintf(why, whysize, "the game's state couldn't be gathered");
         goto end;
     }
     snprintf(folder, sizeof folder, "%sstates", g_exedir);
     plat_mkdir(folder);
-    w = sw_open(path, &h, NULL, why, whysize);
+    w = sw_open(path, &h, thumb, why, whysize);
     if (!w) goto end;
     if (section_write(w, "HLE", hle_schema(), &hle) || section_write(w, "HEAP", 1, &heap) ||
         section_write(w, "GPU", 1, &gpu) || save_memory(w, why, whysize)) {
@@ -837,6 +848,7 @@ end:
     if (g_gpu_mapping_end) g_gpu_mapping_end();
 resume:
     game_resume();
+    free(thumb);
     free(hle.p);
     free(heap.p);
     free(gpu.p);
@@ -937,18 +949,169 @@ static int row_get(const char* p, int i, u64* at, char* slot, size_t size) {
         p += n + 1;
     }
 }
-void state_unattended(void) {
+/* a slot's file, or the file itself when the row names one (the launcher's Play from a state) */
+static void row_path(char* out, size_t size, const char* slot) {
+    if (strchr(slot, '/') || strchr(slot, '\\'))
+        snprintf(out, size, "%s", slot);
+    else
+        state_path(out, size, slot);
+}
+static void state_unattended(void) {
     static int saves, loads;
-    char slot[32], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
+    char slot[512], path[sizeof g_exedir + sizeof g_exename + 512], why[256];
     u64 at, ms = unattended_ms();
     if (row_get(g_settings.state_saves, saves, &at, slot, sizeof slot) && ms >= at) {
         saves++;
-        state_path(path, sizeof path, slot);
+        row_path(path, sizeof path, slot);
         state_save(path, why, sizeof why);
     }
     if (row_get(g_settings.state_loads, loads, &at, slot, sizeof slot) && ms >= at) {
         loads++;
-        state_path(path, sizeof path, slot);
+        row_path(path, sizeof path, slot);
         state_load(path, why, sizeof why);
     }
+}
+
+/* ============================================================ the player's: hotkeys and the menu */
+static int g_slot = 1;        /* the slot F7 and F8 use, 1 to state_slots */
+static int g_ask, g_ask_slot; /* a save, load or delete asked for, done at the next pass */
+static int g_menu_pause;      /* the save states' pages hold the game: 1 paused, -1 it didn't stop */
+
+static void slot_name(char* out, size_t size, int slot) {
+    if (slot)
+        snprintf(out, size, "%d", slot);
+    else
+        snprintf(out, size, "auto");
+}
+/* a slot as a sentence names it, at its start (Slot 2) or within it (slot 2) */
+static void slot_label(char* out, size_t size, int slot, int start) {
+    if (slot)
+        snprintf(out, size, "%s %d", start ? "Slot" : "slot", slot);
+    else
+        snprintf(out, size, "%s auto slot", start ? "The" : "the");
+}
+static void toast(const char* fmt, ...) {
+    char text[OVERLAY_COLS_MAX + 1];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    ui_lock();
+    overlay_toast(text, plat_ns());
+    ui_unlock();
+}
+/* a state's date and the play time then, as the menu lists them */
+static void slot_when(char* out, size_t size, const StateHeader* h) {
+    time_t t = (time_t)h->created;
+    struct tm tm;
+    u64 s = h->guest_ns / 1000000000u;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    snprintf(out, size, "%04d-%02d-%02d %02d:%02d  %llu:%02u:%02u", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, (unsigned long long)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+}
+/* the slots the menu lists, read from their files' headers and thumbnails */
+static void slots_list(void) {
+    OverlaySlot list[OVERLAY_SLOTS_MAX];
+    int n = g_settings.save_state_slots + 1, i;
+    if (n > OVERLAY_SLOTS_MAX) n = OVERLAY_SLOTS_MAX;
+    memset(list, 0, sizeof list);
+    for (i = 0; i < n; i++) {
+        char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
+        StateHeader h;
+        u8* thumb = NULL;
+        slot_name(name, sizeof name, i);
+        state_path(path, sizeof path, name);
+        if (sf_peek(path, &h, &thumb, why, sizeof why)) continue;
+        slot_when(list[i].when, sizeof list[i].when, &h);
+        if (state_check(&h, why, sizeof why)) snprintf(list[i].why, sizeof list[i].why, "It can't load: %s.", why);
+        if (thumb && h.thumb_w == SNX_UI_IMAGE_W && h.thumb_h == SNX_UI_IMAGE_H)
+            list[i].thumb = thumb;
+        else
+            free(thumb);
+    }
+    ui_lock();
+    overlay_slots_set(list, n);
+    ui_unlock();
+}
+void state_ask(int op, int slot) {
+    g_ask = op;
+    g_ask_slot = slot < 0 ? g_slot : slot;
+}
+void state_slot_next(void) {
+    char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256], when[32];
+    StateHeader h;
+    g_slot = g_slot % g_settings.save_state_slots + 1;
+    slot_name(name, sizeof name, g_slot);
+    state_path(path, sizeof path, name);
+    if (sf_peek(path, &h, NULL, why, sizeof why))
+        toast("Slot %d: empty", g_slot);
+    else {
+        slot_when(when, sizeof when, &h);
+        toast("Slot %d: %s", g_slot, when);
+    }
+}
+/* what was asked, done, and said */
+static void ask_do(int op, int slot) {
+    char name[16], label[24], start[24], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
+    StateHeader h;
+    slot_name(name, sizeof name, slot);
+    slot_label(label, sizeof label, slot, 0);
+    slot_label(start, sizeof start, slot, 1);
+    state_path(path, sizeof path, name);
+    if (op == STATE_SAVE) {
+        if (!slot) return; /* only a load saves there */
+        if (state_save(path, why, sizeof why))
+            toast("Not saved: %s", why);
+        else
+            toast("Saved to %s", label);
+        return;
+    }
+    if (sf_peek(path, &h, NULL, why, sizeof why)) {
+        toast("%s is empty", start);
+        return;
+    }
+    if (op == STATE_DELETE) {
+        if (remove(path))
+            toast("%s couldn't be deleted", start);
+        else {
+            LOG("state: deleted %s\n", path);
+            toast("Deleted %s", label);
+        }
+        return;
+    }
+    if (state_check(&h, why, sizeof why)) {
+        toast("Not loaded: %s", why);
+        WARN("state: %s wasn't loaded: %s\n", path, why);
+        return;
+    }
+    /* the game as it was, kept to go back to: a load of the auto slot itself keeps that one */
+    if (g_settings.save_state_backup && slot) {
+        char back[sizeof path], bwhy[256];
+        state_path(back, sizeof back, "auto");
+        if (state_save(back, bwhy, sizeof bwhy)) WARN("state: no auto slot before the load: %s\n", bwhy);
+    }
+    if (state_load(path, why, sizeof why))
+        toast("Not loaded: %s", why);
+    else
+        toast("Loaded %s", label);
+}
+void state_poll(void) {
+    int want = overlay_states_shown(), op = g_ask;
+    state_unattended();
+    /* the save states' pages hold the game while they show: their thumbnails are what the player sees */
+    if (want && !g_menu_pause)
+        g_menu_pause = game_pause() ? -1 : 1;
+    else if (!want && g_menu_pause) {
+        if (g_menu_pause > 0) game_resume();
+        g_menu_pause = 0;
+    }
+    if (op) {
+        g_ask = 0;
+        ask_do(op, g_ask_slot);
+    }
+    if (want && (op || overlay_states_stale())) slots_list();
 }

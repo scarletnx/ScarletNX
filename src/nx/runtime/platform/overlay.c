@@ -11,11 +11,13 @@
 #include "common/utilities/users.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
-enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS, PAGE_MAP };
-enum { M_CONTROLS, M_PADS, M_EXIT, M_COUNT };                                          /* the first page's items */
+enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS, PAGE_MAP, PAGE_STATES, PAGE_SLOT, PAGE_ASK };
+enum { M_CONTROLS, M_PADS, M_STATES, M_EXIT, M_COUNT };                                /* the first page's items */
+enum { S_SAVE, S_LOAD, S_DELETE, S_BACK, S_COUNT }; /* a slot's page's, the auto slot without Save */
 enum { P_PLAYER, P_SWAP, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_MAP, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
 enum {
@@ -55,6 +57,13 @@ static const char* const PADS[P_COUNT] = {SNX_GAMEPAD_PLAYERS,
                                           SNX_GAMEPAD_MAP,
                                           "Back"};
 static int shown, page, focus, top; /* top: the first item showing */
+/* the save state slots listed (slot 0 the auto one), the one a slot's page is for, what its question asks (OVERLAY_LOAD
+   or OVERLAY_DELETE), and whether the list is to be read again */
+static OverlaySlot slots[OVERLAY_SLOTS_MAX];
+static int nslots = 1, slot_at, ask, slots_stale;
+static u32 slots_gen; /* counts the lists given: the picture is set again */
+static char toast[OVERLAY_COLS_MAX + 1];
+static u64 toast_until;
 static int pad_player;              /* the player the gamepads' page shows: 0 every player's, 1 to SNX_GAMEPADS */
 /* the YoRHa menu's colours, from its theme.ini (gui_theme_colors.h), as R G B A bytes; the page hides the game under
    it, whose text would show through its letters */
@@ -64,15 +73,21 @@ static int pad_player;              /* the player the gamepads' page shows: 0 ev
 #define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
 
+/* a slot's page's items: the auto slot has no Save */
+static int slot_item(int i) { return slot_at ? i : i + 1; }
 static int items(void) {
     return page == PAGE_MAIN       ? M_COUNT
            : page == PAGE_CONTROLS ? C_COUNT
            : page == PAGE_PADS     ? P_COUNT
+           : page == PAGE_STATES   ? nslots + 1
+           : page == PAGE_SLOT     ? S_COUNT - !slot_at
+           : page == PAGE_ASK      ? 2
                                    : SNX_VPAD_COUNT + 2;
 }
 static void page_open(int p) {
     page = p;
     focus = top = 0;
+    if (p == PAGE_STATES) slots_stale = 1;
 }
 static void keep_in_view(void) {
     if (focus < top) top = focus;
@@ -111,7 +126,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         return;
     }
     if (page == PAGE_MAIN) {
-        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Exit"};
+        static const char* const main_items[M_COUNT] = {SNX_VPAD_PAGE, SNX_GAMEPAD_PAGE, "Save states", "Exit"};
         snprintf(text, size, "%s", main_items[i]);
         if (i != M_EXIT) snprintf(value, vsize, ">");
         return;
@@ -119,6 +134,27 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     if (page == PAGE_BUTTONS) {
         snprintf(text, size, "%s", i == 0 ? "All" : "Back");
         if (i == 0) snprintf(value, vsize, "%s", all_shown() ? "Shown" : "Some hidden");
+        return;
+    }
+    if (page == PAGE_STATES) {
+        if (i == nslots) {
+            snprintf(text, size, "Back");
+            return;
+        }
+        if (i)
+            snprintf(text, size, "Slot %d", i);
+        else
+            snprintf(text, size, "Auto");
+        snprintf(value, vsize, "%s", slots[i].when[0] ? slots[i].when : "Empty");
+        return;
+    }
+    if (page == PAGE_SLOT) {
+        static const char* const slot_items[S_COUNT] = {"Save", "Load", "Delete", "Back"};
+        snprintf(text, size, "%s", slot_items[slot_item(i)]);
+        return;
+    }
+    if (page == PAGE_ASK) {
+        snprintf(text, size, "%s", i ? "Cancel" : ask == OVERLAY_LOAD ? "Load" : "Delete");
         return;
     }
     if (page == PAGE_PADS && i == P_PLAYER) { /* as Eden's tabs: every player's, or one's own */
@@ -262,10 +298,32 @@ static int act(int i, int step) {
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
         if (i == M_EXIT) return OVERLAY_EXIT;
-        page_open(i == M_PADS ? PAGE_PADS : PAGE_CONTROLS);
+        page_open(i == M_PADS ? PAGE_PADS : i == M_STATES ? PAGE_STATES : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
     if (step) return OVERLAY_NONE;
+    if (page == PAGE_STATES && i < nslots) {
+        slot_at = i;
+        page = PAGE_SLOT;
+        focus = top = 0;
+        return OVERLAY_NONE;
+    }
+    if (page == PAGE_SLOT && slot_item(i) != S_BACK) {
+        int what = slot_item(i);
+        if (what == S_SAVE) return OVERLAY_SAVE;
+        if (!slots[slot_at].when[0] || (what == S_LOAD && slots[slot_at].why[0])) return OVERLAY_NONE;
+        ask = what == S_LOAD ? OVERLAY_LOAD : OVERLAY_DELETE;
+        page = PAGE_ASK;
+        focus = 1; /* Cancel: a stray press does nothing */
+        top = 0;
+        return OVERLAY_NONE;
+    }
+    if (page == PAGE_ASK && i == 0) {
+        int did = ask;
+        page = PAGE_SLOT;
+        focus = top = 0;
+        return did;
+    }
     if (page == PAGE_BUTTONS && i == 0) {
         int c, all = all_shown();
         for (c = 0; c < SNX_VPAD_COUNT; ++c) {
@@ -287,6 +345,27 @@ static int act(int i, int step) {
 }
 
 int overlay_shown(void) { return __atomic_load_n(&shown, __ATOMIC_ACQUIRE); }
+int overlay_states_shown(void) { return overlay_shown() && (page == PAGE_STATES || page == PAGE_SLOT || page == PAGE_ASK); }
+int overlay_states_stale(void) { return slots_stale; }
+int overlay_slot(void) { return slot_at; }
+void overlay_slots_set(const OverlaySlot* given, int n) {
+    int i;
+    for (i = 0; i < OVERLAY_SLOTS_MAX; ++i) free(slots[i].thumb);
+    memset(slots, 0, sizeof slots);
+    nslots = n < 1 ? 1 : n > OVERLAY_SLOTS_MAX ? OVERLAY_SLOTS_MAX : n;
+    memcpy(slots, given, sizeof *slots * (size_t)nslots);
+    for (i = nslots; i < n; ++i) free(given[i].thumb);
+    if (slot_at >= nslots) slot_at = 0;
+    if (page == PAGE_STATES && focus > nslots) focus = nslots;
+    slots_stale = 0;
+    ++slots_gen;
+    keep_in_view();
+}
+void overlay_toast(const char* text, u64 now_ns) {
+    snprintf(toast, sizeof toast, "%s", text);
+    toast_until = now_ns + (u64)SNX_OVERLAY_TOAST_MS * 1000000u;
+}
+int overlay_toasting(u64 now_ns) { return toast[0] && now_ns < toast_until; }
 void overlay_toggle(void) {
     if (!shown) page_open(PAGE_MAIN);
     __atomic_store_n(&shown, !shown, __ATOMIC_RELEASE);
@@ -333,9 +412,11 @@ typedef struct {
     const char* label[VISIBLE];   /* the items showing, from top on */
     const char* value[VISIBLE];   /* at their right; NULL for none */
     int items, top, shown, focus; /* all the items, the first showing, how many show, the one in focus */
+    int aside;                    /* room at the box's right for a picture (the save states' thumbnail), if it fits */
 } Dialog;
 typedef struct {
     SnxOverlayRect box, link, item[VISIBLE];
+    SnxOverlayRect aside; /* the picture's room: empty when there was none */
     int cols, scale;
 } DialogDrawn;
 /* the user playing on the head's band, against right, past left: a box framed as the launcher's are, in the band's
@@ -365,13 +446,20 @@ typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
    a blank row, the items and a blank row; overlay_cols wide, in the middle */
 static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRows rows_of, DialogDrawn* out) {
     char line[OVERLAY_COLS_MAX + 4];
-    int px, py, s, cols, n[DIALOG_PARAS], k, i, total, room, row, last;
+    int px, py, s, cols, n[DIALOG_PARAS], k, i, total, room, row, last, aside = 0;
     float cw, ch, x, y, w;
     memset(out, 0, sizeof *out);
     overlay_place(sw, sh, &px, &py, &s);
     cols = overlay_cols(sw, s);
     cw = 8.0f * (float)s;
     ch = 16.0f * (float)s;
+    if (d->aside) { /* the picture at half its size a scale step, a column apart: the box narrower to fit it */
+        aside = SNX_UI_IMAGE_W / 2 * s + 8 * s;
+        if ((sw - aside) / (8 * s) < OVERLAY_COLS)
+            aside = 0;
+        else if (cols > (sw - aside) * 7 / 8 / (8 * s))
+            cols = (sw - aside) * 7 / 8 / (8 * s) < OVERLAY_COLS ? OVERLAY_COLS : (sw - aside) * 7 / 8 / (8 * s);
+    }
     w = cw * (float)cols;
     for (k = 0; k < d->paras; ++k) {
         n[k] = d->para[k].text ? fatal_wrap(d->para[k].text, cols - 2, rows_of[k], DIALOG_LINES) : 0;
@@ -390,8 +478,14 @@ static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRow
         if (total <= room || pick < 0) break;
         --n[pick];
     }
-    x = (float)((sw - cols * 8 * s) / 2);
+    x = (float)((sw - cols * 8 * s - aside) / 2);
     y = (float)((sh - total * (int)ch) / 2);
+    if (aside) {
+        out->aside.x = x + w + (float)(8 * s);
+        out->aside.y = y;
+        out->aside.w = (float)(SNX_UI_IMAGE_W / 2 * s);
+        out->aside.h = (float)(SNX_UI_IMAGE_H / 2 * s);
+    }
     out->box.x = x;
     out->box.y = y;
     out->box.w = w;
@@ -513,28 +607,64 @@ int overlay_back(void) {
     if (page == PAGE_BUTTONS) {
         page_open(PAGE_CONTROLS);
         focus = C_BUTTONS;
+    } else if (page == PAGE_ASK) {
+        page = PAGE_SLOT;
+        focus = slot_at ? ask == OVERLAY_LOAD ? S_LOAD : S_DELETE : ask == OVERLAY_LOAD ? 0 : 1;
+    } else if (page == PAGE_SLOT) {
+        page = PAGE_STATES;
+        focus = slot_at;
     } else {
         page_open(PAGE_MAIN);
-        focus = from == PAGE_PADS ? M_PADS : M_CONTROLS;
+        focus = from == PAGE_PADS ? M_PADS : from == PAGE_STATES ? M_STATES : M_CONTROLS;
     }
     keep_in_view();
     return OVERLAY_NONE;
 }
 static const char* pads_hint(char* out, size_t size);
-/* the page showing as a dialog: its title, its hint, the items in view, their texts in text and value */
+/* the page showing as a dialog: its title, its hint, the items in view, their texts in text and value. pads holds the
+   title and the hint made for it */
 static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*value)[OVERLAY_COLS_MAX + 1], char* pads,
                         size_t size) {
-    static const char* const titles[] = {"SCARLETNX  /  MENU", "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS",
-                                         "SCARLETNX  /  CONTROLLERS"};
+    static const char* const titles[] = {"SCARLETNX  /  MENU",        "SCARLETNX  /  CONTROLS",
+                                         "SCARLETNX  /  BUTTONS",     "SCARLETNX  /  CONTROLLERS",
+                                         "",                          "SCARLETNX  /  SAVE STATES"};
     static const char* const hints[] = {"Back or Home: back to the game.", "Back: the menu.",
-                                        "Tap one to show or hide it."};
+                                        "Tap one to show or hide it.",     "",
+                                        "",                                "The game waits while this page is open."};
+    const OverlaySlot* sl = &slots[slot_at];
+    char* title = pads + size / 2;
     int r, n = items();
     memset(d, 0, sizeof *d);
-    d->title = titles[page];
+    d->title = page < PAGE_SLOT ? titles[page] : title;
     d->user = 1;
-    d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size) : hints[page];
+    d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size / 2) : page < PAGE_SLOT ? hints[page] : pads;
     d->para[0].rgba = SOFT;
     d->paras = 1;
+    if (page >= PAGE_SLOT) {
+        char name[16];
+        if (slot_at)
+            snprintf(name, sizeof name, "SLOT %d", slot_at);
+        else
+            snprintf(name, sizeof name, "AUTO SLOT");
+        if (page == PAGE_SLOT)
+            snprintf(title, size / 2, "SCARLETNX  /  %s", name);
+        else
+            snprintf(title, size / 2, "SCARLETNX  /  %s %s?", ask == OVERLAY_LOAD ? "LOAD" : "DELETE", name);
+        if (page == PAGE_ASK && ask == OVERLAY_LOAD)
+            snprintf(pads, size / 2, "The game goes back to %s.%s", sl->when,
+                     g_settings.save_state_backup ? " What was played since is kept in the auto slot." : "");
+        else if (page == PAGE_ASK)
+            snprintf(pads, size / 2, "The state saved %s is deleted.", sl->when);
+        else
+            snprintf(pads, size / 2, "%s", sl->when[0] ? sl->when : "Empty.");
+        if (page == PAGE_SLOT && sl->why[0]) { /* why it can't load, under its date */
+            d->para[1].text = sl->why;
+            d->para[1].rgba = FAILURE;
+            d->para[1].on = 1;
+            d->paras = 2;
+        }
+    }
+    d->aside = page >= PAGE_STATES ? 1 : 0;
     d->items = n;
     d->top = top;
     d->focus = focus;
@@ -547,7 +677,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
 }
 int overlay_tap(float x, float y, int sw, int sh) {
     static DialogRows rows_of; /* the event thread's */
-    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[OVERLAY_COLS_MAX];
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     Dialog d;
     DialogDrawn at;
     int r, col;
@@ -593,18 +723,52 @@ static const char* pads_hint(char* out, size_t size) {
         snprintf(out, size, "%s", gamepad_name(0));
     return out;
 }
-void overlay_draw(SnxUiList* l, int sw, int sh) {
+/* the notification: a band of one row in the picture's top left corner */
+static void toast_draw(SnxUiList* l, int sw, int sh) {
+    int px, py, s;
+    float cw, ch, w;
+    overlay_place(sw, sh, &px, &py, &s);
+    cw = 8.0f * (float)s;
+    ch = 16.0f * (float)s;
+    w = cw * (float)(strlen(toast) + 2);
+    ui_fill(l, cw, ch, w, ch, INK);
+    ui_text(l, 2 * cw, ch, s, toast, LIGHT);
+}
+/* the slot whose thumbnail shows beside the save states' pages: the one in focus on the list, or the page's */
+static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
+    static u32 gen;
+    static int at = -1;
+    int slot = page == PAGE_STATES ? (focus < nslots ? focus : -1) : slot_at;
+    float e = r->w / (float)(SNX_UI_IMAGE_W / 2); /* the scale: a pixel of it */
+    if (slot != at || gen != slots_gen) {
+        ui_image_set(slot >= 0 ? slots[slot].thumb : NULL);
+        at = slot;
+        gen = slots_gen;
+    }
+    ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, INK);
+    if (!ui_image(l, r->x, r->y, r->w, r->h)) {
+        ui_fill(l, r->x, r->y, r->w, r->h, LIGHT);
+        ui_text(l, r->x + (r->w - 8.0f * 8 * e) / 2, r->y + (r->h - 16 * e) / 2, (int)e,
+                slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", SOFT);
+    }
+}
+void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     static DialogRows rows_of; /* the renderer's */
-    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[OVERLAY_COLS_MAX];
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     Dialog d;
     DialogDrawn at;
-    if (!shown) return;
+    if (!shown) {
+        if (overlay_toasting(now_ns)) toast_draw(l, sw, sh);
+        return;
+    }
     if (page == PAGE_MAP) {
         map_draw(l, sw, sh);
         return;
     }
     menu_dialog(&d, text, value, pads, sizeof pads);
     dialog_draw(l, sw, sh, &d, rows_of, &at);
+    if (at.aside.w > 0) aside_draw(l, &at.aside);
+    if (overlay_toasting(now_ns)) toast_draw(l, sw, sh);
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;

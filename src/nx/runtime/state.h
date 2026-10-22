@@ -17,7 +17,13 @@ int state_load(const char* path, char* why, size_t whysize);
 int state_check(const StateHeader* h, char* why, size_t whysize);
 /* a slot's file: <g_exedir>states/<exename>.<slot>.snxstate, slot a number or "auto" */
 void state_path(char* out, size_t size, const char* slot);
-/* an unattended run's saves and loads (the state_save and state_load settings), at each pass of the frontend's loop */
-void state_unattended(void);
+/* the player's: a save, load or delete of slot (0 the auto slot, -1 the one F9 picked), done at the next state_poll,
+   which says what came of it in a notification */
+enum { STATE_SAVE = 1, STATE_LOAD, STATE_DELETE };
+void state_ask(int op, int slot);
+void state_slot_next(void); /* F9: the next slot, said with what it holds */
+/* at each pass of the frontend's loop: an unattended run's saves and loads (the state_save and state_load settings),
+   what the player asked for, and the menu's save states pages, which hold the game while they show */
+void state_poll(void);
 
 #endif

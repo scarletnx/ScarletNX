@@ -15,6 +15,9 @@
 static PMutex g_lock = PMUTEX_INIT;
 static u32* g_atlas;
 static u32 g_version;
+static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
+static int g_image_set;
+static u32 g_image_version;
 #define UI_PICTURE_Y SNX_CONTROLS_ATLAS_HEIGHT /* the picture's first row, under the sprites' */
 /* the menu's look's shape for it, GuiPicture's: 0 none, 1 square, 2 round */
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
@@ -25,7 +28,7 @@ void ui_lock(void) { pm_lock(&g_lock); }
 void ui_unlock(void) { pm_unlock(&g_lock); }
 
 static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh, u32 rgba, int turn,
-                 int sharp) {
+                 int sample) {
     SnxUiQuad* q;
     if (l->n >= l->max || w <= 0 || h <= 0) return;
     q = &l->q[l->n++];
@@ -39,15 +42,15 @@ static void quad(SnxUiList* l, float x, float y, float w, float h, int u, int v,
     q->vh = (u16)vh;
     q->rgba = rgba;
     q->turn = (u8)(turn & 3);
-    q->sharp = (u8)sharp;
+    q->sample = (u8)sample;
 }
 void ui_sprite(SnxUiList* l, int sprite, float x, float y, float w, float h, u32 alpha, int turn) {
     const unsigned short* s = snx_controls_sprites[sprite];
-    if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, 0);
+    if (alpha) quad(l, x, y, w, h, s[0], s[1], s[2], s[3], 0x00FFFFFFu | alpha << 24, turn, UI_BLEND);
 }
 int ui_picture(SnxUiList* l, float x, float y, float side) {
     if (!SNX_GUI_THEME_YORHA_PICTURE) return 0;
-    quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, 0);
+    quad(l, x, y, side, side, 0, UI_PICTURE_Y, SNX_UI_PICTURE, SNX_UI_PICTURE, 0xFFFFFFFFu, 0, UI_BLEND);
     return 1;
 }
 /* the picture of the user playing into the atlas's rows from UI_PICTURE_Y, w texels a row; transparent when there is
@@ -72,7 +75,7 @@ static void user_picture(u32* a, int w) {
 }
 void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba) {
     /* the block's inner texels: a blend at its edge never reaches the transparent ones around it */
-    quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, 1);
+    quad(l, x, y, w, h, SNX_CONTROLS_WHITE_X + 1, SNX_CONTROLS_WHITE_Y + 1, 2, 2, rgba, 0, UI_SHARP);
 }
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba) {
     float x0 = x;
@@ -80,9 +83,23 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
         u8 c = (u8)*s;
         if (c != ' ')
             quad(l, x, y, 8.0f * (float)scale, 16.0f * (float)scale, SNX_CONTROLS_FONT_X + c % 16 * 8,
-                 SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, 1);
+                 SNX_CONTROLS_FONT_Y + c / 16 * 16, 8, 16, rgba, 0, UI_SHARP);
     }
     return x - x0;
+}
+int ui_image(SnxUiList* l, float x, float y, float w, float h) {
+    if (!g_image_set) return 0;
+    quad(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H, 0xFFFFFFFFu, 0, UI_IMAGE);
+    return 1;
+}
+void ui_image_set(const u8* rgba) {
+    g_image_set = rgba != NULL;
+    if (rgba) memcpy(g_image, rgba, sizeof g_image);
+    ++g_image_version;
+}
+const u8* ui_image_get(u32* version) {
+    *version = g_image_version;
+    return g_image_set ? g_image : NULL;
 }
 
 void ui_atlas_set(const u32* sprites, int w, int h) {

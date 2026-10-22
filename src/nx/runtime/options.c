@@ -327,11 +327,11 @@ static void put_header(FILE* f) {
             }
         }
     fprintf(f, "\n;  In the game: F1 help, F2 the game's menu, F3 screenshot, F4 FPS limit off and on, F5 thread\n");
-    fprintf(f, ";  dump, F6 showcase on and off");
+    fprintf(f, ";  dump, F6 showcase on and off, F7 save state, F8 load state, F9 next save state slot");
 #if defined(SNX_TRACY)
-    fprintf(f, ", F7 a 60-second Tracy capture");
+    fprintf(f, ", F10 a 60-second Tracy capture");
 #endif
-    fprintf(f, ", F11 or Alt+Enter fullscreen\n");
+    fprintf(f, ", F11 or\n;  Alt+Enter fullscreen\n");
     fprintf(f, "; ==================================================================================\n");
 }
 static void put_rows(FILE* f, const IniOpt* o) {

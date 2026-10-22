@@ -121,6 +121,8 @@ typedef struct Renderer {
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
+    /* the last presented frame scaled to w x h RGBA8 (a save state's thumbnail): 0, or -1 when there is none */
+    int (*thumbnail)(u8* rgba, u32 w, u32 h);
     /* the window again, its last frame (or black) under the on-screen controls and the game's menu, for when the game
        has shown nothing for a while: the frontend's loop calls it while either shows. NULL when there is no window */
     void (*refresh)(void);

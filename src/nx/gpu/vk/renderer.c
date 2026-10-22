@@ -668,15 +668,15 @@ static void vkr_refresh(void) {
     vk_unlock();
 }
 
-/* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
-static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
-    u64 hash = 1469598103934665603ull;
+/* a part of a surface (x, y, w x h), blitted to RGBA8 at dw x dh, scaled on the GPU, and read back: the pixels, good
+   until the next readback, or NULL */
+static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = is_srgb(s->f.vk) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
-                            .extent = {w, h, 1},
+                            .extent = {dw, dh, 1},
                             .mipLevels = 1,
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -686,14 +686,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage tmp;
     VmaAllocation tmem;
-    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return hash;
+    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
     vk_mem_track(tmem);
     VkBuffer buf;
-    u8* p = vk_readback_buffer((u64)w * h * 4, &buf);
+    u8* p = vk_readback_buffer((u64)dw * dh * 4, &buf);
     if (!p) {
         vk_mem_untrack(tmem);
         vmaDestroyImage(g_vk.vma, tmp, tmem);
-        return hash;
+        return NULL;
     }
     vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
     VkCommandBuffer cb = vk_cmd();
@@ -704,14 +704,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+                        .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
     flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
     rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, VK_FILTER_NEAREST);
+                   &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {dw, dh, 1}};
     rec_CmdCopyImageToBuffer(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -724,8 +724,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     vk_readback_ready();
     vk_mem_untrack(tmem);
     vmaDestroyImage(g_vk.vma, tmp, tmem);
+    return p;
+}
+/* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
+static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
+    u64 hash = 1469598103934665603ull;
+    const u8* px = surf_read(s, x, y, w, h, transform, w, h);
+    if (!px) return hash;
     /* the pixels as the device wrote them, little-endian words: the hash is the same on every host */
-    const u8* px = p;
     for (u64 i = 0; i < (u64)w * h; i++) hash = (hash ^ snx_ld_le32(px + i * 4)) * 1099511628211ull;
     if (path) {
         char fn[1100];
@@ -751,6 +757,17 @@ static u64 vkr_screenshot(const char* path) {
                       : 1469598103934665603ull;
     vk_unlock();
     return hash;
+}
+
+/* the last presented frame scaled to w x h, RGBA8 as the display shows it, into rgba: 0, or -1 with none shown */
+static int vkr_thumbnail(u8* rgba, u32 w, u32 h) {
+    const u8* px = NULL;
+    vk_lock();
+    /* a quarter turn shows the frame on its side: the thumbnail is of the picture as the player sees it */
+    if (g_last) px = surf_read(g_last, g_last_x, g_last_y, g_last_w, g_last_h, g_last_transform, w, h);
+    if (px) memcpy(rgba, px, (size_t)w * h * 4);
+    vk_unlock();
+    return px ? 0 : -1;
 }
 
 /* the stall watchdog: the releases queued and how far the submissions they wait for have got */
@@ -838,6 +855,7 @@ const Renderer vk_renderer = {
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
+    .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,
     .release_window = vk_window_release,

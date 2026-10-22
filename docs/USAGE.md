@@ -579,6 +579,8 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `source` | none | The dump the game was made from, which the recompile writes. Without `--extract-container` the game reads its ExeFS and RomFS from it. Left out, the `<id>.source` link older versions made is read instead |
+| `state_slots` | `10` | The save state slots the menu's Save states page lists and F9 steps through, 1 to 32 |
+| `state_auto_backup` | `1` | `1` saves the game to the auto slot before a save state is loaded over it, so the load can be undone |
 | `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720) |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
@@ -676,9 +678,18 @@ after installation. Other HIDAPI controllers may need their vendor's own hidraw 
 | Enter / Backspace | Plus / Minus |
 
 F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
-F7 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter fullscreen; Pause pauses the whole game and resumes it
-(the window's title says "(paused)"); Escape quit. A window shows at most one image per refresh and drops the rest
-unless images tear, and the game keeps the pace `fps_limit` sets.
+F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
+fullscreen; Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape quit. A window
+shows at most one image per refresh and drops the rest unless images tear, and the game keeps the pace `fps_limit`
+sets.
+
+A save state is the whole game at one moment, kept in `states/` in the game's folder, one file a slot. F7 saves to
+the selected slot and F8 loads it, and F9 selects the next slot and says what it holds. The menu's **Save states**
+page lists the slots with the date, the play time and a picture of each, and saves, loads and deletes them. A load
+and a delete ask first. The game waits while the page is open. Before a load the game is saved to the auto slot,
+listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
+and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with, by the
+same build of ScarletNX.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and
 B do the same, the on-screen controls' too, and a direction held goes on after a moment.

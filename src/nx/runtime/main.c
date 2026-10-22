@@ -543,7 +543,7 @@ static void frontend_loop(void) {
         }
 #endif
         pause_unattended();
-        state_unattended();
+        state_poll();
         /* here and not on the GPU thread, where writing the pipeline cache would hold up every channel */
         if (tick % 300 == 0) {
             save_hints();
