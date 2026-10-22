@@ -198,6 +198,8 @@ u8* kshmem_ptr(KShmem* s);
 /* once the game's modules are loaded, for the dumps and kernel_find_symbol_exact */
 void kernel_load_symbols(void);
 u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module exports this name */
+/* the i-th exported function, in address order: its address and its name (NULL when unreadable); 0 past the last */
+int kernel_symbol(u32 i, u64* addr, const char** name);
 void kernel_dump_regs(CPU* c);
 void kernel_dump_threads(void);
 void mem_report(char* out, int n);

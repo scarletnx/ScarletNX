@@ -49,10 +49,11 @@ typedef double f64;
   14: code the guest patches at run time. IC IVAU calls RtAPI.code_changed, and each AOT function first reads its
       byte in SnxModule.stale, which the runtime sets when a line it was compiled from changed: the function then
       runs its entry through dispatch, where the runtime compiles the code there now.
-  15: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
+  15: calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold.
+  16: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
       load-exclusive stores (and returns 0), where every build before made it fail and return 1, so a game's retry
       loop never ended: both the generated code and the interpreter's helper emit the new comparison. */
-#define SNX_ABI 15
+#define SNX_ABI 16
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
