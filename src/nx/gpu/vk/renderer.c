@@ -799,10 +799,25 @@ static void vkr_flush_targets(void) {
     vk_unlock();
     LOG("vulkan: %u render targets written back for a save state\n", n);
 }
+static int vkr_save_targets(struct StateIo* io) {
+    int r;
+    vk_lock();
+    r = vk_zt_save(io);
+    vk_unlock();
+    return r;
+}
+static int vkr_load_targets(struct StateIo* io) {
+    int r;
+    vk_lock();
+    r = vk_zt_load(io);
+    vk_unlock();
+    return r;
+}
 static void vkr_reset(void) {
     vk_lock();
     vk_render_end();
     vk_render_forget_state();
+    vk_zt_forget();
     vk_surf_forget_all();
     vk_buf_forget_all();
     vk_query_forget_all();
@@ -849,6 +864,8 @@ const Renderer vk_renderer = {
     .idle = vkr_idle,
     .reset = vkr_reset,
     .flush_targets = vkr_flush_targets,
+    .save_targets = vkr_save_targets,
+    .load_targets = vkr_load_targets,
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,

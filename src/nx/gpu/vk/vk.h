@@ -180,6 +180,12 @@ void vk_surf_forget_all(void);
 void vk_buf_forget_all(void);
 void vk_query_forget_all(void);
 u32 vk_rt_flush_all(void); /* a save: every render target's pixels written back where it can be, the count */
+/* a save state's depth targets (surface.c): every live one's pixels into io, read back (0, or -1); a load's, kept for
+   the targets the loaded game makes of the same place, format and size; and those dropped */
+struct StateIo;
+int vk_zt_save(struct StateIo* io);
+int vk_zt_load(struct StateIo* io);
+void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */

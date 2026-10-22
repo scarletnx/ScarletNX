@@ -925,8 +925,8 @@ static void own_land_all(void) {
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateWriter* w;
-    Buf hle = {0}, heap = {0}, gpu = {0};
-    StateIo gio = buf_io(&gpu);
+    Buf hle = {0}, heap = {0}, gpu = {0}, surf = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf);
     Names names = {0};
     char folder[sizeof g_exedir + 16];
     u64 t0 = plat_ns();
@@ -951,7 +951,8 @@ int state_save(const char* path, char* why, size_t whysize) {
     header_make(&h);
     h.thumb_w = SNX_UI_IMAGE_W;
     h.thumb_h = SNX_UI_IMAGE_H;
-    if (save_hle(&hle, &heap, &names) || gpu_state_save(&gio)) {
+    if (save_hle(&hle, &heap, &names) || gpu_state_save(&gio) ||
+        (g_renderer->save_targets && g_renderer->save_targets(&sio))) {
         snprintf(why, whysize, "the game's state couldn't be gathered (the log says what)");
         goto end;
     }
@@ -960,7 +961,8 @@ int state_save(const char* path, char* why, size_t whysize) {
     w = sw_open(path, &h, thumb, why, whysize);
     if (!w) goto end;
     if (section_write(w, "HLE", state_schema(), &hle) || names_write(w, &names) || section_write(w, "HEAP", 1, &heap) ||
-        section_write(w, "GPU", 1, &gpu) || save_memory(w, why, whysize)) {
+        section_write(w, "GPU", 1, &gpu) || (surf.n && section_write(w, "SURF", 1, &surf)) ||
+        save_memory(w, why, whysize)) {
         sw_abort(w);
         if (!why[0]) snprintf(why, whysize, "the file couldn't be written");
         goto end;
@@ -975,6 +977,7 @@ resume:
     free(hle.p);
     free(heap.p);
     free(gpu.p);
+    free(surf.p);
     if (r)
         WARN("state: %s wasn't saved: %s\n", path, why);
     else
@@ -986,8 +989,8 @@ resume:
 int state_load(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateReader* r;
-    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0};
-    StateIo gio = buf_io(&gpu), fio;
+    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0}, surf = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), fio;
     Names names = {0};
     ShmPlan plan;
     u8* cur_host[KSHMEM_MAX];
@@ -1006,6 +1009,11 @@ int state_load(const char* path, char* why, size_t whysize) {
     if (section_read(r, "HEAP", NULL, &heap) || section_read(r, "GPU", NULL, &gpu)) {
         snprintf(why, whysize, "it is damaged");
         goto refuse;
+    }
+    /* the depth targets' pixels, which a state without depth targets doesn't have */
+    if (section_read(r, "SURF", NULL, &surf)) {
+        free(surf.p);
+        memset(&surf, 0, sizeof surf);
     }
     if (game_pause()) {
         snprintf(why, whysize, "the game didn't stop to be loaded over");
@@ -1030,6 +1038,8 @@ int state_load(const char* path, char* why, size_t whysize) {
     audio_state_rebuild();
     /* the renderer forgets the old memory, and the state's channels and queue take the old ones' place */
     if (g_renderer->reset) g_renderer->reset();
+    if (surf.n && g_renderer->load_targets && g_renderer->load_targets(&sio))
+        WARN("state: the save state's depth targets couldn't be read: they start empty\n");
     gpu_mem_written_all();
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     if (gpu_state_load(&gio)) fatal("The save state's GPU state couldn't be loaded");
@@ -1044,6 +1054,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     free(hle.p);
     free(heap.p);
     free(gpu.p);
+    free(surf.p);
     LOG("state: loaded %s (guest time %.3f s) at frame %d in %.0f ms\n", path, (double)h.guest_ns / 1e9,
         __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6);
     return 0;
@@ -1053,6 +1064,7 @@ refuse:
     free(hle.p);
     free(heap.p);
     free(gpu.p);
+    free(surf.p);
     WARN("state: %s wasn't loaded: %s\n", path, why);
     return -1;
 }

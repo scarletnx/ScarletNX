@@ -115,6 +115,11 @@ typedef struct Renderer {
     /* a save state's save, the GPU held: every render target's pixels written back to guest memory where they can be,
        so the state holds them. NULL when the renderer keeps none */
     void (*flush_targets)(void);
+    /* a save state's render targets whose pixels guest memory doesn't hold (the depth targets), read back into io (0,
+       or -1), and after the load's reset those of a state, for the targets the loaded game makes. NULL when the
+       renderer keeps none */
+    int (*save_targets)(struct StateIo* io);
+    int (*load_targets)(struct StateIo* io);
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
