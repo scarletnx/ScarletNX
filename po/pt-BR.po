@@ -757,12 +757,8 @@ msgid "Add a folder"
 msgstr "Adicionar pasta"
 
 #: src/gui/main.c
-msgid "ready to run"
-msgstr "pronto para rodar"
-
-#: src/gui/main.c
-msgid "prepared when it runs"
-msgstr "preparado ao rodar"
+msgid "Linux ARM ELF, run with scarletnx-gnuabi"
+msgstr "ELF Linux ARM, rodado com o scarletnx-gnuabi"
 
 #: src/gui/main.c
 msgid "The recent games not shown"

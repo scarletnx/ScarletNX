@@ -875,6 +875,10 @@ msgid ", in the games/ an older version made: new games go to recompiled/"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Linux ARM ELF, run with scarletnx-gnuabi"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Pick a folder of games or dumps, listed after recompiled/ and dumps/"
 msgstr ""
 
@@ -882,14 +886,6 @@ msgstr ""
 #: src/gui/main.c src/gui/ui.txt
 #, snx-key
 msgid "Add a folder"
-msgstr ""
-
-#: src/gui/main.c
-msgid "ready to run"
-msgstr ""
-
-#: src/gui/main.c
-msgid "prepared when it runs"
 msgstr ""
 
 #: src/gui/main.c

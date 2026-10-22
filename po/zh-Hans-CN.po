@@ -757,14 +757,6 @@ msgid "Add a folder"
 msgstr "添加文件夹"
 
 #: src/gui/main.c
-msgid "ready to run"
-msgstr "可以运行"
-
-#: src/gui/main.c
-msgid "prepared when it runs"
-msgstr "运行时准备"
-
-#: src/gui/main.c
 msgid "The recent games not shown"
 msgstr "未显示的最近游戏"
 

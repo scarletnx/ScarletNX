@@ -3489,6 +3489,42 @@ int main(int argc, char** argv) {
             }
             recent_as_games(&app); /* by the name Games shows it by, not its ID */
             assert(app.recent.count == 1 && !strcmp(app.recent.game[0].name, "Made Quest"));
+            { /* its recent row says what Games' row of it says; a recent game Games doesn't list, what its file is */
+                static const struct {
+                    const char* file;
+                    int driver;
+                    const char* kind;
+                } unlisted[] = {{"far away.nsp", GUI_SWITCH, "A dump, prepared when it runs"},
+                                {"tool.elf", GUI_LINUX, "Linux ARM ELF, run with scarletnx-gnuabi"},
+                                {"homebrew.cia", GUI_3DS, "3DS CIA, opened with scarletnx-3ds"}};
+                GuiRecent was = app.recent;
+                GuiGamesBoxes none = {0};
+                char kind[192], listed[192];
+                const char* about;
+                size_t k;
+                list_games(&app);
+                for (k = 0; k < app.games.count &&
+                            !(app.games.paths[k] && !strcmp(app.games.paths[k], app.recent.game[0].path));
+                     ++k) {}
+                assert(k < app.games.count);
+                game_kind(&app, &app.games, k, listed, sizeof listed);
+                recent_changed(&app);
+                app.browser.selected = 1;
+                assert(games_focus(&app, &none, &about, kind, sizeof kind) == app.recent.game[0].name &&
+                       about == app.recent.game[0].path && !strcmp(kind, listed));
+                for (k = 0; k < sizeof unlisted / sizeof unlisted[0]; ++k) {
+                    char* path = snx_path_join(temporary, unlisted[k].file);
+                    assert(!gui_recent_add(&app.recent, path, unlisted[k].driver, 0));
+                    recent_changed(&app);
+                    app.browser.selected = 1;
+                    games_focus(&app, &none, &about, kind, sizeof kind);
+                    assert(!strcmp(kind, unlisted[k].kind));
+                    free(path);
+                }
+                app.recent = was;
+                recent_changed(&app);
+                app.browser.selected = 0;
+            }
             { /* its icon, icon.jpg beside its control.nacp: none, then drawn once and kept, and one that does not draw
                  said with its file */
                 IconJpeg jpeg = {{0}, 0};

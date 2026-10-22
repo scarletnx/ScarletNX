@@ -3436,8 +3436,21 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
         snprintf(kind + n, size - n, "%s",
                  snx_tr(", in the games/ an older version made: new games go to recompiled/"));
 }
+/* a recent game's kind: its row's in Games when Games lists it, else what its file is, in the words Games uses */
+static void recent_kind(const App* app, const GuiRecentGame* r, char* kind, size_t size) {
+    size_t i;
+    for (i = 0; i < app->games.count; ++i)
+        if (app->games.paths[i] && !strcmp(app->games.paths[i], r->path)) {
+            game_kind(app, &app->games, i, kind, size);
+            return;
+        }
+    snprintf(kind, size, "%s",
+             r->driver == GUI_LINUX ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi")
+             : r->driver == GUI_3DS ? snx_tr("3DS CIA, opened with scarletnx-3ds")
+             : gui_is_dump(r->path) ? snx_tr("A dump, prepared when it runs")
+                                    : snx_tr("Ready to run"));
+}
 static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** about, char* kind, size_t size) {
-    static const char* const kinds[] = {"Switch", "Linux ARM", "3DS"}; /* names, never translated */
     size_t selected = app->browser.selected, head = app->browser.head;
     kind[0] = 0;
     if (!selected) {
@@ -3446,8 +3459,7 @@ static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** ab
     }
     if (selected < head && (int)selected - 1 < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[selected - 1];
-        snprintf(kind, size, "%s, %s", kinds[r->driver >= GUI_SWITCH && r->driver <= GUI_3DS ? r->driver : 0],
-                 r->prepared ? snx_tr("ready to run") : snx_tr("prepared when it runs"));
+        recent_kind(app, r, kind, size);
         *about = r->path;
         return r->name;
     }
