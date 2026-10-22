@@ -54,7 +54,8 @@ void wake(KThread* t, int result) {
 void core_set_prio(KThread* t, int prio) { t->prio = prio; }
 
 enum { SNX_KMT_THREADS = 6, SNX_KMT_HANDLE = 0x100 };
-static KThread snx_kmt_thread[SNX_KMT_THREADS];
+/* the threads are the pool's first slots, where the kernel's lists find them (kt_at) */
+#define snx_kmt_thread (g_hle.thread.threads)
 KObj* h_get_nl(u32 h) {
     u32 i = h - SNX_KMT_HANDLE;
     return i < SNX_KMT_THREADS ? &snx_kmt_thread[i].o : NULL;
@@ -80,7 +81,7 @@ static const int start_prio[] = {46, 44, 45, 40, 50, 30};
 static KThread* reset(const int* prio) {
     memset(snx_kmt_thread, 0, sizeof snx_kmt_thread);
     memset(g_mem, 0, 0x1000);
-    g_hle.sync.mwait = NULL;
+    g_hle.sync.mwait = 0;
     for (int i = 0; i < SNX_KMT_THREADS; i++) {
         snx_kmt_thread[i].o.type = KO_THREAD;
         snx_kmt_thread[i].prio = snx_kmt_thread[i].base_prio = prio[i];
@@ -125,7 +126,7 @@ int main(void) {
     svc_arbitrate_unlock(SNX_KMT_M);
     CHECK(e->woken && !b->woken && word(SNX_KMT_M) == (handle(e) | HANDLE_WAIT), "40 takes it, 44 still waits: word %x",
           word(SNX_KMT_M));
-    CHECK(b->lock_owner == e && a->prio == 46 && e->prio == 40, "44 now waits for 40; old owner at %d", a->prio);
+    CHECK(b->lock_owner == kt_ix(e) && a->prio == 46 && e->prio == 40, "44 now waits for 40; old owner at %d", a->prio);
 
     /* a chain: the owner waits on a mutex of its own, so its owner inherits too */
     t = reset((const int[]){46, 44, 45, 40, 50, 30});
@@ -155,7 +156,7 @@ int main(void) {
     u32 held = handle(a);
     snx_st_le32(g_mem + SNX_KMT_M, held);
     svc_signal_cv(SNX_KMT_CV, 1);
-    CHECK(b->wait_kind == 2 && b->lock_owner == a && a->prio == 44, "signalled into a held mutex: owner at %d",
+    CHECK(b->wait_kind == 2 && b->lock_owner == kt_ix(a) && a->prio == 44, "signalled into a held mutex: owner at %d",
           a->prio);
 
     /* the condition variable is marked before its mutex changes hands */

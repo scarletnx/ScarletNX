@@ -63,7 +63,7 @@ struct KThread {
     u32 yields;     /* consecutive yields, of which only some reach the host */
     int on_core;    /* the core it holds, -2 while waiting for one, -1 for none */
     int pinned;     /* the core whose host CPUs its host thread runs on (core_pin), -1 before it first ran */
-    KThread* core_next; /* the core's wait list */
+    u32 core_next;  /* the core's wait list (kt_at) */
     u64 core_ticket;    /* arrival order there, which breaks priority ties */
     u64 affinity;
     u64 tls;
@@ -85,9 +85,9 @@ struct KThread {
     int nwaits;
     u64 wait_addr, wait_key;
     u32 wait_tag;
-    KThread* lock_owner; /* the mutex's owner while it waits on one (kind 2) */
+    u32 lock_owner; /* the mutex's owner while it waits on one (kind 2), as kt_ix numbers it */
     int wait_result;
-    KThread* next_waiter;
+    u32 next_waiter; /* its wait list's next thread (kt_at) */
     char name[32];
     char wait_name[24];
     u64 wait_tid; /* the thread a join waits for, for the thread dump */

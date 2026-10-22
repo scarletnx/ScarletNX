@@ -187,8 +187,8 @@ typedef struct {
        core_next and core_ticket change under core_lk, which is taken after g_klock when both are held (sleep_nl lets
        go of its core with g_klock held), and never the other way round */
     PMutex core_lk;
-    KThread* core_owner[NCORES]; /* the thread holding each core, or NULL */
-    KThread* core_wait[NCORES];  /* the threads waiting for it, through core_next, in no order */
+    u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
+    u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
     u64 core_ticket;             /* arrival order, for waiters of one priority */
     /* each core's share of the host CPUs (thread.c's core_pin), and whether it was logged */
@@ -205,9 +205,9 @@ typedef struct {
    lists are kept: one for mutexes, one per bucket of the word for the others). Under g_hle.kernel.klock */
 #define WAIT_BUCKETS 256
 typedef struct {
-    KThread* mwait;                 /* wait_kind 2: on the mutex at wait_addr, for lock_owner to hand it over */
-    KThread* cvwait[WAIT_BUCKETS];  /* 3: on the condition variable wait_key, to take the mutex at wait_addr */
-    KThread* arbwait[WAIT_BUCKETS]; /* 4: on the address wait_addr */
+    u32 mwait;                      /* wait_kind 2: on the mutex at wait_addr, for lock_owner to hand it over */
+    u32 cvwait[WAIT_BUCKETS];       /* 3: on the condition variable wait_key, to take the mutex at wait_addr */
+    u32 arbwait[WAIT_BUCKETS];      /* 4: on the address wait_addr */
     u32 bad_waits;                  /* the bad handles waited on, logged the first 20 times and every 65536th after */
 } HleSync;
 /* debug.c */

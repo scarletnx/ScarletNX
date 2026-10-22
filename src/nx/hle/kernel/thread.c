@@ -26,7 +26,7 @@ static int core_of(const KThread* t) { return t->core >= 0 && t->core < NCORES ?
 /* stored only when it changes: the holder's code reads poll at each backward branch, and a store of the same value
    still takes its cache line away from the holder's core */
 static void core_flag_nl(int k) {
-    KThread* o = g_hle.thread.core_owner[k];
+    KThread* o = kt_at(g_hle.thread.core_owner[k]);
     u32 v;
     if (!o) return;
     v = __atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED) || g_hle.thread.core_best[k] < o->prio ? 1u : 0u;
@@ -35,15 +35,16 @@ static void core_flag_nl(int k) {
 static void core_rebest_nl(int k) {
     KThread* w;
     int best = 64;
-    for (w = g_hle.thread.core_wait[k]; w; w = w->core_next)
+    for (w = kt_at(g_hle.thread.core_wait[k]); w; w = kt_at(w->core_next))
         if (w->prio < best) best = w->prio;
     g_hle.thread.core_best[k] = best;
 }
 static void core_unlink_nl(int k, KThread* t) {
-    KThread** l = &g_hle.thread.core_wait[k];
-    while (*l && *l != t) l = &(*l)->core_next;
+    u32* l = &g_hle.thread.core_wait[k];
+    u32 i = kt_ix(t);
+    while (*l && *l != i) l = &kt_at(*l)->core_next;
     if (*l) *l = t->core_next;
-    t->core_next = NULL;
+    t->core_next = 0;
     core_rebest_nl(k);
 }
 /* whether a waits ahead of b */
@@ -52,7 +53,7 @@ static int core_before(const KThread* a, const KThread* b) {
 }
 /* t holds core k from now on, and the host thread waiting for it (if any) goes on */
 static void core_give_nl(int k, KThread* t) {
-    g_hle.thread.core_owner[k] = t;
+    g_hle.thread.core_owner[k] = kt_ix(t);
     t->core = k;
     t->on_core = k;
     __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
@@ -66,13 +67,14 @@ static void core_handoff_nl(int k) {
     KThread* best = NULL;
     KThread* w;
     int j, from = k;
-    for (w = g_hle.thread.core_wait[k]; w; w = w->core_next)
+    for (w = kt_at(g_hle.thread.core_wait[k]); w; w = kt_at(w->core_next))
         if (!best || core_before(w, best)) best = w;
     if (!best)
         for (j = 0; j < NCORES; j++) {
             if (j == k || !g_hle.thread.core_owner[j]) continue;
-            for (w = g_hle.thread.core_wait[j]; w; w = w->core_next)
-                if (((w->affinity >> k) & 1) && w->prio >= g_hle.thread.core_owner[j]->prio && (!best || core_before(w, best))) {
+            for (w = kt_at(g_hle.thread.core_wait[j]); w; w = kt_at(w->core_next))
+                if (((w->affinity >> k) & 1) && w->prio >= kt_at(g_hle.thread.core_owner[j])->prio &&
+                    (!best || core_before(w, best))) {
                     best = w;
                     from = j;
                 }
@@ -95,7 +97,7 @@ static void core_wait_nl(KThread* t, int k) {
     t->on_core = -2;
     t->core_ticket = ++g_hle.thread.core_ticket;
     t->core_next = g_hle.thread.core_wait[k];
-    g_hle.thread.core_wait[k] = t;
+    g_hle.thread.core_wait[k] = kt_ix(t);
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
     while (t->on_core == -2) pc_wait(&t->cv, &g_hle.thread.core_lk, -1);
@@ -108,7 +110,7 @@ static void core_take_nl(KThread* t) {
         core_give_nl(k, t);
         return;
     }
-    if (t->prio >= g_hle.thread.core_owner[k]->prio && (j = core_idle_nl(t)) >= 0) {
+    if (t->prio >= kt_at(g_hle.thread.core_owner[k])->prio && (j = core_idle_nl(t)) >= 0) {
         core_give_nl(j, t);
         return;
     }
@@ -119,7 +121,7 @@ static void core_release_nl(KThread* t) {
     int k = t->on_core;
     t->on_core = -1;
     __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
-    if (g_hle.thread.core_owner[k] == t) g_hle.thread.core_owner[k] = NULL;
+    if (g_hle.thread.core_owner[k] == kt_ix(t)) g_hle.thread.core_owner[k] = 0;
     core_handoff_nl(k);
 }
 /* after t took a core: its host thread moves to the core's share of the host CPUs, if it was on another one. Fewer

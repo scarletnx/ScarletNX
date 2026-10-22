@@ -57,6 +57,10 @@ typedef struct {
 extern Hle g_hle;
 void hle_init(void);
 
+/* a thread as a number, which the kernel's lists hold: its slot in g_hle.thread.threads plus 1, 0 for none */
+static inline u32 kt_ix(const KThread* t) { return t ? (u32)(t - g_hle.thread.threads) + 1 : 0; }
+static inline KThread* kt_at(u32 i) { return i ? &g_hle.thread.threads[i - 1] : NULL; }
+
 /* a free slot of the count at base, each size bytes, searched from *next on and wrapping: the slot, *next past it.
    The caller holds the lock that guards the pool, and makes the slot non-zero before it lets go of it */
 void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what);

@@ -290,7 +290,7 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
         case 2:
             snprintf(s, n, "waiting for the mutex at %llx%s, owned by thread %llu", (unsigned long long)t->wait_addr,
                      word_at(t->wait_addr, v1, sizeof v1),
-                     (unsigned long long)(t->lock_owner ? t->lock_owner->id : 0));
+                     (unsigned long long)(t->lock_owner ? kt_at(t->lock_owner)->id : 0));
             break;
         case 3:
             snprintf(s, n, "waiting on the condition variable %llx%s, mutex %llx%s", (unsigned long long)t->wait_key,

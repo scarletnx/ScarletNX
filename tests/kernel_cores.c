@@ -132,7 +132,8 @@ void plat_thread_cpus(const int* ids, int n) {
     snx_kct_moves++;
     pthread_mutex_unlock(&snx_kct_lk);
 }
-static KThread snx_kct_thread[SNX_KCT_THREADS];
+/* the threads are the pool's first slots, where the cores' lists find them (kt_at) */
+#define snx_kct_thread (g_hle.thread.threads)
 /* thread i at this priority, on this core, with this core mask; nobody holds or waits for a core */
 static KThread* thread(int i, int prio, int core, u64 mask) {
     KThread* t = &snx_kct_thread[i];
@@ -149,8 +150,8 @@ static KThread* thread(int i, int prio, int core, u64 mask) {
 }
 static void reset(void) {
     for (int k = 0; k < NCORES; k++) {
-        g_hle.thread.core_owner[k] = NULL;
-        g_hle.thread.core_wait[k] = NULL;
+        g_hle.thread.core_owner[k] = 0;
+        g_hle.thread.core_wait[k] = 0;
         g_hle.thread.core_best[k] = 64;
     }
 }
@@ -420,7 +421,9 @@ int main(void) {
 
     /* the thread pool: KTHREAD_MAX (256) slots, filled by as many threads; an exited thread keeps its slot (the live
        count leaves it out) until its last reference goes, and then a new thread takes that slot. A full pool is a bound
-       below what a game uses, asserted, so no thread is left out */
+       below what a game uses, asserted, so no thread is left out. The tests above used the first slots */
+    reset();
+    memset(g_hle.thread.threads, 0, sizeof g_hle.thread.threads);
     {
         KThread* first[KTHREAD_MAX];
         KThread* t;

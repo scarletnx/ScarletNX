@@ -23,7 +23,7 @@
    mutex */
 static unsigned bucket(u64 word) { return (unsigned)(((word >> 2) * 0x9E3779B97F4A7C15ull) >> 56); }
 /* the list a thread waiting in that kind on that word is in (its wait_key for a condition variable, else wait_addr) */
-static KThread** wait_list_for(int kind, u64 word) {
+static u32* wait_list_for(int kind, u64 word) {
     switch (kind) {
         case 2: return &g_hle.sync.mwait;
         case 3: return &g_hle.sync.cvwait[bucket(word)];
@@ -31,24 +31,25 @@ static KThread** wait_list_for(int kind, u64 word) {
         default: return NULL;
     }
 }
-static KThread** wait_list(const KThread* t) {
+static u32* wait_list(const KThread* t) {
     return wait_list_for(t->wait_kind, t->wait_kind == 3 ? t->wait_key : t->wait_addr);
 }
-static void list_add(KThread** l, KThread* t) {
-    while (*l) l = &(*l)->next_waiter;
-    t->next_waiter = NULL;
-    *l = t;
+static void list_add(u32* l, KThread* t) {
+    while (*l) l = &kt_at(*l)->next_waiter;
+    t->next_waiter = 0;
+    *l = kt_ix(t);
 }
-static void list_del(KThread** l, KThread* t) {
-    while (*l && *l != t) l = &(*l)->next_waiter;
+static void list_del(u32* l, KThread* t) {
+    u32 i = kt_ix(t);
+    while (*l && *l != i) l = &kt_at(*l)->next_waiter;
     if (*l) *l = t->next_waiter;
-    t->next_waiter = NULL;
+    t->next_waiter = 0;
 }
 /* the waiter to wake first among those whose wait_addr (or wait_key, by_key) is key */
-static KThread* list_best(KThread* l, int by_key, u64 key) {
-    KThread* b = NULL;
-    for (; l; l = l->next_waiter)
-        if ((by_key ? l->wait_key : l->wait_addr) == key && (!b || l->prio < b->prio)) b = l;
+static KThread* list_best(u32 l, int by_key, u64 key) {
+    KThread *b = NULL, *w;
+    for (w = kt_at(l); w; w = kt_at(w->next_waiter))
+        if ((by_key ? w->wait_key : w->wait_addr) == key && (!b || w->prio < b->prio)) b = w;
     return b;
 }
 
@@ -81,9 +82,9 @@ static void prio_restore_nl(KThread* t) {
     while (t) {
         int p = t->base_prio;
         KThread* w;
-        KThread** l;
-        for (w = g_hle.sync.mwait; w; w = w->next_waiter)
-            if (w->lock_owner == t && w->prio < p) p = w->prio;
+        u32* l;
+        for (w = kt_at(g_hle.sync.mwait); w; w = kt_at(w->next_waiter))
+            if (w->lock_owner == kt_ix(t) && w->prio < p) p = w->prio;
         if (p == t->prio) return;
         core_set_prio(t, p);
         l = wait_list(t);
@@ -91,7 +92,7 @@ static void prio_restore_nl(KThread* t) {
             list_del(l, t);
             list_add(l, t);
         }
-        t = t->wait_kind == 2 ? t->lock_owner : NULL;
+        t = t->wait_kind == 2 ? kt_at(t->lock_owner) : NULL;
     }
 }
 void prio_set_base_nl(KThread* t, int prio) {
@@ -102,15 +103,15 @@ void prio_set_base_nl(KThread* t, int prio) {
 static void mutex_wait_nl(KThread* owner, KThread* t) {
     t->wait_kind = 2;
     kobj_ref(&owner->o);
-    t->lock_owner = owner;
+    t->lock_owner = kt_ix(owner);
     list_add(&g_hle.sync.mwait, t);
     if (t->prio < owner->prio) prio_restore_nl(owner);
 }
 /* t stops waiting on its mutex without getting it (its condition variable wait timed out) */
 static void mutex_unwait_nl(KThread* t) {
-    KThread* owner = t->lock_owner;
+    KThread* owner = kt_at(t->lock_owner);
     list_del(&g_hle.sync.mwait, t);
-    t->lock_owner = NULL;
+    t->lock_owner = 0;
     t->wait_kind = 0;
     if (owner) prio_restore_nl(owner);
     kobj_unref(owner ? &owner->o : NULL);
@@ -124,14 +125,14 @@ static KThread* mutex_next_nl(u64 addr, int* more) {
     KThread* w;
     *more = 0;
     if (!n) return NULL;
-    old = n->lock_owner;
+    old = kt_at(n->lock_owner);
     list_del(&g_hle.sync.mwait, n);
-    n->lock_owner = NULL;
+    n->lock_owner = 0;
     n->wait_kind = 0;
-    for (w = g_hle.sync.mwait; w; w = w->next_waiter)
-        if (w->wait_addr == addr && w->lock_owner == old) {
+    for (w = kt_at(g_hle.sync.mwait); w; w = kt_at(w->next_waiter))
+        if (w->wait_addr == addr && w->lock_owner == kt_ix(old)) {
             kobj_ref(&n->o);
-            w->lock_owner = n;
+            w->lock_owner = kt_ix(n);
             kobj_unref(old ? &old->o : NULL); /* n's reference to old, dropped below, keeps it */
             *more = 1;
         }
@@ -243,7 +244,8 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
 /* svcSignalProcessWideKey (Eden's KConditionVariable::Signal): wakes count waiters (all of them when count <= 0), and
    clears the mark once nobody waits */
 u32 svc_signal_cv(u64 key, i32 count) {
-    KThread *w, **l;
+    KThread* w;
+    u32* l;
     i32 n = 0;
     key &= ~3ull;
     l = wait_list_for(3, key);
@@ -302,7 +304,8 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
    equals value, which it increments; 2: the same if the word equals value, which it changes by whether waiters remain:
    value + 1 with none, value - 1 when all of them wake (value - 2 with count <= 0), value when some stay */
 u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
-    KThread *w, **l;
+    KThread* w;
+    u32* l;
     i32 n = 0;
     u32* p;
     R_TRY(check_word(addr));
@@ -314,7 +317,7 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
         u32 cur = (u32)value, nv = (u32)value + 1u;
         if (type == 2) {
             i32 waiting = 0;
-            for (w = *l; w; w = w->next_waiter)
+            for (w = kt_at(*l); w; w = kt_at(w->next_waiter))
                 if (w->wait_addr == addr) waiting++;
             if (!waiting)
                 nv = (u32)value + 1u;
