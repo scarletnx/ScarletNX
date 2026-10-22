@@ -14,7 +14,7 @@ int state_save(const char* path, char* why, size_t whysize);
    game, as half a state can't run */
 int state_load(const char* path, char* why, size_t whysize);
 /* whether the state at path can be loaded into this game: 0, or -1 with the reason (the launcher's list) */
-int state_check(const StateHeader* h, char* why, size_t whysize);
+int state_check(const SnxStateHeader* h, char* why, size_t whysize);
 /* a slot's file: <g_exedir>states/<exename>.<slot>.snxstate, slot a number or "auto" */
 void state_path(char* out, size_t size, const char* slot);
 /* the player's: a save, load or delete of slot (0 the auto slot, -1 the one F9 picked), done at the next state_poll,

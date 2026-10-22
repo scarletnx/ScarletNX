@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     char path[512], why[256] = "";
     static u8 big[3 << 20], back[3 << 20];
     u8 thumb[4 * 4 * 4], *t = NULL;
-    StateHeader h, got;
+    SnxStateHeader h, got;
     StateWriter* w;
     StateReader* r;
     u64 schema = 0;
@@ -62,8 +62,8 @@ int main(int argc, char** argv) {
     CHECK(!sw_end(w) && !sw_finish(w, why, sizeof why));
 
     /* the header and the thumbnail alone */
-    CHECK(!sf_peek(path, &got, &t, why, sizeof why));
-    CHECK(got.format == STATE_FORMAT && got.abi == 13 && got.title_id == h.title_id && got.guest_ns == h.guest_ns &&
+    CHECK(!snx_state_peek(path, &got, &t, why, sizeof why));
+    CHECK(got.format == SNX_STATE_FORMAT && got.abi == 13 && got.title_id == h.title_id && got.guest_ns == h.guest_ns &&
           !strcmp(got.game, "A game") && !strcmp(got.runtime, "test build"));
     CHECK(t && !memcmp(t, thumb, sizeof thumb));
     free(t);
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     w = sw_open(path, &h, NULL, why, sizeof why);
     CHECK(w != NULL && !sw_begin(w, "SMALL", 1));
     sw_abort(w);
-    CHECK(!sf_peek(path, &got, NULL, why, sizeof why) && got.thumb_w == 4);
+    CHECK(!snx_state_peek(path, &got, NULL, why, sizeof why) && got.thumb_w == 4);
     snprintf(why, sizeof why, "%s.part", path);
     CHECK(access(why, F_OK) != 0);
 
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
     f = fopen(path, "wb");
     fputs("hello", f);
     fclose(f);
-    CHECK(sf_peek(path, &got, NULL, why, sizeof why) == -1);
+    CHECK(snx_state_peek(path, &got, NULL, why, sizeof why) == -1);
     remove(path);
 
     printf("state_file: %u checks, %u failed\n", checks, failures);

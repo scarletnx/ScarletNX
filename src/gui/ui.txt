@@ -99,6 +99,13 @@
 		android.row_height = 40px
 	}
 }
+# the box of a game's save states, which S on Games opens: a row each, the focused one's picture beside the box
+[scene]States {
+	[list]Rows {
+		max_rows = 64
+		android.row_height = 40px
+	}
+}
 # the OK under the files of a box over the screen (what an older version left, what Clean Old Settings did): any key,
 # button or finger closes the box before a row is hit, so the row's own action is none (@)
 [scene]Files {

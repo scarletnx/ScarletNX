@@ -5,6 +5,7 @@
 #include "gui/main.c"
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
+#include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
 #ifdef _WIN32
 #include "win32_crash.h"
@@ -2868,6 +2869,13 @@ int main(int argc, char** argv) {
         assert(strstr(argv[0], "runtime") && snx_is_file(argv[1 + r]));
         assert(!strcmp(argv[argc - 2], "--data") && argv[argc - 1][0]);
         puts("ScarletNX - an update");
+        return 0;
+    }
+    if (strstr(argv[0], "0100ABCD12350000")) { /* a game played from its save state, slot 1: its own program */
+        int i, found = 0;
+        for (i = 1; i < argc; i++) found |= !strncmp(argv[i], "--state_load=0:", 15) && strstr(argv[i], ".1.snxstate");
+        assert(found);
+        puts("ScarletNX - a save state");
         return 0;
     }
     if (argc > 2 && !strcmp(argv[1], "-r") && strstr(argv[2], "folder game")) { /* R on it: recompiled, not played */
@@ -6848,6 +6856,9 @@ int main(int argc, char** argv) {
                 /* Games' every key at once, the most parts a foot puts together: each in F1's box, none left out */
                 assert(strstr(said, "R: recompile.") && strstr(said, "M: mods.") && strstr(said, "P: folders.") &&
                        strstr(said, "V: view.") && strstr(said, "ESC: back.") && strstr(said, "Tab: screen."));
+#ifndef SDL_PLATFORM_ANDROID
+                assert(strstr(said, "S: save states."));
+#endif
                 assert(strstr(shown_keys(&app, said, sizeof said), "R: recompile.") && strstr(said, "B: AOT pack.") &&
                        strstr(said, "P: folders.") && strstr(said, "ESC: back."));
                 app.aot_state = state;
@@ -6911,6 +6922,115 @@ int main(int argc, char** argv) {
             app.menu.selected = item;
             assert(!snx_remove_tree(cia));
             free(cia);
+        }
+        /* a game's save states (S on Games): a row each, the newest first, the focused one's picture beside the box;
+           one this build can't load in the failure colour, Enter saying why; Del deletes one, asked first; Enter
+           plays the game's program with --state_load= of the state */
+        {
+            char *own = snx_path_join(app.games_dir, "0100ABCD12350000"), *program, *states, *file[3], *kept, *name;
+            static uint8_t thumb[320 * 180 * 4];
+            static const uint64_t created[3] = {1000, 2000, 500};
+            static const char* const slots[3] = {"1", "auto", "2"};
+            GuiStatesBoxes d;
+            SDL_Color c;
+            size_t size;
+            int i, k, nx, ny;
+#ifdef _WIN32
+            program = snx_path_join(own, "0100ABCD12350000.exe");
+#else
+            program = snx_path_join(own, "0100ABCD12350000");
+#endif
+            states = snx_path_join(own, "states");
+            assert(!snx_mkdirs(states));
+            assert(!snx_copy_file(self, program) && !snx_make_executable(program));
+            for (k = 0; k < 320 * 180; k++) { /* a red picture */
+                thumb[k * 4] = 255;
+                thumb[k * 4 + 3] = 255;
+            }
+            for (i = 0; i < 3; i++) {
+                SnxStateHeader h;
+                uint8_t* bytes = (uint8_t*)calloc(1, SNX_STATE_HEADER + sizeof thumb);
+                memset(&h, 0, sizeof h);
+                h.format = SNX_STATE_FORMAT;
+                h.abi = i == 2 ? SNX_ABI + 1 : SNX_ABI; /* slot 2's from another recompiled code */
+                h.title_id = 0x0100ABCD12350000ull;
+                h.created = created[i];
+                h.guest_ns = 3723000000000ull; /* 1:02:03 */
+                h.thumb_w = 320;
+                h.thumb_h = 180;
+                assert(bytes);
+                snx_state_header_write(bytes, &h, 0, 0);
+                memcpy(bytes + SNX_STATE_HEADER, thumb, sizeof thumb);
+                name = snx_format("0100ABCD12350000.%s.snxstate", slots[i]);
+                file[i] = name ? snx_path_join(states, name) : NULL; /* the system's separator, as the box joins */
+                free(name);
+                assert(file[i]);
+                assert(!snx_write_file(file[i], bytes, SNX_STATE_HEADER + sizeof thumb));
+                free(bytes);
+            }
+            app.menu.selected = GUI_SWITCH;
+            go_tab(&app, GUI_TAB_GAMES);
+            focus_game(&app, "0100ABCD12350000");
+            render(&app);
+            {
+                char said[512];
+                assert(strstr(shown_keys(&app, said, sizeof said), "S: save states.")); /* Games' foot says S */
+            }
+            key(&app, SDLK_S);
+            assert(app.states_shown && app.states_count == 3 && !app.menu.running);
+            assert(strstr(app.states[0].label, "Auto ") && strstr(app.states[1].label, "Slot 1 ") &&
+                   strstr(app.states[2].label, "Slot 2 ") && strstr(app.states[0].label, "1:02:03"));
+            assert(!app.states[0].why[0] && !app.states[1].why[0] && strstr(app.states[2].why, "SNX_ABI"));
+            render(&app);
+            assert(find_text(&app, "Slot 1", rgb(app.theme.ink), 1, &nx, &ny));
+            states_boxes(&app, &d);
+            assert(d.picture.w > 0);
+            c = pixel(&app, (float)(d.picture.x + d.picture.w / 2), (float)(d.picture.y + d.picture.h / 2));
+            assert(c.r > 200 && c.g < 40 && c.b < 40); /* the focused state's picture */
+            /* the one this build can't load: Enter says why, nothing runs */
+            key(&app, SDLK_DOWN);
+            key(&app, SDLK_DOWN);
+            key(&app, SDLK_RETURN);
+            assert(app.states_shown && !app.menu.running && strstr(app.message, "SNX_ABI"));
+            /* Del asks; Back keeps it, Delete takes it */
+            key(&app, SDLK_DELETE);
+            assert(app.confirm.shown && app.confirm.ask == GUI_ASK_STATE && strstr(app.ask_line, "Slot 2"));
+            key(&app, SDLK_ESCAPE);
+            assert(!app.confirm.shown && app.states_shown && snx_is_file(file[2]));
+            key(&app, SDLK_DELETE);
+            key(&app, SDLK_DOWN);
+            key(&app, SDLK_RETURN);
+            assert(!app.confirm.shown && app.states_shown && app.states_count == 2 && !snx_is_file(file[2]));
+            assert(app.states_focus == 1);
+            /* Enter on slot 1: the game's program, loading it */
+            launcher(&app, true);
+            key(&app, SDLK_RETURN);
+            assert(!app.states_shown && app.menu.running && !app.state_load);
+            {
+                char* ran = snx_absolute(program);
+                assert(ran && !strcmp(app.file, ran));
+                free(ran);
+            }
+            finish(&app, 0);
+            launcher(&app, false);
+            kept = (char*)snx_read_file(app.run_log, &size);
+            {
+                char* option = snx_format("--state_load=0:%s", file[0]);
+                assert(kept && option && strstr(kept, option));
+                free(option);
+            }
+            free(kept);
+            /* a game without states: S says so, no box */
+            for (i = 0; i < 2; i++) assert(!remove(file[i]));
+            go_tab(&app, GUI_TAB_GAMES);
+            focus_game(&app, "0100ABCD12350000");
+            key(&app, SDLK_S);
+            assert(!app.states_shown && strstr(app.message, "no save states"));
+            for (i = 0; i < 3; i++) free(file[i]);
+            assert(!snx_remove_tree(own));
+            free(own);
+            free(program);
+            free(states);
         }
         /* a game with two versions of its update and a DLC beside it: opening it shows its updates as a choice of one,
            the newest first, and No update, its DLC as a box to check, as the game's addons= has them; then Save and

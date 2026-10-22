@@ -5,10 +5,7 @@
    as it reaches the frame's end), and the table of the sections last, which the header points at once it is written.
    Every number is little-endian.
 
-     0    "SNXSTATE"
-     8    u32 format, u32 abi, u64 title_id, u64 created, u64 guest_ns, u32 thumb_w, u32 thumb_h,
-          u64 table_off, u32 nsections, u32 0, char runtime[96], char stamp[64], char game[128]
-     512  the thumbnail: thumb_w * thumb_h RGBA8 pixels
+     0    the header and the thumbnail (common/utilities/state_header.c)
      ...  the sections
      table_off  nsections entries: char tag[8], u64 schema, u64 offset, u64 stored size, u64 size */
 #include "nx/runtime/state_file.h"
@@ -19,9 +16,9 @@
 #include <string.h>
 #include <zstd.h>
 
-#define HEADER_SIZE 512
+#define HEADER_SIZE SNX_STATE_HEADER
 #define ENTRY_SIZE  40
-#define SECTIONS    64 /* a state holds this many sections at most */
+#define SECTIONS    SNX_STATE_SECTIONS
 #define LEVEL       1  /* zstd's: a save is a pause the player waits through, and guest memory is mostly zeros */
 
 typedef struct {
@@ -32,7 +29,7 @@ typedef struct {
 struct StateWriter {
     FILE* f;
     char path[1100], part[1110];
-    StateHeader h;
+    SnxStateHeader h;
     Section sec[SECTIONS];
     int n, open, failed;
     u64 at; /* the file's length so far */
@@ -57,56 +54,8 @@ static void why_set(char* why, size_t n, const char* text) {
     if (why && n) snprintf(why, n, "%s", text);
 }
 
-/* ============================================================ the header */
-static void put32(u8* p, u32 v) { snx_st_le32(p, v); }
-static void put64(u8* p, u64 v) { snx_st_le64(p, v); }
-static void header_write(u8 b[HEADER_SIZE], const StateHeader* h, u64 table_off, u32 nsections) {
-    memset(b, 0, HEADER_SIZE);
-    memcpy(b, "SNXSTATE", 8);
-    put32(b + 8, h->format);
-    put32(b + 12, h->abi);
-    put64(b + 16, h->title_id);
-    put64(b + 24, h->created);
-    put64(b + 32, h->guest_ns);
-    put32(b + 40, h->thumb_w);
-    put32(b + 44, h->thumb_h);
-    put64(b + 48, table_off);
-    put32(b + 56, nsections);
-    memcpy(b + 64, h->runtime, sizeof h->runtime);
-    memcpy(b + 160, h->stamp, sizeof h->stamp);
-    memcpy(b + 224, h->game, sizeof h->game);
-}
-/* 0, or -1 when b isn't a state's header this runtime reads */
-static int header_read(const u8 b[HEADER_SIZE], StateHeader* h, u64* table_off, u32* nsections, char* why, size_t n) {
-    if (memcmp(b, "SNXSTATE", 8)) {
-        why_set(why, n, "it is not a save state");
-        return -1;
-    }
-    memset(h, 0, sizeof *h);
-    h->format = snx_ld_le32(b + 8);
-    h->abi = snx_ld_le32(b + 12);
-    h->title_id = snx_ld_le64(b + 16);
-    h->created = snx_ld_le64(b + 24);
-    h->guest_ns = snx_ld_le64(b + 32);
-    h->thumb_w = snx_ld_le32(b + 40);
-    h->thumb_h = snx_ld_le32(b + 44);
-    *table_off = snx_ld_le64(b + 48);
-    *nsections = snx_ld_le32(b + 56);
-    memcpy(h->runtime, b + 64, sizeof h->runtime - 1);
-    memcpy(h->stamp, b + 160, sizeof h->stamp - 1);
-    memcpy(h->game, b + 224, sizeof h->game - 1);
-    if (h->format != STATE_FORMAT) {
-        why_set(why, n, "it was saved in another layout of the state file");
-        return -1;
-    }
-    if (*nsections > SECTIONS || h->thumb_w > 4096 || h->thumb_h > 4096) {
-        why_set(why, n, "its header is damaged");
-        return -1;
-    }
-    return 0;
-}
-
 /* ============================================================ writing */
+static void put64(u8* p, u64 v) { snx_st_le64(p, v); }
 static int out(StateWriter* w, const void* p, size_t n) {
     if (w->failed || (n && fwrite(p, 1, n, w->f) != n)) {
         w->failed = 1;
@@ -115,7 +64,7 @@ static int out(StateWriter* w, const void* p, size_t n) {
     w->at += n;
     return 0;
 }
-StateWriter* sw_open(const char* path, const StateHeader* h, const u8* thumb, char* why, size_t whysize) {
+StateWriter* sw_open(const char* path, const SnxStateHeader* h, const u8* thumb, char* why, size_t whysize) {
     StateWriter* w = calloc(1, sizeof *w);
     u8 b[HEADER_SIZE];
     if (!w) {
@@ -125,7 +74,7 @@ StateWriter* sw_open(const char* path, const StateHeader* h, const u8* thumb, ch
     snprintf(w->path, sizeof w->path, "%s", path);
     snprintf(w->part, sizeof w->part, "%s.part", path);
     w->h = *h;
-    w->h.format = STATE_FORMAT;
+    w->h.format = SNX_STATE_FORMAT;
     if (!thumb) w->h.thumb_w = w->h.thumb_h = 0;
     w->outsize = ZSTD_CStreamOutSize();
     w->out = malloc(w->outsize);
@@ -136,7 +85,7 @@ StateWriter* sw_open(const char* path, const StateHeader* h, const u8* thumb, ch
         sw_abort(w);
         return NULL;
     }
-    header_write(b, &w->h, 0, 0); /* again with the table at the end */
+    snx_state_header_write(b, &w->h, 0, 0); /* again with the table at the end */
     out(w, b, sizeof b);
     if (thumb) out(w, thumb, (size_t)w->h.thumb_w * w->h.thumb_h * 4);
     if (w->failed) {
@@ -212,7 +161,7 @@ int sw_finish(StateWriter* w, char* why, size_t whysize) {
         put64(e + 32, w->sec[i].size);
         out(w, e, sizeof e);
     }
-    header_write(b, &w->h, table, (u32)w->n);
+    snx_state_header_write(b, &w->h, table, (u32)w->n);
     if (!w->failed && (fseek(w->f, 0, SEEK_SET) || fwrite(b, 1, sizeof b, w->f) != sizeof b)) w->failed = 1;
     if (!w->failed && fflush(w->f)) w->failed = 1;
     if (w->failed) {
@@ -232,7 +181,7 @@ int sw_finish(StateWriter* w, char* why, size_t whysize) {
 
 /* ============================================================ reading */
 /* the header, and the table into sec: the open file, or NULL */
-static FILE* open_state(const char* path, StateHeader* h, Section* sec, int* n, char* why, size_t whysize) {
+static FILE* open_state(const char* path, SnxStateHeader* h, Section* sec, int* n, char* why, size_t whysize) {
     FILE* f = fopen(path, "rb");
     u8 b[HEADER_SIZE], e[ENTRY_SIZE];
     u64 table;
@@ -241,7 +190,7 @@ static FILE* open_state(const char* path, StateHeader* h, Section* sec, int* n, 
         why_set(why, whysize, "the file can't be opened");
         return NULL;
     }
-    if (fread(b, 1, sizeof b, f) != sizeof b || header_read(b, h, &table, &count, why, whysize)) {
+    if (fread(b, 1, sizeof b, f) != sizeof b || snx_state_header_read(b, h, &table, &count, why, whysize)) {
         if (!why || !why[0]) why_set(why, whysize, "it is not a save state");
         fclose(f);
         return NULL;
@@ -261,24 +210,7 @@ static FILE* open_state(const char* path, StateHeader* h, Section* sec, int* n, 
     if (n) *n = (int)count;
     return f;
 }
-int sf_peek(const char* path, StateHeader* h, u8** thumb, char* why, size_t whysize) {
-    FILE* f = open_state(path, h, NULL, NULL, why, whysize);
-    if (!f) return -1;
-    if (thumb) {
-        size_t size = (size_t)h->thumb_w * h->thumb_h * 4;
-        *thumb = NULL;
-        if (size) {
-            *thumb = malloc(size);
-            if (!*thumb || plat_pread(f, *thumb, size, HEADER_SIZE) != (i64)size) {
-                free(*thumb);
-                *thumb = NULL;
-            }
-        }
-    }
-    fclose(f);
-    return 0;
-}
-StateReader* sr_open(const char* path, StateHeader* h, char* why, size_t whysize) {
+StateReader* sr_open(const char* path, SnxStateHeader* h, char* why, size_t whysize) {
     StateReader* r = calloc(1, sizeof *r);
     if (!r) {
         why_set(why, whysize, "out of memory");

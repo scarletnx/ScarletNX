@@ -692,6 +692,11 @@ and loading one leaves them as they are. A state loads only into the game, updat
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
 then it says so.
 
+In the launcher, S on Games lists the save states of the game in focus, the newest first, with the picture of the one
+in focus beside them. Enter plays the game from that state, and Del deletes it after asking. A state this version
+can't load is shown in the failure colour, and Enter on it says why. `--state_load=0:FILE` plays a game from the
+state FILE the same way.
+
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and
 B do the same, the on-screen controls' too, and a direction held goes on after a moment.
 

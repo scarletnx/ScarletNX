@@ -183,21 +183,13 @@ static u64 state_schema(void) {
 /* ============================================================ the header */
 /* the game's update and mods as its recompile stamped them (<exename>.abi beside the game module) */
 static void game_stamp(char* out, size_t size) {
-    char path[sizeof g_exedir + sizeof g_exename + 8];
-    FILE* f;
-    size_t n = 0;
-    snprintf(path, sizeof path, "%s%s.abi", g_exedir, g_exename);
-    f = fopen(path, "rb");
-    if (f) {
-        n = fread(out, 1, size - 1, f);
-        fclose(f);
-    }
-    out[n] = 0;
-    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = 0;
+    char path[sizeof g_exedir + sizeof g_exename];
+    snprintf(path, sizeof path, "%s%s", g_exedir, g_exename);
+    snx_state_stamp(path, out, size);
 }
-static void header_make(StateHeader* h) {
+static void header_make(SnxStateHeader* h) {
     memset(h, 0, sizeof *h);
-    h->format = STATE_FORMAT;
+    h->format = SNX_STATE_FORMAT;
     h->abi = SNX_ABI;
     h->title_id = g_hle.kernel.title_id;
     h->created = (u64)time(NULL);
@@ -206,26 +198,13 @@ static void header_make(StateHeader* h) {
     game_stamp(h->stamp, sizeof h->stamp);
     snprintf(h->game, sizeof h->game, "%s", g_gamename);
 }
-int state_check(const StateHeader* h, char* why, size_t whysize) {
+int state_check(const SnxStateHeader* h, char* why, size_t whysize) {
     char stamp[sizeof h->stamp];
-    if (h->title_id != g_hle.kernel.title_id) {
-        snprintf(why, whysize, "it is another game's");
-        return -1;
-    }
-    if (h->abi != SNX_ABI) {
-        snprintf(why, whysize, "it was saved by a ScarletNX whose recompiled code differs (SNX_ABI %u, not %u)", h->abi,
-                 SNX_ABI);
-        return -1;
-    }
     game_stamp(stamp, sizeof stamp);
-    if (strcmp(stamp, h->stamp)) {
-        snprintf(why, whysize, "it was saved with another update or other mods");
-        return -1;
-    }
-    return 0;
+    return snx_state_fits(h, g_hle.kernel.title_id, stamp, why, whysize);
 }
 void state_path(char* out, size_t size, const char* slot) {
-    snprintf(out, size, "%sstates/%s.%s.snxstate", g_exedir, g_exename, slot);
+    snprintf(out, size, "%sstates/%s.%s" SNX_STATE_EXT, g_exedir, g_exename, slot);
 }
 
 /* ============================================================ guest memory */
@@ -944,7 +923,7 @@ static void own_land_all(void) {
         for (i = 0; i < n && i < 64; i++) own_acquire(r[i].addr, r[i].size);
 }
 int state_save(const char* path, char* why, size_t whysize) {
-    StateHeader h;
+    SnxStateHeader h;
     StateWriter* w;
     Buf hle = {0}, heap = {0}, gpu = {0};
     StateIo gio = buf_io(&gpu);
@@ -1005,7 +984,7 @@ resume:
 }
 
 int state_load(const char* path, char* why, size_t whysize) {
-    StateHeader h;
+    SnxStateHeader h;
     StateReader* r;
     Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0};
     StateIo gio = buf_io(&gpu), fio;
@@ -1149,7 +1128,7 @@ static void toast(const char* fmt, ...) {
     ui_unlock();
 }
 /* a state's date and the play time then, as the menu lists them */
-static void slot_when(char* out, size_t size, const StateHeader* h) {
+static void slot_when(char* out, size_t size, const SnxStateHeader* h) {
     time_t t = (time_t)h->created;
     struct tm tm;
     u64 s = h->guest_ns / 1000000000u;
@@ -1169,11 +1148,11 @@ static void slots_list(void) {
     memset(list, 0, sizeof list);
     for (i = 0; i < n; i++) {
         char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
-        StateHeader h;
+        SnxStateHeader h;
         u8* thumb = NULL;
         slot_name(name, sizeof name, i);
         state_path(path, sizeof path, name);
-        if (sf_peek(path, &h, &thumb, why, sizeof why)) continue;
+        if (snx_state_peek(path, &h, &thumb, why, sizeof why)) continue;
         slot_when(list[i].when, sizeof list[i].when, &h);
         if (state_check(&h, why, sizeof why)) snprintf(list[i].why, sizeof list[i].why, "It can't load: %s.", why);
         if (thumb && h.thumb_w == SNX_UI_IMAGE_W && h.thumb_h == SNX_UI_IMAGE_H)
@@ -1191,11 +1170,11 @@ void state_ask(int op, int slot) {
 }
 void state_slot_next(void) {
     char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256], when[32];
-    StateHeader h;
+    SnxStateHeader h;
     g_slot = g_slot % g_settings.save_state_slots + 1;
     slot_name(name, sizeof name, g_slot);
     state_path(path, sizeof path, name);
-    if (sf_peek(path, &h, NULL, why, sizeof why))
+    if (snx_state_peek(path, &h, NULL, why, sizeof why))
         toast("Slot %d: empty", g_slot);
     else {
         slot_when(when, sizeof when, &h);
@@ -1205,7 +1184,7 @@ void state_slot_next(void) {
 /* what was asked, done, and said */
 static void ask_do(int op, int slot) {
     char name[16], label[24], start[24], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
-    StateHeader h;
+    SnxStateHeader h;
     slot_name(name, sizeof name, slot);
     slot_label(label, sizeof label, slot, 0);
     slot_label(start, sizeof start, slot, 1);
@@ -1218,7 +1197,7 @@ static void ask_do(int op, int slot) {
             toast("Saved to %s", label);
         return;
     }
-    if (sf_peek(path, &h, NULL, why, sizeof why)) {
+    if (snx_state_peek(path, &h, NULL, why, sizeof why)) {
         toast("%s is empty", start);
         return;
     }

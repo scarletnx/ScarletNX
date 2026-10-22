@@ -450,6 +450,12 @@ msgstr ""
 msgid "B: AOT pack."
 msgstr ""
 
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "S: save states."
+msgstr ""
+
 #: src/gui/main.c
 msgid "click the box (or Enter) to open the file picker"
 msgstr ""
@@ -1108,6 +1114,10 @@ msgid "Move"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Delete"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Play"
 msgstr ""
 
@@ -1364,6 +1374,45 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Side panel"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: save states"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Slot %s  %s  %u:%02u:%02u"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Auto  %s  %u:%02u:%02u"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no save states: F7 saves one while it plays, the menu's Save states page too."
+msgstr ""
+
+#: src/gui/main.c
+msgid "S lists the save states of a recompiled Switch game in focus."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "It can't be played from that state: %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the save state %s?"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not deleted: %s could not be removed"
 msgstr ""
 
 #: src/gui/main.c
@@ -3320,6 +3369,12 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "S"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "Ctrl+S"
 msgstr ""
 
@@ -4110,7 +4165,7 @@ msgid "Tracy capture"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F7 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
+msgid "Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off, the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime must be built with SNX_TRACY"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
