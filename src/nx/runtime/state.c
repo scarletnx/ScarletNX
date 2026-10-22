@@ -591,11 +591,6 @@ static int savable(char* why, size_t whysize) {
             snprintf(why, whysize, "the game has a secure connection open");
             return -1;
         }
-    for (i = 0; i < NV_FDS; i++)
-        if (g_hle.nvdrv.nvf[i].h1x) {
-            snprintf(why, whysize, "the game is decoding a video");
-            return -1;
-        }
     for (i = 0; i < RO_SESSIONS; i++)
         for (k = 0; k < RO_LIMIT; k++)
             if (g_hle.ldr.states[i].nro[k].map.base) {
@@ -922,14 +917,36 @@ static void own_land_all(void) {
     while ((n = own_lookup(AS_BASE, AS_END - AS_BASE, r, 64)) != 0)
         for (i = 0; i < n && i < 64; i++) own_acquire(r[i].addr, r[i].size);
 }
+/* VIDEO: host1x's IOVA table, then each open NVDEC or VIC fd's channel after its index + 1, and 0 */
+static int video_save(StateIo* io) {
+    u32 i, n = 0;
+    int r = host1x_iova_save(io);
+    for (i = 0; i < NV_FDS && !r; i++)
+        if (g_hle.nvdrv.nvf[i].h1x) {
+            r = io_put32(io, i + 1) | host1x_channel_save(g_hle.nvdrv.nvf[i].h1x, io);
+            n++;
+        }
+    if (n) LOG("state: %u NVDEC and VIC channels saved\n", n);
+    return r | io_put32(io, 0);
+}
+/* the loaded g_hle's video fds given their channels again: 0, or -1 */
+static int video_load(StateIo* io) {
+    u32 fd;
+    if (host1x_iova_load(io)) return -1;
+    while (!io_get32(io, &fd)) {
+        if (!fd) return 0;
+        if (fd > NV_FDS || !(g_hle.nvdrv.nvf[fd - 1].h1x = host1x_channel_load(io))) return -1;
+    }
+    return -1;
+}
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateWriter* w;
-    Buf hle = {0}, heap = {0}, gpu = {0}, surf = {0};
-    StateIo gio = buf_io(&gpu), sio = buf_io(&surf);
+    Buf hle = {0}, heap = {0}, gpu = {0}, surf = {0}, video = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video);
     Names names = {0};
     char folder[sizeof g_exedir + 16];
-    u64 t0 = plat_ns();
+    u64 t0 = plat_ns(), t_land = 0, t_gather = 0, t_memory = 0;
     u8* thumb = NULL;
     int r = -1;
     why[0] = 0;
@@ -948,21 +965,23 @@ int state_save(const char* path, char* why, size_t whysize) {
     if (g_renderer->flush_targets) g_renderer->flush_targets();
     if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, 0, 1);
     own_land_all();
+    t_land = plat_ns();
     header_make(&h);
     h.thumb_w = SNX_UI_IMAGE_W;
     h.thumb_h = SNX_UI_IMAGE_H;
-    if (save_hle(&hle, &heap, &names) || gpu_state_save(&gio) ||
+    if (save_hle(&hle, &heap, &names) || gpu_state_save(&gio) || video_save(&vio) ||
         (g_renderer->save_targets && g_renderer->save_targets(&sio))) {
         snprintf(why, whysize, "the game's state couldn't be gathered (the log says what)");
         goto end;
     }
+    t_gather = plat_ns();
     snprintf(folder, sizeof folder, "%sstates", g_exedir);
     plat_mkdir(folder);
     w = sw_open(path, &h, thumb, why, whysize);
     if (!w) goto end;
     if (section_write(w, "HLE", state_schema(), &hle) || names_write(w, &names) || section_write(w, "HEAP", 1, &heap) ||
-        section_write(w, "GPU", 1, &gpu) || (surf.n && section_write(w, "SURF", 1, &surf)) ||
-        save_memory(w, why, whysize)) {
+        section_write(w, "GPU", 1, &gpu) || section_write(w, "VIDEO", 1, &video) ||
+        (surf.n && section_write(w, "SURF", 1, &surf)) || (t_memory = plat_ns(), save_memory(w, why, whysize))) {
         sw_abort(w);
         if (!why[0]) snprintf(why, whysize, "the file couldn't be written");
         goto end;
@@ -978,19 +997,23 @@ resume:
     free(heap.p);
     free(gpu.p);
     free(surf.p);
+    free(video.p);
     if (r)
         WARN("state: %s wasn't saved: %s\n", path, why);
     else
-        LOG("state: saved %s at guest time %.3f s (frame %d) in %.0f ms\n", path, (double)h.guest_ns / 1e9,
-            __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6);
+        LOG("state: saved %s at guest time %.3f s (frame %d) in %.0f ms (GPU written back %.0f, gathered %.0f, "
+            "sections %.0f, guest memory %.0f)\n",
+            path, (double)h.guest_ns / 1e9, __atomic_load_n(&g_frames, __ATOMIC_RELAXED),
+            (double)(plat_ns() - t0) / 1e6, (double)(t_land - t0) / 1e6, (double)(t_gather - t_land) / 1e6,
+            (double)(t_memory - t_gather) / 1e6, (double)(plat_ns() - t_memory) / 1e6);
     return r;
 }
 
 int state_load(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
     StateReader* r;
-    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0}, surf = {0};
-    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), fio;
+    Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0}, surf = {0}, video = {0};
+    StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), fio;
     Names names = {0};
     ShmPlan plan;
     u8* cur_host[KSHMEM_MAX];
@@ -1006,7 +1029,8 @@ int state_load(const char* path, char* why, size_t whysize) {
         goto refuse;
     }
     if (names_read(r, &names, why, whysize)) goto refuse;
-    if (section_read(r, "HEAP", NULL, &heap) || section_read(r, "GPU", NULL, &gpu)) {
+    if (section_read(r, "HEAP", NULL, &heap) || section_read(r, "GPU", NULL, &gpu) ||
+        section_read(r, "VIDEO", NULL, &video)) {
         snprintf(why, whysize, "it is damaged");
         goto refuse;
     }
@@ -1036,6 +1060,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     fio = buf_io(&fs_paths);
     if (fs_paths.n && fs_state_reopen(&fio, why, whysize)) fatal("The save state couldn't be loaded: %s", why);
     audio_state_rebuild();
+    if (video_load(&vio)) fatal("The save state's video channels couldn't be made again");
     /* the renderer forgets the old memory, and the state's channels and queue take the old ones' place */
     if (g_renderer->reset) g_renderer->reset();
     if (surf.n && g_renderer->load_targets && g_renderer->load_targets(&sio))
@@ -1055,6 +1080,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     free(heap.p);
     free(gpu.p);
     free(surf.p);
+    free(video.p);
     LOG("state: loaded %s (guest time %.3f s) at frame %d in %.0f ms\n", path, (double)h.guest_ns / 1e9,
         __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6);
     return 0;
@@ -1065,6 +1091,7 @@ refuse:
     free(heap.p);
     free(gpu.p);
     free(surf.p);
+    free(video.p);
     WARN("state: %s wasn't loaded: %s\n", path, why);
     return -1;
 }
@@ -1095,8 +1122,44 @@ static void row_path(char* out, size_t size, const char* slot) {
     else
         state_path(out, size, slot);
 }
+/* A round trip (the state_check setting): the game held, saved into the check slot, its guest memory hashed, the state
+   loaded back over it and hashed again; the same hash and guest time, or the log says what differs. The slot's file
+   goes after */
+static void state_roundtrip(void) {
+    char path[sizeof g_exedir + sizeof g_exename + 64], why[256];
+    u64 before, after, bytes0, bytes1, t0, t1;
+    state_path(path, sizeof path, "check");
+    if (game_pause()) {
+        WARN("state: check: the game didn't stop\n");
+        return;
+    }
+    if (state_save(path, why, sizeof why)) {
+        WARN("state: check: not saved: %s\n", why);
+        game_resume();
+        return;
+    }
+    before = pause_memory_hash(&bytes0); /* after the save: what the GPU held of memory has landed */
+    t0 = guest_ns();
+    if (state_load(path, why, sizeof why)) {
+        WARN("state: check: not loaded: %s\n", why);
+        game_resume();
+        return;
+    }
+    after = pause_memory_hash(&bytes1);
+    t1 = guest_ns();
+    game_resume();
+    remove(path);
+    if (before == after && bytes0 == bytes1 && t0 == t1)
+        LOG("state: check: guest memory (%llu MB, hash %016llx) and guest time (%.3f s) came back the same\n",
+            (unsigned long long)(bytes0 >> 20), (unsigned long long)before, (double)t0 / 1e9);
+    else
+        WARN("state: check: guest memory or time came back different: %llu bytes hash %016llx at %.3f s before, %llu "
+             "bytes hash %016llx at %.3f s after\n",
+             (unsigned long long)bytes0, (unsigned long long)before, (double)t0 / 1e9, (unsigned long long)bytes1,
+             (unsigned long long)after, (double)t1 / 1e9);
+}
 static void state_unattended(void) {
-    static int saves, loads;
+    static int saves, loads, checks;
     char slot[512], path[sizeof g_exedir + sizeof g_exename + 512], why[256];
     u64 at, ms = unattended_ms();
     if (row_get(g_settings.state_saves, saves, &at, slot, sizeof slot) && ms >= at) {
@@ -1108,6 +1171,15 @@ static void state_unattended(void) {
         loads++;
         row_path(path, sizeof path, slot);
         state_load(path, why, sizeof why);
+    }
+    { /* state_check: at, at, ... */
+        const char* p = g_settings.state_checks;
+        int i;
+        for (i = 0; i < checks && *p; i++) p += strcspn(p, ",") + (p[strcspn(p, ",")] == ',');
+        if (*p && strtoull(p, NULL, 10) <= ms) {
+            checks++;
+            state_roundtrip();
+        }
     }
 }
 

@@ -36,7 +36,8 @@ The runtime options behind it, for a run by hand from `recompiled/<id>/` (`./<id
 | `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it). `Nf:hex` presses at the Nth presented frame instead. One press is a script of one entry: `--script=5000:1` |
 | `--swkbd_text=TEXT` | The software keyboard answers TEXT instead of opening a dialog |
 | `--pause=at:len,...` | Pause the whole game at `at` ms for `len` ms; each pause logs whether guest memory and guest time stayed unchanged (`grep "pause:"`) |
-| `--state_save=at:slot,...`, `--state_load=at:slot,...` | Save the game to a save state slot, or load one, at `at` ms (`grep "state:"`); a later run loads a slot an earlier one saved |
+| `--state_save=at:slot,...`, `--state_load=at:slot,...` | Save the game to a save state slot, or load one, at `at` ms (`grep "state:"`); a later run loads a slot an earlier one saved. A slot that names a file (`0:/path/x.snxstate`) is that file |
+| `--state_check=at,...` | A save state round trip at `at` ms: saves, loads it straight back, and logs `state: check:` whether guest memory and guest time came back the same |
 | `-v` | Log every IPC call (`IPC <interface> cmd N`, `nn::audio::detail::IAudioOut` for an audout): huge, grep it |
 | `--fps_limit=0` | Unlimited frame rate |
 | `--game=PATH` | Run the game PATH names (`recompiled/<id>`, the folder, runs `recompiled/<id>/<id>_code.so`) instead of the one the runtime is named after. Its log, caches and captures still go to that game's folders |

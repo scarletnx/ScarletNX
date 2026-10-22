@@ -746,6 +746,13 @@ setting State loads
     once
     help Save states the run loads, a comma between: at:slot loads that slot at that many ms of the scripted input's
     help clock
+setting State checks
+    key state_check
+    text 512
+    default ""
+    once
+    help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
+    help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 

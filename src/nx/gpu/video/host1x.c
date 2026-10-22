@@ -20,6 +20,7 @@
    of it, since the job waited for may be another channel's */
 #include "nx/gpu/video/host1x_int.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/runtime/state_io.h"
 
 enum { NV_OK = 0, NV_BAD_PARAMETER = 4, NV_INSUFFICIENT_MEMORY = 6 };
 
@@ -447,4 +448,47 @@ u32 host1x_ioctl(H1Ch* ch, u32 cmd, u8* d, u32 n) {
         return NV_OK;
     WARN_LIMIT(16, "host1x: ioctl %08x not handled\n", cmd);
     return NV_OK;
+}
+
+/* ---- save states */
+int host1x_iova_save(StateIo* io) {
+    u32 i;
+    int r;
+    pm_lock(&g_iova_lk);
+    r = io_put32(io, g_niova);
+    for (i = 0; i < g_niova && !r; i++)
+        r = io_put64(io, g_iova[i].iova) | io_put64(io, g_iova[i].span) | io_put64(io, g_iova[i].addr) |
+            io_put32(io, g_iova[i].size) | io_put32(io, g_iova[i].handle);
+    pm_unlock(&g_iova_lk);
+    return r ? -1 : 0;
+}
+int host1x_iova_load(StateIo* io) {
+    u32 n, i;
+    int r = 0;
+    if (io_get32(io, &n) || n > IOVA_SLOTS) return -1;
+    pm_lock(&g_iova_lk);
+    for (i = 0; i < n && !r; i++)
+        r = io_get64(io, &g_iova[i].iova) | io_get64(io, &g_iova[i].span) | io_get64(io, &g_iova[i].addr) |
+            io_get32(io, &g_iova[i].size) | io_get32(io, &g_iova[i].handle);
+    g_niova = r ? 0 : n;
+    pm_unlock(&g_iova_lk);
+    return r ? -1 : 0;
+}
+int host1x_channel_save(const H1Ch* ch, StateIo* io) {
+    return io_put32(io, (u32)ch->is_vic) | io_put(io, ch->syncpt, sizeof ch->syncpt) | io_put32(io, ch->cls) |
+                   io_put32(io, ch->method) | io_put32(io, ch->payload) | io_put(io, ch->regs, sizeof ch->regs)
+               ? -1
+               : 0;
+}
+H1Ch* host1x_channel_load(StateIo* io) {
+    u32 is_vic;
+    H1Ch* ch;
+    if (io_get32(io, &is_vic) || !(ch = host1x_open(is_vic != 0))) return NULL;
+    if (io_get(io, ch->syncpt, sizeof ch->syncpt) || io_get32(io, &ch->cls) || io_get32(io, &ch->method) ||
+        io_get32(io, &ch->payload) || io_get(io, ch->regs, sizeof ch->regs)) {
+        memset(ch->syncpt, 0, sizeof ch->syncpt); /* the state's: not this channel's to free */
+        host1x_close(ch);
+        return NULL;
+    }
+    return ch;
 }
