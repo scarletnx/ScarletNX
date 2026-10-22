@@ -150,6 +150,27 @@ const SnxFunction* snx_codegen_function(const SnxCodegen* codegen, SnxU64 addres
     return lo < codegen->function_count && codegen->functions[lo].start == address ? &codegen->functions[lo] : NULL;
 }
 
+int snx_codegen_exported(const SnxCodegen* codegen, SnxU64 address) {
+    size_t i, lo, hi, middle;
+    for (i = 0; i < codegen->module_count; ++i) {
+        const SnxCodeImage* m = &codegen->modules[i];
+        SnxU64 start = m->base + m->text_off, offset;
+        if (address < start || address - start >= m->text_size) continue;
+        offset = address - m->base;
+        lo = 0;
+        hi = m->exported_count;
+        while (lo < hi) {
+            middle = lo + (hi - lo) / 2;
+            if (m->exported[middle] < offset)
+                lo = middle + 1;
+            else
+                hi = middle;
+        }
+        return lo < m->exported_count && m->exported[lo] == offset;
+    }
+    return 0;
+}
+
 static const Range* inside_range(const Range* ranges, size_t count, SnxU64 address) {
     size_t lo = 0;
     size_t hi = count;

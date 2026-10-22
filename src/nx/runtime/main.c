@@ -15,6 +15,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/hle/services/nvdrv.h"
@@ -950,6 +951,7 @@ int snx_main(int argc, char** argv) {
     load_hints();
     if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
     kernel_load_symbols();
+    hook_install(); /* before the trace, which wraps what a slot holds, and the JIT, which reads the slots */
     nvn_trace_init();
     /* after the trace, which says whether calls must go through the slots it wraps. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */

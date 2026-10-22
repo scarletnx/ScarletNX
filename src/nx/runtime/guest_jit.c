@@ -11,6 +11,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/nvn_trace.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -406,6 +407,7 @@ void jit_code_invalidate(u64 addr, u64 size) {
         image->text_size = 0;
     }
     pm_unlock(&g_jit_synthetic_lock);
+    hook_restore(addr, size); /* the invalidation emptied the hooks' slots in the range too */
 }
 
 /* The AOT functions in the order of the lowest guest address each was compiled from (SnxModule.fn_lo), and the

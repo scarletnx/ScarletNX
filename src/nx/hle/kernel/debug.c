@@ -89,6 +89,14 @@ u64 kernel_find_symbol_exact(const char* name) {
         if (readable(g_hle.debug.syms[i].name, len) && !memcmp(GP(g_hle.debug.syms[i].name), name, len)) return g_hle.debug.syms[i].addr;
     return 0;
 }
+/* the i-th exported function, in address order: its address, and its name in guest memory, NULL when the name isn't
+   readable. A name is a string of the module's DT_STRTAB, so it ends inside the module. 0 past the last */
+int kernel_symbol(u32 i, u64* addr, const char** name) {
+    if (i >= g_hle.debug.nsyms) return 0;
+    *addr = g_hle.debug.syms[i].addr;
+    *name = readable(g_hle.debug.syms[i].name, 1) ? (const char*)GP(g_hle.debug.syms[i].name) : NULL;
+    return 1;
+}
 /* the length of the guest string at a, at most max, when it is readable and ends within max; else 0 */
 static int gstr(u64 a, int max) {
     int n = 0;

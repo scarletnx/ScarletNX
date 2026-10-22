@@ -64,7 +64,7 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
+        snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -656,6 +656,34 @@ set_tests_properties(network_icmp PROPERTIES TIMEOUT 30)
 # requests; the same output compiled as strict C99 against a stand-in for ipc.h;
 # and definitions the generator has to refuse, each with its line and message
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
+# tools/hookgen's adapters (tests/hook/test.hook), and declarations it has to refuse, each with its line and message
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+add_executable(snx-test-hook-adapters hook_adapters.c)
+snx_test_target(snx-test-hook-adapters 99)
+target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook")
+add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
+foreach(bad IN ITEMS
+        unknown_type 2 "unknown type 'u128'"
+        stack_argument 2 "would be on the stack"
+        duplicate_symbol 4 "f is hooked on line 2 too"
+        handler_mismatch 3 "h takes other arguments on line 2"
+        argument_c 2 "'c' can't name an argument"
+        no_family 1 "after a family line"
+        family_twice 2 "family a is named twice")
+    if(NOT DEFINED bad_name)
+        set(bad_name "${bad}")
+    elseif(NOT DEFINED bad_line)
+        set(bad_line "${bad}")
+    else()
+        add_test(NAME hookgen_refuses_${bad_name} COMMAND snx-hookgen --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/${bad_name}.hook")
+        set_tests_properties(hookgen_refuses_${bad_name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "${bad_name}.hook:${bad_line}: .*${bad}")
+        unset(bad_name)
+        unset(bad_line)
+    endif()
+endforeach()
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
 snx_test_target(snx-test-swipc-dispatch 23)
 snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)

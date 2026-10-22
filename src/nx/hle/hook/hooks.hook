@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The functions the game exports that the runtime runs natively (hook.h), for tools/hookgen. A line at a time:
+#
+#   family NAME
+#   hook SYMBOL(TYPE NAME, ...) [-> TYPE] = HANDLER
+#
+# A family names the hooks after it, until the next family line: the hooks_off setting turns families off by name.
+# SYMBOL is the function's name as the game's dynamic symbol table spells it: a C++ function by its mangled name
+# (_ZN2nn2os...), never demangled. The arguments are the function's as C sees it (a C++ method's this first), of the
+# types void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address) f32 and f64. The
+# handler is a function of the runtime's, `ret HANDLER(CPU* c, args...)`, declared by the generated
+# hle/hook/hooks.hook.h. A handler does what the function is known to do and nothing the game could tell apart.
+
+# the C library (libc.c): the guest's own byte loops become the host's
+family libc
+hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
+hook memmove(addr dst, addr src, u64 size) -> addr = hook_memmove
+hook memset(addr dst, i32 value, u64 size) -> addr = hook_memset

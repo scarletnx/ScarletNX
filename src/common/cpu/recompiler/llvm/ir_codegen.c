@@ -71,8 +71,9 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     return LLVMBuildCall2(B, ir->t_guest, function, args, 2, "");
 }
 
-/* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
-   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return. The runtime JIT also calls the AOT module's
+/* call(): F_target(c,target) when the target is a recompiled function the module doesn't export and direct calls
+   aren't hooked (--hook-direct-calls), CALLDYN(target) otherwise, so a hook in an exported function's slot sees
+   every call to it; tail: then return. The runtime JIT also calls the AOT module's
    functions directly (ir->direct says which have one, jit_service.c), through snx_aot_<target>: a symbol its loader
    resolves at each load, so the object holds no host address and a later run can load it again (the JIT's cache) */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
@@ -80,9 +81,10 @@ static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) 
     char name[40];
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
-    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
+    int through_slot = codegen->hook_direct_calls || snx_codegen_exported(codegen, target);
+    if (!through_slot && snx_codegen_function(codegen, target))
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
-    else if (!codegen->hook_direct_calls && ir->direct && ir->direct(ir->direct_user, target) != 0) {
+    else if (!through_slot && ir->direct && ir->direct(ir->direct_user, target) != 0) {
         sprintf(name, "snx_aot_%llx", (unsigned long long)target);
         aot = LLVMGetNamedFunction(ir->mod, name);
         if (!aot) aot = LLVMAddFunction(ir->mod, name, ir->t_guest);

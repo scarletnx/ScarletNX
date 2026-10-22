@@ -23,6 +23,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/filesystem/fs.h"
+#include "nx/hle/hook/hook.h"
 
 typedef struct {
     /* the kernel and the SVCs */
@@ -54,6 +55,8 @@ typedef struct {
     HleSsl ssl;
     /* the file system */
     HleFs fs;
+    /* the game's functions the runtime runs natively */
+    HleHook hook;
 } Hle;
 
 extern Hle g_hle;

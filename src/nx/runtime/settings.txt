@@ -672,6 +672,22 @@ setting Profiler
     startup
     words Off|On
     help 1 = writes profile.txt every 10 seconds (the CPU profiler is Windows only)
+setting Native hooks
+    key hooks
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the game's exported functions that the runtime has a native handler for (hle/hook/hooks.hook: the C
+    help library's memcpy, memmove and memset) run that handler instead of their own code. 0 runs every function's own
+    help code, to tell whether a problem comes from a hook
+setting Hook families off
+    key hooks_off
+    text 256
+    default ""
+    startup
+    help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
+    help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
 setting NVN trace
     key nvn_trace
     int 0 1
