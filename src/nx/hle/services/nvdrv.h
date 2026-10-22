@@ -3,6 +3,7 @@
 /* What nvdrv shares with the GPU, host1x and vi: nvmap handles, the GPU's address space, and the syncpoints */
 #ifndef SNX_NVDRV_H
 #define SNX_NVDRV_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/platform/plat.h" /* PMutex, PCond */
 
@@ -193,4 +194,6 @@ typedef struct {
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
 } HostNvdrv;
+extern const StateFnTable g_nvdrv_state_fns; /* the functions a save state may hold of nvdrv.c */
+
 #endif

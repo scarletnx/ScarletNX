@@ -33,7 +33,7 @@ function(snx_component name)
     target_link_libraries(snx_${name} PUBLIC snx_nx_flags)
 endfunction()
 
-snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_file.c runtime/crash.c runtime/options.c
+snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/state_file.c runtime/crash.c runtime/options.c
               runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
               runtime/cheats.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
@@ -56,7 +56,7 @@ target_sources(snx_hle PRIVATE "${CMAKE_BINARY_DIR}/generated/shared_fonts.c")
 # the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
-snx_swipc(snx_hle ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
+snx_swipc(snx_hle FNS ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
           hle/services/types.swipc hle/services/sm.swipc hle/services/set.swipc hle/services/acc.swipc
           hle/services/audio.swipc hle/services/ldr.swipc hle/services/pl.swipc hle/services/time.swipc
           hle/services/misc.swipc hle/services/am.swipc hle/services/hid.swipc

@@ -855,3 +855,6 @@ static SvcObj* bsd_new(const char* name, int system) {
 SvcObj* new_bsd_u(void) { return bsd_new("bsd:u", 0); }
 SvcObj* new_bsd_s(void) { return bsd_new("bsd:s", 1); }
 SvcObj* new_bsdcfg(void) { return nn_bsdsocket_cfg_ServerInterface_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_bsd_state_fns,
+               STATE_FN("bsd", bsd_destroy));

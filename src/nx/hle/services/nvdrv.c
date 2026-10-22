@@ -1500,3 +1500,6 @@ void nv_init(void) {
     pc_init(&g_host.nvdrv.sync_cv);
     nns_nvdrv_INvDrvServices_register(new_nvdrv);
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_nvdrv_state_fns,
+               STATE_FN("nvdrv", gpu_channel_retire));

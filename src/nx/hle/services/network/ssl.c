@@ -883,3 +883,9 @@ static int nn_ssl_sf_ISslService_GetCertificateBufSize(SvcObj* self, IpcBuf ids,
     R_SUCCEED();
 }
 SvcObj* new_ssl(void) { return nn_ssl_sf_ISslService_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_ssl_state_fns,
+               STATE_FN("ssl", conn_destroy),
+               STATE_FN("ssl", ctx_destroy),
+               STATE_FN("ssl", conn_disp),
+               STATE_FN("ssl", ctx_disp));

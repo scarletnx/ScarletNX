@@ -2039,3 +2039,12 @@ int fs_state_reopen(StateIo* io, char* why, size_t whysize) {
     pm_unlock(&g_hle.fs.tree.lock);
     return r;
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_fs_state_fns,
+               STATE_FN("fs", file_destroy),
+               STATE_FN("fs", dir_destroy),
+               STATE_FN("fs", fs_destroy),
+               STATE_FN("fs", notifier_destroy),
+               STATE_FN("fs", file_disp),
+               STATE_FN("fs", dir_disp),
+               STATE_FN("fs", fs_disp));

@@ -1135,3 +1135,8 @@ void audio_state_rebuild(void) {
             WARN("state: an Opus decoder (%u Hz, %u channels) couldn't be made again\n", h->rate, h->channels);
     }
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_audio_state_fns,
+               STATE_FN("audio", audout_destroy),
+               STATE_FN("audio", device_destroy),
+               STATE_FN("audio", hwopus_destroy));

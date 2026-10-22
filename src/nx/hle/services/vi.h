@@ -3,6 +3,7 @@
 /* vi's display clock, which present.c drives */
 #ifndef SNX_VI_H
 #define SNX_VI_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/hle/kernel/kernel.h"     /* KEvent */
 #include "nx/runtime/platform/plat.h" /* PMutex, PCond */
@@ -44,4 +45,6 @@ typedef struct {
     PMutex lock;
     PCond freed; /* a slot came free */
 } HostVi;
+extern const StateFnTable g_vi_state_fns; /* the functions a save state may hold of vi.c */
+
 #endif

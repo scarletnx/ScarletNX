@@ -4,6 +4,7 @@
    the game ships for gpu/shipped_pass.c), beside the fsp-srv service in fs.c */
 #ifndef SNX_FS_H
 #define SNX_FS_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/platform/plat.h" /* FILE, PFileMap */
 #include "nx/hle/filesystem/fs_tree.h" /* FsTree, FsNode */
@@ -150,4 +151,6 @@ typedef struct {
     PMutex dlock;
 } HostFs;
 /* all zero: fs_init sets the tree up */
+extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */
+
 #endif

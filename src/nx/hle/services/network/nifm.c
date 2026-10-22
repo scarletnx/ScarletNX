@@ -175,3 +175,6 @@ static int nn_nifm_detail_IStaticService_CreateGeneralService(SvcObj* self, u64 
     return general_service(service);
 }
 SvcObj* new_nifm(void) { return nn_nifm_detail_IStaticService_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_nifm_state_fns,
+               STATE_FN("nifm", nifm_req_destroy));

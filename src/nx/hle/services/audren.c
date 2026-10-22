@@ -125,3 +125,6 @@ void audren_state_drop(void) {
     }
     pm_unlock(&g_host.audren.lk);
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_audren_state_fns,
+               STATE_FN("audren", audren_destroy));

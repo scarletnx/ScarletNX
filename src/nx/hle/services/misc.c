@@ -1241,3 +1241,6 @@ SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
 SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
 SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
 SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_misc_state_fns,
+               STATE_FN("misc", nfc_user_destroy));

@@ -38,13 +38,14 @@ else()
     target_compile_options(snx-swipc PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 
-# snx_swipc(<target> ROOT <dir> FILES <file.swipc>...): generates <file.swipc>.h and .inc in <target>-swipc in the
-# build folder for each file (relative to ROOT, types before their first use) and gives <target> the headers' include
-# root. The C file that defines an interface's handlers includes its "<file.swipc>.inc", other files the .h. A test
+# snx_swipc(<target> [FNS] ROOT <dir> FILES <file.swipc>...): generates <file.swipc>.h and .inc in <target>-swipc in
+# the build folder for each file (relative to ROOT, types before their first use) and gives <target> the headers' include
+# root. FNS also generates swipc_fns.c, every interface's dispatcher by its name for save states (g_swipc_fns), which
+# only the target that compiles every file's handlers can link. The C file that defines an interface's handlers includes its "<file.swipc>.inc", other files the .h. A test
 # that compiles a service's C file generates that service's files for itself the same way. swipc only rewrites an
 # output that changed, which the Ninja generators see (restat)
 function(snx_swipc target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "CTR" "ROOT" "FILES")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "CTR;FNS" "ROOT" "FILES")
     set(mode)
     if(arg_CTR)
         set(mode --ctr)
@@ -52,6 +53,10 @@ function(snx_swipc target)
     set(out "${CMAKE_CURRENT_BINARY_DIR}/${target}-swipc")
     set(inputs)
     set(outputs)
+    if(arg_FNS)
+        list(APPEND mode --fns "${out}/swipc_fns.c")
+        list(APPEND outputs "${out}/swipc_fns.c")
+    endif()
     set(dirs)
     foreach(f IN LISTS arg_FILES)
         get_filename_component(dir "${out}/${f}" DIRECTORY)

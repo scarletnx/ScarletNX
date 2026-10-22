@@ -4,6 +4,7 @@
    ssl (ssl.c), ldn (ldn.c) */
 #ifndef SNX_HLE_NETWORK_H
 #define SNX_HLE_NETWORK_H
+#include "nx/runtime/state_fns.h"
 #include "nx/hle/services/services_int.h"
 #include "common/network/net.h"
 #include "common/network/net_room.h"
@@ -182,4 +183,10 @@ typedef struct {
     /* the host's roots, read once under init_lk */
     PMutex init_lk;
 } HostSsl;
+/* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
+extern const StateFnTable g_bsd_state_fns;
+extern const StateFnTable g_ldn_state_fns;
+extern const StateFnTable g_nifm_state_fns;
+extern const StateFnTable g_ssl_state_fns;
+
 #endif

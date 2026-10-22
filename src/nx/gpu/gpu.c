@@ -16,6 +16,7 @@
    runs the jobs of each channel in order. A stream that has to wait (a semaphore acquire, a syncpoint wait, a fence:
    gpu_park) stops after the method that asked, and the thread runs other channels meanwhile, as the console's PFIFO
    switches channels on an acquire that fails. Calls (gpu_call) run on the GPU thread between jobs, in order. */
+#include "nx/runtime/state_fns.h"
 #include "nx/runtime/state_io.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1181,7 +1182,15 @@ int gpu_state_save(StateIo* io) {
     for (it = g_qhead; it && !r; it = it->next) {
         r |= io_put32(io, it->fn ? 1 : 0);
         if (it->fn) {
-            r |= io_put64(io, (u64)IO_CODE_OFF(it->fn)) | io_put64(io, (u64)(uintptr_t)it->arg);
+            const char* name = state_fn_name((StateFnPtr)it->fn);
+            u32 len = name ? (u32)strlen(name) : 0;
+            if (!name) {
+                WARN("gpu: a queued call to %p has no name in state_fns.h's tables, and can't be saved\n",
+                     (void*)(uintptr_t)it->fn);
+                r = -1;
+                break;
+            }
+            r |= io_put32(io, len) | io_put(io, name, len) | io_put64(io, (u64)(uintptr_t)it->arg);
             r |= io_put(io, it->chans, sizeof it->chans) | io_put32(io, it->nchans);
             continue;
         }
@@ -1255,14 +1264,22 @@ int gpu_state_load(StateIo* io) {
         GpuItem* it;
         if (io_get32(io, &kind)) goto fail;
         if (kind) {
-            u64 off, arg;
+            char name[256];
+            u32 len;
+            u64 arg;
+            StateFnPtr f;
+            if (io_get32(io, &len) || len >= sizeof name || io_get(io, name, len)) goto fail;
+            name[len] = 0;
+            if (!(f = state_fn_find(name))) {
+                WARN("gpu: the state queues a call to %s, which this build doesn't have\n", name);
+                goto fail;
+            }
             it = (GpuItem*)calloc(1, sizeof *it);
-            if (!it || io_get64(io, &off) || io_get64(io, &arg) || io_get(io, it->chans, sizeof it->chans) ||
-                io_get32(io, &it->nchans)) {
+            if (!it || io_get64(io, &arg) || io_get(io, it->chans, sizeof it->chans) || io_get32(io, &it->nchans)) {
                 free(it);
                 goto fail;
             }
-            it->fn = IO_CODE_PTR(void (*)(void*), (i64)off);
+            it->fn = (void (*)(void*))f;
             it->arg = (void*)(uintptr_t)arg;
         } else {
             u32 h[10]; /* chan, incs, wait_id, wait_val, expect, n, pf, entry, word, started */
@@ -1334,4 +1351,7 @@ fail:
     g_qtail = tail;
     pm_unlock(&g_qlk);
     return -1;
+}
+void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) {
+    __builtin_dump_struct(&g_scan[0], dump, h);
 }

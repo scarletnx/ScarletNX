@@ -217,3 +217,6 @@ static SvcObj* ro_new(const char* name, int kind) {
 }
 SvcObj* new_ldr(void) { return ro_new("ldr:ro", 0); }
 SvcObj* new_ro1(void) { return ro_new("ro:1", 1); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_ldr_state_fns,
+               STATE_FN("ldr", ro_destroy));

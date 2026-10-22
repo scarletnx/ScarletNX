@@ -525,3 +525,6 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Disconnect(SvcObj* self)
 }
 
 SvcObj* new_ldn(void) { return nn_ldn_detail_IUserServiceCreator_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_ldn_state_fns,
+               STATE_FN("ldn", ldn_destroy));

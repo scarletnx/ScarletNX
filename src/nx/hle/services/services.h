@@ -3,6 +3,7 @@
 /* Registering the HLE services, for startup. The services' own declarations are in services_int.h */
 #ifndef SNX_SERVICES_H
 #define SNX_SERVICES_H
+#include "nx/runtime/state_fns.h"
 #include "nx/hle/kernel/ipc.h"
 
 /* each registers its family's service names with the service manager */
@@ -25,6 +26,12 @@ void audio_release(void);
 void audio_state_drop(void);
 void audren_state_drop(void); /* the renderers' states and host outputs, which a load makes again from the state's */
 void audio_state_rebuild(void);
+/* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
+extern const StateFnTable g_am_state_fns;     /* am.c */
+extern const StateFnTable g_audio_state_fns;  /* audio.c */
+extern const StateFnTable g_audren_state_fns; /* audren.c */
+extern const StateFnTable g_ldr_state_fns;    /* ldr.c */
+extern const StateFnTable g_misc_state_fns;   /* misc.c */
 /* how many nn::settings::Language values set knows, to check the language the settings file names */
 int set_language_count(void);
 #include "common/utilities/users.h" /* SNX_USERS_MAX, the .ini's user at most */

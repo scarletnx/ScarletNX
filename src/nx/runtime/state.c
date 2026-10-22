@@ -7,8 +7,8 @@
    the state holds, and starts each guest thread again as it stopped (kthread_resume).
 
    g_hle is written as it is (tests/hle_flat.c keeps it free of the host's objects), less the fields this file
-   rewrites: pointers into g_hle become offsets from it, and pointers into the runtime's own image (functions, string
-   literals) offsets from io_anchor, so a later run of the same build reads them back wherever it was loaded. Heap
+   rewrites: pointers into g_hle become offsets from it, and functions and the service objects' names their names
+   (state_fns.h, the NAMES section), so any build with the same layout reads them back wherever it was loaded. Heap
    memory a member owns goes into the HEAP section beside it, and what the host's side keeps of the game (caches, the
    file tree, the decoders) stays the running process's. */
 #include "nx/runtime/state.h"
@@ -32,6 +32,7 @@
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/state_fns.h"
 #include "nx/runtime/state_io.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -40,8 +41,6 @@
 #include <time.h>
 
 typedef char state_pointers_are_8_bytes[sizeof(void*) == 8 ? 1 : -1]; /* pointer fields hold the numbers below */
-
-void io_anchor(void) {}
 
 /* ============================================================ streams */
 /* a stream in memory: a section read whole before a load changes anything, or one written before it goes out */
@@ -89,24 +88,23 @@ static int section_write(StateWriter* w, const char* tag, u64 schema, const Buf*
 }
 
 /* ============================================================ the schema */
-/* A hash of the names and types of every field g_hle holds, from Clang's walk of each struct (hle_walk.h): a state
-   whose g_hle had other fields isn't read as this runtime's. The values the walk prints aren't part of it */
-static u64 g_hash;
-static void hash_str(const char* s) {
-    for (; *s; s++) g_hash = (g_hash ^ (u8)*s) * 1099511628211ull;
-    g_hash = (g_hash ^ 0x1F) * 1099511628211ull;
+/* A hash of the names and types of every field g_hle holds, and of the other types the state holds as raw bytes, from
+   Clang's walk of each struct (hle_walk.h): a state whose types had other fields isn't read as this runtime's. The
+   values the walk prints aren't part of it */
+static void hash_str(u64* h, const char* s) {
+    for (; *s; s++) *h = (*h ^ (u8)*s) * 1099511628211ull;
+    *h = (*h ^ 0x1F) * 1099511628211ull;
 }
-static int schema_out(void* ctx, const char* fmt, ...) {
+static int schema_out(u64* h, const char* fmt, ...) {
     va_list ap;
     const char* f;
     int before = 1;
-    (void)ctx;
     va_start(ap, fmt);
     for (f = fmt; *f; f++) {
         int longs = 0;
         if (*f == '=') before = 0;
         if (*f != '%') {
-            if (before) g_hash = (g_hash ^ (u8)*f) * 1099511628211ull;
+            if (before) *h = (*h ^ (u8)*f) * 1099511628211ull;
             continue;
         }
         f++;
@@ -114,7 +112,7 @@ static int schema_out(void* ctx, const char* fmt, ...) {
         switch (*f) {
             case 's': {
                 const char* s = va_arg(ap, const char*);
-                if (before && s) hash_str(s);
+                if (before && s) hash_str(h, s);
                 break;
             }
             case 'p': (void)va_arg(ap, void*); break;
@@ -142,14 +140,44 @@ static int schema_out(void* ctx, const char* fmt, ...) {
     va_end(ap);
     return 0;
 }
-static u64 hle_schema(void) {
-    g_hash = 0xCBF29CE484222325ull ^ sizeof(Hle);
+/* instances of the types written raw outside g_hle, for their walk */
+static const GpuChannel z_chan;
+static const ARState z_ar;
+static const ARVoice z_voice;
+static const ARChannel z_archan;
+static const ARMix z_mix;
+static const AREffect z_effect;
+static const ARSink z_sink;
+static const ARSplitter z_split;
+static const ARDest z_dest;
+static const GMap z_gmap;
+static const GRun z_grun;
+static const VaRange z_va;
+static const MemBlock z_blk;
+static u64 state_schema(void) {
+    static u64 hash;
+    u64 h = 0xCBF29CE484222325ull ^ sizeof(Hle);
+    if (hash) return hash; /* the types don't change while the runtime runs */
 #define SCHEMA_WALK(name, obj)                                                                                         \
-    hash_str(#name);                                                                                                   \
-    __builtin_dump_struct(&(obj), schema_out, NULL);
+    hash_str(&h, #name);                                                                                               \
+    __builtin_dump_struct(&(obj), schema_out, &h);
     HLE_WALKS(SCHEMA_WALK, g_hle)
+    SCHEMA_WALK(GpuChannel, z_chan)
+    SCHEMA_WALK(ARState, z_ar)
+    SCHEMA_WALK(ARVoice, z_voice)
+    SCHEMA_WALK(ARChannel, z_archan)
+    SCHEMA_WALK(ARMix, z_mix)
+    SCHEMA_WALK(AREffect, z_effect)
+    SCHEMA_WALK(ARSink, z_sink)
+    SCHEMA_WALK(ARSplitter, z_split)
+    SCHEMA_WALK(ARDest, z_dest)
+    SCHEMA_WALK(GMap, z_gmap)
+    SCHEMA_WALK(GRun, z_grun)
+    SCHEMA_WALK(VaRange, z_va)
+    SCHEMA_WALK(MemBlock, z_blk)
 #undef SCHEMA_WALK
-    return g_hash;
+    gpu_state_schema(schema_out, &h);
+    return hash = h;
 }
 
 /* ============================================================ the header */
@@ -192,12 +220,6 @@ int state_check(const StateHeader* h, char* why, size_t whysize) {
     game_stamp(stamp, sizeof stamp);
     if (strcmp(stamp, h->stamp)) {
         snprintf(why, whysize, "it was saved with another update or other mods");
-        return -1;
-    }
-    /* the image offsets of functions and string literals hold within one build: across builds a load would need
-       their names */
-    if (strcmp(h->runtime, snx_build_info())) {
-        snprintf(why, whysize, "it was saved by another build of ScarletNX (%s)", h->runtime);
         return -1;
     }
     return 0;
@@ -409,39 +431,158 @@ out:
 }
 
 /* ============================================================ g_hle */
-/* A pointer field of the saved copy holds a number: a pointer into g_hle as its offset (tag 1), one into the
-   runtime's image as its distance from io_anchor (tag 2), in the top two bits */
+/* The names a state's g_hle holds functions and strings by, in the NAMES section: each a kind byte (NAME_FN, a
+   function of state_fns.h, or NAME_STR, a string) and the name. A load reads them before anything changes, and finds
+   each function in this build or refuses the state */
+enum { NAME_FN = 1, NAME_STR = 2 };
+typedef struct {
+    char** name;
+    u8* kind;
+    void** ptr; /* a load's: what each names in this process */
+    u32 n, cap;
+    int bad; /* a save met a pointer it can't name: it is refused */
+} Names;
+static u32 names_add(Names* t, int kind, const char* s) {
+    u32 i;
+    for (i = 0; i < t->n; i++)
+        if (t->kind[i] == kind && !strcmp(t->name[i], s)) return i;
+    if (t->n == t->cap) {
+        u32 cap = t->cap ? t->cap * 2 : 64;
+        char** nn = (char**)realloc(t->name, sizeof *nn * cap);
+        u8* kk;
+        if (nn) t->name = nn;
+        kk = nn ? (u8*)realloc(t->kind, cap) : NULL;
+        if (kk) t->kind = kk;
+        if (!nn || !kk) {
+            t->bad = 1;
+            return 0;
+        }
+        t->cap = cap;
+    }
+    if (!(t->name[t->n] = (char*)malloc(strlen(s) + 1))) {
+        t->bad = 1;
+        return 0;
+    }
+    strcpy(t->name[t->n], s);
+    t->kind[t->n] = (u8)kind;
+    return t->n++;
+}
+static void names_free(Names* t) {
+    u32 i;
+    for (i = 0; i < t->n; i++) free(t->name[i]);
+    free(t->name);
+    free(t->kind);
+    free(t->ptr);
+    memset(t, 0, sizeof *t);
+}
+static int names_write(StateWriter* w, const Names* t) {
+    u32 i;
+    if (sw_begin(w, "NAMES", 1) || sw_put(w, &t->n, 4)) return -1;
+    for (i = 0; i < t->n; i++) {
+        u32 len = (u32)strlen(t->name[i]);
+        if (sw_put(w, &t->kind[i], 1) || sw_put(w, &len, 4) || sw_put(w, t->name[i], len)) return -1;
+    }
+    return sw_end(w);
+}
+/* A string kept for the process: a loaded service object's name, which IPC's crash ring may keep past the object.
+   One copy of each, however many loads name it */
+typedef struct Interned {
+    struct Interned* next;
+    char s[1];
+} Interned;
+static Interned* g_interned;
+static const char* intern(const char* s) {
+    Interned* i;
+    for (i = g_interned; i; i = i->next)
+        if (!strcmp(i->s, s)) return i->s;
+    if (!(i = (Interned*)malloc(sizeof *i + strlen(s)))) return NULL;
+    strcpy(i->s, s);
+    i->next = g_interned;
+    g_interned = i;
+    return i->s;
+}
+/* NAMES read, each name found in this process: 0, or -1 with the reason when this build lacks a function */
+static int names_read(StateReader* r, Names* t, char* why, size_t whysize) {
+    u32 n, i;
+    if (sr_begin(r, "NAMES", NULL) || sr_get(r, &n, 4) || n > 1u << 20) goto bad;
+    if (!(t->name = (char**)calloc(n ? n : 1, sizeof *t->name)) || !(t->kind = (u8*)calloc(n ? n : 1, 1)) ||
+        !(t->ptr = (void**)calloc(n ? n : 1, sizeof *t->ptr)))
+        goto bad;
+    t->n = t->cap = n;
+    for (i = 0; i < n; i++) {
+        u32 len;
+        if (sr_get(r, &t->kind[i], 1) || sr_get(r, &len, 4) || len > 4096 ||
+            !(t->name[i] = (char*)malloc((size_t)len + 1)) || sr_get(r, t->name[i], len))
+            goto bad;
+        t->name[i][len] = 0;
+        if (t->kind[i] == NAME_FN) {
+            StateFnPtr f = state_fn_find(t->name[i]);
+            memcpy(&t->ptr[i], &f, sizeof f);
+            if (!f) {
+                snprintf(why, whysize, "it needs %s, which this ScarletNX doesn't have", t->name[i]);
+                return -1;
+            }
+        } else if (t->kind[i] != NAME_STR || !(t->ptr[i] = (void*)(uintptr_t)intern(t->name[i])))
+            goto bad;
+    }
+    return 0;
+bad:
+    snprintf(why, whysize, "it is damaged");
+    return -1;
+}
+/* A pointer field of the saved copy holds a number, the kind in its top two bits: a pointer into g_hle as its offset
+   (1), a function or a string as its index in NAMES (2 and 3) */
 #define HLE_LO ((uintptr_t)&g_hle)
 #define HLE_HI ((uintptr_t)&g_hle + sizeof g_hle)
-static u64 swz(const void* p) {
+static u64 swz(Names* t, const void* p) {
     uintptr_t a = (uintptr_t)p;
     if (!p) return 0;
     if (a >= HLE_LO && a < HLE_HI) return (1ull << 62) | (u64)(a - HLE_LO);
-    return (2ull << 62) | ((u64)IO_CODE_OFF(p) & ((1ull << 62) - 1));
+    WARN("state: a pointer of g_hle to %p, outside it, can't be saved\n", p);
+    t->bad = 1;
+    return 0;
 }
-static void* unswz(u64 v) {
+static u64 swz_fn(Names* t, StateFnPtr f) {
+    const char* name;
+    if (!f) return 0;
+    if (!(name = state_fn_name(f))) {
+        WARN("state: the function at %p has no name in state_fns.h's tables, and can't be saved\n", (void*)(uintptr_t)f);
+        t->bad = 1;
+        return 0;
+    }
+    return (2ull << 62) | names_add(t, NAME_FN, name);
+}
+static u64 swz_str(Names* t, const char* s) {
+    uintptr_t a = (uintptr_t)s;
+    if (!s) return 0;
+    if (a >= HLE_LO && a < HLE_HI) return (1ull << 62) | (u64)(a - HLE_LO); /* a stand-in's, in g_hle */
+    return (3ull << 62) | names_add(t, NAME_STR, s);
+}
+static void* unswz(const Names* t, u64 v) {
     u64 x = v & ((1ull << 62) - 1);
     switch (v >> 62) {
         case 1: return x < sizeof g_hle ? (void*)(HLE_LO + (uintptr_t)x) : NULL;
-        case 2: return IO_CODE_PTR(void*, (i64)(x << 2) >> 2);
+        case 2:
+        case 3: return x < t->n && t->kind[x] == (v >> 62 == 2 ? NAME_FN : NAME_STR) ? t->ptr[x] : NULL;
         default: return NULL;
     }
 }
-/* the field's pointer as a number, through its bytes (a function pointer converts as an object pointer does) */
-#define SWZ(field)                                                                                                     \
+/* the field's pointer as a number, through its bytes (a function pointer converts as an object pointer does): one into
+   g_hle, a function's, a string's */
+#define SWZ_AS(field, how)                                                                                             \
     do {                                                                                                               \
-        void* p_;                                                                                                      \
-        u64 v_;                                                                                                        \
-        memcpy(&p_, &(field), sizeof p_);                                                                              \
-        v_ = swz(p_);                                                                                                  \
+        u64 v_ = (how);                                                                                                \
         memcpy(&(field), &v_, sizeof v_);                                                                              \
     } while (0)
+#define SWZ(field)     SWZ_AS(field, swz(names, (const void*)(field)))
+#define SWZ_FN(field)  SWZ_AS(field, swz_fn(names, (StateFnPtr)(field)))
+#define SWZ_STR(field) SWZ_AS(field, swz_str(names, (field)))
 #define UNSWZ(field)                                                                                                   \
     do {                                                                                                               \
         u64 v_;                                                                                                        \
         void* p_;                                                                                                      \
         memcpy(&v_, &(field), sizeof v_);                                                                              \
-        p_ = unswz(v_);                                                                                                \
+        p_ = unswz(names, v_);                                                                                         \
         memcpy(&(field), &p_, sizeof p_);                                                                              \
     } while (0)
 #define NIL(field) memset(&(field), 0, sizeof(field))
@@ -485,8 +626,9 @@ static int savable(char* why, size_t whysize) {
     return 0;
 }
 
-/* HLE (g_hle, its pointers numbers) and HEAP (what its members own) into the buffers */
-static int save_hle(Buf* hle, Buf* heap) {
+/* HLE (g_hle, its pointers numbers) and HEAP (what its members own) into the buffers, the names its numbers stand for
+   in names */
+static int save_hle(Buf* hle, Buf* heap, Names* names) {
     Hle* c = (Hle*)malloc(sizeof *c);
     StateIo io = buf_io(heap);
     u32 i, k;
@@ -507,9 +649,9 @@ static int save_hle(Buf* hle, Buf* heap) {
     /* IPC: the objects' functions and names, their data and the sessions' and domains' objects */
     for (i = 0; i < SVCOBJ_MAX; i++) {
         SvcObj* o = &c->ipc.svcobjs[i];
-        SWZ(o->name);
-        SWZ(o->dispatch);
-        SWZ(o->destroy);
+        SWZ_STR(o->name);
+        SWZ_FN(o->dispatch);
+        SWZ_FN(o->destroy);
         SWZ(o->data);
     }
     for (i = 0; i < SESSION_MAX; i++) {
@@ -633,7 +775,7 @@ static int save_hle(Buf* hle, Buf* heap) {
     r |= io_put32(&io, HEAP_END);
     r |= buf_put(hle, c, sizeof *c);
     free(c);
-    return r ? -1 : 0;
+    return r || names->bad ? -1 : 0;
 }
 
 /* The host's side of the running game that a load lets go of before g_hle is overwritten: the services' heap memory,
@@ -657,7 +799,7 @@ static void drop_host(void) {
 
 /* the loaded copy's heap memory from HEAP, its pointers back, and the host's fields the running process keeps: then
    it is g_hle. 0, or -1 when HEAP doesn't hold what g_hle names (fatal by then) */
-static int apply_hle(Hle* ld, Buf* heap, const ShmPlan* plan, Buf* fs_paths) {
+static int apply_hle(Hle* ld, Buf* heap, const Names* names, const ShmPlan* plan, Buf* fs_paths) {
     StateIo io = buf_io(heap);
     u32 i, k, kind, slot;
     u64 n;
@@ -806,6 +948,7 @@ int state_save(const char* path, char* why, size_t whysize) {
     StateWriter* w;
     Buf hle = {0}, heap = {0}, gpu = {0};
     StateIo gio = buf_io(&gpu);
+    Names names = {0};
     char folder[sizeof g_exedir + 16];
     u64 t0 = plat_ns();
     u8* thumb = NULL;
@@ -829,15 +972,15 @@ int state_save(const char* path, char* why, size_t whysize) {
     header_make(&h);
     h.thumb_w = SNX_UI_IMAGE_W;
     h.thumb_h = SNX_UI_IMAGE_H;
-    if (save_hle(&hle, &heap) || gpu_state_save(&gio)) {
-        snprintf(why, whysize, "the game's state couldn't be gathered");
+    if (save_hle(&hle, &heap, &names) || gpu_state_save(&gio)) {
+        snprintf(why, whysize, "the game's state couldn't be gathered (the log says what)");
         goto end;
     }
     snprintf(folder, sizeof folder, "%sstates", g_exedir);
     plat_mkdir(folder);
     w = sw_open(path, &h, thumb, why, whysize);
     if (!w) goto end;
-    if (section_write(w, "HLE", hle_schema(), &hle) || section_write(w, "HEAP", 1, &heap) ||
+    if (section_write(w, "HLE", state_schema(), &hle) || names_write(w, &names) || section_write(w, "HEAP", 1, &heap) ||
         section_write(w, "GPU", 1, &gpu) || save_memory(w, why, whysize)) {
         sw_abort(w);
         if (!why[0]) snprintf(why, whysize, "the file couldn't be written");
@@ -848,6 +991,7 @@ end:
     if (g_gpu_mapping_end) g_gpu_mapping_end();
 resume:
     game_resume();
+    names_free(&names);
     free(thumb);
     free(hle.p);
     free(heap.p);
@@ -865,6 +1009,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     StateReader* r;
     Buf hle = {0}, heap = {0}, gpu = {0}, fs_paths = {0};
     StateIo gio = buf_io(&gpu), fio;
+    Names names = {0};
     ShmPlan plan;
     u8* cur_host[KSHMEM_MAX];
     u64 cur_off[KSHMEM_MAX], cur_size[KSHMEM_MAX], schema = 0, t0 = plat_ns();
@@ -874,10 +1019,11 @@ int state_load(const char* path, char* why, size_t whysize) {
     if (!r) return -1;
     /* everything that can refuse it before the running game is touched */
     if (state_check(&h, why, whysize)) goto refuse;
-    if (section_read(r, "HLE", &schema, &hle) || hle.n != sizeof(Hle) || schema != hle_schema()) {
+    if (section_read(r, "HLE", &schema, &hle) || hle.n != sizeof(Hle) || schema != state_schema()) {
         snprintf(why, whysize, "it holds the game's state in another layout, or is damaged");
         goto refuse;
     }
+    if (names_read(r, &names, why, whysize)) goto refuse;
     if (section_read(r, "HEAP", NULL, &heap) || section_read(r, "GPU", NULL, &gpu)) {
         snprintf(why, whysize, "it is damaged");
         goto refuse;
@@ -897,7 +1043,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     }
     drop_host();
     if (load_memory(r, &plan, why, whysize)) fatal("The save state's guest memory couldn't be loaded: %s", why);
-    if (apply_hle((Hle*)hle.p, &heap, &plan, &fs_paths)) fatal("The save state's game state couldn't be loaded");
+    if (apply_hle((Hle*)hle.p, &heap, &names, &plan, &fs_paths)) fatal("The save state's game state couldn't be loaded");
     for (i = 0; i < KSHMEM_MAX; i++) /* the running game's shared memories the state has no use for */
         if (cur_host[i] && cur_host[i] != plan.host[i]) mem_pool_host_free(cur_host[i], cur_off[i], cur_size[i]);
     fio = buf_io(&fs_paths);
@@ -915,6 +1061,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     }
     game_resume();
     sr_close(r);
+    names_free(&names);
     free(hle.p);
     free(heap.p);
     free(gpu.p);
@@ -923,6 +1070,7 @@ int state_load(const char* path, char* why, size_t whysize) {
     return 0;
 refuse:
     sr_close(r);
+    names_free(&names);
     free(hle.p);
     free(heap.p);
     free(gpu.p);

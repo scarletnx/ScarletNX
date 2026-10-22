@@ -720,3 +720,6 @@ void svc_vi_init(void) {
     nn_visrv_sf_ISystemRootService_register(new_vi_s);
     nn_visrv_sf_IManagerRootService_register(new_vi_m);
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_vi_state_fns,
+               STATE_FN("vi", vi_present));

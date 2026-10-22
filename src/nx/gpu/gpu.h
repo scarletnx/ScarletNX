@@ -279,6 +279,9 @@ void dma_snap_reset(u32 channel);              /* the channel closed: what it qu
 struct StateIo;
 int gpu_state_save(struct StateIo* io);
 int gpu_state_load(struct StateIo* io);
+/* the layout of what gpu_state_save writes as raw bytes beyond GpuChannel, into the save state's schema hash at h, dump
+   taking each struct's walk (state_io.h's StateSchemaFn) */
+void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h);
 int dma_snap_save(struct StateIo* io);
 int dma_snap_load(struct StateIo* io);
 

@@ -59,7 +59,15 @@ void mem_query(u64 addr, MemBlock* out) {
     (void)addr;
 }
 u64 guest_ns(void) { return 0; }
-void io_anchor(void) {} /* save states' code offsets, which nothing here takes */
+/* save states' function names, which nothing here takes */
+const char* state_fn_name(StateFnPtr fn) {
+    (void)fn;
+    return NULL;
+}
+StateFnPtr state_fn_find(const char* name) {
+    (void)name;
+    return NULL;
+}
 /* Keep the compute report path identical to compute.c, using the real shared report handler. */
 void query_get(GpuChannel* ch, u32* r, int base, u32 v);
 void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {

@@ -1428,3 +1428,9 @@ static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* sel
     info->library_applet_mode = a->mode;
     R_SUCCEED();
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_am_state_fns,
+               STATE_FN("am", am_storage_destroy),
+               STATE_FN("am", am_accessor_destroy),
+               STATE_FN("am", am_lock_destroy),
+               STATE_FN("am", am_applet_destroy));

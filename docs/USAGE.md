@@ -688,8 +688,9 @@ the selected slot and F8 loads it, and F9 selects the next slot and says what it
 page lists the slots with the date, the play time and a picture of each, and saves, loads and deletes them. A load
 and a delete ask first. The game waits while the page is open. Before a load the game is saved to the auto slot,
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
-and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with, by the
-same build of ScarletNX.
+and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
+ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
+then it says so.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and
 B do the same, the on-screen controls' too, and a direction held goes on after a moment.
