@@ -23,6 +23,8 @@ const struct SnxIrTuning* snx_llvm_tuning(char opt, char* error, size_t error_si
 
 /* SNX_ABI as this build has it: the layout its modules are written with, which the runtime of the same build checks */
 unsigned snx_module_abi(void);
+/* SNX_ABI_OLDEST: the oldest layout whose modules the runtime of this build still runs */
+unsigned snx_module_abi_oldest(void);
 /* 0 on success. LLVM is a required recompiler dependency. */
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build);
 /* A 32-bit program's module (module_arm.c): its AArch32 blocks and an SnxArmModule. LLVM only */

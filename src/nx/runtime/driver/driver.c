@@ -95,9 +95,9 @@ static int same_bytes(const char* a, const char* b) {
     if (y) fclose(y);
     return same;
 }
-/* A game made by another build of this ABI runs the code it was recompiled into (stamped), with its folder's copy of
-   that build's runtime: replaced by this build's when the two differ, so its fixes reach the games made before it. 0,
-   or nonzero with a line saying why */
+/* A game another build made, of an ABI this one still runs, runs the code it was recompiled into (stamped), with its
+   folder's copy of that build's runtime: replaced by this build's when the two differ, so its fixes reach the games
+   made before it. 0, or nonzero with a line saying why */
 static int refresh_runtime(const SnxPaths* paths, const char* game) {
     char* run = snx_own_runtime(paths);
     int rc = 0;
@@ -110,8 +110,22 @@ static int refresh_runtime(const SnxPaths* paths, const char* game) {
     free(run);
     return rc;
 }
-/* whether this build made the game at base (<folder>/<name>, a game's or its update's), with the mods its game plays
-   now: its stamp says what this build writes, a partial write or anything after it being no completed build */
+/* 1 when a game's stamp (found, size bytes) is the one this build writes (expected, snx_game_stamp's "<abi>[ mods
+   <stamp>]") but for an ABI the runtime still runs, SNX_ABI_OLDEST to SNX_ABI */
+static int stamp_runs(const unsigned char* found, size_t size, const char* expected) {
+    const char* mods = expected + strspn(expected, "0123456789");
+    unsigned abi;
+    int runs = 0;
+    for (abi = snx_game_abi_oldest(); found && !runs && abi <= snx_game_abi(); ++abi) {
+        char* stamp = snx_format("%u%s", abi, mods);
+        runs = size == strlen(stamp) && !memcmp(found, stamp, size);
+        free(stamp);
+    }
+    return runs;
+}
+/* whether a build whose games this one runs made the game at base (<folder>/<name>, a game's or its update's), with the
+   mods its game plays now: its stamp says what this build writes but for the ABI, a partial write or anything after it
+   being no completed build */
 static int stamped(const char* base) {
     char *folder = snx_dirname(base), *off = NULL, *mods, *made, *stamp = snx_format("%s.abi", base), *expected;
     const char* game = folder + strlen(folder);
@@ -125,7 +139,7 @@ static int stamped(const char* base) {
     free(off);
     free(folder);
     unsigned char* found = snx_read_file(stamp, &size);
-    int same = found && size == strlen(expected) && !memcmp(found, expected, size);
+    int same = stamp_runs(found, size, expected);
     free(found);
     free(expected);
     free(stamp);

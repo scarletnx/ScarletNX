@@ -136,7 +136,7 @@ prototypes, a wrapper per SVC and ABI, and the tables by number that both kinds 
 SVC is implemented by dropping its `stub` mark in `hos.svc` and defining `svc_<Name>` in `svc.c`, with the
 declaration's arguments. `build/snx-svcgen --layout src/nx/hle/svc/hos.svc` prints the registers, and
 `ctest -R svcgen_layout` checks them against `tests/svcgen_layout.txt`. The NX modules call an SVC through
-`RtAPI.svcs`, so a change to the tables' size or signature is an `SNX_ABI` change.
+`RtAPI.svcs`, so a change to the tables' size or signature is an `SNX_ABI` change that raises `SNX_ABI_OLDEST`.
 
 ## Provenance
 

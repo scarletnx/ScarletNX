@@ -31,7 +31,8 @@ typedef double f64;
 
 /* The version of the contract between a game module and the runtime: this header (the CPU layout, the SNX_FP_*
    numbers), the helpers in cpu_helpers.c, RtAPI and the module descriptor. The recompiler writes it into each
-   module and the runtime refuses any other. Bump it for any change of layout or of a helper's results.
+   module, and the runtime runs those from SNX_ABI_OLDEST to it and refuses any other. Bump it for any change of
+   layout or of a helper's results.
    7: CPU.poll and RtAPI.poll, read on the backward branches of generated code.
    8: the FP/SIMD emitters and discovery changes.
    9: RtAPI.svcs, which the NX modules call each SVC through by its number.
@@ -44,6 +45,14 @@ typedef double f64;
   13: the AOT module's snx_variants() table, which the runtime reads for code the recompiler missed instead of
       compiling it at run time. */
 #define SNX_ABI 13
+/* The oldest SNX_ABI whose modules this runtime still runs, and whose games the driver plays without recompiling them.
+   An addition the runtime reads as optional (13's table, found by its symbol and versioned on its own) bumps SNX_ABI
+   alone; a change to the contract above (the CPU's layout, a helper's results, RtAPI, the module descriptor) raises
+   this to SNX_ABI too, as an older module would run wrong */
+#define SNX_ABI_OLDEST 12
+#if SNX_ABI_OLDEST > SNX_ABI
+#error "SNX_ABI_OLDEST is an SNX_ABI already reached"
+#endif
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -93,8 +102,8 @@ typedef struct CPU {
 } CPU;
 
 /* The emitters bake these offsets into generated code, so modules built before a layout change would read the
-   wrong fields: a failed check here means SNX_ABI must change too. The fields after mem move with the pointer size,
-   and are checked on 64-bit hosts, the only ones games run on. */
+   wrong fields: a failed check here means SNX_ABI must change too, and SNX_ABI_OLDEST with it. The fields after mem
+   move with the pointer size, and are checked on 64-bit hosts, the only ones games run on. */
 typedef char snx_check_v128[sizeof(V128) == 16 ? 1 : -1];
 typedef char snx_check_cpu_x[offsetof(CPU, x) == 0 ? 1 : -1];
 typedef char snx_check_cpu_pc[offsetof(CPU, pc) == 256 ? 1 : -1];

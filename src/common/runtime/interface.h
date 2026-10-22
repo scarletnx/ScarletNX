@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* RtAPI: the table of runtime functions generated code calls (CPU.rt). Game modules index it by position, so its order
-   and size are part of SNX_ABI (cpu.h): a field added, removed or moved needs a new SNX_ABI */
+   and size are part of SNX_ABI (cpu.h): a field added, removed or moved needs a new SNX_ABI, and SNX_ABI_OLDEST raised
+   to it */
 #ifndef SNX_RUNTIME_INTERFACE_H
 #define SNX_RUNTIME_INTERFACE_H
 #include <stddef.h>

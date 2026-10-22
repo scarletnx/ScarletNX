@@ -1112,6 +1112,20 @@ add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DI
 snx_test_target(snx-test-runtime-variants 11)
 target_link_libraries(snx-test-runtime-variants PRIVATE scarletnx-common scarletnx-filesystem snx_settings)
 add_test(NAME runtime_variants COMMAND snx-test-runtime-variants)
+# the runtime taking a module of an ABI from SNX_ABI_OLDEST to SNX_ABI and refusing any other, on modules that are a
+# descriptor alone (the fixture, also built as a 32-bit program's): plain C99, without sanitizers the runtime may lack
+foreach(snx_fixture module-abi module-abi-arm)
+    add_library(snx-test-${snx_fixture} MODULE module_abi_fixture.c)
+    set_target_properties(snx-test-${snx_fixture} PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-${snx_fixture} PRIVATE -Wall -Wextra -Werror -pedantic-errors)
+    target_include_directories(snx-test-${snx_fixture} PRIVATE "${PROJECT_SOURCE_DIR}/src")
+endforeach()
+target_compile_definitions(snx-test-module-abi-arm PRIVATE SNX_TEST_MODULE_ARM)
+add_executable(snx-test-runtime-module-abi module_abi.c)
+snx_test_target(snx-test-runtime-module-abi 99)
+target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
+add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
+    $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
 # the build-side reader of the runtime JIT's cache
 add_executable(snx-test-jit-cache jit_cache.c)
 snx_test_target(snx-test-jit-cache 11)

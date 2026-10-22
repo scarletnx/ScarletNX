@@ -57,8 +57,9 @@ static unsigned number(const char* text, unsigned max) {
 /* This build's, not the checkout's cpu.h: the modules are laid out as this build's headers say, and an installed
    build has no checkout */
 unsigned snx_game_abi(void) { return snx_module_abi(); }
-/* the ABI alone: a game made by another build of it keeps its code, and its copy of the runtime is replaced by the
-   driver that plays it (driver.c's refresh_runtime) */
+unsigned snx_game_abi_oldest(void) { return snx_module_abi_oldest(); }
+/* the ABI alone: a game made by another build of it, or of an older one the runtime still runs, keeps its code, and
+   its copy of the runtime is replaced by the driver that plays it (driver.c's refresh_runtime) */
 char* snx_game_stamp(const char* mods) {
     return mods[0] ? snx_format("%u mods %s", snx_game_abi(), mods) : snx_format("%u", snx_game_abi());
 }

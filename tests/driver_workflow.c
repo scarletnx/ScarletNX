@@ -3,6 +3,7 @@
 /* Exercise the real driver/supervisor with synthetic extraction, compilation and game children. */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
+#include "common/utilities/mods.h"
 #include "common/utilities/setup.h"
 #include "nx/runtime/driver/driver.h"
 #include "nx/runtime/driver/extract.h"
@@ -173,10 +174,18 @@ static int dump_input(const char* input) {
     return snx_is_file(input) && !(n > 4 && input[n - 4] == '.' && (input[n - 3] | 32) == 'n' &&
                                    (input[n - 2] | 32) == 'r' && (input[n - 1] | 32) == 'o');
 }
-/* this build's stamp: ABI 4, made from commit abc1234 */
-#define SNX_WORKFLOW_STAMP "4\nabc1234\n"
+/* recompile.c's: this build's ABI 4, which plays the games of ABI 2 and 3 as they are made too, and the stamp it writes
+   in a game it makes, as snx_game_stamp writes it */
+unsigned snx_game_abi(void) { return 4; }
+unsigned snx_game_abi_oldest(void) { return 2; }
 char* snx_game_stamp(const char* mods) {
-    return mods[0] ? snx_format("%s mods %s", SNX_WORKFLOW_STAMP, mods) : snx_strdup(SNX_WORKFLOW_STAMP);
+    return mods[0] ? snx_format("%u mods %s", snx_game_abi(), mods) : snx_format("%u", snx_game_abi());
+}
+/* the recompile's last step: this build's stamp at path, no mods played */
+static void write_stamp(const char* path) {
+    char* stamp = snx_game_stamp("");
+    CHECK(!snx_write_file(path, stamp, strlen(stamp)));
+    free(stamp);
 }
 /* recompile.c's: the runtime a game's folder gets, this program (which the recompile below copies as the game), and
    its deploy, as recompile.c's: a copy made executable that replaces the game's program, a new file */
@@ -220,7 +229,8 @@ static int addon_recompile(int argc, char** argv, const SnxPaths* paths) {
     );
     data = snx_format("%s/%s_data", folder, name);
     CHECK(!snx_mkdirs(data) && !snx_copy_file(paths->executable, game) && !snx_make_executable(game));
-    CHECK(!snx_write_file(stamp, SNX_WORKFLOW_STAMP, strlen(SNX_WORKFLOW_STAMP)) && !snx_write_file(code, "x", 1));
+    CHECK(!snx_write_file(code, "x", 1));
+    write_stamp(stamp);
     free(folder);
     free(name);
     free(game);
@@ -330,8 +340,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                                 "so"
 #endif
         );
-        CHECK(!snx_write_file(stamp, SNX_WORKFLOW_STAMP, strlen(SNX_WORKFLOW_STAMP)));
         CHECK(!snx_write_file(code, "synthetic", 9));
+        write_stamp(stamp);
         free(stamp);
         free(code);
     }
@@ -644,22 +654,65 @@ int main(int argc, char** argv) {
         free(kept_runtime);
     }
 
-    /* Missing/mismatched/malformed ABI stamps are never trusted, nor one another build wrote with the same ABI: an
-       older version's ABI alone, another commit's, or this one's cut short or with more after it */
+    /* A game's stamp names the ABI it was made with and its mods' files. One a build of an ABI this one runs wrote,
+       snx_game_abi_oldest() to snx_game_abi(), with the mods played now keeps its code, its program replaced by this
+       build's runtime. Any other is recompiled: an ABI outside them, other mods, older versions' formats (the ABI on a
+       line, their commit after it), one cut short, with more after it or written otherwise, or none */
     {
-        const char* const stale[] = {
-            "3\nabc1234\n",      "broken", "4", "4garbage\n", "4\n", "4\ndef5678\n", "4\nabc1234", "4\nabc1234\n\n",
-            "4\nabc1234-dirty\n"};
-        char* stamp = snx_path_join(repo, "recompiled/Test game/Test game.abi");
+        unsigned abi = snx_game_abi(), oldest = snx_game_abi_oldest();
+        char* kept[] = {snx_format("%u", oldest), snx_format("%u", oldest + 1)};
+        char* stale[] = {snx_format("%u", oldest - 1),
+                         snx_format("%u", abi + 1),
+                         snx_strdup("broken"),
+                         snx_strdup(""),
+                         snx_format("%ugarbage", abi),
+                         snx_format("0%u", abi),
+                         snx_format("+%u", abi),
+                         snx_format(" %u", abi),
+                         snx_format("%u\n", abi),
+                         snx_format("%u\nabc1234\n", abi),
+                         snx_format("%u mods 0123456789abcdef", abi),
+                         snx_format("%u mods 0123456789abcdef", oldest),
+                         snx_format("%u mods ", abi)};
+        char *folder = snx_path_join(repo, "recompiled/Test game"), *stamp = snx_path_join(folder, "Test game.abi");
+        char *file = snx_path_join(folder, "Test game_data/mods/Mod/exefs/main"), *exefs = snx_dirname(file);
+        char *mods, *off = NULL, *made, *with, *without = snx_format("%u", oldest);
         size_t j;
+        for (j = 0; j < sizeof kept / sizeof *kept; ++j) {
+            FILE* f = snx_fopen(game, "ab");
+            CHECK(f && fputs("another build", f) >= 0 && !fclose(f));
+            CHECK(!snx_write_file(stamp, kept[j], strlen(kept[j])));
+            run(exe, repo, dump, log, 0, "G", "ran another build's runtime");
+            free(kept[j]);
+        }
         for (j = 0; j < sizeof stale / sizeof *stale; ++j) {
             CHECK(!snx_write_file(stamp, stale[j], strlen(stale[j])));
             run(exe, repo, dump, log, 0, "RG", NULL);
             run(exe, repo, dump, log, 0, "G", NULL); /* the recompile stamped it as this build */
+            free(stale[j]);
         }
+        /* a mod's ExeFS file played: the oldest ABI with its stamp keeps the code, without it is recompiled */
+        CHECK(!snx_mkdirs(exefs) && !snx_write_file(file, "patched", 7));
+        mods = snx_game_mods(folder, "Test game", &off); /* its mods folder, and none turned off */
+        made = snx_mods_stamp(mods, off);
+        with = snx_format("%u mods %s", oldest, made);
+        CHECK(made[0] && !snx_write_file(stamp, with, strlen(with)));
+        run(exe, repo, dump, log, 0, "G", NULL);
+        CHECK(!snx_write_file(stamp, without, strlen(without)));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        CHECK(!snx_remove_tree(mods));
+        run(exe, repo, dump, log, 0, "G", NULL); /* the mod gone, the stamp the recompile wrote is this build's */
         CHECK(!snx_remove_tree(stamp));
         run(exe, repo, dump, log, 0, "RG", NULL);
+        free(without);
+        free(with);
+        free(made);
+        free(off);
+        free(exefs);
+        free(file);
+        free(mods);
         free(stamp);
+        free(folder);
     }
     {
         const char* flags[] = {"--fullscreen", "-f"};
@@ -951,7 +1004,7 @@ int main(int argc, char** argv) {
         CHECK(!snx_write_file(stamp, "4\n", 2)); /* an older version's */
         run(exe, repo, game, log, 0, "RG", NULL);
         run(exe, repo, game, log, 0, "G", NULL);
-        CHECK(!snx_write_file(stamp, "4\ndef5678\n", 10)); /* another build's */
+        CHECK(!snx_write_file(stamp, "4\ndef5678\n", 10)); /* an older version's, its build named */
         run(exe, repo, folder, log, 0, "RG", NULL);
         CHECK(!snx_remove_tree(code));
         run(exe, repo, game, log, 0, "RG", NULL);

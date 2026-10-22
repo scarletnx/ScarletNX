@@ -157,7 +157,11 @@ its existing execution path.
 
 NX module ABI is in `src/nx/loader/module_abi.h`; the shared CPU layout is in
 `src/common/cpu/aarch64/cpu.h`. Rebuild game modules after shared ABI changes;
-bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
+bump `SNX_ABI` for ABI changes, and raise `SNX_ABI_OLDEST` to it when older
+modules would run wrong (the CPU's layout, a helper's results, RtAPI, the module
+descriptor). An addition the runtime reads as optional bumps `SNX_ABI` alone,
+and games made by the older ABI keep their code. The runtime refuses a module
+outside the two, and the driver recompiles its game.
 
 ## Runtime ownership
 

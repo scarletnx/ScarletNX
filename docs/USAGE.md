@@ -164,12 +164,13 @@ Run the same command again to retry after a failure or interruption:
 
 - `work/Game/` skips extraction. Automatic extraction publishes this directory only after success,
   using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
-- A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming this build's
-  ABI skip recompilation. The stamp holds `SNX_ABI`: a game a build of another ABI made is recompiled
-  automatically, as is one with a missing or invalid stamp. One another build of the same ABI made keeps its code,
-  and its `recompiled/<id>/<id>` is replaced by this build's runtime when the two differ, so a newer build's fixes reach
-  it. Failed builds never publish a valid ABI checkpoint. A change to the recompiler that keeps `SNX_ABI` isn't
-  seen: there `-r` recompiles.
+- A complete `recompiled/<id>/<id>` (`<id>.exe` on Windows), code module and `<id>.abi` stamp naming an ABI this
+  build runs skip recompilation. The stamp holds the `SNX_ABI` of the build that made the game: from this build's
+  `SNX_ABI_OLDEST` to its `SNX_ABI` the game keeps its code, and its `recompiled/<id>/<id>` is replaced by this build's
+  runtime when the two differ, so a newer build's fixes reach it. A game made by an older or newer ABI is recompiled
+  automatically, as is one with a missing or invalid stamp. Failed builds never publish a valid ABI checkpoint. A
+  change to the recompiler that leaves `SNX_ABI_OLDEST` as it was isn't seen, a newer `SNX_ABI`'s addition included:
+  there `-r` recompiles.
 - Changing directory and running the game happen on every launch. A game failure never invalidates the build.
 
 Failures stop the workflow and print the failed stage and exit status or signal. On POSIX, stopping a

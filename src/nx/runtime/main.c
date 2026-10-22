@@ -145,13 +145,12 @@ static const char* program_path(const char* argv0) {
 
 /* ---- the game's code ---- */
 
-static const SnxModule g_other_version; /* abi 0: a 32-bit module of another version, refused as such below */
-
 static const SnxModule* load_module(const char* path) {
     void *lib, *sym;
     ModuleFn get;
     ArmModuleFn get_arm;
     VariantsFn get_variants;
+    const SnxArmModule* arm;
     const SnxModule* m;
     if (snx_module_static) return snx_module_static();
     if (!snx_is_file(path))
@@ -165,8 +164,16 @@ static const SnxModule* load_module(const char* path) {
         m = get();
     } else if ((sym = plat_dl_sym(lib, "snx_module_arm")) != NULL) {
         memcpy(&get_arm, &sym, sizeof get_arm);
-        m = arm_module(get_arm());
-        if (!m) m = &g_other_version;
+        arm = get_arm();
+        /* its own version, which SNX_ABI's range leaves alone. The path in a line of its own: a fatal's text is what
+           reports are grouped by */
+        if (arm && arm->abi != SNX_ARM_MODULE_ABI) {
+            WARN("game: its code is %s\n", path);
+            fatal("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one runs %08x): "
+                  "recompile the game with this one",
+                  (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
+        }
+        m = arm_module(arm);
     } else
         fatal("%s is not a ScarletNX game module", path);
     if (!m) fatal("%s could not be loaded: it describes no game", path);
@@ -642,9 +649,12 @@ int snx_main(int argc, char** argv) {
     snx_error_sink(log_error_line);
     /* the code before anything is written: a mistyped --game leaves no .ini and no log behind */
     mod = load_module(module);
-    if (mod->abi != SNX_ABI)
-        fatal("The recompiled code is from another ScarletNX version: recompile the game with this one (%s)",
-              module);
+    if (mod->abi < SNX_ABI_OLDEST || mod->abi > SNX_ABI) {
+        WARN("game: its code is %s\n", module);
+        fatal("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u to %u): recompile "
+              "the game with this one",
+              (unsigned)mod->abi, (unsigned)SNX_ABI_OLDEST, (unsigned)SNX_ABI);
+    }
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
