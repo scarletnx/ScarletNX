@@ -370,6 +370,47 @@ int main(void) {
     core_leave(w);
     core_leave(a);
 
+    /* with nobody waiting for its core, svcSleepThread(-1) takes a thread of its priority waiting for a busy core its
+       core is in the mask of, and waits behind it (Mesosphère's YieldWithCoreMigration) */
+    reset();
+    a = thread(0, 44, 0, 7), c = thread(2, 44, 2, 4), w = thread(3, 44, 2, 5);
+    core_enter(a);
+    core_enter(c);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2 && w->core == 2, "44 behind 44 on core 2: on core %d", on_core(w));
+    y.t = a, y.migrate = 2;
+    pthread_create(&h2, NULL, yield_body, &y);
+    CHECK(settle(w, 0) == 0 && settle(a, -2) == -2 && a->core == 0, "pull: 44 of core 2 on %d, the yielder on %d",
+          on_core(w), on_core(a));
+    pthread_join(h, NULL);
+    core_leave(w);
+    pthread_join(h2, NULL);
+    CHECK(a->on_core == 0, "pull: the yielder back on core %d", a->on_core);
+    core_leave(a);
+    core_leave(c);
+
+    /* but not one of worse priority, and svcSleepThread(0) takes none */
+    reset();
+    a = thread(0, 44, 0, 7), c = thread(2, 44, 2, 4), w = thread(3, 45, 2, 5);
+    core_enter(a);
+    core_enter(c);
+    pthread_create(&h, NULL, enter_body, w);
+    CHECK(settle(w, -2) == -2, "45 behind 44 on core 2: on core %d", on_core(w));
+    y.t = a, y.migrate = 2;
+    pthread_create(&h2, NULL, yield_body, &y);
+    pthread_join(h2, NULL); /* at once: nothing to take */
+    CHECK(a->on_core == 0 && on_core(w) == -2, "yield -1 took 45: 44 on %d, 45 on %d", a->on_core, on_core(w));
+    core_set_prio(w, 44);
+    y.migrate = 0;
+    pthread_create(&h2, NULL, yield_body, &y);
+    pthread_join(h2, NULL);
+    CHECK(a->on_core == 0 && on_core(w) == -2, "yield 0 took 44: 44 on %d, 44 on %d", a->on_core, on_core(w));
+    core_leave(c);
+    pthread_join(h, NULL);
+    CHECK(w->on_core == 2, "the waiter got core %d", w->on_core);
+    core_leave(w);
+    core_leave(a);
+
     /* each core the game may use runs its threads on every third host CPU, its own */
     host(twelve, 12);
     reset();
