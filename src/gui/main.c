@@ -660,7 +660,41 @@ static float text_px(App* app, float x, float y, const char* value, size_t cols,
     return x;
 }
 /* text at a cell, a line too long for its row sliding as the theme says */
+#ifdef SDL_PLATFORM_IOS
+/* the app's container is no business of the player: what the Files app shows as ScarletNX is Documents, so a path in
+   it is told from ScarletNX on, and one in Library from there. Every container path in s is rewritten, into out */
+static const char* tidy_paths(const char* s, char* out, size_t size) {
+    static const char* const marks[] = {"/private/var/mobile/Containers/Data/Application/",
+                                        "/var/mobile/Containers/Data/Application/"};
+    size_t n = 0;
+    bool changed = false;
+    while (*s && n + 1 < size) {
+        const char* rest = NULL;
+        for (size_t i = 0; i < 2 && !rest; ++i)
+            if (!strncmp(s, marks[i], strlen(marks[i])) && strlen(s + strlen(marks[i])) > 36 &&
+                s[strlen(marks[i]) + 36] == '/')
+                rest = s + strlen(marks[i]) + 37;
+        if (rest) {
+            changed = true;
+            if (!strncmp(rest, "Documents", 9) && (rest[9] == '/' || !rest[9])) {
+                n += (size_t)snprintf(out + n, size - n, "ScarletNX");
+                s = rest + 9;
+            } else
+                s = rest;
+            if (n >= size) n = size - 1;
+        } else
+            out[n++] = *s++;
+    }
+    out[n < size ? n : size - 1] = 0;
+    return changed ? out : NULL;
+}
+#endif
 static void text(App* app, int x, int y, const char* value, SDL_Color color) {
+#ifdef SDL_PLATFORM_IOS
+    char tidy[1100];
+    const char* shorter = tidy_paths(value, tidy, sizeof tidy);
+    if (shorter) value = shorter;
+#endif
     int skip = gui_slide(gui_text_cols(value) - (app->cols - 1 - x), now_ms(app), app->theme.scroll_ms);
     text_px(app, (float)(x * 8 * app->scale), (float)(y * 16 * app->scale), gui_cols_skip(value, skip), SIZE_MAX, color,
             1);
@@ -1104,9 +1138,21 @@ static void recent_note(App* app) {
 }
 /* the recent games shown, and whether a row under them shows the rest */
 static int recent_shown(const App* app) {
+#ifdef SDL_PLATFORM_IOS
+    (void)app; /* the games made are all in Games: a second list of them only repeats it */
+    return 0;
+#else
     return app->recent_all ? app->recent.count : SDL_min(app->recent.count, GUI_RECENT_SHOWN);
+#endif
 }
-static int recent_more(const App* app) { return recent_shown(app) < app->recent.count; }
+static int recent_more(const App* app) {
+#ifdef SDL_PLATFORM_IOS
+    (void)app;
+    return 0;
+#else
+    return recent_shown(app) < app->recent.count;
+#endif
+}
 /* the rows over Games' games: the recent games and the row that shows the rest (P, the foot's, adds a folder) */
 static size_t games_head(const App* app) { return (size_t)(recent_shown(app) + recent_more(app)); }
 /* the list as the menu and the file have it */
@@ -1636,6 +1682,11 @@ static size_t wrap_at(const char* s, int width, int path) {
    slide: the rows it took */
 static int wrap_in(App* app, GuiRect r, int x, int y, const char* s, int path, SDL_Color color) {
     char row[1100];
+#ifdef SDL_PLATFORM_IOS
+    char tidy[1100];
+    const char* shorter = tidy_paths(s, tidy, sizeof tidy);
+    if (shorter) s = shorter;
+#endif
     int width = (r.x + r.w - x) / cell_w(app), rows = 0;
     if (width <= 0) return 0;
     if (app->theme.text == GUI_TEXT_SLIDE) {
@@ -3893,13 +3944,18 @@ static void draw_games(App* app) {
             y += wrap_in(app, r, r.x, y, line, 0, soft) * cell_h(app);
         }
         y += wrap_in(app, r, r.x, y, app->games_dir ? app->games_dir : "recompiled/", 1, soft) * cell_h(app);
+#ifndef SDL_PLATFORM_IOS /* a phone lists the games made alone */
         {
             char* dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
             y += wrap_in(app, r, r.x, y, dumps ? dumps : "dumps/", 1, soft) * cell_h(app);
             free(dumps);
         }
+#endif
         for (i = 0; i < (size_t)app->folder_count; ++i)
-            y += wrap_in(app, r, r.x, y, app->folders[i], 1, soft) * cell_h(app);
+#ifdef SDL_PLATFORM_IOS
+            if (app->folders_library[i] == GUI_LIBRARY_RECOMPILED)
+#endif
+                y += wrap_in(app, r, r.x, y, app->folders[i], 1, soft) * cell_h(app);
         last_output(app, r, y);
     }
     status_box(app, g.place.status);
@@ -5102,10 +5158,25 @@ static void made_read(const App* app, MadeGames* made) {
     snx_free_strings(names, count);
 }
 /* the program of the game made from dump, else NULL */
+#ifdef SDL_PLATFORM_IOS
+/* a file's own name, without its folder */
+static const char* leaf_of(const char* path) {
+    const char* leaf = path;
+    for (const char* s = path; *s; ++s)
+        if (*s == '/' || *s == '\\') leaf = s + 1;
+    return leaf;
+}
+#endif
 static const char* made_program(const MadeGames* made, const char* dump) {
     size_t i;
     for (i = 0; i < made->count; ++i)
         if (snx_same_file(made->game[i].dump, dump)) return made->game[i].program;
+#ifdef SDL_PLATFORM_IOS
+    /* a dump picked outside dumps/ was prepared from its copy there, and the picked file may not be readable any more:
+       the copy keeps its name */
+    for (i = 0; i < made->count; ++i)
+        if (*leaf_of(dump) && !strcmp(leaf_of(made->game[i].dump), leaf_of(dump))) return made->game[i].program;
+#endif
     return NULL;
 }
 static void made_free(MadeGames* made) {
@@ -8226,6 +8297,7 @@ static void pump(App* app) {
             if (!app->abnormal_exit) {
                 recent_made_here(app);
                 recent_as_games(app); /* the game's name, now that it is the entry */
+                list_games(app);      /* the list the run left behind has not the game made */
                 leave_run(app);
             }
 #endif
@@ -9041,11 +9113,16 @@ static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     if (old && !gui_games_add(games, old, kinds, error, sizeof error) && !message[0])
         snprintf(message, size, "%s", error);
     free(old);
+#ifndef SDL_PLATFORM_IOS /* a phone lists the games made: a dump is prepared from the Menu */
     if (dumps && snx_is_dir(dumps) && /* none: places_apply said it could not be made */
         !gui_games_add_deep(games, dumps, GUI_GAMES_DUMP | GUI_GAMES_CIA, GUI_FOLDER_DEPTH, error, sizeof error) &&
         !message[0])
         snprintf(message, size, "%s", error);
+#endif
     for (i = 0; i < app->folder_count; ++i) /* a library's folder, its library's games */
+#ifdef SDL_PLATFORM_IOS
+        if (app->folders_library[i] == GUI_LIBRARY_RECOMPILED)
+#endif
         if (!gui_games_add_deep(games, app->folders[i],
                                 (app->folders_library[i] == GUI_LIBRARY_RECOMPILED ? GUI_GAMES_RUN : GUI_GAMES_DUMP) |
                                     GUI_GAMES_CIA,
