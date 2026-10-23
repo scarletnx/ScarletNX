@@ -161,6 +161,9 @@ u64 mem_restore_alloc(u64 size);
 int mem_restore_write(u64 off, const void* p, u64 size);
 int mem_restore_blocks(const MemBlock* blk, u32 n);
 void mem_restore_end(u64 heap_size, u64 phys_mapped);
+/* before any of that, while the game runs: whether blk (n of them) is a block list mem_restore_blocks takes, one that
+   covers the address space in order with the code mapped now. 0, or -1 */
+int mem_restore_check(const MemBlock* blk, u32 n);
 
 extern MemLayout g_layout;
 extern u8* g_mem;

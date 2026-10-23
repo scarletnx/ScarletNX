@@ -117,10 +117,32 @@ static size_t ar_carve(size_t* at, size_t count, size_t size) {
     return off;
 }
 
+/* where a state's arrays lie in its one block, from its counts (voices also counts the voice channels) */
+typedef struct {
+    size_t voice, chan, mix, effect, sink, buf, temp, order, split, dest, stack, seen, size;
+} ARLayout;
+static void ar_layout(ARLayout* l, u32 voices, u32 nmix, u32 effects, u32 sinks, u32 buffers, u32 frame, u32 nsplit,
+                      u32 ndest) {
+    const ARState* z = NULL; /* for the element sizes */
+    size_t at = sizeof *z;
+    l->voice = ar_carve(&at, voices ? voices : 1, sizeof *z->voice);
+    l->chan = ar_carve(&at, voices ? voices : 1, sizeof *z->chan);
+    l->mix = ar_carve(&at, nmix, sizeof *z->mix);
+    l->effect = ar_carve(&at, effects ? effects : 1, sizeof *z->effect);
+    l->sink = ar_carve(&at, sinks ? sinks : 1, sizeof *z->sink);
+    l->buf = ar_carve(&at, (size_t)(buffers + SNX_AUDREN_CHANNELS) * frame, sizeof *z->buf);
+    l->temp = ar_carve(&at, SNX_AUDREN_TEMP + SNX_AUDREN_HISTORY, sizeof *z->temp);
+    l->order = ar_carve(&at, nmix, sizeof *z->order);
+    l->split = ar_carve(&at, nsplit ? nsplit : 1, sizeof *z->split);
+    l->dest = ar_carve(&at, ndest ? ndest : 1, sizeof *z->dest);
+    l->stack = ar_carve(&at, nsplit ? (size_t)nmix * (nmix + 1) : 0, sizeof *z->stack);
+    l->seen = ar_carve(&at, nmix, 2);
+    l->size = at;
+}
+
 ARState* audren_state_new(const u8* params) {
     u32 nmix, nsplit, ndest, i;
-    const ARState* z;
-    size_t at, voice, chan, mix, effect, sink, buf, temp, order, split, dest, stack, seen;
+    ARLayout l;
     ARState* s;
     u8* base;
     u32 w[11]; /* host numbers: the IPC layer converted OpenAudioRenderer's raw parameters */
@@ -138,21 +160,8 @@ ARState* audren_state_new(const u8* params) {
         nsplit = splitters < 0x1000 ? splitters : 0x1000;
         ndest = dests < 0x4000 ? dests : 0x4000;
     }
-    z = NULL; /* for the element sizes */
-    at = sizeof *z;
-    voice = ar_carve(&at, voices ? voices : 1, sizeof *z->voice);
-    chan = ar_carve(&at, voices ? voices : 1, sizeof *z->chan);
-    mix = ar_carve(&at, nmix, sizeof *z->mix);
-    effect = ar_carve(&at, effects ? effects : 1, sizeof *z->effect);
-    sink = ar_carve(&at, sinks ? sinks : 1, sizeof *z->sink);
-    buf = ar_carve(&at, (size_t)(buffers + SNX_AUDREN_CHANNELS) * frame, sizeof *z->buf);
-    temp = ar_carve(&at, SNX_AUDREN_TEMP + SNX_AUDREN_HISTORY, sizeof *z->temp);
-    order = ar_carve(&at, nmix, sizeof *z->order);
-    split = ar_carve(&at, nsplit ? nsplit : 1, sizeof *z->split);
-    dest = ar_carve(&at, ndest ? ndest : 1, sizeof *z->dest);
-    stack = ar_carve(&at, nsplit ? (size_t)nmix * (nmix + 1) : 0, sizeof *z->stack);
-    seen = ar_carve(&at, nmix, 2);
-    s = calloc(1, at);
+    ar_layout(&l, voices, nmix, effects, sinks, buffers, frame, nsplit, ndest);
+    s = calloc(1, l.size);
     if (!s) return NULL;
     base = (u8*)s;
     s->rate = rate;
@@ -164,18 +173,18 @@ ARState* audren_state_new(const u8* params) {
     s->nsinks = sinks;
     s->nsplit = nsplit;
     s->ndest = ndest;
-    s->voice = (void*)(base + voice);
-    s->chan = (void*)(base + chan);
-    s->mix = (void*)(base + mix);
-    s->effect = (void*)(base + effect);
-    s->sink = (void*)(base + sink);
-    s->buf = (void*)(base + buf);
-    s->temp = (void*)(base + temp);
-    s->order = (void*)(base + order);
-    s->split = (void*)(base + split);
-    s->dest = (void*)(base + dest);
-    s->stack = nsplit ? (void*)(base + stack) : NULL;
-    s->seen = base + seen;
+    s->voice = (void*)(base + l.voice);
+    s->chan = (void*)(base + l.chan);
+    s->mix = (void*)(base + l.mix);
+    s->effect = (void*)(base + l.effect);
+    s->sink = (void*)(base + l.sink);
+    s->buf = (void*)(base + l.buf);
+    s->temp = (void*)(base + l.temp);
+    s->order = (void*)(base + l.order);
+    s->split = (void*)(base + l.split);
+    s->dest = (void*)(base + l.dest);
+    s->stack = nsplit ? (void*)(base + l.stack) : NULL;
+    s->seen = base + l.seen;
     for (i = 0; i < s->nsplit; i++) s->split[i].head = -1;
     for (i = 0; i < s->ndest; i++) {
         s->dest[i].next = -1;
@@ -2148,11 +2157,39 @@ void audren_state_pack(const ARState* s, u8* out) {
                       : NULL;
     }
 }
+/* the indices a frame and an update follow without checking, as the update leaves them: 0, or -1 */
+static int ar_state_check(const ARState* s) {
+    u32 i;
+    for (i = 0; i < s->nres; i++)
+        if (s->chan[i].index >= SNX_AUDREN_WAVES) return -1;
+    for (i = 0; i < s->nvoices; i++)
+        if (s->voice[i].channels > SNX_AUDREN_CHANNELS || s->voice[i].wave_index >= SNX_AUDREN_WAVES) return -1;
+    for (i = 0; i < s->nmix; i++)
+        if (s->mix[i].buffers > SNX_AUDREN_MIX_OUTS) return -1;
+    for (i = 0; i < s->nsplit; i++)
+        if (s->split[i].head < -1 || s->split[i].head >= (i32)s->ndest || s->split[i].count > s->ndest) return -1;
+    for (i = 0; i < s->ndest; i++)
+        if (s->dest[i].next < -1 || s->dest[i].next >= (i32)s->ndest) return -1;
+    return 0;
+}
 ARState* audren_state_unpack(const u8* in, u64 size) {
     ARState* s;
+    ARLayout l;
     u32 i;
     if (size < sizeof *s || !(s = (ARState*)calloc(1, (size_t)size))) return NULL;
     memcpy(s, in, (size_t)size);
+    /* the counts in audren_state_new's bounds, and every array where it lays them out */
+    if (!s->rate || !s->frame || s->frame > 1024 || s->buffers > 0x400 || !s->nmix || s->nmix > 0x101 ||
+        s->nres > 0x400 || s->nvoices != s->nres || s->neffects > 0x100 || s->nsinks > 0x40 || s->nsplit > 0x1000 ||
+        s->ndest > 0x4000 || !s->nsplit != !s->ndest)
+        goto bad;
+    ar_layout(&l, s->nres, s->nmix, s->neffects, s->nsinks, s->buffers, s->frame, s->nsplit, s->ndest);
+    if (l.size != size || (uintptr_t)s->voice != l.voice || (uintptr_t)s->chan != l.chan ||
+        (uintptr_t)s->mix != l.mix || (uintptr_t)s->effect != l.effect || (uintptr_t)s->sink != l.sink ||
+        (uintptr_t)s->buf != l.buf || (uintptr_t)s->temp != l.temp || (uintptr_t)s->order != l.order ||
+        (uintptr_t)s->split != l.split || (uintptr_t)s->dest != l.dest ||
+        (uintptr_t)s->stack != (s->nsplit ? l.stack : 0) || (uintptr_t)s->seen != l.seen)
+        goto bad;
     AR_FROM_OFF(s, voice, ARVoice*);
     AR_FROM_OFF(s, chan, ARChannel*);
     AR_FROM_OFF(s, mix, ARMix*);
@@ -2165,13 +2202,21 @@ ARState* audren_state_unpack(const u8* in, u64 size) {
     AR_FROM_OFF(s, buf, float*);
     AR_FROM_OFF(s, temp, i16*);
     AR_FROM_OFF(s, order, i32*);
-    if (audren_state_size(s) != size) {
-        free(s);
-        return NULL;
-    }
+    if (ar_state_check(s)) goto bad;
     for (i = 0; i < s->neffects; i++) {
-        uintptr_t k = (uintptr_t)s->effect[i].fx;
-        s->effect[i].fx = k && k <= SNX_AUDREN_COMPRESSORS ? &g_hle.audren_dsp.compressors[k - 1] : NULL;
+        AREffect* e = &s->effect[i];
+        uintptr_t k = (uintptr_t)e->fx;
+        /* a compressor's slot of the pool, which the state's g_hle holds; the other effects' state and every
+           limiter's line are made again by the effect's next frame */
+        e->fx = k && k <= SNX_AUDREN_COMPRESSORS && e->type == SNX_AUDREN_EFFECT_COMPRESSOR
+                    ? &g_hle.audren_dsp.compressors[k - 1]
+                    : NULL;
+        e->look = NULL;
+        e->look_len = 0;
+        memset(e->look_pos, 0, sizeof e->look_pos);
     }
     return s;
+bad:
+    free(s);
+    return NULL;
 }

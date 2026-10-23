@@ -18,7 +18,10 @@
 
 /* ============================================================ events */
 /* a handle to e for a reply: the handle takes its own reference */
-u32 ev_handle(u32 ev) { return h_new(&kev(ev)->o); }
+u32 ev_handle(u32 ev) {
+    KEvent* e = kev(ev);
+    return e ? h_new(&e->o) : 0; /* no handle: the game's wait on 0 is refused as an invalid handle */
+}
 
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);

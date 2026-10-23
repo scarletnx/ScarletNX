@@ -20,14 +20,20 @@ void host1x_forget_handle(u32 h);
 /* Save states. The IOVA table, which the game holds addresses of (MAP_BUFFER's): written into io, and read back in
    place of the running one. 0, or -1 */
 struct StateIo;
+typedef struct H1Iova H1Iova;
 int host1x_iova_save(struct StateIo* io);
-int host1x_iova_load(struct StateIo* io);
+H1Iova* host1x_iova_parse(struct StateIo* io); /* read into a copy, NULL when damaged */
+void host1x_iova_install(H1Iova* t);           /* in place of the running table, the copy freed */
+void host1x_iova_free(H1Iova* t);
 /* A channel's state (its syncpoints, the stream's class and method, the engine's registers), and a channel opened
    with it (NULL when io holds no channel or memory ran out). Its jobs ran before the save (the game was paused,
    host1x_drain). An NVDEC channel's decoder starts again: a movie loaded in its middle shows what its next pictures
    decode to without their references until its next key frame */
 int host1x_channel_save(const H1Ch* ch, struct StateIo* io);
 H1Ch* host1x_channel_load(struct StateIo* io);
+/* a channel host1x_channel_load made for a load that was refused: closed without freeing the syncpoints it names,
+   which are the running game's ids too */
+void host1x_channel_discard(H1Ch* ch);
 /* Routes FFmpeg's log (warnings and worse, a limited number) into the game log. nvdec.c defines it; every user of
    libavcodec calls it before opening a decoder */
 void ffmpeg_log_init(void);

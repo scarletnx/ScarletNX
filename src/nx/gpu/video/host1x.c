@@ -462,18 +462,39 @@ int host1x_iova_save(StateIo* io) {
     pm_unlock(&g_iova_lk);
     return r ? -1 : 0;
 }
-int host1x_iova_load(StateIo* io) {
-    u32 n, i;
-    int r = 0;
-    if (io_get32(io, &n) || n > IOVA_SLOTS) return -1;
-    pm_lock(&g_iova_lk);
-    for (i = 0; i < n && !r; i++)
-        r = io_get64(io, &g_iova[i].iova) | io_get64(io, &g_iova[i].span) | io_get64(io, &g_iova[i].addr) |
-            io_get32(io, &g_iova[i].size) | io_get32(io, &g_iova[i].handle);
-    g_niova = r ? 0 : n;
-    pm_unlock(&g_iova_lk);
-    return r ? -1 : 0;
+struct H1Iova {
+    IovaMap map[IOVA_SLOTS];
+    u32 n;
+};
+H1Iova* host1x_iova_parse(StateIo* io) {
+    H1Iova* t = (H1Iova*)calloc(1, sizeof *t);
+    u64 end = IOVA_BASE;
+    u32 i;
+    if (!t || io_get32(io, &t->n) || t->n > IOVA_SLOTS) goto bad;
+    for (i = 0; i < t->n; i++) {
+        IovaMap* m = &t->map[i];
+        if (io_get64(io, &m->iova) || io_get64(io, &m->span) || io_get64(io, &m->addr) || io_get32(io, &m->size) ||
+            io_get32(io, &m->handle))
+            goto bad;
+        /* sorted, apart, inside the IOVA space and the guest's, each one inside its span */
+        if (m->iova < end || m->span > IOVA_END - m->iova || m->size > m->span || m->addr > AS_MAX ||
+            m->size > AS_MAX - m->addr)
+            goto bad;
+        end = m->iova + m->span;
+    }
+    return t;
+bad:
+    free(t);
+    return NULL;
 }
+void host1x_iova_install(H1Iova* t) {
+    pm_lock(&g_iova_lk);
+    memcpy(g_iova, t->map, sizeof *g_iova * t->n);
+    g_niova = t->n;
+    pm_unlock(&g_iova_lk);
+    free(t);
+}
+void host1x_iova_free(H1Iova* t) { free(t); }
 int host1x_channel_save(const H1Ch* ch, StateIo* io) {
     return io_put32(io, (u32)ch->is_vic) | io_put(io, ch->syncpt, sizeof ch->syncpt) | io_put32(io, ch->cls) |
                    io_put32(io, ch->method) | io_put32(io, ch->payload) | io_put(io, ch->regs, sizeof ch->regs)
@@ -486,9 +507,13 @@ H1Ch* host1x_channel_load(StateIo* io) {
     if (io_get32(io, &is_vic) || !(ch = host1x_open(is_vic != 0))) return NULL;
     if (io_get(io, ch->syncpt, sizeof ch->syncpt) || io_get32(io, &ch->cls) || io_get32(io, &ch->method) ||
         io_get32(io, &ch->payload) || io_get(io, ch->regs, sizeof ch->regs)) {
-        memset(ch->syncpt, 0, sizeof ch->syncpt); /* the state's: not this channel's to free */
-        host1x_close(ch);
+        host1x_channel_discard(ch);
         return NULL;
     }
     return ch;
+}
+void host1x_channel_discard(H1Ch* ch) {
+    if (!ch) return;
+    memset(ch->syncpt, 0, sizeof ch->syncpt); /* the state's: not this channel's to free */
+    host1x_close(ch);
 }

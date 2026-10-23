@@ -257,35 +257,57 @@ int dma_snap_save(StateIo* io) {
     pm_unlock(&g_snap_lk);
     return r;
 }
-int dma_snap_load(StateIo* io) {
+/* the rings of a state's snapshots, read but not yet in place */
+struct DmaStaged {
+    DmaSnapRing* q[128];
+};
+void dma_snap_staged_free(DmaStaged* d) {
+    u32 c, i;
+    if (!d) return;
+    for (c = 0; c < 128; c++)
+        if (d->q[c]) {
+            for (i = d->q[c]->tail; i != d->q[c]->head; i++) free(d->q[c]->e[i % SNAP_RING].data);
+            free(d->q[c]);
+        }
+    free(d);
+}
+DmaStaged* dma_snap_parse(StateIo* io) {
+    DmaStaged* d = (DmaStaged*)calloc(1, sizeof *d);
     u32 c, n, i;
-    u64 gen = gpu_mem_generation(); /* the guest memory they were read from is the state's, as new as any */
-    for (c = 0; c < 128; c++) dma_snap_reset(c);
+    if (!d) return NULL;
     for (;;) {
         DmaSnapRing* q;
-        if (io_get32(io, &c)) return -1;
-        if (!c) return 0;
-        if (c > 128 || io_get32(io, &n) || n > SNAP_RING) return -1;
-        q = (DmaSnapRing*)calloc(1, sizeof *q);
-        if (!q) return -1;
+        if (io_get32(io, &c)) goto bad;
+        if (!c) return d;
+        if (c > 128 || d->q[c - 1] || io_get32(io, &n) || n > SNAP_RING) goto bad;
+        if (!(q = d->q[c - 1] = (DmaSnapRing*)calloc(1, sizeof *q))) goto bad;
         for (i = 0; i < n; i++) {
             DmaSnap* e = &q->e[i];
             if (io_get64(io, &e->job) || io_get64(io, &e->src) || io_get64(io, &e->len) || io_get32(io, &e->launch) ||
-                e->len > SNAP_TOTAL || !(e->data = (u8*)malloc(e->len ? (size_t)e->len : 1)) ||
-                io_get(io, e->data, e->len)) {
-                q->head = i + 1;
-                pm_lock(&g_snap_lk);
-                while (q->tail != q->head) snap_drop(q);
-                pm_unlock(&g_snap_lk);
-                free(q);
-                return -1;
-            }
-            e->gen = gen;
-            q->head = i + 1;
+                e->len > SNAP_TOTAL || !(e->data = (u8*)malloc(e->len ? (size_t)e->len : 1)))
+                goto bad;
+            q->head = i + 1; /* freed with the ring from here on */
+            if (io_get(io, e->data, e->len)) goto bad;
         }
-        pm_lock(&g_snap_lk);
-        g_snaps[c - 1] = q;
-        for (i = 0; i < n; i++) g_snap_bytes += q->e[i].len;
-        pm_unlock(&g_snap_lk);
     }
+bad:
+    dma_snap_staged_free(d);
+    return NULL;
+}
+void dma_snap_install(DmaStaged* d) {
+    u32 c, i;
+    u64 gen = gpu_mem_generation(); /* the guest memory they were read from is the state's, as new as any */
+    for (c = 0; c < 128; c++) dma_snap_reset(c);
+    pm_lock(&g_snap_lk);
+    for (c = 0; d && c < 128; c++)
+        if (d->q[c]) {
+            for (i = d->q[c]->tail; i != d->q[c]->head; i++) {
+                d->q[c]->e[i % SNAP_RING].gen = gen;
+                g_snap_bytes += d->q[c]->e[i % SNAP_RING].len;
+            }
+            g_snaps[c] = d->q[c];
+            d->q[c] = NULL;
+        }
+    pm_unlock(&g_snap_lk);
+    free(d);
 }

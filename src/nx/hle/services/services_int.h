@@ -19,10 +19,24 @@
 /* ---- services.c */
 /* The services keep their events and shared memories as kernel object ids (kobj_id), which a save state holds as they
    are: kev and kshm are the objects again, and ev_signal, ev_clear and shm_ptr act on them by id */
-static inline KEvent* kev(u32 id) { return (KEvent*)kobj_at(id); }
-static inline KShmem* kshm(u32 id) { return (KShmem*)kobj_at(id); }
-static inline void ev_signal(u32 id) { kevent_signal(kev(id)); }
-static inline void ev_clear(u32 id) { kevent_clear(kev(id)); }
+/* An id that names no object of the type (0, or one a damaged save state held) gives NULL, and ev_signal and ev_clear
+   do nothing with it. The shared memories' ids are checked when a state is loaded */
+static inline KEvent* kev(u32 id) {
+    KObj* o = kobj_at(id);
+    return o && o->type == KO_EVENT ? (KEvent*)o : NULL;
+}
+static inline KShmem* kshm(u32 id) {
+    KObj* o = kobj_at(id);
+    return o && o->type == KO_SHMEM ? (KShmem*)o : NULL;
+}
+static inline void ev_signal(u32 id) {
+    KEvent* e = kev(id);
+    if (e) kevent_signal(e);
+}
+static inline void ev_clear(u32 id) {
+    KEvent* e = kev(id);
+    if (e) kevent_clear(e);
+}
 static inline u8* shm_ptr(u32 id) { return kshmem_ptr(kshm(id)); }
 u32 ev_handle(u32 ev); /* a handle to the event for a reply, with its own reference */
 /* a new event for a reply that only the game holds, signaled or not. Returns 0, for a handler to return */

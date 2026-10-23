@@ -107,6 +107,7 @@ void kobj_unref(KObj* o) {
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
+    e->o.type = KO_EVENT;
     kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;

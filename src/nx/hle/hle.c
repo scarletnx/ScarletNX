@@ -62,7 +62,7 @@ static int slot_free(const void* slot, size_t size) {
     return !p[0] && !memcmp(p, p + 1, size - 1);
 }
 void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what) {
-    u32 i = *next, k;
+    u32 i = *next < count ? *next : 0, k; /* a save state's next past the pool's end starts it over */
     for (k = 0; k < count; k++, i = i + 1 == count ? 0 : i + 1)
         if (slot_free((u8*)base + (size_t)i * size, size)) {
             *next = i + 1 == count ? 0 : i + 1;

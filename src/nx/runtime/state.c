@@ -298,6 +298,61 @@ out:
     return r;
 }
 
+/* A load's first pass over MEMORY, while the game still runs: the spans and the block table checked as load_memory and
+   mem_restore_blocks will take them, and every page group read, so that zstd checks each frame's checksum before
+   anything changes. 0, or -1 with why */
+static int check_memory(StateReader* r, char* why, size_t whysize) {
+    u64 hdr[2], *span_off = NULL, *span_size = NULL;
+    u32 nblk = 0, nspan = 0, i, k, rec[2];
+    MemBlock* blk = NULL;
+    u8* buf = (u8*)malloc(GROUP * PAGE);
+    int ok = 0;
+    if (!buf || sr_begin(r, "MEMORY", NULL) || sr_get(r, hdr, sizeof hdr) || sr_get(r, &nblk, 4) ||
+        sr_get(r, &nspan, 4) || nblk > (1u << 24) || nspan > (1u << 24))
+        goto out;
+    blk = (MemBlock*)malloc(sizeof *blk * (nblk + 1));
+    span_off = (u64*)malloc(8 * (nspan + 1));
+    span_size = (u64*)malloc(8 * (nspan + 1));
+    if (!blk || !span_off || !span_size || sr_get(r, blk, sizeof *blk * nblk)) goto out;
+    for (i = 0; i < nspan; i++) {
+        if (sr_get(r, &span_off[i], 8) || sr_get(r, &span_size[i], 8) || sr_get(r, rec, sizeof rec)) goto out;
+        if (!span_size[i] || ((span_off[i] | span_size[i]) & (PAGE - 1)) || span_size[i] > (1ull << 40) ||
+            span_off[i] > (1ull << 40) || rec[0] > 1 || (rec[0] && (!rec[1] || rec[1] > KSHMEM_MAX)))
+            goto out;
+    }
+    if (mem_restore_check(blk, nblk)) goto out;
+    for (i = 0; i < nblk; i++) { /* a block of pool pages lies inside one span */
+        u64 o;
+        if (!blk[i].pool) continue;
+        o = blk[i].pool - 1;
+        for (k = 0; k < nspan && !(span_off[k] <= o && o < span_off[k] + span_size[k]); k++) {}
+        if (k == nspan || blk[i].size > span_off[k] + span_size[k] - o) goto out;
+    }
+    for (i = 0; i < nspan; i++) {
+        u64 at, bits;
+        for (at = 0; at < span_size[i]; at += GROUP * PAGE)
+            if (get_group(r, buf, (u32)((span_size[i] - at < GROUP * PAGE ? span_size[i] - at : GROUP * PAGE) / PAGE),
+                          0, &bits))
+                goto out;
+    }
+    for (i = 0; i < nblk; i++) {
+        u64 at, bits;
+        if (blk[i].state == MS_FREE || blk[i].state == MS_CODE || blk[i].pool) continue;
+        for (at = 0; at < blk[i].size; at += GROUP * PAGE)
+            if (get_group(r, buf, (u32)((blk[i].size - at < GROUP * PAGE ? blk[i].size - at : GROUP * PAGE) / PAGE), 0,
+                          &bits))
+                goto out;
+    }
+    ok = !sr_left(r);
+out:
+    if (!ok) snprintf(why, whysize, "its guest memory is damaged");
+    free(buf);
+    free(blk);
+    free(span_off);
+    free(span_size);
+    return ok ? 0 : -1;
+}
+
 /* A load's guest memory. The state's shared memories keep their pages where the running process's are, when a live
    shared memory has the slot and size (the services make theirs at startup, the same in every run); one that has
    none gets new host view pages here, before the memory lock is taken, and is told of them after g_hle is in place.
@@ -600,16 +655,11 @@ static int savable(char* why, size_t whysize) {
     return 0;
 }
 
-/* HLE (g_hle, its pointers numbers) and HEAP (what its members own) into the buffers, the names its numbers stand for
-   in names */
-static int save_hle(Buf* hle, Buf* heap, Names* names) {
-    Hle* c = (Hle*)malloc(sizeof *c);
-    StateIo io = buf_io(heap);
-    u32 i, k;
-    int r = 0;
-    if (!c) return -1;
-    memcpy(c, &g_hle, sizeof *c);
-    /* the host's: kthread_resume and the load's plan set them again */
+/* The host's fields of a copy of g_hle cleared: what kthread_resume, the load's plan and the running process set
+   again, and what the services make again for the state. A save writes them cleared, and a load clears them in the
+   state's copy whatever the file held, before it fills any */
+static void nil_host(Hle* c) {
+    u32 i;
     for (i = 0; i < KTHREAD_MAX; i++) {
         KThread* t = &c->thread.threads[i];
         NIL(t->cpu.mem);
@@ -620,6 +670,66 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
         NIL(t->arm.rt);
     }
     for (i = 0; i < KSHMEM_MAX; i++) NIL(c->svcmem.shmems[i].host);
+    for (i = 0; i < AM_STORAGES; i++) NIL(c->am.storages[i].d);
+    for (i = 0; i < AUDOUT_MAX; i++) NIL(c->audio.outs_pool[i].output);
+    for (i = 0; i < HWOPUS_POOL; i++) {
+        HwOpus* h = &c->audio.opus[i];
+#ifndef SNX_NO_H264
+        NIL(h->dec);
+        NIL(h->pkt);
+        NIL(h->frame);
+#endif
+        NIL(h->queue);
+        NIL(h->taps);
+        NIL(h->hist);
+        NIL(h->lk);
+    }
+    for (i = 0; i < SNX_AUDREN_MAX; i++) {
+        NIL(c->audren.rens[i].s);
+        NIL(c->audren.rens[i].out);
+        c->audren.rens[i].out_failed = c->audren.rens[i].out_started = 0;
+    }
+    for (i = 0; i < RO_SESSIONS * RO_LIMIT; i++) NIL(c->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
+    for (i = 0; i < NV_GMMU_L1; i++) NIL(c->nvdrv.gmmu[i]);
+    NIL(c->nvdrv.gmaps);
+    NIL(c->nvdrv.gruns);
+    NIL(c->nvdrv.vafree);
+    NIL(c->nvdrv.alias);
+    for (i = 0; i < NV_FDS; i++) NIL(c->nvdrv.nvf[i].h1x);
+    for (i = 0; i < FS_FS_MAX; i++) NIL(c->fs.fss[i].root);
+    for (i = 0; i < FS_FILE_MAX; i++) {
+        NIL(c->fs.files[i].f);
+        NIL(c->fs.files[i].node);
+    }
+    for (i = 0; i < FS_DIR_MAX; i++) NIL(c->fs.dirs[i].node);
+    NIL(c->ipc.reg);
+    NIL(c->ipc.ring);
+    NIL(c->debug.syms);
+    NIL(c->am.nacp);
+    NIL(c->bsd.room);
+    NIL(c->ssl.roots);
+    NIL(c->ssl.bio);
+    for (i = 0; i < SSL_CONTEXT_MAX; i++) {
+        SslContext* x = &c->ssl.ctxs[i];
+        NIL(x->ctx);
+        NIL(x->store);
+        NIL(x->client_key);
+        NIL(x->client_cert);
+        NIL(x->client_chain);
+        NIL(x->lk);
+    }
+    for (i = 0; i < BSD_MAX; i++) NIL(c->bsd.bsds[i].lk);
+    for (i = 0; i < LDN_MAX; i++) NIL(c->ldn.ldn[i].lk);
+}
+/* HLE (g_hle, its pointers numbers) and HEAP (what its members own) into the buffers, the names its numbers stand for
+   in names */
+static int save_hle(Buf* hle, Buf* heap, Names* names) {
+    Hle* c = (Hle*)malloc(sizeof *c);
+    StateIo io = buf_io(heap);
+    u32 i, k;
+    int r = 0;
+    if (!c) return -1;
+    memcpy(c, &g_hle, sizeof *c);
     /* IPC: the objects' functions and names, their data and the sessions' and domains' objects */
     for (i = 0; i < SVCOBJ_MAX; i++) {
         SvcObj* o = &c->ipc.svcobjs[i];
@@ -638,7 +748,6 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
     for (i = 0; i < AM_STORAGES; i++) {
         StorageData* s = &c->am.storages[i];
         if (s->obj && s->d) r |= heap_put(&io, HEAP_STORAGE, i, s->d, s->size ? s->size : 1);
-        NIL(s->d);
     }
     for (i = 0; i < AM_ACCESSORS; i++) SWZ(c->am.accessors[i].storage);
     for (i = 0; i < AM_APPLETS; i++) {
@@ -648,22 +757,7 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
     for (i = 0; i < AM_USER_CHANNEL; i++) SWZ(c->am.user_channel[i]);
     /* audio: the outs' list; their host streams and the decoders are made again */
     SWZ(c->audio.outs);
-    for (i = 0; i < AUDOUT_MAX; i++) {
-        SWZ(c->audio.outs_pool[i].next);
-        NIL(c->audio.outs_pool[i].output);
-    }
-    for (i = 0; i < HWOPUS_POOL; i++) {
-        HwOpus* h = &c->audio.opus[i];
-#ifndef SNX_NO_H264
-        NIL(h->dec);
-        NIL(h->pkt);
-        NIL(h->frame);
-#endif
-        NIL(h->queue);
-        NIL(h->taps);
-        NIL(h->hist);
-        NIL(h->lk);
-    }
+    for (i = 0; i < AUDOUT_MAX; i++) SWZ(c->audio.outs_pool[i].next);
     /* audren: each renderer's state as its bytes */
     for (i = 0; i < SNX_AUDREN_MAX; i++) {
         ARRen* a = &c->audren.rens[i];
@@ -679,30 +773,19 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
             free(b);
         }
         SWZ(a->o);
-        NIL(a->s);
-        NIL(a->out);
-        a->out_failed = a->out_started = 0;
     }
     /* ldr: the NRRs' hashes */
     for (i = 0; i < RO_SESSIONS; i++)
         for (k = 0; k < RO_LIMIT; k++) {
             RoNrr* n = &c->ldr.states[i].nrr[k];
             if (n->hashes) r |= heap_put(&io, HEAP_NRR, i * RO_LIMIT + k, n->hashes, (u64)n->count * 32);
-            NIL(n->hashes);
         }
     /* nvdrv: the GPU's page table, its mappings and runs, and the VA allocator's free ranges */
-    for (i = 0; i < NV_GMMU_L1; i++) {
+    for (i = 0; i < NV_GMMU_L1; i++)
         if (c->nvdrv.gmmu[i]) r |= heap_put(&io, HEAP_GMMU, i, c->nvdrv.gmmu[i], 4096 * 8);
-        NIL(c->nvdrv.gmmu[i]);
-    }
     if (c->nvdrv.gmaps) r |= heap_put(&io, HEAP_GMAPS, 0, c->nvdrv.gmaps, (u64)c->nvdrv.ngmaps * sizeof(GMap));
     if (c->nvdrv.gruns) r |= heap_put(&io, HEAP_GRUNS, 0, c->nvdrv.gruns, (u64)c->nvdrv.ngruns * sizeof(GRun));
     if (c->nvdrv.vafree) r |= heap_put(&io, HEAP_VAFREE, 0, c->nvdrv.vafree, (u64)c->nvdrv.nvafree * sizeof(VaRange));
-    NIL(c->nvdrv.gmaps);
-    NIL(c->nvdrv.gruns);
-    NIL(c->nvdrv.vafree);
-    NIL(c->nvdrv.alias);
-    for (i = 0; i < NV_FDS; i++) NIL(c->nvdrv.nvf[i].h1x);
     /* fs: the open file systems, files and folders by path */
     {
         Buf paths = {0};
@@ -720,32 +803,9 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
     c->fs.fs_next = g_hle.fs.fs_next;
     c->fs.file_next = g_hle.fs.file_next;
     c->fs.dir_next = g_hle.fs.dir_next;
-    for (i = 0; i < FS_FS_MAX; i++) NIL(c->fs.fss[i].root);
-    for (i = 0; i < FS_FILE_MAX; i++) {
-        NIL(c->fs.files[i].f);
-        NIL(c->fs.files[i].node);
-    }
-    for (i = 0; i < FS_DIR_MAX; i++) NIL(c->fs.dirs[i].node);
-    /* the rest of the host's side: the running process keeps its own */
-    NIL(c->ipc.reg);
-    NIL(c->ipc.ring);
-    NIL(c->debug.syms);
-    NIL(c->am.nacp);
-    NIL(c->bsd.room);
     SWZ(c->bsd.client);
-    NIL(c->ssl.roots);
-    NIL(c->ssl.bio);
-    for (i = 0; i < SSL_CONTEXT_MAX; i++) {
-        SslContext* x = &c->ssl.ctxs[i];
-        NIL(x->ctx);
-        NIL(x->store);
-        NIL(x->client_key);
-        NIL(x->client_cert);
-        NIL(x->client_chain);
-        NIL(x->lk);
-    }
-    for (i = 0; i < BSD_MAX; i++) NIL(c->bsd.bsds[i].lk);
-    for (i = 0; i < LDN_MAX; i++) NIL(c->ldn.ldn[i].lk);
+    /* the rest of the host's side: the running process keeps its own, or the load makes it again */
+    nil_host(c);
     r |= io_put32(&io, HEAP_END);
     r |= buf_put(hle, c, sizeof *c);
     free(c);
@@ -771,13 +831,226 @@ static void drop_host(void) {
         if (g_hle.nvdrv.nvf[i].h1x) host1x_close(g_hle.nvdrv.nvf[i].h1x);
 }
 
-/* the loaded copy's heap memory from HEAP, its pointers back, and the host's fields the running process keeps: then
-   it is g_hle. 0, or -1 when HEAP doesn't hold what g_hle names (fatal by then) */
-static int apply_hle(Hle* ld, Buf* heap, const Names* names, const ShmPlan* plan, Buf* fs_paths) {
+/* The state's copy of g_hle checked before the running game is touched (comments in review: a state file may come from
+   another player, so what indexes the runtime's own tables is checked, not trusted): the kernel objects its ids name
+   exist and are of their type, the threads' indices and counts are in range, and every pointer it holds lands on an
+   element of the array it points into. Guest memory and the values the game reads are its own business, as a save
+   file's are */
+static const KObj* obj_in(const Hle* h, u32 id) {
+    u32 slot = id & 0xFFFFFF;
+#define OBJ_IN(pool) (slot < sizeof(pool) / sizeof *(pool) ? &(pool)[slot].o : NULL)
+    switch (id >> 24) {
+        case KO_EVENT: return OBJ_IN(h->kernel.events);
+        case KO_THREAD: return OBJ_IN(h->thread.threads);
+        case KO_SESSION: return OBJ_IN(h->ipc.sessions);
+        case KO_SHMEM: return OBJ_IN(h->svcmem.shmems);
+        case KO_TMEM: return OBJ_IN(h->svcmem.tmems);
+        case KO_CODEMEM: return OBJ_IN(h->svcmem.codemems);
+        case KO_WEVENT: return OBJ_IN(h->svc.wevents);
+        case KO_PROCESS: return slot ? NULL : &h->kernel.process;
+        case KO_RESLIMIT: return slot ? NULL : &h->svc.reslimit;
+        default: return NULL;
+    }
+#undef OBJ_IN
+}
+/* 0, or an object of type (any for 0) that exists in h */
+static int id_ok(const Hle* h, u32 id, int type) {
+    const KObj* o;
+    if (!id) return 1;
+    o = obj_in(h, id);
+    return o && o->type == (int)(id >> 24) && (!type || o->type == type);
+}
+/* NULL, or an element of the array arr (in g_hle, where the copy goes) */
+#define ELEM_OK(p, arr)                                                                                                \
+    (!(p) ||                                                                                                           \
+     ((uintptr_t)(p) >= (uintptr_t)(arr) && (uintptr_t)(p) < (uintptr_t)((arr) + sizeof(arr) / sizeof *(arr)) &&       \
+      ((uintptr_t)(p) - (uintptr_t)(arr)) % sizeof *(arr) == 0))
+static int hle_check(const Hle* h) {
+    u32 i, k;
+    /* the handle table */
+    if (h->kernel.htop < 0 || h->kernel.htop > H_MAX || h->kernel.hfree < -1 || h->kernel.hfree >= H_MAX) return -1;
+    for (i = 0; i < H_MAX; i++)
+        if (!id_ok(h, h->kernel.htab[i].obj, 0) || h->kernel.htab[i].next < -1 || h->kernel.htab[i].next >= H_MAX)
+            return -1;
+    /* the threads, their waits and the lists they are in */
+    for (i = 0; i < KTHREAD_MAX; i++) {
+        const KThread* t = &h->thread.threads[i];
+        if (t->o.type != KO_THREAD) continue;
+        if (t->nwaits < 0 || t->nwaits > (int)(sizeof t->waits / sizeof *t->waits) || t->core < 0 ||
+            t->core >= NCORES || t->ideal_core < -1 || t->ideal_core >= NCORES || t->core_next > KTHREAD_MAX ||
+            t->next_waiter > KTHREAD_MAX || t->lock_owner > KTHREAD_MAX || !id_ok(h, t->req_session, KO_SESSION) ||
+            t->req_nvfd > NV_FDS || t->park < PARK_RUN || t->park > PARK_SERVICE || t->wait_svc < WAIT_SVC_SLEEP ||
+            t->wait_svc > WAIT_SVC_SETTLE || t->state < 0 || t->state > 2)
+            return -1;
+        for (k = 0; k < (u32)t->nwaits; k++)
+            if (!t->waits[k] || !id_ok(h, t->waits[k], 0)) return -1;
+    }
+    if (h->sync.mwait > KTHREAD_MAX) return -1;
+    for (i = 0; i < WAIT_BUCKETS; i++)
+        if (h->sync.cvwait[i] > KTHREAD_MAX || h->sync.arbwait[i] > KTHREAD_MAX) return -1;
+    for (i = 0; i < KHANDLED_MAX; i++)
+        if (h->svc.wevents[i].o.type == KO_WEVENT && (!h->svc.wevents[i].r || !id_ok(h, h->svc.wevents[i].r, KO_EVENT)))
+            return -1;
+    /* the shared memories the services write into */
+    if (!id_ok(h, h->hid.shm, KO_SHMEM) || !id_ok(h, h->hid.xpad_shm, KO_SHMEM) ||
+        !id_ok(h, h->hid.six_shm, KO_SHMEM) || !id_ok(h, h->hid.joysix_shm, KO_SHMEM) ||
+        !id_ok(h, h->time.shm, KO_SHMEM) || !id_ok(h, h->pl.shm, KO_SHMEM) || !id_ok(h, h->misc.irs_shm, KO_SHMEM))
+        return -1;
+    /* the pointers, as unswz made them */
+    for (i = 0; i < SVCOBJ_MAX; i++) {
+        const SvcObj* o = &h->ipc.svcobjs[i];
+        if (o->refs > 0 && !o->dispatch) return -1;
+        if (o->data) { /* a slot of its service's pool, whose first u32 names it (svcobj_new_data) */
+            uintptr_t off = (uintptr_t)o->data - HLE_LO;
+            u32 id;
+            if ((uintptr_t)o->data < HLE_LO || o->datasize < 4 || off > sizeof(Hle) - o->datasize) return -1;
+            memcpy(&id, (const u8*)h + off, 4);
+            if (id != i + 1) return -1;
+        }
+    }
+    for (i = 0; i < SESSION_MAX; i++)
+        if (!ELEM_OK(h->ipc.sessions[i].obj, g_hle.ipc.svcobjs) ||
+            !ELEM_OK(h->ipc.sessions[i].domain, g_hle.ipc.domains))
+            return -1;
+    for (i = 0; i < DOMAIN_MAX; i++)
+        for (k = 0; k < DOMAIN_OBJECTS; k++)
+            if (!ELEM_OK(h->ipc.domains[i].obj[k], g_hle.ipc.svcobjs)) return -1;
+    for (i = 0; i < AM_ACCESSORS; i++)
+        if (!ELEM_OK(h->am.accessors[i].storage, g_hle.ipc.svcobjs)) return -1;
+    for (i = 0; i < AM_APPLETS; i++) {
+        for (k = 0; k < AM_IN_DATA; k++)
+            if (!ELEM_OK(h->am.applets[i].in[k], g_hle.ipc.svcobjs)) return -1;
+        for (k = 0; k < AM_OUT_DATA; k++)
+            if (!ELEM_OK(h->am.applets[i].out[k], g_hle.ipc.svcobjs)) return -1;
+    }
+    for (i = 0; i < AM_USER_CHANNEL; i++)
+        if (!ELEM_OK(h->am.user_channel[i], g_hle.ipc.svcobjs)) return -1;
+    if (!ELEM_OK(h->audio.outs, g_hle.audio.outs_pool) || !ELEM_OK(h->bsd.client, g_hle.ipc.svcobjs)) return -1;
+    for (i = 0; i < AUDOUT_MAX; i++)
+        if (!ELEM_OK(h->audio.outs_pool[i].next, g_hle.audio.outs_pool)) return -1;
+    for (i = 0; i < SNX_AUDREN_MAX; i++)
+        if (!ELEM_OK(h->audren.rens[i].o, g_hle.ipc.svcobjs)) return -1;
+    return 0;
+}
+/* what staging filled in the state's copy, when the load is refused */
+static void staged_free(Hle* ld) {
+    u32 i;
+    for (i = 0; i < AM_STORAGES; i++) free(ld->am.storages[i].d);
+    for (i = 0; i < RO_SESSIONS * RO_LIMIT; i++) free(ld->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
+    for (i = 0; i < SNX_AUDREN_MAX; i++) free(ld->audren.rens[i].s);
+    for (i = 0; i < NV_GMMU_L1; i++) free(ld->nvdrv.gmmu[i]);
+    free(ld->nvdrv.gmaps);
+    free(ld->nvdrv.gruns);
+    free(ld->nvdrv.vafree);
+    nil_host(ld);
+}
+/* The state's copy of g_hle made whole while the game still runs: its host fields cleared, its pointers back, its heap
+   memory from HEAP (fs_paths: where the open files' paths are), then checked. 0, or -1 with what it holds freed */
+static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
     StateIo io = buf_io(heap);
     u32 i, k, kind, slot;
     u64 n;
-    /* the host's fields, as the running process has them */
+    nil_host(ld);
+    for (i = 0; i < SVCOBJ_MAX; i++) {
+        SvcObj* o = &ld->ipc.svcobjs[i];
+        UNSWZ(o->name);
+        UNSWZ(o->dispatch);
+        UNSWZ(o->destroy);
+        UNSWZ(o->data);
+    }
+    for (i = 0; i < SESSION_MAX; i++) {
+        UNSWZ(ld->ipc.sessions[i].obj);
+        UNSWZ(ld->ipc.sessions[i].domain);
+    }
+    for (i = 0; i < DOMAIN_MAX; i++)
+        for (k = 0; k < DOMAIN_OBJECTS; k++) UNSWZ(ld->ipc.domains[i].obj[k]);
+    for (i = 0; i < AM_ACCESSORS; i++) UNSWZ(ld->am.accessors[i].storage);
+    for (i = 0; i < AM_APPLETS; i++) {
+        for (k = 0; k < AM_IN_DATA; k++) UNSWZ(ld->am.applets[i].in[k]);
+        for (k = 0; k < AM_OUT_DATA; k++) UNSWZ(ld->am.applets[i].out[k]);
+    }
+    for (i = 0; i < AM_USER_CHANNEL; i++) UNSWZ(ld->am.user_channel[i]);
+    UNSWZ(ld->audio.outs);
+    for (i = 0; i < AUDOUT_MAX; i++) UNSWZ(ld->audio.outs_pool[i].next);
+    for (i = 0; i < SNX_AUDREN_MAX; i++) UNSWZ(ld->audren.rens[i].o);
+    UNSWZ(ld->bsd.client);
+    if (hle_check(ld)) goto bad;
+    /* the heap memory */
+    for (;;) {
+        u8* p;
+        if (io_get32(&io, &kind)) goto bad;
+        if (kind == HEAP_END) break;
+        if (io_get32(&io, &slot) || io_get64(&io, &n) || n > heap->n - heap->at) goto bad;
+        p = heap->p + heap->at;
+        heap->at += n;
+        switch (kind) {
+            case HEAP_STORAGE:
+                if (slot >= AM_STORAGES || ld->am.storages[slot].d ||
+                    !(ld->am.storages[slot].d = (u8*)malloc((size_t)(n ? n : 1))))
+                    goto bad;
+                memcpy(ld->am.storages[slot].d, p, (size_t)n);
+                break;
+            case HEAP_NRR: {
+                RoNrr* nrr;
+                if (slot >= RO_SESSIONS * RO_LIMIT) goto bad;
+                nrr = &ld->ldr.states[slot / RO_LIMIT].nrr[slot % RO_LIMIT];
+                if (nrr->hashes || n != (u64)nrr->count * 32 || !(nrr->hashes = (u8*)malloc((size_t)(n ? n : 1))))
+                    goto bad;
+                memcpy(nrr->hashes, p, (size_t)n);
+                break;
+            }
+            case HEAP_AUDREN:
+                if (slot >= SNX_AUDREN_MAX || ld->audren.rens[slot].s ||
+                    !(ld->audren.rens[slot].s = audren_state_unpack(p, n)))
+                    goto bad;
+                break;
+            case HEAP_GMMU:
+                if (slot >= NV_GMMU_L1 || n != 4096 * 8 || ld->nvdrv.gmmu[slot] ||
+                    !(ld->nvdrv.gmmu[slot] = (u64*)malloc((size_t)n)))
+                    goto bad;
+                memcpy(ld->nvdrv.gmmu[slot], p, (size_t)n);
+                break;
+            case HEAP_GMAPS:
+                if (ld->nvdrv.gmaps || n != (u64)ld->nvdrv.ngmaps * sizeof(GMap) ||
+                    !(ld->nvdrv.gmaps = (GMap*)malloc((size_t)(n ? n : 1))))
+                    goto bad;
+                memcpy(ld->nvdrv.gmaps, p, (size_t)n);
+                ld->nvdrv.capgmaps = ld->nvdrv.ngmaps;
+                break;
+            case HEAP_GRUNS:
+                if (ld->nvdrv.gruns || n != (u64)ld->nvdrv.ngruns * sizeof(GRun) ||
+                    !(ld->nvdrv.gruns = (GRun*)malloc((size_t)(n ? n : 1))))
+                    goto bad;
+                memcpy(ld->nvdrv.gruns, p, (size_t)n);
+                ld->nvdrv.capgruns = ld->nvdrv.ngruns;
+                break;
+            case HEAP_VAFREE:
+                if (ld->nvdrv.vafree || n != (u64)ld->nvdrv.nvafree * sizeof(VaRange) ||
+                    !(ld->nvdrv.vafree = (VaRange*)malloc((size_t)(n ? n : 1))))
+                    goto bad;
+                memcpy(ld->nvdrv.vafree, p, (size_t)n);
+                ld->nvdrv.capvafree = ld->nvdrv.nvafree;
+                break;
+            case HEAP_FS:
+                fs_paths->p = p;
+                fs_paths->n = n;
+                fs_paths->at = 0;
+                break;
+            default: goto bad;
+        }
+    }
+    if (!ld->nvdrv.gmaps) ld->nvdrv.capgmaps = ld->nvdrv.ngmaps = 0;
+    if (!ld->nvdrv.gruns) ld->nvdrv.capgruns = ld->nvdrv.ngruns = 0;
+    if (!ld->nvdrv.vafree) ld->nvdrv.capvafree = ld->nvdrv.nvafree = 0;
+    return 0;
+bad:
+    staged_free(ld);
+    return -1;
+}
+/* The staged copy put in place of g_hle, the running game gone: the host's fields as the running process has them,
+   the shared memories where the plan put their pages */
+static void install_hle(Hle* ld, const ShmPlan* plan) {
+    u32 i;
     memcpy(ld->thread.host_cpu, g_hle.thread.host_cpu, sizeof ld->thread.host_cpu);
     ld->thread.host_ncpu = g_hle.thread.host_ncpu;
     memcpy(ld->thread.pin_said, g_hle.thread.pin_said, sizeof ld->thread.pin_said);
@@ -815,97 +1088,12 @@ static int apply_hle(Hle* ld, Buf* heap, const Names* names, const ShmPlan* plan
         memset(fs.openf, 0, sizeof fs.openf);
         ld->fs = fs;
     }
-    /* the pointers */
-    for (i = 0; i < SVCOBJ_MAX; i++) {
-        SvcObj* o = &ld->ipc.svcobjs[i];
-        UNSWZ(o->name);
-        UNSWZ(o->dispatch);
-        UNSWZ(o->destroy);
-        UNSWZ(o->data);
-    }
-    for (i = 0; i < SESSION_MAX; i++) {
-        UNSWZ(ld->ipc.sessions[i].obj);
-        UNSWZ(ld->ipc.sessions[i].domain);
-    }
-    for (i = 0; i < DOMAIN_MAX; i++)
-        for (k = 0; k < DOMAIN_OBJECTS; k++) UNSWZ(ld->ipc.domains[i].obj[k]);
-    for (i = 0; i < AM_ACCESSORS; i++) UNSWZ(ld->am.accessors[i].storage);
-    for (i = 0; i < AM_APPLETS; i++) {
-        for (k = 0; k < AM_IN_DATA; k++) UNSWZ(ld->am.applets[i].in[k]);
-        for (k = 0; k < AM_OUT_DATA; k++) UNSWZ(ld->am.applets[i].out[k]);
-    }
-    for (i = 0; i < AM_USER_CHANNEL; i++) UNSWZ(ld->am.user_channel[i]);
-    UNSWZ(ld->audio.outs);
-    for (i = 0; i < AUDOUT_MAX; i++) UNSWZ(ld->audio.outs_pool[i].next);
-    for (i = 0; i < SNX_AUDREN_MAX; i++) UNSWZ(ld->audren.rens[i].o);
-    UNSWZ(ld->bsd.client);
     for (i = 0; i < KSHMEM_MAX; i++)
         if (ld->svcmem.shmems[i].o.type == KO_SHMEM) {
             ld->svcmem.shmems[i].host = plan->host[i];
             ld->svcmem.shmems[i].pool = plan->off[i] + 1;
         }
-    /* the heap memory */
-    for (;;) {
-        u8* p;
-        if (io_get32(&io, &kind)) return -1;
-        if (kind == HEAP_END) break;
-        if (io_get32(&io, &slot) || io_get64(&io, &n) || n > heap->n - heap->at) return -1;
-        p = heap->p + heap->at;
-        heap->at += n;
-        switch (kind) {
-            case HEAP_STORAGE:
-                if (slot >= AM_STORAGES || !(ld->am.storages[slot].d = (u8*)malloc((size_t)n))) return -1;
-                memcpy(ld->am.storages[slot].d, p, (size_t)n);
-                break;
-            case HEAP_NRR: {
-                RoNrr* nrr;
-                if (slot >= RO_SESSIONS * RO_LIMIT) return -1;
-                nrr = &ld->ldr.states[slot / RO_LIMIT].nrr[slot % RO_LIMIT];
-                if (!(nrr->hashes = (u8*)malloc((size_t)(n ? n : 1)))) return -1;
-                memcpy(nrr->hashes, p, (size_t)n);
-                break;
-            }
-            case HEAP_AUDREN:
-                if (slot >= SNX_AUDREN_MAX || !(ld->audren.rens[slot].s = audren_state_unpack(p, n))) return -1;
-                break;
-            case HEAP_GMMU:
-                if (slot >= NV_GMMU_L1 || n != 4096 * 8 || !(ld->nvdrv.gmmu[slot] = (u64*)malloc((size_t)n))) return -1;
-                memcpy(ld->nvdrv.gmmu[slot], p, (size_t)n);
-                break;
-            case HEAP_GMAPS:
-                if (n != (u64)ld->nvdrv.ngmaps * sizeof(GMap) ||
-                    !(ld->nvdrv.gmaps = (GMap*)malloc((size_t)(n ? n : 1))))
-                    return -1;
-                memcpy(ld->nvdrv.gmaps, p, (size_t)n);
-                ld->nvdrv.capgmaps = ld->nvdrv.ngmaps;
-                break;
-            case HEAP_GRUNS:
-                if (n != (u64)ld->nvdrv.ngruns * sizeof(GRun) ||
-                    !(ld->nvdrv.gruns = (GRun*)malloc((size_t)(n ? n : 1))))
-                    return -1;
-                memcpy(ld->nvdrv.gruns, p, (size_t)n);
-                ld->nvdrv.capgruns = ld->nvdrv.ngruns;
-                break;
-            case HEAP_VAFREE:
-                if (n != (u64)ld->nvdrv.nvafree * sizeof(VaRange) ||
-                    !(ld->nvdrv.vafree = (VaRange*)malloc((size_t)(n ? n : 1))))
-                    return -1;
-                memcpy(ld->nvdrv.vafree, p, (size_t)n);
-                ld->nvdrv.capvafree = ld->nvdrv.nvafree;
-                break;
-            case HEAP_FS:
-                fs_paths->p = p;
-                fs_paths->n = n;
-                fs_paths->at = 0;
-                break;
-            default: return -1;
-        }
-    }
-    if (!ld->nvdrv.gmaps) ld->nvdrv.capgmaps = ld->nvdrv.ngmaps = 0;
-    if (!ld->nvdrv.gruns) ld->nvdrv.capgruns = ld->nvdrv.ngruns = 0;
-    if (!ld->nvdrv.vafree) ld->nvdrv.capvafree = ld->nvdrv.nvafree = 0;
     memcpy(&g_hle, ld, sizeof g_hle);
-    return 0;
 }
 
 /* ============================================================ save and load */
@@ -929,15 +1117,34 @@ static int video_save(StateIo* io) {
     if (n) LOG("state: %u NVDEC and VIC channels saved\n", n);
     return r | io_put32(io, 0);
 }
-/* the loaded g_hle's video fds given their channels again: 0, or -1 */
-static int video_load(StateIo* io) {
+/* VIDEO read before the running game is touched: the IOVA table, and a channel opened for each of the state's video
+   fds, put in place once the state's g_hle is, or closed when the load is refused */
+typedef struct {
+    H1Iova* iova;
+    H1Ch* ch[NV_FDS];
+} VideoStaged;
+static void video_unstage(VideoStaged* v) {
+    u32 i;
+    host1x_iova_free(v->iova);
+    for (i = 0; i < NV_FDS; i++) host1x_channel_discard(v->ch[i]);
+    memset(v, 0, sizeof *v);
+}
+static int video_stage(StateIo* io, VideoStaged* v) {
     u32 fd;
-    if (host1x_iova_load(io)) return -1;
+    memset(v, 0, sizeof *v);
+    if (!(v->iova = host1x_iova_parse(io))) return -1;
     while (!io_get32(io, &fd)) {
         if (!fd) return 0;
-        if (fd > NV_FDS || !(g_hle.nvdrv.nvf[fd - 1].h1x = host1x_channel_load(io))) return -1;
+        if (fd > NV_FDS || v->ch[fd - 1] || !(v->ch[fd - 1] = host1x_channel_load(io))) break;
     }
+    video_unstage(v);
     return -1;
+}
+static void video_install(VideoStaged* v) {
+    u32 i;
+    host1x_iova_install(v->iova);
+    for (i = 0; i < NV_FDS; i++) g_hle.nvdrv.nvf[i].h1x = v->ch[i];
+    memset(v, 0, sizeof *v);
 }
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;
@@ -1016,13 +1223,20 @@ int state_load(const char* path, char* why, size_t whysize) {
     StateIo gio = buf_io(&gpu), sio = buf_io(&surf), vio = buf_io(&video), fio;
     Names names = {0};
     ShmPlan plan;
+    GpuStaged* gs = NULL;
+    FsStaged* fss = NULL;
+    VideoStaged vs;
     u8* cur_host[KSHMEM_MAX];
-    u64 cur_off[KSHMEM_MAX], cur_size[KSHMEM_MAX], schema = 0, t0 = plat_ns();
+    u64 cur_off[KSHMEM_MAX], cur_size[KSHMEM_MAX], schema = 0, t0 = plat_ns(), t_checked;
     u32 i;
+    int staged = 0;
     why[0] = 0;
+    memset(&vs, 0, sizeof vs);
     r = sr_open(path, &h, why, whysize);
     if (!r) return -1;
-    /* everything that can refuse it before the running game is touched */
+    /* Everything that can refuse the state, before the running game is touched: the header, every section read and
+       its frames' checksums checked, the state's g_hle made whole and checked, its GPU and video state read, the files
+       it had open found and opened, and its guest memory read through once */
     if (state_check(&h, why, whysize)) goto refuse;
     if (section_read(r, "HLE", &schema, &hle) || hle.n != sizeof(Hle) || schema != state_schema()) {
         snprintf(why, whysize, "it holds the game's state in another layout, or is damaged");
@@ -1039,11 +1253,29 @@ int state_load(const char* path, char* why, size_t whysize) {
         free(surf.p);
         memset(&surf, 0, sizeof surf);
     }
+    if (stage_hle((Hle*)hle.p, &heap, &names, &fs_paths)) {
+        snprintf(why, whysize, "its game state is damaged");
+        goto refuse;
+    }
+    staged = 1;
+    if (!(gs = gpu_state_parse(&gio))) {
+        snprintf(why, whysize, "its GPU state is damaged");
+        goto refuse;
+    }
+    if (video_stage(&vio, &vs)) {
+        snprintf(why, whysize, "its video state is damaged");
+        goto refuse;
+    }
+    fio = buf_io(&fs_paths);
+    if (fs_paths.n && !(fss = fs_state_resolve(&fio, &((Hle*)hle.p)->fs, why, whysize))) goto refuse;
+    if (check_memory(r, why, whysize)) goto refuse;
+    t_checked = plat_ns();
     if (game_pause()) {
         snprintf(why, whysize, "the game didn't stop to be loaded over");
         goto refuse;
     }
-    /* past here, nothing of the running game is kept: a failure ends it */
+    /* past here, nothing of the running game is kept: only putting the state in place is left, and a failure ends the
+       game (a thread that won't stop, no host memory or mappings left) */
     if (kernel_retire(3000)) fatal("The game's threads didn't stop for the save state to be loaded");
     for (i = 0; i < KSHMEM_MAX; i++) {
         const KShmem* s = &g_hle.svcmem.shmems[i];
@@ -1054,20 +1286,19 @@ int state_load(const char* path, char* why, size_t whysize) {
     }
     drop_host();
     if (load_memory(r, &plan, why, whysize)) fatal("The save state's guest memory couldn't be loaded: %s", why);
-    if (apply_hle((Hle*)hle.p, &heap, &names, &plan, &fs_paths)) fatal("The save state's game state couldn't be loaded");
+    install_hle((Hle*)hle.p, &plan);
     for (i = 0; i < KSHMEM_MAX; i++) /* the running game's shared memories the state has no use for */
         if (cur_host[i] && cur_host[i] != plan.host[i]) mem_pool_host_free(cur_host[i], cur_off[i], cur_size[i]);
-    fio = buf_io(&fs_paths);
-    if (fs_paths.n && fs_state_reopen(&fio, why, whysize)) fatal("The save state couldn't be loaded: %s", why);
+    fs_state_install(fss);
     audio_state_rebuild();
-    if (video_load(&vio)) fatal("The save state's video channels couldn't be made again");
+    video_install(&vs);
     /* the renderer forgets the old memory, and the state's channels and queue take the old ones' place */
     if (g_renderer->reset) g_renderer->reset();
     if (surf.n && g_renderer->load_targets && g_renderer->load_targets(&sio))
         WARN("state: the save state's depth targets couldn't be read: they start empty\n");
     gpu_mem_written_all();
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
-    if (gpu_state_load(&gio)) fatal("The save state's GPU state couldn't be loaded");
+    gpu_state_install(gs);
     clock_set(h.guest_ns);
     for (i = 0; i < KTHREAD_MAX; i++) {
         KThread* t = &g_hle.thread.threads[i];
@@ -1081,11 +1312,15 @@ int state_load(const char* path, char* why, size_t whysize) {
     free(gpu.p);
     free(surf.p);
     free(video.p);
-    LOG("state: loaded %s (guest time %.3f s) at frame %d in %.0f ms\n", path, (double)h.guest_ns / 1e9,
-        __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6);
+    LOG("state: loaded %s (guest time %.3f s) at frame %d in %.0f ms (checked %.0f)\n", path, (double)h.guest_ns / 1e9,
+        __atomic_load_n(&g_frames, __ATOMIC_RELAXED), (double)(plat_ns() - t0) / 1e6, (double)(t_checked - t0) / 1e6);
     return 0;
 refuse:
     sr_close(r);
+    if (staged) staged_free((Hle*)hle.p);
+    gpu_state_staged_free(gs);
+    video_unstage(&vs);
+    fs_state_staged_free(fss);
     names_free(&names);
     free(hle.p);
     free(heap.p);

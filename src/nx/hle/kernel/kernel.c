@@ -61,18 +61,20 @@ u32 kobj_id(const KObj* o) {
         default: return KOBJ_ID(o->type, 0); /* the process and the resource limit, one of each */
     }
 }
+/* a slot past its pool's end is no object: an id a save state's file named, which the load checks too */
+#define KOBJ_IN(pool, slot) ((slot) < sizeof(pool) / sizeof *(pool) ? &(pool)[slot].o : NULL)
 KObj* kobj_at(u32 id) {
     u32 slot = id & 0xFFFFFF;
     switch (id >> 24) {
-        case KO_EVENT: return &g_hle.kernel.events[slot].o;
-        case KO_THREAD: return &g_hle.thread.threads[slot].o;
-        case KO_SESSION: return &g_hle.ipc.sessions[slot].o;
-        case KO_SHMEM: return &g_hle.svcmem.shmems[slot].o;
-        case KO_TMEM: return &g_hle.svcmem.tmems[slot].o;
-        case KO_CODEMEM: return &g_hle.svcmem.codemems[slot].o;
-        case KO_WEVENT: return &g_hle.svc.wevents[slot].o;
-        case KO_PROCESS: return &g_hle.kernel.process;
-        case KO_RESLIMIT: return &g_hle.svc.reslimit;
+        case KO_EVENT: return KOBJ_IN(g_hle.kernel.events, slot);
+        case KO_THREAD: return KOBJ_IN(g_hle.thread.threads, slot);
+        case KO_SESSION: return KOBJ_IN(g_hle.ipc.sessions, slot);
+        case KO_SHMEM: return KOBJ_IN(g_hle.svcmem.shmems, slot);
+        case KO_TMEM: return KOBJ_IN(g_hle.svcmem.tmems, slot);
+        case KO_CODEMEM: return KOBJ_IN(g_hle.svcmem.codemems, slot);
+        case KO_WEVENT: return KOBJ_IN(g_hle.svc.wevents, slot);
+        case KO_PROCESS: return slot ? NULL : &g_hle.kernel.process;
+        case KO_RESLIMIT: return slot ? NULL : &g_hle.svc.reslimit;
         default: return NULL;
     }
 }

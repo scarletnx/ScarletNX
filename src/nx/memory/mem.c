@@ -1398,12 +1398,14 @@ u64 mem_restore_alloc(u64 size) {
     return pool_alloc_nl(size, &off) ? ~0ull : off;
 }
 int mem_restore_write(u64 off, const void* p, u64 size) { return plat_alias_write(off, p, size) ? -1 : 0; }
-int mem_restore_blocks(const MemBlock* blk, u32 n) {
+/* the state's list covers the address space in order, and its code is the code mapped now: 0, or -1. Under the lock */
+static int restore_check_nl(const MemBlock* blk, u32 n) {
     u32 i, k;
     u64 at = 0;
-    /* the state's list covers the address space in order, and its code is the code mapped now */
     for (i = 0; i < n; i++) {
-        if (blk[i].addr != at || !blk[i].size || (blk[i].addr & (PAGE - 1)) || (blk[i].size & (PAGE - 1))) return -1;
+        if (blk[i].addr != at || !blk[i].size || (blk[i].addr & (PAGE - 1)) || (blk[i].size & (PAGE - 1)) ||
+            blk[i].size > AS_END - at)
+            return -1;
         at += blk[i].size;
     }
     if (at != AS_END) return -1;
@@ -1416,6 +1418,18 @@ int mem_restore_blocks(const MemBlock* blk, u32 n) {
         i++;
         k++;
     }
+    return 0;
+}
+int mem_restore_check(const MemBlock* blk, u32 n) {
+    int r;
+    mem_lock();
+    r = restore_check_nl(blk, n);
+    mem_unlock();
+    return r;
+}
+int mem_restore_blocks(const MemBlock* blk, u32 n) {
+    u32 i;
+    if (restore_check_nl(blk, n)) return -1;
     for (i = 0; i < n; i++) {
         const MemBlock* b = &blk[i];
         if (b->state == MS_FREE || b->state == MS_CODE) continue;

@@ -169,6 +169,7 @@ void audren_volume(float gain) { test_renderer_gain = gain; }
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
+    e->o.type = KO_EVENT;
     kobj_set_name(&e->o, name);
     test_events++;
     return e;
