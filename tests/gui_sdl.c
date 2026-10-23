@@ -6981,6 +6981,22 @@ int main(int argc, char** argv) {
             assert(strstr(app.states[0].label, "Auto ") && strstr(app.states[1].label, "Slot 1 ") &&
                    strstr(app.states[2].label, "Slot 2 ") && strstr(app.states[0].label, "1:02:03"));
             assert(!app.states[0].why[0] && !app.states[1].why[0] && strstr(app.states[2].why, "SNX_ABI"));
+            { /* a pad's X opens it too, and the pad's foot says so */
+                char said[512];
+                key(&app, SDLK_ESCAPE);
+                assert(!app.states_shown);
+                app.pad_driven = true;
+                assert(strstr(shown_keys(&app, said, sizeof said), "X: save states."));
+                { /* X as pad_menu.c gives it: Del from the pads' own keyboard */
+                    SDL_Event e = {0};
+                    e.type = SDL_EVENT_KEY_DOWN;
+                    e.key.key = SDLK_DELETE;
+                    e.key.which = GUI_PAD_KEYBOARD;
+                    event(&app, &e);
+                }
+                assert(app.states_shown && app.states_count == 3 && !app.confirm.shown);
+                app.pad_driven = false;
+            }
             render(&app);
             assert(find_text(&app, "Slot 1", rgb(app.theme.ink), 1, &nx, &ny));
             states_boxes(&app, &d);

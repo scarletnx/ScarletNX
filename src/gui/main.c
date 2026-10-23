@@ -648,6 +648,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
+#define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW  SNX_TR_KEYS("A: pick a file. B: back.")
 #define SAY_PAD_EDITOR    SNX_TR_KEYS("D-pad: key, change. A: edit. B: back.")
 #define SAY_PAD_PICKER           SNX_TR_KEYS("D-pad: row, step 1. LT/RT: step 16. A: OK. B: cancel.")
@@ -6406,6 +6407,7 @@ static void games_said(const App* app, bool pad, const char** parts, int* n) {
 #ifndef SDL_PLATFORM_ANDROID
     if (mods && !pad) said_add(parts, n, SAY_GAMES_STATES); /* its save states' box, S */
 #endif
+    if (mods && pad) said_add(parts, n, SAY_PAD_GAMES_STATES); /* and a pad's X */
 }
 /* a setting's Del (X), said where the focused row is not at its default */
 static void settings_said(const App* app, bool pad, const char** parts, int* n) {
@@ -12627,8 +12629,10 @@ static void event_take(App* app, const SDL_Event* e) {
         app->options_focus = 0;
         return;
     }
-    if (e->key.key == SDLK_S && !e->key.repeat && !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) &&
-        app->menu.view == GUI_LOAD_GAMES && !app->finished) {
+    /* S, or a pad's X (pad_menu.c's Del, which Games has no other use for) */
+    if ((e->key.key == SDLK_S || (e->key.key == SDLK_DELETE && app->pad_driven)) && !e->key.repeat &&
+        !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) && app->menu.view == GUI_LOAD_GAMES &&
+        !app->finished) {
         layout(app);
         states_focus(app);
         return;
