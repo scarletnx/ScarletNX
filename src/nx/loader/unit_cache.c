@@ -26,6 +26,9 @@ struct SnxUnitCache {
 #else
     pthread_mutex_t lock;
 #endif
+    /* the units not kept for the disk's room, and their bytes: the first said whole, the count at the close */
+    size_t left;
+    SnxU64 left_bytes;
     size_t folder_size, identity_size;
     char bytes[];
 };
@@ -80,6 +83,8 @@ SnxUnitCache* snx_unit_cache_open(const char* folder, const SnxUnitIdentity* ide
 #else
     pthread_mutex_init(&cache->lock, NULL);
 #endif
+    cache->left = 0;
+    cache->left_bytes = 0;
     cache->folder_size = folder_size;
     cache->identity_size = identity_size;
     memcpy(cache->bytes, folder, folder_size);
@@ -96,6 +101,9 @@ SnxUnitCache* snx_unit_cache_open(const char* folder, const SnxUnitIdentity* ide
 
 void snx_unit_cache_close(SnxUnitCache* cache) {
     if (!cache) return;
+    if (cache->left)
+        snx_error("unit cache: %zu unit(s) (%.1f MB) not kept for the room on the disk of %s", cache->left,
+                  (double)cache->left_bytes / 1e6, cache->bytes);
 #ifdef _WIN32
     DeleteCriticalSection(&cache->lock);
 #else
@@ -211,7 +219,8 @@ static int trim_files(const char* folder, SnxU64 limit, SnxU64 at_least, const c
 #define GB(bytes) ((double)(bytes) / 1e9)
 #define MB(bytes) ((double)(bytes) / 1e6)
 /* room for a kept object of size bytes on the cache's disk, which always keeps a tenth of itself free: the cache's
-   oldest objects removed for it when it is short. 0 to keep it; -1, said, when there is none */
+   oldest objects removed for it when it is short. 0 to keep it; -1 when there is none, said for the first unit of the
+   cache and counted for the close */
 static int room(SnxUnitCache* cache, SnxU64 size, const char* unit) {
     const char* folder = snx_unit_cache_folder(cache);
     SnxU64 free_bytes = 0, total = 0, reserve, need;
@@ -230,9 +239,13 @@ static int room(SnxUnitCache* cache, SnxU64 size, const char* unit) {
         return -1;
     }
     if (trim.removed_bytes < need) {
-        snx_error("unit cache: the disk of %s has %.1f GB free and keeps a tenth of its %.1f GB (%.1f GB) free, which "
-                  "the cache's %.1f MB cannot make room for: %s (%.1f MB) is not kept",
-                  folder, GB(free_bytes), GB(total), GB(reserve), MB(trim.held - trim.removed_bytes), unit, MB(size));
+        if (!cache->left)
+            snx_error("unit cache: the disk of %s has %.1f GB free and keeps a tenth of its %.1f GB (%.1f GB) free, "
+                      "which the cache's %.1f MB cannot make room for: %s (%.1f MB) is not kept",
+                      folder, GB(free_bytes), GB(total), GB(reserve), MB(trim.held - trim.removed_bytes), unit,
+                      MB(size));
+        ++cache->left;
+        cache->left_bytes += size;
         return -1;
     }
     printf("unit cache: the disk of %s has %.1f GB free and keeps a tenth of its %.1f GB (%.1f GB) free: the %zu "

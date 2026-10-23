@@ -52,7 +52,8 @@ int snx_unit_cache_keep(const SnxUnitCache* cache, const char* key, const unsign
    time renewed), else the one snx_ir_object makes, then kept. A kept object that is not whole, or cannot be read, is
    said on stderr and made again; one that cannot be kept is said, and the unit has it all the same. The cache's disk
    always keeps a tenth of itself free: the cache's oldest objects are removed to make room for a new one (said on
-   stdout), and one there is no room for is not kept (said). Units of one cache may run on several threads. 0, or -1
+   stdout), and one there is no room for is not kept (the first said, how many at snx_unit_cache_close). Units of one
+   cache may run on several threads. 0, or -1
    with why in error (snx_ir_object's) */
 int snx_unit_cache_object(SnxUnitCache* cache, SnxIr* ir, unsigned char** data, size_t* size, int* reused, char* error,
                           size_t error_size);
