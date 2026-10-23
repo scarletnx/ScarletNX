@@ -98,6 +98,7 @@ static void svc_enter(KThread* t) {
    sets suspended before it reads in_svc (both sequentially consistent), so either the pauser sees the thread still in
    its SVC or the thread sees the pause. A paused thread holds no core, so nobody waits for it */
 static void svc_leave(KThread* t) {
+    g_host.thread.committed[kt_ix(t) - 1] = 0; /* its request, if it served one, is answered */
     if (t->core < 0 || t->core >= NCORES || !((__atomic_load_n(&t->affinity, __ATOMIC_RELAXED) >> t->core) & 1)) {
         core_leave(t);
         t->core = core_allowed(t);

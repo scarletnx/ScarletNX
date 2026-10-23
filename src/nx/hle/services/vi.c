@@ -437,7 +437,9 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
     parcel_reply(reply, &out);
     if (qslot >= 0) {
         /* shown once the GPU reaches the fences the frame was queued with: nvdrv waits for those it can't leave to
-           the GPU thread */
+           the GPU thread. The slot is queued and the reply written: a game pause lets this finish rather than
+           making the request again on a save state's load */
+        kthread_commit();
         u32 fences, i, ids[4], vals[4], n = 0;
         fences = snx_ld_le32(qbi + 48);
         for (i = 0; i < 4 && i < fences; i++) {

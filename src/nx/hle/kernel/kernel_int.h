@@ -223,6 +223,8 @@ typedef struct {
         PCond* c;
         PMutex* m;
     } waiting_on[KTHREAD_MAX];
+    /* the request each thread serves changed what a service holds (kthread_commit), until its SVC leaves */
+    u8 committed[KTHREAD_MAX];
 } HostThread;
 /* sync.c: the threads blocked in each kind of wait, in arrival order, linked by next_waiter (sync.c says how the
    lists are kept: one for mutexes, one per bucket of the word for the others). Under g_host.kernel.klock */

@@ -377,12 +377,17 @@ void kthread_unblock(KThread* t) {
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
+void kthread_commit(void) {
+    KThread* t = kthread_cur();
+    if (t) g_host.thread.committed[kt_ix(t) - 1] = 1;
+}
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     KThread* t = kthread_cur();
     u32 slot;
     int r;
     if (!t) return pc_wait(c, m, timeout_ns);
     slot = kt_ix(t) - 1;
+    if (g_host.thread.committed[slot]) return pc_wait(c, m, timeout_ns); /* not stopped: a pause waits for it */
     g_host.thread.waiting_on[slot].c = c; /* where kernel_retire wakes it */
     g_host.thread.waiting_on[slot].m = m;
     t->park = PARK_SERVICE;
