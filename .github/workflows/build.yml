@@ -569,13 +569,13 @@ jobs:
       - name: Install the packaging tools
         uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
         env:
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/e97c4932e3b445a2de8136253e4cf41537896723/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/e97c4932e3b445a2de8136253e4cf41537896723/useful-tools/get-debloated-pkgs.sh
-          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/e97c4932e3b445a2de8136253e4cf41537896723/useful-tools/make-aur-package.sh
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/18bce6b1eba6b556715eed48a185195aaa3fdde3/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/18bce6b1eba6b556715eed48a185195aaa3fdde3/useful-tools/get-debloated-pkgs.sh
+          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/18bce6b1eba6b556715eed48a185195aaa3fdde3/useful-tools/make-aur-package.sh
       - name: Check the packaging tools
         run: |
           sha256sum -c <<'EOF'
-          33b661316746a8152cef2e5b65cc8a83da2e7512db970d20821b0eccc86e5eb1  /usr/local/bin/quick-sharun
+          9bace27e1b73ea8b7bccada130dda40f89c0189a8594f021eb0a9b9d45c3d6bd  /usr/local/bin/quick-sharun
           217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
@@ -670,11 +670,11 @@ jobs:
     timeout-minutes: 180
     continue-on-error: true
     env:
-      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/e97c4932e3b445a2de8136253e4cf41537896723/useful-tools/quick-sharun.sh
-      QUICK_SHARUN_SHA: 33b661316746a8152cef2e5b65cc8a83da2e7512db970d20821b0eccc86e5eb1
+      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/18bce6b1eba6b556715eed48a185195aaa3fdde3/useful-tools/quick-sharun.sh
+      QUICK_SHARUN_SHA: 9bace27e1b73ea8b7bccada130dda40f89c0189a8594f021eb0a9b9d45c3d6bd
       APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.3/appimagetool-full-x86_64-linux
       APPIMAGETOOL_SHA: 9a6fd46ee6bc5910e7acfa68f9d8090f3751e956840b90304ef57d64321a530d
-      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/e97c4932e3b445a2de8136253e4cf41537896723/useful-tools/get-debloated-pkgs.sh
+      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/18bce6b1eba6b556715eed48a185195aaa3fdde3/useful-tools/get-debloated-pkgs.sh
       DEBLOATED_PACKAGES_SHA: 217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f
     strategy:
       fail-fast: false
