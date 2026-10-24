@@ -234,7 +234,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 
 set(SNX_SDL3_FROM_SOURCE OFF)
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime)
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB)
     # Prefer a compatible system package. CPM handles the pinned static fallback and user overrides. SDL_ALTIVEC only
     # changes PowerPC builds: SDL's AltiVec blitters prefetch with dstt, which the ISA phased out and qemu's POWER10
     # traps as illegal (the window icon's and the menu's software surfaces, which nothing here needs fast)
