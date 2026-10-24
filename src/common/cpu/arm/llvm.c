@@ -288,8 +288,13 @@ static void bounds(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignme
         require(a, cmp(a, LLVMIntEQ, band(a, addr, c32(a, alignment - 1)), c32(a, 0)), SNX_ARM_ALIGNMENT, addr);
     end = add(a, z64(a, addr), c64(a, bytes));
     size = get(a, offsetof(SnxArmCPU, mem_size), a->i64);
-    require(a, band(a, cmp(a, LLVMIntULE, end, size), cmp(a, LLVMIntULE, end, c64(a, 1ull << 32))),
-            SNX_ARM_DATA_ABORT, addr);
+    /* the AGB board's window runs past 4 GiB by a guard (agb/cpu/memmap.c): an access the console's bus wraps, an LDM
+       from 0xFFFFFFE8, lands in it instead of aborting */
+    if (arm7tdmi(a))
+        require(a, cmp(a, LLVMIntULE, end, size), SNX_ARM_DATA_ABORT, addr);
+    else
+        require(a, band(a, cmp(a, LLVMIntULE, end, size), cmp(a, LLVMIntULE, end, c64(a, 1ull << 32))),
+                SNX_ARM_DATA_ABORT, addr);
 }
 /* Checked callbacks never see host guest pointers, only a bounded transaction
    buffer. Their faults precede register/base writeback, even for LDM/STM. */

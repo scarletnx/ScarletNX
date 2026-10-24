@@ -23,7 +23,7 @@
 #include <dlfcn.h>
 #endif
 
-#define AGB_RECOMP_ABI 4   /* the ROM's hash and each block's in the map */
+#define AGB_RECOMP_ABI 5   /* accesses bound by the window and its guard, not by 4 GiB */
 #define AGB_BLOCK_MAX  256 /* words compiled per block at most */
 
 /* the ARM7TDMI's rules (arm.h) on the flat window: the A57 default would run the ROM as ARMv8-A */

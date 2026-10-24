@@ -16,6 +16,7 @@
 #define AGB_SRAM_SIZE (128u * 1024) /* 0x0E000000: the cartridge's save memory, up to the 128 KiB flash */
 #define AGB_IO_COUNT 0x200u          /* 0x04000000: register halfwords */
 #define AGB_MAP_SIZE 0x100000000ull /* the flat window: the 256 MiB map twice, for the bit 31 mirror */
+#define AGB_MAP_GUARD 0x10000u /* after it, zeros an access that wraps past 4 GiB reaches: an LDM's 64 bytes, a page */
 #define AGB_BIOS_SIZE 0x4000u        /* 0x00000000: the BIOS, which only the BIOS itself can read */
 #define AGB_ROM_BUS_PERIOD 0x20000u  /* the open bus pattern past the cartridge image repeats this often */
 

@@ -110,10 +110,10 @@ static uint8_t* make_rom(size_t* size) {
     return rom;
 }
 
-/* a Thumb block run as the machine runs it, from its own address: its r0 */
+/* a block run as the machine runs it, from its own address in its own state: its r0 */
 static uint32_t run_block(AgbCpu* cpu, const AgbBlock* block) {
     cpu->arm.r[15] = block->pc;
-    cpu->arm.cpsr |= SNX_ARM_T;
+    cpu->arm.cpsr = block->thumb ? cpu->arm.cpsr | SNX_ARM_T : cpu->arm.cpsr & ~(uint32_t)SNX_ARM_T;
     cpu->arm.exit = SNX_ARM_OK;
     block->fn(&cpu->arm);
     return cpu->arm.exit == SNX_ARM_OK ? cpu->arm.r[0] : 0xFFFFFFFFu;
@@ -234,6 +234,15 @@ int main(void) {
         agb_recomp_free(&next);
         CHECK(!result);
         result = 1;
+    }
+    {
+        /* an LDM the console's bus wraps past 4 GiB lands in the window's guard (memmap.c) instead of aborting */
+        const AgbBlock* block;
+        agb_write32(&board, 0x03000100, 0xE3E00017); /* mvn r0, #23: 0xFFFFFFE8 */
+        agb_write32(&board, 0x03000104, 0xE89001FE); /* ldmia r0, {r1-r8}: to 0x00000007 */
+        agb_write32(&board, 0x03000108, 0xE12FFF1E); /* bx lr */
+        block = agb_recomp_lookup(&recomp, &board, 0x03000100, 0, error, sizeof error);
+        CHECK(block && run_block(&cpu, block) == 0xFFFFFFE8);
     }
     {
         /* the cache is the ROM's it was built from: another one's, named the same, recompiles and says why */

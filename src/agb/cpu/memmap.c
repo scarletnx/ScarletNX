@@ -100,7 +100,7 @@ static int mirror(AgbMap* map, AgbBoard* board, size_t rom, size_t rom_backing_s
     }
     /* past the 28 bits the console decodes, and in both halves, the window is plain memory */
     if (commit(map, 0x10000000u, 0x70000000u, error, error_size) ||
-        commit(map, 0x90000000u, AGB_MAP_SIZE - 0x90000000u, error, error_size))
+        commit(map, 0x90000000u, AGB_MAP_SIZE + AGB_MAP_GUARD - 0x90000000u, error, error_size))
         return -1;
     if (!board->has_cartridge) /* the cartridge windows too, with no cartridge in them */
         return commit(map, 0x08000000u, 0x06000000u, error, error_size) ||
@@ -150,12 +150,12 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
     memset(map, 0, sizeof(*map));
     map->page = snx_host_page();
     map->mirrored = map->page && map->page <= AGB_MAP_VIEW_MAX;
-    map->base = snx_host_reserve(AGB_MAP_SIZE);
+    map->base = snx_host_reserve(AGB_MAP_SIZE + AGB_MAP_GUARD);
     if (!map->base) {
         char why[128];
         snx_os_error(why, sizeof why);
         snprintf(error, error_size, "cannot reserve the guest memory window, %llu bytes of address space: %s",
-                 (unsigned long long)AGB_MAP_SIZE, why);
+                 (unsigned long long)(AGB_MAP_SIZE + AGB_MAP_GUARD), why);
         return -1;
     }
     if (map->mirrored) {
@@ -165,7 +165,7 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
         }
     } else {
         /* no view as small as a mirror: the window is RAM, and each mirror a copy of its own that diverges */
-        if (commit(map, 0, AGB_MAP_SIZE, error, error_size)) {
+        if (commit(map, 0, AGB_MAP_SIZE + AGB_MAP_GUARD, error, error_size)) {
             agb_map_destroy(map, board);
             return -1;
         }
@@ -191,7 +191,7 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
 
 void agb_map_destroy(AgbMap* map, AgbBoard* board) {
     if (map->base) {
-        snx_host_release(map->base, AGB_MAP_SIZE);
+        snx_host_release(map->base, AGB_MAP_SIZE + AGB_MAP_GUARD);
         if (map->adopted) agb_memory_init(&board->memory); /* the devices fall back to plain buffers */
     }
     for (int i = 0; i < map->backing_count; ++i) snx_host_memory_free(&map->backings[i]);

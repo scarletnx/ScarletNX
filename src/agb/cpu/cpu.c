@@ -80,7 +80,7 @@ void agb_cpu_init(AgbCpu* cpu, AgbBoard* board, uint8_t* map) {
     memset(cpu, 0, sizeof(*cpu));
     cpu->board = board;
     cpu->arm.mem = map; /* the flat window: one pointer add per guest access */
-    cpu->arm.mem_size = AGB_MAP_SIZE;
+    cpu->arm.mem_size = AGB_MAP_SIZE + AGB_MAP_GUARD;
     cpu->arm.io = bus;
     /* the boot state the BIOS leaves behind: system mode with every stack set up */
     cpu->arm.cpsr = 0x1F;
