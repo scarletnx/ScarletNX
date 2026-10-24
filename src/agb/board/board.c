@@ -36,8 +36,17 @@ void agb_board_destroy(AgbBoard* board) {
 
 /* ---- the I/O window ---- */
 
+/* the registers whose reads give the open bus, as mGBA's GBAIORead has them: the display's write-only ones (scrolls,
+   the affine parameters, the windows' edges, MOSAIC, BLDY) and its unused ones, the sound FIFOs and the DMA addresses */
+static int io_open(uint32_t byte) {
+    return (byte >= 0x10 && byte <= 0x46) || byte == 0x4C || byte == 0x4E || (byte >= 0x54 && byte <= 0x5E) ||
+           (byte >= 0xA0 && byte <= 0xA6) || (byte >= 0xB0 && byte <= 0xDE && (byte - 0xB0) % 12 < 8);
+}
+
 uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
     uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (io_open(byte)) return (uint16_t)board->open_bus;                   /* its low half, as GBAIORead gives it */
+    if (byte >= 0xB8 && byte <= 0xDC && (byte - 0xB0) % 12 == 8) return 0; /* DMAxCNT_L */
     if (byte <= 0x5F) return agb_ppu_read(board, byte);
     if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
     if (byte >= 0xB0 && byte <= 0xDF) return agb_dma_read(board, byte);

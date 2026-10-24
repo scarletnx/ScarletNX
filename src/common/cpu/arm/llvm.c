@@ -373,6 +373,25 @@ static LLVMTypeRef io_type(ArmIR* a) {
     LLVMTypeRef params[4] = {a->ptr, a->i32, a->i32, a->i32};
     return LLVMFunctionType(a->i32, params, 4, 0);
 }
+/* What a read of an I/O register with nothing to read gives on the GBA: the opcode the ARM7TDMI fetched last, as mGBA's
+   GBALoadBad makes it. ARM: [$+8]. Thumb: [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and from
+   IWRAM [$+4] above [$+2] or below it by $+4's place in its word. Read from the code as it is, the hook gets it as the
+   value of a read */
+static LLVMValueRef code_at(ArmIR* a, uint32_t addr, unsigned bytes) {
+    LLVMValueRef value = LLVMBuildLoad2(a->b, LLVMIntTypeInContext(a->ctx, bytes * 8), memptr(a, c32(a, addr)), "");
+    LLVMSetAlignment(value, 1);
+    value = host_order(a, value, bytes);
+    return bytes < 4 ? z32(a, value) : value;
+}
+static LLVMValueRef open_bus(ArmIR* a) {
+    uint32_t region = (a->pc + 4) >> 24;
+    LLVMValueRef h2, h4;
+    if (!a->thumb) return code_at(a, a->pc + 8, 4);
+    h2 = code_at(a, a->pc + 2, 2);
+    h4 = code_at(a, a->pc + 4, 2);
+    if (region == 0x00 || region == 0x07 || (region == 0x03 && ((a->pc + 4) & 2))) return bor(a, shl(a, h4, 16), h2);
+    return bor(a, h4, shl(a, region == 0x03 ? h2 : h4, 16));
+}
 /* The GBA's ARM7TDMI rotates a misaligned load's aligned data into place in the 32 bit register instead
    of reading across the boundary (ARMv8-A would read the unaligned bytes directly). The zero
    misalignment selects the value unchanged through the shift arithmetic itself. */
@@ -419,7 +438,7 @@ static LLVMValueRef readmem(ArmIR* a, LLVMValueRef addr, unsigned bytes, int sig
     LLVMBuildBr(a->b, done);
     LLVMPositionBuilderAtEnd(a->b, io);
     {
-        LLVMValueRef args[4] = {a->cpu, aligned, c32(a, (sign && bytes == 2 ? 0x200 : 0) | bytes), c32(a, 0)};
+        LLVMValueRef args[4] = {a->cpu, aligned, c32(a, (sign && bytes == 2 ? 0x200 : 0) | bytes), open_bus(a)};
         incoming[1] = LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
         from[1] = io;
     }
@@ -486,7 +505,7 @@ static LLVMValueRef readmem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
     LLVMBuildBr(a->b, done);
     LLVMPositionBuilderAtEnd(a->b, io);
     {
-        LLVMValueRef args[4] = {a->cpu, addr, c32(a, bytes), c32(a, 0)};
+        LLVMValueRef args[4] = {a->cpu, addr, c32(a, bytes), open_bus(a)};
         incoming[1] = LLVMBuildCall2(a->b, io_type(a), fn, args, 4, "");
         from[1] = io;
     }

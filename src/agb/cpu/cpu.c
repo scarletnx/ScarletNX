@@ -59,6 +59,7 @@ static void switch_mode(AgbCpu* cpu, uint32_t mode) {
 static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint32_t value) {
     AgbBoard* board = ((AgbCpu*)arm)->board;
     unsigned bytes = size_write & 0xFF;
+    if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus (llvm.c's open_bus) */
     if (size_write & 0x200) {
         /* LDRSH: the ARM7TDMI quirk reads a sign extended byte at an odd address */
         if (address & 1) return (uint32_t)(int32_t)(int8_t)agb_read8(board, address);
