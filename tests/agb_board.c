@@ -112,6 +112,17 @@ int main(void) {
     CHECK(!board.save.dirty);
     agb_save_reset(&board, AGB_SAVE_FLASH64);
     CHECK(agb_save_size(&board) == 0x10000 && !board.save.dirty);
+    /* a 128 KiB flash's chip erase clears both of its banks, whichever is selected */
+    agb_save_reset(&board, AGB_SAVE_FLASH128);
+    CHECK(agb_save_size(&board) == 0x20000);
+    board.memory.sram[0x00005] = 0x12;
+    board.memory.sram[0x10005] = 0x34;
+    {
+        static const uint32_t addresses[] = {0x5555, 0x2AAA, 0x5555, 0x5555, 0x2AAA, 0x5555};
+        static const uint8_t values[] = {0xAA, 0x55, 0x80, 0xAA, 0x55, 0x10};
+        for (int i = 0; i < 6; ++i) agb_write8(&board, 0x0E000000 + addresses[i], values[i]);
+    }
+    CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
 
     /* a byte store to the I/O window writes its lane alone, the other as the register holds it written */
     board.irq_if = 0x0101;

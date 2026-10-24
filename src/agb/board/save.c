@@ -62,8 +62,8 @@ uint8_t agb_save_read8(AgbBoard* board, uint32_t address) {
 static void flash_erase(AgbBoard* board, uint32_t address, int chip) {
     AgbSave* save = &board->save;
     uint32_t base = save->type == AGB_SAVE_FLASH128 ? (uint32_t)save->bank << 16 : 0;
-    if (chip)
-        memset(board->memory.sram + base, 0xFF, 0x10000);
+    if (chip) /* the whole chip, both banks of a 128 KiB one */
+        memset(board->memory.sram, 0xFF, agb_save_size(board));
     else
         memset(board->memory.sram + (base | (address & 0xF000)), 0xFF, 0x1000); /* 4 KiB sectors */
     save->dirty = 1;
