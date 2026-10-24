@@ -4,7 +4,8 @@
 
 `scarletnx-vita` runs a homebrew VPK the way the other drivers run their games. The VPK is extracted once into the
 data folder's `recompiled/<title ID>/` (`app/` holds the package, `ux0/` the writable storage), the eboot's code is
-compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it. Code
+compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it; its
+`<title ID>.ini` says `system=vita`, which the launcher and a build's deploy pick the driver by. Code
 the offline pass didn't find is compiled at run time by the LLVM backend's executor, and the addresses it compiled are
 kept as hints (`<title ID>.hints`) for the next offline compile.
 

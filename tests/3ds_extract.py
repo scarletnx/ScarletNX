@@ -124,7 +124,7 @@ def main():
         assert expected.is_dir() and str(expected) in text
         assert (expected / f'{name}_code.so').is_file() and os.access(expected / name, os.X_OK)
         ini = dict(line.split('=', 1) for line in (expected / f'{name}.ini').read_text().splitlines())
-        assert ini == {'source': str(source.resolve()), 'model': 'old'}, ini
+        assert ini == {'source': str(source.resolve()), 'model': 'old', 'system': '3ds'}, ini
         assert not (data / 'work/3ds/input with spacesliteral').exists()
         # the copy plays its game alone, from the CIA its .ini names, with what --script= and --seconds= set
         env = {**os.environ, 'HOME': str(root), 'USERPROFILE': str(root)}

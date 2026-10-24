@@ -13,6 +13,7 @@
 #include "vita/runtime/process.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
 #include <ctype.h>
@@ -144,34 +145,20 @@ static char* dump_patch(const char* app, const char* title) {
     }
     return patch;
 }
-static bool same_bytes(const char* a, const char* b) {
-    size_t x = 0, y = 0;
-    unsigned char *p = snx_read_file(a, &x), *q = snx_read_file(b, &y);
-    bool same = p && q && x == y && !memcmp(p, q, x);
-    free(p);
-    free(q);
-    return same;
-}
-/* the folder's copy of the runtime, named after the game, as a Switch game's: copied when missing or another build */
+/* the folder's copy of the runtime, named after the game, as a Switch game's (snx_place_runtime), and system=vita in
+   its .ini, which the launcher picks the driver by */
 static void deploy_runtime(const char* folder, const char* runtime) {
 #ifdef _WIN32
     char* copy = vita_game_file(folder, ".exe");
 #else
     char* copy = vita_game_file(folder, "");
 #endif
-    char *own = runtime ? snx_absolute(runtime) : NULL, *mine = copy ? snx_absolute(copy) : NULL;
-    char* staged = copy ? snx_format("%s.tmp", copy) : NULL;
-    bool done = !runtime || !staged || (own && mine && !strcmp(own, mine)) ||
-                (snx_is_file(copy) && same_bytes(runtime, copy));
-    if (!done) {
-        if (!snx_copy_file(runtime, staged) && !snx_make_executable(staged) && !snx_replace(staged, copy))
-            printf("The game's runtime is %s\n", copy);
-        else
-            fprintf(stderr, "scarletnx-vita: cannot copy the runtime to %s\n", copy);
-    }
-    free(staged);
-    free(mine);
-    free(own);
+    char *ini = vita_game_file(folder, ".ini"), error[512];
+    int placed = runtime && copy ? snx_place_runtime(runtime, copy, error, sizeof error) : 0;
+    if (placed == 1) printf("The game's runtime is %s\n", copy);
+    if (placed < 0) fprintf(stderr, "scarletnx-vita: %s\n", error);
+    if (ini) (void)snx_ini_record(ini, "system", snx_system_word(SNX_SYSTEM_VITA)); /* it says why it could not */
+    free(ini);
     free(copy);
 }
 static int play(const char* folder, bool recompile, double seconds, const char* shot, const char* runtime) {

@@ -6,6 +6,7 @@
 #include "3ds/aot/ctr_discover.h"
 #include "3ds/memory/host.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/gpu/present.h"
 #include "common/utilities/build_info.h"
@@ -110,46 +111,19 @@ static void report_threads(SnxCtrProcess* p) {
     }
     putchar('\n');
 }
-/* 1 when the files at a and b hold the same bytes */
-static bool same_bytes(const char* a, const char* b) {
-    FILE *x = fopen(a, "rb"), *y = fopen(b, "rb");
-    unsigned char p[16384], q[16384];
-    size_t n;
-    bool same = x && y;
-    while (same && (n = fread(p, 1, sizeof p, x)) > 0) same = fread(q, 1, n, y) == n && !memcmp(p, q, n);
-    same = same && !ferror(x) && fread(q, 1, 1, y) == 0 && !ferror(y);
-    if (x) fclose(x);
-    if (y) fclose(y);
-    return same;
-}
-/* The game folder's copy of the runtime, named after it, which plays the game as a Switch game's copy does: runtime
-   copied there through a temporary file and a rename (a copy that is running keeps its old file), when it is not there
-   or holds another build. Nothing when runtime is the copy itself */
+/* The game folder's copy of the runtime, named after it, which plays the game as a Switch game's copy does
+   (snx_place_runtime). Nothing when runtime is the copy itself */
 static bool deploy_runtime(const char* directory, const char* runtime, char* error, size_t error_size) {
 #ifdef _WIN32
     char* copy = snx_ctr_game_file(directory, ".exe");
 #else
     char* copy = snx_ctr_game_file(directory, "");
 #endif
-    char *own = runtime ? snx_absolute(runtime) : NULL, *mine = copy ? snx_absolute(copy) : NULL, why[256];
-    char* staged = copy ? snx_format("%s.tmp", copy) : NULL;
-    bool ok = !runtime || (own && mine && !strcmp(own, mine)) || (snx_is_file(copy) && same_bytes(runtime, copy));
-    if (!ok && staged) {
-        ok = !snx_copy_file(runtime, staged) && !snx_make_executable(staged) && !snx_replace(staged, copy);
-        if (ok)
-            printf("The game's runtime is %s\n", copy);
-        else {
-            snprintf(error, error_size, "cannot copy the runtime %s to %s: %s", runtime, copy,
-                     snx_os_error(why, sizeof why));
-            if (snx_is_file(staged)) (void)remove(staged);
-        }
-    } else if (!ok)
-        snprintf(error, error_size, "out of memory for the game's runtime");
-    free(staged);
-    free(mine);
-    free(own);
+    int placed = !runtime ? 0 : copy ? snx_place_runtime(runtime, copy, error, error_size) : -1;
+    if (placed == 1) printf("The game's runtime is %s\n", copy);
+    if (placed < 0 && copy == NULL) snprintf(error, error_size, "out of memory for the game's runtime");
     free(copy);
-    return ok;
+    return placed >= 0;
 }
 int snx_ctr_aot_run(const char* directory, const SnxCtrCia* cia, SnxCtrModel model, uint64_t limit, double seconds,
                     unsigned flags, uint32_t ipc_stubs, const char* runtime, char* error, size_t error_size) {

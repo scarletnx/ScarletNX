@@ -334,7 +334,8 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
 }
 static bool write_game_ini(const char* folder, const char* source, SnxCtrModel model) {
     char *path = snx_ctr_game_file(folder, ".ini"), *full = snx_absolute(source);
-    char* text = full ? snx_format("source=%s\nmodel=%s\n", full, model == SNX_CTR_OLD ? "old" : "new") : NULL;
+    char* text =
+        full ? snx_format("source=%s\nmodel=%s\nsystem=3ds\n", full, model == SNX_CTR_OLD ? "old" : "new") : NULL;
     bool written = path && text && !snx_write_file(path, text, strlen(text));
     if (!written) {
         char why[256];

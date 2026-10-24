@@ -147,3 +147,61 @@ char* snx_addons_text(const SnxAddon* list, size_t count) {
     }
     return text;
 }
+
+static const char* const g_system_words[] = {"switch", "3ds", "vita", "gba"};
+const char* snx_system_word(SnxSystem system) { return g_system_words[system]; }
+SnxSystem snx_game_system(const char* folder, const char* name) {
+    char *ini = snx_format("%s/%s.ini", folder, name), *word = snx_ini_value(ini, "system"), *model = NULL,
+         *card = snx_path_join(folder, "ux0");
+    SnxSystem system = SNX_SYSTEM_SWITCH;
+    for (size_t i = 0; word && i < sizeof(g_system_words) / sizeof(g_system_words[0]); ++i)
+        if (!strcmp(word, g_system_words[i])) system = (SnxSystem)i;
+    if (!word && (model = snx_ini_value(ini, "model")) != NULL)
+        system = SNX_SYSTEM_3DS;
+    else if (!word && snx_is_dir(card))
+        system = SNX_SYSTEM_VITA;
+    free(card);
+    free(model);
+    free(word);
+    free(ini);
+    return system;
+}
+int snx_record_system(const char* folder, const char* name, SnxSystem system) {
+    char* ini = snx_format("%s/%s.ini", folder, name);
+    int rc = snx_ini_record(ini, "system", snx_system_word(system));
+    free(ini);
+    return rc;
+}
+/* 1 when the files at a and b hold the same bytes */
+static int same_bytes(const char* a, const char* b) {
+    FILE *x = fopen(a, "rb"), *y = fopen(b, "rb");
+    unsigned char p[16384], q[16384];
+    size_t n;
+    int same = x && y;
+    while (same && (n = fread(p, 1, sizeof p, x)) > 0) same = fread(q, 1, n, y) == n && !memcmp(p, q, n);
+    same = same && !ferror(x) && fread(q, 1, 1, y) == 0 && !ferror(y);
+    if (x) fclose(x);
+    if (y) fclose(y);
+    return same;
+}
+int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t error_size) {
+    char *own = snx_absolute(runtime), *mine = snx_absolute(copy), *staged = snx_format("%s.tmp", copy), why[256];
+    int rc = 0;
+    if (!own || !mine || !staged) {
+        snprintf(error, error_size, "out of memory for the game's runtime");
+        rc = -1;
+    } else if (strcmp(own, mine) && !(snx_is_file(copy) && same_bytes(runtime, copy))) {
+        if (!snx_copy_file(runtime, staged) && !snx_make_executable(staged) && !snx_replace(staged, copy))
+            rc = 1;
+        else {
+            snprintf(error, error_size, "cannot copy the runtime %s to %s: %s", runtime, copy,
+                     snx_os_error(why, sizeof why));
+            if (snx_is_file(staged)) (void)remove(staged);
+            rc = -1;
+        }
+    }
+    free(staged);
+    free(mine);
+    free(own);
+    return rc;
+}

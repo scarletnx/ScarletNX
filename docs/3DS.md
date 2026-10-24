@@ -32,7 +32,8 @@ ID as a Switch game's is named (`recompiled/0004000000123400/`). It holds the co
 module (`<title ID>_code.so`, `_code.dll` on Windows), the blocks runs compiled at
 run time (`<title ID>.hints`), the game's state (`sdmc/`, `savedata/`, frames,
 audio), `<title ID>.ini` and a copy of the runtime named `<title ID>`. The `.ini`
-names the CIA (`source=`) and the console (`model=`). Running the copy plays the
+names the CIA (`source=`), the console (`model=`) and the system (`system=3ds`),
+which the launcher and a build's deploy pick the driver by. Running the copy plays the
 game, as a Switch game's copy does: `recompiled/<title ID>/<title ID> --seconds=60
 --script=15000:1`, or `scarletnx-3ds --game=recompiled/<title ID>`. Where scarletnx is
 also the 3DS driver (`SNX_MULTICALL`), the copy is scarletnx, which runs a 3DS game

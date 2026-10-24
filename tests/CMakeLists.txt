@@ -870,6 +870,12 @@ if(WIN32)
     target_link_libraries(snx_test_common PUBLIC advapi32)
 endif()
 
+# the console a game's folder plays and its copy of the runtime (common/utilities/game_ini.c), which the launcher reads
+add_executable(snx-test-game-system game_system.c)
+snx_test_target(snx-test-game-system 99)
+target_link_libraries(snx-test-game-system PRIVATE snx_test_common)
+add_test(NAME game_system COMMAND snx-test-game-system)
+
 add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/driver.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
