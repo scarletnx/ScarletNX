@@ -19,6 +19,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
 
 #define MEMORY     0x40000
 #define CODE_LO    0x1000
@@ -531,12 +537,25 @@ static void test_invalidate_middle(void) {
    compile thread ran a short batch to its end before this thread ran again, and no round dropped one */
 #define IN_FLIGHT_PC   0x10000
 #define IN_FLIGHT_ADDS 4000
+/* a spin of a round: an invalidation elsewhere and the stats, then the processor to the others. A lock taken again at
+   once by the thread that let it go (Windows' SRW lock is not fair) leaves the compile thread waiting for it, its
+   batch never begun */
+static void in_flight_spin(SnxJitStats* stats) {
+    snx_jit_invalidate(service, 0x8000, 0x10);
+    snx_jit_stats(service, stats);
+#ifdef _WIN32
+    SwitchToThread();
+#else
+    sched_yield();
+#endif
+}
 static void test_invalidate_in_flight(void) {
     static const u32 words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
     static const SnxU64 warm_pc[] = {0x4800};
     static u32 long_words[IN_FLIGHT_ADDS + 1];
     SnxJitStats stats;
-    unsigned long batches, dropped, spins;
+    unsigned long batches, dropped;
+    time_t until;
     unsigned round;
     size_t i;
     service = start(1, 1);
@@ -554,10 +573,7 @@ static void test_invalidate_in_flight(void) {
         snx_jit_stats(service, &stats);
         batches = stats.batches;
         CHECK(snx_jit_resolve(service, IN_FLIGHT_PC) == NULL);
-        for (spins = 0; stats.batches == batches && spins < 100000000; ++spins) {
-            snx_jit_invalidate(service, 0x8000, 0x10);
-            snx_jit_stats(service, &stats);
-        }
+        for (until = time(NULL) + 60; stats.batches == batches && time(NULL) < until;) in_flight_spin(&stats);
         CHECK(stats.batches != batches);
         CHECK(snx_jit_wait(service, IN_FLIGHT_PC) != NULL); /* queued again, and compiled once nothing changes */
     }
@@ -566,10 +582,7 @@ static void test_invalidate_in_flight(void) {
     snx_jit_stats(service, &stats);
     batches = stats.batches;
     CHECK(snx_jit_warm(service, warm_pc, 1) == 1);
-    for (spins = 0; stats.batches == batches && spins < 100000000; ++spins) {
-        snx_jit_invalidate(service, 0x8000, 0x10);
-        snx_jit_stats(service, &stats);
-    }
+    for (until = time(NULL) + 60; stats.batches == batches && time(NULL) < until;) in_flight_spin(&stats);
     snx_jit_drain(service);
     CHECK(get(0x4800) != NULL);
     snx_jit_stats(service, &stats);
