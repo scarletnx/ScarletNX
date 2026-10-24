@@ -16,9 +16,10 @@ uint8_t agb_save_detect(const uint8_t* image, uint64_t size) {
         {"SRAM_V", AGB_SAVE_SRAM},
         {"EEPROM_V", AGB_SAVE_EEPROM}, /* the 512 byte chip, the 8 KiB one once a block past it is named */
     };
-    for (uint64_t i = 0; i + 16 < size; ++i)
+    for (uint64_t i = 0; i < size; ++i)
         for (size_t t = 0; t < sizeof(tags) / sizeof(tags[0]); ++t)
-            if (!memcmp(image + i, tags[t].tag, strlen(tags[t].tag))) return tags[t].type;
+            if (strlen(tags[t].tag) <= size - i && !memcmp(image + i, tags[t].tag, strlen(tags[t].tag)))
+                return tags[t].type;
     return AGB_SAVE_NONE;
 }
 

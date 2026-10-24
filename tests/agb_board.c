@@ -146,6 +146,17 @@ int main(void) {
     }
     CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
 
+    /* the save kind a ROM's tag names, wherever it is, the image's last bytes too */
+    {
+        uint8_t image[64] = {0};
+        memcpy(image + 20, "SRAM_V113", 9);
+        CHECK(agb_save_detect(image, sizeof image) == AGB_SAVE_SRAM);
+        memset(image, 0, sizeof image);
+        memcpy(image + sizeof image - 8, "EEPROM_V", 8);
+        CHECK(agb_save_detect(image, sizeof image) == AGB_SAVE_EEPROM);
+        CHECK(agb_save_detect(image, sizeof image - 1) == AGB_SAVE_NONE); /* cut short of the tag's end */
+    }
+
     /* EEPROM: a write of block 5 (6 bits of number on the 512 byte chip) lands at byte 40, most significant bit first,
        and keeps it busy, reading 0, for 115000 cycles. A read request is answered by 68 bits: 4, then the block's. A
        block past 63, with 14 bits of number, makes it the 8 KiB chip */
