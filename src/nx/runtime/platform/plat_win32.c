@@ -204,9 +204,12 @@ u8* plat_vm_reserve(u64 size) {
     return (u8*)p;
 }
 
+static int g_ww_off; /* atomic: plat_ww_off */
+void plat_ww_off(void) { __atomic_store_n(&g_ww_off, 1, __ATOMIC_RELEASE); }
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     void* pages[1024]; /* on the stack: two threads may scan at once */
     u64 start, end, calls, i;
+    if (__atomic_load_n(&g_ww_off, __ATOMIC_ACQUIRE)) return -1;
     if (!g_ww_base || !size) return g_ww_base ? 0 : -1;
     start = (u64)(uintptr_t)p & ~(u64)4095;
     end = ((u64)(uintptr_t)p + size + 4095) & ~(u64)4095;

@@ -644,8 +644,9 @@ setting UMA
     help is (VK_EXT_external_memory_host), as the console's GPU does: vertex, index and storage buffers are read in
     help place and shaders write storage buffers in place, with no copy and nothing to land, and the GPU checks
     help textures against guest memory itself. A discrete GPU keeps its own copies, since it would read guest memory
-    help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. On a GPU without
-    help the extension, 1 and 2 are a warning at start
+    help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. With it on, write
+    help tracking is off: caches that used it compare contents. On a GPU without the extension, 1 and 2 are a warning
+    help at start
 setting UMA texture checks
     key uma_texture_check
     int 0 1

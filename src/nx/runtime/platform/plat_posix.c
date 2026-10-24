@@ -402,6 +402,10 @@ static void ww_remapped(u8* p, u64 size) {
     WARN("memory: could not watch remapped guest memory for writes (error %d): caches compare contents now\n", errno);
 }
 
+/* the pagemap stays open, as a scan on another thread may be using it (ww_remapped); with it gone, ranges mapped
+   again aren't registered and traps let go of theirs (plat_trap_disarm). Pages the registration watches already
+   take one asynchronous write fault each and are writable from then on, as nothing protects them again */
+void plat_ww_off(void) { __atomic_store_n(&g_pagemap, -1, __ATOMIC_RELEASE); }
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
 #if defined(__linux__) && defined(PAGEMAP_SCAN)
     struct page_region regions[64];

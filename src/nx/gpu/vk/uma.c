@@ -168,6 +168,8 @@ void vk_uma_init(void) {
         return;
     }
     mem_set_backing_hook(backing_changed);
+    /* one or the other: the caches that asked write tracking compare contents from now on (plat.h) */
+    plat_ww_off();
     LOG("vulkan: unified memory: draws read guest buffers in place (VK_EXT_external_memory_host, imports aligned to "
         "%llu bytes)%s\n",
         (unsigned long long)g_vk.uma_align,

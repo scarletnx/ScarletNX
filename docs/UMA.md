@@ -14,7 +14,10 @@ not on RADV, ANV or NVIDIA, and not in a game yet.
 
 Without the extension the setting is a warning at start, and the renderer works as before. Buffers are copied into
 staging and their own buffers, results land at the fence, and textures are hashed and watched with write tracking
-(`plat_ww_scan`). Write tracking stays, as that fallback and for the ranges UMA leaves to it (below).
+(`plat_ww_scan`).
+
+Unified memory and write tracking exclude each other. With UMA on, write tracking is off for the run (`plat_ww_off`,
+from `vk_uma_init`), and what asked it compares contents instead, as on a host without it (below).
 
 The console's GPU reads and writes the same memory its CPU does, and the game's fences keep the two apart. ScarletNX
 keeps those fences faithful. A release (a syncpoint increment, a semaphore) waits for the Vulkan submit that holds the
@@ -55,10 +58,9 @@ the whole ioctl again. amdgpu's notifier also waits for the GPU to be done with 
 
 So, on a Steam Deck, the cost of unified memory is the imported pages each submission names, times submissions. Its
 first version imported 64 MiB chunks (16384 pages each) around whatever a draw touched and kept them for good, and it
-ran far slower than with `uma=0`. Anything that changes the protection of imported pages invalidates them. That
-includes write tracking re-protecting written pages (`plat_ww_scan`), which still runs for shaders, index scans,
-render targets' baselines, CPU-checked textures and constant buffer ranges, and transparent huge pages being
-collapsed.
+ran far slower than with `uma=0`. Anything that changes the protection of imported pages invalidates them. Write
+tracking does that by design: each scan re-protects the pages written since the last one. That is why the two
+exclude each other. Transparent huge pages being collapsed still can.
 
 The fix this design points to is the other direction: guest memory allocated as Vulkan memory and mapped into the
 reservation (`VK_EXT_map_memory_placed`, which RADV has), so the GPU uses ordinary buffers. Those mappings can't take
@@ -156,12 +158,17 @@ A texture the GPU can't check (results pending over it, memory the runtime wrote
 imported) goes to the CPU's checks for good, which is how it was checked before UMA. Reloading it at every check
 instead was a staging copy and a rebuild of each such texture every frame and every submission.
 
-Write tracking (or hashing without it) still checks:
+With UMA on there is no write tracking, so these compare contents, as on a host without it:
 
-- textures over memory the runtime wrote while recording (`front`);
-- depth textures;
-- formats a store can't take as they are, with neither extension;
-- shaders, index scans and render targets' baselines (`pipeline.c`, `render.c`, `surface.c`).
+- textures the GPU doesn't check (over memory the runtime wrote while recording, depth textures, formats a store can't
+  take with neither copy extension, any on a discrete GPU or with `uma_texture_check=0`): hashed in each epoch until
+  they settle, then sampled on a schedule (`texture.c`'s `tex_check`);
+- shader code: hashed once in each epoch it is used in (`pipeline.c`'s `code_same`);
+- the largest index of an indexed draw, which sizes the vertex streams bound: the indices scanned at each draw
+  (`render.c`'s `draw_last_vertex`);
+- buffers that aren't read in place (constant buffers updated inline): copied in each epoch, or own buffers checked
+  on a schedule (`buffer.c`);
+- render targets' baselines: hashed (`surface.c`).
 
 ## Next
 

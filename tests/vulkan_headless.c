@@ -1280,6 +1280,8 @@ static int check_uma(void) {
         puts("vulkan_headless: no unified memory on this device, its check skipped");
         return 0;
     }
+    /* write tracking is off with unified memory: its scans would re-protect imported pages */
+    CHECK(vk_written_since(GP(UMA_A), 4096, 0) < 0);
     vk_lock();
     gmmu_map(UMA_GA, UMA_A, 0x10000);
     u8* p = GP(UMA_A);
