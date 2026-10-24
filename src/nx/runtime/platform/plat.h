@@ -106,6 +106,8 @@ int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
 u32 plat_tid(void); /* the calling thread's id, as the system numbers threads */
 /* whether this process's thread tid (plat_tid's) is waiting in a trap now: 1, 0, or -1 when that can't be told */
 int plat_thread_in_fault(u32 tid);
+/* Best-effort fatal diagnostics for the blocked thread, not the trap handler. Never resumes it. */
+void plat_dump_fault_thread(u32 tid);
 /* every page of [p, p + size), whole host pages of pool memory, armed / let go (0, or -1) */
 int plat_trap_arm(u8* p, u64 size);
 int plat_trap_continue(u8* p, u64 size);

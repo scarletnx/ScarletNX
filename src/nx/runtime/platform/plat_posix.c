@@ -39,6 +39,7 @@
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #endif
 #if defined(__ANDROID__)
 #include <SDL3/SDL_system.h>
@@ -618,6 +619,135 @@ int plat_thread_in_fault(u32 tid) {
 #else
     (void)tid;
     return -1; /* traps are userfaultfd's, Linux's */
+#endif
+}
+
+#if defined(__linux__)
+/* Read proc metadata, never the stopped thread's guest memory. A blocked user-space fault has syscall=-1,
+   followed by SP and PC; a blocked syscall has six arguments before them. */
+static int fault_proc_line(u32 tid, const char* file, char* buf, size_t cap) {
+    char path[96];
+    ssize_t n;
+    int fd, error;
+    snprintf(path, sizeof path, "/proc/self/task/%u/%s", tid, file);
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        WARN("ownership-fault: %s unavailable (errno=%d)\n", file, errno);
+        return 0;
+    }
+    n = read(fd, buf, cap - 1);
+    error = errno;
+    close(fd);
+    if (n <= 0) {
+        WARN("ownership-fault: %s unavailable (read=%ld errno=%d)\n", file, (long)n, n < 0 ? error : 0);
+        return 0;
+    }
+    buf[n] = 0;
+    buf[strcspn(buf, "\n")] = 0;
+    return 1;
+}
+
+/* Report mapping-relative and file offsets even in stripped builds, without dladdr's dynamic-loader lock.
+   Stack words are only candidates, not unwound frames. */
+static void fault_code_mapping(uintptr_t pc, const char* kind, size_t slot) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[1024], perms[5];
+    unsigned long long lo, hi, off;
+    int found = 0;
+    if (!f) {
+        WARN("ownership-fault: maps unavailable (errno=%d)\n", errno);
+        return;
+    }
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "%llx-%llx %4s %llx", &lo, &hi, perms, &off) != 4 || pc < lo || pc >= hi || perms[2] != 'x')
+            continue;
+        line[strcspn(line, "\n")] = 0;
+        WARN("ownership-fault: %s[%zu] host=%llx mapping+%llx file-offset=%llx map=%s\n", kind, slot,
+             (unsigned long long)pc, (unsigned long long)pc - lo, off + (unsigned long long)pc - lo, line);
+        found = 1;
+        break;
+    }
+    fclose(f);
+    if (!found && !strcmp(kind, "pc"))
+        WARN("ownership-fault: pc=%llx has no executable mapping (possibly changed)\n", (unsigned long long)pc);
+}
+
+static void fault_stack_candidates(uintptr_t sp) {
+    uintptr_t words[128];
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[1024], perms[5];
+    unsigned long long lo, hi;
+    size_t bytes = 0, i;
+    ssize_t n;
+    struct iovec local, remote;
+    if (!f) {
+        WARN("ownership-fault: stack candidates unavailable (maps errno=%d)\n", errno);
+        return;
+    }
+    while (fgets(line, sizeof line, f)) {
+        int name = 0;
+        if (sscanf(line, "%llx-%llx %4s %*s %*s %*s %n", &lo, &hi, perms, &name) != 3 || !name || sp < lo || sp >= hi)
+            continue;
+        /* Native stacks only: anonymous private RW or [stack]. Owned guest pool pages are shared mappings.
+           Excluding them prevents the diagnostic itself blocking on a userfaultfd page. */
+        if (!strcmp(perms, "rw-p") && (!line[name] || !strncmp(line + name, "[stack]", 7)))
+            bytes = hi - sp < sizeof words ? (size_t)(hi - sp) : sizeof words;
+        break;
+    }
+    fclose(f);
+    if (!bytes) {
+        WARN("ownership-fault: stack candidates unavailable (SP is not in a private native stack mapping)\n");
+        return;
+    }
+    local.iov_base = words;
+    local.iov_len = bytes;
+    remote.iov_base = (void*)sp;
+    remote.iov_len = bytes;
+    /* Android API 21 has no libc declaration for process_vm_readv. Use the kernel interface, as the
+       userfaultfd paths do, and keep the diagnostic optional if the syscall is unavailable or denied. */
+    n = syscall(SYS_process_vm_readv, getpid(), &local, 1ul, &remote, 1ul, 0ul);
+    if (n <= 0) {
+        WARN("ownership-fault: stack candidates unavailable (read=%ld errno=%d)\n", (long)n, n < 0 ? errno : 0);
+        return;
+    }
+    WARN("ownership-fault: scanning %ld native stack bytes for possible callers; candidates are NOT a backtrace\n",
+         (long)n);
+    for (i = 0; i < (size_t)n / sizeof words[0]; i++)
+        fault_code_mapping(words[i], "stack-candidate", i * sizeof words[0]);
+}
+#endif
+
+void plat_dump_fault_thread(u32 tid) {
+#if defined(__linux__)
+    char buf[512], *p, *end;
+    unsigned long long regs[8];
+    long call;
+    unsigned n = 0, expected;
+    if (fault_proc_line(tid, "comm", buf, sizeof buf)) WARN("ownership-fault: thread-name=%s\n", buf);
+    if (fault_proc_line(tid, "wchan", buf, sizeof buf)) WARN("ownership-fault: wait-channel=%s\n", buf);
+    if (!fault_proc_line(tid, "syscall", buf, sizeof buf)) return;
+    call = strtol(buf, &p, 10);
+    if (p == buf) {
+        WARN("ownership-fault: host registers unavailable (%s)\n", buf);
+        return;
+    }
+    while (n < 8) {
+        regs[n] = strtoull(p, &end, 0);
+        if (end == p) break;
+        n++;
+        p = end;
+    }
+    expected = call == -1 ? 2 : 8;
+    if (n != expected) {
+        WARN("ownership-fault: host registers unavailable (unexpected syscall record)\n");
+        return;
+    }
+    WARN("ownership-fault: blocked-thread=%u syscall=%ld host-pc=%llx host-sp=%llx\n", tid, call, regs[n - 1],
+         regs[n - 2]);
+    fault_code_mapping((uintptr_t)regs[n - 1], "pc", 0);
+    fault_stack_candidates((uintptr_t)regs[n - 2]);
+#else
+    WARN("ownership-fault: host context unavailable for thread %u on this platform\n", tid);
 #endif
 }
 u8* plat_alias_mirror(void) {

@@ -316,6 +316,9 @@ int plat_thread_in_fault(u32 tid) {
     (void)tid;
     return -1; /* no traps here */
 }
+void plat_dump_fault_thread(u32 tid) {
+    WARN("ownership-fault: host context unavailable for thread %u on this platform\n", tid);
+}
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
     (void)fault;
     return -1;

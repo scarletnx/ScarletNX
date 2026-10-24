@@ -274,9 +274,34 @@ static void land_pages(u64 lo, u64 hi) {
 }
 
 /* ---------------------------------------------------------------- traps */
+static void report_owned_fault(u64 a, int write, u32 tid, int fault_state) {
+    Own owners[16];
+    u64 page = a & ~(g_page - 1);
+    u32 i, n = 0, total = 0;
+    /* Snapshot metadata only: no guest reads, renderer lock, or logging under the map lock. */
+    pm_lock(&g_own_lk);
+    for (i = first_after_nl(page); i < g_nown && g_own[i].lo < page + g_page; i++) {
+        if (n < sizeof owners / sizeof *owners) owners[n++] = g_own[i];
+        total++;
+    }
+    pm_unlock(&g_own_lk);
+    log_crash_mode();
+    WARN("ownership-fault: thread=%u renderer-holder=%u access=%s guest-page=%llx page-size=%llu "
+         "host-page=%p wait=%s\n",
+         tid, tid, write ? "write" : "read", (unsigned long long)page, (unsigned long long)g_page, (void*)GP(page),
+         fault_state == 1 ? "confirmed" : "unknown");
+    for (i = 0; i < n; i++) {
+        const Own* o = &owners[i];
+        WARN("ownership-fault: owner guest=[%llx,%llx) pool=%llx resource=%p resource-offset=%llx landing=%d\n",
+             (unsigned long long)o->lo, (unsigned long long)o->hi, (unsigned long long)o->pool, o->res,
+             (unsigned long long)o->res_off, o->landing);
+    }
+    if (total > n) WARN("ownership-fault: %u additional owners omitted\n", total - n);
+    plat_dump_fault_thread(tid);
+}
+
 static void own_fault(u8* p, int write, u32 tid) {
     u64 a = (u64)(p - g_mem), page = a & ~(g_page - 1);
-    (void)write;
     if (p < g_mem || a >= AS_SIZE) { /* not the guest's memory: nothing of ours, let it go */
         plat_trap_continue(p, g_page);
         return;
@@ -296,10 +321,16 @@ static void own_fault(u8* p, int write, u32 tid) {
            holder is asked now, not when it faulted: a late message's thread may have taken the lock since, and
            republished the page, so it ends the process only when that thread is waiting in a fault (or it can't be
            told); otherwise the landing waits for the lock as any other */
-        if (tid && g_hooks.busy_tid && tid == g_hooks.busy_tid() && plat_thread_in_fault(tid) != 0)
-            fatal("Thread %u touched GPU-owned guest memory at %llx while it held the renderer: the runtime must call "
-                  "own_acquire first",
-                  tid, (unsigned long long)a);
+        if (tid && g_hooks.busy_tid && tid == g_hooks.busy_tid()) {
+            int fault_state = plat_thread_in_fault(tid);
+            if (fault_state != 0) {
+                report_owned_fault(a, write, tid, fault_state);
+                fatal(
+                    "Thread %u touched GPU-owned guest memory at %llx while it held the renderer: the runtime must call "
+                    "own_acquire first",
+                    tid, (unsigned long long)a);
+            }
+        }
         /* never under g_trap_lk: the landing takes the producer's lock. A page owned again by the time it is done (a
            republish) lands again */
         land_pages(page, page + g_page);

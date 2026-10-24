@@ -88,6 +88,16 @@ rather than landing in the signal handler.
   without `own_acquire`): fatal, with the range, when that thread is waiting in the fault. A late fault message, from a
   thread that has taken `vk_lock` since, lands as any other. Its fault on a page no entry is on any more (landed, not
   let go yet) goes on.
+- Before that fatal, `ownership-fault:` lines record the read/write direction, guest page and host page, whether
+  the wait was confirmed, and up to sixteen overlapping owners (guest ranges, pool offsets, resource identities,
+  resource offsets and landing state). The address is page-granular, not the exact byte accessed.
+  On Linux the report reads the **blocked thread's** PC and SP from `/proc/self/task/TID/syscall`, then records its
+  executable mapping and file offset. It scans at most 128 native stack words for executable addresses, explicitly
+  labeled `stack-candidate`: these may be saved callers or unrelated values, **not an unwound backtrace**. It never
+  reads shared guest pool pages for this scan or resumes the thread. Missing procfs/register/stack access is logged.
+  Use the build revision printed at startup and that build's unstripped binary/debug symbols to resolve addresses;
+  a file offset must be translated through the ELF load segments before using it as an addr2line address.
+  See https://man7.org/linux/man-pages/man5/proc_pid_syscall.5.html for the blocked-thread register format.
 - Landing is a memcpy into the mirror. A producer's GPU copy keeps the range's layout (block linear surfaces are
   swizzled on the GPU), and covers the range's padding: it is filled from guest memory when the producer takes the
   range.
