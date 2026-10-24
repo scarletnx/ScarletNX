@@ -69,6 +69,10 @@ struct KThread {
     int pinned;     /* the core whose host CPUs its host thread runs on (core_pin), -1 before it first ran */
     u32 core_next;  /* the core's wait list (kt_at) */
     u64 core_ticket;    /* arrival order there, which breaks priority ties */
+    /* for the report at exit (kernel_core_report), under core_lk: the time it waited for a core, and how often, and
+       the time it held one */
+    u64 core_wait_ns, core_held_ns;
+    u32 core_waits;
     u64 affinity;
     u64 tls;
     u64 entry, arg, stack_top;
@@ -202,6 +206,8 @@ u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module expor
 int kernel_symbol(u32 i, u64* addr, const char** name);
 void kernel_dump_regs(CPU* c);
 void kernel_dump_threads(void);
+/* how long threads waited for their cores and how busy each core was, logged at exit */
+void kernel_core_report(void);
 void mem_report(char* out, int n);
 
 /* g_klock, the kernel lock, is g_host.kernel.klock (hle.h): every list a waiter or signaller touches is under it */
