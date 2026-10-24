@@ -346,11 +346,20 @@ static int create_device(void) {
         snx_vk_extensions_free(&e);
     }
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
-    g_vk.uma = g_settings.uma && has_host_memory;
-    if (g_vk.uma) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    else if (g_settings.uma)
+    /* unified memory only where the GPU's memory is the CPU's (docs/UMA_MEMORY.md): a discrete GPU reads imported
+       guest memory across PCIe at every use, where its own copies are in its own memory */
+    int shared = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
+                 g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    g_vk.uma = g_settings.uma && has_host_memory && (shared || g_settings.uma == 2);
+    g_vk.uma_shared = g_vk.uma && shared;
+    if (g_vk.uma)
+        ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    else if (g_settings.uma && !has_host_memory)
         WARN("vulkan: unified memory was asked for, but the GPU can't import host memory (no "
              "VK_EXT_external_memory_host): guest buffers are copied for it and watched for writes\n");
+    else if (g_settings.uma)
+        LOG("vulkan: a discrete GPU, with memory of its own: guest buffers are copied for it and watched for writes "
+            "(uma=2 imports guest memory anyway)\n");
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -433,7 +442,7 @@ static int create_device(void) {
     /* unified memory's texture check turns the copies of a rebuild off with copies the GPU writes the commands of
        (VK_KHR_copy_memory_indirect, else VK_NV_copy_memory_indirect), on the graphics queue, from device addresses;
        without them it stores what the copies would (texcheck.c) */
-    if (g_vk.uma && g_settings.uma_indirect_copies && q12.bufferDeviceAddress && (has_cmi_khr || has_cmi_nv)) {
+    if (g_vk.uma_shared && g_settings.uma_indirect_copies && q12.bufferDeviceAddress && (has_cmi_khr || has_cmi_nv)) {
         VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR cmp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 cp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cmp};

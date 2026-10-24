@@ -1,8 +1,12 @@
 # Unified memory (design)
 
-Status: done on Linux under the `uma` setting (on by default, `[Debug]`), for every GPU with
-`VK_EXT_external_memory_host` and a host-coherent memory type for it. It has run on lavapipe only (the headless
-tests), not on RADV, ANV or NVIDIA, and not in a game yet.
+Status: done on Linux under the `uma` setting (`[Debug]`), for GPUs with `VK_EXT_external_memory_host` and a
+host-coherent memory type for it. It is on by default only where the GPU's memory is the CPU's: an integrated GPU, or
+a CPU device like lavapipe (`uma=1`). A discrete GPU would read imported guest memory across PCIe at every use, where
+its own copies sit in its own memory (`docs/UMA_MEMORY.md`), and a GTX 1050 laptop slowed down with it on.
+`uma=2` imports on a discrete GPU too, to compare: buffers are then read and written in place, but textures stay the
+CPU's, since checking them would pull their texels across the bus. It has run on lavapipe only (the headless tests),
+not on RADV, ANV or NVIDIA, and not in a game yet.
 
 - Vertex, index, constant and storage buffers are read where they are in guest memory.
 - Shaders (draws, transform feedback, dispatches) write storage buffers in place.
@@ -114,6 +118,13 @@ mutable format, block-texel views for compressed formats). A rebuild with more t
 rest as it is. That is slower, never wrong, since a rebuild of an unchanged texture gives the same texels. A texture
 the GPU can't check now (results pending over it, memory not imported) is loaded again as it is.
 
+The GPU checks textures only on a shared-memory GPU (`g_vk.uma_shared`): its check reads every byte of a texture, a
+whole 64 KiB piece at a time, at each check, which on a discrete GPU is that much PCIe traffic a submission.
+
+A texture the GPU can't check (results pending over it, memory the runtime wrote while recording, GPU-owned or not
+imported) goes to the CPU's checks for good, which is how it was checked before UMA. Reloading it at every check
+instead was a staging copy and a rebuild of each such texture every frame and every submission.
+
 Write tracking (or hashing without it) still checks:
 
 - textures over memory the runtime wrote while recording (`front`);
@@ -123,6 +134,9 @@ Write tracking (or hashing without it) still checks:
 
 ## Next
 
+0. The GPU's texture checks still read all of a texture at each frame and submission it is used in, on a
+   shared-memory GPU. That is the GPU's own memory there, but bandwidth all the same: checks that skip what can't have
+   changed (fewer epochs, pieces the GPU front end and the guest didn't touch) are next to measure.
 1. Batch the texture checks. Each one ends the rendering pass, once a texture in each epoch. The checks due could be
    recorded together at the first one, and checks of textures a frame doesn't change could happen less often.
 2. The rebuild's CPU bookkeeping (`wgen`, the render target copies `tex_take_drawn` makes) runs at every check, as

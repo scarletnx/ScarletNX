@@ -198,7 +198,7 @@ static VkFormat store_format(u32 bytes) {
 
 int vk_texcheck_prepare(VkImageCreateInfo* ii, VkViewFormats* vf) {
     u32 bw, bh, bytes;
-    if (!g_vk.uma) return 0;
+    if (!g_vk.uma_shared) return 0; /* a discrete GPU's texture checks stay the CPU's: no texels across PCIe */
     if (g_vk.copy_indirect) return 1; /* copies, which any image a texture is made as takes */
     bytes = format_unit(ii->format, &bw, &bh);
     VkFormat sf = store_format(bytes);

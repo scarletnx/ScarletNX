@@ -113,6 +113,9 @@ typedef struct {
        (uma.c), uma_align the driver's minImportedHostPointerAlignment */
     int uma;
     u64 uma_align;
+    /* and the GPU's memory is the CPU's (an integrated GPU): only then does the GPU check textures itself
+       (texcheck.c), which reads their guest bytes. A discrete GPU would read them across PCIe at every check */
+    int uma_shared;
     /* unified memory's texture check (texcheck.c): the copies the GPU turns on and off, 1 with
        VK_KHR_copy_memory_indirect, 2 with VK_NV_copy_memory_indirect, 0 without (dispatches store what they would),
        and bufferDeviceAddress, which they read their source and commands at: the buffers they read are made with

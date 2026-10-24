@@ -162,11 +162,12 @@ void vk_uma_init(void) {
     }
     mem_set_backing_hook(backing_changed);
     LOG("vulkan: unified memory: draws read guest buffers in place (VK_EXT_external_memory_host, imports aligned to "
-        "%llu bytes), the GPU checks textures and turns their rebuilds off %s\n",
+        "%llu bytes)%s\n",
         (unsigned long long)g_vk.uma_align,
-        g_vk.copy_indirect == 1   ? "with VK_KHR_copy_memory_indirect"
-        : g_vk.copy_indirect == 2 ? "with VK_NV_copy_memory_indirect"
-                                  : "storing what their copies would");
+        !g_vk.uma_shared           ? ", on a discrete GPU: the CPU checks textures, which the GPU doesn't read across PCIe"
+        : g_vk.copy_indirect == 1  ? ", the GPU checks textures and turns their rebuilds off with VK_KHR_copy_memory_indirect"
+        : g_vk.copy_indirect == 2  ? ", the GPU checks textures and turns their rebuilds off with VK_NV_copy_memory_indirect"
+                                   : ", the GPU checks textures and turns their rebuilds off storing what their copies would");
 }
 
 /* the index of the first import starting after cpu (g_uma.n when none does) */

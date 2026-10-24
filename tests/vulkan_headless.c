@@ -1247,6 +1247,30 @@ static int tex_matches(const u8* img, const u8* guest) {
             if (img[y * 64 + x] != guest[bl_offset(x, y, 0, 64, 16, 0, 0)]) return 0;
     return 1;
 }
+/* A texture checked by the CPU's write tracking: unchanged over guest submissions it isn't loaded again, and the
+   guest's CPU changing a byte loads it at the next check, the first write marked since its last one included (a
+   baseline of the clock before the check plus one missed it) */
+static int check_texture_writes(void) {
+    u8* p = GP(UMA_A);
+    const u64 ga = UMA_GA + 0xF000;
+    if (g_vk.uma) return 0; /* the GPU checks it there (check_uma) */
+    gmmu_map(UMA_GA, UMA_A, 0x10000);
+    for (u32 i = 0; i < 1024; i++) p[0xF000 + i] = (u8)(i * 3 + 1);
+    u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                  (u32)ga, 3u << 21 | (u32)(ga >> 32), 0, 15 | 1u << 23, 15, 0, 0};
+    u64 up0, up, b;
+    Surf* t = vk_tex_from_tic_raw(tic);
+    CHECK(t);
+    for (int round = 0; round < 5; round++) {
+        if (round == 4) p[0xF000 + 700] ^= 1;
+        vk_ww_new_epoch();
+        vk_tex_stats(&up0, &b);
+        CHECK(vk_tex_from_tic_raw(tic) == t);
+        vk_tex_stats(&up, &b);
+        CHECK(up == up0 + (round == 4));
+    }
+    return 0;
+}
 static int check_uma(void) {
     static u8 out[0x1000], data[16];
     VkBuffer b, b2, any;
@@ -1404,6 +1428,20 @@ static int check_uma(void) {
             } else
                 CHECK(tex_matches(img, tm));
         }
+        /* memory the runtime wrote while recording isn't read in place: the CPU checks the texture from then on, as
+           without unified memory, loading it again only when it changes, not at every check */
+        CHECK(!gmem_write(tg, data, sizeof data));
+        u64 up0, up, upb;
+        vk_tex_stats(&up0, &upb);
+        for (int round = 0; round < 5; round++) {
+            if (round == 4) tm[700] ^= 1;
+            vk_ww_new_epoch();
+            CHECK(vk_tex_from_tic_raw(tic2) == t2);
+            vk_tex_stats(&up, &upb);
+            CHECK(round == 0 ? up <= up0 + 1 : round < 4 ? up == up0 : up == up0 + 1);
+            up0 = up;
+        }
+        CHECK(!tex_read(t2, img) && tex_matches(img, tm));
     }
     /* memory the guest unmaps: its import goes at the next lookup, and memory mapped there again is imported anew */
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
@@ -1482,6 +1520,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
+    CHECK(!check_texture_writes());
     CHECK(!check_uma());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&

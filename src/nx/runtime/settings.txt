@@ -636,15 +636,16 @@ setting Native ETC2
 setting UMA
     label Unified memory (UMA)
     key uma
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = the GPU reads and writes guest memory where it is (VK_EXT_external_memory_host), as the console's GPU
-    help does: vertex, index and storage buffers are read in place and shaders write storage buffers in place, with
-    help no copy and nothing to land, and the GPU checks textures against guest memory itself. 0 = they are copied
-    help for the GPU and kept apart, watched for the CPU's writes, as on GPUs without the extension. On such a GPU 1
-    help is a warning at start
+    words Off|Shared memory|Any GPU
+    help 1 = on a GPU that shares the CPU's memory (an integrated one), the GPU reads and writes guest memory where it
+    help is (VK_EXT_external_memory_host), as the console's GPU does: vertex, index and storage buffers are read in
+    help place and shaders write storage buffers in place, with no copy and nothing to land, and the GPU checks
+    help textures against guest memory itself. A discrete GPU keeps its own copies, since it would read guest memory
+    help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. On a GPU without
+    help the extension, 1 and 2 are a warning at start
 setting UMA indirect copies
     key uma_indirect_copy
     int 0 1
