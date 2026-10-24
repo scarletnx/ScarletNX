@@ -16,6 +16,23 @@ build/agb/scarletnx-agb Game.gba
 `scarletnx-agb` is also a menu entry of `scarletnx-gui` ("Load GBA ROM"), next
 to the Switch, Linux and 3DS loaders.
 
+## Playing
+
+`scarletnx-agb Game.gba` plays the ROM in a window four times the console's
+screen, scaled by whole steps when it is resized, with the console's sound and
+its 59.73 frames a second. `--fullscreen=1` starts it fullscreen, and F11
+switches. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
+Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
+where the console has them (A east, B south), its shoulders and triggers L and
+R, its left stick the D-pad.
+
+The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
+user's), named after the ROM's file, or `<name>/` of `--outdir`. It holds the
+module and the save, `<name>.sav`, and the ROM's folder stays as it is. A
+`<ROM>.sav` beside the ROM, which another emulator keeps, is read once, when the
+folder has none. What the game writes to its SRAM or flash reaches the disk a
+second after it writes, and when the window closes.
+
 ## Status
 
 The board is under construction, piece by piece:
@@ -27,7 +44,8 @@ The board is under construction, piece by piece:
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
 | PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending |
 | APU (audio) | done: the four PSG channels, the two FIFOs and the stereo mixer |
-| Keypad (HID) | not yet: KEYINPUT reads as every button released |
+| Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard and gamepads |
+| Save memory | SRAM and flash, kept in the game's folder; EEPROM not yet |
 | CPU, DMA, timers, interrupts | done |
 
 A ROM is recompiled when it is loaded, the same process the other system
@@ -92,13 +110,15 @@ The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
 `cpu/recomp.c` takes the ROM's ARM and Thumb code through the existing ARM
 recompiler of `src/common/cpu/arm`, block by block, and links the emitted
 objects into a native module with the host compiler. Loading a ROM does this
-automatically and caches the module beside it as `<ROM>.code.so`, the way the
-NX system type caches `<Game>_code.so`; `-r` rebuilds it. Blocks the discovery
-step does not reach, a branch through a register or the instruction after one
-the board interpreted, are compiled when they are first dispatched. The miss
-starts a discovery walk of its own, and the blocks it finds go into a module of
-their own (`<ROM>.code.<n>.so`), so a miss costs those blocks and not the
-whole ROM. When the run ends they are folded into the cached module, so the
+automatically and caches the module in the game's folder as `<name>.code.so`,
+the way the NX system type caches `<Game>_code.so`; `-r` rebuilds it. Blocks the
+discovery step does not reach, a branch through a register or the instruction
+after one the board interpreted, are compiled when they are first dispatched.
+The miss starts a discovery walk of its own; a build with the LLVM backend
+compiles each block it finds in the process at its first dispatch
+(`src/common/cpu/arm/exec.c`), and one without it puts them in a module of their
+own (`<name>.code.<n>.so`), so a miss costs those blocks and not the whole ROM.
+When the run ends the blocks it ran are folded into the cached module, so the
 next run starts with every block the last one reached. A block built from RAM
 runs while RAM holds the words it was built from, and is built again once the
 game writes over them; the map names the ROM's hash, and a map of another ROM is
