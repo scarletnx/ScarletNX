@@ -49,6 +49,25 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     gmem_read(gva, host, size);
 }
 void vk_guest_peek(u64 gva, void* dst, u64 size) { gmem_read(gva, dst, size); }
+/* no unified memory, so no texture checked on the GPU: its uploads are copies, with the gate closed */
+int vk_texcheck_prepare(VkImageCreateInfo* ii, VkViewFormats* vf) {
+    (void)ii, (void)vf;
+    return 0;
+}
+int vk_texcheck_begin(Surf* t, int force) {
+    (void)t, (void)force;
+    return 0;
+}
+void vk_texcheck_end(void) {}
+int vk_gate_open(void) { return 0; }
+void vk_gate_copy(VkCommandBuffer cb, Surf* t, VkBuffer src, u32 n, const VkBufferImageCopy* r) {
+    rec_CmdCopyBufferToImage(cb, src, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
+}
+/* no unified memory: every level is staged, which the checks below read back */
+int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    (void)gva, (void)len, (void)align, (void)buf, (void)off;
+    return 0;
+}
 u8* gmem_host(u64 gva, u64 size) { return gmem_ptr(gva, size); }
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)

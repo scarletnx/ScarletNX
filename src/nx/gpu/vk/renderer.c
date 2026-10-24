@@ -38,6 +38,7 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
+    if (size) vk_uma_before_write(gva, size);
     if (size)
         vk_gfx_image_mem_need(gva, size);
     else
@@ -58,6 +59,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
+    vk_uma_mem_need(gva, size);
     vk_gfx_image_mem_need(gva, size);
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
@@ -68,6 +70,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     g_mapping_size = full ? 0 : size;
     vk_release_drain();
     if (full) {
+        vk_uma_mapping_begin();
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();

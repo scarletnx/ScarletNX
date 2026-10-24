@@ -287,7 +287,10 @@ the build, so a new build or driver reads only the files that hold programs agai
   graphics queue otherwise.
 
 Invalidation: host write tracking + `mem_unmap` -> `gpu_mem_changed`. Vk treats zeroed unmap/heap-return ranges
-as written at the next cache check.
+as written at the next cache check. With unified memory (`uma`, `docs/UMA.md`) guest memory is imported as buffers
+(`VK_EXT_external_memory_host`). Draws and dispatches read buffers and write storage buffers in place, with nothing
+to check or land, and the GPU checks textures against guest memory and rebuilds them itself (`vk/texcheck.c`). Write
+tracking stays for shaders and for the ranges the front end writes while recording.
 
 `Renderer.save`: optional pipeline-cache persistence every 300 frontend ticks (~5s) + exit, concurrent with execution.
 Exit skips renderer teardown and guest-thread joins.

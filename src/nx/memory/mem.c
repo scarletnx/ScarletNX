@@ -181,6 +181,13 @@ static _Thread_local struct {
 } t_runs;
 static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
 
+/* the renderer's imports of guest memory (gpu/vk/uma.c) hold on to the host pages they were made of: they hear of
+   every range whose host pages are replaced or given back, under g_mem_lk, and only note it (a leaf lock) */
+static void (*g_backing_changed)(u64, u64);
+void mem_set_backing_hook(void (*fn)(u64 addr, u64 size)) { g_backing_changed = fn; }
+static void backing_changed_nl(u64 a, u64 size) {
+    if (g_backing_changed) g_backing_changed(a, size);
+}
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_code_invalidate = fn; }
 /* no memory lock held: the hook takes the JIT's */
@@ -303,6 +310,7 @@ static void decommit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
     int i, n = 0;
     runs_stale_nl();
+    backing_changed_nl(a, size);
     own_drop(a, size);
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
         plat_vm_decommit(GP(a), size);
@@ -459,6 +467,7 @@ static void unmap_nl(u64 a, u64 size) {
     u64 end = a + size;
     u32 i;
     runs_stale_nl(); /* before the pages go, not with the state after them */
+    backing_changed_nl(a, size);
     own_drop(a, size); /* what the GPU held there goes with the mapping */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
@@ -479,6 +488,7 @@ static void unmap_nl(u64 a, u64 size) {
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
     runs_stale_nl();
+    backing_changed_nl(a, size);
     if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
         fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
 }
@@ -510,6 +520,7 @@ static int promote_nl(u64 a, u64 size) {
         pool_free_nl(off, size);
         return MEM_NOMEM;
     }
+    backing_changed_nl(a, size); /* the same bytes, in the pool's pages now */
     if (plat_alias_map(GP(a), off, size)) {
         unpool_nl(a, size, &off);
         pool_free_nl(off, size);
@@ -1006,6 +1017,35 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
         }
         at = hi;
     }
+    r = 0;
+out:
+    mem_unlock();
+    return r;
+}
+/* a block whose host pages are the reservation's own, committed: what a driver can import and hold on to */
+static int private_blk(const MemBlock* b) {
+    return !b->pool && b->state != MS_FREE && b->state != MS_IO && b->state != MS_INACCESSIBLE &&
+           b->state != MS_KERNEL;
+}
+int mem_private_span(u64 a, u64 size, u64* lo, u64* hi) {
+    u64 end = a + size, l = *lo, h = *hi;
+    u32 i, j;
+    int r = -1;
+    if (h > AS_END) h = AS_END;
+    if (!size || a < l || end > h || end < a || g_host_page != PAGE) return -1;
+    mem_lock();
+    if (!g_nblk) goto out;
+    i = blk_index_nl(a);
+    for (j = i; j < g_nblk && g_blk[j].addr < end; j++)
+        if (!private_blk(&g_blk[j])) goto out;
+    if (j == i) goto out;
+    /* down from a's block, and up from the last block a + size reaches, while the blocks are private */
+    while (i > 0 && g_blk[i].addr > l && private_blk(&g_blk[i - 1])) i--;
+    if (g_blk[i].addr > l) l = g_blk[i].addr;
+    while (j < g_nblk && blk_end(&g_blk[j - 1]) < h && private_blk(&g_blk[j])) j++;
+    if (blk_end(&g_blk[j - 1]) < h) h = blk_end(&g_blk[j - 1]);
+    *lo = l;
+    *hi = h;
     r = 0;
 out:
     mem_unlock();

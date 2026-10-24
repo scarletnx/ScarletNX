@@ -29,6 +29,7 @@ int vk_buf_pending_any(void);
 int vk_buf_pending(u64, u64);
 int vk_compute_pending(u64, u64);
 int vk_gfx_image_pending(u64, u64);
+int vk_uma_pending(u64, u64);
 int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
@@ -201,6 +202,11 @@ int vk_buf_pending(u64 a, u64 n) {
     return 0;
 }
 int vk_gfx_image_pending(u64 a, u64 n) {
+    (void)a;
+    (void)n;
+    return 0;
+}
+int vk_uma_pending(u64 a, u64 n) { /* no unified memory here */
     (void)a;
     (void)n;
     return 0;

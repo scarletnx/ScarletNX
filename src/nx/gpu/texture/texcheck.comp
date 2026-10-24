@@ -1,0 +1,90 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* Unified memory's texture check (vk/texcheck.c): a texture is a cache of guest memory the GPU checks and rebuilds
+   itself, in order with the draws, with no CPU hash and no write tracking.
+
+   Mode 0 hashes the texture's guest bytes where they are (the import of guest memory), a 64 KiB piece a workgroup,
+   and compares each piece's hash with the one kept from the texture's last check: where one differs, or always when
+   force is set (its first load), the new hash is kept and the texture's flag set. Every byte counts, at its place: the
+   CPU rewrites part of a texture (a row, half a GOB's rows).
+
+   Mode 1, one workgroup, after a barrier: the indirect arguments of the rebuild's dispatches and copies (the
+   deswizzles, conversions, decodes, and the copies into the image or the dispatches that store what they would) are
+   the ones the CPU recorded for when the flag is set, and those it recorded for when it isn't: no work (a dispatch of
+   no workgroups, a copy no texel wide). The flag is cleared for the next check. */
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+    uint mode;  /* 0: hash and compare, 1: the rebuild's arguments */
+    uint bias;  /* words from the bound start of the source to the texture's first */
+    uint words; /* the texture's words */
+    uint force; /* mode 0: set the flag whatever the hashes */
+} p;
+
+layout(binding = 0, std430) readonly restrict buffer Source {
+    uint w[];
+} src;
+/* the flag, then a piece's hash as two words */
+layout(binding = 1, std430) restrict buffer State {
+    uint flag;
+    uint pad0, pad1, pad2;
+    uvec2 piece[];
+} st;
+/* written by the CPU once the rebuild is recorded, before the submit: how many 16 byte slots its arguments take, then
+   the arguments for the flag set, then GATE_SLOTS on, those for the flag clear */
+layout(binding = 2, std430) readonly restrict buffer ArgsIn {
+    uint count;
+    uint pad3, pad4, pad5;
+    uvec4 a[];
+} args_in;
+#define GATE_SLOTS 512u /* texcheck.c's */
+layout(binding = 3, std430) writeonly restrict buffer ArgsOut {
+    uvec4 a[];
+} args_out;
+
+#define PIECE_WORDS 16384u /* 64 KiB */
+
+shared uvec2 sums[256];
+
+/* a word mixed into 32 bits that depend on every bit of it (the lowbias32 finalizer) */
+uint mix32(uint x) {
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    if (p.mode == 1u) {
+        uint on = st.flag;
+        for (uint i = t; i < args_in.count; i += 256u) args_out.a[i] = args_in.a[on != 0u ? i : GATE_SLOTS + i];
+        barrier();
+        if (t == 0u) st.flag = 0u;
+        return;
+    }
+    /* the sum of each word mixed with its index, in two independent lanes: the order the invocations add in doesn't
+       matter, and a word moved or changed changes both */
+    uint piece = gl_WorkGroupID.x, first = piece * PIECE_WORDS;
+    uvec2 h = uvec2(0u);
+    for (uint k = t; k < PIECE_WORDS; k += 256u) {
+        uint i = first + k;
+        if (i >= p.words) break;
+        uint a = mix32(src.w[p.bias + i] ^ (i * 0x9E3779B9u));
+        h += uvec2(a, mix32(a + i + 0x632BE5ABu));
+    }
+    sums[t] = h;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1) {
+        if (t < s) sums[t] += sums[t + s];
+        barrier();
+    }
+    if (t == 0u && (p.force != 0u || st.piece[piece] != sums[0])) {
+        st.piece[piece] = sums[0];
+        atomicOr(st.flag, 1u);
+    }
+}

@@ -156,5 +156,6 @@ extern u64 g_draws;
 extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
 extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
 extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
+extern _Atomic int g_uma_any;     /* shaders write guest memory in place somewhere, in a submit not done yet */
 
 #endif

@@ -15,6 +15,8 @@
    texture.c   textures from the guest's texture headers (TIC), views and samplers (TSC)
    astc.c      compute decoding of ASTC texture blocks during upload
    buffer.c    vertex, index, constant and storage buffers from guest memory
+   uma.c       guest memory imported as buffers (VK_EXT_external_memory_host), which draws read and write in place
+   texcheck.c  textures checked against guest memory and rebuilt on the GPU under unified memory
    pipeline.c  translated shaders, the pipeline layout and pipelines by state
    pipeline_file.c  the shaders and pipelines kept across runs, made again at startup (pipeline_file.h), and the
                     shaders of the programs the game ships (<game>.vkshipped, translated by the pass over its files
@@ -107,6 +109,16 @@ typedef struct {
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
     char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
+    /* VK_EXT_external_memory_host, under the uma setting: guest memory is imported as buffers the GPU reads in place
+       (uma.c), uma_align the driver's minImportedHostPointerAlignment */
+    int uma;
+    u64 uma_align;
+    /* unified memory's texture check (texcheck.c): the copies the GPU turns on and off, 1 with
+       VK_KHR_copy_memory_indirect, 2 with VK_NV_copy_memory_indirect, 0 without (dispatches store what they would),
+       and bufferDeviceAddress, which they read their source and commands at: the buffers they read are made with
+       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT (vk_bda_usage) */
+    int copy_indirect;
+    int has_bda;
 } VkState;
 extern VkState g_vk;
 
@@ -212,6 +224,24 @@ void vk_defer_buffer_view(VkBufferView v);
 void vk_defer_bytes(u64 bytes);
 u64 vk_deferred_bytes(void);
 void vk_defer_call(void (*fn)(void*), void* arg); /* fn(arg) then */
+/* the usage a buffer the GPU's own copies read at a device address takes (g_vk.has_bda) */
+static inline VkBufferUsageFlags vk_bda_usage(void) {
+    return g_vk.has_bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0;
+}
+/* The gate: while texcheck.c holds one open, the dispatches and image copies of a texture's rebuild go through it, and
+   the GPU's check of the texture turns them on or off. Closed, they are recorded as they are. struct Surf is the
+   texture (below) */
+struct Surf;
+typedef struct {
+    void* ctx;
+    void (*dispatch)(void* ctx, VkCommandBuffer cb, u32 x, u32 y, u32 z);
+    void (*copy)(void* ctx, VkCommandBuffer cb, struct Surf* t, VkBuffer src, u32 n, const VkBufferImageCopy* r);
+} VkGate;
+void vk_gate_set(const VkGate* g); /* NULL closes it */
+int vk_gate_open(void);
+void vk_gate_dispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+/* regions of src into t's image: in TRANSFER_DST_OPTIMAL with the gate closed, GENERAL with it open */
+void vk_gate_copy(VkCommandBuffer cb, struct Surf* t, VkBuffer src, u32 n, const VkBufferImageCopy* r);
 /* the submission being recorded (a number that grows at every submit: what a submit may have changed, results landed,
    is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
 u64 vk_submit_number(void);
@@ -279,6 +309,10 @@ void rec_CmdDraw(VkCommandBuffer cb, u32 count, u32 instances, u32 first, u32 fi
 void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 count, u32 instances, u32 first, i32 vertex_offset,
                         u32 first_instance);
 void rec_CmdDispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z);
+void rec_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off);
+/* vkCmdCopyMemoryToImageIndirectKHR or its NV forerunner, as g_vk.copy_indirect has it */
+void rec_CmdCopyMemoryToImageIndirect(VkCommandBuffer cb, VkDeviceAddress at, u32 n, u32 stride, VkImage img,
+                                      VkImageLayout l, const VkImageSubresourceLayers* sub);
 void rec_CmdEndRendering(VkCommandBuffer cb);
 void rec_CmdSetCullMode(VkCommandBuffer cb, VkCullModeFlags mode);
 void rec_CmdSetFrontFace(VkCommandBuffer cb, VkFrontFace face);
@@ -403,7 +437,7 @@ int vk_tic_reads_stencil(const u32* tic);
 VkFormat vk_srgb_as(VkFormat f, int srgb);
 typedef struct {
     VkImageFormatListCreateInfo list;
-    VkFormat f[2];
+    VkFormat f[3]; /* the third: a texture's unsigned store format (texcheck.c's vk_texcheck_prepare) */
 } VkViewFormats;
 /* an image of a color format that has an sRGB twin is viewed as both: sets MUTABLE_FORMAT and chains the list of
    the two to ii (vf has to live until the image is created) */
@@ -481,6 +515,14 @@ typedef struct Surf {
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
+    /* textures under unified memory: checked against guest memory and rebuilt on the GPU (texcheck.c), with the
+       hashes of their 64 KiB pieces and the flag the check sets, and the views stores write through (no
+       VK_KHR/NV_copy_memory_indirect), by level, or by level and layer */
+    int gpu_check;
+    VkBuffer chk_buf;
+    VmaAllocation chk_mem;
+    VkImageView* stv;
+    u32 nstv;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
@@ -802,6 +844,7 @@ void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
+int vk_release_pending(u64 gva, u64 len); /* a queued release's payload covers [gva, gva + len) */
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 u32 vk_release_value(u32 id);
@@ -865,6 +908,57 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+
+/* uma.c: guest memory imported as buffers (g_vk.uma). The game's own fences order its CPU's writes and the GPU's reads
+   of the memory, as on the console: a release (a syncpoint, a semaphore) waits for the submit holding the work before
+   it, so the guest can't write what a recorded draw still reads. The front end's own writes while recording (inline
+   to memory, constant buffer updates) can: their ranges are never read in place, and the first write to a range a
+   recorded draw reads in place waits for that draw (vk_uma_before_write) */
+void vk_uma_init(void); /* after the device: the import alignment, mem.c's hook */
+/* guest memory [cpu, cpu + len) (host offsets into g_mem) as a buffer the GPU reads in place, at an offset that is a
+   multiple of align: 1 with buf and off, 0 when it can't be imported (unmapped pages, a span past the imports'
+   bounds). vk_lock held */
+int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* GPU range [gva, gva + len) as a buffer the commands being recorded read in place, at an offset that is a multiple
+   of align: 1 with buf and off when it is one run of guest memory with no result or release pending over it, nothing
+   GPU-owned and nothing the runtime wrote while recording (then the caller copies it, as without UMA). vk_lock held */
+int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+void vk_uma_before_write(u64 gva, u64 len); /* the front end writes GPU range [gva, gva + len) next (vk_lock held) */
+void vk_uma_owning(u64 cpu, u64 len);       /* [cpu, cpu + len) becomes GPU-owned next (vk_own_publish, vk_lock) */
+void vk_uma_mapping_begin(void);            /* guest memory's host pages change next (the mapping bracket) */
+/* GPU range [gva, gva + len) as a storage buffer the draw or dispatch being set up writes in place: 1 with buf and off,
+   as vk_uma_read. Its writes are pending from vk_uma_writes_commit (once it is recorded) until its submit is done */
+int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+void vk_uma_writes_commit(void); /* the draw or dispatch was recorded (vk_buf_writable_commit) */
+void vk_uma_writes_abort(void);  /* it wasn't */
+void vk_uma_frame_done(u64 frame);                     /* that submit is done: its in-place writes are in memory */
+void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
+int vk_uma_pending(u64 gva, u64 len);     /* an in-place write is pending over GPU range [gva, gva + len) */
+int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */
+/* the runtime's CPU is about to read [gva, gva + len): the in-place writes pending there are done first (gmem_need's
+   hook), unless the calling thread copies them on the GPU (vk_uma_gpu_reads) */
+void vk_uma_mem_need(u64 gva, u64 len);
+void vk_uma_mem_need_cpu(u64 cpu, u64 len); /* the same by guest address, whichever thread copies */
+void vk_uma_gpu_reads(int on);
+typedef struct {
+    u32 imports;
+    u64 bytes, waits, out_waits, barriers, pending;
+} VkUmaStats;
+void vk_uma_stats(VkUmaStats* st);
+
+/* texcheck.c: textures checked and rebuilt on the GPU under unified memory. vk_texcheck_prepare readies a texture's
+   image to be (what the store fallback needs) before it is made: 1 when it can be. vk_texcheck_begin records t's
+   check and opens the gate for its rebuild, which the caller records as an upload (in GENERAL), then
+   vk_texcheck_end: 0 when it can't be checked on the GPU now (not one run of imported guest memory, results pending
+   over it), and the CPU checks it */
+int vk_texcheck_prepare(VkImageCreateInfo* ii, VkViewFormats* vf);
+int vk_texcheck_begin(Surf* t, int force);
+void vk_texcheck_end(void);
+void vk_texcheck_free(Surf* t); /* the surface goes: its hashes and views */
+typedef struct {
+    u64 checks, bytes, copies, stores, overflow;
+} VkTexCheckStats;
+void vk_texcheck_stats(VkTexCheckStats* st);
 
 /* pipeline.c */
 /* the constant buffer words a translation read (the translator resolves BRX jump tables through them): what it made

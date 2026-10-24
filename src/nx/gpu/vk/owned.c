@@ -218,7 +218,8 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     OwnRange o;
     u8* d;
     if (!size) return;
-    vk_rt_before_write_cpu(cpu, size);
+    /*vk_rt_before_write_cpu(cpu, size);*/
+    vk_uma_owning(cpu, size); /* draws that read the bytes in place are done first, and imports let go of them */
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
@@ -251,6 +252,18 @@ static void read_barrier(VkCommandBuffer cb, int before) {
 static void cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at, int* any) {
     OwnRange o[16];
     u32 n, i;
+    VkBuffer ib;
+    u64 io;
+    /* bytes shaders write in place (uma.c), in a submit not done yet: copied from guest memory on the GPU, after them.
+       They are never GPU-owned: owned memory isn't imported */
+    if (vk_uma_pending_cpu(cpu, size) && vk_uma_get(cpu, size, 1, &ib, &io)) {
+        VkBufferCopy c = {io, at, size};
+        if (!*any) read_barrier(vk_cmd(), 1);
+        *any = 1;
+        rec_CmdCopyBuffer(vk_cmd(), ib, buf, 1, &c);
+        return;
+    }
+    vk_uma_mem_need_cpu(cpu, size); /* across imports: they are waited for */
     if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
         memcpy(host, GP(cpu), (size_t)size);
         return;
@@ -277,7 +290,9 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     u64 o = 0;
     int any = 0;
     if (!size) return;
+    vk_uma_gpu_reads(1); /* the in-place writes there are copied below, not waited for */
     gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    vk_uma_gpu_reads(0);
     while (o < size) {
         u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
         if (!n) { /* an unmapped page reads as zero */

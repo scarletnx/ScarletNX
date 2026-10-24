@@ -1278,6 +1278,7 @@ static void surf_free(Surf* s) {
         pend_add_va(&g_drawn_pages, s->drawn_from, 1, -1);
     }
     for (int i = 0; i < s->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[i].v, VK_NULL_HANDLE);
+    vk_texcheck_free(s);
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     free(s);
 }
