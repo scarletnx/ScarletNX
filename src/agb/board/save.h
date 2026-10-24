@@ -15,7 +15,10 @@ typedef struct {
     uint8_t type;
     uint8_t phase;        /* the unlock sequence: 0xAA, then 0x55 */
     uint8_t erase_armed, program_armed, bank_armed, id_mode, bank;
+    uint8_t dirty; /* written since the runner last kept it on disk */
 } AgbSave;
+/* the bytes of board->memory.sram the save kind holds, a .sav's size: 0 for none */
+uint32_t agb_save_size(const AgbBoard* board);
 
 /* The save kind the ROM's tag names, or AGB_SAVE_NONE. */
 uint8_t agb_save_detect(const uint8_t* image, uint64_t size);
