@@ -29,13 +29,16 @@ The copies, landings, hashes and write tracking were only there because the GPU 
 
 `vk/uma.c` imports guest memory as buffers, on demand.
 
-- A range is imported as the 2 MiB aligned chunks it reaches, with every import those meet taken in, so that no page is
-  in two imports. Drivers count each import's pages as memory the GPU holds (amdgpu's userptr pages are GTT), and a
-  long range bound from many starts (a 64 MiB storage window, a vertex stream) made an import of nearly the same pages
-  for each start, which a Steam Deck showed as a spike in GPU memory. An import takes in at most 128 MiB: past that
-  the range is copied. The span is narrowed to the guest memory around it whose host pages are the reservation's own
-  and committed (`mem_private_span`: mapped, not the alias pool's, not I/O). A lookup takes the last one found, then a
-  binary search.
+- Imports are stable: once made, one stays until no draw has used it for 120 presents or its pages change. A range up
+  to S long (S from 2 MiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it starts
+  in, which holds it whatever its start, or a bigger one already made that holds it. A longer range is copied. So a
+  range bound from many starts (a 64 MiB storage window, a vertex stream) finds the same few imports, and a page is in
+  two at most for each size used. The span is narrowed to the guest memory around the range whose host pages are the
+  reservation's own and committed (`mem_private_span`: mapped, not the alias pool's, not I/O). Lookups are by key, a
+  hash of the size and the block.
+- Two earlier ways were wrong on a Steam Deck. An import for each start of a long range doubled GPU memory. Imports
+  grown to take in the ones they met were made again at nearly every such draw, each a userptr buffer mapped anew, at
+  0 to 1 frames a second.
 - An import no draw has used for 120 presents is let go (`vk_uma_frame`).
 - Imports are small and few because of what drivers do with them (below).
 - The alias pool's pages are never imported. GPU-owned memory lives there, trapped (`docs/GPU_OWNERSHIP.md`). RADV
@@ -113,8 +116,16 @@ payloads. A draw recorded before such a write would see it at run time. Two more
   that submit (`vk_finish` when it is the one being recorded). That happens once per range, since the range is in
   `front` from then on.
 
-A range becoming GPU-owned (`vk_own_publish`) counts as such a write. The commands recorded with the imports over it
-are also submitted, and those imports are retired before its pages are trapped.
+With unified memory nothing becomes GPU-owned. The engines' results (DMA, the 2D engine, VIC, NVDEC, compute
+results the old path kept resident, render targets written back) are copied into guest memory on the GPU, in stream
+order, as writes in place pending until their submit is done (`vk_uma_publish`). VIC's inputs copy pending bytes on
+the GPU too. A trap had let go of the imports over its pages (a driver would take trapped pages again at its next
+submit), and moved them into the alias pool, which let go of them again: amdgpu mapped them anew at their next use,
+for every texture the copy engine uploaded and every movie frame.
+
+Where a result's memory isn't imported, it becomes GPU-owned as without UMA, and that counts as such a write. The
+commands recorded with the imports over it are also submitted, and those imports are retired before its pages are
+trapped.
 
 These writes stay on the CPU, and that is deliberate. Making them GPU writes in stream order (`vkCmdUpdateBuffer`
 into the import) doesn't fit in a rendering pass. Transfer commands can't be recorded inside one. Inside dynamic

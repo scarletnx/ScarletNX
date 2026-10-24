@@ -218,9 +218,15 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     OwnRange o;
     u8* d;
     if (!size) return;
-    /*vk_rt_before_write_cpu(cpu, size);*/
     vk_uma_owning(cpu, size); /* draws that read the bytes in place are done first, and imports let go of them */
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
+    /* Unified memory: the result is copied into guest memory on the GPU, in stream order, and nothing is owned or
+       trapped. Each trap let go of the imports over its pages (a driver would take trapped pages again at its next
+       submit), and amdgpu mapped them again at their next use: every texture upload the copy engine made, every movie
+       frame. Older owners of the bytes go: they are written over whole */
+    own_drop(cpu, size);
+    if (vk_uma_publish(cpu, size, r->buf, off)) return;
+    vk_uma_owning(cpu, size); /* draws that read the bytes in place are done first, and imports let go of them */
     if (g_owned.traps && !own_begin(cpu, size, r, off)) return;
     /* not trapped here: older owners of the bytes let go of them, and the result lands now */
     own_drop(cpu, size);

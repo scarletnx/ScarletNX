@@ -33,6 +33,12 @@
         }                                                                                                              \
     } while (0)
 
+/* the GPU's results over guest memory [cpu, cpu + len) done before the test's CPU reads them, as the guest's fence
+   would have them: with unified memory they are written there in place (vk_uma_publish) once their submit is done;
+   without it they are GPU-owned, and the read lands them by itself */
+static void guest_done(u64 cpu, u64 len) {
+    if (g_vk.uma) vk_uma_mem_need_cpu(cpu, len);
+}
 /* A buffer copied into staging as it is hashed gets the hash vk_hash gives it, which the cache compares with hashes
    taken without a copy, and the bytes: every size around the hash's 32-byte steps, from every alignment */
 static int check_hash_copy(void) {
@@ -762,7 +768,13 @@ static int check_vic(void) {
         sl->iy = (VicPlane){y, W * H, W, H, 0, 0};
         sl->ic = (VicPlane){uv, W * H / 2, W, H / 2, 0, 0};
         CHECK(g_renderer->vic_compose(&job));
-        CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0); /* on the GPU until read */
+        /* on the GPU until read: GPU-owned, or with unified memory written in place, owned by nothing */
+        if (g_vk.uma)
+            CHECK(vk_uma_pending_cpu(VIC_BASE + 0x2000, (u64)pitch * H) &&
+                  !own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0));
+        else
+            CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0);
+        guest_done(VIC_BASE + 0x2000, (u64)pitch * H);
         for (u32 j = 0; j < H; ++j)
             for (u32 i = 0; i < W; ++i) {
                 const u8* o = out + j * pitch + i * bpp;
@@ -794,7 +806,7 @@ static int check_vic(void) {
             }
     }
     /* each picture was read here: landed once, by the trap, where the host has traps */
-    CHECK(!own_traps() || own_landings() >= lands + sizeof cases / sizeof cases[0]);
+    CHECK(!own_traps() || g_vk.uma || own_landings() >= lands + sizeof cases / sizeof cases[0]);
     CHECK(g_vk_validation_messages == validation);
     return 0;
 }
@@ -838,6 +850,7 @@ static int check_vic_chain(const char* shot) {
         CHECK(g_renderer->screenshot(shot) == expected);
         CHECK(own_landings() == lands);
     }
+    guest_done(VIC_BASE + 0x2000, (u64)W * 4 * H);
     for (u32 j = 0; j < H; ++j)
         for (u32 i = 0; i < W; ++i) {
             const u8* o = out + (j * W + i) * 4;
@@ -846,7 +859,7 @@ static int check_vic_chain(const char* shot) {
             else
                 CHECK(o[0] == y[j * W + i] && o[3] == 255); /* the first job's: the samples as they are */
         }
-    CHECK(!own_traps() || own_landings() == lands + 1);
+    CHECK(own_landings() == lands + (own_traps() && !g_vk.uma)); /* with unified memory nothing lands: it's there */
     return 0;
 }
 /* NVDEC's picture laid out on the GPU (vk/nvdec.c), then composed by VIC from there, with no CPU access between: the
@@ -895,6 +908,7 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
             CHECK(g_renderer->vic_compose(&job));
     }
     /* the GPU's bytes, read now (landing them), against the references' */
+    guest_done(NV_GPU, 0x20000 + out_size);
     CHECK(!memcmp(GP(NV_GPU), GP(NV_REF), ext_y));
     CHECK(!memcmp(GP(NV_GPU + 0x10000), GP(NV_REF + 0x10000), ext_c));
     CHECK(!memcmp(GP(NV_GPU + 0x20000), GP(NV_REF + 0x20000), out_size));
@@ -920,6 +934,7 @@ static int check_nvdec_vic(void) {
 #define DMA_SPAN 0x100000u
 static int dma_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
+    guest_done(DMA_A, DMA_SPAN); /* the last case's, before the CPU writes over them */
     for (int k = 0; k < 2; k++) { /* the same bytes in both */
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 29 + (i >> 9) * 7 + 3);
@@ -928,6 +943,7 @@ static int dma_case(GpuDmaOp o) {
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->dma_copy(&g));
     dma_copy_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
     return 0;
 }
@@ -1012,6 +1028,7 @@ static int blit_case(GpuDmaSide src, GpuDmaSide dst, u32 bpp, u32 x0, u32 y0, u3
     GpuBlit g, c;
     for (u32 i = 0; i < w; i++) scol[i] = (u32)((u64)i * sw / w); /* nearest, the source scaled onto the window */
     for (u32 i = 0; i < h; i++) srow[i] = (u32)((u64)(h - 1 - i) * sh / h); /* flipped */
+    guest_done(DMA_A, DMA_SPAN); /* the last case's, before the CPU writes over them */
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 13 + (i >> 8) * 5 + 1);
@@ -1022,6 +1039,7 @@ static int blit_case(GpuDmaSide src, GpuDmaSide dst, u32 bpp, u32 x0, u32 y0, u3
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->blit_mem(&g));
     blit_mem_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
     return 0;
 }
@@ -1109,21 +1127,26 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4)); /* reading it lands it */
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* the newer one written back alone: the older one first, under it, and not again after */
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    guest_done(DMA_A, 0x28000);
     memset(GP(DMA_A), 0x11, 0x28000);
     readbacks = g_vk_rt_readbacks;
     CHECK(g_renderer->dma_copy(&o));
     CHECK(g_vk_rt_readbacks == readbacks + 1);
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_bytes(GP(DMA_A + 0x40000), 160 * 128 * 4, 0x11));
     /* A render target and a newer buffer can use different GPU aliases of the
        same memory. A later partial read of the image must not restore its old
@@ -1282,6 +1305,25 @@ static int check_uma(void) {
     }
     /* write tracking is off with unified memory: its scans would re-protect imported pages */
     CHECK(vk_written_since(GP(UMA_A), 4096, 0) < 0);
+    /* the engines' results went into guest memory in place (the DMA, 2D, VIC and NVDEC checks before), and copies
+       into the same memory again make no import again and let none go: a trap let go of them, and amdgpu maps each
+       import it is handed */
+    {
+        VkUmaStats a, z;
+        GpuDmaOp o;
+        vk_uma_stats(&a);
+        CHECK(a.published > 0);
+        memset(&o, 0, sizeof o);
+        o.width = o.line_in = o.line_out = 4096;
+        o.lines = 1;
+        o.src = pitch_side(DMA_GA + 0x1000, 0);
+        o.dst = pitch_side(DMA_GA + 0x8000, 0);
+        for (int i = 0; i < 4; i++) CHECK(g_renderer->dma_copy(&o));
+        vk_uma_stats(&z);
+        CHECK(z.published >= a.published + 4 * 4096 && z.made <= a.made + 1 && z.imports >= a.imports);
+        guest_done(DMA_A + 0x8000, 4096);
+        CHECK(!memcmp(GP(DMA_A + 0x8000), GP(DMA_A + 0x1000), 4096));
+    }
     vk_lock();
     gmmu_map(UMA_GA, UMA_A, 0x10000);
     u8* p = GP(UMA_A);
@@ -1445,19 +1487,21 @@ static int check_uma(void) {
         }
         CHECK(!tex_read(t2, img) && tex_matches(img, tm));
     }
-    /* a long range bound from many starts (a storage window, a vertex stream) takes the imports it reaches, not one
-       more copy of the same pages for each start */
+    /* a long range bound from many starts (a storage window, a vertex stream) finds the same imports: not one more
+       copy of the same pages for each start, and none made again */
     {
         VkUmaStats a, z;
         const u64 big = HEAP_BASE + 0x2000000, gbig = 0x420000000ull;
         CHECK(mem_map(big, 0x1000000, MS_NORMAL, PERM_RW) == 0);
         gmmu_map(gbig, big, 0x1000000);
         vk_uma_stats(&a);
-        for (u32 i = 0; i < 64; i++) {
-            CHECK(vk_buf_get(gbig + (u64)i * 0x11000, 0x800000, &b2, &off2));
-            vk_uma_stats(&z);
-            CHECK(z.bytes - a.bytes <= 0x1000000);
-        }
+        for (int pass = 0; pass < 2; pass++)
+            for (u32 i = 0; i < 64; i++) {
+                CHECK(vk_buf_get(gbig + (u64)i * 0x11000, 0x800000, &b2, &off2));
+                vk_uma_stats(&z);
+                CHECK(z.bytes - a.bytes <= 2 * 0x1000000); /* two imports of the mapping at most */
+                CHECK(z.made - a.made <= 2);              /* made once, none made again (a driver maps each) */
+            }
         vk_unlock();
         CHECK(mem_unmap(big, 0x1000000) == 0);
         vk_lock();

@@ -934,6 +934,10 @@ void vk_uma_mapping_begin(void);            /* guest memory's host pages change 
 int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 void vk_uma_writes_commit(void); /* the draw or dispatch was recorded (vk_buf_writable_commit) */
 void vk_uma_writes_abort(void);  /* it wasn't */
+/* An engine's result (src at off) over guest memory [cpu, cpu + len): copied there on the GPU in stream order, a write
+   in place pending until its submit is done, with no trap and no import let go (vk_own_publish). 0 when it isn't one
+   import's memory: then it is published GPU-owned, as without UMA. vk_lock held */
+int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 void vk_uma_frame_done(u64 frame);                     /* that submit is done: its in-place writes are in memory */
 void vk_uma_frame(void);                               /* a present: imports unused for long go */
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
@@ -946,6 +950,8 @@ void vk_uma_mem_need_cpu(u64 cpu, u64 len); /* the same by guest address, whiche
 void vk_uma_gpu_reads(int on);
 typedef struct {
     u32 imports;
+    u64 made;      /* imports made so far */
+    u64 published; /* bytes of the engines' results copied into guest memory in place */
     u64 bytes, waits, out_waits, barriers, pending;
 } VkUmaStats;
 void vk_uma_stats(VkUmaStats* st);

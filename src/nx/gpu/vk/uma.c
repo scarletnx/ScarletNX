@@ -5,12 +5,14 @@
    Without it (the uma setting off, or a GPU without the extension) buffer.c copies them and watches for the CPU's
    writes.
 
-   Imports are spans of the reservation's own committed pages, the UMA_CHUNK aligned chunks a range reaches, with the
-   imports they meet taken in so that no page is in two (import_new), sorted by where they start, and let go of
-   when no draw has used them for UMA_IDLE presents. They are small and few because a driver may walk an import's
-   pages at every submit that names it: amdgpu takes a userptr buffer's pages again (hmm_range_fault over all of
-   them) in each command submission, and RADV's imports are userptr buffers. 64 MiB chunks around whatever a draw
-   touched, kept for good, were 16384 pages each, every submit. The
+   Imports are stable: once made, one stays until no draw has used it for UMA_IDLE presents or its pages change. A
+   range up to S long (S from 2 MiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it
+   starts in, which holds it whatever its start, so a range bound from many starts (a 64 MiB storage window, a vertex
+   stream) finds the same few. A page is in two imports at most for each size used. Imports are few and small because
+   a driver may walk an import's pages at every submit that names it, and at its making: amdgpu takes a userptr
+   buffer's pages again (hmm_range_fault over all of them) in each command submission, and RADV's imports are userptr
+   buffers. Imports made bigger to take in their neighbours were made again at nearly every draw, 0 to 1 frames a
+   second on a Steam Deck, and an import for each start of a long range doubled GPU memory. The
    alias pool's pages are never imported: GPU-owned memory lives there, trapped (docs/GPU_OWNERSHIP.md), and a driver
    that takes the pages again at each submit (RADV and ANV take imports through MMU notifiers) would fault on a trapped
    page from the kernel, where userfaultfd answers EFAULT. A driver that pins the pages (NVIDIA) holds on to the old
@@ -42,11 +44,12 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 
-#define UMA_CHUNK   (2ull << 20) /* what one import covers around a range, aligned to it */
+#define UMA_BLOCK   (2ull << 20) /* the blocks of the smallest imports: a range of up to this takes two of them */
+#define UMA_LEVELS  6            /* sizes of block, 2 MiB to 64 MiB: a longer range is copied */
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
-#define UMA_MERGE_MAX (128ull << 20) /* the most an import takes in, the imports it meets with it */
+#define UMA_HASH    4096         /* the imports by key, open addressed: at most a quarter full */
+#define UMA_FAIL_N  256          /* keys that couldn't be imported, not tried again until memory changes */
 #define UMA_IMPORTS 1024          /* imports at most: the device may have as few as 4096 allocations */
-#define UMA_MISS_N  256           /* spans that couldn't be imported, not tried again until memory changes */
 #define UMA_USE_N   1024          /* ranges stamped into live in the submit being recorded */
 #define UMA_PREP_N  64            /* in-place writes of one draw or dispatch */
 
@@ -56,10 +59,8 @@ typedef struct {
     VkDeviceMemory mem;
     u64 used; /* the submit that last read it */
     u32 seen; /* g_vk_present then */
+    u64 key;  /* its block size's level, and the block it starts at (import_key) */
 } UmaImport;
-typedef struct {
-    u64 cpu, len, gen;
-} UmaMiss;
 typedef struct {
     u64 cpu, len, submit;
 } UmaUse;
@@ -71,14 +72,15 @@ typedef struct {
 } UmaOut;
 
 static struct {
-    UmaImport imp[UMA_IMPORTS]; /* sorted by lo */
+    UmaImport imp[UMA_IMPORTS];
     u32 n, last;                /* imports; the last one found */
-    u64 max_len;                /* the longest import made: none starts further than that before what it holds */
+    u32 slot[UMA_HASH];         /* imports by key: index + 1, 0 for none */
+    u64 fail[UMA_FAIL_N][2];    /* keys that couldn't be imported, with gen then */
+    u64 made;                   /* imports made so far */
     u32 mem_type_bits_ok;       /* memoryTypeBits of the host-coherent types */
     u64 bytes, waits, refused;
-    u64 gen;      /* moves when imports are retired: the misses before it may import now */
+    u64 gen;      /* moves when guest memory's pages change: the keys that failed before may import now */
     u64 recorded; /* the submit being recorded when an import was last read */
-    UmaMiss miss[UMA_MISS_N];
     UmaUse use[UMA_USE_N];
     WritePages front, live;
     /* in-place writes: the draw's being set up, and those recorded, oldest first, until their submit is done */
@@ -89,7 +91,7 @@ static struct {
     /* the pages shaders wrote and read in place since the last barrier: stamped with barrier_no + 1 */
     WritePages written, read;
     UmaUse rmemo[UMA_USE_N]; /* ranges stamped into read since that barrier */
-    u64 barrier_no, barriers, out_waits;
+    u64 barrier_no, barriers, out_waits, published;
     /* ranges whose host pages changed, noted under mem.c's lock and retired on the next lookup under vk_lock */
     PMutex chg_lk;
     UmaChange chg[64];
@@ -103,8 +105,24 @@ static void import_free(void* arg) {
     vkFreeMemory(g_vk.dev, m->mem, NULL);
     free(m);
 }
-/* import i goes: destroyed once the submits that may have read it are done */
-static void retire(u32 i) {
+static u32 key_home(u64 key) { return (u32)((key * 0x9E3779B97F4A7C15ull) >> 52) & (UMA_HASH - 1); }
+static void key_insert(u64 key, u32 i) {
+    u32 h = key_home(key);
+    while (g_uma.slot[h]) h = (h + 1) & (UMA_HASH - 1);
+    g_uma.slot[h] = i + 1;
+}
+/* the import of key, or g_uma.n */
+static u32 key_find(u64 key) {
+    for (u32 h = key_home(key); g_uma.slot[h]; h = (h + 1) & (UMA_HASH - 1))
+        if (g_uma.imp[g_uma.slot[h] - 1].key == key) return g_uma.slot[h] - 1;
+    return g_uma.n;
+}
+static void keys_rebuild(void) {
+    memset(g_uma.slot, 0, sizeof g_uma.slot);
+    for (u32 i = 0; i < g_uma.n; i++) key_insert(g_uma.imp[i].key, i);
+}
+/* import i goes: destroyed once the submits that may have read it are done. The caller rebuilds the keys */
+static void retire_one(u32 i) {
     UmaImport* m = malloc(sizeof *m);
     if (!m) { /* nowhere to keep it until then: the GPU finishes with it now */
         vk_finish();
@@ -116,14 +134,17 @@ static void retire(u32 i) {
         vk_defer_call(import_free, m);
     }
     g_uma.bytes -= g_uma.imp[i].hi - g_uma.imp[i].lo;
-    memmove(&g_uma.imp[i], &g_uma.imp[i + 1], (g_uma.n - i - 1) * sizeof *g_uma.imp);
-    g_uma.n--;
+    g_uma.imp[i] = g_uma.imp[--g_uma.n];
     g_uma.last = 0;
-    g_uma.gen++;
 }
 static void retire_range(u64 a, u64 n) {
+    int any = 0;
     for (u32 i = g_uma.n; i-- > 0;)
-        if (g_uma.imp[i].lo < a + n && a < g_uma.imp[i].hi) retire(i);
+        if (g_uma.imp[i].lo < a + n && a < g_uma.imp[i].hi) {
+            retire_one(i);
+            any = 1;
+        }
+    if (any) keys_rebuild();
 }
 static void backing_changed(u64 a, u64 n) {
     pm_lock(&g_uma.chg_lk);
@@ -141,9 +162,10 @@ static void take_changes(void) {
     if (k <= (int)(sizeof c / sizeof *c)) memcpy(c, g_uma.chg, (size_t)k * sizeof *c);
     __atomic_store_n(&g_uma.nchg, 0, __ATOMIC_RELEASE);
     pm_unlock(&g_uma.chg_lk);
-    if (k > (int)(sizeof c / sizeof *c))
-        while (g_uma.n) retire(g_uma.n - 1);
-    else
+    if (k > (int)(sizeof c / sizeof *c)) {
+        while (g_uma.n) retire_one(g_uma.n - 1);
+        keys_rebuild();
+    } else
         for (int i = 0; i < k; i++) retire_range(c[i].a, c[i].n);
     g_uma.gen++; /* pages that couldn't be imported may be importable now */
 }
@@ -161,7 +183,7 @@ void vk_uma_init(void) {
     vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
     for (u32 i = 0; i < mp.memoryTypeCount; i++)
         if (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) g_uma.mem_type_bits_ok |= 1u << i;
-    if (!g_uma.mem_type_bits_ok || g_vk.uma_align & (g_vk.uma_align - 1) || g_vk.uma_align > UMA_CHUNK) {
+    if (!g_uma.mem_type_bits_ok || g_vk.uma_align & (g_vk.uma_align - 1) || g_vk.uma_align > UMA_BLOCK) {
         WARN("vulkan: unified memory was asked for, but the GPU imports host memory only in a way it can't be used "
              "(no host-coherent memory type, or %llu-byte alignment): guest buffers are copied for it\n",
              (unsigned long long)g_vk.uma_align);
@@ -180,27 +202,8 @@ void vk_uma_init(void) {
                                    : ", the GPU checks textures and turns their rebuilds off storing what their copies would");
 }
 
-/* the index of the first import starting after cpu (g_uma.n when none does) */
-static u32 import_after(u64 cpu) {
-    u32 lo = 0, hi = g_uma.n;
-    while (lo < hi) {
-        u32 mid = lo + (hi - lo) / 2;
-        if (g_uma.imp[mid].lo <= cpu)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return lo;
-}
-/* an import holding [cpu, cpu + len), or g_uma.n. Imports may overlap (a range across a chunk's end takes both
-   chunks), and none is longer than max_len, so only those starting less than that before cpu can hold it */
-static u32 import_find(u64 cpu, u64 len) {
-    for (u32 k = import_after(cpu); k-- > 0 && g_uma.imp[k].lo + g_uma.max_len > cpu;)
-        if (cpu + len <= g_uma.imp[k].hi) return k;
-    return g_uma.n;
-}
-/* host offsets [lo, hi) imported as import k (the imports after it move up): 0 when the driver refuses them */
-static int import_span(u32 k, u64 lo, u64 hi) {
+/* host offsets [lo, hi) imported as the import of key: 0 when the driver refuses them */
+static int import_span(u64 key, u64 lo, u64 hi) {
     VkMemoryHostPointerPropertiesEXT pointer = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     VkExternalMemoryBufferCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                             .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
@@ -226,7 +229,7 @@ static int import_span(u32 k, u64 lo, u64 hi) {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &import, .allocationSize = hi - lo};
     if (g_vk.has_bda) ai.pNext = &flags;
     VkMemoryRequirements req;
-    UmaImport m = {.lo = lo, .hi = hi};
+    UmaImport m = {.lo = lo, .hi = hi, .key = key};
     u32 bits;
     if (vkGetMemoryHostPointerPropertiesEXT(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, GP(lo),
                                             &pointer) != VK_SUCCESS)
@@ -248,61 +251,47 @@ static int import_span(u32 k, u64 lo, u64 hi) {
         vkFreeMemory(g_vk.dev, m.mem, NULL);
         return 0;
     }
-    memmove(&g_uma.imp[k + 1], &g_uma.imp[k], (g_uma.n - k) * sizeof *g_uma.imp);
-    g_uma.imp[k] = m;
+    g_uma.imp[g_uma.n] = m;
+    key_insert(key, g_uma.n);
     g_uma.n++;
     g_uma.bytes += hi - lo;
-    if (hi - lo > g_uma.max_len) g_uma.max_len = hi - lo;
+    g_uma.made++;
     return 1;
 }
-/* A new import holding [cpu, cpu + len): the chunks it reaches, with the imports they meet taken in, narrowed to the
-   reservation's own committed pages. No page is in two imports: a driver counts each import's pages as memory the GPU
-   holds (amdgpu's userptr pages are GTT), and a long range bound from many starts (a storage window, a vertex stream)
-   made one more import of nearly the same pages for each start, gigabytes of them. Past UMA_MERGE_MAX the range is
-   copied instead. Its index, or g_uma.n when there can't be one */
-static u32 import_new(u64 cpu, u64 len) {
-    u64 al = g_vk.uma_align, lo = cpu & ~(UMA_CHUNK - 1), hi = (cpu + len + UMA_CHUNK - 1) & ~(UMA_CHUNK - 1);
-    u64 cap = g_vk.alloc_cap < UMA_MERGE_MAX ? g_vk.alloc_cap : UMA_MERGE_MAX;
-    UmaMiss* ms = &g_uma.miss[((cpu >> 12) ^ (len << 7)) % UMA_MISS_N];
-    if (ms->cpu == cpu && ms->len == len && ms->gen == g_uma.gen) return g_uma.n;
-    if (g_uma.n == UMA_IMPORTS) goto miss;
-    for (int grown = 1; grown;) { /* until the span takes in every import it meets */
-        grown = 0;
-        for (u32 i = 0; i < g_uma.n; i++) {
-            const UmaImport* m = &g_uma.imp[i];
-            if (m->lo < hi && lo < m->hi && (m->lo < lo || m->hi > hi)) {
-                if (m->lo < lo) lo = m->lo;
-                if (m->hi > hi) hi = m->hi;
-                grown = 1;
-            }
-        }
-    }
-    if (hi - lo > cap) goto miss;
-    if (mem_private_span(cpu, len, &lo, &hi)) goto miss;
+/* the key of the import of level's block size (UMA_BLOCK << level) whose two blocks start at the one cpu is in */
+static u64 import_key(u64 cpu, u32 level) { return (cpu / (UMA_BLOCK << level)) << 3 | level; }
+/* the import of key, made: its two blocks narrowed to the reservation's own committed pages around the range
+   [cpu, cpu + len) they hold. Its index, or g_uma.n when there can't be one */
+static u32 import_new(u64 key, u64 cpu, u64 len) {
+    u64 al = g_vk.uma_align, size = UMA_BLOCK << (key & 7), lo = (key >> 3) * size, hi = lo + 2 * size;
+    u64* f = g_uma.fail[(key ^ (key >> 17)) % UMA_FAIL_N];
+    if (f[0] == key + 1 && f[1] == g_uma.gen) return g_uma.n;
+    if (g_uma.n == UMA_IMPORTS || hi - lo > g_vk.alloc_cap || mem_private_span(cpu, len, &lo, &hi)) goto fail;
     lo = (lo + al - 1) & ~(al - 1);
     hi &= ~(al - 1);
-    if (cpu < lo || cpu + len > hi) goto miss;
-    /* the imports it holds go (destroyed once the submits that used them are done); one it only meets, which the
-       narrowing cut off, stays */
-    for (u32 i = g_uma.n; i-- > 0;)
-        if (g_uma.imp[i].lo >= lo && g_uma.imp[i].hi <= hi) retire(i);
-    if (!import_span(import_after(lo), lo, hi)) goto miss;
-    return import_find(cpu, len);
-miss:
+    if (cpu >= lo && cpu + len <= hi && import_span(key, lo, hi)) return g_uma.n - 1;
+fail:
     g_uma.refused++;
-    *ms = (UmaMiss){cpu, len, g_uma.gen};
+    f[0] = key + 1;
+    f[1] = g_uma.gen;
     return g_uma.n;
 }
 
 int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     UmaImport* m;
-    u32 k;
+    u32 k = g_uma.n, level = 0;
     if (!g_vk.uma || !len || cpu + len < cpu) return 0;
     take_changes();
     m = &g_uma.imp[g_uma.last];
     if (g_uma.last >= g_uma.n || cpu < m->lo || cpu + len > m->hi) {
-        k = import_find(cpu, len);
-        if (k == g_uma.n) k = import_new(cpu, len);
+        while (level < UMA_LEVELS && len > UMA_BLOCK << level) level++;
+        if (level == UMA_LEVELS) return 0; /* longer than the biggest blocks: copied */
+        /* the range's own size's import, or a bigger one already made that holds it */
+        for (u32 l = level; l < UMA_LEVELS && k == g_uma.n; l++) {
+            k = key_find(import_key(cpu, l));
+            if (k < g_uma.n && (cpu < g_uma.imp[k].lo || cpu + len > g_uma.imp[k].hi)) k = g_uma.n;
+        }
+        if (k == g_uma.n) k = import_new(import_key(cpu, level), cpu, len);
         if (k == g_uma.n) return 0;
         g_uma.last = k;
         m = &g_uma.imp[k];
@@ -376,27 +365,40 @@ int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     g_uma.prep[g_uma.nprep++] = (UmaOut){gva, cpu, len, 0};
     return 1;
 }
-void vk_uma_writes_commit(void) {
-    u64 now = vk_submit_number();
-    for (u32 i = 0; i < g_uma.nprep; i++) {
-        UmaOut o = g_uma.prep[i];
-        if (g_uma.nout == g_uma.capout) {
-            u32 cap = g_uma.capout ? g_uma.capout * 2 : 256;
-            UmaOut* n = realloc(g_uma.out, (size_t)cap * sizeof *n);
-            if (!n) { /* nowhere to note it: the GPU finishes it now, and then nothing is pending */
-                vk_finish();
-                continue;
-            }
-            g_uma.out = n;
-            g_uma.capout = cap;
+/* the GPU writes guest memory [cpu, cpu + len) in place in the submit being recorded: pending until it is done */
+static void out_add(u64 gva, u64 cpu, u64 len) {
+    if (g_uma.nout == g_uma.capout) {
+        u32 cap = g_uma.capout ? g_uma.capout * 2 : 256;
+        UmaOut* n = realloc(g_uma.out, (size_t)cap * sizeof *n);
+        if (!n) { /* nowhere to note it: the GPU finishes it now, and then nothing is pending */
+            vk_finish();
+            return;
         }
-        o.submit = now;
-        g_uma.out[g_uma.nout++] = o;
-        write_pages_stamp(&g_uma.written, o.cpu, o.len, g_uma.barrier_no + 1);
-        pend_add_pages(&g_uma.out_pages, o.cpu >> 12, (o.cpu + o.len - 1) >> 12, 1);
+        g_uma.out = n;
+        g_uma.capout = cap;
     }
+    g_uma.out[g_uma.nout++] = (UmaOut){gva, cpu, len, vk_submit_number()};
+    write_pages_stamp(&g_uma.written, cpu, len, g_uma.barrier_no + 1);
+    pend_add_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12, 1);
+    g_uma_any = 1;
+}
+void vk_uma_writes_commit(void) {
+    for (u32 i = 0; i < g_uma.nprep; i++) out_add(g_uma.prep[i].gva, g_uma.prep[i].cpu, g_uma.prep[i].len);
     g_uma.nprep = 0;
-    g_uma_any = g_uma.nout != 0;
+}
+int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
+    VkBuffer ib;
+    u64 io;
+    if (!g_vk.uma || !len || !vk_uma_get(cpu, len, 1, &ib, &io)) return 0;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_all_barrier(cb); /* the producer's writes, and what read or wrote the bytes in place before, first */
+    g_uma.barrier_no++;
+    g_uma.barriers++;
+    rec_CmdCopyBuffer(cb, src, ib, 1, &(VkBufferCopy){off, io, len});
+    out_add(0, cpu, len);
+    g_uma.published += len;
+    return 1;
 }
 void vk_uma_writes_abort(void) { g_uma.nprep = 0; }
 void vk_uma_frame_done(u64 frame) {
@@ -516,14 +518,21 @@ void vk_uma_mapping_begin(void) {
 
 void vk_uma_frame(void) {
     if (!g_vk.uma || g_vk_present % 4) return;
+    int any = 0;
     for (u32 i = g_uma.n; i-- > 0;)
-        if ((u32)(g_vk_present - g_uma.imp[i].seen) > UMA_IDLE) retire(i);
+        if ((u32)(g_vk_present - g_uma.imp[i].seen) > UMA_IDLE) {
+            retire_one(i);
+            any = 1;
+        }
+    if (any) keys_rebuild();
 }
 void vk_uma_stats(VkUmaStats* st) {
     st->imports = g_uma.n;
+    st->made = g_uma.made;
     st->bytes = g_uma.bytes;
     st->waits = g_uma.waits;
     st->out_waits = g_uma.out_waits;
+    st->published = g_uma.published;
     st->barriers = g_uma.barriers;
     st->pending = g_uma.nout;
 }
