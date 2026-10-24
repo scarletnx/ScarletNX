@@ -65,9 +65,16 @@ static void core_unlink_nl(int k, KThread* t) {
 static int core_before(const KThread* a, const KThread* b) {
     return a->prio < b->prio || (a->prio == b->prio && a->core_ticket < b->core_ticket);
 }
+/* t, which held core k since core_give_nl, lets go of it: the time goes to the report at exit (kernel_core_report) */
+static void core_held_nl(int k, KThread* t) {
+    u64 held = plat_ns() - g_host.thread.core_since[k];
+    g_host.thread.core_held_ns[k] += held;
+    t->core_held_ns += held;
+}
 /* t holds core k from now on, and the host thread waiting for it (if any) goes on */
 static void core_give_nl(int k, KThread* t) {
     g_hle.thread.core_owner[k] = kt_ix(t);
+    g_host.thread.core_since[k] = plat_ns();
     t->core = k;
     t->on_core = k;
     __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
@@ -111,7 +118,12 @@ static void core_wait_nl(KThread* t, int k) {
     g_hle.thread.core_wait[k] = kt_ix(t);
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
+    u64 t0 = plat_ns(), waited;
     while (t->on_core == -2) pc_wait(kt_cv(t), &g_host.thread.core_lk, -1);
+    waited = plat_ns() - t0;
+    t->core_wait_ns += waited;
+    t->core_waits++;
+    g_host.thread.core_wait_ns[k] += waited;
 }
 /* t (holding no core) takes one: its own if free; with a holder it would preempt, it waits there and flags the holder;
    otherwise an idle core of its mask, or a place in its own core's line */
@@ -132,7 +144,10 @@ static void core_release_nl(KThread* t) {
     int k = t->on_core;
     t->on_core = -1;
     __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
-    if (g_hle.thread.core_owner[k] == kt_ix(t)) g_hle.thread.core_owner[k] = 0;
+    if (g_hle.thread.core_owner[k] == kt_ix(t)) {
+        g_hle.thread.core_owner[k] = 0;
+        core_held_nl(k, t);
+    }
     core_handoff_nl(k);
 }
 /* after t took a core: its host thread moves to the core's share of the host CPUs, if it was on another one. Fewer
@@ -227,6 +242,7 @@ void core_yield(KThread* t, int migrate) {
         core_flag_nl(j);
         t->on_core = -1;
         __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        core_held_nl(k, t);
         core_give_nl(k, w); /* not core_release_nl: its hand-off could pick another thread */
         core_wait_nl(t, k);
     }
