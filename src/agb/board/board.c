@@ -34,7 +34,7 @@ uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
     if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
     if (byte >= 0xB0 && byte <= 0xDF) return agb_dma_read(board, byte);
     if (byte >= 0x100 && byte <= 0x10F) return agb_timer_read(board, byte);
-    if (byte == 0x130) return 0x3FF; /* KEYINPUT: every button released (HID lands later) */
+    if (byte == 0x130) return (uint16_t)(~board->keys & 0x3FF); /* KEYINPUT: a key held reads 0 */
     if (byte == 0x200) return board->irq_ie;
     if (byte == 0x202) return board->irq_if;
     if (byte == 0x208) return board->irq_ime;
@@ -84,6 +84,14 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t 
         return;
     }
     board->io[offset] = value;
+}
+
+void agb_board_keys(AgbBoard* board, uint16_t held) {
+    /* KEYCNT (0x132): the keys of bits 0 to 9, any of them held (bit 15 clear) or all of them (set), with bit 14 */
+    uint16_t control = board->io[0x132 >> 1], keys = control & 0x3FF;
+    board->keys = held & 0x3FF;
+    if ((control & 0x4000) && keys && ((control & 0x8000) ? (board->keys & keys) == keys : (board->keys & keys)))
+        agb_irq_request(board, AGB_IRQ_KEYPAD);
 }
 
 void agb_irq_request(AgbBoard* board, uint32_t mask) {

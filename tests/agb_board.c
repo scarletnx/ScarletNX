@@ -124,6 +124,27 @@ int main(void) {
     }
     CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
 
+    /* the keypad: KEYINPUT reads a key held as 0, and KEYCNT's interrupt comes once its keys meet its condition */
+    agb_board_keys(&board, 0x009); /* A and Start */
+    CHECK(agb_read16(&board, 0x04000130) == (0x3FF & ~0x009));
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000132, 0x4000 | 0x003); /* A or B */
+    agb_board_keys(&board, 0x008);
+    CHECK(!(board.irq_if & AGB_IRQ_KEYPAD));
+    agb_board_keys(&board, 0x00A);
+    CHECK(board.irq_if & AGB_IRQ_KEYPAD);
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000132, 0xC000 | 0x003); /* A and B */
+    agb_board_keys(&board, 0x001);
+    CHECK(!(board.irq_if & AGB_IRQ_KEYPAD));
+    agb_board_keys(&board, 0x003);
+    CHECK(board.irq_if & AGB_IRQ_KEYPAD);
+    board.irq_if = 0;
+    agb_write16(&board, 0x04000132, 0x0003); /* the same keys, the interrupt off */
+    agb_board_keys(&board, 0x003);
+    CHECK(!(board.irq_if & AGB_IRQ_KEYPAD));
+    agb_board_keys(&board, 0);
+
     /* a byte store to the I/O window writes its lane alone, the other as the register holds it written */
     board.irq_if = 0x0101;
     agb_write8(&board, 0x04000203, 0x01); /* IF+1 acknowledges bit 8 alone */

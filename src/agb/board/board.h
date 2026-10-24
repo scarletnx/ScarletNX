@@ -56,6 +56,7 @@ typedef struct AgbBoard {
     AgbTimer timer[4];
     uint16_t irq_ie, irq_if, irq_ime;
     uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
+    uint16_t keys;             /* the keypad's keys held, KEYINPUT's bits set (the register reads them inverted) */
     uint32_t bios_prefetch;    /* the opcode the BIOS fetched last, what reads of the BIOS return */
     uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
     int has_cartridge;
@@ -73,6 +74,8 @@ uint16_t agb_io_read16(AgbBoard* board, uint32_t address);
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value, uint16_t mask);
 /* Devices request interrupts here. */
 void agb_irq_request(AgbBoard* board, uint32_t mask);
+/* The keypad's keys held now (KEYINPUT's bits set): KEYCNT's interrupt when its keys meet its condition */
+void agb_board_keys(AgbBoard* board, uint16_t held);
 
 /* The DMA controller and the timers (dma.c, timers.c). */
 void agb_dma_write(AgbBoard* board, uint32_t offset, uint16_t value);
