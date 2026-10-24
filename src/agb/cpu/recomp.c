@@ -5,6 +5,9 @@
 #include "common/utilities/common.h"
 #include "common/cpu/arm/llvm.h"
 #include "agb/cpu/runtime.h"
+#ifdef SNX_AGB_JIT
+#include "common/cpu/arm/exec.h"
+#endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Target.h>
@@ -61,6 +64,9 @@ static void close_patches(AgbRecomp* recomp) {
 
 void agb_recomp_free(AgbRecomp* recomp) {
     close_patches(recomp);
+#ifdef SNX_AGB_JIT
+    snx_arm_exec_free(recomp->exec);
+#endif
     if (recomp->handle) close_module(recomp->handle);
     free(recomp->blocks);
     free(recomp->base);
@@ -399,6 +405,7 @@ static int relink(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_
     return 0;
 }
 
+#ifndef SNX_AGB_JIT
 /* Compiles the blocks from index first on into a module of their own. Linking everything again for each
    block a run reaches would cost the whole ROM's compile per block. */
 static int patch(AgbRecomp* recomp, AgbBoard* board, size_t first, char* error, size_t error_size) {
@@ -419,6 +426,36 @@ static int patch(AgbRecomp* recomp, AgbBoard* board, size_t first, char* error, 
     recomp->patches[recomp->patch_count++] = handle;
     return 0;
 }
+#endif
+
+#ifdef SNX_AGB_JIT
+/* The block compiled in this process by the backend's executor (exec.c), at its first dispatch: no module file and no
+   link, which cost a run about a second for each batch of blocks it reached */
+static int compile_block(AgbRecomp* recomp, AgbBoard* board, AgbBlock* block, char* error, size_t error_size) {
+    size_t consumed = 0;
+    if (!recomp->exec && !(recomp->exec = snx_arm_exec_new(error, error_size))) return -1;
+    if (block->thumb) {
+        uint16_t words[AGB_BLOCK_MAX];
+        for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read16(board, block->pc + j * 2);
+        block->fn =
+            snx_arm_exec_compile(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 1, agb_codegen.profile, 0, &consumed);
+    } else {
+        uint32_t words[AGB_BLOCK_MAX];
+        for (uint32_t j = 0; j < AGB_BLOCK_MAX; ++j) words[j] = agb_read32(board, block->pc + j * 4);
+        block->fn =
+            snx_arm_exec_compile(recomp->exec, words, AGB_BLOCK_MAX, block->pc, 0, agb_codegen.profile, 0, &consumed);
+    }
+    if (!block->fn || !consumed) {
+        snprintf(error, error_size, "the ARM recompiler rejected the block at 0x%08X", block->pc);
+        return -1;
+    }
+    block->instructions = (uint16_t)(consumed > 0xFFFF ? 0xFFFF : consumed);
+    block->code = code_hash(board, block->pc, block->thumb, block->instructions);
+    ++recomp->compiled;
+    recomp->dirty = 1;
+    return 0;
+}
+#endif
 
 /* The cache beside the ROM: the module plus a map of the blocks it holds, under the ROM's hash. */
 static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
@@ -509,10 +546,7 @@ const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t p
     }
     first = recomp->count + 1;
     if (block && block->fn && block->instructions) return block;
-    if (block) {
-        /* a block the cached module lacks: link everything again */
-        if (relink(recomp, board, error, error_size)) return NULL;
-    } else {
+    if (!block) {
         /* a block the discovery step did not reach, a branch through a register or the instruction after one
            the board interpreted: the code it reaches comes with it */
         discover(recomp, board, pc, thumb);
@@ -520,8 +554,20 @@ const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t p
             snprintf(error, error_size, "out of memory");
             return NULL;
         }
+#ifndef SNX_AGB_JIT
         if (patch(recomp, board, first, error, error_size)) return NULL;
+        recomp->compiled += recomp->count + 1 - first;
+#endif
+        block = find(recomp, pc, thumb);
     }
+#ifdef SNX_AGB_JIT
+    /* this one alone: the others discovery found wait for their own dispatch, and the saved module for all of them */
+    if (block && !block->fn && compile_block(recomp, board, block, error, error_size)) return NULL;
+#else
+    /* a block the cached module lacks: link everything again */
+    else if (!block->fn && relink(recomp, board, error, error_size))
+        return NULL;
+#endif
     block = find(recomp, pc, thumb);
     if (!block || !block->fn || !block->instructions) {
         if (!error[0]) snprintf(error, error_size, "no block at 0x%08X", pc);
@@ -532,6 +578,16 @@ const AgbBlock* agb_recomp_lookup(AgbRecomp* recomp, AgbBoard* board, uint32_t p
 
 int agb_recomp_save(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
     if (!recomp->dirty) return 0;
+#ifdef SNX_AGB_JIT
+    {
+        /* the blocks the run ran: the ones discovery found that never did would cost the module's optimized compile
+           (about 15 ms each), and a run that reaches them compiles them then */
+        size_t kept = 0;
+        for (size_t i = 1; i <= recomp->count; ++i)
+            if (recomp->blocks[i].instructions) recomp->blocks[++kept] = recomp->blocks[i];
+        recomp->count = kept;
+    }
+#endif
     if (relink(recomp, board, error, error_size)) return -1;
     return write_cache(recomp, board);
 }

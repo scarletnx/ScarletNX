@@ -21,8 +21,10 @@ typedef struct {
     AgbBlock* blocks;
     size_t count, capacity;
     void* handle;   /* the loaded native module */
-    void** patches; /* the modules of the blocks compiled at run time, <base>.<n>.so */
+    void** patches; /* the modules of the blocks compiled at run time, <base>.<n>.so, without SNX_AGB_JIT */
     size_t patch_count;
+    struct SnxArmExec* exec; /* with SNX_AGB_JIT, what compiles them in this process instead, no module or link */
+    size_t compiled;         /* the blocks the run compiled, which saving it folds into the cached module */
     char* base;     /* the cache path: <base>.so and <base>.map, which names the ROM's hash */
     const char* cc; /* the host compiler that links the emitted objects */
     int dirty;      /* blocks changed since the module was linked */

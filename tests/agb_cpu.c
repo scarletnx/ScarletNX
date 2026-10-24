@@ -174,14 +174,14 @@ int main(void) {
         flat[0x06010004] = 0xA5;
         CHECK(flat[0x06018004] == 0xA5 && flat[0x06038004] == 0xA5);
     }
-    /* the instructions after the interpreted ones start blocks the discovery step did not see: they ran from a
-       module of their own, and saving the run folds them into the cached module */
-    CHECK(recomp.patch_count > 0 && recomp.dirty);
+    /* the instructions after the interpreted ones start blocks the discovery step did not see: they were compiled as
+       the run reached them, and saving the run folds them into the cached module */
+    CHECK(recomp.compiled > 0 && recomp.dirty);
     if (agb_recomp_save(&recomp, &board, error, sizeof error)) {
         fprintf(stderr, "agb_cpu: saving the module: %s\n", error);
         goto done;
     }
-    CHECK(!recomp.patch_count && !recomp.dirty);
+    CHECK(!recomp.patch_count && !recomp.dirty); /* no module file left */
     {
         /* the cache holds every block of the run, each with its function and size */
         AgbRecomp cached;
@@ -214,9 +214,9 @@ int main(void) {
         CHECK(block);
         CHECK(run_block(&cpu, block) == 2);
         {
-            size_t patches = recomp.patch_count; /* while RAM holds the same code, its block is the one already built */
+            size_t compiled = recomp.compiled; /* while RAM holds the same code, its block is the one already built */
             CHECK(agb_recomp_lookup(&recomp, &board, 0x03000000, 1, error, sizeof error) == block &&
-                  recomp.patch_count == patches);
+                  recomp.compiled == compiled);
         }
         agb_write16(&board, 0x03000002, 0x4708); /* bx r1: the block's last word alone */
         cpu.arm.r[1] = 0x08000201;
@@ -227,7 +227,7 @@ int main(void) {
         CHECK(!agb_recomp_load_cache(&next, &board, error, sizeof error));
         /* the same code in RAM: the cached block runs, nothing compiled */
         block = agb_recomp_lookup(&next, &board, 0x03000000, 1, error, sizeof error);
-        result = block && !next.patch_count && run_block(&cpu, block) == 2 ? 0 : 1;
+        result = block && !next.compiled && run_block(&cpu, block) == 2 ? 0 : 1;
         agb_write16(&board, 0x03000000, 0x2003); /* movs r0, #3 */
         block = agb_recomp_lookup(&next, &board, 0x03000000, 1, error, sizeof error);
         if (!block || run_block(&cpu, block) != 3) result = 1;

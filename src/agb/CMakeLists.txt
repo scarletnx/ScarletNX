@@ -20,6 +20,12 @@ set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime
 target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm)
 target_compile_definitions(scarletnx-agb PRIVATE SNX_AGB_CC="${CMAKE_C_COMPILER}")
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
+# the blocks a run reaches, compiled in this process by the LLVM backend's executor (exec.c, in snx_llvm, which the
+# Switch driver's build defines), as the 3DS and the Vita do; without it each batch is a module linked by the compiler
+if(TARGET snx_llvm)
+    target_link_libraries(scarletnx-agb PUBLIC snx_llvm)
+    target_compile_definitions(scarletnx-agb PRIVATE SNX_AGB_JIT)
+endif()
 # The runtime library the blocks call (cpu/runtime.h), which the ROM's module links as the 3DS driver's does
 set(agb_runtime_source "${CMAKE_CURRENT_BINARY_DIR}/agb-runtime-$<CONFIG>.c")
 add_custom_command(OUTPUT "${agb_runtime_source}"
