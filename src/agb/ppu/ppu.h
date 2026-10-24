@@ -21,6 +21,7 @@ typedef struct {
     int32_t bgx[4], bgy[4];                      /* the reference points the CPU writes */
     int32_t bgx_line[4], bgy_line[4];            /* the reference points the line renderer walks */
     uint16_t win0h, win1h, win0v, win1v, winin, winout, mosaic;
+    uint8_t window_on[2]; /* WIN0's and WIN1's lines: on from the line the counter meets its top to its bottom's */
     uint16_t bldcnt, bldalpha, bldy;
     uint16_t dispstat;
     uint16_t vcount;
