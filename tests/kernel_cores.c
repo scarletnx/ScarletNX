@@ -10,6 +10,7 @@
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <sched.h>
 #include <time.h>
 
 u8* g_mem;
@@ -111,6 +112,7 @@ void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
 void pc_init(PCond* c) { pthread_cond_init(&c->c, NULL); }
+void plat_yield(void) { sched_yield(); }
 void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
 void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
 int pc_wait(PCond* c, PMutex* m, i64 ns) {
@@ -603,6 +605,54 @@ int main(void) {
         __atomic_store_n(&g[3].stop, 1, __ATOMIC_SEQ_CST);
         pthread_join(gh[3], NULL);
         g[3].t->state = 2;
+    }
+
+    /* without emulated cores (emulated_cores off) the threads run at once, holding no core, so a pause asks each one
+       that runs itself; the poll that leaves set is cleared at its first poll after the pause */
+    {
+        static SnxKctGame g[2];
+        pthread_t gh[2];
+        u64 seen[2];
+        reset();
+        g_settings.emulated_cores = 0;
+        for (int i = 0; i < 2; i++) {
+            g[i].t = &g_hle.thread.threads[i];
+            g[i].t->state = 1;
+            g[i].t->stopped = 0;
+            g[i].t->cpu.poll = 0;
+            pthread_create(&gh[i], NULL, game_body, &g[i]);
+        }
+        for (int i = 0; i < 2000 && !(__atomic_load_n(&g[0].steps, __ATOMIC_SEQ_CST) &&
+                                      __atomic_load_n(&g[1].steps, __ATOMIC_SEQ_CST));
+             i++) {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(g[0].steps && g[1].steps && on_core(g[0].t) == -1 && on_core(g[1].t) == -1,
+              "both of core 0 run, holding no core: %d %d", on_core(g[0].t), on_core(g[1].t));
+        CHECK(kernel_hold(2000) == 0, "the pause holds without cores");
+        CHECK(g[0].t->stopped == 2 && g[1].t->stopped == 2, "both stopped at a poll: %d %d", g[0].t->stopped,
+              g[1].t->stopped);
+        for (int i = 0; i < 2; i++) seen[i] = __atomic_load_n(&g[i].steps, __ATOMIC_SEQ_CST);
+        {
+            struct timespec pause = {0, 10000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(seen[0] == g[0].steps && seen[1] == g[1].steps, "nothing ran while paused without cores");
+        kernel_release();
+        for (int i = 0; i < 2000 && (__atomic_load_n(&g[0].t->cpu.poll, __ATOMIC_RELAXED) ||
+                                     __atomic_load_n(&g[1].t->cpu.poll, __ATOMIC_RELAXED));
+             i++) {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+        CHECK(!g[0].t->cpu.poll && !g[1].t->cpu.poll, "their polls are cleared after the pause: %u %u",
+              g[0].t->cpu.poll, g[1].t->cpu.poll);
+        for (int i = 0; i < 2; i++) __atomic_store_n(&g[i].stop, 1, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < 2; i++) pthread_join(gh[i], NULL);
+        CHECK(g[0].steps > seen[0] && g[1].steps > seen[1], "both went on after the pause");
+        for (int i = 0; i < 2; i++) g[i].t->state = 2;
+        g_settings.emulated_cores = 1;
     }
 
     printf("%u checks, %u failed\n", checks, failures);
