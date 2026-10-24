@@ -3,6 +3,7 @@
 /* What nvdrv shares with the GPU, host1x and vi: nvmap handles, the GPU's address space, and the syncpoints */
 #ifndef SNX_NVDRV_H
 #define SNX_NVDRV_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/platform/plat.h" /* PMutex, PCond */
 
@@ -11,6 +12,8 @@
 #define SYNCPT_IDS 256
 
 void nv_init(void);
+/* an ioctl on fd that a restored thread makes again (svc_service_retry): the use of the fd the old one counted goes */
+void nv_ioctl_abandon(u32 fd);
 
 /* A live, allocated handle's address and size, read together under nvdrv's lock from any thread. 1, or 0 (both
    outputs 0) for a dead handle */
@@ -109,7 +112,7 @@ typedef struct {
 /* an nvhost-ctrl event slot. ev is made on first use and nvdrv keeps a reference. An armed slot is signaled once
    syncpoint id reaches thresh; armed changes under nvev_lk */
 typedef struct {
-    struct KEvent* ev;
+    u32 ev; /* its kernel object id */
     u32 id, thresh;
     int armed;
 } NvEvent;
@@ -125,7 +128,7 @@ typedef struct {
     u64 user_data; /* DEV_GPU: SET_USER_DATA's value, for GET_USER_DATA */
     /* QueryEvent's events of a channel (1 SM exception, 2 SM pause, 3 error notifier, as Ryujinx numbers them), made
        on first query and never signaled: nothing here raises them */
-    struct KEvent* ev[4];
+    u32 ev[4];
     struct H1Ch* h1x; /* DEV_NVDEC, DEV_VIC: the fd's host1x channel (host1x_open) */
     /* the ioctls running on the fd. Close during one only marks it closed, and the last ioctl to leave releases it:
        the entry and its channel stay while an ioctl uses them, and Open doesn't hand the fd out again meanwhile */
@@ -145,9 +148,7 @@ typedef struct {
        handle past the table would be written outside it */
     u32 nvh_free[NVMAP_HANDLES];
     u32 nvh_nfree;
-    PMutex lock;
     u64* gmmu[NV_GMMU_L1]; /* gmmu[i] -> 4096 entries of (guest addr | 1) */
-    PMutex aslock;         /* held across ioctl_as: the mappings below and the VA allocator */
     GMap* gmaps;
     u32 ngmaps, capgmaps;
     /* the GPU page table again as runs, sorted by GPU page and disjoint, changed with it (gmmu_map, gmmu_unmap: every
@@ -156,19 +157,15 @@ typedef struct {
     GRun* gruns;
     u32 ngruns, capgruns;
     GAlias alias;
-    PMutex alias_lock;
     u32 big_page_bits; /* 64K unless asked otherwise */
     VaRange* vafree;
     u32 nvafree, capvafree;
     int va_ready; /* the free ranges hold the whole region at first (va_init) */
     u32 syncpt[SYNCPT_IDS];
     u32 syncpt_max[SYNCPT_IDS];
-    PCond sync_cv;
-    PMutex sync_lk;
     u8 syncpt_used[SYNCPT_N];
     u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
                                 them (sync_lk) */
-    PMutex submit_lk;        /* a submission's promise and its place in the GPU queue, in the same order */
     /* each ctrl fd's 64 event slots, a table of ctrl_evt taken on first use and given back with the fd, under
        nvev_lk: 1 + its index, 0 for none. As on the console, the slots are the fd's (Ryujinx's NvHostCtrlDeviceFile
        keeps them per open). A game's GPU fence waits (one fd) and its movie player (another) both use slot 0,
@@ -181,11 +178,22 @@ typedef struct {
        at once, syncpt_add_quiet's at the outermost vk_unlock, after vk_lock goes (syncpt_events). Arming clears the
        event first and does both in one hold: an increment between a separate arm and clear would signal and then
        lose its wakeup, leaving the game waiting for good. A mutex, not a spin: kevent_signal runs under it */
-    PMutex nvev_lk;
     NvFile nvf[NV_FDS];
-    /* nv_first_use's (device, ioctl) pairs, under seen_lock */
-    PMutex seen_lock;
     NvSeen seen[256];
     u32 nseen;
 } HleNvdrv;
+/* nvdrv's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock;
+    PMutex aslock; /* held across ioctl_as: the mappings below and the VA allocator */
+    PMutex alias_lock;
+    PCond sync_cv;
+    PMutex sync_lk;
+    PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */
+    PMutex nvev_lk;
+    /* nv_first_use's (device, ioctl) pairs, under seen_lock */
+    PMutex seen_lock;
+} HostNvdrv;
+extern const StateFnTable g_nvdrv_state_fns; /* the functions a save state may hold of nvdrv.c */
+
 #endif

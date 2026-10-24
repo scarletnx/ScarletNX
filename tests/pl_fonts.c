@@ -5,6 +5,7 @@
    SDK decodes its size from; and a game folder's .ttf taken over the stand-in for its slot */
 #include "nx/hle/services/pl.c"
 #include "nx/hle/hle.c"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -83,10 +84,6 @@ static int contains(const u8* data, size_t size, const char* text) {
     return 0;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

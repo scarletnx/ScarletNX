@@ -136,6 +136,35 @@ int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n);
 /* the pool offset of guest address a: 0, or -1 when a isn't pool memory */
 int mem_pool_offset(u64 a, u64* off);
 
+/* ---- save states (runtime/state.c), with the game paused and nothing of the GPU's left in guest memory */
+/* The pool's pages in use, in offset order: a run a service maps outside the reservation (a shared memory's pages,
+   mem_pool_host) has host set, and the rest is cut at its ends, so each span is one or the other */
+typedef struct {
+    u64 off, size;
+    int host;
+} MemSpan;
+/* the blocks (mem_query's) and the spans into out, max at most: how many there are */
+u32 mem_blocks(MemBlock* out, u32 max);
+u32 mem_spans(MemSpan* out, u32 max);
+int mem_pool_read(u64 off, void* dst, u64 size); /* 0, or -1 */
+/* A load's new address space, from a state's blocks and spans. mem_restore_begin takes the renderer's lock and the
+   memory lock, lets go of what the GPU holds, and unmaps every block but the modules' code (MS_CODE, which a state
+   keeps as the game loaded it) and every span but the services' host views (a load reconciles those with their
+   shared memories itself, mem_pool_host and mem_pool_host_free, before it begins). Then mem_restore_alloc places
+   each of the state's other spans anew (its offset, or ~0 when the pool is full), mem_restore_write fills them,
+   mem_restore_blocks makes the block list the state's (its pool offsets already this run's, its MS_CODE blocks those
+   mapped now) and maps and commits it, the caller writes the other blocks' bytes at GP, and mem_restore_end sets the
+   heap's and physical memory's sizes, lets go of the locks and tells the JIT and the renderer every block changed.
+   Every call but mem_restore_end returns 0, or -1 with nothing more to do but mem_restore_end */
+int mem_restore_begin(void);
+u64 mem_restore_alloc(u64 size);
+int mem_restore_write(u64 off, const void* p, u64 size);
+int mem_restore_blocks(const MemBlock* blk, u32 n);
+void mem_restore_end(u64 heap_size, u64 phys_mapped);
+/* before any of that, while the game runs: whether blk (n of them) is a block list mem_restore_blocks takes, one that
+   covers the address space in order with the code mapped now. 0, or -1 */
+int mem_restore_check(const MemBlock* blk, u32 n);
+
 extern MemLayout g_layout;
 extern u8* g_mem;
 /* changed under the memory lock, read with __atomic loads without it */

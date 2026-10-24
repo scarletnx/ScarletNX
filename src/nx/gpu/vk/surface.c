@@ -19,6 +19,7 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/runtime/state_io.h"
 
 #define SURFH 4096
 static Surf* g_surfh[SURFH];
@@ -815,6 +816,7 @@ void vk_rt_before_write(u64 gva, u64 size) {
     vk_unlock();
 }
 
+static void zt_restore(Surf* s);
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume);
 /* a render target's lookup or creation as a profiler zone (SNX_TRACY builds) */
@@ -880,8 +882,12 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
     s->rt_size = rt_bytes(s);
     rt_pages(s, 1);
     s->gw = gpu_mem_generation();
-    /* the CPU may have written the memory already (a cleared or decoded frame): start from it */
-    if (!depth) vk_rt_reload(gva);
+    /* the CPU may have written the memory already (a cleared or decoded frame): start from it. A depth target never
+       comes from memory, but a loaded save state may hold its pixels */
+    if (!depth)
+        vk_rt_reload(gva);
+    else
+        zt_restore(s);
     return s;
 }
 
@@ -1375,3 +1381,186 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     vk_surf_touch(dt);
     return 1;
 }
+
+/* a save state's load: every texture and render target goes, as guest memory under them is the state's now */
+void vk_surf_forget_all(void) {
+    u32 k;
+    for (k = 0; k < SURFH; k++)
+        while (g_surfh[k]) surf_evict(g_surfh[k]);
+}
+
+/* a save state's save: every render target whose pixels memory doesn't hold yet writes them back, so the state's guest
+   memory has them (one a format the CPU can't take, a depth target or a scaled one, can't: it has none to write) */
+static int flush_wanted(const Surf* s) {
+    return s->is_rt && !(s->gva >> 63) && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && s->mem_wgen != s->wgen &&
+           flush_bytes(s);
+}
+u32 vk_rt_flush_all(void) {
+    u32 n = 0, i;
+    int list;
+    Surf** all;
+    /* gathered first: a write-back moves its target in the lists */
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next) n += flush_wanted(s);
+    if (!n || !(all = (Surf**)malloc(sizeof *all * n))) return 0;
+    n = 0;
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
+            if (flush_wanted(s)) all[n++] = s;
+    for (i = 0; i < n; i++) vk_surf_flush(all[i], NULL);
+    free(all);
+    return n;
+}
+
+/* ---- a save state's depth targets. Their pixels never go to guest memory and never come from it (rt_create), so a
+   state holds them itself: each one live at the save, its depth and its stencil read back once (the one readback a
+   save makes), and put into the target of the same place, format and size the loaded game makes next ---- */
+typedef struct {
+    u64 gva;
+    u32 w, h, sw, sh, fkey, vk, layers;
+    u64 dsize, ssize; /* the depth aspect's bytes and the stencil's (0 for none), all layers */
+    u8* bytes;        /* the depth's, then the stencil's */
+} ZtSaved;
+static ZtSaved* g_zt;
+static u32 g_nzt;
+/* the bytes a texel of each aspect takes in a buffer copy, and whether it has stencil */
+static u32 zt_depth_bytes(VkFormat f) { return f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4; }
+static int zt_stencil(VkFormat f) {
+    return f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_D16_UNORM_S8_UINT;
+}
+static int zt_saved(const Surf* s) {
+    return s->is_rt && s->f.depth && !(s->gva >> 63) && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && !s->volume &&
+           s->type != VK_IMAGE_VIEW_TYPE_3D;
+}
+static void zt_drop(void) {
+    u32 i;
+    for (i = 0; i < g_nzt; i++) free(g_zt[i].bytes);
+    free(g_zt);
+    g_zt = NULL;
+    g_nzt = 0;
+}
+/* each aspect of every layer of s copied between its image and buf at at, the depth's then the stencil's: to the
+   buffer (out) or from it */
+static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) {
+    u64 dsize = (u64)s->sw * s->sh * zt_depth_bytes(s->f.vk);
+    u32 layer, a, aspects = zt_stencil(s->f.vk) ? 2 : 1;
+    for (a = 0; a < aspects; a++)
+        for (layer = 0; layer < s->layers; layer++) {
+            VkBufferImageCopy c = {.bufferOffset = at,
+                                   .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0,
+                                                        layer, 1},
+                                   .imageExtent = {s->sw, s->sh, 1}};
+            if (out)
+                rec_CmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
+            else
+                rec_CmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+            at += a ? (u64)s->sw * s->sh : dsize;
+        }
+}
+int vk_zt_save(StateIo* io) {
+    u64 total = 0, at = 0;
+    u32 n = 0, i;
+    int list, r = 0;
+    Surf** all;
+    VkBuffer buf;
+    u8* p;
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
+            if (zt_saved(s)) {
+                n++;
+                total += (u64)s->sw * s->sh * s->layers * (zt_depth_bytes(s->f.vk) + (zt_stencil(s->f.vk) ? 1u : 0u));
+            }
+    if (!n) return io_put32(io, 0);
+    if (!(all = (Surf**)malloc(sizeof *all * n))) return -1;
+    n = 0;
+    for (list = VK_LRU_RT; list <= VK_LRU_RT + LRU_AGED; list += LRU_AGED)
+        for (Surf* s = g_lru[list].head; s; s = s->lru_next)
+            if (zt_saved(s)) all[n++] = s;
+    if (!(p = vk_readback_buffer(total, &buf))) {
+        free(all);
+        return -1;
+    }
+    vk_render_end(); /* the copies can't be recorded inside a rendering pass */
+    {
+        VkCommandBuffer cb = vk_cmd();
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                               .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                               .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+        VkDependencyInfo di = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        for (i = 0; i < n; i++) {
+            Surf* s = all[i];
+            vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_READ_BIT);
+            zt_copy(cb, s, buf, at, 1);
+            at += (u64)s->sw * s->sh * s->layers * (zt_depth_bytes(s->f.vk) + (zt_stencil(s->f.vk) ? 1u : 0u));
+        }
+        rec_CmdPipelineBarrier2(cb, &di);
+    }
+    vk_finish();
+    vk_readback_ready();
+    r |= io_put32(io, n);
+    for (i = 0, at = 0; i < n && !r; i++) {
+        Surf* s = all[i];
+        u64 dsize = (u64)s->sw * s->sh * s->layers * zt_depth_bytes(s->f.vk),
+            ssize = zt_stencil(s->f.vk) ? (u64)s->sw * s->sh * s->layers : 0;
+        r |= io_put64(io, s->gva) | io_put32(io, s->w) | io_put32(io, s->h) | io_put32(io, s->sw) | io_put32(io, s->sh);
+        r |= io_put32(io, s->fkey) | io_put32(io, (u32)s->f.vk) | io_put32(io, s->layers) | io_put64(io, dsize) |
+             io_put64(io, ssize) | io_put(io, p + at, dsize + ssize);
+        at += dsize + ssize;
+    }
+    free(all);
+    LOG("vulkan: %u depth targets saved (%llu KB)\n", n, (unsigned long long)(total >> 10));
+    return r ? -1 : 0;
+}
+int vk_zt_load(StateIo* io) {
+    u32 n, i;
+    zt_drop();
+    if (io_get32(io, &n) || n > 4096) return -1;
+    if (!n) return 0;
+    if (!(g_zt = (ZtSaved*)calloc(n, sizeof *g_zt))) return -1;
+    for (i = 0; i < n; i++, g_nzt++) {
+        ZtSaved* z = &g_zt[i];
+        if (io_get64(io, &z->gva) || io_get32(io, &z->w) || io_get32(io, &z->h) || io_get32(io, &z->sw) ||
+            io_get32(io, &z->sh) || io_get32(io, &z->fkey) || io_get32(io, &z->vk) || io_get32(io, &z->layers) ||
+            io_get64(io, &z->dsize) || io_get64(io, &z->ssize) || z->dsize + z->ssize > (1ull << 32) ||
+            !(z->bytes = (u8*)malloc((size_t)(z->dsize + z->ssize + 1))) ||
+            io_get(io, z->bytes, z->dsize + z->ssize)) {
+            zt_drop();
+            return -1;
+        }
+    }
+    return 0;
+}
+/* s, a depth target just made: the pixels a loaded state holds for one of its place, format and size go into it, once */
+static void zt_restore(Surf* s) {
+    u32 i;
+    for (i = 0; i < g_nzt; i++) {
+        ZtSaved* z = &g_zt[i];
+        VkCommandBuffer cb;
+        VkBuffer buf;
+        u64 off;
+        u8* to;
+        if (z->gva != s->gva || z->w != s->w || z->h != s->h || z->sw != s->sw || z->sh != s->sh ||
+            z->fkey != s->fkey || z->vk != (u32)s->f.vk || z->layers != s->layers ||
+            z->dsize != (u64)s->sw * s->sh * s->layers * zt_depth_bytes(s->f.vk))
+            continue;
+        if ((to = vk_stage(z->dsize + z->ssize, 4, &buf, &off)) != NULL) {
+            memcpy(to, z->bytes, (size_t)(z->dsize + z->ssize));
+            vk_render_end();
+            cb = vk_cmd();
+            vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                        VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            zt_copy(cb, s, buf, off, 0);
+            LOG("vulkan: the depth target at %llx (%ux%u) has its pixels from the save state\n",
+                (unsigned long long)s->gva, s->w, s->h);
+        }
+        free(z->bytes);
+        *z = g_zt[--g_nzt];
+        return;
+    }
+}
+/* a load's reset: what an earlier state left unmatched goes */
+void vk_zt_forget(void) { zt_drop(); }

@@ -66,7 +66,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   opened in the checkout (`build/scarletnx --mcp --data .`). Its tools: `scan_log` (the summary above), `read_log`
   (a log's lines holding a text, `|` between alternatives, with context, or a range, or its last lines, only under
   the data folder and its state, cache and settings folders), `find_game` (the extracted games in `work/` with their
-  title IDs and versions), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
+  title IDs and versions), `state_info` (a recompiled game's save states: slot, program, when, play time, the build
+  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
   LLVM's disassembler where LLVM has the AArch64 target). The last game loaded stays loaded for the next call. Its
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
   (`mcp_gdb.c`, [USAGE.md](USAGE.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
@@ -86,6 +87,10 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
   `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
   `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of opening the host's dialog.
+  `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
+  guest memory and guest time stayed unchanged while it held (`pause:` lines).
+  `--state_save=at:slot,...` and `--state_load=at:slot,...` save the game to a save state slot and load one at those
+  times (`state:` lines); the files are `<game folder>/states/<id>.<slot>.snxstate`.
   Masks: A/B/X/Y `1/2/4/8`, L/R `40/80`, ZL/ZR `100/200`, Plus/Minus `400/800`,
   left/up/right/down `1000/2000/4000/8000`.
 - `run_game.py`: Catherine New Game sequence by default; **`--script ""` disables it**.
@@ -114,7 +119,7 @@ The game's `[Debug]` settings ([USAGE.md](USAGE.md#settings--input)) are for inv
 The profiler is not part of the ordinary runtime: `SNX_TRACY` defaults to OFF, so `scarletnx` carries the pinned
 Tracy 0.14.1 client only in a build that asks for it — `cmake --preset tracy -B build/tracy && cmake --build
 build/tracy`, or `-DSNX_TRACY=ON` in a build of your own (Android's app leaves it out, and iOS cannot have it).
-The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F7`.
+The client starts only when profiling is requested: the launcher setting, `--tracy-capture`, `--tracy`, or `F10`.
 Without one, a run does not connect.
 
 A game runs profiled from the terminal, the runtime's own flags and nothing else:
@@ -169,7 +174,7 @@ without a capture and says why in the log: a setting does not cost the game its 
 own, so an earlier capture (or a GUI) on 8086 is not in the way, and the run waits for the capture before it starts
 the game: the handshake needs an answer, and a game loading a dump starves it.
 
-To capture only a later part of a run, leave that setting off and press `F7` in the game: it starts the client and
+To capture only a later part of a run, leave that setting off and press `F10` in the game: it starts the client and
 a 60-second capture beside the game, and logs its path. Run it again after it finishes for another segment. A
 connected GUI and `tracy-capture` are both viewers of the same one-connection client, so disconnect the GUI first
 if it is open.

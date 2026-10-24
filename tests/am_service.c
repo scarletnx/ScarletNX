@@ -51,6 +51,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     if (obj->destroy) obj->destroy(obj);
@@ -96,7 +97,7 @@ void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
-    if (o->destroy) o->destroy(o);
+    if (o->type == KO_SHMEM) free(((KShmem*)o)->host); /* as kshmem_destroy lets go of its pages */
     free(o);
     test_kobjs--;
 }
@@ -104,18 +105,16 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-static void shm_destroy(KObj* o) { free(((KShmem*)o)->host); }
 KShmem* kshmem_new(u64 size, const char* name) {
     KShmem* s = calloc(1, sizeof *s);
     CHECK(s != NULL);
     s->o.type = KO_SHMEM;
-    s->o.name = name;
-    s->o.destroy = shm_destroy;
+    kobj_set_name(&s->o, name);
     s->size = size;
     s->host = calloc(1, size);
     CHECK(s->host != NULL);
@@ -135,17 +134,17 @@ static void close_handles(void) {
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     test_next_handle = 0x100;
 }
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(kobj_at(ev)); }
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
     *event = h_new(&e->o);
     return 0;
 }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 
 void svcobj_ref(SvcObj* o) { o->refs++; }
@@ -301,12 +300,12 @@ static void test_inline(void) {
     CHECK(nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(NULL, 0x11, 3, &a) == 0);
     la = a->data;
     CHECK(nn_am_service_ILibraryAppletAccessor_GetAppletStateChangedEvent(a, &handle) == 0);
-    CHECK(!la->state_ev->signaled);
+    CHECK(!kev(la->state_ev)->signaled);
     CHECK(nn_am_service_ILibraryAppletAccessor_IsCompleted(a, &completed) == 0 && !completed);
     send_request(a, 0xA, 1, 0);
-    CHECK(la->interactive_ev->signaled);
+    CHECK(kev(la->interactive_ev)->signaled);
     svcobj_unref(reply(a, 1, 0, 9));
-    CHECK(!la->interactive_ev->signaled);
+    CHECK(!kev(la->interactive_ev)->signaled);
     CHECK(nn_am_service_ILibraryAppletAccessor_PopInteractiveOutData(a, &s) == RC(128, 2));
     send_request(a, 0xA, 4, 0);
     svcobj_unref(reply(a, 3, 1, 8));
@@ -318,7 +317,7 @@ static void test_inline(void) {
     CHECK(data->d[12] == 0x3D && data->d[13] == 0xD8);
     svcobj_unref(s);
     svcobj_unref(reply(a, 1, 1, 8));
-    CHECK(!la->state_ev->signaled);
+    CHECK(!kev(la->state_ev)->signaled);
     send_request(a, 0xA, 4 | 0x20, 1);
     svcobj_unref(reply(a, 3, 1, 8));
     svcobj_unref(reply(a, 3, 7, 0x7EC));
@@ -332,7 +331,7 @@ static void test_inline(void) {
     svcobj_unref(reply(a, 3, 6, 8));
     svcobj_unref(reply(a, 1, 1, 8));
     send_request(a, 4, 0, 0);
-    CHECK(la->state_ev->signaled);
+    CHECK(kev(la->state_ev)->signaled);
     CHECK(nn_am_service_ILibraryAppletAccessor_IsCompleted(a, &completed) == 0 && completed);
     svcobj_unref(a);
     close_handles();
@@ -388,7 +387,7 @@ static void test_lock_event(void) {
     CHECK(nn_am_service_ICommonStateGetter_GetHomeButtonReaderLockAccessor(NULL, &accessors[0]) == 0);
     CHECK(nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(NULL, 0, &accessors[1]) == 0);
     for (i = 0; i < 2; i++) {
-        CHECK(((AmLock*)accessors[i]->data)->event->signaled);
+        CHECK(kev(((AmLock*)accessors[i]->data)->event)->signaled);
         CHECK(nn_am_service_ILockAccessor_TryLock(accessors[i], 0, &locked, &event) == 0 && locked == 1);
         CHECK(nn_am_service_ILockAccessor_Unlock(accessors[i]) == 0);
         svcobj_unref(accessors[i]);
@@ -498,10 +497,10 @@ static void test_applets(void) {
 }
 /* the events am_init made, which g_hle.am keeps: released before it runs again, which makes new ones */
 static void am_events_release(void) {
-    kobj_unref(&g_hle.am.msg_event->o);
-    kobj_unref(&g_hle.am.sleep_lock_event->o);
-    kobj_unref(&g_hle.am.launchable_event->o);
-    kobj_unref(&g_hle.am.resolution_event->o);
+    kobj_unref(&kev(g_hle.am.msg_event)->o);
+    kobj_unref(&kev(g_hle.am.sleep_lock_event)->o);
+    kobj_unref(&kev(g_hle.am.launchable_event)->o);
+    kobj_unref(&kev(g_hle.am.resolution_event)->o);
 }
 /* am_init: the focus message, then the performance mode's, and the launchable event signaled */
 static void test_messages(void) {
@@ -509,12 +508,12 @@ static void test_messages(void) {
     u32 h;
     am_init();
     CHECK(nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0 && m == 15);
-    CHECK(g_hle.am.msg_event->signaled);
+    CHECK(kev(g_hle.am.msg_event)->signaled);
     CHECK(nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == 0 && m == 31);
-    CHECK(!g_hle.am.msg_event->signaled);
+    CHECK(!kev(g_hle.am.msg_event)->signaled);
     CHECK(nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &m) == RC(128, 3));
     CHECK(nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(NULL, &h) == 0);
-    CHECK(test_handles[h - 0x100] == &g_hle.am.launchable_event->o && g_hle.am.launchable_event->signaled);
+    CHECK(test_handles[h - 0x100] == &kev(g_hle.am.launchable_event)->o && kev(g_hle.am.launchable_event)->signaled);
     close_handles();
     am_events_release();
 }
@@ -567,12 +566,13 @@ static void test_state_getter(void) {
     u8 vr = 0xee;
     int logo = 0, received = 0;
     am_init();
-    CHECK(nn_am_service_ICommonStateGetter_EnableStartupLogoDisappearedMessage(NULL) == 0 && g_hle.am.msg_event->signaled);
+    CHECK(nn_am_service_ICommonStateGetter_EnableStartupLogoDisappearedMessage(NULL) == 0 &&
+          kev(g_hle.am.msg_event)->signaled);
     while (received < AM_MESSAGES && nn_am_service_ICommonStateGetter_ReceiveMessage(NULL, &message) == 0) {
         logo += message == AM_MSG_STARTUP_LOGO_GONE;
         received++;
     }
-    CHECK(received == 3 && logo == 1 && !g_hle.am.msg_event->signaled);
+    CHECK(received == 3 && logo == 1 && !kev(g_hle.am.msg_event)->signaled);
     CHECK(nn_am_service_ICommonStateGetter_IsVrModeEnabled3d(NULL, &vr) == 0 && vr == 0);
     CHECK(nn_am_service_ICommonStateGetter_BeginVrMode3d(NULL) == 0);
     CHECK(nn_am_service_ICommonStateGetter_IsVrModeEnabled3d(NULL, &vr) == 0 && vr == 1);
@@ -595,10 +595,6 @@ static void test_self_settings(void) {
     CHECK(nn_am_service_ISelfController_IsAutoSleepDisabled(NULL, &disabled) == 0 && disabled == 1);
     CHECK(nn_am_service_ISelfController_SetAutoSleepDisabled(NULL, 0) == 0);
     CHECK(nn_am_service_ISelfController_IsAutoSleepDisabled(NULL, &disabled) == 0 && disabled == 0);
-}
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
 }
 
 int main(void) {

@@ -2217,3 +2217,14 @@ void vk_buf_frame(void) {
         vb_free(i);
     }
 }
+
+/* a save state's load: every buffer kept of guest memory goes, and their host addresses with it */
+void vk_buf_forget_all(void) {
+    u32 i;
+    for (i = 0; i < g_nvb; i++)
+        if (g_vb[i].len) {
+            drop_own(i);
+            vb_free(i);
+        }
+    vk_buf_mapping_changed();
+}

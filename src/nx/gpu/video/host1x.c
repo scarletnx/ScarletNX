@@ -20,6 +20,7 @@
    of it, since the job waited for may be another channel's */
 #include "nx/gpu/video/host1x_int.h"
 #include "nx/runtime/platform/tracy.h"
+#include "nx/runtime/state_io.h"
 
 enum { NV_OK = 0, NV_BAD_PARAMETER = 4, NV_INSUFFICIENT_MEMORY = 6 };
 
@@ -52,6 +53,7 @@ static PMutex g_iova_lk = PMUTEX_INIT;
 static IovaMap g_iova[IOVA_SLOTS]; /* sorted by iova */
 static u32 g_niova;
 static PMutex g_engine_lk = PMUTEX_INIT;
+static u32 g_jobs; /* queued or running on any channel, with __atomic operations: what host1x_drain waits for */
 
 /* A job is one block of words: the command buffer count, the increment count, each command buffer as its length and
    words (length 0 for one that was refused), then each increment as (syncpoint id, count) */
@@ -249,6 +251,7 @@ static void worker(void* arg) {
         run_job(ch, job);
         SNX_ZONE_END(z_job);
         free(job);
+        __atomic_sub_fetch(&g_jobs, 1, __ATOMIC_RELEASE);
         pm_lock(&ch->lk);
         ch->head = (ch->head + 1) % H1_QUEUE;
         ch->count--;
@@ -341,6 +344,7 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     ch->queue[(ch->head + ch->count) % H1_QUEUE] = job;
     ch->count++;
+    __atomic_add_fetch(&g_jobs, 1, __ATOMIC_RELAXED);
     pc_broadcast(&ch->cv);
     if (!ch->started) {
         ch->started = 1;
@@ -348,6 +352,19 @@ static u32 submit(H1Ch* ch, u8* d, u32 n) {
     }
     pm_unlock(&ch->lk);
     return NV_OK;
+}
+/* a game pause, with no guest thread left to submit: polled, as pauses are rare and the jobs take milliseconds */
+int host1x_drain(int timeout_ms) {
+    u64 t0 = plat_ns();
+    while (__atomic_load_n(&g_jobs, __ATOMIC_ACQUIRE)) {
+        if (plat_ns() - t0 >= (u64)timeout_ms * 1000000u) {
+            WARN("pause: host1x still has %u jobs after %d ms\n", __atomic_load_n(&g_jobs, __ATOMIC_RELAXED),
+                 timeout_ms);
+            return -1;
+        }
+        plat_sleep_ns(1000000);
+    }
+    return 0;
 }
 /* GET_SYNCPOINT {u32 index; out u32 id}: the channel's syncpoint at that index, allocated when first asked for */
 static u32 get_syncpt(H1Ch* ch, u8* d, u32 n) {
@@ -431,4 +448,72 @@ u32 host1x_ioctl(H1Ch* ch, u32 cmd, u8* d, u32 n) {
         return NV_OK;
     WARN_LIMIT(16, "host1x: ioctl %08x not handled\n", cmd);
     return NV_OK;
+}
+
+/* ---- save states */
+int host1x_iova_save(StateIo* io) {
+    u32 i;
+    int r;
+    pm_lock(&g_iova_lk);
+    r = io_put32(io, g_niova);
+    for (i = 0; i < g_niova && !r; i++)
+        r = io_put64(io, g_iova[i].iova) | io_put64(io, g_iova[i].span) | io_put64(io, g_iova[i].addr) |
+            io_put32(io, g_iova[i].size) | io_put32(io, g_iova[i].handle);
+    pm_unlock(&g_iova_lk);
+    return r ? -1 : 0;
+}
+struct H1Iova {
+    IovaMap map[IOVA_SLOTS];
+    u32 n;
+};
+H1Iova* host1x_iova_parse(StateIo* io) {
+    H1Iova* t = (H1Iova*)calloc(1, sizeof *t);
+    u64 end = IOVA_BASE;
+    u32 i;
+    if (!t || io_get32(io, &t->n) || t->n > IOVA_SLOTS) goto bad;
+    for (i = 0; i < t->n; i++) {
+        IovaMap* m = &t->map[i];
+        if (io_get64(io, &m->iova) || io_get64(io, &m->span) || io_get64(io, &m->addr) || io_get32(io, &m->size) ||
+            io_get32(io, &m->handle))
+            goto bad;
+        /* sorted, apart, inside the IOVA space and the guest's, each one inside its span */
+        if (m->iova < end || m->span > IOVA_END - m->iova || m->size > m->span || m->addr > AS_MAX ||
+            m->size > AS_MAX - m->addr)
+            goto bad;
+        end = m->iova + m->span;
+    }
+    return t;
+bad:
+    free(t);
+    return NULL;
+}
+void host1x_iova_install(H1Iova* t) {
+    pm_lock(&g_iova_lk);
+    memcpy(g_iova, t->map, sizeof *g_iova * t->n);
+    g_niova = t->n;
+    pm_unlock(&g_iova_lk);
+    free(t);
+}
+void host1x_iova_free(H1Iova* t) { free(t); }
+int host1x_channel_save(const H1Ch* ch, StateIo* io) {
+    return io_put32(io, (u32)ch->is_vic) | io_put(io, ch->syncpt, sizeof ch->syncpt) | io_put32(io, ch->cls) |
+                   io_put32(io, ch->method) | io_put32(io, ch->payload) | io_put(io, ch->regs, sizeof ch->regs)
+               ? -1
+               : 0;
+}
+H1Ch* host1x_channel_load(StateIo* io) {
+    u32 is_vic;
+    H1Ch* ch;
+    if (io_get32(io, &is_vic) || !(ch = host1x_open(is_vic != 0))) return NULL;
+    if (io_get(io, ch->syncpt, sizeof ch->syncpt) || io_get32(io, &ch->cls) || io_get32(io, &ch->method) ||
+        io_get32(io, &ch->payload) || io_get(io, ch->regs, sizeof ch->regs)) {
+        host1x_channel_discard(ch);
+        return NULL;
+    }
+    return ch;
+}
+void host1x_channel_discard(H1Ch* ch) {
+    if (!ch) return;
+    memset(ch->syncpt, 0, sizeof ch->syncpt); /* the state's: not this channel's to free */
+    host1x_close(ch);
 }

@@ -8,6 +8,8 @@
    - read_log: parts of a log by text (with lines of context) or by line range, or its last lines, never the whole of a
      large one.
    - find_game: the extracted games in the data folder's work/, with their title IDs and versions.
+   - state_info: a recompiled game's save states (common/utilities/state_header.h): each one's slot, program, when it
+     was saved, the play time then, the runtime and stamp that saved it, and whether this build can load it.
    - symbolize: game addresses (a backtrace's, a crash report's) named by the game's symbols, as tools/symbols.py does.
    - disassemble: a game function, by name or address range, with its branches named (disasm.h), as tools/disasm.py
      does, where this build has an A64 disassembler.
@@ -28,6 +30,7 @@
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
+#include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "nx/loader/loader.h"
@@ -353,6 +356,56 @@ static char* nacp_version(const char* game) {
 }
 
 /* every extracted game, or only title_id's, as {path, title_id, version} into list */
+/* the save states of the recompiled game title_id, in the data folder's games/ or recompiled/ (state_header.h) */
+static void find_states(const Mcp* m, SnxU64 title_id, cJSON* list) {
+    static const char* const libraries[] = {"games", "recompiled"};
+    char id[17];
+    int l, k;
+    hex(id, title_id);
+    for (k = (int)strlen(id); k < 16; k++) {
+        memmove(id + 1, id, (size_t)k + 1);
+        id[0] = '0';
+    }
+    for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
+    for (l = 0; l < 2; l++) {
+        char *folder = snx_format("%s/%s/%s", m->data, libraries[l], id), *dir = snx_path_join(folder, "states");
+        char** names = NULL;
+        size_t count = 0, i;
+        if (!snx_list_dir(dir, &names, &count))
+            for (i = 0; i < count; i++) {
+                char program[256], slot[16], stamp[64], why[256], *path = snx_path_join(dir, names[i]), *prog;
+                SnxStateHeader h;
+                cJSON* s;
+                if (!snx_state_name(names[i], program, sizeof program, slot, sizeof slot) ||
+                    snx_state_peek(path, &h, NULL, why, sizeof why)) {
+                    free(path);
+                    continue;
+                }
+                prog = snx_path_join(folder, program);
+                snx_state_stamp(prog, stamp, sizeof stamp);
+                s = cJSON_CreateObject();
+                cJSON_AddStringToObject(s, "path", path);
+                cJSON_AddStringToObject(s, "program", program);
+                cJSON_AddStringToObject(s, "slot", slot);
+                cJSON_AddNumberToObject(s, "saved", (double)h.created);
+                cJSON_AddNumberToObject(s, "play_time_s", (double)h.guest_ns / 1e9);
+                cJSON_AddNumberToObject(s, "abi", h.abi);
+                cJSON_AddStringToObject(s, "runtime", h.runtime);
+                cJSON_AddStringToObject(s, "stamp", h.stamp);
+                cJSON_AddStringToObject(s, "game", h.game);
+                if (snx_state_fits(&h, title_id, stamp, why, sizeof why))
+                    cJSON_AddStringToObject(s, "cannot_load", why);
+                else
+                    cJSON_AddNullToObject(s, "cannot_load");
+                cJSON_AddItemToArray(list, s);
+                free(prog);
+                free(path);
+            }
+        snx_free_strings(names, count);
+        free(dir);
+        free(folder);
+    }
+}
 static void find_games(const Mcp* m, SnxU64 title_id, cJSON* list) {
     int w;
     for (w = 0; w < 2; w++) {
@@ -725,6 +778,11 @@ static cJSON* tools(void) {
     static const char find_says[] =
         "The extracted games on this machine (the data folder's work/) with their title IDs and versions, or only "
         "title_id's. A log's addresses match only a game of the version its header names.";
+    static const char states_says[] =
+        "A recompiled game's save states (the data folder's games/<title_id>/states/): each one's file, program, slot, "
+        "when it was saved (seconds since 1970), the game's play time then, the SNX_ABI, runtime and update and mods "
+        "stamp that saved it, and why this build can't load it by its header (cannot_load, null when it can: a state whose "
+        "contents have another layout is only refused when it is loaded).";
     static const char sym_says[] =
         "Names game addresses (a backtrace's, a crash report's, hexadecimal) by the game's symbols: module, function "
         "and offset. game is a folder, a game folder of work/, or a title ID.";
@@ -808,6 +866,7 @@ static cJSON* tools(void) {
     tool(list, "scan_log", scan_says, schema(path, s1, 1, path, 1));
     tool(list, "read_log", read_says, schema(read_names, read_types, 6, path, 1));
     tool(list, "find_game", find_says, schema(find_names, s1, 1, NULL, 0));
+    tool(list, "state_info", states_says, schema(find_names, s1, 1, find_names, 1));
     tool(list, "symbolize", sym_says, schema(sym_names, sym_types, 2, sym_names, 2));
     tool(list, "disassemble", dis_says, schema(dis_names, dis_types, 4, game, 1));
     tool(list, "edenprobe_scaffold", scaffold_says, schema(scaffold_names, scaffold_types, 7, scaffold_names, 7));
@@ -928,6 +987,17 @@ static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
         else {
             cJSON* list = cJSON_CreateArray();
             find_games(m, tid, list);
+            text = cJSON_Print(list);
+            cJSON_Delete(list);
+        }
+    } else if (!strcmp(name, "state_info")) {
+        const char* id = arg_string(args, "title_id");
+        SnxU64 tid = 0;
+        if (!id || !parse_hex(id, &tid) || !tid)
+            mcp_put(&err, "title_id: sixteen hexadecimal digits");
+        else {
+            cJSON* list = cJSON_CreateArray();
+            find_states(m, tid, list);
             text = cJSON_Print(list);
             cJSON_Delete(list);
         }

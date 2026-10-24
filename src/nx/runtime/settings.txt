@@ -89,6 +89,18 @@ setting Game cheats off
     help The game's cheats left out, of the Atmosphere-format cheats/<build id>.txt in its data folder: their names
     help as their [name] lines give them, a | between two (a name with a | in it cannot be left out). Every other cheat
     help there runs, once per frame shown. The launcher's list of updates, DLCs, mods and cheats writes it
+setting Save state slots
+    key state_slots
+    int 1 32
+    default 10
+    help The save state slots the menu's Save states page lists and F9 steps through. A state is the whole game at
+    help one moment, kept in states/ in the game's folder. The game's own save files are never part of one
+setting Save state backup
+    key state_auto_backup
+    int 0 1
+    default 1
+    words Off|On
+    help 1 = the game is saved to the auto slot before each save state is loaded over it, so a load can be undone
 
 table g_display_ini
 setting TV mode
@@ -713,6 +725,34 @@ setting Keyboard text
     default ""
     once
     help The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled)
+setting Pauses
+    key pause
+    text 512
+    default ""
+    once
+    help Pauses of the whole game, a comma between: at:length pauses it at that many ms of the scripted input's clock
+    help for length ms. Each checks that guest memory doesn't change while the game is paused, and logs the result
+setting State saves
+    key state_save
+    text 512
+    default ""
+    once
+    help Save states the run writes, a comma between: at:slot saves to that slot at that many ms of the scripted
+    help input's clock
+setting State loads
+    key state_load
+    text 512
+    default ""
+    once
+    help Save states the run loads, a comma between: at:slot loads that slot at that many ms of the scripted input's
+    help clock
+setting State checks
+    key state_check
+    text 512
+    default ""
+    once
+    help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
+    help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
 # ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
 
@@ -844,7 +884,7 @@ setting Tracy capture
     default off
     words on=On
     help Records Switch runs to captures/ beside the game, and opens the trace in the profiler when the run ends. Off,
-    help the client does not start; F7 starts a 60-second capture. tracy-capture must be on PATH, and the runtime
+    help the client does not start; F10 starts a 60-second capture. tracy-capture must be on PATH, and the runtime
     help must be built with SNX_TRACY
 # SNX_TRACY_END
 

@@ -3,6 +3,7 @@
 /* vi's display clock, which present.c drives */
 #ifndef SNX_VI_H
 #define SNX_VI_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/hle/kernel/kernel.h"     /* KEvent */
 #include "nx/runtime/platform/plat.h" /* PMutex, PCond */
@@ -31,14 +32,19 @@ typedef struct {
     u32 max_buffer_count;      /* what the game asked SetBufferCount for; 2 by default, as its window does */
     u32 interval;              /* the swap interval of the last frame queued */
     u32 gen;                   /* bumped when the layer closes (vi_key) */
-    KEvent* event;             /* signaled when a buffer comes free (GetNativeHandle) */
+    u32 event;                 /* signaled when a buffer comes free (GetNativeHandle) */
     ViSlot slot[VI_SLOTS];
 } ViLayer;
 typedef struct {
-    PMutex lock;
-    PCond freed; /* a slot came free */
-    KEvent* vsync;
+    u32 vsync;
     u64 next_stray, frees;
     ViLayer layer[VI_LAYERS];
 } HleVi;
+/* vi's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock;
+    PCond freed; /* a slot came free */
+} HostVi;
+extern const StateFnTable g_vi_state_fns; /* the functions a save state may hold of vi.c */
+
 #endif

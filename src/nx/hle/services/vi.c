@@ -69,7 +69,7 @@ static int vi_layer_open(u64 layer_id) {
     if (free_i < 0) return 0;
     if (!g_hle.vi.layer[free_i].event) {
         g_hle.vi.layer[free_i].event = owned_event("vi:buffer queue");
-        kevent_signal(g_hle.vi.layer[free_i].event);
+        ev_signal(g_hle.vi.layer[free_i].event);
     }
     g_hle.vi.layer[free_i].layer_id = layer_id;
     g_hle.vi.layer[free_i].width = VI_WIDTH;
@@ -92,8 +92,8 @@ static void vi_layer_close(u64 layer_id) {
         l->max_buffer_count = 2;
         l->gen++;
         memset(l->slot, 0, sizeof l->slot);
-        kevent_signal(l->event); /* as when a buffer comes free: the waiter finds the queue gone */
-        pc_broadcast(&g_hle.vi.freed);
+        ev_signal(l->event); /* as when a buffer comes free: the waiter finds the queue gone */
+        pc_broadcast(&g_host.vi.freed);
         return;
     }
     LOG_LIMIT(4, "vi: closing layer %llx, which isn't open\n", (unsigned long long)layer_id);
@@ -221,9 +221,9 @@ static void vi_present(void* arg) {
     ViSlot* s = &l->slot[key & 0xff];
     u32 nvmap, offset, w, h, pitch, layout, bhl, fmt, transform;
     i32 crop[4];
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     if (vi_key(li, (int)(key & 0xff)) != key || s->state != SLOT_QUEUED) {
-        pm_unlock(&g_hle.vi.lock);
+        pm_unlock(&g_host.vi.lock);
         return;
     }
     /* the NvGraphicBuffer: its nvmap id, format and size, and the first plane's layout (libnx's NvSurface) */
@@ -238,17 +238,17 @@ static void vi_present(void* arg) {
     memcpy(crop, s->crop, sizeof crop);
     transform = s->transform;
     if (!pitch) pitch = gb32(s, 0x0c) * ((fmt >= 4 && fmt <= 7 && fmt != 5) ? 2 : 4);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     if (li == VI_SHOWN)
         vi_show_buffer(nvmap, offset, w, h, pitch, layout, bhl, fmt, crop, transform & 3); /* the flips; no rotation */
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     if (vi_key(li, (int)(key & 0xff)) == key && s->state == SLOT_QUEUED) {
         s->state = SLOT_FREE;
         s->freed = ++g_hle.vi.frees;
     }
-    pm_unlock(&g_hle.vi.lock);
-    kevent_signal(l->event);
-    pc_broadcast(&g_hle.vi.freed);
+    pm_unlock(&g_host.vi.lock);
+    ev_signal(l->event);
+    pc_broadcast(&g_host.vi.freed);
 }
 /* QueueBuffer's input: the timestamp, crop, scaling, transform, swap interval and the fence, laid out packed. A
    parcel too short for it (in NULL) queues the whole buffer at a swap interval of 1 */
@@ -308,7 +308,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
     out.n = 0;
     memset(fence_none, 0xff, sizeof fence_none);
     fence_none[0] = 0;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     /* 0: the layer closed after vi_binder_call found it, and its queue is gone */
     switch (l->layer_id ? code : 0) {
         case 0: status = BQ_NO_INIT; break;
@@ -326,7 +326,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             gen = l->gen;
             /* every buffer the game gave is in use: wait for one, never taking one back from the display */
             while ((slot = vi_free_slot(l)) < 0 && l->gen == gen)
-                if (pc_wait(&g_hle.vi.freed, &g_hle.vi.lock, 1000000000ll))
+                if (kthread_wait(&g_host.vi.freed, &g_host.vi.lock, 1000000000ll))
                     WARN_LIMIT(8, "vi: no buffer came free for %d s, still waiting\n", ++waits);
             if (l->gen != gen) { /* the layer closed while it waited */
                 status = BQ_NO_INIT;
@@ -358,8 +358,8 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             if (slot >= 0 && slot < VI_SLOTS && l->slot[slot].state == SLOT_DEQUEUED) {
                 l->slot[slot].state = SLOT_FREE;
                 l->slot[slot].freed = ++g_hle.vi.frees;
-                kevent_signal(l->event);
-                pc_broadcast(&g_hle.vi.freed);
+                ev_signal(l->event);
+                pc_broadcast(&g_host.vi.freed);
             }
             break;
         case BQ_QUERY:
@@ -407,8 +407,8 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
                 if (v < 0x84 || in.pos + 0x84 > in.size) { /* short of the first plane's fields */
                     WARN_LIMIT(4, "vi: slot %d's graphic buffer has 0x%x bytes, too few: the slot is cleared\n",
                                (int)slot, v);
-                    kevent_signal(l->event);
-                    pc_broadcast(&g_hle.vi.freed);
+                    ev_signal(l->event);
+                    pc_broadcast(&g_host.vi.freed);
                     break;
                 }
                 parcel_read(&in, l->slot[slot].gbuf, v < VI_GBUF ? v : VI_GBUF);
@@ -417,8 +417,8 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
                 l->height = gb32(&l->slot[slot], 0x08);
                 l->format = gb32(&l->slot[slot], 0x10);
             }
-            kevent_signal(l->event);
-            pc_broadcast(&g_hle.vi.freed);
+            ev_signal(l->event);
+            pc_broadcast(&g_host.vi.freed);
             break;
         case BQ_GET_BUFFER_HISTORY: /* no history is kept */
         case BQ_DETACH_BUFFER:
@@ -432,12 +432,14 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
             break;
         default: WARN_LIMIT(4, "vi: binder transaction %u isn't known, it answers success\n", code); break;
     }
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     parcel_w32(&out, (u32)status);
     parcel_reply(reply, &out);
     if (qslot >= 0) {
         /* shown once the GPU reaches the fences the frame was queued with: nvdrv waits for those it can't leave to
-           the GPU thread */
+           the GPU thread. The slot is queued and the reply written: a game pause lets this finish rather than
+           making the request again on a save state's load */
+        kthread_commit();
         u32 fences, i, ids[4], vals[4], n = 0;
         fences = snx_ld_le32(qbi + 48);
         for (i = 0; i < 4 && i < fences; i++) {
@@ -454,9 +456,9 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
 static int vi_binder_call(i32 binder_id, u32 code, IpcBuf parcel, IpcBuf reply) {
     ViLayer* l;
     R_UNLESS(parcel.size >= 16, VI_OPERATION_FAILED); /* not even a parcel's header */
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     l = vi_binder(binder_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     R_UNLESS(l, VI_NOT_FOUND);
     vi_transact(l, code, parcel, reply);
     R_SUCCEED();
@@ -475,9 +477,9 @@ static int nns_hosbinder_IHOSBinderDriver_TransactParcelAuto(SvcObj* self, i32 b
 static int nns_hosbinder_IHOSBinderDriver_GetNativeHandle(SvcObj* self, i32 binder_id, u32 type_id, u32* event) {
     ViLayer* l;
     (void)self, (void)type_id;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     l = vi_binder(binder_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     R_UNLESS(l, VI_NOT_FOUND);
     *event = ev_handle(l->event);
     R_SUCCEED();
@@ -596,23 +598,23 @@ static int nn_visrv_sf_IApplicationDisplayService_OpenLayer(SvcObj* self, const 
     int binder;
     (void)self, (void)aruid;
     R_TRY(vi_display_id(display_name, &display));
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     binder = vi_layer_open(layer_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     return vi_native_window(native_window, binder, native_window_size);
 }
 static int nn_visrv_sf_IApplicationDisplayService_CloseLayer(SvcObj* self, u64 layer_id) {
     (void)self;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     vi_layer_close(layer_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     R_SUCCEED();
 }
 static int nn_visrv_sf_IApplicationDisplayService_DestroyStrayLayer(SvcObj* self, u64 layer_id) {
     (void)self;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     vi_layer_close(layer_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     R_SUCCEED();
 }
 static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self, u32 layer_flags, u64 display_id,
@@ -620,10 +622,10 @@ static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self,
                                                                    i64* native_window_size) {
     int binder;
     (void)self, (void)layer_flags, (void)display_id;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     *layer_id = VI_STRAY_ID + g_hle.vi.next_stray++;
     binder = vi_layer_open(*layer_id);
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     return vi_native_window(native_window, binder, native_window_size);
 }
 /* nn::vi::ScalingMode to the Android one */
@@ -684,9 +686,9 @@ static int nn_visrv_sf_ISystemDisplayService_GetDisplayMode(SvcObj* self, u64 di
 static int nn_visrv_sf_IManagerDisplayService_CreateManagedLayer(SvcObj* self, u32 layer_flags, u64 display_id,
                                                                  nn_applet_AppletResourceUserId aruid, u64* layer_id) {
     (void)self, (void)layer_flags, (void)display_id, (void)aruid;
-    pm_lock(&g_hle.vi.lock);
+    pm_lock(&g_host.vi.lock);
     *layer_id = VI_STRAY_ID + g_hle.vi.next_stray++;
-    pm_unlock(&g_hle.vi.lock);
+    pm_unlock(&g_host.vi.lock);
     R_SUCCEED();
 }
 static int nn_visrv_sf_IManagerDisplayService_AcquireLayerTexturePresentingEvent(SvcObj* self, u64 layer_id,
@@ -706,17 +708,20 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 /* ============================================================ the display */
 /* the main loop's 60 Hz: the display's vsync */
 void vi_vsync_tick(void) {
-    if (g_hle.vi.vsync) kevent_signal(g_hle.vi.vsync);
+    if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }
 static SvcObj* new_vi_s(void) { return nn_visrv_sf_ISystemRootService_new(); }
 static SvcObj* new_vi_m(void) { return nn_visrv_sf_IManagerRootService_new(); }
 void svc_vi_init(void) {
-    pm_init(&g_hle.vi.lock);
-    pc_init(&g_hle.vi.freed);
+    pm_init(&g_host.vi.lock);
+    pc_init(&g_host.vi.freed);
     g_hle.vi.vsync = owned_event("vi:vsync");
     nn_visrv_sf_IApplicationRootService_register(new_vi_u);
     nn_visrv_sf_ISystemRootService_register(new_vi_s);
     nn_visrv_sf_IManagerRootService_register(new_vi_m);
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_vi_state_fns,
+               STATE_FN("vi", vi_present));

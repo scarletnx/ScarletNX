@@ -35,6 +35,9 @@ The runtime options behind it, for a run by hand from `recompiled/<id>/` (`./<id
 | `--shot_every=N` | Also a numbered screenshot every N frames (`PATH_0000.ppm`, ...), needs `--shot` |
 | `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it). `Nf:hex` presses at the Nth presented frame instead. One press is a script of one entry: `--script=5000:1` |
 | `--swkbd_text=TEXT` | The software keyboard answers TEXT instead of opening a dialog |
+| `--pause=at:len,...` | Pause the whole game at `at` ms for `len` ms; each pause logs whether guest memory and guest time stayed unchanged (`grep "pause:"`) |
+| `--state_save=at:slot,...`, `--state_load=at:slot,...` | Save the game to a save state slot, or load one, at `at` ms (`grep "state:"`); a later run loads a slot an earlier one saved. A slot that names a file (`0:/path/x.snxstate`) is that file |
+| `--state_check=at,...` | A save state round trip at `at` ms: saves, loads it straight back, and logs `state: check:` whether guest memory and guest time came back the same |
 | `-v` | Log every IPC call (`IPC <interface> cmd N`, `nn::audio::detail::IAudioOut` for an audout): huge, grep it |
 | `--fps_limit=0` | Unlimited frame rate |
 | `--game=PATH` | Run the game PATH names (`recompiled/<id>`, the folder, runs `recompiled/<id>/<id>_code.so`) instead of the one the runtime is named after. Its log, caches and captures still go to that game's folders |
@@ -46,7 +49,8 @@ when the desktop has it. `SDL_VIDEO_DRIVER=x11` runs it on X11 instead: test a p
 Buttons (hex): A 1, B 2, X 4, Y 8, L 40, R 80, ZL 100, ZR 200, Plus 400, Minus 800, Left 1000, Up 2000, Right 4000,
 Down 8000. Combine by adding. The values are 64-bit, and bits 40 to 47 push the sticks all the way: 40 left stick
 left (`10000000000`), 41 up, 42 right, 43 down, then 44 to 47 the same for the right stick (`800000000000` is right
-stick down).
+stick down). Bit 48 (`1000000000000`) is Home: it opens the game's menu (and closes it), and while the menu is open the
+scripted A, B and D-pad move it, as a pad's do. The menu's Save states page holds the game while it shows.
 
 `run_game.py`'s default script was written for one game's boot to its first cutscene: Plus at 15 s, A at 16 s, Plus
 at 18 s, then A at 21, 31, 36, 40 and 44 s. Any other game needs its own `--script`. With save data from earlier runs the screens come

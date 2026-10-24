@@ -17,10 +17,31 @@
 #include <string.h>
 
 /* ---- services.c */
-u32 ev_handle(KEvent* e); /* a handle to e for a reply, with its own reference */
+/* The services keep their events and shared memories as kernel object ids (kobj_id), which a save state holds as they
+   are: kev and kshm are the objects again, and ev_signal, ev_clear and shm_ptr act on them by id */
+/* An id that names no object of the type (0, or one a damaged save state held) gives NULL, and ev_signal and ev_clear
+   do nothing with it. The shared memories' ids are checked when a state is loaded */
+static inline KEvent* kev(u32 id) {
+    KObj* o = kobj_at(id);
+    return o && o->type == KO_EVENT ? (KEvent*)o : NULL;
+}
+static inline KShmem* kshm(u32 id) {
+    KObj* o = kobj_at(id);
+    return o && o->type == KO_SHMEM ? (KShmem*)o : NULL;
+}
+static inline void ev_signal(u32 id) {
+    KEvent* e = kev(id);
+    if (e) kevent_signal(e);
+}
+static inline void ev_clear(u32 id) {
+    KEvent* e = kev(id);
+    if (e) kevent_clear(e);
+}
+static inline u8* shm_ptr(u32 id) { return kshmem_ptr(kshm(id)); }
+u32 ev_handle(u32 ev); /* a handle to the event for a reply, with its own reference */
 /* a new event for a reply that only the game holds, signaled or not. Returns 0, for a handler to return */
 int new_event(u32* event, const char* name, int signaled);
-KEvent* owned_event(const char* name); /* a new event the service keeps a reference on */
+u32 owned_event(const char* name); /* a new event the service keeps a reference on: its id */
 
 /* ---- sm.c */
 SvcObj* new_sm(void);
@@ -108,7 +129,6 @@ typedef struct {
 typedef struct {
     /* the picture of a user with none of its own, drawn at the first ask and kept */
     struct {
-        PMutex lk;
         u32 size;
         int made, overflow; /* made: drawn or tried; overflow: more than SNX_ACC_PICTURE_MAX came */
         u8 d[SNX_ACC_PICTURE_MAX];
@@ -116,6 +136,10 @@ typedef struct {
     AccUser users[ACC_USERS];
     u32 user_next;
 } HleAcc;
+/* acc's host side: the picture's lock (hle.h's g_host) */
+typedef struct {
+    PMutex pic_lk;
+} HostAcc;
 
 /* ---- am.c */
 #define AM_MESSAGES     16 /* the application's message queue */
@@ -137,7 +161,7 @@ typedef struct {
     int handle_only; /* CreateHandleStorage's: only OpenTransferStorage opens it */
     u64 size;
     u64 guest; /* where the transfer memory's pages are, 0 for bytes kept here */
-    KObj* tmem;
+    u32 tmem;  /* the transfer memory's id */
     u8* d; /* size bytes (one at least), the storage's own allocation, freed with it */
 } StorageData;
 /* IStorageAccessor's and ITransferStorageAccessor's: the storage they hold a reference on */
@@ -154,13 +178,13 @@ typedef struct {
 typedef struct {
     u32 obj;
     int locked;
-    KEvent* event;
+    u32 event;
 } AmLock;
 /* ILibraryAppletAccessor's */
 typedef struct {
     u32 obj;
     u32 applet_id, mode;
-    KEvent *state_ev, *out_ev, *interactive_ev;
+    u32 state_ev, out_ev, interactive_ev;
     SvcObj* in[AM_IN_DATA]; /* the storages the game pushed, in order (common arguments first) */
     int nin;
     SvcObj* out[AM_OUT_DATA]; /* the interactive replies, oldest first */
@@ -177,11 +201,10 @@ typedef struct {
 typedef struct {
     /* the application's message queue: a message stays queued until ReceiveMessage takes it, and the event is
        signaled while one is */
-    PMutex lock;
-    KEvent* msg_event;
-    KEvent* sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
-    KEvent* launchable_event; /* library applets can be launched from the start */
-    KEvent* resolution_event; /* the default display resolution and HDCP state never change while running */
+    u32 msg_event;
+    u32 sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
+    u32 launchable_event; /* library applets can be launched from the start */
+    u32 resolution_event; /* the default display resolution and HDCP state never change while running */
     SvcObj* user_channel[AM_USER_CHANNEL]; /* copies of the storages unpopped, the last one on top */
     u32 user_count;
     u8 vr_mode; /* as the game turned it: the screen is not split for it */
@@ -207,6 +230,10 @@ typedef struct {
     LibApplet applets[AM_APPLETS];
     u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next;
 } HleAm;
+/* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock;
+} HostAm;
 
 /* ---- audio.c */
 #define AUDOUT_BUFFERS 64 /* appended and released buffers an audio out holds */
@@ -226,12 +253,12 @@ typedef struct AudOut {
     float volume;
     struct AudOut* next; /* in g_hle.audio.outs */
     PAudio* output;      /* NULL without a host device: the buffers are still played on the clock */
-    KEvent* ev;          /* the buffer event: a buffer released */
+    u32 ev;              /* the buffer event: a buffer released */
     u64 tag[AUDOUT_BUFFERS];
     u32 frames[AUDOUT_BUFFERS];
     u32 first, nreleased, nqueued;
     u32 head_played; /* frames of the first queued buffer already played */
-    u64 t0;          /* when the clock started counting the queued buffers */
+    u64 t0;          /* the guest time (guest_ns) the clock started counting the queued buffers at */
     u64 t0_frames;   /* frames played since t0 */
     u64 played;      /* GetAudioOutPlayedSampleCount */
 } AudOut;
@@ -247,12 +274,16 @@ typedef struct {
 /* an IAudioDevice's system, input and output events */
 typedef struct {
     u32 obj;
-    KEvent* ev[3];
+    u32 ev[3];
 } AudDevice;
 /* a hwopus decoder (audio.c) */
 typedef struct {
     u32 obj;
     u32 rate, channels, step;
+    /* how it was opened, for a save state's load to open it again: the streams and their channels' places, mapped
+       set for a multistream decoder */
+    u32 streams, stereo_streams, mapped;
+    u8 mapping[255];
     PMutex lk;
 #ifndef SNX_NO_H264
     struct AVCodecContext* dec;
@@ -265,8 +296,7 @@ typedef struct {
     u32 queued, cap, phase, ntaps, hpos;
 } HwOpus;
 typedef struct {
-    PMutex lk;           /* the audio outs, and the device's volume */
-    KEvent* ev;          /* the renderers' system event, every frame */
+    u32 ev;              /* the renderers' system event, every frame */
     AudOut* outs;        /* every open audio out, for the clock */
     float device_volume; /* the output device's, as SetAudioDeviceOutputVolume set it */
     u32 hwopus_live;     /* decoders open, across every hwopus session */
@@ -275,7 +305,14 @@ typedef struct {
     AudDevice devices[AUDDEV_MAX];
     HwOpus opus[HWOPUS_POOL];
     u32 out_next, ren_next, device_next, opus_next;
+    int hold, held;
 } HleAudio;
+/* audio's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk; /* the audio outs, and the device's volume */
+    /* a game pause: hold asks the clock's thread to stop at the top of its turn, held says it has, both under lk */
+    PCond hold_cv;
+} HostAudio;
 
 /* ---- audren.c */
 /* an open renderer, its object's u[1] its slot plus 1 */
@@ -289,12 +326,15 @@ typedef struct {
 typedef struct {
     /* the renderers, and every renderer's state: an update and a frame never run at once; and the output device's
        volume (audio.c) on each renderer's host output */
-    PMutex lk;
     ARRen rens[SNX_AUDREN_MAX];
     u32 ren_next;
     float gain;
     i16 stereo[2 * 1024]; /* a frame is at most 1024 samples (audren_state_new); only the clock's thread */
 } HleAudren;
+/* audren's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk;
+} HostAudren;
 
 /* ---- ldr.c */
 #define RO_LIMIT    64
@@ -315,11 +355,14 @@ typedef struct {
     RoNrr nrr[RO_LIMIT];
 } RoState;
 typedef struct {
-    PMutex lock; /* also serializes cloned/domain sessions and initialization across ldr:ro and ro:1 */
     u32 owner;   /* the obj of the session that initialized, 0 for none */
     RoState states[RO_SESSIONS];
     u32 state_next;
 } HleLdr;
+/* ldr's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lock; /* also serializes cloned/domain sessions and initialization across ldr:ro and ro:1 */
+} HostLdr;
 
 /* ---- misc.c */
 #define APM_CONFIGURATION 0x00020003u /* Config7, the default of both modes */
@@ -342,28 +385,31 @@ typedef struct {
 typedef struct {
     u32 obj;
     u32 state;
-    KEvent* availability;
+    u32 availability;
 } NfcUser;
 typedef struct {
     u32 apm_config[APM_MODES]; /* each mode's configuration, as a session or SetCpuBoostMode last set it */
-    PMutex mm_lock;
     Mm mms[MM_SESSIONS];
     u32 mm_next;
     NfcUser nfc_users[NFC_USERS];
     u32 nfc_user_next;
-    /* the add-on contents installed, scanned once */
-    PMutex aoc_lock;
     int aoc_scanned;
     i32 aoc_count, aoc_index[AOC_MAX];
+    u32 irs_shm;
+} HleMisc;
+/* misc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex mm_lock;
+    /* the add-on contents installed, scanned once */
+    PMutex aoc_lock;
     /* irs's shared memory, made at the first ask */
     PMutex irs_lock;
-    KShmem* irs_shm;
-} HleMisc;
+} HostMisc;
 
 /* ---- pl.c */
 #define PL_FONTS 6
 typedef struct {
-    KShmem* shm;
+    u32 shm;
     u32 font_off[PL_FONTS], font_size[PL_FONTS]; /* where each font starts (past its header), and its size */
 } HlePl;
 
@@ -380,10 +426,13 @@ typedef struct {
    keeps the names of objects already gone) */
 #define STAND_IN_NAMES 256 /* more names than Horizon has services */
 typedef struct {
-    PMutex lk;
     char name[STAND_IN_NAMES][9];
     int n;
 } HleSm;
+/* sm's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex lk;
+} HostSm;
 
 /* ---- time.c */
 #define TIME_OBJS 1024 /* time's objects: a service per session, and the clocks and time zone services it hands out */
@@ -399,7 +448,7 @@ typedef struct {
     int read_only;
 } TimeObj;
 typedef struct {
-    KShmem* shm;
+    u32 shm;
     u8 source_id[16]; /* the steady clock's: the console makes a new one when its RTC resets */
     i64 base_ns;      /* the steady clock at the guest clock's start */
     /* every system clock's context: its offset, and the steady clock's time (s) it was taken at */

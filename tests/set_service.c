@@ -54,10 +54,6 @@ int stub_ok(SvcObj* o, IpcCtx* c) {
     return 0;
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {

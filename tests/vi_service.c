@@ -32,6 +32,8 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     test_fail("a dequeue that would wait forever", __LINE__);
     return 1;
 }
+int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
+void kthread_commit(void) {}
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
@@ -46,6 +48,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     test_svcobj_data_free(obj);
@@ -81,7 +84,7 @@ void kobj_unref(KObj* o) {
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -90,7 +93,7 @@ u32 h_new(KObj* o) {
     kobj_ref(o);
     return test_next_handle++;
 }
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(kobj_at(ev)); }
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
@@ -99,10 +102,10 @@ int new_event(u32* event, const char* name, int signaled) {
     test_kobjs--;
     return 0;
 }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 
 /* the GPU thread runs the present at once, or keeps it for later while hold is set (a frame whose fences are still
@@ -157,10 +160,6 @@ static u32 transact(u32 code, const void* payload, u32 n) {
     return rd32(0x4000); /* the data's size; it starts at 0x4010 and ends with the status */
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */

@@ -6,6 +6,7 @@
 
 #include "nx/hle/services/audio.c"
 #include "nx/hle/hle.c"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */
@@ -36,6 +37,14 @@ void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 u64 plat_ns(void) { return test_now; }
+u64 guest_ns(void) { return test_now; } /* the outs play in guest time: no pause here */
+/* the audio clock's pause, whose thread never runs here */
+void pc_init(PCond* c) { (void)c; }
+void pc_broadcast(PCond* c) { (void)c; }
+int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
+    (void)c, (void)m, (void)timeout_ns;
+    return 0;
+}
 void plat_sleep_ns(i64 ns) {
     (void)ns;
     test_fail("the test must not start the audio clock thread", __LINE__);
@@ -160,7 +169,8 @@ void audren_volume(float gain) { test_renderer_gain = gain; }
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
-    e->o.name = name;
+    e->o.type = KO_EVENT;
+    kobj_set_name(&e->o, name);
     test_events++;
     return e;
 }
@@ -172,13 +182,13 @@ void kobj_unref(KObj* o) {
     test_events--;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
-u32 ev_handle(KEvent* e) {
-    CHECK(e != NULL);
+u32 ev_handle(u32 ev) {
+    CHECK(kev(ev) != NULL);
     return 7;
 }
 #ifndef SNX_NO_H264
@@ -577,8 +587,8 @@ static void test_renderer(void) {
     audio_init();
     c = request(7, NULL, 0);
     CHECK(r->dispatch(r, &c) == 0 && c.nout_copy == 1 && c.out_copy[0] == 7);
-    kobj_unref(&g_hle.audio.ev->o);
-    g_hle.audio.ev = NULL;
+    kobj_unref(&kev(g_hle.audio.ev)->o);
+    g_hle.audio.ev = 0;
     svcobj_unref(r);
     svcobj_unref(manager);
 }
@@ -593,7 +603,7 @@ static void test_device(void) {
     /* its system, input and output events: three, each signaled from the start */
     AudDevice* dev = d->data;
     CHECK(dev->ev[0] != dev->ev[1] && dev->ev[1] != dev->ev[2] && dev->ev[0] != dev->ev[2]);
-    CHECK(dev->ev[0]->signaled && dev->ev[1]->signaled && dev->ev[2]->signaled);
+    CHECK(kev(dev->ev[0])->signaled && kev(dev->ev[1])->signaled && kev(dev->ev[2])->signaled);
     /* ListAudioDeviceName (0): AudioDeviceName entries of 0x100 bytes in B */
     sentinel(0x1000, 0x220);
     c = request(0, NULL, 0);
@@ -824,10 +834,6 @@ static void test_hwopus(void) {
     svcobj_unref(manager);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();
@@ -854,9 +860,9 @@ int main(void) {
     CHECK(query64(o, 10) == 24);
     /* Stop hands back what wasn't played, as Flush does: the host's queue goes and the buffer event says so. What
        was played stays counted */
-    q->ev->signaled = 0;
+    kev(q->ev)->signaled = 0;
     command(o, 2);
-    CHECK(!host->started && host->cleared == 1 && host->bytes == 0 && q->ev->signaled);
+    CHECK(!host->started && host->cleared == 1 && host->bytes == 0 && kev(q->ev)->signaled);
     u64 played = query64(o, 10);
     CHECK(played == 24); /* what was played stays counted: the count never goes back */
     test_now += 1000000000;

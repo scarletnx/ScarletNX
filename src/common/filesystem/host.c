@@ -83,7 +83,7 @@ typedef struct {
 } PmNamed;
 static const PmTracy* g_pm_tracy;
 static int g_pm_tracy_on; /* the one flag pm_lock reads; set once, never cleared */
-/* locks named before a reporter registered (a client started later, F7's): attached when one registers */
+/* locks named before a reporter registered (a client started later, F10's): attached when one registers */
 #define PM_PENDING 16
 static struct {
     PMutex* m;

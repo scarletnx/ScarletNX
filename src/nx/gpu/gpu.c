@@ -16,6 +16,8 @@
    runs the jobs of each channel in order. A stream that has to wait (a semaphore acquire, a syncpoint wait, a fence:
    gpu_park) stops after the method that asked, and the thread runs other channels meanwhile, as the console's PFIFO
    switches channels on an acquire that fails. Calls (gpu_call) run on the GPU thread between jobs, in order. */
+#include "nx/runtime/state_fns.h"
+#include "nx/runtime/state_io.h"
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -585,6 +587,7 @@ static u32 g_qtotal;
 static u8 g_qparked[128];    /* the channel's oldest job waits (gpu_park) */
 static u8 g_scan_stale[128]; /* the channel closed: its submission scan starts again from reset */
 static u64 g_job_ids;
+static int g_hold_want, g_hold_at; /* a game pause asked the GPU thread to hold, and it holds (gpu_hold) */
 /* for the stall report: whether this is the GPU thread, the channel whose job runs (its id + 1, 0 between jobs) and
    since when, and the blocking wait it is in (gpu_wait_note) */
 static _Thread_local int t_gpu;
@@ -936,6 +939,62 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     pm_unlock(&g_qlk);
 }
 
+/* A game pause: the GPU thread gets here once the jobs queued before it have run or wait (a channel waiting on the CPU
+   stays parked, its deadline moved on by the time held, as nothing the CPU does can happen meanwhile), the renderer
+   finishes what it has in flight, and the thread waits until gpu_release. One that gpu_hold gave up on goes past */
+static void hold_here(void* arg) {
+    u64 held;
+    u32 c;
+    (void)arg;
+    if (g_renderer->idle) g_renderer->idle();
+    pm_lock(&g_qlk);
+    if (g_hold_want) {
+        g_hold_at = 1;
+        pc_broadcast(&g_qcv);
+        held = plat_ns();
+        while (g_hold_want) pc_wait(&g_qcv, &g_qlk, -1);
+        g_hold_at = 0;
+        held = plat_ns() - held;
+        for (c = 0; c < 128; c++)
+            if (g_qparked[c] && g_gpu.chan[c]) g_gpu.chan[c]->park_end += held;
+    }
+    pm_unlock(&g_qlk);
+}
+int gpu_hold(int timeout_ms) {
+    u64 end = plat_ns() + (u64)timeout_ms * 1000000u;
+    int r = 0;
+    pm_lock(&g_qlk);
+    if (!g_qthread) { /* nothing was ever submitted: there is no GPU thread to hold */
+        pm_unlock(&g_qlk);
+        return 0;
+    }
+    g_hold_want = 1;
+    pm_unlock(&g_qlk);
+    gpu_call(hold_here, NULL, NULL, 0);
+    pm_lock(&g_qlk);
+    while (!g_hold_at) {
+        u64 now = plat_ns();
+        if (now >= end) {
+            g_hold_want = 0;
+            r = -1;
+            break;
+        }
+        pc_wait(&g_qcv, &g_qlk, (i64)(end - now));
+    }
+    pm_unlock(&g_qlk);
+    if (r) {
+        WARN("pause: the GPU thread didn't get to the pause within %d ms\n", timeout_ms);
+        gpu_report_stall();
+    }
+    return r;
+}
+void gpu_release(void) {
+    pm_lock(&g_qlk);
+    g_hold_want = 0;
+    pc_broadcast(&g_qcv);
+    pm_unlock(&g_qlk);
+}
+
 /* ------------------------------------------------------------ the submission scan */
 /* Each launch of the copy engine with a linear source has its source read at submission (dma.c's dma_snap_launch),
    since games free a copy's source right after submitting it and the GPU thread may run the copy frames later. The
@@ -1082,4 +1141,266 @@ void gpu_channel_close(u32 channel) {
 }
 void gpu_release_retire(u32 channel) {
     if (g_renderer->release_retire) g_renderer->release_retire(channel);
+}
+
+/* ------------------------------------------------------------ save states */
+/* With the GPU thread held (gpu_hold) and the renderer idle. A channel goes as its bytes, with its two allocations'
+   contents after it and what the renderer derives from it left out; the queue as its items in order: a job's entries,
+   their offsets, the words fetched at submission and late, and where it stopped; a call (vi's present of a queued
+   buffer, a closed channel's retire) by its function and argument. The submission scans and the copy snapshots go
+   with them, so the jobs run as they would have */
+#define GPU_STATE_VERSION 1
+static u64 job_words_total(const GpuItem* j) {
+    u64 w = 0;
+    u32 e;
+    for (e = 0; e < j->pf; e++) w += entry_words(job_ent(j)[e]);
+    return w;
+}
+int gpu_state_save(StateIo* io) {
+    GpuChannel* copy = (GpuChannel*)malloc(sizeof *copy);
+    GpuItem* it;
+    u32 c, n = 0;
+    u64 now = plat_ns();
+    int r = 0;
+    if (!copy) return -1;
+    pm_lock(&g_qlk);
+    r |= io_put32(io, GPU_STATE_VERSION) | io_put64(io, g_job_ids) | io_put64(io, g_draws);
+    for (c = 0; c < 128 && !r; c++) {
+        const GpuChannel* ch = g_gpu.chan[c];
+        if (!ch) continue;
+        *copy = *ch;
+        copy->i2m.buf = NULL;
+        copy->inline_indices = NULL;
+        copy->park_end = ch->park && ch->park_end > now ? ch->park_end - now : 0; /* what is left of the wait */
+        r |= io_put32(io, c + 1) | io_put(io, copy, sizeof *copy);
+        if (ch->i2m.buf) r |= io_put(io, ch->i2m.buf, ch->i2m.pos);
+        if (ch->inline_indices) r |= io_put(io, ch->inline_indices, (u64)ch->inline_n * 4);
+    }
+    r |= io_put32(io, 0);
+    for (it = g_qhead; it; it = it->next) n++;
+    r |= io_put32(io, n);
+    for (it = g_qhead; it && !r; it = it->next) {
+        r |= io_put32(io, it->fn ? 1 : 0);
+        if (it->fn) {
+            const char* name = state_fn_name((StateFnPtr)it->fn);
+            u32 len = name ? (u32)strlen(name) : 0;
+            if (!name) {
+                WARN("gpu: a queued call to %p has no name in state_fns.h's tables, and can't be saved\n",
+                     (void*)(uintptr_t)it->fn);
+                r = -1;
+                break;
+            }
+            r |= io_put32(io, len) | io_put(io, name, len) | io_put64(io, (u64)(uintptr_t)it->arg);
+            r |= io_put(io, it->chans, sizeof it->chans) | io_put32(io, it->nchans);
+            continue;
+        }
+        r |= io_put64(io, it->id) | io_put32(io, it->chan) | io_put32(io, it->incs) | io_put32(io, it->wait_id);
+        r |= io_put32(io, it->wait_val) | io_put32(io, it->expect) | io_put32(io, it->n) | io_put32(io, it->pf);
+        r |= io_put32(io, it->entry) | io_put32(io, it->word) | io_put32(io, (u32)it->started);
+        r |= io_put(io, job_ent(it), (u64)it->n * 8) | io_put(io, job_off(it), (u64)it->n * 4);
+        r |= io_put(io, job_prefetched(it), job_words_total(it) * 4);
+        r |= io_put32(io, it->late_first) | io_put32(io, it->late_end);
+        if (it->late_end > it->late_first) {
+            u64 w = 0;
+            u32 e;
+            for (e = it->late_first; e < it->late_end; e++) w += entry_words(job_ent(it)[e]);
+            r |= io_put(io, it->late, w * 4);
+        }
+    }
+    r |= io_put(io, g_scan, sizeof g_scan) | io_put(io, g_scan_stale, sizeof g_scan_stale);
+    pm_unlock(&g_qlk);
+    free(copy);
+    return r ? -1 : dma_snap_save(io);
+}
+/* every channel and queued item goes, as when the channels close, with the GPU thread held */
+static void gpu_state_drop(void) {
+    GpuItem* it;
+    u32 c;
+    pm_lock(&g_qlk);
+    while ((it = g_qhead) != NULL) {
+        g_qhead = it->next;
+        item_free(it);
+    }
+    g_qtail = NULL;
+    g_qtotal = 0;
+    memset(g_qjobs, 0, sizeof g_qjobs);
+    memset(g_qparked, 0, sizeof g_qparked);
+    pm_unlock(&g_qlk);
+    for (c = 0; c < 128; c++) gpu_channel_close(c);
+}
+/* a GPU section read, not yet in place */
+struct GpuStaged {
+    u64 job_ids, draws;
+    GpuChannel* chan[128];
+    GpuItem *head, *tail;
+    GpuScan scan[128];
+    u8 scan_stale[128];
+    DmaStaged* dma;
+};
+void gpu_state_staged_free(GpuStaged* s) {
+    u32 c;
+    if (!s) return;
+    for (c = 0; c < 128; c++)
+        if (s->chan[c]) {
+            free(s->chan[c]->i2m.buf);
+            free(s->chan[c]->inline_indices);
+            free(s->chan[c]);
+        }
+    while (s->head) {
+        GpuItem* it = s->head;
+        s->head = it->next;
+        item_free(it);
+    }
+    dma_snap_staged_free(s->dma);
+    free(s);
+}
+/* the item at the queue's end */
+static void staged_append(GpuStaged* s, GpuItem* it) {
+    if (s->tail)
+        s->tail->next = it;
+    else
+        s->head = it;
+    s->tail = it;
+}
+GpuStaged* gpu_state_parse(StateIo* io) {
+    GpuStaged* s = (GpuStaged*)calloc(1, sizeof *s);
+    u32 version, c, n, i, kind;
+    if (!s) return NULL;
+    if (io_get32(io, &version) || version != GPU_STATE_VERSION || io_get64(io, &s->job_ids) || io_get64(io, &s->draws))
+        goto bad;
+    for (;;) {
+        GpuChannel* ch;
+        if (io_get32(io, &c)) goto bad;
+        if (!c) break;
+        if (c > 128 || s->chan[c - 1] || !(ch = s->chan[c - 1] = (GpuChannel*)calloc(1, sizeof *ch))) goto bad;
+        if (io_get(io, ch, sizeof *ch)) {
+            memset(ch, 0, sizeof *ch); /* none of its pointers are this process's */
+            goto bad;
+        }
+        ch->i2m.buf = NULL;
+        ch->inline_indices = NULL;
+        if (ch->i2m.cap) {
+            if (ch->i2m.pos > ch->i2m.cap || !(ch->i2m.buf = (u8*)malloc(ch->i2m.cap)) ||
+                io_get(io, ch->i2m.buf, ch->i2m.pos))
+                goto bad;
+        }
+        if (ch->inline_cap) {
+            if (ch->inline_n > ch->inline_cap || !(ch->inline_indices = (u32*)malloc((size_t)ch->inline_cap * 4)) ||
+                io_get(io, ch->inline_indices, (u64)ch->inline_n * 4))
+                goto bad;
+        }
+        ch->r3d_dirty = ~0u; /* nothing the renderer derived holds */
+        memset(ch->mme_choice, 0, sizeof ch->mme_choice);
+        ch->render_pred = 0; /* the predicate was the renderer's: draws run until the next render enable */
+        ch->xfb_started = 0; /* the byte counters were the renderer's */
+    }
+    if (io_get32(io, &n)) goto bad;
+    for (i = 0; i < n; i++) {
+        GpuItem* it;
+        if (io_get32(io, &kind)) goto bad;
+        if (kind) {
+            char name[256];
+            u32 len;
+            u64 arg;
+            StateFnPtr f;
+            if (io_get32(io, &len) || len >= sizeof name || io_get(io, name, len)) goto bad;
+            name[len] = 0;
+            if (!(f = state_fn_find(name))) {
+                WARN("gpu: the state queues a call to %s, which this build doesn't have\n", name);
+                goto bad;
+            }
+            if (!(it = (GpuItem*)calloc(1, sizeof *it))) goto bad;
+            staged_append(s, it);
+            if (io_get64(io, &arg) || io_get(io, it->chans, sizeof it->chans) || io_get32(io, &it->nchans) ||
+                it->nchans > sizeof it->chans / sizeof *it->chans)
+                goto bad;
+            it->fn = (void (*)(void*))f;
+            it->arg = (void*)(uintptr_t)arg;
+        } else {
+            u32 h[10]; /* chan, incs, wait_id, wait_val, expect, n, pf, entry, word, started */
+            u64 id, words, size;
+            GpuItem* big;
+            if (io_get64(io, &id) || io_get(io, h, sizeof h) || h[5] > (1u << 24) || h[6] > h[5] || h[0] >= 128)
+                goto bad;
+            /* the entries come first: the words fetched at submission are counted from them */
+            size = sizeof(GpuItem) + (u64)h[5] * 12;
+            if (!(it = (GpuItem*)calloc(1, (size_t)size))) goto bad;
+            it->n = h[5];
+            it->pf = h[6];
+            if (io_get(io, job_ent(it), (u64)it->n * 8) || io_get(io, job_off(it), (u64)it->n * 4)) {
+                free(it);
+                goto bad;
+            }
+            words = job_words_total(it);
+            if (words > (1u << 26) || !(big = (GpuItem*)realloc(it, (size_t)(size + words * 4)))) {
+                free(it);
+                goto bad;
+            }
+            it = big;
+            staged_append(s, it);
+            if (io_get(io, job_prefetched(it), words * 4) || io_get32(io, &it->late_first) ||
+                io_get32(io, &it->late_end) || it->late_end > it->n || it->late_first > it->late_end)
+                goto bad;
+            it->id = id;
+            it->chan = h[0];
+            it->incs = h[1];
+            it->wait_id = h[2];
+            it->wait_val = h[3];
+            it->expect = h[4];
+            it->entry = h[7];
+            it->word = h[8];
+            it->started = (int)h[9];
+            if (it->late_end > it->late_first) {
+                u64 w = 0;
+                u32 e;
+                for (e = it->late_first; e < it->late_end; e++) w += entry_words(job_ent(it)[e]);
+                if (w > (1u << 26) || !(it->late = (u32*)malloc((size_t)(w ? w : 1) * 4))) goto bad;
+                it->late_cap = (u32)w;
+                if (io_get(io, it->late, w * 4)) goto bad;
+            }
+        }
+    }
+    if (io_get(io, s->scan, sizeof s->scan) || io_get(io, s->scan_stale, sizeof s->scan_stale) ||
+        !(s->dma = dma_snap_parse(io)))
+        goto bad;
+    return s;
+bad:
+    gpu_state_staged_free(s);
+    return NULL;
+}
+void gpu_state_install(GpuStaged* s) {
+    u64 now = plat_ns();
+    GpuItem* it;
+    u32 c;
+    gpu_state_drop();
+    pm_lock(&g_qlk);
+    g_job_ids = s->job_ids;
+    g_draws = s->draws;
+    for (c = 0; c < 128; c++)
+        if (s->chan[c]) {
+            s->chan[c]->park_end += now; /* what was left of the wait, from now */
+            g_gpu.chan[c] = s->chan[c];
+            g_gpu.nchan++;
+            s->chan[c] = NULL;
+        }
+    for (it = s->head; it; it = it->next)
+        if (!it->fn) {
+            g_qjobs[it->chan]++;
+            g_qtotal++;
+            /* the channel's oldest job, stopped at a wait: it waits again */
+            if (it->started && g_gpu.chan[it->chan] && g_gpu.chan[it->chan]->park) g_qparked[it->chan] = 1;
+        }
+    g_qhead = s->head;
+    g_qtail = s->tail;
+    s->head = s->tail = NULL;
+    memcpy(g_scan, s->scan, sizeof g_scan);
+    memcpy(g_scan_stale, s->scan_stale, sizeof g_scan_stale);
+    g_qgen++;
+    pm_unlock(&g_qlk);
+    dma_snap_install(s->dma);
+    s->dma = NULL;
+    free(s);
+}
+void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h) {
+    __builtin_dump_struct(&g_scan[0], dump, h);
 }

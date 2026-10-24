@@ -64,6 +64,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     if (obj->destroy) obj->destroy(obj);
@@ -106,7 +107,6 @@ void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
-    if (o->destroy) o->destroy(o);
     free(o);
     test_kobjs--;
 }
@@ -114,7 +114,7 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
@@ -134,17 +134,17 @@ static void close_handles(void) {
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     test_next_handle = 0x100;
 }
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(kobj_at(ev)); }
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
     *event = h_new(&e->o);
     return 0;
 }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 /* a poll with nothing to poll sleeps */
 static void sleep_ms(int ms) { snx_net_poll(NULL, 0, ms); }
@@ -345,10 +345,6 @@ static void in_a_room(SvcObj* creator, SvcObj* bsd) {
     fake_room_stop(room);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

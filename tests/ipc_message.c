@@ -66,10 +66,18 @@ void mem_query(u64 a, MemBlock* o) {
     o->size = 0x1000;
     o->state = MS_FREE;
 }
+#include "kobj_ids.h"                       /* the sessions as ids */
+KThread* kthread_cur(void) { return NULL; } /* no guest thread: requests aren't recorded on one */
 void kobj_ref(KObj* o) { o->refs++; }
+static void event_destroy(KObj* o);
+/* what each type does as its last reference goes, as kernel.c's kobj_destroy */
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
-    if (!--o->refs && o->destroy) o->destroy(o);
+    if (--o->refs) return;
+    if (o->type == KO_EVENT)
+        event_destroy(o);
+    else if (o->type == KO_SESSION)
+        ksession_destroy(o);
 }
 u32 h_new(KObj* o) {
     for (u32 i = 0; i < 64; i++)
@@ -104,7 +112,6 @@ static u32 event_handle(void) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.destroy = event_destroy;
     events_live++;
     return h_new(&e->o);
 }
@@ -1024,10 +1031,6 @@ static void session_closes(void) {
     }
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

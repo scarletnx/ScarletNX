@@ -56,6 +56,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     if (obj->destroy) obj->destroy(obj);
@@ -106,20 +107,22 @@ void kobj_unref(KObj* o) {
 KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
-    e->o.name = name;
+    e->o.type = KO_EVENT;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 /* the reply's handles name their events: the test drops them like the game closing its handles */
 static KEvent* test_handles[16];
 static u32 test_nhandles;
-u32 ev_handle(KEvent* e) {
+u32 ev_handle(u32 ev) {
+    KEvent* e = kev(ev);
     CHECK(test_nhandles < 16);
     kobj_ref(&e->o);
     test_handles[test_nhandles++] = e;
@@ -128,7 +131,7 @@ u32 ev_handle(KEvent* e) {
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
-    *event = ev_handle(e);
+    *event = ev_handle(kobj_id(&e->o));
     return 0;
 }
 
@@ -352,10 +355,6 @@ static void test_nifm_room(void) {
     fake_room_stop(room);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     hle_init();

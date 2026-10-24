@@ -26,23 +26,28 @@ void fatal(const char* fmt, ...) {
     va_end(a);
     abort();
 }
-static KThread g_self;
+/* the waiting thread is in the thread pool, where a signal looks for its waiters */
+#define g_self (g_hle.thread.threads[0])
 KThread* kthread_cur(void) { return &g_self; }
 void core_leave(KThread* t) { (void)t; }
 void core_set_prio(KThread* t, int prio) { t->prio = prio; }
 static u64 g_now;
 u64 plat_ns(void) { return g_now; }
+u64 guest_ns(void) { return g_now; } /* the waits' deadlines: no pause here */
+/* a save state's load, which nothing here does */
+const SnxArmModule* g_arm_mod;
+void kthread_retire_check(PMutex* held) { (void)held; }
 void pc_broadcast(PCond* c) { (void)c; }
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);
-static const char* g_seen_name;
+static char g_seen_name[24];
 static u64 g_seen_tid;
 static int g_waits;
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     (void)c;
     (void)m;
     g_waits++;
-    g_seen_name = g_self.wait_name;
+    memcpy(g_seen_name, g_self.wait_name, sizeof g_seen_name);
     g_seen_tid = g_self.wait_tid;
     if (g_during) {
         void (*f)(KThread*) = g_during;
@@ -84,11 +89,17 @@ static void signal_second(KThread* t) {
 static void cancel_it(KThread* t) {
     if (t->wait_kind == 1 && !t->woken) wake(t, R_CANCELLED); /* svc.c's CancelSynchronization */
 }
-static int thread_done(KObj* o) { return ((KThread*)o)->state == 2; }
-/* the writable end of an svcCreateEvent pair: no signaled test, so it can't be waited on */
-static KObj g_wevent = {KO_WEVENT, 1, NULL, NULL, NULL, 0, 0, "writable event"};
+/* the writable end of an svcCreateEvent pair: it can't be waited on */
+static KObj g_wevent = {KO_WEVENT, 1, 0, "writable event"};
 
 void pm_init(PMutex* m) { (void)m; }
+/* the destroys of the types kernel.c doesn't make: none of them is made here */
+void kthread_destroy(KObj* o) { (void)o; }
+void ksession_destroy(KObj* o) { (void)o; }
+void kwevent_destroy(KObj* o) { (void)o; }
+void kshmem_destroy(KObj* o) { (void)o; }
+void kcodemem_destroy(KObj* o) { (void)o; }
+void tmem_destroy(KObj* o) { (void)o; }
 
 int main(void) {
     hle_init();
@@ -97,7 +108,6 @@ int main(void) {
     g_mem = calloc(1, 0x1000);
     if (!g_mem) return 1;
     g_self.o.type = KO_THREAD;
-    g_self.o.is_signaled = thread_done;
     g_self.id = 0x60;
     g_ev[0] = kevent_new("first");
     g_ev[1] = kevent_new("second");
@@ -109,7 +119,7 @@ int main(void) {
     CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 0, &idx) == R_TIMEOUT);
     g_waits = 0;
     CHECK(svc_wait_sync(&g_self, 0xFFFFFFFFFFFFull, 0, 1000, &idx) == R_TIMEOUT && g_waits == 1);
-    CHECK(g_seen_name && !strcmp(g_seen_name, "no handles") && g_self.wait_kind == 0);
+    CHECK(!strcmp(g_seen_name, "no handles") && g_self.wait_kind == 0);
     g_during = cancel_it;
     CHECK(svc_wait_sync(&g_self, 0, 0, -1, &idx) == R_CANCELLED && !g_self.cancel);
 

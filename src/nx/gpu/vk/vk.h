@@ -175,6 +175,17 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
    it at another: whichever submit comes next takes them, so commands recorded from now on never run before the wait */
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal);
 void vk_finish(void); /* submits and waits until the GPU has done everything, and lands every result */
+/* a save state's load (Renderer.reset): every surface, buffer and sample counter kept of the old guest memory goes */
+void vk_surf_forget_all(void);
+void vk_buf_forget_all(void);
+void vk_query_forget_all(void);
+u32 vk_rt_flush_all(void); /* a save: every render target's pixels written back where it can be, the count */
+/* a save state's depth targets (surface.c): every live one's pixels into io, read back (0, or -1); a load's, kept for
+   the targets the loaded game makes of the same place, format and size; and those dropped */
+struct StateIo;
+int vk_zt_save(struct StateIo* io);
+int vk_zt_load(struct StateIo* io);
+void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */

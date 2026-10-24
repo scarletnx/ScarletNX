@@ -9,6 +9,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
+#include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "gui/aot.h"
@@ -338,6 +339,14 @@ typedef struct App {
     int addon_adding;    /* the row it was opened for, ROW_ADD_MOD or ROW_ADD_CHEATS; 0 while none waits */
     char* adding_game;   /* and the game whose box it was, which the answer goes to only while that box shows */
     SDL_DialogFileFilter cheats_filter; /* Add Cheats' .txt, which the file picker reads until it answers */
+    /* the box of a game's save states (states_open), the newest first, and the focused one's picture as a texture */
+    bool states_shown;
+    int states_focus, states_texture_of; /* the state the texture is of, -1 for none */
+    char* states_title;
+    struct GuiState* states;
+    size_t states_count;
+    SDL_Texture* states_texture;
+    char* state_load; /* the --state_load= option launch adds to a Switch game's run, while Play from a state starts it */
     bool previewing; /* drawing the theme editor's preview, on a copy of the app put back after it */
     Uint64 splash_until;
     GuiRgb splash_page;
@@ -599,6 +608,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_R    SNX_TR_KEYS("R: recompile.")
 #define SAY_GAMES_M    SNX_TR_KEYS("M: mods.")
 #define SAY_GAMES_AOT  SNX_TR_KEYS("B: AOT pack.")
+#define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX   SNX_TR_NOOP("click the box (or Enter) to open the file picker")
 #define SAY_KEYS_HOW   SNX_TR_KEYS("Ctrl+V: paste. ESC: back.")
 #define SAY_KEYS_WAIT  SNX_TR_NOOP("Pick or drop prod.keys")
@@ -638,6 +648,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
+#define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW  SNX_TR_KEYS("A: pick a file. B: back.")
 #define SAY_PAD_EDITOR    SNX_TR_KEYS("D-pad: key, change. A: edit. B: back.")
 #define SAY_PAD_PICKER           SNX_TR_KEYS("D-pad: row, step 1. LT/RT: step 16. A: OK. B: cancel.")
@@ -1798,7 +1809,7 @@ static unsigned screen_mark(const App* app) {
 static void fades_mark(App* app) {
     unsigned mark = screen_mark(app);
     bool boxed = app->confirm.shown || app->sizes_shown || app->users_shown || app->addons_shown ||
-                 app->options_shown || app->cleaned_shown || app->left_shown || app->dests_shown || app->help_shown;
+                 app->options_shown || app->states_shown || app->cleaned_shown || app->left_shown || app->dests_shown || app->help_shown;
     if (mark != app->screen_was && app->screen_was) app->switch_ms = SDL_max(now_ms(app), 1);
     if (boxed != app->boxed_was) app->box_ms = SDL_max(now_ms(app), 1);
     app->screen_was = mark;
@@ -1861,7 +1872,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_PLACE:
         case GUI_ASK_FOLDER:
         case GUI_ASK_MOVE:
-        case GUI_ASK_MADE: return app->ask_line;
+        case GUI_ASK_MADE:
+        case GUI_ASK_STATE: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2227,6 +2239,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Reset")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Move")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Play"), SNX_TR_NOOP("Recompile")},
                                              {SNX_TR_NOOP("OK"), NULL}};
@@ -2337,7 +2350,7 @@ static int splash_shown(App* app) {
 #define SAY_MENU_KEYS SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select. F5: refresh. ESC: exit.")
 #endif
 /* the keys the foot of the screen shown says, Tab's after them: what it draws, and what a click on one presses */
-#define GUI_SAID_PARTS 8 /* the most sentences of keys one screen's foot puts together (screen_said) */
+#define GUI_SAID_PARTS 9 /* the most sentences of keys one screen's foot puts together (screen_said) */
 /* part after the screen's others while parts has room, so one more than GUI_SAID_PARTS holds is left out of the foot
    (the test of Games' every key shows it), never written past them */
 static void said_add(const char** parts, int* n, const char* part) {
@@ -4094,6 +4107,274 @@ static void options_pointer(App* app, float x, float y, bool click) {
     else if (click && !in_rect(d.box, x, y))
         app->options_shown = false;
 }
+/* ---- the box of a game's save states (S on Games): a row each, the newest first, saying its slot, when it was saved
+   and the game's play time then; the focused one's picture beside the box. Enter plays the game from it, through its
+   program (the game's own or an update's) with --state_load=, and Del deletes it, asked first. A state this build
+   can't load is drawn in the failure colour, and Enter says why ---- */
+typedef struct GuiState {
+    char *path, *program; /* the state's file, and the program it plays in */
+    char label[96];       /* its slot, date and play time */
+    char why[160];        /* why it can't be loaded, "" when it can */
+    uint64_t created;
+    uint8_t* thumb; /* thumb_w x thumb_h RGBA, NULL for none */
+    int thumb_w, thumb_h;
+} GuiState;
+#define SAY_STATES_TITLE SNX_TR_NOOP("%s: save states")
+static void states_close(App* app) {
+    size_t i;
+    for (i = 0; i < app->states_count; ++i) {
+        free(app->states[i].path);
+        free(app->states[i].program);
+        free(app->states[i].thumb);
+    }
+    free(app->states);
+    free(app->states_title);
+    SDL_DestroyTexture(app->states_texture);
+    app->states = NULL;
+    app->states_title = NULL;
+    app->states_texture = NULL;
+    app->states_texture_of = -1;
+    app->states_count = 0;
+    app->states_shown = false;
+}
+static int state_newer(const void* a, const void* b) {
+    const GuiState *x = (const GuiState*)a, *y = (const GuiState*)b;
+    return x->created < y->created ? 1 : x->created > y->created ? -1 : strcmp(x->path, y->path);
+}
+/* the program a state's file names, beside the game: its path, owned, NULL when it isn't there */
+static char* state_program(const char* folder, const char* program) {
+    char* path = snx_path_join(folder, program);
+    char* exe;
+    if (!path || snx_is_file(path)) return path;
+    exe = snx_format("%s.exe", path);
+    free(path);
+    if (exe && snx_is_file(exe)) return exe;
+    free(exe);
+    return NULL;
+}
+/* the states of game (a game's program in its folder) listed, title what it is shown as: the box open, or a message
+   saying there are none */
+static void states_open(App* app, const char* game, const char* title) {
+    char *folder = snx_dirname(game), *dir = NULL, **names = NULL;
+    const char* name;
+    size_t count = 0, i;
+    SnxU64 id = 0;
+    states_close(app);
+    for (name = folder + strlen(folder); name > folder && name[-1] != '/' && name[-1] != '\\'; --name) continue;
+    dir = snx_path_join(folder, "states");
+    if (snx_title_parse(name, &id) && !snx_list_dir(dir, &names, &count) && count)
+        app->states = (GuiState*)calloc(count, sizeof *app->states);
+    for (i = 0; app->states && i < count; ++i) {
+        GuiState* g = &app->states[app->states_count];
+        SnxStateHeader h;
+        char program[256], slot[16], stamp[64], when[40];
+        uint8_t* thumb;
+        SDL_DateTime dt;
+        uint64_t sec;
+        /* the game's own program's, or an update's (<game>_<update>) */
+        if (!snx_state_name(names[i], program, sizeof program, slot, sizeof slot) ||
+            strncmp(program, name, strlen(name)) || (program[strlen(name)] && program[strlen(name)] != '_'))
+            continue;
+        g->path = snx_path_join(dir, names[i]);
+        g->program = state_program(folder, program);
+        if (!g->path || !g->program || snx_state_peek(g->path, &h, &thumb, g->why, sizeof g->why)) {
+            free(g->path);
+            free(g->program);
+            memset(g, 0, sizeof *g);
+            continue;
+        }
+        snx_state_stamp(g->program, stamp, sizeof stamp);
+        if (snx_state_fits(&h, id, stamp, g->why, sizeof g->why)) g->why[0] = (char)SDL_toupper(g->why[0]);
+        g->created = h.created;
+        g->thumb = thumb;
+        g->thumb_w = (int)h.thumb_w;
+        g->thumb_h = (int)h.thumb_h;
+        if (SDL_TimeToDateTime((SDL_Time)h.created * SDL_NS_PER_SECOND, &dt, true))
+            snprintf(when, sizeof when, "%04d-%02d-%02d %02d:%02d", dt.year, dt.month, dt.day, dt.hour, dt.minute);
+        else
+            when[0] = 0;
+        sec = h.guest_ns / 1000000000u;
+        if (strcmp(slot, "auto"))
+            snprintf(g->label, sizeof g->label, snx_tr("Slot %s  %s  %u:%02u:%02u"), slot, when,
+                     (unsigned)(sec / 3600), (unsigned)(sec / 60 % 60), (unsigned)(sec % 60));
+        else
+            snprintf(g->label, sizeof g->label, snx_tr("Auto  %s  %u:%02u:%02u"), when, (unsigned)(sec / 3600),
+                     (unsigned)(sec / 60 % 60), (unsigned)(sec % 60));
+        app->states_count++;
+    }
+    snx_free_strings(names, count);
+    free(dir);
+    free(folder);
+    if (!app->states_count) {
+        states_close(app);
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s has no save states: F7 saves one while it plays, the menu's Save states page too."), title);
+        return;
+    }
+    qsort(app->states, app->states_count, sizeof *app->states, state_newer);
+    app->states_title = snx_format(snx_tr(SAY_STATES_TITLE), title);
+    app->states_focus = 0;
+    app->states_shown = true;
+}
+/* S on Games: the box of the focused game's save states; else why not */
+static void states_focus(App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    bool recent = row && row < head && (int)row - 1 < recent_shown(app), game = row >= head && index < app->games.count;
+    if (recent && app->recent.game[row - 1].driver == GUI_SWITCH && app->recent.game[row - 1].prepared)
+        states_open(app, app->recent.game[row - 1].path, app->recent.game[row - 1].name);
+    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
+        states_open(app, app->games.paths[index], app->games.shown[index]);
+    else
+        snprintf(app->message, sizeof app->message, "%s",
+                 snx_tr("S lists the save states of a recompiled Switch game in focus."));
+}
+/* the box over the screen, as wide as its title or the longest row; a row each, ui.txt's scene States, the focused one
+   among those shown (the box kept on the screen); the picture's place at its right, or under it, empty when neither
+   has room */
+typedef struct {
+    GuiRect box, picture;
+    GuiRect rects[UI_STATES_ITEMS];
+    UiList lists[UI_STATES_ITEMS]; /* the rows' at UI_STATES_ROWS: row i is states[i] */
+} GuiStatesBoxes;
+static void states_boxes(App* app, GuiStatesBoxes* d) {
+    int s = app->scale, count = (int)app->states_count, width, height, w = 160 * s, h = 90 * s;
+    int longest = SDL_max(16, (int)SDL_utf8strlen(app->states_title) + 2);
+    size_t i;
+    for (i = 0; i < app->states_count; ++i)
+        longest = SDL_max(longest, (int)SDL_utf8strlen(app->states[i].label) + gui_text_cols(app->theme.marker) + 4);
+    ui_states_layout(
+        over_rows(app, longest, rows_h(ui_states_layout, ui_states_row, d->rects, UI_STATES_ROWS, s, count), &d->box),
+        s, d->rects);
+    memset(d->lists, 0, sizeof d->lists);
+    d->lists[UI_STATES_ROWS].focus = (size_t)app->states_focus;
+    ui_states_follow(d->rects, s, UI_STATES_ROWS, (size_t)count, &d->lists[UI_STATES_ROWS]);
+    area(app, &width, &height);
+    if (d->box.x + d->box.w + 4 * s + w <= width)
+        d->picture = gui_rect(d->box.x + d->box.w + 4 * s, d->box.y, w, h);
+    else if (d->box.y + d->box.h + 4 * s + h <= height)
+        d->picture = gui_rect(d->box.x, d->box.y + d->box.h + 4 * s, w, h);
+    else
+        d->picture = gui_rect(0, 0, 0, 0);
+}
+/* States' row: the state's slot, date and play time, in the failure colour when this build can't load it */
+bool ui_states_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
+    (void)width;
+    if (row >= app->states_count) return false;
+    info->label = app->states[row].label;
+    if (app->states[row].why[0]) info->attr |= UI_ATTR_FAILURE;
+    return true;
+}
+/* the focused state's picture, made into a texture when the focus came to it */
+static void render_states(App* app) {
+    GuiStatesBoxes d;
+    const GuiState* g;
+    states_boxes(app, &d);
+    over_box(app, d.box, app->states_title);
+    ui_states_draw(app, d.rects, app->scale, d.lists);
+    if (d.picture.w <= 0 || app->states_focus < 0 || (size_t)app->states_focus >= app->states_count) return;
+    g = &app->states[app->states_focus];
+    if (app->states_texture_of != app->states_focus) {
+        SDL_DestroyTexture(app->states_texture);
+        app->states_texture = NULL;
+        if (g->thumb && g->thumb_w > 0 && g->thumb_h > 0) {
+            app->states_texture = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC,
+                                                    g->thumb_w, g->thumb_h);
+            if (app->states_texture && !SDL_UpdateTexture(app->states_texture, NULL, g->thumb, g->thumb_w * 4)) {
+                SDL_DestroyTexture(app->states_texture);
+                app->states_texture = NULL;
+            }
+        }
+        app->states_texture_of = app->states_focus;
+    }
+    outline(app, gui_rect(d.picture.x - app->scale, d.picture.y - app->scale, d.picture.w + 2 * app->scale,
+                          d.picture.h + 2 * app->scale),
+            app->theme.ink);
+    if (app->states_texture) {
+        SDL_FRect at = {(float)d.picture.x, (float)d.picture.y, (float)d.picture.w, (float)d.picture.h};
+        SDL_RenderTexture(app->renderer, app->states_texture, NULL, &at);
+    } else
+        fill_rect(app, d.picture, app->theme.page);
+}
+/* row pressed: the game played from its state, the box closed; one this build can't load says why */
+static void state_play(App* app, int row) {
+    const GuiState* g = &app->states[row];
+    int selected = app->menu.selected;
+    bool recompile = app->recompile;
+    if (g->why[0]) {
+        snprintf(app->message, sizeof app->message, snx_tr("It can't be played from that state: %s."), g->why);
+        return;
+    }
+    app->state_load = snx_format("--state_load=0:%s", g->path);
+    {
+        char* program = snx_absolute(g->program);
+        states_close(app);
+        app->recompile = false;
+        app->menu.selected = GUI_SWITCH;
+        launch(app, program, true);
+    }
+    free(app->state_load);
+    app->state_load = NULL;
+    if (!app->menu.running) app->menu.selected = selected;
+    app->recompile = recompile;
+}
+/* Del on the box: the focused state's deletion asked first (GUI_ASK_STATE) */
+static void state_delete_ask(App* app) {
+    if ((size_t)app->states_focus >= app->states_count) return;
+    snprintf(app->ask_line, sizeof app->ask_line, snx_tr("Delete the save state %s?"),
+             app->states[app->states_focus].label);
+    gui_confirm_open(&app->confirm, GUI_ASK_STATE, false);
+}
+/* the deletion taken: the file gone, the box without it, closed when it was the last */
+static void state_delete(App* app) {
+    GuiState* g;
+    if ((size_t)app->states_focus >= app->states_count) return;
+    g = &app->states[app->states_focus];
+    if (remove(g->path)) {
+        snprintf(app->message, sizeof app->message, snx_tr("Not deleted: %s could not be removed"), g->path);
+        say_failure(app, app->message);
+        return;
+    }
+    free(g->path);
+    free(g->program);
+    free(g->thumb);
+    memmove(g, g + 1, (app->states_count - (size_t)app->states_focus - 1) * sizeof *g);
+    app->states_count--;
+    app->states_texture_of = -1;
+    if (!app->states_count) {
+        states_close(app);
+        return;
+    }
+    if ((size_t)app->states_focus >= app->states_count) app->states_focus = (int)app->states_count - 1;
+}
+/* a key on the box: Up and Down move, Select plays from the state, Back closes it */
+static void states_key(App* app, GuiKey key) {
+    int count = (int)app->states_count;
+    if (key == GUI_UP || key == GUI_DOWN)
+        app->states_focus = (app->states_focus + (key == GUI_UP ? count - 1 : 1)) % count;
+    else if (key == GUI_SELECT)
+        state_play(app, app->states_focus);
+    else if (key == GUI_CANCEL)
+        states_close(app);
+}
+/* a row under the pointer takes the focus, and a click plays from it */
+void ui_states_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
+    app->states_focus = (int)row;
+    if (hit & UI_HIT_CLICK) state_play(app, (int)row);
+}
+/* the pointer on it: a row's (ui_states_rows_row_action_cb); a click off the box and its picture closes it */
+static void states_pointer(App* app, float x, float y, bool click) {
+    GuiStatesBoxes d;
+    int item;
+    size_t row;
+    uint32_t hit;
+    states_boxes(app, &d);
+    hit = ui_states_hit(app, d.rects, app->scale, d.lists, (int)x, (int)y, click ? UI_HIT_CLICK : 0, &item, &row);
+    if (hit)
+        ui_states_act(app, item, row, hit);
+    else if (click && !in_rect(d.box, x, y) && !in_rect(d.picture, x, y))
+        states_close(app);
+}
 /* ---- the head: the tabs, and the title after them or under them ---- */
 static int title_size(const App* app) { return (int)SDL_clamp(app->theme.title_size, 1, 3); }
 /* value from pixel x, y in letters size times the text's, cut at the right edge of r */
@@ -5302,6 +5583,7 @@ static void draw_screen(App* app) {
     if (idle && app->users_shown && !app->confirm.shown) render_users(app);
     if (idle && app->addons_shown && !app->confirm.shown) render_addons(app);
     if (idle && app->options_shown && !app->confirm.shown) render_view(app);
+    if (idle && app->states_shown && !app->confirm.shown) render_states(app);
     if (idle && app->left_shown && app->lefts) render_files(app, 0);
     overlay(app);
 }
@@ -5451,6 +5733,7 @@ static bool preview_texture(App* app) {
     /* the box of users is the editor's: its pictures, made or replaced on this copy, would go with it */
     app->users_shown = false;
     app->addons_shown = app->options_shown = false;
+    app->states_shown = false;
     app->native = 0;
     app->entering_ms = app->leaving_ms = 0;
     app->fade_ms = run ? app->preview_since : 0; /* a run fades in from black, as after the menu */
@@ -6121,6 +6404,10 @@ static void games_said(const App* app, bool pad, const char** parts, int* n) {
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
+#ifndef SDL_PLATFORM_ANDROID
+    if (mods && !pad) said_add(parts, n, SAY_GAMES_STATES); /* its save states' box, S */
+#endif
+    if (mods && pad) said_add(parts, n, SAY_PAD_GAMES_STATES); /* and a pad's X */
 }
 /* a setting's Del (X), said where the focused row is not at its default */
 static void settings_said(const App* app, bool pad, const char** parts, int* n) {
@@ -9506,6 +9793,8 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         place_use(app, app->place_off, NULL);
     else if (ask == GUI_ASK_FOLDER)
         folder_remove(app, app->folder_off);
+    else if (ask == GUI_ASK_STATE)
+        state_delete(app);
 }
 /* the functions an AOT pack used, from the driver's line, -1 when it printed none */
 static int aot_built(const GuiSteps* steps) {
@@ -9903,6 +10192,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    /* Play from a save state: the runtime loads it before the game's first frame */
+    if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
     if (app->menu.selected == GUI_SWITCH && make) n += gui_settings_one(s, "slp_vectorizer", argv + n);
     /* Extract dump, which both drivers take, for a run and for R's recompile: off, nothing is extracted */
@@ -11327,7 +11618,7 @@ static void ask_key(App* app, GuiKey key) {
     else if (ask == GUI_ASK_TEXT)
         size_answer(app, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
-             ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE)
+             ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE)
         change_answer(app, ask, second);
     else if (ask == GUI_ASK_CLOSE && second) { /* the run ends with the menu, the queue's recompile too */
         if (app->menu.running) abort_run(app);
@@ -11533,6 +11824,7 @@ static const struct {
                  {SNX_TR_KEY("Folders"), SDLK_P, 0, false},
                  {SNX_TR_KEY("V"), SDLK_V, 0, false},
                  {SNX_TR_KEY("View"), SDLK_V, 0, false},
+                 {SNX_TR_KEY("S"), SDLK_S, 0, false},
                  {SNX_TR_KEY("Ctrl+S"), SDLK_S, SDL_KMOD_CTRL, false},
                  {SNX_TR_KEY("Ctrl+V"), SDLK_V, SDL_KMOD_CTRL, false},
                  {SNX_TR_KEY("F5"), SDLK_F5, 0, false},
@@ -11684,6 +11976,8 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         addons_pointer(app, x, y, click);
     else if (app->options_shown)
         options_pointer(app, x, y, click);
+    else if (app->states_shown)
+        states_pointer(app, x, y, click);
     else if (app->editing && app->form == GUI_FORM_PAD) {
         if (click) pad_did(app, snx_pad_screen_tap(&app->pad, snx_pad_screen_hit(&app->pad_drawing, x, y)));
     } else if (app->editing && app->editor.picking)
@@ -12100,6 +12394,14 @@ static void event_take(App* app, const SDL_Event* e) {
         if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && menu_key_of(&e->key, &key)) options_key(app, key);
         return;
     }
+    /* and the box of a game's save states, Del (a pad's X) deleting the one in focus */
+    if (app->states_shown && !app->confirm.shown && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT)) {
+        if (e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && e->key.key == SDLK_DELETE)
+            state_delete_ask(app);
+        else if (e->type == SDL_EVENT_KEY_DOWN && menu_key_of(&e->key, &key))
+            states_key(app, key);
+        return;
+    }
     /* a question takes every key while it shows, over the menu, Games or a form (a run's is the run's, below); a held
        key answers nothing */
     if (app->confirm.shown && !app->menu.running &&
@@ -12241,7 +12543,7 @@ static void event_take(App* app, const SDL_Event* e) {
         for (; app->setup_on && !app->splash && !app->confirm.shown && rows; rows += rows > 0 ? -1 : 1)
             setup_key(app, rows > 0 ? GUI_UP : GUI_DOWN);
         if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown ||
-            app->users_shown || app->addons_shown || app->options_shown || (app->editing && app->editor.picking))
+            app->users_shown || app->addons_shown || app->options_shown || app->states_shown || (app->editing && app->editor.picking))
             return;
         for (; rows > 0; --rows) scroll(app, GUI_UP);
         for (; rows < 0; ++rows) scroll(app, GUI_DOWN);
@@ -12325,6 +12627,14 @@ static void event_take(App* app, const SDL_Event* e) {
         app->menu.view == GUI_LOAD_GAMES && !app->finished) {
         app->options_shown = true;
         app->options_focus = 0;
+        return;
+    }
+    /* S, or a pad's X (pad_menu.c's Del, which Games has no other use for) */
+    if ((e->key.key == SDLK_S || (e->key.key == SDLK_DELETE && app->pad_driven)) && !e->key.repeat &&
+        !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) && app->menu.view == GUI_LOAD_GAMES &&
+        !app->finished) {
+        layout(app);
+        states_focus(app);
         return;
     }
     if (menu_key_of(&e->key, &key)) menu_key(app, key);
@@ -12496,6 +12806,7 @@ static void forget(App* app) {
     gui_games_free(&app->games);
     free(app->games_drivers);
     addons_close(app);
+    states_close(app);
     SDL_free(app->cwd);
     if (app->editing) gui_editor_stop(&app->editor);
     SDL_DestroyTexture(app->preview);

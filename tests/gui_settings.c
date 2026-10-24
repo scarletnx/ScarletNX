@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
         assert(words(key(&s, "gamepad_p1_swap_ab")) == 4 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[1], "As All"));
         assert(key(&s, "gamepad_p3_device")->type == GUI_KEY_TEXT &&
                !strcmp(key(&s, "gamepad_p3_device")->section, "Controllers/Player"));
-        assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.count - 1].section, "Debug"));
+        assert(!strcmp(s.keys[s.own].section, "Game") && !strcmp(s.keys[s.count - 1].section, "Debug"));
         assert(words(key(&s, "fullscreen")) == 3 && words(key(&s, "touch")) == 4 && words(key(&s, "controls")) == 3);
         assert(!strcmp(key(&s, "controls")->key, "Show controls") &&
                !strcmp(key(&s, "touch")->words[3], "Fingers and mouse"));

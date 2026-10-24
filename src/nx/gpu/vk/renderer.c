@@ -668,15 +668,15 @@ static void vkr_refresh(void) {
     vk_unlock();
 }
 
-/* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
-static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
-    u64 hash = 1469598103934665603ull;
+/* a part of a surface (x, y, w x h), blitted to RGBA8 at dw x dh, scaled on the GPU, and read back: the pixels, good
+   until the next readback, or NULL */
+static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = is_srgb(s->f.vk) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
-                            .extent = {w, h, 1},
+                            .extent = {dw, dh, 1},
                             .mipLevels = 1,
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -686,14 +686,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage tmp;
     VmaAllocation tmem;
-    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return hash;
+    if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &tmp, &tmem, NULL))) return NULL;
     vk_mem_track(tmem);
     VkBuffer buf;
-    u8* p = vk_readback_buffer((u64)w * h * 4, &buf);
+    u8* p = vk_readback_buffer((u64)dw * dh * 4, &buf);
     if (!p) {
         vk_mem_untrack(tmem);
         vmaDestroyImage(g_vk.vma, tmp, tmem);
-        return hash;
+        return NULL;
     }
     vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
     VkCommandBuffer cb = vk_cmd();
@@ -704,14 +704,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+                        .dstOffsets = {{0, 0, 0}, {(i32)dw, (i32)dh, 1}}};
     flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
     rec_CmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                   &blit, VK_FILTER_NEAREST);
+                   &blit, dw == w && dh == h ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+    VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {dw, dh, 1}};
     rec_CmdCopyImageToBuffer(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -724,8 +724,14 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
     vk_readback_ready();
     vk_mem_untrack(tmem);
     vmaDestroyImage(g_vk.vma, tmp, tmem);
+    return p;
+}
+/* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
+static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
+    u64 hash = 1469598103934665603ull;
+    const u8* px = surf_read(s, x, y, w, h, transform, w, h);
+    if (!px) return hash;
     /* the pixels as the device wrote them, little-endian words: the hash is the same on every host */
-    const u8* px = p;
     for (u64 i = 0; i < (u64)w * h; i++) hash = (hash ^ snx_ld_le32(px + i * 4)) * 1099511628211ull;
     if (path) {
         char fn[1100];
@@ -753,6 +759,17 @@ static u64 vkr_screenshot(const char* path) {
     return hash;
 }
 
+/* the last presented frame scaled to w x h, RGBA8 as the display shows it, into rgba: 0, or -1 with none shown */
+static int vkr_thumbnail(u8* rgba, u32 w, u32 h) {
+    const u8* px = NULL;
+    vk_lock();
+    /* a quarter turn shows the frame on its side: the thumbnail is of the picture as the player sees it */
+    if (g_last) px = surf_read(g_last, g_last_x, g_last_y, g_last_w, g_last_h, g_last_transform, w, h);
+    if (px) memcpy(rgba, px, (size_t)w * h * 4);
+    vk_unlock();
+    return px ? 0 : -1;
+}
+
 /* the stall watchdog: the releases queued and how far the submissions they wait for have got */
 static void vk_report_stall(void) {
     u64 n, gate, cgate, gsub, gdone, csub, cdone;
@@ -764,6 +781,54 @@ static void vk_report_stall(void) {
          (unsigned long long)n, (unsigned long long)gate, (unsigned long long)cgate, (unsigned long long)gdone,
          (unsigned long long)gsub, (unsigned long long)cdone, (unsigned long long)csub,
          (unsigned long long)vk_rec_behind());
+}
+static void vkr_idle(void) {
+    vk_lock();
+    vk_buf_land_syncwait(); /* results recorded since the last release, which a finish alone leaves pending */
+    vk_gfx_image_land();
+    vk_compute_land();
+    vk_finish();
+    vk_release_drain();
+    vk_unlock();
+}
+static void vkr_flush_targets(void) {
+    u32 n;
+    vk_lock();
+    n = vk_rt_flush_all();
+    vk_finish();
+    vk_unlock();
+    LOG("vulkan: %u render targets written back for a save state\n", n);
+}
+static int vkr_save_targets(struct StateIo* io) {
+    int r;
+    vk_lock();
+    r = vk_zt_save(io);
+    vk_unlock();
+    return r;
+}
+static int vkr_load_targets(struct StateIo* io) {
+    int r;
+    vk_lock();
+    r = vk_zt_load(io);
+    vk_unlock();
+    return r;
+}
+static void vkr_reset(void) {
+    vk_lock();
+    vk_render_end();
+    vk_render_forget_state();
+    vk_zt_forget();
+    vk_surf_forget_all();
+    vk_buf_forget_all();
+    vk_query_forget_all();
+    if (g_cpu_img) {
+        vk_defer_image(g_cpu_img->img, g_cpu_img->mem, VK_NULL_HANDLE, g_cpu_img->att);
+        free(g_cpu_img);
+        g_cpu_img = NULL;
+    }
+    g_last = NULL;
+    g_vk.shader_generation++; /* the shaders found at guest addresses: the code there is the state's */
+    vk_unlock();
 }
 const Renderer vk_renderer = {
     .name = "Vulkan",
@@ -796,12 +861,18 @@ const Renderer vk_renderer = {
     .render_predicate_drop = vk_render_predicate_drop,
     .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
+    .idle = vkr_idle,
+    .reset = vkr_reset,
+    .flush_targets = vkr_flush_targets,
+    .save_targets = vkr_save_targets,
+    .load_targets = vkr_load_targets,
     .samples_reset = vkr_samples_reset,
     .samples_enable = vkr_samples_enable,
     .samples_report = vkr_samples_report,
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
+    .thumbnail = vkr_thumbnail,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,
     .release_window = vk_window_release,

@@ -4,6 +4,7 @@
    the game ships for gpu/shipped_pass.c), beside the fsp-srv service in fs.c */
 #ifndef SNX_FS_H
 #define SNX_FS_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/platform/plat.h" /* FILE, PFileMap */
 #include "nx/hle/filesystem/fs_tree.h" /* FsTree, FsNode */
@@ -14,6 +15,11 @@ void fs_init(const char* keys, const char* title_keys);
 extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
+/* save states (runtime/state.c): the open file systems, files and folders by path into the state, and what is open
+   let go of before a load writes g_hle over it (fs_state_resolve, below, finds the state's again) */
+struct StateIo;
+int fs_state_save(struct StateIo* io);
+void fs_state_drop(void);
 int fs_map_file(const char* path, PFileMap* map); /* 0, or -1 */
 /* the mods' patches the program was recompiled with (HleFs' patches), which the loader writes over the modules they
    are for: their count, and their paths in *paths */
@@ -120,7 +126,6 @@ typedef struct {
     SnxDump dump;
     SnxHacFs* dfs;
     PFileMap dmap;
-    PMutex dlock;
     SnxHacFs* hfs;  /* its HtmlDocument content, read under dlock too (fs_html_document) */
     int html_tried; /* hfs looked for */
     /* the update's dump read in place (dump_open), read with the game's in dump; and the checked DLCs read from their
@@ -140,5 +145,19 @@ typedef struct {
     size_t npatches;
     int rlayered; /* the RomFS image is made up with the mods' over the game's (romfs_init) */
 } HleFs;
+/* fs's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
+typedef struct {
+    PMutex dlock;
+} HostFs;
 /* all zero: fs_init sets the tree up */
+extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */
+/* a load's: the state's open file systems, files and folders found by path in this process's tree and opened, files as
+   the loaded fs (loaded, the state's g_hle.fs) had them, before anything of the running game changes (NULL, with
+   why, when one isn't there any more), then put in place in g_hle once it is the state's, or let go of when the load
+   is refused */
+typedef struct FsStaged FsStaged;
+FsStaged* fs_state_resolve(struct StateIo* io, const HleFs* loaded, char* why, size_t whysize);
+void fs_state_install(FsStaged* st);
+void fs_state_staged_free(FsStaged* st);
+
 #endif

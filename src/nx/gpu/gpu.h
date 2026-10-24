@@ -274,6 +274,24 @@ void dma_method(GpuChannel* ch, u32 m, u32 v);
 void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v);
 void dma_snap_finish(u32 channel, u64 job_id); /* the job ended: what it left goes */
 void dma_snap_reset(u32 channel);              /* the channel closed: what it queued goes */
+/* save states (runtime/state.c), with the GPU thread held: the channels, the queue, the scans and the copy snapshots
+   into the state (0, or -1). A load reads them first into a staged copy (NULL when the section is damaged), which a
+   refused load frees, and puts it in place once the running game is gone, every channel and queued item there was
+   dropped first */
+struct StateIo;
+typedef struct GpuStaged GpuStaged;
+int gpu_state_save(struct StateIo* io);
+GpuStaged* gpu_state_parse(struct StateIo* io);
+void gpu_state_install(GpuStaged* s);
+void gpu_state_staged_free(GpuStaged* s);
+/* the layout of what gpu_state_save writes as raw bytes beyond GpuChannel, into the save state's schema hash at h, dump
+   taking each struct's walk (state_io.h's StateSchemaFn) */
+void gpu_state_schema(int (*dump)(u64* h, const char* fmt, ...), u64* h);
+typedef struct DmaStaged DmaStaged;
+int dma_snap_save(struct StateIo* io);
+DmaStaged* dma_snap_parse(struct StateIo* io);
+void dma_snap_install(DmaStaged* d);
+void dma_snap_staged_free(DmaStaged* d);
 
 /* maxwell3d.c: the record of GPU-side writes. Each write stamps a new generation on the pages it covers, by GPU
    address and by the guest pages behind them */
@@ -283,6 +301,7 @@ void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in 
    picture, published over them, memory/own.c): what is built from them checks them again */
 void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
+void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
@@ -305,6 +324,11 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
 void gpu_kick(void);
+/* a game pause, with no guest thread left to submit: the GPU thread runs what is queued up to now (channels waiting on
+   the CPU stay parked), the renderer finishes (Renderer.idle), and the thread waits until gpu_release. 0, or -1 when it
+   didn't get there within timeout_ms (and won't stop when it does) */
+int gpu_hold(int timeout_ms);
+void gpu_release(void);
 extern volatile u64 g_gpu_submits;
 /* the blocking wait the GPU thread is in, for the stall report: what it waits for (a string that lives on) and a number
    that names it, before the wait, and NULL after. Ignored on other threads */

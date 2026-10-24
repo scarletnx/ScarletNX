@@ -282,15 +282,15 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
     switch (t->woken ? 0 : t->wait_kind) {
         case 1:
             if (t->wait_tid)
-                snprintf(s, n, "waiting on %s (thread %lu)", t->wait_name ? t->wait_name : "objects",
+                snprintf(s, n, "waiting on %s (thread %lu)", t->wait_name[0] ? t->wait_name : "objects",
                          (unsigned long)t->wait_tid);
             else
-                snprintf(s, n, "waiting on %s", t->wait_name ? t->wait_name : "objects");
+                snprintf(s, n, "waiting on %s", t->wait_name[0] ? t->wait_name : "objects");
             break;
         case 2:
             snprintf(s, n, "waiting for the mutex at %llx%s, owned by thread %llu", (unsigned long long)t->wait_addr,
                      word_at(t->wait_addr, v1, sizeof v1),
-                     (unsigned long long)(t->lock_owner ? t->lock_owner->id : 0));
+                     (unsigned long long)(t->lock_owner ? kt_at(t->lock_owner)->id : 0));
             break;
         case 3:
             snprintf(s, n, "waiting on the condition variable %llx%s, mutex %llx%s", (unsigned long long)t->wait_key,

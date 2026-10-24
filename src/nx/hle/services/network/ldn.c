@@ -62,7 +62,7 @@ enum {
 
 static void set_state(Ldn* d, u32 state) {
     d->state = state;
-    kevent_signal(d->ev);
+    ev_signal(d->ev);
 }
 /* the transport's thread: a station or the host came or went. A Finalize under way has taken the transport away
    under the lock and is waiting for this thread, so the callback leaves at once then */
@@ -74,7 +74,7 @@ static void ldn_changed(void* arg) {
         d->reason = (i16)snx_ldn_disconnect_reason(d->lan);
         set_state(d, LDN_STATION_OPENED);
     } else
-        kevent_signal(d->ev);
+        ev_signal(d->ev);
     pm_unlock(&d->lk);
 }
 /* takes the transport away under the lock and closes it outside: closing waits for its thread, which may be in
@@ -96,18 +96,18 @@ static Ldn* ldn_at(u32 i) { return i ? &g_hle.ldn.ldn[i - 1] : NULL; } /* the in
 static void ldn_destroy(SvcObj* o) {
     Ldn* d = o->data;
     u32 *p, self = POOL_INDEX(g_hle.ldn.ldn, d) + 1;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     for (p = &g_hle.ldn.ldns; *p && *p != self; p = &ldn_at(*p)->next) {}
     if (*p) *p = d->next;
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
     ldn_teardown(d);
-    kobj_unref(&d->ev->o);
+    kobj_unref(kobj_at(d->ev));
 }
 void ldn_exit(void) {
     Ldn* d;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     for (d = ldn_at(g_hle.ldn.ldns); d; d = ldn_at(d->next)) ldn_teardown(d);
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
 }
 
 /* ============================================================ the console's address */
@@ -147,10 +147,10 @@ static int nn_ldn_detail_IUserServiceCreator_CreateUserLocalCommunicationService
     pm_init(&d->lk);
     d->ev = owned_event("ldn state change");
     o->destroy = ldn_destroy;
-    pm_lock(&g_hle.ldn.ldns_lk);
+    pm_lock(&g_host.ldn.ldns_lk);
     d->next = g_hle.ldn.ldns;
     g_hle.ldn.ldns = POOL_INDEX(g_hle.ldn.ldn, d) + 1;
-    pm_unlock(&g_hle.ldn.ldns_lk);
+    pm_unlock(&g_host.ldn.ldns_lk);
     *service = o;
     R_SUCCEED();
 }
@@ -525,3 +525,6 @@ static int nn_ldn_detail_IUserLocalCommunicationService_Disconnect(SvcObj* self)
 }
 
 SvcObj* new_ldn(void) { return nn_ldn_detail_IUserServiceCreator_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_ldn_state_fns,
+               STATE_FN("ldn", ldn_destroy));

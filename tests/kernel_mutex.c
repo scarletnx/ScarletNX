@@ -19,7 +19,18 @@ void logf_(int lvl, const char* fmt, ...) {
 }
 u64 plat_ns(void) { return 0; }
 void kobj_ref(KObj* o) { (void)o; }
+/* a restored thread's wait (sync_resume), which nothing here does */
+const SnxArmModule* g_arm_mod;
+u64 guest_ns(void) { return 0; }
+KObj* kobj_at(u32 id) {
+    (void)id;
+    return NULL;
+}
 void kobj_unref(KObj* o) { (void)o; }
+/* kernel.c's, for the threads a join waits on: signaled once exited */
+int kobj_waitable(const KObj* o) { return o->type == KO_EVENT || o->type == KO_THREAD || o->type == KO_PROCESS; }
+int kobj_signaled(const KObj* o) { return o->type == KO_THREAD && ((const KThread*)o)->state == 2; }
+u32 kobj_id(const KObj* o) { return (u32)(size_t)o; } /* tells the test's objects apart */
 void waiter_add(KObj* o, KThread* t) {
     (void)o;
     (void)t;
@@ -30,10 +41,13 @@ void waiter_del(KObj* o, KThread* t) {
 }
 static unsigned g_slept;
 static u64 g_joining;
+static KThread* g_ends[2]; /* the threads a join's sleep sees exit */
 int sleep_nl(KThread* t, i64 timeout) {
     (void)timeout;
     g_slept++;
     g_joining = t->wait_tid;
+    for (int i = 0; i < 2; i++)
+        if (g_ends[i]) g_ends[i]->state = 2;
     return 1;
 }
 /* the word at g_watch when a thread is woken */
@@ -47,17 +61,14 @@ void wake(KThread* t, int result) {
 void core_set_prio(KThread* t, int prio) { t->prio = prio; }
 
 enum { SNX_KMT_THREADS = 6, SNX_KMT_HANDLE = 0x100 };
-static KThread snx_kmt_thread[SNX_KMT_THREADS];
+/* the threads are the pool's first slots, where the kernel's lists find them (kt_at) */
+#define snx_kmt_thread (g_hle.thread.threads)
 KObj* h_get_nl(u32 h) {
     u32 i = h - SNX_KMT_HANDLE;
     return i < SNX_KMT_THREADS ? &snx_kmt_thread[i].o : NULL;
 }
 static u32 handle(KThread* t) { return SNX_KMT_HANDLE + (u32)(t - snx_kmt_thread); }
 /* ends once the waiter sleeps, like a joined thread */
-static int ended_after_a_sleep(KObj* o) {
-    (void)o;
-    return g_slept > 0;
-}
 
 static unsigned checks, failures;
 #define CHECK(expr, ...)                                                                                               \
@@ -77,7 +88,7 @@ static const int start_prio[] = {46, 44, 45, 40, 50, 30};
 static KThread* reset(const int* prio) {
     memset(snx_kmt_thread, 0, sizeof snx_kmt_thread);
     memset(g_mem, 0, 0x1000);
-    g_hle.sync.mwait = NULL;
+    g_hle.sync.mwait = 0;
     for (int i = 0; i < SNX_KMT_THREADS; i++) {
         snx_kmt_thread[i].o.type = KO_THREAD;
         snx_kmt_thread[i].prio = snx_kmt_thread[i].base_prio = prio[i];
@@ -94,10 +105,6 @@ static void lock(KThread* t, KThread* owner, u64 addr) {
     CHECK(svc_arbitrate_lock(t, handle(owner), addr, handle(t)) == 0, "lock");
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
@@ -126,7 +133,7 @@ int main(void) {
     svc_arbitrate_unlock(SNX_KMT_M);
     CHECK(e->woken && !b->woken && word(SNX_KMT_M) == (handle(e) | HANDLE_WAIT), "40 takes it, 44 still waits: word %x",
           word(SNX_KMT_M));
-    CHECK(b->lock_owner == e && a->prio == 46 && e->prio == 40, "44 now waits for 40; old owner at %d", a->prio);
+    CHECK(b->lock_owner == kt_ix(e) && a->prio == 46 && e->prio == 40, "44 now waits for 40; old owner at %d", a->prio);
 
     /* a chain: the owner waits on a mutex of its own, so its owner inherits too */
     t = reset((const int[]){46, 44, 45, 40, 50, 30});
@@ -156,7 +163,7 @@ int main(void) {
     u32 held = handle(a);
     snx_st_le32(g_mem + SNX_KMT_M, held);
     svc_signal_cv(SNX_KMT_CV, 1);
-    CHECK(b->wait_kind == 2 && b->lock_owner == a && a->prio == 44, "signalled into a held mutex: owner at %d",
+    CHECK(b->wait_kind == 2 && b->lock_owner == kt_ix(a) && a->prio == 44, "signalled into a held mutex: owner at %d",
           a->prio);
 
     /* the condition variable is marked before its mutex changes hands */
@@ -173,7 +180,7 @@ int main(void) {
     t = reset(start_prio);
     a = &t[0], b = &t[1];
     b->id = 82;
-    b->o.is_signaled = ended_after_a_sleep;
+    g_ends[0] = b;
     u32 joined = handle(b), at = 9;
     snx_st_le32(g_mem + 0x400, joined);
     g_slept = 0;
@@ -185,13 +192,14 @@ int main(void) {
     t = reset(start_prio);
     a = &t[0], b = &t[1];
     b->id = 83;
-    b->o.is_signaled = ended_after_a_sleep;
-    t[2].o.is_signaled = ended_after_a_sleep;
+    g_ends[0] = b;
+    g_ends[1] = &t[2];
     u32 two[2] = {handle(b), handle(&t[2])};
     snx_st_le32(g_mem + 0x400, two[0]), snx_st_le32(g_mem + 0x404, two[1]);
     g_slept = 0;
     CHECK(svc_wait_sync(a, 0x400, 2, -1, &at) == 0 && at == 0 && g_joining == 83, "join of two: thread %lu",
           (unsigned long)g_joining);
+    g_ends[0] = g_ends[1] = NULL;
 
     /* ArbitrateLock answers as the console: a word that changed meanwhile succeeds without a wait, an owner handle
        that names no thread (the current-thread pseudo-handle, a closed handle) is InvalidHandle, and the address must

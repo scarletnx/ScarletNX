@@ -21,6 +21,7 @@ u64 plat_ns(void) {
     static u64 now;
     return now += 16666666ull;
 }
+u64 guest_ns(void) { return plat_ns(); } /* hid's motion steps: no pause here */
 
 static void test_fail(const char* expression, int line) {
     fprintf(stderr, "misc_service.c:%d: check failed: %s\n", line, expression);
@@ -76,6 +77,7 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     return obj;
 }
 #include "svcobj_data.h"
+#include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
     if (obj->destroy) obj->destroy(obj);
@@ -121,7 +123,7 @@ void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
-    if (o->destroy) o->destroy(o);
+    if (o->type == KO_SHMEM) free(((KShmem*)o)->host); /* as kshmem_destroy lets go of its pages */
     free(o);
     test_kobjs--;
 }
@@ -129,18 +131,16 @@ KEvent* kevent_new(const char* name) {
     KEvent* e = calloc(1, sizeof *e);
     CHECK(e != NULL);
     e->o.type = KO_EVENT;
-    e->o.name = name;
+    kobj_set_name(&e->o, name);
     test_kobjs++;
     return e;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
-static void shm_destroy(KObj* o) { free(((KShmem*)o)->host); }
 KShmem* kshmem_new(u64 size, const char* name) {
     KShmem* s = calloc(1, sizeof *s);
     CHECK(s != NULL);
     s->o.type = KO_SHMEM;
-    s->o.name = name;
-    s->o.destroy = shm_destroy;
+    kobj_set_name(&s->o, name);
     s->size = size;
     s->host = calloc(1, size);
     CHECK(s->host != NULL);
@@ -164,17 +164,17 @@ static void close_handles(void) {
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     test_next_handle = 0x100;
 }
-u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+u32 ev_handle(u32 ev) { return h_new(kobj_at(ev)); }
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_new(name);
     e->signaled = signaled;
     *event = h_new(&e->o);
     return 0;
 }
-KEvent* owned_event(const char* name) {
+u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
-    return e;
+    return kobj_id(&e->o);
 }
 
 typedef struct {
@@ -265,20 +265,22 @@ static void test_mm(void) {
 /* hid IHidServer: SetSupportedNpadStyleSet (100) {u32 style set, aruid at 8}, GetSupportedNpadStyleSet (101) {aruid}
    and AcquireNpadStyleSetUpdateEventHandle (106) {u32 npad id, aruid at 8, u64 event pointer at 16} */
 static u32 no1_style(void) {
-    return snx_ld_le32(kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + HO_HidNpadInternalState_style_set);
+    return snx_ld_le32(kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + HO_HidNpadInternalState_style_set);
 }
 static u32 npad_style_at(int id) {
-    u8* e = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry;
+    u8* e = kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry;
     return snx_ld_le32(e + HO_HidNpadInternalState_style_set);
 }
 static u64 npad_latest_buttons(int id, u32 lifo_offset) {
-    u8* lifo = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
+    u8* lifo =
+        kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
     u64 tail = snx_ld_le64(lifo + HO_HidCommonLifoHeader_tail);
     return snx_ld_le64(lifo + HO_HidNpadCommonLifo_storage + tail * HS_HidNpadCommonStateAtomicStorage + 8 +
                        HO_HidNpadCommonState_buttons);
 }
 static void check_npad_latest_sample(int id, u32 lifo_offset, u64 sample) {
-    u8* lifo = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
+    u8* lifo =
+        kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
     u64 tail = snx_ld_le64(lifo + HO_HidCommonLifoHeader_tail), stamp, state_sample;
     u8* entry = lifo + HO_HidNpadCommonLifo_storage + tail * HS_HidNpadCommonStateAtomicStorage;
     stamp = snx_ld_le64(entry);
@@ -286,7 +288,8 @@ static void check_npad_latest_sample(int id, u32 lifo_offset, u64 sample) {
     CHECK((stamp & 1) == 0 && stamp == sample << 1 && state_sample == sample);
 }
 static void npad_latest_sticks(int id, u32 lifo_offset, i32 sticks[4]) {
-    u8* lifo = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
+    u8* lifo =
+        kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
     u64 tail = snx_ld_le64(lifo + HO_HidCommonLifoHeader_tail);
     memcpy(sticks,
            lifo + HO_HidNpadCommonLifo_storage + tail * HS_HidNpadCommonStateAtomicStorage + 8 +
@@ -295,7 +298,8 @@ static void npad_latest_sticks(int id, u32 lifo_offset, i32 sticks[4]) {
     snx_le32_array(sticks, 4);
 }
 static float npad_latest_direction(int id, u32 lifo_offset, u32 direction_offset) {
-    u8* lifo = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
+    u8* lifo =
+        kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
     u64 tail = snx_ld_le64(lifo + HO_HidCommonLifoHeader_tail);
     u32 bits = snx_ld_le32(lifo + HO_HidNpadSixAxisSensorLifo_storage + tail * HS_HidSixAxisSensorStateAtomicStorage +
                            8 + HO_HidSixAxisSensorState_direction + direction_offset);
@@ -432,7 +436,7 @@ static void test_npad_players(SvcObj* h) {
     static const u32 fewer_ids[] = {0, 1, 3, 0x20};
     static const u32 all_ids[] = {0, 1, 2, 3, 4, 0x20};
     static const u32 no2_only[] = {1};
-    u8* e1 = kshmem_ptr(g_hle.hid.shm) + HO_HidSharedMemory_npad + HS_HidNpadSharedMemoryEntry;
+    u8* e1 = kshmem_ptr(kshm(g_hle.hid.shm)) + HO_HidSharedMemory_npad + HS_HidNpadSharedMemoryEntry;
     u32 assignment, selected_id;
     u64 props;
     i32 sticks[4];
@@ -595,9 +599,9 @@ static void test_hid(void) {
     CHECK(get_styles(h) == 0x7F); /* every style until the game says which it takes */
     CHECK(no1_style() == 1);      /* No1 is a Pro Controller */
     KEvent* no1 = style_event(h, 0);
-    CHECK(no1 == g_hle.hid.style_ev[0] && no1->signaled); /* signaled at first, so the game reads the styles */
-    CHECK(style_event(h, 0x20) == g_hle.hid.style_ev[8] && style_event(h, 0x10) == g_hle.hid.style_ev[9]);
-    CHECK(style_event(h, 3) == g_hle.hid.style_ev[3]);
+    CHECK(no1 == kev(g_hle.hid.style_ev[0]) && no1->signaled); /* signaled at first, so the game reads the styles */
+    CHECK(style_event(h, 0x20) == kev(g_hle.hid.style_ev[8]) && style_event(h, 0x10) == kev(g_hle.hid.style_ev[9]));
+    CHECK(style_event(h, 3) == kev(g_hle.hid.style_ev[3]));
     no1->signaled = 0;
     set_styles(h, (1u << 1) | (1u << 2)); /* handheld and dual Joy-Con */
     CHECK(get_styles(h) == 6);
@@ -621,11 +625,11 @@ static void test_hid(void) {
     svcobj_unref(h);
     close_handles();
     /* the service's own references: everything it made goes with them */
-    kobj_unref(&g_hle.hid.shm->o);
-    kobj_unref(&g_hle.hid.xpad_shm->o);
-    kobj_unref(&g_hle.hid.six_shm->o);
-    kobj_unref(&g_hle.hid.joysix_shm->o);
-    for (int i = 0; i < 10; i++) kobj_unref(&g_hle.hid.style_ev[i]->o);
+    kobj_unref(&kshm(g_hle.hid.shm)->o);
+    kobj_unref(&kshm(g_hle.hid.xpad_shm)->o);
+    kobj_unref(&kshm(g_hle.hid.six_shm)->o);
+    kobj_unref(&kshm(g_hle.hid.joysix_shm)->o);
+    for (int i = 0; i < 10; i++) kobj_unref(&kev(g_hle.hid.style_ev[i])->o);
 }
 
 /* ngc:u's Check (1) and Mask (2) {languages, options} of a text, and ngct:u's Match (0) and Filter (1): nothing found
@@ -1140,10 +1144,6 @@ static void test_mii_latest(void) {
     svcobj_unref(service);
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */

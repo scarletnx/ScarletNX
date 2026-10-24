@@ -26,6 +26,8 @@
 #include "nx/runtime/gdbstub.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
+#include "nx/runtime/pause.h"
+#include "nx/runtime/state.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/runtime/startup.h"
 #include "nx/runtime/platform/backend.h"
@@ -510,11 +512,15 @@ static void frontend_loop(void) {
     u64 tick = 0, next = plat_ns(), now, changed = next, rate_at = next;
     int frames = 0, stalls = 0, rate_frames = 0;
     while (!g_quit) {
-        int shown;
+        int shown, paused;
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
-        hid_update();
-        vi_vsync_tick();
+        /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
+        paused = game_paused();
+        if (!paused) {
+            hid_update();
+            vi_vsync_tick();
+        }
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();
         SNX_ZONE_END(z_frontend);
@@ -536,6 +542,8 @@ static void frontend_loop(void) {
             last_ns = now_ns;
         }
 #endif
+        pause_unattended();
+        state_poll();
         /* here and not on the GPU thread, where writing the pipeline cache would hold up every channel */
         if (tick % 300 == 0) {
             save_hints();
@@ -558,7 +566,7 @@ static void frontend_loop(void) {
             }
 #endif
         }
-        if (shown != frames) {
+        if (shown != frames || paused) { /* a paused game shows nothing new, and isn't stalled */
             frames = shown;
             changed = now;
         } else if (now - changed >= STALL_NS && stalls < 4) {

@@ -81,8 +81,15 @@ KObj* h_get_ref(u32 h, int type) {
     return test_handle;
 }
 void kobj_ref(KObj* o) { o->refs++; }
+/* the destroys of the types svc_mem.c makes, as kernel.c's kobj_destroy picks them */
 void kobj_unref(KObj* o) {
-    if (!--o->refs && o->destroy) o->destroy(o);
+    if (--o->refs) return;
+    if (o->type == KO_SHMEM)
+        kshmem_destroy(o);
+    else if (o->type == KO_TMEM)
+        tmem_destroy(o);
+    else if (o->type == KO_CODEMEM)
+        kcodemem_destroy(o);
 }
 
 static u32 state(u64 a) {
@@ -209,7 +216,7 @@ static void test_code_memory(void) {
     gw32(owner + 0x10000 + 4, 0x22);
     CHECK(gr32(slave + 4) == 0x22);
     CHECK(svc_codemem_control(o, 0, owner, 0x4000, PERM_RW) == R_BADSTATE);
-    o->destroy(o);
+    kcodemem_destroy(o);
     CHECK(mem_pool_used() == 0 && state(owner + 0x10000) == MS_FREE && state(slave) == MS_FREE);
     mem_query(src, &b);
     CHECK(b.perm == PERM_RW && b.attr == 0 && b.pool == 0);
@@ -288,7 +295,7 @@ static void test_pool_full(u64 info) {
     CHECK(info_attr_perm(info, src, &perm) == 0 && perm == PERM_RW);
     s = kshmem_new(0x2000, "copy");
     CHECK(s && !s->pool && kshmem_ptr(s) == s->host);
-    s->o.destroy(&s->o);
+    kshmem_destroy(&s->o);
     CHECK(svc_map_memory(dst, src, 0x1000) == 0 && mem_pool_used() == 0x1000); /* what fits */
     CHECK(svc_unmap_memory(dst, src, 0x1000) == 0 && mem_pool_used() == 0);
     g_pool_size = keep;
@@ -307,7 +314,7 @@ static void test_cycles(void) {
         CHECK(gr32(dst + (u64)(i & 7) * 0x10000) == (u32)i);
         CHECK(svc_unmap_memory(dst + (u64)(i & 7) * 0x10000, src, 0x8000) == 0);
         s = kshmem_new(0x1000, "cycle");
-        s->o.destroy(&s->o);
+        kshmem_destroy(&s->o);
     }
     CHECK(mem_pool_used() == 0 && count_fds() == fds);
     CHECK(count_maps() <= maps + 2);
@@ -315,10 +322,6 @@ static void test_cycles(void) {
     check_tracking(HEAP_BASE, 0x3000); /* the heap's own pages beside it */
 }
 
-int kobj_never_signaled(KObj* o) {
-    (void)o;
-    return 0;
-}
 
 /* GPU-owned physical pages retain their normal guest state after moving into the alias pool. */
 static void test_physical_pool(void)

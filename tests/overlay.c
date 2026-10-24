@@ -115,7 +115,7 @@ static void draw(void) {
     list.q = quads;
     list.n = 0;
     list.max = 2048;
-    overlay_draw(&list, SW, SH);
+    overlay_draw(&list, SW, SH, 0);
 }
 /* whether text shows anywhere on the picture, its letters a cell apart on one row (spaces draw nothing) */
 static int shows(const char* text) {
@@ -228,15 +228,15 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* letters half the screen's height at most, in whole steps, in the middle: a phone held wide, a small window. The
-       page is as tall as its items (three here, under three rows of head, over a blank one), at the scale of the
+       page is as tall as its items (four here, under three rows of head, over a blank one), at the scale of the
        tallest page, and as wide as three quarters of the picture hold, between 40 and 72 columns */
     overlay_place(SW, SH, &px, &py, &s);
     C = overlay_cols(SW, s);
-    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 7 * 32) / 2);
+    assert(s == 2 && C == OVERLAY_COLS_MAX && px == (SW - C * 16) / 2 && py == (SH - 8 * 32) / 2);
     assert(overlay_cols(1280, 2) == 60 && overlay_cols(500, 1) == 46 && overlay_cols(400, 1) == OVERLAY_COLS &&
            overlay_cols(3840, 4) == OVERLAY_COLS_MAX);
     overlay_place(500, 120, &x, &y, &sc);
-    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == 4);
+    assert(sc == 1 && x == (500 - 46 * 8) / 2 && y == (120 - 8 * 16) / 2);
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
     overlay_set_display_scale(408.0f / 160);
@@ -252,17 +252,17 @@ int main(void) {
     /* the first page: the title on a band of ink, the items under it, the focused one on a band; the page hides the
        game, whose text would show through it */
     draw();
-    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 7 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
+    assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 8 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
     assert(list.q[0].rgba >> 24 == 0xFFu);
     assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">")); /* a page under each */
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE On-screen controls") &&
-           text_at(1, 4, "\xFE Controllers") && text_at(1, 5, "\xFE Exit"));
+           text_at(1, 4, "\xFE Controllers") && text_at(1, 5, "\xFE Save states") && text_at(1, 6, "\xFE Exit"));
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(2, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    assert(tap(3, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
     overlay_move(1);
-    overlay_move(-4);
+    overlay_move(-5);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
 
     /* the controls' page: each setting shown with its value, changed and kept */
@@ -363,6 +363,7 @@ int main(void) {
            left stick past half way as one, goes on after a while, then on and on; with the menu closed, nothing, and
            a press held as it opens does not act */
         assert(overlay_controls(0, still, 1000) == OVERLAY_NONE); /* the focus back on Controllers */
+        overlay_move(1);                                          /* Save states */
         assert(overlay_controls(0, down, 1000) == OVERLAY_NONE);  /* to Exit */
         assert(overlay_controls(0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_NONE);
         assert(overlay_controls(1ull << 0, down, 1000 + SNX_OVERLAY_REPEAT_DELAY - 1) == OVERLAY_EXIT); /* not yet */
@@ -375,6 +376,7 @@ int main(void) {
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY) == OVERLAY_NONE); /* Exit */
         assert(overlay_controls(1ull << 15, still, 2001 + SNX_OVERLAY_REPEAT_DELAY + SNX_OVERLAY_REPEAT_MS - 1) ==
                OVERLAY_NONE);
+        overlay_move(1); /* past Save states */
         assert(overlay_controls(1ull << 0, still, 3000) == OVERLAY_EXIT);
         assert(overlay_controls(1ull << 13, still, 3001) == OVERLAY_NONE &&
                overlay_controls(0, left, 3002) == OVERLAY_NONE);
@@ -549,6 +551,69 @@ int main(void) {
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS") && overlay_back() == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  MENU"));
+    /* the save states' pages: a row per slot, the auto one first, then a slot's Save, Load and Delete, Load and
+       Delete asked first. The list is read again each time the page opens */
+    {
+        OverlaySlot sl[3];
+        u8* thumb = (u8*)calloc((size_t)SNX_UI_IMAGE_W * SNX_UI_IMAGE_H, 4);
+        u32 version;
+        memset(sl, 0, sizeof sl);
+        snprintf(sl[2].when, sizeof sl[2].when, "2026-10-22 14:05  0:02:00");
+        sl[2].thumb = thumb;
+        assert(!overlay_states_shown());
+        overlay_move(1);
+        assert(overlay_select() == OVERLAY_NONE && overlay_states_shown() && overlay_states_stale());
+        overlay_slots_set(sl, 3);
+        assert(!overlay_states_stale());
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("\xFE Auto") &&
+               shows("\xFE Slot 1") && shows("\xFE Slot 2") && shows("\xFE Back"));
+        assert(shows("Empty") && shows("2026-10-22 14:05  0:02:00"));
+        /* the focused slot's thumbnail beside the list: none for an empty one, slot 2's once in focus */
+        assert(!ui_image_get(&version));
+        overlay_move(2);
+        draw();
+        assert(ui_image_get(&version) != NULL);
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  SLOT 2") && shows("\xFE Save"));
+        assert(overlay_select() == OVERLAY_SAVE && overlay_slot() == 2);
+        overlay_move(1); /* Load: asked, Cancel in focus */
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  LOAD SLOT 2?"));
+        assert(overlay_select() == OVERLAY_NONE); /* Cancel */
+        draw();
+        assert(shows("SCARLETNX  /  SLOT 2"));
+        assert(overlay_select() == OVERLAY_NONE); /* Load again, the focus back on it, then yes */
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_LOAD && overlay_slot() == 2);
+        /* an empty slot neither loads nor goes */
+        assert(overlay_back() == OVERLAY_NONE && overlay_states_shown());
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_NONE);
+        overlay_move(1);
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  SLOT 1"));
+        /* the auto slot has no Save */
+        assert(overlay_back() == OVERLAY_NONE);
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(shows("SCARLETNX  /  AUTO SLOT") && shows("\xFE Load"));
+        assert(overlay_back() == OVERLAY_NONE && overlay_back() == OVERLAY_NONE && !overlay_states_shown());
+        draw();
+        assert(shows("SCARLETNX  /  MENU"));
+    }
+    /* a notification over the game, closed or open, until its time is up */
+    overlay_toast("Saved to slot 2", 1000);
+    assert(overlay_toasting(1000) && !overlay_toasting(1000 + (u64)SNX_OVERLAY_TOAST_MS * 1000000u));
+    overlay_toggle();
+    draw();
+    assert(!overlay_shown() && shows("Saved to slot 2"));
+    overlay_toast("", 0); /* none */
+    overlay_toggle();
     /* closed, it draws nothing; opened again, its first page */
     overlay_toggle();
     draw();
@@ -801,10 +866,10 @@ int main(void) {
                 const SnxUiQuad* q = &list.q[i];
                 if (q->v == SNX_CONTROLS_ATLAS_HEIGHT && q->uw == SNX_UI_PICTURE && q->vh == SNX_UI_PICTURE) {
                     ++pictures;
-                    assert(q->y == band + 2 * edge && q->h == side && q->w == side && !q->sharp);
+                    assert(q->y == band + 2 * edge && q->h == side && q->w == side && q->sample == UI_BLEND);
                     assert(q->x + q->w == right - 2 * edge);
                 }
-                frames += q->rgba == LIGHT_RGBA && q->sharp && (q->w == edge || q->h == edge) && q->x >= boxx &&
+                frames += q->rgba == LIGHT_RGBA && q->sample == UI_SHARP && (q->w == edge || q->h == edge) && q->x >= boxx &&
                           q->x < right && q->y >= band && q->y < band + 16.0f * (float)s;
                 if (q->u == SNX_CONTROLS_FONT_X + 'P' % 16 * 8 && q->v == SNX_CONTROLS_FONT_Y + 'P' / 16 * 16 &&
                     q->y == band && q->x > boxx)

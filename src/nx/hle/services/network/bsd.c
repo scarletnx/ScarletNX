@@ -55,7 +55,7 @@ int network_interface(SnxNetInterface* out) {
         return 0;
     }
     if (!g_settings.network) return -SNX_ENETDOWN;
-    pm_lock(&g_hle.bsd.iface_lk);
+    pm_lock(&g_host.bsd.iface_lk);
     time_t now = time(NULL);
     if (!g_hle.bsd.iface_when || now - g_hle.bsd.iface_when >= 2 || now < g_hle.bsd.iface_when) {
         g_hle.bsd.iface_have = !snx_net_primary_interface(&g_hle.bsd.iface);
@@ -63,7 +63,7 @@ int network_interface(SnxNetInterface* out) {
     }
     if (g_hle.bsd.iface_have && out) *out = g_hle.bsd.iface;
     int r = g_hle.bsd.iface_have ? 0 : -SNX_ENETDOWN;
-    pm_unlock(&g_hle.bsd.iface_lk);
+    pm_unlock(&g_host.bsd.iface_lk);
     return r;
 }
 int network_online(void) { return !network_interface(NULL); }
@@ -77,22 +77,22 @@ int network_reachable(const SnxSockAddr* a) {
    and its subnet's broadcast address: two consoles on one host then keep their ports apart, and each still hears
    the broadcasts a game sends to the subnet (a Pia session's first messages). NULL clears it */
 void bsd_set_bind_address(const u8* ip, const u8* bcast) {
-    pm_lock(&g_hle.bsd.bind_lk);
+    pm_lock(&g_host.bsd.bind_lk);
     g_hle.bsd.bind_set = ip != NULL;
     if (ip) memcpy(g_hle.bsd.bind_ip, ip, 4);
     if (ip) memcpy(g_hle.bsd.bind_bcast, bcast, 4);
-    pm_unlock(&g_hle.bsd.bind_lk);
+    pm_unlock(&g_host.bsd.bind_lk);
 }
 /* 1 and the broadcast address when a was INADDR_ANY and became the console's address */
 static int bind_address(SnxSockAddr* a, u8 bcast[4]) {
     static const u8 any[4];
     int r;
     if (a->family != SNX_AF_INET || memcmp(a->addr, any, 4)) return 0;
-    pm_lock(&g_hle.bsd.bind_lk);
+    pm_lock(&g_host.bsd.bind_lk);
     r = g_hle.bsd.bind_set;
     if (r) memcpy(a->addr, g_hle.bsd.bind_ip, 4);
     if (r) memcpy(bcast, g_hle.bsd.bind_bcast, 4);
-    pm_unlock(&g_hle.bsd.bind_lk);
+    pm_unlock(&g_host.bsd.bind_lk);
     return r;
 }
 /* the broadcast companion of a datagram socket bound to the console's address: the same port on the broadcast
@@ -267,16 +267,16 @@ static int fd_add(Bsd* b, SnxSocket* s, int flags, int exempt) {
    bsd_destroy clears it under the lock, so a lookup that holds the lock sees the session whole */
 SnxSocket* bsd_client_socket(u64 pid, i32 fd) {
     SnxSocket* s = NULL;
-    pm_lock(&g_hle.bsd.client_lk);
+    pm_lock(&g_host.bsd.client_lk);
     if (g_hle.bsd.client && g_hle.bsd.client_pid == pid) s = fd_get(g_hle.bsd.client->data, fd, NULL);
-    pm_unlock(&g_hle.bsd.client_lk);
+    pm_unlock(&g_host.bsd.client_lk);
     return s;
 }
 static void bsd_destroy(SvcObj* o) {
     Bsd* b = o->data;
-    pm_lock(&g_hle.bsd.client_lk);
+    pm_lock(&g_host.bsd.client_lk);
     if (g_hle.bsd.client == o) g_hle.bsd.client = NULL;
-    pm_unlock(&g_hle.bsd.client_lk);
+    pm_unlock(&g_host.bsd.client_lk);
     for (int i = 0; i < BSD_MAX_FD; i++) {
         snx_socket_unref(b->fd[i].s);
         snx_socket_unref(b->fd[i].bcast);
@@ -321,10 +321,10 @@ static int bsd_unknown(SvcObj* self, IpcCtx* c) {
    registers a new one, which takes over). The transfer memory is the console's buffer space: the host's stack needs
    none */
 static int bsd_register(SvcObj* self, u64 pid) {
-    pm_lock(&g_hle.bsd.client_lk);
+    pm_lock(&g_host.bsd.client_lk);
     g_hle.bsd.client = self;
     g_hle.bsd.client_pid = pid;
-    pm_unlock(&g_hle.bsd.client_lk);
+    pm_unlock(&g_host.bsd.client_lk);
     R_SUCCEED();
 }
 static int nn_socket_sf_IClient_RegisterClient(SvcObj* self, const nn_socket_sf_LibraryConfigData* config, u64 pid,
@@ -855,3 +855,6 @@ static SvcObj* bsd_new(const char* name, int system) {
 SvcObj* new_bsd_u(void) { return bsd_new("bsd:u", 0); }
 SvcObj* new_bsd_s(void) { return bsd_new("bsd:s", 1); }
 SvcObj* new_bsdcfg(void) { return nn_bsdsocket_cfg_ServerInterface_new(); }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_bsd_state_fns,
+               STATE_FN("bsd", bsd_destroy));

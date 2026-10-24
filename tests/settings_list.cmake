@@ -42,7 +42,7 @@ if(NOT at LESS 0)
     message(FATAL_ERROR "scarletnx --settings lists controls_a, the game's own")
 endif()
 if(NOT list MATCHES
-   "^Display\t.*\nGraphics\t.*\nPerformance\t.*\nOn-screen controls\t.*\nOn-screen controls/Buttons\t.*\nControllers\t.*\nControllers/Button map\t.*\nNetwork\t.*\nDebug\t")
+   "^Game\t.*\nDisplay\t.*\nGraphics\t.*\nPerformance\t.*\nOn-screen controls\t.*\nOn-screen controls/Buttons\t.*\nControllers\t.*\nControllers/Button map\t.*\nNetwork\t.*\nDebug\t")
     message(FATAL_ERROR "scarletnx --settings lists the sections out of the .ini's order")
 endif()
 if(list MATCHES "\nOn-screen controls/Buttons\t[^\n]*\nOn-screen controls\t") # a page after its section's others

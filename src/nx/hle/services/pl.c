@@ -108,9 +108,9 @@ static void fonts_fill(u8* shm, u32 shm_size) {
 
 static SvcObj* pl_new(void) { return nn_pl_detail_IPlatformServiceManager_new(); }
 void svc_pl_init(void) {
-    g_hle.pl.shm = kshmem_new(PL_SHM_SIZE, "shared fonts");
-    kobj_ref(&g_hle.pl.shm->o); /* the service's, for as long as the process runs */
-    fonts_fill(kshmem_ptr(g_hle.pl.shm), PL_SHM_SIZE);
+    g_hle.pl.shm = kobj_id(&kshmem_new(PL_SHM_SIZE, "shared fonts")->o);
+    kobj_ref(kobj_at(g_hle.pl.shm)); /* the service's, for as long as the process runs */
+    fonts_fill(shm_ptr(g_hle.pl.shm), PL_SHM_SIZE);
     nn_pl_detail_IPlatformServiceManager_register(pl_new);
 }
 
@@ -138,7 +138,7 @@ static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(Svc
 }
 static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
     (void)self;
-    *shared_memory = h_new(&g_hle.pl.shm->o);
+    *shared_memory = h_new(kobj_at(g_hle.pl.shm));
     R_SUCCEED();
 }
 /* every font, in the order of their types whatever the language, as Eden does: up to 6, or as many as the buffers
