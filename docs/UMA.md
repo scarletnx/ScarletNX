@@ -29,10 +29,13 @@ The copies, landings, hashes and write tracking were only there because the GPU 
 
 `vk/uma.c` imports guest memory as buffers, on demand.
 
-- A range is imported as the 2 MiB aligned chunk around it, or the two it reaches across. A longer range is imported
-  as its own pages. The span is narrowed to the guest memory around it whose host pages are the reservation's own and
-  committed (`mem_private_span`: mapped, not the alias pool's, not I/O). Imports may overlap. A lookup takes the last
-  one found, then a binary search.
+- A range is imported as the 2 MiB aligned chunks it reaches, with every import those meet taken in, so that no page is
+  in two imports. Drivers count each import's pages as memory the GPU holds (amdgpu's userptr pages are GTT), and a
+  long range bound from many starts (a 64 MiB storage window, a vertex stream) made an import of nearly the same pages
+  for each start, which a Steam Deck showed as a spike in GPU memory. An import takes in at most 128 MiB: past that
+  the range is copied. The span is narrowed to the guest memory around it whose host pages are the reservation's own
+  and committed (`mem_private_span`: mapped, not the alias pool's, not I/O). A lookup takes the last one found, then a
+  binary search.
 - An import no draw has used for 120 presents is let go (`vk_uma_frame`).
 - Imports are small and few because of what drivers do with them (below).
 - The alias pool's pages are never imported. GPU-owned memory lives there, trapped (`docs/GPU_OWNERSHIP.md`). RADV
@@ -146,6 +149,9 @@ so the bits land as they are. The image is made able to take that view (`vk_texc
 mutable format, block-texel views for compressed formats). A rebuild with more than 512 slots of arguments runs the
 rest as it is. That is slower, never wrong, since a rebuild of an unchanged texture gives the same texels. A texture
 the GPU can't check now (results pending over it, memory not imported) is loaded again as it is.
+
+A check's arguments take staging for about what its rebuild needs (`gate_room`: a few slots a level of a layer, at
+most 512). Room for 512 at every check was 24 KiB each, hundreds a frame, which grew the staging ring by megabytes.
 
 `uma_texture_check=0` gives textures back to the CPU's checks with unified memory on, to compare. Each check ends the
 rendering pass and records about seven barriers (two of them full ones) even when the rebuild is skipped, once per

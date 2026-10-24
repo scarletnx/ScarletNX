@@ -1445,6 +1445,23 @@ static int check_uma(void) {
         }
         CHECK(!tex_read(t2, img) && tex_matches(img, tm));
     }
+    /* a long range bound from many starts (a storage window, a vertex stream) takes the imports it reaches, not one
+       more copy of the same pages for each start */
+    {
+        VkUmaStats a, z;
+        const u64 big = HEAP_BASE + 0x2000000, gbig = 0x420000000ull;
+        CHECK(mem_map(big, 0x1000000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gbig, big, 0x1000000);
+        vk_uma_stats(&a);
+        for (u32 i = 0; i < 64; i++) {
+            CHECK(vk_buf_get(gbig + (u64)i * 0x11000, 0x800000, &b2, &off2));
+            vk_uma_stats(&z);
+            CHECK(z.bytes - a.bytes <= 0x1000000);
+        }
+        vk_unlock();
+        CHECK(mem_unmap(big, 0x1000000) == 0);
+        vk_lock();
+    }
     /* imports no draw used for long go, so a driver that takes an import's pages at each submit isn't handed them */
     {
         VkUmaStats st0, st1;

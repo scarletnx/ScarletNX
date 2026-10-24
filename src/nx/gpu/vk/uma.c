@@ -5,8 +5,8 @@
    Without it (the uma setting off, or a GPU without the extension) buffer.c copies them and watches for the CPU's
    writes.
 
-   Imports are spans of the reservation's own committed pages, the UMA_CHUNK aligned chunk around a range or the two
-   it reaches across (a longer range: its own pages), sorted by where they start (they may overlap), and let go of
+   Imports are spans of the reservation's own committed pages, the UMA_CHUNK aligned chunks a range reaches, with the
+   imports they meet taken in so that no page is in two (import_new), sorted by where they start, and let go of
    when no draw has used them for UMA_IDLE presents. They are small and few because a driver may walk an import's
    pages at every submit that names it: amdgpu takes a userptr buffer's pages again (hmm_range_fault over all of
    them) in each command submission, and RADV's imports are userptr buffers. 64 MiB chunks around whatever a draw
@@ -44,6 +44,7 @@
 
 #define UMA_CHUNK   (2ull << 20) /* what one import covers around a range, aligned to it */
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
+#define UMA_MERGE_MAX (128ull << 20) /* the most an import takes in, the imports it meets with it */
 #define UMA_IMPORTS 1024          /* imports at most: the device may have as few as 4096 allocations */
 #define UMA_MISS_N  256           /* spans that couldn't be imported, not tried again until memory changes */
 #define UMA_USE_N   1024          /* ranges stamped into live in the submit being recorded */
@@ -254,26 +255,38 @@ static int import_span(u32 k, u64 lo, u64 hi) {
     if (hi - lo > g_uma.max_len) g_uma.max_len = hi - lo;
     return 1;
 }
-/* a new import holding [cpu, cpu + len): the chunk around it, or the two it reaches across, narrowed to the
-   reservation's own committed pages; a longer range, its own pages. Its index, or g_uma.n when there can't be one */
+/* A new import holding [cpu, cpu + len): the chunks it reaches, with the imports they meet taken in, narrowed to the
+   reservation's own committed pages. No page is in two imports: a driver counts each import's pages as memory the GPU
+   holds (amdgpu's userptr pages are GTT), and a long range bound from many starts (a storage window, a vertex stream)
+   made one more import of nearly the same pages for each start, gigabytes of them. Past UMA_MERGE_MAX the range is
+   copied instead. Its index, or g_uma.n when there can't be one */
 static u32 import_new(u64 cpu, u64 len) {
     u64 al = g_vk.uma_align, lo = cpu & ~(UMA_CHUNK - 1), hi = (cpu + len + UMA_CHUNK - 1) & ~(UMA_CHUNK - 1);
+    u64 cap = g_vk.alloc_cap < UMA_MERGE_MAX ? g_vk.alloc_cap : UMA_MERGE_MAX;
     UmaMiss* ms = &g_uma.miss[((cpu >> 12) ^ (len << 7)) % UMA_MISS_N];
     if (ms->cpu == cpu && ms->len == len && ms->gen == g_uma.gen) return g_uma.n;
     if (g_uma.n == UMA_IMPORTS) goto miss;
-    if (hi - lo > 2 * UMA_CHUNK) {
-        lo = cpu & ~(al - 1);
-        hi = (cpu + len + al - 1) & ~(al - 1);
+    for (int grown = 1; grown;) { /* until the span takes in every import it meets */
+        grown = 0;
+        for (u32 i = 0; i < g_uma.n; i++) {
+            const UmaImport* m = &g_uma.imp[i];
+            if (m->lo < hi && lo < m->hi && (m->lo < lo || m->hi > hi)) {
+                if (m->lo < lo) lo = m->lo;
+                if (m->hi > hi) hi = m->hi;
+                grown = 1;
+            }
+        }
     }
+    if (hi - lo > cap) goto miss;
     if (mem_private_span(cpu, len, &lo, &hi)) goto miss;
-    if (hi - lo > g_vk.alloc_cap) { /* past the device's cap on one allocation: the range's own pages */
-        lo = cpu & ~(al - 1);
-        hi = (cpu + len + al - 1) & ~(al - 1);
-        if (hi - lo > g_vk.alloc_cap) goto miss;
-    }
     lo = (lo + al - 1) & ~(al - 1);
     hi &= ~(al - 1);
-    if (cpu < lo || cpu + len > hi || !import_span(import_after(lo), lo, hi)) goto miss;
+    if (cpu < lo || cpu + len > hi) goto miss;
+    /* the imports it holds go (destroyed once the submits that used them are done); one it only meets, which the
+       narrowing cut off, stays */
+    for (u32 i = g_uma.n; i-- > 0;)
+        if (g_uma.imp[i].lo >= lo && g_uma.imp[i].hi <= hi) retire(i);
+    if (!import_span(import_after(lo), lo, hi)) goto miss;
     return import_find(cpu, len);
 miss:
     g_uma.refused++;

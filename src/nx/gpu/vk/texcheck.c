@@ -13,7 +13,8 @@
    in an unsigned format of the unit's size, the image made able to take it (vk_texcheck_prepare).
 
    The arguments the CPU recorded are written into staging once the rebuild is recorded and before the submit, which
-   makes them visible to the GPU. A rebuild with more than GATE_SLOTS slots of arguments runs the rest as it is: a
+   makes them visible to the GPU. A rebuild with more slots of arguments than were made room for (gate_room) runs the
+   rest as it is: a
    rebuild of a texture that didn't change gives the same texels, so that is slower, never wrong. */
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +24,7 @@
 #include "nx/gpu/vk/vk.h"
 
 #define PIECE       (64ull << 10) /* texcheck.comp's PIECE_WORDS, in bytes */
-#define GATE_SLOTS  512u          /* texcheck.comp's: 16 byte slots of a rebuild's arguments */
+#define GATE_SLOTS  512u          /* the most 16 byte slots of a rebuild's arguments a check makes room for */
 #define COPY_SLOTS  4u            /* a copy's command (VkCopyMemoryToImageIndirectCommandKHR) padded to 64 bytes */
 #define COPY_STRIDE (COPY_SLOTS * 16u)
 
@@ -47,7 +48,7 @@ static struct {
     VkBuffer out;
     u64 out_off;
     VkDeviceAddress out_at;
-    u32 n;
+    u32 n, room;
     VkGate gate;
     u64 checks, bytes, copies, stores, overflow;
 } g_tc;
@@ -269,7 +270,7 @@ void vk_texcheck_free(Surf* t) {
 /* ------------------------------------------------------------ the gate */
 /* k free slots of the gate's arguments, at their index, or ~0u when the gate is full */
 static u32 slots(u32 k) {
-    if (g_tc.n + k > GATE_SLOTS) {
+    if (g_tc.n + k > g_tc.room) {
         g_tc.overflow++;
         return ~0u;
     }
@@ -277,7 +278,14 @@ static u32 slots(u32 k) {
     return g_tc.n - k;
 }
 static u32* slot_on(u32 i) { return (u32*)(g_tc.in + 16 + (u64)i * 16); }
-static u32* slot_off(u32 i) { return (u32*)(g_tc.in + 16 + ((u64)GATE_SLOTS + i) * 16); }
+static u32* slot_off(u32 i) { return (u32*)(g_tc.in + 16 + ((u64)g_tc.room + i) * 16); }
+/* the slots t's rebuild takes, about: a level of a layer is a deswizzle, a conversion and a copy (four slots) or a
+   store, and a level past the staging band a few strips more. Every check took room for GATE_SLOTS, 24 KiB of staging
+   each, hundreds of them a frame: the staging ring grew by megabytes a frame, kept for hundreds of frames */
+static u32 gate_room(const Surf* t) {
+    u64 subs = (u64)t->levels * (t->type == VK_IMAGE_VIEW_TYPE_3D ? 1 : t->layers), room = subs * 8 + 16;
+    return room > GATE_SLOTS ? GATE_SLOTS : (u32)room;
+}
 static void gate_dispatch(void* ctx, VkCommandBuffer cb, u32 x, u32 y, u32 z) {
     u32 i = slots(1);
     (void)ctx;
@@ -416,8 +424,9 @@ int vk_texcheck_begin(Surf* t, int force) {
         force = 1; /* no hashes kept yet */
     }
     /* the arguments: header, on, off, as the CPU writes them, and the ones the GPU picks */
-    g_tc.in = vk_stage(16 + 2ull * GATE_SLOTS * 16, vk_stage_align(), &in, &in_off);
-    u8* out = g_tc.in ? vk_stage((u64)GATE_SLOTS * 16, vk_stage_align(), &g_tc.out, &g_tc.out_off) : NULL;
+    g_tc.room = gate_room(t);
+    g_tc.in = vk_stage(16 + 2ull * g_tc.room * 16, vk_stage_align(), &in, &in_off);
+    u8* out = g_tc.in ? vk_stage((u64)g_tc.room * 16, vk_stage_align(), &g_tc.out, &g_tc.out_off) : NULL;
     VkDescriptorSet set = out ? vk_desc_alloc(g_tc.check_ds) : VK_NULL_HANDLE;
     if (!set) return 0;
     memset(g_tc.in, 0, 16);
@@ -425,8 +434,8 @@ int vk_texcheck_begin(Surf* t, int force) {
     g_tc.n = 0;
     VkDescriptorBufferInfo bi[4] = {{src, base, at - base + words * 4},
                                     {t->chk_buf, 0, state},
-                                    {in, in_off, 16 + 2ull * GATE_SLOTS * 16},
-                                    {g_tc.out, g_tc.out_off, (u64)GATE_SLOTS * 16}};
+                                    {in, in_off, 16 + 2ull * g_tc.room * 16},
+                                    {g_tc.out, g_tc.out_off, (u64)g_tc.room * 16}};
     VkWriteDescriptorSet wr[4];
     for (u32 i = 0; i < 4; i++)
         wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -466,6 +475,7 @@ int vk_texcheck_begin(Surf* t, int force) {
 }
 void vk_texcheck_end(void) {
     memcpy(g_tc.in, &g_tc.n, 4); /* the slots the rebuild's arguments took, before the submit */
+    memcpy(g_tc.in + 4, &g_tc.room, 4);
     vk_gate_set(NULL);
 }
 void vk_texcheck_stats(VkTexCheckStats* st) {

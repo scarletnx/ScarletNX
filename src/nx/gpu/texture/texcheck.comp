@@ -32,14 +32,14 @@ layout(binding = 1, std430) restrict buffer State {
     uint pad0, pad1, pad2;
     uvec2 piece[];
 } st;
-/* written by the CPU once the rebuild is recorded, before the submit: how many 16 byte slots its arguments take, then
-   the arguments for the flag set, then GATE_SLOTS on, those for the flag clear */
+/* written by the CPU once the rebuild is recorded, before the submit: how many 16 byte slots its arguments take and
+   how many it had room for, then the arguments for the flag set, then from the room on, those for the flag clear */
 layout(binding = 2, std430) readonly restrict buffer ArgsIn {
     uint count;
-    uint pad3, pad4, pad5;
+    uint room;
+    uint pad3, pad4;
     uvec4 a[];
 } args_in;
-#define GATE_SLOTS 512u /* texcheck.c's */
 layout(binding = 3, std430) writeonly restrict buffer ArgsOut {
     uvec4 a[];
 } args_out;
@@ -62,7 +62,7 @@ void main() {
     uint t = gl_LocalInvocationID.x;
     if (p.mode == 1u) {
         uint on = st.flag;
-        for (uint i = t; i < args_in.count; i += 256u) args_out.a[i] = args_in.a[on != 0u ? i : GATE_SLOTS + i];
+        for (uint i = t; i < args_in.count; i += 256u) args_out.a[i] = args_in.a[on != 0u ? i : args_in.room + i];
         barrier();
         if (t == 0u) st.flag = 0u;
         return;
