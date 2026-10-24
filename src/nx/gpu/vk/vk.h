@@ -901,6 +901,8 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
+/* write tracking taken up or not, as the write_tracking setting asks and the host allows (at the renderer's start) */
+void vk_ww_init(void);
 u32 vk_ww_now(void);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
 u32 vk_ww_epoch(void);
@@ -940,6 +942,10 @@ void vk_uma_writes_abort(void);  /* it wasn't */
 int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off);
 void vk_uma_frame_done(u64 frame);                     /* that submit is done: its in-place writes are in memory */
 void vk_uma_frame(void);                               /* a present: imports unused for long go */
+/* whether an import holds guest page page (address >> 12), on any thread: unless the imported_page_write_tracking
+   setting asks, write tracking neither scans it nor answers for it (buffer.c) */
+int vk_uma_page_imported(u64 page);
+int vk_uma_imported(u64 cpu, u64 len); /* the same for any page of [cpu, cpu + len) */
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
 int vk_uma_pending(u64 gva, u64 len);     /* an in-place write is pending over GPU range [gva, gva + len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */
@@ -948,9 +954,24 @@ int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */
 void vk_uma_mem_need(u64 gva, u64 len);
 void vk_uma_mem_need_cpu(u64 cpu, u64 len); /* the same by guest address, whichever thread copies */
 void vk_uma_gpu_reads(int on);
+/* why ranges weren't imported (each then copied), and why imports went */
+enum {
+    VK_UMA_REFUSED_LONG,   /* longer than the biggest import */
+    VK_UMA_REFUSED_FULL,   /* the most imports made */
+    VK_UMA_REFUSED_CAP,    /* past the device's cap on one allocation */
+    VK_UMA_REFUSED_SHARED, /* not the reservation's own committed pages (the alias pool's, unmapped, I/O) */
+    VK_UMA_REFUSED_ALIGN,  /* not on the import alignment */
+    VK_UMA_REFUSED_ROOM,   /* no room under the bytes imported at once */
+    VK_UMA_REFUSED_DRIVER, /* the driver refused it */
+    VK_UMA_REFUSED_BEFORE, /* refused before, memory unchanged since */
+    VK_UMA_REFUSED_OFFSET, /* imported, at an offset the binding can't take */
+    VK_UMA_REFUSED_N
+};
+enum { VK_UMA_RETIRED_IDLE, VK_UMA_RETIRED_CHANGED, VK_UMA_RETIRED_OWNED, VK_UMA_RETIRED_ROOM, VK_UMA_RETIRED_N };
 typedef struct {
     u32 imports;
     u64 made;      /* imports made so far */
+    u64 why_refused[VK_UMA_REFUSED_N], why_retired[VK_UMA_RETIRED_N];
     u64 published; /* bytes of the engines' results copied into guest memory in place */
     u64 bytes, waits, out_waits, barriers, pending;
 } VkUmaStats;

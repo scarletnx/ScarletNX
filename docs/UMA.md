@@ -16,8 +16,12 @@ Without the extension the setting is a warning at start, and the renderer works 
 staging and their own buffers, results land at the fence, and textures are hashed and watched with write tracking
 (`plat_ww_scan`).
 
-Unified memory and write tracking exclude each other. With UMA on, write tracking is off for the run (`plat_ww_off`,
-from `vk_uma_init`), and what asked it compares contents instead, as on a host without it (below).
+Write tracking leaves out the pages unified memory imports (`imported_page_write_tracking=0`, the default): no scan
+re-protects them, since re-protecting an imported page is what makes amdgpu wait for the GPU and take the import's
+pages again (below), and the caches over them compare contents (`vk_written_since` answers -1). Each imported page is
+counted (`vk_uma_page_imported`) and the scans step around them (`buffer.c`'s `ww_scan_free`). The rest of guest
+memory is write-tracked as without UMA. `imported_page_write_tracking=1` tracks imported pages too, and
+`write_tracking=0` turns write tracking off for the run, with or without UMA.
 
 The console's GPU reads and writes the same memory its CPU does, and the game's fences keep the two apart. ScarletNX
 keeps those fences faithful. A release (a syncpoint increment, a semaphore) waits for the Vulkan submit that holds the
@@ -71,8 +75,8 @@ the whole ioctl again. amdgpu's notifier also waits for the GPU to be done with 
 So, on a Steam Deck, the cost of unified memory is the imported pages each submission names, times submissions. Its
 first version imported 64 MiB chunks (16384 pages each) around whatever a draw touched and kept them for good, and it
 ran far slower than with `uma=0`. Anything that changes the protection of imported pages invalidates them. Write
-tracking does that by design: each scan re-protects the pages written since the last one. That is why the two
-exclude each other. Transparent huge pages being collapsed still can.
+tracking does that by design: each scan re-protects the pages written since the last one. That is why scans leave
+imported pages out. Transparent huge pages being collapsed still can.
 
 The fix this design points to is the other direction: guest memory allocated as Vulkan memory and mapped into the
 reservation (`VK_EXT_map_memory_placed`, which RADV has), so the GPU uses ordinary buffers. Those mappings can't take
@@ -184,7 +188,8 @@ A texture the GPU can't check (results pending over it, memory the runtime wrote
 imported) goes to the CPU's checks for good, which is how it was checked before UMA. Reloading it at every check
 instead was a staging copy and a rebuild of each such texture every frame and every submission.
 
-With UMA on there is no write tracking, so these compare contents, as on a host without it:
+Over imported pages (or anywhere, with `write_tracking=0`) these compare contents, as on a host without write
+tracking:
 
 - textures the GPU doesn't check (over memory the runtime wrote while recording, depth textures, formats a store can't
   take with neither copy extension, any on a discrete GPU or with `uma_texture_check=0`): hashed in each epoch until

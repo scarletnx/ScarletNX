@@ -16,11 +16,14 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+/* A texture longer than an import is checked a segment at a time (vk/texcheck.c), each with its own source: piece0 is
+   the segment's first piece, and the words are counted from the texture's start wherever they are mixed in */
 layout(push_constant) uniform Params {
-    uint mode;  /* 0: hash and compare, 1: the rebuild's arguments */
-    uint bias;  /* words from the bound start of the source to the texture's first */
-    uint words; /* the texture's words */
-    uint force; /* mode 0: set the flag whatever the hashes */
+    uint mode;   /* 0: hash and compare, 1: the rebuild's arguments */
+    uint bias;   /* words from the bound start of the source to the segment's first */
+    uint words;  /* the segment's words */
+    uint force;  /* mode 0: set the flag whatever the hashes */
+    uint piece0; /* the segment's first piece */
 } p;
 
 layout(binding = 0, std430) readonly restrict buffer Source {
@@ -69,13 +72,13 @@ void main() {
     }
     /* the sum of each word mixed with its index, in two independent lanes: the order the invocations add in doesn't
        matter, and a word moved or changed changes both */
-    uint piece = gl_WorkGroupID.x, first = piece * PIECE_WORDS;
+    uint piece = p.piece0 + gl_WorkGroupID.x, first = gl_WorkGroupID.x * PIECE_WORDS;
     uvec2 h = uvec2(0u);
     for (uint k = t; k < PIECE_WORDS; k += 256u) {
-        uint i = first + k;
+        uint i = first + k, g = piece * PIECE_WORDS + k; /* in the segment, and in the texture */
         if (i >= p.words) break;
-        uint a = mix32(src.w[p.bias + i] ^ (i * 0x9E3779B9u));
-        h += uvec2(a, mix32(a + i + 0x632BE5ABu));
+        uint a = mix32(src.w[p.bias + i] ^ (g * 0x9E3779B9u));
+        h += uvec2(a, mix32(a + g + 0x632BE5ABu));
     }
     sums[t] = h;
     barrier();

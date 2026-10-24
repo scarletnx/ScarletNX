@@ -83,10 +83,8 @@ void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when 
    protection with PAGEMAP_SCAN, Windows the write watch of the reservation; SNX_NO_WW in the environment turns both
    off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
-/* write tracking off for good: plat_ww_scan answers -1 from now on, and no page is watched again. Unified memory
-   (gpu/vk/uma.c) and write tracking exclude each other: re-protecting the pages written since a scan changes the
-   protection of imported memory, which a driver that mirrors the page tables (amdgpu's MMU notifier) answers by
-   waiting for the GPU and taking the pages again at its next submit */
+/* write tracking off for good (the write_tracking setting): plat_ww_scan answers -1 from now on, and no page is
+   watched again */
 void plat_ww_off(void);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared

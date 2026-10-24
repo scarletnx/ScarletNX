@@ -23,13 +23,17 @@
 #include "nx/gpu/vk/vk.h"
 
 #define PIECE       (64ull << 10) /* texcheck.comp's PIECE_WORDS, in bytes */
+/* a texture is read a segment at a time, each from the import that holds it: longer ones (a 160 MiB ASTC array) went
+   to the CPU's checks, which hash it whole at every submission without write tracking */
+#define SEGMENT     (32ull << 20)
+#define SEGMENTS_N  64
 #define GATE_SLOTS  16384u        /* the most 16 byte slots of a rebuild's arguments a check makes room for */
 #define COPY_SLOTS  4u            /* a copy's command (VkCopyMemoryToImageIndirectCommandKHR) padded to 64 bytes */
 #define COPY_STRIDE (COPY_SLOTS * 16u)
 
 /* texcheck.comp's and texstore.comp's push constants, member for member */
 typedef struct {
-    u32 mode, bias, words, force;
+    u32 mode, bias, words, force, piece0;
 } CheckParams;
 typedef struct {
     u32 src_byte, row_units, rows_per_slice, bpp;
@@ -405,15 +409,21 @@ static void gate_copy(void* ctx, VkCommandBuffer cb, Surf* t, VkBuffer src, u32 
 /* ------------------------------------------------------------ the check */
 int vk_texcheck_begin(Surf* t, int force) {
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
-    VkBuffer src, in;
-    u64 at, in_off, words = (t->size + 3) / 4, pieces = (t->size + PIECE - 1) / PIECE;
-    if (!t->gpu_check || vk_gate_open() || !t->size || pieces > lim->maxComputeWorkGroupCount[0]) return 0;
+    VkBuffer in, src[SEGMENTS_N];
+    VkDescriptorSet set[SEGMENTS_N];
+    u64 at[SEGMENTS_N], in_off, pieces = (t->size + PIECE - 1) / PIECE, nseg = (t->size + SEGMENT - 1) / SEGMENT;
+    u64 al = lim->minStorageBufferOffsetAlignment < 4 ? 4 : lim->minStorageBufferOffsetAlignment;
+    if (!t->gpu_check || vk_gate_open() || !t->size || nseg > SEGMENTS_N || pieces > lim->maxComputeWorkGroupCount[0])
+        return 0;
     /* its bytes read in place, after what shaders wrote there in place (uma.c) */
-    if (!vk_uma_read(t->gva, t->size, 4, &src, &at)) return 0;
+    for (u64 k = 0; k < nseg; k++) {
+        u64 n = t->size - k * SEGMENT < SEGMENT ? t->size - k * SEGMENT : SEGMENT;
+        if (!vk_uma_read(t->gva + k * SEGMENT, n, 4, &src[k], &at[k]) ||
+            at[k] - (at[k] & ~(al - 1)) + (n + 3) / 4 * 4 > lim->maxStorageBufferRange)
+            return 0;
+    }
     tc_init();
-    u64 al = lim->minStorageBufferOffsetAlignment < 4 ? 4 : lim->minStorageBufferOffsetAlignment, base = at & ~(al - 1);
     u64 state = 16 + pieces * 8;
-    if (at - base + words * 4 > lim->maxStorageBufferRange) return 0;
     if (!t->chk_buf) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                  .size = state,
@@ -430,31 +440,40 @@ int vk_texcheck_begin(Surf* t, int force) {
     g_tc.room = gate_room(t);
     g_tc.in = vk_stage(16 + 2ull * g_tc.room * 16, vk_stage_align(), &in, &in_off);
     u8* out = g_tc.in ? vk_stage((u64)g_tc.room * 16, vk_stage_align(), &g_tc.out, &g_tc.out_off) : NULL;
-    VkDescriptorSet set = out ? vk_desc_alloc(g_tc.check_ds) : VK_NULL_HANDLE;
-    if (!set) return 0;
+    if (!out) return 0;
+    for (u64 k = 0; k < nseg; k++) {
+        u64 n = t->size - k * SEGMENT < SEGMENT ? t->size - k * SEGMENT : SEGMENT, base = at[k] & ~(al - 1);
+        if (!(set[k] = vk_desc_alloc(g_tc.check_ds))) return 0;
+        VkDescriptorBufferInfo bi[4] = {{src[k], base, at[k] - base + (n + 3) / 4 * 4},
+                                        {t->chk_buf, 0, state},
+                                        {in, in_off, 16 + 2ull * g_tc.room * 16},
+                                        {g_tc.out, g_tc.out_off, (u64)g_tc.room * 16}};
+        VkWriteDescriptorSet wr[4];
+        for (u32 i = 0; i < 4; i++)
+            wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                           .dstSet = set[k],
+                                           .dstBinding = i,
+                                           .descriptorCount = 1,
+                                           .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                           .pBufferInfo = &bi[i]};
+        vkUpdateDescriptorSets(g_vk.dev, 4, wr, 0, NULL);
+    }
     memset(g_tc.in, 0, 16);
     g_tc.out_at = g_vk.copy_indirect ? buffer_address(g_tc.out) + g_tc.out_off : 0;
     g_tc.n = 0;
-    VkDescriptorBufferInfo bi[4] = {{src, base, at - base + words * 4},
-                                    {t->chk_buf, 0, state},
-                                    {in, in_off, 16 + 2ull * g_tc.room * 16},
-                                    {g_tc.out, g_tc.out_off, (u64)g_tc.room * 16}};
-    VkWriteDescriptorSet wr[4];
-    for (u32 i = 0; i < 4; i++)
-        wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                       .dstSet = set,
-                                       .dstBinding = i,
-                                       .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                       .pBufferInfo = &bi[i]};
-    vkUpdateDescriptorSets(g_vk.dev, 4, wr, 0, NULL);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
-    CheckParams p = {0, (u32)((at - base) / 4), (u32)words, (u32)(force != 0)};
+    CheckParams p = {0, 0, 0, (u32)(force != 0), 0};
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc.check);
-    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc.check_layout, 0, 1, &set, 0, NULL);
-    rec_CmdPushConstants(cb, g_tc.check_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
-    rec_CmdDispatch(cb, (u32)pieces, 1, 1);
+    for (u64 k = 0; k < nseg; k++) { /* the segments' pieces into the texture's one state */
+        u64 n = t->size - k * SEGMENT < SEGMENT ? t->size - k * SEGMENT : SEGMENT;
+        p.bias = (u32)((at[k] - (at[k] & ~(al - 1))) / 4);
+        p.words = (u32)((n + 3) / 4);
+        p.piece0 = (u32)(k * (SEGMENT / PIECE));
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_tc.check_layout, 0, 1, &set[k], 0, NULL);
+        rec_CmdPushConstants(cb, g_tc.check_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
+        rec_CmdDispatch(cb, (u32)((n + PIECE - 1) / PIECE), 1, 1);
+    }
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,

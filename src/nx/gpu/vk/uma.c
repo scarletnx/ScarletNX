@@ -48,7 +48,7 @@
 #define UMA_LEVELS  6            /* sizes of block, 2 MiB to 64 MiB: a longer range is copied */
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
 #define UMA_HASH    4096         /* the imports by key, open addressed: at most a quarter full */
-#define UMA_FAIL_N  256          /* keys that couldn't be imported, not tried again until memory changes */
+#define UMA_FAIL_N  256          /* ranges that couldn't be imported, not tried again until memory changes */
 /* the most bytes imported at once: a driver counts them as memory the GPU holds (amdgpu's userptr pages are GTT, the
    heap the textures and render targets are in), so imports past it took the room of those */
 #define UMA_BYTES_MAX (1ull << 30)
@@ -78,10 +78,13 @@ static struct {
     UmaImport imp[UMA_IMPORTS];
     u32 n, last;                /* imports; the last one found */
     u32 slot[UMA_HASH];         /* imports by key: index + 1, 0 for none */
-    u64 fail[UMA_FAIL_N][2];    /* keys that couldn't be imported, with gen then */
+    /* ranges that couldn't be imported, with gen then: by range, as a key's span holds other ranges that can be (one
+       range reaching into the alias pool kept out the 128 MiB around it) */
+    u64 fail[UMA_FAIL_N][3];
+    u64 why_refused[VK_UMA_REFUSED_N], why_retired[VK_UMA_RETIRED_N];
     u64 made;                   /* imports made so far */
     u32 mem_type_bits_ok;       /* memoryTypeBits of the host-coherent types */
-    u64 bytes, waits, refused;
+    u64 bytes, waits;
     u64 gen;      /* moves when guest memory's pages change: the keys that failed before may import now */
     u64 recorded; /* the submit being recorded when an import was last read */
     UmaUse use[UMA_USE_N];
@@ -108,6 +111,32 @@ static void import_free(void* arg) {
     vkFreeMemory(g_vk.dev, m->mem, NULL);
     free(m);
 }
+/* how many imports hold each page of guest memory, by leaves of 4096 pages made at the first import in them: written
+   under vk_lock, read by the write scans' thread too (vk_uma_page_imported) */
+#define UMA_PLEAF_SHIFT 12
+static u16* g_pleaf[AS_MAX >> (12 + UMA_PLEAF_SHIFT)];
+static void pages_imported(u64 lo, u64 hi, int delta) {
+    for (u64 pg = lo >> 12; pg < (hi + 4095) >> 12; pg++) {
+        u16** slot = &g_pleaf[pg >> UMA_PLEAF_SHIFT];
+        u16* l = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+        if (!l) {
+            if (delta < 0 || !(l = calloc(1u << UMA_PLEAF_SHIFT, sizeof *l))) continue;
+            __atomic_store_n(slot, l, __ATOMIC_RELEASE);
+        }
+        __atomic_add_fetch(&l[pg & ((1u << UMA_PLEAF_SHIFT) - 1)], (u16)delta, __ATOMIC_RELEASE);
+    }
+}
+int vk_uma_page_imported(u64 page) {
+    const u16* l;
+    if (page >> UMA_PLEAF_SHIFT >= sizeof g_pleaf / sizeof *g_pleaf) return 0;
+    l = __atomic_load_n(&g_pleaf[page >> UMA_PLEAF_SHIFT], __ATOMIC_ACQUIRE);
+    return l && __atomic_load_n(&l[page & ((1u << UMA_PLEAF_SHIFT) - 1)], __ATOMIC_ACQUIRE);
+}
+int vk_uma_imported(u64 cpu, u64 len) {
+    for (u64 pg = cpu >> 12; len && pg <= (cpu + len - 1) >> 12; pg++)
+        if (vk_uma_page_imported(pg)) return 1;
+    return 0;
+}
 static u32 key_home(u64 key) { return (u32)((key * 0x9E3779B97F4A7C15ull) >> 52) & (UMA_HASH - 1); }
 static void key_insert(u64 key, u32 i) {
     u32 h = key_home(key);
@@ -124,8 +153,10 @@ static void keys_rebuild(void) {
     memset(g_uma.slot, 0, sizeof g_uma.slot);
     for (u32 i = 0; i < g_uma.n; i++) key_insert(g_uma.imp[i].key, i);
 }
-/* import i goes: destroyed once the submits that may have read it are done. The caller rebuilds the keys */
-static void retire_one(u32 i) {
+/* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done. The
+   caller rebuilds the keys */
+static void retire_one(u32 i, int why) {
+    g_uma.why_retired[why]++;
     UmaImport* m = malloc(sizeof *m);
     if (!m) { /* nowhere to keep it until then: the GPU finishes with it now */
         vk_finish();
@@ -137,14 +168,15 @@ static void retire_one(u32 i) {
         vk_defer_call(import_free, m);
     }
     g_uma.bytes -= g_uma.imp[i].hi - g_uma.imp[i].lo;
+    pages_imported(g_uma.imp[i].lo, g_uma.imp[i].hi, -1);
     g_uma.imp[i] = g_uma.imp[--g_uma.n];
     g_uma.last = 0;
 }
-static void retire_range(u64 a, u64 n) {
+static void retire_range(u64 a, u64 n, int why) {
     int any = 0;
     for (u32 i = g_uma.n; i-- > 0;)
         if (g_uma.imp[i].lo < a + n && a < g_uma.imp[i].hi) {
-            retire_one(i);
+            retire_one(i, why);
             any = 1;
         }
     if (any) keys_rebuild();
@@ -166,10 +198,10 @@ static void take_changes(void) {
     __atomic_store_n(&g_uma.nchg, 0, __ATOMIC_RELEASE);
     pm_unlock(&g_uma.chg_lk);
     if (k > (int)(sizeof c / sizeof *c)) {
-        while (g_uma.n) retire_one(g_uma.n - 1);
+        while (g_uma.n) retire_one(g_uma.n - 1, VK_UMA_RETIRED_CHANGED);
         keys_rebuild();
     } else
-        for (int i = 0; i < k; i++) retire_range(c[i].a, c[i].n);
+        for (int i = 0; i < k; i++) retire_range(c[i].a, c[i].n, VK_UMA_RETIRED_CHANGED);
     g_uma.gen++; /* pages that couldn't be imported may be importable now */
 }
 
@@ -194,8 +226,6 @@ void vk_uma_init(void) {
         return;
     }
     mem_set_backing_hook(backing_changed);
-    /* one or the other: the caches that asked write tracking compare contents from now on (plat.h) */
-    plat_ww_off();
     LOG("vulkan: unified memory: draws read guest buffers in place (VK_EXT_external_memory_host, imports aligned to "
         "%llu bytes)%s\n",
         (unsigned long long)g_vk.uma_align,
@@ -254,6 +284,7 @@ static int import_span(u64 key, u64 lo, u64 hi) {
         vkFreeMemory(g_vk.dev, m.mem, NULL);
         return 0;
     }
+    pages_imported(lo, hi, 1); /* before the import is used: no scan re-protects its pages from now on */
     g_uma.imp[g_uma.n] = m;
     key_insert(key, g_uma.n);
     g_uma.n++;
@@ -274,7 +305,7 @@ static int import_room(u64 size) {
         for (u32 i = 1; i < g_uma.n; i++)
             if ((i32)(g_uma.imp[i].seen - g_uma.imp[old].seen) < 0) old = i;
         if (g_uma.imp[old].seen == g_vk_present) break;
-        retire_one(old);
+        retire_one(old, VK_UMA_RETIRED_ROOM);
         any = 1;
     }
     ok = g_uma.bytes + size <= UMA_BYTES_MAX;
@@ -283,21 +314,30 @@ static int import_room(u64 size) {
 }
 static u32 import_new(u64 key, u64 cpu, u64 len) {
     u64 al = g_vk.uma_align, size = UMA_BLOCK << (key & 7), lo = (key >> 3) * size, hi = lo + 2 * size;
-    u64* f = g_uma.fail[(key ^ (key >> 17)) % UMA_FAIL_N];
-    if (f[0] == key + 1 && f[1] == g_uma.gen) return g_uma.n;
-    if (g_uma.n == UMA_IMPORTS || hi - lo > g_vk.alloc_cap || mem_private_span(cpu, len, &lo, &hi)) goto fail;
-    lo = (lo + al - 1) & ~(al - 1);
-    hi &= ~(al - 1);
-    if (cpu < lo || cpu + len > hi) goto fail;
-    if (!import_room(hi - lo)) { /* copied while the imports of this present take the room, not remembered as failed */
-        g_uma.refused++;
+    u64* f = g_uma.fail[((cpu >> 12) ^ (len << 7)) % UMA_FAIL_N];
+    int why;
+    if (f[0] == cpu && f[1] == len && f[2] == g_uma.gen) {
+        g_uma.why_refused[VK_UMA_REFUSED_BEFORE]++;
         return g_uma.n;
     }
-    if (import_span(key, lo, hi)) return g_uma.n - 1;
-fail:
-    g_uma.refused++;
-    f[0] = key + 1;
-    f[1] = g_uma.gen;
+    why = g_uma.n == UMA_IMPORTS                ? VK_UMA_REFUSED_FULL
+          : hi - lo > g_vk.alloc_cap            ? VK_UMA_REFUSED_CAP
+          : mem_private_span(cpu, len, &lo, &hi) ? VK_UMA_REFUSED_SHARED
+                                                 : -1;
+    if (why < 0) {
+        lo = (lo + al - 1) & ~(al - 1);
+        hi &= ~(al - 1);
+        if (cpu < lo || cpu + len > hi) why = VK_UMA_REFUSED_ALIGN;
+    }
+    if (why < 0 && !import_room(hi - lo)) { /* copied while this present's imports take the room, not remembered */
+        g_uma.why_refused[VK_UMA_REFUSED_ROOM]++;
+        return g_uma.n;
+    }
+    if (why < 0 && import_span(key, lo, hi)) return g_uma.n - 1;
+    g_uma.why_refused[why < 0 ? VK_UMA_REFUSED_DRIVER : why]++;
+    f[0] = cpu;
+    f[1] = len;
+    f[2] = g_uma.gen;
     return g_uma.n;
 }
 
@@ -309,7 +349,10 @@ int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     m = &g_uma.imp[g_uma.last];
     if (g_uma.last >= g_uma.n || cpu < m->lo || cpu + len > m->hi) {
         while (level < UMA_LEVELS && len > UMA_BLOCK << level) level++;
-        if (level == UMA_LEVELS) return 0; /* longer than the biggest blocks: copied */
+        if (level == UMA_LEVELS) { /* longer than the biggest blocks: copied */
+            g_uma.why_refused[VK_UMA_REFUSED_LONG]++;
+            return 0;
+        }
         /* the range's own size's import, or a bigger one already made that holds it */
         for (u32 l = level; l < UMA_LEVELS && k == g_uma.n; l++) {
             k = key_find(import_key(cpu, l));
@@ -320,7 +363,10 @@ int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.last = k;
         m = &g_uma.imp[k];
     }
-    if ((cpu - m->lo) % (align ? align : 1)) return 0; /* the binding's offset the device can't take */
+    if ((cpu - m->lo) % (align ? align : 1)) { /* the binding's offset the device can't take */
+        g_uma.why_refused[VK_UMA_REFUSED_OFFSET]++;
+        return 0;
+    }
     m->used = g_uma.recorded = vk_submit_number();
     m->seen = g_vk_present;
     *buf = m->buf;
@@ -532,7 +578,7 @@ void vk_uma_owning(u64 cpu, u64 len) {
         if (g_uma.imp[i].lo < cpu + len && cpu < g_uma.imp[i].hi && g_uma.imp[i].used == vk_submit_number())
             recorded = 1;
     if (recorded) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    retire_range(cpu, len);
+    retire_range(cpu, len, VK_UMA_RETIRED_OWNED);
 }
 void vk_uma_mapping_begin(void) {
     /* the same for pages the guest unmaps or moves: a driver taking an import's pages again at its next submit would
@@ -545,7 +591,7 @@ void vk_uma_frame(void) {
     int any = 0;
     for (u32 i = g_uma.n; i-- > 0;)
         if ((u32)(g_vk_present - g_uma.imp[i].seen) > UMA_IDLE) {
-            retire_one(i);
+            retire_one(i, VK_UMA_RETIRED_IDLE);
             any = 1;
         }
     if (any) keys_rebuild();
@@ -557,6 +603,8 @@ void vk_uma_stats(VkUmaStats* st) {
     st->waits = g_uma.waits;
     st->out_waits = g_uma.out_waits;
     st->published = g_uma.published;
+    memcpy(st->why_refused, g_uma.why_refused, sizeof st->why_refused);
+    memcpy(st->why_retired, g_uma.why_retired, sizeof st->why_retired);
     st->barriers = g_uma.barriers;
     st->pending = g_uma.nout;
 }

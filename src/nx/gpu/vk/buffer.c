@@ -1164,9 +1164,26 @@ static int ww_claim(u64 l) {
 }
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
+/* the pages of [a, e) (guest addresses) scanned, past the runs an import holds unless the
+   imported_page_write_tracking setting asks for them: a scan re-protects the pages written since, and re-protecting
+   an imported page makes amdgpu's MMU notifier wait for the GPU and take the import's pages again at the next submit
+   (uma.c). What no scan watches, write tracking doesn't answer for (vk_written_since) */
+static int ww_untracked(void) { return g_vk.uma && !g_settings.imported_page_write_tracking; }
+static int ww_scan_free(u64 a, u64 e) {
+    int r = 0;
+    if (!ww_untracked()) return plat_ww_scan(g_mem + a, e - a, ww_note);
+    for (u64 pg = a >> 12, end = e >> 12; pg < end && r == 0;) {
+        u64 run = pg;
+        while (run < end && !vk_uma_page_imported(run)) run++;
+        if (run > pg) r = plat_ww_scan(g_mem + (pg << 12), (run - pg) << 12, ww_note);
+        while (run < end && vk_uma_page_imported(run)) run++;
+        pg = run;
+    }
+    return r;
+}
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_wstage = st;
-    int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
+    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1340,16 +1357,29 @@ static void ww_used_epoch(u32 seen) {
     __atomic_store_n(&g_ww_used_from, oldest ? oldest : seen, __ATOMIC_RELAXED);
 }
 
-int vk_written_since(const u8* host, u64 len, u32 since) {
-    if (!g_ww || !host || !len) return -1;
-    if (g_ww < 0) {
-        g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
-        LOG("vulkan: %s\n",
-            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
-        if (!g_ww) return -1;
-        pc_init(&g_wscan_cv);
-        if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
+void vk_ww_init(void) {
+    if (g_ww >= 0) return;
+    if (!g_settings.global_write_tracking) { /* off by the setting: nothing is watched from now on */
+        plat_ww_off();
+        g_ww = 0;
+        LOG("vulkan: write tracking off (write_tracking=0): caches check contents\n");
+        return;
     }
+    g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
+    if (!g_ww) {
+        WARN("vulkan: write tracking was asked for, but this host can't tell which pages were written: caches check "
+             "contents\n");
+        return;
+    }
+    LOG("vulkan: write tracking on (caches skip unchanged memory)%s\n",
+        ww_untracked() ? ", but for the pages unified memory imports" : "");
+    pc_init(&g_wscan_cv);
+    if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
+}
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    if (g_ww < 0) vk_ww_init();
+    if (!g_ww || !host || !len) return -1;
+    if (ww_untracked() && vk_uma_imported((u64)(host - g_mem), len)) return -1; /* no scan watches it: compare */
     if (__atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE)) {
         g_ww = 0;
         LOG("vulkan: write tracking failed, caches check contents\n");
@@ -2386,6 +2416,22 @@ void vk_buf_frame(void) {
                 (unsigned long long)(ts.copies - g_ts_last.copies), (unsigned long long)(ts.stores - g_ts_last.stores),
                 (unsigned long long)(ts.overflow - g_ts_last.overflow));
             g_ts_last = ts;
+            LOG("vulkan: unified memory's ranges not imported: long=%llu full=%llu cap=%llu shared=%llu align=%llu "
+                "room=%llu driver=%llu before=%llu offset=%llu; imports let go: idle=%llu changed=%llu owned=%llu "
+                "room=%llu\n",
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_LONG],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_FULL],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_CAP],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_SHARED],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_ALIGN],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_ROOM],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_DRIVER],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_BEFORE],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_OFFSET],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_IDLE],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_CHANGED],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_OWNED],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_ROOM]);
             g_in_place = 0;
         }
         g_vb_lookups = g_vb_probes = 0;

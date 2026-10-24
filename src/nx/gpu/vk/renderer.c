@@ -102,6 +102,7 @@ static int vkr_start(void) {
     vk_cmd_init();
     vk_pipeline_init();
     vk_own_init(); /* GPU engines' results stay on the GPU where guest memory can be trapped (memory/own.c) */
+    vk_ww_init();  /* write tracking, as the settings ask: after unified memory knows what it imports */
     g_gpu_before_write = vkr_before_write;
     g_gpu_mapping_begin = vkr_mapping_begin;
     g_gpu_mapping_end = vkr_mapping_end;

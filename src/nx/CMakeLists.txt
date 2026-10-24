@@ -229,7 +229,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # and with unified memory's texture rebuilds stored by dispatches, as on a GPU without VK_KHR_copy_memory_indirect
     # or VK_NV_copy_memory_indirect
     add_test(NAME vulkan_headless_uma_stores COMMAND snx-test-vulkan -H --uma_indirect_copy=0)
-    set_tests_properties(vulkan_headless vulkan_headless_no_uma vulkan_headless_uma_stores PROPERTIES TIMEOUT 60
+    # and with write tracking off by its setting: every cache compares contents
+    add_test(NAME vulkan_headless_no_ww COMMAND snx-test-vulkan -H --write_tracking=0)
+    set_tests_properties(vulkan_headless vulkan_headless_no_uma vulkan_headless_uma_stores vulkan_headless_no_ww
+                         PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-

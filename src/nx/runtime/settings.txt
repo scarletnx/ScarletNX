@@ -647,6 +647,26 @@ setting UMA
     help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. With it on, write
     help tracking is off: caches that used it compare contents. On a GPU without the extension, 1 and 2 are a warning
     help at start
+setting Global write tracking
+    key write_tracking
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = caches built from guest memory (textures, buffers, shaders) learn which pages the CPU wrote from the host
+    help (userfaultfd and PAGEMAP_SCAN on Linux, the write watch on Windows), and a warning at start says when the host
+    help can't tell. 0 = write tracking is off for the run, and the caches compare contents. Imported page write
+    help tracking says what happens to the pages unified memory imports
+setting Imported page write tracking
+    key uma_page_write_tracking
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help With unified memory on: 1 = the pages imported for the GPU are write-tracked as the rest of guest memory is.
+    help 0 = they aren't: no scan re-protects them, as amdgpu answers a re-protected imported page by waiting for the
+    help GPU and taking the import's pages again at its next submit, and the caches over them compare contents. The
+    help rest of guest memory is write-tracked either way. With unified memory off it does nothing
 setting UMA texture checks
     key uma_texture_check
     int 0 1
