@@ -81,13 +81,16 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-agb-host PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_host COMMAND snx-test-agb-host)
     find_package(Python3 COMPONENTS Interpreter)
-    # the runner's scripted presses, the BIOS's interrupt wait and its SoftReset, each through a ROM the test makes
+    # the runner's scripted presses, the BIOS's interrupt wait and its SoftReset, and an EEPROM save, each through a ROM
+    # the test makes
     if(Python3_Interpreter_FOUND)
         add_test(NAME agb_keys COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_keys.py"
             $<TARGET_FILE:scarletnx-agb-run>)
         add_test(NAME agb_irq COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_irq.py"
             $<TARGET_FILE:scarletnx-agb-run>)
         add_test(NAME agb_reset COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_reset.py"
+            $<TARGET_FILE:scarletnx-agb-run>)
+        add_test(NAME agb_eeprom COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_eeprom.py"
             $<TARGET_FILE:scarletnx-agb-run>)
     endif()
     # jsmolka's gba-tests (cmake/dependencies.cmake), each ROM a test of its own

@@ -97,6 +97,7 @@ static void advance(AgbCpu* cpu, AgbSink* sink, uint32_t cycles) {
     (void)cpu;
     agb_ppu_step(board, cycles);
     agb_timer_step(board, cycles);
+    agb_save_step(board, cycles);
     if (sink->audio && sink->written < sink->capacity)
         sink->written += agb_apu_run(board, cycles, sink->audio + sink->written * 2, sink->capacity - sink->written);
     sink->elapsed += cycles;

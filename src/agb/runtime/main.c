@@ -136,6 +136,7 @@ static int save_read(AgbBoard* board, const char* path) {
     unsigned char* bytes;
     if (!snx_is_file(path)) return 0;
     if (!(bytes = snx_read_file(path, &size))) return -1;
+    if (board->save.type == AGB_SAVE_EEPROM && size > agb_save_size(board)) board->save.type = AGB_SAVE_EEPROM8K;
     memcpy(board->memory.sram, bytes, size < agb_save_size(board) ? size : agb_save_size(board));
     free(bytes);
     return 1;

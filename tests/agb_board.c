@@ -21,6 +21,24 @@ static void fix_checksum(uint8_t* rom) {
     for (size_t i = 0xA0; i <= 0xBC; ++i) sum += rom[i];
     rom[0xBD] = (uint8_t)(0u - sum - 0x19u);
 }
+/* an EEPROM request as a game's DMA sends it, a bit a halfword: 1 0 to write (data's 64 bits, then a 0) or 1 1 to read
+   (then a 0), with block's number in width bits between, most significant bit first. Its halfwords */
+static unsigned eeprom_request(uint16_t* bits, int read, unsigned block, unsigned width, const uint8_t* data) {
+    unsigned n = 0;
+    bits[n++] = 1;
+    bits[n++] = (uint16_t)read;
+    for (unsigned i = width; i-- > 0;) bits[n++] = (uint16_t)(block >> i & 1);
+    for (unsigned i = 0; !read && i < 64; ++i) bits[n++] = (uint16_t)(data[i / 8] >> (7 - i % 8) & 1);
+    bits[n++] = 0;
+    return n;
+}
+/* DMA3 from source to destination, count halfwords, at once */
+static void dma3(AgbBoard* board, uint32_t source, uint32_t destination, unsigned count) {
+    agb_write32(board, 0x040000D4, source);
+    agb_write32(board, 0x040000D8, destination);
+    agb_write16(board, 0x040000DC, (uint16_t)count);
+    agb_write16(board, 0x040000DE, 0x8000);
+}
 static void make_rom(uint8_t* rom) {
     memset(rom, 0, ROM_SIZE);
     rom[0] = 0x2E;
@@ -127,6 +145,47 @@ int main(void) {
         for (int i = 0; i < 6; ++i) agb_write8(&board, 0x0E000000 + addresses[i], values[i]);
     }
     CHECK(board.memory.sram[0x00005] == 0xFF && board.memory.sram[0x10005] == 0xFF && board.save.dirty);
+
+    /* EEPROM: a write of block 5 (6 bits of number on the 512 byte chip) lands at byte 40, most significant bit first,
+       and keeps it busy, reading 0, for 115000 cycles. A read request is answered by 68 bits: 4, then the block's. A
+       block past 63, with 14 bits of number, makes it the 8 KiB chip */
+    agb_save_reset(&board, AGB_SAVE_EEPROM);
+    CHECK(agb_save_size(&board) == 0x200);
+    {
+        static const uint8_t data[8] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};
+        uint16_t bits[81];
+        unsigned n = eeprom_request(bits, 0, 5, 6, data);
+        CHECK(n == 73);
+        for (unsigned i = 0; i < n; ++i) agb_write16(&board, 0x02000000 + i * 2, bits[i]);
+        dma3(&board, 0x02000000, 0x0D000000, n);
+        CHECK(!memcmp(board.memory.sram + 40, data, 8) && board.save.dirty);
+        CHECK(agb_read16(&board, 0x0D000000) == 0);
+        agb_save_step(&board, 114999);
+        CHECK(agb_read16(&board, 0x0D000000) == 0);
+        agb_save_step(&board, 1);
+        CHECK(agb_read16(&board, 0x0D000000) == 1);
+        n = eeprom_request(bits, 1, 5, 6, NULL);
+        CHECK(n == 9);
+        for (unsigned i = 0; i < n; ++i) agb_write16(&board, 0x02000000 + i * 2, bits[i]);
+        dma3(&board, 0x02000000, 0x0D000000, n);
+        dma3(&board, 0x0D000000, 0x02000100, 68);
+        for (unsigned i = 0; i < 68; ++i)
+            CHECK(agb_read16(&board, 0x02000100 + i * 2) == (i < 4 ? 0 : data[(i - 4) / 8] >> (7 - (i - 4) % 8) & 1));
+        CHECK(agb_read16(&board, 0x0D000000) == 1); /* the answer given, the chip is ready again */
+        n = eeprom_request(bits, 0, 0x123, 14, data);
+        CHECK(n == 81);
+        for (unsigned i = 0; i < n; ++i) agb_write16(&board, 0x02000000 + i * 2, bits[i]);
+        dma3(&board, 0x02000000, 0x0D000000, n);
+        CHECK(board.save.type == AGB_SAVE_EEPROM8K && agb_save_size(&board) == 0x2000);
+        CHECK(!memcmp(board.memory.sram + 0x123 * 8, data, 8));
+        n = eeprom_request(bits, 1, 0x123, 14, NULL);
+        for (unsigned i = 0; i < n; ++i) agb_write16(&board, 0x02000000 + i * 2, bits[i]);
+        dma3(&board, 0x02000000, 0x0D000000, n);
+        dma3(&board, 0x0D000000, 0x02000100, 68);
+        CHECK(agb_read16(&board, 0x02000100 + 4 * 2) == 0 && agb_read16(&board, 0x02000100 + 7 * 2) == 1); /* 0x12 */
+        CHECK(agb_read16(&board, 0x02000100 + 67 * 2) == 0); /* 0xF0's last bit */
+    }
+    agb_save_reset(&board, AGB_SAVE_NONE);
 
     /* the keypad: KEYINPUT reads a key held as 0, and KEYCNT's interrupt comes once its keys meet its condition */
     agb_board_keys(&board, 0x009); /* A and Start */
