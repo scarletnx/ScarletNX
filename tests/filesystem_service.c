@@ -213,6 +213,7 @@ u32 owned_event(const char* name) {
     KEvent* event = calloc(1, sizeof *event);
     CHECK(event != NULL);
     (void)name;
+    event->o.type = KO_EVENT;
     event->o.refs = 1;
     test_events++;
     return kobj_id(&event->o);

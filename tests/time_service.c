@@ -30,6 +30,7 @@ static KShmem shm_obj;
 KShmem* kshmem_new(u64 size, const char* name) {
     CHECK(size == sizeof shm_host);
     kobj_set_name(&shm_obj.o, name);
+    shm_obj.o.type = KO_SHMEM;
     shm_obj.size = size;
     shm_obj.host = shm_host;
     return &shm_obj;
