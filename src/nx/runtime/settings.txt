@@ -547,6 +547,15 @@ setting Log level
     int 0 2
     default 1
     help The log's detail, 0 to 2: 2 logs everything, which slows the game down
+setting Emulated cores
+    key emulated_cores
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help On = a guest thread runs only while it holds one of the console's cores, one thread per core at a time, in
+    help priority order. Off = every guest thread runs as soon as the host schedules it (svcGetCurrentProcessorNumber
+    help still answers the thread's core)
 setting Log size limit
     key log_max
     int 1 1024

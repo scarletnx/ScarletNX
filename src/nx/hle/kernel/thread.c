@@ -167,14 +167,14 @@ static void core_pin(KThread* t) {
     LOG("kernel: core %d runs on host CPUs%s\n", k, list);
 }
 void core_enter(KThread* t) {
-    if (!t) return;
+    if (!t || !g_settings.emulated_cores) return;
     pm_lock(&g_host.thread.core_lk);
     if (t->on_core < 0) core_take_nl(t);
     pm_unlock(&g_host.thread.core_lk);
     core_pin(t);
 }
 void core_leave(KThread* t) {
-    if (!t) return;
+    if (!t || !g_settings.emulated_cores) return;
     pm_lock(&g_host.thread.core_lk);
     if (t->on_core >= 0) core_release_nl(t);
     pm_unlock(&g_host.thread.core_lk);
@@ -185,6 +185,12 @@ void core_preempt(KThread* t) {
     int k, j;
     if (!t || !__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED)) return;
     pm_lock(&g_host.thread.core_lk);
+    if (!g_settings.emulated_cores) { /* only a game pause sets poll: kernel_hold, under core_lk */
+        if (!__atomic_load_n(&g_hle.thread.hold, __ATOMIC_RELAXED))
+            __atomic_store_n(&t->cpu.poll, 0u, __ATOMIC_RELAXED);
+        pm_unlock(&g_host.thread.core_lk);
+        return;
+    }
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_best[k] < t->prio) {
         core_release_nl(t);
@@ -229,6 +235,10 @@ void core_yield(KThread* t, int migrate) {
     int k, j;
     KThread* w;
     if (!t) return;
+    if (!g_settings.emulated_cores) { /* the host's threads are the cores: let it run another */
+        plat_yield();
+        return;
+    }
     pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_wait[k]) {
@@ -572,6 +582,11 @@ int kernel_hold(int timeout_ms) {
     /* under the cores' lock, so that no core_flag_nl that read hold before it was set clears a flag after this */
     pm_lock(&g_host.thread.core_lk);
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
+    if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
+        pm_lock(&g_host.kernel.pool_lk);
+        FOR_LIVE_THREADS(t) __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+        pm_unlock(&g_host.kernel.pool_lk);
+    }
     pm_unlock(&g_host.thread.core_lk);
     pm_unlock(&g_host.kernel.klock);
     for (;;) {
