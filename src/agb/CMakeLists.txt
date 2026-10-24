@@ -34,8 +34,9 @@ add_custom_command(OUTPUT "${agb_runtime_source}"
     DEPENDS snx_arm_rt "${PROJECT_SOURCE_DIR}/cmake/ctr-runtime.cmake" VERBATIM)
 target_sources(scarletnx-agb PRIVATE "${agb_runtime_source}")
 
-add_executable(scarletnx-agb-run runtime/main.c)
-target_link_libraries(scarletnx-agb-run PRIVATE scarletnx-agb)
+# the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board
+add_executable(scarletnx-agb-run runtime/main.c runtime/host.c)
+target_link_libraries(scarletnx-agb-run PRIVATE scarletnx-agb SDL3::SDL3 snx_window_icon)
 set_target_properties(scarletnx-agb-run PROPERTIES OUTPUT_NAME scarletnx-agb
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" C_STANDARD 23 C_STANDARD_REQUIRED ON)
 

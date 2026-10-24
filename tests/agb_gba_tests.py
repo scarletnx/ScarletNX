@@ -84,6 +84,8 @@ def check_stripes(frame):
 
 
 CHECKS = {'hello': check_hello, 'shades': check_shades, 'stripes': check_stripes}
+# the save the runner leaves in the game's folder, its kind's size, for the ROMs that write one
+SAVES = {'save_sram': 0x8000, 'save_flash64': 0x10000, 'save_flash128': 0x20000}
 
 
 def main():
@@ -96,11 +98,24 @@ def main():
     path, check = ROMS[args.name]
     with tempfile.TemporaryDirectory(prefix='snx-agb-') as work:
         work = pathlib.Path(work)
-        rom = work / pathlib.Path(path).name  # the recompiled module is cached beside the ROM
+        rom = work / pathlib.Path(path).name
         shutil.copyfile(pathlib.Path(args.tests) / path, rom)
         shot = work / 'frame.ppm'
-        run = subprocess.run([args.runner, '--frames=%d' % args.frames, '--shot=%s' % shot, '--registers', str(rom)],
-                             capture_output=True, text=True, timeout=600)
+        # its folder (the cache, a save) in the temporary one, never the user's recompiled/
+        run = subprocess.run(
+            [
+                args.runner,
+                '--frames=%d' % args.frames,
+                '--shot=%s' % shot,
+                '--registers',
+                '--outdir',
+                str(work),
+                str(rom),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
         if run.returncode:
             sys.exit('%s: scarletnx-agb exited with %d\n%s%s' % (args.name, run.returncode, run.stdout, run.stderr))
         frame = read_ppm(shot)
@@ -117,6 +132,11 @@ def main():
             ok, expected = CHECKS[check](frame)
             if not ok:
                 sys.exit('%s: %s' % (args.name, expected))
+        if args.name in SAVES:
+            stem = rom.stem
+            save = work / stem / ('%s.sav' % stem)
+            if not save.is_file() or save.stat().st_size != SAVES[args.name]:
+                sys.exit('%s: %s is not a save of %d bytes' % (args.name, save, SAVES[args.name]))
     print('%s: passed' % args.name)
 
 

@@ -185,6 +185,8 @@ if(SNX_BUILD_GNUABI)
     add_subdirectory(src/gnuabi)
 endif()
 if(SNX_BUILD_AGB)
+    # the runner's window icon, made here as the 3DS's is: a target of src/agb compiles only src/agb
+    include(cmake/window_icon.cmake)
     add_subdirectory(src/agb)
 endif()
 if(SNX_BUILD_GUI)
