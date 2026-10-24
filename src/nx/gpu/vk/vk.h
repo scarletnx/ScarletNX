@@ -935,6 +935,7 @@ int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 void vk_uma_writes_commit(void); /* the draw or dispatch was recorded (vk_buf_writable_commit) */
 void vk_uma_writes_abort(void);  /* it wasn't */
 void vk_uma_frame_done(u64 frame);                     /* that submit is done: its in-place writes are in memory */
+void vk_uma_frame(void);                               /* a present: imports unused for long go */
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
 int vk_uma_pending(u64 gva, u64 len);     /* an in-place write is pending over GPU range [gva, gva + len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */

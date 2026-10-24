@@ -6,7 +6,11 @@
    writes.
 
    Imports are spans of the reservation's own committed pages, the UMA_CHUNK aligned chunk around a range or the two
-   it reaches across, sorted by where they start (they may overlap). The
+   it reaches across (a longer range: its own pages), sorted by where they start (they may overlap), and let go of
+   when no draw has used them for UMA_IDLE presents. They are small and few because a driver may walk an import's
+   pages at every submit that names it: amdgpu takes a userptr buffer's pages again (hmm_range_fault over all of
+   them) in each command submission, and RADV's imports are userptr buffers. 64 MiB chunks around whatever a draw
+   touched, kept for good, were 16384 pages each, every submit. The
    alias pool's pages are never imported: GPU-owned memory lives there, trapped (docs/GPU_OWNERSHIP.md), and a driver
    that takes the pages again at each submit (RADV and ANV take imports through MMU notifiers) would fault on a trapped
    page from the kernel, where userfaultfd answers EFAULT. A driver that pins the pages (NVIDIA) holds on to the old
@@ -38,7 +42,8 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 
-#define UMA_CHUNK   (64ull << 20) /* the most one import covers, aligned to it */
+#define UMA_CHUNK   (2ull << 20) /* what one import covers around a range, aligned to it */
+#define UMA_IDLE    120          /* presents an import may go unused before it is let go */
 #define UMA_IMPORTS 1024          /* imports at most: the device may have as few as 4096 allocations */
 #define UMA_MISS_N  256           /* spans that couldn't be imported, not tried again until memory changes */
 #define UMA_USE_N   1024          /* ranges stamped into live in the submit being recorded */
@@ -49,6 +54,7 @@ typedef struct {
     VkBuffer buf;
     VkDeviceMemory mem;
     u64 used; /* the submit that last read it */
+    u32 seen; /* g_vk_present then */
 } UmaImport;
 typedef struct {
     u64 cpu, len, gen;
@@ -66,6 +72,7 @@ typedef struct {
 static struct {
     UmaImport imp[UMA_IMPORTS]; /* sorted by lo */
     u32 n, last;                /* imports; the last one found */
+    u64 max_len;                /* the longest import made: none starts further than that before what it holds */
     u32 mem_type_bits_ok;       /* memoryTypeBits of the host-coherent types */
     u64 bytes, waits, refused;
     u64 gen;      /* moves when imports are retired: the misses before it may import now */
@@ -183,9 +190,9 @@ static u32 import_after(u64 cpu) {
     return lo;
 }
 /* an import holding [cpu, cpu + len), or g_uma.n. Imports may overlap (a range across a chunk's end takes both
-   chunks), and none is longer than two chunks, so only those starting less than that before cpu can hold it */
+   chunks), and none is longer than max_len, so only those starting less than that before cpu can hold it */
 static u32 import_find(u64 cpu, u64 len) {
-    for (u32 k = import_after(cpu); k-- > 0 && g_uma.imp[k].lo + 2 * UMA_CHUNK > cpu;)
+    for (u32 k = import_after(cpu); k-- > 0 && g_uma.imp[k].lo + g_uma.max_len > cpu;)
         if (cpu + len <= g_uma.imp[k].hi) return k;
     return g_uma.n;
 }
@@ -242,15 +249,20 @@ static int import_span(u32 k, u64 lo, u64 hi) {
     g_uma.imp[k] = m;
     g_uma.n++;
     g_uma.bytes += hi - lo;
+    if (hi - lo > g_uma.max_len) g_uma.max_len = hi - lo;
     return 1;
 }
 /* a new import holding [cpu, cpu + len): the chunk around it, or the two it reaches across, narrowed to the
-   reservation's own committed pages. Its index, or g_uma.n when there can't be one */
+   reservation's own committed pages; a longer range, its own pages. Its index, or g_uma.n when there can't be one */
 static u32 import_new(u64 cpu, u64 len) {
     u64 al = g_vk.uma_align, lo = cpu & ~(UMA_CHUNK - 1), hi = (cpu + len + UMA_CHUNK - 1) & ~(UMA_CHUNK - 1);
     UmaMiss* ms = &g_uma.miss[((cpu >> 12) ^ (len << 7)) % UMA_MISS_N];
     if (ms->cpu == cpu && ms->len == len && ms->gen == g_uma.gen) return g_uma.n;
-    if (g_uma.n == UMA_IMPORTS || hi - lo > 2 * UMA_CHUNK) goto miss; /* a range longer than a chunk */
+    if (g_uma.n == UMA_IMPORTS) goto miss;
+    if (hi - lo > 2 * UMA_CHUNK) {
+        lo = cpu & ~(al - 1);
+        hi = (cpu + len + al - 1) & ~(al - 1);
+    }
     if (mem_private_span(cpu, len, &lo, &hi)) goto miss;
     if (hi - lo > g_vk.alloc_cap) { /* past the device's cap on one allocation: the range's own pages */
         lo = cpu & ~(al - 1);
@@ -282,6 +294,7 @@ int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     }
     if ((cpu - m->lo) % (align ? align : 1)) return 0; /* the binding's offset the device can't take */
     m->used = g_uma.recorded = vk_submit_number();
+    m->seen = g_vk_present;
     *buf = m->buf;
     *off = cpu - m->lo;
     return 1;
@@ -376,6 +389,7 @@ void vk_uma_frame_done(u64 frame) {
     while (k < g_uma.nout && g_uma.out[k].submit <= frame) {
         const UmaOut* o = &g_uma.out[k++];
         pend_add_pages(&g_uma.out_pages, o->cpu >> 12, (o->cpu + o->len - 1) >> 12, -1);
+        gpu_mem_written_cpu(o->cpu, o->len); /* what was built from the bytes (buffers, textures) takes the new ones */
     }
     if (!k) return;
     memmove(g_uma.out, g_uma.out + k, (g_uma.nout - k) * sizeof *g_uma.out);
@@ -485,6 +499,11 @@ void vk_uma_mapping_begin(void) {
     if (g_vk.uma && g_uma.n && g_uma.recorded == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
 }
 
+void vk_uma_frame(void) {
+    if (!g_vk.uma || g_vk_present % 4) return;
+    for (u32 i = g_uma.n; i-- > 0;)
+        if ((u32)(g_vk_present - g_uma.imp[i].seen) > UMA_IDLE) retire(i);
+}
 void vk_uma_stats(VkUmaStats* st) {
     st->imports = g_uma.n;
     st->bytes = g_uma.bytes;

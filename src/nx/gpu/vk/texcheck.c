@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/texture/texcheck_spv.h" /* compiled from texcheck.comp and texstore.comp (cmake/glsl.cmake) */
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 
@@ -198,7 +199,9 @@ static VkFormat store_format(u32 bytes) {
 
 int vk_texcheck_prepare(VkImageCreateInfo* ii, VkViewFormats* vf) {
     u32 bw, bh, bytes;
-    if (!g_vk.uma_shared) return 0; /* a discrete GPU's texture checks stay the CPU's: no texels across PCIe */
+    /* a discrete GPU's texture checks stay the CPU's (no texels across PCIe), and so do all of them when the setting
+       asks */
+    if (!g_vk.uma_shared || !g_settings.uma_texture_checks) return 0;
     if (g_vk.copy_indirect) return 1; /* copies, which any image a texture is made as takes */
     bytes = format_unit(ii->format, &bw, &bh);
     VkFormat sf = store_format(bytes);

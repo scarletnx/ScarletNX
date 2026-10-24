@@ -1443,6 +1443,20 @@ static int check_uma(void) {
         }
         CHECK(!tex_read(t2, img) && tex_matches(img, tm));
     }
+    /* imports no draw used for long go, so a driver that takes an import's pages at each submit isn't handed them */
+    {
+        VkUmaStats st0, st1;
+        u32 present = g_vk_present;
+        vk_uma_stats(&st0);
+        CHECK(st0.imports > 0);
+        g_vk_present = (present + 200) & ~3u; /* the hook looks every fourth present */
+        vk_uma_frame();
+        vk_uma_stats(&st1);
+        CHECK(st1.imports == 0);
+        g_vk_present = present;
+        CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again when used */
+        CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
+    }
     /* memory the guest unmaps: its import goes at the next lookup, and memory mapped there again is imported anew */
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(UMA_GR, UMA_R, 0x10000);

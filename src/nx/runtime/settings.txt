@@ -646,6 +646,15 @@ setting UMA
     help textures against guest memory itself. A discrete GPU keeps its own copies, since it would read guest memory
     help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. On a GPU without
     help the extension, 1 and 2 are a warning at start
+setting UMA texture checks
+    key uma_texture_check
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = with unified memory on a GPU that shares the CPU's memory, the GPU checks textures against guest memory
+    help and rebuilds what changed itself, reading each texture at its first use in a frame and in each submission.
+    help 0 = the CPU checks them, with write tracking, as without unified memory, to compare the two
 setting UMA indirect copies
     key uma_indirect_copy
     int 0 1

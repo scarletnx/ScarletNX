@@ -26,9 +26,12 @@ The copies, landings, hashes and write tracking were only there because the GPU 
 
 `vk/uma.c` imports guest memory as buffers, on demand.
 
-- A range is imported as the 64 MiB aligned chunk around it, or the two it reaches across. The span is narrowed to the
-  guest memory around it whose host pages are the reservation's own and committed (`mem_private_span`: mapped, not
-  the alias pool's, not I/O). Imports may overlap. A lookup takes the last one found, then a binary search.
+- A range is imported as the 2 MiB aligned chunk around it, or the two it reaches across. A longer range is imported
+  as its own pages. The span is narrowed to the guest memory around it whose host pages are the reservation's own and
+  committed (`mem_private_span`: mapped, not the alias pool's, not I/O). Imports may overlap. A lookup takes the last
+  one found, then a binary search.
+- An import no draw has used for 120 presents is let go (`vk_uma_frame`).
+- Imports are small and few because of what drivers do with them (below).
 - The alias pool's pages are never imported. GPU-owned memory lives there, trapped (`docs/GPU_OWNERSHIP.md`). RADV
   and ANV take an import's pages again through MMU notifiers at each submit. On a trapped page that would be a
   kernel-mode fault, which the userfaultfd answers with EFAULT. On lavapipe, a draw reading a trapped page would
@@ -41,6 +44,27 @@ The copies, landings, hashes and write tracking were only there because the GPU 
   so a driver that takes the pages again at the submit takes the old ones.
 - A span that can't be imported (unmapped pages, the driver refusing) isn't tried again until memory changes.
 
+## What imports cost a driver
+
+RADV makes host-pointer imports amdgpu userptr buffers, and the kernel's command submission
+(`amdgpu_cs_parser_bos`, Linux 6.6) does this for every userptr buffer in a submission's list, at every submission:
+it allocates an array of its pages, takes them all again with `hmm_range_fault`, and compares them with the ones it
+had. A buffer whose pages an MMU notifier invalidated since makes the submission return `-EAGAIN`, and libdrm runs
+the whole ioctl again. amdgpu's notifier also waits for the GPU to be done with the buffer
+(`amdgpu_hmm_invalidate_gfx`).
+
+So, on a Steam Deck, the cost of unified memory is the imported pages each submission names, times submissions. Its
+first version imported 64 MiB chunks (16384 pages each) around whatever a draw touched and kept them for good, and it
+ran far slower than with `uma=0`. Anything that changes the protection of imported pages invalidates them. That
+includes write tracking re-protecting written pages (`plat_ww_scan`), which still runs for shaders, index scans,
+render targets' baselines, CPU-checked textures and constant buffer ranges, and transparent huge pages being
+collapsed.
+
+The fix this design points to is the other direction: guest memory allocated as Vulkan memory and mapped into the
+reservation (`VK_EXT_map_memory_placed`, which RADV has), so the GPU uses ordinary buffers. Those mappings can't take
+userfaultfd, so the write tracking and the GPU-owned traps would need another way there (`docs/UMA_MEMORY.md`).
+NVIDIA pins an import's pages once instead.
+
 ## Reads and writes in place
 
 A range is used in place (`vk_uma_read`, `vk_uma_write`) when four things hold:
@@ -52,7 +76,10 @@ A range is used in place (`vk_uma_read`, `vk_uma_write`) when four things hold:
 
 Otherwise it goes the old way.
 
-- Buffers (`buffer.c`'s `buf_get`) are bound with no Vb entry, hash, own buffer or write-tracking question.
+- Buffers (`buffer.c`'s `buf_get`) are bound with no hash, own buffer or write-tracking question. A range that had an
+  own buffer keeps it: a range read in place only some of the time (a release queued on its page, a result pending
+  beside it) would otherwise be hashed and copied again each frame. Its checks find what changed meanwhile, the CPU's
+  writes by epoch and the in-place writes by the GPU generation they stamp once done.
 - Writable storage buffers and transform feedback buffers (`vk_buf_copy_writable`) are bound in place. Their writes
   are pending from the draw's commit until its submit is done (`UmaOut`, counted in `g_pend_any`), and nothing lands.
 - Under UMA every dispatch runs on the graphics queue, in order with the draws, bound the same way. The compute
@@ -117,6 +144,10 @@ so the bits land as they are. The image is made able to take that view (`vk_texc
 mutable format, block-texel views for compressed formats). A rebuild with more than 512 slots of arguments runs the
 rest as it is. That is slower, never wrong, since a rebuild of an unchanged texture gives the same texels. A texture
 the GPU can't check now (results pending over it, memory not imported) is loaded again as it is.
+
+`uma_texture_check=0` gives textures back to the CPU's checks with unified memory on, to compare. Each check ends the
+rendering pass and records about seven barriers (two of them full ones) even when the rebuild is skipped, once per
+texture in each frame and submission it is used in: batching the checks due is the first thing to measure there.
 
 The GPU checks textures only on a shared-memory GPU (`g_vk.uma_shared`): its check reads every byte of a texture, a
 whole 64 KiB piece at a time, at each check, which on a discrete GPU is that much PCIe traffic a submission.

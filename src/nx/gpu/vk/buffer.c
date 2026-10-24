@@ -158,6 +158,7 @@ static void own_unlink(u32 i) {
 /* Optional copy telemetry. Counters are updated under vk_lock. */
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
 static u64 g_in_place; /* bytes bound where they are in guest memory (uma.c), not copied */
+static VkTexCheckStats g_ts_last; /* the texture checks' counts at the last stats line */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
 static u64 g_alias_draws, g_alias_pages;
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
@@ -2106,11 +2107,11 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->gfx_adds = vk_buf_adds();
         }
     }
-    if (g_vk.uma && buf_in_place(gva, len, align, buf, off)) {
-        /* a copy kept from before goes stale while the GPU reads the range in place: copied again if it comes back */
-        if (e && e->buf) drop_own(i);
-        return 1;
-    }
+    /* A copy kept from before stays: the checks below find what changed while the range was read in place (the
+       CPU's writes by epoch, the GPU's by the generation in-place writes stamp once done). Dropping it made a range
+       that is read in place only some of the time (a release queued on its page, a result pending beside it) hashed,
+       copied and given a buffer of its own again every frame */
+    if (g_vk.uma && buf_in_place(gva, len, align, buf, off)) return 1;
     /* valid: the data is where draws can read it this frame */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
@@ -2341,6 +2342,7 @@ void vk_buf_stats(u32* count, u64* bytes) {
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
 void vk_buf_frame(void) {
+    vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
@@ -2366,11 +2368,20 @@ void vk_buf_frame(void) {
         if (g_vk.uma) {
             VkUmaStats st;
             vk_uma_stats(&st);
+        VkTexCheckStats ts;
+        vk_texcheck_stats(&ts);
             LOG("vulkan: unified memory: bound in place=%llu, imports=%u of %llu MiB, waits for in-place reads=%llu "
                 "writes=%llu, barriers=%llu, writes pending=%llu\n",
                 (unsigned long long)g_in_place, st.imports, (unsigned long long)(st.bytes >> 20),
                 (unsigned long long)st.waits, (unsigned long long)st.out_waits, (unsigned long long)st.barriers,
                 (unsigned long long)st.pending);
+            LOG("vulkan: unified memory's texture checks over 600 presents: %llu of %llu MiB, %llu copies and %llu "
+                "stores gated, %llu ran ungated\n",
+                (unsigned long long)(ts.checks - g_ts_last.checks),
+                (unsigned long long)((ts.bytes - g_ts_last.bytes) >> 20),
+                (unsigned long long)(ts.copies - g_ts_last.copies), (unsigned long long)(ts.stores - g_ts_last.stores),
+                (unsigned long long)(ts.overflow - g_ts_last.overflow));
+            g_ts_last = ts;
             g_in_place = 0;
         }
         g_vb_lookups = g_vb_probes = 0;
