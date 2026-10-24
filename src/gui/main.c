@@ -9,6 +9,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
+#include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which the games this build's driver makes are stamped with */
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
 #include "gui/aot.h"
@@ -441,6 +442,7 @@ typedef struct App {
     char* made_file; /* a dump whose game is made, asked about (GUI_ASK_MADE): played or recompiled, by made_item */
     int made_item;
     bool made_ok;    /* asked and answered Play: the dump runs, its driver playing the game made */
+    bool compiled;   /* the game a compile just made plays (job_play): its stamp is not looked at again */
     char* room_file; /* a run asked about (GUI_ASK_ROOM): its file, its load and whether it was prepared */
     int room_item;
     bool room_prepared, room_recompile;
@@ -6466,6 +6468,23 @@ static bool made_from(const App* app, const char* file) {
     made_free(&made);
     return found;
 }
+/* a Switch game's program in its folder (<folder>/<name>, a game's or its update's, .exe on Windows) that this build
+   made with the mods its game plays now: its driver plays it as it is. One another build made, or this one with other
+   mods, its driver recompiles first */
+static bool made_here(const char* program) {
+    char *base = snx_strdup(program), *made, *expected;
+    bool here;
+#ifdef _WIN32
+    if (strlen(base) > 4 && !SDL_strcasecmp(base + strlen(base) - 4, ".exe")) base[strlen(base) - 4] = 0;
+#endif
+    made = snx_game_mods_stamp(base);
+    expected = snx_game_stamp_for(SNX_ABI, made);
+    here = snx_game_stamp_is(base, expected);
+    free(expected);
+    free(made);
+    free(base);
+    return here;
+}
 /* the recent rows as Games has their games: a dump or a package made into a game of recompiled/ since runs that game's
    program from then on, whichever console's, and a game of a folder of its own goes by the name Games shows it by, its
    control.nacp's */
@@ -9810,8 +9829,13 @@ static void launch(App* app, char* absolute, bool prepared) {
         return;
     }
     /* a game opened that no game of the library was made from yet compiles first through the queue, as R's recompile
-       does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play) */
+       does: the Compile tab shows it, and it plays once it ended if the tab still shows it (job_play). So does a Switch
+       game another build made, which its driver would recompile on the run's screen */
     bool compile = !app->recompile && !prepared && app->menu.selected != GUI_LINUX && !made_from(app, absolute);
+#ifndef SDL_PLATFORM_IOS /* the games there are packs the app loads, with no stamp */
+    compile = compile || (!app->recompile && !app->compiled && prepared && app->menu.selected == GUI_SWITCH &&
+                          gui_game_folder(absolute) && !made_here(absolute));
+#endif
     bool make = app->recompile || compile; /* the driver's -r: a run that makes the game and plays nothing */
     bool native = prepared && app->menu.selected == GUI_SWITCH;
     /* another console's made game plays through its driver in its folder (--game=), as its copy of the runtime does */
@@ -10183,7 +10207,9 @@ static void job_play(App* app, int i) {
     MadeGames made;
     const char* program;
     made_read(app, &made);
-    program = made_program(&made, gui_queue_file(&app->queue, i));
+    /* a made game's own recompile plays its program; a dump's, the game made from it */
+    program =
+        app->queue.job[i].native ? gui_queue_file(&app->queue, i) : made_program(&made, gui_queue_file(&app->queue, i));
     if (!program)
         snprintf(app->message, sizeof app->message,
                  snx_tr("%s: compiled, but no game of %s names it as its source, so it does not play"), name,
@@ -10192,7 +10218,9 @@ static void job_play(App* app, int i) {
         snprintf(app->message, sizeof app->message, snx_tr("%s: compiled, Enter on it plays it"), name);
     else {
         app->menu.selected = app->queue.job[i].console;
+        app->compiled = true;
         launch(app, snx_strdup(program), true);
+        app->compiled = false;
     }
     made_free(&made);
 }

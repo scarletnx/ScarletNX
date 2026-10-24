@@ -390,10 +390,11 @@ cannot be read is named and the others still listed.
 - Empty or missing directories show a diagnostic, and the side box says P adds a folder.
 
 A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with the Settings through the menu's own
-`scarletnx` and is never extracted as a dump: it plays as it is when this build made it, and is recompiled first,
-where it is, when another build did ([USAGE](USAGE.md#extract--aot--run)), the run showing the recompile before the
-game loads. A game an older version laid out beside the others runs directly, as every game does on iOS. A game
-another console's driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
+`scarletnx` and is never extracted as a dump: it plays as it is when this build made it with the mods it plays, and
+when another build did, or other mods, it compiles first, where it is, in the queue as a dump's first compile does
+(its `<id>.abi` says which: [USAGE](USAGE.md#extract--aot--run)), then plays if the Compile tab still shows it. A game
+an older version laid out beside the others runs directly, as every game does on iOS. A game another console's
+driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
 its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
 Enter and R go through that driver, in the game's folder (`--game=`), with none of the Switch's Settings. A CIA goes
 to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to

@@ -69,9 +69,7 @@ static unsigned number(const char* text, unsigned max) {
 unsigned snx_game_abi(void) { return snx_module_abi(); }
 /* the ABI alone: a game made by another build of it keeps its code, and its copy of the runtime is replaced by the
    driver that plays it (driver.c's refresh_runtime) */
-char* snx_game_stamp(const char* mods) {
-    return mods[0] ? snx_format("%u mods %s", snx_game_abi(), mods) : snx_format("%u", snx_game_abi());
-}
+char* snx_game_stamp(const char* mods) { return snx_game_stamp_for(snx_game_abi(), mods); }
 char* snx_own_runtime(const SnxPaths* paths) {
 #ifdef SNX_WITH_RUNTIME
     /* In an AppImage this program is a launcher in its mount, which runs nothing once copied out: the AppImage is the

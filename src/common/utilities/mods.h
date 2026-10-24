@@ -32,4 +32,14 @@ size_t snx_mods_exefs(const char* folder, const char* off, char*** names, char**
    and then the patches snx_mods_patches gives (common/utilities/patches.h), by their names and bytes, as 16 hex digits,
    owned. "" when no mod played has any */
 char* snx_mods_stamp(const char* folder, const char* off);
+/* what a game's <name>.abi holds when the recompile made it for abi with mods, its mods' stamp (snx_mods_stamp): the
+   ABI, and " mods " and that stamp unless it is "", owned */
+char* snx_game_stamp_for(unsigned abi, const char* mods);
+/* the stamp of the mods the game at base (<folder>/<name>, a game's or its update's) plays now, its game's (the folder's
+   name), owned */
+char* snx_game_mods_stamp(const char* base);
+/* 1 when the game at base was made as expected says (snx_game_stamp_for): its <base>.abi holds it, a partial write or
+   anything after it being no completed build. The driver recompiles a game that was not before it plays it, and the
+   launcher compiles it through its queue */
+int snx_game_stamp_is(const char* base, const char* expected);
 #endif

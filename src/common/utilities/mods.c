@@ -149,3 +149,26 @@ char* snx_mods_stamp(const char* folder, const char* off) {
     snx_free_strings(patches, npatches);
     return stamp;
 }
+char* snx_game_stamp_for(unsigned abi, const char* mods) {
+    return mods[0] ? snx_format("%u mods %s", abi, mods) : snx_format("%u", abi);
+}
+char* snx_game_mods_stamp(const char* base) {
+    char *folder = snx_dirname(base), *off = NULL, *mods, *made;
+    const char* game = folder + strlen(folder);
+    while (game > folder && game[-1] != '/' && game[-1] != '\\') --game; /* the game's folder is named as it is */
+    mods = snx_game_mods(folder, game, &off);
+    made = snx_mods_stamp(mods, off);
+    free(mods);
+    free(off);
+    free(folder);
+    return made;
+}
+int snx_game_stamp_is(const char* base, const char* expected) {
+    char* stamp = snx_format("%s.abi", base);
+    size_t size = 0;
+    unsigned char* found = snx_read_file(stamp, &size);
+    int same = found && size == strlen(expected) && !memcmp(found, expected, size);
+    free(found);
+    free(stamp);
+    return same;
+}

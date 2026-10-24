@@ -446,9 +446,19 @@ static void compiled_by(App* app, const char* driver, const char* file, int stat
            !has_arg(argv, "--fullscreen=1", NULL));
     free(argv);
 }
-/* a game of the library made from dump already, as a console's driver leaves one: its program, its data folder and
-   source= in its folder's <name>.ini. Opening dump then plays it, no compile first. Its folder, which the caller
-   removes */
+/* the stamp this build's driver leaves in the game name's folder (<folder>/<name>.abi), as a game it made with no mod has:
+   the launcher plays that game as it is (made_here) */
+static void stamp_here(const char* folder, const char* name) {
+    char *base = snx_path_join(folder, name), *stamp = snx_format("%s.abi", base),
+         *version = snx_game_stamp_for(SNX_ABI, "");
+    assert(base && stamp && version && !snx_write_file(stamp, version, strlen(version)));
+    free(version);
+    free(stamp);
+    free(base);
+}
+/* a game of the library made from dump already, as a console's driver leaves one: its program, its data folder,
+   source= in its folder's <name>.ini and this build's stamp. Opening dump then plays it, no compile first. Its folder,
+   which the caller removes */
 static char* made_game(const App* app, const char* dump, const char* name) {
     char *folder = snx_path_join(app->games_dir, name), *data_name = snx_format("%s_data", name),
          *ini_name = snx_format("%s.ini", name), *text = snx_format("[Game]\nsource=%s\n", dump);
@@ -461,6 +471,7 @@ static char* made_game(const App* app, const char* dump, const char* name) {
          *program = snx_path_join(folder, file);
     assert(!snx_mkdirs(data) && !snx_write_file(program, "x", 1) && !snx_make_executable(program) &&
            !snx_write_file(ini, text, strlen(text)));
+    stamp_here(folder, name);
     free(program);
     free(ini);
     free(data);
@@ -2298,6 +2309,7 @@ static void recompile_queue(App* app) {
         char* where = snx_path_join(folders[i], data);
         programs[i] = snx_path_join(folders[i], file);
         assert(!snx_mkdirs(where) && !snx_write_file(programs[i], "x", 1) && !snx_make_executable(programs[i]));
+        stamp_here(folders[i], names[i]); /* made by this build: Enter plays it */
         free(where);
         free(data);
         free(file);
@@ -2759,6 +2771,46 @@ static void compile_first(App* app, const char* dir) {
         assert(!snx_remove_tree(library));
         free(made);
         free(library);
+    }
+    /* a game of the library another build made (its stamp another ABI's): opened, it compiles in the queue as a first
+       compile does, -r and its program, and plays once it ended while the tab shows it. A compile that left the stamp
+       as it was plays it all the same, once, with no second compile */
+    for (int kept = 0; kept < 2; ++kept) {
+        char *base, *stamp, *other = snx_game_stamp_for(SNX_ABI + 1, ""), *program;
+        const char* job_argv[GUI_QUEUE_ARGS];
+        int n, k;
+        made = made_game(app, dump, "first compile");
+        base = snx_path_join(made, "first compile");
+        stamp = snx_format("%s.abi", base);
+#ifdef _WIN32
+        program = snx_format("%s.exe", base);
+#else
+        program = snx_strdup(base);
+#endif
+        assert(!snx_write_file(stamp, other, strlen(other)));
+        go_tab(app, GUI_TAB_MENU);
+        app->menu.selected = GUI_SWITCH;
+        driver_will(got, 0, "Recompiling first compile");
+        launch(app, snx_strdup(program), true);
+        assert(!app->menu.running && app->queue.count == 1 && app->queue.job[0].kind == GUI_JOB_COMPILE &&
+               app->queue.job[0].native);
+        assert(app->menu.view == GUI_LOAD_RECOMPILE && tab_shown(app) == GUI_TAB_RECOMPILE &&
+               tab_reads(app, "Compile"));
+        n = gui_queue_argv(&app->queue, 0, job_argv);
+        for (k = 1; k + 1 < n && strcmp(job_argv[k], "-r"); ++k) continue;
+        assert(k + 1 < n && !strcmp(job_argv[k + 1], program));
+        if (!kept) stamp_here(made, "first compile"); /* as the driver's -r leaves it */
+        for (until = SDL_GetTicks() + 10000; !app->menu.running && SDL_GetTicks() < until; SDL_Delay(2)) pump(app);
+        assert(app->queue.job[0].state == GUI_JOB_OK && app->menu.running && app->native && app->queue.count == 1);
+        argv_got = ran(app, 0); /* the game's program, played */
+        assert(strstr(argv_got, program) && !has_arg(argv_got, "-r", NULL));
+        free(argv_got);
+        queue_drop(app, 0);
+        made_gone(app, made);
+        free(program);
+        free(other);
+        free(stamp);
+        free(base);
     }
     driver_will(NULL, 0, NULL);
     assert(!remove(dump));
@@ -6747,9 +6799,10 @@ int main(int argc, char** argv) {
     point(&app, game_box(&app, 0, false), true); /* native prepared game, not another extraction */
     assert(app.menu.running && app.native && screen(&app) == GUI_SCREEN_LOADING);
     finish(&app, 0);
-    /* a game in a folder of its own beside its data goes through the menu's driver with the settings and the data
-       folder (Game00 above, an older version's beside the others, runs as it is): the driver plays it, recompiled
-       first when another build made it, which the run shows as compiling until the game loads */
+    /* a game in a folder of its own beside its data that this build made goes through the menu's driver with the
+       settings and the data folder (Game00 above, an older version's beside the others, runs as it is): the driver plays
+       it, recompiled first when it finds another build made it, which the run shows as compiling until the game loads
+       (one the launcher sees another build made compiles in the queue first, below) */
     {
         char *folder = snx_path_join(app.games_dir, "folder game"), *data = snx_path_join(folder, "folder game_data");
 #ifdef _WIN32
@@ -6759,6 +6812,7 @@ int main(int argc, char** argv) {
 #endif
         int item = app.menu.selected;
         assert(!snx_mkdirs(data) && !snx_copy_file(self, program) && !snx_make_executable(program));
+        stamp_here(folder, "folder game");
         leave_run(&app);
         app.menu.selected = GUI_SWITCH;
         launch(&app, snx_strdup(program), true);
@@ -6944,6 +6998,9 @@ int main(int argc, char** argv) {
             assert(!snx_copy_file(self, base) && !snx_make_executable(base));
             assert(!snx_copy_file(self, newer) && !snx_make_executable(newer));
             assert(!snx_copy_file(self, older) && !snx_make_executable(older));
+            stamp_here(own, "0100ABCD12340000"); /* the game and both updates as this build made them */
+            stamp_here(own, "0100ABCD12340000_0100ABCD12340800v65536");
+            stamp_here(own, "0100ABCD12340000_0100ABCD12340800v0");
             ini = snx_game_ini(own, "0100ABCD12340000");
             assert(!snx_ini_record(ini, "addons", "0100ABCD12341001")); /* the DLC checked, no update */
             /* two mods in its data folder's mods/, the second left out; a file there is no mod */

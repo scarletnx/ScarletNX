@@ -173,24 +173,12 @@ static int refresh_runtime(const SnxPaths* paths, const char* game) {
 }
 #ifndef SNX_IOS /* the pack of an app has no stamp: the loader checks its ABI */
 /* whether this build made the game at base (<folder>/<name>, a game's or its update's), with the mods its game plays
-   now: its stamp says what this build writes, a partial write or anything after it being no completed build */
+   now (mods.h's snx_game_stamp_is) */
 static int stamped(const char* base) {
-    char *folder = snx_dirname(base), *off = NULL, *mods, *made, *stamp = snx_format("%s.abi", base), *expected;
-    const char* game = folder + strlen(folder);
-    size_t size = 0;
-    while (game > folder && game[-1] != '/' && game[-1] != '\\') --game; /* the game's folder is named as it is */
-    mods = snx_game_mods(folder, game, &off);
-    made = snx_mods_stamp(mods, off);
-    expected = snx_game_stamp(made);
-    free(made);
-    free(mods);
-    free(off);
-    free(folder);
-    unsigned char* found = snx_read_file(stamp, &size);
-    int same = found && size == strlen(expected) && !memcmp(found, expected, size);
-    free(found);
+    char *made = snx_game_mods_stamp(base), *expected = snx_game_stamp(made);
+    int same = snx_game_stamp_is(base, expected);
     free(expected);
-    free(stamp);
+    free(made);
     return same;
 }
 #endif
