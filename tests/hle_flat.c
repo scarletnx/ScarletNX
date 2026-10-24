@@ -81,13 +81,19 @@ static void parse(const char* root) {
 static Hle h;
 
 /* a walk's name as the paths have it: an array of an unnamed struct, walked as its first element (debug_sleeps_slot),
-   is the array's path with "[]" (debug.sleeps[]) */
+   is the array's path with "[]" (debug.sleeps[]), kept in g_names for the test's whole run */
+static char g_names[8][64];
+static int g_nnames;
 static const char* walk_name(const char* name) {
     size_t n = strlen(name);
     char* s;
     if (n < 5 || strcmp(name + n - 5, "_slot")) return name;
-    s = malloc(n);
-    if (!s) abort();
+    if (g_nnames == (int)(sizeof g_names / sizeof *g_names) || n > sizeof *g_names) {
+        fprintf(stderr, "hle_flat: %s is walk %d of an unnamed struct's array, past the %d names of %d bytes kept\n",
+                name, g_nnames + 1, (int)(sizeof g_names / sizeof *g_names), (int)sizeof *g_names);
+        exit(1);
+    }
+    s = g_names[g_nnames++];
     memcpy(s, name, n - 5);
     s[n - 5] = 0;
     s[strcspn(s, "_")] = '.';
