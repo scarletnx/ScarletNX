@@ -51,22 +51,19 @@ int main(void) {
         assert(!strcmp(again.game[i].path, r.game[i].path) && !strcmp(again.game[i].name, r.game[i].name) &&
                again.game[i].driver == r.game[i].driver && again.game[i].prepared == r.game[i].prepared);
 
-    /* 3DS records keep their own driver across restart; CIA inputs are never prepared executables. */
+    /* every console's records keep their driver across a restart: its package (a CIA, a VPK, a GBA ROM) as one, and the
+       game its driver made of it, ready to run, as one too */
     GuiRecent before_ctr = r;
-    assert(!gui_recent_add(&r, games[6], GUI_3DS, 1));
-    assert(!r.game[0].prepared && r.game[0].driver == GUI_3DS);
-    assert(!gui_recent_save(&r, file));
-    gui_recent_load(&again, file);
-    assert(again.count == r.count && again.game[0].driver == GUI_3DS && !again.game[0].prepared);
     assert(gui_recent_add(&r, games[6], GUI_KEYS, 0));
-    r = before_ctr;
-    /* and Vita ones, VPKs */
-    assert(!gui_recent_add(&r, games[6], GUI_VITA, 1));
-    assert(!r.game[0].prepared && r.game[0].driver == GUI_VITA);
-    assert(!gui_recent_save(&r, file));
-    gui_recent_load(&again, file);
-    assert(again.count == r.count && again.game[0].driver == GUI_VITA && !again.game[0].prepared);
-    r = before_ctr;
+    for (int d = 0; d < 6; ++d) {
+        int driver = d % 3 == 0 ? GUI_3DS : d % 3 == 1 ? GUI_VITA : GUI_GBA, made = d >= 3;
+        assert(!gui_recent_add(&r, games[6], driver, made));
+        assert(r.game[0].prepared == made && r.game[0].driver == driver);
+        assert(!gui_recent_save(&r, file));
+        gui_recent_load(&again, file);
+        assert(again.count == r.count && again.game[0].driver == driver && again.game[0].prepared == made);
+        r = before_ctr;
+    }
 
     /* a file that is gone, a line it cannot read, a second copy: left out; CRLF read too */
     assert(!remove(games[1]));

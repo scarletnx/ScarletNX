@@ -14,8 +14,8 @@ typedef struct {
     size_t room; /* the entries the lists have room for, one past the last included */
 } GuiGames;
 /* what a folder's games are: ready to run (executables; on Android a game's code or a dump), the other consoles'
-   packages (3DS CIA and Vita VPK files, each opened with its driver), and dumps (NSP, XCI and NRO files), prepared when
-   they run */
+   packages (3DS CIA and Vita VPK files, GBA ROMs, each opened with its driver), and dumps (NSP, XCI and NRO files),
+   prepared when they run */
 enum { GUI_GAMES_RUN = 1, GUI_GAMES_CIA = 2, GUI_GAMES_DUMP = 4 };
 /* A folder's games of kinds added after those listed: its own files, and each folder of it that holds its game
    (<name>/<name>), named by the folder; nothing deeper. False, error saying why, when it cannot be read */
@@ -82,7 +82,8 @@ size_t gui_game_cheats(const char* path, char** folder, char*** names);
    copied in part, and taken away when a file fails. from is left as it is. True; false with why naming the file that
    failed, or the link a mod cannot hold, and the system's reason */
 bool gui_copy_mod(const char* from, const char* to, char* why, size_t size);
-/* A 3DS CIA, a Vita VPK, by its name */
+/* A 3DS CIA, a Vita VPK, a GBA ROM, by its name */
 bool gui_is_cia(const char* name);
 bool gui_is_vpk(const char* name);
+bool gui_is_gba(const char* name);
 #endif

@@ -86,7 +86,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   into its game's folder of `recompiled/` (named after its title ID), compiles its code ahead of time and plays it,
   compiling at run time what it missed. A VPK extracted and compiled before plays at once. See
   [Vita driver](VITA.md) for limits.
-- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime: see [AGB board](AGB.md).
+- **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
+  the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
+  it in a window. See [AGB board](AGB.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no `prod.keys` is in use. It prompts you to
   pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
@@ -317,7 +319,8 @@ setup, writing nothing.
 ## Games: the games of recompiled/ and the player's folders
 
 **Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly), the dumps to prepare
-on Android, CIA files, which go to the 3DS driver, and VPK files, which go to the Vita driver. It reads the `recompiled/` of the
+on Android, CIA files, which go to the 3DS driver, VPK files, which go to the Vita driver, and GBA ROMs, which go to the
+GBA's. It reads the `recompiled/` of the
 folder the driver works in, which the menu passes it as `--data`: a portable copy's `.scarletnx/` beside the
 AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
 Extra of Settings > App > Folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
@@ -351,13 +354,15 @@ cannot be read is named and the others still listed.
   Menu; the player turns them on there. An `app.ini` without them, an older version's, has these defaults, and a word
   it does not know is named in the message with the one kept: `recent_games = maybe (it keeps on)`.
 - In the list, Up/Down go round the recent games and the page's files. Enter/Space opens one.
-- **R** (on Android a tap on *Recompile* at the foot) recompiles the Switch game in focus, recent or on the page,
-  where it is, or prepares its dump again: `scarletnx -r`. It plays nothing;
-  Enter then does. On another row, or a 3DS or Vita game, it says why it does nothing.
+- **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
+  console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
+  `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing; Enter then does. On a Linux program, or another row, it
+  says why it does nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods or cheats beside it, and for a game with none of them
   too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives into the game's mods
-  and cheats ([USAGE](USAGE.md#mods)). On another row, a dump, or a 3DS or Vita game, it says what it opens.
+  and cheats ([USAGE](USAGE.md#mods)). On another row, a dump, a package or another console's game, it says what it
+  opens.
 - In the list, Left/Right and PgUp/PgDown go to the previous/next page. The page number and
   total file count are shown. Paging stops at the first and last pages.
 - Resizing adjusts the page size while keeping the selected file visible.
@@ -366,7 +371,10 @@ cannot be read is named and the others still listed.
 A recompiled game, in a folder of its own (`recompiled/<id>/<id>`), runs with the Settings through the menu's own
 `scarletnx` and is never extracted as a dump: it plays as it is when this build made it, and is recompiled first,
 where it is, when another build did ([USAGE](USAGE.md#extract--aot--run)), the run showing the recompile before the
-game loads. A game an older version laid out beside the others runs directly, as every game does on iOS. A CIA goes
+game loads. A game an older version laid out beside the others runs directly, as every game does on iOS. A game
+another console's driver made says so in its `.ini` (`system=` of `[Game]`: `3ds`, `vita` or `gba`; an older one by
+its layout, a 3DS `.ini`'s `model=`, a Vita folder's `ux0/`): its row says "3DS game, ready to run" and the like, and
+Enter and R go through that driver, in the game's folder (`--game=`), with none of the Switch's Settings. A CIA goes
 to `scarletnx-3ds`, which is never executed on it directly. Output capture, resource accounting and the return to
 the main menu work as for a file picked by a load.
 

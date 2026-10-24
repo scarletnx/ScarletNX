@@ -2101,11 +2101,32 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 1 && strstr(argv[0], "scarletnx-3ds")) {
+        /* R's recompile, which plays nothing: -r before the CIA, as the Switch driver takes it */
+        if (!strcmp(argv[1], "-r")) {
+            assert(argc == 5 && snx_is_file(argv[2]) && strstr(argv[2], "r test.cia") && !strcmp(argv[3], "--data") &&
+                   argv[4][0]);
+            puts("Built r test");
+            return 0;
+        }
         /* in the menu's data folder, as the Switch driver */
         assert(argc == 4 && snx_is_file(argv[1]) && strstr(argv[1], "3ds input.CIA") && !strcmp(argv[2], "--data") &&
                argv[3][0]);
         fputs("CIA execution is not implemented (stage 2)\n", stderr);
         return 3;
+    }
+    if (argc > 1 && strstr(argv[0], "scarletnx-agb")) {
+        /* a game it made, played in its folder as its copy of the runtime plays it, by the console its .ini says; its
+           window fullscreen as Settings say */
+        if (!strncmp(argv[1], "--game=", 7)) {
+            assert(argc == 3 && snx_is_dir(argv[1] + 7) && strstr(argv[1], "gba-games") && strstr(argv[1], "made") &&
+                   !strcmp(argv[2], "--fullscreen=1"));
+            return 5;
+        }
+        /* the ROM, in the menu's data folder as the 3DS and Vita drivers */
+        assert(argc == 5 && snx_is_file(argv[1]) && strstr(argv[1], "agb input.gba") && !strcmp(argv[2], "--data") &&
+               argv[3][0] && !strcmp(argv[4], "--fullscreen=1"));
+        fputs("the ROM is no game\n", stderr);
+        return 4;
     }
     if (argc > 1 && strstr(argv[0], "scarletnx-vita")) {
         /* the VPK, in the menu's data folder as the 3DS driver */
@@ -2305,7 +2326,7 @@ int main(int argc, char** argv) {
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
-    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita"};
+    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -4879,7 +4900,8 @@ int main(int argc, char** argv) {
                 } unlisted[] = {{"far away.nsp", GUI_SWITCH, "A dump, prepared when it runs"},
                                 {"tool.elf", GUI_LINUX, "Linux ARM ELF, run with scarletnx-gnuabi"},
                                 {"homebrew.cia", GUI_3DS, "3DS CIA, opened with scarletnx-3ds"},
-                                {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"}};
+                                {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"},
+                                {"homebrew.gba", GUI_GBA, "GBA ROM, played with scarletnx-agb"}};
                 GuiRecent was = app.recent;
                 GuiGamesBoxes none = {0};
                 char kind[192], listed[192];
@@ -5262,6 +5284,67 @@ int main(int argc, char** argv) {
         app.games_dir = original_games;
         app.games_stamp = stamp_now(&app);
         free(vpk);
+        free(recent_file);
+    }
+    /* GBA: a ROM through scarletnx-agb as a VPK through its driver; then a game a driver made, its folder's .ini saying
+       gba: Games shows it ready, Enter plays it in its folder through that driver, and Recent keeps it made */
+    {
+        char* original_games = app.games_dir;
+        char* recent_file = snx_path_join(temporary, "prefs/gba-recent.txt");
+        app.games_dir = snx_path_join(temporary, "gba-games");
+        char* rom = snx_path_join(app.games_dir, "agb input.gba");
+        char* folder = snx_path_join(app.games_dir, "made");
+        char* program = snx_path_join(folder, "made");
+        char kind[160];
+        size_t i;
+        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(rom, "fixture", 7));
+        assert(gui_settings_set(&app.settings, "fullscreen", "1"));
+        recent_open(&app, snx_strdup(recent_file));
+        launcher(&app, true);
+        point(&app, entry_box(&app, GUI_GBA), true);
+        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_GBA);
+        e.type = SDL_EVENT_DROP_FILE;
+        e.drop.data = rom;
+        event(&app, &e);
+        assert(app.menu.running && app.menu.selected == GUI_GBA && !app.native);
+        finish(&app, 4);
+        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_GBA && !app.recent.game[0].prepared);
+        assert(!snx_mkdirs(folder) && !snx_write_file(program, "#!/bin/sh\n", 10) && !snx_make_executable(program));
+        assert(!snx_record_system(folder, "made", SNX_SYSTEM_GBA));
+        app.games_stamp = stamp_now(&app);
+        go_tab(&app, GUI_TAB_GAMES);
+        for (i = 0; i < app.games.count && (!app.games.names[i] || strcmp(app.games.names[i], "made")); ++i);
+        assert(i < app.games.count);
+        game_kind(&app, &app.games, i, kind, sizeof kind);
+        assert(!strcmp(kind, "GBA game, ready to run"));
+        app.browser.selected = app.browser.head + i;
+        key(&app, SDLK_RETURN);
+        assert(app.menu.running && !app.native && app.menu.selected == GUI_GBA);
+        finish(&app, 5);
+        assert(app.recent.game[0].driver == GUI_GBA && app.recent.game[0].prepared &&
+               !strcmp(app.recent.game[0].path, program));
+        /* the ROM in the games folder is one of Games', which Enter plays through scarletnx-agb as a CIA's */
+        leave_run(&app);
+        go_tab(&app, GUI_TAB_GAMES);
+        focus_game(&app, "agb input.gba");
+        game_kind(&app, &app.games, app.browser.page * app.browser.page_size + app.browser.selected - app.browser.head,
+                  kind, sizeof kind);
+        assert(!strcmp(kind, "GBA ROM, played with scarletnx-agb"));
+        key(&app, SDLK_RETURN);
+        assert(app.menu.running && !app.native && app.menu.selected == GUI_GBA);
+        finish(&app, 4);
+        app.recent = (GuiRecent){0};
+        recent_changed(&app);
+        free(app.recent_file);
+        app.recent_file = NULL;
+        launcher(&app, false);
+        app.menu.selected = GUI_LINUX;
+        free(app.games_dir);
+        app.games_dir = original_games;
+        app.games_stamp = stamp_now(&app);
+        free(program);
+        free(folder);
+        free(rom);
         free(recent_file);
     }
 
@@ -5925,13 +6008,22 @@ int main(int argc, char** argv) {
             key(&app, SDLK_R);
             assert(!app.menu.running && !strcmp(app.message, "No game in focus to recompile."));
             focus_game(&app, "r test.cia");
-            { /* R and M are said on a Switch game, M on a made one: not on a CIA */
+            { /* R is said on any console's game, M on a Switch one alone: R on a CIA, not M */
                 char said[512];
-                assert(!strstr(screen_said(&app, true, said, sizeof said), "R: recompile.") &&
+                assert(strstr(screen_said(&app, true, said, sizeof said), "R: recompile.") &&
                        !strstr(said, "M: mods."));
             }
-            key(&app, SDLK_R);
-            assert(!app.menu.running && !strcmp(app.message, "R recompiles Switch games only."));
+            {
+                GuiRecent was = app.recent;
+                key(&app, SDLK_R); /* through the 3DS driver's -r, as a Switch game's through scarletnx -r */
+                assert(app.menu.running && app.menu.selected == GUI_3DS && !app.native);
+                finish(&app, 0);
+                assert(!app.recompile);
+                leave_run(&app);
+                app.recent = was;
+                recent_changed(&app);
+                go_tab(&app, GUI_TAB_GAMES);
+            }
             focus_game(&app, "folder game");
             {
                 char said[512];

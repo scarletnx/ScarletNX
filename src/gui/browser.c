@@ -23,6 +23,7 @@ static bool suffix(const char* name, const char* extension) {
 }
 bool gui_is_cia(const char* name) { return suffix(name, ".cia"); }
 bool gui_is_vpk(const char* name) { return suffix(name, ".vpk"); }
+bool gui_is_gba(const char* name) { return suffix(name, ".gba"); }
 bool gui_is_dump(const char* name) {
     return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
            suffix(name, ".dnsp");
@@ -83,7 +84,7 @@ static bool playable(const char* directory, char* name, int kinds) {
     char* path;
     bool listed;
     if (name[0] == '.') return false;
-    if (gui_is_cia(name) || gui_is_vpk(name)) {
+    if (gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name)) {
         if (!(kinds & GUI_GAMES_CIA)) return false;
         path = snx_path_join(directory, name);
         listed = path && snx_is_file(path);
@@ -514,7 +515,8 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
 }
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
 static bool dump_entry(const GuiGames* games, size_t i) {
-    return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]);
+    return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
+           gui_is_gba(games->names[i]);
 }
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user) {

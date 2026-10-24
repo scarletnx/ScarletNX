@@ -1330,6 +1330,22 @@ msgid "Show More"
 msgstr ""
 
 #: src/gui/main.c
+msgid "3DS game, ready to run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vita game, ready to run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "GBA game, ready to run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Ready to run"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Ready to run, with %zu update(s), DLC(s), mod(s) or cheat(s) to pick from"
 msgstr ""
@@ -1343,11 +1359,11 @@ msgid "Vita VPK, opened with scarletnx-vita"
 msgstr ""
 
 #: src/gui/main.c
-msgid "A dump, prepared when it runs"
+msgid "GBA ROM, played with scarletnx-agb"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Ready to run"
+msgid "A dump, prepared when it runs"
 msgstr ""
 
 #: src/gui/main.c
@@ -2603,7 +2619,7 @@ msgid "No game in focus to recompile."
 msgstr ""
 
 #: src/gui/main.c
-msgid "R recompiles Switch games only."
+msgid "R recompiles games: a Linux program runs as it is."
 msgstr ""
 
 #: src/gui/main.c
