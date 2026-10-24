@@ -36,7 +36,11 @@ static void dma_transfer(AgbBoard* board, int index, int fifo) {
             agb_write32(board, destination, value);
         } else {
             uint16_t value = agb_read16(board, source);
-            agb_write16(board, destination, value);
+            /* a request to the EEPROM: the halfwords left say where its block's number ends */
+            if ((destination >> 24 & 0x0F) == 0x0D && agb_save_eeprom(board))
+                agb_eeprom_write(board, value, count - i);
+            else
+                agb_write16(board, destination, value);
         }
         switch (source_mode) {
             case 0: source += (uint32_t)step; break;

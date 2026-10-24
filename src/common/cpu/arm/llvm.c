@@ -359,9 +359,9 @@ static LLVMValueRef memptr(ArmIR* a, LLVMValueRef addr) {
    bus rules a plain access cannot follow (the BIOS's open bus, mirrors finer than a page, byte write
    widths). The runtime registers a hook the way the A64 side registers a fetch callback; without one every
    access is direct. The regions are the AGB board's: 0x00 to 0x01 the BIOS, 0x04 to 0x07 the I/O
-   window and video memory, 0x0E and 0x0F the save memory. */
-#define SNX_ARM_IO_REGIONS (1u << 0x00 | 1u << 0x01 | 1u << 0x04 | 1u << 0x05 | 1u << 0x06 | 1u << 0x07 | \
-                            1u << 0x0E | 1u << 0x0F)
+   window and video memory, 0x0D the EEPROM a cartridge may have there, 0x0E and 0x0F the save memory. */
+#define SNX_ARM_IO_REGIONS                                                                                             \
+    (1u << 0x00 | 1u << 0x01 | 1u << 0x04 | 1u << 0x05 | 1u << 0x06 | 1u << 0x07 | 1u << 0x0D | 1u << 0x0E | 1u << 0x0F)
 static LLVMValueRef io_route(ArmIR* a, LLVMValueRef addr, LLVMValueRef fn) {
     LLVMValueRef top = lsr(a, addr, 24);
     LLVMValueRef route = band(a, LLVMBuildLShr(a->b, c32(a, SNX_ARM_IO_REGIONS), band(a, top, c32(a, 31)), ""),

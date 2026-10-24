@@ -97,6 +97,7 @@ uint16_t agb_read16(AgbBoard* board, uint32_t address) {
         uint8_t byte = agb_save_read8(board, address);
         return (uint16_t)(byte * 0x0101u);
     }
+    if ((address >> 24) == 0x0D && agb_save_eeprom(board)) return agb_eeprom_read(board);
     if (is_bios(address)) return (uint16_t)(board->bios_prefetch >> (address & 2) * 8);
     p = region8(board, address);
     if (p) return load16(p);
@@ -157,6 +158,10 @@ void agb_write16(AgbBoard* board, uint32_t address, uint16_t value) {
     address &= 0x0FFFFFFE;
     if ((address >> 24) == 0x04) {
         agb_io_write16(board, address, value, 0xFFFF);
+        return;
+    }
+    if ((address >> 24) == 0x0D && agb_save_eeprom(board)) {
+        agb_eeprom_write(board, value, 1); /* a store of the CPU's is a transfer of one */
         return;
     }
     p = region8(board, address);
