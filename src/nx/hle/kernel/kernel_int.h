@@ -219,6 +219,9 @@ typedef struct {
 typedef struct {
     PCond cv[KTHREAD_MAX]; /* each thread's, which it waits on (kt_cv) */
     PMutex core_lk;
+    /* for kernel_core_report, under core_lk: when each core's holder took it (plat_ns), and per core the time it was
+       held and the time threads waited for it */
+    u64 core_since[NCORES], core_held_ns[NCORES], core_wait_ns[NCORES];
     /* a save state's load (thread.c): the guest threads' host threads running, retire asking them to end, and the
        service wait each is in (kthread_wait), where it is woken to */
     int nhost, retire;

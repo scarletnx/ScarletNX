@@ -501,6 +501,7 @@ void snx_save_before_exit(void) {
         svc_core_exit();
         jit_report();
         nvn_trace_report();
+        kernel_core_report();
         saved = 1;
     }
     pm_unlock(&lock);
