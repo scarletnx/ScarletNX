@@ -622,7 +622,18 @@ static void* unswz(const Names* t, u64 v) {
 #define NIL(field) memset(&(field), 0, sizeof(field))
 
 /* the heap memory g_hle's members own, beside it in HEAP: records of a kind, a slot and a size */
-enum { HEAP_END, HEAP_STORAGE, HEAP_NRR, HEAP_AUDREN, HEAP_GMMU, HEAP_GMAPS, HEAP_GRUNS, HEAP_VAFREE, HEAP_FS };
+enum {
+    HEAP_END,
+    HEAP_STORAGE,
+    HEAP_NRR,
+    HEAP_AUDREN,
+    HEAP_GMMU,
+    HEAP_GMAPS,
+    HEAP_GRUNS,
+    HEAP_VAFREE,
+    HEAP_FS,
+    HEAP_VIEW
+};
 static int heap_put(StateIo* io, u32 kind, u32 slot, const void* p, u64 n) {
     return io_put32(io, kind) | io_put32(io, slot) | io_put64(io, n) | io_put(io, p, n);
 }
@@ -668,8 +679,10 @@ static void nil_host(Hle* c) {
         NIL(t->cpu.thread);
         NIL(t->arm.mem);
         NIL(t->arm.rt);
+        NIL(t->arm.io);
     }
     for (i = 0; i < KSHMEM_MAX; i++) NIL(c->svcmem.shmems[i].host);
+    for (i = 0; i < KCODEVIEW_MAX; i++) NIL(c->svcmem.views[i].snap);
     for (i = 0; i < AM_STORAGES; i++) NIL(c->am.storages[i].d);
     for (i = 0; i < AUDOUT_MAX; i++) NIL(c->audio.outs_pool[i].output);
     for (i = 0; i < HWOPUS_POOL; i++) {
@@ -780,6 +793,11 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
             RoNrr* n = &c->ldr.states[i].nrr[k];
             if (n->hashes) r |= heap_put(&io, HEAP_NRR, i * RO_LIMIT + k, n->hashes, (u64)n->count * 32);
         }
+    /* svcmem: the views of code's snapshots */
+    for (i = 0; i < KCODEVIEW_MAX; i++) {
+        const KCodeView* v = &c->svcmem.views[i];
+        if (v->size && v->snap) r |= heap_put(&io, HEAP_VIEW, i, v->snap, v->size);
+    }
     /* nvdrv: the GPU's page table, its mappings and runs, and the VA allocator's free ranges */
     for (i = 0; i < NV_GMMU_L1; i++)
         if (c->nvdrv.gmmu[i]) r |= heap_put(&io, HEAP_GMMU, i, c->nvdrv.gmmu[i], 4096 * 8);
@@ -821,6 +839,7 @@ static void drop_host(void) {
     fs_state_drop();
     for (i = 0; i < AM_STORAGES; i++)
         if (g_hle.am.storages[i].obj) free(g_hle.am.storages[i].d);
+    for (i = 0; i < KCODEVIEW_MAX; i++) free(g_hle.svcmem.views[i].snap);
     for (i = 0; i < RO_SESSIONS; i++)
         for (k = 0; k < RO_LIMIT; k++) free(g_hle.ldr.states[i].nrr[k].hashes);
     for (i = 0; i < NV_GMMU_L1; i++) free(g_hle.nvdrv.gmmu[i]);
@@ -936,6 +955,7 @@ static int hle_check(const Hle* h) {
 static void staged_free(Hle* ld) {
     u32 i;
     for (i = 0; i < AM_STORAGES; i++) free(ld->am.storages[i].d);
+    for (i = 0; i < KCODEVIEW_MAX; i++) free(ld->svcmem.views[i].snap);
     for (i = 0; i < RO_SESSIONS * RO_LIMIT; i++) free(ld->ldr.states[i / RO_LIMIT].nrr[i % RO_LIMIT].hashes);
     for (i = 0; i < SNX_AUDREN_MAX; i++) free(ld->audren.rens[i].s);
     for (i = 0; i < NV_GMMU_L1; i++) free(ld->nvdrv.gmmu[i]);
@@ -1031,6 +1051,14 @@ static int stage_hle(Hle* ld, Buf* heap, const Names* names, Buf* fs_paths) {
                 memcpy(ld->nvdrv.vafree, p, (size_t)n);
                 ld->nvdrv.capvafree = ld->nvdrv.nvafree;
                 break;
+            case HEAP_VIEW: {
+                KCodeView* v;
+                if (slot >= KCODEVIEW_MAX) goto bad;
+                v = &ld->svcmem.views[slot];
+                if (v->snap || !v->size || n != v->size || !(v->snap = (u8*)malloc((size_t)n))) goto bad;
+                memcpy(v->snap, p, (size_t)n);
+                break;
+            }
             case HEAP_FS:
                 fs_paths->p = p;
                 fs_paths->n = n;
