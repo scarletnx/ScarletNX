@@ -10,6 +10,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,9 +24,12 @@
 
 static void usage(void) {
     puts("Usage: scarletnx-agb [OPTIONS] ROM.gba\n"
+         "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
+         "       <name> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
          "Recompiles a Game Boy Advance ROM and plays it on the AGB board, in a window.\n"
          "\n"
-         "  -r, --recompile   rebuild the module even when the cache is current\n"
+         "  --game=DIR        play the game in its folder DIR, as its copy of the runtime does\n"
+         "  -r, --recompile   compile the module again, without playing\n"
          "  --data DIR        the data folder whose recompiled/ holds the game's folder (default: the user's)\n"
          "  --outdir DIR      the folder of the games, in which the game's folder is made\n"
          "  --fullscreen=1    start fullscreen (F11 switches)\n"
@@ -33,8 +37,10 @@ static void usage(void) {
          "  --shot=FILE       write the final frame as a PPM image\n"
          "  --registers       print the CPU's registers when the run ends\n"
          "\n"
-         "The game's folder, named after the ROM's file, holds its save (<name>.sav) and the recompiled module\n"
-         "(<name>.code.so); a <ROM>.sav beside the ROM is read once when the folder has none.");
+         "The game's folder, named after the ROM's file, holds its save (<name>.sav), the recompiled module\n"
+         "(<name>_code.so), the copy of the runtime that plays it from then on (<name>) and <name>.ini, which\n"
+         "names the ROM and the console (source=, system=); a <ROM>.sav beside the ROM is read once when the\n"
+         "folder has none.");
 }
 
 /* The frame the host presents: 240x160 RGB, straight out of the display device. */
@@ -61,6 +67,20 @@ static char* game_name(const char* rom) {
     return name;
 }
 
+/* a program's file name without its folder, and without .exe on Windows: the game a copy of the runtime is named
+   after, dots and all */
+static char* program_name(const char* exe) {
+    const char* leaf = exe;
+    for (const char* c = exe; *c; ++c)
+        if (*c == '/' || *c == '\\') leaf = c + 1;
+    char* name = snx_strdup(leaf);
+#ifdef _WIN32
+    size_t n = strlen(name);
+    if (n > 4 && !_stricmp(name + n - 4, ".exe")) name[n - 4] = 0;
+#endif
+    return name;
+}
+
 /* <ROM>.sav: the ROM's path, its last extension a .sav, where another emulator keeps the game's save */
 static char* save_beside(const char* rom) {
     const char *leaf = rom, *dot;
@@ -68,6 +88,19 @@ static char* save_beside(const char* rom) {
         if (*c == '/' || *c == '\\') leaf = c + 1;
     dot = strrchr(leaf, '.');
     return snx_format("%.*s.sav", (int)(dot && dot != leaf ? (size_t)(dot - rom) : strlen(rom)), rom);
+}
+
+/* The folder of the game this program is the copy of, as a 3DS or Vita game's copy is: named after the game, beside
+   its module <name>_code.so. NULL for the runtime under its own name */
+static char* own_game(const char* argv0) {
+    char *exe = snx_executable(argv0), *dir = exe ? snx_dirname(exe) : NULL, *name = exe ? program_name(exe) : NULL;
+    char* module = dir && name ? snx_format("%s/%s_code.so", dir, name) : NULL;
+    char* folder = name && strncmp(name, "scarletnx", 9) && module && snx_is_file(module) ? snx_strdup(dir) : NULL;
+    free(module);
+    free(name);
+    free(dir);
+    free(exe);
+    return folder;
 }
 
 /* The game's folder: in outdir, else the data folder's recompiled/ as the Switch and 3DS drivers make theirs. Made,
@@ -114,7 +147,7 @@ static int save_write(AgbBoard* board, const char* path) {
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    const char *path = NULL, *shot = NULL, *data = NULL, *outdir = NULL;
+    const char *path = NULL, *shot = NULL, *data = NULL, *outdir = NULL, *game = NULL;
     long frames = -1;
     int recompile = 0, registers = 0, fullscreen = 0;
     for (int i = 1; i < argc; ++i) {
@@ -128,6 +161,8 @@ int main(int argc, char** argv) {
             frames = strtol(argv[i] + 9, NULL, 0);
         else if (!strncmp(argv[i], "--shot=", 7))
             shot = argv[i] + 7;
+        else if (!strncmp(argv[i], "--game=", 7) && argv[i][7])
+            game = argv[i] + 7;
         else if (!strcmp(argv[i], "--registers"))
             registers = 1;
         else if (!strcmp(argv[i], "--fullscreen=0") || !strcmp(argv[i], "--fullscreen=1"))
@@ -147,7 +182,9 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (!path) {
+    char* own = path || game ? NULL : own_game(argv[0]); /* the game's copy of the runtime plays its game */
+    if ((!path && !game && !own) || (path && game) || (game && (data || outdir))) {
+        free(own);
         usage();
         return 2;
     }
@@ -158,33 +195,49 @@ int main(int argc, char** argv) {
         AgbRecomp recomp;
         AgbHost* host = NULL;
         char error[512] = {0};
-        char *name = NULL, *folder = NULL, *base = NULL, *save = NULL;
+        char *name = NULL, *folder = NULL, *base = NULL, *save = NULL, *rom = NULL, *ini = NULL;
         unsigned char* image = NULL;
         size_t length = 0;
         int16_t* audio = NULL;
         int status = 1;
         long written_at = -1; /* the frame the game last wrote its save at, -1 for none since it was kept */
-        if (!(image = snx_read_file(path, &length))) {
+        /* a ROM's game is made in its folder; a game's folder (--game=, or the copy's own) names its ROM */
+        if (path) {
+            name = game_name(path);
+            folder = game_folder(data, outdir, argv[0], name);
+            rom = folder ? snx_absolute(path) : NULL;
+        } else {
+            folder = own ? own : snx_absolute(game);
+            own = NULL;
+            name = folder ? program_name(folder) : NULL;
+        }
+        /* the folder's own, as a 3DS or Vita game's: source= and system=, which the launcher and the deploy read */
+        ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
+        if (!rom && ini && !(rom = snx_ini_value(ini, "source")))
+            fprintf(stderr, "scarletnx-agb: %s names no ROM: source= in %s\n", folder, ini);
+        if (!rom || !(image = snx_read_file(rom, &length))) {
             char why[256];
-            fprintf(stderr, "scarletnx-agb: cannot read %s: %s\n", path, snx_os_error(why, sizeof why));
+            if (rom) fprintf(stderr, "scarletnx-agb: cannot read %s: %s\n", rom, snx_os_error(why, sizeof why));
+            free(ini);
+            free(rom);
+            free(folder);
+            free(name);
             return 1;
         }
+        path = rom;
         agb_board_init(&board);
         if (agb_board_insert(&board, image, length, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
             free(image);
             agb_board_destroy(&board);
+            free(ini);
+            free(rom);
+            free(folder);
+            free(name);
             return 1;
         }
         free(image);
-        printf("ScarletNX - %s (AGB)\n", board.cartridge.title);
-        name = game_name(path);
-        if (!(folder = game_folder(data, outdir, argv[0], name))) {
-            free(name);
-            agb_board_destroy(&board);
-            return 1;
-        }
-        base = snx_format("%s/%s.code", folder, name);
+        base = snx_format("%s/%s_code", folder, name);
         save = snx_format("%s/%s.sav", folder, name);
         if (agb_map_init(&map, &board, error, sizeof error)) {
             fprintf(stderr, "scarletnx-agb: %s\n", error);
@@ -226,6 +279,27 @@ int main(int argc, char** argv) {
             }
             printf("Built %zu blocks\n", recomp.count);
         }
+        /* the game's copy of the runtime and its .ini, so the launcher's Games plays it as any game made */
+        {
+#ifdef _WIN32
+            char* copy = snx_format("%s/%s.exe", folder, name);
+#else
+            char* copy = snx_format("%s/%s", folder, name);
+#endif
+            char* runtime = snx_executable(argv[0]);
+            int placed = runtime ? snx_place_runtime(runtime, copy, error, sizeof error) : -1;
+            if (placed == 1) printf("The game's runtime is %s\n", copy);
+            if (placed < 0) fprintf(stderr, "scarletnx-agb: %s\n", runtime ? error : "cannot name this program");
+            error[0] = 0;
+            placed = snx_ini_record(ini, "source", path) || snx_record_system(folder, name, SNX_SYSTEM_GBA);
+            free(runtime);
+            free(copy);
+            if (placed) goto done; /* the record said why */
+        }
+        if (recompile) { /* R's: the game made, nothing played */
+            status = 0;
+            goto done;
+        }
         audio = (int16_t*)malloc(2 * sizeof(int16_t) * AGB_APU_RATE);
         if (!audio) goto done;
         if (frames < 0) {
@@ -237,6 +311,7 @@ int main(int argc, char** argv) {
                 goto done;
             }
         }
+        printf("ScarletNX - %s (GBA)\n", board.cartridge.title[0] ? board.cartridge.title : name);
         for (long frame = 0; frames < 0 || frame < frames; ++frame) {
             uint32_t written = 0;
             uint16_t keys = 0;
@@ -279,6 +354,8 @@ int main(int argc, char** argv) {
         agb_board_destroy(&board);
         free(save);
         free(base);
+        free(ini);
+        free(rom);
         free(folder);
         free(name);
         return status;

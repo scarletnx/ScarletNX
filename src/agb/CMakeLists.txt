@@ -39,6 +39,14 @@ add_executable(scarletnx-agb-run runtime/main.c runtime/host.c)
 target_link_libraries(scarletnx-agb-run PRIVATE scarletnx-agb SDL3::SDL3 snx_window_icon)
 set_target_properties(scarletnx-agb-run PROPERTIES OUTPUT_NAME scarletnx-agb
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" C_STANDARD 23 C_STANDARD_REQUIRED ON)
+# after each build the runner is copied beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba),
+# as scarletnx is beside every Switch game (cmake/deploy.cmake). A sanitized test build's stays here
+if(SNX_DEPLOY AND NOT (SNX_TEST_SANITIZERS AND BUILD_TESTING))
+    add_custom_command(TARGET scarletnx-agb-run POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" "-DAGB_RUNTIME=$<TARGET_FILE:scarletnx-agb-run>" "-DGAMES=${SNX_RECOMPILED_DIR}"
+                "-DWINDOWS=${WIN32}" "-DMACOS=${APPLE}" -P "${PROJECT_SOURCE_DIR}/cmake/deploy.cmake"
+        VERBATIM)
+endif()
 
 if(BUILD_TESTING)
     add_executable(snx-test-agb-board "${PROJECT_SOURCE_DIR}/tests/agb_board.c")

@@ -10,6 +10,7 @@ against what their source draws.
 """
 
 import argparse
+import os
 import pathlib
 import re
 import shutil
@@ -132,8 +133,21 @@ def main():
             ok, expected = CHECKS[check](frame)
             if not ok:
                 sys.exit('%s: %s' % (args.name, expected))
+        # the game's folder as the launcher's Games plays it: the copy of the runtime, and its .ini naming the console
+        # and the ROM; the copy, run as it is, plays the game in its folder
+        stem = rom.stem
+        copy = work / stem / (stem + ('.exe' if os.name == 'nt' else ''))
+        ini = (work / stem / ('%s.ini' % stem)).read_text()
+        if not copy.is_file() or 'system=gba' not in ini or 'source=%s' % rom.resolve() not in ini:
+            sys.exit("%s: no copy of the runtime %s, or its .ini is not a GBA game's:\n%s" % (args.name, copy, ini))
+        if args.name == 'arm':
+            own = subprocess.run([str(copy), '--frames=1'], capture_output=True, text=True, timeout=600)
+            if own.returncode or 'ScarletNX - ' not in own.stdout:
+                sys.exit(
+                    '%s: its copy of the runtime exited with %d\n%s%s'
+                    % (args.name, own.returncode, own.stdout, own.stderr)
+                )
         if args.name in SAVES:
-            stem = rom.stem
             save = work / stem / ('%s.sav' % stem)
             if not save.is_file() or save.stat().st_size != SAVES[args.name]:
                 sys.exit('%s: %s is not a save of %d bytes' % (args.name, save, SAVES[args.name]))

@@ -6,10 +6,11 @@
 # by its own file name, so each game gets a copy under its name. GAMES empty: recompiled/ of the folder the driver
 # beside the runtime works in when no --repo names one (snx_data_dir): a .scarletnx/ beside it, else the user's data
 # folder.
-# A 3DS game's folder is named after its title ID (0004 and 12 more hex digits) and gets CTR_RUNTIME, scarletnx-3ds,
-# which is RUNTIME too where scarletnx is also the 3DS driver (SNX_MULTICALL). A Vita game's folder is named after its
-# title ID (four capital letters and five digits) and gets VITA_RUNTIME, scarletnx-vita or RUNTIME the same way. One
-# of them empty: its games keep theirs.
+# A game's folder gets the runtime of the console its <Name>.ini names (system=, which the 3DS, Vita and GBA drivers
+# write): AGB_RUNTIME, scarletnx-agb, for gba. Without one, a 3DS game's folder is named after its title ID (0004 and
+# 12 more hex digits) and gets CTR_RUNTIME, scarletnx-3ds, which is RUNTIME too where scarletnx is also the 3DS driver
+# (SNX_MULTICALL). A Vita game's folder is named after its title ID (four capital letters and five digits) and gets
+# VITA_RUNTIME, scarletnx-vita or RUNTIME the same way. One of them empty: its games keep theirs.
 if(WINDOWS)
     set(module_ext dll)
     set(exe_ext .exe)
@@ -22,8 +23,10 @@ if(NOT GAMES)
         get_filename_component(program_dir "${RUNTIME}" DIRECTORY)
     elseif(CTR_RUNTIME)
         get_filename_component(program_dir "${CTR_RUNTIME}" DIRECTORY)
-    else()
+    elseif(VITA_RUNTIME)
         get_filename_component(program_dir "${VITA_RUNTIME}" DIRECTORY)
+    else()
+        get_filename_component(program_dir "${AGB_RUNTIME}" DIRECTORY)
     endif()
     if(IS_DIRECTORY "${program_dir}/.scarletnx")
         set(data "${program_dir}/.scarletnx")
@@ -41,16 +44,41 @@ if(NOT GAMES)
     endif()
     set(GAMES "${data}/recompiled")
 endif()
-# Through a temporary file and a rename, so a game that is running keeps its old copy
+# Through a temporary file and a rename, so a game that is running keeps its old copy. A third argument, a system=
+# word: only a folder whose .ini says it
 function(deploy folder game)
-    if(game MATCHES "^0004[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$")
+    set(system "")
+    if(EXISTS "${folder}/${game}.ini")
+        file(STRINGS "${folder}/${game}.ini" said REGEX "^system=") # the last one counts, as the drivers read it
+        list(POP_BACK said system)
+        string(REGEX REPLACE "^system=" "" system "${system}")
+        string(STRIP "${system}" system)
+    endif()
+    if(ARGC GREATER 2 AND NOT system STREQUAL "${ARGV2}")
+        return()
+    endif()
+    if(system STREQUAL "gba")
+        set(runtime "${AGB_RUNTIME}")
+    elseif(system STREQUAL "3ds")
+        set(runtime "${CTR_RUNTIME}")
+    elseif(system STREQUAL "vita")
+        set(runtime "${VITA_RUNTIME}")
+    elseif(system STREQUAL "switch")
+        set(runtime "${RUNTIME}")
+    elseif(NOT system STREQUAL "")
+        message(STATUS "Runtime not deployed to ${folder}: its ${game}.ini says system=${system}, which is none of "
+                       "switch, 3ds, vita and gba")
+        return()
+    elseif(game MATCHES "^0004[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]$")
         set(runtime "${CTR_RUNTIME}")
     elseif(game MATCHES "^[A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][0-9]$")
         set(runtime "${VITA_RUNTIME}")
     else()
         set(runtime "${RUNTIME}")
     endif()
-    if(NOT runtime)
+    if(NOT runtime) # another console's game, whose driver deploys its own
+        math(EXPR others "${others} + 1")
+        set(others "${others}" PARENT_SCOPE)
         return()
     endif()
     file(COPY_FILE "${runtime}" "${folder}/.${game}.tmp")
@@ -64,6 +92,7 @@ endfunction()
 # the folder's own path in the patterns with its [, * and ? in brackets, read as themselves
 string(REGEX REPLACE "([][*?])" "[\\1]" games_glob "${GAMES}")
 set(deployed 0)
+set(others 0)
 file(GLOB modules "${games_glob}/*_code.${module_ext}")
 foreach(module IN LISTS modules)
     get_filename_component(name "${module}" NAME)
@@ -78,6 +107,18 @@ foreach(module IN LISTS modules)
     string(REGEX REPLACE "_code\\.${module_ext}$" "" game "${name}")
     deploy("${folder}" "${game}")
 endforeach()
-if(deployed EQUAL 0)
+# a GBA game's module is a .so on Windows too (src/agb/cpu/recomp.c): those folders, when their .ini says gba
+if(WINDOWS)
+    file(GLOB modules "${games_glob}/*/*_code.so")
+    foreach(module IN LISTS modules)
+        get_filename_component(folder "${module}" DIRECTORY)
+        get_filename_component(name "${module}" NAME)
+        string(REGEX REPLACE "_code\\.so$" "" game "${name}")
+        deploy("${folder}" "${game}" gba)
+    endforeach()
+endif()
+if(deployed EQUAL 0 AND others EQUAL 0)
     message(STATUS "Runtime not deployed: no game module in ${GAMES}")
+elseif(deployed EQUAL 0)
+    message(STATUS "Runtime not deployed: the ${others} game module(s) in ${GAMES} are another console's")
 endif()

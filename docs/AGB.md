@@ -28,7 +28,14 @@ R, its left stick the D-pad.
 
 The game's folder is `recompiled/<name>/` of the data folder (`--data`, else the
 user's), named after the ROM's file, or `<name>/` of `--outdir`. It holds the
-module and the save, `<name>.sav`, and the ROM's folder stays as it is. A
+module, the save (`<name>.sav`), a copy of the runtime named after the game
+(`<name>`, `<name>.exe` on Windows) and `<name>.ini`, whose `source=` names the
+ROM and `system=gba` the console the launcher plays it with, as a 3DS or Vita
+game's folder does; the ROM's folder stays as it is. The copy plays its game
+alone, from the ROM its `.ini` names, and `scarletnx-agb --game=recompiled/<name>`
+plays it the same way; `-r` compiles the module again without playing. A build
+copies its runner beside every GBA game again (`cmake/deploy.cmake`), which it
+tells by that `system=gba`. A
 `<ROM>.sav` beside the ROM, which another emulator keeps, is read once, when the
 folder has none. What the game writes to its SRAM or flash reaches the disk a
 second after it writes, and when the window closes.
@@ -110,14 +117,14 @@ The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
 `cpu/recomp.c` takes the ROM's ARM and Thumb code through the existing ARM
 recompiler of `src/common/cpu/arm`, block by block, and links the emitted
 objects into a native module with the host compiler. Loading a ROM does this
-automatically and caches the module in the game's folder as `<name>.code.so`,
-the way the NX system type caches `<Game>_code.so`; `-r` rebuilds it. Blocks the
+automatically and caches the module in the game's folder as `<name>_code.so`,
+as the NX system type caches `<Game>_code.so`; `-r` rebuilds it. Blocks the
 discovery step does not reach, a branch through a register or the instruction
 after one the board interpreted, are compiled when they are first dispatched.
 The miss starts a discovery walk of its own; a build with the LLVM backend
 compiles each block it finds in the process at its first dispatch
 (`src/common/cpu/arm/exec.c`), and one without it puts them in a module of their
-own (`<name>.code.<n>.so`), so a miss costs those blocks and not the whole ROM.
+own (`<name>_code.<n>.so`), so a miss costs those blocks and not the whole ROM.
 When the run ends the blocks it ran are folded into the cached module, so the
 next run starts with every block the last one reached. A block built from RAM
 runs while RAM holds the words it was built from, and is built again once the
