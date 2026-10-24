@@ -379,8 +379,10 @@ static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
-    g_tex_uploads++;
-    g_tex_upload_bytes += t->size;
+    if (!vk_gate_open()) { /* a rebuild the GPU's check turns on and off is counted there (vk_texcheck_stats) */
+        g_tex_uploads++;
+        g_tex_upload_bytes += t->size;
+    }
     t->upload_valid = 0;
     t->wgen = vk_surf_gen();      /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;            /* memory's own texels again, until tex_take_drawn copies targets in */

@@ -14,8 +14,7 @@
 
    The arguments the CPU recorded are written into staging once the rebuild is recorded and before the submit, which
    makes them visible to the GPU. A rebuild with more slots of arguments than were made room for (gate_room) runs the
-   rest as it is: a
-   rebuild of a texture that didn't change gives the same texels, so that is slower, never wrong. */
+   rest as it is: a rebuild of a texture that didn't change gives the same texels, so that is slower, never wrong. */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/texture/texcheck_spv.h" /* compiled from texcheck.comp and texstore.comp (cmake/glsl.cmake) */
@@ -24,7 +23,7 @@
 #include "nx/gpu/vk/vk.h"
 
 #define PIECE       (64ull << 10) /* texcheck.comp's PIECE_WORDS, in bytes */
-#define GATE_SLOTS  512u          /* the most 16 byte slots of a rebuild's arguments a check makes room for */
+#define GATE_SLOTS  16384u        /* the most 16 byte slots of a rebuild's arguments a check makes room for */
 #define COPY_SLOTS  4u            /* a copy's command (VkCopyMemoryToImageIndirectCommandKHR) padded to 64 bytes */
 #define COPY_STRIDE (COPY_SLOTS * 16u)
 
@@ -279,11 +278,14 @@ static u32 slots(u32 k) {
 }
 static u32* slot_on(u32 i) { return (u32*)(g_tc.in + 16 + (u64)i * 16); }
 static u32* slot_off(u32 i) { return (u32*)(g_tc.in + 16 + ((u64)g_tc.room + i) * 16); }
-/* the slots t's rebuild takes, about: a level of a layer is a deswizzle, a conversion and a copy (four slots) or a
-   store, and a level past the staging band a few strips more. Every check took room for GATE_SLOTS, 24 KiB of staging
-   each, hundreds of them a frame: the staging ring grew by megabytes a frame, kept for hundreds of frames */
+/* Room for the slots t's rebuild takes, at least: a level of a layer is a deswizzle, a conversion or a decode, and a
+   copy (four slots), and a big level is done in strips or bands of rows, none of less than a MiB of the texture. An
+   estimate of a subresource's alone, capped at 512, left a big array's rebuild to run ungated at every check: on a
+   Steam Deck that decoded its ASTC again each frame, 97136 dispatches and copies over 600 presents. Room for all
+   slots at every check would be 768 KiB of staging each */
 static u32 gate_room(const Surf* t) {
-    u64 subs = (u64)t->levels * (t->type == VK_IMAGE_VIEW_TYPE_3D ? 1 : t->layers), room = subs * 8 + 16;
+    u64 subs = (u64)t->levels * (t->type == VK_IMAGE_VIEW_TYPE_3D ? 1 : t->layers);
+    u64 room = (subs + (t->size >> 20)) * 8 + 64;
     return room > GATE_SLOTS ? GATE_SLOTS : (u32)room;
 }
 static void gate_dispatch(void* ctx, VkCommandBuffer cb, u32 x, u32 y, u32 z) {
@@ -353,8 +355,9 @@ static void copy_stored(VkCommandBuffer cb, Surf* t, VkBuffer src, u32 n, const 
         for (u32 l = 0; l < (per_layer ? slices : 1); l++) {
             u64 at = c->bufferOffset + (per_layer ? l * slice : 0), base = at & ~(al - 1);
             u32 z = per_layer ? 1 : slices;
-            VkImageView v = store_view(t, c->imageSubresource.mipLevel, c->imageSubresource.baseArrayLayer + l,
-                                       per_layer);
+            /* a view a layer, or one for the level's layers, which the store's z then picks */
+            VkImageView v = store_view(t, c->imageSubresource.mipLevel,
+                                       per_layer ? c->imageSubresource.baseArrayLayer + l : 0, per_layer);
             VkDescriptorSet set = v ? vk_desc_alloc(g_tc.store_ds) : VK_NULL_HANDLE;
             if (!set) {
                 LOG_LIMIT(1, "vulkan: a texture's rebuild couldn't store a %ux%u region (left out)\n", w, h);

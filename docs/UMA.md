@@ -36,6 +36,12 @@ The copies, landings, hashes and write tracking were only there because the GPU 
   two at most for each size used. The span is narrowed to the guest memory around the range whose host pages are the
   reservation's own and committed (`mem_private_span`: mapped, not the alias pool's, not I/O). Lookups are by key, a
   hash of the size and the block.
+- Imported bytes stay under 1 GiB. A new import past it lets go of the ones used longest ago, but none used in the
+  present being made, and a range with no room is copied. amdgpu counts imported pages as GTT, the heap the textures
+  and render targets are in.
+- Storage buffers with no size of their own (a bare address, 16 MiB from it) are bound as their own range. The
+  windows they otherwise share (`vk_buf_get_window`) only save copies, and in place there are none: a 64 MiB window
+  took a 128 MiB import, 32 of them at once.
 - Two earlier ways were wrong on a Steam Deck. An import for each start of a long range doubled GPU memory. Imports
   grown to take in the ones they met were made again at nearly every such draw, each a userptr buffer mapped anew, at
   0 to 1 frames a second.
@@ -161,8 +167,11 @@ mutable format, block-texel views for compressed formats). A rebuild with more t
 rest as it is. That is slower, never wrong, since a rebuild of an unchanged texture gives the same texels. A texture
 the GPU can't check now (results pending over it, memory not imported) is loaded again as it is.
 
-A check's arguments take staging for about what its rebuild needs (`gate_room`: a few slots a level of a layer, at
-most 512). Room for 512 at every check was 24 KiB each, hundreds a frame, which grew the staging ring by megabytes.
+A check's arguments take staging for what its rebuild may need (`gate_room`: eight slots a level of a layer and eight
+a MiB of the texture, for the strips and bands of big levels, at most 16384). An estimate of a level of a layer alone,
+capped at 512, ran the rest of a big array's rebuild ungated at every check: on a Steam Deck its ASTC was decoded
+again each frame, 97136 dispatches and copies over 600 presents, at 2 to 3 frames a second. Gated rebuilds don't count
+as texture uploads in the frame lines: the texture check line counts them.
 
 `uma_texture_check=0` gives textures back to the CPU's checks with unified memory on, to compare. Each check ends the
 rendering pass and records about seven barriers (two of them full ones) even when the rebuild is skipped, once per

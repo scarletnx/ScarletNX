@@ -2275,6 +2275,9 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, at, cpu = 0;
     int slot = -1;
     if (!len || gva + len < gva) return 0;
+    /* in place there is nothing to copy, and so nothing for a window to share: the range alone. Its 64 MiB windows
+       took 128 MiB imports each, thirty-two of them, which amdgpu counts as GPU memory */
+    if (g_vk.uma && buf_in_place(gva, len, vk_stage_align(), buf, off)) return 1;
     for (int i = 0; i < WIN_N && slot < 0; i++)
         if (win_live(&g_win[i]) && g_win[i].start <= gva && gva + len <= g_win[i].end) slot = i;
     if (slot < 0) {
@@ -2370,11 +2373,12 @@ void vk_buf_frame(void) {
             vk_uma_stats(&st);
         VkTexCheckStats ts;
         vk_texcheck_stats(&ts);
-            LOG("vulkan: unified memory: bound in place=%llu, imports=%u of %llu MiB, waits for in-place reads=%llu "
-                "writes=%llu, barriers=%llu, writes pending=%llu\n",
+            LOG("vulkan: unified memory: bound in place=%llu, imports=%u of %llu MiB (%llu made in all), engines' "
+                "results written in place=%llu MiB, waits for in-place reads=%llu writes=%llu, barriers=%llu, writes "
+                "pending=%llu\n",
                 (unsigned long long)g_in_place, st.imports, (unsigned long long)(st.bytes >> 20),
-                (unsigned long long)st.waits, (unsigned long long)st.out_waits, (unsigned long long)st.barriers,
-                (unsigned long long)st.pending);
+                (unsigned long long)st.made, (unsigned long long)(st.published >> 20), (unsigned long long)st.waits,
+                (unsigned long long)st.out_waits, (unsigned long long)st.barriers, (unsigned long long)st.pending);
             LOG("vulkan: unified memory's texture checks over 600 presents: %llu of %llu MiB, %llu copies and %llu "
                 "stores gated, %llu ran ungated\n",
                 (unsigned long long)(ts.checks - g_ts_last.checks),

@@ -1472,6 +1472,27 @@ static int check_uma(void) {
             } else
                 CHECK(tex_matches(img, tm));
         }
+        /* an array of 128 layers: its rebuild's dispatches and copies, five a layer, are all the check's to turn off
+           (an estimate of eight a subresource capped at 512 ran the rest of a big one at every check, which on a
+           Steam Deck decoded its ASTC arrays again each frame) */
+        {
+            const u64 ag = UMA_GA + 0x10000, acpu = UMA_A + 0x10000;
+            u32 tica[8];
+            memcpy(tica, tic2, sizeof tica);
+            tica[1] = (u32)ag;
+            tica[3] = 4u << 28;            /* five levels */
+            tica[4] = 15 | 7u << 23;       /* a 2D array */
+            tica[5] = 15 | (127u << 16); /* of 128 layers */
+            tica[7] = 4u << 4;             /* all five seen */
+            gmmu_map(ag, acpu, 0x80000);
+            vk_texcheck_stats(&ts0);
+            Surf* ta = vk_tex_from_tic_raw(tica);
+            CHECK(ta && ta->gpu_check && ta->layers == 128 && ta->levels == 5 && ta->size <= 0x80000);
+            vk_ww_new_epoch();
+            CHECK(vk_tex_from_tic_raw(tica) == ta);
+            vk_texcheck_stats(&ts);
+            CHECK(ts.checks == ts0.checks + 2 && ts.overflow == ts0.overflow);
+        }
         /* memory the runtime wrote while recording isn't read in place: the CPU checks the texture from then on, as
            without unified memory, loading it again only when it changes, not at every check */
         CHECK(!gmem_write(tg, data, sizeof data));

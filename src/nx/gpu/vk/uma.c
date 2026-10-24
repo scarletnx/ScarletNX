@@ -49,6 +49,9 @@
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
 #define UMA_HASH    4096         /* the imports by key, open addressed: at most a quarter full */
 #define UMA_FAIL_N  256          /* keys that couldn't be imported, not tried again until memory changes */
+/* the most bytes imported at once: a driver counts them as memory the GPU holds (amdgpu's userptr pages are GTT, the
+   heap the textures and render targets are in), so imports past it took the room of those */
+#define UMA_BYTES_MAX (1ull << 30)
 #define UMA_IMPORTS 1024          /* imports at most: the device may have as few as 4096 allocations */
 #define UMA_USE_N   1024          /* ranges stamped into live in the submit being recorded */
 #define UMA_PREP_N  64            /* in-place writes of one draw or dispatch */
@@ -262,6 +265,22 @@ static int import_span(u64 key, u64 lo, u64 hi) {
 static u64 import_key(u64 cpu, u32 level) { return (cpu / (UMA_BLOCK << level)) << 3 | level; }
 /* the import of key, made: its two blocks narrowed to the reservation's own committed pages around the range
    [cpu, cpu + len) they hold. Its index, or g_uma.n when there can't be one */
+/* room for an import of size bytes within UMA_BYTES_MAX, made by letting go of the ones used longest ago (none used in
+   this present): 0 when there is none */
+static int import_room(u64 size) {
+    int any = 0, ok;
+    while (g_uma.n && g_uma.bytes + size > UMA_BYTES_MAX) {
+        u32 old = 0;
+        for (u32 i = 1; i < g_uma.n; i++)
+            if ((i32)(g_uma.imp[i].seen - g_uma.imp[old].seen) < 0) old = i;
+        if (g_uma.imp[old].seen == g_vk_present) break;
+        retire_one(old);
+        any = 1;
+    }
+    ok = g_uma.bytes + size <= UMA_BYTES_MAX;
+    if (any) keys_rebuild();
+    return ok;
+}
 static u32 import_new(u64 key, u64 cpu, u64 len) {
     u64 al = g_vk.uma_align, size = UMA_BLOCK << (key & 7), lo = (key >> 3) * size, hi = lo + 2 * size;
     u64* f = g_uma.fail[(key ^ (key >> 17)) % UMA_FAIL_N];
@@ -269,7 +288,12 @@ static u32 import_new(u64 key, u64 cpu, u64 len) {
     if (g_uma.n == UMA_IMPORTS || hi - lo > g_vk.alloc_cap || mem_private_span(cpu, len, &lo, &hi)) goto fail;
     lo = (lo + al - 1) & ~(al - 1);
     hi &= ~(al - 1);
-    if (cpu >= lo && cpu + len <= hi && import_span(key, lo, hi)) return g_uma.n - 1;
+    if (cpu < lo || cpu + len > hi) goto fail;
+    if (!import_room(hi - lo)) { /* copied while the imports of this present take the room, not remembered as failed */
+        g_uma.refused++;
+        return g_uma.n;
+    }
+    if (import_span(key, lo, hi)) return g_uma.n - 1;
 fail:
     g_uma.refused++;
     f[0] = key + 1;
