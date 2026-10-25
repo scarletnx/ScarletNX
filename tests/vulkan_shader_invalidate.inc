@@ -37,6 +37,7 @@ static void invalidate_draw(GpuChannel *channel)
 	DrawCall call = {4, 0, 0, 3, 0, 0, 1}; /* a triangle list of 3 vertices */
 
 	vk_lock();
+	channel->r3d_dirty = ~0u; /* the registers were set directly */
 	mx_draw_state_sync(channel);
 	vk_render_draw(&channel->ds, &call, channel);
 	vk_unlock();

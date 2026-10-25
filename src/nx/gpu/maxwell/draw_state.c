@@ -340,23 +340,83 @@ void mx_draw_texture(const u32* r, DrawTexture* t) {
     t->sx0 = (float)(i32)r[0x42A] / 4096.f, t->sy0 = (float)(i32)r[0x42B] / 4096.f;
 }
 
-/* Brings ch's draw state up to its registers: the groups whose registers a method changed since (GpuChannel.r3d_dirty,
-   which the renderer still takes for what it keeps between draws), and those no register group covers yet, every
-   time */
+/* the generations handed out (DrawState.gen): one counter for every channel, on the GPU thread */
+static struct {
+    u64 gen;
+} g_draw_state;
+
+/* the group of n bytes at kept as made: a new generation when it changed */
+static void keep(void* kept, const void* made, size_t n, u64* gen) {
+    if (!memcmp(kept, made, n)) return;
+    memcpy(kept, made, n);
+    *gen = ++g_draw_state.gen;
+}
+/* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
+static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
+    if (t->count != u->count || t->srgb_write != u->srgb_write) return 1;
+    for (u32 i = 0; i < DS_TARGETS_MAX; i++)
+        if (t->color[i].format != u->color[i].format) return 1;
+    return 0;
+}
+/* Brings ch's draw state up to its registers: the groups whose registers a method changed since the last time
+   (GpuChannel.r3d_dirty, which this takes), each with a new generation when its bytes changed */
 void mx_draw_state_sync(GpuChannel* ch) {
     const u32* r = ch->r3d;
     u32 dirty = ch->r3d_dirty;
     DrawState* ds = &ch->ds;
-    if (dirty & (R3D_SHADER | R3D_PIPEMISC | R3D_XFB)) mx_draw_programs(r, &ds->prog);
-    if (dirty & (R3D_VATTR | R3D_VFORMAT)) mx_draw_vertex_format(r, &ds->vfmt);
-    if (dirty & R3D_BLEND) mx_draw_blend(r, &ds->blend);
-    if (dirty & R3D_PIPEMISC) mx_draw_raster_key(r, &ds->rkey);
-    if (dirty & R3D_XFB) mx_draw_xfb(r, &ds->xfb);
-    mx_draw_targets(r, &ds->tgt);
-    mx_draw_dynamic(r, &ds->dyn);
-    mx_draw_viewports(r, &ds->vp);
-    mx_draw_vertex_buffers(r, &ds->vbuf);
-    mx_draw_index(r, &ds->index);
+    if (!dirty) return;
+    ch->r3d_dirty = 0;
+    if (dirty & (R3D_SHADER | R3D_PIPEMISC | R3D_XFB)) {
+        DsPrograms p;
+        mx_draw_programs(r, &p);
+        keep(&ds->prog, &p, sizeof p, &ds->gen[DS_PROGRAMS]);
+    }
+    if (dirty & (R3D_VATTR | R3D_VFORMAT)) {
+        DsVertexFormat f;
+        mx_draw_vertex_format(r, &f);
+        keep(&ds->vfmt, &f, sizeof f, &ds->gen[DS_VFORMAT]);
+    }
+    if (dirty & R3D_BLEND) {
+        DsBlend b;
+        mx_draw_blend(r, &b);
+        keep(&ds->blend, &b, sizeof b, &ds->gen[DS_BLEND]);
+    }
+    if (dirty & R3D_PIPEMISC) {
+        DsRasterKey k;
+        mx_draw_raster_key(r, &k);
+        keep(&ds->rkey, &k, sizeof k, &ds->gen[DS_RASTER_KEY]);
+    }
+    if (dirty & R3D_XFB) {
+        ShXfb x;
+        mx_draw_xfb(r, &x);
+        keep(&ds->xfb, &x, sizeof x, &ds->gen[DS_XFB]);
+    }
+    if (dirty & (R3D_TARGETS | R3D_RTFORMAT)) {
+        DsTargets t;
+        mx_draw_targets(r, &t);
+        if (target_formats_differ(&t, &ds->tgt)) ds->gen[DS_TARGET_FORMATS] = ++g_draw_state.gen;
+        keep(&ds->tgt, &t, sizeof t, &ds->gen[DS_TARGETS]);
+    }
+    if (dirty & R3D_DYNAMIC) {
+        DsDynamic d;
+        mx_draw_dynamic(r, &d);
+        keep(&ds->dyn, &d, sizeof d, &ds->gen[DS_DYNAMIC]);
+    }
+    if (dirty & R3D_VIEWPORTS) {
+        DsViewports v;
+        mx_draw_viewports(r, &v);
+        keep(&ds->vp, &v, sizeof v, &ds->gen[DS_VIEWPORTS]);
+    }
+    if (dirty & R3D_VBUF) {
+        DsVertexBuffers b;
+        mx_draw_vertex_buffers(r, &b);
+        keep(&ds->vbuf, &b, sizeof b, &ds->gen[DS_VBUF]);
+    }
+    if (dirty & R3D_INDEX) {
+        DsIndex x;
+        mx_draw_index(r, &x);
+        keep(&ds->index, &x, sizeof x, &ds->gen[DS_INDEX]);
+    }
 }
 
 u32 mx_draw_state_stale(const GpuChannel* ch) {
