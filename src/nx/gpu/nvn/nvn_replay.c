@@ -175,12 +175,16 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     switch (op) {
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;
         case OP_REPORT_COUNTER: {
-            /* {counter, timestamp}: the counter is the timestamp for the timestamp types, 0 for the others, which
-               count nothing drawn yet */
+            /* {counter, timestamp}: samples passed as the renderer counts the queue's draws since its reset; the
+               counter is the timestamp for the timestamp types; the others count nothing yet, and an occlusion test
+               before any reset finds something drawn, as the 3D engine's made-up count does (maxwell/engines.c) */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u64 v[2];
             v[1] = guest_ticks();
-            v[0] = r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? v[1] : 0;
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(q->d, r->address, v[1])) break;
+            v[0] = r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? v[1]
+                   : r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED                                       ? 1000
+                                                                                                      : 0;
             effect(FX_WRITE, r->address, v, sizeof v);
             break;
         }
