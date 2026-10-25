@@ -768,9 +768,10 @@ static int check_vic(void) {
         sl->iy = (VicPlane){y, W * H, W, H, 0, 0};
         sl->ic = (VicPlane){uv, W * H / 2, W, H / 2, 0, 0};
         CHECK(g_renderer->vic_compose(&job));
-        /* on the GPU until read: GPU-owned, or with unified memory written in place, owned by nothing */
+        /* on the GPU until read: GPU-owned; with unified memory written in place, owned by nothing, and done before the
+           compose returns (host1x increments the job's syncpoint then, and no trap would land it) */
         if (g_vk.uma)
-            CHECK(vk_uma_pending_cpu(VIC_BASE + 0x2000, (u64)pitch * H) &&
+            CHECK(!vk_uma_pending_cpu(VIC_BASE + 0x2000, (u64)pitch * H) &&
                   !own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0));
         else
             CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0);
