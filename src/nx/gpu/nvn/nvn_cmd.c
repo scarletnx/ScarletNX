@@ -174,7 +174,10 @@ u64 nvn_CommandBufferGetControlMemoryUsed(CPU* c, u64 cb) {
 }
 /* Copying recordings is calling them here: the records stay where they are. NVN copies the commands, so a game may
    take the source's memory back at once, which the replay would then read: neither game run so far copies any */
-void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) { nvn_CommandBufferCallCommands(c, cb, n, handles); }
+void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
+    LOG_LIMIT(1, "nvn: a game copies recordings (nvnCommandBufferCopyCommands): they are called where they are\n");
+    nvn_CommandBufferCallCommands(c, cb, n, handles);
+}
 void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     i32 i;
     for (i = 0; i < n; i++) {
@@ -638,10 +641,16 @@ void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
 }
 
 /* ============================================================ binds */
+/* the program's stages as they are now: the game may set new shaders in it before it submits */
 void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
     NvnPBindProgram* r = REC(c, cb, OP_BIND_PROGRAM, NvnPBindProgram);
-    r->program = program;
+    const NvnProgram* p = program ? NVN_OBJ(const NvnProgram, program) : NULL;
     r->stages = stages;
+    if (p && p->magic == NVN_MAGIC('P', 'R', 'O', 'G')) {
+        r->off_a = p->off_a;
+        memcpy(r->st, p->st, sizeof r->st);
+    } else if (program)
+        LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
 }
 static void bind_state(CPU* c, u64 cb, i32 kind, u64 st, size_t n) {
     NvnPBindState* r = REC(c, cb, OP_BIND_STATE, NvnPBindState);
