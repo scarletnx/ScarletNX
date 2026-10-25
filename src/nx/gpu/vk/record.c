@@ -166,6 +166,14 @@ void vk_rec_queue(VkQueue q) {
     if (q == g_vk.gfx) vk_rec_sync();
 }
 
+/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits and presents on the graphics queue
+   while the GPU thread may bind an image's pieces on it (memory.c). The compute queue's is the graphics queue's when
+   they are one queue */
+static PMutex g_gfx_qlock = PMUTEX_INIT, g_compute_qlock = PMUTEX_INIT;
+static PMutex* queue_mutex(VkQueue q) { return q == g_vk.gfx ? &g_gfx_qlock : &g_compute_qlock; }
+void vk_queue_lock(VkQueue q) { pm_lock(queue_mutex(q)); }
+void vk_queue_unlock(VkQueue q) { pm_unlock(queue_mutex(q)); }
+
 /* ------------------------------------------------------------ beginning and submitting */
 static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -200,7 +208,9 @@ static void submit_run(const void* p) {
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
+    vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock(g_vk.gfx);
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
@@ -243,7 +253,10 @@ static VkResult present_run(const Present* x) {
                            .pSwapchains = &x->sc,
                            .pImageIndices = &x->idx};
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
-    return vkQueuePresentKHR(g_vk.gfx, &pi);
+    vk_queue_lock(g_vk.gfx);
+    VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
+    vk_queue_unlock(g_vk.gfx);
+    return r;
 }
 static void present_queued(const void* p) {
     VkResult r = present_run(p);

@@ -459,6 +459,40 @@ static int check_clear_load_op(void) {
     return 0;
 }
 
+/* Images in pieces (sparse binding: vkQueueBindSparse on the graphics queue) made on this thread while the recording
+   thread submits frames to the same queue: Vulkan requires the two calls to be externally synchronized, which the
+   validation layer's threading checks report when they overlap */
+static int check_sparse_while_submitting(void) {
+    if (!g_vk.sparse) return 0;
+    u64 saved_cap = g_vk.alloc_cap;
+    g_vk.alloc_cap = 64u << 10;
+    for (int i = 0; i < 2000; i++) {
+        VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                .imageType = VK_IMAGE_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .extent = {256, 256, 1}, /* 256 KiB: four pieces */
+                                .mipLevels = 1,
+                                .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VkImage img;
+        VmaAllocation mem;
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+        VkDependencyInfo di = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        vk_lock();
+        rec_CmdPipelineBarrier2(vk_cmd(), &di); /* a frame with a command, so it is submitted */
+        CHECK(vk_image_create(&ii, &img, &mem));
+        vk_image_destroy(img, mem);
+        vk_frame_next(); /* the frame's submission, made by the recording thread */
+        vk_unlock();
+    }
+    g_vk.alloc_cap = saved_cap;
+    return 0;
+}
+
 static int check_multisample_shader_gate(void) {
     u64 guest[14] = {0};
     ShaderInfo info = {0};
@@ -1303,6 +1337,7 @@ int main(int argc, char** argv) {
     CHECK(!check_depth_array());
     CHECK(!check_srgb_write());
     CHECK(!check_clear_load_op());
+    CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());
