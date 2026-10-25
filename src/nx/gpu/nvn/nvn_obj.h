@@ -8,9 +8,10 @@
    state objects (blend, color, depth-stencil...) by value, so their state is packed in their 4 to 24 bytes.
 
    Objects refer to each other and to memory by guest address (u64), never by host pointer: a copy the game makes
-   holds together, and the same 8 bytes nxnative's native objects held. A memory pool's GPU address is its guest CPU
-   address for now (phase 1, no rendering); phase 2 maps pools through the GMMU, and the addresses the records hold
-   are then GPU addresses the replay translates.
+   holds together, and the same 8 bytes nxnative's native objects held. A memory pool has GPU addresses of its own,
+   mapped over its guest memory in the GPU's page table (gmmu_space_*, nvdrv.c) as nvhost-as-gpu maps a buffer, so the
+   addresses the game takes from NVN (buffer, texture and descriptor addresses, the ones it records) are GPU addresses,
+   which the renderer and gmmu_translate read as they read the Maxwell path's.
 
    The layouts are the runtime's own: the game never reads them (it only calls NVN's getters), so they are read and
    written as host structures over guest memory (GP(), which the little-endian hosts the runtime runs games on lay
@@ -62,10 +63,11 @@ typedef struct {
     u32 flags, pad;
 } NvnPoolBuilder;
 NVN_FITS(NvnPoolBuilder, 0x40);
-/* memory: the storage's guest address, which is also its GPU address in phase 1 */
+/* memory: the storage's guest address (0 for a virtual pool, which has none); gpu: its GPU address, the page table
+   showing memory there (a virtual pool's pages show what its mapping requests put there) */
 typedef struct {
     u32 magic, flags;
-    u64 memory, size;
+    u64 memory, size, gpu;
 } NvnPool;
 NVN_FITS(NvnPool, 0x100);
 
@@ -77,7 +79,7 @@ typedef struct {
 NVN_FITS(NvnBufferBuilder, 0x28);
 typedef struct {
     u32 magic, pad;
-    u64 address; /* the pool's memory + offset */
+    u64 address; /* the pool's GPU address + offset */
     u64 size, pool;
     i64 offset;
 } NvnBuffer;
@@ -119,7 +121,8 @@ typedef struct {
 } NvnTexBuilder;
 NVN_FITS(NvnTexBuilder, 0x68);
 /* serial: a number per initialization, never reused, for phase 2's host texture (the game may copy the object, so its
-   address names nothing). memory: the storage's guest address (pool memory + offset), size its bytes */
+   address names nothing). memory: the storage's guest address (pool memory + offset), 0 in a virtual pool; gpu: its
+   GPU address; size its bytes */
 typedef struct {
     u32 magic;
     NvnTexDesc d;
@@ -127,7 +130,7 @@ typedef struct {
     i64 offset;
     u64 memory, size;
     u8 layout[8];
-    u64 serial;
+    u64 serial, gpu;
 } NvnTexture;
 NVN_FITS(NvnTexture, 0x70); /* one game's SDK (NVN 55.8) allocates NVNtexture as 0x70 bytes */
 /* NVNtextureView: 16 bytes in newer SDKs (a game keeps one in a 16-byte stack slot). set: which parts were set */
@@ -201,7 +204,7 @@ typedef struct {
 NVN_FITS(NvnEventBuilder, 0x10);
 typedef struct {
     u32 magic, pad;
-    u64 value; /* the u32's guest address */
+    u64 value, gpu; /* the u32's guest and GPU addresses */
 } NvnEvent;
 NVN_FITS(NvnEvent, 0x28);
 
@@ -314,7 +317,7 @@ typedef struct {
     u64 type, address;
 } NvnPReportCounter;
 typedef struct {
-    u64 value; /* the u32's address */
+    u64 value; /* the u32's GPU address */
     u32 mode, v;
 } NvnPSignalEvent;
 /* color[i] and depth: the texture snapshots after the payload (the game may finalize or reuse an object before it
@@ -402,7 +405,7 @@ typedef struct {
     u64 index_buffer, ind, mdi_count;
     i32 mdi_index, pad;
 } NvnPDrawIdx;
-/* OP_SET_TEX_POOL, OP_SET_SAMP_POOL: the pool's descriptors (memory + offset) and its count */
+/* OP_SET_TEX_POOL, OP_SET_SAMP_POOL: the pool's descriptors (their GPU address) and its count */
 typedef struct {
     u64 descriptors;
     i32 count, pad;

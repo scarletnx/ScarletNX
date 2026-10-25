@@ -191,7 +191,7 @@ void nvn_CommandBufferFenceSync(CPU* c, u64 cb, u64 sync, i32 condition, i32 fla
 }
 /* the event's value written or added to when the GPU reaches it (at submit in phase 1) */
 void nvn_CommandBufferSignalEvent(CPU* c, u64 cb, u64 e, i32 mode, i32 location, i32 flags, u32 value) {
-    u64 address = NVN_OBJ(NvnEvent, e)->value;
+    u64 address = NVN_OBJ(NvnEvent, e)->gpu;
     NvnPSignalEvent* r = REC(c, cb, OP_SIGNAL_EVENT, NvnPSignalEvent);
     (void)location;
     (void)flags;
@@ -512,7 +512,7 @@ void nvn_CommandBufferBarrier(CPU* c, u64 cb, i32 bits) { *(i32*)(void*)GP(rec(c
 /* a descriptor pool the command buffer's handles index from now on: its descriptors' address and count */
 static void set_pool(CPU* c, u64 cb, u32 op, u64 dp) {
     const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
-    u64 descriptors = nvn_pool_memory(p->pool) + p->offset;
+    u64 descriptors = nvn_pool_gpu(p->pool) + p->offset;
     i32 count = p->count;
     NvnPSetPool* r = REC(c, cb, op, NvnPSetPool);
     r->descriptors = descriptors;

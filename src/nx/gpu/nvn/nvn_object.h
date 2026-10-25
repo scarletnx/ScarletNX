@@ -12,8 +12,9 @@
 
 /* a new serial for a texture, sampler or program: above 0, never reused */
 u64 nvn_serial(void);
-/* the storage of a memory pool object (its guest address, the GPU address in phase 1), 0 for none */
+/* a memory pool object's storage: its guest address (0 for none), and its GPU address */
 u64 nvn_pool_memory(u64 pool);
+u64 nvn_pool_gpu(u64 pool);
 
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */

@@ -1010,6 +1010,39 @@ static u32 as_free_space(const u8* d) {
     va_free(gva, size);
     return NV_RESULT_SUCCESS;
 }
+/* GPU address space for a front end that maps guest memory itself, without nvhost-as-gpu's ioctls (nvn_direct's
+   memory pools): the same allocator and page table, under the same lock */
+u64 gmmu_space_alloc(u64 size, u64 align) {
+    u64 gva;
+    if (!size || !gva_ok(0, size)) return 0;
+    pm_lock(&g_host.nvdrv.aslock);
+    gva = va_alloc(size, align && pow2(align) ? align : VA_UNIT);
+    pm_unlock(&g_host.nvdrv.aslock);
+    return gva;
+}
+void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
+    if (!size || !gva_ok(gva, size) || !cpu_ok(cpu, size) || !page_aligned(gva) || !page_aligned(cpu)) {
+        WARN_LIMIT(8, "nvdrv: a mapping of %llx bytes of %llx at %llx is outside the address spaces or unaligned\n",
+                   (unsigned long long)size, (unsigned long long)cpu, (unsigned long long)gva);
+        return;
+    }
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_map(gva, cpu, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
+void gmmu_space_unmap(u64 gva, u64 size) {
+    if (!size || !gva_ok(gva, size)) return;
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_unmap(gva, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK, 0, 0);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
+void gmmu_space_free(u64 gva, u64 size) {
+    if (!size || !gva_ok(gva, size)) return;
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_unmap(gva, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK, 0, 0);
+    va_free(gva, size);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
 /* UNMAP_BUFFER: every piece of the mapping MAP_BUFFER_EX made at base, and its allocator VA */
 static u32 as_unmap_buffer(u64 base) {
     u64 va = 0;
