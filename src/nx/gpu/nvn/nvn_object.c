@@ -9,6 +9,7 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_draw.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -93,6 +94,7 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     o.flags = NVN_OBJ(NvnDeviceBuilder, b)->flags;
     o.origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; /* NVN's defaults: lower-left origin, near = -w */
     memcpy(GP(d), &o, sizeof o);
+    nvn_draw_device(o.origin, o.depth_mode);
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
     return 1;
 }
@@ -143,11 +145,13 @@ void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
 void nvn_DeviceSetWindowOriginMode(CPU* c, u64 d, i32 mode) {
     (void)c;
     NVN_OBJ(NvnDevice, d)->origin = (u32)mode;
+    nvn_draw_device((u32)mode, NVN_OBJ(NvnDevice, d)->depth_mode);
     LOG("nvn: window origin %s\n", mode ? "upper left" : "lower left");
 }
 void nvn_DeviceSetDepthMode(CPU* c, u64 d, i32 mode) {
     (void)c;
     NVN_OBJ(NvnDevice, d)->depth_mode = (u32)mode;
+    nvn_draw_device(NVN_OBJ(NvnDevice, d)->origin, (u32)mode);
     LOG("nvn: depth mode %s\n", mode ? "near = 0" : "near = -w");
 }
 /* a combined handle: texture ID | sampler ID << 20, as the separate handles are laid out */
@@ -1032,34 +1036,58 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
     (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
 }
-/* the stages' {code, control} pairs. NVN lets the caller free the control sections once this returns, so phase 2
-   copies or hashes them here, where nxnative computes its shader keys */
-int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
+/* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
+   format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
+   0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper, which it requires),
+   0x714 the stage, and for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
+   both nonzero when it is dual. data: the code area's GPU address. 0 when the section isn't one */
+static int stage_of(NvnProgram* o, u64 data, u64 control) {
+    u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
+        size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
+    NvnStage* st;
+    if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 || off < 0x30 || cb < off ||
+        size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
+        LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
+                     "program at %#x, constants %#x of %#x)\n",
+                  (unsigned long long)control, magic, format, stage, off, cb, size);
+        return 0;
+    }
+    if (format != 8 && format != 16) LOG_LIMIT(1, "nvn: shader control sections of format %u\n", format);
+    st = &o->st[stage];
+    st->data = data;
+    st->off = off;
+    st->cb = (u16)(cb >> 8);
+    st->cb_size = (u16)((size - cb) >> 8);
+    if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
+        o->off_a = gr32(control + 0x748);
+        st->off = gr32(control + 0x754);
+    }
+    return 1;
+}
+/* the stages' {code, control} pairs, read from the control sections while they are the caller's */
+static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
-    (void)c;
+    i32 i;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
         return 0;
     }
-    o->stages = (u32)n;
-    memcpy(o->sd, GP(sd), (size_t)n * sizeof *o->sd);
+    memset(o->st, 0, sizeof o->st);
+    o->off_a = 0;
+    for (i = 0; i < n; i++)
+        if (!stage_of(o, gr64(sd + stride * (u64)i), gr64(sd + stride * (u64)i + 8))) return 0;
     o->serial = nvn_serial();
     return 1;
+}
+int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
+    (void)c;
+    return set_shaders(p, n, sd, sizeof(NVNshaderData));
 }
 
 /* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
-    NvnProgram* o = NVN_OBJ(NvnProgram, p);
-    i32 i;
     (void)c;
-    if (n < 0 || n > 6) {
-        LOG_LIMIT(8, "nvn: nvnProgramSetShadersExt with %d stages\n", n);
-        return 0;
-    }
-    o->stages = (u32)n;
-    for (i = 0; i < n; i++) memcpy(&o->sd[i], GP(sd + 0x18 * (u64)i), sizeof o->sd[i]);
-    o->serial = nvn_serial();
-    return 1;
+    return set_shaders(p, n, sd, 0x18);
 }
 
 /* ============================================================ syncs */
