@@ -8,6 +8,7 @@
    draws through nvdrv */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "nx/gpu/renderer.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
@@ -196,8 +197,14 @@ i32 nvn_WindowAcquireTexture(CPU* c, u64 w, u64 sync, u64 index) {
     }
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
-/* the frame is shown: phase 1 has nothing to show, and counts it */
+/* The frame is shown. Phase 1 draws nothing, so the window shows black, but the present still ends the renderer's
+   frame: the engines that run on it without NVN (NVDEC's pictures, VIC's compositions of a movie) stage their uploads
+   and take their descriptors in the current frame, which only a present hands back. Without it one frame never ended:
+   its staging grew by a fresh ring each time one filled (a movie's pictures several megabytes each, at its frame
+   rate) and none came back, until about a minute into a movie the pictures stopped and the game, waiting on them,
+   stopped presenting */
 void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
+    static const i32 whole[4] = {0, 0, 0, 0};
     NvnWindow* o = NVN_OBJ(NvnWindow, w);
     (void)c;
     (void)q;
@@ -205,5 +212,6 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     if (!(o->presents % 1800))
         LOG("nvn: %llu presents, %llu submissions\n", (unsigned long long)o->presents,
             (unsigned long long)__atomic_load_n(&g_nvn_queue.submits, __ATOMIC_RELAXED));
+    if (g_renderer_up) g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, whole, 0); /* no buffer: black */
     __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
 }
