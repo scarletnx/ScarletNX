@@ -13,6 +13,8 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -167,6 +169,31 @@ static void copy_buffer_buffer(u64 src, u64 dst, u64 n) {
     }
 }
 
+/* n bytes at dst filled with the 32-bit value, as the DMA engine fills: its remap writes constant A into every
+   component, reading nothing */
+static void fill_buffer(u64 dst, u64 n, u32 value) {
+    const u32 line = 1u << 14; /* elements of 4 bytes a line */
+    GpuDmaOp o;
+    n /= 4;
+    while (n) {
+        u64 lines = n / line;
+        memset(&o, 0, sizeof o);
+        o.multi = o.remap = o.fill = 1;
+        o.cs = 4;
+        o.ns = o.nd = 1;
+        o.sel[0] = 4; /* constant A */
+        o.const_a = value;
+        o.width = lines ? line : (u32)n;
+        o.lines = lines ? (lines > 1024 ? 1024 : (u32)lines) : 1;
+        o.line_in = o.line_out = o.width * 4;
+        o.dst.addr = dst;
+        o.dst.pitch = o.line_out;
+        launch(&o);
+        dst += (u64)o.line_out * o.lines;
+        n -= (u64)o.width * o.lines;
+    }
+}
+
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
     switch (op) {
@@ -178,6 +205,11 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_B2B: {
             const NvnPCopyB2B* r = NVN_OBJ(const NvnPCopyB2B, payload);
             copy_buffer_buffer(r->src, r->dst, r->size);
+            return 1;
+        }
+        case OP_CLEAR_BUF: {
+            const NvnPClearBuf* r = NVN_OBJ(const NvnPClearBuf, payload);
+            fill_buffer(r->address, r->size, r->value);
             return 1;
         }
         case OP_COPY_B2T:
@@ -244,4 +276,64 @@ void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
     if (!w->bytes) fatal("nvn: out of memory for a texel write's %llu bytes", (unsigned long long)span);
     memcpy(w->bytes, GP(src), span); /* the source's whole span, read as the game writes it */
     gpu_call(texel_write, w, NULL, 0);
+}
+
+/* ---- the CPU's texel reads */
+/* the syncpoint the texel reads wait on, made at the first */
+static struct {
+    PMutex lock;
+    u32 syncpt;
+} g_nvn_read = {PMUTEX_INIT, 0};
+typedef struct {
+    TexelWrite w; /* the region and texture, the destination at w.r.buffer */
+    u32 syncpt;
+} TexelRead;
+static void texel_read(void* arg) {
+    TexelRead* r = (TexelRead*)arg;
+    copy_buffer_texture(&r->w.r, &r->w.t, 0, r->w.stride, NULL);
+    if (g_renderer->stream_incr) /* once the copy is done */
+        g_renderer->stream_incr(r->syncpt);
+    else
+        syncpt_incr(r->syncpt);
+    free(r);
+}
+void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst) {
+    TexelRead* r = (TexelRead*)calloc(1, sizeof *r);
+    TexPlane p;
+    u64 lines, width, depth, span, first, size, va;
+    u32 value;
+    if (!r) fatal("nvn: out of memory for a texel read");
+    memcpy(&r->w.t, GP(t), sizeof r->w.t);
+    memcpy(&r->w.r.r, GP(region), sizeof r->w.r.r);
+    if (v) {
+        memcpy(&r->w.r.view, GP(v), sizeof r->w.r.view);
+        r->w.r.has_view = 1;
+    }
+    if (!tex_plane(&r->w.t, r->w.r.has_view ? &r->w.r.view : NULL, &p) || r->w.r.r.width <= 0 || r->w.r.r.height <= 0) {
+        LOG_LIMIT(4, "nvn: a texel read from texture %llx (format %#x) the runtime can't lay out\n",
+                  (unsigned long long)t, r->w.t.d.format);
+        free(r);
+        return;
+    }
+    width = ((u64)r->w.r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
+    lines = ((u64)r->w.r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
+    depth = r->w.r.r.depth > 0 ? (u64)r->w.r.r.depth : 1;
+    span = width * lines * depth; /* tightly packed */
+    /* the destination, mapped in the GPU's page table while the copy runs: the GPU writes it, and the CPU's read of
+       it lands what the GPU wrote (a readback of host-cached memory the GPU copied into, gpu/vk/owned.c) */
+    first = dst & ~0xfffull;
+    size = (dst + span - first + 0xfff) & ~0xfffull;
+    va = gmmu_space_alloc(size, 0x1000);
+    if (!va) fatal("nvn: no GPU address space left for a texel read of %llu bytes", (unsigned long long)span);
+    gmmu_space_map(va, first, size);
+    r->w.r.buffer = va + (dst - first);
+    pm_lock(&g_nvn_read.lock);
+    if (!g_nvn_read.syncpt) g_nvn_read.syncpt = syncpt_alloc();
+    r->syncpt = g_nvn_read.syncpt;
+    value = syncpt_promise(r->syncpt, 1);
+    gpu_call(texel_read, r, NULL, 0);
+    pm_unlock(&g_nvn_read.lock);
+    syncpt_wait(g_nvn_read.syncpt, value, -1);
+    gmmu_space_unmap(va, size);
+    gmmu_space_free(va, size);
 }
