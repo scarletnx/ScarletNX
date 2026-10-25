@@ -602,12 +602,20 @@ static void swapchain_retire(void) {
     g_vk.swapchain = VK_NULL_HANDLE;
     g_vk.sc_count = 0;
 }
+/* vkDeviceWaitIdle, which takes every queue: those of the decoder's (FFmpeg's) are excluded by vk_lock, held here */
+static void device_wait_idle(void) {
+    vk_queue_lock(g_vk.gfx);
+    if (g_vk.compute != g_vk.gfx) vk_queue_lock(g_vk.compute);
+    vkDeviceWaitIdle(g_vk.dev);
+    if (g_vk.compute != g_vk.gfx) vk_queue_unlock(g_vk.compute);
+    vk_queue_unlock(g_vk.gfx);
+}
 
 /* the window's surface made anew, its swapchain to follow: Android destroys a window's surface while the app is in
    the background, and the Vulkan surface on it is lost for good */
 int vk_surface_recreate(void) {
     vk_rec_sync(); /* the device wait covers only what was submitted */
-    vkDeviceWaitIdle(g_vk.dev);
+    device_wait_idle();
     if (g_vk.swapchain) swapchain_retire();
     vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
@@ -631,7 +639,7 @@ int vk_window_release(void) {
         plat_sleep_ns(10000000);
     }
     vk_rec_sync();
-    vkDeviceWaitIdle(g_vk.dev); /* a lost device answers at once */
+    device_wait_idle(); /* a lost device answers at once */
     if (g_vk.swapchain) swapchain_retire();
     if (g_vk.surface) vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
@@ -700,7 +708,7 @@ int vk_swapchain_create(int srgb) {
     VkSwapchainKHR old = g_vk.swapchain;
     if (old) {
         vk_rec_sync();
-        vkDeviceWaitIdle(g_vk.dev);
+        device_wait_idle();
     }
     vk_rec_present_result(); /* the old swapchain's presents, all made (a retire drained the ring), say nothing of it */
     VkSwapchainCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,

@@ -260,6 +260,12 @@ void vk_rec_submit(VkCommandBuffer cb, const VkSemaphoreSubmitInfo* w, u32 nw, c
                    u32 ns);
 void vk_rec_sync(void);        /* until everything queued is recorded and submitted */
 void vk_rec_queue(VkQueue q);  /* before submitting to or presenting on q outside the ring (vk_lock) */
+/* Around every call on the graphics or the compute queue: a submit, a sparse bind, a present, a device wait. Vulkan
+   requires a queue's calls to be externally synchronized, and they come from more than one thread: the recording
+   thread submits and presents the frames (record.c) without vk_lock, which the GPU thread holds while it binds an
+   image's pieces (memory.c) or submits compute. A leaf lock: taken with vk_lock held or not, never the other way */
+void vk_queue_lock(VkQueue q);
+void vk_queue_unlock(VkQueue q);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */
