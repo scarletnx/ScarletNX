@@ -141,9 +141,8 @@ typedef struct {
     u8 cop[DS_TARGETS_MAX], sc[DS_TARGETS_MAX], dc[DS_TARGETS_MAX]; /* DS_BLEND_, DS_FACTOR_: color */
     u8 aop[DS_TARGETS_MAX], sa[DS_TARGETS_MAX], da[DS_TARGETS_MAX]; /* and alpha */
     u8 mask[DS_TARGETS_MAX];                                        /* the components written: VkColorComponentFlags */
-    u8 logic_op;   /* 0, or the logic operation in VkLogicOp's order plus 1 */
-    u8 srgb_write; /* sRGB targets are written as sRGB */
-    u8 pad[2];
+    u8 logic_op; /* 0, or the logic operation in VkLogicOp's order plus 1 */
+    u8 pad[3];
 } DsBlend;
 
 /* Rasterization state a Vulkan 1.3 pipeline is made with */
@@ -154,5 +153,27 @@ typedef struct {
     u8 pad;
     u32 patch_vertices; /* control points of a patch, 0 as asked (the renderer takes it as 1) */
 } DsRasterKey;
+
+/* A render target as the guest lays it out, in the 3D engine's vocabulary (its surfaces are guest memory): what
+   vk_rt_array and vk_zt_array take, before the renderer checks and clamps it */
+typedef struct {
+    u64 gva;   /* 0: none */
+    u32 width; /* in texels, or the row pitch in bytes for a pitch-linear color target */
+    u32 height;
+    u32 format; /* the render target or zeta format code */
+    u32 mem;    /* the memory layout word: block dimensions, pitch-linear bit 12, volume bit 16 */
+    u32 layers; /* the array layers asked for, or a volume's depth (0 taken as 1) */
+    u32 pad;
+    u64 layer_stride; /* bytes between layers */
+} DsSurf;
+
+/* The targets a draw renders to */
+typedef struct {
+    u32 count;     /* color slots 0 to count - 1 are bound (some may have no surface) */
+    u8 srgb_write; /* sRGB targets are written as sRGB */
+    u8 pad[3];
+    DsSurf color[DS_TARGETS_MAX]; /* by slot, filled up to count */
+    DsSurf depth;                 /* gva 0 when no depth target is bound */
+} DsTargets;
 
 #endif

@@ -283,7 +283,7 @@ static void blend(void) {
         CHECK(b.cop[i] == DS_BLEND_SUBTRACT && b.sc[i] == DS_FACTOR_SRC_ALPHA &&
               b.dc[i] == DS_FACTOR_ONE_MINUS_SRC_ALPHA && b.aop[i] == DS_BLEND_SUBTRACT && b.sa[i] == DS_FACTOR_ONE &&
               b.da[i] == DS_FACTOR_SRC1_ALPHA);
-    CHECK(b.logic_op == 0 && b.srgb_write == 0);
+    CHECK(b.logic_op == 0);
     r[0x3E4] = 1; /* target 0's mask for all */
     r[0x4B9] = 1;
     r[0x780 + 8 * 2 + 1] = 5;               /* max */
@@ -294,14 +294,13 @@ static void blend(void) {
     r[0x780 + 8 * 2 + 6] = 99;              /* unknown: one */
     r[0x671] = 3;
     r[0x672] = 0x1506; /* GL_XOR */
-    r[0x56E] = 1;
     mx_draw_blend(r, &b);
     CHECK(b.mask[1] == (DS_COMPONENT_G | DS_COMPONENT_A));
     CHECK(b.cop[2] == DS_BLEND_MAX && b.sc[2] == DS_FACTOR_CONSTANT_COLOR &&
           b.dc[2] == DS_FACTOR_ONE_MINUS_CONSTANT_ALPHA && b.aop[2] == DS_BLEND_MIN &&
           b.sa[2] == DS_FACTOR_CONSTANT_COLOR && b.da[2] == DS_FACTOR_ONE);
     CHECK(b.cop[0] == DS_BLEND_ADD && b.sc[0] == DS_FACTOR_ONE && b.dc[0] == DS_FACTOR_ONE); /* 0: no D3D factor, one */
-    CHECK(b.logic_op == 7 && b.srgb_write == 1);                                             /* VK_LOGIC_OP_XOR + 1 */
+    CHECK(b.logic_op == 7);                                                                  /* VK_LOGIC_OP_XOR + 1 */
 }
 
 /* 0x36B polygon mode (0x1B00 points, 0x1B01 lines), 0x5A1 bit 0 the last vertex provokes, 0x64F bits 11-13 the
@@ -342,6 +341,40 @@ static void xfb(void) {
     CHECK(x.layout[0][0] == 0x20 && x.layout[0][3] == 0x23 && x.layout[3][127] == 0x7F);
 }
 
+/* RT_CONTROL 0x487: the count (at most 8) and 3 bits per slot from bit 4 naming target registers 0x200 + 0x10 j
+   (address high and low, width, height, format, memory layout, third dimension bits 0-27, array pitch in words);
+   depth at 0x3F8-0x3FC and 0x48A-0x48C, bound by 0x54E, its layers forced to one by 0x48C bit 16; 0x56E sRGB */
+static void targets(void) {
+    u32 r[REGS] = {0};
+    DsTargets t;
+    for (u32 j = 0; j < 8; j++) {
+        u32* c = &r[0x200 + 0x10 * j];
+        c[0] = j, c[1] = 0x1000000u * (j + 1), c[2] = 100 + j, c[3] = 50 + j, c[4] = 0xC0 + j, c[5] = 0x1010 + j;
+        c[6] = 0xF0000000u | (j + 2), c[7] = 0x400 + j;
+    }
+    r[0x487] = 3 | (5u << 4) | (0u << 7) | (7u << 10) | (1u << 13); /* slots 0-2 take targets 5, 0 and 7 */
+    r[0x56E] = 3;
+    r[0x3F8] = 1, r[0x3F9] = 0x2000, r[0x3FA] = 0x16, r[0x3FB] = 0x20, r[0x3FC] = 0x80;
+    r[0x48A] = 640, r[0x48B] = 360, r[0x48C] = 0x10006; /* forced to one layer */
+    mx_draw_targets(r, &t);
+    CHECK(t.count == 3 && t.srgb_write == 1);
+    CHECK(t.color[0].gva == ((5ull << 32) | 0x6000000u) && t.color[0].width == 105 && t.color[0].height == 55);
+    CHECK(t.color[0].format == 0xC5 && t.color[0].mem == 0x1015 && t.color[0].layers == 7 &&
+          t.color[0].layer_stride == 0x405 * 4ull);
+    CHECK(t.color[1].format == 0xC0 && t.color[2].format == 0xC7 && t.color[2].layers == 9);
+    CHECK(t.color[3].gva == 0 && t.color[3].format == 0); /* past the count */
+    CHECK(t.depth.gva == 0);                              /* 0x54E off */
+    r[0x54E] = 1;
+    r[0x487] = 15; /* a count above 8: 8, every slot taking target 0 */
+    mx_draw_targets(r, &t);
+    CHECK(t.count == 8 && t.color[7].format == 0xC0);
+    CHECK(t.depth.gva == 0x100002000ull && t.depth.width == 640 && t.depth.height == 360 && t.depth.format == 0x16 &&
+          t.depth.mem == 0x20 && t.depth.layers == 1 && t.depth.layer_stride == 0x200);
+    r[0x48C] = 0x0006;
+    mx_draw_targets(r, &t);
+    CHECK(t.depth.layers == 6);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -354,6 +387,7 @@ int main(void) {
     blend();
     raster_key();
     xfb();
+    targets();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
