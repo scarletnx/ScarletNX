@@ -406,6 +406,48 @@ static void index_state(void) {
     CHECK(x.restart == 0 && x.restart_index == 0xFFFE);
 }
 
+/* the texture bank 0x982, the TIC pool 0x55D/0x55E and its highest index 0x55F, the TSC pool 0x557/0x558 and 0x559,
+   the sampler index mode 0x48D; capture buffer i at 0xE0 + 8 i (enable, address bits 32-39 and 0-31, size, start
+   offset), on with a layout (0x1C1 + 4 i words or 0x1C2 + 4 i stride); the constant buffer slots left alone */
+static void bindings(void) {
+    u32 r[REGS] = {0};
+    DsBindings b;
+    memset(&b, 0, sizeof b);
+    b.cb_addr[4][3] = 0x1234;
+    r[0x982] = 2;
+    r[0x55D] = 0x1, r[0x55E] = 0x200000, r[0x55F] = 0x7FF;
+    r[0x557] = 0x2, r[0x558] = 0x300000, r[0x559] = 0xFF;
+    r[0x48D] = 1;
+    r[0xE0] = 1, r[0xE1] = 0x1FF, r[0xE2] = 0x400000, r[0xE3] = 0x1000, r[0xE4] = 0x40;
+    r[0x1C1] = 4;
+    r[0xE0 + 8] = 1, r[0xE3 + 8] = 0x800;                             /* no layout: off */
+    r[0xE0 + 16] = 0, r[0x1C2 + 8] = 16;                              /* a layout, not enabled: off */
+    r[0xE0 + 24] = 1, r[0xE3 + 24] = 0xFFFFFFF0u, r[0x1C2 + 12] = 32; /* a negative size, for the renderer */
+    mx_draw_bindings(r, &b);
+    CHECK(b.tex_bank == 2 && b.tex_pool == 0x100200000ull && b.tex_max == 0x7FF);
+    CHECK(b.smp_pool == 0x200300000ull && b.smp_max == 0xFF && b.smp_mode == 1);
+    CHECK(b.xfb[0].on && b.xfb[0].addr == 0xFF00400040ull && b.xfb[0].size == 0x1000);
+    CHECK(!b.xfb[1].on && !b.xfb[2].on && b.xfb[3].on && b.xfb[3].size == 0xFFFFFFF0u);
+    CHECK(b.cb_addr[4][3] == 0x1234);
+}
+
+/* a front end's inline constant buffer blocks: the slot names a stage's block 0 or 2, read as little-endian words,
+   zeros past its end */
+static void inline_blocks(void) {
+    static DrawState ds;
+    ds.bind.cb_inline[4][0] = DS_CB_BANK0;
+    ds.bind.cb_inline[4][2] = DS_CB_BANK2;
+    ds.bind.cb_addr[4][3] = 0x5000;
+    ds.inl.bank0[4][0x510] = 0x78, ds.inl.bank0[4][0x513] = 0x12;
+    ds.inl.bank2[4][0x20] = 0x05, ds.inl.bank2[4][0x22] = 0x30;
+    CHECK(ds_cb_inline(&ds, 4, 0) == ds.inl.bank0[4] && ds_cb_inline(&ds, 4, 2) == ds.inl.bank2[4]);
+    CHECK(!ds_cb_inline(&ds, 4, 3) && !ds_cb_inline(&ds, 0, 0) && !ds_cb_inline(&ds, 4, 40));
+    CHECK(ds_inline_word(ds_cb_inline(&ds, 4, 0), 0x510) == 0x12000078u);
+    CHECK(ds_inline_word(ds_cb_inline(&ds, 4, 2), 0x20) == 0x300005u);
+    CHECK(ds_inline_word(ds.inl.bank2[4], DS_INLINE_BANK - 4) == 0 &&
+          ds_inline_word(ds.inl.bank2[4], DS_INLINE_BANK) == 0);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -421,6 +463,8 @@ int main(void) {
     targets();
     vertex_buffers();
     index_state();
+    bindings();
+    inline_blocks();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
