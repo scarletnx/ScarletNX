@@ -48,7 +48,7 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
     if (v && (v->set & NVN_VIEW_LAYERS)) p->base += (u64)v->min_layer * l.layer_size;
     p->volume = t->d.target == NVN_TEXTURE_TARGET_3D;
     p->depth = p->volume ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
-    if (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) {
+    if (t->d.flags & NVN_TEX_LINEAR) {
         p->pitch = t->d.stride ? t->d.stride : p->wb;
         return 1;
     }
