@@ -235,7 +235,6 @@ void mx_draw_blend(const u32* r, DsBlend* b) {
     }
     /* LOGIC_OP (0x671 on, 0x672 the operation as GL numbers it from CLEAR 0x1500 to SET 0x150F, VkLogicOp's order) */
     if (r[0x671] & 1) b->logic_op = (u8)((r[0x672] & 15) + 1);
-    b->srgb_write = r[0x56E] & 1;
 }
 
 void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
@@ -259,4 +258,35 @@ void mx_draw_xfb(const u32* r, ShXfb* x) {
         x->stride[i] = (u16)r[0x1C2 + 4 * i];
         memcpy(x->layout[i], &r[0xA00 + 0x20 * i], sizeof x->layout[i]); /* word n / 4's byte n % 4 */
     }
+}
+
+/* RT_CONTROL (0x487): the slot count in bits 0-3 (at most 8), then 3 bits per slot naming the target registers it
+   takes, 0x200 + 0x10 j: the address (2 words), width, height, format, memory layout, third dimension (bits 0-27) and
+   array pitch in words. The depth target at 0x3F8-0x3FC (address, format, memory layout, array pitch) with its size
+   at 0x48A-0x48C, bound when 0x54E is set: ZETA_SIZE's dimension control (bit 16) forces one layer, else its
+   depth (bits 0-15) is the array size. 0x56E: the sRGB write */
+void mx_draw_targets(const u32* r, DsTargets* t) {
+    u32 ctl = r[0x487], count = ctl & 15;
+    if (count > DS_TARGETS_MAX) count = DS_TARGETS_MAX;
+    memset(t, 0, sizeof *t);
+    t->count = count;
+    t->srgb_write = r[0x56E] & 1;
+    for (u32 i = 0; i < count; i++) {
+        const u32* c = &r[0x200 + ((ctl >> (4 + i * 3)) & 7) * 0x10];
+        DsSurf* s = &t->color[i];
+        s->gva = ((u64)c[0] << 32) | c[1];
+        s->width = c[2];
+        s->height = c[3];
+        s->format = c[4];
+        s->mem = c[5];
+        s->layers = c[6] & 0x0fffffff;
+        s->layer_stride = (u64)c[7] * 4;
+    }
+    t->depth.gva = r[0x54E] ? ((u64)r[0x3F8] << 32) | r[0x3F9] : 0;
+    t->depth.width = r[0x48A];
+    t->depth.height = r[0x48B];
+    t->depth.format = r[0x3FA];
+    t->depth.mem = r[0x3FB];
+    t->depth.layers = r[0x48C] & (1u << 16) ? 1 : r[0x48C] & 0xffff;
+    t->depth.layer_stride = (u64)r[0x3FC] * 4;
 }
