@@ -422,3 +422,5 @@ void plat_install_crash_handler(void) {
     AddVectoredExceptionHandler(1, shutdown_note);
     SetUnhandledExceptionFilter(crash_filter);
 }
+
+u64 plat_monotonic_ns(void) { return 0; }
