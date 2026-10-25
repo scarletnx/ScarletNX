@@ -106,7 +106,11 @@ static int check_volume_surface_atomics(void)
 						CHECK(!gmem_write(target, initial, sizeof(initial)));
 						qmd[QMD_BLOCK_DIM_X] = invocations << 16;
 						vk_lock();
-						vk_dispatch(channel, qmd, program);
+						{
+							DispatchState d;
+							mx_dispatch_state(qmd, channel->rcomp, program, &d);
+							vk_dispatch(&d);
+						}
 						vk_unlock();
 						if (g_vk_dispatches != dispatches + 1)
 							fprintf(stderr, "3D atomic skipped: op %u signed %u bound %u base %u family %u\n",

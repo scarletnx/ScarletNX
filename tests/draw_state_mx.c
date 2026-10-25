@@ -3,6 +3,7 @@
 /* The 3D engine's registers as a draw's dynamic state (gpu/maxwell/draw_state.c). The expected values are what
    render_draw computed from the same registers before it read them through the struct */
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -452,6 +453,78 @@ static void inline_blocks(void) {
     CHECK(ds_inline_word(b0, DS_INLINE_BANK0) == 0 && ds_inline_word(b2, DS_INLINE_BANK2 - 2) == 0);
 }
 
+/* a compute launch: its QMD and the compute engine's registers as the dispatch state. A fixture with each field set
+   by hand, then random QMDs and registers checked against the accessors vk_dispatch read them through before the
+   state (same program address, grid, block, shared memory, constant buffers and pools, so the same pipeline and
+   shader keys and bindings) */
+static u32 rng = 0x9E3779B9u;
+static u32 rand32(void) { return rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5; }
+
+static void dispatch_state(void) {
+    u32 q[KEPLER_COMPUTE_QMD_WORDS] = {0}, r[REGS] = {0};
+    DispatchState d;
+    q[QMD_PROGRAM_START] = 0x1200;
+    q[QMD_LINKED_TSC] = 1u << 30;
+    q[QMD_GRID_DIM_X] = 0x80000040u; /* bit 31 isn't the grid's */
+    q[QMD_GRID_DIM_YZ] = 3u << 16 | 5;
+    q[QMD_SHARED_ALLOC] = 0xC0000u | 0x2000;
+    q[QMD_BLOCK_DIM_X] = 64u << 16 | 0xFFFF;
+    q[QMD_BLOCK_DIM_YZ] = 1u << 16 | 2;
+    q[QMD_CONST_BUFFER_ENABLE] = 0x60000000u | 0x85; /* 0, 2 and 7; the cache layout isn't a buffer */
+    q[QMD_CONST_BUFFER_CONFIG + 0] = 0x40001000u, q[QMD_CONST_BUFFER_CONFIG + 1] = 0x10000u << 15 | 0x1FF;
+    q[QMD_CONST_BUFFER_CONFIG + 4] = 0x2000, q[QMD_CONST_BUFFER_CONFIG + 5] = 0x100u << 15 | 0x01;
+    q[QMD_CONST_BUFFER_CONFIG + 2] = 0x7000, q[QMD_CONST_BUFFER_CONFIG + 3] = 0x40u << 15; /* not enabled */
+    q[QMD_CONST_BUFFER_CONFIG + 14] = 0x3000, q[QMD_CONST_BUFFER_CONFIG + 15] = 0;
+    r[KEPLER_COMPUTE_TIC] = 0x1, r[KEPLER_COMPUTE_TIC + 1] = 0x200000, r[KEPLER_COMPUTE_TIC + 2] = 0x7FF;
+    r[KEPLER_COMPUTE_TSC] = 0x2, r[KEPLER_COMPUTE_TSC + 1] = 0x300000, r[KEPLER_COMPUTE_TSC + 2] = 0xFF;
+    r[KEPLER_COMPUTE_TEX_CB_INDEX] = 0xA; /* index 2 */
+    mx_dispatch_state(q, r, 0x500000000ull, &d);
+    CHECK(d.code == 0x500001200ull && d.grid[0] == 0x40 && d.grid[1] == 5 && d.grid[2] == 3);
+    CHECK(d.block[0] == 64 && d.block[1] == 2 && d.block[2] == 1 && d.shared == 0x2000);
+    CHECK(d.cb_on == 0x85 && d.cb_addr[0] == 0xFF40001000ull && d.cb_size[0] == 0x10000);
+    CHECK(d.cb_addr[2] == 0x100002000ull && d.cb_size[2] == 0x100 && d.cb_addr[7] == 0x3000 && !d.cb_size[7]);
+    CHECK(!d.cb_addr[1] && !d.cb_size[1]);
+    CHECK(d.tex_pool == 0x100200000ull && d.tex_max == 0x7FF && d.smp_pool == 0x200300000ull && d.smp_max == 0xFF);
+    CHECK(d.smp_mode == 1 && d.tex_bank == 2);
+    for (u32 i = 0; i < DX_CBUFS; i++) CHECK(!dx_cb_inline(&d, i).bytes);
+
+    for (int n = 0; n < 100000; n++) {
+        int bad = 0;
+        u64 code = (u64)(rand32() & 0xFF) << 32 | rand32();
+        for (u32 i = 0; i < KEPLER_COMPUTE_QMD_WORDS; i++) q[i] = rand32();
+        r[KEPLER_COMPUTE_TIC] = rand32(), r[KEPLER_COMPUTE_TIC + 1] = rand32(), r[KEPLER_COMPUTE_TIC + 2] = rand32();
+        r[KEPLER_COMPUTE_TSC] = rand32(), r[KEPLER_COMPUTE_TSC + 1] = rand32(), r[KEPLER_COMPUTE_TSC + 2] = rand32();
+        r[KEPLER_COMPUTE_TEX_CB_INDEX] = rand32();
+        mx_dispatch_state(q, r, code, &d);
+        bad |= d.code != code + qmd_program_start(q);
+        bad |= d.grid[0] != qmd_grid_dim_x(q) || d.grid[1] != qmd_grid_dim_y(q) || d.grid[2] != qmd_grid_dim_z(q);
+        bad |= d.block[0] != qmd_block_dim_x(q) || d.block[1] != qmd_block_dim_y(q) ||
+               d.block[2] != qmd_block_dim_z(q) || d.shared != qmd_shared_alloc(q);
+        for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
+            int on = qmd_const_buffer_enabled(q, i);
+            bad |= (int)(d.cb_on >> i & 1) != on || dx_cb_inline(&d, i).bytes != NULL;
+            if (on) bad |= d.cb_addr[i] != qmd_const_buffer_address(q, i) || d.cb_size[i] != qmd_const_buffer_size(q, i);
+        }
+        bad |= d.cb_on >> QMD_NUM_CONST_BUFFERS != 0;
+        bad |= d.tex_pool != kepler_compute_address(r, KEPLER_COMPUTE_TIC) ||
+               d.smp_pool != kepler_compute_address(r, KEPLER_COMPUTE_TSC) ||
+               d.tex_bank != kepler_compute_tex_cb_index(r);
+        if (bad) {
+            CHECK(!"a random launch's dispatch state differs from its QMD's fields");
+            break;
+        }
+    }
+
+    /* a front end's inline blocks: a slot names the dispatch's bank 0 or 2 (NVN's dispatch size at 0x200) */
+    static DispatchState x;
+    x.cb_on = 5, x.cb_inline[0] = DS_CB_BANK0, x.cb_inline[2] = DS_CB_BANK2;
+    x.bank0[0x200] = 8, x.bank0[0x204] = 4, x.bank2[0x30] = 0x11;
+    DsCbBlock b0 = dx_cb_inline(&x, 0), b2 = dx_cb_inline(&x, 2);
+    CHECK(b0.bytes == x.bank0 && b0.size == DS_INLINE_BANK0 && b2.bytes == x.bank2 && b2.size == DS_INLINE_BANK2);
+    CHECK(ds_inline_word(b0, 0x200) == 8 && ds_inline_word(b0, 0x204) == 4 && ds_inline_word(b2, 0x30) == 0x11);
+    CHECK(!dx_cb_inline(&x, 1).bytes && !dx_cb_inline(&x, DX_CBUFS).bytes);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -469,6 +542,7 @@ int main(void) {
     index_state();
     bindings();
     inline_blocks();
+    dispatch_state();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

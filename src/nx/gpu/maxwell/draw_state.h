@@ -32,4 +32,6 @@ void mx_draw_xfb(const u32* r, ShXfb* x);
 /* a clear (CLEAR_SURFACE's word v) and a texture draw (DRAW_TEXTURE) from the registers r */
 void mx_draw_clear(const u32* r, u32 v, DrawClear* c);
 void mx_draw_texture(const u32* r, DrawTexture* t);
+/* a compute launch from its description q (the QMD) and the compute engine's registers r, its programs at code_loc */
+void mx_dispatch_state(const u32* q, const u32* r, u64 code_loc, DispatchState* d);
 #endif

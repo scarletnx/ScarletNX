@@ -1001,7 +1001,7 @@ struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
 
 /* compute.c */
-void vk_dispatch(GpuChannel* ch, const u32* q, u64 code);
+void vk_dispatch(const DispatchState* d);
 void vk_compute_land(void); /* pending compute results into guest memory, now */
 /* the compute results so far, submitted and put aside to land later: the batch to wait for (0: none pending) */
 u64 vk_compute_put_aside(void);

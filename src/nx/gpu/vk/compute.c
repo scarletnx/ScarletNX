@@ -840,10 +840,9 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
-void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
-    u32* rc = ch->rcomp;
-    u32 gx = qmd_grid_dim_x(q), gy = qmd_grid_dim_y(q), gz = qmd_grid_dim_z(q), lx = qmd_block_dim_x(q),
-        ly = qmd_block_dim_y(q), lz = qmd_block_dim_z(q), shm = qmd_shared_alloc(q);
+void vk_dispatch(const DispatchState* d) {
+    u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
+        shm = d->shared;
     CsKey ck = {0};
     u32 tcb_key;
     u64 tic_key_base;
@@ -864,16 +863,20 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         return;
     }
     cs_init();
-    /* constant buffers from the QMD (reading them lands results they overlap) */
-    u64 cba[QMD_NUM_CONST_BUFFERS] = {0};
+    /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
     for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
         g_cbn[i] = 0;
-        if (!qmd_const_buffer_enabled(q, i)) continue;
-        cba[i] = qmd_const_buffer_address(q, i);
-        u32 sz = qmd_const_buffer_size(q, i);
+        if (!(d->cb_on >> i & 1)) continue;
+        DsCbBlock in = dx_cb_inline(d, i);
+        if (in.bytes) {
+            memcpy(g_cb[i], in.bytes, in.size);
+            g_cbn[i] = in.size;
+            continue;
+        }
+        u32 sz = d->cb_size[i];
         if (!sz || sz > sizeof g_cb[i]) sz = sizeof g_cb[i];
         g_cbn[i] = sz;
-        gmem_read(cba[i], g_cb[i], sz);
+        gmem_read(d->cb_addr[i], g_cb[i], sz);
     }
     /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does. */
     struct cs_fast {
@@ -884,7 +887,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         CsPipe* p;
     };
     static struct cs_fast fc[64];
-    u64 pa = code + qmd_program_start(q);
+    u64 pa = d->code;
     struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
@@ -910,8 +913,8 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     }
     /* Stores default to unsigned for bindless images and float for bound ones. Descriptors of another class,
        signed stores, and integer sampled textures select a variant keyed on their numeric types. */
-    tcb_key = kepler_compute_tex_cb_index(rc);
-    tic_key_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC);
+    tcb_key = d->tex_bank;
+    tic_key_base = d->tex_pool;
     if (!p->failed)
         for (i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
@@ -979,9 +982,9 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         u64 tic_base;
         u32 h = 0, tic[8];
         if (p->si.img[i].type != 1) continue;
-        tic_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC);
+        tic_base = d->tex_pool;
         if ((u32)i >= g_vk_buffer_image_slots ||
-            !cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : kepler_compute_tex_cb_index(rc), p->si.img[i].cbuf_off * 4,
+            !cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : d->tex_bank, p->si.img[i].cbuf_off * 4,
                         &h)) {
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
             return;
@@ -1185,8 +1188,8 @@ rebind:
     if (gfx) {
         /* textures from the compute engine's headers; texture handles from its texture constant buffer bank. Their
            number types are what the program was keyed on (vk_tex_num), and depth textures aren't sampled here */
-        u64 tic_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC), tsc_base = kepler_compute_address(rc, KEPLER_COMPUTE_TSC);
-        u32 tcb = kepler_compute_tex_cb_index(rc);
+        u64 tic_base = d->tex_pool, tsc_base = d->smp_pool;
+        u32 tcb = d->tex_bank;
         int fmt_used = 0;
         i32 fmt[320] = {0}; /* SNX_FMT, std140: snx_ic[8] snx_tc[32] snx_ib[8] snx_tb[32], 16 bytes each */
         for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {

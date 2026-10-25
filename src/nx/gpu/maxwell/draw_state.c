@@ -4,6 +4,7 @@
    classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the hardware's from 1 and
    OpenGL's enumerants, both in Vulkan's order */
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/gpu.h"
 
 static u32 cmp_op(u32 v) {
@@ -468,4 +469,28 @@ void mx_draw_bindings(const u32* r, DsBindings* b) {
         b->xfb[i].size = t[3];
         b->xfb[i].on = t[0] && (r[0x1C1 + 4 * i] || r[0x1C2 + 4 * i]);
     }
+}
+
+/* A launch (the compute engine's KEPLER_COMPUTE_LAUNCH): its description q (the QMD's words, kepler_compute_regs.h)
+   and the compute engine's registers r: the program at code_loc plus the QMD's program start; the grid, block and
+   shared memory; the constant buffers the QMD enables, with their addresses and sizes; the texture and sampler pools
+   with their limits, the handles' constant buffer (tex_cb_index) and the QMD's linked TSC as the sampler index mode */
+void mx_dispatch_state(const u32* q, const u32* r, u64 code_loc, DispatchState* d) {
+    memset(d, 0, sizeof *d);
+    d->code = code_loc + qmd_program_start(q);
+    d->grid[0] = qmd_grid_dim_x(q), d->grid[1] = qmd_grid_dim_y(q), d->grid[2] = qmd_grid_dim_z(q);
+    d->block[0] = qmd_block_dim_x(q), d->block[1] = qmd_block_dim_y(q), d->block[2] = qmd_block_dim_z(q);
+    d->shared = qmd_shared_alloc(q);
+    for (u32 i = 0; i < DX_CBUFS; i++) {
+        if (!qmd_const_buffer_enabled(q, i)) continue;
+        d->cb_on |= 1u << i;
+        d->cb_addr[i] = qmd_const_buffer_address(q, i);
+        d->cb_size[i] = qmd_const_buffer_size(q, i);
+    }
+    d->tex_pool = kepler_compute_address(r, KEPLER_COMPUTE_TIC);
+    d->smp_pool = kepler_compute_address(r, KEPLER_COMPUTE_TSC);
+    d->tex_max = r[KEPLER_COMPUTE_TIC + 2];
+    d->smp_max = r[KEPLER_COMPUTE_TSC + 2];
+    d->smp_mode = (q[QMD_LINKED_TSC] >> 30) & 1;
+    d->tex_bank = kepler_compute_tex_cb_index(r);
 }
