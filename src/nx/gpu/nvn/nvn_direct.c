@@ -114,9 +114,15 @@ static void take(u64 addr, const char* name) {
     pm_unlock(&g_nvn_direct.lock);
 }
 
+/* The driver's lookup runs with no device. Given one, it reads the driver's own state in it, which the runtime's
+   device doesn't have, and sets nvnPrivate0 when no debug layer is installed. That flag sends the game's inlined NVN
+   code to write Maxwell methods into command memory itself, through the command buffer's first words, which are the
+   runtime's state. With no device the lookup answers the same address and leaves the flag 0 (one game's driver: its
+   lookup stores device && no debug layer in it) */
 static void getproc(CPU* c, u64 entry) {
     char name[128];
     int valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
+    c->x[0] = 0;
     g_nvn_direct.getproc_original(c, entry);
     if (valid && c->x[0]) take(c->x[0], name);
 }
