@@ -117,6 +117,12 @@ int nvn_CommandBufferIsRecording(CPU* c, u64 cb) {
     (void)c;
     return CB(cb)->recording != 0;
 }
+/* the driver's switch for its memory callback: the runtime calls it whenever command memory runs out */
+void nvn_CommandBufferSetCommandMemoryCallbackEnabled(CPU* c, u64 cb, int on) {
+    (void)c;
+    (void)cb;
+    (void)on;
+}
 void nvn_CommandBufferSetMemoryCallback(CPU* c, u64 cb, u64 fn) {
     (void)c;
     CB(cb)->callback = fn;
@@ -198,6 +204,26 @@ void nvn_CommandBufferReportCounter(CPU* c, u64 cb, i32 type, u64 address) {
 }
 void nvn_CommandBufferResetCounter(CPU* c, u64 cb, i32 type) {
     *(u64*)(void*)GP(rec(c, cb, OP_RESET_COUNTER, 8)) = (u64)(u32)type;
+}
+
+/* a copy the GPU makes, in order with the queue's work: phase 2's */
+void nvn_CommandBufferCopyBufferToBuffer(CPU* c, u64 cb, u64 src, u64 dst, u64 size, i32 flags) {
+    NvnPCopyB2B* r = REC(c, cb, OP_COPY_B2B, NvnPCopyB2B);
+    (void)flags;
+    r->src = src;
+    r->dst = dst;
+    r->size = size;
+}
+/* the bytes are copied into the record (the caller may change its own afterwards), and written when the GPU reaches
+   them */
+void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer_size, i64 offset, u64 size,
+                                          u64 data) {
+    u64 payload = rec(c, cb, OP_UPDATE_UB, sizeof(NvnPUpdateUB) + (size_t)size);
+    NvnPUpdateUB* r = (NvnPUpdateUB*)(void*)GP(payload);
+    (void)buffer_size;
+    r->dst = buffer + (u64)offset;
+    r->size = size;
+    memcpy(GP(payload + sizeof *r), GP(data), (size_t)size);
 }
 
 /* ============================================================ render targets, clears and fixed state */
@@ -311,6 +337,37 @@ void nvn_CommandBufferSetLineWidth(CPU* c, u64 cb, f32 width) {
     (void)c;
     (void)cb;
     if (width != 1.0f) LOG_LIMIT(1, "nvn: line width %.2f isn't recorded\n", (double)width);
+}
+void nvn_CommandBufferSetDepthClamp(CPU* c, u64 cb, int on) {
+    REC(c, cb, OP_DEPTH_CLAMP, NvnPDepthClamp)->on = on != 0;
+}
+void nvn_CommandBufferSetPolygonOffsetClamp(CPU* c, u64 cb, f32 factor, f32 units, f32 clamp) {
+    NvnPPolyOffset* r = REC(c, cb, OP_POLY_OFFSET, NvnPPolyOffset);
+    r->factor = factor;
+    r->units = units;
+    r->clamp = clamp;
+}
+void nvn_CommandBufferSetRenderEnable(CPU* c, u64 cb, int on) {
+    REC(c, cb, OP_RENDER_COND, NvnPRenderCond)->mode = on ? 2 : 3;
+}
+void nvn_CommandBufferSetRenderEnableConditional(CPU* c, u64 cb, i32 mode, u64 address) {
+    NvnPRenderCond* r = REC(c, cb, OP_RENDER_COND, NvnPRenderCond);
+    r->mode = mode;
+    r->address = address;
+}
+/* not recorded, as in nxnative: the depth bounds test has no counterpart there, and the point size comes from the
+   shader */
+void nvn_CommandBufferSetDepthBounds(CPU* c, u64 cb, int on, f32 min, f32 max) {
+    (void)c;
+    (void)cb;
+    (void)on;
+    (void)min;
+    (void)max;
+}
+void nvn_CommandBufferSetPointSize(CPU* c, u64 cb, f32 size) {
+    (void)c;
+    (void)cb;
+    (void)size;
 }
 void nvn_CommandBufferBarrier(CPU* c, u64 cb, i32 bits) { *(i32*)(void*)GP(rec(c, cb, OP_BARRIER, 4)) = bits; }
 /* a descriptor pool the command buffer's handles index from now on: its descriptors' address and count */
@@ -486,6 +543,18 @@ void nvn_CommandBufferDrawElements(CPU* c, u64 cb, i32 prim, i32 type, i32 count
 void nvn_CommandBufferDrawElementsInstanced(CPU* c, u64 cb, i32 prim, i32 type, i32 count, u64 ib, i32 base_vertex,
                                             i32 base_instance, i32 instances) {
     draw_idx(c, cb, prim, type, count, ib, base_vertex, base_instance, instances);
+}
+void nvn_CommandBufferDrawElementsBaseVertex(CPU* c, u64 cb, i32 prim, i32 type, i32 count, u64 ib, i32 base_vertex) {
+    draw_idx(c, cb, prim, type, count, ib, base_vertex, 0, 1);
+}
+/* caller: the game's call site, which names the dispatcher */
+void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
+    u64 caller = c->x[30];
+    NvnPDispatch* r = REC(c, cb, OP_DISPATCH, NvnPDispatch);
+    r->x = x;
+    r->y = y;
+    r->z = z;
+    r->caller = caller;
 }
 /* drawing the vertex count transform feedback captured: nxnative records nothing, and neither does this */
 void nvn_CommandBufferDrawTransformFeedback(CPU* c, u64 cb, i32 prim, u64 control) {
