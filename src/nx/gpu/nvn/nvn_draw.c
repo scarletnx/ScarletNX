@@ -60,7 +60,7 @@ struct NvnDraw {
     NvnMultisample ms;
     u32 svalue[2], smask[2], sref[2]; /* the stencil's compare mask, write mask and reference, front and back */
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
-    u8 discard, depth_clamp, restart;
+    u8 discard, depth_clamp, restart, render_off;
     u32 restart_index;
     float vp[16][4], depth[2]; /* x, y, w, h; depth range 0 */
     i32 scissor[4];
@@ -72,6 +72,7 @@ struct NvnDraw {
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
     u32 dirty;
+    DrawState scratch; /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
 };
 
 /* the device's, for every queue (set on the game's threads, read on the GPU thread) */
@@ -514,6 +515,7 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     dc.count = (u32)r.count;
     dc.base_instance = (u32)r.base_instance;
     dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    if (d->render_off) return;
     sync(d, 0, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
@@ -551,6 +553,7 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     dc.base_vertex = (u32)r.base_vertex;
     dc.base_instance = (u32)r.base_instance;
     dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    if (d->render_off) return;
     sync(d, r.base_vertex, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
@@ -642,6 +645,46 @@ static void bind_state(NvnDraw* d, u64 payload) {
     }
 }
 
+/* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
+   layer (or a volume's slice) at a time, as the 3D engine's clears of a target do */
+static void clear_texture(NvnDraw* d, u64 payload) {
+    NvnPClearTex r;
+    DrawState* x = &d->scratch;
+    DrawClear c;
+    DsTargets t;
+    i32 k, depth;
+    int is_depth;
+    memcpy(&r, GP(payload), sizeof r);
+    if (r.r.width <= 0 || r.r.height <= 0 || !(r.mask & 15) || !g_renderer->clear) return;
+    memset(&t, 0, sizeof t);
+    t.count = 1;
+    t.srgb_write = 1;
+    if (!target(r.texture, &r.view, r.has_view, &t.color[0], &is_depth) || is_depth) {
+        if (is_depth) LOG_LIMIT(1, "nvn: a ClearTexture of a depth texture isn't replayed yet\n");
+        return;
+    }
+    if (target_formats_differ(&t, &x->tgt)) new_gen(&x->gen[DS_TARGET_FORMATS]);
+    keep(&x->tgt, &t, sizeof t, &x->gen[DS_TARGETS]);
+    x->owner = d->ds.owner;
+    {
+        DsViewports v;
+        memcpy(&v, &x->vp, sizeof v);
+        v.scissor_on = 1;
+        v.scissor_x[0] = clamp16(r.r.xoffset) | clamp16((i64)r.r.xoffset + r.r.width) << 16;
+        v.scissor_y[0] = clamp16(r.r.yoffset) | clamp16((i64)r.r.yoffset + r.r.height) << 16;
+        keep(&x->vp, &v, sizeof v, &x->gen[DS_VIEWPORTS]);
+    }
+    memset(&c, 0, sizeof c);
+    c.color_mask = (u32)r.mask & 15;
+    c.scissored = 1;
+    memcpy(c.color, r.c, sizeof c.color); /* floats, or the integers of an integer texture */
+    depth = r.r.depth > 0 ? r.r.depth : 1;
+    for (k = 0; k < depth; k++) {
+        c.layer = (u32)(r.r.zoffset + k);
+        g_renderer->clear(x, &c, &d->own);
+    }
+}
+
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     switch (op) {
         case OP_SET_RT: set_targets(d, payload); return 1;
@@ -653,7 +696,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.color_mask = (u32)r.mask & 15;
             c.slot = (u32)r.index;
             memcpy(c.color, r.rgba, sizeof c.color);
-            if (c.color_mask && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
+            if (c.color_mask && !d->render_off && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
             return 1;
         }
         case OP_CLEAR_DS: {
@@ -664,7 +707,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.aspects = (r.depth_mask ? 1u : 0) | (r.stencil_mask ? 2u : 0);
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
-            if (c.aspects && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
+            if (c.aspects && !d->render_off && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
             return 1;
         }
         case OP_VIEWPORTS: {
@@ -770,6 +813,16 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
                 g_renderer->method_barrier(0);
             return 1;
         }
+        case OP_CLEAR_TEX: clear_texture(d, payload); return 1;
+        case OP_RENDER_COND: {
+            /* SetRenderEnable(true, false) are modes 2 and 3. The conditional modes compare occlusion counters,
+               which the replay doesn't count yet (their reports hold 0): those draws all run */
+            i32 mode = NVN_OBJ(const NvnPRenderCond, payload)->mode;
+            d->render_off = mode == 3;
+            if (mode < 2) LOG_LIMIT(1, "nvn: conditional rendering on occlusion counters draws everything\n");
+            return 1;
+        }
+        case OP_RESET_COUNTER: return 1; /* the counters the replay reports count nothing yet */
         case OP_DRAW: draw_arrays(d, payload, size); return 1;
         case OP_DRAW_IDX: draw_elements(d, payload, size); return 1;
     }

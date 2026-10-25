@@ -744,15 +744,10 @@ void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
     (void)v;
     (void)region;
 }
-/* ReadTexels gives the CPU a texture's texels, out of its block-linear storage: a deswizzle, the GPU's work, of what
-   the GPU drew. Phase 1 draws nothing and leaves the destination as it was; phase 2 reads it back from the GPU */
+/* the texels copied out of the texture by the GPU (gpu/nvn/nvn_copy.c): a deswizzle is the GPU's work */
 void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
     (void)c;
-    (void)v;
-    (void)region;
-    (void)dst;
-    LOG_LIMIT(4, "nvn: nvnTextureReadTexels from texture %llx (%ux%u, format %#x): left to phase 2's GPU\n",
-              (unsigned long long)t, CT(t)->d.width, CT(t)->d.height, CT(t)->d.format);
+    nvn_read_texels(t, v, region, dst);
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     (void)c;
