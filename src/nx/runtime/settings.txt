@@ -178,6 +178,16 @@ setting Vsync
     words Off|On
     help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
     help the display allows, else at once
+setting Frame pacing
+    key frame_pacing
+    int 0 2
+    default 2
+    words Timer|Display|Display and hold
+    help With VSync and fps_limit=game: 0 = the game's frames are paced by a timer; 1 = the game's next frame also
+    help waits until the frame before is on the display (VK_KHR_present_wait or VK_GOOGLE_display_timing), so frames
+    help don't queue for it; 2 = and a game that asks for two refreshes or more a frame has each frame held until its
+    help refresh where the display can say when (VK_EXT_present_timing or VK_GOOGLE_display_timing), so its frames
+    help are shown evenly. Where the display can't do one, the one before it
 setting Anisotropic filtering
     key anisotropy
     int 0 16

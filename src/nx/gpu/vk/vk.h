@@ -62,7 +62,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[24];
+    const char* dev_ext[32];
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -77,9 +77,15 @@ typedef struct {
     int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
     int sc_lost;   /* the last create found the surface lost: show() has it made anew */
+    int sc_clock;  /* how display.c learns when its presents are displayed (VkClock) */
+    /* its presents can be held until a time (display.c's targets, CLOCK_MONOTONIC): with VK_CLOCK_WAIT2 in the time
+       domain sc_time_domain, the present stage sc_time_stage's own clock (0 for CLOCK_MONOTONIC itself) */
+    int sc_hold;
+    u64 sc_time_domain;
+    u32 sc_time_stage;
     u32 sc_count;
-    /* taken around the swapchain's externally synchronized calls on other threads than the GPU thread's: its acquire,
-       create and destroy, which the GPU thread makes under vk_lock, and display.c's present waits */
+    /* taken around the swapchain's externally synchronized calls, on the GPU thread (its acquire, create and destroy,
+       under vk_lock), the recording thread (its presents, record.c) and display.c's (its present waits) */
     PMutex sc_lock;
     VkImage sc_images[VK_SC_MAX];
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
@@ -113,8 +119,20 @@ typedef struct {
     int has_provoking_last;
     /* VK_KHR_present_id and VK_KHR_present_wait: presents carry ids, and display.c learns when each is displayed */
     int has_present_wait;
+    /* VK_KHR_present_id2, VK_KHR_present_wait2 and VK_EXT_present_timing's presentAtAbsoluteTime (with
+       VK_KHR_get_surface_capabilities2): a present can be held until a time, on a surface that says so (sc_hold) */
+    int has_present_timing;
+    int has_calibrated_mono; /* CLOCK_MONOTONIC among the calibrateable time domains */
+    int has_surface_caps2;   /* the instance's VK_KHR_get_surface_capabilities2, which present timing is asked by */
+    /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
+       and the swapchain tells when each was */
+    int has_display_timing;
 } VkState;
 extern VkState g_vk;
+
+/* the swapchain's display clock (sc_clock): none; present ids and waits; their second versions, which a swapchain made
+   for VK_EXT_present_timing takes; VK_GOOGLE_display_timing's past presentation timings */
+typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } VkClock;
 
 /* device.c */
 int vk_init(void);
@@ -275,7 +293,9 @@ void vk_queue_unlock(VkQueue q);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */
-VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id); /* id: VK_KHR_present_id's, 0 none */
+/* id: the present's id (display.c's), 0 none; with sc_hold, target: not shown before then (CLOCK_MONOTONIC ns), 0 at
+   once */
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id, u64 target);
 /* takes the queued presents' result that wasn't VK_SUCCESS, if any (after a drain: a new swapchain drops the old's) */
 VkResult vk_rec_present_result(void);
 /* a new descriptor set of layout with those writes, for commands of the frame's command buffer only: allocated and
@@ -1006,15 +1026,22 @@ void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
 struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
 
-/* display.c: the display's clock, with VK_KHR_present_wait (has_present_wait). vk_display_id gives the next present's
-   id (0 without present waits), vk_display_presented hands a present queued with it to the thread that learns when
+/* display.c: the display's clock (sc_clock). vk_display_id gives the next present's id (0 without a clock),
+   vk_display_presented hands a present queued with it to the thread that learns when
    it is displayed (game: a frame of the game's, released by it at released_ns), on the GPU thread. vk_display_fifo
    says whether the swapchain shows each present for a refresh at least (FIFO), which pacing on the display needs.
    vk_display_wait is renderer.h's display_wait */
 u64 vk_display_id(void);
+void vk_display_dropped(void); /* a game frame not shown: no swapchain image was free (GPU thread) */
+/* with sc_hold, a game frame's display target for a frame period of period_ns (0 for none): the refresh it goes
+   to, held there, in CLOCK_MONOTONIC ns (vk_rec_present's target), 0 to show it at once. GPU thread */
+u64 vk_display_target(u64 period_ns);
 void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns);
+/* the present with that id (vk_display_presented before) was made, with that result: display.c waits for it only
+   then (a present wait 2 for an id not presented yet is invalid). Any thread */
+void vk_display_made(u64 id, VkResult r);
 void vk_display_fifo(int fifo);
-int vk_display_wait(u32 queued, u64 deadline_ns, u64* refresh_ns);
+int vk_display_wait(u64 deadline_ns, u64* refresh_ns);
 
 /* compute.c */
 void vk_dispatch(const DispatchState* d);

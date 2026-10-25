@@ -948,7 +948,7 @@ static int check_vic_chain(const char* shot) {
                 u32 px = t ? 0xFF0080FFu : y[j * W + i] | (u32)c[0] << 8 | (u32)c[1] << 16 | 0xFF000000u;
                 expected = (expected ^ px) * 1099511628211ull;
             }
-        g_renderer->present_buffer(VIC_BASE + 0x2000, W, H, W * 4, 0, 0, 1, full, 0, 0);
+        g_renderer->present_buffer(VIC_BASE + 0x2000, W, H, W * 4, 0, 0, 1, full, 0, 0, 0);
         CHECK(g_renderer->screenshot(shot) == expected);
         CHECK(own_landings() == lands);
     }
@@ -1388,7 +1388,7 @@ int main(int argc, char** argv) {
                 expected = (expected ^ pixels[sy * w + sx]) * 1099511628211ull;
             }
         u64 before = vk_frame_id();
-        g_renderer->present_buffer(address, w, h, w * 4, 0, 0, 1, region, transform, 0);
+        g_renderer->present_buffer(address, w, h, w * 4, 0, 0, 1, region, transform, 0, 0);
         CHECK(vk_frame_id() == before + 1);
         CHECK(!g_vk.surface && !g_vk.swapchain);
         CHECK(g_renderer->screenshot(shot) == expected);
@@ -1408,7 +1408,7 @@ int main(int argc, char** argv) {
     }
     /* Even a present without an image submits and retires the current frame slot. */
     u64 before = vk_frame_id();
-    g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full, 0, 0);
+    g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full, 0, 0, 0);
     CHECK(vk_frame_id() == before + 1);
     vk_finish();
     CHECK(!snx_remove_tree(root));

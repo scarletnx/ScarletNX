@@ -243,7 +243,11 @@ typedef struct {
     VkSwapchainKHR sc;
     VkSemaphore wait;
     u32 idx;
-    u64 id; /* VK_KHR_present_id's, 0 none */
+    u64 id;     /* display.c's, 0 none */
+    u64 target; /* not shown before then (with VK_CLOCK_WAIT2, in the time domain domain), 0 none */
+    u64 domain; /* the time domain's id */
+    u32 stage;  /* the present stage the domain is local to, 0 none */
+    int clock;  /* the swapchain's VkClock: how the id and the time are given */
 } Present;
 static VkResult g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
 static VkResult present_run(const Present* x) {
@@ -254,19 +258,38 @@ static VkResult present_run(const Present* x) {
                            .pSwapchains = &x->sc,
                            .pImageIndices = &x->idx};
     VkPresentIdKHR pid = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .swapchainCount = 1, .pPresentIds = &x->id};
-    if (x->id) pi.pNext = &pid;
+    VkPresentId2KHR pid2 = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR, .swapchainCount = 1, .pPresentIds = &x->id};
+    VkPresentTimingInfoEXT ti = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+                                 .targetTime = x->target,
+                                 .timeDomainId = x->domain,
+                                 .targetTimeDomainPresentStage = x->stage};
+    VkPresentTimingsInfoEXT tis = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .swapchainCount = 1, .pTimingInfos = &ti};
+    VkPresentTimeGOOGLE gt = {.presentID = (u32)x->id, .desiredPresentTime = x->target};
+    VkPresentTimesInfoGOOGLE gtis = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &gt};
+    if (x->id && x->clock == VK_CLOCK_WAIT2) {
+        pi.pNext = &pid2;
+        if (x->target) pid2.pNext = &tis;
+    } else if (x->id && x->clock == VK_CLOCK_GOOGLE)
+        pi.pNext = &gtis;
+    else if (x->id)
+        pi.pNext = &pid;
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
+    pm_lock(&g_vk.sc_lock); /* the swapchain, which the GPU thread acquires from and display.c waits on meanwhile */
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
     vk_queue_unlock(g_vk.gfx);
+    pm_unlock(&g_vk.sc_lock);
+    vk_display_made(x->id, r);
     return r;
 }
 static void present_queued(const void* p) {
     VkResult r = present_run(p);
     if (r != VK_SUCCESS) __atomic_store_n(&g_present_result, r, __ATOMIC_RELEASE);
 }
-VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id) {
-    Present x = {sc, wait, idx, id};
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id, u64 target) {
+    Present x = {sc, wait, idx, id, g_vk.sc_hold ? target : 0, g_vk.sc_time_domain, g_vk.sc_time_stage, g_vk.sc_clock};
     if (g_rec <= 0) return present_run(&x);
     *(Present*)rec_push(present_queued, sizeof x) = x;
     publish();

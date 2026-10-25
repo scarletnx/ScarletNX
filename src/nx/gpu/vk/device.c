@@ -85,9 +85,19 @@ typedef struct {
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
+    /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
+       VK_KHR_get_surface_capabilities2 */
+    const char* ext[17];
+    u32 next = 0;
+    for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
+    if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
+    if (!g_opt_headless && snx_vk_has_instance_extension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
+        ext[next++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+        g_vk.has_surface_caps2 = 1;
+    }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
-                              .extensions = be,
-                              .extension_count = be ? nbe : 0,
+                              .extensions = ext,
+                              .extension_count = next,
                               .validation = g_settings.vulkan_validation_layer != 0,
                               .portability = true,
                               .debug = debug_cb};
@@ -282,7 +292,8 @@ static int create_device(void) {
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
     int has_portability = 0, has_reconvergence = 0;
-    int has_calibrated = 0, has_present_id = 0, has_present_wait = 0;
+    int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
+    int has_google_timing = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
@@ -304,14 +315,20 @@ static int create_device(void) {
         has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
-        has_present_id = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_ID_EXTENSION_NAME);
-        has_present_wait = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
         has_portability = snx_vk_extensions_has(&e, "VK_KHR_portability_subset");
         if (has_portability) ext[next++] = "VK_KHR_portability_subset";
         video_exts = snx_vk_extensions_has(&e, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+        has_present_id = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        has_present_wait = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+        if (!g_opt_headless && g_vk.has_surface_caps2)
+            has_present_v2 = snx_vk_extensions_has(&e, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) +
+                             snx_vk_extensions_has(&e, VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME) +
+                             snx_vk_extensions_has(&e, VK_EXT_PRESENT_TIMING_EXTENSION_NAME);
+        has_calibrated_khr = snx_vk_extensions_has(&e, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+        has_google_timing = !g_opt_headless && snx_vk_extensions_has(&e, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         snx_vk_extensions_free(&e);
     }
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
@@ -323,8 +340,10 @@ static int create_device(void) {
             VkTimeDomainEXT* dom = malloc(sizeof *dom * nd);
             if (dom) {
                 if (VK_OK(vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(g_vk.phys, &nd, dom)))
-                    for (u32 i = 0; i < nd; i++)
+                    for (u32 i = 0; i < nd; i++) {
                         if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT) g_vk.has_calibrated_host = 1;
+                        if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT) g_vk.has_calibrated_mono = 1;
+                    }
                 free(dom);
             }
         }
@@ -371,7 +390,14 @@ static int create_device(void) {
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
     VkPhysicalDevicePresentWaitFeaturesKHR qpwait = {.sType =
                                                          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+    VkPhysicalDevicePresentId2FeaturesKHR qpid2 = {.sType =
+                                                       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
+    VkPhysicalDevicePresentWait2FeaturesKHR qpwait2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR};
+    VkPhysicalDevicePresentTimingFeaturesEXT qtiming = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT};
     int present_wait = has_present_id && has_present_wait;
+    has_present_v2 = has_present_v2 == 3 && has_calibrated_khr;
     int robustness = has_pipeline_robustness && has_robustness2;
     void* const query[] = {&f2,
                            &q11,
@@ -390,11 +416,17 @@ static int create_device(void) {
                            robustness ? &qrobust : NULL,
                            present_wait ? &qpid : NULL,
                            present_wait ? &qpwait : NULL,
+                           has_present_v2 ? &qpid2 : NULL,
+                           has_present_v2 ? &qpwait2 : NULL,
+                           has_present_v2 ? &qtiming : NULL,
                            has_shader_clock ? &qclock : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
-    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
     g_vk.has_present_wait = has_present_id && has_present_wait && qpid.presentId && qpwait.presentWait;
+    g_vk.has_present_timing = g_vk.has_present_wait && has_present_v2 && qpid2.presentId2 && qpwait2.presentWait2 &&
+                              qtiming.presentTiming && qtiming.presentAtAbsoluteTime;
+    g_vk.has_display_timing = has_google_timing && !g_vk.has_present_wait;
+    g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     /* the dynamic state and the barriers within a pass only serve feedback loops */
@@ -532,15 +564,6 @@ static int create_device(void) {
         chain = &fprov;
         ext[next++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
     }
-    VkPhysicalDevicePipelineRobustnessFeaturesEXT fpipeline = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT,
-        .pNext = chain,
-        .pipelineRobustness = VK_TRUE};
-    if (g_vk.has_vertex_robustness2) {
-        chain = &fpipeline;
-        ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
-        ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
-    }
     /* when each present is displayed (display.c), which the game's pace goes by */
     VkPhysicalDevicePresentIdFeaturesKHR fpid = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .pNext = chain, .presentId = VK_TRUE};
@@ -550,6 +573,35 @@ static int create_device(void) {
         chain = &fpwait;
         ext[next++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
         ext[next++] = VK_KHR_PRESENT_WAIT_EXTENSION_NAME;
+    }
+    /* a game frame held until the refresh it is due at (display.c), where the surface can */
+    VkPhysicalDevicePresentId2FeaturesKHR fpid2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR, .pNext = chain, .presentId2 = VK_TRUE};
+    VkPhysicalDevicePresentWait2FeaturesKHR fpwait2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR,
+        .pNext = &fpid2,
+        .presentWait2 = VK_TRUE};
+    VkPhysicalDevicePresentTimingFeaturesEXT ftiming = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
+        .pNext = &fpwait2,
+        .presentTiming = VK_TRUE,
+        .presentAtAbsoluteTime = VK_TRUE};
+    if (g_vk.has_present_timing) {
+        chain = &ftiming;
+        ext[next++] = VK_KHR_PRESENT_ID_2_EXTENSION_NAME;
+        ext[next++] = VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME;
+        ext[next++] = VK_EXT_PRESENT_TIMING_EXTENSION_NAME;
+        ext[next++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; /* present timing's requirement */
+    }
+    if (g_vk.has_display_timing) ext[next++] = VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME; /* when presents are shown */
+    VkPhysicalDevicePipelineRobustnessFeaturesEXT fpipeline = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT,
+        .pNext = chain,
+        .pipelineRobustness = VK_TRUE};
+    if (g_vk.has_vertex_robustness2) {
+        chain = &fpipeline;
+        ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
+        ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
     u32 nq = g_vk.compute_family == g_vk.gfx_family ? 1 : 2;
     if (g_vk.video_family != ~0u)
@@ -619,6 +671,8 @@ static void swapchain_retire(void) { /* sc_lock held */
     vk_ui_swapchain_gone();
     vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
     g_vk.swapchain = VK_NULL_HANDLE;
+    g_vk.sc_clock = VK_CLOCK_NONE;
+    g_vk.sc_hold = 0;
     g_vk.sc_count = 0;
 }
 /* vkDeviceWaitIdle, which takes every queue: those of the decoder's (FFmpeg's) are excluded by vk_lock, held here */
@@ -718,8 +772,15 @@ int vk_swapchain_create(int srgb) {
     free(ms);
 
     /* an image for each frame in flight beyond what the driver keeps: a frame's present waits in the recording ring
-       (vk_rec_present) while the next frame acquires, which takes no wait, so with one image fewer it found none */
-    u32 count = snx_vk_swap_image_count(&caps, VK_FRAMES, VK_SC_MAX);
+       (vk_rec_present) while the next frame acquires, which takes no wait, so with one image fewer it found none.
+       Where the game's pace waits for the display (frame_pacing, FIFO with a display clock), a frame is released only
+       once the one before is displayed, so frames don't queue for the display: one image more than the driver keeps
+       is enough, and more would only let frames that came early (a menu's, fps_limit's) queue */
+    int clock = g_vk.has_present_wait || g_vk.has_display_timing;
+    u32 extra = clock && mode == VK_PRESENT_MODE_FIFO_KHR && __atomic_load_n(&g_settings.frame_pacing, __ATOMIC_RELAXED)
+                    ? 1
+                    : VK_FRAMES;
+    u32 count = snx_vk_swap_image_count(&caps, extra, VK_SC_MAX);
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha)) /* the lowest one it has */
         alpha = (VkCompositeAlphaFlagBitsKHR)(caps.supportedCompositeAlpha & -caps.supportedCompositeAlpha);
@@ -734,7 +795,28 @@ int vk_swapchain_create(int srgb) {
         device_wait_idle();
     }
     vk_rec_present_result(); /* the old swapchain's presents, all made (a retire drained the ring), say nothing of it */
+    /* frames held until a time (display.c), under FIFO where the surface can: present ids and waits 2 with it */
+    int timing = 0;
+    VkPresentStageFlagsEXT stages = 0;
+    if (g_vk.has_present_timing && mode == VK_PRESENT_MODE_FIFO_KHR) {
+        VkPresentTimingSurfaceCapabilitiesEXT ct = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
+        VkSurfaceCapabilitiesPresentId2KHR cid = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR,
+                                                  .pNext = &ct};
+        VkSurfaceCapabilitiesPresentWait2KHR cwait = {
+            .sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR, .pNext = &cid};
+        VkSurfaceCapabilities2KHR c2 = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, .pNext = &cwait};
+        VkPhysicalDeviceSurfaceInfo2KHR si2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+                                               .surface = g_vk.surface};
+        timing = vkGetPhysicalDeviceSurfaceCapabilities2KHR(g_vk.phys, &si2, &c2) == VK_SUCCESS &&
+                 ct.presentTimingSupported && ct.presentAtAbsoluteTimeSupported && cid.presentId2Supported &&
+                 cwait.presentWait2Supported;
+        stages = ct.presentStageQueries;
+    }
     VkSwapchainCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                                   .flags = timing ? VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR |
+                                                         VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR |
+                                                         VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT
+                                                   : 0,
                                    .surface = g_vk.surface,
                                    .minImageCount = count,
                                    .imageFormat = fmt.format,
@@ -774,6 +856,37 @@ int vk_swapchain_create(int srgb) {
     }
     if (old) swapchain_retire();
     g_vk.swapchain = sc;
+    /* the times presents are held until: the system's CLOCK_MONOTONIC (plat_monotonic_ns) if the swapchain has it,
+       else a present stage's own clock, calibrated against CLOCK_MONOTONIC at each present (display.c), the stage
+       the first pixel goes out at if it can be. VK_GOOGLE_display_timing's are CLOCK_MONOTONIC's, under FIFO */
+    g_vk.sc_clock = timing                    ? VK_CLOCK_WAIT2
+                    : g_vk.has_present_wait   ? VK_CLOCK_WAIT
+                    : g_vk.has_display_timing ? VK_CLOCK_GOOGLE
+                                              : VK_CLOCK_NONE;
+    g_vk.sc_hold = g_vk.sc_clock == VK_CLOCK_GOOGLE && mode == VK_PRESENT_MODE_FIFO_KHR && plat_monotonic_ns();
+    g_vk.sc_time_stage = 0;
+    if (timing && plat_monotonic_ns()) {
+        VkTimeDomainKHR dom[16];
+        u64 ids[16], counter = 0;
+        VkSwapchainTimeDomainPropertiesEXT tp = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIME_DOMAIN_PROPERTIES_EXT,
+                                                 .timeDomainCount = 16,
+                                                 .pTimeDomains = dom,
+                                                 .pTimeDomainIds = ids};
+        VkResult tr = vkGetSwapchainTimeDomainPropertiesEXT(g_vk.dev, sc, &tp, &counter);
+        for (u32 i = 0; (tr == VK_SUCCESS || tr == VK_INCOMPLETE) && i < tp.timeDomainCount && i < 16; i++)
+            if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR) {
+                g_vk.sc_hold = 1;
+                g_vk.sc_time_domain = ids[i];
+                g_vk.sc_time_stage = 0;
+            } else if (dom[i] == VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT && !g_vk.sc_hold && stages &&
+                       g_vk.has_calibrated_mono) {
+                g_vk.sc_hold = 1;
+                g_vk.sc_time_domain = ids[i];
+                g_vk.sc_time_stage = stages & VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT
+                                         ? VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT
+                                         : stages & -stages;
+            }
+    }
     pm_unlock(&g_vk.sc_lock);
     vk_display_fifo(mode == VK_PRESENT_MODE_FIFO_KHR);
     g_vk.sc_extent = ext;
@@ -787,7 +900,10 @@ int vk_swapchain_create(int srgb) {
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
     memcpy(g_vk.sc_done, done, sizeof done[0] * nimg);
     LOG("vulkan: swapchain %ux%u, %u images%s%s, %s\n", ext.width, ext.height, g_vk.sc_count,
-        g_vk.sc_srgb ? ", sRGB" : "", g_vk.has_present_wait ? ", presents waited for" : "",
+        g_vk.sc_srgb ? ", sRGB" : "",
+        g_vk.sc_hold    ? ", presents timed and held until they are due"
+        : g_vk.sc_clock ? ", presents timed"
+                        : "",
         mode == VK_PRESENT_MODE_MAILBOX_KHR     ? "mailbox"
         : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate"
                                                 : "fifo");
