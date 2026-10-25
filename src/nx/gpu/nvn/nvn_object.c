@@ -18,6 +18,8 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define DEVICE_INFO_ITEMS 0x69
@@ -1048,19 +1050,100 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     }
     return 1;
 }
+/* ---- transform feedback layouts: the programs whose last stage before rasterization captures, by serial (their
+   128-byte layouts don't fit the program object). Programs that capture are few, and their entries stay */
+typedef struct {
+    u64 serial;
+    ShXfb x;
+} XfbEntry;
+static struct {
+    PMutex lock;
+    XfbEntry* e;
+    u32 n, cap;
+} g_nvn_xfb = {PMUTEX_INIT, NULL, 0, 0};
+int nvn_program_xfb(u64 serial, ShXfb* x) {
+    u32 i;
+    int found = 0;
+    pm_lock(&g_nvn_xfb.lock);
+    for (i = g_nvn_xfb.n; i-- > 0 && !found;)
+        if (g_nvn_xfb.e[i].serial == serial) {
+            *x = g_nvn_xfb.e[i].x;
+            found = 1;
+        }
+    pm_unlock(&g_nvn_xfb.lock);
+    return found;
+}
+/* The capture layout a stage's control section gives, as the game's driver reads it into the 3D engine's
+   transform feedback registers: 0x6ec set when it captures; per buffer i, its stream at 0x6e4 + i, its stride
+   (u16) at 0x6dc + 2 i and its groups at 0x6e8 + i, each group j an output location (s8) at 0xdc + 0x80 i + j,
+   its first component at 0x2dc + 0x80 i + j and its component count at 0x4dc + 0x80 i + j. Each component
+   captured is an output attribute word, from the driver's table of locations (the position, the built-ins, the
+   clip distances, then generic n at 0x20 + 4 n). The varying count is the stride's words */
+static void xfb_of(u64 control, u64 serial) {
+    static const u8 word_of[32] = {0x1c, 0xa0, 0xa4, 0xa8, 0xac, 0xba, 0x1b, 0xc0, 0xc4, 0xc8, 0xcc,
+                                   0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
+                                   0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
+    const u8* c = GP(control);
+    XfbEntry e;
+    u32 i, j, k;
+    if (!c[0x6ec]) return;
+    memset(&e, 0, sizeof e);
+    e.serial = serial;
+    for (i = 0; i < 4; i++) {
+        u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
+        if (c[0x6e4 + i])
+            LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
+        e.x.stride[i] = (u16)stride;
+        e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
+        for (j = 0; j < groups && j < 0x80; j++) {
+            i32 loc = (i8)c[0xdc + 0x80 * i + j];
+            u32 start = c[0x2dc + 0x80 * i + j], count = c[0x4dc + 0x80 * i + j];
+            u32 word = loc < 0 ? 0xff : loc < 32 ? word_of[loc] : 0x20 + 4 * (u32)(loc - 0x20);
+            for (k = 0; k < count && n < 128; k++) e.x.layout[i][n++] = (u8)(word == 0xff ? 0xff : word + start + k);
+        }
+    }
+    pm_lock(&g_nvn_xfb.lock);
+    if (g_nvn_xfb.n == g_nvn_xfb.cap) {
+        u32 cap = g_nvn_xfb.cap ? 2 * g_nvn_xfb.cap : 16;
+        XfbEntry* m = (XfbEntry*)realloc(g_nvn_xfb.e, cap * sizeof *m);
+        if (!m) fatal("nvn: out of memory for transform feedback layouts");
+        g_nvn_xfb.e = m;
+        g_nvn_xfb.cap = cap;
+    }
+    g_nvn_xfb.e[g_nvn_xfb.n++] = e;
+    pm_unlock(&g_nvn_xfb.lock);
+}
+
 /* the stages' {code, control} pairs, read from the control sections while they are the caller's */
 static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     NvnProgram* o = NVN_OBJ(NvnProgram, p);
-    i32 i;
+    u64 last = 0; /* the control section of the last stage before rasterization */
+    i32 i, last_rank = -1;
     if (n < 0 || n > 6) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
         return 0;
     }
     memset(o->st, 0, sizeof o->st);
     o->off_a = 0;
-    for (i = 0; i < n; i++)
-        if (!stage_of(o, gr64(sd + stride * (u64)i), gr64(sd + stride * (u64)i + 8))) return 0;
+    for (i = 0; i < n; i++) {
+        u64 control = gr64(sd + stride * (u64)i + 8);
+        u32 stage;
+        i32 rank;
+        if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
+        /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
+        stage = gr32(control + 0x714);
+        rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
+               : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
+               : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
+               : stage == NVN_SHADER_STAGE_VERTEX          ? 0
+                                                           : -1;
+        if (rank > last_rank) {
+            last_rank = rank;
+            last = control;
+        }
+    }
     o->serial = nvn_serial();
+    if (last) xfb_of(last, o->serial);
     return 1;
 }
 int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {

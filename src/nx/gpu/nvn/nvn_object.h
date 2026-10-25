@@ -6,6 +6,7 @@
 #define SNX_NVN_OBJECT_H
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/memory/mem.h"
+#include "nx/gpu/shader/shader.h"
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
 #define NVN_OBJ(T, a) ((T*)(void*)GP(a))
@@ -16,6 +17,8 @@ u64 nvn_serial(void);
 u64 nvn_pool_memory(u64 pool);
 u64 nvn_pool_gpu(u64 pool);
 
+/* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
+int nvn_program_xfb(u64 serial, ShXfb* x);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);
