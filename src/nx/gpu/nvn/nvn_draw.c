@@ -276,7 +276,7 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     s->height = t.d.height >> level ? t.d.height >> level : 1;
     s->layers = layers;
     s->layer_stride = l.layer_size;
-    if (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR) {
+    if (t.d.flags & NVN_TEX_LINEAR) {
         int bw, bh, bpb = nvn_fmt_bpb((int)t.d.format, &bw, &bh);
         u32 align = (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 128 : 32;
         s->mem = 1u << 12;

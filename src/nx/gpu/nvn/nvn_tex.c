@@ -133,7 +133,7 @@ static void samples_xy(int s, u32* sx, u32* sy) {
    whole tiles, 64 KB aligned */
 #define SPARSE_TILE 0x10000u
 static int sparse_of(const NvnTexDesc* d) {
-    return (d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEXTURE_FLAGS_LINEAR) &&
+    return (d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) &&
            d->target != NVN_TEXTURE_TARGET_BUFFER;
 }
 /* the offset of a level from its layer's start */
@@ -179,16 +179,19 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         o->align = t.bpb == 12 ? 4 : t.bpb;
         return;
     }
-    if (d->flags & NVN_TEXTURE_FLAGS_LINEAR) { /* the row pitch: the stride, or aligned to 32 */
+    if (d->flags & NVN_TEX_LINEAR) { /* the row pitch: the stride, or aligned to 32 */
         u32 stride;
         o->align = (d->flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 128 : 32;
         stride = d->stride ? d->stride : (t.bpb * blk(w, t.bw) + o->align - 1) & ~(o->align - 1);
         o->layer_size = o->size = (u64)stride * blk(h, t.bh);
         return;
     }
+    /* MINIMAL_LAYOUT: blocks of one GOB, as the game's driver describes such a texture */
     if (dpl == 2)
-        tile_h = pkg_h ? (unsigned)pkg_h - 1 : pick_tile(blk(h * sy, t.bh) * 3 / 16);
-    else if (dpl == 3)
+        tile_h = pkg_h                                         ? (unsigned)pkg_h - 1
+                 : d->flags & NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT ? 0
+                                                               : pick_tile(blk(h * sy, t.bh) * 3 / 16);
+    else if (dpl == 3 && !(d->flags & NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT))
         tile_d = pick_tile(z + z / 2);
     o->tile_h = tile_h;
     o->tile_d = tile_d;
@@ -217,7 +220,7 @@ u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level) {
     u32 w, h, z;
     NvnTexLayout l;
     shape(d, &dpl, &layered, &w, &h, &z);
-    if (!t.bpb || (d->flags & NVN_TEXTURE_FLAGS_LINEAR) || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
+    if (!t.bpb || (d->flags & NVN_TEX_LINEAR) || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
     nvn_tex_layout(d, &l);
     return level_offset(d, level, dpl, w, h, z, l.tile_h, l.tile_d, t);
 }

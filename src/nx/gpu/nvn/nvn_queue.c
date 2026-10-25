@@ -326,7 +326,7 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
             unsigned th = 0, td = 0;
             nvn_tex_level_tiles(&t.d, 0, &th, &td);
             value = nvn_replay_present(NVN_OBJ(NvnQueue, q)->replay, t.gpu, t.d.width, t.d.height, fmt,
-                                       (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR) != 0, th,
+                                       (t.d.flags & NVN_TEX_LINEAR) != 0, th,
                                        t.d.stride ? t.d.stride : t.d.width * 4, crop);
         } else /* nothing vi shows: black */
             value = nvn_replay_present(NVN_OBJ(NvnQueue, q)->replay, 0, 0, 0, 0, 0, 0, 0, crop);

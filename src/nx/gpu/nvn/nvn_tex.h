@@ -8,6 +8,10 @@
 #define SNX_NVN_TEX_H
 #include "nx/gpu/nvn/nvn_obj.h"
 
+/* the flags that make a texture pitch linear: LINEAR, or LINEAR_RENDER_TARGET alone (the game's driver lays such a
+   texture out at its stride and describes it as pitch linear) */
+#define NVN_TEX_LINEAR (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)
+
 typedef struct {
     u64 size, layer_size;      /* the storage's bytes, and a layer's */
     u32 align, layers, bpb;    /* alignment, layer count, bytes per block */
