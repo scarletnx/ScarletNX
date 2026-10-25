@@ -13,6 +13,7 @@
 #include <string.h>
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/hle/services/nvdrv.h"
@@ -575,30 +576,32 @@ static VkBlendOp blend_op(u32 v) {
     }
     return VK_BLEND_OP_ADD;
 }
-static VkCompareOp cmp_op(u32 v) {
-    if (v >= 0x200 && v <= 0x207) return (VkCompareOp)(v - 0x200);
-    if (v >= 1 && v <= 8) return (VkCompareOp)(v - 1);
-    return VK_COMPARE_OP_ALWAYS;
-}
-static VkStencilOp stencil_op(u32 v) {
-    switch (v) {
-        case 1:
-        case 0x1E00: return VK_STENCIL_OP_KEEP;
-        case 3:
-        case 0x1E01: return VK_STENCIL_OP_REPLACE;
-        case 4:
-        case 0x1E02: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
-        case 5:
-        case 0x1E03: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
-        case 6:
-        case 0x150A: return VK_STENCIL_OP_INVERT;
-        case 7:
-        case 0x8507: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
-        case 8:
-        case 0x8508: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
-    }
-    return VK_STENCIL_OP_ZERO;
-}
+/* the draw state's enumerants are Vulkan's (gpu/draw_state.h) */
+typedef char ds_polygon_vk[DS_POLYGON_FILL == VK_POLYGON_MODE_FILL && DS_POLYGON_LINE == VK_POLYGON_MODE_LINE &&
+                                   DS_POLYGON_POINT == VK_POLYGON_MODE_POINT
+                               ? 1
+                               : -1];
+typedef char ds_cull_vk[DS_CULL_NONE == VK_CULL_MODE_NONE && DS_CULL_FRONT == VK_CULL_MODE_FRONT_BIT &&
+                                DS_CULL_BACK == VK_CULL_MODE_BACK_BIT &&
+                                DS_CULL_FRONT_AND_BACK == VK_CULL_MODE_FRONT_AND_BACK
+                            ? 1
+                            : -1];
+typedef char
+    ds_cmp_vk[DS_CMP_NEVER == VK_COMPARE_OP_NEVER && DS_CMP_LESS == VK_COMPARE_OP_LESS &&
+                      DS_CMP_EQUAL == VK_COMPARE_OP_EQUAL && DS_CMP_LESS_OR_EQUAL == VK_COMPARE_OP_LESS_OR_EQUAL &&
+                      DS_CMP_GREATER == VK_COMPARE_OP_GREATER && DS_CMP_NOT_EQUAL == VK_COMPARE_OP_NOT_EQUAL &&
+                      DS_CMP_GREATER_OR_EQUAL == VK_COMPARE_OP_GREATER_OR_EQUAL && DS_CMP_ALWAYS == VK_COMPARE_OP_ALWAYS
+                  ? 1
+                  : -1];
+typedef char ds_stencil_vk[DS_STENCIL_KEEP == VK_STENCIL_OP_KEEP && DS_STENCIL_ZERO == VK_STENCIL_OP_ZERO &&
+                                   DS_STENCIL_REPLACE == VK_STENCIL_OP_REPLACE &&
+                                   DS_STENCIL_INCREMENT_AND_CLAMP == VK_STENCIL_OP_INCREMENT_AND_CLAMP &&
+                                   DS_STENCIL_DECREMENT_AND_CLAMP == VK_STENCIL_OP_DECREMENT_AND_CLAMP &&
+                                   DS_STENCIL_INVERT == VK_STENCIL_OP_INVERT &&
+                                   DS_STENCIL_INCREMENT_AND_WRAP == VK_STENCIL_OP_INCREMENT_AND_WRAP &&
+                                   DS_STENCIL_DECREMENT_AND_WRAP == VK_STENCIL_OP_DECREMENT_AND_WRAP
+                               ? 1
+                               : -1];
 
 /* vertex attribute format from the size code (bits 21-26) and component type (27-29): 1 snorm, 2 unorm, 3 sint,
    4 uint, 5 uscaled, 6 sscaled, 7 float */
@@ -1858,41 +1861,38 @@ u64 g_vk_drawn, g_vk_skipped;
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
    Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. */
-VkViewport vk_render_viewport_at(const u32* r, u32 index) {
-    if (index >= GUEST_VIEWPORTS) fatal("vulkan: viewport %u of the %u the GPU has", index, GUEST_VIEWPORTS);
-    float vt[6];
-    memcpy(vt, &r[0x280 + index * 8], sizeof vt);
-    float sx = vt[0], sy = vt[1], tx = vt[3], ty = vt[4], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index) {
+    if (index >= v->count) fatal("vulkan: viewport %u of the %u the draw has", index, v->count);
+    const float* vs = v->scale[index];
+    const float* vt = v->translate[index];
+    float sx = vs[0], sy = vs[1], tx = vt[0], ty = vt[1], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
     VkViewport vp;
     int small = 2 * ax < 1 || 2 * ay < 1;
-    if (small != !(r[0x64B] & 1))
-        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, r[0x64B]);
+    if (small != !v->transform_on)
+        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, v->transform_on);
     if (small) {
-        u32 vx = r[0x300 + index * 4], vy = r[0x301 + index * 4];
+        u32 vx = v->clip_x[index], vy = v->clip_y[index];
         vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
     } else
         vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
     /* A lower-left window measures y from the surface clip's bottom. Match the 3D blit path's conversion. */
-    if (r[0x4EB] & 1) {
-        vp.y += vk_scf((float)(r[0x3FE] >> 16));
+    if (d->window_origin & DS_ORIGIN_LOWER_LEFT) {
+        vp.y += vk_scf((float)d->clip_height);
         vp.height = -vp.height;
     }
-    if (((r[0x286 + index * 8] >> 4) & 7) == 3) {
+    if (((v->swizzle[index] >> 4) & 7) == 3) {
         vp.y += vp.height;
         vp.height = -vp.height;
     }
-    float zn, zf;
-    memcpy(&zn, &r[0x302 + index * 4], 4);
-    memcpy(&zf, &r[0x303 + index * 4], 4);
-    if (vt[2] != 0.0f || vt[5] != 0.0f) {
-        zn = vt[5] - ((r[0x35F] & 1) ? 0.0f : vt[2]);
-        zf = vt[5] + vt[2];
+    float zn = v->z_near[index], zf = v->z_far[index];
+    if (vs[2] != 0.0f || vt[2] != 0.0f) {
+        zn = vt[2] - (d->depth_mode ? 0.0f : vs[2]);
+        zf = vt[2] + vs[2];
     }
     vp.minDepth = zn < 0 ? 0 : zn > 1 ? 1 : zn;
     vp.maxDepth = zf < 0 ? 0 : zf > 1 ? 1 : zf;
     return vp;
 }
-VkViewport vk_render_viewport(const u32* r) { return vk_render_viewport_at(r, 0); }
 /* the vertices of the geometry program's input primitive: the tessellator's output primitive (0xC8: the domain in
    bits 0-1, isolines 0, and the output in bits 8-9, points 0), or the draw's topology */
 static u32 gs_input_vertices(u32 topology, int tes_on, u32 params) {
@@ -1904,11 +1904,11 @@ static u32 gs_input_vertices(u32 topology, int tes_on, u32 params) {
                                               : 3;
 }
 
-static VkFrontFace front_face_at_viewport(const u32* r, float viewport_height) {
-    int cw = r[0x647] == 0x900;
+static VkFrontFace front_face_at_viewport(const DsDynamic* d, float viewport_height) {
+    int cw = d->front_cw;
     /* A negative Vulkan viewport already reverses framebuffer winding. WINDOW_ORIGIN_FLIP_Y also reverses guest
        facing, so only compensate for that bit when the viewport has not performed the same reversal. */
-    if ((r[0x4EB] & 0x10) && viewport_height > 0) cw = !cw;
+    if ((d->window_origin & DS_ORIGIN_FLIP_Y) && viewport_height > 0) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
 int vk_render_depth_clamp(const u32* r) {
@@ -1917,7 +1917,9 @@ int vk_render_depth_clamp(const u32* r) {
     return mode != 1 && mode != 3 && mode != 5;
 }
 
-VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
+VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v) {
+    return front_face_at_viewport(d, vk_viewport_from(d, v, 0).height);
+}
 
 /* the Vulkan topology of a draw's (the 3D engine's numbers, 14 a patch list) */
 static VkPrimitiveTopology topology_vk(u32 topology) {
@@ -3028,8 +3030,11 @@ retry:
     if (k->nbind)
         rec_CmdBindVertexBuffers2(cb, 0, k->nbind, vbuf, voff, vsize, g_vk.has_dynamic_stride ? pl->stride : NULL);
 
-    VkViewport vp = vk_render_viewport(r);
     u32 viewports = last->si.writes_viewport ? GUEST_VIEWPORTS : 1;
+    DsDynamic dyn;
+    DsViewports dvp;
+    mx_draw_dynamic(r, k->polygon, viewports, &dyn, &dvp);
+    VkViewport vp = vk_viewport_from(&dyn, &dvp, 0);
     if (viewports == 1 && !(vp.width > 0 && vp.height != 0)) {
         draw_images_discard(&images);
         return; /* its one viewport has no area: nothing is drawn, so nothing is recorded */
@@ -3040,7 +3045,7 @@ retry:
                   ? g_vk.props.limits.viewportSubPixelBits
                   : g_vk.props.limits.subPixelPrecisionBits; /* the points' nudge below */
     for (u32 i = 0; i < viewports; i++) {
-        viewport[i] = vk_render_viewport_at(r, i);
+        viewport[i] = vk_viewport_from(&dyn, &dvp, i);
         /* A point a pixel wide covers the pixel its window position falls in on the console (OpenGL's aliased point
            rule), so one exactly on a pixel border goes to the pixel after it. Vulkan covers the pixels whose center is
            in the point's square, and leaves a center on its edge to the device: RADV takes the pixel before. One game
@@ -3051,21 +3056,21 @@ retry:
            is larger (Vulkan only requires 4 bits of the rasterizer's and none of the viewport's): a smaller move
            rounds away. Not at all on a viewport without subpixel bits. Only in the modes that game draws them in,
            the OpenGL point center (0x597) and half-integer pixel centers (0x649): the others' rules aren't known */
-        if (topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST && !gs && !tes && !r[0x597] && !r[0x649] && sub) {
+        if (topo == VK_PRIMITIVE_TOPOLOGY_POINT_LIST && !gs && !tes && dyn.point_nudge && sub) {
             float e = vk_scf(1.0f / (float)(1u << (sub < 7 ? sub : 7)));
             viewport[i].x += e;
-            viewport[i].y += (r[0x4EB] & 1) ? -e : e;
+            viewport[i].y += (dyn.window_origin & DS_ORIGIN_LOWER_LEFT) ? -e : e;
         }
         int area = viewport[i].width > 0 && viewport[i].height != 0;
         if (!area) /* An empty guest viewport clips everything. Vulkan still needs a valid transform. */
             viewport[i] = (VkViewport){0, 0, 1, 1, 0, 1};
         VkRect2D sc = {{0, 0}, area ? g_rp.ext : (VkExtent2D){0, 0}};
-        if (area && (r[0x380 + i * 4] & 1)) {
-            u32 xs = r[0x381 + i * 4], ys = r[0x382 + i * 4];
+        if (area && (dvp.scissor_on >> i & 1)) {
+            u32 xs = dvp.scissor_x[i], ys = dvp.scissor_y[i];
             i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16);
             i32 y0 = (i32)vk_scf(ys & 0xFFFF), y1 = (i32)vk_scf(ys >> 16);
-            if (r[0x4EB] & 1) {
-                i32 clip_height = (i32)vk_scf((float)(r[0x3FE] >> 16));
+            if (dyn.window_origin & DS_ORIGIN_LOWER_LEFT) {
+                i32 clip_height = (i32)vk_scf((float)dyn.clip_height);
                 i32 old_y0 = y0;
                 y0 = clip_height - y1;
                 y1 = clip_height - old_y0;
@@ -3090,11 +3095,8 @@ retry:
     g_dyn.viewports = viewports;
     /* Triangle facing has its own window-origin control, independent of viewport scale and swizzle. */
     {
-        VkCullModeFlags cull = !r[0x646]           ? VK_CULL_MODE_NONE
-                               : r[0x648] == 0x404 ? VK_CULL_MODE_FRONT_BIT
-                               : r[0x648] == 0x408 ? VK_CULL_MODE_FRONT_AND_BACK
-                                                   : VK_CULL_MODE_BACK_BIT;
-        VkFrontFace front = front_face_at_viewport(r, vp.height);
+        VkCullModeFlags cull = dyn.cull;
+        VkFrontFace front = front_face_at_viewport(&dyn, vp.height);
         u32 prim_restart = restart && (indexed == 1 || indexed == 3);
         DYN(cull, cull, rec_CmdSetCullMode(cb, cull));
         DYN(front, front, rec_CmdSetFrontFace(cb, front));
@@ -3104,67 +3106,45 @@ retry:
            draws points whose vertex program only stores to memory and writes no position: rasterized, they all lit
            the pixel in the middle of the screen. A channel starts with it on (reset_3d, as Eden's register defaults)
            (1 off, 2 on: 0 is a new command buffer's) */
-        u32 discard = !r[0xDF] ? 2 : 1;
+        u32 discard = dyn.discard ? 2 : 1;
         DYN(discard, discard, rec_CmdSetRasterizerDiscardEnable(cb, discard == 2));
     }
     {
-        float lw; /* smooth lines (0x55C) have a width of their own */
-        memcpy(&lw, &r[r[0x55C] ? 0x4EC : 0x4ED], 4);
+        float lw = dyn.line_width;
         lw = g_vk.feat.wideLines && lw > 0 && lw < 64 ? lw : 1.0f;
         DYNV(lw, lw, rec_CmdSetLineWidth(cb, lw));
     }
-    /* depth bias: enabled per polygon mode (0x370 points, 0x371 lines, 0x372 filled), clamped by 0x61F. The units
-       are passed as they are (Ryujinx halves them: a run decides) */
+    /* depth bias: enabled per polygon mode (the key's, as the device draws it). The units are passed as they are
+       (Ryujinx halves them: a run decides) */
     {
-        u32 bias_on = r[k->polygon == VK_POLYGON_MODE_POINT  ? 0x370
-                        : k->polygon == VK_POLYGON_MODE_LINE ? 0x371
-                                                            : 0x372] != 0;
+        u32 bias_on = dyn.bias_on;
         DYN(bias_on, bias_on, rec_CmdSetDepthBiasEnable(cb, bias_on));
     }
     {
-        float fac, un, clamp;
-        memcpy(&fac, &r[0x55B], 4);
-        memcpy(&un, &r[0x56F], 4);
-        memcpy(&clamp, &r[0x61F], 4);
-        float bias[3] = {un, g_vk.feat.depthBiasClamp ? clamp : 0.0f, fac};
+        float bias[3] = {dyn.bias_units, g_vk.feat.depthBiasClamp ? dyn.bias_clamp : 0.0f, dyn.bias_slope};
         DYNV(bias, bias, rec_CmdSetDepthBias(cb, bias[0], bias[1], bias[2]));
     }
     if (!g_vk.feat.depthClamp && vk_render_depth_clamp(r))
         LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
-    {
-        float bc[4];
-        memcpy(bc, &r[0x4C7], 16);
-        DYNV(bc, bc, rec_CmdSetBlendConstants(cb, bc));
-    }
+    DYNV(bc, dyn.blend_const, rec_CmdSetBlendConstants(cb, dyn.blend_const));
     /* depth and stencil */
     {
-        u32 dt = zt && r[0x4B3], dw = zt && r[0x4BA];
-        VkCompareOp dcmp = cmp_op(r[0x4C3]);
+        u32 dt = zt && dyn.depth_test, dw = zt && dyn.depth_write;
+        VkCompareOp dcmp = dyn.depth_cmp;
         DYN(dt, dt, rec_CmdSetDepthTestEnable(cb, dt));
         DYN(dw, dw, rec_CmdSetDepthWriteEnable(cb, dw));
         DYN(dcmp, dcmp, rec_CmdSetDepthCompareOp(cb, dcmp));
         DYN(dbounds, 1, (rec_CmdSetDepthBoundsTestEnable(cb, VK_FALSE), rec_CmdSetDepthBounds(cb, 0.0f, 1.0f)));
     }
-    int stencil = zt && zt->f.stencil && r[0x4E0];
+    int stencil = zt && zt->f.stencil && dyn.stencil_test;
     DYN(st, (u32)stencil, rec_CmdSetStencilTestEnable(cb, stencil));
-    /* GL order in the registers: fail, depth fail, pass */
-    int two = r[0x565] != 0;
     {
-        /* per face: fail, depth fail and pass operations, the compare op, reference, compare and write masks */
-        u32 sf[7] = {stencil_op(r[0x4E1]),
-                     stencil_op(r[0x4E3]),
-                     stencil_op(r[0x4E2]),
-                     cmp_op(r[0x4E4]),
-                     r[0x4E5],
-                     r[0x4E6],
-                     r[0x4E7]};
-        u32 sb[7] = {stencil_op(r[two ? 0x566 : 0x4E1]),
-                     stencil_op(r[two ? 0x568 : 0x4E3]),
-                     stencil_op(r[two ? 0x567 : 0x4E2]),
-                     cmp_op(r[two ? 0x569 : 0x4E4]),
-                     r[two ? 0x3D5 : 0x4E5],
-                     r[two ? 0x3D7 : 0x4E6],
-                     r[two ? 0x3D6 : 0x4E7]};
+        /* per face: fail, pass and depth fail operations (vkCmdSetStencilOp's order), the compare op, reference,
+           compare and write masks */
+        u32 sf[7] = {dyn.face[0].fail, dyn.face[0].pass,  dyn.face[0].zfail, dyn.face[0].cmp,
+                     dyn.face[0].ref,  dyn.face[0].cmask, dyn.face[0].wmask};
+        u32 sb[7] = {dyn.face[1].fail, dyn.face[1].pass,  dyn.face[1].zfail, dyn.face[1].cmp,
+                     dyn.face[1].ref,  dyn.face[1].cmask, dyn.face[1].wmask};
         DYNV(sfront, sf,
              (rec_CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_BIT, sf[0], sf[1], sf[2], sf[3]),
               rec_CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_BIT, sf[4]),
@@ -3176,25 +3156,21 @@ retry:
               rec_CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[5]),
               rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_BACK_BIT, sb[6])));
     }
-    /* push constants: the depth mode (snx_vp.y) for the vertex stage, the alpha test (0x4BB on, 0x4C4 reference,
-       0x4C5 function) and the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a
-       lower-left window's bottom (0x4EB bit 0): it flips when the sprite's origin (0x581 bit 2, 1 the top) is the
-       other side. Then the fragment stage's scaled textures (stage_set) */
-    float pc[12] = {0, (r[0x35F] & 1) ? 0.0f : 1.0f, 0, 0};
-    memcpy(&pc[0], &r[0x50E], sizeof(u32));
-    {
-        u32 fn = r[0x4C5];
-        int f = fn >= 0x200 && fn <= 0x207 ? (int)(fn - 0x200) : fn >= 1 && fn <= 8 ? (int)fn - 1 : 7;
-        pc[4] = (r[0x4BB] & 1) ? 1.0f : 0.0f;
-        pc[5] = (float)f;
-        memcpy(&pc[6], &r[0x4C4], 4);
-        pc[7] = ((r[0x581] >> 2) & 1) == (r[0x4EB] & 1) ? 1.0f : 0.0f;
-    }
+    /* push constants: the depth mode (snx_vp.y) for the vertex stage, the alpha test (on, function, reference) and
+       the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
+       bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
+       textures (stage_set) */
+    float pc[12] = {0, dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
+    memcpy(&pc[0], &dyn.depth_word, sizeof(u32));
+    pc[4] = dyn.alpha_test ? 1.0f : 0.0f;
+    pc[5] = (float)dyn.alpha_func;
+    memcpy(&pc[6], &dyn.alpha_ref, 4);
+    pc[7] = dyn.sprite_origin == ((dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0) ? 1.0f : 0.0f;
     u32 scaled_words[2] = {(u32)scaled, (u32)(scaled >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
-    vk_query_draw(cb, ch->id, r[0x574]); /* counted by the channel's samples-passed counter when it runs */
+    vk_query_draw(cb, ch->id, dyn.msaa_mode); /* counted by the channel's samples-passed counter when it runs */
     VkBuffer counters[4] = {g_xfb.buf, g_xfb.buf, g_xfb.buf, g_xfb.buf};
     VkDeviceSize counter_offs[4] = {0, 4, 8, 12};
     /* the buffers from 0 to the last one bound, as begin and end take the counters of: one between that isn't bound
