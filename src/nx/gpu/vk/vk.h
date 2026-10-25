@@ -1024,13 +1024,12 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
-void vk_render_clear(GpuChannel* ch, u32 v);
+void vk_render_clear(const DrawState* ds, const DrawClear* c, GpuChannel* ch);
 /* viewport index of a draw's state with the resolution scale, and the facing its first viewport gives */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
 VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
-void vk_render_draw_texture(GpuChannel* ch);
-void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
-                    u32 instances);
+void vk_render_draw_texture(const DrawState* ds, const DrawTexture* t, GpuChannel* ch);
+void vk_render_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,

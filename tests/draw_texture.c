@@ -17,7 +17,8 @@ u64 g_draws;
 int g_renderer_up = 1;
 static int calls;
 static u32 seen[12];
-static void record(GpuChannel* ch) {
+static void record(const DrawState* ds, const DrawTexture* t, GpuChannel* ch) {
+    (void)ds, (void)t;
     calls++;
     memcpy(seen, &ch->r3d[0x420], sizeof seen);
 }

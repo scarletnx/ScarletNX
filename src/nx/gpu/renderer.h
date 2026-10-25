@@ -39,14 +39,19 @@ typedef struct Renderer {
        but not those a later submission makes meanwhile */
     void (*stream_run)(int on);
     /* the 3D engine (maxwell3d.c) */
-    void (*clear)(GpuChannel* ch, u32 v);
-    void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
-                 u32 instances);
+    /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
+       of the state ds (gpu/draw_state.h), which the front end brought up to date before the call (a GPU channel's
+       mx_draw_state_sync, the NVN replay's own fill) and which the renderer only reads. ch gives what ds doesn't hold
+       yet, and only that: the resource bindings (constant buffers, texture and sampler pools and handles, storage
+       buffers and images, transform feedback buffers), the inline indices, and the renderer's own state of the
+       owner (its id, the render predicate, the capture counters). The NVN path will fill a bindings group of
+       DrawState there instead, once the bindings move into it. Called on the GPU thread */
+    void (*clear)(const DrawState* ds, const DrawClear* c, GpuChannel* ch);
+    void (*draw)(const DrawState* ds, const DrawCall* dc, GpuChannel* ch);
+    void (*draw_texture)(const DrawState* ds, const DrawTexture* t, GpuChannel* ch);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);
-    /* DRAW_TEXTURE: a texture's rectangle onto color target 0. NULL: not drawn */
-    void (*draw_texture)(GpuChannel* ch);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);

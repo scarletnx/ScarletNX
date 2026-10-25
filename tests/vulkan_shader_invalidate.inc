@@ -34,8 +34,11 @@ static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 
 static void invalidate_draw(GpuChannel *channel)
 {
+	DrawCall call = {4, 0, 0, 3, 0, 0, 1}; /* a triangle list of 3 vertices */
+
 	vk_lock();
-	vk_render_draw(channel, 0, 4, 0, 3, 0, 0, 1);
+	mx_draw_state_sync(channel);
+	vk_render_draw(&channel->ds, &call, channel);
 	vk_unlock();
 }
 

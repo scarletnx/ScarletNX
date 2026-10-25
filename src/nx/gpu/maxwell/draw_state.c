@@ -4,6 +4,7 @@
    classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the hardware's from 1 and
    OpenGL's enumerants, both in Vulkan's order */
 #include "nx/gpu/maxwell/draw_state.h"
+#include "nx/gpu/gpu.h"
 
 static u32 cmp_op(u32 v) {
     if (v >= 0x200 && v <= 0x207) return v - 0x200;
@@ -97,7 +98,7 @@ static u32 blend_op(u32 v) {
     return DS_BLEND_ADD;
 }
 
-void mx_draw_dynamic(const u32* r, u32 polygon, u32 viewports, DsDynamic* d, DsViewports* v) {
+void mx_draw_dynamic(const u32* r, DsDynamic* d) {
     memset(d, 0, sizeof *d);
     d->cull = (u8)(!r[0x646]           ? DS_CULL_NONE
                    : r[0x648] == 0x404 ? DS_CULL_FRONT
@@ -106,7 +107,7 @@ void mx_draw_dynamic(const u32* r, u32 polygon, u32 viewports, DsDynamic* d, DsV
     d->front_cw = r[0x647] == 0x900;
     d->discard = !r[0xDF]; /* RASTERIZE_ENABLE */
     /* enabled per polygon mode: 0x370 points, 0x371 lines, 0x372 filled */
-    d->bias_on = r[polygon == DS_POLYGON_POINT ? 0x370 : polygon == DS_POLYGON_LINE ? 0x371 : 0x372] != 0;
+    d->bias_on = (u8)((r[0x370] != 0) | (r[0x371] != 0) << 1 | (r[0x372] != 0) << 2);
     d->depth_test = r[0x4B3] != 0;
     d->depth_write = r[0x4BA] != 0;
     d->depth_cmp = (u8)cmp_op(r[0x4C3]);
@@ -143,14 +144,15 @@ void mx_draw_dynamic(const u32* r, u32 polygon, u32 viewports, DsDynamic* d, DsV
     d->clip_height = r[0x3FE] >> 16;
     d->msaa_mode = r[0x574];
     d->depth_word = r[0x50E];
+}
 
-    /* SET_VIEWPORT_SCALE_X(j) at register 0x280 + 8 j (scale x, y, z, offset x, y, z, then the coordinate swizzle),
-       SET_VIEWPORT_CLIP_HORIZONTAL(j) at 0x300 + 4 j (then vertical, min z, max z) and SET_SCISSOR_ENABLE(j) at
-       0x380 + 4 j (then horizontal, vertical) */
-    v->count = viewports < DS_VIEWPORTS_MAX ? viewports : DS_VIEWPORTS_MAX; /* the rest are left as they were */
+/* SET_VIEWPORT_SCALE_X(j) at register 0x280 + 8 j (scale x, y, z, offset x, y, z, then the coordinate swizzle),
+   SET_VIEWPORT_CLIP_HORIZONTAL(j) at 0x300 + 4 j (then vertical, min z, max z) and SET_SCISSOR_ENABLE(j) at
+   0x380 + 4 j (then horizontal, vertical); 0x64B the transform enable */
+void mx_draw_viewports(const u32* r, DsViewports* v) {
     v->transform_on = r[0x64B] & 1;
     v->scissor_on = 0;
-    for (u32 j = 0; j < v->count; j++) {
+    for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
         memcpy(v->scale[j], &r[0x280 + j * 8], 12);
         memcpy(v->translate[j], &r[0x283 + j * 8], 12);
         v->swizzle[j] = r[0x286 + j * 8];
@@ -292,10 +294,8 @@ void mx_draw_targets(const u32* r, DsTargets* t) {
 }
 
 /* Stream s starts at 0x701 + 4 s (2 words) and ends at its limit 0x7C0 + 2 s (2 words, inclusive) */
-void mx_draw_vertex_buffers(const u32* r, u32 streams, DsVertexBuffers* b) {
-    b->filled = streams;
-    for (u32 m = streams; m; m &= m - 1) {
-        u32 s = (u32)__builtin_ctz(m);
+void mx_draw_vertex_buffers(const u32* r, DsVertexBuffers* b) {
+    for (u32 s = 0; s < DS_STREAMS; s++) {
         u64 start = ((u64)r[0x701 + s * 4] << 32) | r[0x702 + s * 4],
             end = ((u64)r[0x7C0 + s * 2] << 32) | r[0x7C1 + s * 2];
         b->addr[s] = start;
@@ -312,4 +312,77 @@ void mx_draw_index(const u32* r, DsIndex* x) {
     x->format = r[0x5F6];
     x->restart = r[0x591] != 0;
     x->restart_index = r[0x592];
+}
+
+/* CLEAR_SURFACE's word v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer. The
+   color at 0x360-0x363, depth 0x364, stencil 0x368 */
+void mx_draw_clear(const u32* r, u32 v, DrawClear* c) {
+    memset(c, 0, sizeof *c);
+    c->aspects = v & 3;
+    c->color_mask = (v >> 2) & 15;
+    c->slot = (v >> 6) & 15;
+    c->layer = (v >> 10) & 0x7ff;
+    memcpy(c->color, &r[0x360], 16);
+    memcpy(&c->depth, &r[0x364], 4);
+    c->stencil = r[0x368];
+    c->scissored = r3d_clear_scissored(r) != 0;
+}
+
+/* DRAW_TEXTURE's registers 0x420-0x42B: the destination's x, y, width and height in 20.12 fixed point, du and dv in
+   32.32 (low word first), the texture and sampler indices, and the source's x and y in 20.12 */
+void mx_draw_texture(const u32* r, DrawTexture* t) {
+    memset(t, 0, sizeof *t);
+    t->handle = (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF);
+    t->x0 = (float)(i32)r[0x420] / 4096.f, t->y0 = (float)(i32)r[0x421] / 4096.f;
+    t->w = (float)(i32)r[0x422] / 4096.f, t->h = (float)(i32)r[0x423] / 4096.f;
+    t->du = (double)(i64)((u64)r[0x425] << 32 | r[0x424]) / 4294967296.0;
+    t->dv = (double)(i64)((u64)r[0x427] << 32 | r[0x426]) / 4294967296.0;
+    t->sx0 = (float)(i32)r[0x42A] / 4096.f, t->sy0 = (float)(i32)r[0x42B] / 4096.f;
+}
+
+/* Brings ch's draw state up to its registers: the groups whose registers a method changed since (GpuChannel.r3d_dirty,
+   which the renderer still takes for what it keeps between draws), and those no register group covers yet, every
+   time */
+void mx_draw_state_sync(GpuChannel* ch) {
+    const u32* r = ch->r3d;
+    u32 dirty = ch->r3d_dirty;
+    DrawState* ds = &ch->ds;
+    if (dirty & (R3D_SHADER | R3D_PIPEMISC | R3D_XFB)) mx_draw_programs(r, &ds->prog);
+    if (dirty & (R3D_VATTR | R3D_VFORMAT)) mx_draw_vertex_format(r, &ds->vfmt);
+    if (dirty & R3D_BLEND) mx_draw_blend(r, &ds->blend);
+    if (dirty & R3D_PIPEMISC) mx_draw_raster_key(r, &ds->rkey);
+    if (dirty & R3D_XFB) mx_draw_xfb(r, &ds->xfb);
+    mx_draw_targets(r, &ds->tgt);
+    mx_draw_dynamic(r, &ds->dyn);
+    mx_draw_viewports(r, &ds->vp);
+    mx_draw_vertex_buffers(r, &ds->vbuf);
+    mx_draw_index(r, &ds->index);
+}
+
+u32 mx_draw_state_stale(const GpuChannel* ch) {
+    const u32* r = ch->r3d;
+    const DrawState* ds = &ch->ds;
+    DrawState f; /* every group filled again */
+    u32 stale = 0;
+    mx_draw_programs(r, &f.prog);
+    mx_draw_vertex_format(r, &f.vfmt);
+    mx_draw_blend(r, &f.blend);
+    mx_draw_raster_key(r, &f.rkey);
+    mx_draw_xfb(r, &f.xfb);
+    mx_draw_targets(r, &f.tgt);
+    mx_draw_dynamic(r, &f.dyn);
+    mx_draw_viewports(r, &f.vp);
+    mx_draw_vertex_buffers(r, &f.vbuf);
+    mx_draw_index(r, &f.index);
+    stale |= (u32)(memcmp(&f.prog, &ds->prog, sizeof f.prog) != 0) << DS_PROGRAMS;
+    stale |= (u32)(memcmp(&f.vfmt, &ds->vfmt, sizeof f.vfmt) != 0) << DS_VFORMAT;
+    stale |= (u32)(memcmp(&f.blend, &ds->blend, sizeof f.blend) != 0) << DS_BLEND;
+    stale |= (u32)(memcmp(&f.rkey, &ds->rkey, sizeof f.rkey) != 0) << DS_RASTER_KEY;
+    stale |= (u32)(memcmp(&f.xfb, &ds->xfb, sizeof f.xfb) != 0) << DS_XFB;
+    stale |= (u32)(memcmp(&f.tgt, &ds->tgt, sizeof f.tgt) != 0) << DS_TARGETS;
+    stale |= (u32)(memcmp(&f.dyn, &ds->dyn, sizeof f.dyn) != 0) << DS_DYNAMIC;
+    stale |= (u32)(memcmp(&f.vp, &ds->vp, sizeof f.vp) != 0) << DS_VIEWPORTS;
+    stale |= (u32)(memcmp(&f.vbuf, &ds->vbuf, sizeof f.vbuf) != 0) << DS_VBUF;
+    stale |= (u32)(memcmp(&f.index, &ds->index, sizeof f.index) != 0) << DS_INDEX;
+    return stale;
 }

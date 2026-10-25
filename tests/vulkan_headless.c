@@ -147,13 +147,15 @@ static int check_staging_overflow(void)
 static VkViewport viewport_of(const u32* r, u32 index) {
     DsDynamic d;
     DsViewports v;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, DS_VIEWPORTS_MAX, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     return vk_viewport_from(&d, &v, index);
 }
 static VkFrontFace front_face_of(const u32* r) {
     DsDynamic d;
     DsViewports v;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     return vk_render_front_face(&d, &v);
 }
 
@@ -281,6 +283,13 @@ static int check_packed_depth(void) {
 }
 
 /* Clear separate shadow cascades through the real register path, then read each depth layer back. */
+/* a clear as the 3D engine hands it to the renderer (maxwell3d.c r3d_clear) */
+static void engine_clear(GpuChannel* ch, u32 v) {
+    DrawClear c;
+    mx_draw_state_sync(ch);
+    mx_draw_clear(ch->r3d, v, &c);
+    vk_render_clear(&ch->ds, &c, ch);
+}
 static int check_depth_array(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     CHECK(ch);
@@ -295,7 +304,7 @@ static int check_depth_array(void) {
     for (u32 layer = 0; layer < 3; layer++) {
         float depth = 0.25f * (layer + 1);
         memcpy(&r[0x364], &depth, 4);
-        vk_render_clear(ch, 1 | (layer << 10));
+        engine_clear(ch, 1 | (layer << 10));
     }
     vk_render_end();
     Surf* target = vk_rt_find(r[0x3F9]);
@@ -330,14 +339,14 @@ static int check_depth_array(void) {
     CHECK(!vk_rt_drawn_fresh(target)); /* reused guest memory must still win */
     r[0x3F9] = 0x200000;
     r[0x48C] = 3 | (1u << 16);
-    vk_render_clear(ch, 1);
+    engine_clear(ch, 1);
     vk_render_end();
     CHECK(vk_rt_find(r[0x3F9])->layers == 1);
     /* Sampling a packed-depth array must retain the rendered image, including all cascade layers. */
     r[0x3F9] = 0x300000;
     r[0x3FA] = 0x14;
     r[0x48C] = 3;
-    vk_render_clear(ch, 3);
+    engine_clear(ch, 3);
     vk_render_end();
     u32 tic[8] = {0x2B, r[0x3F9], 2u << 21, 2, 15 | (7u << 23), 15 | (2u << 16), 0, 0};
     CHECK(vk_tex_from_tic(tic) == vk_rt_find(r[0x3F9]));
@@ -362,15 +371,15 @@ static int check_srgb_write(void) {
     float color[4] = {0.25f, 0.25f, 0.25f, 1};
     memcpy(&r[0x360], color, sizeof color);
     r[0x56E] = 1;
-    vk_render_clear(ch, 15 << 2);
+    engine_clear(ch, 15 << 2);
     r[0x56E] = 0;
-    vk_render_clear(ch, (15 << 2) | (1 << 10));
+    engine_clear(ch, (15 << 2) | (1 << 10));
     color[0] = 0.5f;
     memcpy(&r[0x360], color, sizeof color);
     r[0x56E] = 1;
-    vk_render_clear(ch, (1 << 2) | (1 << 10));
+    engine_clear(ch, (1 << 2) | (1 << 10));
     r[0x56E] = 0;
-    vk_render_clear(ch, 1 << 2);
+    engine_clear(ch, 1 << 2);
     vk_render_end();
     Surf* target = vk_rt_find(r[0x201]);
     CHECK(target && target->f.vk == VK_FORMAT_R8G8B8A8_SRGB && target->layers == 2);
@@ -1087,7 +1096,7 @@ static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int b
     r[0x206] = 1;
     r[0x207] = 0;
     memcpy(&r[0x360], color, sizeof color);
-    vk_render_clear(ch, 15 << 2);
+    engine_clear(ch, 15 << 2);
     vk_render_end();
 }
 static void rt_clear(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue) {
