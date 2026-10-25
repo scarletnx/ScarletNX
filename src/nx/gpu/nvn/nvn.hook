@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The NVN functions the runtime implements under nvn_direct (gpu/nvn/nvn_direct.c), for tools/hookgen with
+# --prefix nvn: hooks.hook's grammar, each function by the name the game resolves it by (nvnBootstrapLoader and
+# nvnDeviceGetProcAddress), with its arguments as src/nx/gpu/nvn/nvn.h declares them (a pointer is an addr, an enum
+# an i32, an NVNboolean a bool) and its handler. A family per NVN object. A function the game resolves that isn't
+# here stops the game with its name when it is called.
