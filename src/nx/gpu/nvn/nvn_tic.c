@@ -234,7 +234,11 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
         int stencil = v && (v->set & NVN_VIEW_DSMODE) ? (v->set >> 6) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL
                                                       : (t->d.bits & NVN_TEX_STENCIL) != 0;
         u32 s = (d24 ^ stencil) ? SWZ_G : SWZ_R;
-        out[0] |= s << 19 | s << 22 | s << 25 | (stencil ? s : (u32)SWZ_ONE_FLOAT) << 28;
+        /* depth as (d, 0, 0, 1), as the game's driver describes a depth texture; stencil in every channel */
+        if (stencil)
+            out[0] |= s << 19 | s << 22 | s << 25 | s << 28;
+        else
+            out[0] |= s << 19 | (u32)SWZ_ZERO << 22 | (u32)SWZ_ZERO << 25 | (u32)SWZ_ONE_FLOAT << 28;
     }
     out[4] |= (u32)f->srgb << 22;
     if (target == NVN_TEXTURE_TARGET_BUFFER) {
@@ -244,7 +248,7 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
         out[4] |= (w - 1) & 0xffff;
     } else {
         int rect = target == NVN_TEXTURE_TARGET_RECTANGLE;
-        if (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) {
+        if (t->d.flags & NVN_TEX_LINEAR) {
             int bw, bh, bpb = nvn_fmt_bpb((int)t->d.format, &bw, &bh);
             u32 align = (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 128 : 32;
             u32 pitch = t->d.stride ? t->d.stride : ((u32)bpb * ((w + (u32)bw - 1) / (u32)bw) + align - 1) & ~(align - 1);
