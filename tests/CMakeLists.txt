@@ -1755,6 +1755,12 @@ add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-render-enable 23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
 
+add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c")
+snx_test_target(snx-test-draw-state-groups 23)
+add_test(NAME draw_state_groups COMMAND snx-test-draw-state-groups)
+
 add_executable(snx-test-clear-flags clear_flags.c)
 snx_test_target(snx-test-clear-flags 23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)

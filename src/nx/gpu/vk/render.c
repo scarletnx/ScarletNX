@@ -1883,8 +1883,9 @@ static VkPrimitiveTopology topology_vk(u32 topology) {
     }
 }
 /* ------------------------------------------------------------ a draw's shaders and pipeline, kept between draws */
-/* the register groups a draw's shaders and pipeline key are made from */
-#define DRAW_GROUPS (R3D_SHADER | R3D_VATTR | R3D_VFORMAT | R3D_RTFORMAT | R3D_BLEND | R3D_PIPEMISC | R3D_XFB)
+/* the draw state's groups (their generations) a draw's shaders and pipeline key are made from, but the vertex format,
+   whose change is looked at closer (vertex_format_holds) */
+static const u8 g_draw_groups[] = {DS_PROGRAMS, DS_BLEND, DS_RASTER_KEY, DS_XFB, DS_TARGET_FORMATS};
 /* the programs a draw's registers select */
 typedef struct {
     VkSh *vs, *tcs, *tes, *gs; /* the stages between NULL when off */
@@ -1911,8 +1912,8 @@ typedef struct {
     u32 n, present, is_int, stencil;
     u32 color[8], depth;
 } TargetFormats;
-/* What the last draw made from the registers, kept for the next draw while nothing it was made from changed: the
-   register groups (pend: those a method changed since, all of them when another channel draws), the draw's topology,
+/* What the last draw made from its state, kept for the next draw while nothing it was made from changed: the state's
+   owner and the generations of the groups it was made from (g_draw_groups and the vertex format), the draw's topology,
    the shaders' code (trusted within an epoch and shader generation, as vk_shader_get trusts it) and the constant
    buffer words their translation read (checked each draw, as vk_shader_get checks them on a hit). What else goes into it is found each
    draw and compared: the fragment variant's key (its textures' formats), the targets' formats, which vertex streams
@@ -1921,7 +1922,8 @@ typedef struct {
    before. SNX_DIRTY_CHECK makes it again for each draw that keeps it, and warns of any difference: a register missing
    from a group, or an input that isn't compared */
 static struct {
-    u32 ch_id, pend;
+    u32 ch_id;        /* the owner of the state it was made from */
+    u64 gen[DS_GENS]; /* that state's generations */
     u32 topology; /* the draw's argument, before tessellation makes it a patch list */
     u32 epoch;    /* g_vk_epoch */
 	u64 shader_generation; /* instruction invalidations also expire kept draws */
@@ -1932,71 +1934,52 @@ static struct {
     TargetFormats tf;
     PipeKey k; /* k and pipe hold together whenever pipe is set */
     VkPipeline pipe;
-    /* the vertex registers the state was made from, for a change of R3D_VATTR or R3D_VFORMAT that leaves them as they
-       were: attributes and streams the vertex program doesn't read. The attributes changed in a third of one game's
-       draws, and comparing what was read kept 66% of its draws where the groups alone kept 60% */
-    u32 vattr[32];      /* the attributes the vertex program reads, 0 for the others */
-    u32 vstreams;       /* the streams those attributes name */
-    u32 vstream[32][3]; /* each one's stride and enable word, divisor, and whether it is per instance */
+    /* the vertex format the state was made from, for a change that leaves what it read as it was: attributes and
+       streams the vertex program doesn't read. The attributes changed in a third of one game's draws, and comparing
+       what was read kept 66% of its draws where the register groups alone kept 60% */
+    DsVertexFormat vfmt;
+    u32 vstreams;       /* the streams the attributes the vertex program reads name */
     int check;          /* SNX_DIRTY_CHECK, -1 until read */
-} g_draw = {.pend = ~0u, .check = -1};
+} g_draw = {.check = -1};
 u64 g_vk_draw_kept, g_vk_draw_checked;
 
 static void draw_differs(const char* what) {
     WARN_LIMIT(32, "vulkan: SNX_DIRTY_CHECK: a draw that kept the last draw's state has another %s when it is made "
                    "again (%llu draws checked)\n", what, (unsigned long long)g_vk_draw_checked);
 }
-/* the integer vertex attributes (int, signed sint) of all 32, which key the vertex program */
-static void attr_ints(const u32* r, u32* ai, u32* as) {
-    *ai = *as = 0;
-    for (int i = 0; i < 32; i++) {
-        u32 ty = (r[0x458 + i] >> 27) & 7;
-        if (ty == 3 || ty == 4) {
-            *ai |= 1u << i;
-            if (ty == 3) *as |= 1u << i;
-        }
+/* whether the vertex format f is, in what the kept state read of it, the one it was made from: the attributes the
+   vertex program reads, the streams they name, and which of all 32 attributes are integers (they key the program) */
+static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
+    const DsVertexFormat* k = &g_draw.vfmt;
+    u32 in = s->vs->si.in_mask, st = g_draw.vstreams;
+    if (f->is_int != s->attr_int || f->is_sint != s->attr_sint || ((f->constant ^ k->constant) & in) ||
+        ((f->bgra ^ k->bgra) & in) || ((f->stream_on ^ k->stream_on) & st) || ((f->instanced ^ k->instanced) & st))
+        return 0;
+    for (u32 m = in; m; m &= m - 1) {
+        u32 i = (u32)__builtin_ctz(m);
+        if (f->stream[i] != k->stream[i] || f->size[i] != k->size[i] || f->type[i] != k->type[i] ||
+            f->offset[i] != k->offset[i])
+            return 0;
     }
-}
-static void stream_regs(const u32* r, u32 s, u32* w) {
-    w[0] = r[0x700 + s * 4];
-    w[1] = r[0x703 + s * 4];
-    w[2] = r[0x620 + s];
-}
-/* keeps the vertex registers of the state made, for vertex_regs_hold */
-static void vertex_regs_keep(const u32* r, u32 in) {
-    g_draw.vstreams = 0;
-    for (u32 i = 0; i < 32; i++) {
-        g_draw.vattr[i] = in >> i & 1 ? r[0x458 + i] : 0;
-        if (in >> i & 1) g_draw.vstreams |= 1u << (r[0x458 + i] & 31);
-    }
-    for (u32 m = g_draw.vstreams; m; m &= m - 1) stream_regs(r, (u32)snx_ctz32(m), g_draw.vstream[snx_ctz32(m)]);
-}
-/* whether what the kept state read of the vertex registers is as it was: all that the shaders, the key and the
-   vertex bindings take from them */
-static int vertex_regs_hold(const u32* r, const DrawShaders* s) {
-    u32 in = s->vs->si.in_mask, ai, as, w[3];
-    attr_ints(r, &ai, &as);
-    if (ai != s->attr_int || as != s->attr_sint) return 0;
-    for (u32 m = in; m; m &= m - 1)
-        if (r[0x458 + snx_ctz32(m)] != g_draw.vattr[snx_ctz32(m)]) return 0;
-    for (u32 m = g_draw.vstreams; m; m &= m - 1) {
-        stream_regs(r, (u32)snx_ctz32(m), w);
-        if (memcmp(w, g_draw.vstream[snx_ctz32(m)], sizeof w)) return 0;
+    for (u32 m = st; m; m &= m - 1) {
+        u32 i = (u32)__builtin_ctz(m);
+        if (f->stride[i] != k->stride[i] || f->divisor[i] != k->divisor[i]) return 0;
     }
     return 1;
 }
 /* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
 static int draw_kept(const GpuChannel* ch, const DrawState* ds, u32 topology, u32 epoch) {
     const DrawShaders* s = &g_draw.sh;
-    u32 pend = g_draw.pend & DRAW_GROUPS;
 	if (g_draw.shader_generation != g_vk.shader_generation)
 		return 0;
-    if (!s->vs || (pend & ~(R3D_VATTR | R3D_VFORMAT)) || g_draw.topology != topology || g_draw.epoch != epoch)
-        return 0;
-    if (pend) { /* the vertex registers changed: those the state read may not have */
-        if (!vertex_regs_hold(ch->r3d, s)) return 0;
-        g_draw.pend &= ~pend;
-    }
+        if (!s->vs || g_draw.ch_id != ch->id || g_draw.topology != topology || g_draw.epoch != epoch) return 0;
+        for (u32 i = 0; i < sizeof g_draw_groups; i++)
+            if (g_draw.gen[g_draw_groups[i]] != ds->gen[g_draw_groups[i]]) return 0;
+        if (g_draw.gen[DS_VFORMAT] !=
+            ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
+            if (!vertex_format_holds(&ds->vfmt, s)) return 0;
+            g_draw.gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
+        }
     if (s->xfb_on != (g_vk.has_xfb && ds->prog.xfb_on && xfb_counters())) return 0; /* the counters were made since */
     const VkSh* used[6] = {s->vs, s->tcs, s->tes, s->gs, s->fs0, g_draw.fs};
     for (int i = 0; i < 6; i++)
@@ -2408,13 +2391,6 @@ static void render_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch)
             LOG("vulkan: SNX_DIRTY_CHECK: draws that keep the last draw's shaders and pipeline make them again to "
                 "compare\n");
     }
-    /* the register groups changed since the kept state was made: all of them when another channel draws */
-    if (g_draw.ch_id != ch->id) {
-        g_draw.ch_id = ch->id;
-        g_draw.pend = ~0u;
-    }
-    g_draw.pend |= ch->r3d_dirty;
-    ch->r3d_dirty = 0;
     /* the Maxwell front end's state kept from its register groups, against its registers read again */
     if (g_draw.check && ds == &ch->ds) {
         u32 stale = mx_draw_state_stale(ch);
@@ -2886,8 +2862,11 @@ retry:
         if (pl != &g_draw.plan) g_draw.plan = *pl;
         if (k != &g_draw.k) g_draw.k = *k;
         g_draw.pipe = pipe;
-        vertex_regs_keep(r, vs->si.in_mask);
-        g_draw.pend &= ~DRAW_GROUPS;
+        g_draw.ch_id = ch->id;
+        memcpy(g_draw.gen, ds->gen, sizeof g_draw.gen);
+        g_draw.vfmt = ds->vfmt;
+        g_draw.vstreams = 0;
+        for (u32 m = vs->si.in_mask; m; m &= m - 1) g_draw.vstreams |= 1u << ds->vfmt.stream[__builtin_ctz(m)];
     }
     /* the color slots the draw writes */
     u32 writes = 0;

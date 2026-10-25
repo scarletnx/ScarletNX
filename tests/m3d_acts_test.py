@@ -55,7 +55,7 @@ def main():
     regs = (ROOT / 'src/nx/gpu/maxwell/maxwell_3d_regs.h').read_text()
     consts, macros = names(regs, src)
     val = lambda e: evaluate(e, consts, macros)
-    table_src = src[src.index('static const u8 g_m3d_group'):]
+    table_src = src[src.index('static const u16 g_m3d_group'):]
     table_src = table_src[:table_src.index('};')]
     table = set()
     for n, base in re.findall(r'\bM3D_RANGE([0-9]+)\(([^,]+), G_ACTS\)', table_src):
