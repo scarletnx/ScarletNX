@@ -1315,7 +1315,10 @@ static int check_uma(void) {
         vk_lock();
         CHECK(!vk_uma_imported(fresh, 4096));
         CHECK(vk_written_since(GP(UMA_A), 4096, 0) < 0);
-        CHECK((vk_written_since(GP(fresh), 4096, 0) >= 0) == g_settings.global_write_tracking); /* off: none */
+        /* a host that can't tell which pages were written has none, whatever the setting asks */
+        CHECK((vk_written_since(GP(fresh), 4096, 0) >= 0) == vk_ww_on());
+        if (g_settings.global_write_tracking && !vk_ww_on())
+            puts("vulkan_headless: write tracking was asked for, but this host has none: imports not told apart");
         vk_unlock();
         CHECK(mem_unmap(fresh, 0x10000) == 0);
         vk_lock();

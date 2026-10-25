@@ -1376,6 +1376,10 @@ void vk_ww_init(void) {
     pc_init(&g_wscan_cv);
     if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
 }
+int vk_ww_on(void) {
+    if (g_ww < 0) vk_ww_init();
+    return g_ww > 0;
+}
 int vk_written_since(const u8* host, u64 len, u32 since) {
     if (g_ww < 0) vk_ww_init();
     if (!g_ww || !host || !len) return -1;

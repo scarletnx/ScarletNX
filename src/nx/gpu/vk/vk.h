@@ -903,6 +903,7 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
 int vk_written_since(const u8* host, u64 len, u32 since);
 /* write tracking taken up or not, as the write_tracking setting asks and the host allows (at the renderer's start) */
 void vk_ww_init(void);
+int vk_ww_on(void); /* the setting asks for write tracking and this host can tell which pages were written */
 u32 vk_ww_now(void);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
 u32 vk_ww_epoch(void);
