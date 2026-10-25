@@ -207,6 +207,141 @@ static void viewports(void) {
     CHECK(v.scale[0][1] == 1.0f && v.translate[0][1] == 4.0f && v.swizzle[0] == 0x6420);
 }
 
+/* program slot j at 0x800 + 0x10 j: enable bit 0, offset from the base 0x582/0x583 at + 1; 0x544 clip enable,
+   0xC8 tessellation, 0x490-0x497 the geometry passthrough mask, 0x084 bit 0 early Z, 0x1D1 transform feedback */
+static void programs(void) {
+    u32 r[REGS] = {0};
+    DsPrograms p;
+    r[0x582] = 0x12;
+    r[0x583] = 0x34560000;
+    for (u32 j = 0; j < 6; j++) r[0x801 + 0x10 * j] = 0x100 * (j + 1);
+    r[0x800] = 1;
+    r[0x810] = 0; /* VertexB's bit: it runs anyway, as the renderer decides */
+    r[0x840] = 3;
+    r[0x850] = 2; /* bit 0 only */
+    r[0x544] = 0x1F3;
+    r[0xC8] = 0x321;
+    for (u32 j = 0; j < 8; j++) r[0x490 + j] = 0xA0 + j;
+    r[0x084] = 3;
+    r[0x1D1] = 5;
+    mx_draw_programs(r, &p);
+    for (u32 j = 0; j < 6; j++) CHECK(p.code[j] == 0x1234560000ull + 0x100 * (j + 1));
+    CHECK(p.on == ((1u << 0) | (1u << 4)));
+    CHECK(p.clip_enable == 0xF3 && p.tess_params == 0x321 && p.early_z == 1 && p.xfb_on == 1);
+    for (u32 j = 0; j < 8; j++) CHECK(p.gs_skip[j] == 0xA0 + j);
+    r[0x084] = 2;
+    r[0x1D1] = 0;
+    mx_draw_programs(r, &p);
+    CHECK(p.early_z == 0 && p.xfb_on == 0);
+}
+
+/* attribute 0x458 + i: stream bits 0-4, constant 6, offset 7-20, size 21-26, type 27-29, BGRA 31; stream 0x700 + 4 s:
+   stride bits 0-11, enable 12, divisor at + 3; 0x620 + s per instance */
+static void vertex_format(void) {
+    u32 r[REGS] = {0};
+    DsVertexFormat f;
+    r[0x458 + 0] = 3u | (0x123u << 7) | (0x0Fu << 21) | (7u << 27); /* float, stream 3 */
+    r[0x458 + 1] =
+        31u | (1u << 6) | (0x3FFFu << 7) | (0x3Fu << 21) | (3u << 27) | (1u << 31); /* sint, constant, BGRA */
+    r[0x458 + 2] = (4u << 27);                                                      /* uint */
+    r[0x458 + 31] = (2u << 27);                                                     /* unorm */
+    r[0x700 + 3 * 4] = 0x1000 | 0xFFF;
+    r[0x703 + 3 * 4] = 7;
+    r[0x620 + 3] = 2;
+    r[0x700 + 31 * 4] = 0x2010; /* enable is bit 12 only: off */
+    r[0x620 + 31] = 1;
+    mx_draw_vertex_format(r, &f);
+    CHECK(f.stream[0] == 3 && f.offset[0] == 0x123 && f.size[0] == 0x0F && f.type[0] == 7);
+    CHECK(f.stream[1] == 31 && f.offset[1] == 0x3FFF && f.size[1] == 0x3F && f.type[1] == 3);
+    CHECK(f.constant == 2u && f.bgra == 2u);
+    CHECK(f.is_int == (2u | 4u) && f.is_sint == 2u);
+    CHECK(f.type[31] == 2 && !(f.is_int >> 31));
+    CHECK(f.stride[3] == 0xFFF && f.divisor[3] == 7 && f.stride[31] == 0x10);
+    CHECK(f.stream_on == (1u << 3) && f.instanced == ((1u << 3) | (1u << 31)));
+}
+
+/* blending: 0x680 + i masks (0x680 for all with 0x3E4), 0x4D8 + i enables, 0x4B9 per-target equations at 0x780 + 8 i
+   (+1 op, +2 source, +3 destination, +4..+6 alpha's, 0 the color's), else 0x4D0-0x4D6 for all; 0x671/0x672 the logic
+   operation, 0x56E the sRGB write */
+static void blend(void) {
+    u32 r[REGS] = {0};
+    DsBlend b;
+    r[0x680 + 0] = 0x1010; /* R and B nibbles' neighbours: G and A */
+    r[0x680 + 1] = 0x0F0F;
+    r[0x4D8 + 0] = 1;
+    r[0x4D8 + 2] = 4;
+    r[0x4D0] = 0x800A;          /* GL_FUNC_SUBTRACT */
+    r[0x4D1] = 0x4000 | 0x302;  /* GL_SRC_ALPHA */
+    r[0x4D2] = 0x4000 | 0x303;  /* GL_ONE_MINUS_SRC_ALPHA */
+    r[0x4D3] = 0;               /* alpha takes the color's */
+    r[0x4D4] = 2;               /* D3D one */
+    r[0x4D6] = 0x4000 | 0x8902; /* the hardware's SRC1_ALPHA */
+    mx_draw_blend(r, &b);
+    CHECK(b.mask[0] == (DS_COMPONENT_G | DS_COMPONENT_A) && b.mask[1] == (DS_COMPONENT_R | DS_COMPONENT_B));
+    CHECK(b.en[0] == 1 && b.en[1] == 0 && b.en[2] == 1);
+    for (u32 i = 0; i < 8; i++) /* one set of equations for every target */
+        CHECK(b.cop[i] == DS_BLEND_SUBTRACT && b.sc[i] == DS_FACTOR_SRC_ALPHA &&
+              b.dc[i] == DS_FACTOR_ONE_MINUS_SRC_ALPHA && b.aop[i] == DS_BLEND_SUBTRACT && b.sa[i] == DS_FACTOR_ONE &&
+              b.da[i] == DS_FACTOR_SRC1_ALPHA);
+    CHECK(b.logic_op == 0 && b.srgb_write == 0);
+    r[0x3E4] = 1; /* target 0's mask for all */
+    r[0x4B9] = 1;
+    r[0x780 + 8 * 2 + 1] = 5;               /* max */
+    r[0x780 + 8 * 2 + 2] = 14;              /* D3D blend factor */
+    r[0x780 + 8 * 2 + 3] = 0x4000 | 0x8004; /* GL_ONE_MINUS_CONSTANT_ALPHA */
+    r[0x780 + 8 * 2 + 4] = 0x8007;          /* GL_MIN */
+    r[0x780 + 8 * 2 + 5] = 0;               /* the color's */
+    r[0x780 + 8 * 2 + 6] = 99;              /* unknown: one */
+    r[0x671] = 3;
+    r[0x672] = 0x1506; /* GL_XOR */
+    r[0x56E] = 1;
+    mx_draw_blend(r, &b);
+    CHECK(b.mask[1] == (DS_COMPONENT_G | DS_COMPONENT_A));
+    CHECK(b.cop[2] == DS_BLEND_MAX && b.sc[2] == DS_FACTOR_CONSTANT_COLOR &&
+          b.dc[2] == DS_FACTOR_ONE_MINUS_CONSTANT_ALPHA && b.aop[2] == DS_BLEND_MIN &&
+          b.sa[2] == DS_FACTOR_CONSTANT_COLOR && b.da[2] == DS_FACTOR_ONE);
+    CHECK(b.cop[0] == DS_BLEND_ADD && b.sc[0] == DS_FACTOR_ONE && b.dc[0] == DS_FACTOR_ONE); /* 0: no D3D factor, one */
+    CHECK(b.logic_op == 7 && b.srgb_write == 1);                                             /* VK_LOGIC_OP_XOR + 1 */
+}
+
+/* 0x36B polygon mode (0x1B00 points, 0x1B01 lines), 0x5A1 bit 0 the last vertex provokes, 0x64F bits 11-13 the
+   geometry clip (1, 3 and 5 clip depth, the rest clamp it), 0x373 patch vertices */
+static void raster_key(void) {
+    u32 r[REGS] = {0};
+    DsRasterKey k;
+    for (u32 mode = 0; mode <= 7; mode++) {
+        r[0x64F] = mode << 11 | 0x7FF;
+        mx_draw_raster_key(r, &k);
+        CHECK(k.depth_clamp == (mode == 0 || mode == 2 || mode == 4 || mode == 6 || mode == 7));
+    }
+    r[0x36B] = 0x1B00;
+    r[0x5A1] = 3;
+    r[0x373] = 16;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.polygon == DS_POLYGON_POINT && k.provoking_last == 1 && k.patch_vertices == 16);
+    r[0x36B] = 0x1B01;
+    r[0x5A1] = 2;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.polygon == DS_POLYGON_LINE && k.provoking_last == 0);
+    r[0x36B] = 0x1B02;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.polygon == DS_POLYGON_FILL);
+}
+
+/* buffer i's words at 0x1C1 + 4 i (at most 128), stride 0x1C2 + 4 i, layout bytes from 0xA00 + 0x20 i */
+static void xfb(void) {
+    u32 r[REGS] = {0};
+    ShXfb x;
+    r[0x1C1] = 200;
+    r[0x1C2] = 0x10040;
+    r[0x1C1 + 12] = 3;
+    r[0xA00] = 0x23222120;
+    r[0xA00 + 0x60 + 31] = 0x7F000000;
+    mx_draw_xfb(r, &x);
+    CHECK(x.count[0] == 128 && x.stride[0] == 0x40 && x.count[3] == 3 && x.count[1] == 0);
+    CHECK(x.layout[0][0] == 0x20 && x.layout[0][3] == 0x23 && x.layout[3][127] == 0x7F);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -214,6 +349,11 @@ int main(void) {
     bias();
     others();
     viewports();
+    programs();
+    vertex_format();
+    blend();
+    raster_key();
+    xfb();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
