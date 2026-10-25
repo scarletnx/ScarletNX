@@ -10,13 +10,19 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
 
-/* the file's state: the serials handed out */
+#define DEVICE_INFO_ITEMS 0x69
+/* the file's state: the serials handed out, and nvnDeviceGetInteger's answers once read from the game's driver
+   (driver: 1) */
 typedef struct {
     u64 serial;
+    i32 info[DEVICE_INFO_ITEMS];
+    int driver;
 } NvnObjectState;
 static NvnObjectState g_nvn_object;
 
@@ -41,12 +47,13 @@ static void st64(u64 a, u64 v) { memcpy(GP(a), &v, sizeof v); }
 #define SET64(a, field, v) st64(a, nvn_set_field(ld64(a), field, (u64)(v)))
 
 /* ============================================================ device */
-/* nvnDeviceGetInteger, as the driver of SDK 12.3.9 (NVN 55.8) answers: its own table, items 0 to 0x68. The items it
-   reads from its device state (0x17, 0x18, 0x2b, 0x2d, 0x37, 0x38, 0x3a, 0x3b, 0x3d-0x41) take the values nxnative
-   measured on the console. 0x62 reads device state nobody measured: 0, logged. The API version is the newest the
-   SDKs ship, 55.15, as nxnative answers every game from SDK 11 on: a game checks the major version and a minimum
-   minor one, and each game carries its own driver, so the runtime can't take one game's answer for all of them */
-static const i32 device_info[0x69] = {
+/* nvnDeviceGetInteger's answers, items 0 to 0x68. Every item the game's own driver answers with a constant comes from
+   that driver (nvn_device_driver, before the game asks): its API version (a game refuses another), the GPU code
+   versions its shaders are checked against, and the rest. This table holds the others, which the driver reads from
+   its device state: what SDK 12.3.9's driver (NVN 55.8) answers, with nxnative's console measurements for its
+   device's fields (0x17, 0x18, 0x2b, 0x2d, 0x37, 0x38, 0x3a, 0x3b, 0x3d-0x41). 0x62 reads device state nobody
+   measured: 0, logged */
+static const i32 device_info[DEVICE_INFO_ITEMS] = {
     [0x00] = 55,      [0x01] = 15,      [0x02] = 14,      [0x03] = 65536,   [0x04] = 256,     [0x05] = 8,
     [0x06] = 16,      [0x07] = 4,       [0x08] = 16,      [0x09] = 32,      [0x0a] = 16,      [0x0b] = 4,
     [0x0c] = 4,       [0x0d] = 4,       [0x0e] = 16,      [0x0f] = 32,      [0x10] = 32,      [0x11] = 256,
@@ -85,12 +92,47 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
     return 1;
 }
+/* the end of the read-only segment that follows func's code: the module's jump tables are there */
+typedef struct {
+    u64 func, start, end;
+} RoAfter;
+static int ro_after(void* ctx, const char* name, const u8* bytes, u64 gva, u64 size, int writable) {
+    RoAfter* r = (RoAfter*)ctx;
+    size_t n = strlen(name);
+    (void)bytes;
+    if (!writable && n > 3 && !strcmp(name + n - 3, ".ro") && gva > r->func && (!r->start || gva < r->start)) {
+        r->start = gva;
+        r->end = gva + size;
+    }
+    return 0;
+}
+void nvn_device_driver(u64 func) {
+    RoAfter r = {0};
+    u64 hi;
+    if (__atomic_load_n(&g_nvn_object.driver, __ATOMIC_ACQUIRE)) return; /* resolved again: read once */
+    r.func = func;
+    loader_segments(ro_after, &r);
+    hi = r.end ? r.end : g_code_hi;
+    u32 i, n = 0;
+    memcpy(g_nvn_object.info, device_info, sizeof device_info);
+    for (i = 0; i < DEVICE_INFO_ITEMS; i++) n += (u32)nvn_driver_info(g_mem, g_code_lo, hi, func, i, &g_nvn_object.info[i]);
+    if (!nvn_driver_info(g_mem, g_code_lo, hi, func, 0, &g_nvn_object.info[0]) ||
+        !nvn_driver_info(g_mem, g_code_lo, hi, func, 1, &g_nvn_object.info[1]))
+        WARN("nvn: the game's nvnDeviceGetInteger at %llx doesn't read as a known switch: the device answers API "
+             "%d.%d from its own table, which the game may refuse\n",
+             (unsigned long long)func, g_nvn_object.info[0], g_nvn_object.info[1]);
+    __atomic_store_n(&g_nvn_object.driver, 1, __ATOMIC_RELEASE);
+    LOG("nvn: the game's driver answers API %d.%d and GPU code %d.%d to %d.%d, %u items in all from its code\n",
+        g_nvn_object.info[0], g_nvn_object.info[1], g_nvn_object.info[0x2f], g_nvn_object.info[0x31],
+        g_nvn_object.info[0x2e], g_nvn_object.info[0x30], n);
+}
 void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     u32 w = (u32)what;
-    i32 v = w < sizeof device_info / sizeof *device_info ? device_info[w] : 0;
+    const i32* info = __atomic_load_n(&g_nvn_object.driver, __ATOMIC_ACQUIRE) ? g_nvn_object.info : device_info;
+    i32 v = w < DEVICE_INFO_ITEMS ? info[w] : 0;
     (void)c;
     (void)d;
-    if (w >= sizeof device_info / sizeof *device_info || w == 0x62)
+    if (w >= DEVICE_INFO_ITEMS || w == 0x62)
         LOG_LIMIT(16, "nvn: nvnDeviceGetInteger of item %#x, which the driver reads from state nobody measured: 0\n", w);
     gw32(out, (u32)v);
 }
