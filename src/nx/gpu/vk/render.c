@@ -46,42 +46,36 @@ void vk_render_end(void) {
     vk_gpuprof_pass_end(cb);
 }
 
-/* the targets the registers name, without opening anything */
-static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
-    u32* r = ch->r3d;
-    u32 ctl = r[0x487], count = ctl & 15;
-    if (count > 8) count = 8;
+/* the surfaces of the targets tg names, without opening anything */
+static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
     *n = 0;
     for (u32 i = 0; i < 8; i++) {
         rt[i] = NULL;
-        if (i >= count) continue;
-        u32* t = &r[0x200 + ((ctl >> (4 + i * 3)) & 7) * 0x10];
-        u64 a = ((u64)t[0] << 32) | t[1];
-        if (a && t[2] && t[3] && t[4]) {
+        if (i >= tg->count) continue;
+        const DsSurf* t = &tg->color[i];
+        u64 a = t->gva;
+        if (a && t->width && t->height && t->format) {
             /* a pitch-linear target (bit 12 of the memory layout) holds its row pitch in bytes where the width is */
-            u32 bpp = vk_rt_format(t[4]).bpp, linear = (t[5] >> 12) & 1, w = linear ? t[2] / bpp : t[2];
-            /* COLOR_TARGET_THIRD_DIMENSION (bits 0-27) names the number of renderable array slices, or a volume's
-               depth when the memory word's THIRD_DIMENSION_CONTROL (bit 16, NVIDIA's clb197.h) says so: its slices
-               are then GOB slices of a 3D surface, and the array pitch says nothing. One game's 64x64x64 light
-               volume taken as 64 layers its 1 MiB array pitch apart covered 63 MiB of other memory. Vertex shaders
-               may select one with their layer output (the color LUT passes render all slices in one draw). */
-            u32 layers = t[6] & 0x0fffffff;
+            u32 bpp = vk_rt_format(t->format).bpp, linear = (t->mem >> 12) & 1, w = linear ? t->width / bpp : t->width;
+            /* COLOR_TARGET_THIRD_DIMENSION names the number of renderable array slices, or a volume's depth when the
+               memory word's THIRD_DIMENSION_CONTROL (bit 16, NVIDIA's clb197.h) says so: its slices are then GOB
+               slices of a 3D surface, and the array pitch says nothing. One game's 64x64x64 light volume taken as 64
+               layers its 1 MiB array pitch apart covered 63 MiB of other memory. Vertex shaders may select one with
+               their layer output (the color LUT passes render all slices in one draw). */
+            u32 layers = t->layers;
             if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
             if (w)
-                rt[i] = vk_rt_array(a, w, t[3], t[4], t[5], linear ? t[2] : w * bpp, layers, (u64)t[7] * 4,
-                                    (t[5] >> 16) & 1);
+                rt[i] = vk_rt_array(a, w, t->height, t->format, t->mem, linear ? t->width : w * bpp, layers,
+                                    t->layer_stride, (t->mem >> 16) & 1);
             if (rt[i]) *n = i + 1;
         }
     }
     *zt = NULL;
-    if (r[0x54E]) {
-        u64 za = ((u64)r[0x3F8] << 32) | r[0x3F9];
-        if (za && r[0x48A] && r[0x48B]) {
-            /* ZETA_SIZE's dimension control can force one layer; otherwise its depth is the array size. */
-            u32 layers = r[0x48C] & (1u << 16) ? 1 : r[0x48C] & 0xffff;
-            if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
-            *zt = vk_zt_array(za, r[0x48A], r[0x48B], r[0x3FA], r[0x3FB], layers, (u64)r[0x3FC] * 4);
-        }
+    const DsSurf* z = &tg->depth;
+    if (z->gva && z->width && z->height) {
+        u32 layers = z->layers;
+        if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
+        *zt = vk_zt_array(z->gva, z->width, z->height, z->format, z->mem, layers, z->layer_stride);
     }
 }
 
@@ -407,10 +401,12 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     memcpy(cc, &r[0x360], 16);
     memcpy(&dz, &r[0x364], 4);
     dz = dz > 1 ? 1 : dz >= 0 ? dz : 0; /* Vulkan takes 0..1 only */
+    DsTargets tg;
+    mx_draw_targets(r, &tg);
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(ch, rt, &zt, &n);      /* may record uploads: before anything is opened */
+    read_targets(&tg, rt, &zt, &n);     /* may record uploads: before anything is opened */
     for (u32 i = 0; mask && i < n; i++) /* the slot the clear takes is resolved below: every bound one is listed */
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -429,7 +425,7 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
             LOG_LIMIT(1, "vulkan: a clear of color slot %u under RT_CONTROL %08x\n", slot, ctl);
     }
     int zt_undefined = zt && zt->layout == VK_IMAGE_LAYOUT_UNDEFINED;
-    if (!render_begin(rt, zt, n, 0, r[0x56E] & 1, 0)) return;
+    if (!render_begin(rt, zt, n, 0, tg.srgb_write, 0)) return;
     u32 layers = ~0u;
     for (u32 i = 0; i < g_rp.n; i++)
         if (g_rp.rt[i] && g_rp.rt[i]->layers < layers) layers = g_rp.rt[i]->layers;
@@ -864,15 +860,12 @@ typedef struct {
     u64 tm, ts, dm;
     u32 rm, rs, df, unfed;
 } FsKey;
-/* the integer color targets (rm, signed rs) the registers name, which key the fragment shader's outputs */
-static void rt_int_targets(const u32* r, u32* rm, u32* rs) {
-    u32 ctl = r[0x487], count = ctl & 15;
-    if (count > 8) count = 8;
+/* the integer color targets (rm, signed rs) tg names, which key the fragment shader's outputs */
+static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
     *rm = *rs = 0;
-    for (u32 i = 0; i < count; i++) {
-        const u32* t = &r[0x200 + ((ctl >> (4 + i * 3)) & 7) * 0x10];
-        if (!t[4]) continue;
-        VkFmt f = vk_rt_format(t[4]);
+    for (u32 i = 0; i < tg->count; i++) {
+        if (!tg->color[i].format) continue;
+        VkFmt f = vk_rt_format(tg->color[i].format);
         if (f.is_int) {
             *rm |= 1u << i;
             if (f.sint) *rs |= 1u << i;
@@ -2025,9 +2018,10 @@ static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
            a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int && a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on;
 }
-/* the shaders of the programs p, the vertex format vf and ch's targets for a draw of topology: 0 when the draw is
+/* the shaders of the programs p, the vertex format vf and the targets tg for a draw of topology: 0 when the draw is
    skipped */
-static int draw_shaders(GpuChannel* ch, const DsPrograms* p, const DsVertexFormat* vf, u32 topology, DrawShaders* o) {
+static int draw_shaders(GpuChannel* ch, const DsPrograms* p, const DsVertexFormat* vf, const DsTargets* tg,
+                        u32 topology, DrawShaders* o) {
     const u32* r = ch->r3d;
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
     u32 attr_int = vf->is_int, attr_sint = vf->is_sint, clip;
@@ -2080,7 +2074,7 @@ static int draw_shaders(GpuChannel* ch, const DsPrograms* p, const DsVertexForma
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
     o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ch, p, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
-    rt_int_targets(r, &o->rt_int, &o->rt_sint);
+    rt_int_targets(tg, &o->rt_int, &o->rt_sint);
     return 1;
 }
 static u64 stream_start(const u32* r, u32 s) { return ((u64)r[0x701 + s * 4] << 32) | r[0x702 + s * 4]; }
@@ -2113,11 +2107,11 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
     }
 }
 /* the pipeline key of the shaders (fs the fragment variant drawn), the vertex format vf, blending bl, the raster
-   state rk, ch's vertex streams and the targets drawn to, all but the feedback loop, and the vertex bindings it
+   state rk, ch's vertex streams and the targets drawn to (tg, and their surfaces rt and zt), all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
 static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs, const DsVertexFormat* vf,
-                    const DsBlend* bl, const DsRasterKey* rk, Surf* const* rt, const Surf* zt, u32 n, PipeKey* k,
-                    VertexPlan* pl) {
+                    const DsBlend* bl, const DsRasterKey* rk, const DsTargets* tg, Surf* const* rt, const Surf* zt,
+                    u32 n, PipeKey* k, VertexPlan* pl) {
     const u32* r = ch->r3d;
     const VkSh* vs = sh->vs;
     u32 topology = sh->topology;
@@ -2267,7 +2261,7 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     k->ncolor = n;
     for (u32 i = 0; i < n; i++) {
         if (!rt[i]) continue; /* format UNDEFINED, nothing written */
-        k->color[i] = bl->srgb_write ? rt[i]->f.vk : vk_srgb_as(rt[i]->f.vk, 0);
+        k->color[i] = tg->srgb_write ? rt[i]->f.vk : vk_srgb_as(rt[i]->f.vk, 0);
         k->blend[i].mask = bl->mask[i];
         if (bl->en[i] && !rt[i]->f.is_int) {
             k->blend[i].en = 1;
@@ -2443,6 +2437,8 @@ retry:
     u64 setup_frame = vk_submit_number();
     DsPrograms prog; /* read every draw: the fragment variant, keyed each draw, takes the early Z flag */
     mx_draw_programs(r, &prog);
+    DsTargets tg;
+    mx_draw_targets(r, &tg);
     /* the vertex format, blending and raster state: read only for a draw whose key is made */
     DsVertexFormat vfmt;
     DsBlend blend;
@@ -2461,7 +2457,7 @@ retry:
         mx_draw_blend(r, &blend);
         mx_draw_raster_key(r, &rkey);
         key_read = 1;
-        if (!draw_shaders(ch, &prog, &vfmt, draw_topo, &made)) {
+        if (!draw_shaders(ch, &prog, &vfmt, &tg, draw_topo, &made)) {
             if (kept) {
                 draw_differs("shaders");
                 g_draw.sh.vs = NULL;
@@ -2511,7 +2507,7 @@ retry:
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(ch, rt, &zt, &n);
+    read_targets(&tg, rt, &zt, &n);
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
             LOG_LIMIT(64,
@@ -2555,7 +2551,7 @@ retry:
         if (cleared_frame != g_vk_present || cleared != zt) {
             cleared_frame = g_vk_present;
             cleared = zt;
-            if (render_begin(rt, zt, 0, 0, r[0x56E] & 1, 0)) {
+            if (render_begin(rt, zt, 0, 0, tg.srgb_write, 0)) {
                 VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
                                                      (zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)};
                 a.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -2584,7 +2580,7 @@ retry:
             mx_draw_blend(r, &blend);
             mx_draw_raster_key(r, &rkey);
         }
-        if (!draw_key(ch, &sh, fs, &vfmt, &blend, &rkey, rt, zt, n, &made_k, &made_pl)) {
+        if (!draw_key(ch, &sh, fs, &vfmt, &blend, &rkey, &tg, rt, zt, n, &made_k, &made_pl)) {
             if (kept) {
                 draw_differs("pipeline key");
                 g_draw.sh.vs = NULL;
@@ -2938,7 +2934,7 @@ retry:
     }
     int zt_undefined = zt && zt->layout == VK_IMAGE_LAYOUT_UNDEFINED;
     if (!n && !zt ? !render_begin_empty()
-                  : !render_begin(rt, zt, n, zt_ro, r[0x56E] & 1, fb) || !feedback_order(fb, writes)) {
+                  : !render_begin(rt, zt, n, zt_ro, tg.srgb_write, fb) || !feedback_order(fb, writes)) {
         draw_images_discard(&images);
         return;
     }
@@ -3154,7 +3150,8 @@ retry:
     if (fb) g_vk_fb_draws++;
     for (u32 i = 0; i < n; i++)
         if (writes >> i & 1) target_written(g_rp.rt[i]);
-    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF))))) &&
+    if (zt && !zt_ro &&
+        (dyn.depth_write || (dyn.stencil_test && ((dyn.face[0].wmask & 0xFF) || (dyn.face[1].wmask & 0xFF)))) &&
         zt_written(zt, ch->render_pred, zt_undefined))
         target_written(zt);
     g_vk_drawn++;
@@ -3182,7 +3179,9 @@ void vk_render_draw_texture(GpuChannel* ch) {
     tex_resolve(ch, (r[0x428] & 0xFFF) << 20 | (r[0x429] & 0xFFFFF), &x);
     Surf *rt[8], *zt, *t = x.t;
     u32 n;
-    read_targets(ch, rt, &zt, &n);
+    DsTargets tg;
+    mx_draw_targets(r, &tg);
+    read_targets(&tg, rt, &zt, &n);
     if (!t || !n || !rt[0]) {
         LOG_LIMIT(1, "vulkan: a draw texture without its texture or a color target (not drawn)\n");
         return;
