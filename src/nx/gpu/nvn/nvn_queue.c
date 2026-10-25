@@ -49,6 +49,27 @@ void nvn_QueueBuilderSetCommandFlushThreshold(CPU* c, u64 b, u64 size) {
     (void)c;
     QB(b)->flush_threshold = size;
 }
+void nvn_QueueBuilderSetFlags(CPU* c, u64 b, i32 flags) {
+    (void)c;
+    QB(b)->flags = (u32)flags;
+}
+void nvn_QueueBuilderSetComputeMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    QB(b)->compute_size = size;
+}
+/* the memory the queue's command, compute and control blocks take, rounded to 4 KiB: nothing uses it, but the game
+   allocates it */
+u64 nvn_QueueBuilderGetQueueMemorySize(CPU* c, u64 b) {
+    const NvnQueueBuilder* o = QB(b);
+    (void)c;
+    return (o->cmd_size + o->compute_size + o->control_size + 4095) & ~4095ull;
+}
+void nvn_QueueBuilderSetQueueMemory(CPU* c, u64 b, u64 memory, u64 size) {
+    NvnQueueBuilder* o = QB(b);
+    (void)c;
+    o->memory = memory;
+    o->memory_size = size;
+}
 int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     NvnQueue o = {0};
     (void)c;
@@ -179,6 +200,22 @@ void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
 void nvn_WindowFinalize(CPU* c, u64 w) {
     (void)c;
     NVN_OBJ(NvnWindow, w)->magic = 0;
+}
+void nvn_WindowBuilderSetPresentInterval(CPU* c, u64 b, i32 interval) {
+    (void)c;
+    WB(b)->interval = interval;
+}
+/* the window takes its textures in turn, all of them */
+void nvn_WindowBuilderSetNumActiveTextures(CPU* c, u64 b, i32 n) {
+    (void)c;
+    (void)b;
+    LOG_LIMIT(1, "nvn: a window of %d active textures takes all it was given in turn\n", n);
+}
+void nvn_WindowSetPresentInterval(CPU* c, u64 w, i32 interval) {
+    NvnWindow* o = NVN_OBJ(NvnWindow, w);
+    (void)c;
+    if (o->interval != interval) LOG_LIMIT(8, "nvn: present interval %d\n", interval);
+    o->interval = interval;
 }
 int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     const NvnWindowBuilder* s = WB(b);

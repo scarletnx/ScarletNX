@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    Ported from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/nvn_tex.h, whose algorithm is deko3d's
    (zlib), Copyright (C) 2018-2020 fincs */
-/* An NVN texture's storage in the Tegra X1's block-linear layout: its size and alignment, as
+/* An NVN texture's storage in the Tegra X1's block-linear layout: its size, alignment and level offsets, as
    nvnTextureBuilderGetStorageSize and its kin report them (gpu/nvn/nvn_tex.c) */
 #ifndef SNX_NVN_TEX_H
 #define SNX_NVN_TEX_H
@@ -15,6 +15,8 @@ typedef struct {
 } NvnTexLayout;
 
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o);
+/* a level's offset from its layer's start */
+u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 /* bytes per block (0 for a format it doesn't know), and the block's width and height */
 int nvn_fmt_bpb(int format, int* bw, int* bh);
 
