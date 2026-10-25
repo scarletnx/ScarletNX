@@ -131,7 +131,10 @@ int vk_ftz_native(void) {
     VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi};
     /* at the renderer's start, before any other submission: nothing else uses the compute queue yet */
-    if (!VK_OK(vkQueueSubmit2(g_vk.compute, 1, &si, fence))) goto out;
+    vk_queue_lock(g_vk.compute);
+    VkResult sr = vkQueueSubmit2(g_vk.compute, 1, &si, fence);
+    vk_queue_unlock(g_vk.compute);
+    if (!VK_OK(sr)) goto out;
     submitted = 1;
     done = VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, 5000000000ull));
     if (!done || !VK_OK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE))) goto out;
