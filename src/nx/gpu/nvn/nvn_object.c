@@ -9,6 +9,7 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn/nvn_driver.h"
@@ -755,11 +756,7 @@ void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     (void)c;
-    (void)v;
-    (void)region;
-    (void)src;
-    LOG_LIMIT(4, "nvn: nvnTextureWriteTexels into texture %llx: left to phase 2's GPU swizzle\n",
-              (unsigned long long)t);
+    nvn_write_texels(t, v, region, src, 0, 0);
 }
 /* the channel mapping SetSwizzle gave the builder, R G B A when it gave none */
 static u32 tex_swizzle(const NvnTexDesc* d) { return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9; }
@@ -797,18 +794,10 @@ u64 nvn_TextureGetZCullStorageSize(CPU* c, u64 t) {
     (void)c;
     return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
 }
-/* WriteTexels writes the texels into the storage's block-linear layout: a swizzle, which is the GPU's work
-   (docs/BLOCKLINEAR.md). Nothing reads the storage without a renderer, so phase 1 leaves it to phase 2, which swizzles
-   the source rows on the GPU */
+/* the texels written into the storage's layout on the GPU (gpu/nvn/nvn_copy.c): a swizzle is the GPU's work */
 void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
     (void)c;
-    (void)v;
-    (void)region;
-    (void)src;
-    (void)row;
-    (void)image;
-    LOG_LIMIT(4, "nvn: nvnTextureWriteTexelsStrided into texture %llx: left to phase 2's GPU swizzle\n",
-              (unsigned long long)t);
+    nvn_write_texels(t, v, region, src, row, image);
 }
 
 /* ============================================================ texture views */

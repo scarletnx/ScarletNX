@@ -11,6 +11,7 @@
    stream increment gpu.c makes after a GPFIFO job's work). A window present shows the presented texture once the
    work before it is replayed */
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
@@ -24,9 +25,11 @@
 
 #define NVN_QUEUES 8
 
-/* a queue's replay state: its rendering state (gpu/nvn/nvn_draw.c), and the syncpoint its fences count */
+/* a queue's replay state: its rendering and copy state (gpu/nvn/nvn_draw.c, nvn_copy.c), and the syncpoint its
+   fences count */
 typedef struct {
     NvnDraw* d;
+    i64 stride[2]; /* the copies' row and image strides (gpu/nvn/nvn_copy.c) */
     u32 syncpt;
 } ReplayQueue;
 /* What the CPU sees of a submission: a fence's syncpoint increment, or bytes the stream writes (counter reports, event
@@ -47,7 +50,7 @@ typedef struct {
     u32 nfx, fx_cap;
     u64 unknown; /* the ops logged as not replayed (GPU thread) */
 } NvnReplayState;
-static NvnReplayState g_nvn_replay = {{{0, 0}}, 0, PMUTEX_INIT, NULL, 0, 0, 0};
+static NvnReplayState g_nvn_replay = {{{0, {0, 0}, 0}}, 0, PMUTEX_INIT, NULL, 0, 0, 0};
 
 enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT };
 typedef struct {
@@ -187,7 +190,8 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             break;
         }
         default:
-            if (!nvn_draw_record(q->d, op, payload, size) && !(g_nvn_replay.unknown >> op & 1)) {
+            if (!nvn_draw_record(q->d, op, payload, size) && !nvn_copy_record(op, payload, size, q->stride) &&
+                !(g_nvn_replay.unknown >> op & 1)) {
                 g_nvn_replay.unknown |= 1ull << op; /* each once */
                 LOG("nvn: records of op %u aren't replayed yet\n", op);
             }
@@ -241,6 +245,9 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64 ready) {
     p.syncpt = nvn_replay_syncpt(queue);
     p.ready = ready;
     for (i = 0; i < n; i++) j->handles[i] = gr64(handles + 8 * (u64)i);
+    /* what the CPU wrote before the submission is for its work to see: the renderer's caches check guest memory
+       again (gpu.c does the same before a GPFIFO job) */
+    if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     pm_lock(&g_nvn_replay.lock);
     for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
     gpu_call(run, j, NULL, 0);
