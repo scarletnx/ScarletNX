@@ -283,9 +283,11 @@ static int check_packed_depth(void) {
 }
 
 /* Clear separate shadow cascades through the real register path, then read each depth layer back. */
-/* a clear as the 3D engine hands it to the renderer (maxwell3d.c r3d_clear) */
+/* a clear as the 3D engine hands it to the renderer (maxwell3d.c r3d_clear). The tests set the registers directly,
+   not through the engine's methods, so every register group counts as changed */
 static void engine_clear(GpuChannel* ch, u32 v) {
     DrawClear c;
+    ch->r3d_dirty = ~0u;
     mx_draw_state_sync(ch);
     mx_draw_clear(ch->r3d, v, &c);
     vk_render_clear(&ch->ds, &c, ch);
