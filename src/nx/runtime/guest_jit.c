@@ -10,6 +10,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
+#include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
@@ -223,7 +224,7 @@ void jit_init(void) {
     config.aot_functions = g_mod->entry_fn;
     config.aot_count = g_mod->nentries;
     /* with nvn_trace, wrappers sit in dispatch slots, which only calls through the table see */
-    config.hook_direct_calls = nvn_trace_active();
+    config.hook_direct_calls = nvn_trace_active() || nvn_direct_active();
     config.direct_svc = 1; /* g_rtapi's svcs, as the AOT module calls them */
     config.threads = (unsigned)g_settings.jit_threads;
     config.region_instructions = (size_t)g_settings.jit_region_size;

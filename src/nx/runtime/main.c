@@ -10,6 +10,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/filesystem/fs.h"
@@ -952,6 +953,7 @@ int snx_main(int argc, char** argv) {
     if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
     kernel_load_symbols();
     hook_install(); /* before the trace, which wraps what a slot holds, and the JIT, which reads the slots */
+    nvn_direct_init(); /* before the trace, which stands aside when it runs */
     nvn_trace_init();
     /* after the trace, which says whether calls must go through the slots it wraps. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */

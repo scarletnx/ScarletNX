@@ -697,6 +697,14 @@ setting NVN trace
     help 1 = logs each NVN function the game resolves, the GPFIFO submissions during each queue call, and at exit
     help the calls of every function used (gpu/nvn_trace.c). Calls by direct branch are counted only in a game
     help recompiled with --hook-direct-calls. The game runs slower
+setting NVN direct
+    key nvn_direct
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the runtime runs the game's NVN calls itself and the game's NVN driver doesn't run (gpu/nvn/nvn_direct.c).
+    help Unfinished: the game stops at the first NVN function it calls that isn't implemented yet, naming it
 setting Shader corpus
     key shader_corpus
     text 1024
