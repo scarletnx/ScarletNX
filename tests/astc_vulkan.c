@@ -81,6 +81,11 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
 }
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
+/* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
+void vk_display_made(u64 id, VkResult r) {
+    (void)id;
+    (void)r;
+}
 /* cmd.c's waits note themselves for gpu.c's stall report, which isn't here */
 void gpu_wait_note(const char* what, u64 value) {
     (void)what;
