@@ -39,8 +39,9 @@ u64 nvmap_addr_by_id(u32 id) { return id == 7 ? 0x1000 : 0; }
 void cheats_frame(void) {}
 static u64 presented;
 static void test_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 t,
-                         u64 released) {
-    (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)t, (void)released;
+                         u64 released, u64 period) {
+    (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)t, (void)released,
+        (void)period;
     presented = a;
 }
 static Renderer test_renderer;
@@ -95,11 +96,48 @@ static void pacing(void) {
     g_opt_fps = SNX_FPS_GAME;
 }
 
+/* the display's clock: its refresh sets the period, and one that didn't take the frames in time is only asked,
+   without waiting, until it takes them again */
+static int display_r;
+static u64 display_deadline;
+static int test_display_wait(u64 deadline_ns, u64* refresh_ns) {
+    display_deadline = deadline_ns;
+    *refresh_ns = 16683350; /* 59.94 Hz */
+    return display_r;
+}
+static void display_pacing(void) {
+    u64 before;
+    test_renderer.display_wait = test_display_wait;
+    now_ns += 1000000000u;
+    display_r = 1;
+    present_pace(2, -1); /* late: no wait */
+    before = slept_ns;
+    present_pace(2, -1);
+    CHECK(slept_ns - before == 2 * 16683350u, "a 59.94 Hz display's two refreshes waited %llu ns",
+          (unsigned long long)(slept_ns - before));
+    display_r = 0;
+    present_pace(2, -1);
+    CHECK(display_deadline > now_ns, "the first wait for the display has no time");
+    present_pace(2, -1);
+    CHECK(display_deadline <= now_ns, "a stuck display was waited for");
+    display_r = 1;
+    present_pace(2, -1);
+    present_pace(2, -1);
+    CHECK(display_deadline > now_ns, "a display taking frames again isn't waited for");
+    display_r = -1;
+    before = slept_ns;
+    present_pace(2, -1);
+    present_pace(2, -1);
+    CHECK(slept_ns - before >= 2 * (1000000000u / 60) - 1000, "without a clock, the timer's period");
+    test_renderer.display_wait = NULL;
+}
+
 int main(void) {
     i32 crop[4] = {0, 0, 0, 0};
     clock_start();
     ticks();
     pacing();
+    display_pacing();
     test_renderer.present_buffer = test_present;
     vi_show_buffer(7, 0x40, 1, 1, 4, 1, 0, 1, crop, 0, 0);
     vi_show_buffer(8, 0, 1, 1, 4, 1, 0, 1, crop, 0, 0);

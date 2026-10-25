@@ -62,6 +62,9 @@ SNX_NORETURN void plat_exit_now(int code);
 
 /* ---- time */
 u64 plat_ns(void);        /* a monotonic clock in nanoseconds */
+/* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR), which plat_ns isn't:
+   0 where there is none (Windows) */
+u64 plat_monotonic_ns(void);
 i64 plat_unix_time(void); /* seconds since 1970 UTC */
 i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
