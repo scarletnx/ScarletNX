@@ -9,6 +9,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
@@ -115,6 +116,17 @@ int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
     return 1;
 }
 
+/* the guest address the GPU's n bytes at gva show, 0 (logged) when they aren't mapped in one run */
+static u64 gpu_guest(u64 gva, u64 n) {
+    u64 cpu = 0;
+    if (gmmu_run(gva, n, &cpu) < n) {
+        LOG_LIMIT(8, "nvn: the GPU writes %llu bytes at %llx, which aren't mapped\n", (unsigned long long)n,
+                  (unsigned long long)gva);
+        return 0;
+    }
+    return cpu;
+}
+
 /* What a recording does that the CPU sees, run as the GPU would reach it: a counter report writes its 16 bytes
    ({counter, timestamp}: the counter is the timestamp for the timestamp types, 0 for the others, which counted
    nothing drawn), a fence signals when the queue's work is done, an event takes its value. A JUMP continues in another
@@ -137,14 +149,18 @@ static void run_effects(u64 p, u64 ready, int depth) {
                                                              r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP
                                                          ? ticks
                                                          : 0;
-                gw64(r->address, counter);
-                gw64(r->address + 8, ticks);
+                u64 at = gpu_guest(r->address, 16);
+                if (at) {
+                    gw64(at, counter);
+                    gw64(at + 8, ticks);
+                }
                 break;
             }
             case OP_FENCE_SYNC: fence(NVN_OBJ(NvnSync, gr64(p + 8)), ready); break;
             case OP_SIGNAL_EVENT: {
                 const NvnPSignalEvent* e = NVN_OBJ(NvnPSignalEvent, p + 8);
-                gw32(e->value, e->mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(e->value) + e->v : e->v);
+                u64 at = gpu_guest(e->value, 4);
+                if (at) gw32(at, e->mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(at) + e->v : e->v);
                 break;
             }
             default: break; /* drawing state and work: phase 2's */

@@ -12,6 +12,7 @@
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
@@ -29,6 +30,7 @@ static NvnObjectState g_nvn_object;
 u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn_object.serial, 1, __ATOMIC_RELAXED); }
 
 u64 nvn_pool_memory(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->memory : 0; }
+u64 nvn_pool_gpu(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->gpu : 0; }
 
 /* the small state objects are copied by value and may sit anywhere in the game's structures: read and written whole */
 static u32 ld32(u64 a) {
@@ -202,25 +204,40 @@ void nvn_MemoryPoolBuilderSetFlags(CPU* c, u64 b, i32 flags) {
     (void)c;
     NVN_OBJ(NvnPoolBuilder, b)->flags = (u32)flags;
 }
-/* The pool's GPU address is its guest address in phase 1, where nothing is drawn. Phase 2 maps each pool through the
-   GMMU and the addresses it hands out become GPU addresses */
+/* A pool takes GPU addresses of its own, as NVIDIA's driver maps it through nvhost-as-gpu: from the same allocator,
+   its pages showing its storage. A virtual pool (flags 0x200, no storage) only reserves its range: its mapping
+   requests fill it. The storage's page offset carries over, so each byte keeps one GPU address */
+#define NVN_POOL_VIRTUAL 0x200u
+#define NVN_POOL_ALIGN   0x20000u /* the GPU address alignment: a big page, as compressible kinds want */
 int nvn_MemoryPoolInitialize(CPU* c, u64 p, u64 b) {
     const NvnPoolBuilder* s = NVN_OBJ(NvnPoolBuilder, b);
     NvnPool o = {0};
+    u64 lead, va;
     (void)c;
     o.magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o.flags = s->flags;
     o.memory = s->memory;
     o.size = s->size;
-    if (!o.memory) LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
+    if (!o.memory && !(o.flags & NVN_POOL_VIRTUAL))
+        LOG_LIMIT(8, "nvn: memory pool %llx has no storage (flags %#x)\n", (unsigned long long)p, o.flags);
+    lead = o.memory & 0xfff;
+    va = gmmu_space_alloc(lead + o.size, NVN_POOL_ALIGN);
+    if (!va)
+        fatal("nvn: no GPU address space left for a memory pool of %llx bytes", (unsigned long long)o.size);
+    if (o.memory) gmmu_space_map(va, o.memory - lead, lead + o.size);
+    o.gpu = va + lead;
     memcpy(GP(p), &o, sizeof o);
-    LOGV("nvn: memory pool %llx: %llx, %llx bytes, flags %#x\n", (unsigned long long)p, (unsigned long long)o.memory,
-         (unsigned long long)o.size, o.flags);
+    LOGV("nvn: memory pool %llx: %llx, %llx bytes at GPU %llx, flags %#x\n", (unsigned long long)p,
+         (unsigned long long)o.memory, (unsigned long long)o.size, (unsigned long long)o.gpu, o.flags);
     return 1;
 }
 void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
+    NvnPool* o = NVN_OBJ(NvnPool, p);
+    u64 lead = o->gpu & 0xfff;
     (void)c;
-    NVN_OBJ(NvnPool, p)->magic = 0;
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
+    o->magic = 0;
+    o->gpu = 0;
 }
 /* the CPU and the GPU share guest memory in phase 1: nothing to flush */
 void nvn_MemoryPoolFlushMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
@@ -241,44 +258,40 @@ void nvn_MemoryPoolInvalidateMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
     (void)offset;
     (void)size;
 }
-/* A virtual pool (flags 0x200) is a GPU address range with no storage of its own, which mapping requests fill with
-   the pages of physical pools. Ported from nxnative's first case: when every request maps the same physical pool at
-   the same offset from the virtual one, the virtual pool's memory is that physical memory, as one set of pages is
-   on the console. A sparse mapping (requests at offsets of their own) needs the GMMU, phase 2's: it fails here, and
-   says so */
+/* A virtual pool's pages show what its mapping requests put there, as the GPU's page table does: each request maps
+   size bytes of a physical pool's storage from its offset at the virtual pool's offset, or unmaps them (no physical
+   pool). Sparse requests at offsets of their own are just more pages */
 int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
-    NvnPool* o = NVN_OBJ(NvnPool, p);
-    u64 base = 0;
+    const NvnPool* o = NVN_OBJ(const NvnPool, p);
     i32 i;
     (void)c;
     for (i = 0; i < n; i++) {
-        const NvnMapRequest* r = NVN_OBJ(NvnMapRequest, requests + (u64)i * sizeof(NvnMapRequest));
-        u64 phys = nvn_pool_memory(r->physical), b;
-        if (!r->physical) continue; /* an unmapping: the pages stay where the base put them */
-        b = phys + (u64)r->physical_offset - (u64)r->virtual_offset;
-        if (!phys || (base && b != base)) {
-            LOG_LIMIT(8, "nvn: virtual pool %llx: request %d maps pool %llx at %llx to %llx (%llx bytes), not at the "
-                         "offset the others did: a sparse mapping, which needs phase 2's GMMU\n",
-                      (unsigned long long)p, i, (unsigned long long)r->physical,
-                      (unsigned long long)r->physical_offset, (unsigned long long)r->virtual_offset,
-                      (unsigned long long)r->size);
+        const NvnMapRequest* r = NVN_OBJ(const NvnMapRequest, requests + (u64)i * sizeof(NvnMapRequest));
+        u64 phys = nvn_pool_memory(r->physical), at = o->gpu + (u64)r->virtual_offset;
+        if (r->virtual_offset < 0 || (u64)r->virtual_offset + r->size > o->size) {
+            LOG_LIMIT(8, "nvn: virtual pool %llx: a request at %llx of %llx bytes past its %llx\n",
+                      (unsigned long long)p, (unsigned long long)r->virtual_offset, (unsigned long long)r->size,
+                      (unsigned long long)o->size);
             return 0;
         }
-        base = b;
+        if (!r->physical) {
+            gmmu_space_unmap(at, r->size);
+            continue;
+        }
+        if (!phys) {
+            LOG_LIMIT(8, "nvn: virtual pool %llx: request %d maps pool %llx, which has no storage\n",
+                      (unsigned long long)p, i, (unsigned long long)r->physical);
+            return 0;
+        }
+        gmmu_space_map(at, phys + (u64)r->physical_offset, r->size);
     }
-    if (base) {
-        if (o->memory && o->memory != base)
-            LOG_LIMIT(8, "nvn: virtual pool %llx moves from %llx to %llx\n", (unsigned long long)p,
-                      (unsigned long long)o->memory, (unsigned long long)base);
-        o->memory = base;
-    }
-    LOG_LIMIT(16, "nvn: virtual pool %llx (%llx bytes): %d requests, memory at %llx\n", (unsigned long long)p,
-              (unsigned long long)o->size, n, (unsigned long long)o->memory);
+    LOG_LIMIT(16, "nvn: virtual pool %llx (%llx bytes at GPU %llx): %d requests mapped\n", (unsigned long long)p,
+              (unsigned long long)o->size, (unsigned long long)o->gpu, n);
     return 1;
 }
 u64 nvn_MemoryPoolGetBufferAddress(CPU* c, u64 p) {
     (void)c;
-    return NVN_OBJ(NvnPool, p)->memory;
+    return NVN_OBJ(NvnPool, p)->gpu;
 }
 u64 nvn_MemoryPoolMap(CPU* c, u64 p) {
     (void)c;
@@ -313,11 +326,11 @@ void nvn_BufferBuilderSetStorage(CPU* c, u64 b, u64 pool, i64 offset, u64 size) 
 }
 int nvn_BufferInitialize(CPU* c, u64 buf, u64 b) {
     const NvnBufferBuilder* s = NVN_OBJ(NvnBufferBuilder, b);
-    u64 memory = nvn_pool_memory(s->pool);
+    u64 gpu = nvn_pool_gpu(s->pool);
     NvnBuffer o = {0};
     (void)c;
-    if (!memory) {
-        LOG_LIMIT(8, "nvn: buffer %llx: its pool %llx has no storage\n", (unsigned long long)buf,
+    if (!gpu) {
+        LOG_LIMIT(8, "nvn: buffer %llx: its pool %llx isn't initialized\n", (unsigned long long)buf,
                   (unsigned long long)s->pool);
         return 0;
     }
@@ -325,7 +338,7 @@ int nvn_BufferInitialize(CPU* c, u64 buf, u64 b) {
         LOG_LIMIT(8, "nvn: buffer %llx ends past its pool (offset %llx, size %llx)\n", (unsigned long long)buf,
                   (unsigned long long)s->offset, (unsigned long long)s->size);
     o.magic = NVN_MAGIC('B', 'U', 'F', 0);
-    o.address = memory + (u64)s->offset;
+    o.address = gpu + (u64)s->offset;
     o.size = s->size;
     o.pool = s->pool;
     o.offset = s->offset;
@@ -340,9 +353,12 @@ u64 nvn_BufferGetAddress(CPU* c, u64 buf) {
     (void)c;
     return NVN_OBJ(NvnBuffer, buf)->address;
 }
+/* the CPU's view: the pool's storage, 0 in a virtual pool */
 u64 nvn_BufferMap(CPU* c, u64 buf) {
+    const NvnBuffer* o = NVN_OBJ(const NvnBuffer, buf);
+    u64 memory = nvn_pool_memory(o->pool);
     (void)c;
-    return NVN_OBJ(NvnBuffer, buf)->address;
+    return memory ? memory + (u64)o->offset : 0;
 }
 u64 nvn_BufferGetSize(CPU* c, u64 buf) {
     (void)c;
@@ -382,8 +398,8 @@ static int desc_pool_init(u64 dp, u64 pool, i64 offset, i32 count, const char* k
     o.offset = (u32)offset;
     o.count = count;
     memcpy(GP(dp), &o, sizeof o);
-    LOG("nvn: %s pool %llx: %d descriptors at %llx\n", kind, (unsigned long long)dp, count,
-        (unsigned long long)(nvn_pool_memory(pool) + (u64)offset));
+    LOG("nvn: %s pool %llx: %d descriptors at GPU %llx\n", kind, (unsigned long long)dp, count,
+        (unsigned long long)(nvn_pool_gpu(pool) + (u64)offset));
     return 1;
 }
 /* the guest address of descriptor id, 0 when it is outside the pool or the pool has no storage */
@@ -609,10 +625,11 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     const NvnTexBuilder* s = TB(b);
     NvnTexture o = {0};
     NvnTexLayout l;
-    u64 memory = nvn_pool_memory(s->pool);
+    u64 memory = nvn_pool_memory(s->pool), gpu = nvn_pool_gpu(s->pool);
     (void)c;
     nvn_tex_layout(&s->d, &l);
     o.magic = NVN_MAGIC('T', 'E', 'X', 0);
+    o.gpu = gpu ? gpu + (u64)s->offset : 0;
     o.d = s->d;
     o.pool = s->pool;
     o.offset = s->offset;
@@ -744,17 +761,16 @@ i32 nvn_TextureGetStorageClass(CPU* c, u64 t) {
     (void)t;
     return 0;
 }
-/* the storage's GPU address: its guest address in phase 1 */
 u64 nvn_TextureGetTextureAddress(CPU* c, u64 t) {
     (void)c;
-    return CT(t)->memory;
+    return CT(t)->gpu;
 }
 /* the same texture (games replace a registered descriptor only when the two differ): description, storage and
    channel mapping */
 int nvn_TextureCompare(CPU* c, u64 a, u64 b) {
     const NvnTexture *x = CT(a), *y = CT(b);
     (void)c;
-    return !memcmp(&x->d, &y->d, sizeof x->d) && x->memory == y->memory;
+    return !memcmp(&x->d, &y->d, sizeof x->d) && x->gpu == y->gpu;
 }
 u64 nvn_TextureGetZCullStorageSize(CPU* c, u64 t) {
     const NvnTexDesc* d = &CT(t)->d;
@@ -1068,6 +1084,7 @@ int nvn_EventInitialize(CPU* c, u64 e, u64 b) {
     }
     o.magic = NVN_MAGIC('E', 'V', 'N', 'T');
     o.value = memory + (u64)s->offset;
+    o.gpu = nvn_pool_gpu(s->pool) + (u64)s->offset;
     memcpy(GP(e), &o, sizeof o);
     return 1;
 }
