@@ -38,8 +38,9 @@ void logf_(int lvl, const char* fmt, ...) {
 u64 nvmap_addr_by_id(u32 id) { return id == 7 ? 0x1000 : 0; }
 void cheats_frame(void) {}
 static u64 presented;
-static void test_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 t) {
-    (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)t;
+static void test_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 t,
+                         u64 released) {
+    (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)t, (void)released;
     presented = a;
 }
 static Renderer test_renderer;
@@ -63,33 +64,33 @@ static void pacing(void) {
     int i;
     now_ns = 1000;
     slept_ns = 0;
-    present_pace(2); /* the first frame doesn't wait */
+    present_pace(2, -1); /* the first frame doesn't wait */
     CHECK(!slept_ns, "the first frame waited %llu ns", (unsigned long long)slept_ns);
     for (i = 0; i < 3; i++) {
         before = slept_ns;
         now_ns += 1000000; /* the game took 1 ms for its frame */
-        present_pace(2);
+        present_pace(2, -1);
         CHECK(slept_ns - before == 2 * refresh - 1000000, "interval 2 waited %llu ns",
               (unsigned long long)(slept_ns - before));
     }
     before = slept_ns;
-    present_pace(0);
+    present_pace(0, -1);
     CHECK(slept_ns == before, "the game's pace with interval 0 waited");
     now_ns += 10 * refresh; /* a load: the schedule starts again rather than catching up */
-    present_pace(1);
+    present_pace(1, -1);
     CHECK(slept_ns == before, "a late frame waited");
-    present_pace(1);
+    present_pace(1, -1);
     CHECK(slept_ns - before == refresh, "the frame after a late one waited %llu ns",
           (unsigned long long)(slept_ns - before));
     g_opt_fps = 30;
     before = slept_ns;
-    present_pace(0);
-    present_pace(4); /* a number ignores the interval */
+    present_pace(0, -1);
+    present_pace(4, -1); /* a number ignores the interval */
     CHECK(slept_ns - before == 2 * (1000000000u / 30), "fps_limit=30 waited %llu ns over two frames",
           (unsigned long long)(slept_ns - before));
     g_opt_fps = 0;
     before = slept_ns;
-    present_pace(1);
+    present_pace(1, -1);
     CHECK(slept_ns == before, "fps_limit=0 waited");
     g_opt_fps = SNX_FPS_GAME;
 }
@@ -100,8 +101,8 @@ int main(void) {
     ticks();
     pacing();
     test_renderer.present_buffer = test_present;
-    vi_show_buffer(7, 0x40, 1, 1, 4, 1, 0, 1, crop, 0);
-    vi_show_buffer(8, 0, 1, 1, 4, 1, 0, 1, crop, 0);
+    vi_show_buffer(7, 0x40, 1, 1, 4, 1, 0, 1, crop, 0, 0);
+    vi_show_buffer(8, 0, 1, 1, 4, 1, 0, 1, crop, 0, 0);
     CHECK(presented == 0x1040 && g_frames == 1, "presented %llx, %d frames", (unsigned long long)presented,
           g_frames);
     if (failures) {
