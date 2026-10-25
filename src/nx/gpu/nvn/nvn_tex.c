@@ -221,3 +221,18 @@ u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level) {
     nvn_tex_layout(d, &l);
     return level_offset(d, level, dpl, w, h, z, l.tile_h, l.tile_d, t);
 }
+
+void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d) {
+    Fmt t = fmt_of(d->format);
+    unsigned dpl;
+    int layered;
+    u32 w, h, z, sx, sy, lh, ld;
+    NvnTexLayout l;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    samples_xy(d->samples, &sx, &sy);
+    nvn_tex_layout(d, &l);
+    lh = dpl >= 2 && t.bh ? blk(mip(h * sy, level), t.bh) : 1;
+    ld = dpl >= 3 ? mip(z, level) : 1;
+    *tile_h = adj_tile(l.tile_h, 8, lh);
+    *tile_d = adj_tile(l.tile_d, 1, ld);
+}

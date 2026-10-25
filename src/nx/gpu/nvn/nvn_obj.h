@@ -19,8 +19,8 @@
 
    Commands are recorded into the game's command memory in nxnative's record format: a header {op, size} (size
    with the header, a multiple of 8), then the payload. A recording's handle is the guest address of its first record;
-   OP_JUMP continues in another segment, OP_CALL runs another recording, OP_END ends one. Phase 2's Vulkan replay reads
-   these records; phase 1 walks them at submit only for what the CPU sees (counters, fences, events) */
+   OP_JUMP continues in another segment, OP_CALL runs another recording, OP_END ends one. The queue's replay
+   (gpu/nvn/nvn_replay.c) reads them on the GPU thread once they are submitted */
 #ifndef SNX_NVN_OBJ_H
 #define SNX_NVN_OBJ_H
 #include "common/cpu/aarch64/cpu.h"
@@ -49,10 +49,10 @@ typedef struct {
     u64 cmd_size, compute_size, control_size, flush_threshold, memory, memory_size;
 } NvnQueueBuilder; /* nxnative's device field doesn't fit an SDK 5 builder's 0x38: the runtime has one device */
 NVN_FITS(NvnQueueBuilder, 0x38);
-/* ready: when the work submitted so far is done (plat_ns): phase 1 draws nothing, so only the syncs the queue waits
-   for (a window texture's) hold it back */
+/* replay: the queue's replay state (gpu/nvn/nvn_replay.c), by index. ready: when its work so far is done on the
+   pacer's clock (plat_ns): only the syncs the queue waits for (a window texture's) hold it back there */
 typedef struct {
-    u32 magic, pad;
+    u32 magic, replay;
     u64 submits, ready;
 } NvnQueue;
 NVN_FITS(NvnQueue, 0x1748);
@@ -175,11 +175,12 @@ typedef struct {
     u64 serial;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
-/* ready: when it signals, on the runtime's monotonic clock (plat_ns): when the queue's work before its fence is
-   done, which in phase 1 is when the queue last waited for (a window's texture comes free at the display's pace) or
-   at once */
+/* A fenced sync signals when the syncpoint reaches value (0: no syncpoint, a window texture's) and the pacer's clock
+   (plat_ns) reaches ready: its queue's work before it replayed and done, and what the queue waited for before it (a
+   window's texture comes free at the display's pace) */
 typedef struct {
     u32 magic, fenced;
+    u32 syncpt, value;
     u64 ready;
 } NvnSync;
 NVN_FITS(NvnSync, 0x20);
@@ -203,12 +204,14 @@ typedef struct {
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window, which the runtime doesn't use */
 NVN_FITS(NvnWindowBuilder, 0x2c);
 /* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
-   its last present's slot plus one period (0: at once) */
+   its last present's slot plus one period (0: at once); syncpt[i], value[i]: the point the replay reaches once texture
+   i is off the display (0: none), the present after its own, or its own while none came yet (shown: those) */
 typedef struct {
     u32 magic;
     i32 count, interval, next, crop[4];
     u64 texture[4];
     u64 presents, pace, available[4];
+    u32 syncpt[4], value[4], shown;
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 
@@ -321,7 +324,7 @@ typedef struct {
 } NvnPSetRT;
 typedef struct {
     i32 index, mask;
-    f32 rgba[4];
+    u32 rgba[4]; /* floats, or an integer clear's integers */
 } NvnPClearColor;
 typedef struct {
     f32 depth;
