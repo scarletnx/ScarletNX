@@ -6,6 +6,7 @@ the game code that writes command memory itself, and whether those writes depend
 
     tools/nvn_census.py work/Game [work/Other ...]            # a report per game
     tools/nvn_census.py --markdown work/Game [work/Other ...] # one table row per game, then the details
+    tools/nvn_census.py --footprints work/Game [...]          # the bytes the driver writes of each object type
 
 The game folder is the extracted dump (exefs/ + romfs/). Its modules are read through `scarletnx --dump-modules`
 (tools/moduledump.py), with the segment bounds from the ExeFS NSO headers, and the relocations, dynamic symbols,
@@ -55,6 +56,17 @@ What it reports, per game:
    read and tested right in front of the cursor check, and "same fallback" when that test is a CBZ to where the
    check branches when the space is short. The last summary column says whether every inline check is tested.
 
+6. Object footprints (--footprints, A64 only). For each object type with SetDefaults or Initialize procedures in
+   the table ("TextureView" from TextureViewSetDefaults, "TextureBuilder" from TextureBuilderSetDefaults), the
+   highest byte those procedures store through the object: x0 on entry, followed through MOV, ADD and SUB of
+   immediates and store writeback, in address order up to the next function start, counting every STR, STUR, STP,
+   STNP, STRB, STRH and ST1-ST4 with its width, GPR or SIMD/FP. A direct call with the object in x0 is followed one
+   level deep, a tail branch (B out of the function, or BR through a relocated pointer) at any depth, and memset,
+   bzero, memcpy and memmove (named by the module's symbols or through its PLT stubs' relocations) with the object in
+   x0 and a constant size count that size. The table shows the most any of a type's procedures writes, with nvn.h's
+   reserved size, ">h" where it is larger and "<old" where an older SDK's driver writes more. The API version comes
+   from nvnDeviceGetInteger's switch (the answers for the API major and minor version).
+
 What it can't prove:
 - A function reached only through a pointer (a vtable, a callback) has no direct callers, so it is never a "helper",
   and an "internal" caller can be an ordinary NVN entry point. Indirect calls are not followed.
@@ -74,6 +86,10 @@ What it can't prove:
 - A pair loaded from [sp] is taken for a local, never a command buffer.
 - The pointers are the relocated values at load time. Entries the driver replaces at run time (its debug layer's
   hooks) are not seen, and the template of a trampoline table is assumed to be the one the driver copies.
+- A footprint is a lower bound of the object's size: an Initialize or SetDefaults procedure need not touch the
+  object's tail (padding, fields only later calls set). A store through a register offset is not counted, a call
+  is followed only one level, a branch through a pointer filled at run time not at all (DeviceInitialize), and the
+  address-order walk can keep a register as the object on a path where it is something else.
 - 32-bit programs get steps 1 and the imports of step 5 only: the code scans decode A64.
 """
 
@@ -707,6 +723,12 @@ class Functions:
         starts.update(t for _, t, bl in code.branches() if bl and lo <= t < hi)
         self.starts = sorted(starts)
         self.start_set = starts
+        self.end = hi
+
+    def next_start(self, off):
+        """The first function start after off, or the end of the text"""
+        i = bisect.bisect_right(self.starts, off)
+        return self.starts[i] if i < len(self.starts) else self.end
 
     def containing(self, off):
         i = bisect.bisect_right(self.starts, off) - 1
@@ -883,6 +905,292 @@ def game_inline_checks(m, code, funcs, cursor, flags):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# Footprints: the bytes of each NVN object that the driver's own whole-object writers store
+
+
+NVN_H = os.path.join(HERE, '..', 'src', 'nx', 'gpu', 'nvn', 'nvn.h')
+WRITERS = ('SetDefaults', 'Initialize')
+MEMORY_CALLS = {'memset': 2, 'bzero': 1, 'memcpy': 2, 'memmove': 2}  # the register holding the size
+
+
+def header_sizes(path=NVN_H):
+    """{'NVNtexture': 0xc0, ...}: the reserved arrays of nvn.h's opaque structs"""
+    try:
+        with open(path, encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        return {}
+    pattern = r'typedef struct \{\s*(?:unsigned )?char reserved\[(0x[0-9A-Fa-f]+|\d+)\];\s*\} (NVN\w+);'
+    return {name: int(size, 0) for size, name in re.findall(pattern, text)}
+
+
+def store(x):
+    """(base, offset, bytes, writeback) of a store, the offset None for a register offset and the writeback the
+    base's increment in the pre- and post-index forms; None for anything else"""
+    simd = (x >> 26) & 1
+    rn = (x >> 5) & 31
+    if (x & 0x3A000000) == 0x28000000:  # register pairs
+        opc = x >> 30
+        if x & (1 << 22) or opc == 3 or (opc == 1 and not simd):  # loads, STGP
+            return None
+        size = (4 << opc) if simd else (4 if opc == 0 else 8)
+        imm = sext((x >> 15) & 0x7F, 7) * size
+        index = (x >> 23) & 3  # 0 non-temporal and 2 signed offset, 1 post-index, 3 pre-index
+        return rn, 0 if index == 1 else imm, 2 * size, imm if index in (1, 3) else None
+    if (x & 0x3B000000) in (0x38000000, 0x39000000):  # single registers
+        size, opc = x >> 30, (x >> 22) & 3
+        if simd and opc == 0:
+            width = 1 << size
+        elif simd and opc == 2 and size == 0:
+            width = 16
+        elif not simd and opc == 0:
+            width = 1 << size
+        else:
+            return None
+        if x & (1 << 24):  # unsigned offset
+            return rn, ((x >> 10) & 0xFFF) * width, width, None
+        kind = (x >> 10) & 3
+        if x & (1 << 21):  # register offset, or an atomic
+            return (rn, None, width, None) if kind == 2 else None
+        imm = sext((x >> 12) & 0x1FF, 9)
+        return rn, 0 if kind == 1 else imm, width, imm if kind in (1, 3) else None
+    if (x & 0xBFFF0000) == 0x0C000000 or (x & 0xBFE00000) == 0x0C800000:  # ST1 to ST4, multiple structures
+        regs = {0x7: 1, 0xA: 2, 0x6: 3, 0x2: 4, 0x0: 4, 0x4: 3, 0x8: 2}.get((x >> 12) & 0xF)
+        if regs is None:
+            return None
+        width = regs * (16 if x & (1 << 30) else 8)
+        post = x & (1 << 23) and (x >> 16) & 31 == 31
+        return rn, 0, width, width if post else None
+    return None
+
+
+def bitmask_imm(n, immr, imms, bits):
+    """The value of a logical immediate"""
+    length = (n << 6 | (~imms & 0x3F)).bit_length() - 1
+    if length < 1:
+        return None
+    esize = 1 << length
+    levels = esize - 1
+    s, r = imms & levels, immr & levels
+    if s == levels:
+        return None
+    elem = (1 << (s + 1)) - 1
+    elem = ((elem >> r) | (elem << (esize - r))) & ((1 << esize) - 1)
+    out = 0
+    for i in range(bits // esize):
+        out |= elem << (i * esize)
+    return out
+
+
+def constant(x, const):
+    """(register, value) when x sets a register to a constant (MOVZ, MOVN, MOVK of a known value, ORR of a logical
+    immediate with the zero register), else None"""
+    rd, bits = x & 31, 64 if x >> 31 else 32
+    mask = (1 << bits) - 1
+    imm, shift = (x >> 5) & 0xFFFF, ((x >> 21) & 3) * 16
+    top = x & 0x7F800000
+    if top == 0x52800000:
+        return rd, imm << shift
+    if top == 0x12800000:
+        return rd, ~(imm << shift) & mask
+    if top == 0x72800000:
+        return (rd, (const[rd] & ~(0xFFFF << shift) | imm << shift) & mask) if rd in const else None
+    if (x & 0x7F8003E0) == 0x320003E0:
+        v = bitmask_imm((x >> 22) & 1, (x >> 16) & 0x3F, (x >> 10) & 0x3F, bits)
+        return (rd, v) if v is not None else None
+    return None
+
+
+def memory_calls(m, code, is64):
+    """{module offset: name} of memset, bzero, memcpy and memmove in module m: its own symbols, and its PLT stubs
+    (`adrp x16; ldr x17, [x16, #lo]; add x16, x16, #lo; br x17`) whose GOT slot a symbol relocation names"""
+    named = {v: n for v, n in m.syms.items() if n in MEMORY_CALLS}
+    tags = dynamic(m.image, is64)
+    if DT_SYMTAB not in tags or DT_STRTAB not in tags:
+        return named
+    slots = {}
+    for off, _, sym, _ in reloc_entries(m.image, is64, tags):
+        if sym:
+            name = dynsym(m.image, is64, tags, sym)[0]
+            if name in MEMORY_CALLS:
+                slots[off] = name
+    for site, at, rt in code.adrp_ldr():
+        if rt == 17 and at in slots and (code.w[code.index(site) - 1] & 0x9F00001F) == 0x90000010:
+            named[site - 4] = slots[at]
+    return named
+
+
+def footprint(code, funcs, named, relocs, start, entry, depth, seen, why):
+    """The end of the highest object byte the function at start stores, the object's registers on entry being
+    `entry` ({register: offset into the object}). Walks the function's instructions in address order, up to the next
+    function start, following the object through MOV, ADD and SUB of immediates and the writeback of its stores.
+    A direct call with the object in x0 is followed one level deep, a tail branch at any depth, and memset, bzero,
+    memcpy and memmove with the object in x0 and a constant size count that size. A BR or BLR through a pointer
+    loaded from a relocated word (ADRP, ADD or LDR, LDR) counts as a branch or call to the word's target. Appends to
+    `why` the calls followed, the memory calls, and what could not be followed."""
+    end = funcs.next_start(start)
+    obj, const, top = dict(entry), {}, 0
+    addr, loaded = {}, {}  # register: an address from ADRP and ADD, a relocated word's target loaded through one
+    for j in range(code.index(start), min(code.index(end), len(code.w))):
+        x = code.w[j]
+        st = store(x)
+        if st:
+            rn, off, width, wb = st
+            if rn in obj:
+                if off is None:
+                    why.append(('register offset store', code.pc(j), 0))
+                else:
+                    top = max(top, obj[rn] + off + width)
+                if wb is not None:
+                    obj[rn] += wb
+            continue
+        if (x & 0xFFE0FFE0) == 0xAA0003E0:  # mov xd, xs
+            rd, rs = x & 31, (x >> 16) & 31
+            if rs in obj:
+                obj[rd] = obj[rs]
+            else:
+                obj.pop(rd, None)
+            const.pop(rd, None)
+            continue
+        if (x & 0xBF000000) == 0x91000000:  # add or sub xd, xn, #imm
+            rd, rs = x & 31, (x >> 5) & 31
+            imm = ((x >> 10) & 0xFFF) << (12 if x & (1 << 22) else 0)
+            if rs in obj and rd != 31:
+                obj[rd] = obj[rs] + (-imm if x & (1 << 30) else imm)
+            else:
+                obj.pop(rd, None)
+            const.pop(rd, None)
+            continue
+        c = constant(x, const)
+        if c:
+            const[c[0]] = c[1]
+            obj.pop(c[0], None)
+            continue
+        if (x & 0x9F000000) == 0x90000000:  # adrp
+            addr[x & 31] = (code.pc(j) & ~0xFFF) + (sext(((x >> 29) & 3) | (((x >> 5) & 0x7FFFF) << 2), 21) << 12)
+            loaded.pop(x & 31, None)
+        elif (x & 0xFFC00000) == 0xF9400000 and (x >> 5) & 31 in addr:  # ldr xt, [xn, #imm]
+            at = addr[(x >> 5) & 31] + ((x >> 10) & 0xFFF) * 8
+            if at in relocs:
+                loaded[x & 31] = relocs[at]
+            else:
+                addr[x & 31] = at  # perhaps a GOT slot
+        is_bl = (x & 0xFC000000) == 0x94000000
+        indirect = (x & 0xFFDFFC1F) == 0xD61F0000  # br or blr
+        if indirect and 0 in obj and (x >> 5) & 31 not in loaded:
+            why.append(('indirect branch', code.pc(j), 0))
+        if is_bl or (x & 0xFC000000) == 0x14000000 or (indirect and (x >> 5) & 31 in loaded):
+            if indirect:
+                target, is_bl = loaded[(x >> 5) & 31], bool(x & (1 << 21))
+            else:
+                target = code.pc(j + sext(x & 0x3FFFFFF, 26))
+            tail = not is_bl and not start <= target < end
+            if (is_bl or tail) and 0 in obj:
+                name = named.get(target)
+                if name in MEMORY_CALLS:
+                    size = const.get(MEMORY_CALLS[name])
+                    if size is not None and size < 0x100000:
+                        top = max(top, obj[0] + size)
+                        why.append((name, code.pc(j), obj[0] + size))
+                    else:
+                        why.append((name + ' of unknown size', code.pc(j), 0))
+                elif target not in seen and (tail or depth == 0):
+                    sub = footprint(code, funcs, named, relocs, target, obj if tail else {0: obj[0]},
+                                    depth + (not tail), seen | {target}, why)
+                    why.append(('tail branch' if tail else 'call', target, sub))
+                    top = max(top, sub)
+        for regs in (obj, const, addr, loaded):
+            for r in [r for r in regs if redefines(x, r)]:
+                if not (regs is addr and (x & 0xFF800000) == 0x91000000):
+                    del regs[r]
+        if (x & 0xFF800000) == 0x91000000 and (x >> 5) & 31 in addr:  # add xd, xn, #lo after an ADRP
+            addr[x & 31] = addr[(x >> 5) & 31] + ((x >> 10) & 0xFFF)
+    return top
+
+
+def footprints(code, funcs, table, named, relocs):
+    """{type: (bytes, the writer that stores the most, [(writer, bytes, why)])} over the table's SetDefaults and
+    Initialize procedures, the type being the name without that suffix ("TextureView", "TextureBuilder")"""
+    out = {}
+    for name, func in zip(table['names'], table['funcs']):
+        kind = next((w for w in WRITERS if name.endswith(w) and len(name) > len(w)), None)
+        if kind is None:
+            continue
+        why = []
+        size = footprint(code, funcs, named, relocs, func, {0: 0}, 0, {func}, why)
+        t = out.setdefault(name[: -len(kind)], [0, None, []])
+        t[2].append((name, size, why))
+        if size > t[0] or t[1] is None:
+            t[0], t[1] = size, name
+    return {k: tuple(v) for k, v in out.items()}
+
+
+def api_version(m, code, table):
+    """(major, minor) that nvnDeviceGetInteger answers for NVN_DEVICE_INFO_API_MAJOR_VERSION and _MINOR_VERSION (0
+    and 1), from the switch in it or in the first function it calls: a jump table of byte or halfword entries scaled
+    by 4 from an ADR base, or of signed words relative to the table, each case setting w0 or keeping the value set
+    before the BR. None when that isn't found."""
+    func = dict(zip(table['names'], table['funcs'])).get('DeviceGetInteger')
+    if func is None:
+        return None
+    w = code.w
+    starts = [func]
+    for j in range(code.index(func), min(code.index(func) + 16, len(w))):
+        if (w[j] & 0xFC000000) == 0x94000000:
+            starts.append(code.pc(j + sext(w[j] & 0x3FFFFFF, 26)))
+            break
+    for start in starts:
+        addr, jump, base, default = {}, None, None, None
+        for j in range(code.index(start), min(code.index(start) + 64, len(w))):
+            x = w[j]
+            rn = (x >> 5) & 31
+            c = constant(x, {})
+            if (x & 0x9F000000) == 0x90000000:  # adrp
+                addr[x & 31] = (code.pc(j) & ~0xFFF) + (sext(((x >> 29) & 3) | (((x >> 5) & 0x7FFFF) << 2), 21) << 12)
+            elif (x & 0x9F000000) == 0x10000000:  # adr
+                addr[x & 31] = code.pc(j) + sext(((x >> 29) & 3) | (((x >> 5) & 0x7FFFF) << 2), 21)
+            elif (x & 0xFF800000) == 0x91000000 and rn in addr:
+                addr[x & 31] = addr[rn] + ((x >> 10) & 0xFFF)
+            elif (x & 0xFFE0EC00) == 0x38606800 and rn in addr:  # ldrb wt, [xn, xm]
+                jump = (addr[rn], 1)
+            elif (x & 0xFFE0EC00) == 0x78606800 and rn in addr:  # ldrh wt, [xn, xm{, lsl #1}]
+                jump = (addr[rn], 2)
+            elif (x & 0xFFE0FC00) == 0xB8A07800 and rn in addr:  # ldrsw xt, [xn, xm, lsl #2]: table-relative words
+                jump = (addr[rn], 4)
+            elif (x & 0xFFE0FC00) == 0x8B000800 and rn in addr:  # add xd, xbase, xm, lsl #2
+                base = addr[rn]
+            elif c and c[0] == 0:
+                default = c[1]
+            elif (x & 0xFFFFFC1F) == 0xD61F0000:  # br
+                break
+        else:
+            continue
+        if jump is None or (jump[1] < 4 and base is None):
+            continue
+        values = []
+        for key in (0, 1):
+            at, size = jump
+            entry = int.from_bytes(m.image[at + key * size : at + (key + 1) * size], 'little', signed=size == 4)
+            target = at + entry if size == 4 else base + entry * 4
+            value = None
+            for k in range(code.index(target), min(code.index(target) + 8, len(w))):
+                x = w[k]
+                c = constant(x, {})
+                if c and c[0] == 0:
+                    value = c[1]
+                    break
+                if (x & 0xFC000000) == 0x14000000 or (x & 0xFFFFFC1F) == 0xD65F0000:
+                    value = default
+                    break
+                if redefines(x, 0):
+                    break
+            values.append(value)
+        if None not in values:
+            return tuple(values)
+    return None
+
+
+# ---------------------------------------------------------------------------------------------------------------
 
 
 def function_name(syms, addr):
@@ -929,8 +1237,12 @@ def census(game):
     b = r['base'] = nvn.base
     r['table_funcs'] = (b + min(table['funcs']), b + max(table['funcs']))
     if not is64:
-        r['errors'].append('32-bit program: the slow path, caller and flag scans decode A64 only')
+        r['errors'].append('32-bit program: the slow path, caller, flag and footprint scans decode A64 only')
         return r
+    funcs = Functions(nvn, code, table['funcs'])
+    r['api'] = api_version(nvn, code, table)
+    named = memory_calls(nvn, code, is64)
+    r['footprints'] = footprints(code, funcs, table, named, relocs)
     try:
         slow, facts = find_slow_path(code, table)
     except Fail as e:
@@ -938,7 +1250,6 @@ def census(game):
         return r
     r['slow'] = b + slow
     r['facts'] = facts
-    funcs = Functions(nvn, code, table['funcs'])
     calls = classify_callers(code, funcs, table, slow, relocs)
     r['callers'] = [(b + s, b + o, k, why, function_name(syms, b + o)) for s, o, k, why in calls]
     # The other modules: the game's own copies of the reserve check, and the flags in front of them
@@ -1064,10 +1375,75 @@ def markdown_row(r):
         r['game'], entries, ver, slow, calls, internal, inline, flags, loads, gated, verdict, note)
 
 
+def sdk_order(r):
+    """A sort key of a result's SDK middleware NVN version, () when unknown"""
+    v = r.get('versions', {}).get('NVN')
+    return tuple(int(p) for p in v[0].split('.')) if v else ()
+
+
+def footprint_cell(r, kind, sizes, results):
+    """The table cell of one type in one game: the bytes, '>h' when above nvn.h's reserved size, '<old' when an
+    older SDK's driver writes more, '?' when nothing was found and a branch could not be followed"""
+    if 'footprints' not in r:
+        return 'n/a'
+    got = r['footprints'].get(kind)
+    if got is None:
+        return '-'
+    size, _, writers = got
+    if not size:
+        return '?' if any(k == 'indirect branch' for _, _, why in writers for k, _, _ in why) else '0'
+    cell = '%#x' % size
+    header = sizes.get('NVN' + kind[0].lower() + kind[1:])
+    if header is not None and size > header:
+        cell += ' >h'
+    older = [o['footprints'][kind][0] for o in results if 'footprints' in o and kind in o['footprints']
+             and () < sdk_order(o) < sdk_order(r)]
+    if older and size < max(older):
+        cell += ' <old'
+    return cell
+
+
+def report_footprints(results, out):
+    w = out.write
+    sizes = header_sizes()
+    kinds = sorted({k for r in results for k in r.get('footprints', {})})
+
+    def label(r):
+        v = r['versions'].get('NVN')
+        api = '%d.%d' % r['api'] if r.get('api') else '?'
+        return '%s (%s, API %s)' % (r['game'], v[0] if v else '?', api)
+
+    w('| Type | %s | nvn.h |\n' % ' | '.join(label(r) for r in results))
+    w('| --- |%s --- |\n' % (' --- |' * len(results)))
+    for kind in kinds:
+        header = sizes.get('NVN' + kind[0].lower() + kind[1:])
+        w('| %s | %s | %s |\n' % (kind, ' | '.join(footprint_cell(r, kind, sizes, results) for r in results),
+                                  '%#x' % header if header is not None else '-'))
+    w('\nBytes written by the driver\'s SetDefaults and Initialize procedures of the type (highest offset stored '
+      'through the object plus the access width): a lower bound of the object\'s size, since a writer need not touch '
+      'its tail. ">h": above nvn.h\'s reserved size. "<old": an older SDK\'s driver writes more. "?": nothing found '
+      'and a branch through a run-time pointer not followed. "-": no such procedure. "n/a": not scanned.\n\n')
+    for r in results:
+        if 'footprints' not in r:
+            continue
+        w('== %s\n' % label(r))
+        for kind in kinds:
+            if kind not in r['footprints']:
+                continue
+            parts = []
+            for name, size, why in r['footprints'][kind][2]:
+                notes = sorted({k for k, _, v in why if v and v == size} | {k for k, _, _ in why
+                                                                             if k.startswith('indirect')})
+                parts.append('%s %#x%s' % (name, size, ' (%s)' % ', '.join(notes) if notes else ''))
+            w('  %-22s %s\n' % (kind, '; '.join(parts)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('games', nargs='+')
     ap.add_argument('--markdown', action='store_true', help='a table row per game before the details')
+    ap.add_argument('--footprints', action='store_true',
+                    help='only the bytes each object type\'s SetDefaults and Initialize procedures write, per game')
     args = ap.parse_args()
     results = []
     for game in args.games:
@@ -1076,6 +1452,9 @@ def main():
         except (Fail, SystemExit) as e:
             name = os.path.basename(os.path.normpath(game))
             results.append({'game': name, 'is64': True, 'versions': {}, 'errors': [str(e)]})
+    if args.footprints:
+        report_footprints(results, sys.stdout)
+        return
     if args.markdown:
         print('| Game | Table entries | NVN version | Slow path | Slow path call sites | From other NVN-module code '
               '| Game-side inline checks | nvnPrivate* imports (modules) | Flag GOT loads '
