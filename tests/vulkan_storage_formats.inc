@@ -197,7 +197,11 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	CHECK(!vk_storage_image_view(&wrong, &info, 0, &bytes));
 	info.img[0].kind = numeric == 2 ? 2 : 0;
 	CHECK(!vk_storage_image_view(surface, &info, 0, &bytes));
-	vk_dispatch(channel, qmd, program);
+	{
+		DispatchState d;
+		mx_dispatch_state(qmd, channel->rcomp, program, &d);
+		vk_dispatch(&d);
+	}
 	vk_unlock();
 	if (g_vk_dispatches != dispatches + 1)
 		fprintf(stderr, "storage image format %u dimension %u bound %d base %u skipped\n",

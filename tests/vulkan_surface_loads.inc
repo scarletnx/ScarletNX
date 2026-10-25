@@ -96,7 +96,11 @@ static int check_layered_surface_loads(void)
 					CHECK(!storage_write_words(descriptors, tic, 8));
 					CHECK(!storage_write_words(descriptors + 32, output_tic, 8));
 					vk_lock();
-					vk_dispatch(channel, qmd, program);
+					{
+						DispatchState d;
+						mx_dispatch_state(qmd, channel->rcomp, program, &d);
+						vk_dispatch(&d);
+					}
 					vk_unlock();
 					if (g_vk_dispatches != dispatches + 1)
 						fprintf(stderr, "surface load skipped: case %u dim %u bound %u base %u\n", c, dim, bound, base);
