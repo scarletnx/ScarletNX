@@ -353,6 +353,7 @@ typedef struct {
     i32 stages;
     u32 off_a;
     NvnStage st[6];
+    u64 serial; /* the program's SetShaders (nvn_program_xfb) */
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {

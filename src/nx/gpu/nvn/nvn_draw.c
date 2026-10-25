@@ -71,6 +71,9 @@ struct NvnDraw {
     NVNbufferRange vbuf[16];
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
+    ShXfb xfb;            /* the bound program's capture layout (zero: none) */
+    NVNbufferRange tf[4]; /* the transform feedback buffers */
+    u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
     DrawState scratch; /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
 };
@@ -305,7 +308,9 @@ static void make_programs(NvnDraw* d) {
     memcpy(p.code, d->code, sizeof p.code);
     p.on = d->prog_on;
     p.clip_enable = 0xff; /* NVN has no clip distance enables: those the program writes clip */
+    p.xfb_on = d->tf_on;
     keep(&d->ds.prog, &p, sizeof p, &d->ds.gen[DS_PROGRAMS]);
+    keep(&d->ds.xfb, &d->xfb, sizeof d->xfb, &d->ds.gen[DS_XFB]);
 }
 static void make_vertex_format(NvnDraw* d) {
     DsVertexFormat f;
@@ -604,6 +609,17 @@ static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
         if (slot >= 0) put64(d, d->inl.bank2[s], DS_INLINE_BANK2, off, h);
     }
 }
+/* the capture buffers, each capturing when the layout gives it words or a stride (as the 3D engine's registers
+   do, maxwell/draw_state.c mx_draw_bindings) */
+static void tf_buffers(NvnDraw* d) {
+    u32 i;
+    for (i = 0; i < 4; i++) {
+        d->bind.xfb[i].addr = d->tf[i].address;
+        d->bind.xfb[i].size = d->tf[i].size > 0x7fffffffu ? 0x7fffffffu : (u32)d->tf[i].size;
+        d->bind.xfb[i].on = d->tf[i].address && (d->xfb.count[i] || d->xfb.stride[i]);
+    }
+    d->dirty |= D_BIND;
+}
 static void bind_program(NvnDraw* d, u64 payload) {
     NvnPBindProgram r;
     static const i32 nvn_stage[DS_PROGRAM_SLOTS] = {NVN_SHADER_STAGE_VERTEX,       NVN_SHADER_STAGE_VERTEX,
@@ -626,6 +642,12 @@ static void bind_program(NvnDraw* d, u64 payload) {
         /* bank 1: the program's constants, after its code */
         d->bind.cb_addr[s][1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
         d->bind.cb_size[s][1] = 256 * (u32)st->cb_size;
+    }
+    /* the capture layout of the program's last stage before rasterization, when it binds one */
+    if ((u32)r.stages & (NVN_SHADER_STAGE_VERTEX_BIT | NVN_SHADER_STAGE_TESS_CONTROL_BIT |
+                         NVN_SHADER_STAGE_TESS_EVALUATION_BIT | NVN_SHADER_STAGE_GEOMETRY_BIT)) {
+        if (!r.serial || !nvn_program_xfb(r.serial, &d->xfb)) memset(&d->xfb, 0, sizeof d->xfb);
+        tf_buffers(d);
     }
     d->dirty |= D_PROGRAMS | D_BIND;
 }
@@ -820,6 +842,25 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             i32 mode = NVN_OBJ(const NvnPRenderCond, payload)->mode;
             d->render_off = mode == 3;
             if (mode < 2) LOG_LIMIT(1, "nvn: conditional rendering on occlusion counters draws everything\n");
+            return 1;
+        }
+        case OP_TF_BIND: {
+            const NvnPTfBind* r = NVN_OBJ(const NvnPTfBind, payload);
+            if (r->index < 0 || r->index >= 4) return 1;
+            d->tf[r->index].address = r->address;
+            d->tf[r->index].size = r->size;
+            tf_buffers(d);
+            return 1;
+        }
+        case OP_TF_STATE: {
+            /* Begin: the capture starts over at each buffer's start (the driver's macro resets the counters); End and
+               Pause stop it, their counters kept where the renderer keeps them; Resume goes on from them. The driver
+               also writes the counters into the control memory at End and Pause (4 bytes each from + 4), which only
+               a DrawTransformFeedback reads, and the replay doesn't draw those yet */
+            i32 what = NVN_OBJ(const NvnPTfState, payload)->what;
+            d->tf_on = what == 0 || what == 3;
+            if (what == 0) d->own.xfb_reload = 15;
+            d->dirty |= D_PROGRAMS;
             return 1;
         }
         case OP_RESET_COUNTER: return 1; /* the counters the replay reports count nothing yet */
