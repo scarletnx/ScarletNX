@@ -15,4 +15,8 @@ u64 nvn_serial(void);
 /* the storage of a memory pool object (its guest address, the GPU address in phase 1), 0 for none */
 u64 nvn_pool_memory(u64 pool);
 
+/* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
+   before the game can ask */
+void nvn_device_driver(u64 func);
+
 #endif

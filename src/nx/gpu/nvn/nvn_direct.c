@@ -12,6 +12,7 @@
    game resolves that has no implementation yet gets a handler that stops the game with its name when it is called,
    which says what to implement next */
 #include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/hle/hook/hook.h"
@@ -90,6 +91,7 @@ static void take(u64 addr, const char* name) {
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3))
         fatal("nvn: the driver resolved %s to %llx, outside the game's code, where nvn_direct can't take its calls",
               name, (unsigned long long)addr);
+    if (!strcmp(name, "nvnDeviceGetInteger")) nvn_device_driver(addr); /* its answers, from its code */
     pm_lock(&g_nvn_direct.lock);
     slot = &g_disp[(addr - g_code_lo) / 4];
     if (*slot == getproc || *slot == bootstrap) { /* the resolvers, which a game also looks up by name: still wrapped */
