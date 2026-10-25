@@ -39,9 +39,12 @@
              row in focus stays as the list moves; a focus the pointer put on a row moves nothing), min_row_width
              and max_row_width (a row's width kept between them), tile_width and tile_height (both or neither,
              pixels: a tile list), attr, color
-     button  width, height, grow (17px along, the whole inside across, by default), attr, color, key, for-platform
+     button  width, height, grow (17px along, the whole inside across, by default), attr, color, key, for-platform,
+             icon
      label   as a button, without attr and key
-   An item of a list is a row: it takes attr, color, key and for-platform alone, and shows its "Text". attr = callback:
+   An item of a list is a row: it takes attr, color, key, for-platform and icon alone, and shows its "Text". icon is
+   the name of an icon of gui/icons.h's list, lower case (gamepad-2: GUI_ICON_GAMEPAD_2, which a name it lacks fails to
+   compile), drawn beside the text; a list without items' get_row_info gives each row's. attr = callback:
    the code gives the button or row its UI_ATTR_* bits as it is drawn (failure, blink, active); on a list with items,
    any row's by its index. for-platform (android or desktop) is a row's alone: a scene's items keep their places on
    every platform, though an item's width and height, and a list's row_height, row_gap, max_rows, tile_width and
@@ -132,6 +135,7 @@ enum {
     P_COLOR,
     P_KEY,
     P_PLATFORM,
+    P_ICON,
     P_COUNT
 };
 #define LENGTHS_END (P_MAX_HEIGHT + 1)
@@ -139,10 +143,11 @@ enum {
 #define NUMBERS_END (P_MAX_ROWS + 1)
 #define WORDS_END   (P_NARROW + 1)
 static const char* const property_words[P_COUNT] = {
-    "width",        "height",  "min_row_width", "max_row_width", "min_width", "max_width",  "min_height",
-    "max_height",   "gap",     "padding",       "row_height",    "row_gap",   "tile_width", "tile_height",
-    "narrow_below", "grow",    "max_rows",      "direction",     "align",     "justify",    "scroll",
-    "attr",         "measure", "shown",         "narrow",        "color",     "key",        "for-platform"};
+    "width",      "height",      "min_row_width", "max_row_width", "min_width",  "max_width",
+    "min_height", "max_height",  "gap",           "padding",       "row_height", "row_gap",
+    "tile_width", "tile_height", "narrow_below",  "grow",          "max_rows",   "direction",
+    "align",      "justify",     "scroll",        "attr",          "measure",    "shown",
+    "narrow",     "color",       "key",           "for-platform",  "icon"};
 /* the whole numbers' bounds */
 static const int number_lo[2] = {0, 1}, number_hi[2] = {100, 64};
 /* the words' values, a list each, their index the value */
@@ -168,14 +173,14 @@ static const unsigned properties_of[T_TYPES] = {
     FLEX | BIT(P_NARROW_BELOW),
     BOX | BIT(P_MAX_ROWS) | BIT(P_ROW_HEIGHT) | BIT(P_ROW_GAP) | BIT(P_TILE_WIDTH) | BIT(P_TILE_HEIGHT) |
         BIT(P_SCROLL) | BIT(P_MIN_ROW_WIDTH) | BIT(P_MAX_ROW_WIDTH) | BIT(P_ATTR) | BIT(P_COLOR),
-    BOX | BIT(P_ATTR) | BIT(P_COLOR) | BIT(P_KEY) | BIT(P_PLATFORM),
+    BOX | BIT(P_ATTR) | BIT(P_COLOR) | BIT(P_KEY) | BIT(P_PLATFORM) | BIT(P_ICON),
     BOX | BIT(P_COLOR) | BIT(P_PLATFORM),
     FLEX | AREA,
     AREA | BIT(P_MEASURE)};
 /* what a frame's item may set its own below the scene's narrow_below (narrow.direction = column) */
 #define NARROW_TAKES                                                                                                   \
     (BOX | BIT(P_MIN_WIDTH) | BIT(P_MAX_WIDTH) | BIT(P_MIN_HEIGHT) | BIT(P_MAX_HEIGHT) | BIT(P_DIRECTION))
-#define ROW_TAKES  (BIT(P_ATTR) | BIT(P_COLOR) | BIT(P_KEY) | BIT(P_PLATFORM))
+#define ROW_TAKES  (BIT(P_ATTR) | BIT(P_COLOR) | BIT(P_KEY) | BIT(P_PLATFORM) | BIT(P_ICON))
 /* the defaults, in pixels at 1x and rows: a row as main.c's lists have it (a cell of text and a pixel), 2px under
    each (Liz's) */
 #define ROW_HEIGHT 17
@@ -205,6 +210,7 @@ typedef struct {
     unsigned set;                       /* the properties given, a bit each */
     unsigned bound_cb;                  /* the bounds main.c gives as it lays out (min_width = callback), a bit each */
     int color, platform;                /* color: an index in colors + 1, 0 for none */
+    char* icon;                         /* its icon's name in gui/icons.h's list, NULL for none */
     int key, fkey, mods;                /* key: an ASCII character; fkey: 1 to 12 for F1 to F12 */
     int key_line;
     int plat_value[3][P_COUNT]; /* a platform's own values (android.height), by PLATFORM_* */
@@ -400,6 +406,18 @@ static char* upper(const char* s) {
     char* p;
     for (p = u; *p; p++) *p = (char)toupper((unsigned char)*p);
     return u;
+}
+/* an item's icon as gui/icons.h names it (GUI_ICON_GAMEPAD_2 for gamepad-2), or 0 for none */
+static char* icon_enum(const Item* it) {
+    char *u, *e, *p;
+    if (!it->icon) return dup("0");
+    u = upper(it->icon);
+    e = (char*)alloc(strlen(u) + sizeof "GUI_ICON_");
+    sprintf(e, "GUI_ICON_%s", u);
+    for (p = e; *p; p++)
+        if (*p == '-') *p = '_';
+    free(u);
+    return e;
 }
 
 /* ============================================================ ui.txt */
@@ -605,6 +623,15 @@ static void set_property(Item* it, char* word, char* value, int line) {
                  "color = %s: the theme's colours are page, ink, soft, focus, active, failure, dim, warning, added",
                  value);
         it->color = i + 1;
+    } else if (p == P_ICON) {
+        for (i = 0; value[i] && (islower((unsigned char)value[i]) ||
+                                 (i && (isdigit((unsigned char)value[i]) || (value[i] == '-' && value[i + 1]))));
+             i++)
+            continue;
+        if (value[i] || !i)
+            fail(line, "icon = %s: an icon's name is lower case letters, digits and -, as gui/icons.h's list has it",
+                 value);
+        it->icon = dup(value);
     } else if (p == P_PLATFORM) {
         if (!strcmp(value, "android"))
             it->platform = PLATFORM_ANDROID;
@@ -1169,7 +1196,7 @@ static void write_frame(int scene) {
     for (i = scene + 1; i < g_uigen.nitems && g_uigen.items[i].scene == scene; i++) {
         const Item* it = &g_uigen.items[i];
         out_from(it->line);
-        out("    {%s, UI_COLOR_NONE, %s, UI_NO_TEXT},\n", type_enums[it->type],
+        out("    {%s, UI_COLOR_NONE, %s, UI_NO_TEXT, 0},\n", type_enums[it->type],
             it->parent == scene ? "-1" : g_uigen.items[it->parent].upper);
     }
     out_here();
@@ -1248,18 +1275,21 @@ static void write_h(const char* path) {
     }
     outs("\n} UiColor;\n");
     outs("#define UI_NO_TEXT 0xffff /* a named label's update_cb gives it */\n");
-    outs("/* an item of a scene: its parent's index (-1: the scene's own), its text's offset in the scene's texts */\n"
-         "typedef struct {\n    uint8_t type, color; /* UiType, UiColor */\n    int16_t parent;\n    uint16_t text;\n"
-         "} UiItem;\n");
+    outs(
+        "/* an item of a scene: its parent's index (-1: the scene's own), its text's offset in the scene's texts, its icon\n"
+        "   (gui/icons.h's, 0 for none) */\n"
+        "typedef struct {\n    uint8_t type, color; /* UiType, UiColor */\n    int16_t parent;\n    uint16_t text, icon;\n"
+        "} UiItem;\n");
     outs("/* a list's state, the caller's: the row it shows first, the row in focus, and whether the pointer put the "
          "focus\n   there, which keeps first where it is while the focus shows */\ntypedef struct {\n"
          "    size_t first, focus;\n    bool pointed;\n"
          "    int tile_w, tile_h; /* a tile list's tile in pixels at 1x where the code sizes it; 0: ui.txt's */\n"
          "} UiList;\n");
     outs(
-        "/* a row a list without items asks get_row_info for: its text (NULL: \"(null)\", as printf's %s prints it), the\n"
-        "   image before it (NULL: none; main.c's, which draws it) and how it is drawn */\ntypedef struct {\n"
-        "    const char* label;\n    const void* image;\n    unsigned attr;\n} UiRowInfo;\n");
+        "/* a row a list without items asks get_row_info for: its text (NULL: \"(null)\", as printf's %s prints it), its\n"
+        "   icon beside it (gui/icons.h's, 0: none), the image before it (NULL: none; main.c's, which draws it) and how\n"
+        "   it is drawn */\ntypedef struct {\n"
+        "    const char* label;\n    unsigned icon;\n    const void* image;\n    unsigned attr;\n} UiRowInfo;\n");
     outs(
         "/* how a row is drawn, a bit each: in the failure colour, every other blink, an arrow up (rows above it are\n"
         "   hidden) or down (rows below) at its right, in the active colour (the one activated last), a label between\n"
@@ -1271,10 +1301,10 @@ static void write_h(const char* path) {
     outs("/* what the hit test says of a point, a bit each: on an item, pressed on it, released on it */\nenum { "
          "UI_HIT_HOVER = 1, UI_HIT_CLICK = 2, UI_HIT_RELEASE = 4 };\n");
     outs(
-        "/* the drawing, main.c's: a row (a list's, or a button) and a label, in the theme's look, their text as given; a\n"
-        "   text of ui.txt as shown (translated) */\n"
-        "void ui_draw_row(App* app, GuiRect r, const char* text, const void* image, unsigned color, unsigned attr,\n"
-        "                 bool focused);\n"
+        "/* the drawing, main.c's: a row (a list's, or a button) and a label, in the theme's look, their text as given, a\n"
+        "   row's icon (gui/icons.h's, 0: none) beside it; a text of ui.txt as shown (translated) */\n"
+        "void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const void* image, unsigned color,\n"
+        "                 unsigned attr, bool focused);\n"
         "void ui_draw_label(App* app, GuiRect r, const char* text, unsigned color);\n"
         "const char* ui_tr(const char* english);\n");
     outs("/* a tile of a tile list (tile_width, tile_height), main.c's: a row drawn as a tile, image over its text */\n"
@@ -1511,17 +1541,18 @@ static void write_scene(int scene) {
     out("const UiItem %s_items[%s_ITEMS] = {\n", s->symbol, s->upper);
     for (i = scene + 1; i < g_uigen.nitems && g_uigen.items[i].scene == scene; i++) {
         const Item* it = &g_uigen.items[i];
-        char* color = upper(it->color ? colors[it->color - 1] : "none");
+        char *color = upper(it->color ? colors[it->color - 1] : "none"), *icon = icon_enum(it);
         out_platform(it);
         out_from(it->line);
         out("    {%s, UI_COLOR_%s, %s, ", type_enums[it->type], color,
             it->parent == scene ? "-1" : g_uigen.items[it->parent].upper);
         if (it->text)
-            out("%d},\n", it->offset);
+            out("%d, %s},\n", it->offset, icon);
         else
-            outs("UI_NO_TEXT},\n");
+            out("UI_NO_TEXT, %s},\n", icon);
         out_platform_end(it);
         free(color);
+        free(icon);
     }
     out_here();
     outs("};\n");
@@ -1673,9 +1704,10 @@ static void write_scene(int scene) {
                 it->symbol, it->symbol);
             out("        ui_draw_row(app, ");
             out_row(it, i, "i");
-            out(", ui_tr(%s_texts + %s_items[item].text), NULL, %s_items[item].color ? %s_items[item].color : "
-                "%s_items[%s].color, attr,\n                    row == lists[%s].focus);\n    }\n",
-                s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, it->upper, it->upper);
+            out(", ui_tr(%s_texts + %s_items[item].text), %s_items[item].icon, NULL,\n                    "
+                "%s_items[item].color ? %s_items[item].color : %s_items[%s].color, attr, row == lists[%s].focus);\n"
+                "    }\n",
+                s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, it->upper, it->upper);
         } else if (is_tiles(it)) {
             /* from its first row, while the rows fit: a label on a line of its own, drawn as a row, the others tiles;
                the row after each asked first, its label maybe a buffer the row's call writes, and whether it fits */
@@ -1685,21 +1717,23 @@ static void write_scene(int scene) {
                 "            GuiRect box, after_box;\n            UiRowInfo next;\n            UiFlow after;\n"
                 "            bool more;\n",
                 it->upper);
-            out("            next.label = NULL;\n            next.image = NULL;\n            next.attr = 0;\n"
-                "            more = %s_get_row_info(app, row + 1, flow.tile_w, &next);\n",
+            out("            next.label = NULL;\n            next.icon = 0;\n            next.image = NULL;\n"
+                "            next.attr = 0;\n            more = %s_get_row_info(app, row + 1, flow.tile_w, &next);\n",
                 it->symbol);
-            out("            info.label = NULL;\n            info.image = NULL;\n            info.attr = 0;\n"
-                "            if (!%s_get_row_info(app, row, flow.tile_w, &info)) break;\n",
+            out("            info.label = NULL;\n            info.icon = 0;\n            info.image = NULL;\n"
+                "            info.attr = 0;\n            if (!%s_get_row_info(app, row, flow.tile_w, &info)) break;\n",
                 it->symbol);
             outs("            if (!ui_flow_next(&flow, (info.attr & UI_ATTR_LABEL) != 0, &box)) break;\n"
                  "            after = flow;\n"
                  "            more = more && !ui_flow_next(&after, (next.attr & UI_ATTR_LABEL) != 0, &after_box);\n"
                  "            if (i == 0 && row > 0) info.attr |= UI_ATTR_MORE_UP;\n"
                  "            if (more) info.attr |= UI_ATTR_MORE_DOWN;\n");
-            out("            (info.attr & UI_ATTR_LABEL ? ui_draw_row : ui_draw_tile)(app, box, info.label ? info.label : "
-                "\"(null)\", info.image,\n                %s_items[%s].color, info.attr, row == lists[%s].focus);\n"
-                "        }\n    }\n",
-                s->symbol, it->upper, it->upper);
+            out("            if (info.attr & UI_ATTR_LABEL)\n                ui_draw_row(app, box, info.label ? info.label : "
+                "\"(null)\", info.icon, info.image, %s_items[%s].color,\n                            info.attr, row == "
+                "lists[%s].focus);\n            else\n                ui_draw_tile(app, box, info.label ? info.label : "
+                "\"(null)\", info.image, %s_items[%s].color,\n                             info.attr, row == "
+                "lists[%s].focus);\n        }\n    }\n",
+                s->symbol, it->upper, it->upper, s->symbol, it->upper, it->upper);
         } else if (it->type == T_LIST) {
             out("    n = %s_shown(r, scale, %s);\n", s->symbol, it->upper);
             out("    for (i = 0; i < n; i++) {\n        size_t row = lists[%s].first + i;\n        GuiRect box = ",
@@ -1708,19 +1742,18 @@ static void write_scene(int scene) {
             outs(";\n        UiRowInfo next;\n");
             /* the row after it asked first: the row's own label may be a buffer of the code's the next call writes */
             out("        bool more = i + 1 == n && %s_get_row_info(app, row + 1, box.w, &next);\n", it->symbol);
-            out("        info.label = NULL;\n        info.image = NULL;\n        info.attr = 0;\n"
+            out("        info.label = NULL;\n        info.icon = 0;\n        info.image = NULL;\n        info.attr = 0;\n"
                 "        if (!%s_get_row_info(app, row, box.w, &info)) "
                 "break;\n",
                 it->symbol);
             outs("        if (i == 0 && row > 0) info.attr |= UI_ATTR_MORE_UP;\n");
             outs("        if (more) info.attr |= UI_ATTR_MORE_DOWN;\n");
-            out("        ui_draw_row(app, box, info.label ? info.label : \"(null)\", info.image, %s_items[%s].color, "
-                "info.attr,\n"
-                "                    row == lists[%s].focus);\n    }\n",
+            out("        ui_draw_row(app, box, info.label ? info.label : \"(null)\", info.icon, info.image, "
+                "%s_items[%s].color,\n                    info.attr, row == lists[%s].focus);\n    }\n",
                 s->symbol, it->upper, it->upper);
         } else if (it->type == T_BUTTON) {
-            out("    ui_draw_row(app, r[%s], ui_tr(%s_texts + %d), NULL, %s_items[%s].color, ", it->upper, s->symbol,
-                it->offset, s->symbol, it->upper);
+            out("    ui_draw_row(app, r[%s], ui_tr(%s_texts + %d), %s_items[%s].icon, NULL, %s_items[%s].color, ",
+                it->upper, s->symbol, it->offset, s->symbol, it->upper, s->symbol, it->upper);
             if (has_attr(it))
                 out("%s_attr_cb(app), false);\n", it->symbol);
             else
@@ -1747,8 +1780,8 @@ static void write_scene(int scene) {
             out("    {\n        UiFlow flow;\n        GuiRect box;\n        %s_flow(r, scale, %s, &flow);\n"
                 "        ui_flow_sized(&flow, &lists[%s], scale);\n"
                 "        for (i = 0;; i++) {\n            *row = lists[%s].first + i;\n"
-                "            info.label = NULL;\n            info.image = NULL;\n            info.attr = 0;\n"
-                "            if (!%s_get_row_info(app, *row, flow.tile_w, &info)) break;\n"
+                "            info.label = NULL;\n            info.icon = 0;\n            info.image = NULL;\n"
+                "            info.attr = 0;\n            if (!%s_get_row_info(app, *row, flow.tile_w, &info)) break;\n"
                 "            if (!ui_flow_next(&flow, (info.attr & UI_ATTR_LABEL) != 0, &box)) break;\n"
                 "            if (ui_in(box, x, y)) {\n                *item = %s;\n"
                 "                return UI_HIT_HOVER | event;\n            }\n        }\n    }\n",
@@ -1835,7 +1868,7 @@ static void write_c(const char* path) {
     int i;
     g_uigen.out_path = path;
     head();
-    outs("#include \"gui/ui.h\"\n#include <SDL3/SDL_keycode.h>\n");
+    outs("#include \"gui/ui.h\"\n#include \"gui/icons.h\"\n#include <SDL3/SDL_keycode.h>\n");
     outs("/* a: a fraction of length, c: pixels at 1x, both in 16.16 fixed point; s the UI scale */\n"
          "#define UI_AT(a, length, c, s) ((int)(((int64_t)(a) * (length) + (int64_t)(c) * (s)) / 65536))\n");
     outs("/* whether x, y is in r */\nstatic bool ui_in(GuiRect r, int x, int y) { return x >= r.x && x < r.x + r.w && "
@@ -1844,15 +1877,14 @@ static void write_c(const char* path) {
          "static GuiRect ui_row(GuiRect r, size_t i, int height, int gap, int min, int max, int s) {\n"
          "    int w = r.w;\n    if (max && w > max) w = max;\n    if (min && w < min) w = min;\n"
          "    return gui_rect(r.x, r.y + (int)i * (height + gap) * s, w, height * s);\n}\n");
-    outs(
-        "/* first set so the focus is among the shown rows of count: in their middle (center) while rows are left to "
-        "move\n   past, else, and for a focus the pointer put there, as little moved as it takes */\nstatic void "
-        "ui_follow(UiList* l, size_t count, size_t shown, int center) {\n"
-        "    size_t last = count > shown ? count - shown : 0;\n    if (!shown) return;\n"
-        "    if (center && !l->pointed)\n"
-        "        l->first = l->focus > (shown - 1) / 2 ? l->focus - (shown - 1) / 2 : 0;\n"
-        "    else if (l->focus < l->first)\n        l->first = l->focus;\n    else if (l->focus >= l->first + shown)\n"
-        "        l->first = l->focus - shown + 1;\n    if (l->first > last) l->first = last;\n}\n");
+    outs("/* first set so the focus is among the shown rows of count: in their middle (center) while rows are left to "
+         "move\n   past, else, and for a focus the pointer put there, as little moved as it takes */\nstatic void "
+         "ui_follow(UiList* l, size_t count, size_t shown, int center) {\n"
+         "    size_t last = count > shown ? count - shown : 0;\n    if (!shown) return;\n"
+         "    if (center && !l->pointed)\n"
+         "        l->first = l->focus > (shown - 1) / 2 ? l->focus - (shown - 1) / 2 : 0;\n"
+         "    else if (l->focus < l->first)\n        l->first = l->focus;\n    else if (l->focus >= l->first + shown)\n"
+         "        l->first = l->focus - shown + 1;\n    if (l->first > last) l->first = last;\n}\n");
     outs("/* the rows that fit in a list height pixels high, max_rows at most */\n"
          "static size_t ui_shown(int height, int row, int gap, int max_rows, int s) {\n"
          "    int fit = height > 0 ? (height + gap * s) / ((row + gap) * s) : 0;\n"

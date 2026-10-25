@@ -2626,9 +2626,10 @@ static GuiRect ui_row_box(const App* app, GuiRect r) {
 }
 /* a row of a scene of ui.txt, a box of its own on the dim colour (fill) or framed in it (line), the focused one inverted
    on the focus colour or framed and written in it: the theme's cursor and the arrows of hidden rows inside it, the box
-   between them; the failure colour fills it (every other blink_ms with UI_ATTR_BLINK, steady with 0), the active
-   colour writes the one activated last, and an open one (UI_ATTR_OPEN) has the focus's look without the cursor; a
-   title (UI_ATTR_TITLE) is on a band of ink in a theme of filled boxes, else over a rule */
+   between them, its icon (icons.h) after the marker and a column before the text; the failure colour fills it (every
+   other blink_ms with UI_ATTR_BLINK, steady with 0), the active colour writes the one activated last, and an open one
+   (UI_ATTR_OPEN) has the focus's look without the cursor; a title (UI_ATTR_TITLE) is on a band of ink in a theme of
+   filled boxes, else over a rule */
 /* a row's text's top: as item_text_y has it in a row a cell and a pixel high, in the middle of a taller one */
 static int ui_text_y(const App* app, GuiRect b) { return b.y + (b.h - cell_h(app) + app->scale) / 2; }
 static int user_side(const App* app, int h);
@@ -2639,9 +2640,10 @@ static void row_arrows(App* app, GuiRect b, int y, unsigned attr, SDL_Color colo
         text_in(app, b, b.x + b.w - ((attr & UI_ATTR_MORE_DOWN) ? 2 : 1) * cell_w(app), y, "\x1e", color);
     if (attr & UI_ATTR_MORE_DOWN) text_in(app, b, b.x + b.w - cell_w(app), y, "\x1f", color);
 }
-void ui_draw_row(App* app, GuiRect r, const char* text, const void* image, unsigned color, unsigned attr,
+void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const void* image, unsigned color, unsigned attr,
                  bool focused) {
     const GuiTheme* t = &app->theme;
+    char glyph[4];
     int look = focused || (attr & UI_ATTR_OPEN), filled = t->panels == GUI_PANELS_FILL, inverted = look && t->focus_bar;
     int failing =
         (attr & UI_ATTR_FAILURE) && !((attr & UI_ATTR_BLINK) && t->blink_ms && (now_ms(app) / t->blink_ms) % 2);
@@ -2660,7 +2662,7 @@ void ui_draw_row(App* app, GuiRect r, const char* text, const void* image, unsig
         text_in(app, r, r.x + cell_w(app) / 2, ui_text_y(app, r), text, rgb(filled ? t->page : t->ink));
         return;
     }
-    snprintf(label, sizeof label, "%s%s", t->marker, text);
+    snprintf(label, sizeof label, "%s%s%s%s", t->marker, gui_icon_utf8(icon, glyph), icon ? " " : "", text);
     if (failing || inverted)
         fill_rect(app, b, failing ? t->failure : t->focus);
     else if (filled)

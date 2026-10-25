@@ -9,14 +9,15 @@
 #include <string.h>
 #include <SDL3/SDL_keycode.h>
 #include "gui/ui.h"
+#include "gui/icons.h"
 
 /* the app the callbacks get: what they were called with */
 struct App {
     int calls[8], hits[8];
     size_t rows[8];
-    bool keys_missing; /* Load Switch blinks in the failure colour */
-    size_t active;     /* LoadList's row in the active colour, + 1; 0: none */
-    int width;         /* the width Games' get_row_info was given last */
+    bool keys_missing;         /* Load Switch blinks in the failure colour */
+    size_t active;             /* LoadList's row in the active colour, + 1; 0: none */
+    int width;                 /* the width Games' get_row_info was given last */
     bool top_off, right_off;   /* Frame's Top and Right not shown */
     int top_width, info_width; /* the widths Frame's Top and Info were measured at last */
     int knob_least;            /* Frame's Knob at least this wide, at 1x; 0: no least */
@@ -33,7 +34,7 @@ typedef struct {
     GuiRect r;
     char text[64];
     const void* image;
-    unsigned color, attr;
+    unsigned icon, color, attr;
     int focused, label, tile;
 } Drawn;
 static struct {
@@ -43,12 +44,13 @@ static struct {
     char tile[8]; /* Grid's row's label, one buffer as main.c's: it lasts until the next call */
 } g_gui_ui;
 
-void ui_draw_row(App* app, GuiRect r, const char* text, const void* image, unsigned color, unsigned attr,
+void ui_draw_row(App* app, GuiRect r, const char* text, unsigned icon, const void* image, unsigned color, unsigned attr,
                  bool focused) {
     Drawn* d = &g_gui_ui.drawn[g_gui_ui.ndrawn++];
     (void)app;
     d->r = r;
     snprintf(d->text, sizeof d->text, "%s", text);
+    d->icon = icon;
     d->image = image;
     d->color = color;
     d->attr = attr;
@@ -57,12 +59,12 @@ void ui_draw_row(App* app, GuiRect r, const char* text, const void* image, unsig
 }
 void ui_draw_tile(App* app, GuiRect r, const char* text, const void* image, unsigned color, unsigned attr,
                   bool focused) {
-    ui_draw_row(app, r, text, image, color, attr, focused);
+    ui_draw_row(app, r, text, 0, image, color, attr, focused);
     g_gui_ui.drawn[g_gui_ui.ndrawn - 1].tile = 1;
 }
 const char* ui_tr(const char* english) { return english; }
 void ui_draw_label(App* app, GuiRect r, const char* text, unsigned color) {
-    ui_draw_row(app, r, text, NULL, color, 0, false);
+    ui_draw_row(app, r, text, 0, NULL, color, 0, false);
     g_gui_ui.drawn[g_gui_ui.ndrawn - 1].label = 1;
 }
 
@@ -81,14 +83,15 @@ void ui_main_load_list_load_3ds_game_action_cb(App* app, uint32_t hit) { called(
 void ui_main_load_list_open_data_folder_action_cb(App* app, uint32_t hit) { called(app, DATA, hit, 0); }
 #endif
 void ui_main_load_list_settings_action_cb(App* app, uint32_t hit) { called(app, SETTINGS, hit, 0); }
-/* four games: a title, the second in the failure colour, the third with no label and open (the focus's look, no
-   cursor), the last with an image */
+/* four games: a title, the second in the failure colour with an icon, the third with no label and open (the focus's
+   look, no cursor), the last with an image */
 bool ui_main_games_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     static const char* const names[] = {"Game 0", "Game 1", NULL, "Game 3"};
     app->width = width;
     if (row >= 4) return false;
     info->label = names[row];
     if (row == 3) info->image = &g_gui_ui.image;
+    if (row == 1) info->icon = GUI_ICON_SAVE;
     info->attr = row == 0 ? UI_ATTR_TITLE : row == 1 ? UI_ATTR_FAILURE : row == 2 ? UI_ATTR_OPEN : 0;
     return true;
 }
@@ -217,6 +220,9 @@ static void test_draw(void) {
     assert(!strcmp(d[7].text, "Game 3") && d[7].focused);
     assert(d[7].image == &g_gui_ui.image && !d[4].image && !d[5].image && !d[6].image); /* a row's own image */
     assert(!d[0].image && !d[3].image); /* a static list's rows have none */
+    /* an icon: a static row's from ui.txt, a list without items' from its get_row_info, none for the others */
+    assert(d[2].icon == GUI_ICON_BOX && !d[1].icon && !d[3].icon && !d[0].icon);
+    assert(d[5].icon == GUI_ICON_SAVE && !d[4].icon && !d[6].icon && !d[7].icon);
     is(d[7].r, 14, 154 + 3 * 19, 300, 17);
     assert(app.width == 300); /* each row asked with its own width, max_row_width */
     assert(d[8].label && !strcmp(d[8].text, "ready"));

@@ -62,6 +62,16 @@ ${T}${T}tile_height = 30px
 ${T}${T}android.tile_width = 60px
 ${T}}
 }
+[scene]Icons {
+${T}[list]Rows {
+${T}${T}[button]\"Play\" {
+${T}${T}${T}icon = gamepad-2
+${T}${T}}
+${T}}
+${T}[button]\"Exit\" {
+${T}${T}icon = log-out
+${T}}
+}
 ")
 execute_process(COMMAND "${UIGEN}" --out "${WORK}/out" "${WORK}/ui.txt"
                 RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
@@ -106,8 +116,14 @@ foreach(line
         # the texts, one array, each item at its offset; a # in a text is the text's
         "const char ui_main_texts[] =\n    \"Load Switch NSP/XCI/NRO\" \"\\0\"\n    \"Load 3DS game\" \"\\0\"\n    \"Open Data Folder\" \"\\0\"\n    \"Paste #1 \\\"here\\\"\" \"\\0\"\n"
         # an item at the line it came from: its type, colour, parent, text's offset and lengths
-        "#line 3 \"${WORK}/ui.txt\"\n    {UI_LIST, UI_COLOR_NONE, -1, UI_NO_TEXT},\n"
-        "#line 8 \"${WORK}/ui.txt\"\n    {UI_BUTTON, UI_COLOR_FOCUS, UI_MAIN_LOAD_LIST, 24},\n"
+        "#line 3 \"${WORK}/ui.txt\"\n    {UI_LIST, UI_COLOR_NONE, -1, UI_NO_TEXT, 0},\n"
+        "#line 8 \"${WORK}/ui.txt\"\n    {UI_BUTTON, UI_COLOR_FOCUS, UI_MAIN_LOAD_LIST, 24, 0},\n"
+        # an icon by its name in gui/icons.h, a row's and a button's, drawn beside its text
+        "#include \"gui/icons.h\"\n"
+        "    {UI_BUTTON, UI_COLOR_NONE, UI_ICONS_ROWS, 0, GUI_ICON_GAMEPAD_2},\n"
+        "    {UI_BUTTON, UI_COLOR_NONE, -1, 5, GUI_ICON_LOG_OUT},\n"
+        "ui_draw_row(app, ui_row(r[UI_ICONS_ROWS], i, 17, 2, 0, 0, s), ui_tr(ui_icons_texts + ui_icons_items[item].text), ui_icons_items[item].icon, NULL,\n"
+        "    ui_draw_row(app, r[UI_ICONS_EXIT], ui_tr(ui_icons_texts + 5), ui_icons_items[UI_ICONS_EXIT].icon, NULL, ui_icons_items[UI_ICONS_EXIT].color, 0, false);\n"
         # the list's rows; its row bounds in px, times the scale
         "static const int16_t ui_main_load_list_rows[] = {\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NSP_XCI_NRO,\n"
         "ui_row(r[UI_MAIN_LOAD_LIST], i, 17, 2, 200 * s, 400 * s, s)"
@@ -128,7 +144,7 @@ foreach(line
         "        unsigned attr = ui_main_attr(app, item);\n        if (i == 0 && row > 0) attr |= UI_ATTR_MORE_UP;\n        if (i + 1 == n && row + 1 < sizeof ui_main_load_list_rows / sizeof *ui_main_load_list_rows) attr |= UI_ATTR_MORE_DOWN;\n"
         # a list without items asks for the row after the last one shown first: the row's own label may be a buffer the
         # next call writes; each asked with the row's width, for a label cut to fit, and drawn in that box
-        "        GuiRect box = ui_row(r[UI_MAIN_GAMES], i, 17, 2, 0, 0, s);\n        UiRowInfo next;\n        bool more = i + 1 == n && ui_main_games_get_row_info(app, row + 1, box.w, &next);\n        info.label = NULL;\n        info.image = NULL;\n        info.attr = 0;\n        if (!ui_main_games_get_row_info(app, row, box.w, &info)) break;\n        if (i == 0 && row > 0) info.attr |= UI_ATTR_MORE_UP;\n        if (more) info.attr |= UI_ATTR_MORE_DOWN;\n        ui_draw_row(app, box, info.label ? info.label : \"(null)\", info.image, "
+        "        GuiRect box = ui_row(r[UI_MAIN_GAMES], i, 17, 2, 0, 0, s);\n        UiRowInfo next;\n        bool more = i + 1 == n && ui_main_games_get_row_info(app, row + 1, box.w, &next);\n        info.label = NULL;\n        info.icon = 0;\n        info.image = NULL;\n        info.attr = 0;\n        if (!ui_main_games_get_row_info(app, row, box.w, &info)) break;\n        if (i == 0 && row > 0) info.attr |= UI_ATTR_MORE_UP;\n        if (more) info.attr |= UI_ATTR_MORE_DOWN;\n        ui_draw_row(app, box, info.label ? info.label : \"(null)\", info.icon, info.image, "
         # the hit test: a row of a list without items is there while get_row_info says so, hit where it is drawn
         "        GuiRect box = ui_row(r[UI_MAIN_GAMES], i, 17, 2, 0, 0, s);\n        *row = lists[UI_MAIN_GAMES].first + i;\n        if (!ui_main_games_get_row_info(app, *row, box.w, &info)) break;\n        if (ui_in(box, x, y)) {\n            *item = UI_MAIN_GAMES;\n"
         # ui.txt's texts as shown, through main.c's ui_tr
@@ -196,7 +212,7 @@ refused(outside "[button]\"A\" {}\n" "1: a button outside a scene: the file hold
 refused(holds "${S}${T}[button]\"A\" {\n${T}${T}[label]\"B\" {}\n${T}}\n}\n" "3: a button cannot hold a label")
 refused(scene_text "[scene]\"Main\" {}\n" "1: a scene has a Name, not a text")
 refused(button_name "${S}${T}[button]Load {}\n}\n" "2: a button has its \"Text\": its symbol is the text's, and a label is what shows a changing one")
-refused(property "${S}${T}[button]\"A\" {\n${T}${T}some_prop = 131313\n${T}}\n}\n" "3: some_prop is not a property of a button: it takes width, height, grow, attr, color, key, for-platform")
+refused(property "${S}${T}[button]\"A\" {\n${T}${T}some_prop = 131313\n${T}}\n}\n" "3: some_prop is not a property of a button: it takes width, height, grow, attr, color, key, for-platform, icon")
 refused(scene_property "${S}${T}color = ink\n}\n" "2: color is not a property of a scene: it takes gap, padding, narrow_below, direction, align, justify")
 refused(twice "${S}${T}[label]\"A\" {\n${T}${T}color = ink\n${T}${T}color = soft\n${T}}\n}\n" "4: color is set twice for one label")
 refused(percent "${S}${T}[list]L {\n${T}${T}width = 150%\n${T}}\n}\n" "3: width = 150%: a % of its parent is 0 to 100")
@@ -219,7 +235,7 @@ refused(unterminated "${S}${T}[button]\"A {}\n}\n" "2: a text without its closin
 refused(empty_text "${S}${T}[button]\"\" {}\n}\n" "2: an empty text: an item shows its text, or a label has a name instead")
 refused(junk "${S}${T}[button]\"A\" {} x\n}\n" "2: after the item, \\{ or \\{\\}, not \"\\{\\} x\"")
 refused(scene_platform "${S}${T}[button]\"A\" {\n${T}${T}for-platform = android\n${T}}\n}\n" "2: for-platform is a row's: an item of a scene keeps its place on every platform")
-refused(row_width "${S}${T}[list]L {\n${T}${T}[button]\"A\" {\n${T}${T}${T}width = 10px\n${T}${T}}\n${T}}\n}\n" "4: width is not a property of a row's button: it takes attr, color, key, for-platform")
+refused(row_width "${S}${T}[list]L {\n${T}${T}[button]\"A\" {\n${T}${T}${T}width = 10px\n${T}${T}}\n${T}}\n}\n" "4: width is not a property of a row's button: it takes attr, color, key, for-platform, icon")
 refused(row_label "${S}${T}[list]L {\n${T}${T}[label]Status {}\n${T}}\n}\n" "3: a row of a list shows its \"Text\": a list whose rows change has no items, its rows come from its get_row_info")
 refused(grow_and_height "${S}${T}[list]L {\n${T}${T}height = 40px\n${T}${T}grow = 2\n${T}}\n}\n" "2: height in px and grow 2: one of them, a length or a share of what is left")
 refused(max_rows "${S}${T}[list]L {\n${T}${T}max_rows = 65\n${T}}\n}\n" "3: max_rows = 65: a whole number from 1 to 64")
@@ -228,6 +244,10 @@ refused(direction "[scene]S {\n${T}direction = diagonal\n}\n" "2: direction = di
 refused(pixels "[scene]S {\n${T}gap = 5%\n}\n" "2: gap = 5%: pixels end in px, cols or rows")
 refused(row_bounds "${S}${T}[list]L {\n${T}${T}min_row_width = 300px\n${T}${T}max_row_width = 200px\n${T}}\n}\n" "2: min_row_width 300px is over max_row_width 200px")
 refused(row_bounds_pct "${S}${T}[list]L {\n${T}${T}min_row_width = 60%\n${T}${T}max_row_width = 50%\n${T}}\n}\n" "2: min_row_width 60% is over max_row_width 50%")
+refused(icon_case "${S}${T}[button]\"A\" {\n${T}${T}icon = Gamepad\n${T}}\n}\n" "3: icon = Gamepad: an icon's name is lower case letters, digits and -, as gui/icons.h's list has it")
+refused(icon_dash "${S}${T}[button]\"A\" {\n${T}${T}icon = folder-\n${T}}\n}\n" "3: icon = folder-: an icon's name is lower case letters, digits and -, as gui/icons.h's list has it")
+refused(icon_digit "${S}${T}[button]\"A\" {\n${T}${T}icon = 2d\n${T}}\n}\n" "3: icon = 2d: an icon's name is lower case letters, digits and -, as gui/icons.h's list has it")
+refused(icon_list "${S}${T}[list]L {\n${T}${T}icon = folder\n${T}}\n}\n" "3: icon is not a property of a list: it takes .*")
 refused(label_attr "${S}${T}[label]\"A\" {\n${T}${T}attr = callback\n${T}}\n}\n" "3: attr is not a property of a label: it takes width, height, grow, color, for-platform")
 refused(attr "${S}${T}[button]\"A\" {\n${T}${T}attr = always\n${T}}\n}\n" "3: attr = always: it is callback")
 refused(rows_attr "${S}${T}[list]L {\n${T}${T}attr = callback\n${T}}\n}\n" "2: attr = callback on a list without items: its get_row_info gives each row's attr")
