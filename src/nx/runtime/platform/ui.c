@@ -7,6 +7,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/font.h"
 #include "common/utilities/users.h"
+#include "gui/icons.h"
 #include "gui/splash.h"
 #include "gui_theme_colors.h"
 #include <stdlib.h>
@@ -19,6 +20,9 @@ static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
 static int g_image_set;
 static u32 g_image_version;
 #define UI_PICTURE_Y SNX_CONTROLS_ATLAS_HEIGHT /* the picture's first row, under the sprites' */
+_Static_assert(SNX_UI_ICONS_X + SNX_UI_ICON * SNX_UI_ICONS_ROW <= SNX_CONTROLS_ATLAS_WIDTH &&
+                   (GUI_ICON_COUNT + SNX_UI_ICONS_ROW - 1) / SNX_UI_ICONS_ROW * SNX_UI_ICON <= SNX_UI_PICTURE,
+               "the icons fit beside the picture");
 /* the menu's look's shape for it, GuiPicture's: 0 none, 1 square, 2 round */
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
 #error "the YoRHa theme names no [head] picture"
@@ -87,6 +91,13 @@ float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba
     }
     return x - x0;
 }
+float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba) {
+    int i = (int)icon - GUI_ICON_FIRST;
+    if (icon < GUI_ICON_FIRST || icon >= GUI_ICON_END) return 0;
+    quad(l, x, y, 16.0f * (float)scale, 16.0f * (float)scale, SNX_UI_ICONS_X + i % SNX_UI_ICONS_ROW * SNX_UI_ICON + 1,
+         UI_PICTURE_Y + i / SNX_UI_ICONS_ROW * SNX_UI_ICON + 1, SNX_UI_ICON - 2, SNX_UI_ICON - 2, rgba, 0, UI_BLEND);
+    return 16.0f * (float)scale;
+}
 int ui_image(SnxUiList* l, float x, float y, float w, float h) {
     if (!g_image_set) return 0;
     quad(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H, 0xFFFFFFFFu, 0, UI_IMAGE);
@@ -102,6 +113,30 @@ const u8* ui_image_get(u32* version) {
     return g_image_set ? g_image : NULL;
 }
 
+/* icon i of icons.h's list into its cell of the atlas a, w texels a row: lunasvg's drawing of it, white premultiplied
+   by its coverage, or the font's '?' where it cannot be drawn, said */
+static void icon_draw(u32* a, int w, int i) {
+    enum { SIDE = SNX_UI_ICON - 2 };
+    u32 argb[SIDE * SIDE];
+    SnxSplashDrawing* drawing = snx_splash_open(&gui_icon_svgs[i]);
+    u32* at = a + (size_t)(UI_PICTURE_Y + i / SNX_UI_ICONS_ROW * SNX_UI_ICON + 1) * (size_t)w + SNX_UI_ICONS_X +
+              i % SNX_UI_ICONS_ROW * SNX_UI_ICON + 1;
+    int x, y, failed = !drawing || snx_splash_draw(drawing, SIDE, argb, SIDE * 4);
+    snx_splash_close(drawing);
+    if (failed) {
+        WARN("ui: the menu's icon %s.svg could not be drawn, a ? shows in its place\n", gui_icon_svgs[i].name);
+        for (y = 0; y < 32; ++y) /* the font's '?' twice its size, in the middle */
+            for (x = 0; x < 16; ++x)
+                at[(size_t)(y + (SIDE - 32) / 2) * (size_t)w + (size_t)(x + (SIDE - 16) / 2)] =
+                    gui_vga_font['?' * 16 + y / 2] & (0x80 >> x / 2) ? 0xFFFFFFFFu : 0;
+        return;
+    }
+    for (y = 0; y < SIDE; ++y)
+        for (x = 0; x < SIDE; ++x) {
+            u32 cover = argb[y * SIDE + x] >> 24; /* premultiplied ARGB: whatever the colour, the alpha is the cover */
+            at[(size_t)y * (size_t)w + (size_t)x] = cover | cover << 8 | cover << 16 | cover << 24;
+        }
+}
 void ui_atlas_set(const u32* sprites, int w, int h) {
     int x, y, c, i;
     u32* a;
@@ -120,6 +155,7 @@ void ui_atlas_set(const u32* sprites, int w, int h) {
                     gui_vga_font[c * 16 + y] & (0x80 >> x) ? 0xFFFFFFFFu : 0;
     for (y = 0; y < 4; ++y)
         for (x = 0; x < 4; ++x) a[(SNX_CONTROLS_WHITE_Y + y) * w + SNX_CONTROLS_WHITE_X + x] = 0xFFFFFFFFu;
+    for (c = 0; c < GUI_ICON_COUNT; ++c) icon_draw(a, w, c);
     user_picture(a, w);
     snx_le32_array(a, (size_t)w * (size_t)(h + SNX_UI_PICTURE)); /* the texels' bytes R G B A, as the GPU reads them */
     ui_lock();

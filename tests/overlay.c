@@ -12,6 +12,7 @@
 #include "nx/runtime/platform/controls_atlas.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/font.h"
+#include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "common/utilities/users.h"
 #include "gui/splash.h"
@@ -81,16 +82,18 @@ void gamepad_store_player_map(int p) {
     (void)p;
     ++player_maps_stored;
 }
-const IniOpt g_gamepad_players_ini[] = {
-    {"gamepad_p1_swap_ab", "-1", NULL, INI_INT, 0, &g_settings.player_swap_a_b[0], -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0},
-    {"gamepad_p1_rumble", "-10", NULL, INI_INT, 0, &g_settings.player_vibration[0], -10, 100, NULL, "Vibration", "As All|Off|#%", 10,
-     0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+const IniOpt g_gamepad_players_ini[] = {{"gamepad_p1_swap_ab", "-1", NULL, INI_INT, 0, &g_settings.player_swap_a_b[0],
+                                         -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0},
+                                        {"gamepad_p1_rumble", "-10", NULL, INI_INT, 0, &g_settings.player_vibration[0],
+                                         -10, 100, NULL, "Vibration", "As All|Off|#%", 10, 0, 0},
+                                        {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
 const IniOpt g_gamepad_ini[] = {
     {"gamepad_swap_ab", "0", NULL, INI_INT, 0, &g_settings.swap_a_b, 0, 1, NULL, "Swap A/B", "Off|On", 0, 0, 0},
-    {"gamepad_deadzone", "20", NULL, INI_INT, 0, &g_settings.stick_dead_zone, 0, 90, NULL, "Stick dead zone", "#%", 5, 0, 0},
+    {"gamepad_deadzone", "20", NULL, INI_INT, 0, &g_settings.stick_dead_zone, 0, 90, NULL, "Stick dead zone", "#%", 5,
+     0, 0},
     {"gamepad_rumble", "100", NULL, INI_INT, 0, &g_settings.vibration, 0, 100, NULL, "Vibration", "Off|#%", 10, 0, 0},
-    {"gamepad_background", "0", NULL, INI_INT, 0, &g_settings.background_input, 0, 1, NULL, "Background input", "Off|On", 0, 0, 0},
+    {"gamepad_background", "0", NULL, INI_INT, 0, &g_settings.background_input, 0, 1, NULL, "Background input",
+     "Off|On", 0, 0, 0},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
 static char stored[64], log_[512]; /* the last key kept, and every key=value since log_ was emptied */
 static void store(const char* key, const char* value) {
@@ -154,6 +157,19 @@ static int glyph_at(int col, int row, u8 c) {
             list.q[i].u == SNX_CONTROLS_FONT_X + c % 16 * 8 && list.q[i].v == SNX_CONTROLS_FONT_Y + c / 16 * 16)
             return i;
     return -1;
+}
+/* whether an icon of gui/icons.h is drawn from that cell on, two cells wide, blended from its drawing beside the
+   picture: its cell's inside, a texel in */
+static int icon_at(int col, int row, unsigned icon) {
+    int i, k = (int)(icon - GUI_ICON_FIRST);
+    for (i = 0; i < list.n; ++i)
+        if (list.q[i].x == (float)(px + col * 8 * s) && list.q[i].y == (float)(py + row * 16 * s) &&
+            list.q[i].w == (float)(16 * s) && list.q[i].h == (float)(16 * s) &&
+            list.q[i].u == SNX_UI_ICONS_X + k % SNX_UI_ICONS_ROW * SNX_UI_ICON + 1 &&
+            list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT + k / SNX_UI_ICONS_ROW * SNX_UI_ICON + 1 &&
+            list.q[i].uw == SNX_UI_ICON - 2 && list.q[i].vh == SNX_UI_ICON - 2 && list.q[i].sample == UI_BLEND)
+            return 1;
+    return 0;
 }
 /* whether a line of text is drawn from that cell on, in the font's glyphs (a space draws none) */
 static int text_at(int col, int row, const char* text) {
@@ -260,9 +276,12 @@ int main(void) {
     assert(list.q[0].w == (float)(C * 16) && list.q[0].h == 9 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
     assert(list.q[0].rgba >> 24 == 0xFFu);
     assert(text_at(C - 2, 3, ">") && text_at(C - 2, 4, ">")); /* a page under each */
-    assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE On-screen controls") &&
-           text_at(1, 4, "\xFE Controllers") && text_at(1, 5, "\xFE Save states") && text_at(1, 6, "\xFE Stats") &&
-           text_at(1, 7, "\xFE Exit"));
+    /* each item its marker, its icon in two cells and one, its name */
+    assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE") && icon_at(3, 3, GUI_ICON_POINTER) &&
+           text_at(6, 3, "On-screen controls") && icon_at(3, 4, GUI_ICON_GAMEPAD_2) && text_at(6, 4, "Controllers") &&
+           icon_at(3, 5, GUI_ICON_SAVE) && text_at(6, 5, "Save states") && icon_at(3, 6, GUI_ICON_ACTIVITY) &&
+           text_at(6, 6, "Stats") && icon_at(3, 7, GUI_ICON_LOG_OUT) && text_at(1, 7, "\xFE") && text_at(6, 7, "Exit"));
+    assert(!icon_at(3, 3, GUI_ICON_SAVE) && !text_at(1, 3, "\xFE On-screen controls"));
     /* Stats: a tap turns it on and keeps it in the game's .ini, as F12 does, and again off */
     assert(text_at(C - 4, 6, "Off") && !g_settings.stats);
     assert(tap(3, 3) == OVERLAY_NONE && g_settings.stats && !strcmp(stored, "stats"));
@@ -581,8 +600,8 @@ int main(void) {
         overlay_slots_set(sl, 3);
         assert(!overlay_states_stale());
         draw();
-        assert(shows("SCARLETNX  /  SAVE STATES") && shows("\xFE Auto") &&
-               shows("\xFE Slot 1") && shows("\xFE Slot 2") && shows("\xFE Back"));
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("\xFE Auto") && shows("\xFE Slot 1") &&
+               shows("\xFE Slot 2") && shows("\xFE Back"));
         assert(shows("Empty") && shows("2026-10-22 14:05  0:02:00"));
         /* the focused slot's thumbnail beside the list: none for an empty one, slot 2's once in focus */
         assert(!ui_image_get(&version));
@@ -663,6 +682,25 @@ int main(void) {
                            (gui_vga_font[sc * 16 + y] & (0x80 >> x) ? 0xFFFFFFFFu : 0));
         assert(gui_vga_font['A' * 16 + 5] && gui_vga_font['A' * 16 + 5] != 0xFF);
         assert(a[(SNX_CONTROLS_WHITE_Y + 1) * w + SNX_CONTROLS_WHITE_X + 1] == 0xFFFFFFFFu);
+        /* each icon beside the picture in a cell of its own, lunasvg's drawing a texel inside it in white
+           premultiplied by its cover, the texels round it clear; ink in each */
+        for (sc = 0; sc < GUI_ICON_COUNT; ++sc) {
+            enum { SIDE = SNX_UI_ICON - 2 };
+            static u32 argb[SIDE * SIDE];
+            SnxSplashDrawing* drawing = snx_splash_open(&gui_icon_svgs[sc]);
+            int ink = 0, cx = SNX_UI_ICONS_X + sc % SNX_UI_ICONS_ROW * SNX_UI_ICON,
+                cy = SNX_CONTROLS_ATLAS_HEIGHT + sc / SNX_UI_ICONS_ROW * SNX_UI_ICON;
+            assert(drawing && !snx_splash_draw(drawing, SIDE, argb, SIDE * 4));
+            snx_splash_close(drawing);
+            for (y = 0; y < SNX_UI_ICON; ++y)
+                for (x = 0; x < SNX_UI_ICON; ++x) {
+                    u32 t = snx_le32(a[(cy + y) * w + cx + x]), cover = 0;
+                    if (x && y && x <= SIDE && y <= SIDE) cover = argb[(y - 1) * SIDE + x - 1] >> 24;
+                    assert(t == (cover | cover << 8 | cover << 16 | cover << 24));
+                    ink += cover == 0xFF;
+                }
+            assert(ink > SIDE);
+        }
         ui_atlas_done();
         assert(!ui_atlas(&w, &h, &version) && version == 1);
         free(sprites);
@@ -847,7 +885,7 @@ int main(void) {
         for (y = 0; y < SNX_UI_PICTURE; ++y)
             for (x = 0; x < SNX_UI_PICTURE; ++x) {
                 u32 p = snx_le32(a[(SNX_CONTROLS_ATLAS_HEIGHT + y) * w + x]); /* the GPU's bytes R G B A */
-                assert(p >> 24 == 0xFF); /* square: every texel opaque */
+                assert(p >> 24 == 0xFF);                                      /* square: every texel opaque */
                 white += p == 0xFFFFFFFFu;
             }
         assert(a[SNX_CONTROLS_ATLAS_HEIGHT * w] == 0xFFFFFFFFu && white < SNX_UI_PICTURE * SNX_UI_PICTURE * 9 / 10);
@@ -884,8 +922,8 @@ int main(void) {
                     assert(q->y == band + 2 * edge && q->h == side && q->w == side && q->sample == UI_BLEND);
                     assert(q->x + q->w == right - 2 * edge);
                 }
-                frames += q->rgba == LIGHT_RGBA && q->sample == UI_SHARP && (q->w == edge || q->h == edge) && q->x >= boxx &&
-                          q->x < right && q->y >= band && q->y < band + 16.0f * (float)s;
+                frames += q->rgba == LIGHT_RGBA && q->sample == UI_SHARP && (q->w == edge || q->h == edge) &&
+                          q->x >= boxx && q->x < right && q->y >= band && q->y < band + 16.0f * (float)s;
                 if (q->u == SNX_CONTROLS_FONT_X + 'P' % 16 * 8 && q->v == SNX_CONTROLS_FONT_Y + 'P' / 16 * 16 &&
                     q->y == band && q->x > boxx)
                     assert(q->x == boxx + 8.0f * (float)s); /* the nickname a column into the box */

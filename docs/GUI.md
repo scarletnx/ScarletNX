@@ -21,7 +21,7 @@ lacks and its 16x16 ones, two columns each, for the wide letters a language show
 integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
 has an icon beside its name, a [Lucide](https://lucide.dev) one (`src/gui/lucide`, ISC) drawn at its letters' size: the
 menu's, the groups of the Settings and their rows that open a screen or do something (the others keep its columns), a
-game's box's actions and the setup's pages. No font files or localization packages are needed.
+game's box's actions, the setup's pages and the game's menu's. No font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx

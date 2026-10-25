@@ -34,6 +34,14 @@ void ui_fill(SnxUiList* l, float x, float y, float w, float h, u32 rgba);
 int ui_picture(SnxUiList* l, float x, float y, float side);
 /* ASCII text, 0xFE the font's square, in 8x16 glyphs at a whole scale; returns the width drawn */
 float ui_text(SnxUiList* l, float x, float y, int scale, const char* s, u32 rgba);
+/* an icon of the menus' (gui/icons.h), two of the font's cells at a whole scale, as the launcher draws it beside a
+   label; returns the width drawn, 0 for GUI_ICON_NONE. Its texels are lunasvg's drawing of it in the atlas beside the
+   picture, on its rows: icon i's cell SNX_UI_ICON square, SNX_UI_ICONS_ROW a row from x SNX_UI_ICONS_X, the drawing a
+   texel inside it, blended to the size shown (a texel clear round it, which the blend reaches) */
+#define SNX_UI_ICONS_X   SNX_UI_PICTURE
+#define SNX_UI_ICON      48
+#define SNX_UI_ICONS_ROW 19
+float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba);
 /* One picture apart from the atlas, SNX_UI_IMAGE_W x SNX_UI_IMAGE_H: the menu's save state thumbnail. ui_image draws it
    at x, y, w x h: 0 while there is none, which draws nothing */
 #define SNX_UI_IMAGE_W 320
