@@ -7,6 +7,7 @@
 #ifndef SNX_GPU_DRAW_STATE_H
 #define SNX_GPU_DRAW_STATE_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/endian.h"
 #include "nx/gpu/shader/shader.h"
 
 #define DS_VIEWPORTS_MAX 16
@@ -14,6 +15,9 @@
 #define DS_ATTRS         32
 #define DS_STREAMS       32
 #define DS_TARGETS_MAX   8
+#define DS_GFX_STAGES    5     /* VS, TCS, TES, GS, FS: shader_vk_set's order */
+#define DS_CBUFS         18    /* constant buffer slots of a stage */
+#define DS_INLINE_BANK   0x800 /* the bytes of an inline constant buffer block */
 
 /* VkPolygonMode, VkCullModeFlags, VkCompareOp, VkStencilOp, VkBlendOp, VkBlendFactor */
 enum { DS_POLYGON_FILL, DS_POLYGON_LINE, DS_POLYGON_POINT };
@@ -197,6 +201,7 @@ typedef struct {
     u32 indexed;      /* 0 not, 1 from the index buffer, 3 the channel's inline indices */
     u32 first, count; /* vertices, or indices when indexed */
     u32 base_vertex, base_instance, instances;
+    const u32* inline_indices; /* indexed 3: the owner's inline indices (host words), from first on */
 } DrawCall;
 
 /* DrawState's groups, in its order */
@@ -211,14 +216,46 @@ enum {
     DS_VIEWPORTS,
     DS_VBUF,
     DS_INDEX,
+    DS_BIND,
+    DS_INLINE,
     DS_TARGET_FORMATS, /* a generation without a struct: DsTargets' count, formats and sRGB write, which the pipeline
                           key reads where the rest of the targets change every pass */
     DS_GENS
 };
 
-/* Everything a draw reads but its arguments and its resource bindings, written by its owner's front end (a GPU
-   channel's 3D engine registers, mx_draw_state_sync) and only read by the renderer */
+/* Where a constant buffer slot's bytes are (DsBindings.cb_inline) */
+enum { DS_CB_MEMORY, DS_CB_BANK0, DS_CB_BANK2 };
+
+/* The resource bindings: what the guest memory a draw reads its constants, textures, images and storage from is.
+   Texture handles are the 3D engine's (the header's index in bits 0-19, the sampler's in 20-31), naming entries of
+   the TIC and TSC pools in guest memory. A front end without bound constant buffers in guest memory (NVN's driver
+   banks) puts their bytes in DsInline and names that block here instead */
 typedef struct {
+    u64 cb_addr[DS_GFX_STAGES][DS_CBUFS];  /* each slot's GPU VA, 0 unbound */
+    u32 cb_size[DS_GFX_STAGES][DS_CBUFS];  /* its bytes, 0 for 64 KiB */
+    u8 cb_inline[DS_GFX_STAGES][DS_CBUFS]; /* DS_CB_: guest memory, or the stage's inline block 0 or 2 */
+    u8 pad[2];
+    u64 tex_pool, smp_pool; /* GPU VAs of the TIC and TSC entries, 32 bytes each */
+    u32 tex_max, smp_max;   /* the highest index of each pool */
+    u32 smp_mode;           /* the sampler index mode (0: the handle's sampler index) */
+    u32 tex_bank;           /* the constant buffer bound textures' and images' handles are read from */
+    struct {
+        u64 addr; /* where capture starts: the buffer's address plus its start offset */
+        u32 size; /* bytes, a signed count as the guest gives it */
+        u32 on;   /* enabled, with a layout to capture into */
+    } xfb[4];
+} DsBindings;
+
+/* Constant buffer blocks a front end gives inline (DsBindings.cb_inline): each graphics stage's two */
+typedef struct {
+    u8 bank0[DS_GFX_STAGES][DS_INLINE_BANK], bank2[DS_GFX_STAGES][DS_INLINE_BANK];
+} DsInline;
+
+/* Everything a draw reads but its arguments, written by its owner's front end (a GPU channel's 3D engine registers,
+   mx_draw_state_sync) and only read by the renderer */
+typedef struct {
+    u32 owner; /* who draws: a GPU channel's id, the NVN replay's queues from 0x80000000 */
+    u32 pad;
     DsPrograms prog;
     DsVertexFormat vfmt;
     DsBlend blend;
@@ -229,10 +266,30 @@ typedef struct {
     DsViewports vp;
     DsVertexBuffers vbuf;
     DsIndex index;
+    DsBindings bind;
+    DsInline inl; /* its front end gives gen[DS_INLINE] a new generation when it changes them */
     /* each group's generation (DS_), a new one whenever its bytes change: from one counter for every owner, so two
        generations are equal only when they are the same state of the same owner */
     u64 gen[DS_GENS];
 } DrawState;
+
+/* stage's constant buffer bank as an inline block of ds (DS_INLINE_BANK bytes), NULL when it is in guest memory */
+static inline const u8* ds_cb_inline(const DrawState* ds, int stage, u32 bank) {
+    u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
+    return k == DS_CB_BANK0 ? ds->inl.bank0[stage] : k == DS_CB_BANK2 ? ds->inl.bank2[stage] : NULL;
+}
+/* the word at byte off of an inline block: 0 past its end, as an unbound buffer reads */
+static inline u32 ds_inline_word(const u8* block, u64 off) {
+    return off <= DS_INLINE_BANK - 4 ? snx_ld_le32(block + off) : 0;
+}
+
+/* What a draw takes of its owner besides its state, which the front end and the renderer share */
+typedef struct {
+    u32 pred;       /* the render enable's predicate (renderer.h render_predicate), 0 for none: the front end's */
+    u8 xfb_reload;  /* the capture buffers whose start offset the front end set: their capture starts over there */
+    u8 xfb_started; /* those whose capture began, which resumes from its counter: the renderer's */
+    u8 pad[2];
+} DrawOwner;
 
 /* A clear of the targets a DrawState names */
 typedef struct {

@@ -926,16 +926,15 @@ void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
    tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
-   enables, and SNX_SH_NOT_LAST (the stages before rasterization). The translator reads ch's bound constant buffers
-   (ch->cbind) to resolve indirect branches. xfb: what transform feedback captures of the last stage before
-   rasterization's outputs (ShaderInfo.xfb), NULL for none. p: the programs' state that keys a fragment program (its
-   early fragment tests) and a geometry program (its passthrough mask), NULL for none */
-VkSh* vk_shader_get(const GpuChannel* ch, const DsPrograms* p, u64 gva, u64 gva_a, int stage, u64 int_mask,
-                    u64 sint_mask, u32 rt_int, u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed,
-                    const ShXfb* xfb);
-/* whether the constant buffer words s's translation read still hold in ch's bound buffers (vk_shader_get's check on
+   enables, and SNX_SH_NOT_LAST (the stages before rasterization). xfb: what transform feedback captures of the last stage before
+   rasterization's outputs (ShaderInfo.xfb), NULL for none. ds: the draw state whose programs key a fragment program
+   (its early fragment tests) and a geometry program (its passthrough mask), and whose bound constant buffers the
+   translator reads to resolve indirect branches. NULL for none */
+VkSh* vk_shader_get(const DrawState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+/* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
-int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s);
+int vk_shader_cb_hold(const DrawState* ds, const VkSh* s);
 typedef struct {
     VkShaderModule vs, fs;
     VkShaderModule tcs, tes, gs; /* tessellation control and evaluation, geometry: VK_NULL_HANDLE when off */
@@ -1024,12 +1023,12 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
-void vk_render_clear(const DrawState* ds, const DrawClear* c, GpuChannel* ch);
+void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o);
 /* viewport index of a draw's state with the resolution scale, and the facing its first viewport gives */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
 VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
-void vk_render_draw_texture(const DrawState* ds, const DrawTexture* t, GpuChannel* ch);
-void vk_render_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch);
+void vk_render_draw_texture(const DrawState* ds, const DrawTexture* t);
+void vk_render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,

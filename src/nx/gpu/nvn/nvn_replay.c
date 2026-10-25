@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* nvn_direct's replay: a queue's submitted recordings run on the GPU thread, in submission order, as a GPFIFO
    submission's methods do (neutral_draw_state's 4f: never at record time, since a recording may be submitted many
-   times and what it reads changes between). Each queue keeps the state its commands set, in a GpuChannel of its own
-   (the renderer's draw and clear entries take one) whose DrawState the replay fills, as maxwell3d.c fills a channel's.
+   times and what it reads changes between). Each queue keeps the state its commands set in a DrawState of its own,
+   which the replay fills as maxwell/draw_state.c fills a channel's, and the renderer's draw and clear entries read.
 
    What the replay runs so far: the render targets (SET_RT), the clears, and what the CPU sees (counter reports and
    event writes through the renderer's ordered releases, fences as increments of the queue's syncpoint). A sync is
@@ -25,10 +25,14 @@
 
 #define NVN_QUEUES 8
 
-/* a queue's replay state: the channel the renderer's entries take (its DrawState the queue's), only touched on the
-   GPU thread but for the syncpoint */
+/* the draw state of a queue and what the renderer shares with it, on the GPU thread */
 typedef struct {
-    GpuChannel* ch;
+    DrawState ds;
+    DrawOwner own;
+} QueueDraw;
+/* a queue's replay state: its draw state (one allocation, a DrawState is large), and the syncpoint its fences count */
+typedef struct {
+    QueueDraw* d;
     u32 syncpt;
 } ReplayQueue;
 /* What the CPU sees of a submission: a fence's syncpoint increment, or bytes the stream writes (counter reports, event
@@ -47,8 +51,19 @@ typedef struct {
     PMutex lock;
     Effect* fx;
     u32 nfx, fx_cap;
+    u64 gen;
 } NvnReplayState;
-static NvnReplayState g_nvn_replay = {{{0, 0}}, 0, PMUTEX_INIT, NULL, 0, 0};
+static NvnReplayState g_nvn_replay = {{{0, 0}}, 0, PMUTEX_INIT, NULL, 0, 0, 0};
+
+/* DrawState.gen: a new generation of group *gen. Maxwell's channels count theirs from 1 (maxwell/draw_state.c),
+   these from 2^63, so no generation of a queue's is ever one of a channel's */
+static void new_gen(u64* gen) { *gen = (1ull << 63) + ++g_nvn_replay.gen; }
+/* the group of n bytes at kept as made: a new generation when it changed */
+static void keep(void* kept, const void* made, size_t n, u64* gen) {
+    if (!memcmp(kept, made, n)) return;
+    memcpy(kept, made, n);
+    new_gen(gen);
+}
 
 enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT };
 typedef struct {
@@ -64,10 +79,10 @@ u32 nvn_replay_queue(void) {
     pm_lock(&g_nvn_replay.lock);
     if (g_nvn_replay.n == NVN_QUEUES) fatal("nvn: more than %d queues", NVN_QUEUES);
     i = g_nvn_replay.n++;
-    g_nvn_replay.q[i].ch = (GpuChannel*)calloc(1, sizeof(GpuChannel));
-    if (!g_nvn_replay.q[i].ch) fatal("nvn: out of memory for a queue's state");
+    g_nvn_replay.q[i].d = (QueueDraw*)calloc(1, sizeof(QueueDraw));
+    if (!g_nvn_replay.q[i].d) fatal("nvn: out of memory for a queue's state");
+    g_nvn_replay.q[i].d->ds.owner = 0x80000000u | i; /* renderer.h: the NVN replay's queues from 0x80000000 */
     g_nvn_replay.q[i].syncpt = syncpt_alloc();
-    g_nvn_replay.q[i].ch->id = g_nvn_replay.q[i].syncpt;
     pm_unlock(&g_nvn_replay.lock);
     return i + 1;
 }
@@ -124,6 +139,15 @@ static void stream_incr(u32 id) {
         g_renderer->stream_incr(id);
     else
         syncpt_incr(id);
+}
+
+/* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
+static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
+    u32 i;
+    if (t->count != u->count || t->srgb_write != u->srgb_write) return 1;
+    for (i = 0; i < DS_TARGETS_MAX; i++)
+        if (t->color[i].format != u->color[i].format) return 1;
+    return 0;
 }
 
 /* a render target from a texture snapshot and its view, as the 3D engine's registers describe one */
@@ -219,12 +243,12 @@ static void effects(ReplayQueue* q) {
 }
 static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     ReplayQueue* q = ((Replay*)ctx)->q;
-    GpuChannel* ch = q->ch;
+    QueueDraw* d = q->d;
     (void)size;
     switch (op) {
         case OP_SET_RT: {
             NvnPSetRT r;
-            DsTargets* tg = &ch->ds.tgt;
+            DsTargets t, *tg = &t;
             i32 i;
             int depth;
             memcpy(&r, GP(payload), sizeof r);
@@ -236,6 +260,8 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
                     memset(&tg->color[i], 0, sizeof tg->color[i]);
             if (!target(r.depth, &r.dview, r.has_dview, &tg->depth, &depth) || !depth)
                 memset(&tg->depth, 0, sizeof tg->depth);
+            if (target_formats_differ(&t, &d->ds.tgt)) new_gen(&d->ds.gen[DS_TARGET_FORMATS]);
+            keep(&d->ds.tgt, &t, sizeof t, &d->ds.gen[DS_TARGETS]);
             break;
         }
         case OP_CLEAR_COLOR: {
@@ -246,7 +272,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             c.color_mask = (u32)r.mask & 15;
             c.slot = (u32)r.index;
             memcpy(c.color, r.rgba, sizeof c.color);
-            if (c.color_mask && g_renderer->clear) g_renderer->clear(&ch->ds, &c, ch);
+            if (c.color_mask && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
             break;
         }
         case OP_CLEAR_DS: {
@@ -257,7 +283,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             c.aspects = (r.depth_mask ? 1u : 0) | (r.stencil_mask ? 2u : 0);
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
-            if (c.aspects && g_renderer->clear) g_renderer->clear(&ch->ds, &c, ch);
+            if (c.aspects && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
             break;
         }
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;

@@ -40,15 +40,21 @@ typedef struct Renderer {
     void (*stream_run)(int on);
     /* the 3D engine (maxwell3d.c) */
     /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
-       of the state ds (gpu/draw_state.h), which the front end brought up to date before the call (a GPU channel's
-       mx_draw_state_sync, the NVN replay's own fill) and which the renderer only reads. ch gives what ds doesn't hold
-       yet, and only that: the resource bindings (constant buffers, texture and sampler pools and handles, storage
-       buffers and images, transform feedback buffers), the inline indices, and the renderer's own state of the
-       owner (its id, the render predicate, the capture counters). The NVN path will fill a bindings group of
-       DrawState there instead, once the bindings move into it. Called on the GPU thread */
-    void (*clear)(const DrawState* ds, const DrawClear* c, GpuChannel* ch);
-    void (*draw)(const DrawState* ds, const DrawCall* dc, GpuChannel* ch);
-    void (*draw_texture)(const DrawState* ds, const DrawTexture* t, GpuChannel* ch);
+       of the state ds (gpu/draw_state.h): everything they read but their own arguments, the resource bindings
+       included. The front end brings it up to date before each call (a GPU channel's mx_draw_state_sync, the NVN
+       replay's own fill) and gives each group whose bytes changed a new generation (DrawState.gen, the renderer keeps
+       what it made from a group while its generation holds); the renderer only reads it. ds->owner names the
+       front end's queue: the renderer keys what it keeps between draws, and the samples-passed counter, by it.
+       Constant buffers are guest memory (DsBindings.cb_addr) or blocks of ds->inl (cb_inline, NVN's driver banks:
+       storage buffer addresses in bank 0, texture and image handles in bank 2 with tex_bank 2, the application's
+       uniform buffer r at slot 3 + r). Texture handles name the TIC and TSC entries of the pools in guest memory.
+       A draw's inline indices come with it (DrawCall.inline_indices). The owner o is shared with the front end: it
+       sets o->pred (the render predicate) and the capture buffers to start over (o->xfb_reload), and the renderer
+       clears what it took of those and keeps which buffers' capture began (o->xfb_started). Called on the GPU
+       thread */
+    void (*clear)(const DrawState* ds, const DrawClear* c, const DrawOwner* o);
+    void (*draw)(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
+    void (*draw_texture)(const DrawState* ds, const DrawTexture* t);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);

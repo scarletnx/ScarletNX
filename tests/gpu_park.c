@@ -100,17 +100,17 @@ static void see(u32 v) {
     pthread_cond_broadcast(&seen_cv);
     pthread_mutex_unlock(&seen_lk);
 }
-static void record_clear(const DrawState* ds, const DrawClear* c, GpuChannel* ch) {
+static void record_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o) {
     /* CLEAR_SURFACE's word again, from the clear the 3D engine made of it */
     u32 v = c->aspects | c->color_mask << 2 | c->slot << 6 | c->layer << 10;
-    (void)ds, (void)ch;
+    (void)ds, (void)o;
     if (rewrite_on_clear) {
         *rewrite_on_clear = snx_le32(rewrite_value);
         rewrite_on_clear = NULL;
     }
     see(v);
 }
-static void no_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch) { (void)ds, (void)dc, (void)ch; }
+static void no_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) { (void)ds, (void)dc, (void)o; }
 static int epochs; /* mem_may_have_changed calls */
 static void new_epoch(void) { __atomic_add_fetch(&epochs, 1, __ATOMIC_SEQ_CST); }
 static void nothing(void) {}

@@ -142,12 +142,33 @@ static u32 topology_of(const u32* r, u32 topology) {
     }
 }
 
+/* SNX_DIRTY_CHECK: each draw's state, kept from the register groups, is compared with its registers read again */
+static int dirty_check(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("SNX_DIRTY_CHECK");
+        on = e && *e && *e != '0';
+    }
+    return on;
+}
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
     if (ch->render_off || !g_renderer->draw) return;
     mx_draw_state_sync(ch);
-    DrawCall dc = {topology_of(ch->r3d, topology), (u32)indexed, first, count, base_vertex, base_instance, instances};
-    g_renderer->draw(&ch->ds, &dc, ch);
+    if (dirty_check()) {
+        u32 stale = mx_draw_state_stale(ch);
+        if (stale)
+            WARN_LIMIT(32, "gpu: SNX_DIRTY_CHECK: the draw state's groups %x differ from the registers\n", stale);
+    }
+    DrawCall dc = {topology_of(ch->r3d, topology),
+                   (u32)indexed,
+                   first,
+                   count,
+                   base_vertex,
+                   base_instance,
+                   instances,
+                   ch->inline_indices};
+    g_renderer->draw(&ch->ds, &dc, &ch->owner);
 }
 /* guest memory without the renderer's hooks: only for the clear below, made while no renderer runs */
 static void raw_write(u64 gva, const u8* src, u32 n) {
@@ -219,7 +240,7 @@ void r3d_clear(GpuChannel* ch, u32 v) {
         DrawClear c;
         mx_draw_state_sync(ch);
         mx_draw_clear(ch->r3d, v, &c);
-        g_renderer->clear(&ch->ds, &c, ch);
+        g_renderer->clear(&ch->ds, &c, &ch->owner);
     }
 }
 /* DRAW_TEXTURE: not gated by the render enable here, the renderer reads its registers as Eden does */
@@ -228,7 +249,7 @@ void r3d_draw_texture(GpuChannel* ch) {
     DrawTexture t;
     mx_draw_state_sync(ch);
     mx_draw_texture(ch->r3d, &t);
-    g_renderer->draw_texture(&ch->ds, &t, ch);
+    g_renderer->draw_texture(&ch->ds, &t);
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy) {
@@ -244,8 +265,9 @@ void r3d_cb_bind(GpuChannel* ch, int stage, u32 v) {
         LOG_LIMIT(4, "gpu: constant buffer bind %08x of stage %d is past the slots\n", v, stage);
         return;
     }
-    ch->cbind[stage][slot] = (v & 1) ? cb_address(ch->r3d) : 0;
-    ch->cbind_size[stage][slot] = (v & 1) ? ch->r3d[0x8E0] : 0;
+    ch->ds.bind.cb_addr[stage][slot] = (v & 1) ? cb_address(ch->r3d) : 0;
+    ch->ds.bind.cb_size[stage][slot] = (v & 1) ? ch->r3d[0x8E0] : 0;
+    ch->r3d_dirty |= R3D_CBIND;
 }
 /* LOAD_CONSTANT_BUFFER (0x8E4-0x8F3): a word at the buffer's address plus its offset (0x8E3), which moves on by 4.
    A batch's words are held and written in one go at its last, or before anything else */

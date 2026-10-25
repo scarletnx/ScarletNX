@@ -8,7 +8,7 @@ static void targetless_draw(GpuChannel* channel, int* drawn, int* skipped) {
     vk_lock();
     mx_draw_state_sync(channel);
     DrawCall call = {.topology = 4, .count = 3, .instances = 1};
-    vk_render_draw(&channel->ds, &call, channel);
+    vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_end();
     vk_unlock();
     *drawn = g_vk_drawn == recorded + 1;
@@ -76,8 +76,8 @@ static int check_targetless_stores(void) {
         r[0x204 + i * 0x10] = 0; /* no format: nothing is written there */
     }
     r[0x54e] = 0; /* depth off */
-    channel->cbind[4][0] = cbuf;
-    channel->cbind_size[4][0] = 0x1000;
+    channel->ds.bind.cb_addr[4][0] = cbuf;
+    channel->ds.bind.cb_size[4][0] = 0x1000;
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
     u8 word[4];

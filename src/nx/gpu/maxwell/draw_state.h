@@ -25,6 +25,8 @@ void mx_draw_targets(const u32* r, DsTargets* t);
 /* the vertex streams and the index buffer */
 void mx_draw_vertex_buffers(const u32* r, DsVertexBuffers* b);
 void mx_draw_index(const u32* r, DsIndex* x);
+/* the bindings' registers into b, leaving its constant buffer slots as they are */
+void mx_draw_bindings(const u32* r, DsBindings* b);
 /* what transform feedback captures, for programs that DsPrograms.xfb_on says capture */
 void mx_draw_xfb(const u32* r, ShXfb* x);
 /* a clear (CLEAR_SURFACE's word v) and a texture draw (DRAW_TEXTURE) from the registers r */

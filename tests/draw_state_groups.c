@@ -153,6 +153,34 @@ int main(void) {
             }
         }
     }
+    /* a constant buffer bound through the 3D engine (BIND_GROUP 0x904 + 8 * stage, of the buffer at 0x8E1-0x8E2 with the
+       size 0x8E0): its slot in the bindings, with a new generation, and unbound again */
+    for (u32 stage = 0; stage < DS_GFX_STAGES; stage++)
+        for (u32 slot = 0; slot < DS_CBUFS; slot += 7) {
+            u64 gen;
+            maxwell3d_method(&ch, 0x8E0, 0x400 + slot, 0);
+            maxwell3d_method(&ch, 0x8E1, 0x1100 + stage, 0); /* bits 8 and up are past the address */
+            maxwell3d_method(&ch, 0x8E2, 0x10000u * (slot + 1), 1);
+            mx_draw_state_sync(&ch);
+            gen = ch.ds.gen[DS_BIND];
+            maxwell3d_method(&ch, 0x904 + 8 * stage, slot << 4 | 1, 1);
+            mx_draw_state_sync(&ch);
+            if (ch.ds.bind.cb_addr[stage][slot] != ((u64)stage << 32 | 0x10000u * (slot + 1)) ||
+                ch.ds.bind.cb_size[stage][slot] != 0x400 + slot || ch.ds.gen[DS_BIND] == gen ||
+                mx_draw_state_stale(&ch)) {
+                fprintf(stderr, "FAIL: stage %u's constant buffer %u bound: %llx, %u bytes\n", stage, slot,
+                        (unsigned long long)ch.ds.bind.cb_addr[stage][slot], ch.ds.bind.cb_size[stage][slot]);
+                failures++;
+            }
+            gen = ch.ds.gen[DS_BIND];
+            maxwell3d_method(&ch, 0x904 + 8 * stage, slot << 4, 1);
+            mx_draw_state_sync(&ch);
+            if (ch.ds.bind.cb_addr[stage][slot] || ch.ds.bind.cb_size[stage][slot] || ch.ds.gen[DS_BIND] == gen) {
+                fprintf(stderr, "FAIL: stage %u's constant buffer %u still bound\n", stage, slot);
+                failures++;
+            }
+            checked += 2;
+        }
     u32 found = 0;
     for (u32 m = 0; m < MAXWELL3D_MACRO_REGISTERS_START; m++) found += reads[m] != 0;
     if (found < 200) {

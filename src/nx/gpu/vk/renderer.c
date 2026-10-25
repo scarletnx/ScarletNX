@@ -117,23 +117,23 @@ static void vkr_mem_may_have_changed(void) {
     __atomic_add_fetch(&g_vk_epoch, 1, __ATOMIC_RELAXED);
     vk_ww_new_epoch();
 }
-static void vkr_draw_texture(const DrawState* ds, const DrawTexture* t, GpuChannel* ch) {
+static void vkr_draw_texture(const DrawState* ds, const DrawTexture* t) {
     vk_lock();
-    vk_render_draw_texture(ds, t, ch);
+    vk_render_draw_texture(ds, t);
     vk_unlock();
 }
-static void vkr_clear(const DrawState* ds, const DrawClear* c, GpuChannel* ch) {
+static void vkr_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o) {
     vk_lock();
-    vk_render_clear(ds, c, ch);
+    vk_render_clear(ds, c, o);
     vk_unlock();
 }
-static void vkr_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch) {
+static void vkr_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
     /* a draw predicated on the GPU (gpu.h render_pred) counts too: whether it runs isn't known here without the wait
        the predicate is there to avoid, and the counters made up from this (maxwell/engines.c counter_report) only
        stand in for what the console counts, growing with the work given */
     g_draws++;
     vk_lock();
-    vk_render_draw(ds, dc, ch);
+    vk_render_draw(ds, dc, o);
     vk_unlock();
 }
 static void vkr_samples_reset(GpuChannel* ch) {

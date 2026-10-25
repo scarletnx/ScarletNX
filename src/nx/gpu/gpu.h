@@ -92,7 +92,11 @@ enum {
                                 clip, the point sprite origin, the depth mode, the MSAA mode */
     R3D_VIEWPORTS = 1u << 9, /* viewports 0x280-0x2FF and 0x300-0x33F, scissors 0x380-0x3BF, transforms on 0x64B */
     R3D_VBUF = 1u << 10,     /* the vertex streams' addresses (0x701 + 4 * i, 2 words) and limits 0x7C0-0x7FF */
-    R3D_INDEX = 1u << 11     /* the index buffer 0x5F2-0x5F6, primitive restart 0x591-0x592 */
+    R3D_INDEX = 1u << 11,    /* the index buffer 0x5F2-0x5F6, primitive restart 0x591-0x592 */
+    R3D_BIND = 1u << 12,     /* the texture bank 0x982, the TIC and TSC pools 0x557-0x559 and 0x55D-0x55F, the
+                                sampler index mode 0x48D, the capture buffers 0xE0-0xFF and their layouts 0x1C0-0x1CF */
+    R3D_CBIND = 1u << 13     /* a constant buffer bound (3D 0x904 + 8 * stage, written into GpuChannel.ds by
+                                r3d_cb_bind), not a register's change */
 };
 
 /* A GPU channel: an nvhost-gpu fd's state, named by its syncpoint id. It is made at the channel's first submission
@@ -132,20 +136,14 @@ typedef struct GpuChannel {
     int mme_collecting;
     u32 mme_index;
     GpuMme mme; /* the macro running, or one a wait stopped after the method that asked for it */
-    /* transform feedback, a bit per buffer: its write pointer was loaded (3D 0xE4 + 8 * i) since its last capture,
-       and a capture since that left a byte count in the renderer's counter to resume from */
-    u8 xfb_reload, xfb_started;
     /* constant buffer data (3D 0x8E4-0x8F3) a batch is still sending: written to memory in one go */
     u64 cb_addr;
     u32 cb_n;
     u32 cb_words[256];
-    /* the constant buffers bound to each stage (3D 0x904 + 8 * stage), address and size, 0 when unbound. The renderer
-       reads the drawing channel's: another channel binds its own */
-    u64 cbind[5][18];
-    u32 cbind_size[5][18];
     int render_off; /* SetRenderEnable (3D 0x554-0x556) or its override (0x651) turned drawing off */
-    u32 render_pred; /* the render enable's comparison is made on the GPU: its draws and clears run on this predicate
-                        (renderer.h render_predicate), 0 for none */
+    /* the render enable's comparison made on the GPU (pred: its draws and clears run on it), and transform feedback's
+       buffers whose write pointer was loaded (3D 0xE4 + 8 * i) since their last capture (xfb_reload) */
+    DrawOwner owner;
     /* counter reports (3D 0x6C3 operation 2): g_draws at each selector's last reset, and the selectors reset */
     u64 counter_base[32];
     u32 counter_reset;
@@ -398,7 +396,7 @@ void r3d_draw_texture(GpuChannel* ch); /* DRAW_TEXTURE (3D 0x420-0x42B) */
 /* a draw: indexed 0 none, 1 the index buffer, 3 the channel's inline indices */
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances);
-void r3d_cb_bind(GpuChannel* ch, int stage, u32 v); /* records the binding in ch->cbind */
+void r3d_cb_bind(GpuChannel* ch, int stage, u32 v); /* records the binding in ch->ds.bind */
 void r3d_const_upload(GpuChannel* ch, u32 v, int last);
 void r3d_const_flush(GpuChannel* ch); /* writes the constant buffer data r3d_const_upload is holding */
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,

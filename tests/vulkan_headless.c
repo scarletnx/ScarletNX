@@ -290,7 +290,7 @@ static void engine_clear(GpuChannel* ch, u32 v) {
     ch->r3d_dirty = ~0u;
     mx_draw_state_sync(ch);
     mx_draw_clear(ch->r3d, v, &c);
-    vk_render_clear(&ch->ds, &c, ch);
+    vk_render_clear(&ch->ds, &c, &ch->owner);
 }
 static int check_depth_array(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);

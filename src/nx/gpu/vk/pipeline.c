@@ -56,17 +56,18 @@ static void pf_shader_record(const VkSh* s, const u32* spv, size_t nw, const u8*
 static u32 src_bytes(u32 mlen);
 static void pf_ship_found(VkSh* s);
 static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a, u64 qh_a);
-/* the channel and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
-static const GpuChannel* g_sh_ch;
+/* the draw state and stage whose bound constant buffers the translator reads, for the vk_shader_get call running */
+static const DrawState* g_sh_ds;
 static int g_sh_bind;
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
-    if (idx >= 18) return 0;
-    u64 a = g_sh_ch->cbind[g_sh_bind][idx];
-    u32 sz = g_sh_ch->cbind_size[g_sh_bind][idx];
-    u32 limit = sz ? sz : 65536;
-    if (!a || limit < 4 || off > limit - 4) return 0;
-    *out = gmem_r32(a + off);
+    if (idx >= 18 || !g_sh_ds) return 0;
+    const u8* in = ds_cb_inline(g_sh_ds, g_sh_bind, idx);
+    u64 a = g_sh_ds->bind.cb_addr[g_sh_bind][idx];
+    u32 sz = g_sh_ds->bind.cb_size[g_sh_bind][idx];
+    u32 limit = in ? DS_INLINE_BANK : sz ? sz : 65536;
+    if ((!a && !in) || limit < 4 || off > limit - 4) return 0;
+    *out = in ? ds_inline_word(in, off) : gmem_r32(a + off);
     return 1;
 }
 static VkCbReader g_rec_read;
@@ -490,11 +491,11 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         s->failed = 1;
     return s;
 }
-VkSh* vk_shader_get(const GpuChannel* ch, const DsPrograms* p, u64 gva, u64 gva_a, int stage, u64 int_mask,
-                    u64 sint_mask, u32 rt_int, u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed,
-                    const ShXfb* xfb) {
+VkSh* vk_shader_get(const DrawState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
+                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb) {
+    const DsPrograms* p = ds ? &ds->prog : NULL;
     pf_merge();
-    g_sh_ch = ch;
+    g_sh_ds = ds;
     g_sh_bind = stage <= ST_FS ? stage : 0;
     u32 mask[20] = {(u32)int_mask,
                     (u32)(int_mask >> 32),
@@ -622,10 +623,10 @@ VkSh* vk_shader_get(const GpuChannel* ch, const DsPrograms* p, u64 gva, u64 gva_
     return s;
 }
 
-/* whether the constant buffer words s's translation read (BRX jump tables) still hold in ch's bound buffers, as
+/* whether the constant buffer words s's translation read (BRX jump tables) still hold in ds's bound buffers, as
    vk_shader_get checks them on each hit */
-int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s) {
-    g_sh_ch = ch;
+int vk_shader_cb_hold(const DrawState* ds, const VkSh* s) {
+    g_sh_ds = ds;
     g_sh_bind = s->stage <= ST_FS ? s->stage : 0;
     return vk_cb_reads_hold(&s->cbr, sh_cb_read);
 }
