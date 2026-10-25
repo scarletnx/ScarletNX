@@ -1025,8 +1025,9 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
    0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper, which it requires),
-   0x714 the stage, and for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
-   both nonzero when it is dual. data: the code area's GPU address. 0 when the section isn't one */
+   0x714 the stage, for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
+   both nonzero when it is dual, and for a compute program 0x6fc its constants' bytes, 0x748-0x750 its workgroup size
+   and 0x754 its shared memory. data: the code area's GPU address. 0 when the section isn't one */
 static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
@@ -1044,7 +1045,14 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     st->off = off;
     st->cb = (u16)(cb >> 8);
     st->cb_size = (u16)((size - cb) >> 8);
-    if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
+    /* a compute program's workgroup size, shared memory and constants' bytes: 0x748-0x750, 0x754 and 0x6fc */
+    if (stage == NVN_SHADER_STAGE_COMPUTE) {
+        o->block[0] = (u16)gr32(control + 0x748);
+        o->block[1] = (u16)gr32(control + 0x74c);
+        o->block[2] = (u16)gr32(control + 0x750);
+        o->off_a = gr32(control + 0x754);
+        st->cb_size = (u16)((gr32(control + 0x6fc) + 0xff) >> 8);
+    } else if (stage == NVN_SHADER_STAGE_VERTEX && gr32(control + 0x74c) && gr32(control + 0x758)) {
         o->off_a = gr32(control + 0x748);
         st->off = gr32(control + 0x754);
     }
@@ -1124,6 +1132,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         return 0;
     }
     memset(o->st, 0, sizeof o->st);
+    memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
         u64 control = gr64(sd + stride * (u64)i + 8);
