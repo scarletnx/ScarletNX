@@ -9,8 +9,12 @@
 #include "common/cpu/aarch64/cpu.h"
 
 #define DS_VIEWPORTS_MAX 16
+#define DS_PROGRAM_SLOTS 6 /* VertexA, VertexB, tessellation control and evaluation, geometry, fragment */
+#define DS_ATTRS         32
+#define DS_STREAMS       32
+#define DS_TARGETS_MAX   8
 
-/* VkPolygonMode, VkCullModeFlags, VkCompareOp, VkStencilOp */
+/* VkPolygonMode, VkCullModeFlags, VkCompareOp, VkStencilOp, VkBlendOp, VkBlendFactor */
 enum { DS_POLYGON_FILL, DS_POLYGON_LINE, DS_POLYGON_POINT };
 enum { DS_CULL_NONE, DS_CULL_FRONT, DS_CULL_BACK, DS_CULL_FRONT_AND_BACK };
 enum {
@@ -33,6 +37,33 @@ enum {
     DS_STENCIL_INCREMENT_AND_WRAP,
     DS_STENCIL_DECREMENT_AND_WRAP
 };
+enum { DS_BLEND_ADD, DS_BLEND_SUBTRACT, DS_BLEND_REVERSE_SUBTRACT, DS_BLEND_MIN, DS_BLEND_MAX };
+enum {
+    DS_FACTOR_ZERO,
+    DS_FACTOR_ONE,
+    DS_FACTOR_SRC_COLOR,
+    DS_FACTOR_ONE_MINUS_SRC_COLOR,
+    DS_FACTOR_DST_COLOR,
+    DS_FACTOR_ONE_MINUS_DST_COLOR,
+    DS_FACTOR_SRC_ALPHA,
+    DS_FACTOR_ONE_MINUS_SRC_ALPHA,
+    DS_FACTOR_DST_ALPHA,
+    DS_FACTOR_ONE_MINUS_DST_ALPHA,
+    DS_FACTOR_CONSTANT_COLOR,
+    DS_FACTOR_ONE_MINUS_CONSTANT_COLOR,
+    DS_FACTOR_CONSTANT_ALPHA,
+    DS_FACTOR_ONE_MINUS_CONSTANT_ALPHA,
+    DS_FACTOR_SRC_ALPHA_SATURATE,
+    DS_FACTOR_SRC1_COLOR,
+    DS_FACTOR_ONE_MINUS_SRC1_COLOR,
+    DS_FACTOR_SRC1_ALPHA,
+    DS_FACTOR_ONE_MINUS_SRC1_ALPHA
+};
+/* VkColorComponentFlagBits */
+#define DS_COMPONENT_R       1
+#define DS_COMPONENT_G       2
+#define DS_COMPONENT_B       4
+#define DS_COMPONENT_A       8
 /* window_origin's bits */
 #define DS_ORIGIN_LOWER_LEFT 0x01 /* y counts up from the bottom of a surface clip_height high */
 #define DS_ORIGIN_FLIP_Y     0x10 /* the guest's facing is reversed */
@@ -76,5 +107,52 @@ typedef struct {
     float z_near[DS_VIEWPORTS_MAX], z_far[DS_VIEWPORTS_MAX];
     u32 scissor_x[DS_VIEWPORTS_MAX], scissor_y[DS_VIEWPORTS_MAX]; /* min in bits 0-15, max in 16-31 */
 } DsViewports;
+
+/* The programs and what keys their translation */
+typedef struct {
+    u64 code[DS_PROGRAM_SLOTS]; /* each slot's program address */
+    u32 on;                     /* the slots enabled (bit per slot): VertexB runs whatever its bit says */
+    u32 clip_enable;            /* the clip distances that clip (bit per distance) */
+    u32 tess_params;            /* the tessellator's domain (bits 0-1), spacing (4-5) and output primitive (8-9) */
+    u32 gs_skip[8];             /* the geometry passthrough's skip mask */
+    u8 early_z;                 /* fragment tests run before the fragment program */
+    u8 xfb_on;                  /* transform feedback asked for (its layout: the front end's) */
+    u8 pad[2];
+} DsPrograms;
+
+/* The vertex attributes and streams, struct of arrays. Formats are the 3D engine's codes (vk/'s attr_format) */
+typedef struct {
+    u32 constant;            /* attributes without data: (0, 0, 0, 1) */
+    u32 is_int, is_sint;     /* integer attributes, and the signed ones among them */
+    u32 bgra;                /* attributes with their first and third components swapped */
+    u8 stream[DS_ATTRS];     /* the stream an attribute reads */
+    u8 size[DS_ATTRS];       /* the component sizes code */
+    u8 type[DS_ATTRS];       /* 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
+    u16 offset[DS_ATTRS];    /* bytes into the stream's vertex */
+    u32 stream_on;           /* the streams enabled */
+    u32 instanced;           /* the streams stepped per instance */
+    u16 stride[DS_STREAMS];  /* bytes */
+    u32 divisor[DS_STREAMS]; /* instances per element of an instanced stream, 0 as asked (taken as 1) */
+} DsVertexFormat;
+
+/* Blending and the color write, struct of arrays over the targets */
+typedef struct {
+    u8 en[DS_TARGETS_MAX]; /* blending asked for (the renderer leaves it off on integer targets) */
+    u8 cop[DS_TARGETS_MAX], sc[DS_TARGETS_MAX], dc[DS_TARGETS_MAX]; /* DS_BLEND_, DS_FACTOR_: color */
+    u8 aop[DS_TARGETS_MAX], sa[DS_TARGETS_MAX], da[DS_TARGETS_MAX]; /* and alpha */
+    u8 mask[DS_TARGETS_MAX];                                        /* the components written: VkColorComponentFlags */
+    u8 logic_op;   /* 0, or the logic operation in VkLogicOp's order plus 1 */
+    u8 srgb_write; /* sRGB targets are written as sRGB */
+    u8 pad[2];
+} DsBlend;
+
+/* Rasterization state a Vulkan 1.3 pipeline is made with */
+typedef struct {
+    u8 polygon;        /* DS_POLYGON_ */
+    u8 provoking_last; /* the last vertex provokes (Vulkan's default is the first) */
+    u8 depth_clamp;    /* depth is clamped rather than clipped */
+    u8 pad;
+    u32 patch_vertices; /* control points of a patch, 0 as asked (the renderer takes it as 1) */
+} DsRasterKey;
 
 #endif
