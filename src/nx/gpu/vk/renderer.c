@@ -214,11 +214,11 @@ static void vkr_rt_reload(u64 gva) {
     vk_rt_reload(gva);
     vk_unlock();
 }
-static void vkr_dispatch(GpuChannel* ch, const u32* q, u64 code) {
+static void vkr_dispatch(const DispatchState* d) {
     if (!g_settings.compute_dispatches) return;
     r3d_pending_flush(); /* a merged draw the front end is holding comes first */
     vk_lock();
-    vk_dispatch(ch, q, code);
+    vk_dispatch(d);
     vk_unlock();
 }
 /* Pending shader results land before the stream signals or waits. */

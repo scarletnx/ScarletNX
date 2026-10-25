@@ -286,12 +286,41 @@ typedef struct {
     const u8* bytes;
     u32 size;
 } DsCbBlock;
+/* the inline block a slot's DS_CB_ kind names, of the banks bank0 and bank2 */
+static inline DsCbBlock ds_cb_block(u32 kind, const u8* bank0, const u8* bank2) {
+    if (kind == DS_CB_BANK0) return (DsCbBlock){bank0, DS_INLINE_BANK0};
+    if (kind == DS_CB_BANK2) return (DsCbBlock){bank2, DS_INLINE_BANK2};
+    return (DsCbBlock){NULL, 0};
+}
 /* stage's constant buffer bank as an inline block of ds */
 static inline DsCbBlock ds_cb_inline(const DrawState* ds, int stage, u32 bank) {
     u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
-    if (k == DS_CB_BANK0) return (DsCbBlock){ds->inl.bank0[stage], DS_INLINE_BANK0};
-    if (k == DS_CB_BANK2) return (DsCbBlock){ds->inl.bank2[stage], DS_INLINE_BANK2};
-    return (DsCbBlock){NULL, 0};
+    return ds_cb_block(k, ds->inl.bank0[stage], ds->inl.bank2[stage]);
+}
+
+/* A compute dispatch, for any front end: everything the renderer reads of it (Renderer.dispatch). Its constant
+   buffers are guest memory or the inline blocks bank0 and bank2 (NVN's driver banks: the dispatch size at 0x200 of
+   bank 0, the uniform buffer table from 0x210, storage buffers from 0x310, texture handles in bank 2). Texture
+   handles name the TIC and TSC entries of the pools in guest memory, as a draw's do */
+#define DX_CBUFS 8 /* constant buffer slots of a dispatch */
+typedef struct {
+    u64 code;               /* the program's GPU VA */
+    u32 grid[3];            /* blocks, x y z */
+    u32 block[3];           /* threads of a block, x y z */
+    u32 shared;             /* shared memory bytes */
+    u32 cb_on;              /* the constant buffer slots bound (bit per slot) */
+    u64 cb_addr[DX_CBUFS];  /* each slot's GPU VA */
+    u32 cb_size[DX_CBUFS];  /* its bytes, 0 for 64 KiB */
+    u8 cb_inline[DX_CBUFS]; /* DS_CB_: guest memory, or the inline block 0 or 2 */
+    u64 tex_pool, smp_pool; /* GPU VAs of the TIC and TSC entries, 32 bytes each */
+    u32 tex_max, smp_max;   /* the highest index of each pool */
+    u32 smp_mode;           /* the sampler index mode (0: the handle's sampler index) */
+    u32 tex_bank;           /* the constant buffer bound textures' and images' handles are read from */
+    u8 bank0[DS_INLINE_BANK0], bank2[DS_INLINE_BANK2]; /* the inline blocks, as DsInline's for a stage */
+} DispatchState;
+/* slot's constant buffer of the dispatch d as an inline block */
+static inline DsCbBlock dx_cb_inline(const DispatchState* d, u32 slot) {
+    return ds_cb_block(slot < DX_CBUFS ? d->cb_inline[slot] : DS_CB_MEMORY, d->bank0, d->bank2);
 }
 /* the word at byte off of an inline block: 0 past its end, as an unbound buffer reads */
 static inline u32 ds_inline_word(DsCbBlock b, u64 off) {
