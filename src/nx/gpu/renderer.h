@@ -115,12 +115,14 @@ typedef struct Renderer {
        clears under it run on (the channel's render_pred), held until render_predicate_drop */
     int (*render_predicate)(u64 a, int equal, u32* pred);
     void (*render_predicate_drop)(u32 pred);
-    /* the 3D engine's samples-passed counter (occlusion queries), one per channel: it counts from its reset, while
-       SampleCounterEnable is on. A report writes the count at gva as a release, len 4 (the count's low word) or 16 (the
-       count, then ticks). samples_report 0: no count to give (no reset yet), and the caller writes a value of its own */
-    void (*samples_reset)(GpuChannel* ch);
-    void (*samples_enable)(GpuChannel* ch, int on);
-    int (*samples_report)(GpuChannel* ch, u64 gva, u32 len, u64 ticks);
+    /* the 3D engine's samples-passed counter (occlusion queries), one per draw owner (DrawState.owner: a channel's
+       id, another front end's queue): it counts that owner's draws from its reset, while SampleCounterEnable is on. A
+       report writes the count at gva as a release, len 4 (the count's low word) or 16 (the count, then ticks).
+       samples_report 0: no count to give (no reset yet), and the caller writes a value of its own. A render enable on a
+       report's count is render_predicate's, whichever owner made the report */
+    void (*samples_reset)(u32 owner);
+    void (*samples_enable)(u32 owner, int on);
+    int (*samples_report)(u32 owner, u64 gva, u32 len, u64 ticks);
     /* a GPFIFO submission ran to its end or waits (gpu_park): what the guest may look at now goes to the GPU */
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */

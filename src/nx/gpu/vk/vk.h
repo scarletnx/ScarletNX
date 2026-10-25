@@ -825,15 +825,15 @@ void vk_release_drain(void);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
    (render.c), vk_query_flush outside a pass before a submit (cmd.c) */
-void vk_query_draw(VkCommandBuffer cb, u32 chan, u32 msaa_mode); /* msaa_mode: 3D 0x574 */
+void vk_query_draw(VkCommandBuffer cb, u32 owner, u32 msaa_mode); /* msaa_mode: 3D 0x574 */
 void vk_query_pass_end(VkCommandBuffer cb);
 void vk_query_flush(VkCommandBuffer cb);
-void vk_query_reset(u32 chan);
-void vk_query_enable(u32 chan, int on);
-int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks);
+void vk_query_reset(u32 owner);
+void vk_query_enable(u32 owner, int on);
+int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
-#define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a channel's each */
+#define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
    not zero, 0 zero. -1 when there can be no predicate: the device can't make them, or there's no memory for the
