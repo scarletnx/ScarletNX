@@ -189,6 +189,18 @@ typedef struct {
 } NvnSync;
 NVN_FITS(NvnSync, 0x20);
 
+/* an event: a 32-bit value in pool memory, which the CPU and the GPU signal and the CPU reads */
+typedef struct {
+    u64 pool;
+    i64 offset;
+} NvnEventBuilder;
+NVN_FITS(NvnEventBuilder, 0x10);
+typedef struct {
+    u32 magic, pad;
+    u64 value; /* the u32's guest address */
+} NvnEvent;
+NVN_FITS(NvnEvent, 0x28);
+
 /* ---- windows ---- */
 typedef struct {
     u64 texture[4];

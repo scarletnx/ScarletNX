@@ -193,6 +193,10 @@ u64 nvn_MemoryPoolMap(CPU* c, u64 p) {
     (void)c;
     return NVN_OBJ(NvnPool, p)->memory;
 }
+i32 nvn_MemoryPoolGetFlags(CPU* c, u64 p) {
+    (void)c;
+    return (i32)NVN_OBJ(NvnPool, p)->flags;
+}
 u64 nvn_MemoryPoolGetSize(CPU* c, u64 p) {
     (void)c;
     return NVN_OBJ(NvnPool, p)->size;
@@ -253,6 +257,14 @@ u64 nvn_BufferGetSize(CPU* c, u64 buf) {
     (void)c;
     return NVN_OBJ(NvnBuffer, buf)->size;
 }
+u64 nvn_BufferGetMemoryPool(CPU* c, u64 buf) {
+    (void)c;
+    return NVN_OBJ(NvnBuffer, buf)->pool;
+}
+i64 nvn_BufferGetMemoryOffset(CPU* c, u64 buf) {
+    (void)c;
+    return NVN_OBJ(NvnBuffer, buf)->offset;
+}
 void nvn_BufferFlushMappedRange(CPU* c, u64 buf, i64 offset, u64 size) {
     (void)c;
     (void)buf;
@@ -288,6 +300,14 @@ static u64 desc_slot(u64 dp, i32 id, const char* kind) {
         return 0;
     }
     return memory + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE;
+}
+void nvn_TexturePoolFinalize(CPU* c, u64 tp) {
+    (void)c;
+    (void)tp;
+}
+void nvn_SamplerPoolFinalize(CPU* c, u64 sp) {
+    (void)c;
+    (void)sp;
 }
 int nvn_TexturePoolInitialize(CPU* c, u64 tp, u64 pool, i64 offset, i32 count) {
     (void)c;
@@ -465,6 +485,27 @@ i32 nvn_TextureGetTarget(CPU* c, u64 t) {
     (void)c;
     return CT(t)->d.target;
 }
+i32 nvn_TextureGetSamples(CPU* c, u64 t) {
+    (void)c;
+    return CT(t)->d.samples;
+}
+/* the row stride of a linear texture as built, 0 for a block-linear one */
+i64 nvn_TextureGetStride(CPU* c, u64 t) {
+    (void)c;
+    return (i64)CT(t)->d.stride;
+}
+i32 nvn_TextureGetStorageSize(CPU* c, u64 t) {
+    (void)c;
+    return (i32)CT(t)->size;
+}
+u64 nvn_TextureGetMemoryPool(CPU* c, u64 t) {
+    (void)c;
+    return CT(t)->pool;
+}
+i64 nvn_TextureGetMemoryOffset(CPU* c, u64 t) {
+    (void)c;
+    return CT(t)->offset;
+}
 /* WriteTexels writes the texels into the storage's block-linear layout: a swizzle, which is the GPU's work
    (docs/BLOCKLINEAR.md). Nothing reads the storage without a renderer, so phase 1 leaves it to phase 2, which swizzles
    the source rows on the GPU */
@@ -624,6 +665,50 @@ int nvn_SyncInitialize(CPU* c, u64 s, u64 d) {
     o.magic = NVN_MAGIC('S', 'Y', 'N', 'C');
     memcpy(GP(s), &o, sizeof o);
     return 1;
+}
+
+void nvn_SyncFinalize(CPU* c, u64 s) {
+    (void)c;
+    NVN_OBJ(NvnSync, s)->magic = 0;
+}
+
+/* ============================================================ events */
+void nvn_EventBuilderSetDefaults(CPU* c, u64 b) {
+    (void)c;
+    memset(GP(b), 0, sizeof(NvnEventBuilder));
+}
+void nvn_EventBuilderSetStorage(CPU* c, u64 b, u64 pool, i64 offset) {
+    NvnEventBuilder* o = NVN_OBJ(NvnEventBuilder, b);
+    (void)c;
+    o->pool = pool;
+    o->offset = offset;
+}
+int nvn_EventInitialize(CPU* c, u64 e, u64 b) {
+    const NvnEventBuilder* s = NVN_OBJ(NvnEventBuilder, b);
+    u64 memory = nvn_pool_memory(s->pool);
+    NvnEvent o = {0};
+    (void)c;
+    if (!memory) {
+        LOG_LIMIT(8, "nvn: event %llx has no storage\n", (unsigned long long)e);
+        return 0;
+    }
+    o.magic = NVN_MAGIC('E', 'V', 'N', 'T');
+    o.value = memory + (u64)s->offset;
+    memcpy(GP(e), &o, sizeof o);
+    return 1;
+}
+void nvn_EventFinalize(CPU* c, u64 e) {
+    (void)c;
+    NVN_OBJ(NvnEvent, e)->magic = 0;
+}
+u32 nvn_EventGetValue(CPU* c, u64 e) {
+    (void)c;
+    return gr32(NVN_OBJ(NvnEvent, e)->value);
+}
+void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
+    u64 a = NVN_OBJ(NvnEvent, e)->value;
+    (void)c;
+    gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
 }
 
 /* ============================================================ state objects (nvn_obj.h's packed fields) */

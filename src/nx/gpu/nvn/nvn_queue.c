@@ -59,6 +59,27 @@ int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     return 1;
 }
 
+void nvn_QueueFinalize(CPU* c, u64 q) {
+    (void)c;
+    NVN_OBJ(NvnQueue, q)->magic = 0;
+}
+/* every submission completes as it is made: nothing to flush or wait for */
+void nvn_QueueFlush(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+}
+void nvn_QueueFinish(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+}
+/* the queue's later work waits on the GPU for the sync: the work before it completed already */
+int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
+    (void)c;
+    (void)q;
+    (void)sync;
+    return 1;
+}
+
 /* What a recording does that the CPU sees, run as the GPU would reach it: a counter report writes its 16 bytes
    ({counter, timestamp}: the counter is the timestamp for the timestamp types, 0 for the others, which counted
    nothing drawn), a fence signals with this submission, an event takes its value. A JUMP continues in another
@@ -154,6 +175,10 @@ void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
     }
     o->count = n;
     for (i = 0; i < n; i++) o->texture[i] = gr64(textures + 8 * (u64)i);
+}
+void nvn_WindowFinalize(CPU* c, u64 w) {
+    (void)c;
+    NVN_OBJ(NvnWindow, w)->magic = 0;
 }
 int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     const NvnWindowBuilder* s = WB(b);
