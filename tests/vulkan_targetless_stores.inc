@@ -6,7 +6,9 @@
 static void targetless_draw(GpuChannel* channel, int* drawn, int* skipped) {
     u64 recorded = g_vk_drawn, dropped = g_vk_skipped;
     vk_lock();
-    vk_render_draw(channel, 0, 4, 0, 3, 0, 0, 1);
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, channel);
     vk_render_end();
     vk_unlock();
     *drawn = g_vk_drawn == recorded + 1;
