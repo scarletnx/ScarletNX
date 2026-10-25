@@ -9,6 +9,7 @@
    GPU-side writes the renderer's caches check */
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/write_pages.h"
+#include "nx/gpu/maxwell/draw_state.h"
 #include "nx/hle/services/nvdrv.h"
 
 /* ------------------------------------------------------------ the record of GPU-side writes */
@@ -144,7 +145,9 @@ static u32 topology_of(const u32* r, u32 topology) {
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
     if (ch->render_off || !g_renderer->draw) return;
-    g_renderer->draw(ch, indexed, topology_of(ch->r3d, topology), first, count, base_vertex, base_instance, instances);
+    mx_draw_state_sync(ch);
+    DrawCall dc = {topology_of(ch->r3d, topology), (u32)indexed, first, count, base_vertex, base_instance, instances};
+    g_renderer->draw(&ch->ds, &dc, ch);
 }
 /* guest memory without the renderer's hooks: only for the clear below, made while no renderer runs */
 static void raw_write(u64 gva, const u8* src, u32 n) {
@@ -207,12 +210,25 @@ void r3d_clear(GpuChannel* ch, u32 v) {
     if (ch->render_off) return;
     if (!g_renderer_up)
         clear_in_memory(ch, v);
-    else if (g_renderer->clear)
-        g_renderer->clear(ch, v);
+    else if (g_renderer->clear) {
+        /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
+           target registers of that index directly isn't settled: the first clear where the two differ is logged */
+        u32 ctl = ch->r3d[0x487], slot = (v >> 6) & 15;
+        if (((v >> 2) & 15) && (slot >= (ctl & 15) || ((ctl >> (4 + slot * 3)) & 7) != slot))
+            LOG_LIMIT(1, "vulkan: a clear of color slot %u under RT_CONTROL %08x\n", slot, ctl);
+        DrawClear c;
+        mx_draw_state_sync(ch);
+        mx_draw_clear(ch->r3d, v, &c);
+        g_renderer->clear(&ch->ds, &c, ch);
+    }
 }
 /* DRAW_TEXTURE: not gated by the render enable here, the renderer reads its registers as Eden does */
 void r3d_draw_texture(GpuChannel* ch) {
-    if (g_renderer->draw_texture) g_renderer->draw_texture(ch);
+    if (!g_renderer->draw_texture) return;
+    DrawTexture t;
+    mx_draw_state_sync(ch);
+    mx_draw_texture(ch->r3d, &t);
+    g_renderer->draw_texture(&ch->ds, &t, ch);
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy) {

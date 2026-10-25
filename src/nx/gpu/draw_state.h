@@ -7,6 +7,7 @@
 #ifndef SNX_GPU_DRAW_STATE_H
 #define SNX_GPU_DRAW_STATE_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/gpu/shader/shader.h"
 
 #define DS_VIEWPORTS_MAX 16
 #define DS_PROGRAM_SLOTS 6 /* VertexA, VertexB, tessellation control and evaluation, geometry, fragment */
@@ -73,7 +74,7 @@ typedef struct {
     u8 cull;                               /* DS_CULL_ */
     u8 front_cw;                           /* clockwise is front, before the window origin's flip */
     u8 discard;                            /* rasterization is off (it only matters while primitives are captured) */
-    u8 bias_on;                            /* depth bias, for the polygon mode it was asked for */
+    u8 bias_on;                            /* depth bias per polygon mode: bit 0 points, 1 lines, 2 filled */
     u8 depth_test, depth_write, depth_cmp; /* with a depth target */
     u8 stencil_test;                       /* with a stencil target */
     u8 alpha_test, alpha_func;             /* DS_CMP_ */
@@ -96,9 +97,8 @@ typedef struct {
     u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
-/* The viewports, struct of arrays: only the first count are filled */
+/* The viewports, struct of arrays (a program that writes the viewport index selects among them) */
 typedef struct {
-    u32 count;        /* 1, or DS_VIEWPORTS_MAX when the last vertex stage selects one */
     u32 transform_on; /* the guest's viewport transform enable (the renderer picks by the scale, and logs a mismatch) */
     u32 scissor_on;   /* bit j: viewport j's scissor */
     float scale[DS_VIEWPORTS_MAX][3], translate[DS_VIEWPORTS_MAX][3];
@@ -176,10 +176,8 @@ typedef struct {
     DsSurf depth;                 /* gva 0 when no depth target is bound */
 } DsTargets;
 
-/* The vertex streams' memory: only the streams in filled are */
+/* The vertex streams' memory */
 typedef struct {
-    u32 filled;
-    u32 pad;
     u64 addr[DS_STREAMS];
     u64 size[DS_STREAMS]; /* from the address to the stream's limit, inclusive: 0 when the limit is below */
 } DsVertexBuffers;
@@ -200,5 +198,55 @@ typedef struct {
     u32 first, count; /* vertices, or indices when indexed */
     u32 base_vertex, base_instance, instances;
 } DrawCall;
+
+/* DrawState's groups, in its order */
+enum {
+    DS_PROGRAMS,
+    DS_VFORMAT,
+    DS_BLEND,
+    DS_RASTER_KEY,
+    DS_XFB,
+    DS_TARGETS,
+    DS_DYNAMIC,
+    DS_VIEWPORTS,
+    DS_VBUF,
+    DS_INDEX,
+    DS_GROUPS
+};
+
+/* Everything a draw reads but its arguments and its resource bindings, written by its owner's front end (a GPU
+   channel's 3D engine registers, mx_draw_state_sync) and only read by the renderer */
+typedef struct {
+    DsPrograms prog;
+    DsVertexFormat vfmt;
+    DsBlend blend;
+    DsRasterKey rkey;
+    ShXfb xfb; /* what transform feedback captures, when prog.xfb_on */
+    DsTargets tgt;
+    DsDynamic dyn;
+    DsViewports vp;
+    DsVertexBuffers vbuf;
+    DsIndex index;
+} DrawState;
+
+/* A clear of the targets a DrawState names */
+typedef struct {
+    u32 aspects;    /* bit 0 depth, bit 1 stencil */
+    u32 color_mask; /* the color components cleared, R in bit 0 to A in bit 3: 0 clears no color */
+    u32 slot;       /* the color slot */
+    u32 layer;
+    u32 color[4];  /* the clear color's words: floats, or an integer target's integers */
+    float depth;   /* as given (the renderer clamps it) */
+    u32 stencil;   /* its low 8 bits */
+    u32 scissored; /* limited to viewport 0's scissor */
+} DrawClear;
+
+/* A texture's rectangle drawn onto color target 0 (the 3D engine's DRAW_TEXTURE), in pixels */
+typedef struct {
+    u32 handle;         /* the texture's handle: its header's index in bits 0-19, its sampler's in 20-31 */
+    float x0, y0, w, h; /* the destination, y measured as the window origin says */
+    double du, dv;      /* source texels per destination pixel */
+    float sx0, sy0;     /* the source's origin */
+} DrawTexture;
 
 #endif
