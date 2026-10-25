@@ -167,11 +167,19 @@ typedef struct {
 NVN_FITS(NvnSampler, 0x40);
 
 /* ---- programs and syncs ---- */
-/* sd: the stages SetShaders gave ({code address, control section address}). The control section is the caller's
-   only during that call: phase 2 copies or hashes it there */
+/* A program's stage as SetShaders read it from the stage's control section (the caller's only during that call):
+   its code area (data, the GPU address SetShaders gave), the program's offset in it (the shader program header,
+   after the driver's 0x30-byte wrapper; a dual vertex program's VertexB), and the compiler's constants, constant
+   bank 1, at their offset with their bytes (in 256-byte units). data 0: no such stage */
 typedef struct {
-    u32 magic, stages;
-    NVNshaderData sd[6];
+    u64 data;
+    u32 off;
+    u16 cb, cb_size;
+} NvnStage;
+/* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA, 0 for none */
+typedef struct {
+    u32 magic, off_a;
+    NvnStage st[6];
     u64 serial;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
@@ -340,9 +348,11 @@ typedef struct {
 typedef struct {
     f32 n, f;
 } NvnPDepthRange;
+/* the stages bound (NVN_SHADER_STAGE_*_BIT) and the program's as they were when recorded */
 typedef struct {
-    u64 program;
-    i32 stages, pad;
+    i32 stages;
+    u32 off_a;
+    NvnStage st[6];
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {
