@@ -222,10 +222,11 @@ static void run(void* arg) {
         case JOB_FENCE: stream_incr(q->syncpt); break;
         case JOB_PRESENT: {
             u64 cpu = j->gva ? gmmu_translate(j->gva) : 0;
+            /* no release time of the game's: nvn_direct's window doesn't pace on the display's clock yet */
             if (g_renderer_up && cpu)
-                g_renderer->present_buffer(cpu, j->w, j->h, j->pitch, j->linear ? 0 : 3, j->bhl, j->fmt, j->crop, 0);
+                g_renderer->present_buffer(cpu, j->w, j->h, j->pitch, j->linear ? 0 : 3, j->bhl, j->fmt, j->crop, 0, 0);
             else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
-                g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, j->crop, 0);
+                g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, j->crop, 0, 0);
             stream_incr(q->syncpt); /* shown: the window's texture comes free (nvn_WindowAcquireTexture) */
             break;
         }

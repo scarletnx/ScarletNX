@@ -41,11 +41,11 @@ extern int g_frames;        /* the frames shown so far, atomic: the presenting t
 void crash_report(void* host_pc, void* fault, int sig);
 /* one of vi's queued buffers on the display, once the GPU has drawn it (the GPU thread): nvmap_id's memory from offset,
    its layout, format and size, the crop rectangle (left, top, right, bottom; all 0 for the whole buffer) and the
-   transform's flips (bit 0 horizontal, bit 1 vertical) */
+   transform's flips (bit 0 horizontal, bit 1 vertical); slot is vi's, which present_pace was given at its dequeue */
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                    u32 transform);
+                    u32 transform, int slot);
 /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
-   frame before has been on the display for interval refreshes (its swap interval) */
-void present_pace(u32 interval);
+   frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
+void present_pace(u32 interval, int slot);
 
 #endif
