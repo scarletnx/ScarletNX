@@ -196,14 +196,24 @@ int vk_nvdec_write(const NvdecPic* p) {
 }
 
 /* ---- FFmpeg's Vulkan device: this one. Its submissions to the graphics and compute queues (frame setup) take
-   vk_lock, after the recording thread's, as the renderer's own do; its decode queue is its alone */
+   vk_lock, after the recording thread's, and the queue's lock (vk_queue_lock), as the renderer's own do; its decode
+   queue is its alone */
 static void queue_lock(AVHWDeviceContext* c, uint32_t family, uint32_t index) {
-    (void)c, (void)index;
+    (void)c;
     vk_lock();
-    if (family != g_vk.video_family) vk_rec_sync();
+    if (family == g_vk.video_family) return;
+    vk_rec_sync();
+    VkQueue q;
+    vkGetDeviceQueue(g_vk.dev, family, index, &q);
+    vk_queue_lock(q);
 }
 static void queue_unlock(AVHWDeviceContext* c, uint32_t family, uint32_t index) {
-    (void)c, (void)family, (void)index;
+    (void)c;
+    if (family != g_vk.video_family) {
+        VkQueue q;
+        vkGetDeviceQueue(g_vk.dev, family, index, &q);
+        vk_queue_unlock(q);
+    }
     vk_unlock();
 }
 void* vk_nvdec_hw_device(void) {
