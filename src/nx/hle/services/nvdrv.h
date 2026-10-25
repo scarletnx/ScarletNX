@@ -38,6 +38,14 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu);
 /* Points the pages of [gva, gva + size) at guest memory from cpu on, the renderer told (its mapping bracket): what
    nvhost-as-gpu's MapBufferEx does, and a test without the ioctls */
 void gmmu_map(u64 gva, u64 cpu, u64 size);
+/* GPU address space for a front end that maps guest memory itself (nvn_direct's memory pools), from the allocator and
+   page table nvhost-as-gpu uses: alloc reserves size bytes at the alignment (a power of two, 0 for the allocator's
+   64 KiB) and returns their GPU address, 0 when the space is full; map points page-aligned [gva, gva + size) at guest
+   memory from cpu on; unmap clears those pages; free clears them and gives the addresses back */
+u64 gmmu_space_alloc(u64 size, u64 align);
+void gmmu_space_map(u64 gva, u64 cpu, u64 size);
+void gmmu_space_unmap(u64 gva, u64 size);
+void gmmu_space_free(u64 gva, u64 size);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the
