@@ -424,7 +424,8 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     }
     y.line_width = 1.0f;
     y.bias_slope = d->bias[0];
-    y.bias_units = d->bias[1];
+    /* the 3D engine's units register holds twice NVN's units: the game's driver writes -11.32 for a game's -5.66 */
+    y.bias_units = d->bias[1] * 2.0f;
     y.bias_clamp = d->bias[2];
     memcpy(y.blend_const, d->blend_color, sizeof y.blend_const);
     y.clip_height = surface_height(&d->ds.tgt);
