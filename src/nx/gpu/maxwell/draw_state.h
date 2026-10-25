@@ -6,19 +6,28 @@
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/shader/shader.h"
 
-/* A draw's dynamic state from the registers r, in guest units. polygon (DS_POLYGON_) is the mode the draw rasterizes
-   with, which picks the depth bias enable; viewports (1 or DS_VIEWPORTS_MAX) is how many viewports to fill */
-void mx_draw_dynamic(const u32* r, u32 polygon, u32 viewports, DsDynamic* d, DsViewports* v);
+#include "nx/gpu/gpu.h"
+
+/* ch's draw state (GpuChannel.ds) brought up to its registers: before each draw, clear and texture draw */
+void mx_draw_state_sync(GpuChannel* ch);
+/* the groups (bit DS_ per group) of ch's draw state that differ from its registers read again: none, unless a
+   register a group reads is missing from its register group (SNX_DIRTY_CHECK) */
+u32 mx_draw_state_stale(const GpuChannel* ch);
+/* a draw's dynamic state and viewports from the registers r, in guest units */
+void mx_draw_dynamic(const u32* r, DsDynamic* d);
+void mx_draw_viewports(const u32* r, DsViewports* v);
 /* the groups a pipeline and its programs are keyed by, from the registers r */
 void mx_draw_programs(const u32* r, DsPrograms* p);
 void mx_draw_vertex_format(const u32* r, DsVertexFormat* f);
 void mx_draw_blend(const u32* r, DsBlend* b);
 void mx_draw_raster_key(const u32* r, DsRasterKey* k);
 void mx_draw_targets(const u32* r, DsTargets* t);
-/* the streams of the mask streams, and the index buffer */
-void mx_draw_vertex_buffers(const u32* r, u32 streams, DsVertexBuffers* b);
+/* the vertex streams and the index buffer */
+void mx_draw_vertex_buffers(const u32* r, DsVertexBuffers* b);
 void mx_draw_index(const u32* r, DsIndex* x);
 /* what transform feedback captures, for programs that DsPrograms.xfb_on says capture */
 void mx_draw_xfb(const u32* r, ShXfb* x);
-
+/* a clear (CLEAR_SURFACE's word v) and a texture draw (DRAW_TEXTURE) from the registers r */
+void mx_draw_clear(const u32* r, u32 v, DrawClear* c);
+void mx_draw_texture(const u32* r, DrawTexture* t);
 #endif

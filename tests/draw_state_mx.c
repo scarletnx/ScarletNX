@@ -39,7 +39,8 @@ static void stencil(void) {
     r[0x3D5] = 0x44;
     r[0x3D6] = 0x55;
     r[0x3D7] = 0x66;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     /* one-sided: the back face is the front's */
     CHECK(d.stencil_test == 1);
     CHECK(d.face[0].fail == DS_STENCIL_REPLACE && d.face[0].zfail == DS_STENCIL_INVERT &&
@@ -47,14 +48,16 @@ static void stencil(void) {
     CHECK(d.face[0].ref == 0x11 && d.face[0].cmask == 0x22 && d.face[0].wmask == 0x33);
     CHECK(!memcmp(&d.face[1], &d.face[0], sizeof d.face[0]));
     r[0x565] = 1; /* two-sided */
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.face[0].fail == DS_STENCIL_REPLACE && d.face[0].ref == 0x11);
     CHECK(d.face[1].fail == DS_STENCIL_KEEP && d.face[1].zfail == DS_STENCIL_DECREMENT_AND_WRAP &&
           d.face[1].pass == DS_STENCIL_ZERO && d.face[1].cmp == DS_CMP_NOT_EQUAL);
     CHECK(d.face[1].ref == 0x44 && d.face[1].cmask == 0x66 && d.face[1].wmask == 0x55);
     r[0x4E0] = 0;
     r[0x4E4] = 9; /* out of both ranges: always */
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.stencil_test == 0 && d.face[0].cmp == DS_CMP_ALWAYS);
 }
 
@@ -70,10 +73,11 @@ static void origin(void) {
     r[0x581] = 4;
     r[0x647] = 0x900;
     r[0x35F] = 1;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.window_origin == (DS_ORIGIN_LOWER_LEFT | DS_ORIGIN_FLIP_Y));
     CHECK(d.clip_height == 100);
-    CHECK(v.count == 1 && v.swizzle[0] == 0x6430 && ((v.swizzle[0] >> 4) & 7) == 3);
+    CHECK(v.swizzle[0] == 0x6430 && ((v.swizzle[0] >> 4) & 7) == 3);
     CHECK(d.sprite_origin == 1 && d.front_cw == 1 && d.depth_mode == 1);
     CHECK(d.cull == DS_CULL_NONE);
     r[0x646] = 1;
@@ -82,14 +86,17 @@ static void origin(void) {
     r[0x35F] = 0;
     r[0x4EB] = 0;
     r[0x581] = 0;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.cull == DS_CULL_FRONT && d.front_cw == 0 && d.window_origin == 0 && d.sprite_origin == 0 &&
           d.depth_mode == 0);
     r[0x648] = 0x408;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.cull == DS_CULL_FRONT_AND_BACK);
     r[0x648] = 0x405;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.cull == DS_CULL_BACK);
 }
 
@@ -100,41 +107,34 @@ static void line_width(void) {
     DsViewports v;
     setf(r, 0x4EC, 2.5f);
     setf(r, 0x4ED, 100.0f);
-    mx_draw_dynamic(r, DS_POLYGON_LINE, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.line_width == 100.0f);
     r[0x55C] = 1;
-    mx_draw_dynamic(r, DS_POLYGON_LINE, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.line_width == 2.5f);
 }
 
-/* the bias enable for the polygon mode drawn: 0x370 points, 0x371 lines, 0x372 filled; units 0x56F, slope 0x55B,
-   clamp 0x61F */
+/* the bias enables per polygon mode: 0x370 points (bit 0), 0x371 lines (bit 1), 0x372 filled (bit 2); units 0x56F,
+   slope 0x55B, clamp 0x61F */
 static void bias(void) {
     u32 r[REGS] = {0};
     DsDynamic d;
-    DsViewports v;
     r[0x370] = 1;
     r[0x371] = 0;
     r[0x372] = 2;
     setf(r, 0x56F, 3.0f);
     setf(r, 0x55B, -1.5f);
     setf(r, 0x61F, 0.25f);
-    mx_draw_dynamic(r, DS_POLYGON_POINT, 1, &d, &v);
-    CHECK(d.bias_on == 1);
-    mx_draw_dynamic(r, DS_POLYGON_LINE, 1, &d, &v);
-    CHECK(d.bias_on == 0);
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
-    CHECK(d.bias_on == 1);
+    mx_draw_dynamic(r, &d);
+    CHECK(d.bias_on == 5);
     CHECK(d.bias_units == 3.0f && d.bias_slope == -1.5f && d.bias_clamp == 0.25f);
     r[0x370] = 0;
     r[0x371] = 5;
     r[0x372] = 0;
-    mx_draw_dynamic(r, DS_POLYGON_POINT, 1, &d, &v);
-    CHECK(d.bias_on == 0);
-    mx_draw_dynamic(r, DS_POLYGON_LINE, 1, &d, &v);
-    CHECK(d.bias_on == 1);
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
-    CHECK(d.bias_on == 0);
+    mx_draw_dynamic(r, &d);
+    CHECK(d.bias_on == 2);
 }
 
 /* depth 0x4B3 test, 0x4BA write, 0x4C3 function; alpha 0x4BB bit 0, 0x4C5 function (the compare's decoding), 0x4C4
@@ -155,7 +155,8 @@ static void others(void) {
     setf(r, 0x4CA, 0.4f);
     r[0x574] = 3;
     r[0x50E] = 0x3F800000u;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.depth_test == 1 && d.depth_write == 0 && d.depth_cmp == DS_CMP_LESS);
     CHECK(d.alpha_test == 1 && d.alpha_func == DS_CMP_GREATER_OR_EQUAL && d.alpha_ref == 0.5f);
     CHECK(d.blend_const[0] == 0.1f && d.blend_const[1] == 0.2f && d.blend_const[2] == 0.3f && d.blend_const[3] == 0.4f);
@@ -163,7 +164,8 @@ static void others(void) {
     r[0xDF] = 1;
     r[0x4BB] = 2;
     r[0x4C5] = 0x300; /* unknown: always */
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
     CHECK(d.discard == 0 && d.alpha_test == 0 && d.alpha_func == DS_CMP_ALWAYS);
 }
 
@@ -185,8 +187,9 @@ static void viewports(void) {
         r[0x382 + j * 4] = 0x2000u * j + 2;
     }
     r[0x64B] = 1;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 16, &d, &v);
-    CHECK(v.count == 16 && v.transform_on == 1);
+    mx_draw_dynamic(r, &d);
+    mx_draw_viewports(r, &v);
+    CHECK(v.transform_on == 1);
     u32 scissors = 0;
     for (u32 j = 0; j < 16; j++) {
         for (u32 c = 0; c < 3; c++) {
@@ -200,11 +203,9 @@ static void viewports(void) {
         if (j % 3 != 1) scissors |= 1u << j;
     }
     CHECK(v.scissor_on == scissors);
-    /* one viewport: only the first is read, and the others' scissor bits stay clear */
     r[0x64B] = 0;
-    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
-    CHECK(v.count == 1 && v.transform_on == 0 && v.scissor_on == 1);
-    CHECK(v.scale[0][1] == 1.0f && v.translate[0][1] == 4.0f && v.swizzle[0] == 0x6420);
+    mx_draw_viewports(r, &v);
+    CHECK(v.transform_on == 0 && v.scissor_on == scissors);
 }
 
 /* program slot j at 0x800 + 0x10 j: enable bit 0, offset from the base 0x582/0x583 at + 1; 0x544 clip enable,
@@ -375,21 +376,20 @@ static void targets(void) {
     CHECK(t.depth.layers == 6);
 }
 
-/* stream s: start 0x701 + 4 s (high, low), limit 0x7C0 + 2 s (high, low, inclusive); only the streams asked for */
+/* stream s: start 0x701 + 4 s (high, low), limit 0x7C0 + 2 s (high, low, inclusive) */
 static void vertex_buffers(void) {
     u32 r[REGS] = {0};
     DsVertexBuffers b;
-    memset(&b, 0xA5, sizeof b);
     r[0x701 + 4 * 2] = 1, r[0x702 + 4 * 2] = 0x1000, r[0x7C0 + 2 * 2] = 1, r[0x7C1 + 2 * 2] = 0x1FFF; /* 4 KiB */
     r[0x701 + 4 * 5] = 0, r[0x702 + 4 * 5] = 0x2000, r[0x7C1 + 2 * 5] = 0x1FFF;                       /* below */
     r[0x702 + 4 * 31] = 0x3000, r[0x7C1 + 2 * 31] = 0x3000;                                           /* a byte */
-    r[0x702 + 4 * 7] = 0x4000, r[0x7C1 + 2 * 7] = 0x5000;                                             /* not asked */
-    mx_draw_vertex_buffers(r, (1u << 2) | (1u << 5) | (1u << 31), &b);
-    CHECK(b.filled == ((1u << 2) | (1u << 5) | (1u << 31)));
+    r[0x702 + 4 * 7] = 0x4000, r[0x7C1 + 2 * 7] = 0x5000;
+    mx_draw_vertex_buffers(r, &b);
     CHECK(b.addr[2] == 0x100001000ull && b.size[2] == 0x1000);
     CHECK(b.addr[5] == 0x2000 && b.size[5] == 0);
     CHECK(b.addr[31] == 0x3000 && b.size[31] == 1);
-    CHECK(b.addr[7] == 0xA5A5A5A5A5A5A5A5ull); /* left as it was */
+    CHECK(b.addr[7] == 0x4000 && b.size[7] == 0x1001);
+    CHECK(b.addr[0] == 0 && b.size[0] == 1); /* start and limit 0: one byte */
 }
 
 /* the index buffer 0x5F2/0x5F3, its last byte 0x5F4/0x5F5, format 0x5F6; restart 0x591 and its index 0x592 */

@@ -25,13 +25,14 @@ typedef struct {
 static Draw draws[8];
 static int ndraws;
 static int barriers[8], nbarriers, signals;
-static void record_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
-                        u32 base_instance, u32 instances) {
-    (void)ch;
-    if (ndraws < 8) draws[ndraws] = (Draw){indexed, topology, first, count, base_vertex, base_instance, instances};
+static void record_draw(const DrawState* ds, const DrawCall* dc, GpuChannel* ch) {
+    (void)ds, (void)ch;
+    if (ndraws < 8)
+        draws[ndraws] = (Draw){(int)dc->indexed, dc->topology,      dc->first,    dc->count,
+                               dc->base_vertex,  dc->base_instance, dc->instances};
     ndraws++;
 }
-static void no_clear(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
+static void no_clear(const DrawState* ds, const DrawClear* c, GpuChannel* ch) { (void)ds, (void)c, (void)ch; }
 static void record_barrier(int kind) {
     if (nbarriers < 8) barriers[nbarriers++] = kind;
 }
