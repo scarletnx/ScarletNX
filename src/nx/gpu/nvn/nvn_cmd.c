@@ -650,6 +650,7 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         r->off_a = p->off_a;
         memcpy(r->st, p->st, sizeof r->st);
         r->serial = p->serial;
+        memcpy(r->block, p->block, sizeof r->block);
     } else if (program)
         LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
 }
