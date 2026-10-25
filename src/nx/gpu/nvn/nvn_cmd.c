@@ -172,6 +172,8 @@ u64 nvn_CommandBufferGetControlMemoryUsed(CPU* c, u64 cb) {
     (void)cb;
     return 0;
 }
+/* copying a recording into the command buffer is calling it: the records stay where they are */
+void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) { nvn_CommandBufferCallCommands(c, cb, n, handles); }
 void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     i32 i;
     for (i = 0; i < n; i++) {
@@ -201,6 +203,13 @@ void nvn_CommandBufferReportCounter(CPU* c, u64 cb, i32 type, u64 address) {
     NvnPReportCounter* r = REC(c, cb, OP_REPORT_COUNTER, NvnPReportCounter);
     r->type = (u64)(u32)type;
     r->address = address;
+}
+/* a 32-bit value written when the GPU reaches it: an event's write, at submit in phase 1 */
+void nvn_CommandBufferReportValue(CPU* c, u64 cb, u32 value, u64 address) {
+    NvnPSignalEvent* r = REC(c, cb, OP_SIGNAL_EVENT, NvnPSignalEvent);
+    r->value = address;
+    r->mode = NVN_EVENT_SIGNAL_MODE_WRITE;
+    r->v = value;
 }
 void nvn_CommandBufferResetCounter(CPU* c, u64 cb, i32 type) {
     *(u64*)(void*)GP(rec(c, cb, OP_RESET_COUNTER, 8)) = (u64)(u32)type;
@@ -264,6 +273,90 @@ void nvn_CommandBufferSetRenderTargets(CPU* c, u64 cb, i32 n, u64 colors, u64 vi
     r->depth = tex_snap(payload, SNAP_OFF(NvnPSetRT), n, depth);
     copy_view(&r->dview, &r->has_dview, depth_view);
 }
+void nvn_CommandBufferCopyBufferToTexture(CPU* c, u64 cb, u64 src, u64 t, u64 v, u64 region, i32 flags) {
+    u64 payload = rec(c, cb, OP_COPY_B2T, SNAP_OFF(NvnPCopyB2T) + sizeof(NvnTexture));
+    NvnPCopyB2T* r = (NvnPCopyB2T*)(void*)GP(payload);
+    r->buffer = src;
+    r->texture = tex_snap(payload, SNAP_OFF(NvnPCopyB2T), 0, t);
+    copy_view(&r->view, &r->has_view, v);
+    memcpy(&r->r, GP(region), sizeof r->r);
+    r->flags = flags;
+}
+void nvn_CommandBufferCopyTextureToBuffer(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 dst, i32 flags) {
+    u64 payload = rec(c, cb, OP_COPY_T2B, SNAP_OFF(NvnPCopyB2T) + sizeof(NvnTexture));
+    NvnPCopyB2T* r = (NvnPCopyB2T*)(void*)GP(payload);
+    r->buffer = dst;
+    r->texture = tex_snap(payload, SNAP_OFF(NvnPCopyB2T), 0, t);
+    copy_view(&r->view, &r->has_view, v);
+    memcpy(&r->r, GP(region), sizeof r->r);
+    r->flags = flags;
+}
+static NvnPCopyT2T* copy_t2t(CPU* c, u64 cb, u64 s, u64 sv, u64 d, u64 dv) {
+    u64 payload = rec(c, cb, OP_COPY_T2T, SNAP_OFF(NvnPCopyT2T) + 2 * sizeof(NvnTexture));
+    NvnPCopyT2T* r = (NvnPCopyT2T*)(void*)GP(payload);
+    r->src = tex_snap(payload, SNAP_OFF(NvnPCopyT2T), 0, s);
+    r->dst = tex_snap(payload, SNAP_OFF(NvnPCopyT2T), 1, d);
+    copy_view(&r->sv, &r->has_sv, sv);
+    copy_view(&r->dv, &r->has_dv, dv);
+    return r;
+}
+void nvn_CommandBufferCopyTextureToTexture(CPU* c, u64 cb, u64 s, u64 sv, u64 sr, u64 d, u64 dv, u64 dr, i32 flags) {
+    NvnPCopyT2T* r = copy_t2t(c, cb, s, sv, d, dv);
+    memcpy(&r->sr, GP(sr), sizeof r->sr);
+    memcpy(&r->dr, GP(dr), sizeof r->dr);
+    r->flags = flags;
+}
+/* a multisample resolve of the whole texture, recorded as a copy (nxnative's) */
+static void downsample(CPU* c, u64 cb, u64 s, u64 sv, u64 d, u64 dv) {
+    NvnPCopyT2T* r = copy_t2t(c, cb, s, sv, d, dv);
+    if (s) {
+        const NvnTexture* t = NVN_OBJ(const NvnTexture, s);
+        r->sr.width = (int)t->d.width;
+        r->sr.height = (int)t->d.height;
+        r->sr.depth = 1;
+    }
+    if (d) {
+        const NvnTexture* t = NVN_OBJ(const NvnTexture, d);
+        r->dr.width = (int)t->d.width;
+        r->dr.height = (int)t->d.height;
+        r->dr.depth = 1;
+    }
+    r->flags = NVN_COPY_RESOLVE;
+}
+void nvn_CommandBufferDownsample(CPU* c, u64 cb, u64 s, u64 d) { downsample(c, cb, s, 0, d, 0); }
+void nvn_CommandBufferDownsampleTextureView(CPU* c, u64 cb, u64 s, u64 sv, u64 d, u64 dv) {
+    downsample(c, cb, s, sv, d, dv);
+}
+static void clear_tex(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 value, i32 mask, u8 is_uint) {
+    u64 payload = rec(c, cb, OP_CLEAR_TEX, SNAP_OFF(NvnPClearTex) + sizeof(NvnTexture));
+    NvnPClearTex* r = (NvnPClearTex*)(void*)GP(payload);
+    r->texture = tex_snap(payload, SNAP_OFF(NvnPClearTex), 0, t);
+    copy_view(&r->view, &r->has_view, v);
+    memcpy(&r->r, GP(region), sizeof r->r);
+    r->mask = mask;
+    r->is_uint = is_uint;
+    memcpy(r->c, GP(value), sizeof r->c);
+}
+void nvn_CommandBufferClearTexture(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 rgba, i32 mask) {
+    clear_tex(c, cb, t, v, region, rgba, mask, 0);
+}
+void nvn_CommandBufferClearTextureui(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 rgba, i32 mask) {
+    clear_tex(c, cb, t, v, region, rgba, mask, 1);
+}
+static void copy_stride(CPU* c, u64 cb, i64 stride, i32 image) {
+    NvnPCopyStride* r = REC(c, cb, OP_COPY_STRIDE, NvnPCopyStride);
+    r->stride = stride;
+    r->image = image;
+}
+void nvn_CommandBufferSetCopyRowStride(CPU* c, u64 cb, i64 stride) { copy_stride(c, cb, stride, 0); }
+void nvn_CommandBufferSetCopyImageStride(CPU* c, u64 cb, i64 stride) { copy_stride(c, cb, stride, 1); }
+void nvn_CommandBufferClearColorui(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
+    NvnPClearColor* r = REC(c, cb, OP_CLEAR_COLOR, NvnPClearColor);
+    int i;
+    r->index = index;
+    r->mask = mask;
+    for (i = 0; i < 4; i++) r->rgba[i] = (f32)gr32(rgba + 4 * (u64)i);
+}
 void nvn_CommandBufferClearColor(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
     NvnPClearColor* r = REC(c, cb, OP_CLEAR_COLOR, NvnPClearColor);
     r->index = index;
@@ -300,6 +393,52 @@ void nvn_CommandBufferSetViewport(CPU* c, u64 cb, i32 x, i32 y, i32 w, i32 h) {
     r->v[0][1] = (f32)y;
     r->v[0][2] = (f32)w;
     r->v[0][3] = (f32)h;
+}
+void nvn_CommandBufferSetViewports(CPU* c, u64 cb, i32 first, i32 n, u64 v) {
+    NvnPViewports* r;
+    i32 i;
+    if (n < 0 || first < 0 || first + n > 16) {
+        LOG_LIMIT(4, "nvn: nvnCommandBufferSetViewports %d from %d\n", n, first);
+        return;
+    }
+    r = RECN(c, cb, OP_VIEWPORTS, NvnPViewports, v, n);
+    r->first = first;
+    r->count = n;
+    for (i = 0; i < n; i++) memcpy(r->v[i], GP(v + 16 * (u64)i), 16);
+}
+/* nxnative keeps scissor and depth range 0 only, as its replay has one each */
+void nvn_CommandBufferSetScissors(CPU* c, u64 cb, i32 first, i32 n, u64 rects) {
+    if (first == 0 && n >= 1)
+        nvn_CommandBufferSetScissor(c, cb, (i32)gr32(rects), (i32)gr32(rects + 4), (i32)gr32(rects + 8),
+                                    (i32)gr32(rects + 12));
+    if (first + n > 1) LOG_LIMIT(1, "nvn: scissors %d to %d: only scissor 0 is recorded\n", first, first + n - 1);
+}
+void nvn_CommandBufferSetDepthRanges(CPU* c, u64 cb, i32 first, i32 n, u64 ranges) {
+    if (first == 0 && n >= 1) {
+        f32 r[2];
+        memcpy(r, GP(ranges), sizeof r);
+        nvn_CommandBufferSetDepthRange(c, cb, r[0], r[1]);
+    }
+    if (first + n > 1)
+        LOG_LIMIT(1, "nvn: depth ranges %d to %d: only depth range 0 is recorded\n", first, first + n - 1);
+}
+void nvn_CommandBufferSetViewportSwizzles(CPU* c, u64 cb, i32 first, i32 n, u64 swizzles) {
+    NvnPVpSwizzle* r;
+    i32 i, k;
+    if (n < 0 || first < 0 || first + n > 16) {
+        LOG_LIMIT(4, "nvn: nvnCommandBufferSetViewportSwizzles %d from %d\n", n, first);
+        return;
+    }
+    r = REC(c, cb, OP_VP_SWIZZLE, NvnPVpSwizzle);
+    r->first = first;
+    r->count = n;
+    for (i = 0; i < n; i++)
+        for (k = 0; k < 4; k++) r->sw[i][k] = (u8)((gr32(swizzles + 4 * (u64)(4 * i + k)) ^ (u32)(2 * k)) & 7);
+}
+void nvn_CommandBufferSetPrimitiveRestart(CPU* c, u64 cb, int on, i32 index) {
+    NvnPPrimRestart* r = REC(c, cb, OP_PRIM_RESTART, NvnPPrimRestart);
+    r->on = on != 0;
+    r->index = (u32)index;
 }
 void nvn_CommandBufferSetScissor(CPU* c, u64 cb, i32 x, i32 y, i32 w, i32 h) {
     NvnPScissor* r = REC(c, cb, OP_SCISSOR, NvnPScissor);
@@ -352,7 +491,7 @@ void nvn_CommandBufferSetRenderEnable(CPU* c, u64 cb, int on) {
 }
 void nvn_CommandBufferSetRenderEnableConditional(CPU* c, u64 cb, i32 mode, u64 address) {
     NvnPRenderCond* r = REC(c, cb, OP_RENDER_COND, NvnPRenderCond);
-    r->mode = mode;
+    r->mode = mode & 1;
     r->address = address;
 }
 /* not recorded, as in nxnative: the depth bounds test has no counterpart there, and the point size comes from the
@@ -399,6 +538,101 @@ void nvn_CommandBufferSetTiledCacheTileSize(CPU* c, u64 cb, i32 w, i32 h) {
     (void)cb;
     (void)w;
     (void)h;
+}
+void nvn_CommandBufferWaitEvent(CPU* c, u64 cb, u64 e, i32 mode, u32 value) {
+    (void)c;
+    (void)cb;
+    (void)e;
+    (void)mode;
+    (void)value;
+}
+/* hints the replay has no use for, as nxnative: an alpha reference without an alpha test, the sample mask,
+   conservative rasterization, discards (the contents are undefined after, so keeping them is right), ZCull */
+void nvn_CommandBufferSetAlphaRef(CPU* c, u64 cb, f32 ref) {
+    (void)c;
+    (void)cb;
+    (void)ref;
+}
+void nvn_CommandBufferSetSampleMask(CPU* c, u64 cb, i32 mask) {
+    (void)c;
+    (void)cb;
+    if ((mask & 0xffff) != 0xffff) LOG_LIMIT(1, "nvn: sample mask %#x isn't recorded\n", (unsigned)mask);
+}
+void nvn_CommandBufferSetConservativeRasterEnable(CPU* c, u64 cb, int on) {
+    (void)c;
+    (void)cb;
+    if (on) LOG_LIMIT(1, "nvn: conservative rasterization isn't recorded\n");
+}
+void nvn_CommandBufferDiscardColor(CPU* c, u64 cb, i32 index) {
+    (void)c;
+    (void)cb;
+    (void)index;
+}
+void nvn_CommandBufferDiscardDepthStencil(CPU* c, u64 cb) {
+    (void)c;
+    (void)cb;
+}
+void nvn_CommandBufferSaveZCullData(CPU* c, u64 cb, u64 address, u64 size) {
+    (void)c;
+    (void)cb;
+    (void)address;
+    (void)size;
+}
+void nvn_CommandBufferRestoreZCullData(CPU* c, u64 cb, u64 address, u64 size) {
+    (void)c;
+    (void)cb;
+    (void)address;
+    (void)size;
+}
+void nvn_CommandBufferSetPatchSize(CPU* c, u64 cb, i32 size) {
+    (void)c;
+    (void)cb;
+    (void)size;
+}
+/* debug markers and groups name the work for NVIDIA's tools */
+void nvn_CommandBufferInsertDebugMarker(CPU* c, u64 cb, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)text;
+}
+void nvn_CommandBufferInsertDebugMarkerDynamic(CPU* c, u64 cb, u32 domain, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)domain;
+    (void)text;
+}
+void nvn_CommandBufferInsertDebugMarkerStatic(CPU* c, u64 cb, u32 domain, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)domain;
+    (void)text;
+}
+void nvn_CommandBufferPushDebugGroup(CPU* c, u64 cb, u32 domain, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)domain;
+    (void)text;
+}
+void nvn_CommandBufferPushDebugGroupDynamic(CPU* c, u64 cb, u32 domain, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)domain;
+    (void)text;
+}
+void nvn_CommandBufferPushDebugGroupStatic(CPU* c, u64 cb, u32 domain, u64 text) {
+    (void)c;
+    (void)cb;
+    (void)domain;
+    (void)text;
+}
+void nvn_CommandBufferPopDebugGroup(CPU* c, u64 cb) {
+    (void)c;
+    (void)cb;
+}
+void nvn_CommandBufferPopDebugGroupId(CPU* c, u64 cb, u32 domain) {
+    (void)c;
+    (void)cb;
+    (void)domain;
 }
 void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
     (void)c;
@@ -485,13 +719,87 @@ void nvn_CommandBufferBindTexture(CPU* c, u64 cb, i32 stage, i32 slot, u64 handl
     r->slot = slot;
     r->h = handle;
 }
-/* an image handle is its descriptor's ID in the texture pool */
-void nvn_CommandBufferBindImage(CPU* c, u64 cb, i32 stage, i32 slot, u64 handle) {
-    NvnPBindHandles* r = RECN(c, cb, OP_BIND_IMG, NvnPBindHandles, h, 1);
+void nvn_CommandBufferBindVertexBuffers(CPU* c, u64 cb, i32 first, i32 n, u64 ranges) {
+    NvnPBindVBuf* r;
+    if (n < 0 || first < 0 || first + n > 16) {
+        LOG_LIMIT(4, "nvn: nvnCommandBufferBindVertexBuffers %d from %d\n", n, first);
+        return;
+    }
+    r = RECN(c, cb, OP_BIND_VBUF, NvnPBindVBuf, r, n);
+    r->first = first;
+    r->count = n;
+    memcpy(r->r, GP(ranges), sizeof(NVNbufferRange) * (size_t)n);
+}
+void nvn_CommandBufferBindStorageBuffers(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 ranges) {
+    i32 i;
+    for (i = 0; i < n; i++) {
+        u64 at = ranges + (u64)i * sizeof(NVNbufferRange);
+        bind_buf(c, cb, OP_BIND_SSBO, stage, first + i, gr64(at), gr64(at + 8));
+    }
+}
+/* handles, recorded with their count: textures (combined, or separate in slots 128 on, as the hardware keeps the two
+   in tables of their own), samplers and images */
+#define NVN_SEPTEX_SLOT0 128
+static NvnPBindHandles* bind_handles(CPU* c, u64 cb, u32 op, i32 stage, i32 first, i32 n, u64 handles) {
+    NvnPBindHandles* r;
+    if (n < 0 || n > 32) {
+        LOG_LIMIT(4, "nvn: a bind of %d handles\n", n);
+        return NULL;
+    }
+    r = RECN(c, cb, op, NvnPBindHandles, h, n);
+    r->stage = stage;
+    r->first = first;
+    r->count = n;
+    if (n) memcpy(r->h, GP(handles), 8 * (size_t)n);
+    return r;
+}
+void nvn_CommandBufferBindTextures(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 handles) {
+    bind_handles(c, cb, OP_BIND_TEX, stage, first, n, handles);
+}
+/* the GPU reads the handles where they are when it runs the command, not as recorded: the address is recorded, and
+   the handles as they were for a replay that has nothing better */
+void nvn_CommandBufferBindTexturesDeferred(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 handles) {
+    NvnPBindHandles* r = bind_handles(c, cb, OP_BIND_TEX, stage, first, n, handles);
+    if (r && handles) {
+        r->defer = 1;
+        r->src = handles;
+    }
+}
+void nvn_CommandBufferBindSeparateTextures(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 handles) {
+    bind_handles(c, cb, OP_BIND_TEX, stage, NVN_SEPTEX_SLOT0 + first, n, handles);
+}
+void nvn_CommandBufferBindSeparateSamplers(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 handles) {
+    bind_handles(c, cb, OP_BIND_SAMP, stage, first, n, handles);
+}
+void nvn_CommandBufferBindImages(CPU* c, u64 cb, i32 stage, i32 first, i32 n, u64 handles) {
+    bind_handles(c, cb, OP_BIND_IMG, stage, first, n, handles);
+}
+static void bind_one(CPU* c, u64 cb, u32 op, i32 stage, i32 slot, u64 handle) {
+    NvnPBindHandles* r = RECN(c, cb, op, NvnPBindHandles, h, 1);
     r->stage = stage;
     r->first = slot;
     r->count = 1;
     r->h[0] = handle;
+}
+/* an image handle is its descriptor's ID in the texture pool */
+void nvn_CommandBufferBindImage(CPU* c, u64 cb, i32 stage, i32 slot, u64 handle) {
+    bind_one(c, cb, OP_BIND_IMG, stage, slot, handle);
+}
+void nvn_CommandBufferBindSeparateTexture(CPU* c, u64 cb, i32 stage, i32 slot, u64 handle) {
+    bind_one(c, cb, OP_BIND_TEX, stage, NVN_SEPTEX_SLOT0 + slot, handle);
+}
+void nvn_CommandBufferBindSeparateSampler(CPU* c, u64 cb, i32 stage, i32 slot, u64 handle) {
+    bind_one(c, cb, OP_BIND_SAMP, stage, slot, handle);
+}
+void nvn_CommandBufferBindTransformFeedbackBuffers(CPU* c, u64 cb, i32 first, i32 n, u64 ranges) {
+    i32 i;
+    for (i = 0; i < n; i++) {
+        u64 at = ranges + (u64)i * sizeof(NVNbufferRange);
+        NvnPTfBind* r = REC(c, cb, OP_TF_BIND, NvnPTfBind);
+        r->index = first + i;
+        r->address = gr64(at);
+        r->size = gr64(at + 8);
+    }
 }
 void nvn_CommandBufferBindTransformFeedbackBuffer(CPU* c, u64 cb, i32 index, u64 address, u64 size) {
     NvnPTfBind* r = REC(c, cb, OP_TF_BIND, NvnPTfBind);
@@ -506,6 +814,8 @@ static void tf_state(CPU* c, u64 cb, i32 what, u64 control) {
 }
 void nvn_CommandBufferBeginTransformFeedback(CPU* c, u64 cb, u64 control) { tf_state(c, cb, 0, control); }
 void nvn_CommandBufferEndTransformFeedback(CPU* c, u64 cb, u64 control) { tf_state(c, cb, 1, control); }
+void nvn_CommandBufferPauseTransformFeedback(CPU* c, u64 cb, u64 control) { tf_state(c, cb, 2, control); }
+void nvn_CommandBufferResumeTransformFeedback(CPU* c, u64 cb, u64 control) { tf_state(c, cb, 3, control); }
 
 /* ============================================================ draws */
 /* a plain draw stops before its indirect and multi-draw fields */
@@ -529,6 +839,62 @@ static void draw_idx(CPU* c, u64 cb, i32 prim, i32 type, i32 count, u64 ib, i32 
     d.instances = instances;
     d.index_buffer = ib;
     memcpy(GP(rec(c, cb, OP_DRAW_IDX, offsetof(NvnPDrawIdx, ind))), &d, offsetof(NvnPDrawIdx, ind));
+}
+/* the arguments at ind are read by the GPU when it draws */
+void nvn_CommandBufferDrawArraysIndirect(CPU* c, u64 cb, i32 prim, u64 ind) {
+    NvnPDraw d = {0};
+    d.prim = prim;
+    d.instances = 1;
+    d.ind = ind;
+    memcpy(GP(rec(c, cb, OP_DRAW, sizeof d)), &d, sizeof d);
+}
+void nvn_CommandBufferDrawElementsIndirect(CPU* c, u64 cb, i32 prim, i32 type, u64 ib, u64 ind) {
+    NvnPDrawIdx d = {0};
+    d.prim = prim;
+    d.index_type = type;
+    d.instances = 1;
+    d.index_buffer = ib;
+    d.ind = ind;
+    memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d)), &d, sizeof d);
+}
+/* an indirect-count multi-draw: max indirect draws carrying the count's address and their index, as nxnative records
+   them; the replay draws those below the count the GPU wrote */
+#define MDI_MAX 1024
+void nvn_CommandBufferMultiDrawElementsIndirectCount(CPU* c, u64 cb, i32 prim, i32 type, u64 ib, u64 ind, u64 count,
+                                                     i32 max, i64 stride) {
+    i32 i;
+    if (max > MDI_MAX) {
+        LOG_LIMIT(1, "nvn: an indirect-count multi-draw of up to %d draws: the first %d are recorded\n", max, MDI_MAX);
+        max = MDI_MAX;
+    }
+    for (i = 0; i < max; i++) {
+        NvnPDrawIdx d = {0};
+        d.prim = prim;
+        d.index_type = type;
+        d.instances = 1;
+        d.index_buffer = ib;
+        d.ind = ind + (u64)i * (u64)stride;
+        d.mdi_count = count;
+        d.mdi_index = i;
+        memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d)), &d, sizeof d);
+    }
+}
+void nvn_CommandBufferMultiDrawArraysIndirectCount(CPU* c, u64 cb, i32 prim, u64 ind, u64 count, i32 max,
+                                                   i64 stride) {
+    i32 i;
+    if (max > MDI_MAX) {
+        LOG_LIMIT(1, "nvn: an indirect-count multi-draw of up to %d draws: the first %d are recorded\n", max, MDI_MAX);
+        max = MDI_MAX;
+    }
+    for (i = 0; i < max; i++) {
+        NvnPDraw d = {0};
+        d.prim = prim;
+        d.instances = 1;
+        d.ind = ind + (u64)i * (u64)stride;
+        d.mdi_count = count;
+        d.mdi_index = i;
+        memcpy(GP(rec(c, cb, OP_DRAW, sizeof d)), &d, sizeof d);
+    }
 }
 void nvn_CommandBufferDrawArrays(CPU* c, u64 cb, i32 prim, i32 first, i32 count) {
     draw(c, cb, prim, first, count, 1, 0);
@@ -555,6 +921,13 @@ void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
     r->y = y;
     r->z = z;
     r->caller = caller;
+}
+/* the group counts at ind are read by the GPU when it dispatches */
+void nvn_CommandBufferDispatchComputeIndirect(CPU* c, u64 cb, u64 ind) {
+    u64 caller = c->x[30];
+    NvnPDispatch* r = REC(c, cb, OP_DISPATCH, NvnPDispatch);
+    r->caller = caller;
+    r->ind = ind;
 }
 /* drawing the vertex count transform feedback captured: nxnative records nothing, and neither does this */
 void nvn_CommandBufferDrawTransformFeedback(CPU* c, u64 cb, i32 prim, u64 control) {
