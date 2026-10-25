@@ -176,11 +176,13 @@ typedef struct {
     u32 off;
     u16 cb, cb_size;
 } NvnStage;
-/* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA, 0 for none */
+/* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA (0 for none), or a compute
+   program's shared memory bytes; block: a compute program's workgroup size */
 typedef struct {
     u32 magic, off_a;
     NvnStage st[6];
     u64 serial;
+    u16 block[3], pad;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint, a window texture's) and the pacer's clock
@@ -354,6 +356,7 @@ typedef struct {
     u32 off_a;
     NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
+    u16 block[3], pad;
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {

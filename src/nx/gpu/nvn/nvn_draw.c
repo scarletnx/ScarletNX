@@ -61,6 +61,7 @@ struct NvnDraw {
     u32 svalue[2], smask[2], sref[2]; /* the stencil's compare mask, write mask and reference, front and back */
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
     u8 discard, depth_clamp, restart, render_off;
+    u8 samples; /* the samples-passed counter was reset: the renderer counts it */
     u32 restart_index;
     float vp[16][4], depth[2]; /* x, y, w, h; depth range 0 */
     i32 scissor[4];
@@ -76,6 +77,7 @@ struct NvnDraw {
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
     DrawState scratch; /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
+    DispatchState dx;  /* the compute stage's program and bindings, a dispatch's state */
 };
 
 /* the device's, for every queue (set on the game's threads, read on the GPU thread) */
@@ -135,6 +137,12 @@ NvnDraw* nvn_draw_new(u32 owner) {
         d->bind.cb_inline[s][2] = DS_CB_BANK2;
         memcpy(d->inl.bank0[s] + C0_POINT_SIZE, &point, 4);
     }
+    /* compute: bank 0 and 2 inline (slots 0 and 2), bank 2 starting with the words 0 to 7 as the driver's does */
+    d->dx.cb_on = 1u << 0 | 1u << 2;
+    d->dx.cb_inline[0] = DS_CB_BANK0;
+    d->dx.cb_inline[2] = DS_CB_BANK2;
+    d->dx.tex_bank = 2;
+    for (s = 0; s < 8; s++) snx_st_le32(d->dx.bank2 + 4 * (u32)s, (u32)s);
     d->dirty = ~0u;
     return d;
 }
@@ -576,7 +584,22 @@ static void put64(NvnDraw* d, u8* block, u32 size, u32 off, u64 v) {
 static void bind_buffer(NvnDraw* d, u32 op, u64 payload) {
     const NvnPBindBuf* r = NVN_OBJ(const NvnPBindBuf, payload);
     int s = gfx_stage(r->stage);
-    if (s < 0 || r->index < 0 || r->index >= 16) return; /* compute's: not replayed yet */
+    if (r->index < 0 || r->index >= 16) return;
+    if (r->stage == NVN_SHADER_STAGE_COMPUTE) {
+        /* bank 0's tables of {address, size}: uniform buffers from 0x210, which are also constant buffers 3 + r
+           while there are slots, storage buffers from 0x310 */
+        u32 at = (op == OP_BIND_UBO ? 0x210 : 0x310) + 16 * (u32)r->index;
+        snx_st_le64(d->dx.bank0 + at, r->address);
+        snx_st_le32(d->dx.bank0 + at + 8, (u32)r->size);
+        if (op == OP_BIND_UBO && 3 + r->index < DX_CBUFS) {
+            u32 slot = 3 + (u32)r->index;
+            d->dx.cb_addr[slot] = r->address;
+            d->dx.cb_size[slot] = r->size >= 0x10000 ? 0 : (u32)r->size;
+            d->dx.cb_on = r->size ? d->dx.cb_on | 1u << slot : d->dx.cb_on & ~(1u << slot);
+        }
+        return;
+    }
+    if (s < 0) return;
     if (op == OP_BIND_UBO) {
         if (3 + r->index >= DS_CBUFS) return;
         d->bind.cb_addr[s][3 + r->index] = r->address;
@@ -596,8 +619,9 @@ static void bind_buffer(NvnDraw* d, u32 op, u64 payload) {
 static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
     const NvnPBindHandles* r = NVN_OBJ(const NvnPBindHandles, payload);
     int s = gfx_stage(r->stage);
+    u8* bank2 = r->stage == NVN_SHADER_STAGE_COMPUTE ? d->dx.bank2 : s >= 0 ? d->inl.bank2[s] : NULL;
     i32 i;
-    if (s < 0) return;
+    if (!bank2) return;
     for (i = 0; i < r->count && i < 32; i++) {
         /* a deferred bind reads the handles where they are as the GPU runs it */
         u64 h = r->defer ? gr64(r->src + 8 * (u64)i) : r->h[i];
@@ -606,7 +630,7 @@ static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
                   : op == OP_BIND_IMG    ? C2_IMG + 8 * (u32)slot
                   : slot >= SEPTEX_SLOT0 ? C2_SEPTEX + 8 * (u32)(slot - SEPTEX_SLOT0)
                                          : C2_TEX + 8 * (u32)slot;
-        if (slot >= 0) put64(d, d->inl.bank2[s], DS_INLINE_BANK2, off, h);
+        if (slot >= 0) put64(d, bank2, DS_INLINE_BANK2, off, h);
     }
 }
 /* the capture buffers, each capturing when the layout gives it words or a stride (as the 3D engine's registers
@@ -643,6 +667,16 @@ static void bind_program(NvnDraw* d, u64 payload) {
         d->bind.cb_addr[s][1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
         d->bind.cb_size[s][1] = 256 * (u32)st->cb_size;
     }
+    if ((u32)r.stages & NVN_SHADER_STAGE_COMPUTE_BIT) {
+        const NvnStage* st = &r.st[NVN_SHADER_STAGE_COMPUTE];
+        d->dx.code = st->data ? st->data + st->off : 0;
+        d->dx.block[0] = r.block[0], d->dx.block[1] = r.block[1], d->dx.block[2] = r.block[2];
+        d->dx.shared = r.off_a;
+        /* bank 1: the program's constants, after its code */
+        d->dx.cb_addr[1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
+        d->dx.cb_size[1] = 256 * (u32)st->cb_size;
+        d->dx.cb_on = d->dx.cb_addr[1] ? d->dx.cb_on | 2u : d->dx.cb_on & ~2u;
+    }
     /* the capture layout of the program's last stage before rasterization, when it binds one */
     if ((u32)r.stages & (NVN_SHADER_STAGE_VERTEX_BIT | NVN_SHADER_STAGE_TESS_CONTROL_BIT |
                          NVN_SHADER_STAGE_TESS_EVALUATION_BIT | NVN_SHADER_STAGE_GEOMETRY_BIT)) {
@@ -665,6 +699,41 @@ static void bind_state(NvnDraw* d, u64 payload) {
         case 4: d->poly = v, d->dirty |= D_DYNAMIC | D_RASTER; break;
         case 5: d->dss = w, d->dirty |= D_DYNAMIC; break;
     }
+}
+
+/* SetRenderEnable (modes 2 and 3: on, off) and SetRenderEnableConditional (0: draw when the counts at address and
+   address + 16 are equal, 1: when they differ), as the 3D engine's render enable (maxwell/engines.c): NVN's occlusion
+   test, a samples-passed count against zero, compared by the GPU when the count isn't known yet */
+static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
+    u32 pred = 0;
+    int known;
+    if (d->own.pred) {
+        g_renderer->render_predicate_drop(d->own.pred);
+        d->own.pred = 0;
+    }
+    if (r->mode >= 2) {
+        d->render_off = r->mode == 3;
+        return;
+    }
+    d->render_off = 0;
+    known = g_renderer->render_predicate ? g_renderer->render_predicate(r->address, r->mode == 0, &pred) : -1;
+    if (known >= 0) {
+        d->render_off = !known;
+        if (known == 2) {
+            d->render_off = 0;
+            d->own.pred = pred;
+        }
+        return;
+    }
+    {
+        u64 x = 0, y = 0;
+        gmem_read(r->address, &x, 8);
+        gmem_read(r->address + 16, &y, 8);
+        d->render_off = (x == y) != (r->mode == 0);
+    }
+}
+int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
+    return d->samples && g_renderer->samples_report && g_renderer->samples_report(d->ds.owner, address, 16, ticks);
 }
 
 /* ClearTexture: the region of the texture, a color target of its own, cleared within a scissor of the region, a
@@ -705,6 +774,22 @@ static void clear_texture(NvnDraw* d, u64 payload) {
         c.layer = (u32)(r.r.zoffset + k);
         g_renderer->clear(x, &c, &d->own);
     }
+}
+
+/* a compute dispatch: its grid (or the GPU's words at ind) in bank 0 at 0x200, and the compute stage's state */
+static void dispatch(NvnDraw* d, u64 payload) {
+    const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
+    u32 g[3];
+    if (r->ind)
+        words(r->ind, g, 3);
+    else
+        g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
+    if (!d->dx.code || !g[0] || !g[1] || !g[2] || !g_renderer->dispatch) return;
+    memcpy(d->dx.grid, g, sizeof g);
+    snx_st_le32(d->dx.bank0 + 0x200, g[0]);
+    snx_st_le32(d->dx.bank0 + 0x204, g[1]);
+    snx_st_le32(d->dx.bank0 + 0x208, g[2]);
+    g_renderer->dispatch(&d->dx);
 }
 
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
@@ -807,7 +892,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_BIND_TEX1: {
             const NvnPBindTex1* r = NVN_OBJ(const NvnPBindTex1, payload);
             int s = gfx_stage(r->stage);
-            if (s >= 0 && r->slot >= 0) put64(d, d->inl.bank2[s], DS_INLINE_BANK2, C2_TEX + 8 * (u32)r->slot, r->h);
+            u8* bank2 = r->stage == NVN_SHADER_STAGE_COMPUTE ? d->dx.bank2 : s >= 0 ? d->inl.bank2[s] : NULL;
+            if (bank2 && r->slot >= 0) put64(d, bank2, DS_INLINE_BANK2, C2_TEX + 8 * (u32)r->slot, r->h);
             return 1;
         }
         case OP_SET_TEX_POOL:
@@ -815,9 +901,9 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             const NvnPSetPool* r = NVN_OBJ(const NvnPSetPool, payload);
             u32 max = r->count > 0 ? (u32)r->count - 1 : 0;
             if (op == OP_SET_TEX_POOL)
-                d->bind.tex_pool = r->descriptors, d->bind.tex_max = max;
+                d->bind.tex_pool = d->dx.tex_pool = r->descriptors, d->bind.tex_max = d->dx.tex_max = max;
             else
-                d->bind.smp_pool = r->descriptors, d->bind.smp_max = max;
+                d->bind.smp_pool = d->dx.smp_pool = r->descriptors, d->bind.smp_max = d->dx.smp_max = max;
             d->dirty |= D_BIND;
             return 1;
         }
@@ -836,14 +922,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             return 1;
         }
         case OP_CLEAR_TEX: clear_texture(d, payload); return 1;
-        case OP_RENDER_COND: {
-            /* SetRenderEnable(true, false) are modes 2 and 3. The conditional modes compare occlusion counters,
-               which the replay doesn't count yet (their reports hold 0): those draws all run */
-            i32 mode = NVN_OBJ(const NvnPRenderCond, payload)->mode;
-            d->render_off = mode == 3;
-            if (mode < 2) LOG_LIMIT(1, "nvn: conditional rendering on occlusion counters draws everything\n");
-            return 1;
-        }
+        case OP_RENDER_COND: render_enable(d, NVN_OBJ(const NvnPRenderCond, payload)); return 1;
         case OP_TF_BIND: {
             const NvnPTfBind* r = NVN_OBJ(const NvnPTfBind, payload);
             if (r->index < 0 || r->index >= 4) return 1;
@@ -863,7 +942,15 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             d->dirty |= D_PROGRAMS;
             return 1;
         }
-        case OP_RESET_COUNTER: return 1; /* the counters the replay reports count nothing yet */
+        case OP_RESET_COUNTER:
+            /* samples passed counts the queue's draws from here; the other counters count nothing yet */
+            if (gr64(payload) == NVN_COUNTER_TYPE_SAMPLES_PASSED && g_renderer->samples_reset) {
+                if (!d->samples && g_renderer->samples_enable) g_renderer->samples_enable(d->ds.owner, 1);
+                g_renderer->samples_reset(d->ds.owner);
+                d->samples = 1;
+            }
+            return 1;
+        case OP_DISPATCH: dispatch(d, payload); return 1;
         case OP_DRAW: draw_arrays(d, payload, size); return 1;
         case OP_DRAW_IDX: draw_elements(d, payload, size); return 1;
     }
