@@ -34,21 +34,32 @@ else()
     target_compile_options(snx-hookgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 
-# snx_hookgen(<target> [SPEC <file>]): generates hle/hook/hooks.hook.h (the handlers' declarations) and
-# hle/hook/hooks.hook.inc (the adapters and the table, which hle/hook/hook.c includes) into the build folder and gives
-# <target> their include root. SPEC is src/nx/hle/hook/hooks.hook unless a test names its own
+# snx_hookgen(<target> [SPEC <file>] [PREFIX <name>] [NAME <path>]): generates NAME.h (the handlers' declarations)
+# and NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
+# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook unless a test names its own, NAME is
+# hle/hook/hooks.hook, and PREFIX (hook) names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements,
+# is a second spec with its own
 function(snx_hookgen target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "" "SPEC" "")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "SPEC;PREFIX;NAME" "")
     set(spec "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     if(arg_SPEC)
         set(spec "${arg_SPEC}")
     endif()
+    set(prefix hook)
+    if(arg_PREFIX)
+        set(prefix "${arg_PREFIX}")
+    endif()
+    set(name hle/hook/hooks.hook)
+    if(arg_NAME)
+        set(name "${arg_NAME}")
+    endif()
+    get_filename_component(dir "${name}" DIRECTORY)
     set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
-    add_custom_command(OUTPUT "${out}/hle/hook/hooks.hook.h" "${out}/hle/hook/hooks.hook.inc"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/hle/hook"
-        COMMAND snx-hookgen --header "${out}/hle/hook/hooks.hook.h" --out "${out}/hle/hook/hooks.hook.inc" "${spec}"
+    add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
+        COMMAND snx-hookgen --prefix "${prefix}" --header "${out}/${name}.h" --out "${out}/${name}.inc" "${spec}"
         DEPENDS snx-hookgen "${spec}"
-        COMMENT "Generating the hooks" VERBATIM)
-    target_sources(${target} PRIVATE "${out}/hle/hook/hooks.hook.h" "${out}/hle/hook/hooks.hook.inc")
+        COMMENT "Generating ${name}" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
     target_include_directories(${target} PUBLIC "${out}")
 endfunction()
