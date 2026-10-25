@@ -176,4 +176,29 @@ typedef struct {
     DsSurf depth;                 /* gva 0 when no depth target is bound */
 } DsTargets;
 
+/* The vertex streams' memory: only the streams in filled are */
+typedef struct {
+    u32 filled;
+    u32 pad;
+    u64 addr[DS_STREAMS];
+    u64 size[DS_STREAMS]; /* from the address to the stream's limit, inclusive: 0 when the limit is below */
+} DsVertexBuffers;
+
+/* The index buffer and primitive restart */
+typedef struct {
+    u64 addr, end;     /* the first byte and the last */
+    u32 format;        /* 0 8-bit, 1 16-bit, others 32-bit indices */
+    u32 restart;       /* primitive restart is on */
+    u32 restart_index; /* the index that restarts */
+    u32 pad;
+} DsIndex;
+
+/* A draw's own arguments */
+typedef struct {
+    u32 topology;     /* the 3D engine's primitive numbers (14 a patch list) */
+    u32 indexed;      /* 0 not, 1 from the index buffer, 3 the channel's inline indices */
+    u32 first, count; /* vertices, or indices when indexed */
+    u32 base_vertex, base_instance, instances;
+} DrawCall;
+
 #endif

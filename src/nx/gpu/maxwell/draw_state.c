@@ -290,3 +290,26 @@ void mx_draw_targets(const u32* r, DsTargets* t) {
     t->depth.layers = r[0x48C] & (1u << 16) ? 1 : r[0x48C] & 0xffff;
     t->depth.layer_stride = (u64)r[0x3FC] * 4;
 }
+
+/* Stream s starts at 0x701 + 4 s (2 words) and ends at its limit 0x7C0 + 2 s (2 words, inclusive) */
+void mx_draw_vertex_buffers(const u32* r, u32 streams, DsVertexBuffers* b) {
+    b->filled = streams;
+    for (u32 m = streams; m; m &= m - 1) {
+        u32 s = (u32)__builtin_ctz(m);
+        u64 start = ((u64)r[0x701 + s * 4] << 32) | r[0x702 + s * 4],
+            end = ((u64)r[0x7C0 + s * 2] << 32) | r[0x7C1 + s * 2];
+        b->addr[s] = start;
+        b->size[s] = end >= start ? end - start + 1 : 0;
+    }
+}
+
+/* The index buffer at 0x5F2/0x5F3, its last byte at 0x5F4/0x5F5, its format at 0x5F6; primitive restart 0x591, its
+   index 0x592 */
+void mx_draw_index(const u32* r, DsIndex* x) {
+    memset(x, 0, sizeof *x);
+    x->addr = ((u64)r[0x5F2] << 32) | r[0x5F3];
+    x->end = ((u64)r[0x5F4] << 32) | r[0x5F5];
+    x->format = r[0x5F6];
+    x->restart = r[0x591] != 0;
+    x->restart_index = r[0x592];
+}
