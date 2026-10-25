@@ -1,0 +1,4 @@
+family f
+@version(>= 1.0.0, < 3.0.0)
+hook f() = h
+@version(>= 2.0.0) hook f() = g

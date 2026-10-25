@@ -675,6 +675,13 @@ snx_test_target(snx-test-hook-adapters 99)
 target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook")
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
+# versioned hooks and struct layouts (tests/hook/versions.hook): the entries by version, the layout variant each
+# adapter passes, the SDK labels a module's bytes hold and the entry hook_select picks for a module's version
+add_executable(snx-test-hook-versions hook_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-hook-versions 99)
+target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
+add_test(NAME hook_versions COMMAND snx-test-hook-versions)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
         stack_argument 2 "would be on the stack"
@@ -682,7 +689,21 @@ foreach(bad IN ITEMS
         handler_mismatch 3 "h takes other arguments on line 2"
         argument_c 2 "'c' can't name an argument"
         no_family 1 "after a family line"
-        family_twice 2 "family a is named twice")
+        family_twice 2 "family a is named twice"
+        version_overlap 4 "f's versions overlap line 3's"
+        version_mixed 3 "f is declared without @version on line 2"
+        version_keys 3 "f is versioned by sdk on line 2"
+        version_key 2 "unknown version key 'gpu'"
+        version_malformed 2 "malformed version '12.x'"
+        version_empty 2 "no version satisfies this @version"
+        version_dangling 2 "@version goes before a hook or a struct"
+        struct_field_type 2 "struct S's field a is a u64, and a u32 on line 1"
+        struct_field_missing 2 "struct S has no field b, which line 1's has"
+        struct_overlap 2 "struct S's versions overlap line 1's"
+        struct_mixed 3 "struct S is declared without @version on line 1"
+        struct_past_end 3 "field a runs past the end of struct S"
+        uses_unknown 2 "unknown struct 'T'"
+        uses_uncovered 3 "no declaration of struct S holds for f's versions")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)
