@@ -10,8 +10,8 @@
    the game last added memory, the JUMPs included: games place the next recording, and size what they reserve, by it,
    so a record takes no more room than it must (a draw stops before its indirect fields, an array takes its count).
 
-   Every NVN command that has no effect the CPU can see is only recorded. Phase 1 draws nothing, so nothing reads the
-   records but the queue's submit, which runs what the CPU sees (gpu/nvn/nvn_queue.c); phase 2 replays them */
+   Every NVN command is only recorded here: the queue's replay runs the records on the GPU thread once they are
+   submitted (gpu/nvn/nvn_replay.c) */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/runtime/platform/log.h"
@@ -172,7 +172,8 @@ u64 nvn_CommandBufferGetControlMemoryUsed(CPU* c, u64 cb) {
     (void)cb;
     return 0;
 }
-/* copying a recording into the command buffer is calling it: the records stay where they are */
+/* Copying recordings is calling them here: the records stay where they are. NVN copies the commands, so a game may
+   take the source's memory back at once, which the replay would then read: neither game run so far copies any */
 void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) { nvn_CommandBufferCallCommands(c, cb, n, handles); }
 void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     i32 i;
@@ -183,13 +184,13 @@ void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     }
 }
 
-/* ============================================================ effects the CPU sees at submit */
+/* ============================================================ effects the CPU sees */
 void nvn_CommandBufferFenceSync(CPU* c, u64 cb, u64 sync, i32 condition, i32 flags) {
     (void)condition;
     (void)flags;
     *(u64*)(void*)GP(rec(c, cb, OP_FENCE_SYNC, 8)) = sync;
 }
-/* the event's value written or added to when the GPU reaches it (at submit in phase 1) */
+/* the event's value written or added to when the GPU reaches it */
 void nvn_CommandBufferSignalEvent(CPU* c, u64 cb, u64 e, i32 mode, i32 location, i32 flags, u32 value) {
     u64 address = NVN_OBJ(NvnEvent, e)->gpu;
     NvnPSignalEvent* r = REC(c, cb, OP_SIGNAL_EVENT, NvnPSignalEvent);
@@ -204,7 +205,7 @@ void nvn_CommandBufferReportCounter(CPU* c, u64 cb, i32 type, u64 address) {
     r->type = (u64)(u32)type;
     r->address = address;
 }
-/* a 32-bit value written when the GPU reaches it: an event's write, at submit in phase 1 */
+/* a 32-bit value written when the GPU reaches it: an event's write */
 void nvn_CommandBufferReportValue(CPU* c, u64 cb, u32 value, u64 address) {
     NvnPSignalEvent* r = REC(c, cb, OP_SIGNAL_EVENT, NvnPSignalEvent);
     r->value = address;
@@ -350,26 +351,22 @@ static void copy_stride(CPU* c, u64 cb, i64 stride, i32 image) {
 }
 void nvn_CommandBufferSetCopyRowStride(CPU* c, u64 cb, i64 stride) { copy_stride(c, cb, stride, 0); }
 void nvn_CommandBufferSetCopyImageStride(CPU* c, u64 cb, i64 stride) { copy_stride(c, cb, stride, 1); }
-void nvn_CommandBufferClearColorui(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
-    NvnPClearColor* r = REC(c, cb, OP_CLEAR_COLOR, NvnPClearColor);
-    int i;
-    r->index = index;
-    r->mask = mask;
-    for (i = 0; i < 4; i++) r->rgba[i] = (f32)gr32(rgba + 4 * (u64)i);
-}
-void nvn_CommandBufferClearColor(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
+/* the clear color's words as the game gives them: floats, or an integer target's integers, as the 3D engine's clear
+   registers hold them (the renderer reads them by the target's format) */
+static void clear_color(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
     NvnPClearColor* r = REC(c, cb, OP_CLEAR_COLOR, NvnPClearColor);
     r->index = index;
     r->mask = mask;
     memcpy(r->rgba, GP(rgba), sizeof r->rgba);
 }
-/* an integer target's clear, recorded as floats the replay converts back (exact up to 2^24) */
+void nvn_CommandBufferClearColor(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
+    clear_color(c, cb, index, rgba, mask);
+}
 void nvn_CommandBufferClearColori(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
-    NvnPClearColor* r = REC(c, cb, OP_CLEAR_COLOR, NvnPClearColor);
-    int i;
-    r->index = index;
-    r->mask = mask;
-    for (i = 0; i < 4; i++) r->rgba[i] = (f32)(i32)gr32(rgba + 4 * (u64)i);
+    clear_color(c, cb, index, rgba, mask);
+}
+void nvn_CommandBufferClearColorui(CPU* c, u64 cb, i32 index, u64 rgba, i32 mask) {
+    clear_color(c, cb, index, rgba, mask);
 }
 void nvn_CommandBufferClearDepthStencil(CPU* c, u64 cb, f32 depth, int depth_mask, i32 stencil, i32 stencil_mask) {
     NvnPClearDS* r = REC(c, cb, OP_CLEAR_DS, NvnPClearDS);
