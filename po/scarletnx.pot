@@ -766,6 +766,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Cannot draw the menu's icons %d pixels high, a ? shows each: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Disk: %s, %s free"
 msgstr ""
 

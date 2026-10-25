@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/model.h"
 #include "gui/browser.h"
+#include "gui/icons.h"
 #include "gui/latin.h"
 #include "gui/wide.h"
 #include <assert.h>
@@ -278,6 +279,43 @@ int main(void) {
         for (i = 1; i < (size_t)gui_wide_count; ++i) assert(gui_wide_points[i - 1] < gui_wide_points[i]);
         for (i = 0; i < (size_t)gui_wide_count; ++i)
             assert(gui_menu_glyph(gui_wide_points[i]) == 256 + gui_latin_count + 2 * (int)i);
+    }
+    /* the icons, two columns each after the wide letters, from U+E000 in icons.h's order: each its own SVG, which
+       lunasvg draws at the menus' sizes with ink inside Lucide's padding (half a unit each side of 24 blank), the code
+       point past the last '?', and each written as UTF-8 reads back as itself */
+    {
+        static uint32_t argb[96 * 96];
+        int i, k, wide = 256 + gui_latin_count + 2 * gui_wide_count;
+        static const int sides[] = {16, 24, 48, 96};
+        char utf8[4];
+        const char* at;
+        for (i = 0; i < GUI_ICON_COUNT; ++i) {
+            int c = gui_menu_glyph((uint32_t)(GUI_ICON_FIRST + i));
+            const char* name = gui_icon_svgs[i].name;
+            SnxSplashDrawing* drawing = snx_splash_open(&gui_icon_svgs[i]);
+            assert(c == wide + 2 * i && gui_glyph_cols(c) == 2);
+            for (k = 0; k < i; ++k) assert(strcmp(name, gui_icon_svgs[k].name));
+            if (!drawing) fprintf(stderr, "lunasvg cannot read %s.svg\n", name);
+            assert(drawing);
+            for (k = 0; k < (int)(sizeof sides / sizeof *sides); ++k) {
+                int side = sides[k], ink = 0, edge = 0, p;
+                assert(!snx_splash_draw(drawing, side, argb, side * 4));
+                for (p = 0; p < side * side; ++p) {
+                    int x = p % side, y = p / side, a = (int)(argb[p] >> 24);
+                    ink += a > 0;
+                    if (x < side / 48 || y < side / 48 || x >= side - side / 48 || y >= side - side / 48) edge |= a;
+                }
+                if (!ink || edge)
+                    fprintf(stderr, "%s.svg at %d pixels: %d inked, %s its edge\n", name, side, ink,
+                            edge ? "ink on" : "none on");
+                assert(ink > side && !edge);
+            }
+            snx_splash_close(drawing);
+            at = gui_icon_utf8((unsigned)(GUI_ICON_FIRST + i), utf8);
+            assert(strlen(utf8) == 3 && gui_utf8_step(&at) == (uint32_t)(GUI_ICON_FIRST + i) && !*at);
+        }
+        assert(gui_menu_glyph(GUI_ICON_END) == '?' && gui_menu_glyph(GUI_ICON_FIRST - 1) == '?');
+        assert(!gui_icon_utf8(GUI_ICON_NONE, utf8)[0] && gui_text_cols(gui_icon_utf8(GUI_ICON_SAVE, utf8)) == 2);
     }
     /* UTF-8 a character a step; U+FFFD and a byte for what no character is (overlong, a surrogate, past U+10FFFF, cut
        short, a stray byte), 0 at the end */

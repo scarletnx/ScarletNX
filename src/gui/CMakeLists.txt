@@ -142,7 +142,7 @@ endforeach()
 install(DIRECTORY themes DESTINATION ${CMAKE_INSTALL_DATADIR}/scarletnx)
 if(BUILD_TESTING)
     add_executable(snx-test-gui-model "${PROJECT_SOURCE_DIR}/tests/gui_model.c")
-    target_link_libraries(snx-test-gui-model PRIVATE snx_gui_support)
+    target_link_libraries(snx-test-gui-model PRIVATE snx_gui_support snx_splash) # the icons, drawn by lunasvg
     add_test(NAME gui_model COMMAND snx-test-gui-model)
     # what tools/uigen makes of tests/ui_test.txt, built and run: layouts, drawing, hit tests, actions, hotkeys
     set(gui_ui_test "${CMAKE_CURRENT_BINARY_DIR}/uitest")
@@ -208,6 +208,9 @@ if(BUILD_TESTING)
     # once, in order
     add_test(NAME gui_glyphs_kept COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" --check)
     add_test(NAME gui_glyphs_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/glyphs_test.py")
+    # cmake/gui_icons.cmake compiles src/gui/lucide's SVGs, and refuses one missing, not Lucide's or of no icon
+    add_test(NAME gui_icons COMMAND "${CMAKE_COMMAND}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
+             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/gui-icons-test" -P "${PROJECT_SOURCE_DIR}/tests/gui_icons.cmake")
     add_executable(snx-test-gui-process "${PROJECT_SOURCE_DIR}/tests/gui_process.c")
     target_link_libraries(snx-test-gui-process PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_process_tree COMMAND snx-test-gui-process)

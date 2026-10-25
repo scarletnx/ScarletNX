@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# snx_splash: the boot splash's drawings, Wimsy (dist/wimsy.svg) and the ones in dist/splash, compiled in as SVG text,
-# and lunasvg on plutovg (cmake/dependencies.cmake) to draw one at the splash's size (src/gui/splash.h)
+# snx_splash: the boot splash's drawings, Wimsy (dist/wimsy.svg) and the ones in dist/splash, and the menus' icons
+# (cmake/gui_icons.cmake), compiled in as SVG text, and lunasvg on plutovg (cmake/dependencies.cmake) to draw one at the
+# size it is shown (src/gui/splash.h)
 include_guard(GLOBAL)
 
 # The text of an SVG without what drawing it does not need: the XML declaration, the comments, the metadata (the
@@ -65,11 +66,13 @@ const SnxSplashSvg snx_splash_svgs[] = {
 const int snx_splash_svg_count = @snx_splash_count@;
 ")
 
+# the menus' icons, Lucide's SVGs (src/gui/icons.h), drawn the same way
+include("${PROJECT_SOURCE_DIR}/cmake/gui_icons.cmake")
 set(plutovg_sources blend canvas font ft-math ft-raster ft-stroker matrix paint path rasterize surface)
 list(TRANSFORM plutovg_sources REPLACE "(.+)" "${plutovg_SOURCE_DIR}/source/plutovg-\\1.c")
 file(GLOB lunasvg_sources "${lunasvg_SOURCE_DIR}/source/*.cpp")
 add_library(snx_splash STATIC "${PROJECT_SOURCE_DIR}/src/gui/splash.cpp" "${PROJECT_BINARY_DIR}/generated/splash_svgs.c"
-            ${plutovg_sources} ${lunasvg_sources})
+            "${snx_gui_icons_c}" ${plutovg_sources} ${lunasvg_sources})
 target_include_directories(snx_splash PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_include_directories(snx_splash SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include" "${plutovg_SOURCE_DIR}/source"
                            "${lunasvg_SOURCE_DIR}/include" "${lunasvg_SOURCE_DIR}/source")
@@ -95,6 +98,7 @@ include(GNUInstallDirs) # its folders, before the first install of a fresh confi
 install(FILES "${lunasvg_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/lunasvg)
 install(FILES "${plutovg_SOURCE_DIR}/LICENSE" "${plutovg_SOURCE_DIR}/source/FTL.TXT"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/plutovg)
+install(FILES "${snx_gui_icons_dir}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx/lucide)
 if(BUILD_TESTING)
     add_executable(snx-test-splash "${PROJECT_SOURCE_DIR}/tests/splash.c")
     target_link_libraries(snx-test-splash PRIVATE snx_splash SDL3::SDL3)

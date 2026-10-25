@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/latin.h"
 #include "common/utilities/font.h"
+#include "gui/icons.h"
 #include "gui/wide.h"
 
 int gui_menu_glyph(uint32_t codepoint) {
@@ -24,5 +25,7 @@ int gui_menu_glyph(uint32_t codepoint) {
         else
             high = middle - 1;
     }
+    if (codepoint >= GUI_ICON_FIRST && codepoint < GUI_ICON_END)
+        return 256 + gui_latin_count + 2 * gui_wide_count + 2 * (int)(codepoint - GUI_ICON_FIRST);
     return '?';
 }

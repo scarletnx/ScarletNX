@@ -26,6 +26,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
+| Lucide 1.61.0 (the menus' icons, `src/gui/lucide/`, as Lucide ships them; some derived from Feather) | ISC, the Feather ones MIT ([text](../src/gui/lucide/LICENSE)) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
 | GUI Latin letters past CP437 (GNU Unifont 18.0.01's 8x16 glyphs, `src/gui/unifont-latin.hex`, fitted to the VGA font) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
 | GUI wide letters the languages show, as Chinese (GNU Unifont 18.0.01's 16x16 glyphs, `src/gui/unifont-wide.hex`) | GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1 |
