@@ -511,72 +511,37 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
 }
 
 /* ------------------------------------------------------------ register values -> Vulkan */
-static VkBlendFactor blend_factor(u32 v) {
-    if (v & 0x4000)
-        v &= ~0x4000u; /* a GL enum */
-    else
-        switch (v) { /* the D3D-style numbering */
-            case 1: return VK_BLEND_FACTOR_ZERO;
-            case 2: return VK_BLEND_FACTOR_ONE;
-            case 3: return VK_BLEND_FACTOR_SRC_COLOR;
-            case 4: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-            case 5: return VK_BLEND_FACTOR_SRC_ALPHA;
-            case 6: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-            case 7: return VK_BLEND_FACTOR_DST_ALPHA;
-            case 8: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-            case 9: return VK_BLEND_FACTOR_DST_COLOR;
-            case 10: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
-            case 11: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
-            case 14: return VK_BLEND_FACTOR_CONSTANT_COLOR;
-            case 15: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-            case 16: return VK_BLEND_FACTOR_SRC1_COLOR;
-            case 17: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
-            case 18: return VK_BLEND_FACTOR_SRC1_ALPHA;
-            case 19: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
-            default: return VK_BLEND_FACTOR_ONE;
-        }
-    switch (v) {
-        case 0: return VK_BLEND_FACTOR_ZERO;
-        case 1: return VK_BLEND_FACTOR_ONE;
-        case 0x300: return VK_BLEND_FACTOR_SRC_COLOR;
-        case 0x301: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-        case 0x302: return VK_BLEND_FACTOR_SRC_ALPHA;
-        case 0x303: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        case 0x304: return VK_BLEND_FACTOR_DST_ALPHA;
-        case 0x305: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-        case 0x306: return VK_BLEND_FACTOR_DST_COLOR;
-        case 0x307: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
-        case 0x308: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
-        case 0x8001: return VK_BLEND_FACTOR_CONSTANT_COLOR;
-        case 0x8002: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-        case 0x8003: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
-        case 0x8004: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
-        /* the dual-source factors as the hardware numbers them (0xC900-0xC903), not by their GL values */
-        case 0x8900: return VK_BLEND_FACTOR_SRC1_COLOR;
-        case 0x8901: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
-        case 0x8902: return VK_BLEND_FACTOR_SRC1_ALPHA;
-        case 0x8903: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
-        case 0x88F9: return VK_BLEND_FACTOR_SRC1_COLOR;
-        case 0x88FA: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
-        case 0x8589: return VK_BLEND_FACTOR_SRC1_ALPHA;
-        case 0x88FB: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
-    }
-    return VK_BLEND_FACTOR_ONE;
-}
-static VkBlendOp blend_op(u32 v) {
-    switch (v) {
-        case 2:
-        case 0x800A: return VK_BLEND_OP_SUBTRACT;
-        case 3:
-        case 0x800B: return VK_BLEND_OP_REVERSE_SUBTRACT;
-        case 4:
-        case 0x8007: return VK_BLEND_OP_MIN;
-        case 5:
-        case 0x8008: return VK_BLEND_OP_MAX;
-    }
-    return VK_BLEND_OP_ADD;
-}
 /* the draw state's enumerants are Vulkan's (gpu/draw_state.h) */
+typedef char ds_blend_vk[DS_BLEND_ADD == VK_BLEND_OP_ADD && DS_BLEND_SUBTRACT == VK_BLEND_OP_SUBTRACT &&
+                                 DS_BLEND_REVERSE_SUBTRACT == VK_BLEND_OP_REVERSE_SUBTRACT &&
+                                 DS_BLEND_MIN == VK_BLEND_OP_MIN && DS_BLEND_MAX == VK_BLEND_OP_MAX
+                             ? 1
+                             : -1];
+typedef char ds_factor_vk[DS_FACTOR_ZERO == VK_BLEND_FACTOR_ZERO && DS_FACTOR_ONE == VK_BLEND_FACTOR_ONE &&
+                                  DS_FACTOR_SRC_COLOR == VK_BLEND_FACTOR_SRC_COLOR &&
+                                  DS_FACTOR_ONE_MINUS_SRC_COLOR == VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR &&
+                                  DS_FACTOR_DST_COLOR == VK_BLEND_FACTOR_DST_COLOR &&
+                                  DS_FACTOR_ONE_MINUS_DST_COLOR == VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR &&
+                                  DS_FACTOR_SRC_ALPHA == VK_BLEND_FACTOR_SRC_ALPHA &&
+                                  DS_FACTOR_ONE_MINUS_SRC_ALPHA == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA &&
+                                  DS_FACTOR_DST_ALPHA == VK_BLEND_FACTOR_DST_ALPHA &&
+                                  DS_FACTOR_ONE_MINUS_DST_ALPHA == VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA &&
+                                  DS_FACTOR_CONSTANT_COLOR == VK_BLEND_FACTOR_CONSTANT_COLOR &&
+                                  DS_FACTOR_ONE_MINUS_CONSTANT_COLOR == VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR &&
+                                  DS_FACTOR_CONSTANT_ALPHA == VK_BLEND_FACTOR_CONSTANT_ALPHA &&
+                                  DS_FACTOR_ONE_MINUS_CONSTANT_ALPHA == VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA &&
+                                  DS_FACTOR_SRC_ALPHA_SATURATE == VK_BLEND_FACTOR_SRC_ALPHA_SATURATE &&
+                                  DS_FACTOR_SRC1_COLOR == VK_BLEND_FACTOR_SRC1_COLOR &&
+                                  DS_FACTOR_ONE_MINUS_SRC1_COLOR == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR &&
+                                  DS_FACTOR_SRC1_ALPHA == VK_BLEND_FACTOR_SRC1_ALPHA &&
+                                  DS_FACTOR_ONE_MINUS_SRC1_ALPHA == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA
+                              ? 1
+                              : -1];
+typedef char ds_component_vk[DS_COMPONENT_R == VK_COLOR_COMPONENT_R_BIT && DS_COMPONENT_G == VK_COLOR_COMPONENT_G_BIT &&
+                                     DS_COMPONENT_B == VK_COLOR_COMPONENT_B_BIT &&
+                                     DS_COMPONENT_A == VK_COLOR_COMPONENT_A_BIT
+                                 ? 1
+                                 : -1];
 typedef char ds_polygon_vk[DS_POLYGON_FILL == VK_POLYGON_MODE_FILL && DS_POLYGON_LINE == VK_POLYGON_MODE_LINE &&
                                    DS_POLYGON_POINT == VK_POLYGON_MODE_POINT
                                ? 1
@@ -950,9 +915,9 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
     fk->rs |= signed_images << 8;
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
-static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
+static VkSh* fs_variant(GpuChannel* ch, const DsPrograms* p, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
-    return vk_shader_get(ch, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
+    return vk_shader_get(ch, p, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -1911,11 +1876,6 @@ static VkFrontFace front_face_at_viewport(const DsDynamic* d, float viewport_hei
     if ((d->window_origin & DS_ORIGIN_FLIP_Y) && viewport_height > 0) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
-int vk_render_depth_clamp(const u32* r) {
-    /* GeometryClip: Passthrough, FrustumXYZ and FrustumZ clip depth; the remaining modes clamp it. */
-    u32 mode = (r[0x64F] >> 11) & 7;
-    return mode != 1 && mode != 3 && mode != 5;
-}
 
 VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v) {
     return front_face_at_viewport(d, vk_viewport_from(d, v, 0).height);
@@ -2065,18 +2025,17 @@ static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
     return a->vs == b->vs && a->tcs == b->tcs && a->tes == b->tes && a->gs == b->gs && a->fs0 == b->fs0 &&
            a->attr_int == b->attr_int && a->attr_sint == b->attr_sint && a->rt_int == b->rt_int && a->rt_sint == b->rt_sint && a->topology == b->topology && a->xfb_on == b->xfb_on;
 }
-/* the shaders of ch's registers for a draw of topology: 0 when the draw is skipped */
-static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
+/* the shaders of the programs p, the vertex format vf and ch's targets for a draw of topology: 0 when the draw is
+   skipped */
+static int draw_shaders(GpuChannel* ch, const DsPrograms* p, const DsVertexFormat* vf, u32 topology, DrawShaders* o) {
     const u32* r = ch->r3d;
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
-    u64 code = ((u64)r[0x582] << 32) | r[0x583];
-    u32 attr_int, attr_sint, clip;
+    u32 attr_int = vf->is_int, attr_sint = vf->is_sint, clip;
     int tcs_on, tes_on, gs_on;
-    attr_ints(r, &attr_int, &attr_sint);
     /* the stages between: tessellation control and evaluation (program slots 2 and 3), geometry (slot 4) */
-    tcs_on = r[0x820] & 1;
-    tes_on = r[0x830] & 1;
-    gs_on = r[0x840] & 1;
+    tcs_on = p->on >> 2 & 1;
+    tes_on = p->on >> 3 & 1;
+    gs_on = p->on >> 4 & 1;
     if ((tcs_on || tes_on || gs_on) && g_vk_stage_sets < 5) {
         LOG_LIMIT(1, "vulkan: this GPU binds too few descriptor sets for tessellation and geometry (draw skipped)\n");
         return 0;
@@ -2090,49 +2049,37 @@ static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
     if ((topology == 14 && !tes_on) || (topology >= 10 && topology <= 13 && !gs_on))
         return 0; /* patches and adjacency need the stages above */
     if (tes_on) topology = 14; /* every primitive is a patch with tessellation, as Vulkan requires */
-    /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set, in the last
-       stage before rasterization */
-    clip = r[0x544] & 0xFF;
-    /* transform feedback (0x1D1): what the last stage before rasterization captures, from each buffer's control
-       (0x1C0 + 4 * i: its stream, the words of a vertex, their stride in bytes) and the layout of those words
-       (0xA00 + 0x20 * i, a byte each: an attribute word, as Eden's MakeTransformFeedbackVaryings reads them) */
+    /* a clip distance the program writes clips only when its bit is set, in the last stage before rasterization */
+    clip = p->clip_enable;
+    /* transform feedback: what the last stage before rasterization captures */
     ShXfb xfb;
-    int xfb_on = g_vk.has_xfb && r[0x1D1] && xfb_counters();
-    if (xfb_on) {
-        memset(&xfb, 0, sizeof xfb);
-        for (int i = 0; i < 4; i++) {
-            u32 words = r[0x1C1 + 4 * i];
-            xfb.count[i] = (u8)(words > 128 ? 128 : words);
-            xfb.stride[i] = (u16)r[0x1C2 + 4 * i];
-            memcpy(xfb.layout[i], &r[0xA00 + 0x20 * i], sizeof xfb.layout[i]); /* word n / 4's byte n % 4 */
-        }
-    }
+    int xfb_on = g_vk.has_xfb && p->xfb_on && xfb_counters();
+    if (xfb_on) mx_draw_xfb(r, &xfb);
     o->topology = topology;
     o->xfb_on = xfb_on;
     o->attr_int = attr_int;
     o->attr_sint = attr_sint;
-    o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                          tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
-                          xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+    o->vs = vk_shader_get(ch, p, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
+                          tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !tes_on && !gs_on ? &xfb : NULL);
     /* a vertex program's images pick its variant as a fragment program's do (fs_key) */
     u32 vs_signed_images = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ch, 0, o->vs, &vs_signed_images) : 0;
     if (vs_images || vs_signed_images)
-        o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint,
+        o->vs = vk_shader_get(ch, p, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint,
                               vs_images << 8, vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
                               xfb_on && !tes_on && !gs_on ? &xfb : NULL);
-    o->tcs =
-        tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
-    o->tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0,
+    o->tcs = tcs_on ? vk_shader_get(ch, p, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
+    o->tes = tes_on ? vk_shader_get(ch, p, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,
                                     gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !gs_on ? &xfb : NULL)
                     : NULL;
-    o->gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]),
-                                  0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
-                  : NULL;
+    o->gs = gs_on
+                ? vk_shader_get(ch, p, p->code[4], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, p->tess_params),
+                                0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
+                : NULL;
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
-    o->fs0 = (r[0x850] & 1) ? vk_shader_get(ch, code + r[0x851], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
+    o->fs0 = (p->on >> 5 & 1) ? vk_shader_get(ch, p, p->code[5], 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0, NULL) : NULL;
     rt_int_targets(r, &o->rt_int, &o->rt_sint);
     return 1;
 }
@@ -2165,10 +2112,12 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
         tf->stencil = zt->f.stencil ? 1 : 0;
     }
 }
-/* the pipeline key of the shaders (fs the fragment variant drawn), ch's registers and the targets drawn to, all but
-   the feedback loop, and the vertex bindings it describes: 0 when the draw is skipped */
-static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt,
-                    u32 n, PipeKey* k, VertexPlan* pl) {
+/* the pipeline key of the shaders (fs the fragment variant drawn), the vertex format vf, blending bl, the raster
+   state rk, ch's vertex streams and the targets drawn to, all but the feedback loop, and the vertex bindings it
+   describes: 0 when the draw is skipped */
+static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs, const DsVertexFormat* vf,
+                    const DsBlend* bl, const DsRasterKey* rk, Surf* const* rt, const Surf* zt, u32 n, PipeKey* k,
+                    VertexPlan* pl) {
     const u32* r = ch->r3d;
     const VkSh* vs = sh->vs;
     u32 topology = sh->topology;
@@ -2176,15 +2125,15 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     memset(pl, 0, sizeof *pl);
     k->vs = vs->mod;
     k->fs = fs ? fs->mod : VK_NULL_HANDLE;
-    k->depth_clamp = g_vk.feat.depthClamp && vk_render_depth_clamp(r);
-    /* PROVOKING_VERTEX (0x5A1): 1 the last vertex, GL's and NVN's default, 0 the first, Vulkan's */
-    k->provoking_last = (r[0x5A1] & 1) && g_vk.has_provoking_last;
-    if ((r[0x5A1] & 1) && !g_vk.has_provoking_last)
+    k->depth_clamp = g_vk.feat.depthClamp && rk->depth_clamp;
+    if (!g_vk.feat.depthClamp && rk->depth_clamp)
+        LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
+    k->provoking_last = rk->provoking_last && g_vk.has_provoking_last;
+    if (rk->provoking_last && !g_vk.has_provoking_last)
         LOG_LIMIT(1, "vulkan: flat inputs take the first vertex of a primitive, not the last the game asks for\n");
-    /* LOGIC_OP (0x671 on, 0x672 the operation as GL numbers it from CLEAR 0x1500 to SET 0x150F, VkLogicOp's order) */
-    if (r[0x671] & 1) {
+    if (bl->logic_op) {
         if (g_vk.feat.logicOp)
-            k->logic_op = (r[0x672] & 15) + 1;
+            k->logic_op = bl->logic_op;
         else
             LOG_LIMIT(1, "vulkan: this GPU has no logic operations: targets are blended instead\n");
     }
@@ -2202,15 +2151,12 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
         for (int i = 0; i < 5; i++)
             if (stages[i] && stages[i]->indexed) k->arrays |= 1u << shader_vk_set(stages[i]->stage);
     }
-    if (sh->tes) { /* 0x373: the control points of a patch */
-        k->patch = r[0x373] ? r[0x373] : 1;
+    if (sh->tes) { /* the control points of a patch */
+        k->patch = rk->patch_vertices ? rk->patch_vertices : 1;
         if (k->patch > g_vk.props.limits.maxTessellationPatchSize)
             k->patch = g_vk.props.limits.maxTessellationPatchSize;
     }
-    k->polygon = !g_vk.feat.fillModeNonSolid ? VK_POLYGON_MODE_FILL
-                 : r[0x36B] == 0x1B01        ? VK_POLYGON_MODE_LINE
-                 : r[0x36B] == 0x1B00        ? VK_POLYGON_MODE_POINT
-                                             : VK_POLYGON_MODE_FILL;
+    k->polygon = !g_vk.feat.fillModeNonSolid ? VK_POLYGON_MODE_FILL : rk->polygon;
 
     /* vertex streams: each used guest stream is a binding, and so is an attribute at an offset past the device's
        limit or reaching past its stream's stride (it is read from its own offset there); one more holds the 0,0,0,1
@@ -2229,11 +2175,10 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     pl->empty = attributes_empty(r, vs->si.in_mask);
     for (u32 i = 0; i < nloc && !over; i++) {
         if (!(vs->si.in_mask & (1u << i))) continue;
-        u32 a = r[0x458 + i];
-        u32 sbuf = a & 31, off = (a >> 7) & 0x3FFF, size = (a >> 21) & 0x3F, ty = (a >> 27) & 7;
-        const u32* va = &r[0x700 + sbuf * 4];
-        VkFormat fmt = attr_format(size, ty, (a >> 31) & 1);
-        int is_int = ty == 3 || ty == 4, data = !((a >> 6) & 1) && (va[0] & 0x1000) && vertex_format_ok(fmt);
+        u32 sbuf = vf->stream[i], off = vf->offset[i], size = vf->size[i], ty = vf->type[i];
+        VkFormat fmt = attr_format(size, ty, (vf->bgra >> i) & 1);
+        int is_int = ty == 3 || ty == 4,
+            data = !((vf->constant >> i) & 1) && ((vf->stream_on >> sbuf) & 1) && vertex_format_ok(fmt);
         if (data) {
             pl->used |= 1u << sbuf;
         }
@@ -2270,7 +2215,7 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
             k->nattr++;
             continue;
         }
-        u32 stride = va[0] & 0xFFF, asz = attr_bytes(size);
+        u32 stride = vf->stride[sbuf], asz = attr_bytes(size);
         /* an attribute may be wider than its stream's stride (a game may read 8-byte attributes from
            6-byte strides, its world geometry): Maxwell reads the rest from the next vertex, and so does Vulkan,
            which allows it outside the portability subset (vertexAttributeAccessBeyondStride) */
@@ -2291,7 +2236,7 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
             pl->pad[b] = stride && base + asz > stride ? base + asz - stride : 0;
             pl->stride[b] = stride;
             pl->key[b] = key;
-            u32 div = r[0x620 + sbuf] ? (va[3] ? va[3] : 1) : 0;
+            u32 div = (vf->instanced >> sbuf) & 1 ? (vf->divisor[sbuf] ? vf->divisor[sbuf] : 1) : 0;
             if (div > 1 && !g_vk.has_divisor) div = 1;
             k->bind[b].divisor = div;
             k->bind[b].stride = g_vk.has_dynamic_stride ? 0 : stride;
@@ -2322,31 +2267,16 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     k->ncolor = n;
     for (u32 i = 0; i < n; i++) {
         if (!rt[i]) continue; /* format UNDEFINED, nothing written */
-        k->color[i] = r[0x56E] & 1 ? rt[i]->f.vk : vk_srgb_as(rt[i]->f.vk, 0);
-        u32 cm = r[0x3E4] ? r[0x680] : r[0x680 + i];
-        k->blend[i].mask = ((cm & 0xF) ? VK_COLOR_COMPONENT_R_BIT : 0) |
-                           ((cm & 0xF0) ? VK_COLOR_COMPONENT_G_BIT : 0) |
-                           ((cm & 0xF00) ? VK_COLOR_COMPONENT_B_BIT : 0) |
-                           ((cm & 0xF000) ? VK_COLOR_COMPONENT_A_BIT : 0);
-        if (r[0x4D8 + i] && !rt[i]->f.is_int) {
-            /* the alpha fields are used even without separate alpha, as on hardware */
-            const u32* b = &r[0x780 + i * 8];
-            u32 eq, sc, dc, eqa, sa, da;
-            if (r[0x4B9]) {
-                eq = b[1], sc = b[2], dc = b[3];
-                eqa = b[4] ? b[4] : b[1], sa = b[5] ? b[5] : b[2], da = b[6] ? b[6] : b[3];
-            } else {
-                eq = r[0x4D0], sc = r[0x4D1], dc = r[0x4D2];
-                eqa = r[0x4D3] ? r[0x4D3] : r[0x4D0], sa = r[0x4D4] ? r[0x4D4] : r[0x4D1];
-                da = r[0x4D6] ? r[0x4D6] : r[0x4D2];
-            }
+        k->color[i] = bl->srgb_write ? rt[i]->f.vk : vk_srgb_as(rt[i]->f.vk, 0);
+        k->blend[i].mask = bl->mask[i];
+        if (bl->en[i] && !rt[i]->f.is_int) {
             k->blend[i].en = 1;
-            k->blend[i].cop = blend_op(eq);
-            k->blend[i].sc = blend_factor(sc);
-            k->blend[i].dc = blend_factor(dc);
-            k->blend[i].aop = blend_op(eqa);
-            k->blend[i].sa = blend_factor(sa);
-            k->blend[i].da = blend_factor(da);
+            k->blend[i].cop = bl->cop[i];
+            k->blend[i].sc = bl->sc[i];
+            k->blend[i].dc = bl->dc[i];
+            k->blend[i].aop = bl->aop[i];
+            k->blend[i].sa = bl->sa[i];
+            k->blend[i].da = bl->da[i];
         }
     }
     if (zt) {
@@ -2511,7 +2441,13 @@ retry:
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
-    u64 code = ((u64)r[0x582] << 32) | r[0x583];
+    DsPrograms prog; /* read every draw: the fragment variant, keyed each draw, takes the early Z flag */
+    mx_draw_programs(r, &prog);
+    /* the vertex format, blending and raster state: read only for a draw whose key is made */
+    DsVertexFormat vfmt;
+    DsBlend blend;
+    DsRasterKey rkey;
+    int key_read = 0;
     u32 epoch = __atomic_load_n(&g_vk_epoch, __ATOMIC_RELAXED);
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
        here when it doesn't (and when SNX_DIRTY_CHECK compares) */
@@ -2521,7 +2457,11 @@ retry:
     if (kept) sh = g_draw.sh;
     if (!kept || g_draw.check) {
         DrawShaders made;
-        if (!draw_shaders(ch, draw_topo, &made)) {
+        mx_draw_vertex_format(r, &vfmt);
+        mx_draw_blend(r, &blend);
+        mx_draw_raster_key(r, &rkey);
+        key_read = 1;
+        if (!draw_shaders(ch, &prog, &vfmt, draw_topo, &made)) {
             if (kept) {
                 draw_differs("shaders");
                 g_draw.sh.vs = NULL;
@@ -2553,7 +2493,7 @@ retry:
         if (kept && memcmp(&fk, &g_draw.fkey, sizeof fk)) kept = 0;
         if (kept) fs = g_draw.fs;
         if (!kept || g_draw.check) {
-            VkSh* made = fs_variant(ch, code + r[0x851], sh.fs0, &fk);
+            VkSh* made = fs_variant(ch, &prog, prog.code[5], sh.fs0, &fk);
             if (kept && made != fs) {
                 draw_differs("fragment shader");
                 kept = 0;
@@ -2577,11 +2517,11 @@ retry:
             LOG_LIMIT(64,
                       "gpu-trace-target: draw color slot %u target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n", i,
                       (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, count, indexed,
-                      (unsigned long long)(code + r[0x811]), (unsigned long long)(code + r[0x851]));
+                      (unsigned long long)prog.code[1], (unsigned long long)prog.code[5]);
     if (trace_target(zt))
         LOG_LIMIT(64, "gpu-trace-target: draw depth target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",
-                  (unsigned long long)zt->gva, zt->w, zt->h, count, indexed, (unsigned long long)(code + r[0x811]),
-                  (unsigned long long)(code + r[0x851]));
+                  (unsigned long long)zt->gva, zt->w, zt->h, count, indexed, (unsigned long long)prog.code[1],
+                  (unsigned long long)prog.code[5]);
     /* a color target the fragment shader samples but doesn't write (no output for it, or a write mask of 0) is drawn
        without: a game's lighting passes may keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
@@ -2639,7 +2579,12 @@ retry:
     const PipeKey* k = &g_draw.k;
     const VertexPlan* pl = &g_draw.plan;
     if (!kept || g_draw.check) {
-        if (!draw_key(ch, &sh, fs, rt, zt, n, &made_k, &made_pl)) {
+        if (!key_read) {
+            mx_draw_vertex_format(r, &vfmt);
+            mx_draw_blend(r, &blend);
+            mx_draw_raster_key(r, &rkey);
+        }
+        if (!draw_key(ch, &sh, fs, &vfmt, &blend, &rkey, rt, zt, n, &made_k, &made_pl)) {
             if (kept) {
                 draw_differs("pipeline key");
                 g_draw.sh.vs = NULL;
@@ -3124,8 +3069,6 @@ retry:
         float bias[3] = {dyn.bias_units, g_vk.feat.depthBiasClamp ? dyn.bias_clamp : 0.0f, dyn.bias_slope};
         DYNV(bias, bias, rec_CmdSetDepthBias(cb, bias[0], bias[1], bias[2]));
     }
-    if (!g_vk.feat.depthClamp && vk_render_depth_clamp(r))
-        LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
     DYNV(bc, dyn.blend_const, rec_CmdSetBlendConstants(cb, dyn.blend_const));
     /* depth and stencil */
     {

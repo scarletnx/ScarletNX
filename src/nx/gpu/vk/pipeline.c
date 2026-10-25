@@ -490,8 +490,9 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
         s->failed = 1;
     return s;
 }
-VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb) {
+VkSh* vk_shader_get(const GpuChannel* ch, const DsPrograms* p, u64 gva, u64 gva_a, int stage, u64 int_mask,
+                    u64 sint_mask, u32 rt_int, u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed,
+                    const ShXfb* xfb) {
     pf_merge();
     g_sh_ch = ch;
     g_sh_bind = stage <= ST_FS ? stage : 0;
@@ -506,8 +507,8 @@ VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int
                     (u32)(dc_color >> 32),
                     dc_funcs,
                     unfed};
-    if (stage == ST_FS && ch) mask[11] = ch->r3d[0x084] & 1; /* MANDATED_EARLY_Z */
-    if (stage == ST_GS && ch) memcpy(mask + 12, ch->r3d + 0x490, 8 * sizeof(u32));
+    if (stage == ST_FS && p) mask[11] = p->early_z;
+    if (stage == ST_GS && p) memcpy(mask + 12, p->gs_skip, 8 * sizeof(u32));
     /* a capture's layout, in the words only the fragment stage's key uses otherwise */
     if (stage != ST_FS && xfb) {
         u64 xh = vk_hash(xfb, sizeof *xfb);

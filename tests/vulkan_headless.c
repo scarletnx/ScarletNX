@@ -159,11 +159,6 @@ static VkFrontFace front_face_of(const u32* r) {
 
 static int check_viewport_orientation(void) {
     u32 r[0xE00] = {0};
-    for (u32 mode = 0; mode <= 6; mode++) {
-        r[0x64F] = mode << 11;
-        CHECK(vk_render_depth_clamp(r) == (mode == 0 || mode == 2 || mode == 4 || mode == 6));
-    }
-    r[0x64F] = 0;
     float transform[6] = {32, 17, 0.5f, 40, 37, 0.5f};
     memcpy(&r[0x280], transform, sizeof transform);
     r[0x64B] = 1;

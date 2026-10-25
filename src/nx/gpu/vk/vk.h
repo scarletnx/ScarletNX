@@ -928,9 +928,11 @@ void vk_pipeline_init(void);
    tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
    enables, and SNX_SH_NOT_LAST (the stages before rasterization). The translator reads ch's bound constant buffers
    (ch->cbind) to resolve indirect branches. xfb: what transform feedback captures of the last stage before
-   rasterization's outputs (ShaderInfo.xfb), NULL for none */
-VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, const ShXfb* xfb);
+   rasterization's outputs (ShaderInfo.xfb), NULL for none. p: the programs' state that keys a fragment program (its
+   early fragment tests) and a geometry program (its passthrough mask), NULL for none */
+VkSh* vk_shader_get(const GpuChannel* ch, const DsPrograms* p, u64 gva, u64 gva_a, int stage, u64 int_mask,
+                    u64 sint_mask, u32 rt_int, u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed,
+                    const ShXfb* xfb);
 /* whether the constant buffer words s's translation read still hold in ch's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const GpuChannel* ch, const VkSh* s);
@@ -1025,7 +1027,6 @@ void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain do
 void vk_render_clear(GpuChannel* ch, u32 v);
 /* viewport index of a draw's state with the resolution scale, and the facing its first viewport gives */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
-int vk_render_depth_clamp(const u32* r);
 VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
