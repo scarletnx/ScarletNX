@@ -471,6 +471,42 @@ u64 nvn_TextureBuilderGetZCullStorageSize(CPU* c, u64 b) {
     (void)c;
     return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
 }
+i32 nvn_TextureBuilderGetTarget(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->d.target;
+}
+i32 nvn_TextureBuilderGetWidth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)TB(b)->d.width;
+}
+i32 nvn_TextureBuilderGetHeight(CPU* c, u64 b) {
+    (void)c;
+    return (i32)TB(b)->d.height;
+}
+i32 nvn_TextureBuilderGetDepth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)TB(b)->d.depth;
+}
+i32 nvn_TextureBuilderGetLevels(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->d.levels;
+}
+i32 nvn_TextureBuilderGetFormat(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->d.format;
+}
+i32 nvn_TextureBuilderGetSamples(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->d.samples;
+}
+i32 nvn_TextureBuilderGetFlags(CPU* c, u64 b) {
+    (void)c;
+    return (i32)TB(b)->d.flags;
+}
+i64 nvn_TextureBuilderGetStride(CPU* c, u64 b) {
+    (void)c;
+    return (i64)TB(b)->d.stride;
+}
 void nvn_TextureBuilderSetDepth(CPU* c, u64 b, i32 depth) {
     (void)c;
     TB(b)->d.depth = (u32)depth;
@@ -647,6 +683,43 @@ void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     LOG_LIMIT(4, "nvn: nvnTextureWriteTexels into texture %llx: left to phase 2's GPU swizzle\n",
               (unsigned long long)t);
 }
+/* the channel mapping SetSwizzle gave the builder, R G B A when it gave none */
+static u32 tex_swizzle(const NvnTexDesc* d) { return d->swizzle & NVN_TEX_SWIZZLE_SET ? d->swizzle : 2u | 3u << 3 | 4u << 6 | 5u << 9; }
+void nvn_TextureGetSwizzle(CPU* c, u64 t, u64 r, u64 g, u64 b, u64 a) {
+    u32 w = tex_swizzle(&CT(t)->d);
+    (void)c;
+    if (r) gw32(r, w & 7);
+    if (g) gw32(g, w >> 3 & 7);
+    if (b) gw32(b, w >> 6 & 7);
+    if (a) gw32(a, w >> 9 & 7);
+}
+i32 nvn_TextureGetDepthStencilMode(CPU* c, u64 t) {
+    (void)c;
+    return CT(t)->d.bits & NVN_TEX_STENCIL ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : 0;
+}
+i32 nvn_TextureGetStorageClass(CPU* c, u64 t) {
+    (void)c;
+    (void)t;
+    return 0;
+}
+/* the storage's GPU address: its guest address in phase 1 */
+u64 nvn_TextureGetTextureAddress(CPU* c, u64 t) {
+    (void)c;
+    return CT(t)->memory;
+}
+/* the same texture (games replace a registered descriptor only when the two differ): description, storage and
+   channel mapping */
+int nvn_TextureCompare(CPU* c, u64 a, u64 b) {
+    const NvnTexture *x = CT(a), *y = CT(b);
+    (void)c;
+    return !memcmp(&x->d, &y->d, sizeof x->d) && x->memory == y->memory;
+}
+u64 nvn_TextureGetZCullStorageSize(CPU* c, u64 t) {
+    const NvnTexDesc* d = &CT(t)->d;
+    u64 tiles = (u64)((d->width + 31) / 32) * ((d->height + 31) / 32) * (d->depth ? d->depth : 1);
+    (void)c;
+    return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
+}
 /* WriteTexels writes the texels into the storage's block-linear layout: a swizzle, which is the GPU's work
    (docs/BLOCKLINEAR.md). Nothing reads the storage without a renderer, so phase 1 leaves it to phase 2, which swizzles
    the source rows on the GPU */
@@ -697,6 +770,47 @@ void nvn_TextureViewSetDepthStencilMode(CPU* c, u64 v, i32 mode) {
     NvnView* o = VW(v);
     (void)c;
     o->set = (u8)((o->set & 0x3fu) | NVN_VIEW_DSMODE | ((u32)mode & 3u) << 6);
+}
+int nvn_TextureViewGetLevels(CPU* c, u64 v, u64 base, u64 n) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(base, o->base_level);
+    gw32(n, o->levels);
+    return (o->set & NVN_VIEW_LEVELS) != 0;
+}
+int nvn_TextureViewGetLayers(CPU* c, u64 v, u64 min, u64 n) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(min, o->min_layer);
+    gw32(n, o->layers);
+    return (o->set & NVN_VIEW_LAYERS) != 0;
+}
+int nvn_TextureViewGetFormat(CPU* c, u64 v, u64 format) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(format, o->format);
+    return (o->set & NVN_VIEW_FORMAT) != 0;
+}
+int nvn_TextureViewGetTarget(CPU* c, u64 v, u64 target) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(target, o->target);
+    return (o->set & NVN_VIEW_TARGET) != 0;
+}
+int nvn_TextureViewGetSwizzle(CPU* c, u64 v, u64 r, u64 g, u64 b, u64 a) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(r, o->swizzle[0]);
+    gw32(g, o->swizzle[1]);
+    gw32(b, o->swizzle[2]);
+    gw32(a, o->swizzle[3]);
+    return (o->set & NVN_VIEW_SWIZZLE) != 0;
+}
+int nvn_TextureViewGetDepthStencilMode(CPU* c, u64 v, u64 mode) {
+    const NvnView* o = VW(v);
+    (void)c;
+    gw32(mode, (u32)o->set >> 6);
+    return (o->set & NVN_VIEW_DSMODE) != 0;
 }
 void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
     NvnView* o = VW(v);
@@ -779,6 +893,54 @@ void nvn_SamplerSetDebugLabel(CPU* c, u64 s, u64 label) {
     (void)c;
     (void)s;
     (void)label;
+}
+#define SP(s) (&NVN_OBJ(const NvnSampler, s)->p)
+void nvn_SamplerGetMinMagFilter(CPU* c, u64 s, u64 min, u64 mag) {
+    (void)c;
+    gw32(min, SP(s)->min_filter);
+    gw32(mag, SP(s)->mag_filter);
+}
+void nvn_SamplerGetWrapMode(CPU* c, u64 s, u64 ws, u64 wt, u64 wr) {
+    (void)c;
+    gw32(ws, SP(s)->wrap_s);
+    gw32(wt, SP(s)->wrap_t);
+    gw32(wr, SP(s)->wrap_r);
+}
+void nvn_SamplerGetLodClamp(CPU* c, u64 s, u64 min, u64 max) {
+    (void)c;
+    memcpy(GP(min), &SP(s)->lod_min, 4);
+    memcpy(GP(max), &SP(s)->lod_max, 4);
+}
+f32 nvn_SamplerGetLodBias(CPU* c, u64 s) {
+    (void)c;
+    return SP(s)->lod_bias;
+}
+void nvn_SamplerGetCompare(CPU* c, u64 s, u64 mode, u64 func) {
+    (void)c;
+    gw32(mode, SP(s)->compare_mode);
+    gw32(func, SP(s)->compare_func);
+}
+void nvn_SamplerGetBorderColor(CPU* c, u64 s, u64 rgba) {
+    (void)c;
+    memcpy(GP(rgba), SP(s)->border, 16);
+}
+f32 nvn_SamplerGetMaxAnisotropy(CPU* c, u64 s) {
+    (void)c;
+    return SP(s)->anisotropy;
+}
+i32 nvn_SamplerGetReductionFilter(CPU* c, u64 s) {
+    (void)c;
+    return SP(s)->reduction;
+}
+/* the same sampler state (games deduplicate sampler pool entries by it) */
+int nvn_SamplerCompare(CPU* c, u64 a, u64 b) {
+    const NvnSamplerPar *x = SP(a), *y = SP(b);
+    (void)c;
+    return x->min_filter == y->min_filter && x->mag_filter == y->mag_filter && x->wrap_s == y->wrap_s &&
+           x->wrap_t == y->wrap_t && x->wrap_r == y->wrap_r && x->compare_mode == y->compare_mode &&
+           x->compare_func == y->compare_func && x->reduction == y->reduction && x->lod_min == y->lod_min &&
+           x->lod_max == y->lod_max && x->lod_bias == y->lod_bias && x->anisotropy == y->anisotropy &&
+           !memcmp(x->border, y->border, sizeof x->border);
 }
 void nvn_SamplerFinalize(CPU* c, u64 s) {
     (void)c;

@@ -445,6 +445,46 @@ typedef struct {
 typedef struct {
     u64 src, dst, size;
 } NvnPCopyB2B;
+/* a copy between a buffer and a texture (OP_COPY_B2T, and OP_COPY_T2B with buffer the destination), with the
+   texture's snapshot after it */
+typedef struct {
+    u64 buffer, texture;
+    NvnView view;
+    u8 has_view, pad[7];
+    NVNcopyRegion r;
+    i32 flags;
+} NvnPCopyB2T;
+/* a copy between textures, the two snapshots after it. NVN_COPY_RESOLVE in flags: a Downsample (a multisample
+   resolve), which reads its source and writes its destination as a copy does */
+typedef struct {
+    u64 src, dst;
+    NvnView sv, dv;
+    u8 has_sv, has_dv, pad[6];
+    NVNcopyRegion sr, dr;
+    i32 flags;
+} NvnPCopyT2T;
+#define NVN_COPY_RESOLVE 0x40000000
+typedef struct {
+    u64 texture;
+    NvnView view;
+    u8 has_view, is_uint, pad[6];
+    NVNcopyRegion r;
+    i32 mask;
+    u32 c[4]; /* floats' bits, or unsigned integers */
+} NvnPClearTex;
+/* image: SetCopyImageStride (bytes per layer or slice) instead of SetCopyRowStride */
+typedef struct {
+    i64 stride;
+    i32 image, pad;
+} NvnPCopyStride;
+typedef struct {
+    u32 on, index;
+} NvnPPrimRestart;
+/* per viewport the source of clip x, y, z and w XOR the identity (0, 2, 4, 6), so 0 is unchanged */
+typedef struct {
+    i32 first, count;
+    u8 sw[16][4];
+} NvnPVpSwizzle;
 /* a memory pool mapping request (NVNmappingRequest): {physical pool, physical offset, virtual offset, size, storage
    class} */
 typedef struct {
