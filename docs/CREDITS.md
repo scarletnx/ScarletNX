@@ -12,6 +12,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
 | hactool / cJSON / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / MIT / Unicode license |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
+| NVN's types and function prototypes (`src/nx/gpu/nvn/nvn.h`), h1k421's reconstruction, as [nxnative](https://github.com/seedds/nxnative) carries it | MIT (in the file) |
 | OpenSSL | Apache 2.0 |
 | jemalloc (the `scarletnx` program's malloc, with `SNX_JEMALLOC`) | BSD-2-Clause |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |
