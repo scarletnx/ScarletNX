@@ -2077,21 +2077,28 @@ static int draw_shaders(GpuChannel* ch, const DsPrograms* p, const DsVertexForma
     rt_int_targets(tg, &o->rt_int, &o->rt_sint);
     return 1;
 }
-static u64 stream_start(const u32* r, u32 s) { return ((u64)r[0x701 + s * 4] << 32) | r[0x702 + s * 4]; }
-/* the bytes of vertex stream s, from its start to its limit (0x7C0 + 2 * s, inclusive): 0 when the limit is below */
-static u64 stream_len(const u32* r, u32 s) {
-    u64 start = stream_start(r, s), end = ((u64)r[0x7C0 + s * 2] << 32) | r[0x7C1 + s * 2];
-    return end >= start ? end - start + 1 : 0;
+/* stream s's address and bytes (to its limit, 0 when the limit is below), of the streams b holds */
+static const DsVertexBuffers* vb_stream(const DsVertexBuffers* b, u32 s) {
+    if (!(b->filled >> s & 1)) fatal("vulkan: vertex stream %u read but not filled (%08x)", s, b->filled);
+    return b;
 }
-/* Attributes whose relative offsets start outside their bindings. */
-static u32 attributes_empty(const u32* r, u32 inputs) {
+static u64 stream_start(const DsVertexBuffers* b, u32 s) { return vb_stream(b, s)->addr[s]; }
+static u64 stream_len(const DsVertexBuffers* b, u32 s) { return vb_stream(b, s)->size[s]; }
+/* the attributes whose offsets start outside their streams */
+static u32 attributes_empty(const DsVertexBuffers* b, const DsVertexFormat* vf, u32 inputs) {
     u32 e = 0;
     while (inputs) {
-        u32 i = (u32)snx_ctz32(inputs), attribute = r[0x458 + i];
+        u32 i = (u32)__builtin_ctz(inputs);
         inputs &= inputs - 1;
-        if (stream_len(r, attribute & 31) <= ((attribute >> 7) & 0x3fff)) e |= 1u << i;
+        if (stream_len(b, vf->stream[i]) <= vf->offset[i]) e |= 1u << i;
     }
     return e;
+}
+/* the streams the attributes in of the vertex format vf read */
+static u32 input_streams(const DsVertexFormat* vf, u32 in) {
+    u32 streams = 0;
+    for (u32 m = in; m; m &= m - 1) streams |= 1u << vf->stream[__builtin_ctz(m)];
+    return streams;
 }
 static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats* tf) {
     *tf = (TargetFormats){.n = n};
@@ -2107,12 +2114,11 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
     }
 }
 /* the pipeline key of the shaders (fs the fragment variant drawn), the vertex format vf, blending bl, the raster
-   state rk, ch's vertex streams and the targets drawn to (tg, and their surfaces rt and zt), all but the feedback loop, and the vertex bindings it
+   state rk, the vertex streams vb and the targets drawn to (tg, and their surfaces rt and zt), all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
-static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs, const DsVertexFormat* vf,
+static int draw_key(const DsVertexBuffers* vb, const DrawShaders* sh, const VkSh* fs, const DsVertexFormat* vf,
                     const DsBlend* bl, const DsRasterKey* rk, const DsTargets* tg, Surf* const* rt, const Surf* zt,
                     u32 n, PipeKey* k, VertexPlan* pl) {
-    const u32* r = ch->r3d;
     const VkSh* vs = sh->vs;
     u32 topology = sh->topology;
     memset(k, 0, sizeof *k);
@@ -2166,7 +2172,7 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
     }
     int cbind = -1, zbind = -1, over = 0;
     u32 align[33] = {0}; /* each binding's largest attribute component */
-    pl->empty = attributes_empty(r, vs->si.in_mask);
+    pl->empty = attributes_empty(vb, vf, vs->si.in_mask);
     for (u32 i = 0; i < nloc && !over; i++) {
         if (!(vs->si.in_mask & (1u << i))) continue;
         u32 sbuf = vf->stream[i], off = vf->offset[i], size = vf->size[i], ty = vf->type[i];
@@ -2292,10 +2298,9 @@ static u32 top_memo_slot(u64 a) { return (u32)((a * 0x9E3779B97F4A7C15ull) >> 52
 /* A draw's entry above and its indices' range in the buffer cache, fetched when the draw starts: each was a cache miss
    in the middle of its setup, the entry above the most frequent last-level miss in vk_render_draw's own code in one
    game */
-static void draw_indices_prefetch(const GpuChannel* ch, int indexed, u32 first, u32 count, int step) {
-    const u32* r = ch->r3d;
-    u32 ifmt = r[0x5F6], isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
-    u64 a = (((u64)r[0x5F2] << 32) | r[0x5F3]) + (u64)first * isz;
+static void draw_indices_prefetch(const DsIndex* ix, int indexed, u32 first, u32 count, int step) {
+    u32 ifmt = ix->format, isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
+    u64 a = ix->addr + (u64)first * isz;
     if (indexed != 1 && indexed != 2) return;
     if (!step) __builtin_prefetch(&g_top_memo[top_memo_slot(a)]);
     vk_buf_prefetch(a, (u64)count * isz, step);
@@ -2326,16 +2331,15 @@ static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* b
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
    vertices through, so its range from the draw's start to the limit was megabytes for a few hundred vertices: one
    game copied 100 to 360 MB a frame that way */
-static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u32 base_vertex) {
-    const u32* r = ch->r3d;
+static u64 draw_last_vertex(GpuChannel* ch, const DsIndex* ix, int indexed, u32 first, u32 count, u32 base_vertex) {
     u64 top = 0;
     if (!indexed) return (u64)first + count - 1;
     if (indexed == 3) { /* inline indices, 32-bit */
         for (u32 j = 0; j < count; j++)
             if (ch->inline_indices[first + j] > top) top = ch->inline_indices[first + j];
     } else {
-        u32 ifmt = r[0x5F6], isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
-        u64 ia = ((u64)r[0x5F2] << 32) | r[0x5F3], iend = ((u64)r[0x5F4] << 32) | r[0x5F5];
+        u32 ifmt = ix->format, isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
+        u64 ia = ix->addr, iend = ix->end;
         if (iend < ia || first >= (iend - ia + 1) / isz) return ~0ull;
         u64 n = (iend - ia + 1) / isz - first, a = ia + (u64)first * isz;
         VkBuffer tb;
@@ -2344,8 +2348,11 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
         if (vk_buf_pending(a, n * isz) || vk_compute_gpu_src(a, n * isz, &tb, &to)) return ~0ull;
         vk_compute_mem_need(a, n * isz);
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex */
-        u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = r[0x591] ? r[0x592] & ones : ones;
-        u32 skip = r[0x591] ? ones : 0;
+        u32 ones = isz == 1   ? 0xFFu
+                   : isz == 2 ? 0xFFFFu
+                              : 0xFFFFFFFFu,
+            ri = ix->restart ? ix->restart_index & ones : ones;
+        u32 skip = ix->restart ? ones : 0;
         typeof(g_top_memo[0])* memo = g_top_memo;
         u32 slot = top_memo_slot(a), ws = vk_ww_now();
         u64 gw = gpu_mem_generation();
@@ -2395,18 +2402,20 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
     return last < 0 ? 0 : (u64)last;
 }
 
-static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
-                        u32 base_instance, u32 instances);
+static void render_draw(GpuChannel* ch, const DrawCall* dc);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances) {
     SNX_ZONE(z, "draw");
-    render_draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
+    DrawCall dc = {topology, (u32)indexed, first, count, base_vertex, base_instance, instances};
+    render_draw(ch, &dc);
     SNX_ZONE_END(z);
 }
-static void render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
-                        u32 base_instance, u32 instances) {
+static void render_draw(GpuChannel* ch, const DrawCall* dc) {
     u32* r = ch->r3d;
+    int indexed = (int)dc->indexed;
+    u32 topology = dc->topology, first = dc->first, count = dc->count, base_vertex = dc->base_vertex,
+        base_instance = dc->base_instance, instances = dc->instances;
     /* the stages between the vertex and fragment programs and their sets */
     int bset_ok, b;
     VkSh *vs, *tcs, *tes, *gs, *between[3];
@@ -2439,6 +2448,8 @@ retry:
     mx_draw_programs(r, &prog);
     DsTargets tg;
     mx_draw_targets(r, &tg);
+    DsIndex ix;
+    mx_draw_index(r, &ix);
     /* the vertex format, blending and raster state: read only for a draw whose key is made */
     DsVertexFormat vfmt;
     DsBlend blend;
@@ -2503,7 +2514,7 @@ retry:
     }
     cb_prefetch(ch, 0, vs, 0);
     if (fs) cb_prefetch(ch, 4, fs, 0);
-    draw_indices_prefetch(ch, indexed, first, count, 0);
+    draw_indices_prefetch(&ix, indexed, first, count, 0);
     Surf* rt[8];
     Surf* zt;
     u32 n;
@@ -2564,12 +2575,18 @@ retry:
         return;
     }
 
-    /* the pipeline key and its vertex bindings: the kept ones when the targets' formats and the empty streams are the
+    /* the pipeline key and its vertex bindings: the kept ones when the targets' formats and the empty attributes are the
        same too */
     TargetFormats tf;
     target_formats(rt, zt, n, &tf);
-    if (kept && (memcmp(&tf, &g_draw.tf, sizeof tf) || attributes_empty(r, vs->si.in_mask) != g_draw.plan.empty))
-        kept = 0;
+    DsVertexBuffers vb; /* the streams the kept bindings and the inputs read, and when a key is made those the inputs
+                           may read */
+    if (kept) {
+        if (!key_read) mx_draw_vertex_format(r, &vfmt);
+        mx_draw_vertex_buffers(r, g_draw.plan.used | input_streams(&vfmt, vs->si.in_mask), &vb);
+        if (memcmp(&tf, &g_draw.tf, sizeof tf) || attributes_empty(&vb, &vfmt, vs->si.in_mask) != g_draw.plan.empty)
+            kept = 0;
+    }
     PipeKey made_k;
     VertexPlan made_pl;
     const PipeKey* k = &g_draw.k;
@@ -2580,7 +2597,8 @@ retry:
             mx_draw_blend(r, &blend);
             mx_draw_raster_key(r, &rkey);
         }
-        if (!draw_key(ch, &sh, fs, &vfmt, &blend, &rkey, &tg, rt, zt, n, &made_k, &made_pl)) {
+        mx_draw_vertex_buffers(r, (kept ? vb.filled : 0) | input_streams(&vfmt, vs->si.in_mask), &vb);
+        if (!draw_key(&vb, &sh, fs, &vfmt, &blend, &rkey, &tg, rt, zt, n, &made_k, &made_pl)) {
             if (kept) {
                 draw_differs("pipeline key");
                 g_draw.sh.vs = NULL;
@@ -2604,7 +2622,7 @@ retry:
     } vq[33];
     u32 nvq = 0;
     /* each stream up to the last vertex or instance the draw reads, rather than to its limit */
-    u64 last_vertex = k->nbind ? draw_last_vertex(ch, indexed, first, count, base_vertex) : ~0ull;
+    u64 last_vertex = k->nbind ? draw_last_vertex(ch, &ix, indexed, first, count, base_vertex) : ~0ull;
     u64 last_instance = (u64)base_instance + instances - 1;
     for (u32 v = 0; v < k->nbind; v++) {
         if (pl->key[v] == ~0u || pl->key[v] == ~1u) {
@@ -2621,7 +2639,7 @@ retry:
         u32 sbuf = pl->key[v] & 31;
         /* up to a power of two of the bytes it reads: the cache keeps a range by its length, and draws of a mesh's parts
            that end at different vertices then share a few ranges, not one each */
-        u64 limit = stream_len(r, sbuf), len = limit;
+        u64 limit = stream_len(&vb, sbuf), len = limit;
         u64 last = k->bind[v].divisor ? last_instance : last_vertex;
         u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
         if (gstride && last < len / gstride) {
@@ -2643,7 +2661,7 @@ retry:
             vsize[v] = 0;
             continue;
         }
-        vq[nvq].gva = stream_start(r, sbuf);
+        vq[nvq].gva = stream_start(&vb, sbuf);
         vq[nvq].len = len;
         vq[nvq].b = v;
         vq[nvq].base = base;
@@ -2674,7 +2692,7 @@ retry:
     /* descriptor sets (may record uploads and barriers, so before the pass opens) */
     cb_prefetch(ch, 0, vs, 1);
     if (fs) cb_prefetch(ch, 4, fs, 1);
-    draw_indices_prefetch(ch, indexed, first, count, 1);
+    draw_indices_prefetch(&ix, indexed, first, count, 1);
     VkDrawStorage storage;
     draw_storage_read(ch, &storage, vs, fs);
     int alias = storage.n[0] || storage.n[1] ? vk_buf_draw_has_alias(&storage) : 0;
@@ -2714,13 +2732,13 @@ retry:
         g_vk_skipped++;
         return;
     }
-    /* indices, up to the end of the index buffer (0x5F4, inclusive). What is made into other indices on the CPU (quads,
+    /* indices, up to the end of the index buffer (inclusive). What is made into other indices on the CPU (quads,
        8-bit indices, another restart index) is capped */
     VkBuffer ibuf = VK_NULL_HANDLE;
     u64 ioff = 0;
     VkIndexType itype = VK_INDEX_TYPE_UINT32;
-    u32 ifmt = indexed == 3 ? 2 : r[0x5F6], isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
-    u64 ia = ((u64)r[0x5F2] << 32) | r[0x5F3], iend = ((u64)r[0x5F4] << 32) | r[0x5F5];
+    u32 ifmt = indexed == 3 ? 2 : ix.format, isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
+    u64 ia = ix.addr, iend = ix.end;
     if (indexed && indexed != 3 && iend >= ia && (u64)first + count > (iend - ia + 1) / isz) {
         u64 avail = (iend - ia + 1) / isz;
         LOG_LIMIT(1, "vulkan: a draw reads indices %u..%u of an index buffer of %llu (cut there)\n", first,
@@ -2737,7 +2755,7 @@ retry:
     }
     /* Vulkan restarts at all ones of the index type, in strips and fans; the guest's restart index is 0x592 */
     int restart =
-        r[0x591] && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
+        ix.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
         topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY &&
         topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     u32 icount = count;
@@ -2787,9 +2805,9 @@ retry:
                 return;
             }
             memcpy(o, ch->inline_indices + first, (size_t)count * 4);
-            if (restart && r[0x592] != 0xFFFFFFFFu)
+            if (restart && ix.restart_index != 0xFFFFFFFFu)
                 for (u32 j = 0; j < count; j++)
-                    if (o[j] == r[0x592]) o[j] = 0xFFFFFFFFu;
+                    if (o[j] == ix.restart_index) o[j] = 0xFFFFFFFFu;
             snx_le32_array(o, count); /* host words, read by the device little-endian */
             itype = VK_INDEX_TYPE_UINT32;
         } else if (ifmt == 0) { /* 8-bit indices need an extension: widen them */
@@ -2806,11 +2824,11 @@ retry:
                 else
                     gmem_read(ia + first + j, &v, 1);
                 /* the index type's bits, as below, little-endian for the device */
-                o[j] = snx_le16(r[0x591] && v == (r[0x592] & 0xFF) ? 0xFFFF : v);
+                o[j] = snx_le16(ix.restart && v == (ix.restart_index & 0xFF) ? 0xFFFF : v);
             }
             itype = VK_INDEX_TYPE_UINT16;
         } else {
-            u32 ones = isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = r[0x592] & ones;
+            u32 ones = isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = ix.restart_index & ones;
             u64 bytes = (u64)count * isz;
             if (restart && ri != ones && count <= (1u << 24)) { /* the guest's restart index becomes Vulkan's */
                 u8* o = vk_stage(bytes, vk_stage_align(), &ibuf, &ioff);

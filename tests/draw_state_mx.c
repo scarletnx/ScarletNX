@@ -375,6 +375,37 @@ static void targets(void) {
     CHECK(t.depth.layers == 6);
 }
 
+/* stream s: start 0x701 + 4 s (high, low), limit 0x7C0 + 2 s (high, low, inclusive); only the streams asked for */
+static void vertex_buffers(void) {
+    u32 r[REGS] = {0};
+    DsVertexBuffers b;
+    memset(&b, 0xA5, sizeof b);
+    r[0x701 + 4 * 2] = 1, r[0x702 + 4 * 2] = 0x1000, r[0x7C0 + 2 * 2] = 1, r[0x7C1 + 2 * 2] = 0x1FFF; /* 4 KiB */
+    r[0x701 + 4 * 5] = 0, r[0x702 + 4 * 5] = 0x2000, r[0x7C1 + 2 * 5] = 0x1FFF;                       /* below */
+    r[0x702 + 4 * 31] = 0x3000, r[0x7C1 + 2 * 31] = 0x3000;                                           /* a byte */
+    r[0x702 + 4 * 7] = 0x4000, r[0x7C1 + 2 * 7] = 0x5000;                                             /* not asked */
+    mx_draw_vertex_buffers(r, (1u << 2) | (1u << 5) | (1u << 31), &b);
+    CHECK(b.filled == ((1u << 2) | (1u << 5) | (1u << 31)));
+    CHECK(b.addr[2] == 0x100001000ull && b.size[2] == 0x1000);
+    CHECK(b.addr[5] == 0x2000 && b.size[5] == 0);
+    CHECK(b.addr[31] == 0x3000 && b.size[31] == 1);
+    CHECK(b.addr[7] == 0xA5A5A5A5A5A5A5A5ull); /* left as it was */
+}
+
+/* the index buffer 0x5F2/0x5F3, its last byte 0x5F4/0x5F5, format 0x5F6; restart 0x591 and its index 0x592 */
+static void index_state(void) {
+    u32 r[REGS] = {0};
+    DsIndex x;
+    r[0x5F2] = 2, r[0x5F3] = 0x100, r[0x5F4] = 2, r[0x5F5] = 0x1FF, r[0x5F6] = 1;
+    r[0x591] = 4, r[0x592] = 0xFFFE;
+    mx_draw_index(r, &x);
+    CHECK(x.addr == 0x200000100ull && x.end == 0x2000001FFull && x.format == 1);
+    CHECK(x.restart == 1 && x.restart_index == 0xFFFE);
+    r[0x591] = 0;
+    mx_draw_index(r, &x);
+    CHECK(x.restart == 0 && x.restart_index == 0xFFFE);
+}
+
 int main(void) {
     stencil();
     origin();
@@ -388,6 +419,8 @@ int main(void) {
     raster_key();
     xfb();
     targets();
+    vertex_buffers();
+    index_state();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

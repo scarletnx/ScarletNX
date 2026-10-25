@@ -15,6 +15,9 @@ void mx_draw_vertex_format(const u32* r, DsVertexFormat* f);
 void mx_draw_blend(const u32* r, DsBlend* b);
 void mx_draw_raster_key(const u32* r, DsRasterKey* k);
 void mx_draw_targets(const u32* r, DsTargets* t);
+/* the streams of the mask streams, and the index buffer */
+void mx_draw_vertex_buffers(const u32* r, u32 streams, DsVertexBuffers* b);
+void mx_draw_index(const u32* r, DsIndex* x);
 /* what transform feedback captures, for programs that DsPrograms.xfb_on says capture */
 void mx_draw_xfb(const u32* r, ShXfb* x);
 
