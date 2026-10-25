@@ -12,6 +12,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/inline_to_memory_regs.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
+#include "nx/gpu/maxwell/draw_state.h"
 
 #define QMD_BYTES (KEPLER_COMPUTE_QMD_WORDS * 4) /* the launch description, 256 bytes */
 #define CAPTURE_CODE_BYTES 0x10000               /* a captured program: up to 64 KiB of it */
@@ -61,7 +62,10 @@ static void launch(GpuChannel* ch) {
     gmem_read((u64)r[KEPLER_COMPUTE_LAUNCH_DESC_LOC] << KEPLER_COMPUTE_LAUNCH_DESC_LOC_SHIFT, q, sizeof q);
     snx_le32_array(q, KEPLER_COMPUTE_QMD_WORDS); /* the renderer reads its words and bitfields as numbers */
     if (g_settings.shader_captures) capture(q, code);
-    if (g_renderer->dispatch) g_renderer->dispatch(ch, q, code);
+    if (!g_renderer->dispatch) return;
+    DispatchState d;
+    mx_dispatch_state(q, r, code, &d);
+    g_renderer->dispatch(&d);
 }
 /* Eden's KeplerCompute::CallMethod: every method is kept in the registers, and these act */
 void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {
