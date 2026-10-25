@@ -109,6 +109,14 @@ int nvn_CommandBufferInitialize(CPU* c, u64 cb, u64 d) {
     o->device = d;
     return 1;
 }
+void nvn_CommandBufferFinalize(CPU* c, u64 cb) {
+    (void)c;
+    CB(cb)->magic = 0;
+}
+int nvn_CommandBufferIsRecording(CPU* c, u64 cb) {
+    (void)c;
+    return CB(cb)->recording != 0;
+}
 void nvn_CommandBufferSetMemoryCallback(CPU* c, u64 cb, u64 fn) {
     (void)c;
     CB(cb)->callback = fn;
@@ -172,6 +180,16 @@ void nvn_CommandBufferFenceSync(CPU* c, u64 cb, u64 sync, i32 condition, i32 fla
     (void)condition;
     (void)flags;
     *(u64*)(void*)GP(rec(c, cb, OP_FENCE_SYNC, 8)) = sync;
+}
+/* the event's value written or added to when the GPU reaches it (at submit in phase 1) */
+void nvn_CommandBufferSignalEvent(CPU* c, u64 cb, u64 e, i32 mode, i32 location, i32 flags, u32 value) {
+    u64 address = NVN_OBJ(NvnEvent, e)->value;
+    NvnPSignalEvent* r = REC(c, cb, OP_SIGNAL_EVENT, NvnPSignalEvent);
+    (void)location;
+    (void)flags;
+    r->value = address;
+    r->mode = (u32)mode;
+    r->v = value;
 }
 void nvn_CommandBufferReportCounter(CPU* c, u64 cb, i32 type, u64 address) {
     NvnPReportCounter* r = REC(c, cb, OP_REPORT_COUNTER, NvnPReportCounter);
