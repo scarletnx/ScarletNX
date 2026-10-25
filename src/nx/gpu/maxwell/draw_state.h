@@ -14,6 +14,7 @@ void mx_draw_programs(const u32* r, DsPrograms* p);
 void mx_draw_vertex_format(const u32* r, DsVertexFormat* f);
 void mx_draw_blend(const u32* r, DsBlend* b);
 void mx_draw_raster_key(const u32* r, DsRasterKey* k);
+void mx_draw_targets(const u32* r, DsTargets* t);
 /* what transform feedback captures, for programs that DsPrograms.xfb_on says capture */
 void mx_draw_xfb(const u32* r, ShXfb* x);
 
