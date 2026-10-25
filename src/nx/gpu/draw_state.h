@@ -211,7 +211,9 @@ enum {
     DS_VIEWPORTS,
     DS_VBUF,
     DS_INDEX,
-    DS_GROUPS
+    DS_TARGET_FORMATS, /* a generation without a struct: DsTargets' count, formats and sRGB write, which the pipeline
+                          key reads where the rest of the targets change every pass */
+    DS_GENS
 };
 
 /* Everything a draw reads but its arguments and its resource bindings, written by its owner's front end (a GPU
@@ -227,6 +229,9 @@ typedef struct {
     DsViewports vp;
     DsVertexBuffers vbuf;
     DsIndex index;
+    /* each group's generation (DS_), a new one whenever its bytes change: from one counter for every owner, so two
+       generations are equal only when they are the same state of the same owner */
+    u64 gen[DS_GENS];
 } DrawState;
 
 /* A clear of the targets a DrawState names */
