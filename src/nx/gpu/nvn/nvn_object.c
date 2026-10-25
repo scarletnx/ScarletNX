@@ -12,6 +12,7 @@
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
@@ -24,6 +25,7 @@ typedef struct {
     u64 serial;
     i32 info[DEVICE_INFO_ITEMS];
     int driver;
+    u32 formats[8]; /* bit f: a texture of NVN format f was initialized (logged once) */
 } NvnObjectState;
 static NvnObjectState g_nvn_object;
 
@@ -385,8 +387,9 @@ void nvn_BufferFlushMappedRange(CPU* c, u64 buf, i64 offset, u64 size) {
 }
 
 /* ============================================================ descriptor pools */
-/* The descriptors live in pool memory, 32 bytes each, as the hardware's do: a registration writes the texture's or
-   sampler's serial and address at its ID, and phase 2 reads the pool a command buffer set */
+/* The descriptors live in pool memory: the hardware's TIC and TSC entries, 32 bytes each, which a registration
+   writes at its ID as NVIDIA's driver does (gpu/nvn/nvn_tic.c), and the renderer reads from the pool a command buffer
+   set, as it reads nvhost's */
 static int desc_pool_init(u64 dp, u64 pool, i64 offset, i32 count, const char* kind) {
     NvnDescPool o = {0};
     if (offset < 0 || (u64)offset > 0xffffffffull) {
@@ -430,31 +433,38 @@ int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
     return desc_pool_init(sp, pool, offset, count, "sampler");
 }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
-static void register_texture(u64 tp, i32 id, u64 t, u64 v) {
+static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u64 slot = desc_slot(tp, id, "texture");
-    NvnTexDescriptor e = {0};
+    NvnTexture tex;
+    NvnView view;
+    u32 tic[8];
     if (!slot) return;
-    e.serial = t ? NVN_OBJ(NvnTexture, t)->serial : 0;
-    e.texture = t;
-    if (v) memcpy(&e.view, GP(v), sizeof e.view);
-    memcpy(GP(slot), &e, sizeof e);
+    if (!t) { /* no texture: an empty descriptor */
+        memset(GP(slot), 0, sizeof tic);
+        return;
+    }
+    memcpy(&tex, GP(t), sizeof tex);
+    if (v) memcpy(&view, GP(v), sizeof view);
+    if (!nvn_tic_encode(&tex, v ? &view : NULL, image, tic))
+        LOG_LIMIT(8, "nvn: a texture of format %#x, which has no texture descriptor: an empty one at %d\n",
+                  v && (view.set & NVN_VIEW_FORMAT) ? view.format : tex.d.format, id);
+    memcpy(GP(slot), tic, sizeof tic);
 }
 void nvn_TexturePoolRegisterTexture(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;
-    register_texture(tp, id, t, v);
+    register_texture(tp, id, t, v, 0);
 }
 void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;
-    register_texture(tp, id, t, v);
+    register_texture(tp, id, t, v, 1);
 }
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
     u64 slot = desc_slot(sp, id, "sampler");
-    NvnSamplerDescriptor e = {0};
+    u32 tsc[8];
     (void)c;
     if (!slot) return;
-    e.serial = s ? NVN_OBJ(NvnSampler, s)->serial : 0;
-    e.sampler = s;
-    memcpy(GP(slot), &e, sizeof e);
+    nvn_tsc_encode(&NVN_OBJ(const NvnSampler, s)->p, tsc);
+    memcpy(GP(slot), tsc, sizeof tsc);
 }
 
 /* ============================================================ textures */
@@ -637,6 +647,11 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     o.size = l.size;
     memcpy(o.layout, s->layout, sizeof o.layout);
     o.serial = nvn_serial();
+    if (o.d.format < 256 &&
+        !(__atomic_fetch_or(&g_nvn_object.formats[o.d.format >> 5], 1u << (o.d.format & 31), __ATOMIC_RELAXED) &
+          1u << (o.d.format & 31)))
+        LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width,
+            o.d.height);
     /* a whole range, guest to guest, as the driver's own copy */
     if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
     memcpy(GP(t), &o, sizeof o);

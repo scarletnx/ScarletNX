@@ -6,6 +6,7 @@
    (vk/blocklinear.c, vk/texconv.c, vk/astc.c), and checked for changes now and then: often at first, rarely once
    they have stayed the same. */
 #include "common/utilities/bits.h"
+#include "nx/gpu/texture/descriptor.h"
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -727,14 +728,16 @@ static Surf* tex_check(Surf* t, u64 gva) {
     return t->upload_valid ? t : NULL;
 }
 static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
-    u64 gva = ((u64)(tic[2] & 0xFFFF) << 32) | tic[1];
-    u32 hv = (tic[2] >> 21) & 7;
+    TicFields tf;
+    tic_decode(tic, &tf);
+    u64 gva = tf.address;
+    u32 hv = tf.header;
     int bl = hv == 3 || hv == 4;
-    u32 w = (tic[4] & 0xFFFF) + 1, h = (tic[5] & 0xFFFF) + 1, d = ((tic[5] >> 16) & 0x3FFF) + 1;
-    u32 type = (tic[4] >> 23) & 0xF;
-    int srgb = (tic[4] >> 22) & 1;
-    u32 glevels = ((tic[3] >> 28) & 0xF) + 1;
-    u32 bh = (tic[3] >> 3) & 7, bd = (tic[3] >> 6) & 7, pitch = bl ? 0 : ((tic[3] & 0xFFFF) << 5);
+    u32 w = tf.width, h = tf.height, d = tf.depth;
+    u32 type = tf.type;
+    int srgb = (int)tf.srgb;
+    u32 glevels = tf.levels;
+    u32 bh = tf.block_h, bd = tf.block_d, pitch = bl ? 0 : tf.pitch;
     if (!gva) return NULL;
     if (hv == 0 || type == 6) {
         /* Buffer TICs describe a linear row of texels, bound as a 2D image the shader's 1D fetch reads at
@@ -742,7 +745,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
            buffer (UE4's vertex factories keep a mesh's texture coordinates and colors in such buffers, of tens of
            thousands of texels) */
         if (hv != 0 || type != 6) return NULL;
-        w = (((tic[3] & 0xFFFFu) << 16) | (tic[4] & 0xFFFFu)) + 1;
+        w = tf.buffer_width;
         h = d = 1;
         if (w > (1u << SH_TEXEL_ROW_SHIFT)) {
             h = (w + (1u << SH_TEXEL_ROW_SHIFT) - 1) >> SH_TEXEL_ROW_SHIFT;
@@ -752,7 +755,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         bl = 0;
         bh = bd = 0;
     }
-    if ((tic[7] >> 8) & 0xF) LOG_LIMIT(1, "vulkan: multisampled textures are read as single-sampled\n");
+    if (tf.msaa) LOG_LIMIT(1, "vulkan: multisampled textures are read as single-sampled\n");
     if (type == 0 || type == 4) h = 1;
     if (type == 3)
         d = 6;
@@ -787,7 +790,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     /* the levels the shader sees, base level to max level (word 7), as a texture of their own the way Ryujinx makes
        it: the base level's address, size and blocks. Pitch-linear textures have one level */
     u32 levels = bl ? glevels : 1;
-    u32 base = tic[7] & 0xF, maxl = (tic[7] >> 4) & 0xF;
+    u32 base = tf.base_level, maxl = tf.max_level;
     if (bl && base < glevels && (base || maxl + 1 != glevels)) {
         for (u32 l = 0; l < base; l++) gva += bl_level_size(w, h, d3, &f, bh, bd, l, NULL, NULL);
         bl_level_blocks(h, d3, &f, bh, bd, base, &bh, &bd);
@@ -1044,23 +1047,23 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
     }
-    u32 mag = tsc[1] & 3, min = (tsc[1] >> 4) & 3, mip = (tsc[1] >> 6) & 3;
-    float minl = (float)(tsc[2] & 0xFFF) / 256.f, maxl = (float)((tsc[2] >> 12) & 0xFFF) / 256.f;
-    i32 bias = (i32)((tsc[1] >> 12) & 0x1FFF);
-    if (bias & 0x1000) bias |= ~0x1FFF;
-    float lb = (float)bias / 256.f, lbmax = g_vk.props.limits.maxSamplerLodBias;
+    TscFields sf;
+    tsc_decode(tsc, &sf);
+    u32 mag = sf.mag, min = sf.min, mip = sf.mip;
+    float minl = (float)sf.min_lod / 256.f, maxl = (float)sf.max_lod / 256.f;
+    float lb = (float)sf.lod_bias / 256.f, lbmax = g_vk.props.limits.maxSamplerLodBias;
     if (lb > lbmax) lb = lbmax;
     if (lb < -lbmax) lb = -lbmax;
     static const float aniso_lut[8] = {1, 2, 4, 6, 8, 10, 12, 16}; /* Ryujinx's SamplerDescriptor */
-    u32 aniso = (tsc[0] >> 20) & 7;
+    u32 aniso = sf.anisotropy;
     float af = aniso_lut[aniso];
     /* anisotropy=N raises a mipmapped 2D texture's linear filtering (raise), a 3D scene's surfaces, to N. Nearest
        filtering (2D art, the HUD), samplers without a mip filter and depth compares (shadow maps) keep the game's */
-    if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
+    if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !sf.compare)
         af = (float)g_vk_anisotropy;
     /* tsc[1] bits 10-11: the least (1) or the greatest (2) of the texels the filter reads, not their weighted average
        (0), which vk_tex_bind_sampler leaves only where the view's format and the device take it */
-    u32 reduction = (tsc[1] >> 10) & 3;
+    u32 reduction = sf.reduction;
     if (reduction == 3) {
         LOG_LIMIT(1, "vulkan: sampler reduction 3 names no mode: the texels are averaged\n");
         reduction = 0;
@@ -1072,14 +1075,14 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
                               .magFilter = mag == 2 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                               .minFilter = min == 2 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                               .mipmapMode = mip == 3 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
-                              .addressModeU = wrap(tsc[0] & 7),
-                              .addressModeV = wrap((tsc[0] >> 3) & 7),
-                              .addressModeW = wrap((tsc[0] >> 6) & 7),
+                              .addressModeU = wrap(sf.wrap_u),
+                              .addressModeV = wrap(sf.wrap_v),
+                              .addressModeW = wrap(sf.wrap_p),
                               .mipLodBias = lb,
                               .anisotropyEnable = af > 1 && g_vk.feat.samplerAnisotropy,
                               .maxAnisotropy = af,
-                              .compareEnable = (tsc[0] >> 9) & 1,
-                              .compareOp = (VkCompareOp)((tsc[0] >> 10) & 7),
+                              .compareEnable = sf.compare,
+                              .compareOp = (VkCompareOp)sf.compare_op,
                               .minLod = minl,
                               .maxLod = mip <= 1 ? minl + 0.25f : maxl, /* no mip filter: the base level only */
                               .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK}; /* set below */
@@ -1091,8 +1094,8 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
        takes one of the device's few custom-color samplers while there are any left, else the nearest built-in one */
     float bc[4];
     i32 bi[4];
-    memcpy(bc, &tsc[4], 16);
-    memcpy(bi, &tsc[4], 16);
+    memcpy(bc, sf.border, 16);
+    memcpy(bi, sf.border, 16);
     int black = integer ? !bi[0] && !bi[1] && !bi[2] : bc[0] == 0 && bc[1] == 0 && bc[2] == 0;
     int white = integer ? bi[0] == 1 && bi[1] == 1 && bi[2] == 1 : bc[0] == 1 && bc[1] == 1 && bc[2] == 1;
     int clear = integer ? !bi[3] : bc[3] == 0, opaque = integer ? bi[3] == 1 : bc[3] == 1;

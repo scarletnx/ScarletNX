@@ -15,6 +15,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | NVN's types and function prototypes (`src/nx/gpu/nvn/nvn.h`), h1k421's reconstruction, as [nxnative](https://github.com/seedds/nxnative) carries it | MIT (in the file) |
 | nvn_direct's NVN objects and command records (`src/nx/gpu/nvn/nvn_obj.h`, `nvn_object.c`, `nvn_cmd.c`, `nvn_queue.c`), ported from [nxnative](https://github.com/seedds/nxnative)'s `dm/gfx/nvn/hle_nvn.c` and `nvn_obj.h`, Copyright (c) 2026 seedds | MIT |
 | NVN texture storage layout (`src/nx/gpu/nvn/nvn_tex.c`), ported from nxnative's `dm/gfx/nvn/nvn_tex.c` (MIT, seedds), whose algorithm is [deko3d](https://github.com/devkitPro/deko3d)'s `source/dk_image.cpp`, Copyright (C) 2018-2020 fincs | MIT / zlib |
+| NVN's texture and sampler descriptors (`src/nx/gpu/nvn/nvn_tic.c`), ported from [deko3d](https://github.com/devkitPro/deko3d)'s `source/maxwell/tic_generate.cpp`, `tsc_generate.cpp` and `format_traits.inc`, Copyright (C) 2018-2020 fincs (notice in the file) | zlib |
 | OpenSSL | Apache 2.0 |
 | jemalloc (the `scarletnx` program's malloc, with `SNX_JEMALLOC`) | BSD-2-Clause |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |

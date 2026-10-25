@@ -85,8 +85,8 @@ typedef struct {
 } NvnBuffer;
 NVN_FITS(NvnBuffer, 0x30);
 
-/* a texture or sampler pool: its descriptors live in pool memory, 32 bytes each, as the hardware's do. offset is
-   32 bits to fit SDK 5's 0x14 bytes */
+/* a texture or sampler pool: its descriptors live in pool memory, the hardware's TIC and TSC entries, 32 bytes
+   each (gpu/nvn/nvn_tic.c). offset is 32 bits to fit SDK 5's 0x14 bytes */
 typedef struct {
     u64 pool;
     u32 offset;
@@ -148,13 +148,6 @@ NVN_FITS(NvnView, 0x10);
 #define NVN_VIEW_SWIZZLE 0x10u
 #define NVN_VIEW_DSMODE  0x20u /* the depth-stencil mode in bits 6-7 */
 
-/* a texture pool's descriptor: what TexturePoolRegisterTexture or RegisterImage put at its ID (the view zeroed when
-   none was given). Phase 2 finds its host texture by serial */
-typedef struct {
-    u64 serial, texture;
-    NvnView view;
-} NvnTexDescriptor;
-typedef char nvn_check_texdesc[sizeof(NvnTexDescriptor) == NVN_DESCRIPTOR_SIZE ? 1 : -1];
 
 /* ---- samplers ---- */
 typedef struct {
@@ -172,11 +165,6 @@ typedef struct {
     u64 serial;
 } NvnSampler;
 NVN_FITS(NvnSampler, 0x40);
-/* a sampler pool's descriptor: what SamplerPoolRegisterSampler put at its ID */
-typedef struct {
-    u64 serial, sampler, reserved[2];
-} NvnSamplerDescriptor;
-typedef char nvn_check_sampdesc[sizeof(NvnSamplerDescriptor) == NVN_DESCRIPTOR_SIZE ? 1 : -1];
 
 /* ---- programs and syncs ---- */
 /* sd: the stages SetShaders gave ({code address, control section address}). The control section is the caller's
