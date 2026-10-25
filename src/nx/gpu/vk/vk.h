@@ -950,6 +950,8 @@ int vk_uma_imported(u64 cpu, u64 len); /* the same for any page of [cpu, cpu + l
 void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame); /* at that submit's end: its writes visible to the host */
 int vk_uma_pending(u64 gva, u64 len);     /* an in-place write is pending over GPU range [gva, gva + len) */
 int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */
+int vk_uma_pending_any(void);             /* any in-place write is pending, as vk_buf_pending_any for results */
+int vk_uma_pending_unsubmitted(void);     /* one is in the commands recorded since the last submit */
 /* the runtime's CPU is about to read [gva, gva + len): the in-place writes pending there are done first (gmem_need's
    hook), unless the calling thread copies them on the GPU (vk_uma_gpu_reads) */
 void vk_uma_mem_need(u64 gva, u64 len);
