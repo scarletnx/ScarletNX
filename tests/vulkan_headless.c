@@ -1644,6 +1644,11 @@ static int check_uma(void) {
     CHECK(vk_uma_get(UMA_A, 0x100, 1, &any, &any_off)); /* takes the change */
     uma_stats(&n, &waits);
     CHECK(n == n0 - 1);
+    { /* the import it gives is UMA_A's own, as a lookup with nothing changed finds it, not a slot the change emptied */
+        VkBuffer again;
+        u64 again_off;
+        CHECK(any && vk_uma_get(UMA_A, 0x100, 1, &again, &again_off) && again == any && again_off == any_off);
+    }
     vk_unlock();
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
     vk_lock();

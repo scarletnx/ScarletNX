@@ -343,9 +343,10 @@ static u32 import_new(u64 key, u64 cpu, u64 len) {
 
 int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
     UmaImport* m;
-    u32 k = g_uma.n, level = 0;
+    u32 k, level = 0;
     if (!g_vk.uma || !len || cpu + len < cpu) return 0;
     take_changes();
+    k = g_uma.n; /* after the changes: they may have retired imports */
     m = &g_uma.imp[g_uma.last];
     if (g_uma.last >= g_uma.n || cpu < m->lo || cpu + len > m->hi) {
         while (level < UMA_LEVELS && len > UMA_BLOCK << level) level++;
