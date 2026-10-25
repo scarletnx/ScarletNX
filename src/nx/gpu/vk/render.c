@@ -120,11 +120,27 @@ static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
     }
 }
 
+/* the size the targets rt (n of them) and zt have in common */
+static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
+    VkExtent2D ext = {~0u, ~0u};
+    for (u32 i = 0; i < n; i++)
+        if (rt[i]) {
+            if (rt[i]->sw < ext.width) ext.width = rt[i]->sw;
+            if (rt[i]->sh < ext.height) ext.height = rt[i]->sh;
+        }
+    if (zt) {
+        if (zt->sw < ext.width) ext.width = zt->sw;
+        if (zt->sh < ext.height) ext.height = zt->sh;
+    }
+    return ext;
+}
 /* opens a rendering pass on these targets (begun at its first command: rp_record), or keeps the open one if it is the
    same set. zt_ro: the depth target is
    bound read-only, so draws can sample it too (soft particles test against depth they also read). fb: color slots the
-   draw samples, which the pass needs in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback_order) */
-static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb) {
+   draw samples, which the pass needs in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback_order). area: the render area when no
+   attachment has a surface (a draw's color targets all sampled and none written, render_draw), the targets' the guest
+   bound */
+static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb, VkExtent2D area) {
     srgb_write = !!srgb_write;
     if (!n && !zt) return 0;
     if (!zt) zt_ro = 0;
@@ -189,6 +205,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         if (zt->sw < ext.width) ext.width = zt->sw;
         if (zt->sh < ext.height) ext.height = zt->sh;
     }
+    if (ext.width == ~0u) ext = area; /* nothing bound with a surface: the bound targets' size */
     u32 layers = ~0u;
     for (u32 i = 0; i < n; i++)
         if (rt[i] && rt[i]->layers < layers) layers = rt[i]->layers;
@@ -302,7 +319,7 @@ static int feedback_order(u32 read, u32 write) {
         memcpy(rt, g_rp.rt, sizeof rt);
         vk_render_end();
         g_vk_fb_restarts++;
-        return render_begin(rt, g_rp.zt, g_rp.n, g_rp.zt_ro, g_rp.srgb_write, g_rp.fb);
+        return render_begin(rt, g_rp.zt, g_rp.n, g_rp.zt_ro, g_rp.srgb_write, g_rp.fb, g_rp.ext);
     }
     VkMemoryBarrier2 mb = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -460,7 +477,7 @@ void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o
         LOG_LIMIT(64, "gpu-trace-target: clear depth target=%llx %ux%u depth=%d stencil=%d value=%g\n",
                   (unsigned long long)zt->gva, zt->w, zt->h, v & 1, (v >> 1) & 1, dz);
     int zt_undefined = zt && zt->layout == VK_IMAGE_LAYOUT_UNDEFINED;
-    if (!render_begin(rt, zt, n, 0, ds->tgt.srgb_write, 0)) return;
+    if (!render_begin(rt, zt, n, 0, ds->tgt.srgb_write, 0, target_extent(rt, zt, n))) return;
     u32 layers = ~0u;
     for (u32 i = 0; i < g_rp.n; i++)
         if (g_rp.rt[i] && g_rp.rt[i]->layers < layers) layers = g_rp.rt[i]->layers;
@@ -2603,6 +2620,7 @@ retry:
     /* a color target the fragment shader samples but doesn't write (no output for it, or a write mask of 0) is drawn
        without: a game's lighting passes may keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
+    VkExtent2D bound = target_extent(rt, zt, n); /* the render area should none of them stay */
     if (fs)
         for (u32 j = 0; j < n; j++) {
             if (!rt[j] || (((fs->si.sph[18] >> (j * 4)) & 15) && ds->blend.mask[j])) continue;
@@ -2632,7 +2650,7 @@ retry:
         if (cleared_frame != g_vk_present || cleared != zt) {
             cleared_frame = g_vk_present;
             cleared = zt;
-            if (render_begin(rt, zt, 0, 0, ds->tgt.srgb_write, 0)) {
+            if (render_begin(rt, zt, 0, 0, ds->tgt.srgb_write, 0, target_extent(rt, zt, 0))) {
                 VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
                                                      (zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)};
                 a.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -3016,7 +3034,7 @@ retry:
     }
     int zt_undefined = zt && zt->layout == VK_IMAGE_LAYOUT_UNDEFINED;
     if (!n && !zt ? !render_begin_empty()
-                  : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb) || !feedback_order(fb, writes)) {
+                  : !render_begin(rt, zt, n, zt_ro, ds->tgt.srgb_write, fb, bound) || !feedback_order(fb, writes)) {
         draw_images_discard(&images);
         return;
     }
