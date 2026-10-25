@@ -13,6 +13,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
 | yyjson (the MCP server's JSON and the GPU driver packages' meta.json) | MIT |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
+| NVN's types and function prototypes (`src/nx/gpu/nvn/nvn.h`), h1k421's reconstruction, as [nxnative](https://github.com/seedds/nxnative) carries it | MIT (in the file) |
 | OpenSSL | Apache 2.0 |
 | libcurl (the launcher's downloads, `cmake/curl.cmake`) | curl license (MIT-like) |
 | Mozilla's root certificates, curl's extract of them (`cmake/cacert.cmake`, which the launcher's HTTPS trusts) | MPL-2.0 |
