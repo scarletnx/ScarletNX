@@ -35,6 +35,7 @@
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/draw_state.h"
+#include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -77,6 +78,9 @@ typedef struct {
     int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
     int sc_lost;   /* the last create found the surface lost: show() has it made anew */
     u32 sc_count;
+    /* taken around the swapchain's externally synchronized calls on other threads than the GPU thread's: its acquire,
+       create and destroy, which the GPU thread makes under vk_lock, and display.c's present waits */
+    PMutex sc_lock;
     VkImage sc_images[VK_SC_MAX];
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
     /* optional features that were enabled */
@@ -107,6 +111,8 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
+    /* VK_KHR_present_id and VK_KHR_present_wait: presents carry ids, and display.c learns when each is displayed */
+    int has_present_wait;
 } VkState;
 extern VkState g_vk;
 
@@ -269,7 +275,7 @@ void vk_queue_unlock(VkQueue q);
 /* presents image idx of sc once wait is signaled, in order after the submissions queued before it (vk_lock). The
    result is this present's without the recording thread, otherwise that of an earlier one which wasn't VK_SUCCESS,
    or VK_SUCCESS: a swapchain out of date shows a frame later */
-VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait);
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id); /* id: VK_KHR_present_id's, 0 none */
 /* takes the queued presents' result that wasn't VK_SUCCESS, if any (after a drain: a new swapchain drops the old's) */
 VkResult vk_rec_present_result(void);
 /* a new descriptor set of layout with those writes, for commands of the frame's command buffer only: allocated and
@@ -999,6 +1005,16 @@ void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
 /* what is made before the game draws, so far (the renderer's prepare) */
 struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
+
+/* display.c: the display's clock, with VK_KHR_present_wait (has_present_wait). vk_display_id gives the next present's
+   id (0 without present waits), vk_display_presented hands a present queued with it to the thread that learns when
+   it is displayed (game: a frame of the game's, released by it at released_ns), on the GPU thread. vk_display_fifo
+   says whether the swapchain shows each present for a refresh at least (FIFO), which pacing on the display needs.
+   vk_display_wait is renderer.h's display_wait */
+u64 vk_display_id(void);
+void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns);
+void vk_display_fifo(int fifo);
+int vk_display_wait(u32 queued, u64 deadline_ns, u64* refresh_ns);
 
 /* compute.c */
 void vk_dispatch(const DispatchState* d);

@@ -358,9 +358,9 @@ static void gpu_memory_plots(void) {
 
 /* The window's image: src's g_last_ rectangle (a frame of fw x fh, flipped by transform) letterboxed on black, or
    black alone, with the on-screen controls and the game's menu over it; then the frame's commands are submitted and
-   the image presented. A game's frame (game) also moves the per-present bookkeeping, and without src shows nothing.
-   Under vk_lock */
-static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
+   the image presented. A game's frame (game, which the game released at released_ns, 0 unknown) also moves the
+   per-present bookkeeping, and without src shows nothing. Under vk_lock */
+static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 released_ns) {
     SNX_ZONE(z_show, "vk show");
     /* the size the swapchain was made for, not the extent the surface clamped it to: that can stay different */
     int ww, wh, srgb = src ? is_srgb(src->f.vk) : g_sc_srgb, shown = backend_window_shown();
@@ -389,7 +389,9 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
            Every image still on the display or queued for it (FIFO behind) leaves this frame unshown */
+        pm_lock(&g_vk.sc_lock);
         VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
+        pm_unlock(&g_vk.sc_lock);
         if (r == VK_NOT_READY || r == VK_TIMEOUT) {
             /* the game faster than the display (vsync=1 with fps_limit over its refresh, or a 59.94 Hz one) */
             static u64 dropped;
@@ -611,7 +613,9 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
         /* after the frame's submission, whose semaphore it waits on, without waiting for its recording */
-        VkResult r = vk_rec_present(g_vk.swapchain, idx, signal);
+        u64 id = vk_display_id();
+        VkResult r = vk_rec_present(g_vk.swapchain, idx, signal, id);
+        vk_display_presented(g_vk.swapchain, id, game, released_ns);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || (r == VK_SUBOPTIMAL_KHR && !g_vk.sc_turned))
             recreate = 1;
         else if (r == VK_ERROR_SURFACE_LOST_KHR)
@@ -632,7 +636,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
 /* the game queued a buffer for display: show it, letterboxed to the window. A frame that can't be shown (minimized,
    no image to draw to) is still submitted, with the per-present bookkeeping, so frames don't pile up */
 static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                               u32 transform) {
+                               u32 transform, u64 released_ns) {
     SNX_ZONE(z_present, "present");
     vk_lock();
     vk_buf_writable_abort(); /* a draw abandoned during setup has no shader writes to land */
@@ -667,7 +671,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_w = (u32)((u64)src->sw * x1 / src->w) - g_last_x;
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
-    show(src, x1 - x0, y1 - y0, transform, 1);
+    show(src, x1 - x0, y1 - y0, transform, 1, released_ns);
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }
@@ -684,7 +688,7 @@ static void vkr_refresh(void) {
     if (!vk_trylock()) return;
     last = now;
     vk_render_end();
-    show(g_last, g_last_w, g_last_h, g_last_transform, 0);
+    show(g_last, g_last_w, g_last_h, g_last_transform, 0, 0);
     vk_unlock();
 }
 

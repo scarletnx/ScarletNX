@@ -225,6 +225,19 @@ int backend_ini(const char* k, const char* v) {
 static void wsize_set(int w, int h) {
     if (w > 0 && h > 0) __atomic_store_n(&g_wsize, (u64)(u32)w | (u64)(u32)h << 32, __ATOMIC_RELAXED);
 }
+/* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
+   to another display, read by the renderer's threads */
+static u64 g_refresh_ns;
+static void refresh_set(void) {
+    const SDL_DisplayMode* m = g_win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_win)) : NULL;
+    u64 ns = 0;
+    if (m && m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0)
+        ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
+    else if (m && m->refresh_rate > 0)
+        ns = (u64)(1e9 / m->refresh_rate);
+    __atomic_store_n(&g_refresh_ns, ns, __ATOMIC_RELAXED);
+}
+u64 backend_display_refresh_ns(void) { return g_opt_headless ? 0 : __atomic_load_n(&g_refresh_ns, __ATOMIC_RELAXED); }
 /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
    on the main thread with the size, read by the renderer on its own */
 static u64 g_wsafe;
@@ -391,6 +404,7 @@ void video_init(const char* title, const char* addons) {
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
     wsize_set(w, h);
     wsafe_set();
+    refresh_set();
     if (!g_renderer->start())
         fatal("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.");
     LOG("renderer: Vulkan\n");
@@ -1311,6 +1325,8 @@ void video_poll(void) {
                 wsafe_set();
                 break;
             case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
+            case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+            case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refresh_set(); break;
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
                 overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
                 break;

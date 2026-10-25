@@ -243,6 +243,7 @@ typedef struct {
     VkSwapchainKHR sc;
     VkSemaphore wait;
     u32 idx;
+    u64 id; /* VK_KHR_present_id's, 0 none */
 } Present;
 static VkResult g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
 static VkResult present_run(const Present* x) {
@@ -252,6 +253,8 @@ static VkResult present_run(const Present* x) {
                            .swapchainCount = 1,
                            .pSwapchains = &x->sc,
                            .pImageIndices = &x->idx};
+    VkPresentIdKHR pid = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .swapchainCount = 1, .pPresentIds = &x->id};
+    if (x->id) pi.pNext = &pid;
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
     vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
@@ -262,8 +265,8 @@ static void present_queued(const void* p) {
     VkResult r = present_run(p);
     if (r != VK_SUCCESS) __atomic_store_n(&g_present_result, r, __ATOMIC_RELEASE);
 }
-VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait) {
-    Present x = {sc, wait, idx};
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id) {
+    Present x = {sc, wait, idx, id};
     if (g_rec <= 0) return present_run(&x);
     *(Present*)rec_push(present_queued, sizeof x) = x;
     publish();

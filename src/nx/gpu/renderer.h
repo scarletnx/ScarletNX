@@ -145,8 +145,10 @@ typedef struct Renderer {
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
+    /* released_ns: when the game was given the buffer to draw the frame in (plat_ns), 0 unknown: the log's display
+       times count from there */
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                           u32 transform);
+                           u32 transform, u64 released_ns);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
     /* the last presented frame scaled to w x h RGBA8 (a save state's thumbnail): 0, or -1 when there is none */
     int (*thumbnail)(u8* rgba, u32 w, u32 h);

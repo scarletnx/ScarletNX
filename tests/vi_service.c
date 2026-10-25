@@ -125,13 +125,16 @@ void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* 
         fn(arg);
 }
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                    u32 transform) {
-    (void)offset, (void)crop, (void)transform;
+                    u32 transform, int slot) {
+    (void)offset, (void)crop, (void)transform, (void)slot;
     shown_n++;
     shown_nvmap = nvmap_id, shown_w = w, shown_h = h, shown_pitch = pitch;
     shown_layout = layout, shown_bhl = bhl, shown_fmt = fmt;
 }
-void present_pace(u32 interval) { paced = interval; }
+void present_pace(u32 interval, int slot) {
+    (void)slot;
+    paced = interval;
+}
 
 static u32 rd32(u64 a) { return snx_ld_le32(g_mem + a); } /* the parcels' words are the guest's, little-endian */
 /* a request parcel at 0x2000: the header, the interface token, then the payload */
