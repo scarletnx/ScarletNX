@@ -1163,6 +1163,7 @@ static int check_rt_overlap(void) {
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A, 0x10000 + 512);
     CHECK(all_bytes(GP(DMA_A + 0x10000), 512, 0x6d));
     CHECK(all_blue(GP(DMA_A), 512));
     /* Replacing a GPU mapping must resolve the old target against its old
@@ -1170,10 +1171,13 @@ static int check_rt_overlap(void) {
     rt_clear(ch, alias, 160, 256, 4, 1);
     memset(GP(DMA_B), 0x37, 0x28000);
     gmmu_map(alias, DMA_B, DMA_SPAN);
+    guest_done(DMA_A, 0x28000);
     CHECK(all_blue(GP(DMA_A), 0x28000));
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_B, 0x28000);
+    guest_done(DMA_A + 0x40000, 512);
     CHECK(all_bytes(GP(DMA_B), 0x28000, 0x37));
     CHECK(all_bytes(GP(DMA_A + 0x40000), 512, 0x37));
     /* Dirty metadata queries must leave GPU-owned pixels on the GPU. */
