@@ -34,6 +34,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/draw_state.h"
 #include "nx/runtime/platform/tracy.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -1022,10 +1023,10 @@ void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 void vk_render_clear(GpuChannel* ch, u32 v);
-VkViewport vk_render_viewport(const u32* r);
-VkViewport vk_render_viewport_at(const u32* r, u32 index);
+/* viewport index of a draw's state with the resolution scale, and the facing its first viewport gives */
+VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
 int vk_render_depth_clamp(const u32* r);
-VkFrontFace vk_render_front_face(const u32* r);
+VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
 void vk_render_draw_texture(GpuChannel* ch);
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances);

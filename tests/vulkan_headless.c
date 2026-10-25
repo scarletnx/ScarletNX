@@ -4,6 +4,7 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
+#include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
@@ -142,6 +143,20 @@ static int check_staging_overflow(void)
 	return 0;
 }
 
+/* the renderer's viewport index and its first viewport's facing for the registers r, through the draw state */
+static VkViewport viewport_of(const u32* r, u32 index) {
+    DsDynamic d;
+    DsViewports v;
+    mx_draw_dynamic(r, DS_POLYGON_FILL, DS_VIEWPORTS_MAX, &d, &v);
+    return vk_viewport_from(&d, &v, index);
+}
+static VkFrontFace front_face_of(const u32* r) {
+    DsDynamic d;
+    DsViewports v;
+    mx_draw_dynamic(r, DS_POLYGON_FILL, 1, &d, &v);
+    return vk_render_front_face(&d, &v);
+}
+
 static int check_viewport_orientation(void) {
     u32 r[0xE00] = {0};
     for (u32 mode = 0; mode <= 6; mode++) {
@@ -154,50 +169,56 @@ static int check_viewport_orientation(void) {
     r[0x64B] = 1;
     r[0x286] = 0x6420; /* identity x/y/z/w swizzle */
     r[0x647] = 0x900;  /* guest clockwise */
-    VkViewport vp = vk_render_viewport(r);
+    VkViewport vp = viewport_of(r, 0);
     CHECK(vp.x == 8 && vp.width == 64 && vp.y == 20 && vp.height == 34);
     CHECK(vp.minDepth == 0 && vp.maxDepth == 1);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     /* NegativeY reverses the endpoints about translate_y, keeping the same viewport rectangle. */
     r[0x286] = 0x6430;
-    vp = vk_render_viewport(r);
+    vp = viewport_of(r, 0);
     CHECK(vp.y == 54 && vp.height == -34 && vp.y + vp.height == 20);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     /* Negative scale and negative coordinate swizzle cancel in the viewport. */
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
-    vp = vk_render_viewport(r);
+    vp = viewport_of(r, 0);
     CHECK(vp.y == 20 && vp.height == 34);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     r[0x4EB] = 0x10;
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
     /* The origin facing flip and a negative viewport cancel. */
     transform[1] = 17;
     memcpy(&r[0x280], transform, sizeof transform);
-    CHECK(vk_render_viewport(r).height == -34);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(viewport_of(r, 0).height == -34);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
     r[0x647] = 0x901;
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     transform[1] = 17;
     memcpy(&r[0x280], transform, sizeof transform);
     r[0x286] = 0x6420;
     r[0x647] = 0x900;
     r[0x3FE] = 100u << 16;
     r[0x4EB] = 1; /* lower-left window origin flips the viewport */
-    vp = vk_render_viewport(r);
+    vp = viewport_of(r, 0);
     CHECK(vp.y == 120 && vp.height == -34);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
-	/* Viewport 1 has independent transform, swizzle and depth registers. */
-	float second[6] = {10, 20, 0.25f, 50, 60, 0.5f};
-	memcpy(&r[0x288], second, sizeof second);
-	r[0x28e] = 0x6420;
-	r[0x4eb] = 0;
-	vp = vk_render_viewport_at(r, 1);
-	CHECK(vp.x == 40 && vp.y == 40 && vp.width == 20 && vp.height == 40);
-	CHECK(vp.minDepth == 0.25f && vp.maxDepth == 0.75f);
-	CHECK(vk_render_viewport(r).width == 64);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
+    /* and NegativeY on it reverses it again about the flipped translate_y */
+    r[0x286] = 0x6430;
+    vp = viewport_of(r, 0);
+    CHECK(vp.y == 86 && vp.height == 34);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
+    r[0x286] = 0x6420;
+    /* Viewport 1 has independent transform, swizzle and depth registers. */
+    float second[6] = {10, 20, 0.25f, 50, 60, 0.5f};
+    memcpy(&r[0x288], second, sizeof second);
+    r[0x28e] = 0x6420;
+    r[0x4eb] = 0;
+    vp = viewport_of(r, 1);
+    CHECK(vp.x == 40 && vp.y == 40 && vp.width == 20 && vp.height == 40);
+    CHECK(vp.minDepth == 0.25f && vp.maxDepth == 0.75f);
+    CHECK(viewport_of(r, 0).width == 64);
     return 0;
 }
 
