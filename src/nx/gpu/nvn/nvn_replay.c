@@ -175,17 +175,19 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     switch (op) {
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;
         case OP_REPORT_COUNTER: {
-            /* {counter, timestamp}: samples passed as the renderer counts the queue's draws since its reset; the
-               counter is the timestamp for the timestamp types; the others count nothing yet, and an occlusion test
-               before any reset finds something drawn, as the 3D engine's made-up count does (maxwell/engines.c) */
+            /* {counter, timestamp}, written in order with the stream, as the 3D engine's reports are (a render enable
+               later in the same submission reads it, maxwell/engines.c): samples passed as the renderer counts the
+               queue's draws since its reset, else a made-up count, so an occlusion test before any reset finds
+               something drawn; the timestamp types put 0 in the counter, as the game's driver writes them (a report
+               of payload 0). One game makes each conditional clear of a target run once a frame that way: it sets the
+               counter to 1, clears when it differs from the word 16 bytes on, and then reports a timestamp over it */
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
-            u64 v[2];
-            v[1] = guest_ticks();
-            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(q->d, r->address, v[1])) break;
-            v[0] = r->type == NVN_COUNTER_TYPE_TIMESTAMP || r->type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? v[1]
-                   : r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED                                       ? 1000
-                                                                                                      : 0;
-            effect(FX_WRITE, r->address, v, sizeof v);
+            u8 v[16];
+            u64 ticks = guest_ticks();
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(q->d, r->address, ticks)) break;
+            snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
+            snx_st_le64(v + 8, ticks);
+            gpu_release_write(r->address, v, sizeof v);
             break;
         }
         case OP_SIGNAL_EVENT: {
