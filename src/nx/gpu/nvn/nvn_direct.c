@@ -31,14 +31,18 @@ typedef struct {
     char name[128];
 } Missing;
 #define MISSING_SLOTS 1024 /* a power of two above the ~530 functions NVN has */
-static Missing missing[MISSING_SLOTS];
-static PMutex lock = PMUTEX_INIT;
-static GuestFn bootstrap_original, getproc_original;
-static int active;
+/* the file's state */
+typedef struct {
+    Missing missing[MISSING_SLOTS];
+    PMutex lock;
+    GuestFn bootstrap_original, getproc_original;
+    int active;
+} NvnDirectState;
+static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0};
 static void getproc(CPU* c, u64 entry);
 static void bootstrap(CPU* c, u64 entry);
 
-int nvn_direct_active(void) { return active; }
+int nvn_direct_active(void) { return g_nvn_direct.active; }
 
 /* the generated table's index of name (sorted by name), or -1 */
 static int implemented(const char* name) {
@@ -57,8 +61,8 @@ static int implemented(const char* name) {
 static u32 missing_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (MISSING_SLOTS - 1); }
 static const Missing* missing_find(u64 addr) {
     for (u32 n = 0, i = missing_hash(addr); n < MISSING_SLOTS; n++, i = (i + 1) & (MISSING_SLOTS - 1)) {
-        u64 a = __atomic_load_n(&missing[i].addr, __ATOMIC_ACQUIRE);
-        if (a == addr) return &missing[i];
+        u64 a = __atomic_load_n(&g_nvn_direct.missing[i].addr, __ATOMIC_ACQUIRE);
+        if (a == addr) return &g_nvn_direct.missing[i];
         if (!a) return NULL;
     }
     return NULL;
@@ -86,34 +90,34 @@ static void take(u64 addr, const char* name) {
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3))
         fatal("nvn: the driver resolved %s to %llx, outside the game's code, where nvn_direct can't take its calls",
               name, (unsigned long long)addr);
-    pm_lock(&lock);
+    pm_lock(&g_nvn_direct.lock);
     slot = &g_disp[(addr - g_code_lo) / 4];
     if (*slot == getproc || *slot == bootstrap) { /* the resolvers, which a game also looks up by name: still wrapped */
-        pm_unlock(&lock);
+        pm_unlock(&g_nvn_direct.lock);
         return;
     }
     if (*slot != fn && ours(*slot)) {
         /* two names the driver folded to one address, identical code: the first implemented one keeps it */
         LOG_LIMIT(16, "nvn: %s shares its address with a function resolved before it\n", name);
         if (*slot != unimplemented || fn == unimplemented) {
-            pm_unlock(&lock);
+            pm_unlock(&g_nvn_direct.lock);
             return;
         }
     }
     if (fn == unimplemented && !missing_find(addr)) {
         u32 j = missing_hash(addr);
-        while (missing[j].addr) j = (j + 1) & (MISSING_SLOTS - 1);
-        memcpy(missing[j].name, name, strlen(name) + 1);
-        __atomic_store_n(&missing[j].addr, addr, __ATOMIC_RELEASE);
+        while (g_nvn_direct.missing[j].addr) j = (j + 1) & (MISSING_SLOTS - 1);
+        memcpy(g_nvn_direct.missing[j].name, name, strlen(name) + 1);
+        __atomic_store_n(&g_nvn_direct.missing[j].addr, addr, __ATOMIC_RELEASE);
     }
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
-    pm_unlock(&lock);
+    pm_unlock(&g_nvn_direct.lock);
 }
 
 static void getproc(CPU* c, u64 entry) {
     char name[128];
     int valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
-    getproc_original(c, entry);
+    g_nvn_direct.getproc_original(c, entry);
     if (valid && c->x[0]) take(c->x[0], name);
 }
 
@@ -121,7 +125,7 @@ static void bootstrap(CPU* c, u64 entry) {
     char name[128];
     int valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     GuestFn* slot;
-    bootstrap_original(c, entry);
+    g_nvn_direct.bootstrap_original(c, entry);
     if (!valid || !c->x[0]) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {
         take(c->x[0], name);
@@ -131,14 +135,14 @@ static void bootstrap(CPU* c, u64 entry) {
     if (c->x[0] < g_code_lo || c->x[0] >= g_code_hi || (c->x[0] & 3))
         fatal("nvn: the driver's nvnDeviceGetProcAddress is at %llx, outside the game's code",
               (unsigned long long)c->x[0]);
-    pm_lock(&lock);
+    pm_lock(&g_nvn_direct.lock);
     slot = &g_disp[(c->x[0] - g_code_lo) / 4];
     if (*slot != getproc) {
         if (!*slot) fatal("nvn: the driver's nvnDeviceGetProcAddress has no recompiled code");
-        getproc_original = *slot;
+        g_nvn_direct.getproc_original = *slot;
         __atomic_store_n(slot, getproc, __ATOMIC_RELEASE);
     }
-    pm_unlock(&lock);
+    pm_unlock(&g_nvn_direct.lock);
 }
 
 void nvn_direct_init(void) {
@@ -150,9 +154,9 @@ void nvn_direct_init(void) {
         fatal("nvn: nvn_direct needs the game's nvnBootstrapLoader, which none of its executables exports");
     slot = &g_disp[(entry - g_code_lo) / 4];
     if (!*slot) fatal("nvn: the game's nvnBootstrapLoader has no recompiled code");
-    bootstrap_original = *slot;
+    g_nvn_direct.bootstrap_original = *slot;
     *slot = bootstrap; /* before any guest thread runs */
-    active = 1;
+    g_nvn_direct.active = 1;
     LOG("nvn: nvn_direct: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n",
         NVN_COUNT);
 }
