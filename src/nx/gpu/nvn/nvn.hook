@@ -30,6 +30,7 @@ hook nvnMemoryPoolBuilderSetStorage(addr b, addr memory, u64 size) = nvn_MemoryP
 hook nvnMemoryPoolFinalize(addr p) = nvn_MemoryPoolFinalize
 hook nvnMemoryPoolFlushMappedRange(addr p, i64 offset, u64 size) = nvn_MemoryPoolFlushMappedRange
 hook nvnMemoryPoolGetBufferAddress(addr p) -> u64 = nvn_MemoryPoolGetBufferAddress
+hook nvnMemoryPoolGetFlags(addr p) -> i32 = nvn_MemoryPoolGetFlags
 hook nvnMemoryPoolGetSize(addr p) -> u64 = nvn_MemoryPoolGetSize
 hook nvnMemoryPoolInitialize(addr p, addr b) -> bool = nvn_MemoryPoolInitialize
 hook nvnMemoryPoolMap(addr p) -> addr = nvn_MemoryPoolMap
@@ -41,6 +42,8 @@ hook nvnBufferBuilderSetStorage(addr b, addr pool, i64 offset, u64 size) = nvn_B
 hook nvnBufferFinalize(addr buf) = nvn_BufferFinalize
 hook nvnBufferFlushMappedRange(addr buf, i64 offset, u64 size) = nvn_BufferFlushMappedRange
 hook nvnBufferGetAddress(addr buf) -> u64 = nvn_BufferGetAddress
+hook nvnBufferGetMemoryOffset(addr buf) -> i64 = nvn_BufferGetMemoryOffset
+hook nvnBufferGetMemoryPool(addr buf) -> addr = nvn_BufferGetMemoryPool
 hook nvnBufferGetSize(addr buf) -> u64 = nvn_BufferGetSize
 hook nvnBufferInitialize(addr buf, addr b) -> bool = nvn_BufferInitialize
 hook nvnBufferMap(addr buf) -> addr = nvn_BufferMap
@@ -67,9 +70,15 @@ hook nvnTextureGetFlags(addr t) -> i32 = nvn_TextureGetFlags
 hook nvnTextureGetFormat(addr t) -> i32 = nvn_TextureGetFormat
 hook nvnTextureGetHeight(addr t) -> i32 = nvn_TextureGetHeight
 hook nvnTextureGetLevels(addr t) -> i32 = nvn_TextureGetLevels
+hook nvnTextureGetMemoryOffset(addr t) -> i64 = nvn_TextureGetMemoryOffset
+hook nvnTextureGetMemoryPool(addr t) -> addr = nvn_TextureGetMemoryPool
+hook nvnTextureGetSamples(addr t) -> i32 = nvn_TextureGetSamples
+hook nvnTextureGetStorageSize(addr t) -> i32 = nvn_TextureGetStorageSize
+hook nvnTextureGetStride(addr t) -> i64 = nvn_TextureGetStride
 hook nvnTextureGetTarget(addr t) -> i32 = nvn_TextureGetTarget
 hook nvnTextureGetWidth(addr t) -> i32 = nvn_TextureGetWidth
 hook nvnTextureInitialize(addr t, addr b) -> bool = nvn_TextureInitialize
+hook nvnTexturePoolFinalize(addr tp) = nvn_TexturePoolFinalize
 hook nvnTexturePoolInitialize(addr tp, addr pool, i64 offset, i32 count) -> bool = nvn_TexturePoolInitialize
 hook nvnTexturePoolRegisterImage(addr tp, i32 id, addr t, addr v) = nvn_TexturePoolRegisterImage
 hook nvnTexturePoolRegisterTexture(addr tp, i32 id, addr t, addr v) = nvn_TexturePoolRegisterTexture
@@ -93,6 +102,7 @@ hook nvnSamplerBuilderSetMinMagFilter(addr b, i32 min, i32 mag) = nvn_SamplerBui
 hook nvnSamplerBuilderSetWrapMode(addr b, i32 s, i32 t, i32 r) = nvn_SamplerBuilderSetWrapMode
 hook nvnSamplerFinalize(addr s) = nvn_SamplerFinalize
 hook nvnSamplerInitialize(addr s, addr b) -> bool = nvn_SamplerInitialize
+hook nvnSamplerPoolFinalize(addr sp) = nvn_SamplerPoolFinalize
 hook nvnSamplerPoolInitialize(addr sp, addr pool, i64 offset, i32 count) -> bool = nvn_SamplerPoolInitialize
 hook nvnSamplerPoolRegisterSampler(addr sp, i32 id, addr s) = nvn_SamplerPoolRegisterSampler
 
@@ -102,8 +112,17 @@ hook nvnProgramInitialize(addr p, addr d) -> bool = nvn_ProgramInitialize
 hook nvnProgramSetShaders(addr p, i32 n, addr sd) -> bool = nvn_ProgramSetShaders
 
 family sync
+hook nvnSyncFinalize(addr s) = nvn_SyncFinalize
 hook nvnSyncInitialize(addr s, addr d) -> bool = nvn_SyncInitialize
 hook nvnSyncWait(addr sync, u64 timeout) -> i32 = nvn_SyncWait
+
+family event
+hook nvnEventBuilderSetDefaults(addr b) = nvn_EventBuilderSetDefaults
+hook nvnEventBuilderSetStorage(addr b, addr pool, i64 offset) = nvn_EventBuilderSetStorage
+hook nvnEventFinalize(addr e) = nvn_EventFinalize
+hook nvnEventGetValue(addr e) -> u32 = nvn_EventGetValue
+hook nvnEventInitialize(addr e, addr b) -> bool = nvn_EventInitialize
+hook nvnEventSignal(addr e, i32 mode, u32 value) = nvn_EventSignal
 
 family queue
 hook nvnQueueBuilderSetCommandFlushThreshold(addr b, u64 size) = nvn_QueueBuilderSetCommandFlushThreshold
@@ -112,9 +131,13 @@ hook nvnQueueBuilderSetControlMemorySize(addr b, u64 size) = nvn_QueueBuilderSet
 hook nvnQueueBuilderSetDefaults(addr b) = nvn_QueueBuilderSetDefaults
 hook nvnQueueBuilderSetDevice(addr b, addr d) = nvn_QueueBuilderSetDevice
 hook nvnQueueFenceSync(addr q, addr sync, i32 condition, i32 flags) = nvn_QueueFenceSync
+hook nvnQueueFinalize(addr q) = nvn_QueueFinalize
+hook nvnQueueFinish(addr q) = nvn_QueueFinish
+hook nvnQueueFlush(addr q) = nvn_QueueFlush
 hook nvnQueueInitialize(addr q, addr b) -> bool = nvn_QueueInitialize
 hook nvnQueuePresentTexture(addr q, addr w, i32 index) = nvn_QueuePresentTexture
 hook nvnQueueSubmitCommands(addr q, i32 n, addr handles) = nvn_QueueSubmitCommands
+hook nvnQueueWaitSync(addr q, addr sync) -> bool = nvn_QueueWaitSync
 
 family window
 hook nvnWindowAcquireTexture(addr w, addr sync, addr index) -> i32 = nvn_WindowAcquireTexture
@@ -122,6 +145,7 @@ hook nvnWindowBuilderSetDefaults(addr b) = nvn_WindowBuilderSetDefaults
 hook nvnWindowBuilderSetDevice(addr b, addr d) = nvn_WindowBuilderSetDevice
 hook nvnWindowBuilderSetNativeWindow(addr b, addr w) = nvn_WindowBuilderSetNativeWindow
 hook nvnWindowBuilderSetTextures(addr b, i32 n, addr textures) = nvn_WindowBuilderSetTextures
+hook nvnWindowFinalize(addr w) = nvn_WindowFinalize
 hook nvnWindowInitialize(addr w, addr b) -> bool = nvn_WindowInitialize
 hook nvnWindowSetCrop(addr w, i32 x, i32 y, i32 width, i32 height) = nvn_WindowSetCrop
 
@@ -160,9 +184,11 @@ hook nvnCommandBufferDrawTransformFeedback(addr cb, i32 prim, u64 control) = nvn
 hook nvnCommandBufferEndRecording(addr cb) -> u64 = nvn_CommandBufferEndRecording
 hook nvnCommandBufferEndTransformFeedback(addr cb, u64 control) = nvn_CommandBufferEndTransformFeedback
 hook nvnCommandBufferFenceSync(addr cb, addr sync, i32 condition, i32 flags) = nvn_CommandBufferFenceSync
+hook nvnCommandBufferFinalize(addr cb) = nvn_CommandBufferFinalize
 hook nvnCommandBufferGetCommandMemoryUsed(addr cb) -> u64 = nvn_CommandBufferGetCommandMemoryUsed
 hook nvnCommandBufferGetControlMemoryUsed(addr cb) -> u64 = nvn_CommandBufferGetControlMemoryUsed
 hook nvnCommandBufferInitialize(addr cb, addr d) -> bool = nvn_CommandBufferInitialize
+hook nvnCommandBufferIsRecording(addr cb) -> bool = nvn_CommandBufferIsRecording
 hook nvnCommandBufferReportCounter(addr cb, i32 type, u64 address) = nvn_CommandBufferReportCounter
 hook nvnCommandBufferResetCounter(addr cb, i32 type) = nvn_CommandBufferResetCounter
 hook nvnCommandBufferSetBlendColor(addr cb, addr rgba) = nvn_CommandBufferSetBlendColor
@@ -182,6 +208,7 @@ hook nvnCommandBufferSetTexturePool(addr cb, addr tp) = nvn_CommandBufferSetText
 hook nvnCommandBufferSetTiledCacheAction(addr cb, i32 action) = nvn_CommandBufferSetTiledCacheAction
 hook nvnCommandBufferSetTiledCacheTileSize(addr cb, i32 w, i32 h) = nvn_CommandBufferSetTiledCacheTileSize
 hook nvnCommandBufferSetViewport(addr cb, i32 x, i32 y, i32 w, i32 h) = nvn_CommandBufferSetViewport
+hook nvnCommandBufferSignalEvent(addr cb, addr e, i32 mode, i32 location, i32 flags, u32 value) = nvn_CommandBufferSignalEvent
 hook nvnCommandBufferWaitSync(addr cb, addr sync) = nvn_CommandBufferWaitSync
 
 family state
