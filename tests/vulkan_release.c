@@ -32,6 +32,8 @@ int vk_gfx_image_pending(u64, u64);
 int vk_uma_pending(u64, u64);
 int vk_uma_pending_any(void);
 int vk_uma_pending_unsubmitted(void);
+int vk_uma_reads_in_flight(void);
+int vk_uma_reads_unsubmitted(void);
 int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
@@ -217,6 +219,10 @@ int vk_uma_pending(u64 a, u64 n) { /* no unified memory here */
 static int uma_pending, uma_unsubmitted;
 int vk_uma_pending_any(void) { return uma_pending; }
 int vk_uma_pending_unsubmitted(void) { return uma_unsubmitted; }
+/* and draws that read guest memory in place: one not done, and one in the submit being recorded */
+static int uma_reads, uma_reads_unsubmitted;
+int vk_uma_reads_in_flight(void) { return uma_reads; }
+int vk_uma_reads_unsubmitted(void) { return uma_reads_unsubmitted; }
 void gmem_read_raw(u64 address, void* data, u64 size) { memcpy(data, memory + gmmu_translate(address), size); }
 int vk_buf_pending_unsubmitted(void) { return unsubmitted; }
 /* a submit: what was recorded becomes the last submission */
@@ -439,6 +445,8 @@ int main(void) {
     /* a release after the GPU's writes into guest memory in place (unified memory) waits for their submit as for
        storage results: queued on the submit being recorded without submitting it, on the last submit once that one
        holds them, and done when it is */
+    int was_pending = pending;
+    pending = 0; /* no storage result: these alone hold the releases */
     uma_pending = uma_unsubmitted = 1;
     before = submits;
     recording = vk_submit_number();
@@ -452,6 +460,21 @@ int main(void) {
     vk_release_retire(9);
     assert(completed[8] == 1 && completed[9] == 1 && g_rhead == g_rtail && events_signaled == 4 && !events_due);
     uma_pending = 0;
+    /* the same after draws that read guest memory in place: the guest's CPU writes those bytes again once the fence
+       says so, so the fence waits for them */
+    uma_reads = uma_reads_unsubmitted = 1;
+    before = submits;
+    recording = vk_submit_number();
+    vk_release_incr(10);
+    assert(submits == before && g_rq[(g_rhead - 1) % RQ_N].gate == recording && completed[10] == 0);
+    vk_release_submit();
+    uma_reads_unsubmitted = 0;
+    vk_release_incr(11);
+    assert(g_rq[(g_rhead - 1) % RQ_N].gate == vk_last_submit() && completed[11] == 0);
+    vk_release_retire(11);
+    assert(completed[10] == 1 && completed[11] == 1 && g_rhead == g_rtail && events_signaled == 5 && !events_due);
+    uma_reads = 0;
+    pending = was_pending;
     check_writeback_merge();
     return 0;
 }

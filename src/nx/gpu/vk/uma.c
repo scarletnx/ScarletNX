@@ -496,6 +496,14 @@ void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame) {
 int vk_uma_pending(u64 gva, u64 len) { return g_uma_any && len && pend_hit(&g_uma.out_pages, gva, len); }
 int vk_uma_pending_any(void) { return g_uma.nout != 0; }
 int vk_uma_pending_unsubmitted(void) { return g_uma.nout && g_uma.out[g_uma.nout - 1].submit == vk_submit_number(); }
+int vk_uma_reads_unsubmitted(void) { return g_vk.uma && g_uma.recorded && g_uma.recorded == vk_submit_number(); }
+int vk_uma_reads_in_flight(void) {
+    u64 submitted, done;
+    if (!g_vk.uma || !g_uma.recorded) return 0;
+    if (g_uma.recorded == vk_submit_number()) return 1;
+    vk_submit_progress(&submitted, &done);
+    return g_uma.recorded > done;
+}
 int vk_uma_pending_cpu(u64 cpu, u64 len) {
     return g_uma_any && len && pend_hit_pages(&g_uma.out_pages, cpu >> 12, (cpu + len - 1) >> 12);
 }

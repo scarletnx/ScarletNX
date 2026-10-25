@@ -206,13 +206,14 @@ static void release(Release* r) {
        Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
-    if (!r->samples && !vk_buf_pending_any() && !vk_uma_pending_any() && !vk_gfx_image_in_flight(0) && !r->cgate)
+    if (!r->samples && !vk_buf_pending_any() && !vk_uma_pending_any() && !vk_uma_reads_in_flight() &&
+        !vk_gfx_image_in_flight(0) && !r->cgate)
         r->gate = 0;
     else
-        r->gate =
-            r->samples || vk_buf_pending_unsubmitted() || vk_uma_pending_unsubmitted() || vk_gfx_image_in_flight(1)
-                ? recording
-                : vk_last_submit();
+        r->gate = r->samples || vk_buf_pending_unsubmitted() || vk_uma_pending_unsubmitted() ||
+                          vk_uma_reads_unsubmitted() || vk_gfx_image_in_flight(1)
+                      ? recording
+                      : vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
         g_rheld = g_rhead;

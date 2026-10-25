@@ -952,6 +952,10 @@ int vk_uma_pending(u64 gva, u64 len);     /* an in-place write is pending over G
 int vk_uma_pending_cpu(u64 cpu, u64 len); /* the same by guest address */
 int vk_uma_pending_any(void);             /* any in-place write is pending, as vk_buf_pending_any for results */
 int vk_uma_pending_unsubmitted(void);     /* one is in the commands recorded since the last submit */
+/* a draw that read guest memory in place is not done, or is in the commands recorded since the last submit: the
+   guest's CPU may write those bytes again once its fence says so (release.c) */
+int vk_uma_reads_in_flight(void);
+int vk_uma_reads_unsubmitted(void);
 /* the runtime's CPU is about to read [gva, gva + len): the in-place writes pending there are done first (gmem_need's
    hook), unless the calling thread copies them on the GPU (vk_uma_gpu_reads) */
 void vk_uma_mem_need(u64 gva, u64 len);
