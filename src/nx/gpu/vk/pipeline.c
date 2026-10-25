@@ -62,12 +62,12 @@ static int g_sh_bind;
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
     if (idx >= 18 || !g_sh_ds) return 0;
-    const u8* in = ds_cb_inline(g_sh_ds, g_sh_bind, idx);
+    DsCbBlock in = ds_cb_inline(g_sh_ds, g_sh_bind, idx);
     u64 a = g_sh_ds->bind.cb_addr[g_sh_bind][idx];
     u32 sz = g_sh_ds->bind.cb_size[g_sh_bind][idx];
-    u32 limit = in ? DS_INLINE_BANK : sz ? sz : 65536;
-    if ((!a && !in) || limit < 4 || off > limit - 4) return 0;
-    *out = in ? ds_inline_word(in, off) : gmem_r32(a + off);
+    u32 limit = in.bytes ? in.size : sz ? sz : 65536;
+    if ((!a && !in.bytes) || limit < 4 || off > limit - 4) return 0;
+    *out = in.bytes ? ds_inline_word(in, off) : gmem_r32(a + off);
     return 1;
 }
 static VkCbReader g_rec_read;

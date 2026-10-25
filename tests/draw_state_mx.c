@@ -440,12 +440,16 @@ static void inline_blocks(void) {
     ds.bind.cb_addr[4][3] = 0x5000;
     ds.inl.bank0[4][0x510] = 0x78, ds.inl.bank0[4][0x513] = 0x12;
     ds.inl.bank2[4][0x20] = 0x05, ds.inl.bank2[4][0x22] = 0x30;
-    CHECK(ds_cb_inline(&ds, 4, 0) == ds.inl.bank0[4] && ds_cb_inline(&ds, 4, 2) == ds.inl.bank2[4]);
-    CHECK(!ds_cb_inline(&ds, 4, 3) && !ds_cb_inline(&ds, 0, 0) && !ds_cb_inline(&ds, 4, 40));
-    CHECK(ds_inline_word(ds_cb_inline(&ds, 4, 0), 0x510) == 0x12000078u);
-    CHECK(ds_inline_word(ds_cb_inline(&ds, 4, 2), 0x20) == 0x300005u);
-    CHECK(ds_inline_word(ds.inl.bank2[4], DS_INLINE_BANK - 4) == 0 &&
-          ds_inline_word(ds.inl.bank2[4], DS_INLINE_BANK) == 0);
+    DsCbBlock b0 = ds_cb_inline(&ds, 4, 0), b2 = ds_cb_inline(&ds, 4, 2);
+    CHECK(b0.bytes == ds.inl.bank0[4] && b0.size == DS_INLINE_BANK0 && b2.bytes == ds.inl.bank2[4] &&
+          b2.size == DS_INLINE_BANK2);
+    CHECK(!ds_cb_inline(&ds, 4, 3).bytes && !ds_cb_inline(&ds, 0, 0).bytes && !ds_cb_inline(&ds, 4, 40).bytes);
+    CHECK(ds_inline_word(b0, 0x510) == 0x12000078u);
+    CHECK(ds_inline_word(b2, 0x20) == 0x300005u);
+    /* NVN's last words: the base instance at 0x644 of bank 0, separate sampler 127 at 0x960 of bank 2 */
+    ds.inl.bank0[4][0x644] = 7, ds.inl.bank2[4][0x960] = 9;
+    CHECK(ds_inline_word(b0, 0x644) == 7 && ds_inline_word(b2, 0x960) == 9);
+    CHECK(ds_inline_word(b0, DS_INLINE_BANK0) == 0 && ds_inline_word(b2, DS_INLINE_BANK2 - 2) == 0);
 }
 
 int main(void) {

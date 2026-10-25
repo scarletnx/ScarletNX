@@ -17,7 +17,12 @@
 #define DS_TARGETS_MAX   8
 #define DS_GFX_STAGES    5     /* VS, TCS, TES, GS, FS: shader_vk_set's order */
 #define DS_CBUFS         18    /* constant buffer slots of a stage */
-#define DS_INLINE_BANK   0x800 /* the bytes of an inline constant buffer block */
+/* the bytes of the inline constant buffer blocks (DsInline), as NVN's driver lays out its banks: bank 0 holds the
+   storage buffer tables (from 0x110 for the vertex stage, 0x310 compute, 0x510 fragment, 16 bytes an entry), the
+   largest point size at 0x610 and the base instance at 0x644; bank 2 the handles of textures from 0x20, images from
+   0x120, separate textures from 0x168 and separate samplers from 0x568 + 8 r, up to 0x968 */
+#define DS_INLINE_BANK0  0x650
+#define DS_INLINE_BANK2  0xA00
 
 /* VkPolygonMode, VkCullModeFlags, VkCompareOp, VkStencilOp, VkBlendOp, VkBlendFactor */
 enum { DS_POLYGON_FILL, DS_POLYGON_LINE, DS_POLYGON_POINT };
@@ -248,7 +253,7 @@ typedef struct {
 
 /* Constant buffer blocks a front end gives inline (DsBindings.cb_inline): each graphics stage's two */
 typedef struct {
-    u8 bank0[DS_GFX_STAGES][DS_INLINE_BANK], bank2[DS_GFX_STAGES][DS_INLINE_BANK];
+    u8 bank0[DS_GFX_STAGES][DS_INLINE_BANK0], bank2[DS_GFX_STAGES][DS_INLINE_BANK2];
 } DsInline;
 
 /* Everything a draw reads but its arguments, written by its owner's front end (a GPU channel's 3D engine registers,
@@ -273,14 +278,24 @@ typedef struct {
     u64 gen[DS_GENS];
 } DrawState;
 
-/* stage's constant buffer bank as an inline block of ds (DS_INLINE_BANK bytes), NULL when it is in guest memory */
-static inline const u8* ds_cb_inline(const DrawState* ds, int stage, u32 bank) {
+/* a generation for DrawState.gen, from one sequence for every front end (gpu/draw_state.c) */
+u64 ds_generation_next(void);
+
+/* an inline constant buffer block: its bytes, NULL for a buffer in guest memory */
+typedef struct {
+    const u8* bytes;
+    u32 size;
+} DsCbBlock;
+/* stage's constant buffer bank as an inline block of ds */
+static inline DsCbBlock ds_cb_inline(const DrawState* ds, int stage, u32 bank) {
     u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
-    return k == DS_CB_BANK0 ? ds->inl.bank0[stage] : k == DS_CB_BANK2 ? ds->inl.bank2[stage] : NULL;
+    if (k == DS_CB_BANK0) return (DsCbBlock){ds->inl.bank0[stage], DS_INLINE_BANK0};
+    if (k == DS_CB_BANK2) return (DsCbBlock){ds->inl.bank2[stage], DS_INLINE_BANK2};
+    return (DsCbBlock){NULL, 0};
 }
 /* the word at byte off of an inline block: 0 past its end, as an unbound buffer reads */
-static inline u32 ds_inline_word(const u8* block, u64 off) {
-    return off <= DS_INLINE_BANK - 4 ? snx_ld_le32(block + off) : 0;
+static inline u32 ds_inline_word(DsCbBlock b, u64 off) {
+    return b.size >= 4 && off <= b.size - 4 ? snx_ld_le32(b.bytes + off) : 0;
 }
 
 /* What a draw takes of its owner besides its state, which the front end and the renderer share */
