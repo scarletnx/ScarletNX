@@ -417,6 +417,12 @@ void mx_draw_state_sync(GpuChannel* ch) {
         mx_draw_index(r, &x);
         keep(&ds->index, &x, sizeof x, &ds->gen[DS_INDEX]);
     }
+    if (dirty & R3D_BIND) {
+        DsBindings b = ds->bind;
+        mx_draw_bindings(r, &b);
+        keep(&ds->bind, &b, sizeof b, &ds->gen[DS_BIND]);
+    }
+    if (dirty & R3D_CBIND) ds->gen[DS_BIND] = ++g_draw_state.gen; /* r3d_cb_bind wrote the slots in place */
 }
 
 u32 mx_draw_state_stale(const GpuChannel* ch) {
@@ -434,6 +440,8 @@ u32 mx_draw_state_stale(const GpuChannel* ch) {
     mx_draw_viewports(r, &f.vp);
     mx_draw_vertex_buffers(r, &f.vbuf);
     mx_draw_index(r, &f.index);
+    f.bind = ds->bind; /* the constant buffer slots are the 3D engine's binds, kept nowhere else */
+    mx_draw_bindings(r, &f.bind);
     stale |= (u32)(memcmp(&f.prog, &ds->prog, sizeof f.prog) != 0) << DS_PROGRAMS;
     stale |= (u32)(memcmp(&f.vfmt, &ds->vfmt, sizeof f.vfmt) != 0) << DS_VFORMAT;
     stale |= (u32)(memcmp(&f.blend, &ds->blend, sizeof f.blend) != 0) << DS_BLEND;
@@ -444,5 +452,25 @@ u32 mx_draw_state_stale(const GpuChannel* ch) {
     stale |= (u32)(memcmp(&f.vp, &ds->vp, sizeof f.vp) != 0) << DS_VIEWPORTS;
     stale |= (u32)(memcmp(&f.vbuf, &ds->vbuf, sizeof f.vbuf) != 0) << DS_VBUF;
     stale |= (u32)(memcmp(&f.index, &ds->index, sizeof f.index) != 0) << DS_INDEX;
+    stale |= (u32)(memcmp(&f.bind, &ds->bind, sizeof f.bind) != 0) << DS_BIND;
     return stale;
+}
+
+/* The registers of the bindings, not the constant buffer slots (r3d_cb_bind writes those): the texture bank 0x982,
+   the TIC pool 0x55D/0x55E with its highest index 0x55F, the TSC pool 0x557/0x558 with 0x559, the sampler index mode
+   0x48D, and capture buffer i at 0xE0 + 8 i (enable, address bits 32-39 and 0-31, size, start offset), which captures
+   when its layout (0x1C1 + 4 i, 0x1C2 + 4 i) has words or a stride */
+void mx_draw_bindings(const u32* r, DsBindings* b) {
+    b->tex_pool = ((u64)r[0x55D] << 32) | r[0x55E];
+    b->smp_pool = ((u64)r[0x557] << 32) | r[0x558];
+    b->tex_max = r[0x55F];
+    b->smp_max = r[0x559];
+    b->smp_mode = r[0x48D];
+    b->tex_bank = r[0x982];
+    for (u32 i = 0; i < 4; i++) {
+        const u32* t = &r[0xE0 + 8 * i];
+        b->xfb[i].addr = (((u64)(t[1] & 0xFF) << 32) | t[2]) + t[4];
+        b->xfb[i].size = t[3];
+        b->xfb[i].on = t[0] && (r[0x1C1 + 4 * i] || r[0x1C2 + 4 * i]);
+    }
 }
