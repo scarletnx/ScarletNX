@@ -406,6 +406,59 @@ static int check_srgb_write(void) {
     return 0;
 }
 
+/* a single-layer target's pixel 0 as its image holds it */
+static int read_pixel0(Surf* target, u8 out[4]) {
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(4, &buffer);
+    CHECK(data);
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(cb, target->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, data, 4);
+    return 0;
+}
+
+/* Clears as load ops: a whole-target clear before any draw of its pass is the pass's LOAD_OP_CLEAR, and gives the
+   pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
+   is there */
+static int check_clear_load_op(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    r[0x487] = 1;
+    r[0x201] = 0x480000;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    float red[4] = {1, 0, 0, 1}, half[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+    memcpy(&r[0x360], red, sizeof red);
+    u64 loads = g_vk_clear_loads, cmds = g_vk_clear_cmds, dontcare = g_vk_dontcare_loads;
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    CHECK(g_vk_clear_loads == loads + 1 && g_vk_clear_cmds == cmds);
+    Surf* target = vk_rt_find(r[0x201]);
+    CHECK(target);
+    u8 px[4];
+    CHECK(!read_pixel0(target, px));
+    CHECK(px[0] == 255 && px[1] == 0 && px[2] == 0 && px[3] == 255);
+    /* discarded, then only its red written (a masked clear is a draw): red is what the draw wrote */
+    vk_render_discard(&ch->ds, 1);
+    memcpy(&r[0x360], half, sizeof half);
+    engine_clear(ch, 1 << 2);
+    vk_render_end();
+    CHECK(g_vk_dontcare_loads == dontcare + 1);
+    CHECK(!read_pixel0(target, px));
+    CHECK(abs((int)px[0] - 128) <= 1);
+    free(ch);
+    return 0;
+}
+
 static int check_multisample_shader_gate(void) {
     u64 guest[14] = {0};
     ShaderInfo info = {0};
@@ -1249,6 +1302,7 @@ int main(int argc, char** argv) {
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
     CHECK(!check_srgb_write());
+    CHECK(!check_clear_load_op());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());

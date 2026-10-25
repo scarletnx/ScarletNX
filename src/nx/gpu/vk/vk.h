@@ -439,6 +439,9 @@ typedef struct Surf {
     u32 wgen;       /* render targets: bumped when drawn to */
     u64 wseq;       /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
+    u64 discard_wseq; /* a render target discarded (vk_render_discard) at this wseq: its next pass loads it as
+                         DONT_CARE while nothing wrote it since */
+    u8 discarded;
     u32 drawn_at;   /* render targets: g_vk_present when last drawn to */
     u64 draw_wseq;  /* render targets: wseq at its last draw or clear (vk_rt_drawn), 0 before one */
     int in_drawn;   /* in surface.c's list of drawn targets, entered at drawn_from */
@@ -1028,6 +1031,7 @@ void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
 VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
 void vk_render_draw_texture(const DrawState* ds, const DrawTexture* t);
+void vk_render_discard(const DrawState* ds, u32 targets);
 void vk_render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
@@ -1077,6 +1081,9 @@ extern u64 g_vk_draw_kept, g_vk_draw_checked;
    begun again for them (a target's layout, or ordering without those barriers), and draws that sampled a target
    through a copy instead (gpu/vk/render.c) */
 extern u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
+/* rendering passes begun; clears recorded as vkCmdClearAttachments; attachments a pass began by clearing (its load
+   op) and by loading as DONT_CARE */
+extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 
 /* gpuprof.c, vk_gpu_profile=1: GPU time per rendering pass, summed per target and logged every 10 s */
 /* the Tracy GPU track's contexts, one per queue: the graphics queue's render passes, the compute queue's batches */

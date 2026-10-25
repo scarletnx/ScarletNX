@@ -55,6 +55,10 @@ typedef struct Renderer {
     void (*clear)(const DrawState* ds, const DrawClear* c, const DrawOwner* o);
     void (*draw)(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
     void (*draw_texture)(const DrawState* ds, const DrawTexture* t);
+    /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
+       (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
+       next loaded. NULL: they are kept */
+    void (*discard)(const DrawState* ds, u32 targets);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);

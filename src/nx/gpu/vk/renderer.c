@@ -122,6 +122,11 @@ static void vkr_draw_texture(const DrawState* ds, const DrawTexture* t) {
     vk_render_draw_texture(ds, t);
     vk_unlock();
 }
+static void vkr_discard(const DrawState* ds, u32 targets) {
+    vk_lock();
+    vk_render_discard(ds, targets);
+    vk_unlock();
+}
 static void vkr_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o) {
     vk_lock();
     vk_render_clear(ds, c, o);
@@ -590,6 +595,10 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                 "begun again), %llu through a copy\n",
                 (unsigned long long)g_vk_fb_draws, (unsigned long long)g_vk_fb_barriers,
                 (unsigned long long)g_vk_fb_restarts, (unsigned long long)g_vk_rt_copies);
+            LOG("vulkan: %llu rendering passes, %llu clear commands, %llu attachments cleared and %llu left undefined "
+                "by their load op\n",
+                (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
+                (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads);
             /* what the GPU engines keep on the GPU (docs/GPU_OWNERSHIP.md), and what the CPU had to wait for */
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
                 "engine %llu times\n",
@@ -848,6 +857,7 @@ const Renderer vk_renderer = {
     .stream_run = vk_ww_stream,
     .clear = vkr_clear,
     .draw_texture = vkr_draw_texture,
+    .discard = vkr_discard,
     .draw = vkr_draw,
     .method_barrier = vkr_method_barrier,
     .blit = vkr_blit,
