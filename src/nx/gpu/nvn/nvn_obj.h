@@ -48,9 +48,11 @@ typedef struct {
     u64 cmd_size, compute_size, control_size, flush_threshold, memory, memory_size;
 } NvnQueueBuilder; /* nxnative's device field doesn't fit an SDK 5 builder's 0x38: the runtime has one device */
 NVN_FITS(NvnQueueBuilder, 0x38);
+/* ready: when the work submitted so far is done (plat_ns): phase 1 draws nothing, so only the syncs the queue waits
+   for (a window texture's) hold it back */
 typedef struct {
     u32 magic, pad;
-    u64 submits;
+    u64 submits, ready;
 } NvnQueue;
 NVN_FITS(NvnQueue, 0x1748);
 
@@ -182,10 +184,12 @@ typedef struct {
     u64 serial;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
-/* fence: the submission whose completion signals it. Every submission completes as it is made in phase 1 */
+/* ready: when it signals, on the runtime's monotonic clock (plat_ns): when the queue's work before its fence is
+   done, which in phase 1 is when the queue last waited for (a window's texture comes free at the display's pace) or
+   at once */
 typedef struct {
     u32 magic, fenced;
-    u64 fence;
+    u64 ready;
 } NvnSync;
 NVN_FITS(NvnSync, 0x20);
 
@@ -207,11 +211,13 @@ typedef struct {
     i32 count, interval;
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window, which the runtime doesn't use */
 NVN_FITS(NvnWindowBuilder, 0x2c);
+/* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
+   its last present's slot plus one period (0: at once) */
 typedef struct {
     u32 magic;
     i32 count, interval, next, crop[4];
     u64 texture[4];
-    u64 presents;
+    u64 presents, pace, available[4];
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 
