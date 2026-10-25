@@ -2,19 +2,18 @@
    Copyright 2026 the ScarletNX contributors */
 /* nvn_direct's replay: a queue's submitted recordings run on the GPU thread, in submission order, as a GPFIFO
    submission's methods do (neutral_draw_state's 4f: never at record time, since a recording may be submitted many
-   times and what it reads changes between). Each queue keeps the state its commands set in a DrawState of its own,
-   which the replay fills as maxwell/draw_state.c fills a channel's, and the renderer's draw and clear entries read.
+   times and what it reads changes between). Each queue keeps the state its commands set (gpu/nvn/nvn_draw.c), which
+   makes the renderer's draw state of it as maxwell/draw_state.c makes a channel's, for the draws and clears.
 
-   What the replay runs so far: the render targets (SET_RT), the clears, and what the CPU sees (counter reports and
-   event writes through the renderer's ordered releases, fences as increments of the queue's syncpoint). A sync is
-   fenced at submission with the syncpoint value its point will reach, and signals when the GPU thread has replayed
-   up to it and the renderer's work before it is done (the stream increment gpu.c makes after a GPFIFO job's work).
-   A window present shows the presented texture once the work before it is replayed */
+   What the CPU sees happens in order too: counter reports and event writes through the renderer's ordered releases,
+   fences as increments of the queue's syncpoint. A sync is fenced at submission with the syncpoint value its point
+   will reach, and signals when the GPU thread has replayed up to it and the renderer's work before it is done (the
+   stream increment gpu.c makes after a GPFIFO job's work). A window present shows the presented texture once the
+   work before it is replayed */
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
-#include "nx/gpu/nvn/nvn_tex.h"
-#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
@@ -25,14 +24,9 @@
 
 #define NVN_QUEUES 8
 
-/* the draw state of a queue and what the renderer shares with it, on the GPU thread */
+/* a queue's replay state: its rendering state (gpu/nvn/nvn_draw.c), and the syncpoint its fences count */
 typedef struct {
-    DrawState ds;
-    DrawOwner own;
-} QueueDraw;
-/* a queue's replay state: its draw state (one allocation, a DrawState is large), and the syncpoint its fences count */
-typedef struct {
-    QueueDraw* d;
+    NvnDraw* d;
     u32 syncpt;
 } ReplayQueue;
 /* What the CPU sees of a submission: a fence's syncpoint increment, or bytes the stream writes (counter reports, event
@@ -51,19 +45,9 @@ typedef struct {
     PMutex lock;
     Effect* fx;
     u32 nfx, fx_cap;
-    u64 gen;
+    u64 unknown; /* the ops logged as not replayed (GPU thread) */
 } NvnReplayState;
 static NvnReplayState g_nvn_replay = {{{0, 0}}, 0, PMUTEX_INIT, NULL, 0, 0, 0};
-
-/* DrawState.gen: a new generation of group *gen. Maxwell's channels count theirs from 1 (maxwell/draw_state.c),
-   these from 2^63, so no generation of a queue's is ever one of a channel's */
-static void new_gen(u64* gen) { *gen = (1ull << 63) + ++g_nvn_replay.gen; }
-/* the group of n bytes at kept as made: a new generation when it changed */
-static void keep(void* kept, const void* made, size_t n, u64* gen) {
-    if (!memcmp(kept, made, n)) return;
-    memcpy(kept, made, n);
-    new_gen(gen);
-}
 
 enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT };
 typedef struct {
@@ -79,9 +63,7 @@ u32 nvn_replay_queue(void) {
     pm_lock(&g_nvn_replay.lock);
     if (g_nvn_replay.n == NVN_QUEUES) fatal("nvn: more than %d queues", NVN_QUEUES);
     i = g_nvn_replay.n++;
-    g_nvn_replay.q[i].d = (QueueDraw*)calloc(1, sizeof(QueueDraw));
-    if (!g_nvn_replay.q[i].d) fatal("nvn: out of memory for a queue's state");
-    g_nvn_replay.q[i].d->ds.owner = 0x80000000u | i; /* renderer.h: the NVN replay's queues from 0x80000000 */
+    g_nvn_replay.q[i].d = nvn_draw_new(0x80000000u | i); /* renderer.h: the NVN replay's queues from 0x80000000 */
     g_nvn_replay.q[i].syncpt = syncpt_alloc();
     pm_unlock(&g_nvn_replay.lock);
     return i + 1;
@@ -141,62 +123,6 @@ static void stream_incr(u32 id) {
         syncpt_incr(id);
 }
 
-/* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
-static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
-    u32 i;
-    if (t->count != u->count || t->srgb_write != u->srgb_write) return 1;
-    for (i = 0; i < DS_TARGETS_MAX; i++)
-        if (t->color[i].format != u->color[i].format) return 1;
-    return 0;
-}
-
-/* a render target from a texture snapshot and its view, as the 3D engine's registers describe one */
-static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth) {
-    NvnTexture t;
-    NvnTexLayout l;
-    u32 format, level = 0, layer = 0, layers = 1;
-    unsigned th, td;
-    memset(s, 0, sizeof *s);
-    if (!snapshot) return 0;
-    memcpy(&t, GP(snapshot), sizeof t);
-    if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
-    format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
-    s->format = nvn_rt_format(format, depth);
-    if (!s->format) {
-        LOG_LIMIT(8, "nvn: a render target of format %#x, which no target takes\n", format);
-        return 0;
-    }
-    nvn_tex_layout(&t.d, &l);
-    if (has_view && (v->set & NVN_VIEW_LEVELS)) level = v->base_level;
-    if (t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
-        t.d.target == NVN_TEXTURE_TARGET_CUBEMAP || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
-        layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 : t.d.depth;
-        if (has_view && (v->set & NVN_VIEW_LAYERS)) {
-            layer = v->min_layer;
-            layers = v->layers ? v->layers : layers - layer;
-        }
-    }
-    s->gva = t.gpu + nvn_tex_level_offset(&t.d, level) + (u64)layer * l.layer_size;
-    s->width = t.d.width >> level ? t.d.width >> level : 1;
-    s->height = t.d.height >> level ? t.d.height >> level : 1;
-    s->layers = layers;
-    s->layer_stride = l.layer_size;
-    if (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR) {
-        int bw, bh, bpb = nvn_fmt_bpb((int)t.d.format, &bw, &bh);
-        u32 align = (t.d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 128 : 32;
-        s->mem = 1u << 12;
-        s->width = t.d.stride ? t.d.stride : ((u32)bpb * s->width + align - 1) & ~(align - 1);
-    } else {
-        nvn_tex_level_tiles(&t.d, level, &th, &td);
-        if (t.d.target == NVN_TEXTURE_TARGET_3D) { /* a volume: its slices, the GOB slices of the 3D surface */
-            s->layers = t.d.depth >> level ? t.d.depth >> level : 1;
-            s->mem |= 1u << 16;
-        }
-        s->mem |= th << 4 | td << 8;
-    }
-    return 1;
-}
-
 /* on the GPU thread: a record's work */
 typedef struct {
     ReplayQueue* q;
@@ -243,49 +169,7 @@ static void effects(ReplayQueue* q) {
 }
 static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     ReplayQueue* q = ((Replay*)ctx)->q;
-    QueueDraw* d = q->d;
-    (void)size;
     switch (op) {
-        case OP_SET_RT: {
-            NvnPSetRT r;
-            DsTargets t, *tg = &t;
-            i32 i;
-            int depth;
-            memcpy(&r, GP(payload), sizeof r);
-            memset(tg, 0, sizeof *tg);
-            tg->count = r.count > 0 && r.count <= DS_TARGETS_MAX ? (u32)r.count : 0;
-            tg->srgb_write = 1; /* NVN writes sRGB targets as sRGB */
-            for (i = 0; i < (i32)tg->count; i++)
-                if (!target(r.color[i], &r.cview[i], r.has_cview[i], &tg->color[i], &depth) || depth)
-                    memset(&tg->color[i], 0, sizeof tg->color[i]);
-            if (!target(r.depth, &r.dview, r.has_dview, &tg->depth, &depth) || !depth)
-                memset(&tg->depth, 0, sizeof tg->depth);
-            if (target_formats_differ(&t, &d->ds.tgt)) new_gen(&d->ds.gen[DS_TARGET_FORMATS]);
-            keep(&d->ds.tgt, &t, sizeof t, &d->ds.gen[DS_TARGETS]);
-            break;
-        }
-        case OP_CLEAR_COLOR: {
-            NvnPClearColor r;
-            DrawClear c;
-            memcpy(&r, GP(payload), sizeof r);
-            memset(&c, 0, sizeof c);
-            c.color_mask = (u32)r.mask & 15;
-            c.slot = (u32)r.index;
-            memcpy(c.color, r.rgba, sizeof c.color);
-            if (c.color_mask && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
-            break;
-        }
-        case OP_CLEAR_DS: {
-            NvnPClearDS r;
-            DrawClear c;
-            memcpy(&r, GP(payload), sizeof r);
-            memset(&c, 0, sizeof c);
-            c.aspects = (r.depth_mask ? 1u : 0) | (r.stencil_mask ? 2u : 0);
-            c.depth = r.depth;
-            c.stencil = (u32)r.stencil;
-            if (c.aspects && g_renderer->clear) g_renderer->clear(&d->ds, &c, &d->own);
-            break;
-        }
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;
         case OP_REPORT_COUNTER: {
             /* {counter, timestamp}: the counter is the timestamp for the timestamp types, 0 for the others, which
@@ -302,7 +186,12 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             effect(e->mode == NVN_EVENT_SIGNAL_MODE_ADD ? FX_ADD : FX_WRITE, e->value, &e->v, sizeof e->v);
             break;
         }
-        default: break; /* the draws and the rest: not replayed yet */
+        default:
+            if (!nvn_draw_record(q->d, op, payload, size) && !(g_nvn_replay.unknown >> op & 1)) {
+                g_nvn_replay.unknown |= 1ull << op; /* each once */
+                LOG("nvn: records of op %u aren't replayed yet\n", op);
+            }
+            break;
     }
 }
 
