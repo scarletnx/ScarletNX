@@ -25,7 +25,7 @@ What it reports, per game:
    those procedures are trampolines (`ldr` of a dispatch table pointer, `ldr` of the slot of their own index, `br`)
    into a table filled at run time from a template of the real functions in the same order: the template is the run
    of at least n code pointers that a relocated pointer names, and its functions replace the trampolines. The NVN and
-   nnSdk versions come from the SDK's middleware strings ("SDK MW+Nintendo+NintendoSDK_NVN-<version>"), which are
+   nnSdk versions come from the SDK's middleware strings ("SDK MW+<vendor>+<vendor>SDK_NVN-<version>"), which are
    the SDK's own labels, not a guess.
 2. The command buffer reserve slow path (A64 only). Each nvnCommandBuffer* function checks its cursor against its
    limit inline and calls one shared function when the space is short. The slow path is the BL target that the most
@@ -619,7 +619,7 @@ def versions(mods):
     """{'NVN': ..., 'nnSdk': ...} from the SDK's middleware strings"""
     out = {}
     for m in mods:
-        for hit in re.finditer(rb'SDK MW\+Nintendo\+NintendoS[Dd][Kk]_(NVN|nnSdk)-([0-9_]+)', m.image):
+        for hit in re.finditer(rb'SDK MW\+[A-Za-z]+\+[A-Za-z]+S[Dd][Kk]_(NVN|nnSdk)-([0-9_]+)', m.image):
             out.setdefault(hit.group(1).decode(), (hit.group(2).decode().replace('_', '.'), m.name))
     return out
 
