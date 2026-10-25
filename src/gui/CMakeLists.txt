@@ -233,6 +233,9 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-gui-sdl PRIVATE snx_apple_frontend "-framework Foundation")
         set_target_properties(snx-test-gui-sdl PROPERTIES LINKER_LANGUAGE CXX)
     endif()
+    # the runtime's sections and pages, each of which has an icon in the Settings
+    target_compile_definitions(snx-test-gui-sdl PRIVATE
+                               SNX_GUI_SETTINGS_TXT="${PROJECT_SOURCE_DIR}/src/nx/runtime/settings.txt")
     # TODO: fix this
     if (NOT APPLE)
         add_test(NAME gui_sdl_events COMMAND snx-test-gui-sdl)

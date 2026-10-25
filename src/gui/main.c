@@ -3575,6 +3575,17 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     app->addons_focus = 0;
     app->addons_shown = true;
 }
+/* the icon of the box's row: its actions'; none for a choice, which its box or circle marks */
+static unsigned addons_icon(const App* app, int row) {
+    int item = addons_row(app, row);
+    return item == ROW_ADD_MOD                                    ? GUI_ICON_PACKAGE_PLUS
+           : item == ROW_MODS_FOLDER || item == ROW_CHEATS_FOLDER ? GUI_ICON_FOLDER_OPEN
+           : item == ROW_ADD_CHEATS                               ? GUI_ICON_FILE_PLUS
+           : item == ROW_SAVE                                     ? GUI_ICON_SAVE
+           : item == ROW_PLAY && app->addons_recompile            ? GUI_ICON_HAMMER
+           : item == ROW_PLAY                                     ? GUI_ICON_PLAY
+                                                                  : GUI_ICON_NONE;
+}
 static void addons_label(const App* app, int row, char* label, size_t size) {
     int item = addons_row(app, row);
     size_t i;
@@ -3623,7 +3634,7 @@ static void addons_boxes(App* app, GuiAddonsBoxes* d) {
     char label[160];
     for (i = 0; i < count; ++i) {
         addons_label(app, i, label, sizeof label);
-        longest = SDL_max(longest, (int)SDL_utf8strlen(label) + 4);
+        longest = SDL_max(longest, (int)SDL_utf8strlen(label) + 4 + (addons_icon(app, i) ? 3 : 0));
     }
     ui_addons_layout(
         over_rows(app, longest, rows_h(ui_addons_layout, ui_addons_row, d->rects, UI_ADDONS_ROWS, s, count), &d->box),
@@ -3640,6 +3651,7 @@ bool ui_addons_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* inf
     if (row >= (size_t)addons_rows(app)) return false;
     addons_label(app, (int)row, app->row_text, sizeof app->row_text);
     info->label = app->row_text + strlen(app->theme.marker);
+    info->icon = addons_icon(app, (int)row);
     return true;
 }
 static void render_addons(App* app) {
@@ -4611,6 +4623,10 @@ enum { SETUP_NOTICE = SNX_SETUP_STEPS }; /* a page's: a step's, or the notices' 
 static const char* const setup_step_names[SNX_SETUP_STEPS] = {SNX_TR_NOOP("Appearance"), SNX_TR_NOOP("Install"),
                                                               SNX_TR_NOOP("Folders"), SNX_TR_NOOP("Keys"),
                                                               SNX_TR_NOOP("User")};
+/* each step's icon in its tab, before its name where its number was (the page's head says it, 1/5): the tabs keep
+   the width they had; the notices' after them */
+static const unsigned setup_step_icons[SNX_SETUP_STEPS + 1] = {
+    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER, GUI_ICON_KEY_ROUND, GUI_ICON_USER, GUI_ICON_INFO};
 static int tab_count(const App* app) {
     if (app->setup_on && !app->editing) return app->setup_count;
     return app->queue.count ? GUI_TABS : GUI_TAB_RECOMPILE;
@@ -4624,10 +4640,13 @@ static void tab_label(const App* app, int i, char* out, size_t size) {
         recompile_tab(app, out, size);
     else if (!app->setup_on || app->editing)
         snprintf(out, size, "%s", snx_tr(tab_names[i]));
-    else if (app->setup_pages[i] == SETUP_NOTICE)
-        snprintf(out, size, "%s", snx_tr("Notice"));
-    else
-        snprintf(out, size, "%d %s", setup_number(app, i), snx_tr(setup_step_names[app->setup_pages[i]]));
+    else {
+        char icon[4];
+        gui_icon_utf8(setup_step_icons[app->setup_pages[i]], icon);
+        snprintf(out, size, "%s %s", icon,
+                 app->setup_pages[i] == SETUP_NOTICE ? snx_tr("Notice")
+                                                     : snx_tr(setup_step_names[app->setup_pages[i]]));
+    }
 }
 /* the columns tab i's name takes: the Compile tab's as many as its longest, so the head stays put as it changes */
 static int tab_cols(const App* app, int i) {
@@ -6310,6 +6329,28 @@ static void group_add(App* app, const char* name, int first, const char* about) 
    and settings.ini's [header] keep that name */
 static const char* group_title(const char* section) {
     return strcmp(section, "On-screen controls") ? section : SNX_TR_NOOP("Overlay");
+}
+/* the icon of a group by its name (group_title's English), and of a group's row that opens a page by the page's: none
+   for one these do not name, which gui_sdl's test refuses for every section and page of settings.txt */
+static unsigned group_icon(const char* name) {
+    static const struct {
+        const char* name;
+        unsigned icon;
+    } icons[] = {{"App", GUI_ICON_APP_WINDOW},  {"Launch", GUI_ICON_ROCKET},
+                 {"Game", GUI_ICON_JOYSTICK},   {"Display", GUI_ICON_MONITOR},
+                 {"Graphics", GUI_ICON_IMAGE},  {"Performance", GUI_ICON_GAUGE},
+                 {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
+                 {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
+                 {"Debug", GUI_ICON_BUG}};
+    for (size_t i = 0; i < SDL_arraysize(icons); ++i)
+        if (!strcmp(icons[i].name, name)) return icons[i].icon;
+    return GUI_ICON_NONE;
+}
+static unsigned page_icon(const char* page) {
+    return !strcmp(page, "LLVM Internals") ? GUI_ICON_CPU
+           : !strcmp(page, "Buttons")      ? GUI_ICON_LAYOUT_GRID
+           : !strcmp(page, "Button map")   ? GUI_ICON_GAMEPAD_DIRECTIONAL
+                                           : GUI_ICON_NONE;
 }
 static void settings_groups(App* app) {
     GuiSettings* s = settings_of(app);
@@ -8133,11 +8174,46 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
         snprintf(line, size, "%s%s%*s ...%s", app->theme.marker, label, pad, "", tail);
     }
 }
-/* row r of e as a list of ui.txt asks for it, in a row width pixels wide: false past its last */
+/* the icon of row r of e: App's rows that open a screen or do something, Folders' Add Folder and its last row, a
+   group's row that opens its page; none for a row that holds a value */
+static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
+    const GuiThemeKey* k = gui_editor_key_of(e, r);
+    int at, group;
+    if (e->keys == app_keys)
+        return r == GUI_APP_EDITOR   ? GUI_ICON_PAINTBRUSH
+               : r == GUI_APP_PLACES ? GUI_ICON_FOLDER
+               : r == GUI_APP_CLEAN  ? GUI_ICON_ERASER
+               : r == GUI_APP_MOVE   ? GUI_ICON_FOLDER_INPUT
+               : r == GUI_APP_RESET  ? GUI_ICON_ROTATE_CCW
+                                     : GUI_ICON_NONE;
+    if (e->keys == app->folder_keys)
+        return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
+               : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
+                                                                : GUI_ICON_NONE;
+    if (k && e->object == (char*)app->settings.values) {
+        int row = e->keys == app->view_keys   ? app->view_rows[k - app->view_keys]
+                  : e->keys == app->peek_keys ? app->peek_rows[k - app->peek_keys]
+                                              : (int)(k - app->settings.keys);
+        if (app->settings.values[row].kind == GUI_SETTING_PAGE) return page_icon(k->key);
+    }
+    return GUI_ICON_NONE;
+}
+/* row r of e as a list of ui.txt asks for it, in a row width pixels wide: false past its last. In a form with icons a
+   row without one starts where their text does, its values in their column */
 static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, int width, UiRowInfo* info) {
     char* line = app->row_text;
-    if (r >= (size_t)gui_editor_rows(e)) return false;
-    form_line(app, e, (int)r, labels, form_room(app, width), line, sizeof app->row_text);
+    int i, rows = gui_editor_rows(e), gutter = 0;
+    if (r >= (size_t)rows) return false;
+    for (i = 0; i < rows && !gutter; ++i) gutter = form_icon(app, e, i) != GUI_ICON_NONE;
+    info->icon = form_icon(app, e, (int)r);
+    gutter = gutter && !info->icon;
+    form_line(app, e, (int)r, labels, form_room(app, width) - (gutter || info->icon ? 3 : 0), line + 3 * gutter,
+              sizeof app->row_text - 3);
+    if (gutter) { /* the marker, then the icon's columns and the one after it */
+        size_t n = strlen(app->theme.marker);
+        memmove(line, line + 3, n);
+        memset(line + n, ' ', 3);
+    }
     info->label = line + strlen(app->theme.marker); /* ui_draw_row puts the marker */
     return true;
 }
@@ -8147,6 +8223,7 @@ bool ui_form_list_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* 
         return form_row_info(app, &app->editor, row, form_labels(&app->editor), width, info);
     if (row >= (size_t)app->groups) return false;
     info->label = snx_tr(app->group_keys[row].key);
+    info->icon = group_icon(app->group_keys[row].key);
     if (app->form != GUI_FORM_SETTINGS && (int)row == form_group(app)) info->attr = UI_ATTR_OPEN;
     return true;
 }

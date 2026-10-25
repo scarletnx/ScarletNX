@@ -8,18 +8,37 @@
 		max_rows = 64
 		# a finger's: 40px at the 3x a phone held wide gets is about 48dp, Android's touch target
 		android.row_height = 40px
-		[button]"Load Switch NSP/XCI/NRO" {}
-		[button]"Load Linux ARM ELF" {}
-		[button]"Load 3DS game" {}
-		[button]"Load Vita VPK" {}
-		[button]"Load GBA ROM" {}
-		[button]"Install Keys" {}
-		[button]"Settings" {}
-		[button]"Share Log" {}
+		[button]"Load Switch NSP/XCI/NRO" {
+			icon = gamepad-2
+		}
+		[button]"Load Linux ARM ELF" {
+			icon = square-terminal
+		}
+		[button]"Load 3DS game" {
+			icon = box
+		}
+		[button]"Load Vita VPK" {
+			icon = package
+		}
+		[button]"Load GBA ROM" {
+			icon = gamepad
+		}
+		[button]"Install Keys" {
+			icon = key-round
+		}
+		[button]"Settings" {
+			icon = settings
+		}
+		[button]"Share Log" {
+			icon = share-2
+		}
 		[button]"Open Data Folder" {
 			for-platform = android
+			icon = folder-open
 		}
-		[button]"Exit" {}
+		[button]"Exit" {
+			icon = log-out
+		}
 	}
 }
 [scene]Games {

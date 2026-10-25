@@ -18,8 +18,10 @@ name beside it, opens its launcher: a small SDL3 menu for the command-line drive
 after a game, without its code, says so and never opens it. It uses an
 embedded public-domain 8x16 VGA BIOS font, with GNU Unifont's 8x16 glyphs fitted to it for the Latin letters its CP437
 lacks and its 16x16 ones, two columns each, for the wide letters a language shows (Chinese), and nearest-neighbor
-integer scaling; its words are English or a language compiled into it ([Languages](#languages)). No font files or
-localization packages are needed.
+integer scaling; its words are English or a language compiled into it ([Languages](#languages)). An item of a menu
+has an icon beside its name, a [Lucide](https://lucide.dev) one (`src/gui/lucide`, ISC) drawn at its letters' size: the
+menu's, the groups of the Settings and their rows that open a screen or do something (the others keep its columns), a
+game's box's actions and the setup's pages. No font files or localization packages are needed.
 
 ```sh
 ./build/scarletnx
