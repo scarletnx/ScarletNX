@@ -224,5 +224,9 @@ int vk_vic_compose(const VicJob* j) {
     vk_lock();
     int r = compose(j);
     vk_unlock();
+    /* with unified memory the planes are copied in on the GPU and no trap lands them: host1x increments the job's
+       syncpoint once this returns, and the guest reads them then */
+    if (r) vk_uma_mem_need_cpu((u64)(j->oy.p - g_mem), j->oy.lim);
+    if (r && j->oc.p && j->oc.lim) vk_uma_mem_need_cpu((u64)(j->oc.p - g_mem), j->oc.lim);
     return r;
 }
