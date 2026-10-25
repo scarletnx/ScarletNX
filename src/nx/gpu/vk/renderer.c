@@ -141,19 +141,19 @@ static void vkr_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
     vk_render_draw(ds, dc, o);
     vk_unlock();
 }
-static void vkr_samples_reset(GpuChannel* ch) {
+static void vkr_samples_reset(u32 owner) {
     vk_lock();
-    vk_query_reset(ch->id);
+    vk_query_reset(owner);
     vk_unlock();
 }
-static void vkr_samples_enable(GpuChannel* ch, int on) {
+static void vkr_samples_enable(u32 owner, int on) {
     vk_lock();
-    vk_query_enable(ch->id, on);
+    vk_query_enable(owner, on);
     vk_unlock();
 }
-static int vkr_samples_report(GpuChannel* ch, u64 gva, u32 len, u64 ticks) {
+static int vkr_samples_report(u32 owner, u64 gva, u32 len, u64 ticks) {
     vk_lock();
-    int r = vk_query_report(ch->id, gva, len, ticks);
+    int r = vk_query_report(owner, gva, len, ticks);
     vk_unlock();
     return r;
 }
