@@ -75,7 +75,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c
               gpu/nvn_trace.c gpu/nvn/nvn_direct.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
-              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/shipped_pass.c)
+              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/shipped_pass.c)
 # the NVN functions nvn_direct implements: their adapters and table, generated from gpu/nvn/nvn.hook
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 # mme_jit.c compiles the macros mme_hle.c has no implementation for with the LLVM backend
