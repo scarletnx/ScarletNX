@@ -22,10 +22,12 @@ static int invalidate_write_code(u64 address, const u64 *code, size_t count)
 static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 {
 	VkSh *shader;
+	DsPrograms programs;
 
+	mx_draw_programs(channel->r3d, &programs); /* as the draw reads them */
 	vk_lock();
-	shader = vk_shader_get(channel, address, 0, ST_FS, 0, 0, 0, 0,
-			       0, 0, 0, 0, NULL);
+	shader = vk_shader_get(channel, &programs, address, 0, ST_FS, 0, 0, 0,
+			       0, 0, 0, 0, 0, NULL);
 	vk_unlock();
 	return shader;
 }
