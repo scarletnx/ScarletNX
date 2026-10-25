@@ -340,16 +340,11 @@ void mx_draw_texture(const u32* r, DrawTexture* t) {
     t->sx0 = (float)(i32)r[0x42A] / 4096.f, t->sy0 = (float)(i32)r[0x42B] / 4096.f;
 }
 
-/* the generations handed out (DrawState.gen): one counter for every channel, on the GPU thread */
-static struct {
-    u64 gen;
-} g_draw_state;
-
 /* the group of n bytes at kept as made: a new generation when it changed */
 static void keep(void* kept, const void* made, size_t n, u64* gen) {
     if (!memcmp(kept, made, n)) return;
     memcpy(kept, made, n);
-    *gen = ++g_draw_state.gen;
+    *gen = ds_generation_next();
 }
 /* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
 static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
@@ -394,7 +389,7 @@ void mx_draw_state_sync(GpuChannel* ch) {
     if (dirty & (R3D_TARGETS | R3D_RTFORMAT)) {
         DsTargets t;
         mx_draw_targets(r, &t);
-        if (target_formats_differ(&t, &ds->tgt)) ds->gen[DS_TARGET_FORMATS] = ++g_draw_state.gen;
+        if (target_formats_differ(&t, &ds->tgt)) ds->gen[DS_TARGET_FORMATS] = ds_generation_next();
         keep(&ds->tgt, &t, sizeof t, &ds->gen[DS_TARGETS]);
     }
     if (dirty & R3D_DYNAMIC) {
@@ -422,7 +417,7 @@ void mx_draw_state_sync(GpuChannel* ch) {
         mx_draw_bindings(r, &b);
         keep(&ds->bind, &b, sizeof b, &ds->gen[DS_BIND]);
     }
-    if (dirty & R3D_CBIND) ds->gen[DS_BIND] = ++g_draw_state.gen; /* r3d_cb_bind wrote the slots in place */
+    if (dirty & R3D_CBIND) ds->gen[DS_BIND] = ds_generation_next(); /* r3d_cb_bind wrote the slots in place */
 }
 
 u32 mx_draw_state_stale(const GpuChannel* ch) {
