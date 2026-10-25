@@ -1369,12 +1369,15 @@ static int check_uma(void) {
     CHECK(!gmem_write(UMA_GA + 0x2000, data, sizeof data)); /* no draw reads it in place: no wait */
     uma_stats(&n, &waits);
     CHECK(waits == waits0 + 1);
-    /* a range becoming GPU-owned: the draw reading it in place is done first, and its import goes */
+    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, the DMA
+       checks' among them (imports are blocks of 2 MiB and more), while one elsewhere stays */
     CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 == b);
     uma_stats(&n0, &waits0);
+    int elsewhere = vk_uma_imported(HEAP_BASE, 4096);
     vk_uma_owning(UMA_A + 0x4000, 0x100);
     uma_stats(&n, &waits);
-    CHECK(waits == waits0 + 1 && n == n0 - 1);
+    CHECK(waits == waits0 + 1 && n < n0 && !vk_uma_imported(UMA_A + 0x4000, 0x100));
+    CHECK(vk_uma_imported(HEAP_BASE, 4096) == elsewhere);
     CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 != b); /* the runtime's now: copied */
     CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again */
     CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
