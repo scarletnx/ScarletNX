@@ -420,5 +420,39 @@ typedef struct {
 typedef struct {
     i32 on;
 } NvnPRastDiscard;
+/* caller: the game's call site, which names the dispatcher; ind: DispatchComputeIndirect's group counts */
+typedef struct {
+    i32 x, y, z, pad;
+    u64 caller, ind;
+} NvnPDispatch;
+typedef struct {
+    f32 factor, units, clamp;
+} NvnPPolyOffset;
+typedef struct {
+    i32 on;
+} NvnPDepthClamp;
+/* mode 0 and 1: SetRenderEnableConditional (draw when the 64-bit counters at address and address + 16 are equal, not
+   equal), 2 and 3: SetRenderEnable(true, false) */
+typedef struct {
+    i32 mode, pad;
+    u64 address;
+} NvnPRenderCond;
+/* OP_UPDATE_UB: the destination and size, then the bytes, copied at record time (the caller may change its own
+   afterwards) */
+typedef struct {
+    u64 dst, size;
+} NvnPUpdateUB;
+typedef struct {
+    u64 src, dst, size;
+} NvnPCopyB2B;
+/* a memory pool mapping request (NVNmappingRequest): {physical pool, physical offset, virtual offset, size, storage
+   class} */
+typedef struct {
+    u64 physical;
+    i64 physical_offset, virtual_offset;
+    u64 size;
+    i32 storage_class, pad;
+} NvnMapRequest;
+typedef char nvn_check_map_request[sizeof(NvnMapRequest) == 0x28 ? 1 : -1];
 
 #endif

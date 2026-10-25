@@ -43,9 +43,11 @@ static void st64(u64 a, u64 v) { memcpy(GP(a), &v, sizeof v); }
 /* ============================================================ device */
 /* nvnDeviceGetInteger, as the driver of SDK 12.3.9 (NVN 55.8) answers: its own table, items 0 to 0x68. The items it
    reads from its device state (0x17, 0x18, 0x2b, 0x2d, 0x37, 0x38, 0x3a, 0x3b, 0x3d-0x41) take the values nxnative
-   measured on the console. 0x62 reads device state nobody measured: 0, logged */
+   measured on the console. 0x62 reads device state nobody measured: 0, logged. The API version is the newest the
+   SDKs ship, 55.15, as nxnative answers every game from SDK 11 on: a game checks the major version and a minimum
+   minor one, and each game carries its own driver, so the runtime can't take one game's answer for all of them */
 static const i32 device_info[0x69] = {
-    [0x00] = 55,      [0x01] = 8,       [0x02] = 14,      [0x03] = 65536,   [0x04] = 256,     [0x05] = 8,
+    [0x00] = 55,      [0x01] = 15,      [0x02] = 14,      [0x03] = 65536,   [0x04] = 256,     [0x05] = 8,
     [0x06] = 16,      [0x07] = 4,       [0x08] = 16,      [0x09] = 32,      [0x0a] = 16,      [0x0b] = 4,
     [0x0c] = 4,       [0x0d] = 4,       [0x0e] = 16,      [0x0f] = 32,      [0x10] = 32,      [0x11] = 256,
     [0x12] = 256,     [0x13] = 4,       [0x14] = 8,       [0x15] = 512,     [0x16] = 256,     [0x17] = 2,
@@ -185,6 +187,53 @@ void nvn_MemoryPoolFlushMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
     (void)offset;
     (void)size;
 }
+/* debug labels name objects for NVIDIA's tools */
+void nvn_MemoryPoolSetDebugLabel(CPU* c, u64 p, u64 label) {
+    (void)c;
+    (void)p;
+    (void)label;
+}
+void nvn_MemoryPoolInvalidateMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
+    (void)c;
+    (void)p;
+    (void)offset;
+    (void)size;
+}
+/* A virtual pool (flags 0x200) is a GPU address range with no storage of its own, which mapping requests fill with
+   the pages of physical pools. Ported from nxnative's first case: when every request maps the same physical pool at
+   the same offset from the virtual one, the virtual pool's memory is that physical memory, as one set of pages is
+   on the console. A sparse mapping (requests at offsets of their own) needs the GMMU, phase 2's: it fails here, and
+   says so */
+int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
+    NvnPool* o = NVN_OBJ(NvnPool, p);
+    u64 base = 0;
+    i32 i;
+    (void)c;
+    for (i = 0; i < n; i++) {
+        const NvnMapRequest* r = NVN_OBJ(NvnMapRequest, requests + (u64)i * sizeof(NvnMapRequest));
+        u64 phys = nvn_pool_memory(r->physical), b;
+        if (!r->physical) continue; /* an unmapping: the pages stay where the base put them */
+        b = phys + (u64)r->physical_offset - (u64)r->virtual_offset;
+        if (!phys || (base && b != base)) {
+            LOG_LIMIT(8, "nvn: virtual pool %llx: request %d maps pool %llx at %llx to %llx (%llx bytes), not at the "
+                         "offset the others did: a sparse mapping, which needs phase 2's GMMU\n",
+                      (unsigned long long)p, i, (unsigned long long)r->physical,
+                      (unsigned long long)r->physical_offset, (unsigned long long)r->virtual_offset,
+                      (unsigned long long)r->size);
+            return 0;
+        }
+        base = b;
+    }
+    if (base) {
+        if (o->memory && o->memory != base)
+            LOG_LIMIT(8, "nvn: virtual pool %llx moves from %llx to %llx\n", (unsigned long long)p,
+                      (unsigned long long)o->memory, (unsigned long long)base);
+        o->memory = base;
+    }
+    LOG_LIMIT(16, "nvn: virtual pool %llx (%llx bytes): %d requests, memory at %llx\n", (unsigned long long)p,
+              (unsigned long long)o->size, n, (unsigned long long)o->memory);
+    return 1;
+}
 u64 nvn_MemoryPoolGetBufferAddress(CPU* c, u64 p) {
     (void)c;
     return NVN_OBJ(NvnPool, p)->memory;
@@ -256,6 +305,11 @@ u64 nvn_BufferMap(CPU* c, u64 buf) {
 u64 nvn_BufferGetSize(CPU* c, u64 buf) {
     (void)c;
     return NVN_OBJ(NvnBuffer, buf)->size;
+}
+void nvn_BufferSetDebugLabel(CPU* c, u64 buf, u64 label) {
+    (void)c;
+    (void)buf;
+    (void)label;
 }
 u64 nvn_BufferGetMemoryPool(CPU* c, u64 buf) {
     (void)c;
@@ -375,6 +429,47 @@ void nvn_TextureBuilderSetFormat(CPU* c, u64 b, i32 format) {
 void nvn_TextureBuilderSetLevels(CPU* c, u64 b, i32 levels) {
     (void)c;
     TB(b)->d.levels = (u8)levels;
+}
+void nvn_TextureBuilderSetWidth(CPU* c, u64 b, i32 w) {
+    (void)c;
+    TB(b)->d.width = (u32)w;
+}
+void nvn_TextureBuilderSetHeight(CPU* c, u64 b, i32 h) {
+    (void)c;
+    TB(b)->d.height = (u32)h;
+}
+void nvn_TextureBuilderSetSamples(CPU* c, u64 b, i32 samples) {
+    (void)c;
+    TB(b)->d.samples = (u8)samples;
+}
+void nvn_TextureBuilderSetStride(CPU* c, u64 b, i64 stride) {
+    (void)c;
+    TB(b)->d.stride = (u32)stride;
+}
+/* a packaged texture's 8 layout bytes: byte 0 is its block height (log2), which its storage size then follows */
+void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
+    NvnTexBuilder* o = TB(b);
+    (void)c;
+    o->d.bits &= (u8)~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
+    memset(o->layout, 0, sizeof o->layout);
+    if (!layout) return;
+    memcpy(o->layout, GP(layout), sizeof o->layout);
+    o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | ((o->layout[0] + 1u) & NVN_TEX_BLOCK_H));
+}
+/* the storage class is the GMMU page kind the driver picks from the format: phase 2's. nxnative answers 0 */
+i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return 0;
+}
+/* The size of a depth texture's ZCull save area. The runtime does no ZCull and never touches it, but games allocate
+   it from their pools, and NVN never answers 0 (nxnative: a zero-size allocation broke one game's pool allocator).
+   nxnative's estimate, 8 bytes per 32x32 tile and layer, at least 256 */
+u64 nvn_TextureBuilderGetZCullStorageSize(CPU* c, u64 b) {
+    const NvnTexDesc* d = &TB(b)->d;
+    u64 tiles = (u64)((d->width + 31) / 32) * ((d->height + 31) / 32) * (d->depth ? d->depth : 1);
+    (void)c;
+    return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
 }
 void nvn_TextureBuilderSetDepth(CPU* c, u64 b, i32 depth) {
     (void)c;
@@ -506,6 +601,52 @@ i64 nvn_TextureGetMemoryOffset(CPU* c, u64 t) {
     (void)c;
     return CT(t)->offset;
 }
+void nvn_TextureSetDebugLabel(CPU* c, u64 t, u64 label) {
+    (void)c;
+    (void)t;
+    (void)label;
+}
+/* where a view's first level and layer start in the storage */
+i64 nvn_TextureGetViewOffset(CPU* c, u64 t, u64 v) {
+    const NvnTexture* o = CT(t);
+    const NvnView* w;
+    NvnTexLayout l;
+    u64 off = 0;
+    (void)c;
+    if (!v) return 0;
+    w = NVN_OBJ(const NvnView, v);
+    if (w->set & NVN_VIEW_LEVELS) off = nvn_tex_level_offset(&o->d, w->base_level);
+    if (w->set & NVN_VIEW_LAYERS) {
+        nvn_tex_layout(&o->d, &l);
+        off += (u64)w->min_layer * l.layer_size;
+    }
+    return (i64)off;
+}
+/* the CPU and the GPU share guest memory in phase 1: nothing to flush */
+void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
+    (void)c;
+    (void)t;
+    (void)v;
+    (void)region;
+}
+/* ReadTexels gives the CPU a texture's texels, out of its block-linear storage: a deswizzle, the GPU's work, of what
+   the GPU drew. Phase 1 draws nothing and leaves the destination as it was; phase 2 reads it back from the GPU */
+void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
+    (void)c;
+    (void)v;
+    (void)region;
+    (void)dst;
+    LOG_LIMIT(4, "nvn: nvnTextureReadTexels from texture %llx (%ux%u, format %#x): left to phase 2's GPU\n",
+              (unsigned long long)t, CT(t)->d.width, CT(t)->d.height, CT(t)->d.format);
+}
+void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
+    (void)c;
+    (void)v;
+    (void)region;
+    (void)src;
+    LOG_LIMIT(4, "nvn: nvnTextureWriteTexels into texture %llx: left to phase 2's GPU swizzle\n",
+              (unsigned long long)t);
+}
 /* WriteTexels writes the texels into the storage's block-linear layout: a swizzle, which is the GPU's work
    (docs/BLOCKLINEAR.md). Nothing reads the storage without a renderer, so phase 1 leaves it to phase 2, which swizzles
    the source rows on the GPU */
@@ -551,6 +692,11 @@ void nvn_TextureViewSetTarget(CPU* c, u64 v, i32 target) {
     (void)c;
     o->set |= NVN_VIEW_TARGET;
     o->target = (u8)target;
+}
+void nvn_TextureViewSetDepthStencilMode(CPU* c, u64 v, i32 mode) {
+    NvnView* o = VW(v);
+    (void)c;
+    o->set = (u8)((o->set & 0x3fu) | NVN_VIEW_DSMODE | ((u32)mode & 3u) << 6);
 }
 void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
     NvnView* o = VW(v);
@@ -612,6 +758,10 @@ void nvn_SamplerBuilderSetBorderColor(CPU* c, u64 b, u64 color) {
     (void)c;
     memcpy(SB(b)->border, GP(color), sizeof SB(b)->border);
 }
+void nvn_SamplerBuilderSetReductionFilter(CPU* c, u64 b, i32 filter) {
+    (void)c;
+    SB(b)->reduction = (u8)filter;
+}
 void nvn_SamplerBuilderSetMaxAnisotropy(CPU* c, u64 b, f32 anisotropy) {
     (void)c;
     SB(b)->anisotropy = anisotropy;
@@ -624,6 +774,11 @@ int nvn_SamplerInitialize(CPU* c, u64 s, u64 b) {
     o.serial = nvn_serial();
     memcpy(GP(s), &o, sizeof o);
     return 1;
+}
+void nvn_SamplerSetDebugLabel(CPU* c, u64 s, u64 label) {
+    (void)c;
+    (void)s;
+    (void)label;
 }
 void nvn_SamplerFinalize(CPU* c, u64 s) {
     (void)c;
@@ -653,6 +808,21 @@ int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
     }
     o->stages = (u32)n;
     memcpy(o->sd, GP(sd), (size_t)n * sizeof *o->sd);
+    o->serial = nvn_serial();
+    return 1;
+}
+
+/* NVN 55's SetShaders: 0x18 bytes a stage, NVNshaderData and an 8-byte extension, which nxnative doesn't use either */
+int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
+    NvnProgram* o = NVN_OBJ(NvnProgram, p);
+    i32 i;
+    (void)c;
+    if (n < 0 || n > 6) {
+        LOG_LIMIT(8, "nvn: nvnProgramSetShadersExt with %d stages\n", n);
+        return 0;
+    }
+    o->stages = (u32)n;
+    for (i = 0; i < n; i++) memcpy(&o->sd[i], GP(sd + 0x18 * (u64)i), sizeof o->sd[i]);
     o->serial = nvn_serial();
     return 1;
 }

@@ -209,3 +209,15 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     o->size = layered ? ls * z : ls;
     o->align = sparse_of(d) ? SPARSE_TILE : 512;
 }
+
+u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level) {
+    Fmt t = fmt_of(d->format);
+    unsigned dpl;
+    int layered;
+    u32 w, h, z;
+    NvnTexLayout l;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    if (!t.bpb || (d->flags & NVN_TEXTURE_FLAGS_LINEAR) || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
+    nvn_tex_layout(d, &l);
+    return level_offset(d, level, dpl, w, h, z, l.tile_h, l.tile_d, t);
+}
