@@ -34,16 +34,57 @@ static struct {
     /* feedback loops (feedback_order): the color slots in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL, those of them written
        since the pass began or its last barrier, and those sampled since then */
     u32 fb, fb_written, fb_read;
+    /* A pass is begun (vkCmdBeginRendering) only when its first command is recorded (rp_record): a clear of whole
+       attachments before that is the pass's load op (vk_render_clear), as a discard is (vk_render_discard). Its
+       attachments, with the load ops it begins with, and its layers */
+    int begun;
+    int clears; /* a load op clears: the pass is begun even with nothing drawn */
+    VkRenderingAttachmentInfo ca[8], za, zs;
+    u32 layers;
 } g_rp;
 u64 g_vk_fb_draws, g_vk_fb_barriers, g_vk_fb_restarts, g_vk_rt_copies;
+u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
+
+/* the open pass begun, for a command recorded in it */
+static void rp_record(void) {
+    if (!g_rp.open || g_rp.begun) return;
+    VkCommandBuffer cb = vk_cmd();
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{0, 0}, g_rp.ext},
+                          .layerCount = g_rp.layers,
+                          .colorAttachmentCount = g_rp.n,
+                          .pColorAttachments = g_rp.ca,
+                          .pDepthAttachment = g_rp.zt ? &g_rp.za : NULL,
+                          .pStencilAttachment = g_rp.zt && g_rp.zt->f.stencil ? &g_rp.zs : NULL};
+    vk_gpuprof_pass_begin(cb, g_rp.n ? g_rp.rt[0] : NULL, g_rp.zt);
+    rec_CmdBeginRendering(cb, &ri);
+    g_rp.begun = 1;
+    g_vk_passes++;
+    const VkRenderingAttachmentInfo* att[10] = {ri.pDepthAttachment, ri.pStencilAttachment};
+    for (u32 i = 0; i < g_rp.n; i++) att[2 + i] = g_rp.rt[i] ? &g_rp.ca[i] : NULL;
+    for (u32 i = 0; i < 2 + g_rp.n; i++) {
+        g_vk_clear_loads += att[i] && att[i]->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+        g_vk_dontcare_loads += att[i] && att[i]->loadOp == VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    }
+}
 
 void vk_render_end(void) {
     if (!g_rp.open) return;
+    if (g_rp.clears) rp_record(); /* clears with nothing drawn after them still clear */
     g_rp.open = 0;
+    if (!g_rp.begun) return; /* nothing was recorded in it: its load and store would change nothing */
+    g_rp.begun = 0;
     VkCommandBuffer cb = vk_cmd();
     vk_query_pass_end(cb); /* a query begun in the pass ends in it */
     rec_CmdEndRendering(cb);
     vk_gpuprof_pass_end(cb);
+}
+/* the load op of an attachment s: its contents don't matter when they are undefined (never drawn, or new memory
+   over it: surface.c vk_rt_reload) or discarded with nothing written since. undefined: s's layout before the pass */
+static VkAttachmentLoadOp load_op(Surf* s, int undefined) {
+    int discarded = s->discarded && s->discard_wseq == s->wseq;
+    s->discarded = 0;
+    return undefined || discarded ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
 }
 
 /* the surfaces of the targets tg names, without opening anything */
@@ -79,7 +120,8 @@ static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
     }
 }
 
-/* opens a rendering pass on these targets, or keeps the open one if it is the same set. zt_ro: the depth target is
+/* opens a rendering pass on these targets (begun at its first command: rp_record), or keeps the open one if it is the
+   same set. zt_ro: the depth target is
    bound read-only, so draws can sample it too (soft particles test against depth they also read). fb: color slots the
    draw samples, which the pass needs in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback_order) */
 static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb) {
@@ -100,6 +142,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                                             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                             .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
         if (!rt[i]) continue;
+        int undefined = rt[i]->layout == VK_IMAGE_LAYOUT_UNDEFINED;
         /* a target left in the feedback-loop layout stays in it: draws keep sampling the same targets pass after pass,
            and moving it back would end the next such pass at its first feedback draw */
         int loop = g_vk.has_feedback &&
@@ -116,6 +159,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         ca[i].imageView = vk_rt_attachment(rt[i], srgb_write);
         if (!ca[i].imageView) return 0;
         ca[i].imageLayout = layout;
+        ca[i].loadOp = load_op(rt[i], undefined);
         if (loop) loops |= 1u << i;
         if (rt[i]->sw < ext.width) ext.width = rt[i]->sw;
         if (rt[i]->sh < ext.height) ext.height = rt[i]->sh;
@@ -129,6 +173,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
        access vk_surf_use records doesn't cover, and the next barrier wouldn't wait for it */
     if (zt_ro) za.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
     if (zt) {
+        int undefined = zt->layout == VK_IMAGE_LAYOUT_UNDEFINED;
         if (zt_ro)
             vk_surf_use(cb, zt, zl,
                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
@@ -140,6 +185,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         za.imageView = zt->att;
         za.imageLayout = zl;
+        za.loadOp = load_op(zt, undefined);
         if (zt->sw < ext.width) ext.width = zt->sw;
         if (zt->sh < ext.height) ext.height = zt->sh;
     }
@@ -148,15 +194,10 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         if (rt[i] && rt[i]->layers < layers) layers = rt[i]->layers;
     if (zt && zt->layers < layers) layers = zt->layers;
     if (layers == ~0u) layers = 1;
-    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                          .renderArea = {{0, 0}, ext},
-                          .layerCount = layers,
-                          .colorAttachmentCount = n,
-                          .pColorAttachments = ca,
-                          .pDepthAttachment = zt ? &za : NULL,
-                          .pStencilAttachment = zt && zt->f.stencil ? &za : NULL};
-    vk_gpuprof_pass_begin(cb, n ? rt[0] : NULL, zt);
-    rec_CmdBeginRendering(cb, &ri);
+    memcpy(g_rp.ca, ca, n * sizeof *ca);
+    g_rp.za = g_rp.zs = za; /* depth and stencil: one view, a load op each */
+    g_rp.layers = layers;
+    g_rp.begun = g_rp.clears = 0;
     memcpy(g_rp.rt, rt, sizeof g_rp.rt);
     g_rp.zt = zt;
     g_rp.n = n;
@@ -194,6 +235,9 @@ static int render_begin_empty(void) {
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = 1};
     vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
     rec_CmdBeginRendering(vk_cmd(), &ri);
+    g_rp.begun = 1;
+    g_rp.clears = 0;
+    g_vk_passes++;
     memset(g_rp.rt, 0, sizeof g_rp.rt);
     g_rp.zt = NULL;
     g_rp.n = 0;
@@ -271,6 +315,7 @@ static int feedback_order(u32 read, u32 write) {
                            .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT | VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT,
                            .memoryBarrierCount = 1,
                            .pMemoryBarriers = &mb};
+    rp_record(); /* the barrier is the pass's, after what began it */
     rec_CmdPipelineBarrier2(vk_cmd(), &di);
     g_rp.fb_written = g_rp.fb_read = 0;
     g_vk_fb_barriers++;
@@ -328,6 +373,7 @@ static void pred_end(VkCommandBuffer cb, u32 pred) {
    the cleared slot alone, in the target's number type, run on pred */
 static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 layer, u32 pred) {
     static VkShaderModule vs, fs[8][3];
+    rp_record();
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
     if (!vs) vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
@@ -442,10 +488,39 @@ void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o
     u32 written = mask && slot < g_rp.n && g_rp.rt[slot] ? 1u << slot : 0;
     if (!feedback_order(0, written)) return;
     feedback_done(0, written);
-    VkClearAttachment at[2];
-    u32 na = 0;
-    if (mask && slot < g_rp.n && g_rp.rt[slot]) {
-        if (mask == 15) {
+    int color = mask && slot < g_rp.n && g_rp.rt[slot], color_clear = color && mask == 15;
+    VkImageAspectFlags za = 0; /* the depth target's aspects it clears */
+    if ((v & 3) && zt)
+        za = ((v & 1) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | ((v & 2) && zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    /* Whole attachments before anything else of the pass: the load ops it begins with clear them (rp_record), in place
+       of a load and vkCmdClearAttachments. Not a clear of one layer of several (a load op clears every layer the pass
+       renders), of less than the render area (its scissor: one game scissors every clear, to the whole target in most)
+       or a predicated one (a load op clears the render area, always), or a color clear of some components only */
+    int whole = rect.rect.offset.x == 0 && rect.rect.offset.y == 0 && rect.rect.extent.width == g_rp.ext.width &&
+                rect.rect.extent.height == g_rp.ext.height;
+    if (!g_rp.begun && !o->pred && layers == 1 && whole && (!color || color_clear) && (color_clear || za)) {
+        if (color_clear) {
+            VkRenderingAttachmentInfo* a = &g_rp.ca[slot];
+            a->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            if (g_rp.rt[slot]->f.is_int)
+                memcpy(a->clearValue.color.uint32, c->color, 16);
+            else
+                memcpy(a->clearValue.color.float32, cc, 16);
+        }
+        if (za & VK_IMAGE_ASPECT_DEPTH_BIT) {
+            g_rp.za.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            g_rp.za.clearValue.depthStencil.depth = dz;
+        }
+        if (za & VK_IMAGE_ASPECT_STENCIL_BIT) {
+            g_rp.zs.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            g_rp.zs.clearValue.depthStencil.stencil = c->stencil & 0xFF;
+        }
+        g_rp.clears = 1;
+    } else {
+        rp_record();
+        VkClearAttachment at[2];
+        u32 na = 0;
+        if (color_clear) {
             at[na] = (VkClearAttachment){.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = slot};
             /* an integer target's clear color registers hold the integers themselves, not floats to convert: an
                R8_Uint clear of 185 arrives as 000000b9 */
@@ -454,44 +529,69 @@ void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o
             else
                 memcpy(at[na].clearValue.color.float32, cc, 16);
             na++;
-        } else {
+        } else if (color) {
             if (clear_masked(slot, mask, cc, rect.rect, layer, o->pred)) target_written(g_rp.rt[slot]);
         }
-    }
-    if ((v & 3) && zt) {
-        VkImageAspectFlags a = 0;
-        if (v & 1) a |= VK_IMAGE_ASPECT_DEPTH_BIT;
-        if ((v & 2) && zt->f.stencil) a |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        if (a) {
-            at[na] = (VkClearAttachment){.aspectMask = a};
+        if (za) {
+            at[na] = (VkClearAttachment){.aspectMask = za};
             at[na].clearValue.depthStencil = (VkClearDepthStencilValue){dz, c->stencil & 0xFF};
             na++;
         }
+        if (na) {
+            pred_begin(vk_cmd(), o->pred);
+            rec_CmdClearAttachments(vk_cmd(), na, at, 1, &rect);
+            pred_end(vk_cmd(), o->pred);
+            g_vk_clear_cmds++;
+        }
     }
-    if (na) {
-        int color_clear = mask == 15 && slot < g_rp.n && g_rp.rt[slot];
-        pred_begin(vk_cmd(), o->pred);
-        rec_CmdClearAttachments(vk_cmd(), na, at, 1, &rect);
-        pred_end(vk_cmd(), o->pred);
-        /* a predicated clear may not run: it covers no target whole */
-        if (color_clear) {
-            Surf* s = g_rp.rt[slot];
-            vk_surf_wrote(s);
-            if (!o->pred && s->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
-                rect.rect.extent.width == s->sw && rect.rect.extent.height == s->sh)
-                vk_rt_drawn_full(s);
-            else
-                vk_rt_drawn(s);
+    /* a predicated clear may not run: it covers no target whole */
+    if (color_clear) {
+        Surf* s = g_rp.rt[slot];
+        vk_surf_wrote(s);
+        if (!o->pred && s->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
+            rect.rect.extent.width == s->sw && rect.rect.extent.height == s->sh)
+            vk_rt_drawn_full(s);
+        else
+            vk_rt_drawn(s);
+    }
+    if (za && zt_written(zt, o->pred, zt_undefined)) {
+        vk_surf_wrote(zt);
+        int all_aspects = (v & 1) && (!zt->f.stencil || (v & 2));
+        if (!o->pred && all_aspects && zt->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
+            rect.rect.extent.width == zt->sw && rect.rect.extent.height == zt->sh)
+            vk_rt_drawn_full(zt);
+        else
+            vk_rt_drawn(zt);
+    }
+}
+
+/* targets of ds (bit i color slot i, bit 8 the depth target) whose contents no longer matter: the open pass, before
+   anything of it, loads them as DONT_CARE; otherwise their next pass does, unless something writes them first */
+void vk_render_discard(const DrawState* ds, u32 targets) {
+    Surf* rt[8];
+    Surf* zt;
+    u32 n;
+    read_targets(&ds->tgt, rt, &zt, &n);
+    for (u32 i = 0; i < 9; i++) {
+        Surf* s = i < 8 ? (i < n && targets >> i & 1 ? rt[i] : NULL) : (targets >> 8 & 1 ? zt : NULL);
+        if (!s) continue;
+        if (g_rp.open && !g_rp.begun) { /* the pass of these targets hasn't begun: its load ops discard them */
+            int found = 0;
+            for (u32 j = 0; j < g_rp.n; j++)
+                if (g_rp.rt[j] == s) {
+                    if (g_rp.ca[j].loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR)
+                        g_rp.ca[j].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                    found = 1;
+                }
+            if (g_rp.zt == s) {
+                if (g_rp.za.loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR) g_rp.za.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                if (g_rp.zs.loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR) g_rp.zs.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                found = 1;
+            }
+            if (found) continue;
         }
-        if (na > (u32)color_clear && zt && zt_written(zt, o->pred, zt_undefined)) {
-            vk_surf_wrote(zt);
-            int all_aspects = (v & 1) && (!zt->f.stencil || (v & 2));
-            if (!o->pred && all_aspects && zt->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
-                rect.rect.extent.width == zt->sw && rect.rect.extent.height == zt->sh)
-                vk_rt_drawn_full(zt);
-            else
-                vk_rt_drawn(zt);
-        }
+        s->discarded = 1;
+        s->discard_wseq = s->wseq;
     }
 }
 
@@ -2537,7 +2637,9 @@ retry:
                                                      (zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)};
                 a.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
                 VkClearRect cr = {{{0, 0}, g_rp.ext}, 0, 1};
+                rp_record();
                 rec_CmdClearAttachments(vk_cmd(), 1, &a, 1, &cr);
+                g_vk_clear_cmds++;
                 target_written(zt);
             }
         }
@@ -2918,6 +3020,7 @@ retry:
         draw_images_discard(&images);
         return;
     }
+    rp_record();
     VkCommandBuffer cb = vk_cmd();
     /* only what differs from the previous draw's in this command buffer (g_dyn) */
     int fresh = g_dyn.cb != vk_cb_begun();
