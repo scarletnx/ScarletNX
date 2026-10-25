@@ -83,10 +83,8 @@ void nvn_draw_device(u32 origin, u32 depth_mode) {
     __atomic_store_n(&g_nvn_device.depth_mode, depth_mode, __ATOMIC_RELAXED);
 }
 
-/* DrawState.gen: a new generation of group *gen. Maxwell's channels count theirs from 1 (maxwell/draw_state.c),
-   these from 2^63, so no generation of a queue's is ever one of a channel's (GPU thread only) */
-static u64 g_nvn_gen;
-static void new_gen(u64* gen) { *gen = (1ull << 63) + ++g_nvn_gen; }
+/* DrawState.gen: a new generation of group *gen, from the sequence every front end shares */
+static void new_gen(u64* gen) { *gen = ds_generation_next(); }
 /* the group of n bytes at kept as made: a new generation when it changed */
 static void keep(void* kept, const void* made, size_t n, u64* gen) {
     if (!memcmp(kept, made, n)) return;
@@ -558,11 +556,10 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
 }
 
 /* ---- bindings */
-/* 8 bytes at off of an inline block, when they fit (NVN's tables can run past the renderer's block) */
-static void put64(NvnDraw* d, u8* block, u32 off, u64 v) {
-    if (off + 8 > DS_INLINE_BANK) {
-        LOG_LIMIT(1, "nvn: a handle at %#x of a driver constant buffer, past the %#x bytes the renderer keeps\n", off,
-                  DS_INLINE_BANK);
+/* 8 bytes at off of an inline block of size bytes, when they fit */
+static void put64(NvnDraw* d, u8* block, u32 size, u32 off, u64 v) {
+    if (off + 8 > size) {
+        LOG_LIMIT(1, "nvn: a handle at %#x of a driver constant buffer, past its %#x bytes\n", off, size);
         return;
     }
     snx_st_le64(block + off, v);
@@ -584,7 +581,7 @@ static void bind_buffer(NvnDraw* d, u32 op, u64 payload) {
             LOG_LIMIT(1, "nvn: a storage buffer of shader stage %d, whose table nobody measured\n", r->stage);
             return;
         }
-        put64(d, d->inl.bank0[s], base + 16 * (u32)r->index, r->address);
+        put64(d, d->inl.bank0[s], DS_INLINE_BANK0, base + 16 * (u32)r->index, r->address);
         snx_st_le32(d->inl.bank0[s] + base + 16 * (u32)r->index + 8, (u32)r->size);
     }
 }
@@ -601,7 +598,7 @@ static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
                   : op == OP_BIND_IMG    ? C2_IMG + 8 * (u32)slot
                   : slot >= SEPTEX_SLOT0 ? C2_SEPTEX + 8 * (u32)(slot - SEPTEX_SLOT0)
                                          : C2_TEX + 8 * (u32)slot;
-        if (slot >= 0) put64(d, d->inl.bank2[s], off, h);
+        if (slot >= 0) put64(d, d->inl.bank2[s], DS_INLINE_BANK2, off, h);
     }
 }
 static void bind_program(NvnDraw* d, u64 payload) {
@@ -745,7 +742,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_BIND_TEX1: {
             const NvnPBindTex1* r = NVN_OBJ(const NvnPBindTex1, payload);
             int s = gfx_stage(r->stage);
-            if (s >= 0 && r->slot >= 0) put64(d, d->inl.bank2[s], C2_TEX + 8 * (u32)r->slot, r->h);
+            if (s >= 0 && r->slot >= 0) put64(d, d->inl.bank2[s], DS_INLINE_BANK2, C2_TEX + 8 * (u32)r->slot, r->h);
             return 1;
         }
         case OP_SET_TEX_POOL:
