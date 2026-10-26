@@ -251,3 +251,22 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
     return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, 0, (in_size + 3) & ~3ull, out, out_off,
                        out_at + (u64)out_pitch * rows - out_off);
 }
+int vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkBuffer in, u64 in_at, u64 in_size,
+                VkBuffer out, u64 out_at, u64 out_size) {
+    u64 align = storage_align(), in_off = in_at & ~(align - 1), out_off = out_at & ~(align - 1);
+    /* rows of at most 65,535 workgroups, the least maxComputeWorkGroupCount[0] the specification allows */
+    u32 units = n < 65535u * 64 ? n : 65535u * 64, rows = n ? (n + units - 1) / units : 0;
+    if ((in_at | out_at) & 3) return 0;
+    if (!n) return 1;
+    TcParams p = {.mode = mode,
+                  .units = units,
+                  .rows = rows,
+                  .in_bias = (u32)(in_at - in_off), /* bytes, for these modes */
+                  .out_bias = (u32)((out_at - out_off) / 4),
+                  .remap = remap,
+                  .const_a = restart,
+                  .line_out = n};
+    /* a word of input still binds when there is none (vertex numbers made into quads) */
+    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, (in_at + (in_size ? in_size : 4) - in_off + 3) & ~3ull,
+                       out, out_off, out_at + out_size - out_off);
+}
