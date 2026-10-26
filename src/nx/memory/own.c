@@ -349,7 +349,8 @@ int own_init(const OwnHooks* h) {
     g_hooks = *h;
     g_page = plat_vm_page();
     pc_init(&g_own_cv);
-    if (!plat_alias_mirror() || plat_trap_init(own_fault)) {
+    /* SNX_NO_TRAPS: as a host without traps (Windows, macOS), to measure and test that path here */
+    if (getenv("SNX_NO_TRAPS") || !plat_alias_mirror() || plat_trap_init(own_fault)) {
         LOG("memory: no traps on this host: GPU engines land their results in guest memory at their fence\n");
         return -1;
     }
