@@ -234,8 +234,12 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
         int stencil = v && (v->set & NVN_VIEW_DSMODE) ? (v->set >> 6) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL
                                                       : (t->d.bits & NVN_TEX_STENCIL) != 0;
         u32 s = (d24 ^ stencil) ? SWZ_G : SWZ_R;
-        /* depth as (d, 0, 0, 1), as the game's driver describes a depth texture; stencil in every channel */
-        if (stencil)
+        /* depth as (d, 0, 0, 1), as the game's driver describes a depth texture; stencil in every channel, but a
+           DEPTH24_STENCIL8 texture's stencil, which the driver describes as R8G24 with an integer R (stencil, 0, 0,
+           1): the renderer reads a target's stencil through that format */
+        if (stencil && format == NVN_FORMAT_DEPTH24_STENCIL8)
+            out[0] = 0x24a0eu | (u32)SWZ_R << 19 | (u32)SWZ_ZERO << 22 | (u32)SWZ_ZERO << 25 | (u32)SWZ_ONE_INT << 28;
+        else if (stencil)
             out[0] |= s << 19 | s << 22 | s << 25 | s << 28;
         else
             out[0] |= s << 19 | (u32)SWZ_ZERO << 22 | (u32)SWZ_ZERO << 25 | (u32)SWZ_ONE_FLOAT << 28;
