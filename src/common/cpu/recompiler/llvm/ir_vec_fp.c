@@ -311,6 +311,8 @@ static void fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, Fast* 
                 inexact = nonzero(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), fb, fa), 64);
                 cut = either(ir, is_zero(ir, 64, a), magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64)));
             }
+            /* a zero divided by an infinity is an exact zero, though its residual (0 * inf) is a NaN */
+            if (inexact) inexact = both(ir, inexact, not1(ir, exact_zero));
             break;
     }
     V ok = either(ir, roomy(ir, width, rb), exact_zero);

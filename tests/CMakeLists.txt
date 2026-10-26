@@ -601,6 +601,14 @@ snx_test_target(snx-test-nvn-descriptors 99)
 target_include_directories(snx-test-nvn-descriptors PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-descriptors PRIVATE m)
 add_test(NAME nvn_descriptors COMMAND snx-test-nvn-descriptors)
+# the vector FP instructions with fast paths through the LLVM steps against the soft-float helpers, lane by lane,
+# with lanes the host's arithmetic can and can't take in one vector
+add_executable(snx-test-llvm-vfp-lanes llvm_vfp_lanes.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-lanes 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
+target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
 # the FP fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
 # left once LLVM folds the guards
 add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)

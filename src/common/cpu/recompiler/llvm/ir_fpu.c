@@ -285,6 +285,8 @@ static V fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, V* ok, V*
                 *inexact = float_ne(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), fb, fa), kfloat(ir, 64, 0.0));
                 cut = either(ir, is_zero(ir, 64, a), magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64)));
             }
+            /* a zero divided by an infinity is an exact zero, though its residual (0 * inf) is a NaN */
+            if (*inexact) *inexact = both(ir, *inexact, LLVMBuildNot(B, exact_zero, ""));
             break;
     }
     *ok = both(ir, both(ir, fpcr_clear(ir, FPCR_RMODE), both(ir, unflushed(ir, width, a), unflushed(ir, width, b))),
