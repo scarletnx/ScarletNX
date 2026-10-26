@@ -332,8 +332,9 @@ LLVMValueRef ir_mp(SnxIr* ir, LLVMValueRef address) {
    atomics, which are fences and seq_cst accesses. The ARMv8 memory model allows all of that: a load may return what
    an earlier one of the same address did, and stores may coalesce. A loop that polls memory another thread writes (a
    relaxed atomic is a plain LDR) keeps its load: every backward branch in a function polls (ir_codegen.c's poll),
-   calling the runtime through a pointer on its cold path, which LLVM must take to write any memory, so it hoists no
-   load out of the loop and sinks no store; a loop through other functions has their calls */
+   whose compiler barrier no load or store crosses, so LLVM hoists no load out of the loop and sinks no store (the
+   call on the poll's cold path alone isn't enough: GVN moves the load onto that path); a loop through other
+   functions has their calls */
 LLVMValueRef ir_rd(SnxIr* ir, LLVMValueRef address, unsigned bits) {
     LLVMValueRef load = LLVMBuildLoad2(ir->b, ir_int_type(ir, bits), ir_mp(ir, address), "");
     LLVMSetAlignment(load, 1);
