@@ -251,6 +251,25 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)
     set_tests_properties(astc_vulkan_pieces PROPERTIES PASS_REGULAR_EXPRESSION "memory in pieces")
     set_tests_properties(astc_vulkan astc_vulkan_pieces PROPERTIES TIMEOUT 300)
+
+    # The GPU performance regression test (docs/PERF.md): the block linear shader every texture upload and render
+    # target write-back runs, against a reference copy of the same runs in the same workgroup shape, 8 MiB a
+    # dispatch. Not in a sanitized or cross build, where the instrumentation or the emulator would decide the number.
+    # Skipped locally without a Vulkan device (ctest's skip, code 77), failed in CI instead of skipped.
+    if(NOT CMAKE_CROSSCOMPILING AND NOT SNX_TEST_SANITIZERS)
+        add_executable(snx-test-perf-gpu "${PROJECT_SOURCE_DIR}/tests/perf_gpu.c"
+            "${PROJECT_SOURCE_DIR}/tests/support/perf.c" "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-perf-gpu 11)
+        target_include_directories(snx-test-perf-gpu PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+        target_link_libraries(snx-test-perf-gpu PRIVATE snx_nx_flags Threads::Threads ${CMAKE_DL_LIBS})
+        set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+        snx_glsl_spirv(snx-test-perf-gpu SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv
+                       HEADER nx/gpu/texture/blocklinear_spv.h)
+        snx_glsl_spirv(snx-test-perf-gpu SOURCE "${PROJECT_SOURCE_DIR}/tests/perf_copy.comp" NAME perf_copy_spv
+                       HEADER support/perf_copy_spv.h)
+        add_test(NAME perf_gpu COMMAND snx-test-perf-gpu "${PROJECT_SOURCE_DIR}/tests/perf_baseline.txt")
+        set_tests_properties(perf_gpu PROPERTIES LABELS perf SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL TRUE)
+    endif()
 endif()
 if(BUILD_TESTING)
     snx_sanitizer_path() # tests/CMakeLists.txt: this folder's tests

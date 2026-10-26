@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# Each line is `key reference warn% fail% ceiling`. The reference is the best stable ratio main has measured: main
+# lowers it only when a run is statistically better, so improvements tighten the test and a regression cannot raise
+# it by itself. The warning and failure ratios are the reference raised by the percentages, and `ceiling` is the hard
+# backstop for a regression too large to be worth a retest.
+#
+# A warning uses the block's 95% lower bound and then runs a confirmation block; it leaves CI green and its GitHub
+# annotation says that it may be variance. A failure needs the 99.9% lower bound over the failure line in two
+# independent blocks, so one run or a difference the run's own noise could explain only warns. A ratio over the
+# ceiling also runs the confirmation block before anything fails.
+#
+# The first main run of a new key lowers a deliberately generous reference to what the runner measures. Later runs
+# lower it further only when the whole 95% interval is below the current reference. A reference never rises here:
+# a small regression passes inside the band but does not move the line, so regressions cannot accumulate. Raising a
+# reference for an intended trade-off is a reviewed change to this file.
+#
+# cpu_*: the recompiled A64 loop's time over the same loop written in C. A Mac on Apple silicon has a key of its own:
+#        its performance and efficiency cores move the C mirror's speed more than the generated code's.
+# gpu_*: the block linear deswizzle shader's time over the reference copy shader's, on hardware or on a software
+#        device (lavapipe reports VK_PHYSICAL_DEVICE_TYPE_CPU).
+# compile_*: seconds for `scarletnx -r` to compile a generated NRO of 512 functions and about 38,000 instructions with
+#        one job, a fresh cache and a fresh output folder. Unlike the others this is a time, not a ratio: the main
+#        baseline is per runner and architecture, and a different CPU model moves it.
+cpu_x86_64          1.50 30 60 3.00
+cpu_aarch64         1.50 30 60 3.00
+cpu_aarch64_darwin  1.80 30 60 3.50
+cpu_other           1.50 30 60 3.00
+gpu_hardware        1.30 25 50 3.00
+gpu_software        8.00 25 50 15.00
+compile_x86_64      3.00 25 50 8.00
+compile_aarch64     3.00 25 50 8.00
+compile_aarch64_darwin 3.00 25 50 8.00
+compile_other       3.00 25 50 8.00

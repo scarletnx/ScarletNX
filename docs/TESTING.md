@@ -12,6 +12,7 @@ dumps, game files or shader and texture dumps ([CONTRIBUTING](../CONTRIBUTING.md
 * [Which build](#which-build)
 * [A game that does not run as it should](#a-game-that-does-not-run-as-it-should)
 * [A test of a pull request or a fix](#a-test-of-a-pull-request-or-a-fix)
+* [Performance regression tests](#performance-regression-tests)
 * [Naming your machine](#naming-your-machine)
 * [What happens to a report](#what-happens-to-a-report)
 
@@ -73,6 +74,13 @@ Not tested: <what the change touches that this run did not reach>
 - `Result` quotes the decisive log lines (`build:`, `vulkan:`, crash, `FATAL`) and attaches the log, or puts it in a
   `<details>` block.
 - A fix for an intermittent crash needs enough runs to show it is gone.
+
+## Performance regression tests
+
+A change to the recompiler, to a GPU shader or to the recompile path is also held by `perf_cpu`, `perf_gpu` and
+`perf_compile`, which time a CPU path, a GPU path and a real `scarletnx -r` compile. They use little of the machine and
+skip locally when it is too busy to trust a timing, while CI fails rather than skips. See
+[performance regression tests](PERF.md) for what they measure, how to run them and what a ceiling means.
 
 ## Naming your machine
 

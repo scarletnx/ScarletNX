@@ -1357,6 +1357,32 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library 11)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
+
+# Performance regression tests (docs/PERF.md): each times two workloads together in one process and limits their
+# ratio, so the host's speed, its load and its clock cancel out. Skipped locally on a machine too busy to trust a
+# timing (ctest's skip, code 77), failed in CI instead of skipped, and left out of a sanitized or cross build, where
+# the instrumentation or the emulator would decide the number
+if(TARGET scarletnx-recompiler AND NOT CMAKE_CROSSCOMPILING AND NOT SNX_TEST_SANITIZERS)
+    add_executable(snx-test-perf-cpu perf_cpu.c support/perf.c)
+    snx_test_target(snx-test-perf-cpu 11)
+    target_link_libraries(snx-test-perf-cpu PRIVATE scarletnx-recompiler)
+    add_test(NAME perf_cpu COMMAND snx-test-perf-cpu "${CMAKE_CURRENT_SOURCE_DIR}/perf_baseline.txt")
+    set_tests_properties(perf_cpu PROPERTIES LABELS perf SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL TRUE)
+endif()
+# The ratchet tool itself: a reference follows a run only when the whole 95% interval is below it
+if(Python3_Interpreter_FOUND)
+    add_test(NAME perf_baseline_tool COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/perf_baseline_test.py")
+endif()
+
+# The real recompile path: `scarletnx -r` over a generated NRO, with a fresh cache and one job. A time, not a ratio;
+# the baseline is still ratcheted from main. Not in a sanitized or cross build, and only where the NX program exists
+if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT CMAKE_CROSSCOMPILING AND
+   NOT SNX_TEST_SANITIZERS)
+    add_test(NAME perf_compile COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/perf_compile.py"
+             --runtime $<TARGET_FILE:scarletnx> --repo "${PROJECT_SOURCE_DIR}"
+             --baseline "${CMAKE_CURRENT_SOURCE_DIR}/perf_baseline.txt")
+    set_tests_properties(perf_compile PROPERTIES LABELS perf SKIP_RETURN_CODE 77 TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
 # The Mach-O linker on objects Clang compiles for arm64 macOS, which any host's Clang with AArch64 can: what macOS
 # would check of the dylib (link_macho.c), on hosts that can't load one
 if(TARGET OpenSSL::Crypto)

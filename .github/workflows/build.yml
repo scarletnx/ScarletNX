@@ -100,6 +100,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
+      # A pull request is measured against the baseline main has, never the copy it carries: it may tighten its own
+      # numbers only through the reviewed baseline file on main
+      - name: Use main's performance baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          if git -c safe.directory="$GITHUB_WORKSPACE" fetch --depth=1 origin "${{ github.base_ref }}" &&
+             git -c safe.directory="$GITHUB_WORKSPACE" show \
+               "origin/${{ github.base_ref }}:tests/perf_baseline.txt" > "$RUNNER_TEMP/perf_baseline.txt"; then
+            echo "SNX_PERF_BASELINE=$RUNNER_TEMP/perf_baseline.txt" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=perf::main has no performance baseline yet; the checked-out file is used"
+          fi
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
@@ -203,7 +215,45 @@ jobs:
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default --output-on-failure --parallel 4
+        run: ctest --test-dir build/default --output-on-failure --parallel 4 --exclude-regex '^perf_(cpu|gpu|compile)$'
+      # One step for all three: no other test runs beside them, the output is the step's so GitHub parses its
+      # ::warning:: and ::error:: annotations, and the step's two minute cap bounds the whole performance suite
+      - name: Performance regression tests
+        timeout-minutes: 2
+        env:
+          SNX_PERF_REQUIRE: "1"
+        run: |
+          set -euo pipefail
+          baseline="${SNX_PERF_BASELINE:-tests/perf_baseline.txt}"
+          SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-cpu-${{ matrix.arch }}.txt" \
+            build/default/tests/snx-test-perf-cpu "$baseline"
+          SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-compile-${{ matrix.arch }}.txt" \
+            python3 tests/perf_compile.py --runtime build/default/scarletnx --repo "$PWD" --baseline "$baseline"
+          SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-gpu-${{ matrix.arch }}.txt" \
+            build/headless/src/nx/snx-test-perf-gpu "$baseline"
+      # Main proposes the next baseline from its own run: a reference moves down only when the whole 95% interval
+      # is below it, so a small regression passes inside the band but never moves the line. The file is an artifact
+      # and a summary diff, for a reviewed commit (a bot pull request can apply it later)
+      - name: Propose the performance baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          python3 scripts/perf-baseline.py --baseline tests/perf_baseline.txt \
+            --result "perf-result-cpu-${{ matrix.arch }}.txt" \
+            --result "perf-result-gpu-${{ matrix.arch }}.txt" \
+            --result "perf-result-compile-${{ matrix.arch }}.txt" \
+            --out "perf-baseline-${{ matrix.arch }}.txt"
+          {
+            echo "### Performance baseline (${{ matrix.arch }})"
+            echo '```diff'
+            diff -u tests/perf_baseline.txt "perf-baseline-${{ matrix.arch }}.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the proposed baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-baseline-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
+          path: "perf-baseline-${{ matrix.arch }}.txt"
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -1115,7 +1165,7 @@ jobs:
       - name: Test native tooling and indexed filesystems
         run: |
           set -euo pipefail
-          ctest --test-dir build/default --output-on-failure --parallel 4
+          ctest --test-dir build/default --output-on-failure --parallel 4 --exclude-regex '^perf_(cpu|gpu|compile)$'
       - name: Bundle runtime DLLs and licenses
         run: |
           set -euo pipefail
@@ -1468,7 +1518,7 @@ jobs:
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
-        run: ctest --test-dir build/macos --output-on-failure --parallel 4
+        run: ctest --test-dir build/macos --output-on-failure --parallel 4 --exclude-regex '^perf_(cpu|gpu|compile)$'
       # the app, signed ad hoc, and its zip, by CPack (cmake/apple_package.cmake)
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
