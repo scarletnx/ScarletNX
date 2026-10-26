@@ -695,6 +695,21 @@ static u32 attr_bytes(u32 size) {
     }
     return 4; /* 0x0A, 0x0F, 0x12, 0x30, 0x31 */
 }
+/* the bytes of a component of a vertex attribute of that size, which Vulkan fetches it only from multiples of: a packed
+   format's word as one */
+static u32 attr_component_bytes(u32 size) {
+    switch (size) {
+        case 0x03:
+        case 0x05:
+        case 0x0F:
+        case 0x1B: return 2;
+        case 0x0A:
+        case 0x13:
+        case 0x18:
+        case 0x1D: return 1;
+    }
+    return 4;
+}
 
 /* ------------------------------------------------------------ resources of a draw */
 static u32 tex_handle(const GpuChannel* ch, int stage, u32 tcb, const ShTex* st) {
@@ -1876,9 +1891,11 @@ typedef struct {
 } DrawShaders;
 /* the vertex bindings a pipeline key describes, for finding their buffers each draw: binding b reads guest stream
    key[b] & 31 from its base offset key[b] >> 5 on, with pad bytes past its last stride when still inside the stream's
-   limit, or the constants of the attributes without data when key[b] is ~0u */
+   limit, or the constants of the attributes without data when key[b] is ~0u. When the guest's stride isn't a multiple
+   of its attributes' components (guest_stride[b], else 0), the binding reads a copy with the vertices stride[b] apart,
+   rounded up to one (copy_restrided) */
 typedef struct {
-    u32 key[33], pad[33];
+    u32 key[33], pad[33], guest_stride[33];
     VkDeviceSize stride[33];
     u32 used;  /* the streams whose limits the bindings were planned with */
     u32 empty; /* attributes whose relative offsets are outside their guest bindings */
@@ -2145,6 +2162,7 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
         return 0;
     }
     int cbind = -1, zbind = -1, over = 0;
+    u32 align[33] = {0}; /* each binding's largest attribute component */
     pl->empty = attributes_empty(r, vs->si.in_mask);
     for (u32 i = 0; i < nloc && !over; i++) {
         if (!(vs->si.in_mask & (1u << i))) continue;
@@ -2221,10 +2239,20 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
         k->attr[k->nattr].format = fmt;
         k->attr[k->nattr].offset = off - base;
         k->nattr++;
+        if (attr_component_bytes(size) > align[b]) align[b] = attr_component_bytes(size);
     }
     if (over) {
         LOG_LIMIT(1, "vulkan: a draw needs more vertex bindings than the %u this GPU has (draw skipped)\n", maxbind);
         return 0;
+    }
+    /* Maxwell reads an attribute at any byte, Vulkan only at a multiple of its components' size, which a stride like
+       one game's 69 for 4-byte floats breaks every other vertex: RADV's fetches hung the GPU on them */
+    for (u32 b = 0; b < k->nbind; b++) {
+        u32 st = (u32)pl->stride[b], a = align[b];
+        if (!st || a < 2 || !(st % a)) continue;
+        pl->guest_stride[b] = st;
+        pl->stride[b] = (st + a - 1) / a * a;
+        if (!g_vk.has_dynamic_stride) k->bind[b].stride = (u32)pl->stride[b];
     }
 
     /* attachments and blending */
@@ -2284,6 +2312,28 @@ static void draw_indices_prefetch(const GpuChannel* ch, int indexed, u32 first, 
     if (indexed != 1 && indexed != 2) return;
     if (!step) __builtin_prefetch(&g_top_memo[top_memo_slot(a)]);
     vk_buf_prefetch(a, (u64)count * isz, step);
+}
+/* the len bytes of a vertex stream at gva, its vertices gstride apart, copied to staging with them stride apart
+   instead: each vertex's stride bytes, so an attribute reaching past the guest's stride still reads the next vertex's
+   first bytes. The stream lands first if the GPU wrote it */
+static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, VkDeviceSize* off,
+                          VkDeviceSize* size) {
+    u64 nv = (len + gstride - 1) / gstride;
+    u8* src = malloc((size_t)len);
+    u8* dst = src ? vk_stage_upload(nv * stride, vk_stage_align(), buf, off) : NULL;
+    if (!dst) {
+        free(src);
+        return 0;
+    }
+    gmem_read(gva, src, len);
+    for (u64 i = 0; i < nv; i++) {
+        u64 at = i * gstride, n = len - at < stride ? len - at : stride;
+        memcpy(dst + i * stride, src + at, (size_t)n);
+        if (n < stride) memset(dst + i * stride + n, 0, (size_t)(stride - n));
+    }
+    free(src);
+    *size = nv * stride;
+    return 1;
 }
 /* The last vertex a draw reads, for its streams' ranges, or ~0 when that isn't known: indices outside contiguous guest
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
@@ -2566,8 +2616,9 @@ retry:
            that end at different vertices then share a few ranges, not one each */
         u64 limit = stream_len(r, sbuf), len = limit;
         u64 last = k->bind[v].divisor ? last_instance : last_vertex;
-        if (pl->stride[v] && last < len / pl->stride[v]) {
-            u64 need = (last + 1) * pl->stride[v], up = 4096;
+        u64 gstride = pl->guest_stride[v] ? pl->guest_stride[v] : pl->stride[v];
+        if (gstride && last < len / gstride) {
+            u64 need = (last + 1) * gstride, up = 4096;
             while (up < need) up <<= 1;
             if (up < len) len = up;
         }
@@ -2594,6 +2645,15 @@ retry:
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 0);
     for (u32 q = 0; q < nvq; q++) vk_buf_prefetch(vq[q].gva, vq[q].len, 1);
     for (u32 q = 0; q < nvq; q++) {
+        u32 b = vq[q].b;
+        if (pl->guest_stride[b]) {
+            if (!copy_restrided(vq[q].gva + vq[q].base, vq[q].len - vq[q].base, pl->guest_stride[b], (u32)pl->stride[b],
+                                &vbuf[b], &voff[b], &vsize[b])) {
+                g_vk_skipped++;
+                return;
+            }
+            continue;
+        }
         /* vertex formats have components of up to 4 bytes, which each attribute's address must be a multiple of */
         if (!vk_buf_get_input(vq[q].gva, vq[q].len, 4, &vbuf[vq[q].b], &voff[vq[q].b])) {
             g_vk_skipped++;
