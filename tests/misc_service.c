@@ -120,10 +120,19 @@ int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return RC(10, 235);
 }
+/* the commands misc.swipc marks @stub: no handler exists, and the generated dispatcher answers them through
+   stub_ok, as it answers a command the interface doesn't declare. The test drives these, and a command reaching
+   here that isn't one of them is a gap nobody declared */
+static int stub_allowed(SvcObj* o, u32 cmd) {
+    return (!strcmp(o->name, "nn::mii::detail::IDatabaseService") && cmd == 1) ||
+           (!strcmp(o->name, "nn::prepo::detail::ipc::IPrepoService") && cmd >= 10100 && cmd <= 10107);
+}
 int stub_ok(SvcObj* o, IpcCtx* c) {
-    fprintf(stderr, "unexpected stub: %s command %u\n", o->name, c->cmd);
-    test_fail("a command without a handler", __LINE__);
-    return -1;
+    if (!stub_allowed(o, c->cmd)) {
+        fprintf(stderr, "unexpected stub: %s command %u\n", o->name, c->cmd);
+        test_fail("a command without a handler", __LINE__);
+    }
+    return 0;
 }
 int quiet_ok(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
 void svc_register(const char* name, SvcCtor ctor) {

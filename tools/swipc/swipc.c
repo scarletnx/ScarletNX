@@ -1188,10 +1188,12 @@ static void write_inc(int fi, const char* out_dir) {
                 emit("            return %s(self);\n", name);
             } else if (!c->stub) {
                 emit("            return %s__%lu(self, c);\n", cn, c->id);
-            } else if (c->out_size)
-                emit("            c->out_size = 0x%lx;\n            return 0; /* %s: @stub */\n", c->out_size, c->name);
-            else
-                emit("            return 0; /* %s: @stub */\n", c->name);
+            } else {
+                /* a @stub has no handler: stub_ok answers it zeros, with the reply's raw size the declaration
+                   gives, and reports the gap like a command the interface doesn't declare (ipc.c) */
+                if (c->out_size) emit("            c->out_size = 0x%lx;\n", c->out_size);
+                emit("            return stub_ok(self, c); /* %s: @stub */\n", c->name);
+            }
         }
         emit("    }\n    return %s(self, c);\n}\n\n", f->fallback);
     }

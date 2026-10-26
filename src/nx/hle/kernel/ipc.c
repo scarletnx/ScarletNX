@@ -625,6 +625,12 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
 }
 
 /* ============================================================ what dispatchers answer */
+/* A command the runtime doesn't implement, reported where the game made the call: once per (service, command) pair,
+   so a game that polls one every frame doesn't fill the log, or every call while ipc_spam is on, which shows the
+   order and the rate a game asks its gaps in */
+static int gap_reported(SvcObj* o, u32 cmd) {
+    return g_settings.log_every_unknown_command || ipc_warn_once(o->name, cmd);
+}
 /* A game that polls a command nothing implements would fill the log with it: each pair is reported the first time
    only. Past WARN_PAIRS pairs the table stops growing and new pairs go unreported, which the log is told once */
 int ipc_warn_once(const char* name, u32 cmd) {
@@ -658,20 +664,22 @@ int ipc_warn_once(const char* name, u32 cmd) {
 /* "undeclared", not "stub": a success carrying none of the command's outputs. The SDK still reads them from the reply,
    past what respond writes, so they are zeroed here: a count, an object or a handle reads as none, not as the request's
    bytes left in the client's buffer (a game took a device count of "SFCI" from IAudioDevice cmd 14 and walked off its
-   stack) */
+   stack). A command the .swipc marks @stub comes here too: it is declared, and nothing implements it yet, so the
+   reporter the generated dispatcher calls is this one */
 int stub_ok(SvcObj* o, IpcCtx* c) {
     if (!g_settings.answer_unknown_commands) return ipc_unknown(o, c);
-    if (ipc_warn_once(o->name, c->cmd)) WARN("  [undeclared] %s cmd %u -> ok\n", o->name, c->cmd);
+    if (gap_reported(o, c->cmd)) WARN("  [undeclared] %s cmd %u -> ok\n", o->name, c->cmd);
     memset(c->msg, 0, c->msg_size < SERVER_MSG ? (size_t)c->msg_size : SERVER_MSG);
     R_SUCCEED();
 }
+/* an interface nothing serves (@fallback(quiet_ok)): every command of it is one the runtime doesn't have, and it is
+   reported like any other gap */
 int quiet_ok(SvcObj* o, IpcCtx* c) {
-    (void)o;
-    (void)c;
+    if (gap_reported(o, c->cmd)) WARN("  [undeclared] %s cmd %u -> ok\n", o->name, c->cmd);
     R_SUCCEED();
 }
 int ipc_unknown(SvcObj* o, IpcCtx* c) {
-    if (ipc_warn_once(o->name, c->cmd)) WARN("  [unknown] %s cmd %u -> UnknownCommandId\n", o->name, c->cmd);
+    if (gap_reported(o, c->cmd)) WARN("  [unknown] %s cmd %u -> UnknownCommandId\n", o->name, c->cmd);
     R_THROW((int)RC_UNKNOWNCOMMAND);
 }
 int ipc_bad_request(SvcObj* o, IpcCtx* c) {

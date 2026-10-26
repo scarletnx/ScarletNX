@@ -352,9 +352,11 @@ int main(void) {
     CHECK(ctx.nout_copy == 1 && ctx.out_copy[0] == 0x61);
     svcobj_unref(ctx.out_objs[0]);
 
-    /* [6] @stub: success, zeros of the outputs' size */
+    /* [6] @stub: success, zeros of the outputs' size, through stub_ok like an undeclared command */
     request(6);
+    stubs = 0;
     CHECK(thing->dispatch(thing, &ctx) == 0 && ctx.out_size == 16 && out_u(0, 8) == 0 && out_u(8, 8) == 0);
+    CHECK(stubs == 1);
 
     /* [7] copy handles in declaration order */
     request(7);

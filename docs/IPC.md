@@ -66,12 +66,13 @@ interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
   `handle<copy, kind>` and `handle<move, kind>` a handle. A move handle is only an output: the kernel refuses a request
   that carries one, so the generator refuses one among a command's inputs.
 - `@stub` before a command: the generated code answers it with success and zeros, and there is no handler. A command
-  that gives an object or a handle can't be a stub. `@unsorted` before a command keeps its raw arguments in
-  declaration order (see the layout). `@fallback(function)` before an interface names the C function that answers the
-  commands it doesn't declare, `int function(SvcObj* self, IpcCtx* c)`: `quiet_ok` (success, silent), `ipc_unknown`
-  (sf's UnknownCommandId, what the console answers), or one of the service's own, static in its file (bsd answers
-  EOPNOTSUPP). Without it `stub_ok` answers success and logs the command the first three times. `@version(...)` and
-  `@undocumented` are accepted and ignored.
+  that gives an object or a handle can't be a stub. A `@stub` goes through `stub_ok`, so it is logged like a command
+  the interface doesn't declare: a gap the game only shows by using it. `@unsorted` before a command keeps its raw
+  arguments in declaration order (see the layout). `@fallback(function)` before an interface names the C function
+  that answers the commands it doesn't declare, `int function(SvcObj* self, IpcCtx* c)`: `quiet_ok` (success, logged
+  the same way), `ipc_unknown` (sf's UnknownCommandId, what the console answers), or one of the service's own, static
+  in its file (bsd answers EOPNOTSUPP). Without it `stub_ok` answers success and logs the command the first three
+  times. `@version(...)` and `@undocumented` are accepted and ignored.
 
 ## The layout
 

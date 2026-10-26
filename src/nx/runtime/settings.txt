@@ -652,6 +652,14 @@ setting Answer unknown commands
     words Off|On
     help 1 = a service command the runtime doesn't know answers success (logged as [undeclared]); 0 = it answers
     help the console's UnknownCommandId, which shows the gap where the game makes the call
+setting Log every unknown command
+    key ipc_spam
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = every unknown service command is logged, not one line per service and command: a game polling a
+    help command nothing implements fills the log with it. It shows such a game's rate of polling, and fills a log
+    help quickly. 0 = each (service, command) pair is logged once, among the first 512
 setting Shader captures
     key diag
     int 0 1
