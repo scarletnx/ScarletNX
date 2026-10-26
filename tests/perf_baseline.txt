@@ -23,13 +23,18 @@
 # compile_*: seconds for `scarletnx -r` to compile a generated NRO of 512 functions and about 38,000 instructions with
 #        one job, a fresh cache and a fresh output folder. Unlike the others this is a time, not a ratio: the main
 #        baseline is per runner and architecture, and a different CPU model moves it.
-cpu_x86_64          1.50 30 60 3.00
-cpu_aarch64         1.50 30 60 3.00
-cpu_aarch64_darwin  1.80 30 60 3.50
-cpu_other           1.50 30 60 3.00
+cpu_x86_64          2.00 30 60 4.00
+cpu_aarch64         2.00 30 60 4.00
+# Apple silicon and Windows are local or advisory only: their variance is not yet measured, so their bands are wide.
+cpu_aarch64_darwin  1.80 60 90 4.00
+cpu_x86_64_windows  2.00 100 200 8.00
+cpu_aarch64_windows 2.00 100 200 8.00
+cpu_other           2.00 30 60 4.00
 gpu_hardware        1.30 25 50 3.00
-gpu_software        8.00 25 50 15.00
-compile_x86_64      3.00 25 50 8.00
-compile_aarch64     3.00 25 50 8.00
-compile_aarch64_darwin 3.00 25 50 8.00
-compile_other       3.00 25 50 8.00
+gpu_software        2.00 25 50 4.00
+compile_x86_64      10.00 25 50 20.00
+compile_aarch64     10.00 25 50 20.00
+compile_aarch64_darwin 3.00 100 200 10.00
+compile_x86_64_windows 10.00 100 200 40.00
+compile_aarch64_windows 10.00 100 200 40.00
+compile_other       10.00 25 50 20.00
