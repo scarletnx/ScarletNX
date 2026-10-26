@@ -510,7 +510,11 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->dirty & D_INLINE) keep(&d->ds.inl, &d->inl, sizeof d->inl, &d->ds.gen[DS_INLINE]);
     d->dirty = 0;
 }
-/* the 32-bit words at gva, read as the stream sees them */
+/* the 32-bit words at gva, read as the stream sees them. Indirect draws' and dispatches' arguments are read here on
+   the CPU, not by the GPU: the renderer takes a draw's counts on the CPU (it sizes the vertex ranges it reads by them),
+   as the 3D engine's indirect draws through the macros do. Arguments a compute program wrote land first (gmem_read).
+   A run of one game reads them fewer than 4096 times; the GPU would read them once the renderer takes indirect draws
+   and dispatches */
 static void words(u64 gva, u32* w, u32 n) {
     u32 i;
     memset(w, 0, 4 * (size_t)n);
@@ -634,7 +638,8 @@ static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
     i32 i;
     if (!bank2) return;
     for (i = 0; i < r->count && i < 32; i++) {
-        /* a deferred bind reads the handles where they are as the GPU runs it */
+        /* a deferred bind reads the handles where they are as the GPU runs it: eight bytes each, which the game's CPU
+           writes, read on the replay's thread as the renderer reads the bank they go into on the CPU */
         u64 h = r->defer ? gr64(r->src + 8 * (u64)i) : r->h[i];
         i32 slot = r->first + i;
         u32 off = op == OP_BIND_SAMP     ? C2_SAMP + 8 * (u32)slot
@@ -736,7 +741,8 @@ static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
         }
         return;
     }
-    {
+    { /* counts the GPU can't compare for the renderer: read as the stream sees them, past the releases queued before
+         (gmem_read), as the 3D engine's render enable reads them */
         u64 x = 0, y = 0;
         gmem_read(r->address, &x, 8);
         gmem_read(r->address + 16, &y, 8);
@@ -918,7 +924,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             d->dirty |= D_BIND;
             return 1;
         }
-        case OP_UPDATE_UB: { /* the bytes land in the buffer in order with the draws around them */
+        case OP_UPDATE_UB: { /* the bytes land in the buffer in order with the draws around them: the command's own
+                                bytes, written into guest memory as the 3D engine's LOAD_CONSTANT_BUFFER writes them */
             const NvnPUpdateUB* r = NVN_OBJ(const NvnPUpdateUB, payload);
             if (r->size && r->size <= (u64)size - sizeof *r) gmem_write(r->dst, GP(payload + sizeof *r), r->size);
             return 1;
