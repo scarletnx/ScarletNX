@@ -1045,6 +1045,36 @@ static int dma_case(GpuDmaOp o) {
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
     return 0;
 }
+/* the same with a linear source read at submission into the renderer's memory (maxwell/dma.c's snapshot): the copy
+   takes those bytes, not guest memory's, which changed after (the program freed its source), and lets go of them */
+static int dma_snap_case(GpuDmaOp o) {
+    GpuDmaOp g = o, c = o;
+    u64 span = (u64)o.src.pitch * (o.lines - 1) + o.line_in, id = 0, held = vk_snap_bytes();
+    for (int k = 0; k < 2; k++) {
+        u8* t = GP(k ? DMA_B : DMA_A);
+        for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
+    }
+    g.src.addr += DMA_GA, g.dst.addr += DMA_GA;
+    c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
+    u8* snap = g_renderer->snap_alloc(span, &id);
+    CHECK(snap && id && vk_snap_bytes() == held + span);
+    memcpy(snap, GP(DMA_A) + o.src.addr, span);
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* guest memory changes after the read */
+    g.snap = snap;
+    g.snap_id = id;
+    CHECK(g_renderer->dma_copy(&g));
+    for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* the same again, for the comparison */
+    dma_copy_ref(&c);
+    CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
+    vk_lock();
+    for (int i = 0; i <= VK_FRAMES; i++) { /* the copy's frame slot used again, its work done: its memory went */
+        vk_frame_next();
+        vk_cmd();
+    }
+    vk_unlock();
+    CHECK(vk_snap_bytes() == held);
+    return 0;
+}
 static GpuDmaSide pitch_side(u64 addr, u32 pitch) {
     GpuDmaSide s = {addr, 0, pitch, 0, 0, 0, 0, 0, 0, 0};
     return s;
@@ -1064,6 +1094,7 @@ static int check_dma(void) {
     o.src = pitch_side(0x100, 0);
     o.dst = pitch_side(0x80003, 0);
     CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
     /* pitch to block linear, a window of a surface (a texture upload) */
     memset(&o, 0, sizeof o);
     o.multi = 1;
@@ -1072,6 +1103,7 @@ static int check_dma(void) {
     o.src = pitch_side(0x1000, 100);
     o.dst = bl_side(0x80000, 128, 40, 2, 16, 3);
     CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
     /* block linear to pitch, from an origin not on 16 bytes, lines past the surface reading zero */
     o.src = bl_side(0x2000, 192, 40, 1, 7, 35);
     o.dst = pitch_side(0x90001, 120);
@@ -1095,6 +1127,7 @@ static int check_dma(void) {
     o.src = pitch_side(0x100, 140);
     o.dst = pitch_side(0x80002, 150);
     CHECK(!dma_case(o));
+    CHECK(!dma_snap_case(o));
     /* constants only (a fill), 2 byte components, into block linear */
     o.fill = 1, o.shuffle = 0;
     o.cs = 2, o.ns = 2, o.nd = 2;
