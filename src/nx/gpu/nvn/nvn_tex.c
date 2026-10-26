@@ -239,3 +239,18 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     *tile_h = adj_tile(l.tile_h, 8, lh);
     *tile_d = adj_tile(l.tile_d, 1, ld);
 }
+
+/* A block-linear volume level keeps 2^tile_d slices in each block, one GOB (512 bytes, 64 by 8) per block row and
+   slice: slice z of the first block is z * 2^tile_h GOBs on, and the blocks of later slices follow a whole slab of
+   the level's blocks, its GOBs across times its block rows times the block's GOBs */
+u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
+    Fmt t = fmt_of(d->format);
+    unsigned th, td;
+    u64 gobs_x, rows, slab;
+    if (!t.bpb) return 0;
+    nvn_tex_level_tiles(d, level, &th, &td);
+    gobs_x = blk(blk(mip(d->width, level), t.bw) * t.bpb, 64);
+    rows = blk(blk(mip(d->height, level), t.bh), 8u << th);
+    slab = gobs_x * rows * (512ull << th << td);
+    return (u64)(z >> td) * slab + (u64)(z & ((1u << td) - 1)) * (512ull << th);
+}
