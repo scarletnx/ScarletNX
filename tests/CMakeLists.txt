@@ -609,7 +609,7 @@ snx_test_target(snx-test-llvm-vfp-lanes 11)
 snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
 target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
-# the FP fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
+# the same fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
 # left once LLVM folds the guards
 add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
 snx_test_target(snx-test-llvm-fp-fast 11)
