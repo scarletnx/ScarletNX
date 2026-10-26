@@ -129,4 +129,5 @@ rather than landing in the signal handler.
    own readers of what it writes (the shader translator, MME macros) would land every GPU-owned copy of it again.
    `vulkan_headless` holds the DMA engine and the 2D blit to `dma_ref.c` and `fermi2d_ref.c` on lavapipe.
 5. Windows and the other hosts. Until then their `plat_trap_*` fail, and a published result lands at once (a readback
-   per result, correct and slow).
+   per result, correct and slow). The environment variable `SNX_NO_TRAPS` makes a Linux host take that path, to measure and test it
+   there.
