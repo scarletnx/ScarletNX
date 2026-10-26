@@ -254,6 +254,8 @@ typedef struct App {
     /* UI scale's slider (#613): its bar as last drawn, empty when none shows; a drag on it going on; the question about
        a size its steps took, which Left and Right go on stepping */
     GuiRect slider_bar;
+    int slider_setting; /* the settings row a bar edits, -1 for UI scale */
+    int slider_steps;   /* the bar's steps, less one */
     bool slider_drag, size_slid;
     bool left_shown;   /* in a box as the menu opens, until a key, a button or a finger closes it */
     bool left_clear;   /* the menu's own files of menu_old among them: the box says how they go (SAY_LEFT_CLEAR) */
@@ -7834,6 +7836,16 @@ static void slider_to(App* app, int k) {
     }
     app_values(app);
 }
+static void keep_settings(App* app);
+/* the sharpness bar at step value: the setting picked and kept, as a click or drag on the bar does */
+static void sharpness_to(App* app, int value) {
+    char text[8];
+    snprintf(text, sizeof text, "%d", SDL_clamp(value, 0, 100));
+    if (gui_settings_set(&app->settings, "upscaler_sharpness", text)) {
+        app->editor.dirty = true;
+        keep_settings(app);
+    }
+}
 /* the columns a row of width room columns leaves the slider, its label labels columns and its value value's after it,
    a column apart: 0 where fewer than its steps fit */
 static int slider_cols(const App* app, int room, int labels, const char* value) {
@@ -7848,6 +7860,8 @@ static void slider_draw(App* app, GuiRect bar, bool focused, bool inverted) {
     int span = bar.w - cw; /* the knob a cell wide, its left from bar.x to bar.x + span */
     GuiRgb line = inverted ? t->page : t->soft, knob = inverted ? t->page : focused ? t->focus : t->ink;
     app->slider_bar = bar;
+    app->slider_setting = -1;
+    app->slider_steps = GUI_SIZE_STEPS - 1;
     if (span <= 0) return;
     fill_rect(app, gui_rect(bar.x + cw / 2, mid - s, span, 2 * s), line);
     for (k = 0; k < GUI_SIZE_STEPS; ++k)
@@ -7863,8 +7877,8 @@ static int slider_at(const App* app, float x, float y) {
     if (!b.w || span <= 0 || x < (float)b.x || x >= (float)(b.x + b.w) || y < (float)b.y || y >= (float)(b.y + b.h))
         return -1;
     return SDL_clamp(
-        (int)SDL_floorf(((x - (float)b.x - (float)cell_w(app) / 2) * (GUI_SIZE_STEPS - 1) + span / 2.0f) / (float)span),
-        0, GUI_SIZE_STEPS - 1);
+        (int)SDL_floorf(((x - (float)b.x - (float)cell_w(app) / 2) * app->slider_steps + span / 2.0f) / (float)span), 0,
+        app->slider_steps);
 }
 static void sizes_key(App* app, GuiKey key) {
     switch (gui_choice_key(&app->sizes, key)) {
@@ -8442,8 +8456,14 @@ static void render_pad(App* app) {
                              : "",
          rgb(app->editor.note[0] ? theme->failure : theme->soft), keys);
 }
+static bool sharpness_off(const App* app);
+static int sharpness_row(const App* app, const GuiEditor* e);
 static void editor_key(App* app, GuiKey key) {
     GuiEditorDo what;
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
+        (key == GUI_LEFT || key == GUI_RIGHT || key == GUI_SELECT) && sharpness_off(app) &&
+        sharpness_row(app, &app->editor) == app->editor.row)
+        return;
     /* a player's map row opens its button map, as every player's Button map page does; its Controller row waits for
        a press on the controller it takes */
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
@@ -8527,6 +8547,7 @@ static void editor_input(App* app, const SDL_Event* e) {
     /* Del, or Backspace when nothing is typed: a setting back to its default */
     if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
         (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        if (sharpness_off(app) && sharpness_row(app, &app->editor) == app->editor.row) return;
         gui_settings_reset(&app->settings, setting_of(app, app->editor.row));
         app->editor.dirty = true;
         keep_settings(app);
@@ -8697,6 +8718,48 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
 static int form_room(const App* app, int width) {
     return (ui_row_box(app, gui_rect(0, 0, width, 0)).w - cell_w(app) * 3 / 2) / cell_w(app);
 }
+/* the settings row a form's key is, -1 for a launcher row or a form over something else */
+static int setting_row_of(const App* app, const GuiEditor* e, const GuiThemeKey* k) {
+    if (!k || e->object != (char*)app->settings.values) return -1;
+    if (e->keys == app->view_keys) return app->view_rows[k - e->keys];
+    if (e->keys == app->peek_keys) return app->peek_rows[k - e->keys];
+    return (int)(k - app->settings.keys);
+}
+/* the upscaler sharpness row of a form, -1 when the form has none */
+static int sharpness_row(const App* app, const GuiEditor* e) {
+    int r;
+    for (r = 0; r < gui_editor_rows(e); ++r) {
+        int row = setting_row_of(app, e, gui_editor_key_of(e, r));
+        if (row >= 0 && !strcmp(app->settings.values[row].key, "upscaler_sharpness")) return r;
+    }
+    return -1;
+}
+static int setting_number(const App* app, int row) {
+    return row >= 0 && row < app->settings.count ? (int)app->settings.values[row].number : 0;
+}
+/* None and Bilinear run no sharpening, so the bar is greyed and the row does nothing while either is picked */
+static bool sharpness_off(const App* app) { return !gui_settings_upscaler_sharpness(&app->settings); }
+#define GUI_SHARP_TICKS 11
+static int sharpness_cols(const App* app, int room, int labels, const char* value) {
+    int cols = room - gui_text_cols(app->theme.marker) - labels - 1 - gui_text_cols(value) - 1;
+    return cols >= GUI_SHARP_TICKS ? cols : 0;
+}
+/* the sharpness bar: a line, a tick each tenth, the knob at the value */
+static void sharpness_draw(App* app, GuiRect bar, bool focused, bool inverted, int value, int row) {
+    const GuiTheme* t = &app->theme;
+    int s = app->scale, cw = cell_w(app), k, mid = bar.y + bar.h / 2, span = bar.w - cw;
+    GuiRgb line = inverted ? t->page : t->soft, knob = inverted ? t->page : focused ? t->focus : t->ink;
+    app->slider_bar = bar;
+    app->slider_setting = row;
+    app->slider_steps = 100;
+    if (span <= 0) return;
+    fill_rect(app, gui_rect(bar.x + cw / 2, mid - s, span, 2 * s), line);
+    for (k = 0; k < GUI_SHARP_TICKS; ++k)
+        fill_rect(app, gui_rect(bar.x + cw / 2 + k * span / (GUI_SHARP_TICKS - 1) - s / 2, mid - 3 * s, s, 6 * s), line);
+    value = SDL_clamp(value, 0, 100);
+    fill_rect(app,
+              gui_rect(bar.x + value * span / 100, mid - cell_h(app) / 2 + 2 * s, cw, cell_h(app) - 4 * s), knob);
+}
 /* a row of a form as its box shows it, its marker first: its label, the value past the widest label (labels
    columns); one being typed ends where the typing is, its start giving way, in room columns */
 static void form_line(App* app, const GuiEditor* e, int r, int labels, int room, char* line, size_t size) {
@@ -8735,8 +8798,10 @@ static void form_line(App* app, const GuiEditor* e, int r, int labels, int room,
         else
             snprintf(value, sizeof value, "%s", path);
     }
-    if (e->keys == app_keys && r == GUI_APP_TEXT && !typing) { /* UI scale: its slider, the value at the row's end */
-        int bar = slider_cols(app, room, labels, value);
+    if (!typing && ((e->keys == app_keys && r == GUI_APP_TEXT) || r == sharpness_row(app, e))) {
+        /* UI scale's slider, or the upscaler sharpness bar: the value at the row's end */
+        int sharp = r == sharpness_row(app, e);
+        int bar = sharp ? sharpness_cols(app, room, labels, value) : slider_cols(app, room, labels, value);
         char shown[400];
         snprintf(shown, sizeof shown, "%*s%s%s", bar, "", bar ? " " : "", value);
         snprintf(value, sizeof value, "%s", shown);
@@ -8767,6 +8832,10 @@ static int clean_left(App* app) {
    setting at its default, no folder picked */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
     int picked = 0;
+    if (e->object == (char*)app->settings.values) {
+        int row = setting_row_of(app, e, gui_editor_key_of(e, r));
+        if (row >= 0 && !strcmp(app->settings.values[row].key, "upscaler_sharpness")) return sharpness_off(app);
+    }
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||
                (r == GUI_APP_RESET && app->settings.keys && !gui_settings_changed(&app->settings));
@@ -8916,23 +8985,28 @@ static void form_slider(App* app, const GuiFormBoxes* f) {
     GuiEditor peek;
     const GuiEditor* e = form_rows(app, &peek);
     const UiList* l = &f->right_lists[UI_FORM_SIDE_ROWS];
-    int s = app->scale, cw = cell_w(app), labels, bar;
+    int s = app->scale, cw = cell_w(app), labels, bar, sharp = sharpness_row(app, e);
     size_t i, n = ui_form_side_shown(f->right, s, UI_FORM_SIDE_ROWS);
     char value[64];
-    if (e->keys != app_keys) return;
     labels = form_labels(e);
-    size_name(app, app->menu.text_size, value, sizeof value);
-    for (i = 0; i < n; ++i)
-        if (l->first + i == GUI_APP_TEXT) {
-            GuiRect row = ui_form_side_row(f->right, s, UI_FORM_SIDE_ROWS, i), b = ui_row_box(app, row);
-            bool focused = e == &app->editor && app->editor.row == GUI_APP_TEXT;
+    for (i = 0; i < n; ++i) {
+        size_t row_at = l->first + i;
+        GuiRect row = ui_form_side_row(f->right, s, UI_FORM_SIDE_ROWS, i), b = ui_row_box(app, row);
+        bool focused = e == &app->editor && app->editor.row == (int)row_at;
+        int at = b.x + cw / 2 + (gui_text_cols(app->theme.marker) + labels + 1) * cw;
+        if (e->keys == app_keys && row_at == GUI_APP_TEXT) {
+            size_name(app, app->menu.text_size, value, sizeof value);
             bar = slider_cols(app, form_room(app, row.w), labels, value);
-            if (bar)
-                slider_draw(
-                    app,
-                    gui_rect(b.x + cw / 2 + (gui_text_cols(app->theme.marker) + labels + 1) * cw, b.y, bar * cw, b.h),
-                    focused, focused && app->theme.focus_bar);
+            if (bar) slider_draw(app, gui_rect(at, b.y, bar * cw, b.h), focused, focused && app->theme.focus_bar);
+        } else if (sharp >= 0 && row_at == (size_t)sharp) {
+            int set_row = setting_row_of(app, e, gui_editor_key_of(e, sharp));
+            snprintf(value, sizeof value, "%d", setting_number(app, set_row));
+            bar = sharpness_cols(app, form_room(app, row.w), labels, value);
+            if (bar && !sharpness_off(app))
+                sharpness_draw(app, gui_rect(at, b.y, bar * cw, b.h), focused, focused && app->theme.focus_bar,
+                               setting_number(app, set_row), set_row);
         }
+    }
 }
 static void draw_form(App* app) {
     GuiFormBoxes f;
@@ -10163,7 +10237,9 @@ static void render_help(App* app) {
 }
 static void render(App* app) {
     layout(app);
-    app->slider_bar = gui_rect(0, 0, 0, 0); /* none until a screen with UI scale's draws it */
+    app->slider_bar = gui_rect(0, 0, 0, 0); /* none until a screen with a slider draws it */
+    app->slider_setting = -1;
+    app->slider_steps = GUI_SIZE_STEPS;
     if (splash_shown(app)) return;
     if (app->closing_ms) {
         draw_closing(app);
@@ -12981,12 +13057,22 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
        until the button or the finger lifts (#613) */
     if (app->slider_drag && !click) {
         GuiRect b = app->slider_bar;
-        if (b.w) slider_to(app, slider_at(app, SDL_clamp(x, (float)b.x, (float)(b.x + b.w - 1)), (float)b.y));
+        int at = b.w ? slider_at(app, SDL_clamp(x, (float)b.x, (float)(b.x + b.w - 1)), (float)b.y) : -1;
+        if (at >= 0) {
+            if (app->slider_setting >= 0)
+                sharpness_to(app, at);
+            else
+                slider_to(app, at);
+        }
         return;
     }
     if (click && !app->confirm.shown && slider_at(app, x, y) >= 0) {
+        int at = slider_at(app, x, y);
         app->slider_drag = true;
-        slider_to(app, slider_at(app, x, y));
+        if (app->slider_setting >= 0)
+            sharpness_to(app, at);
+        else
+            slider_to(app, at);
         return;
     }
     /* under a question, the folder's too, a click is the question's */

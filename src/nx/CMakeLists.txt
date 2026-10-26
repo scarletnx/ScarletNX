@@ -103,7 +103,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
+                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/vk/upscale.c gpu/vk/upscale_select.c gpu/vk/upscale_fsr.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
                  gpu/vk/ftz_probe.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
@@ -121,6 +121,20 @@ snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_predicate.comp NAME query_predicate_spv
                HEADER nx/gpu/vk/query_predicate_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
+# the presented frame's spatial upscalers (gpu/vk/upscale.c): FSR 1's two passes, NIS's compute pass (RGBA16F and the
+# RGBA8 fallback), and SGSR's vertex and fragment
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr.vert NAME fsr_vert_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_easu.frag NAME fsr_easu_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_rcas.frag NAME fsr_rcas_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_easu.frag NAME fsr_easu_fp16_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES YUZU_USE_FP16)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/fsr_rcas.frag NAME fsr_rcas_fp16_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES YUZU_USE_FP16)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/nis.comp NAME nis_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/nis.comp NAME nis8_spv HEADER nx/gpu/vk/upscale_spv.h
+               DEFINES NIS_OUTPUT_RGBA8)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.vert NAME sgsr_vert_spv HEADER nx/gpu/vk/upscale_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/upscale/sgsr1.frag NAME sgsr_frag_spv HEADER nx/gpu/vk/upscale_spv.h)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS
@@ -268,6 +282,24 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # the presented frame's upscalers on a synthetic image, then under the validation layer
+    add_executable(snx-test-vulkan-upscale "${PROJECT_SOURCE_DIR}/tests/vulkan_upscale.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/half.c")
+    target_link_libraries(snx-test-vulkan-upscale PRIVATE snx_nx_flags ${components} snx_driver Threads::Threads
+                                                          ${CMAKE_DL_LIBS})
+    set_target_properties(snx-test-vulkan-upscale PROPERTIES LINKER_LANGUAGE CXX)
+    if(WIN32)
+        target_link_libraries(snx-test-vulkan-upscale PRIVATE user32)
+    else()
+        target_link_libraries(snx-test-vulkan-upscale PRIVATE m)
+    endif()
+    target_link_libraries(snx-test-vulkan-upscale PRIVATE SDL3::SDL3)
+    add_test(NAME vulkan_upscale COMMAND snx-test-vulkan-upscale -H)
+    set_tests_properties(vulkan_upscale PROPERTIES TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    add_test(NAME vulkan_upscale_validation COMMAND snx-test-vulkan-upscale -H --vk_validation=1)
+    set_tests_properties(vulkan_upscale_validation PROPERTIES TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the ASTC upload against the CPU decoder, block linear moves on the GPU against bl_offset's layout and texture
     # conversions against the CPU's, with the

@@ -11,6 +11,7 @@
 #ifndef SNX_GUI_SETTINGS_H
 #define SNX_GUI_SETTINGS_H
 #include <stddef.h>
+#include <stdint.h>
 #include "gui/theme.h"
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
@@ -19,6 +20,7 @@ enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
 #define GUI_SETTING_TEXT 192 /* a typed value's room: gamepad_map's whole map (pad_map.h) is 165 at most */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's */
+    uint32_t number;                    /* a number row's: its value, its default until it is picked */
     char text[GUI_SETTING_TEXT];        /* a typed row's: empty, the .ini's. A page's and an All's: the value shown */
     char start[GUI_SETTING_TEXT];       /* the value the menu starts with, which a file of picks leaves out */
     char option[GUI_SETTING_TEXT + 72]; /* a run's --key=value; a page's row: the section it is in */
@@ -75,6 +77,8 @@ void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t 
 int gui_settings_debug(const GuiSettings* settings, const char* ini, int picks, char* out, size_t size);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
+/* whether the upscaler picked runs a sharpening pass: Auto may, None and Bilinear never do */
+int gui_settings_upscaler_sharpness(const GuiSettings* settings);
 /* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,
    --tmpfs and --extract-container. Their count, count + 1 at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char** argv);

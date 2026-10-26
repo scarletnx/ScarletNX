@@ -23,6 +23,9 @@ static const char list[] =
     "Graphics\tresolution\t1\tfloat\t0.25\t4\tInternal 3D resolution\t\t\n"
     "Graphics\tanisotropy\t0\tint\t0\t16\tTexture filtering at an angle\t\t"
     "0=0|1=1|2=2|3=3|4=4|5=5|6=6|7=7|8=8|9=9|10=10|11=11|12=12|13=13|14=14|15=15|16=16\n"
+    "Graphics\tupscaler\tauto\ttext\t0\t0\tThe spatial filter\tUpscaler\t"
+    "auto=Auto|off=None|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR\n"
+    "Graphics\tupscaler_sharpness\t25\tint\t0\t100\tSharpening\tUpscaler sharpness\t\n"
     "Graphics\told\t0\tint\t0\t1\tAn older runtime's line\n"
     "Graphics\tbroken\t0\tint\t0\t1\tA value without its word\t\t0|1=On\n"
     "settings: not a setting\n"
@@ -72,12 +75,13 @@ int main(int argc, char** argv) {
     int fullscreen, touch, stub, tmpfs, extract, launch, page, all, changed;
     size_t tracy_n;
     assert(!gui_settings_read(&s, list));
+    gui_settings_mark(&s);
 
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
     int opt = 3 + tracy;                      /* the optimization level's row, after it */
-    assert(s.own > 5 && s.count == s.own + 16 && !strcmp(s.keys[0].key, "GDB stub"));
+    assert(s.own > 5 && s.count == s.own + 18 && !strcmp(s.keys[0].key, "GDB stub"));
     assert(!tracy || at(&s, "tracy_capture") == 3); /* after Extract dump, before the optimization level */
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
@@ -129,6 +133,21 @@ int main(int argc, char** argv) {
     assert(!strcmp(key(&s, "touch")->words[0], ".ini") && !strcmp(key(&s, "touch")->words[3], "Fingers and mouse"));
     assert(words(key(&s, "anisotropy")) == 18 && !strcmp(key(&s, "anisotropy")->words[17], "16"));
     assert(key(&s, "language")->type == GUI_KEY_TEXT && key(&s, "resolution")->type == GUI_KEY_TEXT);
+    assert(key(&s, "upscaler")->type == GUI_KEY_WORD && words(key(&s, "upscaler")) == 7 &&
+           !strcmp(key(&s, "upscaler")->words[5], "NVIDIA NIS"));
+    assert(key(&s, "upscaler_sharpness")->type == GUI_KEY_NUMBER && key(&s, "upscaler_sharpness")->max == 100);
+    assert(!strcmp(on_screen(&s, "upscaler_sharpness"), "25 [default]"));
+    assert(gui_settings_set(&s, "upscaler_sharpness", "50") &&
+           !strcmp(gui_settings_value(&s, "upscaler_sharpness"), "50") &&
+           !strcmp(on_screen(&s, "upscaler_sharpness"), "50"));
+    gui_settings_reset(&s, at(&s, "upscaler_sharpness"));
+    assert(!gui_settings_value(&s, "upscaler_sharpness") &&
+           !strcmp(on_screen(&s, "upscaler_sharpness"), "25 [default]"));
+    assert(gui_settings_upscaler_sharpness(&s));
+    assert(gui_settings_set(&s, "upscaler", "off") && !gui_settings_upscaler_sharpness(&s));
+    assert(gui_settings_set(&s, "upscaler", "bilinear") && !gui_settings_upscaler_sharpness(&s));
+    assert(gui_settings_set(&s, "upscaler", "fsr1") && gui_settings_upscaler_sharpness(&s));
+    assert(gui_settings_set(&s, "upscaler", "auto") && gui_settings_set(&s, "upscaler", ".ini"));
     assert(key(&s, "old")->type == GUI_KEY_TEXT && key(&s, "broken")->type == GUI_KEY_TEXT);
     assert(!strcmp(shown(&s, "touch"), ".ini") && !strcmp(shown(&s, "log"), ".ini"));
     /* the page: its row in its section opens the rows after its All, which steps them */
@@ -371,6 +390,8 @@ int main(int argc, char** argv) {
             if (*next) ++next;
         }
         assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages);
+        assert(key(&s, "upscaler")->type == GUI_KEY_WORD && key(&s, "upscaler_sharpness")->type == GUI_KEY_NUMBER &&
+               key(&s, "upscaler_sharpness")->max == 100 && gui_settings_upscaler_sharpness(&s));
         /* each player's own, on Controllers' Player page: a word row whose default is every player's */
         assert(words(key(&s, "gamepad_p1_swap_ab")) == 4 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[1], "As All"));
         assert(key(&s, "gamepad_p3_device")->type == GUI_KEY_TEXT &&

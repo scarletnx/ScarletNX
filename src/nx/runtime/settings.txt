@@ -185,6 +185,23 @@ setting Anisotropic filtering
     startup
     words Game's|#x
     help 0 = textures filtered as the game asks, 2 to 16 = sharper surfaces seen at an angle
+setting Upscaler
+    key upscaler
+    text 16
+    default auto
+    startup
+    words auto=Auto|off=None|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR
+    help The spatial filter the presented frame uses as the window grows it: Auto picks AMD FSR 1 on AMD, Intel and
+    help every other GPU, NVIDIA NIS on NVIDIA, and Qualcomm SGSR on a phone known to run it well. Auto uses it above
+    help 1.3x each axis and leaves a 1:1 frame alone. None blits the frame as it is. Bilinear blits it softly, and is
+    help never picked by itself
+setting Sharpness
+    key upscaler_sharpness
+    label Upscaler sharpness
+    int 0 100
+    default 25
+    startup
+    help The upscaler's sharpening, 0 the sharpest and 100 the softest. None and Bilinear leave it out
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)

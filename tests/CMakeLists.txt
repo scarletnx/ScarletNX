@@ -716,6 +716,12 @@ add_executable(snx-test-runtime-present runtime_present.c)
 snx_test_target(snx-test-runtime-present 11)
 add_test(NAME runtime_present COMMAND snx-test-runtime-present)
 
+# the upscaler setting's names, Auto's GPU and phone choice, and its ratio with hysteresis (gpu/vk/upscale_select.c)
+add_executable(snx-test-upscale-select upscale_select.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/upscale_select.c")
+snx_test_target(snx-test-upscale-select 99)
+target_include_directories(snx-test-upscale-select PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME upscale_select COMMAND snx-test-upscale-select)
+
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
 add_executable(snx-test-nvdrv-service nvdrv_service.c)
 snx_test_target(snx-test-nvdrv-service 23)
