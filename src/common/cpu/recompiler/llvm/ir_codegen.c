@@ -108,7 +108,12 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
 }
 
 /* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ [c->pc=resume;] c->rt->poll(c); } (codegen.c): a loop
-   that makes no SVC can still be taken off its core, for a waiter of higher priority */
+   that makes no SVC can still be taken off its core, for a waiter of higher priority.
+   The compiler barrier after the flag's load (a single-thread fence: no instruction on any host) keeps every guest
+   load of the loop in it. Guest loads aren't volatile (ir_state.c's ir_rd), so without it LLVM's GVN sees the call on
+   the cold path as the loop's only write, and moves the load of an address the loop builds from constants (ADRP, MOV)
+   onto that path: a spin on memory another thread writes then spins on the poll flag alone, and sees the store only
+   when a waiter of higher priority flags its core, or never without emulated cores (tests/recompiler_library.c) */
 static void poll(SnxIr* ir, const SnxU64* resume) {
     LLVMBasicBlockRef yes = ir_block(ir, "poll"), no = ir_block(ir, "run");
     LLVMValueRef flag = LLVMBuildLoad2(B, ir->t_i32, ir_cpu(ir, ir_off_poll()), ""), args[1];
@@ -116,6 +121,7 @@ static void poll(SnxIr* ir, const SnxU64* resume) {
     LLVMSetOrdering(flag, LLVMAtomicOrderingMonotonic);
     LLVMSetAlignment(flag, 4);
     ir_tag_cpu(ir, flag);
+    LLVMBuildFence(B, LLVMAtomicOrderingAcquire, 1, "");
     ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, flag, ir_i32(ir, 0), ""), yes, no));
     LLVMPositionBuilderAtEnd(B, yes);
     if (resume) ir_set_pc(ir, ir_i64(ir, *resume));
