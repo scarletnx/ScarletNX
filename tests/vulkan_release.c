@@ -46,6 +46,7 @@ void vk_query_pred_drop(u32);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
 #include "nx/gpu/vk/release.c"
+typedef void (*VkChangedRun)(void* user, u32 from, u32 to); /* vk.h's, for writeback.c */
 #include "nx/gpu/vk/writeback.c"
 
 int g_gpu_releases;
@@ -252,6 +253,37 @@ u64 vk_submit_number(void) { return next_graphics + 1; }
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.
  */
+/* the runs vk_write_changed_runs tells, collected, against buffer.c's former scan of its own: 8-byte granules from the
+   result's start where it differs from the original, merged when they touch */
+static u32 runs_seen[1024][2], nruns_seen;
+static void collect_run(void *user, u32 from, u32 to)
+{
+	(void)user;
+	assert(nruns_seen < 1024);
+	runs_seen[nruns_seen][0] = from;
+	runs_seen[nruns_seen][1] = to;
+	nruns_seen++;
+}
+static void check_runs(const u8 *result, const u8 *original, u32 n)
+{
+	u32 want[1024][2], nwant = 0;
+
+	for (u32 k = 0; k < n; k += 8) {
+		u32 w = n - k < 8 ? n - k : 8;
+
+		if (!memcmp(result + k, original + k, w))
+			continue;
+		if (nwant && want[nwant - 1][1] == k) {
+			want[nwant - 1][1] = k + w;
+		} else {
+			want[nwant][0] = k;
+			want[nwant][1] = k + w;
+			nwant++;
+		}
+	}
+	assert(nruns_seen == nwant && !memcmp(runs_seen, want, nwant * sizeof *want));
+}
+
 static void check_writeback_merge(void)
 {
 	u8 original[4099], result[4099], current[4099], expected[4099];
@@ -281,6 +313,15 @@ static void check_writeback_merge(void)
 				assert(!memcmp(memory + mapping, expected, n));
 				assert(!memcmp(memory + mapping + n, current + n, sizeof current - n));
 				assert(!vk_result_landing());
+				/* the same landing telling its runs */
+				memcpy(memory + mapping, current, sizeof current);
+				nruns_seen = 0;
+				vk_lock();
+				vk_write_changed_runs(0x31000, result, original, n, collect_run, NULL);
+				vk_unlock();
+				assert(!memcmp(memory + mapping, expected, n));
+				assert(!memcmp(memory + mapping + n, current + n, sizeof current - n));
+				check_runs(result, original, n);
 			}
 		}
 	}
