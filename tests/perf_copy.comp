@@ -1,0 +1,25 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The reference the GPU performance test compares the block linear shader against: one 16 byte run copied from the
+   same place to the same place in another buffer, in the same workgroup shape and with the same dispatch grid. The
+   block linear shader's turns of the address and its bounds check are the only work this does not do, so a change
+   to them shows as a larger ratio at the same bytes, workgroups and invocations. Test only, not part of the runtime. */
+
+layout(local_size_x = 32, local_size_y = 2, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+    uint run_row; /* uvec4s in a row of workgroups: 32 times the grid's x */
+} params;
+
+layout(std430, binding = 0) readonly restrict buffer Src {
+    uvec4 src[];
+};
+layout(std430, binding = 1) writeonly restrict buffer Dst {
+    uvec4 dst[];
+};
+
+void main() {
+    uint index = gl_GlobalInvocationID.y * params.run_row + gl_GlobalInvocationID.x;
+    dst[index] = src[index];
+}
