@@ -160,7 +160,8 @@ static void effects(ReplayQueue* q) {
             stream_incr(q->syncpt);
             continue;
         }
-        if (e->kind == FX_ADD) { /* what is there as the stream sees it, past the releases queued before (gmem_read) */
+        if (e->kind == FX_ADD) { /* what is there as the stream sees it, past the releases queued before (gmem_read): an
+                                    event's 32-bit value, which the game's CPU waits on */
             u32 v;
             memcpy(&v, e->data, 4);
             v += gmem_r32(e->gva);
