@@ -188,13 +188,14 @@ static void check_targets(void) {
     nvn_tic_encode(&t, NULL, 0, tic);
     tic_decode(tic, &d);
     check(d.header == 0 && d.type == 6 && d.buffer_width == 100000, "a buffer texture", 0x0A);
-    /* depth reads red, stencil (Z24S8's in red, its depth in green) */
+    /* depth reads red (Z24S8's in green) */
     t = texture(0x35, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     nvn_tic_encode(&t, NULL, 0, tic);
     check(((tic[0] >> 19) & 7) == 3 && ((tic[0] >> 28) & 7) == 7, "Z24S8's depth in green, alpha one", 0x35);
     t.d.bits |= NVN_TEX_STENCIL;
     nvn_tic_encode(&t, NULL, 0, tic);
-    check(((tic[0] >> 19) & 7) == 2 && ((tic[0] >> 28) & 7) == 2, "Z24S8's stencil in red", 0x35);
+    /* its stencil as the game's driver describes it: R8G24 (0x0E), an integer R, (stencil, 0, 0, 1) */
+    check((tic[0] & 0x7fffffffu) == 0x60124a0eu, "Z24S8's stencil as R8G24", 0x35);
     /* a swizzle: B G R ONE of RGBA8 */
     t = texture(0x25, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     t.d.swizzle = (u16)(NVN_TEX_SWIZZLE_SET | 4 | 3 << 3 | 2 << 6 | 1 << 9);
