@@ -282,6 +282,9 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
         s->mem = 1u << 12;
         s->width = t.d.stride ? t.d.stride : ((u32)bpb * s->width + align - 1) & ~(align - 1);
     } else {
+        /* the width a whole number of GOBs (64 bytes) across, as the game's driver gives a block-linear target */
+        int bw, bh, bpb = nvn_fmt_bpb((int)format, &bw, &bh);
+        if (bpb > 0 && bw == 1) s->width = ((u32)bpb * s->width + 63) / 64 * 64 / (u32)bpb;
         nvn_tex_level_tiles(&t.d, level, &th, &td);
         if (t.d.target == NVN_TEXTURE_TARGET_3D) { /* a volume: its slices, the GOB slices of the 3D surface */
             u32 slices = t.d.depth >> level ? t.d.depth >> level : 1;
