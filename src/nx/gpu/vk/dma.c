@@ -8,6 +8,7 @@
    them keeps its bytes. The destination's rows go back into its layout, and the buffer is published over its span.
    Under vk_lock, in the frame's command buffer: the semaphore after the copy is the renderer's queued release, which
    comes after it */
+#include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
 #include "nx/hle/services/nvdrv.h"
@@ -15,6 +16,92 @@
 #include "nx/runtime/platform/log.h"
 
 static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
+
+/* ------------------------------------------------ copies of linear sources made at submission (maxwell/dma.c) */
+/* They were read into malloc's memory on the submitting thread and copied again into staging here: now they are read
+   once, into host-cached memory the copy reads in place. Chunks of it are made as the copies need them, up to what
+   maxwell/dma.c holds at most (256 MiB), each with a VMA virtual block handing out its ranges. Any thread allocates
+   (vk_snap_alloc, under the lock); a copy lets go of its range when its frame's work is done, an unused one at once */
+#define SNAP_CHUNK  (32ull << 20)
+#define SNAP_CHUNKS 8
+typedef struct {
+    u32 chunk;
+    VmaVirtualAllocation a;
+    u64 off, len;
+} SnapMem;
+typedef struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    u8* ptr;
+    VmaVirtualBlock block;
+} SnapChunk;
+static struct {
+    PMutex lk;
+    SnapChunk c[SNAP_CHUNKS];
+    u64 bytes; /* held, for the test */
+} g_snap = {PMUTEX_INIT, {{0}}, 0};
+
+static int snap_chunk_new(SnapChunk* c) {
+    VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                              .size = SNAP_CHUNK,
+                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo aci = {
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaVirtualBlockCreateInfo vbi = {.size = SNAP_CHUNK};
+    VmaAllocationInfo info;
+    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &c->buf, &c->mem, &info))) return 0;
+    if (!VK_OK(vmaCreateVirtualBlock(&vbi, &c->block))) {
+        vmaDestroyBuffer(g_vk.vma, c->buf, c->mem);
+        c->buf = VK_NULL_HANDLE;
+        return 0;
+    }
+    vk_mem_track(c->mem);
+    c->ptr = info.pMappedData;
+    return 1;
+}
+u8* vk_snap_alloc(u64 len, u64* id) {
+    VmaVirtualAllocationCreateInfo vai = {.size = len ? len : 1, .alignment = 64};
+    SnapMem* m;
+    u8* p = NULL;
+    if (len > SNAP_CHUNK || !(m = (SnapMem*)malloc(sizeof *m))) return NULL;
+    pm_lock(&g_snap.lk);
+    for (u32 i = 0; i < SNAP_CHUNKS && !p; i++) {
+        SnapChunk* c = &g_snap.c[i];
+        if (!c->buf && !snap_chunk_new(c)) break;
+        if (vmaVirtualAllocate(c->block, &vai, &m->a, &m->off) == VK_SUCCESS) { /* else the next chunk */
+            m->chunk = i;
+            m->len = len;
+            p = c->ptr + m->off;
+            g_snap.bytes += len;
+        }
+    }
+    pm_unlock(&g_snap.lk);
+    if (!p) {
+        free(m);
+        return NULL;
+    }
+    *id = (u64)(uintptr_t)m;
+    return p;
+}
+void vk_snap_free(u64 id) {
+    SnapMem* m = (SnapMem*)(uintptr_t)id;
+    if (!m) return;
+    pm_lock(&g_snap.lk);
+    vmaVirtualFree(g_snap.c[m->chunk].block, m->a);
+    g_snap.bytes -= m->len;
+    pm_unlock(&g_snap.lk);
+    free(m);
+}
+static void snap_free_later(void* m) { vk_snap_free((u64)(uintptr_t)m); }
+u64 vk_snap_bytes(void) {
+    u64 b;
+    pm_lock(&g_snap.lk);
+    b = g_snap.bytes;
+    pm_unlock(&g_snap.lk);
+    return b;
+}
 
 /* the bytes a side's lines lie in: a pitch linear side's lines, a block linear one's surface up to its slice */
 static u64 side_span(const GpuDmaSide* s, u32 lines, u32 line) {
@@ -52,7 +139,14 @@ static int dma(const GpuDmaOp* o) {
     if (dspan > g_vk.alloc_cap || sspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(scratch_size, &cap))) return 0;
     if (!o->fill) {
         u8* p;
-        if (o->snap) { /* the source as it was at submission */
+        if (o->snap_id) { /* the source as it was at submission, where it was read into */
+            const SnapMem* m = (const SnapMem*)(uintptr_t)o->snap_id;
+            const SnapChunk* c = &g_snap.c[m->chunk]; /* chunks stay once made */
+            if (!VK_OK(vmaFlushAllocation(g_vk.vma, c->mem, m->off, sspan))) return 0;
+            p = c->ptr + m->off;
+            sb = c->buf;
+            sat = m->off;
+        } else if (o->snap) { /* the same in the submitting thread's memory */
             p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
             if (p) memcpy(p, o->snap, sspan);
         } else
@@ -147,9 +241,13 @@ static int dma(const GpuDmaOp* o) {
 }
 int vk_dma_copy(const GpuDmaOp* o) {
     int r;
-    if (!o->lines || !o->line_out) return 1;
+    if (!o->lines || !o->line_out) {
+        vk_snap_free(o->snap_id);
+        return 1;
+    }
     vk_lock();
     r = dma(o);
+    if (o->snap_id) vk_defer_call(snap_free_later, (void*)(uintptr_t)o->snap_id); /* after its frame's work */
     vk_unlock();
     return r;
 }

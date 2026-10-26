@@ -223,7 +223,7 @@ typedef struct NvdecPic {
    down; rows from h on read as zero and take no writes). With remap, an element is ns components of cs bytes in and
    nd out, component k of it from sel[k] (0-3 a source component, 4 constant A, 5 constant B, 6 and 7 the
    destination's own bytes); fill: nothing is read. snap: the source's bytes as read at submission (pitch linear, its
-   span), or NULL */
+   span), or NULL; snap_id: nonzero when they are the renderer's (Renderer.snap_alloc), which dma_copy takes over */
 typedef struct {
     u64 addr;
     int bl;
@@ -235,6 +235,7 @@ typedef struct {
     u32 width, lines, line_in, line_out; /* elements a line, lines, a line's bytes in and out */
     GpuDmaSide src, dst;
     const u8* snap;
+    u64 snap_id;
 } GpuDmaOp;
 /* A 2D engine blit (maxwell/fermi2d.c) the renderer does on the GPU: each destination pixel of columns x0 to x1 - 1
    and rows y0 to y1 - 1 the source pixel at column scol[x - x0] and row srow[y - y0] (nearest sampled, the tables
