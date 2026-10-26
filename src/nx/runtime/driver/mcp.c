@@ -7,7 +7,8 @@
    - scan_log: the log summary (common/utilities/logscan.h) of a game's log or the launcher's Share Log file.
    - read_log: parts of a log by text (with lines of context) or by line range, or its last lines, never the whole of a
      large one.
-   - find_game: the extracted games in the data folder's work/, with their title IDs and versions.
+   - find_game: the games the data folder holds: the extractions in its work/ folders and the games made in its
+     recompiled/ and games/ libraries, with their title IDs and versions.
    - state_info: a recompiled game's save states (common/utilities/state_header.h): each one's slot, program, when it
      was saved, the play time then, the runtime and stamp that saved it, and whether this build can load it.
    - symbolize: game addresses (a backtrace's, a crash report's) named by the game's symbols, as tools/symbols.py does.
@@ -18,18 +19,21 @@
    - gdb_attach, gdb_command, gdb_threads, gdb_guest, gdb_memory, gdb_detach (mcp_gdb.c, UNIX only): GDB on a game
      started with the GDB stub, the runtime's process read and driven through it.
 
-   scan_log, read_log, symbolize and disassemble read only under the data folder (DIR, else snx_data_dir's) and its
-   state, cache and settings folders: what a tool answers with is a log's text or a game's code, and those are where
-   ScarletNX keeps them. The edenprobe tools work in the clone and on the NRO the person names, and answer only their
-   own results. The GDB tools reach the game's process only, on this machine's loopback: gdb_command runs a list of
-   GDB's reading, breakpoint and execution commands, none that runs a shell or a script or writes a file, though
-   print and call evaluate the game's own functions.
+   scan_log, read_log, symbolize and disassemble read only under ScarletNX's own folders on this machine: the data
+   folder (DIR, else snx_data_dir's) with its state, cache and settings folders, the folders each of its games keeps
+   its own files in, and the work folders its extractions live in. A game's log, settings and caches are stored
+   wherever the game's <name>.folders redirects them, which is rarely the data folder itself. The edenprobe tools work
+   in the clone and on the NRO the person names, and answer only their own results. The GDB tools reach the game's
+   process only, on this machine's loopback: gdb_command runs a list of GDB's reading, breakpoint and execution
+   commands, none that runs a shell or a script or writes a file, though print and call evaluate the game's own
+   functions.
 
    A game's code goes to the agent's context the way a session's tools/disasm.py output does, and nowhere else. An
    answer is cut at MAX_LINES lines: the agent's context is the scarce part */
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
 #include "common/utilities/logscan.h"
@@ -47,7 +51,6 @@
 #define MAX_DISTANCE 0x4000    /* a symbol further back than this isn't taken as the enclosing function (symbols.py) */
 #define MAX_FUNCTION 0x10000   /* the most of a function disassemble shows */
 #define MAX_CONTEXT  20
-#define MAX_ROOTS    8
 
 /* A game's symbols at their run-time addresses, sorted, from the recompiler's loader */
 typedef struct {
@@ -62,11 +65,11 @@ typedef struct {
 
 typedef struct {
     char* data;             /* the data folder */
-    char* roots[MAX_ROOTS]; /* the folders read_log reads under */
+    char** roots;           /* the folders the tools read under (readable), this many of them */
     char* works[2];         /* the extractions: the cache's work/, then an older version's in the data folder */
     char* self;             /* this program, which edenprobe_run recompiles and runs edenprobe with */
     char* cache;            /* the data folder's cache folder, where edenprobe_run keeps its recompile */
-    int nroots;
+    int nroots, roots_cap;
     /* the last game symbolize or disassemble loaded, kept for the next call: an agent asks about one game many times,
        and loading one takes a second or more. game_folder NULL for none */
     char* game_folder;
@@ -127,15 +130,67 @@ static int parse_hex(const char* s, SnxU64* out) {
 }
 
 /* ============================================================ the folders */
+/* a folder the tools read under (readable), owned by m; one already there is kept once */
 static void add_root(Mcp* m, char* path) {
-    if (path && m->nroots < MAX_ROOTS)
-        m->roots[m->nroots++] = path;
-    else
-        free(path);
+    int i;
+    if (!path) return;
+    for (i = 0; i < m->nroots; i++)
+        if (!strcmp(m->roots[i], path)) {
+            free(path);
+            return;
+        }
+    if (m->nroots == m->roots_cap) {
+        m->roots_cap = m->roots_cap ? m->roots_cap * 2 : 8;
+        m->roots = (char**)snx_realloc(m->roots, (size_t)m->roots_cap * sizeof *m->roots);
+    }
+    m->roots[m->nroots++] = path;
+}
+/* the folders each game of the data folder's libraries keeps its own files in (snx_game_files: its log and
+   threads.txt in state, its settings in config, its caches in cache), whichever folder the game itself is in, as the
+   runtime's kind_dir and the launcher's gui_game_kind_dir find them: the folder its <name>.folders records, else
+   where this build moves them (snx_user_path), else beside the game. A game's log is a game's file, not the data
+   folder's */
+static void add_game_folders(Mcp* m) {
+    static const char* const libraries[] = {"games", "recompiled"};
+    static const char* const keys[] = {"config", "state", "cache"};
+    char record[SNX_PATH_SIZE];
+    int l, kind;
+    for (l = 0; l < 2; l++) {
+        char* library = snx_path_join(m->data, libraries[l]);
+        char** names = NULL;
+        size_t count = 0, i;
+        if (!snx_is_dir(library) || snx_list_dir(library, &names, &count)) {
+            free(library);
+            continue;
+        }
+        for (i = 0; i < count; i++) {
+            char* folder = snx_path_join(library, names[i]);
+            if (snx_is_dir(folder))
+                for (kind = SNX_USER_CONFIG; kind <= SNX_USER_CACHE; kind++) {
+                    char *picked = NULL, *want;
+                    if (!snx_path_format(record, sizeof record, "%s/%s.folders", folder, names[i]))
+                        picked = snx_ini_value(record, keys[kind - SNX_USER_CONFIG]);
+                    if (picked && snx_is_dir(picked)) { /* a folder this game records, and it is there */
+                        add_root(m, picked);
+                        continue;
+                    }
+                    free(picked);
+                    want = snx_user_path(folder, kind);
+                    if (!strcmp(want, folder) || !snx_is_dir(want)) { /* the files stay beside the game */
+                        free(want);
+                        want = snx_strdup(folder);
+                    }
+                    add_root(m, want);
+                }
+            free(folder);
+        }
+        snx_free_strings(names, count);
+        free(library);
+    }
 }
 static int mcp_open(Mcp* m, int argc, char** argv) {
     char *self, *dir, *work;
-    int i;
+    int i, kind;
     memset(m, 0, sizeof *m);
     for (i = 2; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--data") || !strcmp(argv[i], "--repo")) {
@@ -155,10 +210,16 @@ static int mcp_open(Mcp* m, int argc, char** argv) {
     m->cache = snx_user_path(m->data, SNX_USER_CACHE);
     add_root(m, snx_strdup(m->cache));
     add_root(m, snx_user_path(m->data, SNX_USER_CONFIG));
+    /* the machine's own folders, where a game's per-game folders are when --data names a checkout rather than the
+       user's data folder: a recompiled game of a checkout logs in the machine's state folder all the same */
+    for (kind = SNX_USER_CONFIG; kind <= SNX_USER_CACHE; kind++) add_root(m, snx_menu_dir(NULL, kind));
+    add_game_folders(m);
     /* snx_work_dir without its notice, which would go to stdout */
     work = snx_path_join(m->data, "work");
     m->works[0] = snx_user_path(work, SNX_USER_CACHE);
     m->works[1] = work;
+    add_root(m, snx_strdup(m->works[0]));
+    add_root(m, snx_strdup(m->works[1]));
     return 0;
 }
 static void game_free(Game* g);
@@ -169,6 +230,7 @@ static void mcp_close(Mcp* m) {
     if (m->game_folder) game_free(&m->game);
     free(m->game_folder);
     for (i = 0; i < m->nroots; i++) free(m->roots[i]);
+    free(m->roots);
     free(m->works[0]);
     free(m->works[1]);
     free(m->self);
@@ -188,8 +250,8 @@ static int readable(const Mcp* m, const char* path) {
     free(full);
     return ok;
 }
-static const char outside[] = "outside the folders the tools read (ScarletNX's data folder and its state, cache and "
-                              "settings folders)";
+static const char outside[] = "outside the folders the tools read (ScarletNX's data folder, its state, cache and "
+                              "settings folders, its games' own folders and its work folders)";
 
 /* ============================================================ scan_log, read_log */
 static char* scan_log(const char* path, Text* err) {
@@ -355,18 +417,26 @@ static char* nacp_version(const char* game) {
     return out;
 }
 
+/* a title ID as the logs' header and the games' folders write it: sixteen digits, upper case */
+static void title_id_text(SnxU64 title, char* out) {
+    int k;
+    hex(out, title);
+    for (k = (int)strlen(out); k < 16; k++) {
+        memmove(out + 1, out, (size_t)k + 1);
+        out[0] = '0';
+    }
+    for (k = 0; out[k]; k++) out[k] = (char)toupper((unsigned char)out[k]);
+}
+/* the recompiled games, or only title_id's, into list, beside the extractions of work/ */
+static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list);
+
 /* every extracted game, or only title_id's, as {path, title_id, version} into list */
 /* the save states of the recompiled game title_id, in the data folder's games/ or recompiled/ (state_header.h) */
 static void find_states(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     static const char* const libraries[] = {"games", "recompiled"};
     char id[17];
-    int l, k;
-    hex(id, title_id);
-    for (k = (int)strlen(id); k < 16; k++) {
-        memmove(id + 1, id, (size_t)k + 1);
-        id[0] = '0';
-    }
-    for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
+    int l;
+    title_id_text(title_id, id);
     for (l = 0; l < 2; l++) {
         char *folder = snx_format("%s/%s/%s", m->data, libraries[l], id), *dir = snx_path_join(folder, "states");
         char** names = NULL;
@@ -419,13 +489,7 @@ static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_
             if (snx_is_dir(game) && !snx_load_npdm(game, &npdm, error, sizeof error) && npdm.title_id &&
                 (!title_id || npdm.title_id == title_id)) {
                 yyjson_mut_val* g = yyjson_mut_arr_add_obj(d, list);
-                int k;
-                hex(id, npdm.title_id);
-                for (k = (int)strlen(id); k < 16; k++) { /* sixteen digits, upper case, as the logs' header */
-                    memmove(id + 1, id, (size_t)k + 1);
-                    id[0] = '0';
-                }
-                for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
+                title_id_text(npdm.title_id, id);
                 version = nacp_version(game);
                 yyjson_mut_obj_add_strcpy(d, g, "path", game);
                 yyjson_mut_obj_add_strcpy(d, g, "title_id", id);
@@ -439,6 +503,67 @@ static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_
             free(game);
         }
         snx_free_strings(names, count);
+    }
+    find_recompiled(m, title_id, list);
+}
+
+/* the recompiled games of the data folder's games/ and recompiled/, or only title_id's, as {path, title_id, version}
+   into list. A folder is a game when it holds the game's own data folder beside it: an add-on's, another system's or a
+   folder that names no title ID is left out. The version is the one that data folder's control.nacp names, where an
+   extraction's comes from the dump's own. A game whose dump is in a work folder is listed there and not again here: its
+   code is that dump's, and its NPDM is not here at all, so is64 is an extraction's only. A game extracted beside the
+   data folder, as a game whose ExeFS the runtime reads from its own dump is, is this folder: where its log is, and
+   what an agent reading that log wants */
+static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list) {
+    static const char* const libraries[] = {"games", "recompiled"};
+    char data[SNX_PATH_SIZE], id[17];
+    int l;
+    for (l = 0; l < 2; l++) {
+        char* library = snx_path_join(m->data, libraries[l]);
+        char** names = NULL;
+        size_t count = 0, i;
+        if (!snx_is_dir(library) || snx_list_dir(library, &names, &count)) {
+            free(library);
+            continue;
+        }
+        for (i = 0; i < count; i++) {
+            char* folder = snx_path_join(library, names[i]);
+            SnxU64 id_value;
+            char* version;
+            cJSON* g;
+            int k, taken = 0;
+            if (strlen(names[i]) != 16 || !parse_hex(names[i], &id_value) || !id_value || !snx_is_dir(folder) ||
+                snx_path_format(data, sizeof data, "%s/%s_data", folder, names[i]) || !snx_is_dir(data)) {
+                free(folder);
+                continue;
+            }
+            title_id_text(id_value, id);
+            if (title_id && id_value != title_id) {
+                free(folder);
+                continue;
+            }
+            for (k = 0; !taken && k < (int)cJSON_GetArraySize(list); k++) {
+                const cJSON* at = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, k), "title_id");
+                taken = cJSON_IsString(at) && !strcmp(at->valuestring, id);
+            }
+            if (taken) { /* its extraction in work/ already answers */
+                free(folder);
+                continue;
+            }
+            version = nacp_version(data);
+            g = cJSON_CreateObject();
+            cJSON_AddStringToObject(g, "path", folder);
+            cJSON_AddStringToObject(g, "title_id", id);
+            if (version)
+                cJSON_AddStringToObject(g, "version", version);
+            else
+                cJSON_AddNullToObject(g, "version");
+            cJSON_AddItemToArray(list, g);
+            free(version);
+            free(folder);
+        }
+        snx_free_strings(names, count);
+        free(library);
     }
 }
 
@@ -467,7 +592,7 @@ static char* game_found(const Mcp* m, const char* game, Text* err) {
         if (first)
             out = snx_strdup(first);
         else
-            mcp_put(err, "no extracted game with that title ID in work/ (find_game lists them)");
+            mcp_put(err, "no game of that title ID in work/ or recompiled/ (find_game lists them)");
         yyjson_mut_doc_free(d);
         return out;
     }
@@ -774,10 +899,12 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "Parts of a log with line numbers, never the whole of a large one: the lines holding pattern (plain text, "
         "alternatives separated by |, ignore_case to match any case) with context lines around each (0 to 20), "
         "or count lines from start (1-based), or the last count lines. 400 lines at most. Reads files under "
-        "ScarletNX's data folder and its state, cache and settings folders.";
+        "ScarletNX's data folder, its state, cache and settings folders, its games' own folders and its work "
+        "folders.";
     static const char find_says[] =
-        "The extracted games on this machine (the data folder's work/) with their title IDs and versions, or only "
-        "title_id's. A log's addresses match only a game of the version its header names.";
+        "The games this machine's data folder holds: the extractions in its work/ folders and the games made in its "
+        "recompiled/ and games/ libraries, with their title IDs and versions, or only title_id's. A log's addresses "
+        "match only a game of the version its header names.";
     static const char states_says[] =
         "A recompiled game's save states (the data folder's games/<title_id>/states/): each one's file, program, slot, "
         "when it was saved (seconds since 1970), the game's play time then, the SNX_ABI, runtime and update and mods "

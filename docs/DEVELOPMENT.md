@@ -172,8 +172,10 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   failure on this machine, built into the program so a player's agent has it too. `.mcp.json` starts it for agents
   opened in the checkout (`build/scarletnx --mcp --data .`). Its tools: `scan_log` (the summary above), `read_log`
   (a log's lines holding a text, `|` between alternatives, with context, or a range, or its last lines, only under
-  the data folder and its state, cache and settings folders), `find_game` (the extracted games in `work/` with their
-  title IDs and versions), `state_info` (a recompiled game's save states: slot, program, when, play time, the build
+  ScarletNX's own folders: the data folder with its state, cache and settings folders, the folders each of its games
+  keeps its own files in, and its `work/` folders), `find_game` (the games the data folder holds, the extractions of
+  `work/` and the recompiled games of `recompiled/` and `games/`, with their title IDs and versions), `state_info` (a
+  recompiled game's save states: slot, program, when, play time, the build
   and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
   LLVM's disassembler where LLVM has the AArch64 target). The last game loaded stays loaded for the next call. Its
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
