@@ -284,7 +284,14 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     } else {
         nvn_tex_level_tiles(&t.d, level, &th, &td);
         if (t.d.target == NVN_TEXTURE_TARGET_3D) { /* a volume: its slices, the GOB slices of the 3D surface */
-            s->layers = t.d.depth >> level ? t.d.depth >> level : 1;
+            u32 slices = t.d.depth >> level ? t.d.depth >> level : 1;
+            s->layers = slices;
+            /* a view of some slices targets those, from the first one's GOBs on, as the game's driver binds each
+               slice of a volume to a target of its own */
+            if (has_view && (v->set & NVN_VIEW_LAYERS) && v->min_layer < slices) {
+                s->gva += nvn_tex_slice_offset(&t.d, level, v->min_layer);
+                s->layers = v->layers && v->layers <= slices - v->min_layer ? v->layers : slices - v->min_layer;
+            }
             s->mem |= 1u << 16;
         }
         s->mem |= th << 4 | td << 8;

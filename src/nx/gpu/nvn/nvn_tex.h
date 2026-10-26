@@ -23,6 +23,8 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o);
 u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 /* the block height and depth level `level` is laid out with (log2 of the GOBs): they shrink with its rows and slices */
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d);
+/* the bytes from a block-linear volume level's start to its depth slice z */
+u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z);
 /* bytes per block (0 for a format it doesn't know), and the block's width and height */
 int nvn_fmt_bpb(int format, int* bw, int* bh);
 
