@@ -124,8 +124,25 @@ void syncpt_add(u32 id, u32 n) {
     gpu_kick();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
+/* the renderer's memory for submission-time copies of DMA sources: malloc's here, counted, so that every copy is let
+   go of once, by the launch that takes it or where it is dropped */
+static int snaps_live, snaps_made;
+static u8* snap_alloc(u64 len, u64* id) {
+    u8* p = (u8*)malloc(len ? (size_t)len : 1);
+    if (!p) return NULL;
+    __atomic_add_fetch(&snaps_live, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&snaps_made, 1, __ATOMIC_SEQ_CST);
+    *id = (u64)(uintptr_t)p;
+    return p;
+}
+static void snap_free(u64 id) {
+    if (!id) return;
+    free((void*)(uintptr_t)id);
+    __atomic_sub_fetch(&snaps_live, 1, __ATOMIC_SEQ_CST);
+}
 static int dma_on_cpu(const GpuDmaOp* o) { /* the renderer's copy as its CPU reference does it */
     dma_copy_ref(o);
+    snap_free(o->snap_id); /* it takes the copy's memory over */
     return 1;
 }
 /* A compute result whose host mirror still has the old command payload. Safe
@@ -145,6 +162,8 @@ static void compute_read(u64 addr, u64 size) {
 }
 static const Renderer stand_in = {.name = "stand-in",
                                   .dma_copy = dma_on_cpu,
+                                  .snap_alloc = snap_alloc,
+                                  .snap_free = snap_free,
                                   .cs_mem_need = compute_read,
                                   .mem_may_have_changed = new_epoch,
                                   .clear = record_clear,
@@ -582,6 +601,8 @@ int main(void) {
                "DMA keeps CPU staging bytes but discards a snapshot after a GPU write");
         forget_marks();
     }
+    expect(__atomic_load_n(&snaps_made, __ATOMIC_SEQ_CST) > 0 && !__atomic_load_n(&snaps_live, __ATOMIC_SEQ_CST),
+           "the renderer's snapshot memory is let go of, used or discarded");
     /* Both report engines can wait for CPU-produced DMA input. Use fresh channels so a previous wait cannot
        already have disabled their submission scanner. */
     for (u32 sub = 0; sub < 2; sub++) {

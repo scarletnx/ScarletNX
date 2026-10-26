@@ -750,6 +750,11 @@ void* vk_nvdec_hw_device(void);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
    past the device's limits (skipped). Takes vk_lock */
 int vk_dma_copy(const GpuDmaOp* o);
+/* memory for the DMA engine's copies of sources at submission, which the copy reads in place (Renderer.snap_alloc and
+   snap_free, from any thread), and the bytes it holds */
+u8* vk_snap_alloc(u64 len, u64* id);
+void vk_snap_free(u64 id);
+u64 vk_snap_bytes(void);
 /* blit.c: a 2D blit from memory on the GPU (gpu.h's GpuBlit), its destination published: 1 when done. Takes vk_lock */
 int vk_blit_mem(const GpuBlit* b);
 

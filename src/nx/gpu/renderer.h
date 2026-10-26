@@ -74,8 +74,14 @@ typedef struct Renderer {
        Video on this renderer's GPU, for NVDEC's decoder, whose pictures then reach nvdec_write as GPU images: NULL when
        the GPU has no decode queue or the vulkan_video setting is off */
     void* (*nvdec_hw_device)(void);
-    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be */
+    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be. It takes over
+       o->snap_id's memory, used or not */
     int (*dma_copy)(const GpuDmaOp* o);
+    /* memory for the DMA engine's copies of linear sources at submission (maxwell/dma.c), which the GPU reads in place,
+       from any thread: len bytes, *id naming them; NULL when there is none (the caller allocates its own then).
+       snap_free lets go of a copy no launch used */
+    u8* (*snap_alloc)(u64 len, u64* id);
+    void (*snap_free)(u64 id);
     /* a 2D blit the GPU's own blit can't do (its source isn't a render target) done on the GPU from memory, its
        destination kept there: 0 when it couldn't be */
     int (*blit_mem)(const GpuBlit* b);
