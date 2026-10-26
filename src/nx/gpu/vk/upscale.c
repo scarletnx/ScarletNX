@@ -41,7 +41,7 @@ typedef struct {
 
 static struct {
     int configured, sharpness;
-    int auto_state;
+    int auto_state; /* Auto's ratio state: 0 off, 1 on, -1 off after it was on */
     VkFormat fmt;
     u32 w, h;
     int made, failed;
@@ -77,9 +77,9 @@ static VkFormat choose_format(void) {
 VkFormat vk_upscale_format(void) { return choose_format(); }
 
 void vk_upscale_configure(int filter, int sharpness) {
-    g_up.configured = filter;
+    __atomic_store_n(&g_up.configured, filter, __ATOMIC_RELAXED);
     g_up.sharpness = sharpness < 0 ? 0 : sharpness > 100 ? 100 : sharpness;
-    g_up.auto_state = 0;
+    __atomic_store_n(&g_up.auto_state, 0, __ATOMIC_RELAXED);
     g_up.failed = 0;
     if (filter == SNX_UPSCALE_AUTO) {
         int pick = snx_upscale_auto_pick(g_vk.props.vendorID, g_vk.props.deviceID, g_vk.props.deviceName);
@@ -91,12 +91,29 @@ void vk_upscale_configure(int filter, int sharpness) {
 
 int vk_upscale_filter_uses_sharpness(int filter) { return snx_upscale_uses_sharpness(filter); }
 
+int vk_upscale_cycle(void) {
+    /* FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR, None. Auto enters the cycle at FSR 1 */
+    static const int order[] = {SNX_UPSCALE_FSR1, SNX_UPSCALE_BILINEAR, SNX_UPSCALE_NIS, SNX_UPSCALE_SGSR,
+                                SNX_UPSCALE_OFF};
+    int f = __atomic_load_n(&g_up.configured, __ATOMIC_RELAXED), i, n = (int)(sizeof order / sizeof order[0]), next;
+    for (i = 0; i < n && order[i] != f; ++i) continue;
+    next = i == n ? order[0] : order[(i + 1) % n];
+    __atomic_store_n(&g_up.configured, next, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_up.auto_state, 0, __ATOMIC_RELAXED);
+    return next;
+}
+
 int vk_upscale_pick(u32 src_w, u32 src_h, u32 dst_w, u32 dst_h, u32 transform) {
-    int f = g_up.configured;
+    int f = __atomic_load_n(&g_up.configured, __ATOMIC_RELAXED);
     if (!src_w || !src_h || !dst_w || !dst_h) return -1;
     if (f == SNX_UPSCALE_AUTO) {
+        int state = __atomic_load_n(&g_up.auto_state, __ATOMIC_RELAXED);
         f = snx_upscale_auto_pick(g_vk.props.vendorID, g_vk.props.deviceID, g_vk.props.deviceName);
-        if (!snx_upscale_ratio(&g_up.auto_state, src_w, src_h, dst_w, dst_h)) return SNX_UPSCALE_OFF;
+        if (!snx_upscale_ratio(&state, src_w, src_h, dst_w, dst_h)) {
+            __atomic_store_n(&g_up.auto_state, state, __ATOMIC_RELAXED);
+            return SNX_UPSCALE_OFF;
+        }
+        __atomic_store_n(&g_up.auto_state, state, __ATOMIC_RELAXED);
     }
     if (f == SNX_UPSCALE_OFF || f == SNX_UPSCALE_BILINEAR) return f;
     /* NIS samples the input itself and supports at most 2x each axis, and its coordinates have no flip: FSR 1's

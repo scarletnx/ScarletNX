@@ -692,6 +692,9 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     vk_unlock();
 }
 
+/* Ctrl+U: the live spatial upscaler cycle */
+static const char* vkr_cycle_upscale(void) { return snx_upscale_label(vk_upscale_cycle()); }
+
 /* The last frame again, under the controls and the menu, while the game shows none: a game loading, stuck, or drawing
    nothing still has them. Not before a quarter second without a frame (a slow game's own come between), at 30 a second
    at most, and only when the GPU thread holds no Vulkan work: then the next call tries again */
@@ -917,5 +920,6 @@ const Renderer vk_renderer = {
     .save = vk_pipeline_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
+    .cycle_upscale = vkr_cycle_upscale,
 };
 const Renderer* g_renderer = &vk_renderer;

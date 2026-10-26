@@ -22,4 +22,6 @@ int vk_upscale_process(VkCommandBuffer cb, VkImageView src, u32 image_w, u32 ima
 VkFormat vk_upscale_format(void);
 /* whether a filter's sharpness applies, for the menu's greyed row */
 int vk_upscale_filter_uses_sharpness(int filter);
+/* the live cycle (Ctrl+U): FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR, None, and round. Auto enters at FSR 1 */
+int vk_upscale_cycle(void);
 #endif

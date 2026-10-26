@@ -280,6 +280,21 @@ int main(int argc, char** argv) {
     CHECK(!vk_upscale_filter_uses_sharpness(SNX_UPSCALE_BILINEAR));
     CHECK(vk_upscale_filter_uses_sharpness(SNX_UPSCALE_FSR1));
 
+    /* the live cycle: FSR 1, Bilinear, NIS, SGSR, None, and round; Auto enters at FSR 1 */
+    vk_upscale_configure(SNX_UPSCALE_AUTO, 25);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_FSR1);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_FSR1);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_BILINEAR);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_BILINEAR);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_NIS);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_NIS);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_SGSR);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_SGSR);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_cycle() == SNX_UPSCALE_FSR1);
+    CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_FSR1);
+
     image_free(&src);
     vk_finish();
     vk_unlock();

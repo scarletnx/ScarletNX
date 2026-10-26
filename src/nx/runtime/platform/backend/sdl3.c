@@ -417,6 +417,7 @@ static const char* HELP =
 #if defined(SNX_TRACY)
     "  F10 record a 60 second Tracy capture\n"
 #endif
+    "  Ctrl+U  cycle: FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR, None\n"
     "  Pause  pause the whole game, and resume it\n"
     "  F11 or Alt+Enter  switch fullscreen\n"
     "  F12  turn the stats on or off\n"
@@ -802,6 +803,15 @@ static void title_paused(int paused) {
     if (n >= sizeof mark - 1 && !strcmp(t + n - (sizeof mark - 1), mark)) n -= sizeof mark - 1;
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
+}
+/* Ctrl+U: cycle the live spatial upscaler through the menu's filters */
+static void upscale_hotkey(void) {
+    const char* label = g_renderer && g_renderer->cycle_upscale ? g_renderer->cycle_upscale() : NULL;
+    char text[64];
+    if (!label) return;
+    snprintf(text, sizeof text, "Upscaler: %s", label);
+    overlay_toast(text, plat_ns());
+    LOG("upscaler: %s (Ctrl+U)\n", label);
 }
 static void hotkey(SDL_Keycode k) {
     switch (k) {
@@ -1217,6 +1227,10 @@ void video_poll(void) {
                 }
                 if (e.key.key == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT)) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
+                    break;
+                }
+                if (!e.key.repeat && e.key.key == SDLK_U && (e.key.mod & SDL_KMOD_CTRL)) {
+                    upscale_hotkey();
                     break;
                 }
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */

@@ -710,7 +710,9 @@ pad.
 
 F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Pause pauses the whole game and resumes it (the window's title says "(paused)");
+fullscreen; F12 stats on and off; Ctrl+U cycles the spatial upscaler through AMD FSR 1, Bilinear, NVIDIA NIS,
+Qualcomm SGSR and None (Auto enters the cycle at FSR 1); Pause pauses the whole game and resumes it (the window's title
+says "(paused)");
 Escape quit. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
 the pace `fps_limit` sets.
 
