@@ -181,7 +181,7 @@ setting Vsync
 setting Frame pacing
     key frame_pacing
     int 0 2
-    default 2
+    default 1
     words Timer|Display|Display and hold
     help With VSync and fps_limit=game: 0 = the game's frames are paced by a timer; 1 = the game's next frame also
     help waits until the frame before is on the display (VK_KHR_present_wait or VK_GOOGLE_display_timing), so frames
