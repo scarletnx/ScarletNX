@@ -731,7 +731,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
                check plus one is what the next scans taken in are marked with, and the texture took their writes as
                seen (one game's glyph cache missed the glyphs its CPU drew after a check that marked nothing) */
             if (wr) {
-                t->wseen = wnow;
+                t->wseen = vk_ww_now();
                 tex_rehash(t);
             }
             return t->upload_valid ? t : NULL;
