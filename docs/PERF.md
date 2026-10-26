@@ -153,6 +153,22 @@ CI never skips: `SNX_PERF_REQUIRE=1` (or a plain `CI` environment variable) turn
 reason. A spread over 70% fails there rather than reporting a median. `SNX_PERF_SKIP=1` forces a local skip, and
 `SNX_PERF_VERBOSE=1` prints every round.
 
+## Platforms
+
+| Platform | `perf_cpu` | `perf_gpu` | `perf_compile` | CI |
+| --- | --- | --- | --- | --- |
+| Linux x86_64, aarch64 | yes | yes, lavapipe | yes | **The merge gate**, 2 minute cap, tight bands |
+| macOS arm64 | yes, `cpu_aarch64_darwin` | local with MoltenVK; not built in CI | yes, `compile_aarch64_darwin` | Advisory Mac job, 2 minute cap, wider bands |
+| Windows x86_64 | yes, `cpu_x86_64_windows` | no Vulkan 1.3 ICD on the hosted runner | yes, `compile_x86_64_windows` | Not run in CI, local only |
+
+The Linux runner is the one whose variance is low enough to hold a merge. The Mac job is already `continue-on-error`,
+so its `::error` is visible without blocking, and its bands start much wider until its measurements say otherwise.
+The Windows tests are built and can be run locally, but this project has no Windows runner that can time them, and
+its hosted runners have no Vulkan device for the GPU test. Their keys are wide for the same reason.
+
+A platform with more variance gets a wider band before it gets a tighter one. The Linux keys stay the useful fail
+gate for a major regression.
+
 ## Running them
 
 ```sh
@@ -188,10 +204,11 @@ tests. Until then the proposal is reviewed like any other baseline change.
 
 ## Cost and margin
 
-GitHub Actions is free for public repositories on the standard hosted runners, which this project uses. The two
-steps add about a second and a few seconds to a Linux job that already builds for tens of minutes, and they use one
-processor and one small GPU workload, so the cost is a few seconds of wall time and no billed minutes. A separate
-job would add a runner start and a rebuild, so the tests stay steps in the job that already built them.
+GitHub Actions is free for public repositories on the standard hosted runners, which this project uses. The Linux
+step adds about ten seconds to a job that already builds for tens of minutes, and the advisory Mac step adds another
+few seconds to its own job. They use one processor and one small GPU workload, so the cost is wall time and no billed
+minutes. A separate job would add a runner start and a rebuild, so the tests stay steps in the jobs that already
+built them.
 
 More samples are cheap and the current counts are already heavier than the first version. At 401 CPU pairs the 95%
 interval is roughly ±2% when a block's spread is 20%, and wider when the machine is noisier; at 201 GPU pairs it is

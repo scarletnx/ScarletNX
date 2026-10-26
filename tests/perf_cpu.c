@@ -71,6 +71,10 @@ static const uint32_t kernel_words[] = {
    Linux CI runner's reference is not applied to it */
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64))
 #define PERF_CPU_KEY "cpu_aarch64_darwin"
+#elif defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#define PERF_CPU_KEY "cpu_x86_64_windows"
+#elif defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
+#define PERF_CPU_KEY "cpu_aarch64_windows"
 #elif defined(__x86_64__) || defined(_M_X64)
 #define PERF_CPU_KEY "cpu_x86_64"
 #elif defined(__aarch64__) || defined(_M_ARM64)
