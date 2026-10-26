@@ -659,7 +659,8 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
           1u << (o.d.format & 31)))
         LOG("nvn: the first texture of format %#x (target %u, %ux%u)\n", o.d.format, o.d.target, o.d.width,
             o.d.height);
-    /* a whole range, guest to guest, as the driver's own copy */
+    /* a whole range, guest to guest, as the driver's own copy: bytes already in the texture's layout, nothing
+       converted, before any submission can read the texture */
     if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
     memcpy(GP(t), &o, sizeof o);
     return 1;
