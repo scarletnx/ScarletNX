@@ -45,6 +45,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 ## Development
 
 - [Development](./DEVELOPMENT.md): checks, running and diagnosing a game, profiling, shaders and SVCs
+- [Performance regression tests](./PERF.md): the CPU and GPU ratios CI holds a change to
 - [edenprobe](./EDENPROBE.md): the hardware probes CI runs against a baseline
 - [Status and roadmap](./ROADMAP.md): what is next
 - [Contributing](../CONTRIBUTING.md): game data, checks, commits and pull requests
