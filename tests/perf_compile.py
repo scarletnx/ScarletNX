@@ -183,6 +183,10 @@ def main(argv=None):
     machine = platform.machine().lower()
     if sys.platform == 'darwin' and machine in ('arm64', 'aarch64'):
         key = 'compile_aarch64_darwin'
+    elif sys.platform == 'win32' and machine in ('x86_64', 'amd64'):
+        key = 'compile_x86_64_windows'
+    elif sys.platform == 'win32' and machine in ('arm64', 'aarch64'):
+        key = 'compile_aarch64_windows'
     elif machine in ('x86_64', 'amd64'):
         key = 'compile_x86_64'
     elif machine in ('arm64', 'aarch64'):

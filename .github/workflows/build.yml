@@ -228,7 +228,8 @@ jobs:
           SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-cpu-${{ matrix.arch }}.txt" \
             build/default/tests/snx-test-perf-cpu "$baseline"
           SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-compile-${{ matrix.arch }}.txt" \
-            python3 tests/perf_compile.py --runtime build/default/scarletnx --repo "$PWD" --baseline "$baseline"
+            python3 tests/perf_compile.py --runtime build/default/scarletnx --repo "$PWD" --baseline "$baseline" \
+              --runs 3
           SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-gpu-${{ matrix.arch }}.txt" \
             build/headless/src/nx/snx-test-perf-gpu "$baseline"
       # Main proposes the next baseline from its own run: a reference moves down only when the whole 95% interval
@@ -1045,6 +1046,17 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # A pull request is measured against main's baseline, never the copy it carries
+      - name: Use main's performance baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          if git -c safe.directory="$GITHUB_WORKSPACE" fetch --depth=1 origin "${{ github.base_ref }}" &&
+             git -c safe.directory="$GITHUB_WORKSPACE" show \
+               "origin/${{ github.base_ref }}:tests/perf_baseline.txt" > "$RUNNER_TEMP/perf_baseline.txt"; then
+            echo "SNX_PERF_BASELINE=$RUNNER_TEMP/perf_baseline.txt" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=perf::main has no performance baseline yet; the checked-out file is used"
+          fi
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
@@ -1519,6 +1531,20 @@ jobs:
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: ctest --test-dir build/macos --output-on-failure --parallel 4 --exclude-regex '^perf_(cpu|gpu|compile)$'
+      # The portable tests on Apple silicon. The GPU test is not built in this job (SNX_TEST_VULKAN is off), and
+      # the Mac job is advisory already: it runs the CPU and recompile paths and reports them without holding a merge.
+      - name: Performance regression tests
+        if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
+        timeout-minutes: 2
+        env:
+          SNX_PERF_REQUIRE: "1"
+        run: |
+          set -euo pipefail
+          baseline="${SNX_PERF_BASELINE:-tests/perf_baseline.txt}"
+          SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-cpu-macos.txt" \
+            build/macos/tests/snx-test-perf-cpu "$baseline"
+          SNX_PERF_RESULT="$GITHUB_WORKSPACE/perf-result-compile-macos.txt" \
+            python3 tests/perf_compile.py --runtime build/macos/scarletnx --repo "$PWD" --baseline "$baseline"
       # the app, signed ad hoc, and its zip, by CPack (cmake/apple_package.cmake)
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
