@@ -258,15 +258,29 @@ static void test_stage(void) {
     CHECK(own_begin(a + 0x1800, 0x1000, r, 0) == 0);
     GP(a)[0x3800] = 0x99; /* a page with no owner on it: written as ever */
     lands = g_lands;
-    memset(dst, 0, sizeof dst);
+    memset(dst, 0xEE, sizeof dst);
     CHECK(own_stage(a + 0x1000, 0x3000, dst, o, 4) == 1 && g_lands == lands);
     CHECK(o[0].addr == a + 0x1800 && o[0].size == 0x1000 && o[0].res == r && o[0].res_off == 0);
     for (i = 0; i < 0x800; i++) CHECK(dst[i] == (u8)(0x11 + 0x1000 + i)); /* the CPU's, beside the owner */
+    for (i = 0x800; i < 0x1800; i++) CHECK(dst[i] == 0xEE); /* the owner's: left for the caller's copy */
     CHECK(dst[0x1800] == (u8)(0x11 + 0x2800) && dst[0x2800] == 0x99);
     CHECK(own_stage(a + 0x1000, 0x3000, dst, o, 0) == 1); /* no room: how many, nothing copied */
-    CHECK(own_lookup(a, 0x4000, o, 4) == 1 && g_lands == lands);
-    CHECK(mem_unmap(a, 0x4000) == 0 && refs(r) == 0);
+    /* a second owner within a page: the CPU's bytes between and after the two, and neither owner's */
+    Res* r2 = res_new(0x200, 0x30);
+    CHECK(own_begin(a + 0x3200, 0x200, r2, 0) == 0);
+    lands = g_lands;
+    memset(dst, 0xEE, sizeof dst);
+    CHECK(own_stage(a + 0x1000, 0x3000, dst, o, 4) == 2 && g_lands == lands);
+    CHECK(o[1].addr == a + 0x3200 && o[1].size == 0x200 && o[1].res == r2);
+    for (i = 0; i < 0x3000; i++)
+        if ((i >= 0x800 && i < 0x1800) || (i >= 0x2200 && i < 0x2400))
+            CHECK(dst[i] == 0xEE);
+        else
+            CHECK(dst[i] == (i == 0x2800 ? 0x99 : (u8)(0x11 + 0x1000 + i)));
+    CHECK(own_lookup(a, 0x4000, o, 4) == 2 && g_lands == lands);
+    CHECK(mem_unmap(a, 0x4000) == 0 && refs(r) == 0 && refs(r2) == 0);
     res_free(r);
+    res_free(r2);
 }
 
 /* a second mapping of owned memory lands it first: owned memory has one */
