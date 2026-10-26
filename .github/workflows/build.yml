@@ -1046,17 +1046,6 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
-      # A pull request is measured against main's baseline, never the copy it carries
-      - name: Use main's performance baseline
-        if: github.event_name == 'pull_request'
-        run: |
-          if git -c safe.directory="$GITHUB_WORKSPACE" fetch --depth=1 origin "${{ github.base_ref }}" &&
-             git -c safe.directory="$GITHUB_WORKSPACE" show \
-               "origin/${{ github.base_ref }}:tests/perf_baseline.txt" > "$RUNNER_TEMP/perf_baseline.txt"; then
-            echo "SNX_PERF_BASELINE=$RUNNER_TEMP/perf_baseline.txt" >> "$GITHUB_ENV"
-          else
-            echo "::warning title=perf::main has no performance baseline yet; the checked-out file is used"
-          fi
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
@@ -1422,6 +1411,17 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+      # A pull request is measured against main's baseline, never the copy it carries
+      - name: Use main's performance baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          if git -c safe.directory="$GITHUB_WORKSPACE" fetch --depth=1 origin "${{ github.base_ref }}" &&
+             git -c safe.directory="$GITHUB_WORKSPACE" show \
+               "origin/${{ github.base_ref }}:tests/perf_baseline.txt" > "$RUNNER_TEMP/perf_baseline.txt"; then
+            echo "SNX_PERF_BASELINE=$RUNNER_TEMP/perf_baseline.txt" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=perf::main has no performance baseline yet; the checked-out file is used"
+          fi
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
