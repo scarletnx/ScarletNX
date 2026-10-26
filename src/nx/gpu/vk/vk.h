@@ -892,6 +892,10 @@ void vk_result_begin(void);
 void vk_result_end(void);
 int vk_result_landing(void);
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
+/* the same, telling run each run of changed granules: the 8-byte pieces of the result from its start on (the last may be
+   shorter) where res and org differ, merged when they touch, in order */
+typedef void (*VkChangedRun)(void* user, u32 from, u32 to);
+void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkChangedRun run, void* user);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
