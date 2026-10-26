@@ -19,6 +19,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
@@ -2515,6 +2516,94 @@ static u64 draw_last_vertex(const u32* inline_indices, const DsIndex* ix, int in
     return last < 0 ? 0 : (u64)last;
 }
 
+/* Index buffers Vulkan can't read as they are, made on the GPU (texconv's TC_INDEX_* modes) in this frame's output
+   ring: quads as triangles, 8-bit indices without VK_KHR_index_type_uint8, and a restart index other than all ones.
+   The CPU made them for each draw before, reading guest memory an index at a time, and the restart rewrite read the
+   output ring back, which can be device memory behind the BAR. Quads of vertex numbers take one buffer for every
+   draw, made once for each size it grows to: 0 1 2 0 2 3, 4 5 6 4 6 7..., drawn from the draw's first vertex */
+static struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    u32 quads; /* how many quads it has the indices of */
+} g_quads;
+/* what the GPU wrote (src: the stage and access) before what reads it next (dst) */
+static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                          VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = src_stage,
+                          .srcAccessMask = src_access,
+                          .dstStageMask = dst_stage,
+                          .dstAccessMask = dst_access};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(cb, &d);
+}
+static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
+    if (nq > g_quads.quads) {
+        u32 cap = g_quads.quads ? g_quads.quads : 16384;
+        while (cap < nq) cap *= 2;
+        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = (u64)cap * 24,
+                                  .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VkBuffer b;
+        VmaAllocation m;
+        if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
+        vk_mem_track(m);
+        vk_render_end(); /* dispatches happen outside rendering passes */
+        VkCommandBuffer cb = vk_cmd();
+        /* the input is bound but not read: vertex numbers are their own indices */
+        if (!vk_tc_index(cb, TC_INDEX_QUADS, 0, 0, cap, b, 0, 0, b, 0, (u64)cap * 24)) {
+            vk_defer_buffer(b, m);
+            return 0;
+        }
+        /* every later draw reads it, in this submission and the ones after (a barrier's second scope) */
+        index_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+        if (g_quads.buf) vk_defer_buffer(g_quads.buf, g_quads.mem); /* earlier draws of this frame still read it */
+        g_quads.buf = b;
+        g_quads.mem = m;
+        g_quads.quads = cap;
+    }
+    *buf = g_quads.buf;
+    *off = 0;
+    return 1;
+}
+/* n elements of mode (with remap and the restart index restart, as texconv_modes.glsl says) made from count indices of
+   isz bytes from index first, the guest's at ia or the draw's inline ones, into out_bytes of the output ring: *buf
+   and *off, which the draw binds */
+static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz, u32 first, u32 count, u32 mode,
+                         u32 remap, u32 restart, u32 n, u64 out_bytes, VkBuffer* buf, u64* off) {
+    u64 in_bytes = (u64)count * isz, align = vk_stage_align();
+    VkBuffer src;
+    u64 at;
+    if (inline_indices) { /* host words the pushbuffer gave, in the CPU's hands already: copied whole */
+        u8* p = vk_stage(in_bytes, align, &src, &at);
+        if (!p) return 0;
+        memcpy(p, dc->inline_indices + first, (size_t)in_bytes);
+        snx_le32_array(p, count); /* read by the device little-endian */
+    } else if (!vk_buf_get_input(ia + (u64)first * isz, in_bytes, isz, &src, &at))
+        return 0;
+    vk_render_end(); /* copies and dispatches happen outside rendering passes */
+    VkCommandBuffer cb = vk_cmd();
+    if ((at | in_bytes) & 3) { /* the shader reads whole words: a copy of them that starts at one, rounded up */
+        VkBuffer word_buf;
+        u64 word_at;
+        if (!vk_stage_output((in_bytes + 3) & ~3ull, align, &word_buf, &word_at, NULL)) return 0;
+        VkBufferCopy c = {at, word_at, in_bytes};
+        rec_CmdCopyBuffer(cb, src, word_buf, 1, &c);
+        index_barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        src = word_buf;
+        at = word_at;
+    }
+    if (!vk_stage_output(out_bytes, align, buf, off, NULL)) return 0;
+    if (!vk_tc_index(cb, mode, remap, restart, n, src, at, in_bytes, *buf, *off, out_bytes)) return 0;
+    index_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+    return 1;
+}
+
 static void render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
 void vk_render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
@@ -2830,7 +2919,7 @@ retry:
         count = (u32)(avail - first);
     }
     if ((topology == 7 || (indexed && ifmt == 0)) && count > (1u << 24)) {
-        LOG_LIMIT(1, "vulkan: a draw of %u vertices converted on the CPU (cut to %u)\n", count, 1u << 24);
+        LOG_LIMIT(1, "vulkan: a draw of %u vertices made into other indices (cut to %u)\n", count, 1u << 24);
         count = 1u << 24;
     }
     /* Vulkan restarts at all ones of the index type, in strips and fans; the guest's restart index is 0x592 */
@@ -2839,94 +2928,57 @@ retry:
         topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY &&
         topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     u32 icount = count;
-    int quads_indexed = 0;
+    i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
     if (topology == 7) { /* quads -> two triangles each */
         u32 nq = count / 4;
-        const u8* src = NULL;
-        if (indexed)
-            src = indexed == 3 ? (const u8*)(dc->inline_indices + first)
-                               : gmem_ptr(ia + (u64)first * isz, (u64)count * isz);
-        u32* idx = (u32*)vk_stage((u64)nq * 24 + 4, vk_stage_align(), &ibuf, &ioff);
-        if (!idx) {
+        int made = indexed ? index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, 0, nq,
+                                           (u64)nq * 24, &ibuf, &ioff)
+                           : quad_indices(nq, &ibuf, &ioff);
+        if (!made) {
             draw_images_discard(&images);
             return;
         }
-        /* guest indices are little-endian, the inline ones host words (already widened), and what the device reads
-           is little-endian again */
-        for (u32 q = 0; q < nq; q++) {
-            u32 v[4];
-            for (int j = 0; j < 4; j++) {
-                u32 e = q * 4 + j;
-                u8 g[4] = {0};
-                if (!indexed)
-                    v[j] = first + e;
-                else if (indexed == 3)
-                    v[j] = dc->inline_indices[first + e];
-                else {
-                    if (src)
-                        memcpy(g, src + (u64)e * isz, isz);
-                    else
-                        gmem_read(ia + ((u64)first + e) * isz, g, isz);
-                    v[j] = isz == 1 ? g[0] : isz == 2 ? snx_ld_le16(g) : snx_ld_le32(g);
-                }
-            }
-            u32 t6[6] = {v[0], v[1], v[2], v[0], v[2], v[3]};
-            snx_le32_array(t6, 6);
-            memcpy(idx + q * 6, t6, 24);
-        }
+        if (!indexed) voffset = (i32)first; /* the vertex numbers count from the draw's first */
         icount = nq * 6;
-        quads_indexed = indexed;
-        indexed = 2; /* drawn indexed, with the first vertex in the indices */
+        indexed = 2; /* drawn indexed, as triangles */
     } else if (indexed) {
-        if (indexed == 3) {
-            u32* o = (u32*)vk_stage((u64)count * 4, vk_stage_align(), &ibuf, &ioff);
+        u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = ds->index.restart_index & ones;
+        u64 bytes = (u64)count * isz;
+        itype = isz == 1 ? VK_INDEX_TYPE_UINT8_KHR : isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        if (indexed == 3) { /* inline indices, host words: the guest's restart index made Vulkan's as they're copied */
+            u32* o = (u32*)vk_stage(bytes, vk_stage_align(), &ibuf, &ioff);
             if (!o) {
                 draw_images_discard(&images);
                 return;
             }
-            memcpy(o, dc->inline_indices + first, (size_t)count * 4);
-            if (restart && ds->index.restart_index != 0xFFFFFFFFu)
-                for (u32 j = 0; j < count; j++)
-                    if (o[j] == ds->index.restart_index) o[j] = 0xFFFFFFFFu;
-            snx_le32_array(o, count); /* host words, read by the device little-endian */
-            itype = VK_INDEX_TYPE_UINT32;
-        } else if (ifmt == 0) { /* 8-bit indices need an extension: widen them */
-            const u8* src = gmem_ptr(ia + first, count);
-            u16* o = (u16*)vk_stage((u64)count * 2, vk_stage_align(), &ibuf, &ioff);
-            if (!o) {
+            if (restart && ri != ones)
+                for (u32 j = 0; j < count; j++) {
+                    u32 v = dc->inline_indices[first + j];
+                    o[j] = snx_le32(v == ri ? ones : v);
+                }
+            else {
+                memcpy(o, dc->inline_indices + first, (size_t)bytes);
+                snx_le32_array(o, count); /* host words, read by the device little-endian */
+            }
+        } else if (isz == 1 && !(g_vk.has_index8 && (!ds->index.restart || (restart && ri == ones)))) {
+            /* 8-bit indices Vulkan can't read, or whose restart index the guest has elsewhere: widened to 16 bits,
+               the restart index (when on, whatever the topology) becoming 0xFFFF */
+            if (!index_convert(dc, 0, ia, 1, first, count, TC_INDEX_WIDEN8, ds->index.restart != 0, ri,
+                               (count + 1) / 2, ((u64)count + 1) / 2 * 4, &ibuf, &ioff)) {
                 draw_images_discard(&images);
                 return;
-            }
-            for (u32 j = 0; j < count; j++) {
-                u8 v = 0;
-                if (src)
-                    v = src[j];
-                else
-                    gmem_read(ia + first + j, &v, 1);
-                /* the index type's bits, as below, little-endian for the device */
-                o[j] = snx_le16(ds->index.restart && v == (ds->index.restart_index & 0xFF) ? 0xFFFF : v);
             }
             itype = VK_INDEX_TYPE_UINT16;
-        } else {
-            u32 ones = isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = ds->index.restart_index & ones;
-            u64 bytes = (u64)count * isz;
-            if (restart && ri != ones && count <= (1u << 24)) { /* the guest's restart index becomes Vulkan's */
-                u8* o = vk_stage(bytes, vk_stage_align(), &ibuf, &ioff);
-                if (!o) {
-                    draw_images_discard(&images);
-                    return;
-                }
-                gmem_read(ia + (u64)first * isz, o, bytes);
-                for (u32 j = 0; j < count; j++)
-                    if (isz == 2 && snx_ld_le16(o + (u64)j * 2) == ri)
-                        memset(o + (u64)j * 2, 0xFF, 2);
-                    else if (isz == 4 && snx_ld_le32(o + (u64)j * 4) == ri)
-                        memset(o + (u64)j * 4, 0xFF, 4);
-            } else if (!vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
+        } else if (isz != 1 && restart && ri != ones && count <= (1u << 24)) { /* the restart index becomes Vulkan's */
+            u32 n = isz == 2 ? (count + 1) / 2 : count;
+            if (!index_convert(dc, 0, ia, isz, first, count, isz == 2 ? TC_INDEX_RESTART16 : TC_INDEX_RESTART32, 0,
+                               ri, n, (u64)n * 4, &ibuf, &ioff)) {
                 draw_images_discard(&images);
                 return;
             }
-            itype = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+        } else if (!vk_buf_get_input(ia + (u64)first * isz, bytes, isz, &ibuf, &ioff)) {
+            draw_images_discard(&images);
+            return;
         }
     }
 
@@ -3233,9 +3285,7 @@ retry:
     pred_begin(cb, o->pred);
     if (indexed) {
         rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
-        /* quads made from guest indices keep the base vertex, quads made from vertex numbers have it in them */
-        rec_CmdDrawIndexed(cb, icount, instances, 0, indexed == 2 && !quads_indexed ? 0 : (i32)base_vertex,
-                         base_instance);
+        rec_CmdDrawIndexed(cb, icount, instances, 0, voffset, base_instance);
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
