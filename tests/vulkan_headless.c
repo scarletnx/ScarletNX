@@ -1290,6 +1290,7 @@ static int check_rt_overlap(void) {
 }
 
 #include "vulkan_shader_invalidate.inc"
+#include "vulkan_index_draws.inc"
 #include "vulkan_storage_formats.inc"
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_surface_loads.inc"
@@ -1331,6 +1332,7 @@ int main(int argc, char** argv) {
     CHECK(!check_volume_surface_atomics());
     CHECK(!check_layered_surface_loads());
     CHECK(!check_viewport_orientation());
+    CHECK(!check_index_draws());
     CHECK(!check_mesh_inputs());
     CHECK(!check_targetless_stores());
     CHECK(!check_packed_depth());

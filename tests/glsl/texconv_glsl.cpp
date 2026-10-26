@@ -268,6 +268,72 @@ static void dma_remaps() {
     }
 }
 
+// the 3D engine's index buffers Vulkan can't read (vk/render.c's index_convert) against render.c's CPU conversions
+// before they moved to the GPU: quads from 8, 16 and 32-bit indices and from vertex numbers, 8-bit indices widened
+// with and without their restart index, 16 and 32-bit restart indices made all ones; odd counts, inputs and outputs
+// that start past the bound offset, and more elements than a row of units (gl_GlobalInvocationID.y counts rows; 0: n)
+static void index_case(uint32_t mode, uint32_t remap, uint32_t count, uint32_t units) {
+    uint32_t isz = mode == 34 ? 1 : mode == 35 ? 2 : mode == 36 ? 4 : remap ? remap : 4, in_bias = 4 * (random_word() % 4);
+    uint32_t n = mode == 37 ? count / 4 : mode == 36 ? count : (count + 1) / 2, out_bias = random_word() % 5;
+    std::vector<uint8_t> inb(in_bias + (count * isz + 3) / 4 * 4);
+    for (auto& b : inb) b = (uint8_t)(random_word() % 6 == 0 ? 0xFF : random_word() % 12); // restart indices often
+    uint32_t ri = mode == 37 ? 0 : inb[in_bias] | (isz > 1 ? 0xFFu << 8 : 0) | (isz > 2 ? 0xFFFF0000u : 0);
+    if (mode == 34 && random_word() % 3 == 0) ri = 0xFF;
+    if (isz > 1 && mode != 37) // the restart index somewhere in the buffer
+        std::memcpy(&inb[in_bias + isz * (random_word() % count)], &ri, isz);
+    std::vector<uint32_t> want(out_bias + (mode == 37 ? 6 * n : n), 0xDEADBEEFu);
+    const uint8_t* ib = &inb[in_bias];
+    for (uint32_t j = 0; j < count; j++) {
+        uint32_t v = mode == 37 && !remap ? j : le_bytes(ib + j * isz, isz);
+        if (mode == 37) {
+            if (j / 4 >= n) continue;
+            static const uint32_t at[4][2] = {{0, 3}, {1, 1}, {2, 4}, {5, 5}}; // where each corner goes: 0 1 2 0 2 3
+            want[out_bias + 6 * (j / 4) + at[j & 3][0]] = v;
+            want[out_bias + 6 * (j / 4) + at[j & 3][1]] = v;
+        } else if (mode == 36)
+            want[out_bias + j] = v == ri ? 0xFFFFFFFFu : v;
+        else {
+            uint32_t w = (mode == 34 ? remap && v == (ri & 0xFF) : v == (ri & 0xFFFF)) ? 0xFFFFu : v;
+            uint32_t& d = want[out_bias + j / 2];
+            d = j & 1 ? (d & 0xFFFFu) | w << 16 : w;
+        }
+    }
+    std::vector<glsl::leuint> in(inb.size() / 4), out(want.size(), 0xDEADBEEFu);
+    std::memcpy(in.data(), inb.data(), inb.size());
+    if (!units) units = n; // one row
+    uint32_t rows = (n + units - 1) / units;
+    glsl::dispatch<Conv>(glsl::uvec3((units + 63) / 64, rows, 1), glsl::uvec3(64, 1, 1), [&](Conv& c) {
+        c.mode = mode;
+        c.units = units;
+        c.rows = rows;
+        c.in_bias = in_bias;
+        c.out_bias = out_bias;
+        c.remap = remap;
+        c.const_a = mode == 34 ? ri & 0xFF : mode == 35 ? ri & 0xFFFF : ri;
+        c.line_out = n;
+        c.src = in.data();
+        c.dst = out.data();
+    });
+    for (uint32_t i = 0; i < want.size(); i++) {
+        // an odd count's last pair has a high half that no index is drawn from: only its low half counts
+        uint32_t mask = mode != 36 && mode != 37 && count % 2 && i == want.size() - 1 ? 0xFFFFu : ~0u;
+        CHECK(((uint32_t)out[i] & mask) == (want[i] & mask), "index mode %u remap %u count %u word %u: %08x, not %08x",
+              mode, remap, count, i, (uint32_t)out[i], want[i]);
+    }
+}
+static void index_buffers() {
+    for (int i = 0; i < 300; i++) {
+        uint32_t count = 1 + random_word() % 300, units = random_word() % 2 ? 0 : 1 + random_word() % 70;
+        index_case(34, random_word() % 2, count, units);
+        index_case(35, 0, count, units);
+        index_case(36, 0, count, units);
+        if (count >= 4) {
+            static const uint32_t sizes[4] = {0, 1, 2, 4};
+            index_case(37, sizes[random_word() % 4], count, units);
+        }
+    }
+}
+
 static void depth_float() {
     Conv c;
     for (uint32_t z = 0; z < 1u << 24; z++) {
@@ -430,6 +496,7 @@ int main() {
     vi_frames();
     nv12_uv();
     dma_remaps();
+    index_buffers();
     depth_float();
     halves();
     rgb32f();

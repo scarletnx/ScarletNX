@@ -62,7 +62,7 @@ typedef struct {
        asks for it (experimental): FFmpeg's Vulkan decoder decodes on it (vk/nvdec.c), told of the device by the
        extensions and features enabled */
     u32 video_family;
-    const char* dev_ext[32];
+    const char* dev_ext[40];
     u32 dev_ext_n;
     VkPhysicalDeviceFeatures2 feat2; /* feat, with the 1.1 to 1.3 features enabled chained */
     VkPhysicalDeviceVulkan11Features feat11;
@@ -117,6 +117,8 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
+    /* VK_KHR_index_type_uint8 (or the EXT before it): 8-bit index buffers bound as they are */
+    int has_index8;
     /* VK_KHR_present_id and VK_KHR_present_wait: presents carry ids, and display.c learns when each is displayed */
     int has_present_wait;
     /* VK_KHR_present_id2, VK_KHR_present_wait2 and VK_EXT_present_timing's presentAtAbsoluteTime (with
@@ -713,6 +715,11 @@ int vk_tc_dma_remap(VkCommandBuffer cb, const GpuDmaOp* o, u32 lines, VkBuffer i
    GpuBlit's (GPU_BLIT_FLOAT). in is bound from 0. 0 past the device's limits */
 int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer in, u64 in_size, u64 src_at,
                u32 in_pitch, u64 col_at, u64 row_at, VkBuffer out, u64 out_at, u32 out_pitch);
+/* index buffers Vulkan can't read (texconv_modes.glsl's TC_INDEX_*): n elements (index pairs, indices or quads) from
+   in_size bytes at in_at in in into out_size bytes at out_at in out, with the guest's restart index restart and
+   remap as the mode says (offsets multiples of 4; in_size 0 binds a word). 0 past the device's limits */
+int vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkBuffer in, u64 in_at, u64 in_size,
+                VkBuffer out, u64 out_at, u64 out_size);
 int vk_tc_vi_converts(u32 fmt);
 VkTcShape vk_tc_vi_shape(u32 fmt, u32 w);
 int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, u64 in_at, u32 in_pitch, VkBuffer out,

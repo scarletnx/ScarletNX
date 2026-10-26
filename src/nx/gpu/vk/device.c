@@ -294,6 +294,7 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
+    const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
@@ -321,6 +322,10 @@ static int create_device(void) {
         video_exts = snx_vk_extensions_has(&e, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME) +
                      snx_vk_extensions_has(&e, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+        if (snx_vk_extensions_has(&e, VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME))
+            index8_ext = VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME;
+        else if (snx_vk_extensions_has(&e, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME))
+            index8_ext = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
         has_present_id = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_ID_EXTENSION_NAME);
         has_present_wait = !g_opt_headless && snx_vk_extensions_has(&e, VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
         if (!g_opt_headless && g_vk.has_surface_caps2)
@@ -385,6 +390,8 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceProvokingVertexFeaturesEXT qprov = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
+    VkPhysicalDeviceIndexTypeUint8FeaturesKHR qindex8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
     VkPhysicalDevicePresentIdFeaturesKHR qpid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
@@ -410,6 +417,7 @@ static int create_device(void) {
                            g_vk.has_local_read ? &qlocal : NULL,
                            has_cond ? &qcond : NULL,
                            has_provoking ? &qprov : NULL,
+                           index8_ext ? &qindex8 : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
                            robustness ? &qpipeline : NULL,
@@ -429,6 +437,7 @@ static int create_device(void) {
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
+    g_vk.has_index8 = index8_ext && qindex8.indexTypeUint8;
     /* the dynamic state and the barriers within a pass only serve feedback loops */
     g_vk.has_feedback = g_vk.has_feedback && qloop.attachmentFeedbackLoopLayout;
     g_vk.has_feedback_dynamic =
@@ -563,6 +572,13 @@ static int create_device(void) {
     if (g_vk.has_provoking_last) {
         chain = &fprov;
         ext[next++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
+    }
+    /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
+    VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = chain, .indexTypeUint8 = VK_TRUE};
+    if (g_vk.has_index8) {
+        chain = &findex8;
+        ext[next++] = index8_ext;
     }
     /* when each present is displayed (display.c), which the game's pace goes by */
     VkPhysicalDevicePresentIdFeaturesKHR fpid = {

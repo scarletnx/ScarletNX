@@ -550,9 +550,49 @@ uint tc_remap_byte(uint ob, uint in_line, uint old) {
     return old;
 }
 
+/* TC_INDEX_QUADS: index j of the input, of remap bytes (in_bias a multiple of 4), or j itself with remap 0 */
+uint tc_index(uint j) {
+    uint w = in_bias >> 2;
+    if (remap == 1u) return tc_src_byte(in_bias + j);
+    if (remap == 2u) return (src[w + (j >> 1)] >> (16u * (j & 1u))) & 0xFFFFu;
+    if (remap == 4u) return src[w + j];
+    return j;
+}
+
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
+    if (mode >= TC_INDEX_WIDEN8 && mode <= TC_INDEX_QUADS) {
+        uint e = gl_GlobalInvocationID.y * units + u, w = in_bias >> 2;
+        if (e >= line_out) return;
+        if (mode == TC_INDEX_QUADS) {
+            uint o = out_bias + 6u * e, v0 = tc_index(4u * e), v2 = tc_index(4u * e + 2u);
+            dst[o] = v0;
+            dst[o + 1u] = tc_index(4u * e + 1u);
+            dst[o + 2u] = v2;
+            dst[o + 3u] = v0;
+            dst[o + 4u] = v2;
+            dst[o + 5u] = tc_index(4u * e + 3u);
+        } else if (mode == TC_INDEX_RESTART32) {
+            uint v = src[w + e];
+            dst[out_bias + e] = v == const_a ? 0xFFFFFFFFu : v;
+        } else {
+            uint lo, hi;
+            if (mode == TC_INDEX_WIDEN8) {
+                lo = tc_src_byte(in_bias + 2u * e);
+                hi = tc_src_byte(in_bias + 2u * e + 1u);
+            } else {
+                lo = src[w + e] & 0xFFFFu;
+                hi = src[w + e] >> 16;
+            }
+            if (mode == TC_INDEX_RESTART16 || remap != 0u) { /* branches on uniform values only, then selects */
+                lo = lo == const_a ? 0xFFFFu : lo;
+                hi = hi == const_a ? 0xFFFFu : hi;
+            }
+            dst[out_bias + e] = lo | (hi << 16);
+        }
+        return;
+    }
     if (mode == TC_BLIT) {
         uint line = gl_GlobalInvocationID.y, at = out_bias + line * out_pitch + u, w = dst[at], r = 0u;
         uint row = in_bias + src[const_b + line] * in_pitch;
