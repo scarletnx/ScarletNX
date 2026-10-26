@@ -586,7 +586,7 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 ## Settings / input
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
+Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `upscaler`, `upscaler_sharpness`, `memory_gb`, `memory_fit`, `heap_max_mb`,
 `thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
@@ -608,6 +608,8 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `shadows` | `1` | `0` skips shadow maps |
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
+| `upscaler` | `auto` | The spatial filter that grows the presented frame to the window: `auto` picks `fsr1` on AMD, Intel and other GPUs, `nis` on NVIDIA and `sgsr` on a phone known to run it well; `off` (`None`) blits the frame as it is, `bilinear` blits it softly, and `fsr1`, `nis` and `sgsr` name a filter. Auto runs one only above 1.3x each axis, so a 1:1 frame pays nothing. A filter's output keeps the frame's aspect and letterbox, and the on-screen controls keep their own resolution |
+| `upscaler_sharpness` | `25` | The upscaler's sharpening, `0` the sharpest and `100` the softest. `None` and `Bilinear` leave it out |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
 | `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
@@ -708,7 +710,9 @@ pad.
 
 F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Pause pauses the whole game and resumes it (the window's title says "(paused)");
+fullscreen; F12 stats on and off; Ctrl+U cycles the spatial upscaler through AMD FSR 1, Bilinear, NVIDIA NIS,
+Qualcomm SGSR and None (Auto enters the cycle at FSR 1); Pause pauses the whole game and resumes it (the window's title
+says "(paused)");
 Escape quit. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
 the pace `fps_limit` sets.
 

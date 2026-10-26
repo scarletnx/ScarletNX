@@ -142,6 +142,8 @@ typedef struct Renderer {
     /* RendererPrepare's progress, any thread. What isn't done when the game starts goes on in the background. NULL when
        the renderer makes nothing before */
     void (*prepare)(RendererPrepare* p);
+    /* the live spatial upscaler cycle (backend/sdl3.c's Ctrl+U): its label now, or NULL when there is none */
+    const char* (*cycle_upscale)(void);
 } Renderer;
 
 extern const Renderer vk_renderer;

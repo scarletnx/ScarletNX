@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/upscale.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -92,6 +93,7 @@ static int vkr_start(void) {
     if (!vk_init()) return 0;
     g_vk_scale = g_settings.resolution_scale;       /* the .ini keeps resolution within 0.25 to 4 (options.c) */
     g_vk_anisotropy = g_settings.anisotropic_filtering; /* the sampler table keeps what it makes: anisotropy applies at start */
+    vk_upscale_configure(snx_upscale_parse(g_settings.upscaler), g_settings.sharpness);
     if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
         LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
@@ -239,6 +241,8 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
         if (!g_cpu_img) return NULL;
         g_cpu_img->w = g_cpu_img->sw = w;
         g_cpu_img->h = g_cpu_img->sh = h;
+        g_cpu_img->levels = 1;
+        g_cpu_img->type = VK_IMAGE_VIEW_TYPE_2D;
         g_cpu_img->f = vk_rt_format(0xD5); /* RGBA8 */
         g_cpu_img->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -249,7 +253,8 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
                                 .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT,
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                         VK_IMAGE_USAGE_SAMPLED_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (!VK_OK(vmaCreateImage(g_vk.vma, &ii, &aci, &g_cpu_img->img, &g_cpu_img->mem, NULL))) {
@@ -339,6 +344,17 @@ static void flip_src(VkImageBlit* b, u32 transform) {
         b->srcOffsets[1].y = y;
     }
 }
+/* a source image's crop to the window's rectangle, in guest order flipped as the frame's transform says */
+static void present_blit(VkCommandBuffer cb, VkImage img, u32 x, u32 y, u32 w, u32 h, VkImage sc, i32 dx, i32 dy,
+                         u32 dw, u32 dh, u32 transform, VkFilter filter) {
+    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
+    flip_src(&blit, transform);
+    rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                     filter);
+}
 
 #if defined(SNX_TRACY)
 /* The heap the caches manage, as vk_mem_use reads it for their own trimming, in bytes (the plot is a Memory one). */
@@ -398,9 +414,6 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
             wait = acq;
             signal = g_vk.sc_done[idx];
             VkImage sc = g_vk.sc_images[idx];
-            if (src)
-                vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                            VK_ACCESS_2_TRANSFER_READ_BIT);
             /* the submit waits for the acquire at the clear, the image's first use */
             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_CLEAR_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                        VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -431,14 +444,37 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                     dw = (u32)((u64)ch * fw / fh);
                 }
                 i32 dx = (i32)(cx + (cw - dw) / 2), dy = (i32)(cy + (ch - dh) / 2);
-                VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                    .srcOffsets = {{(i32)g_last_x, (i32)g_last_y, 0},
-                                                   {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
-                                    .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                    .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
-                flip_src(&blit, transform); /* render targets stay in guest order */
-                rec_CmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                int filter = vk_upscale_pick(fw, fh, dw, dh, transform);
+                if (filter > SNX_UPSCALE_BILINEAR) {
+                    VkComponentMapping identity = {0};
+                    /* the filter works in the space the final blit leaves: sRGB frames are sampled through their
+                       sRGB view (linear), and the blit to an sRGB swapchain encodes once; an sRGB frame shown on a
+                       non-sRGB swapchain keeps its encoded bytes, and so does a CPU frame */
+                    VkImageView src_view =
+                        vk_tex_view(src, VK_IMAGE_VIEW_TYPE_2D, is_srgb(src->f.vk) && g_vk.sc_srgb, &identity, 0);
+                    VkImage up_img = VK_NULL_HANDLE;
+                    VkImageView up_view = VK_NULL_HANDLE;
+                    int done = 0;
+                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                    if (src_view)
+                        done = vk_upscale_process(cb, src_view, src->sw, src->sh, g_last_x, g_last_y, g_last_w,
+                                                  g_last_h, transform, dw, dh, filter, g_settings.sharpness,
+                                                  &up_img, &up_view);
+                    if (done)
+                        present_blit(cb, up_img, 0, 0, dw, dh, sc, dx, dy, dw, dh, 0, VK_FILTER_NEAREST);
+                    else { /* the filter could not run: the plain blit still shows the frame */
+                        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                    VK_ACCESS_2_TRANSFER_READ_BIT);
+                        present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh,
+                                     transform, VK_FILTER_LINEAR);
+                    }
+                } else {
+                    vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT);
+                    present_blit(cb, src->img, g_last_x, g_last_y, g_last_w, g_last_h, sc, dx, dy, dw, dh, transform,
+                                 VK_FILTER_LINEAR);
+                }
             }
             {
                 int safe[4] = {(int)cx, (int)cy, (int)cw, (int)ch};
@@ -655,6 +691,9 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }
+
+/* Ctrl+U: the live spatial upscaler cycle */
+static const char* vkr_cycle_upscale(void) { return snx_upscale_label(vk_upscale_cycle()); }
 
 /* The last frame again, under the controls and the menu, while the game shows none: a game loading, stuck, or drawing
    nothing still has them. Not before a quarter second without a frame (a slow game's own come between), at 30 a second
@@ -881,5 +920,6 @@ const Renderer vk_renderer = {
     .save = vk_pipeline_save,
     .release_window = vk_window_release,
     .prepare = vk_pipeline_prepare,
+    .cycle_upscale = vkr_cycle_upscale,
 };
 const Renderer* g_renderer = &vk_renderer;

@@ -20,8 +20,9 @@ static GuiSetting* row(GuiSettings* s, const char* section, const char* key, con
     k->words = words;
     k->type = type;
     k->at = type == GUI_KEY_WORD ? (size_t)((char*)&v->word - (char*)s->values)
-                                 : (size_t)((char*)v->text - (char*)s->values);
-    k->size = type == GUI_KEY_WORD ? sizeof v->word : sizeof v->text;
+           : type == GUI_KEY_NUMBER ? (size_t)((char*)&v->number - (char*)s->values)
+                                    : (size_t)((char*)v->text - (char*)s->values);
+    k->size = type == GUI_KEY_WORD ? sizeof v->word : type == GUI_KEY_NUMBER ? sizeof v->number : sizeof v->text;
     k->max = 0;
     v->key = key;
     return v;
@@ -118,6 +119,12 @@ int gui_settings_read(GuiSettings* s, const char* runtime) {
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
         v->fallback = v->def = field[2];
+        if (!strcmp(v->key, "upscaler_sharpness")) { /* the one number row drawn as a bar (upscaler's sharpness) */
+            s->keys[s->count - 1].type = GUI_KEY_NUMBER;
+            s->keys[s->count - 1].max = 100;
+            s->keys[s->count - 1].at = (size_t)((char*)&v->number - (char*)s->values);
+            v->number = (uint32_t)strtoul(field[2], NULL, 10);
+        }
         for (w = 1; words && words[w]; ++w) /* the word of the default's value */
             if (!strcmp(values ? values[w] : words[w], field[2])) v->fallback = words[w];
         if (page) {
@@ -133,11 +140,17 @@ void gui_settings_free(GuiSettings* s) {
     free(s->keys);
     memset(s, 0, sizeof *s);
 }
-/* row i's value as a file of picks keeps it: a word row's value (.ini for none), a typed row's text */
+/* row i's value as a file of picks keeps it: a word row's value (.ini for none), a typed row's text, a number row's
+   number */
 static const char* kept(const GuiSettings* s, int i) {
     const GuiSetting* v = &s->values[i];
+    static char number[16];
     if (s->keys[i].type == GUI_KEY_ACTION) return "";
     if (s->keys[i].type == GUI_KEY_TEXT) return v->text;
+    if (s->keys[i].type == GUI_KEY_NUMBER) {
+        snprintf(number, sizeof number, "%lu", (unsigned long)v->number);
+        return number;
+    }
     return v->values && v->word ? v->values[v->word] : s->keys[i].words[v->word];
 }
 /* row i set to value, a value of its words or a text: 1 when it did */
@@ -249,6 +262,8 @@ int gui_settings_changed(const GuiSettings* s) {
 static const char* picked(const GuiSettings* s, int i) {
     const GuiSetting* v = &s->values[i];
     if (s->keys[i].type == GUI_KEY_WORD) return v->word ? kept(s, i) : NULL;
+    if (s->keys[i].type == GUI_KEY_NUMBER)
+        return v->number != (uint32_t)strtoul(v->fallback ? v->fallback : "", NULL, 10) ? kept(s, i) : NULL;
     return s->keys[i].type == GUI_KEY_TEXT && v->text[0] ? v->text : NULL;
 }
 int gui_settings_set(GuiSettings* s, const char* key, const char* value) {
@@ -317,6 +332,10 @@ void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
 const char* gui_settings_value(const GuiSettings* s, const char* key) {
     int i = find(s, key);
     return i < s->count ? picked(s, i) : NULL;
+}
+int gui_settings_upscaler_sharpness(const GuiSettings* s) {
+    const char* value = gui_settings_value(s, "upscaler");
+    return !value || (strcmp(value, "off") && strcmp(value, "none") && strcmp(value, "bilinear"));
 }
 /* one of the launcher's own rows turned on (its value "on"), as its file of picks keeps it */
 static int own_on(const GuiSettings* s, const char* key) {
