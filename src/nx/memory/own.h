@@ -44,8 +44,8 @@ int own_begin(u64 addr, u64 size, void* res, u64 res_off);
    than max when they didn't all fit). With the producer's lock held, as the resources live while it is */
 u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max);
 /* the CPU's bytes of [addr, addr + size) copied to dst without touching a trapped page (read through the pool's
-   mirror), and its owned parts (clipped, in address order) in out, whose bytes in dst are stale: the caller copies
-   them from their resources over dst there. How many owned parts there are; more than max when they didn't fit, and
+   mirror), and its owned parts (clipped, in address order) in out, whose bytes in dst are left as they were: the
+   caller copies them from their resources over dst there. How many owned parts there are; more than max when they didn't fit, and
    nothing was copied then. With the producer's lock held, as own_lookup */
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max);
 /* change detection over [addr, addr + size) without touching it: 1 when GPU-owned bytes are on its pages, which must
