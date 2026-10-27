@@ -4217,9 +4217,18 @@ static void render_addons(App* app) {
     over_box(app, d.box, title);
     ui_addons_draw(app, d.rects, app->scale, d.lists);
 }
-/* what is picked kept as the game's addons=, mods_off= and cheats_off=: 1, else 0 with app->message saying why. The
-   picked
-   update's program, absolute and owned, in *program when it is not NULL (NULL with no update picked) */
+/* the picked update's program, absolute and owned; NULL with no update picked */
+static char* addons_program(const App* app) {
+    char* program = NULL;
+    for (size_t i = 0; i < app->addons.count; ++i)
+        if (app->addons_checked[i] && addon_kind(app, i) == SNX_ADDON_UPDATE) {
+            free(program);
+            program = snx_absolute(app->addons.paths[i]);
+        }
+    return program;
+}
+/* what is picked kept as the game's addons=, mods_off= and cheats_off=: 1, else 0 with app->message saying why. Once
+   kept, the picked update's program in *program when it is not NULL (addons_program) */
 static int addons_save(App* app, char** program) {
     char *folder, *name, *ini, *text, *off = snx_strdup(""), *cheats_off = snx_strdup("");
     SnxAddon* list = (SnxAddon*)calloc(app->addons.count + 1, sizeof *list);
@@ -4228,10 +4237,7 @@ static int addons_save(App* app, char** program) {
     if (program) *program = NULL;
     addons_where(app, &folder, &name);
     for (i = 0; list && i < app->addons.count; ++i)
-        if (app->addons_checked[i]) {
-            snprintf(list[count++].entry, sizeof list->entry, "%s", addon_entry(app, i));
-            if (program && addon_kind(app, i) == SNX_ADDON_UPDATE) *program = snx_absolute(app->addons.paths[i]);
-        }
+        if (app->addons_checked[i]) snprintf(list[count++].entry, sizeof list->entry, "%s", addon_entry(app, i));
     for (i = 0; i < app->mods_count; ++i)
         if (!app->mods_on[i]) {
             char* more = snx_format("%s%s%s", off, off[0] ? "/" : "", app->mods[i]);
@@ -4251,7 +4257,8 @@ static int addons_save(App* app, char** program) {
     if (!saved) {
         snprintf(app->message, sizeof app->message, snx_tr("Not saved: %s could not be written"), ini);
         say_failure(app, app->message);
-    }
+    } else if (program)
+        *program = addons_program(app);
     free(off);
     free(cheats_off);
     free(text);
@@ -4590,17 +4597,29 @@ static void addons_picked(App* app, const char* picked, const char* error, bool 
 }
 static void launch(App* app, char* absolute, bool prepared);
 static void states_open(App* app, const char* game, const char* title);
+/* the box closed and its game played (or recompiled, in the box R opened) through the driver from program, owned: the
+   picked update's (addons_program), else with NULL the game's own. A mod's exefs/ changes the program, which the driver
+   recompiles before it plays */
+static void addons_play(App* app, char* program) {
+    int selected = app->menu.selected;
+    bool recompile = app->recompile;
+    if (!program) program = snx_absolute(app->addons_game);
+    app->recompile = app->addons_recompile;
+    addons_close(app);
+    app->menu.selected = GUI_SWITCH;
+    launch(app, program, true);
+    if (!app->menu.running) app->menu.selected = selected;
+    app->recompile = recompile;
+}
 /* row pressed: an update picked (the others not: one runs at a time), No update, a DLC's, a mod's or a cheat's box
    checked or not; Add Mod or Add Cheats, the picker, whose folder or file goes into the mods or cheats folder (mod_add,
    cheats_add); Open Mods Folder or Open Cheats Folder, the folder opened; Open Folder, its page of the game's other
    folders, one opened as it is pressed there; Clean Cache, the caches' deletion asked; Save, the picks kept and the box
-   closed; or Play, the picks kept and the game played (or recompiled) through the driver, from the picked update's
-   program. A mod's exefs/ changes the program, which the driver recompiles before it plays */
+   closed; or Play, the picks kept and the game played (addons_play) */
 static void addons_press(App* app, int row) {
-    int item, selected = app->menu.selected;
+    int item;
     size_t i;
     char* path;
-    bool recompile = app->recompile;
     if (app->addons_folders_shown) {
         addons_folder_press(app, row);
         return;
@@ -4667,13 +4686,7 @@ static void addons_press(App* app, int row) {
         addons_close(app);
         return;
     }
-    if (!path) path = snx_absolute(app->addons_game);
-    app->recompile = app->addons_recompile;
-    addons_close(app);
-    app->menu.selected = GUI_SWITCH;
-    launch(app, path, true);
-    if (!app->menu.running) app->menu.selected = selected;
-    app->recompile = recompile;
+    addons_play(app, path);
 }
 /* a key on the box: Up and Down move, Select presses the row, Back closes it, nothing kept */
 static void addons_key(App* app, GuiKey key) {
