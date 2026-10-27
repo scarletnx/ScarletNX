@@ -10,6 +10,7 @@
   * [NRO applications](#nro-applications)
 * [GDB (Linux)](#gdb-linux)
   * [GDB through the MCP server](#gdb-through-the-mcp-server)
+* [Games through the MCP server](#games-through-the-mcp-server)
 * [Headless Vulkan / lavapipe](#headless-vulkan--lavapipe)
 * [AppImage / display](#appimage--display)
 * [Folders](#folders)
@@ -417,6 +418,40 @@ RelWithDebInfo build, not one built with `-g0`).
 - `gdb_memory` reads guest memory. A page the GPU holds can't be read until the game's CPU
   touches it.
 - `gdb_detach` lets the game run on without the debugger.
+
+### Games through the MCP server
+
+`scarletnx --mcp` also lists, builds and runs the games under its data folder. These tools stay under that data folder
+(and its state, config and cache folders), and none of them changes a game's `.ini` selections: the update, DLCs, mods
+and cheats are choices of the call.
+
+- `game_info` names a game by its title ID, its folder under the data folder, a program in it, or the name `-r` gave it.
+  It returns the folder, program, data folder, version, log and `.ini`, whether the current build is ready to run, the
+  updates and DLCs (entry, title ID, version, installed, built, current), and the mods and cheats with whether the
+  `.ini` enables each. `current` is the `.ini`'s selection; a run can choose another.
+- `game_recompile` builds a game or one of its updates with the mods named. `update` is `current`, `latest`, `none` (the
+  base game), an update entry or its title ID; `mods` is `current`, `all`, `none`, or the mods the build plays. The
+  per-call `--mods_off` reaches the recompiler as its `mods_off` setting, so the build's stamp matches the run without
+  changing the `.ini`. `force` rebuilds, and `dry_run` returns the command. A build with the program, code and ABI/mods
+  stamp already there is `up_to_date`. A game is rebuilt in its own folder from what its `_data` keeps; an update is
+  only built from its dump, the source its `.ini` names. A `work/` extraction has no data folder yet: build it from its
+  dump first (`scarletnx <dump>`), then this tool builds the game folder it made.
+- `game_run` runs the game unattended, once or up to 20 times. `update`, `dlcs`, `mods` and `cheats` choose what this
+  run plays; `dlcs` takes entries or title IDs, and `mods`/`cheats` take names or `current`, `all`, `none`. The script is
+  empty unless `script` names one (the `tools/run_game.py` Catherine sequence is not hidden here).
+  `seconds` is the runtime's timed exit, and `timeout` (default `2*seconds+60`) kills a run that hangs before it.
+  `runtime` is `current` (this build, with `--game=<program>`) or `game` (the copy in the game's folder); `headless` is
+  on by default. `state_save`/`state_load` pass the runtime's timed state commands, and `settings` is an object of
+  runtime setting names and values for this run only.
+- A run writes `runN.log`, the game log's snapshot `runN.game.log`, and, with `shot` on (the default), the last frame as
+  `runN.ppm`. The answer gives each run's exit, crash (signal, game pc and lr), svcBreak reason, frames and average FPS,
+  the output log's path and the screenshot's path and pixel hash. Screenshots are PPM: no Pillow is needed.
+- `out` is a folder under the data folder or its cache folder; without one the run goes in
+  `cache/mcp-runs/<name>-<time>-<n>`. `dry_run` returns the command without creating anything.
+- `build_info` says which build this is, its commit and ABI, and whether it has the Tracy profiler and GDB tools.
+  `tracy=capture` or `tracy=client` is refused, with the reason, by a build without Tracy.
+- A selected program that is missing, or whose code or ABI/mods stamp is stale, makes `game_run` stop with the
+  `game_recompile` call to make. `game_run` never recompiles by itself.
 
 ## Headless Vulkan / lavapipe
 

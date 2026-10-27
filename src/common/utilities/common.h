@@ -265,6 +265,9 @@ int snx_run(const char* const* argv, const char* cwd, const char* home, char** o
 /* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is */
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
                     void* data);
+/* snx_run ending the child after timeout_ms (0: no limit); *timed_out is 1 when it did. The exit is 124 then */
+int snx_run_timed(const char* const* argv, const char* cwd, const char* home, char** output, int timeout_ms,
+                  int* timed_out);
 /* Foreground workflow stage with inherited stdio, interruption forwarding and diagnostics.
    A stopped POSIX child is aborted so a rerun can restart that stage. Not thread safe. */
 int snx_run_stage(const char* const* argv, const char* cwd, const char* stage);

@@ -9,6 +9,10 @@
      large one.
    - find_game: the games the data folder holds: the extractions in its work/ folders and the games made in its
      recompiled/ and games/ libraries, with their title IDs and versions.
+   - game_info: one game's updates, DLCs, mods and cheats, what is current, and whether its build can run.
+   - build_info: this program's build, ABI and the debuggers it has (Tracy, GDB).
+   - game_recompile: build one game or one of its updates, with per-call mods, without changing its .ini.
+   - game_run: an unattended run with per-run update, DLCs, mods and cheats, logs and the last frame.
    - state_info: a recompiled game's save states (common/utilities/state_header.h): each one's slot, program, when it
      was saved, the play time then, the runtime and stamp that saved it, and whether this build can load it.
    - symbolize: game addresses (a backtrace's, a crash report's) named by the game's symbols, as tools/symbols.py does.
@@ -19,7 +23,8 @@
    - gdb_attach, gdb_command, gdb_threads, gdb_guest, gdb_memory, gdb_detach (mcp_gdb.c, UNIX only): GDB on a game
      started with the GDB stub, the runtime's process read and driven through it.
 
-   scan_log, read_log, symbolize and disassemble read only under ScarletNX's own folders on this machine: the data
+   scan_log, read_log, symbolize and disassemble read only under ScarletNX's own folders on this machine, and the game
+   tools work only there too: the data
    folder (DIR, else snx_data_dir's) with its state, cache and settings folders, the folders each of its games keeps
    its own files in, and the work folders its extractions live in. A game's log, settings and caches are stored
    wherever the game's <name>.folders redirects them, which is rarely the data folder itself. The edenprobe tools work
@@ -28,8 +33,10 @@
    commands, none that runs a shell or a script or writes a file, though print and call evaluate the game's own
    functions.
 
-   A game's code goes to the agent's context the way a session's tools/disasm.py output does, and nowhere else. An
-   answer is cut at MAX_LINES lines: the agent's context is the scarce part */
+   game_recompile and game_run write under ScarletNX's data folder or its cache folder, and game_run's process is the
+   game's own runtime with a per-run command line: its .ini's selections are never rewritten. A game's code goes to the agent's context the
+   way a session's tools/disasm.py output does, and nowhere else. An answer is cut at MAX_LINES lines: the agent's
+   context is the scarce part */
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
@@ -64,11 +71,11 @@ typedef struct {
 } Game;
 
 typedef struct {
-    char* data;             /* the data folder */
-    char** roots;           /* the folders the tools read under (readable), this many of them */
-    char* works[2];         /* the extractions: the cache's work/, then an older version's in the data folder */
-    char* self;             /* this program, which edenprobe_run recompiles and runs edenprobe with */
-    char* cache;            /* the data folder's cache folder, where edenprobe_run keeps its recompile */
+    char* data;     /* the data folder */
+    char** roots;   /* the folders the tools read under (readable), this many of them */
+    char* works[2]; /* the extractions: the cache's work/, then an older version's in the data folder */
+    char* self;     /* this program, which edenprobe_run recompiles and runs edenprobe with */
+    char* cache;    /* the data folder's cache folder, where edenprobe_run keeps its recompile */
     int nroots, roots_cap;
     /* the last game symbolize or disassemble loaded, kept for the next call: an agent asks about one game many times,
        and loading one takes a second or more. game_folder NULL for none */
@@ -428,7 +435,7 @@ static void title_id_text(SnxU64 title, char* out) {
     for (k = 0; out[k]; k++) out[k] = (char)toupper((unsigned char)out[k]);
 }
 /* the recompiled games, or only title_id's, into list, beside the extractions of work/ */
-static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list);
+static void find_recompiled(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list);
 
 /* every extracted game, or only title_id's, as {path, title_id, version} into list */
 /* the save states of the recompiled game title_id, in the data folder's games/ or recompiled/ (state_header.h) */
@@ -504,7 +511,7 @@ static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_
         }
         snx_free_strings(names, count);
     }
-    find_recompiled(m, title_id, list);
+    find_recompiled(m, title_id, d, list);
 }
 
 /* the recompiled games of the data folder's games/ and recompiled/, or only title_id's, as {path, title_id, version}
@@ -514,7 +521,7 @@ static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_
    code is that dump's, and its NPDM is not here at all, so is64 is an extraction's only. A game extracted beside the
    data folder, as a game whose ExeFS the runtime reads from its own dump is, is this folder: where its log is, and
    what an agent reading that log wants */
-static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list) {
+static void find_recompiled(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     static const char* const libraries[] = {"games", "recompiled"};
     char data[SNX_PATH_SIZE], id[17];
     int l;
@@ -530,8 +537,9 @@ static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list) {
             char* folder = snx_path_join(library, names[i]);
             SnxU64 id_value;
             char* version;
-            cJSON* g;
-            int k, taken = 0;
+            yyjson_mut_val* g;
+            size_t k;
+            int taken = 0;
             if (strlen(names[i]) != 16 || !parse_hex(names[i], &id_value) || !id_value || !snx_is_dir(folder) ||
                 snx_path_format(data, sizeof data, "%s/%s_data", folder, names[i]) || !snx_is_dir(data)) {
                 free(folder);
@@ -542,23 +550,23 @@ static void find_recompiled(const Mcp* m, SnxU64 title_id, cJSON* list) {
                 free(folder);
                 continue;
             }
-            for (k = 0; !taken && k < (int)cJSON_GetArraySize(list); k++) {
-                const cJSON* at = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, k), "title_id");
-                taken = cJSON_IsString(at) && !strcmp(at->valuestring, id);
+            yyjson_mut_arr_foreach(list, k, count, g) {
+                yyjson_mut_val* at = g ? yyjson_mut_obj_get(g, "title_id") : NULL;
+                taken = at && yyjson_mut_is_str(at) && !strcmp(yyjson_mut_get_str(at), id);
+                if (taken) break;
             }
             if (taken) { /* its extraction in work/ already answers */
                 free(folder);
                 continue;
             }
             version = nacp_version(data);
-            g = cJSON_CreateObject();
-            cJSON_AddStringToObject(g, "path", folder);
-            cJSON_AddStringToObject(g, "title_id", id);
+            g = yyjson_mut_arr_add_obj(d, list);
+            yyjson_mut_obj_add_strcpy(d, g, "path", folder);
+            yyjson_mut_obj_add_strcpy(d, g, "title_id", id);
             if (version)
-                cJSON_AddStringToObject(g, "version", version);
+                yyjson_mut_obj_add_strcpy(d, g, "version", version);
             else
-                cJSON_AddNullToObject(g, "version");
-            cJSON_AddItemToArray(list, g);
+                yyjson_mut_obj_add_null(d, g, "version");
             free(version);
             free(folder);
         }
@@ -846,6 +854,10 @@ static const char instructions[] =
     "For a game started with the GDB stub (-S, or -s to wait before the runtime starts), gdb_attach connects GDB; "
     "gdb_command, gdb_threads, gdb_guest and gdb_memory then read the runtime and the guest, and gdb_detach lets the "
     "game run on. "
+    "game_info lists one game's updates, DLCs, mods and cheats and whether its build can run; game_recompile builds "
+    "the game or an update with the mods named, and game_run runs it unattended with per-run update, DLCs, mods and "
+    "cheats, a script, a last frame and logs (dry_run shows the command without building or running). None of them "
+    "rewrites the game's .ini. "
     "Nothing of a game (code, files) goes into an issue, a pull request or an edenprobe case: a case asks the "
     "hardware a question the failure narrowed down to.";
 
@@ -861,6 +873,13 @@ static yyjson_mut_val* schema(yyjson_mut_doc* d, const char* const* names, const
         if (!strcmp(types[i], "string[]")) {
             yyjson_mut_obj_add_str(d, p, "type", "array");
             yyjson_mut_obj_add_str(d, yyjson_mut_obj_add_obj(d, p, "items"), "type", "string");
+        } else if (!strcmp(types[i], "choice")) {
+            yyjson_mut_val* any = yyjson_mut_arr(d);
+            yyjson_mut_obj_add_str(d, yyjson_mut_arr_add_obj(d, any), "type", "string");
+            yyjson_mut_val* array = yyjson_mut_arr_add_obj(d, any);
+            yyjson_mut_obj_add_str(d, array, "type", "array");
+            yyjson_mut_obj_add_str(d, yyjson_mut_obj_add_obj(d, array, "items"), "type", "string");
+            yyjson_mut_obj_add_val(d, p, "anyOf", any);
         } else
             yyjson_mut_obj_add_str(d, p, "type", types[i]);
     }
@@ -989,6 +1008,46 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "most 4096), as hex and text. The game must be stopped. A page the GPU holds can't be read: it is trapped "
         "until the game's CPU touches it.";
     static const char detach_says[] = "Detaches GDB, and the game runs on without it. Attaching again needs a new run.";
+    static const char* const game_info_names[] = {"game"};
+    static const char* const game_info_types[] = {"string"};
+    static const char* const recompile_names[] = {
+        "game", "update",  "mods",      "mods_off",         "force", "dry_run", "optimization",
+        "jobs", "keep_ir", "jit_cache", "hook_direct_calls"};
+    static const char* const recompile_types[] = {"string", "string",  "choice",  "string", "boolean", "boolean",
+                                                  "string", "integer", "boolean", "string", "boolean"};
+    static const char* const game_run_names[] = {
+        "game",       "update",     "dlcs",     "mods",    "cheats",   "mods_off",       "cheats_off", "seconds",
+        "frames",     "runs",       "script",   "out",     "headless", "shot",           "runtime",    "tracy",
+        "state_save", "state_load", "settings", "timeout", "dry_run",  "stop_on_failure"};
+    static const char* const game_run_types[] = {"string",  "string",  "choice",  "choice",  "choice", "string",
+                                                 "string",  "integer", "integer", "integer", "string", "string",
+                                                 "boolean", "boolean", "string",  "string",  "string", "string",
+                                                 "object",  "integer", "boolean", "boolean"};
+    static const char build_says[] =
+        "This build's build string, commit, SNX_ABI and capabilities: whether it has the Tracy profiler and, on "
+        "UNIX, GDB. A game's build stamp names this ABI; capture needs a build with Tracy.";
+    static const char game_info_says[] =
+        "One game's folder, program, data, version, log and .ini, whether its build is ready to run, its updates and "
+        "DLCs (entry, title ID, version, installed, built, current), and its mods and cheats with whether each is "
+        "enabled. current is the .ini's selection; game_run can pick another without changing the .ini. game is a title "
+        "ID, a folder under the data folder, a program in it, or the name it was made by.";
+    static const char recompile_says[] =
+        "Builds a game or one of its updates with the mods named, without changing the game's .ini. update: current, "
+        "latest, none (the base game), an update entry or title ID. mods: current, all, none, or the mods the build "
+        "plays (their names from game_info). A build is up to date when its program, code and ABI/mods stamp match; "
+        "force rebuilds. dry_run returns the command. A game is rebuilt in its own folder from what its _data keeps; an "
+        "update is only built from its dump, which its .ini names. A work/ extraction needs its dump built first. game "
+        "is a title ID, folder, program or name under the data folder.";
+    static const char game_run_says[] =
+        "Runs a game unattended, one or more times, and returns each run's exit, crash, svcBreak and frames, the "
+        "child output's path and a snapshot of the game log. update, dlcs, mods and cheats are this run's choices, "
+        "never written to the .ini; mods/cheats take current, all, none or names, dlcs current, all, none or entries. "
+        "script is empty unless given (no hidden New Game sequence); seconds is the timed exit (60), and timeout "
+        "seconds (default 2*seconds+60) kills a run that hangs before it. shot writes the last frame as runN.ppm "
+        "(no Pillow; hash is its pixels). runtime current (this build, --game) or game (the copy in the game's "
+        "folder). tracy capture/client needs a build with Tracy. out is under the data or cache folder (default: "
+        "cache/mcp-runs/<name>-<time>-<n>). dry_run shows the command. A missing or stale build answers with the "
+        "game_recompile call to make; this tool never recompiles by itself.";
     yyjson_mut_val* list = yyjson_mut_arr(d);
     tool(d, list, "scan_log", scan_says, schema(d, path, s1, 1, path, 1));
     tool(d, list, "read_log", read_says, schema(d, read_names, read_types, 6, path, 1));
@@ -1000,6 +1059,10 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     tool(d, list, "edenprobe_check", check_says, schema(d, check_names, s2, 2, check_names, 1));
     tool(d, list, "edenprobe_run", run_says, schema(d, run_names, s3, 3, run_names, 3));
     tool(d, list, "edenprobe_finding", finding_says, schema(d, finding_names, finding_types, 6, finding_names, 4));
+    tool(d, list, "build_info", build_says, schema(d, NULL, NULL, 0, NULL, 0));
+    tool(d, list, "game_info", game_info_says, schema(d, game_info_names, game_info_types, 1, game_info_names, 1));
+    tool(d, list, "game_recompile", recompile_says, schema(d, recompile_names, recompile_types, 11, recompile_names, 1));
+    tool(d, list, "game_run", game_run_says, schema(d, game_run_names, game_run_types, 22, game_run_names, 1));
     tool(d, list, "gdb_attach", attach_says, schema(d, attach_names, attach_types, 2, NULL, 0));
     tool(d, list, "gdb_command", command_says, schema(d, command_names, command_types, 2, command_names, 1));
     tool(d, list, "gdb_threads", threads_says, schema(d, NULL, NULL, 0, NULL, 0));
@@ -1166,6 +1229,26 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
         text = mcp_edenprobe_finding(arg_number(args, "issue", 0), arg_string(args, "suite"), arg_string(args, "name"),
                                      arg_string(args, "scarletnx_report"), arg_string(args, "reference_report"),
                                      arg_string(args, "source"), &err);
+    } else if (!strcmp(name, "build_info")) {
+        text = mcp_build_info();
+    } else if (!strcmp(name, "game_info")) {
+        const char* game = arg_string(args, "game");
+        if (!game)
+            mcp_put(&err, "game: a title ID, a folder, a program or the name it was made by");
+        else
+            text = mcp_game_info(m->data, game, &err);
+    } else if (!strcmp(name, "game_recompile")) {
+        const char* game = arg_string(args, "game");
+        if (!game)
+            mcp_put(&err, "game: a title ID, a folder, a program or the name it was made by");
+        else
+            text = mcp_game_recompile(m->self, m->data, game, args, &err);
+    } else if (!strcmp(name, "game_run")) {
+        const char* game = arg_string(args, "game");
+        if (!game)
+            mcp_put(&err, "game: a title ID, a folder, a program or the name it was made by");
+        else
+            text = mcp_game_run(m->self, m->data, m->cache, game, args, &err);
     } else if (!strncmp(name, "gdb_", 4)) {
         text = gdb_tool(m, name, args, &err);
     } else {

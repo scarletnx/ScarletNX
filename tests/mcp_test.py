@@ -4,8 +4,10 @@
 """scarletnx --mcp (src/nx/runtime/driver/mcp.c) driven over stdio as an MCP client does: initialize, the tool list,
 scan_log, read_log by text, by range and its last lines, and its refusal of a file outside the data folder, find_game
 on a made-up extracted game (its NPDM's program ID, its NACP's version), symbolize and disassemble on a made-up NRO
-(nx_runtime_smoke.py's), the errors a tool answers with, an unknown method, a notification left unanswered and a line
-that isn't JSON, and on UNIX the GDB tools against a made-up GDB (FAKE_GDB). Offline.
+(nx_runtime_smoke.py's), build_info, game_info's updates, DLCs, mods and cheats, game_recompile's and game_run's dry
+runs and a game_run of a made-up program that prints the runtime's frame line, the errors a tool answers with, an
+unknown method, a notification left unanswered and a line that isn't JSON, and on UNIX the GDB tools against a made-up
+GDB (FAKE_GDB). Offline.
 
     tests/mcp_test.py SCARLETNX"""
 
@@ -63,7 +65,7 @@ def report(result, detail):
 # A GDB that answers the MI commands the GDB tools send (mcp_gdb.c) as GDB 14 does, over a made-up game: thread 1 the
 # runtime's, thread 2 a guest thread whose KThread (at 0x5000, the layout below) names its SDK thread and frame
 # records in guest memory. It logs each command it reads to the file FAKE_GDB_LOG names
-FAKE_GDB = r'''
+FAKE_GDB = r"""
 import os, re, signal, sys, threading
 
 LOG = open(os.environ['FAKE_GDB_LOG'], 'a')
@@ -208,7 +210,7 @@ for raw in sys.stdin:
         break
     else:
         say(token + '^error,msg="unknown"', '(gdb)')
-'''
+"""
 
 
 def gdb_session(runtime, data, nro, tmp):
@@ -238,9 +240,22 @@ def gdb_session(runtime, data, nro, tmp):
         check('threads can' not in said, f'the KThread layout read: {said}')
         bad, said = ask('gdb_attach', port=4321)
         check(bad and 'already attached' in said, f'a second attach: {said}')
-        for refused in ('she echo x', 'shell ls', 'commands 1', 'thread apply all bt', 'frame apply 2 p 1',
-                        'set logging file x', 'maint set x', 'p $_shell("id")', 'p 1\nshell ls', 'dis', 'c 3',
-                        'n x', 'advance', 'interrupt'):
+        for refused in (
+            'she echo x',
+            'shell ls',
+            'commands 1',
+            'thread apply all bt',
+            'frame apply 2 p 1',
+            'set logging file x',
+            'maint set x',
+            'p $_shell("id")',
+            'p 1\nshell ls',
+            'dis',
+            'c 3',
+            'n x',
+            'advance',
+            'interrupt',
+        ):
             bad, said = gdb(refused)
             check(bad, f'{refused!r} refused: {said}')
         bad, said = gdb('p 1+1')
@@ -268,15 +283,19 @@ def gdb_session(runtime, data, nro, tmp):
         check('Unable to read' in ask('gdb_memory', address='9100000', size=4)[1], 'unreadable')
 
         bad, said = gdb('continue', wait=5)
-        check(not bad and 'stopped (breakpoint-hit 7) in thread 2 at crash_report (src/nx/runtime/crash.c:9)' in said,
-              f'a resume that stops: {said}')
+        check(
+            not bad and 'stopped (breakpoint-hit 7) in thread 2 at crash_report (src/nx/runtime/crash.c:9)' in said,
+            f'a resume that stops: {said}',
+        )
         bad, said = gdb('continue', wait=0)
         check(not bad and 'The game is running' in said, f'left running: {said}')
         time.sleep(0.5)
         check('running' in gdb('p 1')[1] and 'running' in ask('gdb_threads')[1], 'nothing runs while it runs')
         bad, said = gdb('interrupt')
-        check(not bad and said.startswith('tick\n') and 'stopped (signal-received SIGINT) in thread 1' in said,
-              f'interrupted, with what GDB said meanwhile: {said}')
+        check(
+            not bad and said.startswith('tick\n') and 'stopped (signal-received SIGINT) in thread 1' in said,
+            f'interrupted, with what GDB said meanwhile: {said}',
+        )
         bad, said = gdb('continue', wait=1)
         check(not bad and 'Still running after 1 s: interrupted.' in said and 'SIGINT' in said, f'the wait: {said}')
         bad, said = gdb('n 2')
@@ -336,6 +355,62 @@ def main():
         nacp[0x3060:0x3065] = b'1.2.3'
         (game / 'control.nacp').write_bytes(bytes(nacp))
         (data / 'games').mkdir()
+        # a recompiled game with an update, a DLC, two mods and two cheats. Its program is a shell script that prints
+        # the runtime's frame line, so game_run's process, logs and summary run without a game
+        rid, uid, did = '0100CCCCDDDD0000', '0100CCCCDDDD0800', '0100CCCCDDDD1000'
+        uentry = uid + 'v65536'
+        noup, nuentry = '0100AAAA00000000', '0100AAAA00000800v65536'
+        ext = '.exe' if os.name == 'nt' else ''
+        code = '.dll' if os.name == 'nt' else '.so'
+        rgame, rdata = data / 'recompiled' / rid, data / 'recompiled' / rid / (rid + '_data')
+        (rdata / 'exefs').mkdir(parents=True)
+        (rdata / 'mods' / 'ModA' / 'exefs').mkdir(parents=True)
+        (rdata / 'mods' / 'ModA' / 'exefs' / 'main').write_text('x')
+        (rdata / 'mods' / 'ModB' / 'romfs').mkdir(parents=True)
+        (rdata / 'cheats').mkdir()
+        (rdata / 'cheats' / 'build.txt').write_text('[CheatA]\n0100\n[CheatB]\n0200\n')
+        rnacp = bytearray(0x4000)
+        rnacp[0x3060:0x3065] = b'1.2.3'
+        (rdata / 'control.nacp').write_bytes(bytes(rnacp))
+        rini = f'addons={uentry},{did}\nmods_off=ModB\ncheats_off=CheatB\n'
+        (rgame / (rid + '.ini')).write_text(rini)
+        uprogram = rgame / (rid + '_' + uentry + ext)
+        uprogram.write_text(
+            '#!/bin/sh\n'
+            'echo "*** Crash (signal 11) at host pc=0x123"\n'
+            'echo "  pc=80000100 lr=80000200 sp=80000300 fp=0 tls=0"\n'
+            'echo "*** The game called svcBreak (reason 0, info 0, 2 bytes) ***"\n'
+            'echo "frames=7 hash=abc"\nexit 1\n'
+        )
+        uprogram.chmod(0o755)
+        (rgame / (rid + '_' + uentry + '_data')).mkdir()
+        udump = data / 'update.nsp'
+        udump.write_bytes(b'PFS0' + b'\0' * 0x100)
+        (rgame / (rid + '_' + uentry + '.ini')).write_text(f'source={udump}\n')
+        (rgame / (rid + '_' + uentry + '_code' + code)).write_text('x')
+        (rgame / (rid + '_' + uentry + '.abi')).write_text('14')
+        (rgame / (rid + '_' + did + '_data')).mkdir()
+        # an update whose .ini names no dump, for the error game_recompile must answer with
+        nug = data / 'recompiled' / noup
+        (nug / (noup + '_data')).mkdir(parents=True)
+        (nug / (noup + '_' + nuentry + '_data')).mkdir()
+        rprogram = rgame / (rid + ext)
+        rprogram.write_text('#!/bin/sh\necho "frames=120 hash=feedface"\nexit 0\n')
+        rprogram.chmod(0o755)
+        (rgame / (rid + '_code' + code)).write_text('x')
+        (rgame / (rid + '.abi')).write_text('14')
+        # a recompiled game with no program, for the error game_run must answer with
+        noid = '0100EEEEFFFF0000'
+        (data / 'recompiled' / noid / (noid + '_data')).mkdir(parents=True)
+        # a program that outlives its timeout, for game_run's host-side one
+        tid = '0100FFFF00000000'
+        tgame = data / 'recompiled' / tid
+        (tgame / (tid + '_data')).mkdir(parents=True)
+        (tgame / (tid + ext)).write_text('#!/bin/sh\nexec sleep 5\n')
+        (tgame / (tid + ext)).chmod(0o755)
+        (tgame / (tid + '_code' + code)).write_text('x')
+        (tgame / (tid + '.abi')).write_text('14')
+        (data / 'fake.nsp').write_bytes(b'PFS0' + b'\0' * 0x100)
         log = data / 'games' / 'game.log'
         log.write_text(LOG)
         outside.mkdir()
@@ -379,6 +454,81 @@ def main():
             call('find_game', 'find_none', title_id='0100000000000001'),
             call('state_info', title_id='0100AAAABBBB0000'),
             call('state_info', 'states_none', title_id='0100000000000001'),
+            call('build_info', 'build_info'),
+            call('game_info', 'game_info', game=rid),
+            call('game_info', 'game_info_program', game=str(uprogram)),
+            call('game_info', 'game_info_work', game='Some Game'),
+            call('game_info', 'game_info_dump', game=str(data / 'fake.nsp')),
+            call('game_recompile', 'recompile_work', game='Some Game', dry_run=True),
+            call('game_recompile', 'recompile_nodump', game=noup, update=nuentry, dry_run=True),
+            call('game_recompile', 'recompile_dry', game=rid, update='none', mods=['ModA'], dry_run=True),
+            call('game_recompile', 'recompile_program_dry', game=str(uprogram), mods=[], dry_run=True),
+            call(
+                'game_run',
+                'run_dry',
+                game=rid,
+                update=uentry,
+                dlcs=[did],
+                mods=['ModA'],
+                cheats=['CheatA'],
+                script='1000:1',
+                out=str(data / 'runs'),
+                dry_run=True,
+            ),
+            call('game_run', 'run_missing', game=noid, out=str(data / 'runs_missing')),
+            call(
+                'game_run',
+                'run_program_dry',
+                game=str(uprogram),
+                dry_run=True,
+                out=str(data / 'runs_program'),
+            ),
+            call('game_run', 'run_stale', game=rid, update='none', mods=['ModA'], out=str(data / 'runs_stale')),
+            call('game_run', 'run_dlc_missing', game=rid, update='none', dlcs=['0100CCCCDDDD2000'], dry_run=True),
+            call(
+                'game_run',
+                'settings_dry',
+                game=rid,
+                update='none',
+                settings={'log': 2, 'fps_limit': 0},
+                dry_run=True,
+                out=str(data / 'runs_settings'),
+            ),
+            call(
+                'game_run',
+                'run_real',
+                game=rid,
+                update='none',
+                runtime='game',
+                mods=[],
+                cheats=[],
+                out=str(data / 'runs_real'),
+                seconds=1,
+                shot=False,
+            ),
+            call(
+                'game_run',
+                'run_update',
+                game=str(uprogram),
+                runtime='game',
+                mods=[],
+                cheats=[],
+                out=str(data / 'runs_update'),
+                seconds=1,
+                shot=False,
+            ),
+            call('game_run', 'tracy_no_build', game=rid, update='none', tracy='capture', dry_run=True),
+            call(
+                'game_run',
+                'run_timeout',
+                game=tid,
+                update='none',
+                runtime='game',
+                seconds=1,
+                timeout=1,
+                shot=False,
+                out=str(data / 'runs_timeout'),
+            ),
             call('symbolize', game=str(nro), addresses=['8000080', 'zz']),
             call('disassemble', game=str(nro), start='8000000', end='8000094'),
             call('disassemble', 'no_range', game=str(nro)),
@@ -432,6 +582,10 @@ def main():
             check=True,
         )
         written = {rel: (checkout / rel).read_bytes().decode() for rel in CHECKOUT}
+        ini_after = (rgame / (rid + '.ini')).read_text()
+        run_real_log = data / 'runs_real' / 'run1.log'
+        run_real_log_exists = run_real_log.is_file()
+        run_update_log_exists = (data / 'runs_update' / 'run1.log').is_file()
         crlf_written = {rel: (crlf / rel).read_bytes().decode() for rel in CHECKOUT}
         untouched = all(
             (broken / rel).read_bytes() == text.encode() for rel, text in CHECKOUT.items() if 'serviceref.h' not in rel
@@ -475,6 +629,10 @@ def main():
             'gdb_guest',
             'gdb_memory',
             'gdb_detach',
+            'build_info',
+            'game_info',
+            'game_recompile',
+            'game_run',
         },
         f'tools: {sorted(tools)}',
     )
@@ -514,6 +672,124 @@ def main():
     )
     check(json.loads(text('states_none')) == [], 'state_info with another title ID')
 
+    build = json.loads(text('build_info'))
+    check(build['abi'] > 0 and build['commit'] and 'clang' in build['build'], f'build_info: {build}')
+    check(isinstance(build['capabilities']['tracy'], bool), 'build_info says whether Tracy is there')
+
+    info = json.loads(text('game_info'))
+    check(info['game']['title_id'] == rid and info['game']['version'] == '1.2.3', f'game_info: {info}')
+    check(info['current']['update'] == uentry and info['current']['dlcs'] == [did], 'game_info current add-ons')
+    check(
+        [m['name'] for m in info['mods']] == ['ModA', 'ModB'] and [m['enabled'] for m in info['mods']] == [True, False],
+        f'the mods and the .ini selection: {info["mods"]}',
+    )
+    check(
+        [c['name'] for c in info['cheats']] == ['CheatA', 'CheatB']
+        and [c['enabled'] for c in info['cheats']] == [True, False],
+        f'the cheats and the .ini selection: {info["cheats"]}',
+    )
+    updates = {u['entry']: u for u in info['updates']}
+    check(updates[uentry]['built'] and updates[uentry]['current'], f'the update: {info["updates"]}')
+    check(info['dlcs'][0]['installed'] and info['dlcs'][0]['current'], f'the DLC: {info["dlcs"]}')
+    check(
+        not info['game']['ready'] and uentry in info['game']['not_ready'],
+        f'game_info checks the current update build: {info["game"]}',
+    )
+    by_program = json.loads(text('game_info_program'))
+    check(
+        by_program['game']['title_id'] == rid and by_program['current']['update'] == uentry,
+        f'game_info by an update program: {by_program["game"]}',
+    )
+    work = json.loads(text('game_info_work'))
+    check(
+        work['game']['title_id'] == '0100AAAABBBB0000'
+        and work['game']['version'] == '1.2.3'
+        and not work['game']['ready']
+        and 'work/ extraction' in work['game']['not_ready'],
+        f'game_info on a work extraction: {work["game"]}',
+    )
+    check(failed('game_info_dump') and 'dump is prepared' in text('game_info_dump'), 'a dump is not a game folder')
+    check(failed('recompile_work') and 'data folder' in text('recompile_work'), 'an extraction needs its dump first')
+    check(
+        failed('recompile_nodump') and 'source=' in text('recompile_nodump'),
+        f'an update needs the dump its .ini names: {text("recompile_nodump")}',
+    )
+
+    rebuilt = json.loads(text('recompile_dry'))
+    check(rebuilt['status'] == 'dry_run' and rebuilt['update'] is None, f'the base recompile: {rebuilt}')
+    check('--mods_off=ModB' in rebuilt['command'], f'the mods this build leaves out: {rebuilt["command"]}')
+    check(
+        rebuilt['command'][-1] == str(rdata) and f'--name={rid}' in rebuilt['command'],
+        f'the base game is rebuilt in its folder from its data: {rebuilt["command"]}',
+    )
+    check(ini_after == rini, 'recompile does not touch the .ini')
+    update_build = json.loads(text('recompile_program_dry'))
+    check(
+        update_build['update'] == uentry and update_build['program'] == str(uprogram),
+        f'recompiling the update a program names: {update_build}',
+    )
+    # an update is built from its dump, beside its game, and never with --name: the recompiler names it itself
+    check(
+        update_build['command'][-1] == str(udump)
+        and '--name' not in update_build['command']
+        and '--outdir' in update_build['command']
+        and update_build['command'][update_build['command'].index('--outdir') + 1] == str(rgame.parent),
+        f'the update is built from its dump beside its game: {update_build["command"]}',
+    )
+
+    run = json.loads(text('run_dry'))
+    command = run['command']
+    check(run['status'] == 'dry_run' and run['update'] == uentry and run['dlcs'] == [did], f'dry run: {run}')
+    check(
+        '--addons=' + did in command and '--mods_off=ModB' in command and '--cheats_off=CheatB' in command,
+        f'the run choices: {command}',
+    )
+    check('--script=1000:1' in command and not any('tracy' in a for a in command), f'the script, no Tracy: {command}')
+    check(not (data / 'runs').exists(), 'a dry run writes nothing')
+    check(failed('run_missing') and 'game_recompile' in text('run_missing'), f'a missing build: {text("run_missing")}')
+    check(failed('run_stale') and 'game_recompile' in text('run_stale'), f'a stale build: {text("run_stale")}')
+    check(
+        failed('run_dlc_missing') and 'no DLC' in text('run_dlc_missing'), f'a missing DLC: {text("run_dlc_missing")}'
+    )
+
+    program = json.loads(text('run_program_dry'))
+    check(program['update'] == uentry and program['program'] == str(uprogram), f'an update program: {program}')
+
+    settings = json.loads(text('settings_dry'))
+    check(
+        '--log=2' in settings['command'] and '--fps_limit=0' in settings['command'],
+        f'a setting for one run: {settings["command"]}',
+    )
+
+    if not build['capabilities']['tracy']:
+        check(failed('tracy_no_build') and 'no Tracy' in text('tracy_no_build'), 'Tracy needs its build')
+
+    if os.name != 'nt':  # the program is a shell script, and game_run runs it directly with runtime "game"
+        real = json.loads(text('run_real'))
+        check(real['ok'] and real['failed'] == 0 and real['runs'][0]['frames'] == 120, f'the run: {real}')
+        check(real['runs'][0]['ok'] and real['runs'][0]['exit'] == 0, f'the run result: {real["runs"][0]}')
+        check(run_real_log_exists, 'the run log')
+        updated = json.loads(text('run_update'))
+        item = updated['runs'][0]
+        check(
+            updated['update'] == uentry
+            and item['signal'] == 11
+            and item['pc'] == '0000000080000100'
+            and item['lr'] == '0000000080000200'
+            and item['svcbreak'] == '0000000000000000',
+            f'the update run and its crash: {updated}',
+        )
+        check(item['frames'] == 7 and not item['ok'] and item['exit'] != 0, f'the update result: {item}')
+        check(run_update_log_exists, 'the update run log')
+        check(ini_after == rini, 'game_run does not touch the .ini')
+        timeout = json.loads(text('run_timeout'))
+        check(
+            timeout['runs'][0]['timed_out']
+            and timeout['runs'][0]['exit'] == 124
+            and 'timeout' in timeout['runs'][0]['summary'],
+            f'a timed-out run: {timeout}',
+        )
+
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
     dis = text('disassemble')
@@ -522,6 +798,7 @@ def main():
         check('svc' in dis and 'adr' in dis, f'the code disassembled:\n{dis}')
     check(failed('no_range') and 'name a function, or a range' in text('no_range'), 'disassemble without a target')
     check(failed('no_game') and 'title ID' in text('no_game'), 'a title ID with no game')
+
     # without a game under the stub (and on Windows, where they are UNIX only) the GDB tools fail, saying why
     def gdb_fails(name, why):
         return failed(name) and (why if os.name != 'nt' else 'UNIX only') in text(name)

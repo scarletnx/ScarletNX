@@ -176,8 +176,14 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   keeps its own files in, and its `work/` folders), `find_game` (the games the data folder holds, the extractions of
   `work/` and the recompiled games of `recompiled/` and `games/`, with their title IDs and versions), `state_info` (a
   recompiled game's save states: slot, program, when, play time, the build
-  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, A64 through
-  LLVM's disassembler where LLVM has the AArch64 target). The last game loaded stays loaded for the next call. Its
+  and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py`
+  and `tools/disasm.py`, A64 through LLVM's disassembler where LLVM has the AArch64 target), `game_info` (a game's
+  updates, DLCs, mods and cheats, the `.ini`'s current selection, and whether its current build can run), `build_info`
+  (this build, commit, ABI, Tracy and GDB), `game_recompile` (one game or update, with per-call mods; `dry_run` returns
+  the command) and `game_run` (an unattended run with per-run update, DLCs, mods and cheats, a script, logs, a PPM last
+  frame and a host-side timeout). The game tools never write the `.ini`'s selections: a run passes the runtime
+  `--addons`, `--mods_off` and `--cheats_off`, and a recompile passes `--mods_off` to the recompiler. The last game
+  loaded stays loaded for the next call. Its
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
   (`mcp_gdb.c`, [USAGE.md](USAGE.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
   resumes as `-exec-*` commands in the background). They find a guest thread's `KThread` through its host thread's
@@ -202,7 +208,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   times (`state:` lines); the files are `<game folder>/states/<id>.<slot>.snxstate`.
   Masks: A/B/X/Y `1/2/4/8`, L/R `40/80`, ZL/ZR `100/200`, Plus/Minus `400/800`,
   left/up/right/down `1000/2000/4000/8000`.
-- `run_game.py`: Catherine New Game sequence by default; **`--script ""` disables it**.
+- `run_game.py`: Catherine New Game sequence by default; **`--script ""` disables it**. The MCP `game_run` has no
+  default script.
   `--out DIR` → `runN.log` + PNG (PPM without Pillow); default fresh temp dir.
   Summary: exit, PC/symbol (`--dump`), frames/FPS. Unknown args pass through, e.g. `--fps_limit=0`.
 - Guest VAs: hex; disasm function queries: substrings. Disasm requires `llvm-objcopy` + `llvm-objdump`.

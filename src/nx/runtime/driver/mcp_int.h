@@ -6,6 +6,9 @@
 #define SNX_MCP_INT_H
 #include "common/utilities/common.h" /* SnxU64 */
 #include <stddef.h>
+#include <yyjson.h>
+
+struct cJSON;
 
 /* text grown as it is written, p NULL until then; lines counts what a tool chose to count */
 typedef struct {
@@ -37,6 +40,15 @@ char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, co
    request's text: from which issue, what each machine answered, the tests run, and what a case may not hold */
 char* mcp_edenprobe_finding(long issue, const char* suite, const char* name, const char* ours, const char* theirs,
                             const char* source, Text* err);
+
+/* The game tools (mcp_game.c): the games this machine has made, what each can play, recompiling one, and unattended
+   runs. A game is named by its title ID, its folder, a program in it, or the name it was made by. game_info is a JSON
+   object; game_recompile and game_run answer JSON too, their failure in err when the request itself is wrong */
+char* mcp_build_info(void);
+char* mcp_game_info(const char* data, const char* game, Text* err);
+char* mcp_game_recompile(const char* self, const char* data, const char* game, const yyjson_val* args, Text* err);
+char* mcp_game_run(const char* self, const char* data, const char* cache, const char* game, const yyjson_val* args,
+                   Text* err);
 
 /* The GDB tools (mcp_gdb.c, UNIX only): one GDB connected to a game's GDB stub, each returning its answer, malloc'd,
    or NULL with why in err. A namer writes a guest address's name (the game's module, function and offset) into t;

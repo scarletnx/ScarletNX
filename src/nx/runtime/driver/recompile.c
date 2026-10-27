@@ -469,7 +469,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     char error[1024], option[64], why[256], reason[256];
     const char* equal;
     size_t option_size;
+    const char* mods_off_arg = NULL; /* --mods_off=: the mods this build leaves out, instead of the game's .ini */
     int i, rc = 1, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0;
+    int mods_off_set = 0;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
@@ -528,6 +530,10 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 if (arg[1] == '-' && snx_recompile_setting(arg + 2)) {
                     const IniOpt* o = snx_recompile_setting(arg + 2);
                     if (ini_check(o, value, error, sizeof error)) return snx_error("%s", error);
+                    if (!strcmp(arg + 2, "mods_off")) { /* the play's choice, not the .ini's, for this build */
+                        mods_off_arg = value;
+                        mods_off_set = 1;
+                    }
                     ini_read(o, value);
                     continue;
                 }
@@ -679,6 +685,10 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         char of[17];
         snx_title_text(owner, of);
         mods = snx_game_mods(folder, addon ? of : game, &mods_off);
+        if (mods_off_set) {
+            free(mods_off);
+            mods_off = snx_strdup(mods_off_arg);
+        }
         mods_stamp = snx_mods_stamp(mods, mods_off);
         mod_count = snx_mods_exefs(mods, mods_off, &mod_names, &mod_files);
     }
