@@ -59,8 +59,9 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     *cap_out = g_bl_cap;
     if (size <= g_bl_cap) return g_bl_scratch;
     if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;
-    /* the old one stays alive until the frame's work that may use it is done */
-    if (g_bl_scratch) vk_defer_buffer(g_bl_scratch, g_bl_mem);
+    /* the old one stays alive until every frame's work that may use it is done: it is shared by all of them, so a
+       vk_finish retires it */
+    if (g_bl_scratch) vk_retire_buffer(g_bl_scratch, g_bl_mem);
     g_bl_scratch = VK_NULL_HANDLE;
     g_bl_cap = 0;
     u64 cap = 4ull << 20;

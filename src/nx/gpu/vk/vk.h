@@ -200,6 +200,9 @@ void vk_readback_ready(void);
 /* destroyed once the frame being recorded now is done (the GPU may still use them until then) */
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2);
 void vk_defer_buffer(VkBuffer b, VmaAllocation a);
+/* a buffer shared by every frame in flight, retired rather than deferred to one frame: freed once a vk_finish has
+   waited for all submissions (gpu/vk/blocklinear.c's scratch) */
+void vk_retire_buffer(VkBuffer b, VmaAllocation a);
 void vk_defer_buffer_view(VkBufferView v);
 /* bytes of device memory the resources just deferred release, and all deferred releases still to come: an evicted
    entry's memory counts as gone from when it is deferred (vk_mem_trim) */

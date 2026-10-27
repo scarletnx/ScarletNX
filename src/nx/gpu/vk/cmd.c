@@ -514,12 +514,38 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
 }
 
 u64 g_vk_finishes, g_vk_finish_ns;
+/* buffers shared by every frame in flight, replaced before the frames that use them are done (the block linear
+   scratch): kept until a vk_finish has waited for every submission */
+typedef struct {
+    VkBuffer b;
+    VmaAllocation a;
+} Retired;
+static Retired* g_retired;
+static u32 g_nretired, g_capretired;
+void vk_retire_buffer(VkBuffer b, VmaAllocation a) {
+    if (g_nretired == g_capretired) {
+        u32 cap = g_capretired ? g_capretired * 2 : 8;
+        Retired* grown = realloc(g_retired, cap * sizeof *grown);
+        if (!grown) return; /* freed with the process */
+        g_retired = grown;
+        g_capretired = cap;
+    }
+    g_retired[g_nretired++] = (Retired){b, a};
+}
+static void retired_free(void) {
+    for (u32 i = 0; i < g_nretired; i++) {
+        vk_mem_untrack(g_retired[i].a);
+        vmaDestroyBuffer(g_vk.vma, g_retired[i].b, g_retired[i].a);
+    }
+    g_nretired = 0;
+}
 void vk_finish(void) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     timeline_wait(g_gval);
     land_through(g_gval);
+    retired_free();
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
 }
