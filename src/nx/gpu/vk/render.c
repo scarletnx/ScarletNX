@@ -1712,7 +1712,8 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
         if (st->flags & SNX_TEX_INDEXED) continue;
-        u32 handle = tex_handle(ch, stage, tcb, st);
+        /* the fragment stage's handles are fs_key's, read from the same constant buffer in this draw */
+        u32 handle = res && res[i].have ? res[i].handle : tex_handle(ch, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
         TexRes* x = res ? &res[i] : NULL;
