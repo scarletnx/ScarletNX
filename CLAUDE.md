@@ -19,6 +19,18 @@ get wrong and points to the skills that carry the procedures.
 - **Find the mechanism.** A fix explains why the game does what it does: what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. No timing tweaks, retries or special cases for a
   title ID. Syncpoints above 127 "worked" for a whole session while overwriting the game's heap.
+- **A driver's bug gets a workaround, scoped to that driver, and only once it is shown to be the driver's.** Some
+  frames are wrong because the driver is: Turnip, MoltenVK, and the Mali/MediaTek and Adreno drivers have real
+  defects and gaps. Establish that first (the state the runtime submitted and the SPIR-V are right, the same content
+  is right on another driver or as the specification says the call behaves), because most wrong output is still
+  ours. Where it is the driver and a workaround is the best option, it is the fix rather than a feature dropped.
+  Work around the defect that was seen, never a driver that might misbehave. Check the known practice first (the
+  specification, the validation layer, another emulator's solution) and keep the workaround to that driver: gated on
+  the driver (`driverID`) or the extension or feature it lacks, with a comment naming the driver, its version and
+  what it does wrong, so every other driver takes the normal path. `g_vk.has_dynamic_stride` and
+  `g_vk_flush_denorm` in `vk/device.c` are the pattern. Check both sides where possible: the driver that needs it,
+  and lavapipe or a desktop driver that does not. When the driver is not to hand, the commit says which side was
+  actually run. The special case is the driver's, never a title ID's.
 - **Licensing.** ScarletNX is GPL-3.0-or-later (`LICENSE`). A new file starts with
   `SPDX-License-Identifier: GPL-3.0-or-later` and the project's copyright line. Code under GPL-3.0,
   GPL-2.0-or-later (yuzu, suyu, sudachi, Citron, Eden), LGPL, MIT, BSD, ISC, zlib or Apache 2.0 can be ported,

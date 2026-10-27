@@ -24,6 +24,9 @@ frame.
   batched, at the points where the guest can observe the memory.
 - Shaders must declare `SignedZeroInfNanPreserve`: Maxwell code relies on infinities and NaNs (lighting became
   NaN blocks without it).
+- **A driver's bug may be worked around, scoped to that driver** (CLAUDE.md's rule). Gate it on `driverID` or the
+  missing extension or feature, name the driver and its version in the comment, and keep every other driver on the
+  normal path. `g_vk.has_dynamic_stride` and `g_vk_flush_denorm` in `device.c` are the pattern.
 
 ## Validation layers
 Every renderer change is run under the Khronos validation layer before it is called done, and its messages are
