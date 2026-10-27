@@ -540,6 +540,8 @@ void vk_rt_drawn(Surf* s);      /* a render target was drawn to (gpu/vk/render.c
 void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
+/* vk_write_changed over the runs of res that differ from org, n (from, to) pairs: bytes outside them are the same */
+void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const u32* runs, u32 n);
 u32 vk_rt_take_gen(void); /* changes whenever vk_rt_drawn_in's targets or their pixels can have changed */
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
