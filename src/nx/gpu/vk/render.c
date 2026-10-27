@@ -44,8 +44,50 @@ void vk_render_end(void) {
     vk_gpuprof_pass_end(cb);
 }
 
+/* The last draw's targets, while their registers and the surface table are the same: a draw found each of its targets
+   again by its registers, through the surface table, when most draws draw where the one before did. The read check
+   each target's lookup made (vk_rt_note_read) is still made */
+#define RT_KEY 138
+static struct {
+    const GpuChannel* ch;
+    u32 epoch, n;
+    int valid;
+    u32 key[RT_KEY];
+    Surf *rt[8], *zt;
+} g_rtm;
+static void rt_key(const u32* r, u32* k) {
+    k[0] = r[0x487];
+    memcpy(k + 1, &r[0x200], 128 * sizeof *k);
+    k[129] = r[0x54E];
+    memcpy(k + 130, &r[0x3F8], 5 * sizeof *k);
+    memcpy(k + 135, &r[0x48A], 3 * sizeof *k);
+}
+static int read_targets_(GpuChannel* ch, Surf** rt, Surf** zt, u32* n);
 /* the targets the registers name, without opening anything */
 static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
+    u32 key[RT_KEY];
+    rt_key(ch->r3d, key);
+    if (g_rtm.valid && g_rtm.ch == ch && g_rtm.epoch == g_vk_surf_epoch && !memcmp(key, g_rtm.key, sizeof key)) {
+        memcpy(rt, g_rtm.rt, sizeof g_rtm.rt);
+        *zt = g_rtm.zt;
+        *n = g_rtm.n;
+        for (u32 i = 0; i < 8; i++)
+            if (rt[i]) vk_rt_note_read(rt[i]);
+        if (*zt) vk_rt_note_read(*zt);
+        return;
+    }
+    /* kept only when every target the registers name was found: one that couldn't be made is tried again */
+    g_rtm.valid = read_targets_(ch, rt, zt, n);
+    memcpy(g_rtm.key, key, sizeof key);
+    memcpy(g_rtm.rt, rt, sizeof g_rtm.rt);
+    g_rtm.zt = *zt;
+    g_rtm.n = *n;
+    g_rtm.ch = ch;
+    g_rtm.epoch = g_vk_surf_epoch;
+}
+/* 0 when a target the registers name couldn't be had */
+static int read_targets_(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
+    int all = 1;
     u32* r = ch->r3d;
     u32 ctl = r[0x487], count = ctl & 15;
     if (count > 8) count = 8;
@@ -68,7 +110,10 @@ static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
             if (w)
                 rt[i] = vk_rt_array(a, w, t[3], t[4], t[5], linear ? t[2] : w * bpp, layers, (u64)t[7] * 4,
                                     (t[5] >> 16) & 1);
-            if (rt[i]) *n = i + 1;
+            if (rt[i])
+                *n = i + 1;
+            else if (w)
+                all = 0;
         }
     }
     *zt = NULL;
@@ -79,8 +124,10 @@ static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
             u32 layers = r[0x48C] & (1u << 16) ? 1 : r[0x48C] & 0xffff;
             if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
             *zt = vk_zt_array(za, r[0x48A], r[0x48B], r[0x3FA], r[0x3FB], layers, (u64)r[0x3FC] * 4);
+            if (!*zt) all = 0;
         }
     }
+    return all;
 }
 
 /* opens a rendering pass on these targets, or keeps the open one if it is the same set. zt_ro: the depth target is
