@@ -772,6 +772,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
    pad's and a Switch one's name them, a PlayStation pad's shapes in their place (gui_pad_keys_named) */
 #define SAY_PAD_MENU             SNX_TR_KEYS("D-pad: move. A: select. Start: refresh. B: back.")
 #define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back.")
+#define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
@@ -7448,7 +7449,7 @@ static bool games_play_focus(const App* app) {
    M on a made Switch one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
-    if (!pad && games_play_focus(app)) said_add(parts, n, SAY_GAMES_PLAY);
+    if (games_play_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_PLAY : SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
@@ -13869,6 +13870,7 @@ static const struct {
                  {SNX_TR_KEY("Start"), SDLK_F5, 0, true},
                  {SNX_TR_KEY("L3"), SDLK_M, 0, true},
                  {SNX_TR_KEY("R3"), SDLK_B, 0, true},
+                 {SNX_TR_KEY("Right stick"), SDLK_L, 0, true},
                  {SNX_TR_KEY("ESC"), SDLK_ESCAPE, 0, false},
                  {SNX_TR_KEY("Back"), SDLK_AC_BACK, 0, false},
                  {SNX_TR_KEY("Tab"), SDLK_TAB, 0, false},

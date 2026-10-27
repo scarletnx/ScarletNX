@@ -46,7 +46,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - A gamepad drives the menu as the keys do (`src/gui/pad_menu.c`): the D-pad and the left stick are the arrows, the
   button labelled A (or Cross) is Enter, B (or Circle) ESC, X (or Square) Del and Y (or Triangle) R, wherever the pad
   has them (a Switch pad's A is east, its X north), LB and RB are Shift+Tab and Tab, LT and RT are PgUp and PgDn, L3
-  and R3 are M and B (Games' mods and AOT pack), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
+  and R3 are M and B (Games' mods and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
+  back), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
   the focused game's save states, as S does, and in that box it deletes one, as Del does. A held arrow or
   page repeats. A press on the pad hides the mouse's cursor and the foot names the pad's buttons, a PlayStation pad's
   by their shapes; a key or the mouse moving past a few pixels shows the keyboard's again, and so do a click and a
@@ -434,11 +435,11 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
-- **L** (on Android a tap on *Play* at the foot) plays the game in focus, recent or on the page, as Enter does, but a
-  game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with the ones the box keeps for
-  it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or writing them. The queue of
-  compiles and the question of a game made already come as they do for Enter. On a heading, or the row that shows
-  every recent game, it says there is no game to play.
+- **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
+  page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
+  the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or
+  writing them. The queue of compiles and the question of a game made already come as they do for Enter. On a heading,
+  or the row that shows every recent game, it says there is no game to play.
 - **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
   console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
   `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one

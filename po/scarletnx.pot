@@ -734,6 +734,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Right stick: play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Y: recompile."
 msgstr ""
 
@@ -3571,6 +3577,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "R3"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Right stick"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

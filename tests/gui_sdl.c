@@ -8281,12 +8281,13 @@ int main(int argc, char** argv) {
             }
             finish(&app, 0);
             leave_run(&app);
-            /* L, the foot's L clicked and a finger's Play tapped: the game played as the box's Play row plays it, from
-               the update the box keeps (the older, which is not the first listed) with its DLC, mods and cheats, the box
-               not shown and nothing written (addons= keeps a DLC not there, which a save would drop); Enter still opens
-               the box. A recent row of the game's own program plays the update kept too, where Enter plays that
-               program. The foot says Play before Recompile on a game, and not on a heading or on the row that shows
-               every recent game, where L says why it plays nothing */
+            /* L, the foot's L clicked, a finger's Play tapped and a pad's right stick (its key, as pad_menu.c gives
+               it): the game played as the box's Play row plays it, from the update the box keeps (the older, which is
+               not the first listed) with its DLC, mods and cheats, the box not shown and nothing written (addons= keeps
+               a DLC not there, which a save would drop); Enter still opens the box. A recent row of the game's own
+               program plays the update kept too, where Enter plays that program. The foot says Play before Recompile
+               on a game, a pad's foot its right stick, and not on a heading or on the row that shows every recent
+               game, where L says why it plays nothing */
             {
                 static const char* const how[3] = {"key", "L", "Play"};
                 char said[1024], *was, *now, *dump, *ran = snx_absolute(older);
@@ -8301,14 +8302,30 @@ int main(int argc, char** argv) {
                 focus_game(&app, "0100ABCD12340000");
                 assert(strstr(shown_keys(&app, said, sizeof said), "L: play.") && strstr(said, "R: recompile.") &&
                        strstr(said, "L: play.") < strstr(said, "R: recompile."));
+                app.pad_driven = true;
+                assert(strstr(shown_keys(&app, said, sizeof said), "Right stick: play.") &&
+                       strstr(said, "Right stick: play.") < strstr(said, "Y: recompile."));
+                k = hint_pick("Right stick", 3, true);
+                assert(k >= 0 && hint_keys[k].key == SDLK_L);
+                app.pad_driven = false;
                 key(&app, SDLK_RETURN);
                 assert(app.addons_shown && !app.menu.running);
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running);
-                for (k = 0; k < 3; k++) {
+                for (k = 0; k < 4; k++) {
                     go_tab(&app, GUI_TAB_GAMES);
                     focus_game(&app, "0100ABCD12340000");
-                    if (k)
+                    if (k == 3) {
+                        SDL_Event e = {0};
+                        SDL_Keymod mod;
+                        bool repeats;
+                        static const int labels[4] = {SNX_PAD_LABEL_A, SNX_PAD_LABEL_B, SNX_PAD_LABEL_X,
+                                                      SNX_PAD_LABEL_Y};
+                        e.type = SDL_EVENT_KEY_DOWN;
+                        e.key.which = GUI_PAD_KEYBOARD;
+                        assert(gui_pad_key(GUI_PAD_RIGHT_STICK, labels, &e.key.key, &mod, &repeats));
+                        event(&app, &e);
+                    } else if (k)
                         assert(hint_press(&app, how[k], 0));
                     else
                         key(&app, SDLK_L);
