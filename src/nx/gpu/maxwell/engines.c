@@ -163,6 +163,12 @@ static void counter_report(GpuChannel* ch, u64 a, u32 sel, u32 payload, int one)
     report_write(a, v, one);
     madeup_set(a, 1);
 }
+int query_acquire(GpuChannel* ch, u32* r, int base, u32 v) {
+    if (report_semaphore_operation(v) != REPORT_SEMAPHORE_OPERATION_ACQUIRE) return 0;
+    gpu_park(ch, GPU_PARK_REPORT, gpu_packed_va(r[base], r[base + 1]), r[base + 2],
+             report_semaphore_comparison(v) == REPORT_SEMAPHORE_COMPARISON_GREATER_OR_EQUAL);
+    return 1;
+}
 void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     u64 a = gpu_packed_va(r[base], r[base + 1]);
     u32 payload = r[base + 2];
@@ -639,4 +645,80 @@ static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
             break;
         default: break;
     }
+}
+
+/* ------------------------------------------------------------ the split GPU thread's front */
+/* A 3D method on the front (gpu.c's split GPU thread): the front keeps every register, the shadow RAM and the macros,
+   and the back gets what it acts on. A plain register goes to the back only when its value changes, constant buffer
+   data a batch at a time (r3d_const_upload's batches), and every other method that acts as it came, after the
+   shadow RAM. The registers the back's methods change themselves (the constant buffer offset, the index count a
+   draw uses up, firmware call 4's scratch) change here too, for the macros that read them */
+void maxwell3d_front(GpuChannel* ch, u32 m, u32 v, int last) {
+    u32* r = ch->r3d;
+    m &= 0xFFF;
+    if (m >= MAXWELL3D_MACRO_REGISTERS_START) {
+        if (ch->cb_n) gpu_split_cb(ch);
+        r[m] = v;
+        macro_call(ch, m, v, last);
+        return;
+    }
+    if (m >= MAXWELL3D_CONST_BUFFER_BUFFER && m <= MAXWELL3D_CONST_BUFFER_BUFFER_LAST) {
+        u64 a = (((u64)(r[0x8E1] & 0xFF) << 32) | r[0x8E2]) + r[0x8E3];
+        r[m] = v;
+        if (ch->cb_n && (a != ch->cb_addr + (u64)ch->cb_n * 4 || ch->cb_n == sizeof ch->cb_words / 4))
+            gpu_split_cb(ch);
+        if (!ch->cb_n) ch->cb_addr = a;
+        ch->cb_words[ch->cb_n++] = v;
+        r[0x8E3] += 4;
+        if (last) gpu_split_cb(ch);
+        return;
+    }
+    if (ch->cb_n) gpu_split_cb(ch);
+    if (!(g_m3d_group[m] & G_ACTS)) {
+        if (m >= MAXWELL3D_SHADOW_FIRST) v = shadow_ram(ch, m, v);
+        if (r[m] != v) {
+            r[m] = v;
+            gpu_split_reg(ch, m, v);
+        }
+        return;
+    }
+    if (shadowed(m)) v = shadow_ram(ch, m, v);
+    r[m] = v;
+    switch (m) {
+        case MAXWELL3D_LOAD_MME_INSTRUCTION_PTR: mme_upload_ptr(ch, v); return;
+        case MAXWELL3D_LOAD_MME_INSTRUCTION: mme_upload(ch, v); return;
+        case MAXWELL3D_LOAD_MME_START_ADDRESS_PTR: ch->mme_start_ptr = v; return;
+        case MAXWELL3D_LOAD_MME_START_ADDRESS: mme_bind(ch, v); return;
+        case MAXWELL3D_SHADOW_RAM_CONTROL: ch->shadow_mode = v & MAXWELL3D_SHADOW_RAM_CONTROL_MASK; return;
+        case MAXWELL3D_FIRMWARE_CALL_4: r[MAXWELL3D_SHADOW_SCRATCH] = 1; break;
+        /* inline indices: the draw they end leaves the index count alone (draw_end). inline_n is a flag here */
+        case MAXWELL3D_INLINE_INDEX_4X8_INDEX0:
+        case MAXWELL3D_DRAW_INLINE_INDEX:
+        case MAXWELL3D_INLINE_INDEX_2X16_EVEN: ch->inline_n = 1; break;
+        case MAXWELL3D_DRAW_END:
+            if (!ch->inline_n) r[MAXWELL3D_INDEX_BUFFER_COUNT] = 0;
+            ch->inline_n = 0;
+            break;
+        case MAXWELL3D_REPORT_SEMAPHORE_QUERY:
+            if (query_acquire(ch, r, MAXWELL3D_REPORT_SEMAPHORE, v)) return;
+            gpu_split_release(gpu_packed_va(r[MAXWELL3D_REPORT_SEMAPHORE], r[MAXWELL3D_REPORT_SEMAPHORE + 1]),
+                              report_semaphore_short_query(v) ? 4 : MAXWELL3D_REPORT_BYTES);
+            break;
+        default: break;
+    }
+    gpu_split_3d(ch, m, v, last);
+}
+/* the back's side of gpu_split_reg: n plain 3D registers, each a new value (the front sends only changes, and the
+   back's registers are the front's before them), as maxwell3d_method would store them. The held draw goes first, as
+   at the first of them; the shadow RAM is the front's */
+void maxwell3d_regs(GpuChannel* ch, const u32* mv, u32 n) {
+    u32* r = ch->r3d;
+    u32 dirty = 0;
+    if (g_engines.deferred.ch) r3d_pending_flush();
+    for (u32 i = 0; i < n; i++) {
+        u32 m = mv[2 * i] & 0xFFF;
+        dirty |= g_m3d_group[m];
+        r[m] = mv[2 * i + 1];
+    }
+    ch->r3d_dirty |= dirty;
 }

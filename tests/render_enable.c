@@ -92,6 +92,11 @@ void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
     parked.kind = kind, parked.addr = addr, parked.val = val, parked.geq = geq;
     parked.n++;
 }
+int g_gpu_split;
+void gpu_split_reg(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
+void gpu_split_3d(GpuChannel* ch, u32 m, u32 v, int last) { (void)ch, (void)m, (void)v, (void)last; }
+void gpu_split_cb(GpuChannel* ch) { (void)ch; }
+void gpu_split_release(u64 gva, u32 len) { (void)gva, (void)len; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void i2m_launch(GpuChannel* ch, u32* regs, int base) { (void)ch, (void)regs, (void)base; }

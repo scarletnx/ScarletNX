@@ -144,7 +144,7 @@ static void gmmu_change_begin(u64 gva, u64 size) {
     if (g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
 }
 static void gmmu_change_end(u64 gva, u64 size) {
-    gpu_mem_written(gva, size);
+    gpu_mem_written_map(gva, size);
     if (g_gpu_mapping_end) g_gpu_mapping_end();
 }
 /* the counts of the entries before page first stop short of it, before it changes */

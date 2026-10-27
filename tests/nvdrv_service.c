@@ -170,6 +170,7 @@ void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 void gpu_kick(void) { test_gpu.kicks++; }
 void gpu_mem_written(u64 gva, u64 size) { (void)gva, (void)size; }
+void gpu_mem_written_map(u64 gva, u64 size) { (void)gva, (void)size; }
 
 /* host1x: one channel per NVDEC or VIC fd. Its ioctl can run a hook in the middle, as another guest thread would */
 struct H1Ch {
