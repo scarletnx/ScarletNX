@@ -49,7 +49,25 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-static void stamp_alias(void* ctx, u64 gva, u64 n) { write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx); }
+/* The GPU pages showing the guest memory behind the last GPU page written alone, while the mappings stay
+   (gmmu_generation): writes within one page are most of them (constant buffer data, a few hundred bytes at a time
+   through a ring), and finding the aliases each time (gmmu_aliases, under its lock) was most of their recording */
+#define WLAST_ALIASES 8
+static struct {
+    u64 gpage, mapgen;
+    u32 n;
+    int valid, recording;
+    u64 alias[WLAST_ALIASES]; /* the aliases' GPU addresses less the written page's offset */
+} g_wlast;
+static void stamp_alias(void* ctx, u64 gva, u64 n) {
+    write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx);
+    if (g_wlast.recording) {
+        if (g_wlast.n < WLAST_ALIASES)
+            g_wlast.alias[g_wlast.n] = gva & ~(u64)0xFFF;
+        g_wlast.n++;
+    }
+}
+/* guest memory written: the GPU pages showing it */
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
     gmmu_aliases(cpu, n, stamp_alias, &gen);
@@ -62,10 +80,23 @@ static int stamp_run(u64 cpu, u64 n, void* ctx) {
 void gpu_mem_written(u64 gva, u64 size) {
     u64 gen;
     if (!size) return;
+    int one = (gva >> 12) == ((gva + size - 1) >> 12) && !wcheck_on();
+    u64 mapgen = one ? gmmu_generation() : 0;
     pm_lock(&g_wlk);
     gen = g_wgen + 1;
     write_pages_stamp(&g_wgpu, gva, size, gen);
-    guest_runs(gva, size, stamp_run, &gen);
+    if (one && g_wlast.valid && g_wlast.gpage == gva >> 12 && g_wlast.mapgen == mapgen) {
+        for (u32 i = 0; i < g_wlast.n; i++) write_pages_stamp(&g_wgpu, g_wlast.alias[i] | (gva & 0xFFF), size, gen);
+    } else if (one) {
+        g_wlast.recording = 1;
+        g_wlast.n = 0;
+        guest_runs(gva, size, stamp_run, &gen);
+        g_wlast.recording = 0;
+        g_wlast.valid = g_wlast.n <= WLAST_ALIASES;
+        g_wlast.gpage = gva >> 12;
+        g_wlast.mapgen = mapgen;
+    } else
+        guest_runs(gva, size, stamp_run, &gen);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }

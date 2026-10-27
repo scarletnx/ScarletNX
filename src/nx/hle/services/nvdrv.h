@@ -44,6 +44,8 @@ void gmmu_map(u64 gva, u64 cpu, u64 size);
    index's lock: it takes no lock and doesn't call back into nvdrv. The index compares addresses only, as the page
    table holds them: guest memory freed under a mapping still counts here, where gmmu_translate reads it as unmapped */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx);
+/* changes whenever a mapping does: what gmmu_aliases told holds while it doesn't */
+u64 gmmu_generation(void);
 /* The other way: each run of the page table over [gva, gva + size), a range below 2^40, in GPU order and clipped to it:
    fn(ctx, gva, cpu, n) for n bytes at gva showing guest memory from cpu on, whole pages. Addresses only, and under the
    same lock, as gmmu_aliases */

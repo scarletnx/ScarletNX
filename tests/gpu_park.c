@@ -54,6 +54,7 @@ void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void
         if (gmmu_translate((p << 12) + 0x800) && a < b) fn(ctx, (p << 12) + (a - c), b - a);
     }
 }
+u64 gmmu_generation(void) { return 0; }
 void mem_query(u64 addr, MemBlock* out) {
     memset(out, 0, sizeof *out);
     out->size = sizeof guest;

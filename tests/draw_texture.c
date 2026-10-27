@@ -43,6 +43,7 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
 }
 /* nvdrv.c's index of mappings by guest address, for the translation above */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) { fn(ctx, cpu, size); }
+u64 gmmu_generation(void) { return 0; }
 u32 gpu_color_bpp(u32 format) { return (void)format, 4; }
 u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log2, u32 bd_log2) {
     (void)x_bytes, (void)y, (void)z, (void)width_bytes, (void)height, (void)bh_log2, (void)bd_log2;
