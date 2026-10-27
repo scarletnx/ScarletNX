@@ -438,6 +438,8 @@ typedef struct Surf {
     int in_drawn;   /* in surface.c's list of drawn targets, entered at drawn_from */
     int in_linear;  /* a pitch-linear color target in surface.c's list of those drawn since the last release */
     u32 rt_all;     /* render targets: its place in surface.c's index of them (g_rt_all) plus 1, 0 for none */
+    int take_seen; /* render targets: a texture looked for drawn targets over it since its last write (vk_rt_take_gen) */
+    u32 take_gen, take_wgen; /* textures: vk_rt_take_gen() and wgen when tex_take_drawn last had nothing to do */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
@@ -538,6 +540,7 @@ void vk_rt_drawn(Surf* s);      /* a render target was drawn to (gpu/vk/render.c
 void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
+u32 vk_rt_take_gen(void); /* changes whenever vk_rt_drawn_in's targets or their pixels can have changed */
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */

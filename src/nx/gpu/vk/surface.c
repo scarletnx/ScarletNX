@@ -397,7 +397,20 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+/* What a texture takes from the drawn targets over it (gpu/vk/texture.c tex_take_drawn) changes with the targets in its
+   range and their pixels, so a texture that had nothing to take is passed over while this hasn't moved. It moves when a
+   target enters the list of drawn targets, leaves it or is parked or unparked, and when one that vk_rt_drawn_in
+   returned since its last write is written or drawn again. Every target in a passed over texture's range was returned
+   to it, and a target's freshness only comes back with a draw, so nothing a texture would take goes unnoticed */
+static u32 g_take_gen = 1;
+u32 vk_rt_take_gen(void) { return g_take_gen; }
+static void take_changed(Surf* s) {
+    if (!s->take_seen) return;
+    s->take_seen = 0;
+    g_take_gen++;
+}
 void vk_surf_wrote(Surf* s) {
+    take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }
@@ -1014,12 +1027,14 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             rtx_del(gva);
             s->gva = gva | 1ull << 63;
             if (s->rt_all) rt_all_span(s);
+            g_take_gen++;
             g_parked++;
             g_vk_surf_epoch++;
         }
     if (parked) {
         parked->gva = gva;
         if (parked->rt_all) rt_all_span(parked);
+        g_take_gen++;
         rtx_add(parked);
         g_parked--;
         g_vk_surf_epoch++;
@@ -1230,6 +1245,7 @@ static int rt_superseded(const Surf* s) {
     return 0;
 }
 void vk_rt_drawn(Surf* s) {
+    take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;
     if (s->rt_size > g_drawn_max) g_drawn_max = s->rt_size;
@@ -1257,6 +1273,7 @@ void vk_rt_drawn(Surf* s) {
         g_capdrawn = cap;
     }
     s->drawn_from = s->gva;
+    g_take_gen++;
     int at = drawn_lower(s->drawn_from);
     memmove(&g_drawn[at + 1], &g_drawn[at], (size_t)(g_ndrawn - at) * sizeof *g_drawn);
     g_drawn[at] = s;
@@ -1294,6 +1311,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
         if (s->gva == s->drawn_from) {
             if (n < max) out[n] = s;
             n++;
+            s->take_seen = 1;
         }
     }
     return n;
@@ -1312,6 +1330,7 @@ static void surf_free(Surf* s) {
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
+        g_take_gen++;
         int i = drawn_lower(s->drawn_from);
         while (i < g_ndrawn && g_drawn[i] != s) i++;
         if (i < g_ndrawn) {

@@ -1218,6 +1218,10 @@ static void tex_take_drawn(Surf* t) {
     /* a converted format's texels differ from its host image's, but a depth texture takes its targets' host images
        as they are (the same format, below): D24S8's guest packing is converted only when it is loaded from memory */
     if (!t || t->is_rt || (t->f.conv && !t->f.depth)) return;
+    /* nothing over it changed since it had nothing to take (vk_rt_take_gen), and it wasn't uploaded again */
+    u32 gen = vk_rt_take_gen();
+    if (t->take_gen == gen && t->take_wgen == t->wgen) return;
+    int settled = 1; /* what was found is all taken, or can't be until something changes */
     Surf* small[32];
     Surf** d = small;
     u64 stride = t->layer_size;
@@ -1230,6 +1234,7 @@ static void tex_take_drawn(Surf* t) {
         else {
             d = small;
             n = 32;
+            settled = 0;
         }
     }
     for (int i = 0; i < n; i++) {
@@ -1258,7 +1263,10 @@ static void tex_take_drawn(Surf* t) {
                    are blitted down to an array at the guest's size first, and copied into the slices from there */
                 VmaAllocation mm = VK_NULL_HANDLE;
                 VkImage mid = scaled ? vk_unscaled_image(s, t->depth3d, &mm) : VK_NULL_HANDLE;
-                if (scaled && !mid) continue;
+                if (scaled && !mid) {
+                    settled = 0;
+                    continue;
+                }
                 VkCommandBuffer cb = copy_begin(s, t);
                 if (scaled) {
                     VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
@@ -1349,6 +1357,10 @@ static void tex_take_drawn(Surf* t) {
         }
     }
     if (d != small) free(d);
+    if (settled && vk_rt_take_gen() == gen) {
+        t->take_gen = gen;
+        t->take_wgen = t->wgen;
+    }
 }
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, 0);
