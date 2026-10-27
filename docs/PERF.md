@@ -160,6 +160,7 @@ reason. A spread over 70% fails there rather than reporting a median. `SNX_PERF_
 | Linux x86_64, aarch64 | yes | yes, lavapipe | yes | **The merge gate**, 2 minute cap, tight bands |
 | macOS arm64 | yes, `cpu_aarch64_darwin` | local with MoltenVK; not built in CI | yes, `compile_aarch64_darwin` | Advisory Mac job, 2 minute cap, wider bands |
 | Windows x86_64 | yes, `cpu_x86_64_windows` | no Vulkan 1.3 ICD on the hosted runner | yes, `compile_x86_64_windows` | Not run in CI, local only |
+| Android, iOS | `perf_local` general test | not built | `perf_local` includes a compile phase | Local-only, advisory, no CI gate |
 
 The Linux runner is the one whose variance is low enough to hold a merge. The Mac job is already `continue-on-error`,
 so its `::error` is visible without blocking, and its bands start much wider until its measurements say otherwise.
@@ -168,6 +169,17 @@ its hosted runners have no Vulkan device for the GPU test. Their keys are wide f
 
 A platform with more variance gets a wider band before it gets a tighter one. The Linux keys stay the useful fail
 gate for a major regression.
+
+### Local-only device test
+
+`snx-test-perf-local` is the general check for a device build, chiefly iOS and Android. It uses only standard C timing
+and the recompiler library, so it needs no host driver, game, window or Vulkan. It compiles 64 synthetic functions
+and runs the loop in-process, printing the compile time and the recompiled/native ratio.
+
+A cross build makes it with `-DSNX_TEST_PERF_DEVICE=ON`. Run it on the device or simulator, and compare two builds of
+the same device. It has no baseline, no ceiling and no CTest entry, and iOS/Android CI does not run it: it is
+advisory, its numbers are not comparable with Linux, and its accuracy on those platforms is not verified by this
+project's CI. It does not cover the GPU.
 
 ## Running them
 

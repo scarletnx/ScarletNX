@@ -4,6 +4,7 @@ option(SNX_TEST_SANITIZERS
        "Build the native regression tests, and the in-tree libraries they exercise, with ASan and UBSan (a test build: \
 the runtime links those libraries too, and isn't deployed)" OFF)
 option(SNX_TEST_VULKAN "Run offscreen Vulkan integration tests (requires a Vulkan 1.3 ICD, e.g. lavapipe)" OFF)
+option(SNX_TEST_PERF_DEVICE "Build the local-only performance test for an iOS or Android device" OFF)
 option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires native LLVM SDK)" OFF)
 option(SNX_TEST_VP9_VECTORS
        "Run NVDEC's VP9 jobs on libvpx's test vectors (configure downloads 32 files from the WebM project)" OFF)
@@ -1383,6 +1384,16 @@ if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT CMA
              --baseline "${CMAKE_CURRENT_SOURCE_DIR}/perf_baseline.txt")
     set_tests_properties(perf_compile PROPERTIES LABELS perf SKIP_RETURN_CODE 77 TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
+# A local-only performance check for a device build: the recompiler library compiles a synthetic module and runs a
+# loop in-process, with standard C timing and no host driver, game, window or Vulkan. It has no baseline, no ceiling
+# and no CTest entry; a developer compares two builds on the same device. iOS and Android builds opt in with
+# SNX_TEST_PERF_DEVICE=ON because a cross build cannot run it. Linux stays the performance gate (docs/PERF.md).
+if(TARGET scarletnx-recompiler AND NOT SNX_TEST_SANITIZERS AND (NOT CMAKE_CROSSCOMPILING OR SNX_TEST_PERF_DEVICE))
+    add_executable(snx-test-perf-local perf_local.c)
+    snx_test_target(snx-test-perf-local 11)
+    target_link_libraries(snx-test-perf-local PRIVATE scarletnx-recompiler)
+endif()
+
 # The Mach-O linker on objects Clang compiles for arm64 macOS, which any host's Clang with AArch64 can: what macOS
 # would check of the dylib (link_macho.c), on hosts that can't load one
 if(TARGET OpenSSL::Crypto)
