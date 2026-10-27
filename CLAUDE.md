@@ -37,6 +37,19 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 - **Find the mechanism.** A fix explains why the game does what it does. It tells what the game or SDK code expects
   (`tools/disasm.py`), and what the runtime gave it instead. Do not tune delays, add retries or add special cases for
   a title ID. Syncpoints above 127 "worked" for a whole session while they overwrote the heap of the game.
+- **A driver's bug gets a workaround, scoped to that driver, and only after proof.** Some frames are wrong because
+  the driver is wrong. Turnip, MoltenVK, and the Mali/MediaTek and Adreno drivers have real defects. Prove that the
+  driver is at fault first. The state that the runtime submitted and the SPIR-V must be right. Another driver or the
+  specification must give the same content.
+
+  Most wrong output is still ours. When the driver is at fault, the workaround is the fix, not a dropped feature. Work
+  around the defect that you saw. Check the specification, the validation layer and another emulator's solution first.
+  Gate the workaround on the driver (`driverID`) or on the extension or feature that the driver lacks.
+
+  The comment names the driver, its version and the defect, so every other driver takes the normal path.
+  `g_vk.has_dynamic_stride` and `g_vk_flush_denorm` in `vk/device.c` are the pattern. Check both sides where
+  possible: the driver that needs the workaround, and lavapipe or a desktop driver. When the driver is not
+  available, the commit says which side you ran. The special case is the driver's, never a title ID's.
 - **Licenses.** ScarletNX is GPL-3.0-or-later (`LICENSE`). A new file starts with
   `SPDX-License-Identifier: GPL-3.0-or-later` and the copyright line of the project.
 
