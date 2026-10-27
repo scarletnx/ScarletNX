@@ -993,8 +993,12 @@ static char* game_recompile_source(const Game* g) {
         source = nro;
     else if (!snx_is_dir(exefs)) {
         char* from = snx_game_source(g->folder, g->name, NULL);
-        source = from && snx_is_file(from) ? from : snx_format("%s_data", base);
-        free(from);
+        if (from && snx_is_file(from))
+            source = from; /* the dump its .ini names, read in place */
+        else {
+            free(from);
+            source = snx_format("%s_data", base);
+        }
     } else
         source = snx_format("%s_data", base);
     free(nro);
