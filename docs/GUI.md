@@ -434,6 +434,11 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
+- **L** (on Android a tap on *Play* at the foot) plays the game in focus, recent or on the page, as Enter does, but a
+  game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with the ones the box keeps for
+  it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or writing them. The queue of
+  compiles and the question of a game made already come as they do for Enter. On a heading, or the row that shows
+  every recent game, it says there is no game to play.
 - **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
   console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
   `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one

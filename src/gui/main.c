@@ -654,6 +654,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #endif
 #define SAY_GAMES_GRID SAY_GAMES /* a finger's are the list's */
 /* Games' focused row, each when it can be done there (games_said) */
+#define SAY_GAMES_PLAY   SNX_TR_KEYS("Play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("Recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("Mods.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("AOT pack.")
@@ -728,6 +729,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES        SNX_TR_KEYS("Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
 #define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
 /* Games' focused row, each when it can be done there (games_said) */
+#define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("M: mods.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("B: AOT pack.")
@@ -2537,7 +2539,7 @@ static int splash_shown(App* app) {
 #define SAY_MENU_KEYS SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select. F5: refresh. ESC: exit.")
 #endif
 /* the keys the foot of the screen shown says, Tab's after them: what it draws, and what a click on one presses */
-#define GUI_SAID_PARTS 9 /* the most sentences of keys one screen's foot puts together (screen_said) */
+#define GUI_SAID_PARTS 10 /* the most sentences of keys one screen's foot puts together (screen_said) */
 /* part after the screen's others while parts has room, so one more than GUI_SAID_PARTS holds is left out of the foot
    (the test of Games' every key shows it), never written past them */
 static void said_add(const char** parts, int* n, const char* part) {
@@ -7434,9 +7436,19 @@ static bool games_game_focus(const App* app, bool* mods) {
     *mods = !gui_is_dump(app->games.names[index]) && app->games_drivers[index] == GUI_SWITCH;
     return true;
 }
-/* Games' keys the focused row takes, in parts, when it does something there: R on a game, M on a made Switch one */
+/* Games' focused row one that plays, as Enter plays it: a recent run's (a Linux program's too) or a listed game's; a
+   heading, the row that shows every recent game and a page's empty rows not */
+static bool games_play_focus(const App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    if (row < head) return (int)row < recent_shown(app);
+    return index < app->games.count && !gui_games_heading(&app->games, index);
+}
+/* Games' keys the focused row takes, in parts, when it does something there: Play on a game that plays, R on a game,
+   M on a made Switch one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
+    if (!pad && games_play_focus(app)) said_add(parts, n, SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
@@ -12450,8 +12462,11 @@ static void queue_key(App* app, GuiKey key) {
         free(game);
     }
 }
-/* the recent game shown at row shown, run as the menu would: its driver, the options the menu has now */
-static void open_recent(App* app, int shown) {
+/* the recent game shown at row shown, run as the menu would: its driver, the options the menu has now. With play (Games'
+   Play key), a Switch game with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it
+   (addons_play), the box not shown and its picks not written; one the queue compiles shows its compile, as launch
+   shows it for its path */
+static void open_recent(App* app, int shown, bool play) {
     int index = recent_index(app, shown);
     GuiRecentGame game = app->recent.game[index];
     if (!snx_is_file(game.path)) {
@@ -12460,6 +12475,13 @@ static void open_recent(App* app, int shown) {
         gui_recent_remove(&app->recent, index);
         recent_changed(app);
         return;
+    }
+    if (play && game.driver == GUI_SWITCH && gui_queue_find(&app->queue, game.path) < 0) {
+        addons_open(app, game.path, game.name, false);
+        if (app->addons_shown) {
+            addons_play(app, addons_program(app));
+            return;
+        }
     }
     int item = app->menu.selected;
     app->menu.selected = game.driver;
@@ -12498,8 +12520,10 @@ static int row_driver(const GuiGames* games, size_t i) {
     int named = named_driver(games->names[i]);
     return named >= 0 ? named : program_driver(games->paths[i]);
 }
-/* a game of Games' page, at index of the list, played by its row's driver (row_driver) */
-static void open_game(App* app, size_t index) {
+/* a game of Games' page, at index of the list, played by its row's driver (row_driver). With play (Games' Play key),
+   one with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it (addons_play), the box not
+   shown and its picks not written */
+static void open_game(App* app, size_t index, bool play) {
     int item = app->menu.selected;
     if (gui_games_heading(&app->games, index)) return;               /* a group's heading runs nothing */
     if (gui_queue_find(&app->queue, app->games.paths[index]) >= 0) { /* it cannot play yet: its recompile shows */
@@ -12512,6 +12536,10 @@ static void open_game(App* app, size_t index) {
     }
     if (app->games.addons[index]) { /* its updates and DLCs: which one runs is asked first */
         addons_open(app, app->games.paths[index], app->games.shown[index], false);
+        if (app->addons_shown && play) {
+            addons_play(app, addons_program(app));
+            return;
+        }
         if (app->addons_shown) return;
     }
     const char* name = app->games.names[index];
@@ -12533,11 +12561,22 @@ static void recompile_focus(App* app) {
     else {
         app->recompile = true;
         if (recent)
-            open_recent(app, (int)row);
+            open_recent(app, (int)row, false);
         else
-            open_game(app, index);
+            open_game(app, index, false);
         app->recompile = false;
     }
+}
+/* L on Games, the foot's Play: the focused game played as Enter plays it, but one with updates, DLCs, mods or cheats
+   beside it as its box's Play row plays it, the box not shown (open_game, open_recent); else why not */
+static void play_focus(App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    if (!games_play_focus(app))
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus to play."));
+    else if (row < head)
+        open_recent(app, (int)row, true);
+    else
+        open_game(app, app->browser.page * app->browser.page_size + row - head, true);
 }
 /* the focused prepared Switch game: its program path, and the folder and name the runtime's cache is under */
 typedef struct {
@@ -13560,7 +13599,7 @@ static void menu_key(App* app, GuiKey key) {
             app->menu.view = GUI_LOAD_NONE;
             app->message[0] = 0;
         } else if (action == GUI_BROWSER_HEAD && (int)row < recent_shown(app))
-            open_recent(app, (int)row);
+            open_recent(app, (int)row, false);
         else if (action ==
                  GUI_BROWSER_HEAD) { /* ...show more: every recent game, the focus on the first that was hidden */
             app->recent_all = true;
@@ -13568,7 +13607,7 @@ static void menu_key(App* app, GuiKey key) {
             layout(app);
         } else if (action == GUI_BROWSER_OPEN) {
             size_t index = app->browser.page * app->browser.page_size + row - app->browser.head;
-            if (index < app->games.count) open_game(app, index);
+            if (index < app->games.count) open_game(app, index, false);
         }
         return;
     }
@@ -13848,6 +13887,8 @@ static const struct {
                  {SNX_TR_KEY("Del"), SDLK_DELETE, 0, false},
                  {SNX_TR_KEY("Take out"), SDLK_DELETE, 0, false}, /* a finger's, on the Compile tab */
                  {SNX_TR_KEY("Games"), SDLK_TAB, 0, false},
+                 {SNX_TR_KEY("L"), SDLK_L, 0, false},
+                 {SNX_TR_KEY("Play"), SDLK_L, 0, false},
                  {SNX_TR_KEY("R"), SDLK_R, 0, false},
                  {SNX_TR_KEY("Recompile"), SDLK_R, 0, false},
                  {SNX_TR_KEY("B"), SDLK_B, 0, false},
@@ -14795,6 +14836,12 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->key.key == SDLK_DELETE && !e->key.repeat && app->menu.view == GUI_LOAD_RECOMPILE && !app->finished) {
         queue_take_out(app);
+        return;
+    }
+    if (e->key.key == SDLK_L && !e->key.repeat && !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) &&
+        app->menu.view == GUI_LOAD_GAMES && !app->finished) {
+        layout(app); /* the page a resize in the same poll gave */
+        play_focus(app);
         return;
     }
     if (e->key.key == SDLK_R && !e->key.repeat && !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) &&

@@ -310,6 +310,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Recompile."
 msgstr ""
 
@@ -517,6 +523,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L: play."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1231,7 +1243,9 @@ msgstr ""
 msgid "Delete"
 msgstr ""
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
+#, snx-key
 msgid "Play"
 msgstr ""
 
@@ -3328,6 +3342,10 @@ msgid "R recompiles games: a Linux program runs as it is."
 msgstr ""
 
 #: src/gui/main.c
+msgid "No game in focus to play."
+msgstr ""
+
+#: src/gui/main.c
 msgid "B builds an AOT pack for a prepared Switch game in focus."
 msgstr ""
 
@@ -3643,6 +3661,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Take out"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "L"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

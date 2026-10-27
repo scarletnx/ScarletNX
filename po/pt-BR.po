@@ -444,6 +444,16 @@ msgstr "P: pastas."
 
 #: src/gui/main.c
 #, snx-keys
+msgid "L: play."
+msgstr "L: jogar."
+
+#: src/gui/main.c
+#, snx-keys
+msgid "Play."
+msgstr "Jogar."
+
+#: src/gui/main.c
+#, snx-keys
 msgid "Folders: tap it."
 msgstr "Pastas: toque."
 
@@ -1987,6 +1997,10 @@ msgid "No game in focus to recompile."
 msgstr "Nenhum jogo em foco para recompilar."
 
 #: src/gui/main.c
+msgid "No game in focus to play."
+msgstr "Nenhum jogo em foco para jogar."
+
+#: src/gui/main.c
 msgid "R recompiles Switch games only."
 msgstr "R só recompila jogos de Switch."
 
@@ -2182,6 +2196,12 @@ msgstr "R"
 #, snx-key
 msgid "Recompile"
 msgstr "Recompilar"
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Play"
+msgstr "Jogar"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
