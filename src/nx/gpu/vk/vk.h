@@ -543,6 +543,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, 
 /* vk_write_changed over the runs of res that differ from org, n (from, to) pairs: bytes outside them are the same */
 void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const u32* runs, u32 n);
 u32 vk_rt_take_gen(void); /* changes whenever vk_rt_drawn_in's targets or their pixels can have changed */
+int vk_rt_pages_hit(u64 gva, u64 size); /* a render target not parked covers a page of [gva, gva + size) */
 void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */

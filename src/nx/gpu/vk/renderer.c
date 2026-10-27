@@ -34,8 +34,15 @@ static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
 /* vk_lock once around the hooks: each takes it again only as a depth count. Each took and dropped it on its own, and
    every drop let the lock go (vk_let_go) on the GPU thread's writes, the constant buffer uploads before most draws */
+/* A write over nothing pending (no compute or graphics result, no queued release, no storage image) and no render
+   target needs none of the checks below, each of which looked its own pages up: one look at g_pend_any, which counts
+   all of their pages, and at the targets' pages. Constant buffer data, written a few times a draw, meets none */
 static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
+    if (size && !g_gfx_img_any && !pend_hit(&g_pend_any, gva, size) && !vk_rt_pages_hit(gva, size)) {
+        vk_unlock();
+        return;
+    }
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
     if (size)

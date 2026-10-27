@@ -1299,6 +1299,7 @@ int vk_rt_drawn_fresh(Surf* s) {
     }
     return written == 0;
 }
+int vk_rt_pages_hit(u64 gva, u64 size) { return pend_hit_va(&g_rt_pages, gva, size); }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;
     if (hi <= lo || !pend_hit_va(&g_drawn_pages, lo, hi - lo)) return 0;
