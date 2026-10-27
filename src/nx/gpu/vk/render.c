@@ -1609,6 +1609,31 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
     SNX_ZONE_END(z);
     return set;
 }
+/* What each stage's last set was made from. A draw whose stage reads the same takes that set again: the same program,
+   its constant buffers where cb_get put them (cb_get still checks their memory), and for each texture the same
+   surface, image and headers, none of them a target of the draw (those are copied or bound in place per draw). The
+   textures are still resolved each draw, which checks them against memory and copies what targets drew into them,
+   and still move to the layout sampling takes. What is saved is finding their views and samplers and hashing the
+   writes (desc_set_cached). In one game two thirds of the fragment stages and a fifth of the vertex stages read what
+   the draw before them did. A set is taken again only in the frame it was made in (its pool, and the views of a
+   surface it names, last until that frame is done) */
+typedef struct {
+    u32 handle;
+    int used; /* bound through its own view: moved to the sampled layout */
+    Surf* t;
+    VkImage img;
+    u32 tic[8], tsc[8];
+} StageTex;
+typedef struct {
+    u64 frame;
+    const VkSh* s;
+    VkDescriptorSetLayout layout;
+    VkBuffer cb[18], rs;
+    u64 co[18], rso;
+    StageTex tex[SH_MAXTEX];
+    VkDescriptorSet set; /* none: nothing kept */
+} StageMemo;
+static StageMemo g_stage_memo[5];
 static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     u32* r = ch->r3d;
@@ -1616,12 +1641,23 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
     d.n = 0;
+    StageMemo* m = &g_stage_memo[stage];
+    u64 frame = vk_frame_id() + 1;
+    /* keep: what this set is made from can be kept (no storage buffers, images, texture tables or raw loads, no
+       target sampled). same: the last set holds it all so far */
+    int keep = !s->si.ngbuf && !s->si.nimg;
+    int same = keep && m->set && m->frame == frame && m->s == s && m->layout == layout;
+    VkBuffer cbs[18] = {0}, rs = VK_NULL_HANDLE;
+    u64 cos[18] = {0}, rso = 0;
     for (int i = 0; i < 18; i++) {
         if (!(s->si.cbuf_mask & (1u << i))) continue;
         u32 sz = cb_range(ch, stage, s, i);
         VkBuffer b;
         u64 o;
         if (!cb_get(ch, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
+        cbs[i] = b;
+        cos[i] = o;
+        same = same && m->cb[i] == b && m->co[i] == o;
         dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
@@ -1643,8 +1679,12 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
                   draw->map_off[stage ? 1 : 0], draw->map_size[stage ? 1 : 0]);
     VkBuffer cb;
     u64 co;
-    if (stage == 4 && frame_consts(&cb, &co))
+    if (stage == 4 && frame_consts(&cb, &co)) {
+        rs = cb;
+        rso = co;
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
+    }
+    same = same && m->rs == rs && m->rso == rso;
     u32 tcb = r[0x982];
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     int table_first[SH_INDEXED_TABLES] = {0}, table_count = 0;
@@ -1659,25 +1699,25 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             }
         }
     }
-    if (table_count &&
-        !tex_tables_set(ch, stage, s, table_first, table_count, rt, zt, n,
-                        s->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &d, set))
-        return VK_NULL_HANDLE;
+    if (table_count) {
+        keep = same = 0;
+        if (!tex_tables_set(ch, stage, s, table_first, table_count, rt, zt, n,
+                            s->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &d, set))
+            return VK_NULL_HANDLE;
+    }
+    /* every texture resolved first, then bound: the last set may hold them all */
+    TexRes own[SH_MAXTEX], *xs[SH_MAXTEX];
+    Surf* ts[SH_MAXTEX];
+    StageTex now[SH_MAXTEX];
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
         if (st->flags & SNX_TEX_INDEXED) continue;
-        ShTex plain;
-        if (st->shadow && (s->si.tex_dc_color_mask >> i & 1)) { /* compared in the shader: a plain sampler and view */
-            plain = *st;
-            plain.shadow = 0;
-            st = &plain;
-        }
         u32 handle = tex_handle(ch, stage, tcb, st);
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
-        TexRes own, *x = res ? &res[i] : NULL;
+        TexRes* x = res ? &res[i] : NULL;
         if (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt)) {
-            x = &own;
+            x = &own[i];
             tex_resolve(ch, handle, x);
         }
         Surf* t = x->t;
@@ -1688,6 +1728,42 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
         if ((st->flags & 1) && !t)
             LOG_LIMIT(1, "vulkan: a raw surface load's header %08x %08x %08x has no 32-bit view: it reads zeros\n",
                       x->tic[0], x->tic[2], x->tic[4]);
+        xs[i] = x;
+        ts[i] = t;
+        if ((st->flags & 1) || (t && is_target(t, rt, zt, n))) keep = 0;
+        if (!keep) {
+            same = 0;
+            continue;
+        }
+        StageTex* e = &now[i];
+        e->handle = handle;
+        e->used = 0;
+        e->t = t;
+        e->img = t ? t->img : VK_NULL_HANDLE;
+        memcpy(e->tic, x->tic, sizeof e->tic);
+        memcpy(e->tsc, x->tsc, sizeof e->tsc);
+        const StageTex* l = &m->tex[i];
+        same = same && l->handle == handle && l->t == t && l->img == e->img && !memcmp(l->tic, e->tic, 32) &&
+               !memcmp(l->tsc, e->tsc, 32);
+    }
+    if (same) {
+        for (int i = 0; i < nt; i++)
+            if (m->tex[i].used)
+                vk_surf_use(vk_cmd(), ts[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        return m->set;
+    }
+    for (int i = 0; i < nt; i++) {
+        ShTex* st = &s->si.tex[i];
+        if (st->flags & SNX_TEX_INDEXED) continue;
+        ShTex plain;
+        if (st->shadow && (s->si.tex_dc_color_mask >> i & 1)) { /* compared in the shader: a plain sampler and view */
+            plain = *st;
+            plain.shadow = 0;
+            st = &plain;
+        }
+        TexRes* x = xs[i];
+        Surf* t = ts[i];
         VkImageViewType want = vk_tex_view_type(st);
         int num = st->flags & 1                                    ? 1
                   : st->shadow || !((s->si.tex_int_mask >> i) & 1) ? 0
@@ -1728,9 +1804,10 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         } else if (view && slots)
             layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; /* render_begin moves it there */
-        else if (view)
+        else if (view) {
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else {
+            now[i].used = 1;
+        } else {
             view = vk_null_view(want, st->shadow ? 3 : num);
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
@@ -1802,7 +1879,19 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
                                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                             .pImageInfo = &d.ii[binding]};
     }
-    return desc_set_cached(layout, &d);
+    set = desc_set_cached(layout, &d);
+    m->set = keep ? set : VK_NULL_HANDLE;
+    if (m->set) {
+        m->frame = frame;
+        m->s = s;
+        m->layout = layout;
+        memcpy(m->cb, cbs, sizeof m->cb);
+        memcpy(m->co, cos, sizeof m->co);
+        m->rs = rs;
+        m->rso = rso;
+        memcpy(m->tex, now, (size_t)nt * sizeof *now);
+    }
+    return set;
 }
 
 /* ------------------------------------------------------------ draws */
