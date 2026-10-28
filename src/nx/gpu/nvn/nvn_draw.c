@@ -52,7 +52,7 @@ enum {
 
 /* the NVN state a queue's records set: the state objects' words as the game packed them (nvn_obj.h) */
 struct NvnDraw {
-    DrawState ds; /* what the renderer reads */
+    DsState ds; /* what the renderer reads */
     DrawOwner own;
     DsBindings bind; /* the bindings and inline blocks as the records left them */
     DsInline inl;
@@ -77,7 +77,7 @@ struct NvnDraw {
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
-    DrawState scratch; /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
+    DsState scratch;   /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
     DispatchState dx;  /* the compute stage's program and bindings, a dispatch's state */
 };
 
@@ -90,7 +90,7 @@ void nvn_draw_device(u32 origin, u32 depth_mode) {
     __atomic_store_n(&g_nvn_device.depth_mode, depth_mode, __ATOMIC_RELAXED);
 }
 
-/* DrawState.gen: a new generation of group *gen, from the sequence every front end shares */
+/* DsState.gen: a new generation of group *gen, from the sequence every front end shares */
 static void new_gen(u64* gen) { *gen = ds_generation_next(); }
 /* the group of n bytes at kept as made: a new generation when it changed */
 static void keep(void* kept, const void* made, size_t n, u64* gen) {
@@ -762,7 +762,7 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
    layer (or a volume's slice) at a time, as the 3D engine's clears of a target do */
 static void clear_texture(NvnDraw* d, u64 payload) {
     NvnPClearTex r;
-    DrawState* x = &d->scratch;
+    DsState* x = &d->scratch;
     DrawClear c;
     DsTargets t;
     i32 k, depth;
