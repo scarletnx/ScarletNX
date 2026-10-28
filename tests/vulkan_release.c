@@ -43,6 +43,7 @@ int vk_query_pred_job(u32, u64, u64, u64, int, u32, u32*);
 int vk_query_pred_flush(void);
 void vk_query_pred_hold(u32);
 void vk_query_pred_drop(u32);
+int vk_query_pred_compare(u64, u32*);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
 #include "nx/gpu/vk/release.c"
@@ -242,6 +243,15 @@ int vk_query_pred_flush(void) {
     pred_flushes++;
     return 1;
 }
+/* the GPU's comparison of two values a result not landed holds: slot 40 */
+static unsigned pred_compares;
+int vk_query_pred_compare(u64 a, u32* slot) {
+    assert(lock_depth && a == 0x10180);
+    pred_compares++;
+    pred_refs[40] = 1;
+    *slot = 40;
+    return 1;
+}
 void vk_query_pred_hold(u32 slot) { pred_refs[slot]++; }
 void vk_query_pred_drop(u32 slot) {
     assert(pred_refs[slot]);
@@ -439,6 +449,14 @@ int main(void) {
     assert(pred_refs[10] == 1 && pred_refs[11] == 0 && g_rhead == g_rtail); /* the channel still holds slot 10 */
     vk_render_predicate_drop(11);
     assert(pred_refs[10] == 0);
+    /* values a result not landed holds, no release queued over them: compared on the GPU, not read (which would wait
+       for the result to land); with nothing pending they are read as before */
+    other_pending = 1;
+    assert(vk_render_predicate(0x10180, 1, &pred) == 2 && pred == (41 | VK_PRED_EQUAL) && pred_compares == 1);
+    vk_render_predicate_drop(pred);
+    assert(!pred_refs[40]);
+    other_pending = 0;
+    assert(vk_render_predicate(0x10180, 1, &pred) == -1 && pred_compares == 1);
     job_known = 0; /* a count known to be zero: IF_EQUAL draws, IF_NOT_EQUAL doesn't, without a predicate */
     vk_release_samples(0x10140, 16, 3, 13, 14, 0);
     assert(vk_render_predicate(0x10140, 1, &pred) == 1 && vk_render_predicate(0x10140, 0, &pred) == 0);

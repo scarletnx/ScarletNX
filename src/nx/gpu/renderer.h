@@ -115,9 +115,10 @@ typedef struct Renderer {
     int (*release_read)(u64 a, void* dst, u64 n);
     u32 (*release_value)(u32 id); /* completed and queued increments, read consistently */
     /* the render enable (3D 0x556 IF_EQUAL when equal is set, else IF_NOT_EQUAL) compares the count at a with the one
-       at a + 16, one side a samples-passed count not known yet, the other zero: NVN's occlusion test. -1 when that
-       isn't so here (the caller reads both and compares, waiting for the count); 0 or 1, the comparison's result when
-       the count is known to be zero or not without the GPU; 2 when the GPU makes it, *pred the predicate the draws and
+       at a + 16, one side a samples-passed count not known yet, the other zero: NVN's occlusion test. Values that
+       results the GPU hasn't landed hold (a compute program's) are compared on the GPU as well. -1 when neither is so
+       here (the caller reads both and compares, waiting for what is pending); 0 or 1, the comparison's result when the
+       count is known to be zero or not without the GPU; 2 when the GPU makes it, *pred the predicate the draws and
        clears under it run on (the channel's render_pred), held until render_predicate_drop */
     int (*render_predicate)(u64 a, int equal, u32* pred);
     void (*render_predicate_drop)(u32 pred);

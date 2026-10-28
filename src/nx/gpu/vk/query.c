@@ -32,6 +32,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/query_compare_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
 
@@ -519,6 +520,108 @@ int vk_query_pred_flush(void) {
                                                VK_ACCESS_2_TRANSFER_WRITE_BIT};
     d.pMemoryBarriers = &after;
     rec_CmdPipelineBarrier2(cb, &d);
+    return 1;
+}
+
+/* A predicate of two 64-bit values in guest memory, at a and a + 16, compared on the GPU (query_compare.comp): for a
+   render enable over values that results the GPU hasn't landed hold (a compute program's, a draw's storage), which
+   reading them on the CPU would wait for. The values are read where the GPU holds them (vk_buf_get). 1 with *slot
+   held once for the caller, 0 when it can't be made */
+static VkDescriptorSetLayout g_cds;
+static VkPipelineLayout g_clayout;
+static VkPipeline g_cpipe;
+static int g_cfailed;
+static int compare_init(void) {
+    if (g_cpipe) return 1;
+    if (g_cfailed || !pred_init()) return 0;
+    g_cfailed = 1; /* until everything below is made */
+    VkDescriptorSetLayoutBinding b[2];
+    for (u32 i = 0; i < 2; i++)
+        b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+                                              NULL};
+    VkDescriptorSetLayoutCreateInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_cds))) return 0;
+    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(u32)};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &g_cds,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &push};
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_clayout))) return 0;
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = query_compare_spv_size,
+                                   .pCode = query_compare_spv};
+    VkShaderModule m;
+    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                .module = m,
+                                                .pName = "main"},
+                                      .layout = g_clayout};
+    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_cpipe));
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    if (!ok) {
+        g_cpipe = VK_NULL_HANDLE;
+        return 0;
+    }
+    g_cfailed = 0;
+    return 1;
+}
+int vk_query_pred_compare(u64 a, u32* slot) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, off, base;
+    VkBuffer buf;
+    u32 k, at, push[2];
+    if ((a & 3) || !compare_init()) return 0;
+    for (k = 0; k < PN && g_pref[(g_pnext + k) % PN]; k++) {
+    }
+    if (k == PN) return 0;
+    at = (g_pnext + k) % PN;
+    if (!vk_buf_get(a, 24, &buf, &off)) return 0;
+    VkDescriptorSet set = vk_desc_alloc(g_cds);
+    if (!set) return 0;
+    base = align ? off / align * align : off; /* a storage binding's offset is a multiple of the device's alignment */
+    VkDescriptorBufferInfo bufs[2] = {{buf, base, off - base + 24}, {g_pbuf, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet w[2];
+    for (u32 i = 0; i < 2; i++)
+        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                      .dstSet = set,
+                                      .dstBinding = i,
+                                      .descriptorCount = 1,
+                                      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                      .pBufferInfo = &bufs[i]};
+    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    VkCommandBuffer cb = vk_cmd();
+    vk_render_end(); /* a dispatch is outside a rendering pass */
+    /* whatever wrote the values, and the draws predicated on the slot before it is written again; the predicate
+       before the draws that read it */
+    VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT},
+                      after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT,
+                               .dstAccessMask = VK_ACCESS_2_CONDITIONAL_RENDERING_READ_BIT_EXT};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &before};
+    rec_CmdPipelineBarrier2(cb, &d);
+    push[0] = at;
+    push[1] = (u32)((off - base) / 4);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_cpipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_clayout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    rec_CmdDispatch(cb, 1, 1, 1);
+    d.pMemoryBarriers = &after;
+    rec_CmdPipelineBarrier2(cb, &d);
+    g_pslot_batch[at] = g_pbatch; /* not a batch's predicate to go on from */
+    g_pref[at] = 1;
+    g_pnext = at + 1;
+    *slot = at;
     return 1;
 }
 

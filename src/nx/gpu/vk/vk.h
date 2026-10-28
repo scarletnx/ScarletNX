@@ -891,6 +891,9 @@ int vk_query_pred_flush(void); /* records the batch's shader; 0 without memory, 
 void vk_query_pred_hold(u32 slot);
 void vk_query_pred_drop(u32 slot);
 VkBuffer vk_query_pred_buffer(void); /* a predicate's word is at slot * 4 */
+/* a predicate slot, held once, that the GPU writes now with whether the 64-bit values at a and a + 16 differ: 1, or 0
+   when it can't be made */
+int vk_query_pred_compare(u64 a, u32* slot);
 void vk_buf_mem_need_map(u64 gva, u64 len);
 void vk_buf_before_write(u64 gva, u64 len);
 void vk_buf_land(void);
