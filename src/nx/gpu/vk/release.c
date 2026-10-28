@@ -419,11 +419,31 @@ static int reads_zero(u64 gva) {
     gmem_read_raw(gva, &v, 8);
     return v == 0;
 }
+/* two values results the GPU hasn't landed hold, no release queued over them: compared on the GPU too, where the
+   CPU would wait for the results to land. With vk_lock held: 2 with *pred, else -1 */
+static int compare_on_gpu(u64 a, int equal, u32* pred) {
+    u32 slot = 0;
+    int queued = 0;
+    if (!(vk_compute_pending(a, 24) || vk_buf_pending(a, 24) || vk_gfx_image_pending(a, 24))) return -1;
+    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+        pm_lock(&g_rlock);
+        queued = count_queued(a) != -1 || count_queued(a + 16) != -1;
+        pm_unlock(&g_rlock);
+    }
+    if (queued || !vk_query_pred_compare(a, &slot)) return -1;
+    *pred = (slot + 1) | (equal ? VK_PRED_EQUAL : 0);
+    return 2;
+}
 int vk_render_predicate(u64 a, int equal, u32* pred) {
     i64 ia, ib, at;
     u32 slot = 0;
     int got = -1, k;
-    if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) return -1;
+    if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+        vk_lock();
+        got = vk_query_pred_ok() ? compare_on_gpu(a, equal, pred) : -1;
+        vk_unlock();
+        return got;
+    }
     vk_lock();
     if (!vk_query_pred_ok()) { /* outside g_rlock, which the game's threads take: it may make the shader */
         vk_unlock();
@@ -439,8 +459,9 @@ int vk_render_predicate(u64 a, int equal, u32* pred) {
     else if (ib >= 0 && ia == -1 && reads_zero(a))
         at = ib;
     else {
+        got = ia == -1 && ib == -1 ? compare_on_gpu(a, equal, pred) : -1;
         vk_unlock();
-        return -1;
+        return got;
     }
     pm_lock(&g_rlock);
     if (!g_rq[at % RQ_N].pred) {
