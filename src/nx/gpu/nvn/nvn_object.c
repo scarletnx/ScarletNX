@@ -392,6 +392,15 @@ void nvn_BufferFlushMappedRange(CPU* c, u64 buf, i64 offset, u64 size) {
     (void)offset;
     (void)size;
 }
+/* A buffer's mapping is the pool's guest memory, where the replay's writes land before the CPU can read them (the
+   renderer's ordered releases, and GPU-owned memory landed when the CPU touches it): nothing to invalidate, as for
+   a pool's range */
+void nvn_BufferInvalidateMappedRange(CPU* c, u64 buf, i64 offset, u64 size) {
+    (void)c;
+    (void)buf;
+    (void)offset;
+    (void)size;
+}
 
 /* ============================================================ descriptor pools */
 /* The descriptors live in pool memory: the hardware's TIC and TSC entries, 32 bytes each, which a registration
