@@ -298,19 +298,66 @@ void vk_release_incr(u32 id) {
 }
 /* Mapping changes hold vk_lock and drain the queue before changing translations.
    Thus these translations name the backing that was present at enqueue time. */
-static int release_overlaps(const Release* r, u64 gva, u64 len) {
-    if (!r->gva || !r->len || !len) return 0;
-    if (gva >= r->gva ? gva - r->gva < r->len : r->gva - gva < len) return 1;
-    for (u32 at = 0; at < r->len;) {
-        u64 a = r->gva + at, cpu = gmmu_translate(a);
-        u32 n = 4096 - (u32)(a & 4095);
-        if (n > r->len - at) n = r->len - at;
-        for (u64 off = 0; cpu && off < len;) {
-            u64 b = gva + off, other = gmmu_translate(b), span = 4096 - (b & 4095);
-            if (span > len - off) span = len - off;
+/* A range a stream reads or writes, as the guest memory behind it: its runs (gmmu_run), each compared with a payload
+   in a step. release_overlaps translated each page of the range again for every release queued, the payload's
+   aliases through other GPU addresses: with a few hundred releases queued, a constant buffer read over a page that
+   holds one cost thousands of translations, a tenth of one game's GPU thread. A range of more runs than RUNS_N is
+   compared a page at a time, and its unmapped pages meet nothing */
+#define RUNS_N 8
+typedef struct {
+    u64 gva, len;
+    u64 cpu[RUNS_N], n[RUNS_N];
+    u32 runs;
+    int paged; /* more runs than RUNS_N */
+} Backing;
+static void backing_of(Backing* b, u64 gva, u64 len) {
+    b->gva = gva;
+    b->len = len;
+    b->runs = 0;
+    b->paged = 0;
+    for (u64 off = 0; off < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + off, len - off, &cpu);
+        if (!n) { /* an unmapped page: nothing of it to meet */
+            u64 left = GMMU_PAGE_SIZE - ((gva + off) & GMMU_PAGE_MASK);
+            off += left < len - off ? left : len - off;
+            continue;
+        }
+        if (b->runs && b->cpu[b->runs - 1] + b->n[b->runs - 1] == cpu)
+            b->n[b->runs - 1] += n;
+        else if (b->runs == RUNS_N) {
+            b->paged = 1;
+            return;
+        } else {
+            b->cpu[b->runs] = cpu;
+            b->n[b->runs++] = n;
+        }
+        off += n;
+    }
+}
+/* [cpu, cpu + n) of guest memory meets the range */
+static int backing_meets(const Backing* b, u64 cpu, u64 n) {
+    if (b->paged) {
+        for (u64 off = 0; off < b->len;) {
+            u64 at = b->gva + off, other = gmmu_translate(at), span = GMMU_PAGE_SIZE - (at & GMMU_PAGE_MASK);
+            if (span > b->len - off) span = b->len - off;
             if (other && (other >= cpu ? other - cpu < n : cpu - other < span)) return 1;
             off += span;
         }
+        return 0;
+    }
+    for (u32 i = 0; i < b->runs; i++)
+        if (b->cpu[i] >= cpu ? b->cpu[i] - cpu < n : cpu - b->cpu[i] < b->n[i]) return 1;
+    return 0;
+}
+static int release_overlaps(const Release* r, const Backing* b) {
+    if (!r->gva || !r->len || !b->len) return 0;
+    if (b->gva >= r->gva ? b->gva - r->gva < r->len : r->gva - b->gva < b->len) return 1;
+    if (r->cpu) return backing_meets(b, r->cpu, r->len); /* one page's words, translated when it was queued */
+    for (u32 at = 0; at < r->len;) {
+        u64 a = r->gva + at, cpu = gmmu_translate(a);
+        u32 n = GMMU_PAGE_SIZE - (u32)(a & GMMU_PAGE_MASK);
+        if (n > r->len - at) n = r->len - at;
+        if (cpu && backing_meets(b, cpu, n)) return 1;
         at += n;
     }
     return 0;
@@ -325,12 +372,14 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
         vk_unlock();
         return;
     }
+    Backing range = {0};
+    if (len && !all) backing_of(&range, gva, len);
     pm_lock(&g_rlock);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
     for (u64 i = g_rtail; i < g_rhead; i++) {
         const Release* r = &g_rq[i % RQ_N];
-        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
+        if (all || (len ? release_overlaps(r, &range) : !r->gva && r->id == id)) {
             gate = r->gate;
             cgate = r->cgate;
             found = 1;
@@ -359,10 +408,12 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         vk_unlock();
         return 0;
     }
+    Backing range = {0};
+    backing_of(&range, gva, len);
     pm_lock(&g_rlock);
     for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
-        if (!release_overlaps(q, gva, len)) continue;
+        if (!release_overlaps(q, &range)) continue;
         /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
         r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
     }
@@ -403,9 +454,12 @@ static i64 count_queued(u64 gva) {
             u32 i = rix_find(c + o);
             if (g_rix[i].word && (i64)g_rix[i].seq > last) last = (i64)g_rix[i].seq;
         }
-    else
+    else {
+        Backing range;
+        backing_of(&range, gva, 8);
         for (u64 i = g_rtail; i < g_rhead; i++)
-            if (release_overlaps(&g_rq[i % RQ_N], gva, 8)) last = (i64)i;
+            if (release_overlaps(&g_rq[i % RQ_N], &range)) last = (i64)i;
+    }
     if (last >= 0) {
         const Release* r = &g_rq[last % RQ_N];
         if (!r->samples || r->gva != gva || r->len != 16) return -2;
