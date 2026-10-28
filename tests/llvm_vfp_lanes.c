@@ -20,10 +20,11 @@ static u64 next(u64* s) {
 }
 
 /* Vd = Vn op Vm (FMLA: Vd += Vn * Vm) with d 0, n 1, m 2, single (4S) or double (2D) */
+enum { MINMAX = 100, UNARY = 200 }; /* MINMAX + minimum + 2 * numeric; UNARY + SNX_FP_RECPE or RSQRTE, of Vn */
 typedef struct {
     const char* name;
     u32 word;   /* the 4S form (S for a scalar); bit 22 makes it 2D (D) */
-    int op;     /* SNX_FP_*, or -1 for FMLA */
+    int op;     /* SNX_FP_*, -1 for FMLA, or MINMAX, UNARY's */
     int scalar; /* one lane, the rest of Vd cleared (ir_fpu.c's fast paths) */
 } Insn;
 static const Insn g_insns[] = {
@@ -33,6 +34,9 @@ static const Insn g_insns[] = {
     {"FRECPS", 0x4E22FC20u, SNX_FP_RECPS, 0}, {"FRSQRTS", 0x4EA2FC20u, SNX_FP_RSQRTS, 0},
     {"FADD", 0x1E222820u, SNX_FP_ADD, 1},     {"FSUB", 0x1E223820u, SNX_FP_SUB, 1},
     {"FMUL", 0x1E220820u, SNX_FP_MUL, 1},     {"FDIV", 0x1E221820u, SNX_FP_DIV, 1},
+    {"FMAX", 0x4E22F420u, MINMAX + 0, 0},     {"FMIN", 0x4EA2F420u, MINMAX + 1, 0},
+    {"FMAXNM", 0x4E22C420u, MINMAX + 2, 0},   {"FMINNM", 0x4EA2C420u, MINMAX + 3, 0},
+    {"FRECPE", 0x4EA1D820u, UNARY + SNX_FP_RECPE, 0}, {"FRSQRTE", 0x6EA1D820u, UNARY + SNX_FP_RSQRTE, 0},
 };
 #define NINSN (sizeof g_insns / sizeof *g_insns)
 
@@ -48,6 +52,10 @@ static u64 lane_value(u64* s, int width) {
         case 3: return sign | emax << fbits | ((u64)1 << (fbits - 1)) | (frac >> 1); /* a quiet NaN */
         case 4: return sign | (u64)1 << fbits | frac; /* the smallest normals */
         case 5: return sign | (emax - 1) << fbits | frac; /* the largest */
+        case 6: return sign | emax << fbits | (frac & (((u64)1 << (fbits - 1)) - 1)) | 1; /* a signalling NaN */
+        case 7: /* square roots of the smallest normal: products land around it */
+            e = bias / 2 + (next(s) % 17) - 8;
+            return sign | e << fbits | frac;
         default: /* exponents near 1, so sums cancel and products and quotients stay in range */
             e = bias - 8 + (next(s) % 17);
             return sign | e << fbits | frac;
@@ -85,12 +93,14 @@ int main(void) {
                     RtAPI rt;
                     u64 r = next(&seed), want[4];
                     u32 fpcr = 0, fpsr = r & 1 ? 0x10u : 0;
+                    if (r % 3 == 0) fpsr |= (u32)next(&seed) & 0x9Fu; /* the other cumulative flags */
                     memset(&c, 0, sizeof c);
                     memset(&rt, 0, sizeof rt);
                     c.rt = &rt;
                     if (r % 10 == 1) fpcr = (u32)(next(&seed) % 4) << 22; /* a rounding mode */
                     if (r % 10 == 2) fpcr = 1u << 24;                     /* FZ */
                     if (r % 10 == 3) fpcr = 1u << 25;                     /* DN */
+                    if (r % 10 == 4) fpcr = 3u << 24;                     /* FZ and DN */
                     for (lane = 0; lane < lanes; lane++) {
                         set_lane(&c.v[0], width, lane, lane_value(&seed, width));
                         set_lane(&c.v[1], width, lane, lane_value(&seed, width));
@@ -102,8 +112,11 @@ int main(void) {
                     for (lane = 0; lane < lanes; lane++) {
                         u64 d = get_lane(&c.v[0], width, lane), n = get_lane(&c.v[1], width, lane);
                         u64 m = get_lane(&c.v[2], width, lane);
-                        want[lane] = g_insns[k].op < 0 ? snx_fp_fma(&ref, d, n, m, width)
-                                                       : snx_fp_binary(&ref, n, m, width, g_insns[k].op);
+                        int op = g_insns[k].op;
+                        want[lane] = op < 0          ? snx_fp_fma(&ref, d, n, m, width)
+                                     : op >= UNARY  ? snx_fp_unary(&ref, n, width, op - UNARY)
+                                     : op >= MINMAX ? snx_fp_minmax(&ref, n, m, width, (op - MINMAX) & 1, (op - MINMAX) >> 1)
+                                                    : snx_fp_binary(&ref, n, m, width, op);
                     }
                     step(&c);
                     checks++;
@@ -126,6 +139,7 @@ int main(void) {
                     }
                 }
             }
+        llvm_steps_end(&steps);
         llvm_steps_end(&steps);
     }
     printf("Vector FP fast paths through the LLVM steps: %u checks, %d failed\n", checks, failures);
