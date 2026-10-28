@@ -200,7 +200,8 @@ typedef struct {
        one core comes from here: a core that falls free goes to its best waiter (lowest priority value, then the
        earliest), never to whichever host thread wakes first. Every field below and each thread's on_core, core,
        core_next and core_ticket change under core_lk, which is taken after g_klock when both are held (sleep_nl lets
-       go of its core with g_klock held), and never the other way round */
+       go of its core with g_klock held), and never the other way round. The heads of core_wait are also read without
+       it, with __atomic loads, by core_yield, and a thread's on_core by the thread itself in core_enter */
     u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
     u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
