@@ -198,7 +198,25 @@ static int check_shader_invalidation(void)
 	vk_compute_land();
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 2);
-	puts("shader invalidation: graphics and compute replacement and module reuse checked");
+	/* the same launch with its grid in guest memory, which the GPU reads (DispatchState.indirect): on the graphics
+	   queue, its grid copied into bank 0's dispatch size there */
+	{
+		DispatchState d;
+		u8 grid[12];
+
+		snx_st_le32(grid, 1);
+		snx_st_le32(grid + 4, 1);
+		snx_st_le32(grid + 8, 1);
+		CHECK(!gmem_write(address + 0x1f000, grid, sizeof grid));
+		mx_dispatch_state(qmd, channel->rcomp, address + 0x20000, &d);
+		d.indirect = address + 0x1f000;
+		vk_lock();
+		vk_dispatch(&d);
+		vk_finish();
+		vk_unlock();
+		CHECK(g_vk_dispatches == dispatches + 3);
+	}
+	puts("shader invalidation: graphics and compute replacement, module reuse and an indirect dispatch checked");
 	free(channel);
 	return 0;
 }

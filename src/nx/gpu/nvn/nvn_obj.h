@@ -412,16 +412,17 @@ typedef struct {
     i32 face, value_mask, mask, ref, which;
 } NvnPStencil;
 /* a draw stops before ind unless it is indirect or a multi-draw: games size command memory by what
-   GetCommandMemoryUsed reports. instances 0 counts as 1 */
+   GetCommandMemoryUsed reports. instances 0 counts as 1. ind: an indirect draw's arguments, which the GPU reads; a
+   multi-draw's mdi_max records mdi_stride bytes apart from there, as many as the 32-bit count at mdi_count says */
 typedef struct {
     i32 prim, first, count, instances, base_instance, pad;
     u64 ind, mdi_count;
-    i32 mdi_index, pad2;
+    i32 mdi_max, mdi_stride;
 } NvnPDraw;
 typedef struct {
     i32 prim, index_type, count, base_vertex, base_instance, instances;
     u64 index_buffer, ind, mdi_count;
-    i32 mdi_index, pad;
+    i32 mdi_max, mdi_stride;
 } NvnPDrawIdx;
 /* OP_SET_TEX_POOL, OP_SET_SAMP_POOL: the pool's descriptors (their GPU address) and its count */
 typedef struct {

@@ -167,7 +167,11 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
                    base_vertex,
                    base_instance,
                    instances,
-                   ch->inline_indices};
+                   ch->inline_indices,
+                   0,
+                   0,
+                   0,
+                   0};
     g_renderer->draw(&ch->ds, &dc, &ch->owner);
 }
 /* guest memory without the renderer's hooks: only for the clear below, made while no renderer runs */

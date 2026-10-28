@@ -207,6 +207,13 @@ typedef struct {
     u32 first, count; /* vertices, or indices when indexed */
     u32 base_vertex, base_instance, instances;
     const u32* inline_indices; /* indexed 3: the owner's inline indices (host words), from first on */
+    /* An indirect draw (indexed 0 or 1): the GPU reads first, count, instances, base vertex and base instance from the
+       GPU address indirect, laid out as VkDrawIndirectCommand or VkDrawIndexedIndirectCommand, draw_count records
+       stride bytes apart, and with indirect_count, as many of them as the 32-bit count there says. Their vertices
+       and indices are read from anywhere in the streams and up to the index buffer's end (DsIndex.end). 0: a direct
+       draw, which ignores the rest */
+    u64 indirect, indirect_count;
+    u32 draw_count, stride;
 } DrawCall;
 
 /* DrawState's groups, in its order */
@@ -317,6 +324,9 @@ typedef struct {
     u32 smp_mode;           /* the sampler index mode (0: the handle's sampler index) */
     u32 tex_bank;           /* the constant buffer bound textures' and images' handles are read from */
     u8 bank0[DS_INLINE_BANK0], bank2[DS_INLINE_BANK2]; /* the inline blocks, as DsInline's for a stage */
+    /* an indirect dispatch: the GPU reads the grid, three 32-bit counts, at this GPU address (grid is ignored), and
+       puts them in the inline bank 0 at 0x200 too, where NVN's programs read the dispatch size. 0: grid */
+    u64 indirect;
 } DispatchState;
 /* slot's constant buffer of the dispatch d as an inline block */
 static inline DsCbBlock dx_cb_inline(const DispatchState* d, u32 slot) {

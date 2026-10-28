@@ -2604,6 +2604,44 @@ static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz
     return 1;
 }
 
+/* An indirect draw's arguments, and its count: guest memory as buffers the GPU reads (vk_buf_get), which hold a
+   compute program's or an earlier draw's results where they are. 0 when they can't be had or drawn here */
+static int indirect_args(const DrawCall* dc, int indexed, VkBuffer* abuf, u64* aoff, VkBuffer* cbuf, u64* coff) {
+    u32 rec = indexed ? 20 : 16, n = dc->draw_count ? dc->draw_count : 1, stride = dc->stride ? dc->stride : rec;
+    if ((dc->indirect & 3) || (dc->indirect_count & 3) || (n > 1 && (stride < rec || (stride & 3)))) {
+        LOG_LIMIT(1, "vulkan: an indirect draw at %llx with stride %u isn't drawn\n", (unsigned long long)dc->indirect,
+                  stride);
+        return 0;
+    }
+    if (dc->indirect_count && !g_vk.has_draw_indirect_count) {
+        LOG_LIMIT(1, "vulkan: an indirect draw with a count needs drawIndirectCount, which this GPU lacks\n");
+        return 0;
+    }
+    if (!vk_buf_get(dc->indirect, (u64)(n - 1) * stride + rec, abuf, aoff)) return 0;
+    return !dc->indirect_count || vk_buf_get(dc->indirect_count, 4, cbuf, coff);
+}
+/* an indirect draw's index buffer: from its address on, as far as its guest memory runs (DsIndex.end), in the
+   type Vulkan reads. 0 when the GPU would need its indices made into others first */
+static int indirect_indices(const DsIndex* ix, int restart, VkBuffer* buf, u64* off, VkIndexType* type) {
+    u32 isz = ix->format == 0 ? 1 : ix->format == 1 ? 2 : 4, ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : ~0u;
+    u64 len = ix->end >= ix->addr ? ix->end - ix->addr + 1 : 0;
+    if ((isz == 1 && !g_vk.has_index8) || (ix->restart && restart && (ix->restart_index & ones) != ones) ||
+        (isz == 1 && ix->restart && !restart) || len < isz || (ix->addr & (isz - 1)))
+        return 0;
+    *type = isz == 1 ? VK_INDEX_TYPE_UINT8_KHR : isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    if (len > (4u << 20)) len = 4u << 20; /* a window holds it, and the binding reads on to the window's end */
+    return vk_buf_get_window_input(ix->addr, len, isz, buf, off);
+}
+/* the draws: Vulkan's draw count past one needs multiDrawIndirect, else one call each */
+static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 aoff, VkBuffer cbuf, u64 coff, u32 n,
+                          u32 stride) {
+    n = n ? n : 1;
+    if (cbuf || n == 1 || g_vk.feat.multiDrawIndirect)
+        rec_CmdDrawIndirect(cb, indexed, abuf, aoff, cbuf, coff, n, stride);
+    else
+        for (u32 i = 0; i < n; i++)
+            rec_CmdDrawIndirect(cb, indexed, abuf, aoff + (u64)i * stride, VK_NULL_HANDLE, 0, 1, 0);
+}
 static void render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
 void vk_render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
@@ -2691,7 +2729,7 @@ retry:
     }
     cb_prefetch(ds, 0, vs, 0);
     if (fs) cb_prefetch(ds, 4, fs, 0);
-    draw_indices_prefetch(&ds->index, indexed, first, count, 0);
+    if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 0);
     Surf* rt[8];
     Surf* zt;
     u32 n;
@@ -2790,9 +2828,10 @@ retry:
     } vq[33];
     u32 nvq = 0;
     /* each stream up to the last vertex or instance the draw reads, rather than to its limit */
-    u64 last_vertex =
-        k->nbind ? draw_last_vertex(dc->inline_indices, &ds->index, indexed, first, count, base_vertex) : ~0ull;
-    u64 last_instance = (u64)base_instance + instances - 1;
+    u64 last_vertex = k->nbind && !dc->indirect
+                          ? draw_last_vertex(dc->inline_indices, &ds->index, indexed, first, count, base_vertex)
+                          : ~0ull;
+    u64 last_instance = dc->indirect ? ~0ull : (u64)base_instance + instances - 1;
     for (u32 v = 0; v < k->nbind; v++) {
         if (pl->key[v] == ~0u || pl->key[v] == ~1u) {
             /* the constants: staging that fails skips the draw (it once drew without the attributes) */
@@ -2856,12 +2895,20 @@ retry:
         voff[vq[q].b] += vq[q].base;
         vsize[vq[q].b] = vq[q].len - vq[q].base;
     }
+    /* an indirect draw's arguments and count, as the GPU holds them (a compute program's results that haven't landed
+       read where they are) */
+    VkBuffer abuf = VK_NULL_HANDLE, cntbuf = VK_NULL_HANDLE;
+    u64 aoff = 0, cntoff = 0;
+    if (dc->indirect && !indirect_args(dc, indexed, &abuf, &aoff, &cntbuf, &cntoff)) {
+        g_vk_skipped++;
+        return;
+    }
     VkPrimitiveTopology topo = topology_vk(topology);
 
     /* descriptor sets (may record uploads and barriers, so before the pass opens) */
     cb_prefetch(ds, 0, vs, 1);
     if (fs) cb_prefetch(ds, 4, fs, 1);
-    draw_indices_prefetch(&ds->index, indexed, first, count, 1);
+    if (!dc->indirect) draw_indices_prefetch(&ds->index, indexed, first, count, 1);
     VkDrawStorage storage;
     draw_storage_read(ds, &storage, vs, fs);
     int alias = storage.n[0] || storage.n[1] ? vk_buf_draw_has_alias(&storage) : 0;
@@ -2929,7 +2976,16 @@ retry:
         topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
     u32 icount = count;
     i32 voffset = (i32)base_vertex; /* the draw's vertexOffset */
-    if (topology == 7) { /* quads -> two triangles each */
+    if (dc->indirect) {
+        /* what the CPU makes into other indices needs the count, which only the GPU has */
+        if (topology == 7 || (indexed && !indirect_indices(&ds->index, restart, &ibuf, &ioff, &itype))) {
+            LOG_LIMIT(1, "vulkan: an indirect draw of %s isn't drawn\n",
+                      topology == 7 ? "quads" : "8-bit indices or another restart index than Vulkan's");
+            draw_images_discard(&images);
+            g_vk_skipped++;
+            return;
+        }
+    } else if (topology == 7) { /* quads -> two triangles each */
         u32 nq = count / 4;
         int made = indexed ? index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, 0, nq,
                                            (u64)nq * 24, &ibuf, &ioff)
@@ -3253,7 +3309,14 @@ retry:
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
        textures (stage_set) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
-    memcpy(&pc[0], &ds->dyn.depth_word, sizeof(u32));
+    /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
+       with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
+       3D engine's instanced draws continue from an earlier draw's instances, and an indirect draw's base instance is
+       the GPU's */
+    u32 pc0 = !g_vk.has_shader_draw_parameters ? ds->dyn.depth_word
+              : dc->indirect                    ? 0
+                                                : base_instance - ds->dyn.depth_word;
+    memcpy(&pc[0], &pc0, sizeof(u32));
     pc[4] = ds->dyn.alpha_test ? 1.0f : 0.0f;
     pc[5] = (float)ds->dyn.alpha_func;
     memcpy(&pc[6], &ds->dyn.alpha_ref, 4);
@@ -3283,7 +3346,10 @@ retry:
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
     pred_begin(cb, o->pred);
-    if (indexed) {
+    if (dc->indirect) {
+        if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
+        draw_indirect(cb, indexed, abuf, aoff, cntbuf, cntoff, dc->draw_count, dc->stride);
+    } else if (indexed) {
         rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
         rec_CmdDrawIndexed(cb, icount, instances, 0, voffset, base_instance);
     } else

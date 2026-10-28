@@ -259,6 +259,9 @@ static int create_device(void) {
     if (g_settings.native_etc2 && !want->textureCompressionETC2)
         WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
     WANT(vertexPipelineStoresAndAtomics);
+    /* indirect draws (render.c's draw_indirect): several in one call, and a base instance from the GPU's arguments */
+    WANT(multiDrawIndirect);
+    WANT(drawIndirectFirstInstance);
     WANT(fragmentStoresAndAtomics);
     WANT(shaderImageGatherExtended);
     WANT(shaderStorageImageExtendedFormats);
@@ -462,6 +465,8 @@ static int create_device(void) {
         .shaderDrawParameters = q11.shaderDrawParameters,
         .samplerYcbcrConversion = g_vk.video_family != ~0u && q11.samplerYcbcrConversion};
     g_vk.has_shader_draw_parameters = q11.shaderDrawParameters != 0;
+    g_shader_draw_parameters = g_vk.has_shader_draw_parameters;
+    g_vk.has_draw_indirect_count = q12.drawIndirectCount != 0;
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -472,6 +477,7 @@ static int create_device(void) {
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
+                                            .drawIndirectCount = q12.drawIndirectCount,
                                             .shaderSampledImageArrayNonUniformIndexing =
                                                 q12.shaderSampledImageArrayNonUniformIndexing};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */

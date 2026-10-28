@@ -900,6 +900,7 @@ static void draw_idx(CPU* c, u64 cb, i32 prim, i32 type, i32 count, u64 ib, i32 
 /* the arguments at ind are read by the GPU when it draws */
 void nvn_CommandBufferDrawArraysIndirect(CPU* c, u64 cb, i32 prim, u64 ind) {
     NvnPDraw d = {0};
+    LOG_LIMIT(1, "nvn: the game records indirect draws (DrawArraysIndirect)\n");
     d.prim = prim;
     d.instances = 1;
     d.ind = ind;
@@ -907,6 +908,7 @@ void nvn_CommandBufferDrawArraysIndirect(CPU* c, u64 cb, i32 prim, u64 ind) {
 }
 void nvn_CommandBufferDrawElementsIndirect(CPU* c, u64 cb, i32 prim, i32 type, u64 ib, u64 ind) {
     NvnPDrawIdx d = {0};
+    LOG_LIMIT(1, "nvn: the game records indirect draws (DrawElementsIndirect)\n");
     d.prim = prim;
     d.index_type = type;
     d.instances = 1;
@@ -914,44 +916,35 @@ void nvn_CommandBufferDrawElementsIndirect(CPU* c, u64 cb, i32 prim, i32 type, u
     d.ind = ind;
     memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d)), &d, sizeof d);
 }
-/* an indirect-count multi-draw: max indirect draws carrying the count's address and their index, as nxnative records
-   them; the replay draws those below the count the GPU wrote */
-#define MDI_MAX 1024
+/* an indirect-count multi-draw: up to max indirect draws, stride bytes apart, as many as the count the GPU reads at
+   count says. One record: the replay hands the whole of it to the GPU */
 void nvn_CommandBufferMultiDrawElementsIndirectCount(CPU* c, u64 cb, i32 prim, i32 type, u64 ib, u64 ind, u64 count,
                                                      i32 max, i64 stride) {
-    i32 i;
-    if (max > MDI_MAX) {
-        LOG_LIMIT(1, "nvn: an indirect-count multi-draw of up to %d draws: the first %d are recorded\n", max, MDI_MAX);
-        max = MDI_MAX;
-    }
-    for (i = 0; i < max; i++) {
-        NvnPDrawIdx d = {0};
-        d.prim = prim;
-        d.index_type = type;
-        d.instances = 1;
-        d.index_buffer = ib;
-        d.ind = ind + (u64)i * (u64)stride;
-        d.mdi_count = count;
-        d.mdi_index = i;
-        memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d)), &d, sizeof d);
-    }
+    NvnPDrawIdx d = {0};
+    LOG_LIMIT(1, "nvn: the game records indirect multi-draws (MultiDrawElementsIndirectCount)\n");
+    if (max <= 0) return;
+    d.prim = prim;
+    d.index_type = type;
+    d.instances = 1;
+    d.index_buffer = ib;
+    d.ind = ind;
+    d.mdi_count = count;
+    d.mdi_max = max;
+    d.mdi_stride = (i32)stride;
+    memcpy(GP(rec(c, cb, OP_DRAW_IDX, sizeof d)), &d, sizeof d);
 }
 void nvn_CommandBufferMultiDrawArraysIndirectCount(CPU* c, u64 cb, i32 prim, u64 ind, u64 count, i32 max,
                                                    i64 stride) {
-    i32 i;
-    if (max > MDI_MAX) {
-        LOG_LIMIT(1, "nvn: an indirect-count multi-draw of up to %d draws: the first %d are recorded\n", max, MDI_MAX);
-        max = MDI_MAX;
-    }
-    for (i = 0; i < max; i++) {
-        NvnPDraw d = {0};
-        d.prim = prim;
-        d.instances = 1;
-        d.ind = ind + (u64)i * (u64)stride;
-        d.mdi_count = count;
-        d.mdi_index = i;
-        memcpy(GP(rec(c, cb, OP_DRAW, sizeof d)), &d, sizeof d);
-    }
+    NvnPDraw d = {0};
+    LOG_LIMIT(1, "nvn: the game records indirect multi-draws (MultiDrawArraysIndirectCount)\n");
+    if (max <= 0) return;
+    d.prim = prim;
+    d.instances = 1;
+    d.ind = ind;
+    d.mdi_count = count;
+    d.mdi_max = max;
+    d.mdi_stride = (i32)stride;
+    memcpy(GP(rec(c, cb, OP_DRAW, sizeof d)), &d, sizeof d);
 }
 void nvn_CommandBufferDrawArrays(CPU* c, u64 cb, i32 prim, i32 first, i32 count) {
     draw(c, cb, prim, first, count, 1, 0);
@@ -983,6 +976,7 @@ void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
 void nvn_CommandBufferDispatchComputeIndirect(CPU* c, u64 cb, u64 ind) {
     u64 caller = c->x[30];
     NvnPDispatch* r = REC(c, cb, OP_DISPATCH, NvnPDispatch);
+    LOG_LIMIT(1, "nvn: the game records indirect dispatches (DispatchComputeIndirect)\n");
     r->caller = caller;
     r->ind = ind;
 }
