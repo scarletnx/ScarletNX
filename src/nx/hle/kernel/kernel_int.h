@@ -258,6 +258,13 @@ typedef struct {
     u8* snap;
 } KCodeView;
 #define KCODEVIEW_MAX 64 /* the views a mod keeps at once: exlaunch's are its module's text and its hook pools */
+/* svcMapMemory's view of src at dst, size bytes: src stays locked until svcUnmapMemory, so the view is the owner of
+   that lock. A view is live while dst is still mapped in its state (the stack state, or normal memory in the alias
+   region); one whose dst is gone owns nothing */
+typedef struct {
+    u64 dst, src, size;
+} KMapView;
+#define KMAPVIEW_MAX 256 /* the live threads' stacks (KTHREAD_MAX), and the fibers' and mods' views */
 /* svc_mem.c */
 typedef struct {
     /* the cores and priorities the npdm's kernel capabilities allow (svcGetInfo 0 and 1) */
@@ -271,11 +278,15 @@ typedef struct {
     int entropy_made;
     u64 local_region; /* UserExceptionContextAddress's page, 0 until made */
     KCodeView views[KCODEVIEW_MAX]; /* under g_host.svcmem.views_lk: a free one has size 0 */
+    KMapView maps[KMAPVIEW_MAX]; /* under g_host.svcmem.map_lk: a free one has size 0 */
     u64 fit; /* memory_fit's: the most the game is told, measured as it starts (mem_fit); 0 for the console's */
 } HleSvcMem;
 /* svc_mem's host side: the views' lock, which a save state never holds (hle.h's g_host) */
 typedef struct {
     PMutex views_lk;
+    /* MapMemory, UnmapMemory and the attribute and permission changes, one at a time as the console's page table lock
+       makes them: taken before views_lk and mem.c's locks, never after them. Guards g_hle.svcmem.maps too */
+    PMutex map_lk;
 } HostSvcMem;
 /* until the npdm says (main.c): an application's */
 #endif

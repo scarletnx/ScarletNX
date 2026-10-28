@@ -35,8 +35,12 @@ enum {
     NVMAP_ALLOC_KIND = 16,
     NVMAP_ALLOC_ADDRESS = 24
 };
-/* IocFreeParams {u32 handle; 4 bytes padding; out u64 address, u32 size, u32 flags} */
+/* IocAllocParams.flags: bit 1 asks for uncached memory (Switchbrew's NV services) */
+#define NVMAP_ALLOC_UNCACHED 2u
+/* IocFreeParams {u32 handle; 4 bytes padding; out u64 address, u32 size, u32 flags}. The address and size are 0 unless
+   this was the handle's last reference; flags is 1 (WAS_UNCACHED) when the allocation asked for uncached memory */
 enum { NVMAP_FREE_HANDLE = 0, NVMAP_FREE_ADDRESS = 8, NVMAP_FREE_SIZE = 16, NVMAP_FREE_FLAGS = 20 };
+#define NVMAP_FREE_WAS_UNCACHED 1u
 /* IocParamParams {u32 handle, u32 param; out u32 result} */
 enum { NVMAP_PARAM_HANDLE = 0, NVMAP_PARAM_PARAM = 4, NVMAP_PARAM_RESULT = 8 };
 /* IocGetIdParams {out u32 id; u32 handle} */

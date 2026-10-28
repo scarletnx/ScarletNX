@@ -14,6 +14,7 @@ void hle_init(void) {
     pm_init(&g_host.kernel.klock);
     pm_init(&g_host.kernel.pool_lk);
     pm_init(&g_host.svcmem.views_lk);
+    pm_init(&g_host.svcmem.map_lk);
     pm_init(&g_host.thread.core_lk);
     pm_init(&g_host.ipc.lk);
     pm_init(&g_host.acc.pic_lk);

@@ -434,6 +434,30 @@ static void gmmu_unmap(u64 gva, u64 size, int own, u64 cpu) {
     grun_change(first, last, 0, own, cpu);
     gmmu_change_end(gva, size);
 }
+/* A GPU mapping of a handle's memory pins it, as the console's nvmap does: the handle object lives until the mapping
+   goes, even when FREE has given back the game's reference, and FREE reports no memory meanwhile. A pin is one piece
+   of a mapping, since a split keeps a piece of its own; every pin's piece unpins it in turn */
+static void nvmap_retire(u32 h);
+
+static void nvmap_pin(u32 h) {
+    if (!h || h >= NVMAP_HANDLES) return;
+    pm_lock(&g_host.nvdrv.lock);
+    if (g_hle.nvdrv.nvh[h].alive) g_hle.nvdrv.nvh[h].pins++;
+    pm_unlock(&g_host.nvdrv.lock);
+}
+static void nvmap_unpin(u32 h) {
+    int retire = 0;
+    if (!h || h >= NVMAP_HANDLES) return;
+    pm_lock(&g_host.nvdrv.lock);
+    if (g_hle.nvdrv.nvh[h].alive && g_hle.nvdrv.nvh[h].pins) {
+        if (!--g_hle.nvdrv.nvh[h].pins && !g_hle.nvdrv.nvh[h].refs) {
+            g_hle.nvdrv.nvh[h].alive = g_hle.nvdrv.nvh[h].allocated = 0;
+            retire = 1;
+        }
+    }
+    pm_unlock(&g_host.nvdrv.lock);
+    if (retire) nvmap_retire(h);
+}
 static GMap* gmap_add(void) {
     if (g_hle.nvdrv.ngmaps == g_hle.nvdrv.capgmaps) {
         u32 nc = g_hle.nvdrv.capgmaps ? g_hle.nvdrv.capgmaps * 2 : 1024;
@@ -443,6 +467,13 @@ static GMap* gmap_add(void) {
         g_hle.nvdrv.capgmaps = nc;
     }
     return &g_hle.nvdrv.gmaps[g_hle.nvdrv.ngmaps++];
+}
+/* a piece of a mapping of handle h, pinned */
+static GMap* gmap_new(u32 h) {
+    GMap* g = gmap_add();
+    g->h = h;
+    nvmap_pin(h);
+    return g;
 }
 /* takes [gva, gva+size) out of the tracked pieces, splitting a piece that straddles it */
 static void gmap_cut(u64 gva, u64 size) {
@@ -458,7 +489,7 @@ static void gmap_cut(u64 gva, u64 size) {
             tail.gva = e;
             tail.size = ge - e;
             g->size = gva - g->gva;
-            *gmap_add() = tail;
+            *gmap_new(tail.h) = tail; /* two pieces now, each with its own pin */
             k++;
         } else if (g->gva < gva) {
             g->size = gva - g->gva;
@@ -468,8 +499,11 @@ static void gmap_cut(u64 gva, u64 size) {
             g->size = ge - e;
             g->gva = e;
             k++;
-        } else
+        } else {
+            u32 h = g->h;
             g_hle.nvdrv.gmaps[k] = g_hle.nvdrv.gmaps[--g_hle.nvdrv.ngmaps];
+            nvmap_unpin(h);
+        }
     }
 }
 /* GPU VA for ALLOC_SPACE and MAP_BUFFER_EX: first fit from where the big-page region starts (Eden's
@@ -855,31 +889,43 @@ static u32 nvmap_ioc_alloc(const u8* d) {
     if (!r) LOGV("nvdrv: nvmap alloc %u at %llx\n", h, (unsigned long long)addr);
     return r;
 }
-/* FREE: drops a reference and reports the handle's memory. The last reference ends the handle, and its number goes
+/* the last reference and pin gone: NVDEC and VIC drop what they mapped of it before the number can name another buffer */
+static void nvmap_retire(u32 h) {
+    host1x_forget_handle(h);
+    pm_lock(&g_host.nvdrv.lock);
+    g_hle.nvdrv.nvh_free[g_hle.nvdrv.nvh_nfree++] = h;
+    pm_unlock(&g_host.nvdrv.lock);
+}
+/* FREE: drops a reference and, only when that was the last one, reports the handle's memory: a zero address says the
+   handle lives on (a GPU mapping pins it, another reference, or a mapping of the memory itself), which the SDK relies
+   on to know whether it may change the memory's attributes. The last reference ends the handle, and its number goes
    back once NVDEC and VIC have dropped what they mapped of it */
 static u32 nvmap_ioc_free(u8* d) {
-    int last = 0;
+    int last = 0, retire = 0;
     u32 h = rd32(d, NVMAP_FREE_HANDLE);
     NvMapH* m;
     if (!h || h >= NVMAP_HANDLES) return NV_RESULT_NOT_IMPLEMENTED;
     pm_lock(&g_host.nvdrv.lock);
     m = nvmap_live(h);
+    wr64(d, NVMAP_FREE_ADDRESS, 0);
+    wr32(d, NVMAP_FREE_SIZE, 0);
+    wr32(d, NVMAP_FREE_FLAGS, 0);
     if (m) {
-        wr64(d, NVMAP_FREE_ADDRESS, m->addr);
-        wr32(d, NVMAP_FREE_SIZE, m->size);
-        wr32(d, NVMAP_FREE_FLAGS, m->flags);
-        last = !--m->refs;
-        if (last) m->alive = m->allocated = 0;
+        if (m->refs) m->refs--;
+        last = !m->refs && !m->pins;
+        if (last) {
+            if (!(svc_mem_range_locked && svc_mem_range_locked(m->addr, m->size))) {
+                wr64(d, NVMAP_FREE_ADDRESS, m->addr);
+                wr32(d, NVMAP_FREE_SIZE, m->size);
+                wr32(d, NVMAP_FREE_FLAGS, (m->flags & NVMAP_ALLOC_UNCACHED) ? NVMAP_FREE_WAS_UNCACHED : 0);
+            }
+            m->alive = m->allocated = 0;
+            retire = 1;
+        }
     }
     pm_unlock(&g_host.nvdrv.lock);
     if (!m) return NV_RESULT_NOT_IMPLEMENTED;
-    if (last) {
-        /* NVDEC and VIC drop what they mapped of it before the number can name another buffer */
-        host1x_forget_handle(h);
-        pm_lock(&g_host.nvdrv.lock);
-        g_hle.nvdrv.nvh_free[g_hle.nvdrv.nvh_nfree++] = h;
-        pm_unlock(&g_host.nvdrv.lock);
-    }
+    if (retire) nvmap_retire(h);
     return NV_RESULT_SUCCESS;
 }
 /* PARAM: one of the handle's properties (Eden's IocParam) */
@@ -977,6 +1023,7 @@ static u32 as_unmap_buffer(u64 base) {
         gmmu_unmap(g.gva, g.size, 1, g.cpu);
         if (g.va) va = g.va;
         g_hle.nvdrv.gmaps[k] = g_hle.nvdrv.gmaps[--g_hle.nvdrv.ngmaps];
+        nvmap_unpin(g.h);
     }
     if (va) va_free(base, va);
     return NV_RESULT_SUCCESS;
@@ -1023,7 +1070,7 @@ static u32 as_map_buffer(u8* d) {
         va = span;
     }
     gmmu_map(gva, cpu, span);
-    g = gmap_add();
+    g = gmap_new(h);
     g->gva = gva;
     g->size = span;
     g->cpu = cpu;
@@ -1078,6 +1125,7 @@ static u32 as_remap(const u8* d, u32 n) {
         }
         if (!h) {
             gmmu_unmap(gva, size, 0, 0);
+            gmap_cut(gva, size);
             LOG_LIMIT(16, "nvdrv: REMAP unmaps %llx bytes at %llx\n", (unsigned long long)size,
                       (unsigned long long)gva);
             continue;
@@ -1093,6 +1141,15 @@ static u32 as_remap(const u8* d, u32 n) {
             continue;
         }
         gmmu_map(gva, cpu, size);
+        gmap_cut(gva, size);
+        {
+            GMap* g = gmap_new(h);
+            g->gva = gva;
+            g->size = size;
+            g->cpu = cpu;
+            g->base = gva;
+            g->va = 0;
+        }
         LOG_LIMIT(16, "nvdrv: REMAP handle %u: %llx bytes at %llx -> %llx\n", h, (unsigned long long)size,
                   (unsigned long long)gva, (unsigned long long)cpu);
     }

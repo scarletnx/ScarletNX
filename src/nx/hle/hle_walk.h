@@ -17,6 +17,7 @@
     X(KTmem, (h).svcmem.tmems[0])                                                                                      \
     X(KCodeMem, (h).svcmem.codemems[0])                                                                                \
     X(KCodeView, (h).svcmem.views[0])                                                                                  \
+    X(KMapView, (h).svcmem.maps[0])                                                                                    \
     X(debug_sleeps_slot, (h).debug.sleeps[0])                                                                          \
     X(SvcObj, (h).ipc.svcobjs[0])                                                                                      \
     X(KSession, (h).ipc.sessions[0])                                                                                   \

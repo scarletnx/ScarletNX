@@ -141,6 +141,10 @@ static inline void kobj_set_name(KObj* o, const char* name) {
 }
 void kobj_ref(KObj* o);
 void kobj_unref(KObj* o);
+/* whether a mapping of the memory (a MapMemory view, a transfer memory or a code memory) holds [addr, addr + size)
+   locked: nvmap's FREE reports no memory for such a range, as the console's page table pins what is mapped. Weak, so
+   nvdrv's tests, which have no memory layer, need not answer */
+int svc_mem_range_locked(u64 addr, u64 size) __attribute__((weak));
 /* the object h names, of type t (0 for any), with a reference the caller drops with kobj_unref. NULL when none */
 KObj* h_get_ref(u32 h, int t);
 

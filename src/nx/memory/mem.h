@@ -78,6 +78,9 @@ enum {
 };
 /* MemoryPermission */
 enum { PERM_NONE = 0, PERM_R = 1, PERM_W = 2, PERM_RW = 3, PERM_X = 4, PERM_RX = 5, PERM_DONTCARE = 0x10000000 };
+/* MemoryAttribute: the bits svcSetMemoryAttribute names, and the set it may change (Uncached and PermissionLocked) */
+enum { MA_LOCKED = 1, MA_IPC_LOCKED = 2, MA_DEVICE_SHARED = 4, MA_UNCACHED = 8, MA_PERMISSION_LOCKED = 0x10 };
+#define MA_SET_MASK 0x18u
 /* what the calls below return besides 0 */
 enum { MEM_BADSTATE = -1, MEM_NOMEM = -2, MEM_LIMIT = -3 };
 

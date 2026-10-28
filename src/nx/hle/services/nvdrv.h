@@ -99,22 +99,24 @@ void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* 
    unused */
 #define NV_CHANNEL_EVENTS 4u
 
-/* an nvmap handle (nvh, by handle number). CREATE and each FROM_ID take a reference, FREE gives one back and the
-   last one ends the handle. allocated: ALLOC gave it guest memory at addr */
+/* an nvmap handle (nvh, by handle number). CREATE and each FROM_ID take a reference, FREE gives one back; a GPU
+   mapping pins it, as the console's nvmap does, and the last reference and pin ends it. allocated: ALLOC gave it guest
+   memory at addr */
 typedef struct {
     u64 addr;
     u32 size, align, heap, flags;
     u32 id;
-    u32 refs;
+    u32 refs, pins;
     int alive, allocated;
     u8 kind;
 } NvMapH;
-/* what MAP_BUFFER_EX mapped, for UNMAP_BUFFER: [gva, gva+size) maps cpu. base is the address UNMAP_BUFFER names; a
-   modify (NVHOST_AS_MAP_REMAP) or FREE_SPACE splits a mapping into pieces that keep it. va is the VA the mapping took from
-   the allocator (0 when the game placed it), given back when it is unmapped */
+/* what MAP_BUFFER_EX mapped, for UNMAP_BUFFER: [gva, gva+size) maps cpu of nvmap handle h. base is the address
+   UNMAP_BUFFER names; a modify (NVHOST_AS_MAP_REMAP) or FREE_SPACE splits a mapping into pieces that keep it. va is the
+   VA the mapping took from the allocator (0 when the game placed it), given back when it is unmapped */
 typedef struct {
     u64 gva, size, cpu;
     u64 base, va;
+    u32 h;
 } GMap;
 typedef struct {
     u64 a, e;

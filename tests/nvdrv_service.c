@@ -580,10 +580,10 @@ static void test_nvmap_as(void) {
     CHECK(nvmap_call(0x03, d) == 0 && snx_ld_le32(d + 4) == h); /* FROM_ID: the id is the handle's number */
     memset(d, 0, sizeof d);
     snx_st_le32(d, h);
-    CHECK(nvmap_call(0x05, d) == 0); /* FREE reports the address, size and flags */
+    CHECK(nvmap_call(0x05, d) == 0); /* not the last reference: no address, and the handle lives on */
     addr = snx_ld_le64(d + 8);
     v = snx_ld_le32(d + 16);
-    CHECK(addr == 0x8000 && v == 0x2000 && g_hle.nvdrv.nvh[h].alive);
+    CHECK(addr == 0 && v == 0 && g_hle.nvdrv.nvh[h].alive);
     CHECK(nvmap_param(h, 4, &v) == 0 && v == 0x40000000u); /* Eden's heap for an allocated handle */
     CHECK(nvmap_param(h, 3, &v) == 0 && v == 0x8000);       /* Base: the address's low bits */
     CHECK(nvmap_param(h, 2, &v) == 0 && v == 0x1000);       /* no alignment given */
@@ -594,6 +594,7 @@ static void test_nvmap_as(void) {
     memset(d, 0, sizeof d);
     snx_st_le32(d, h);
     CHECK(nvmap_call(0x05, d) == 0 && !g_hle.nvdrv.nvh[h].alive);
+    CHECK(snx_ld_le64(d + 8) == 0x8000 && snx_ld_le32(d + 16) == 0x2000); /* the last reference reports it */
     CHECK(nvmap_call(0x05, d) == 1 && nvmap_param(h, 1, &v) == 1);
     memset(d, 0, sizeof d);
     snx_st_le32(d + 4, h);
@@ -668,6 +669,18 @@ static void test_nvmap_as(void) {
     v = 0x10000;
     snx_st_le32(d + 8, v);
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 16);
+
+    /* a GPU mapping pins the handle, as the console's nvmap does: FREE reports no memory and leaves it alive, and
+       UNMAP_BUFFER of the last mapping ends it */
+    h = nvmap_new(0x2000, 0x8000);
+    gva = as_map(0, h, 0x2000, 0);
+    memset(d, 0, sizeof d);
+    snx_st_le32(d, h);
+    CHECK(nvmap_call(0x05, d) == 0);
+    CHECK(snx_ld_le64(d + 8) == 0 && g_hle.nvdrv.nvh[h].alive && g_hle.nvdrv.nvh[h].pins == 1);
+    memset(d, 0, sizeof d);
+    snx_st_le64(d, gva);
+    CHECK(as_call(0x05, d, 8) == 0 && !g_hle.nvdrv.nvh[h].alive);
 }
 
 

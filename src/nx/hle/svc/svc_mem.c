@@ -23,9 +23,6 @@
 #define MSF_CAN_MAP_PROCESS (1u << 23)
 #define MSF_CAN_CHANGE_ATTR (1u << 24)
 #define MSF_CAN_CODE_MEMORY (1u << 25)
-/* MemoryAttribute: Locked, IpcLocked, DeviceShared, Uncached, PermissionLocked */
-#define MA_LOCKED   1u
-#define MA_SET_MASK 0x18u /* what SetMemoryAttribute may change: Uncached and PermissionLocked */
 
 /* ============================================================ helpers */
 static int in_region(u64 a, u64 size, u64 base, u64 rsize) { return a >= base && size <= rsize && a - base <= rsize - size; }
@@ -193,22 +190,178 @@ u32 svc_unmap_physical(u64 addr, u64 size) {
 /* ============================================================ permissions, attributes, MapMemory */
 /* svcSetMemoryPermission: none, read or read-write, on memory whose state may be reprotected and has no attribute */
 u32 svc_set_mem_perm(u64 addr, u64 size, u32 perm) {
+    u32 r;
     R_TRY(check_range(addr, size));
     if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
+    pm_lock(&g_host.svcmem.map_lk);
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_REPROTECT, ANY, ~0u, 0))
-        R_THROW(R_BADMEMSTATE);
-    set_perm(addr, size, perm);
-    R_SUCCEED();
+        r = R_BADMEMSTATE;
+    else {
+        set_perm(addr, size, perm);
+        r = 0;
+    }
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+/* the first block of [addr, addr + size) that svcSetMemoryAttribute can't change: 1 and b when there is one, 0 when
+   the whole range allows the change */
+static int attr_blocked(u64 addr, u64 size, MemBlock* b) {
+    u64 end = addr + size;
+    while (addr < end) {
+        mem_query(addr, b);
+        if (b->addr > addr || b->addr + b->size <= addr) return 1;
+        if (!(b->state & MSF_CAN_CHANGE_ATTR) || (b->attr & ~MA_SET_MASK)) return 1;
+        addr = b->addr + b->size;
+    }
+    return 0;
+}
+/* ============================================================ the owners of a lock */
+/* A view's dst is mapped in the stack state, or in normal memory inside the alias region (check_map_memory's choice) */
+static u32 view_state(u64 dst, u64 size) {
+    if (can_contain(dst, size, MS_STACK)) return MS_STACK;
+    if (ALIAS_SIZE && in_region(dst, size, ALIAS_BASE, ALIAS_SIZE)) return MS_NORMAL;
+    return 0;
+}
+/* whether a view's dst is still mapped as it was: a view whose dst is gone is stale, and its source's lock has no
+   owner left */
+static int view_live(const KMapView* v) {
+    u32 state = view_state(v->dst, v->size);
+    return state && range_ok(v->dst, v->size, state, 0, ANY, ~0u, 0);
+}
+/* forget the views whose dst is no longer mapped: an unmap that got as far as the dst but not as far as its source's
+   lock leaves one behind */
+static void views_prune(void) {
+    u32 i;
+    for (i = 0; i < KMAPVIEW_MAX; i++) {
+        KMapView* v = &g_hle.svcmem.maps[i];
+        if (v->size && !view_live(v)) {
+            LOG("kernel: the view of %llx at %llx is no longer mapped: its source's lock has no owner now\n",
+                (unsigned long long)v->src, (unsigned long long)v->dst);
+            memset(v, 0, sizeof *v);
+        }
+    }
+}
+/* a view of src at dst, under map_lk: a stale view's slot is taken before one past the end is reported */
+static void map_view_add(u64 dst, u64 src, u64 size) {
+    u32 i;
+    for (i = 0; i < KMAPVIEW_MAX; i++)
+        if (!g_hle.svcmem.maps[i].size) break;
+    if (i == KMAPVIEW_MAX) {
+        views_prune();
+        for (i = 0; i < KMAPVIEW_MAX && g_hle.svcmem.maps[i].size; i++) {}
+    }
+    if (i == KMAPVIEW_MAX) {
+        WARN_LIMIT(4, "kernel: more than %d MapMemory views at once: their sources' locks have no owner to name\n",
+                   KMAPVIEW_MAX);
+        return;
+    }
+    g_hle.svcmem.maps[i].dst = dst;
+    g_hle.svcmem.maps[i].src = src;
+    g_hle.svcmem.maps[i].size = size;
+}
+static void map_view_del(u64 dst) {
+    u32 i;
+    for (i = 0; i < KMAPVIEW_MAX; i++)
+        if (g_hle.svcmem.maps[i].size && g_hle.svcmem.maps[i].dst == dst) {
+            memset(&g_hle.svcmem.maps[i], 0, sizeof g_hle.svcmem.maps[i]);
+            return;
+        }
+}
+/* Clear the Locked attribute of the parts of [addr, addr + size) that no live view, transfer memory or code memory
+   owns. The console never keeps such a lock: one here is this runtime's, left behind by an unmap that did not finish,
+   and the console's SetMemoryAttribute would be refused over it for good. Answers how many bytes it unlocked. Under
+   map_lk; takes the pool's lock before mem.c's, which no path takes the other way round */
+static u64 release_unowned(u64 addr, u64 size) {
+    u64 at = addr, end = addr + size, cleared = 0;
+    u32 i;
+    views_prune();
+    pm_lock(&g_host.kernel.pool_lk);
+    while (at < end) {
+        u64 next = at, gap = end;
+        for (i = 0; i < KMAPVIEW_MAX; i++) {
+            const KMapView* v = &g_hle.svcmem.maps[i];
+            u64 e = v->size ? v->src + v->size : 0;
+            if (!v->size) continue;
+            if (v->src <= at && at < e) {
+                if (e > next) next = e;
+            } else if (v->src > at && v->src < gap)
+                gap = v->src;
+        }
+        for (i = 0; i < KHANDLED_MAX; i++) {
+            const KTmem* m = &g_hle.svcmem.tmems[i];
+            const KCodeMem* c = &g_hle.svcmem.codemems[i];
+            u64 a = m->o.type == KO_TMEM ? m->addr : c->o.type == KO_CODEMEM ? c->addr : 0;
+            u64 n = m->o.type == KO_TMEM ? m->size : c->o.type == KO_CODEMEM ? c->size : 0;
+            if (!n) continue;
+            if (a <= at && at < a + n) {
+                if (a + n > next) next = a + n;
+            } else if (a > at && a < gap)
+                gap = a;
+        }
+        if (next > at) {
+            at = next < end ? next : end;
+            continue;
+        }
+        if (gap > end) gap = end;
+        mem_set_attr(at, gap - at, MA_LOCKED, 0);
+        cleared += gap - at;
+        at = gap;
+    }
+    pm_unlock(&g_host.kernel.pool_lk);
+    if (cleared)
+        WARN_LIMIT(8, "kernel: unlocked %llx bytes at %llx that no view, transfer memory or code memory owns\n",
+                   (unsigned long long)cleared, (unsigned long long)addr);
+    return cleared;
+}
+/* whether a mapping of the memory holds it: MapMemory, a transfer memory or a code memory locks its source, and the
+   console's page table keeps such memory pinned, so nvmap's FREE reports no memory for it and the SDK changes no
+   attribute over a locked block */
+int svc_mem_range_locked(u64 addr, u64 size) {
+    u64 end = addr + size;
+    MemBlock b;
+    if (!size || addr >= AS_END || size > AS_END - addr) return 0;
+    while (addr < end) {
+        mem_query(addr, &b);
+        if (b.addr > addr || b.addr + b.size <= addr) return 0;
+        if (b.attr & MA_LOCKED) return 1;
+        addr = b.addr + b.size;
+    }
+    return 0;
 }
 /* svcSetMemoryAttribute: mask names the attributes that change (a superset of attr), only Uncached and
    PermissionLocked; the memory's state must allow it and it must be neither locked nor shared with a device */
-u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
-    R_TRY(check_range(addr, size));
-    R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, R_BADCOMBO);
-    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0))
+static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
+    MemBlock b;
+    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+        /* a lock with no owner is this runtime's alone: the console would never have it, so release it and try once
+           more before refusing as the console would */
+        if (in_region(addr, size, 0, AS_END) && release_unowned(addr, size) &&
+            range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+            mem_set_attr(addr, size, mask, attr);
+            R_SUCCEED();
+        }
+        if (!in_region(addr, size, 0, AS_END))
+            WARN_LIMIT(4, "svcSetMemoryAttribute(%llx, %llx, mask %x, attr %x): outside the address space\n",
+                       (unsigned long long)addr, (unsigned long long)size, mask, attr);
+        else if (attr_blocked(addr, size, &b))
+            WARN_LIMIT(4,
+                       "svcSetMemoryAttribute(%llx, %llx, mask %x, attr %x): the block at %llx of %llx is state %x, "
+                       "attr %x, perm %x\n",
+                       (unsigned long long)addr, (unsigned long long)size, mask, attr, (unsigned long long)b.addr,
+                       (unsigned long long)b.size, b.state, b.attr, b.perm);
         R_THROW(R_BADMEMSTATE);
+    }
     mem_set_attr(addr, size, mask, attr);
     R_SUCCEED();
+}
+u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
+    u32 r;
+    R_TRY(check_range(addr, size));
+    R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, R_BADCOMBO);
+    pm_lock(&g_host.svcmem.map_lk);
+    r = set_mem_attr_locked(addr, size, mask, attr);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
 }
 /* svcMapMemory: a view of src at dst, in the stack region (in the stack state) or, as the first firmwares had it,
    the alias region (as normal memory), src locked meanwhile (no permission, locked). The view and src are the same
@@ -226,7 +379,7 @@ static u32 check_map_memory(u64 dst, u64 src, u64 size, u32* state) {
         R_THROW(R_BADREGION);
     R_SUCCEED();
 }
-u32 svc_map_memory(u64 dst, u64 src, u64 size) {
+static u32 svc_map_memory_impl(u64 dst, u64 src, u64 size) {
     u32 state, r;
     R_TRY(check_map_memory(dst, src, size, &state));
     R_UNLESS(range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_RW, ~0u, 0), R_BADMEMSTATE);
@@ -240,17 +393,34 @@ u32 svc_map_memory(u64 dst, u64 src, u64 size) {
     mem_set_attr(src, size, MA_LOCKED, MA_LOCKED);
     R_SUCCEED();
 }
-u32 svc_unmap_memory(u64 dst, u64 src, u64 size) {
-    u32 state;
+u32 svc_map_memory(u64 dst, u64 src, u64 size) {
+    u32 r;
+    pm_lock(&g_host.svcmem.map_lk);
+    r = svc_map_memory_impl(dst, src, size);
+    if (R_SUCCEEDED(r)) map_view_add(dst, src, size);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+static u32 svc_unmap_memory_impl(u64 dst, u64 src, u64 size) {
+    u32 state, r;
     R_TRY(check_map_memory(dst, src, size, &state));
-    if (!range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_NONE, ~0u, MA_LOCKED) ||
-        !range_ok(dst, size, state, 0, ANY, MA_LOCKED, 0))
-        R_THROW(R_BADMEMSTATE);
-    mem_alias_unmap(dst, size, src);
+    R_UNLESS(range_ok(src, size, 0, MSF_CAN_ALIAS, PERM_NONE, ~0u, MA_LOCKED) &&
+                 range_ok(dst, size, state, 0, ANY, MA_LOCKED, 0),
+             R_BADMEMSTATE);
+    r = mem_result(mem_alias_unmap(dst, size, src));
+    if (R_FAILED(r)) R_THROW(r); /* dst is still mapped and src still locked: the view stands */
     mem_alias_end(src, size);
     mem_set_attr(src, size, MA_LOCKED, 0);
     set_perm(src, size, PERM_RW);
     R_SUCCEED();
+}
+u32 svc_unmap_memory(u64 dst, u64 src, u64 size) {
+    u32 r;
+    pm_lock(&g_host.svcmem.map_lk);
+    r = svc_unmap_memory_impl(dst, src, size);
+    if (R_SUCCEEDED(r)) map_view_del(dst);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
 }
 
 /* svcMapProcessMemory: a view of a process's memory at dst, shared code read and written, src staying as it is. The
@@ -510,7 +680,7 @@ u32 svc_unmap_shm(u32 h, u64 addr, u64 size) {
 /* ============================================================ transfer memory */
 /* svcCreateTransferMemory: the source stays where it is, its permission lowered to perm and locked, until the
    object goes (tmem_destroy). A service reads it in place */
-u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out) {
+static u32 svc_tmem_new_impl(u64 addr, u64 size, u32 perm, KTmem** out) {
     KTmem* m;
     R_TRY(check_range(addr, size));
     if (perm != PERM_NONE && perm != PERM_R && perm != PERM_RW) R_THROW(R_BADPERM);
@@ -528,6 +698,9 @@ u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out) {
     mem_set_attr(addr, size, MA_LOCKED, MA_LOCKED);
     *out = m;
     R_SUCCEED();
+}
+u32 svc_tmem_new(u64 addr, u64 size, u32 perm, KTmem** out) {
+    return svc_tmem_new_impl(addr, size, perm, out);
 }
 void tmem_destroy(KObj* o) {
     KTmem* m = (KTmem*)o;
@@ -555,7 +728,7 @@ void kcodemem_destroy(KObj* o) {
     POOL_PUT(c);
     pm_unlock(&g_host.kernel.pool_lk);
 }
-u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
+static u32 svc_codemem_new_impl(u64 addr, u64 size, KObj** out) {
     KCodeMem* c;
     R_TRY(check_range(addr, size));
     if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CODE_MEMORY, PERM_RW, ~0u, 0))
@@ -572,6 +745,9 @@ u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
     mem_set_attr(addr, size, MA_LOCKED, MA_LOCKED);
     *out = &c->o;
     R_SUCCEED();
+}
+u32 svc_codemem_new(u64 addr, u64 size, KObj** out) {
+    return svc_codemem_new_impl(addr, size, out);
 }
 /* op 0 MapOwner (read-write), 1 MapSlave (read or read-execute), 2 UnmapOwner, 3 UnmapSlave */
 u32 svc_codemem_control(KObj* o, u32 op, u64 addr, u64 size, u32 perm) {
