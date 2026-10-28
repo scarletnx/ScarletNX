@@ -17,7 +17,7 @@ u64 g_draws;
 int g_renderer_up = 1;
 static int calls;
 static DrawTexture seen;
-static void record(const DrawState* ds, const DrawTexture* t) {
+static void record(const DsState* ds, const DrawTexture* t) {
     (void)ds;
     calls++;
     seen = *t;
