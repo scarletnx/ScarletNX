@@ -547,7 +547,12 @@ static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, 
     SnxSocket* c = fd_get_bcast(b, fd);
     SnxSockAddr from = {0};
     int64_t r;
-    if (n && a) own_acquire(a, n); /* the kernel writes the buffer, and can't wait on memory the GPU holds */
+    /* the kernel writes the buffer, and can't wait on memory the GPU holds nor fault on a page the write tracking
+       protects */
+    if (n && a) {
+        own_acquire(a, n);
+        plat_ww_open(GP(a), n);
+    }
     if (!n)
         r = 0; /* Eden: nothing to receive into, and a datagram stays queued */
     else if (!a)
