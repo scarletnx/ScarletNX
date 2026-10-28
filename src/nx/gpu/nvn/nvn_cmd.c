@@ -751,11 +751,9 @@ void nvn_CommandBufferPopDebugGroupId(CPU* c, u64 cb, u32 domain) {
     (void)cb;
     (void)domain;
 }
-void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) {
-    (void)c;
-    (void)cb;
-    (void)sync;
-}
+/* the work recorded after it waits for the sync: the queue's later work is held behind it at submission, as
+   QueueWaitSync holds it (gpu/nvn/nvn_replay.c promise). One game waits for its window texture's sync only this way */
+void nvn_CommandBufferWaitSync(CPU* c, u64 cb, u64 sync) { *(u64*)(void*)GP(rec(c, cb, OP_WAIT_SYNC, 8)) = sync; }
 
 /* ============================================================ binds */
 /* the program's stages as they are now: the game may set new shaders in it before it submits */
