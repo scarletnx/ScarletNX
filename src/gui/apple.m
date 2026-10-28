@@ -4,6 +4,7 @@
    SDL's give dist/apple/Frontend.swift to present its pickers and share sheet over */
 #include "gui/apple.h"
 #include "gui/i18n.h"
+#include "gui/log.h"
 #include <SDL3/SDL.h>
 #include <TargetConditionals.h>
 #include <stdbool.h>
@@ -93,9 +94,11 @@ void gui_apple_log_start(void) {
                                                                 inDomains:NSUserDomainMask].firstObject;
         NSURL* logs = [documents URLByAppendingPathComponent:@"logs" isDirectory:YES];
         const char* path = NULL;
+        char today[64];
+        gui_log_console_name(today, sizeof today); /* the day it starts on: gui_log's lines go there too */
         if (logs) {
             [NSFileManager.defaultManager createDirectoryAtURL:logs withIntermediateDirectories:YES attributes:nil error:NULL];
-            path = [logs URLByAppendingPathComponent:@"scarletnx-console.log"].path.fileSystemRepresentation;
+            path = [logs URLByAppendingPathComponent:@(today)].path.fileSystemRepresentation;
         }
         time_t now = time(NULL);
         if (!path || !freopen(path, "a", stderr)) return;

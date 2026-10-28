@@ -2,11 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/log.h"
 #include "common/utilities/common.h"
+#include <errno.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* the folder, which the menu's thread sets and the dumps' icons' thread reads: under a spin lock, a copy at a time */
 static struct {
@@ -23,7 +25,23 @@ void gui_log_folder(const char* folder) {
     snprintf(g_gui_log.folder, sizeof g_gui_log.folder, "%s", folder ? folder : "");
     unlock();
 }
+void gui_log_console_name(char* out, size_t size) {
+    char day[16] = "";
+    time_t now = time(NULL);
+    struct tm tm;
+#ifdef _WIN32
+    if (!localtime_s(&tm, &now)) strftime(day, sizeof day, "%Y-%m-%d", &tm);
+#else
+    if (localtime_r(&now, &tm)) strftime(day, sizeof day, "%Y-%m-%d", &tm);
+#endif
+    snprintf(out, size, "scarletnx-console-%s.log", day);
+}
 void gui_log_path(const char* file, char* out, size_t size) {
+    char today[64];
+    if (!strcmp(file, SNX_CONSOLE_LOG)) {
+        gui_log_console_name(today, sizeof today);
+        file = today;
+    }
     lock();
     if (g_gui_log.folder[0]) {
         char* path = snx_path_join(g_gui_log.folder, file);
@@ -33,13 +51,50 @@ void gui_log_path(const char* file, char* out, size_t size) {
         out[0] = 0;
     unlock();
 }
-/* text in the log named file of the folder, when there is one */
+/* a day's launcher log, gui_log_console_name's */
+static int console_day(const char* name) {
+    static const char shape[] = "scarletnx-console-0000-00-00.log";
+    size_t i;
+    if (strlen(name) != sizeof shape - 1) return 0;
+    for (i = 0; i < sizeof shape - 1; ++i)
+        if (shape[i] == '0' ? name[i] < '0' || name[i] > '9' : name[i] != shape[i]) return 0;
+    return 1;
+}
+static int by_name(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
+/* the launcher's logs of folder down to the GUI_LOG_DAYS newest days; on stderr each that could not go */
+static void console_prune(const char* folder) {
+    char** names = NULL;
+    size_t count = 0, i, days = 0;
+    if (snx_list_dir(folder, &names, &count)) return;
+    qsort(names, count, sizeof *names, by_name);
+    for (i = count; i-- > 0;) {
+        char* path;
+        if (!console_day(names[i]) || ++days <= GUI_LOG_DAYS) continue;
+        path = snx_path_join(folder, names[i]);
+        if (remove(path) && errno != ENOENT) { /* another launcher's day may have taken it first */
+            char why[256];
+            fprintf(stderr, "scarletnx: %s could not be deleted (%s), past the %d days of logs kept\n", path,
+                    snx_os_error(why, sizeof why), GUI_LOG_DAYS);
+        }
+        free(path);
+    }
+    snx_free_strings(names, count);
+}
+/* text in the log named file of the folder, when there is one; a day's first line of the launcher's log takes the
+   days past GUI_LOG_DAYS away */
 static void log_to(const char* file, const char* text) {
     char path[sizeof g_gui_log.folder + 64];
+    int day_first;
     gui_log_path(file, path, sizeof path);
-    if (path[0] && snx_log_lines(path, text)) {
+    if (!path[0]) return;
+    day_first = !strcmp(file, SNX_CONSOLE_LOG) && !snx_path_exists(path);
+    if (snx_log_lines(path, text)) {
         char why[256];
         fprintf(stderr, "scarletnx: %s could not be written (%s): %s\n", path, snx_os_error(why, sizeof why), text);
+    } else if (day_first) {
+        char* folder = snx_dirname(path);
+        if (folder) console_prune(folder);
+        free(folder);
     }
 }
 void gui_log(const char* format, ...) {

@@ -143,7 +143,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
     (`app.ini`, which names the others, and each game's `.ini`: `XDG_CONFIG_HOME` moves it, a portable copy keeps its
     own), **Logs** (the games' logs and `threads.txt`, `recent.txt`, `last-run.log`, `last-recompile.log` and the
-    launcher's `scarletnx-console.log` and `scarletnx-error.log`), **Caches** (the recompile's
+    launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
     `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
     **Extra** folders, whose dumps Games lists, and **Add a folder**;
@@ -282,8 +282,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   data folder's `state/` and is shared.
 - **Open Data Folder**, on Android, opens the data folder, the app's own storage, in the
   system's Files app ([ANDROID](ANDROID.md)).
-- The launcher's log, `scarletnx-console.log` in its state folder (Settings > App > Folders' Logs; on iOS in `logs/`
-  of the app's Documents, [APPLE](APPLE.md)), holds what it says: its start (its build and data folder), each failure
+- The launcher's log, a file a day, `scarletnx-console-2026-10-28.log` in its state folder (Settings > App > Folders'
+  Logs; on iOS in `logs/` of the app's Documents, [APPLE](APPLE.md)), the 14 newest days kept (a day's first line
+  deletes the older ones; the `scarletnx-console.log` older versions wrote stays as it is), holds what it says: its start (its build and data folder), each failure
   once in a session (what the box over the screen says, shown or not), the warnings it gives as it opens, a dump whose
   icon the driver did not give with what the driver said. Each line starts with the time and the launcher's process
   ID, `2026-10-25 11:30:02 [4242] `, so two launchers open at once write theirs apart, and the lines go to stderr

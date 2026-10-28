@@ -51,7 +51,8 @@ menu's driver:
 - **A game** runs in the app's process once the menu closes (`src/nx/runtime/entry.c`): the runtime starts once per
   process, so the app ends with the game.
 - **Share Log** opens the share sheet with `scarletnx.log`.
-- **Logs.** Everything the app prints goes to `logs/scarletnx-console.log` in its Documents, after a banner with the
+- **Logs.** Everything the app prints goes to the day it starts on's `logs/scarletnx-console-<date>.log` in its
+  Documents (the 14 newest days kept), after a banner with the
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
   when a run fails; Share Log sends both.

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The launcher's logs (gui/log.h): nothing without a folder; with one, each line of what it says after the time and
-   its pid in scarletnx-console.log, a fatal error in scarletnx-error.log too; two programs writing at once keep their
-   lines whole, each named by its pid; a run log held by one launcher is seen taken by another. */
+   its pid in the day's scarletnx-console-YYYY-MM-DD.log, the days past GUI_LOG_DAYS deleted as a day starts and the
+   versions before's scarletnx-console.log left, a fatal error in scarletnx-error.log too; two programs writing at
+   once keep their lines whole, each named by its pid; a run log held by one launcher is seen taken by another. */
 #include "gui/log.h"
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -58,9 +60,16 @@ static int lines_of(const char* path, unsigned long pid, char* out, size_t size)
 }
 
 int main(void) {
-    char *dir = snx_temp_dir(NULL), *console, *error, path[4096], said[4096];
+    char *dir = snx_temp_dir(NULL), *console, *error, path[4096], said[4096], today[64], want[64];
     assert(dir);
-    console = snx_path_join(dir, SNX_CONSOLE_LOG);
+    { /* the day's name, by the local date */
+        time_t now = time(NULL);
+        struct tm* tm = localtime(&now);
+        assert(tm && strftime(want, sizeof want, "scarletnx-console-%Y-%m-%d.log", tm));
+        gui_log_console_name(today, sizeof today);
+        assert(!strcmp(today, want));
+    }
+    console = snx_path_join(dir, today);
     error = snx_path_join(dir, SNX_ERROR_LOG);
 
     /* no folder: stderr alone, no file anywhere */
@@ -78,7 +87,30 @@ int main(void) {
     assert(!strcmp(path, console));
     gui_log_path(SNX_ERROR_LOG, path, sizeof path);
     assert(!strcmp(path, error));
-    gui_log("first %d", 1);
+    /* the day's first line: of 16 days before and the old single file, the 13 newest days stay with today's (14) */
+    {
+        char name[64], *old;
+        int day, kept = 0;
+        for (day = 1; day <= 16; day++) {
+            snprintf(name, sizeof name, "scarletnx-console-2025-01-%02d.log", day);
+            old = snx_path_join(dir, name);
+            assert(!snx_write_file(old, "old\n", 4));
+            free(old);
+        }
+        old = snx_path_join(dir, SNX_CONSOLE_LOG);
+        assert(!snx_write_file(old, "the versions before's\n", 22));
+        gui_log("first %d", 1);
+        assert(snx_path_exists(old));
+        free(old);
+        for (day = 1; day <= 16; day++) {
+            snprintf(name, sizeof name, "scarletnx-console-2025-01-%02d.log", day);
+            old = snx_path_join(dir, name);
+            assert(!!snx_path_exists(old) == (day > 3));
+            kept += snx_path_exists(old);
+            free(old);
+        }
+        assert(kept == GUI_LOG_DAYS - 1);
+    }
     gui_log("two\nlines\n");
     gui_log("a\n\nblank between");
     gui_log_fatal("the window could not be made");

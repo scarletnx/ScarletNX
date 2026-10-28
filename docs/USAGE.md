@@ -479,7 +479,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
 | the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
 | the setup's `setup.ini` ([Setup](#setup)) | - | `~/.config/scarletnx/` | `config/` |
-| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console.log` and fatal errors `scarletnx-error.log` ([GUI](GUI.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
+| the menu's `recent.txt`, `last-run.log`, `last-recompile.log` (a second launcher open at once `last-run-2.log` and `last-recompile-2.log`), its log `scarletnx-console-<date>.log` (a file a day, the 14 newest kept) and fatal errors `scarletnx-error.log` ([GUI](GUI.md); iOS: `logs/` of its Documents) | - | `~/.local/state/scarletnx/` | `state/` |
 | the menu's Share Log, `scarletnx.log` | - | `~/.local/state/scarletnx/` | `state/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |

@@ -26,6 +26,12 @@ static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255
                        pink = {255, 85, 255, 255}, black = {0, 0, 0, 255};
 
 /* the question's box and its choices, as the theme places them (ask_place) */
+/* the launcher's log of today in folder (gui_log_console_name), owned */
+static char* console_in(const char* folder) {
+    char name[64];
+    gui_log_console_name(name, sizeof name);
+    return snx_path_join(folder, name);
+}
 static void ask_boxes(App* app, GuiRect* r, GuiChoices* choices) {
     ask_place(app, choices);
     *r = choices->box;
@@ -6268,7 +6274,7 @@ int main(int argc, char** argv) {
                 char *cache = snx_path_join(temporary, "icon cache"), *with = snx_path_join(temporary, "with icon.nsp");
                 char *without = snx_path_join(temporary, "no icon.nsp"), *dir, *why, *old_dir, *old_why;
                 char *hung = snx_path_join(temporary, "hung icon.nsp"), *logs = snx_path_join(temporary, "icon logs");
-                char *console = snx_path_join(logs, SNX_CONSOLE_LOG), *said, *line, reason[160], kind[256];
+                char *console = console_in(logs), *said, *line, reason[160], kind[256];
                 size_t said_size = 0;
                 unsigned answered;
                 GuiRecentGame recent_dump = {0};
@@ -10350,7 +10356,7 @@ int main(int argc, char** argv) {
                 "[   2.32] FATAL: The game stopped (svcBreak, reason 0). See the .log for details.\r\n";
             /* the launcher's log: a failure written once however often it is said, shown in its box or not; a fatal
                error in the other log too; both in the shared file under their paths, after the recompile's */
-            char *logs = snx_path_join(temporary, "launcher logs"), *console = snx_path_join(logs, SNX_CONSOLE_LOG);
+            char *logs = snx_path_join(temporary, "launcher logs"), *console = console_in(logs);
             char *errors = snx_path_join(logs, SNX_ERROR_LOG), *line, *mine;
             assert(!snx_mkdirs(logs));
             gui_log_folder(logs);
@@ -10424,7 +10430,7 @@ int main(int argc, char** argv) {
         char *state = snx_path_join(temporary, "two launchers"), *first = snx_path_join(state, "last-run.log");
         char *second = snx_path_join(state, "last-run-2.log"),
              *second_job = snx_path_join(state, "last-recompile-2.log");
-        char *console = snx_path_join(state, SNX_CONSOLE_LOG), *said, *line;
+        char *console = console_in(state), *said, *line;
         size_t size = 0;
         intptr_t other, third;
         bool locked_was = app.run_locked;

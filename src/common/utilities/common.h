@@ -258,7 +258,8 @@ void snx_set_stage_runner(int (*run)(int argc, char** argv));
 /* As above, but intentional debugger stops do not abort the game. */
 int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage);
 FILE* snx_fopen(const char* path, const char* mode);
-/* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, and a fatal error of it or of a game
+/* The launcher's logs, in its state folder (docs/USAGE.md#folders): what it says, a file a day named after this one
+   (gui/log.h's gui_log_console_name; this name the versions before wrote, kept), and a fatal error of it or of a game
    in the other one too */
 #define SNX_CONSOLE_LOG "scarletnx-console.log"
 #define SNX_ERROR_LOG   "scarletnx-error.log"
