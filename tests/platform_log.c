@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The log (platform/plat.c): nothing on disk before the game's module is loaded, the lines from before then at the
-   top of the log (only the first ones when they don't all fit), the time stamp only at the start of a line, a cut
-   line still ending its line, the per-thread redirect, LOG_LIMIT, fatal, and crash mode reaching the log */
+/* The log (platform/plat.c): nothing on disk before the game's module is loaded, the run before's log moved into
+   logs/ by its date and logs/ kept to the last runs, the lines from before then at the top of the log (only the first
+   ones when they don't all fit), the time stamp only at the start of a line, a cut line still ending its line, the
+   per-thread redirect, LOG_LIMIT, fatal, and crash mode reaching the log */
 #include "nx/runtime/platform/plat.c"
 #include <setjmp.h>
 #include <stdlib.h>
@@ -53,15 +54,36 @@ int main(int argc, char** argv) {
     FILE* r;
     int i, code, kept = 0, contiguous = 1;
     const char* dir = argc > 1 ? argv[1] : ".";
+    char runs[1200], path[1400], stamp[32];
+    const SnxU64 before = 1767225600; /* 2026-01-01 00:00:00 UTC */
     snprintf(log, sizeof log, "%s/LogTest.log", dir);
     snprintf(err, sizeof err, "%s/LogTest.stderr", dir);
     snprintf(redir, sizeof redir, "%s/LogTest.redirect", dir);
+    snprintf(runs, sizeof runs, "%s/logs", dir);
     remove(log);
+    snx_remove_tree(runs);
     if (!freopen(err, "w", stderr)) return 2;
+
+    /* the run before's log, last written at a known time, and five older runs' in logs/ beside a file of the
+       player's */
+    {
+        static const char* const older[] = {"2025-01-01_00-00-00.log",   "2025-01-03_00-00-00.log",
+                                            "2025-01-03_00-00-00-2.log", "2025-01-04_00-00-00.log",
+                                            "2025-01-05_00-00-00.log",   "notes.txt"};
+        FILE* f = fopen(log, "w");
+        CHECK(f && fputs("the run before\n", f) >= 0 && !fclose(f), "the run before's log was not written");
+        CHECK(!snx_set_file_time(log, before), "the run before's log has no time");
+        CHECK(!snx_mkdirs(runs), "logs/ was not made");
+        for (i = 0; i < 6; i++) {
+            snprintf(path, sizeof path, "%s/%s", runs, older[i]);
+            f = fopen(path, "w");
+            CHECK(f && !fclose(f), older[i]);
+        }
+    }
 
     /* before the module: stderr only, and kept for the log (60-byte lines: they don't all fit in the 4 KiB) */
     for (i = 0; i < 100; i++) LOG("early %02d ..........................................\n", i);
-    CHECK(!fopen(log, "r"), "a log exists before the module is loaded");
+    CHECK(!strcmp(slurp(log), "the run before\n"), "the log was written before the module is loaded");
     g_mod = &mod;
     snprintf(g_statedir, sizeof g_statedir, "%s/", dir);
     snprintf(g_exename, sizeof g_exename, "LogTest");
@@ -78,6 +100,28 @@ int main(int argc, char** argv) {
     }
     CHECK(kept > 10 && kept < 100 && contiguous, "the early lines kept are not the first ones without a gap");
     CHECK(strstr(t, "] after the module\n") != NULL, "the line after the module is missing");
+    CHECK(!strstr(t, "the run before"), "the log kept the run before's lines");
+    /* the run before's log in logs/, named by when it was last written (the local time), and the runs' logs there
+       down to the 4 newest: with this run's, 5; the player's file stays */
+    {
+        time_t when = (time_t)before;
+        struct tm tm;
+        static const char* const gone[] = {"2025-01-01_00-00-00.log", "2025-01-03_00-00-00.log"};
+        static const char* const stay[] = {"2025-01-03_00-00-00-2.log", "2025-01-04_00-00-00.log",
+                                           "2025-01-05_00-00-00.log", "notes.txt"}; /* -2 is the later of a second */
+        localtime_r(&when, &tm);
+        strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", &tm);
+        snprintf(path, sizeof path, "%s/%s.log", runs, stamp);
+        CHECK(!strcmp(slurp(path), "the run before\n"), "the run before's log is not in logs/ by its date");
+        for (i = 0; i < 2; i++) {
+            snprintf(path, sizeof path, "%s/%s", runs, gone[i]);
+            CHECK(!snx_path_exists(path), gone[i]);
+        }
+        for (i = 0; i < 4; i++) {
+            snprintf(path, sizeof path, "%s/%s", runs, stay[i]);
+            CHECK(snx_path_exists(path), stay[i]);
+        }
+    }
 
     /* a line too long for the buffer still ends its line */
     memset(line, 'x', sizeof line - 1);

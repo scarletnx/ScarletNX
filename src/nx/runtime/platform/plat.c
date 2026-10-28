@@ -1,15 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The log (<game>.log in the state folder, and stderr) and fatal errors */
+/* The log (<game>.log in the state folder, the runs before in logs/ beside it, and stderr) and fatal errors */
 #include "nx/runtime/platform/log.h"
+#include "common/utilities/common.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -19,6 +23,7 @@ __thread void* tls_thread;
 
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096
+#define LOG_RUNS  5          /* the runs' logs kept: this one's in <game>.log, the ones before in logs/ */
 
 /* Initialised statically: threads log from the first moments of the run, and a lazy init would race */
 static PMutex g_log_lock = PMUTEX_INIT;
@@ -41,19 +46,82 @@ void log_crash_mode(void) {
     tls_log_redirect = NULL;
 }
 
+static size_t log_compose(char* out, size_t cap, const char* text);
+/* a name log_keep_run gives a run's log: YYYY-MM-DD_HH-MM-SS, -N when two share a second, .log */
+static int run_log_name(const char* name) {
+    static const char shape[] = "0000-00-00_00-00-00";
+    size_t i, n = strlen(name);
+    for (i = 0; i < sizeof shape - 1; ++i)
+        if (i >= n || (shape[i] == '0' ? name[i] < '0' || name[i] > '9' : name[i] != shape[i])) return 0;
+    return n >= i + 4 && !strcmp(name + n - 4, ".log");
+}
+/* run_log_name's names oldest first: by the second, then the plain one before its -2, -3...; any other by its bytes */
+static int by_name(const void* a, const void* b) {
+    const char *x = *(char* const*)a, *y = *(char* const*)b;
+    int c = strncmp(x, y, 19);
+    if (c || !run_log_name(x) || !run_log_name(y)) return c ? c : strcmp(x, y);
+    return (x[19] == '-' ? atoi(x + 20) : 1) - (y[19] == '-' ? atoi(y + 20) : 1);
+}
+/* The run before this one: its log (path) into logs/ beside it, named by when it was last written, and logs/ down to
+   the LOG_RUNS - 1 newest. What went wrong into why, a line for the new log, "" when nothing did */
+static void log_keep_run(const char* path, char* why, size_t size) {
+    char dir[1400], dated[1500], stamp[32], **names = NULL;
+    SnxU64 when = snx_file_time(path);
+    time_t t = (time_t)when;
+    struct tm tm;
+    size_t count = 0, i, runs = 0;
+    int n;
+    why[0] = 0;
+    if (!when) return; /* the first run */
+    snprintf(dir, sizeof dir, "%slogs", g_statedir);
+    if (snx_mkdirs(dir)) {
+        snprintf(why, size, "log: cannot make %s (%s): the last run's log is written over\n", dir, strerror(errno));
+        return;
+    }
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", &tm);
+    snprintf(dated, sizeof dated, "%s/%s.log", dir, stamp);
+    for (n = 2; snx_file_time(dated) && n < 100; ++n) snprintf(dated, sizeof dated, "%s/%s-%d.log", dir, stamp, n);
+    if (rename(path, dated)) {
+        snprintf(why, size, "log: cannot move the last run's log to %s (%s): it is written over\n", dated,
+                 strerror(errno));
+        return;
+    }
+    if (snx_list_dir(dir, &names, &count)) return;
+    qsort(names, count, sizeof *names, by_name);
+    for (i = count; i-- > 0;) {
+        if (!run_log_name(names[i]) || ++runs < LOG_RUNS) continue;
+        snprintf(dated, sizeof dated, "%s/%s", dir, names[i]);
+        if (remove(dated) && !why[0])
+            snprintf(why, size, "log: cannot delete %s (%s), past the %d runs' logs kept\n", dated, strerror(errno),
+                     LOG_RUNS);
+    }
+    snx_free_strings(names, count);
+}
+
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
    --game, a dump given instead of a game) leaves no log behind */
 static void log_create_nl(void) {
-    char path[1400];
+    char path[1400], why[1700], out[LINE_MAX_ + 32];
     FILE* file;
     if (g_log || g_log_gave_up || !g_mod) return;
     snprintf(path, sizeof path, "%s%s.log", g_statedir, g_exename);
+    log_keep_run(path, why, sizeof why);
     file = fopen(path, "w");
     if (!file) {
         g_log_gave_up = 1;
         fprintf(stderr, "Could not create the log %s, so it only goes to the console.\n", path);
     } else {
         if (g_early_len) fwrite(g_early, 1, g_early_len, file);
+        if (why[0]) {
+            log_compose(out, sizeof out, why);
+            fputs(out, file);
+            fputs(why, stderr);
+        }
         fflush(file);
 #if !defined(_WIN32)
         __atomic_store_n(&g_log_fd, fileno(file), __ATOMIC_RELEASE);
