@@ -1,0 +1,25 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The render enable's comparison of two 64-bit values in guest memory, 16 bytes apart, made on the GPU when results
+   the GPU hasn't landed hold them (vk/query.c's vk_query_pred_compare): the predicate is 1 when they differ, 0 when
+   they are equal, as query_predicate.comp's is for a count against zero, so a draw predicated on it runs when they
+   differ, or, inverted, when they are equal. CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+/* the guest memory the values are in, as the GPU holds it */
+layout(std430, set = 0, binding = 0) readonly buffer Values {
+    uint words[];
+};
+layout(std430, set = 0, binding = 1) buffer Predicates {
+    uint predicates[];
+};
+layout(push_constant) uniform Params {
+    uint slot;  /* the predicate written */
+    uint first; /* the first value's first word in words */
+};
+
+void main() {
+    uvec2 x = uvec2(words[first], words[first + 1]), y = uvec2(words[first + 4], words[first + 5]);
+    predicates[slot] = x != y ? 1u : 0u;
+}
