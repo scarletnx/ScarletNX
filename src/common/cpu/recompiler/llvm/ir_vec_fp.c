@@ -426,14 +426,15 @@ static void relax(SnxIr* ir, unsigned width, Fast* f) {
 
 /* ---- the operations, fast where they can be ---- */
 
-/* SNX_FP_* of a and b (lanes of width) */
+/* SNX_FP_* of a and b (lanes of width). FABD is the difference's, its sign cleared */
 static V binary(SnxIr* ir, unsigned op, unsigned width, V a, V b) {
     LaneOp o = op_binary(width, op);
-    if (width != 16 && op <= SNX_FP_MULX && op != SNX_FP_ABD) {
+    if (width != 16 && op <= SNX_FP_ABD) {
         Fast f;
         Split s;
-        fast_binary(ir, op, width, a, b, &f);
+        fast_binary(ir, op == SNX_FP_ABD ? SNX_FP_SUB : op, width, a, b, &f);
         relax(ir, width, &f);
+        if (op == SNX_FP_ABD) f.value = magnitude(ir, width, f.value);
         split_begin(ir, f.quick, f.ok, f.value, f.inexact, &s);
         return split_end(ir, &s, map(ir, &o, a, b, NULL, width));
     }
@@ -583,18 +584,21 @@ static V compare(SnxIr* ir, unsigned cmp, unsigned width, V a, V b, int abs) {
     return compare_slow(ir, &o, cmp, a, b);
 }
 
-/* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR; exact: FRINTX's IXC). The host's rounding instructions
-   give the encoding's modes exactly for every lane but a NaN or a flushed denormal, and raise nothing (ties away
-   from zero only on AArch64) */
+/* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR, taken in round to nearest; exact: FRINTX's IXC). The
+   host's rounding instructions give the modes exactly for every lane but a NaN or a flushed denormal, and raise
+   nothing (ties away from zero only on AArch64). FRINTX's IXC is a lane that rounding changed */
 static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a) {
     LaneOp o = op_simple(H_ROUND, width);
     o.p1 = exact;
     o.rm = rm == RM_FPCR ? fpcr_rmode(ir) : ir_i32(ir, rm);
-    if (width != 16 && rm < RM_FPCR && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
-        static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
-        V fa = as_float(ir, a, width), r = ir_intrinsic(ir, names[rm], LLVMTypeOf(fa), &fa, 1);
+    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
+        static const char* const names[] = {"llvm.roundeven", "llvm.ceil",  "llvm.floor",
+                                            "llvm.trunc",     "llvm.round", "llvm.roundeven"};
+        V fa = as_float(ir, a, width), r = ir_intrinsic(ir, names[rm], LLVMTypeOf(fa), &fa, 1), ok;
         Split s;
-        split_begin(ir, NULL, both(ir, no_nan(ir, width, a), unflushed(ir, width, a)), as_bits(ir, r, width), NULL, &s);
+        ok = both(ir, no_nan(ir, width, a), unflushed(ir, width, a));
+        if (rm == RM_FPCR) ok = both(ir, ok, fpcr_clear(ir, FPCR_RMODE));
+        split_begin(ir, NULL, ok, as_bits(ir, r, width), exact ? ir_vec_any(ir, float_ne(ir, r, fa)) : NULL, &s);
         return split_end(ir, &s, map(ir, &o, a, NULL, NULL, width));
     }
     return map(ir, &o, a, NULL, NULL, width);
