@@ -161,3 +161,28 @@ The `hooks` setting (`[Debug]`, on by default) turns every hook off, to tell whe
 log names each module's SDK version and each hooked function at startup (`hook: memcpy at ... runs hook_memmove`). A handler that wants to hand a
 case back to the function's own code calls `hook_original(addr)` with the CPU as the call left it. A hook is on by
 default only once it passes verify mode (or, for one that isn't pure, its recorded-input test).
+
+## What the guest profile showed
+
+An accelerator is added only when its function shows up in a guest profile of CPU time by SDK function. The first
+profile (perf `cycles:u` on two games built with SDK 12.3.9 and 20.5.22, during loading, a title screen and
+gameplay, each recompiled function's samples named by the game's symbols) gave these shares of the time spent in
+guest code:
+
+| Family | Share of guest time |
+| --- | --- |
+| nn::os | 3.8% to 6.3% in gameplay, 4.9% loading, 15.6% on one game's title screen |
+| math (`sinf`, `cosf`, `powf` and their kernels) | 0.5% to 1.1% |
+| the C library's string functions left unhooked (`strcmp`, `strlen`, `memcmp`) | 0.3% to 0.8% |
+| allocators (`nn::mem`, `nn::lmem`, the SDK's heap) | 0.02% to 0.6% |
+| compression and hashing (zlib, LZ4, zstd, CRC) | under 0.01% |
+
+Most of nn::os's share is the internal critical section under every mutex (`Enter`, `Leave`,
+`IsLockedByCurrentThread`) and, on the title screen, a loop polling `GetSystemTick` and `ConvertToTimeSpan`. Neither
+is guest code a handler can make cheaper. Half of `Enter`'s and `Leave`'s samples land on the compare-and-swap that
+the recompiler makes of their exclusive store, and a native handler, which has to make the same compare-and-swap on
+the same word to keep the lock's protocol, spent 78% of its own time there: in gameplay the hooked pair cost the same
+per lock taken as the recompiled code, within the runs' noise. A tick-polling loop waits for time to pass, however
+fast it polls. The math functions differ between the two SDKs (one has FreeBSD's `__sindf` kernels, the other its
+own `sinf`), so each needs a bit-exact port per version for a gain under 0.2% of all CPU time, and the string
+functions are word-at-a-time loops the recompiled code already runs well. None of these got a hook.
