@@ -228,12 +228,13 @@ NVN_FITS(NvnWindowBuilder, 0x2c);
    i is off the display (0: none), the present after its own, or its own while none came yet (shown: those);
    on_display[0], [1]: the presents' syncpoint value once the last present, and the one before it, are on the display
    (0: not waited for); released[i]: when the game could draw in texture i, as far as the window knows (for the
-   renderer's display times) */
+   renderer's display times); shown_at[i]: the slot of texture i's last present on the pacer's clock (0: none), which
+   AcquireTexture waits for */
 typedef struct {
     u32 magic;
     i32 count, interval, next, crop[4];
     u64 texture[4];
-    u64 presents, pace, available[4], released[4];
+    u64 presents, pace, available[4], released[4], shown_at[4];
     u32 syncpt[4], value[4], on_display[2], shown;
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
@@ -327,10 +328,11 @@ enum {
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
     OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
-    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_COUNT_
+    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC, OP_COUNT_
 };
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
-/* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC: u64 sync. OP_RESET_COUNTER: u64 type. OP_BARRIER: i32 bits */
+/* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
+   OP_BARRIER: i32 bits */
 typedef struct {
     u64 type, address;
 } NvnPReportCounter;
