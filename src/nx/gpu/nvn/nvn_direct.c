@@ -10,7 +10,12 @@
    itself (tools/nvn_census.py).
    A game's NVN objects are the runtime's from its first call, so nothing can be left to the driver: a function the
    game resolves that has no implementation yet gets a handler that stops the game with its name when it is called,
-   which says what to implement next */
+   which says what to implement next.
+
+   The game's first nvnBootstrapLoader call, before it has any NVN function, reads the game's NVN API version: the
+   driver's own lookup finds nvnDeviceGetInteger by name (it touches nothing else), and that function's switch answers
+   it (gpu/nvn/nvn_driver.c). A function declared for some API versions (gpu/nvn/nvn.hook's @version(nvn ...)) takes
+   the declaration that holds for it (hle/hook/version.c hook_select) */
 #include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
@@ -32,32 +37,21 @@ typedef struct {
     char name[128];
 } Missing;
 #define MISSING_SLOTS 1024 /* a power of two above the ~530 functions NVN has */
-/* the file's state */
+/* the file's state: the missing functions, the lock their table and the slots are changed under, the resolvers'
+   recompiled code, the game's NVN API version (nvn_api_pack, 0 unknown) once decided (under lock) and whether the
+   runtime runs the game's NVN calls */
 typedef struct {
     Missing missing[MISSING_SLOTS];
     PMutex lock;
     GuestFn bootstrap_original, getproc_original;
-    int active;
+    u32 api;
+    int active, decided;
 } NvnDirectState;
-static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0};
+static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0, 0, 0};
 static void getproc(CPU* c, u64 entry);
 static void bootstrap(CPU* c, u64 entry);
 
-int nvn_direct_active(void) { return g_nvn_direct.active; }
-
-/* the generated table's index of name (sorted by name), or -1 */
-static int implemented(const char* name) {
-    int lo = 0, hi = NVN_COUNT;
-    while (lo < hi) {
-        int mid = (lo + hi) / 2, d = strcmp(nvn_symbol[mid], name);
-        if (!d) return mid;
-        if (d < 0)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return -1;
-}
+int nvn_direct_active(void) { return __atomic_load_n(&g_nvn_direct.active, __ATOMIC_ACQUIRE); }
 
 static u32 missing_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (MISSING_SLOTS - 1); }
 static const Missing* missing_find(u64 addr) {
@@ -84,9 +78,25 @@ static int ours(GuestFn fn) {
     return 0;
 }
 
+/* name's entry in the generated table for the game's API version: its index, or -1 when none (*versioned: 1 when the
+   name has entries, but none for this version) */
+static int implemented(const char* name, int* versioned) {
+    u32 versions[HOOK_KEYS] = {0};
+    int first, k;
+    versions[HOOK_NVN] = g_nvn_direct.api;
+    k = hook_select(&nvn_table, name, versions, &first);
+    *versioned = k == -2;
+    if (k >= 0 && nvn_key[k] != HOOK_ANY) {
+        char range[96];
+        hook_range_text(range, sizeof range, nvn_key[k], nvn_lo[k], nvn_hi[k]);
+        LOG_LIMIT(64, "nvn: %s runs %s, the one for %s\n", name, nvn_handler[k], range);
+    }
+    return k >= 0 ? k : -1;
+}
+
 /* the game resolved name to addr: its slot takes the runtime's implementation, or the handler that names it */
 static void take(u64 addr, const char* name) {
-    int i = implemented(name);
+    int versioned, i = implemented(name, &versioned);
     GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot;
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3))
         fatal("nvn: the driver resolved %s to %llx, outside the game's code, where nvn_direct can't take its calls",
@@ -108,8 +118,14 @@ static void take(u64 addr, const char* name) {
     }
     if (fn == unimplemented && !missing_find(addr)) {
         u32 j = missing_hash(addr);
+        char version[32];
         while (g_nvn_direct.missing[j].addr) j = (j + 1) & (MISSING_SLOTS - 1);
-        memcpy(g_nvn_direct.missing[j].name, name, strlen(name) + 1);
+        hook_version_text(version, sizeof version, HOOK_NVN, g_nvn_direct.api);
+        if (versioned) /* its declarations are for other API versions */
+            snprintf(g_nvn_direct.missing[j].name, sizeof g_nvn_direct.missing[j].name, "%s for NVN API %s", name,
+                     version);
+        else
+            snprintf(g_nvn_direct.missing[j].name, sizeof g_nvn_direct.missing[j].name, "%s", name);
         __atomic_store_n(&g_nvn_direct.missing[j].addr, addr, __ATOMIC_RELEASE);
     }
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
@@ -129,10 +145,45 @@ static void getproc(CPU* c, u64 entry) {
     if (valid && c->x[0]) take(c->x[0], name);
 }
 
+/* The driver's own lookup of name, run on c from inside the game's bootstrap call (entry: the loader's address) as
+   nvn_cmd.c runs a callback: the name goes below the stack pointer, the call runs until it returns to the game's
+   return address, which nothing else returns to, and the game's x0, link register and stack pointer are put back. The
+   function's address, 0 for none */
+static u64 driver_lookup(CPU* c, u64 entry, const char* name) {
+    size_t n = strlen(name) + 1;
+    u64 sp = c->x[31], lr = c->x[30], arg = c->x[0], at = (sp - n) & ~15ull, pc, found;
+    memcpy(GP(at), name, n);
+    c->x[31] = at;
+    c->x[0] = at;
+    g_nvn_direct.bootstrap_original(c, entry);
+    while ((pc = c->pc) != lr) snx_lookup(c, pc)(c, pc);
+    found = c->x[0];
+    c->x[31] = sp;
+    c->x[30] = lr;
+    c->x[0] = arg;
+    c->pc = lr;
+    return found;
+}
+
+/* Once, at the game's first bootstrap call, before it has any NVN function: the game's NVN API version, from its
+   driver's nvnDeviceGetInteger. Under lock */
+static void decide(CPU* c, u64 entry) {
+    u64 f = driver_lookup(c, entry, "nvnDeviceGetInteger");
+    char version[32];
+    if (f >= g_code_lo && f < g_code_hi && !(f & 3)) nvn_device_driver(f); /* its answers, from its code */
+    g_nvn_direct.api = nvn_device_api();
+    g_nvn_direct.decided = 1;
+    hook_version_text(version, sizeof version, HOOK_NVN, g_nvn_direct.api);
+    LOG("nvn: the game's NVN API version is %s\n", version);
+}
+
 static void bootstrap(CPU* c, u64 entry) {
     char name[128];
     int valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     GuestFn* slot;
+    pm_lock(&g_nvn_direct.lock);
+    if (!g_nvn_direct.decided) decide(c, entry);
+    pm_unlock(&g_nvn_direct.lock);
     g_nvn_direct.bootstrap_original(c, entry);
     if (!valid || !c->x[0]) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {

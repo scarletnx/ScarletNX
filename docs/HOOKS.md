@@ -69,7 +69,12 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   255) and logs it once per module (`hooks: module sdk, SDK 20.5.22`). In the games looked at so far only the `sdk`
   module carries one: `main`, `rtld` and the `subsdk` modules have none, so their version is unknown.
 - `nvn` is the NVN API version (`major.minor`, packed `major << 16 | minor`), for the NVN functions the runtime
-  will implement (`gpu/nvn/nvn.hook`). The runtime doesn't read it yet, so it is unknown and no `nvn` hook installs.
+  implements under `nvn_direct` (`gpu/nvn/nvn.hook`). It is the game's own driver's: at the game's first
+  `nvnBootstrapLoader` call, before it has any NVN function, the driver's lookup finds `nvnDeviceGetInteger` by name
+  and its switch's answers for the API's major and minor version are read from its code (`gpu/nvn/nvn_driver.c`).
+  Each NVN function the game then resolves takes the declaration that holds for that version, and one declared only
+  for other versions stops the game with its name and the version when it is called
+  (`tests/nvn_versions.c`).
 - A hook is matched per module, against the version of the module that exports its function. An unknown version
   (0) matches only unversioned hooks: a hook that reads the guest's structs never guesses their layout.
 - One symbol may be declared several times, each with its own handler, for versions of one key that don't overlap.

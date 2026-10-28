@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# NVN functions declared by API version, with --prefix nvn as gpu/nvn/nvn.hook is, for tests/nvn_versions.c
+family window
+@version(nvn >= 53.0, < 55.0)
+hook nvnWindowAcquireTexture(addr w, addr sync, addr index) -> i32 = acquire_53
+@version(nvn >= 55.0, < 56.0)
+hook nvnWindowAcquireTexture(addr w, addr sync, addr index) -> i32 = acquire_55
+family queue
+hook nvnQueueFinish(addr q) = queue_finish
