@@ -196,6 +196,11 @@ that can't be written to leaves the JIT working without the file.
 `snx_recompiled_invalidate` clears dispatch entries for compiled functions overlapping
 [addr, addr+size) and purges matching lazy JIT units. Host code stays loaded for running
 threads. An optional callback receives each retired [start, end) span.
+`snx_recompiled_update_code(m, addr, code, size)` copies the guest's current bytes for a
+word-aligned range into the module's own copy of the code, the copy its JIT compiles from,
+and returns the bytes inside the module's ranges. Call it with the changed bytes before
+`snx_recompiled_invalidate`. Without it, a module made for an embedder compiles a patched
+function again from the bytes it was made from.
 
 For A32 and Thumb, `snx_recompile32` prepares an address range whose blocks are compiled
 on first use by the LLVM block compiler (`src/common/cpu/arm/`), and
