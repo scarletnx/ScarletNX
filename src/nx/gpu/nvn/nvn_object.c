@@ -179,6 +179,18 @@ u64 nvn_DeviceGetSeparateSamplerHandle(CPU* c, u64 d, i32 id) {
     (void)d;
     return (u64)(u32)id << 20;
 }
+/* a texture's separate handle, and a texel fetch's: its ID with bit 32 set, as the game's driver makes both (sxtw, orr
+   #0x100000000), which the shader's low word (the ID) combines with a separate sampler's */
+u64 nvn_DeviceGetSeparateTextureHandle(CPU* c, u64 d, i32 id) {
+    (void)c;
+    (void)d;
+    return (u64)(i64)id | 1ull << 32;
+}
+u64 nvn_DeviceGetTexelFetchHandle(CPU* c, u64 d, i32 id) {
+    (void)c;
+    (void)d;
+    return (u64)(i64)id | 1ull << 32;
+}
 /* a counter's timestamp is in the GPU's 19.2 MHz ticks */
 u64 nvn_DeviceGetTimestampInNanoseconds(CPU* c, u64 d, u64 counter) {
     (void)c;
@@ -625,6 +637,14 @@ i64 nvn_TextureBuilderGetStride(CPU* c, u64 b) {
 void nvn_TextureBuilderSetDepth(CPU* c, u64 b, i32 depth) {
     (void)c;
     TB(b)->d.depth = (u32)depth;
+}
+/* the width, the height and depth 1, as the driver stores the three */
+void nvn_TextureBuilderSetSize1D(CPU* c, u64 b, i32 w) {
+    NvnTexBuilder* o = TB(b);
+    (void)c;
+    o->d.width = (u32)w;
+    o->d.height = 1;
+    o->d.depth = 1;
 }
 void nvn_TextureBuilderSetSize2D(CPU* c, u64 b, i32 w, i32 h) {
     NvnTexBuilder* o = TB(b);
