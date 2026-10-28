@@ -13,3 +13,7 @@ void plat_ww_open(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
+void plat_ww_close(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+}
