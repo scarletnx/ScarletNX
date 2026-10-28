@@ -88,9 +88,12 @@ void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when 
    SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
-   which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written. Nothing to do
-   where the kernel's writes are tracked as they come (Linux's userfaultfd, Windows' write watch) */
+   which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
+   protects them again until plat_ww_close with the same range, after the call. A range being moved (plat_freeze)
+   waits for the move first. Nothing to do where the kernel's writes are tracked as they come (Linux's userfaultfd,
+   Windows' write watch) */
 void plat_ww_open(u8* p, u64 size);
+void plat_ww_close(u8* p, u64 size);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and
