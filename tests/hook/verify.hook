@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# Hooks for tests/hook_verify.c: pure hooks with buffers of each kind of length, and one that isn't pure
+family pure
+hook copy(addr dst out[n], addr src in[n], u64 n) -> addr = t_copy pure
+hook fill(addr dst out[n * 4], u32 value, u64 n) = t_fill pure
+hook sum(u64 n, addr p in[n * 2 + 2]) -> u16 = t_sum pure
+hook half(f64 x) -> f64 = t_half pure
+hook wrong(addr dst out[n], addr src in[n], u64 n) -> addr = t_copy_wrong pure
+family other
+hook tick() -> u64 = t_tick
