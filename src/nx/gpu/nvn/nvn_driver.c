@@ -163,6 +163,8 @@ u32 nvn_api_pack(i32 major, i32 minor) {
     return (u32)major << 16 | (u32)minor;
 }
 
+int nvn_api_described(u32 api) { return api >= NVN_API_DESCRIBED_LO && api <= NVN_API_DESCRIBED_HI; }
+
 int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
     Image m;
     u64 starts[2];
