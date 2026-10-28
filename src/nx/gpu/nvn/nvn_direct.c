@@ -180,31 +180,30 @@ static u64 driver_lookup(CPU* c, u64 entry, const char* name) {
    game imports, so the version alone decides. Under lock */
 static void decide(CPU* c, u64 entry) {
     u64 f = driver_lookup(c, entry, "nvnDeviceGetInteger");
-    char version[32], lo[32], hi[32];
+    char version[32], described_text[64];
     int described;
     if (f >= g_code_lo && f < g_code_hi && !(f & 3)) nvn_device_driver(f); /* its answers, from its code */
     g_nvn_direct.api = nvn_device_api();
     described = nvn_api_described(g_nvn_direct.api);
     hook_version_text(version, sizeof version, HOOK_NVN, g_nvn_direct.api);
-    hook_version_text(lo, sizeof lo, HOOK_NVN, NVN_API_DESCRIBED_LO);
-    hook_version_text(hi, sizeof hi, HOOK_NVN, NVN_API_DESCRIBED_HI);
+    nvn_api_described_text(described_text, sizeof described_text);
     g_nvn_direct.decided = 1;
     if (g_settings.nvn_direct != 2) {
         if (!described)
-            WARN("nvn: nvn_direct=1 with the game's NVN API %s, which nvn_direct has no measured layouts for (%s to "
-                 "%s)\n",
-                 version, lo, hi);
+            WARN("nvn: nvn_direct=1 with the game's NVN API %s, which nvn_direct has no measured layouts for (%s)\n",
+                 version, described_text);
         return;
     }
     if (described) {
         LOG("nvn: nvn_direct=auto: the runtime runs the game's NVN calls: its NVN API %s is one nvn_direct has "
-            "measured layouts for (%s to %s), and nvnPrivate0, which turns on its inlined command writes, stays 0 (%s)\n",
-            version, lo, hi, g_nvn_direct.flag ? "the driver's lookup runs without a device" : "the driver exports none");
+            "measured layouts for (%s), and nvnPrivate0, which turns on its inlined command writes, stays 0 (%s)\n",
+            version, described_text,
+            g_nvn_direct.flag ? "the driver's lookup runs without a device" : "the driver exports none");
         return;
     }
     LOG("nvn: nvn_direct=auto: the game's NVN driver runs: its NVN API %s isn't one nvn_direct has measured layouts "
-        "for (%s to %s)\n",
-        version, lo, hi);
+        "for (%s)\n",
+        version, described_text);
     __atomic_store_n(&g_disp[(entry - g_code_lo) / 4], g_nvn_direct.bootstrap_original, __ATOMIC_RELEASE);
     __atomic_store_n(&g_nvn_direct.active, 0, __ATOMIC_RELEASE);
 }
