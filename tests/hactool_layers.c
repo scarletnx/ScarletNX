@@ -817,7 +817,7 @@ static void in_place(const update_t* u) {
    each time: the extraction stays under four times that, where a buffer per small file, or one the size of the large
    file, is many times it. First in main, set before its own blocks come and go: glibc takes a block out of fresh
    memory only when none it freed fits, and the setting stays for the tests after it. A probe block counts the pages
-   of 4 MB here; under huge pages the count proves nothing, and is said to be skipped */
+   of 4 MB here; under huge pages, or a sanitizer's malloc, the count proves nothing, and is said to be skipped */
 #define SMALL_FILES 64
 #define LARGE_FILE  0x1400031
 static void small_files(void) {
@@ -832,16 +832,19 @@ static void small_files(void) {
     unsigned i;
 #if defined(__GLIBC__)
     struct rusage before, after;
-    long probe_pages;
-    CHECK(mallopt(M_MMAP_THRESHOLD, 128 * 1024) == 1);
-    CHECK(!getrusage(RUSAGE_SELF, &before));
-    unsigned char* probe = malloc(0x400000);
-    CHECK(probe != NULL);
-    memset(probe, 0xCC, 0x400000);
-    __asm__ volatile("" : : "r"(probe) : "memory"); /* the fill is what is counted: kept */
-    CHECK(!getrusage(RUSAGE_SELF, &after));
-    free(probe);
-    probe_pages = after.ru_minflt - before.ru_minflt;
+    long probe_pages = 0;
+    /* glibc's malloc takes the setting (1); a sanitizer's, in place of it, does not (0), and the count is skipped */
+    int glibc_heap = mallopt(M_MMAP_THRESHOLD, 128 * 1024) == 1;
+    if (glibc_heap) {
+        CHECK(!getrusage(RUSAGE_SELF, &before));
+        unsigned char* probe = malloc(0x400000);
+        CHECK(probe != NULL);
+        memset(probe, 0xCC, 0x400000);
+        __asm__ volatile("" : : "r"(probe) : "memory"); /* the fill is what is counted: kept */
+        CHECK(!getrusage(RUSAGE_SELF, &after));
+        free(probe);
+        probe_pages = after.ru_minflt - before.ru_minflt;
+    }
 #endif
     for (i = 0; i < SMALL_FILES; i++) {
         sprintf(names[i], "f%02u.bin", i); /* 7 characters: hactool reads past a name of a multiple of 4 */
@@ -896,7 +899,9 @@ static void small_files(void) {
     CHECK(!getrusage(RUSAGE_SELF, &after));
     printf("hactool layers: %ld pages faulted in saving %u files, %ld in filling one 4 MB block\n",
            after.ru_minflt - before.ru_minflt, SMALL_FILES + 2, probe_pages);
-    if (probe_pages >= 512)
+    if (!glibc_heap)
+        printf("hactool layers: skipped the page count: this malloc takes no mallopt, a sanitizer's\n");
+    else if (probe_pages >= 512)
         CHECK(after.ru_minflt - before.ru_minflt < 4 * probe_pages);
     else
         printf("hactool layers: skipped the page count: 4 MB filled in %ld pages, huge ones\n", probe_pages);
