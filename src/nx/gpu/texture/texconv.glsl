@@ -562,10 +562,21 @@ uint tc_index(uint j) {
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
-    if (mode >= TC_INDEX_WIDEN8 && mode <= TC_INDEX_QUADS) {
+    if (mode >= TC_INDEX_WIDEN8 && mode <= TC_RESTRIDE) {
         uint e = gl_GlobalInvocationID.y * units + u, w = in_bias >> 2;
         if (e >= line_out) return;
-        if (mode == TC_INDEX_QUADS) {
+        if (mode == TC_RESTRIDE) {
+            /* the window's two words funneled, (w1 << 1) << (31 - s) being 0 for an aligned one (s 0); the second word
+               is read only while it holds stream bytes, which diverges at the stream's end alone */
+            uint v = e / out_pitch, b = v * in_pitch + 4u * (e - v * out_pitch), r = 0u;
+            if (b < const_a) {
+                uint a = in_bias + b, i = a >> 2, s = 8u * (a & 3u);
+                r = src[i] >> s;
+                if (4u * i + 4u < in_bias + const_a) r |= (src[i + 1u] << 1u) << (31u - s);
+                if (const_a - b < 4u) r &= (1u << (8u * (const_a - b))) - 1u;
+            }
+            dst[out_bias + e] = r;
+        } else if (mode == TC_INDEX_QUADS) {
             uint o = out_bias + 6u * e, v0 = tc_index(4u * e), v2 = tc_index(4u * e + 2u);
             dst[o] = v0;
             dst[o + 1u] = tc_index(4u * e + 1u);
