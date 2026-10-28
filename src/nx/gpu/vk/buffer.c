@@ -915,19 +915,6 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
     if (rmap != local) free(rmap);
 }
 
-/* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
-   that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
-   at an offset bindings accept, from this submit when the reader writes it (its copy back for landing was recorded at
-   its submit's end) or this frame otherwise, at an offset that is a multiple of align. Returns 2 when pending results cover the range and can all be copied over
-   guest memory on the GPU (gfx_overlay), 0 when none do, or after landing them because one can't: it maps the range
-   through another virtual address, or the guest wrote its original bytes since. A result of the frame before is read
-   where it is too (transform feedback captures the same buffers every frame, over the last frame's capture), its
-   frame's rings held until the reader is done (vk_frame_hold) */
-/* o has bytes of [gva, gva + len): at the same GPU address, or on the same guest pages (q) */
-static int out_meets_range(const GfxOut* o, u64 gva, u64 len, const RangePages* q) {
-    u64 lo = gva > o->addr ? gva : o->addr, hi = gva + len < o->addr + o->size ? gva + len : o->addr + o->size;
-    return lo < hi || backing_overlap(q, o);
-}
 /* whether the guest still holds o's original bytes in [gva, gva + len) (rmap: made on first use) */
 static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64 local[16]) {
     Copyable c = {o, gva, o->frame_id + 1 >= vk_frame_id()};
@@ -935,6 +922,15 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64
     if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
     return c.ok;
 }
+/* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
+   that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
+   at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
+   recorded at its submit's end), from this frame otherwise. Returns 2 when pending results cover the range and can
+   all be copied over guest memory on the GPU (gfx_overlay), 0 when none do, or after landing them because one can't:
+   the guest wrote its original bytes since. A result counts only with bytes of the range (out_meets): two storage
+   buffers sharing a page, one after the other, made each read of one compose with the other's results, which gave it
+   nothing. A result of the frame before is read where it is too (transform feedback captures the same buffers every
+   frame, over the last frame's capture), its frame's rings held until the reader is done (vk_frame_hold) */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align) {
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
@@ -945,8 +941,11 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
     for (GfxOut* o = g_out; o; o = o->next)
-        if (out_meets_range(o, gva, len, &q)) newest = o;
-    if (!newest) return 0;
+        if (out_meets(o, gva, len, &q, &rmap, local)) newest = o;
+    if (!newest) {
+        if (rmap && rmap != local) free(rmap);
+        return 0;
+    }
     /* The newest result over the range was composed over the older ones when it was made (gfx_overlay, through any
        address), and its draw ran after theirs: when it covers the whole range at this address, its buffer holds every
        byte as all of them left it, and the older ones need no check. Requiring a single result made every binding
@@ -964,7 +963,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         before = newest->frame_id != vk_frame_id();
     } else
         for (GfxOut* o = g_out; o; o = o->next) {
-            if (!out_meets_range(o, gva, len, &q)) continue;
+            if (!out_meets(o, gva, len, &q, &rmap, local)) continue;
             if (!out_still_copyable(o, gva, len, &rmap, local)) {
                 if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
                 if (rmap && rmap != local) free(rmap);
