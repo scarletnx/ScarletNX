@@ -1130,6 +1130,14 @@ def api_version(m, code, table):
     and 1), from the switch in it or in the first function it calls: a jump table of byte or halfword entries scaled
     by 4 from an ADR base, or of signed words relative to the table, each case setting w0 or keeping the value set
     before the BR. None when that isn't found."""
+    got = device_answers(m, code, table, (0, 1))
+    return None if got is None or None in got else tuple(got)
+
+
+def device_answers(m, code, table, keys):
+    """[the constant nvnDeviceGetInteger answers for each item of keys, or None where its case reads the driver's
+    state or lies past the switch's bound (its `cmp wN, #max`)], from its switch (api_version), or None when the
+    switch isn't found"""
     func = dict(zip(table['names'], table['funcs'])).get('DeviceGetInteger')
     if func is None:
         return None
@@ -1140,7 +1148,7 @@ def api_version(m, code, table):
             starts.append(code.pc(j + sext(w[j] & 0x3FFFFFF, 26)))
             break
     for start in starts:
-        addr, jump, base, default = {}, None, None, None
+        addr, jump, base, default, bound = {}, None, None, None, None
         for j in range(code.index(start), min(code.index(start) + 64, len(w))):
             x = w[j]
             rn = (x >> 5) & 31
@@ -1161,6 +1169,8 @@ def api_version(m, code, table):
                 base = addr[rn]
             elif c and c[0] == 0:
                 default = c[1]
+            elif (x & 0xFF80001F) == 0x7100001F and bound is None:  # cmp wn, #imm
+                bound = (x >> 10) & 0xFFF
             elif (x & 0xFFFFFC1F) == 0xD61F0000:  # br
                 break
         else:
@@ -1168,12 +1178,16 @@ def api_version(m, code, table):
         if jump is None or (jump[1] < 4 and base is None):
             continue
         values = []
-        for key in (0, 1):
+        for key in keys:
             at, size = jump
             entry = int.from_bytes(m.image[at + key * size : at + (key + 1) * size], 'little', signed=size == 4)
             target = at + entry if size == 4 else base + entry * 4
             value = None
-            for k in range(code.index(target), min(code.index(target) + 8, len(w))):
+            first = code.index(target)
+            if (bound is not None and key > bound) or not 0 <= first < len(w):
+                values.append(None)
+                continue
+            for k in range(first, min(first + 8, len(w))):
                 x = w[k]
                 c = constant(x, {})
                 if c and c[0] == 0:
@@ -1185,8 +1199,8 @@ def api_version(m, code, table):
                 if redefines(x, 0):
                     break
             values.append(value)
-        if None not in values:
-            return tuple(values)
+        if None not in values[:2]:
+            return values
     return None
 
 
