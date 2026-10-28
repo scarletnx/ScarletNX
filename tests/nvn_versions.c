@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The NVN key of versioned hooks (tests/hook/nvn_versions.hook, generated with --prefix nvn as gpu/nvn/nvn.hook is):
    the API version a driver's nvnDeviceGetInteger answers, read from its code (gpu/nvn/nvn_driver.c) as nvn_direct
-   reads it at the game's first NVN call, packed as the key takes it, and the entry hook_select picks for it */
+   reads it at the game's first NVN call, packed as the key takes it, the entry hook_select picks for it, and the
+   versions nvn_direct=auto takes the game's NVN calls for */
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/hle/hook/hook.h"
 #include "gpu/nvn/nvn_versions.hook.h"
@@ -114,6 +115,10 @@ int main(void) {
         assert(!strcmp(text, "nvn >= 53.0, < 55.0"));
     }
 
+    /* the versions auto takes the game's NVN calls for */
+    assert(nvn_api_described(55u << 16 | 8) && nvn_api_described(55u << 16 | 12) && nvn_api_described(55u << 16 | 15));
+    assert(!nvn_api_described(55u << 16 | 7) && !nvn_api_described(55u << 16 | 16) &&
+           !nvn_api_described(53u << 16 | 209) && !nvn_api_described(0));
     puts("nvn versions: ok");
     return 0;
 }
