@@ -473,7 +473,8 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
     Backing range = {0};
     backing_of(&range, gva, len);
     pm_lock(&g_rlock);
-    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+    u64 from = latest_over(&range) < 0 ? g_rhead : g_rtail; /* through the queue only when a release is there */
+    for (u64 i = from; i < g_rhead && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
         if (!release_overlaps(q, &range)) continue;
         /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
