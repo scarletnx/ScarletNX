@@ -237,6 +237,7 @@ typedef struct GfxOut {
     VmaAllocation initial_mem;
     u64* pages; /* sorted guest CPU pages behind this GPU virtual range */
     u64* vmap;  /* the same pages in the range's order, ~0 for an unmapped one */
+    u64 cpu;    /* the guest CPU address of addr when vmap is one run of guest memory, ~0 otherwise */
     u32 npages;
     /* earlier pending results were copied into buf on the GPU when it was made (gfx_overlay, atlas_fill): org holds
        guest memory without them until each lands (out_rebase) */
@@ -278,16 +279,20 @@ static GfxOut* gfx_out_new(u32 npages, u32 len) {
     o->vmap = o->pages + npages;
     o->npages = npages;
     o->org = (u8*)(o->vmap + npages);
+    o->cpu = ~0ull;
     o->wseen = vk_ww_now(); /* before its caller reads org: a write in between only makes copyable_span compare */
     return o;
 }
 static int page_cmp(const void* a, const void* b);
 /* o's page lists for its range at gva, as the GMMU maps it now */
 static void out_map(GfxOut* o, u64 gva) {
+    int run = 1;
     for (u32 i = 0; i < o->npages; i++) {
         u64 cpu = gmmu_translate((gva & ~0xFFFull) + (u64)i * 0x1000);
         o->vmap[i] = o->pages[i] = cpu ? cpu >> 12 : ~0ull;
+        run &= cpu && o->vmap[i] == o->vmap[0] + i;
     }
+    o->cpu = run && o->npages ? o->vmap[0] << 12 | (gva & 0xFFF) : ~0ull;
     qsort(o->pages, o->npages, sizeof *o->pages, page_cmp);
 }
 /* The bytes of [gva, gva + len) that are bytes of o: the same guest memory, through the same GPU address or another
@@ -303,6 +308,19 @@ static void out_span_page(const GfxOut* o, u64 j, u64 gva, u64 gr, u64 ra, u64 r
 }
 static void out_spans(const GfxOut* o, u64 gva, u64 len, const u64* rmap, SpanFn fn, void* user) {
     u64 rbase = gva & ~4095ull, rend = gva + len, obase = o->addr & ~4095ull, n = o->npages;
+    /* both one run of guest memory (most are): their bytes in common are where the runs meet, one span. The walk
+       below looked each of the range's pages up in o's, for every result a draw's binding met: a storage range of
+       half a megabyte against a few dozen results was a sixth of one game's GPU thread */
+    if (len && o->cpu != ~0ull && rmap[0] != ~0ull) {
+        u64 np = (rend - rbase + 4095) >> 12, i = 1;
+        while (i < np && rmap[i] == rmap[0] + i) i++;
+        if (i == np) {
+            u64 rcpu = rmap[0] << 12 | (gva & 4095), lo = rcpu > o->cpu ? rcpu : o->cpu;
+            u64 hi = rcpu + len < o->cpu + o->size ? rcpu + len : o->cpu + o->size;
+            if (lo < hi) fn(user, lo - rcpu, lo - o->cpu, hi - lo);
+            return;
+        }
+    }
     for (u64 i = 0, gr = rbase; gr < rend; i++, gr += 4096) {
         u64 ra = gr > gva ? 0 : gva - gr, rb = gr + 4096 < rend ? 4096 : rend - gr, page = rmap[i];
         u64 same = gr >= obase && gr - obase < n * 4096 ? (gr - obase) >> 12 : n; /* o's page at this address */
@@ -585,6 +603,7 @@ typedef struct {
     u32 n;
     u64 lo, hi; /* the lowest and highest guest page, ~0 and 0 when none is mapped */
     u64 a, an;
+    int run; /* every page mapped, each the one after the last: [lo, hi] whole */
 } RangePages;
 static void range_pages(u64 a, u64 an, RangePages* q) {
     q->n = 0;
@@ -592,10 +611,15 @@ static void range_pages(u64 a, u64 an, RangePages* q) {
     q->hi = 0;
     q->a = a;
     q->an = an;
+    q->run = 1;
     for (u64 ap = a >> 12, ae = (a + an - 1) >> 12; ap <= ae; ap++) {
         u64 ac = gmmu_translate(ap << 12), page;
-        if (!ac) continue;
+        if (!ac) {
+            q->run = 0;
+            continue;
+        }
         page = ac >> 12;
+        if (q->n && page != q->hi + 1) q->run = 0;
         if (q->n < 16) q->page[q->n] = page;
         q->n++;
         if (page < q->lo) q->lo = page;
@@ -611,6 +635,7 @@ static int backing_overlap(const RangePages* q, const GfxOut* o) {
     if (ohi == ~0ull) /* unmapped pages sort last */
         for (i = o->npages; i-- && o->pages[i] == ~0ull;) ohi = i ? o->pages[i - 1] : 0;
     if (q->hi < olo || ohi < q->lo) return 0;
+    if (q->run && o->cpu != ~0ull) return 1; /* two whole runs of pages whose bounds meet */
     if (q->n <= 16) {
         for (i = 0; i < q->n; i++)
             if (bsearch(&q->page[i], o->pages, o->npages, sizeof q->page[i], page_cmp)) return 1;
@@ -1711,6 +1736,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     else
         memset(o->org, 0, 4096);
     o->pages[0] = o->vmap[0] = p->key;
+    o->cpu = p->key << 12;
     o->composed = composed;
     o->addr = p->gva;
     o->size = 4096;
