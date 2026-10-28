@@ -122,7 +122,9 @@ int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
 void nvn_QueueFinalize(CPU* c, u64 q) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
+    nvn_wait_begin();
     nvn_replay_finish(o->replay);
+    nvn_wait_end();
     o->magic = 0;
 }
 /* submissions go to the GPU thread as they are made: nothing to flush */
@@ -133,7 +135,9 @@ void nvn_QueueFlush(CPU* c, u64 q) {
 /* the game may reuse every recording's memory after it */
 void nvn_QueueFinish(CPU* c, u64 q) {
     (void)c;
+    nvn_wait_begin();
     nvn_replay_finish(NVN_OBJ(NvnQueue, q)->replay);
+    nvn_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
 static void wait_sync(NvnQueue* o, const NvnSync* s) {
@@ -192,7 +196,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
 /* A fenced sync signals once its syncpoint reaches its value (the replay reached it), the present it waits for is on
    the display (shown_wait) and the pacer's clock reaches its ready time: the wait blocks until all three, or for the
    timeout (nanoseconds, ~0 for good). One never fenced waits out its timeout, as on the console */
-i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
+static i32 sync_wait(CPU* c, u64 sync, u64 timeout) {
     const NvnSync* s = NVN_OBJ(const NvnSync, sync);
     u64 start = plat_ns(), now, ready;
     i64 left = timeout > (u64)INT64_MAX ? -1 : (i64)timeout;
@@ -225,6 +229,15 @@ i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
         waited = 1;
     }
     return waited ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+}
+/* off the guest core while it waits (nvn_wait_begin); a poll (timeout 0) never waits */
+i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
+    i32 r;
+    if (!timeout) return sync_wait(c, sync, timeout);
+    nvn_wait_begin();
+    r = sync_wait(c, sync, timeout);
+    nvn_wait_end();
+    return r;
 }
 
 /* ============================================================ window */

@@ -17,6 +17,7 @@
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
+#include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -810,10 +811,25 @@ void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
     (void)v;
     (void)region;
 }
-/* the texels copied out of the texture by the GPU (gpu/nvn/nvn_copy.c): a deswizzle is the GPU's work */
+void nvn_wait_begin(void) {
+    KThread* t = kthread_cur();
+    if (!t) return;
+    core_leave(t);
+    kthread_block(t);
+}
+void nvn_wait_end(void) {
+    KThread* t = kthread_cur();
+    if (!t) return;
+    kthread_unblock(t);
+    core_enter(t);
+}
+/* the texels copied out of the texture by the GPU (gpu/nvn/nvn_copy.c): a deswizzle is the GPU's work, waited for
+   off the core */
 void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
     (void)c;
+    nvn_wait_begin();
     nvn_read_texels(t, v, region, dst);
+    nvn_wait_end();
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     (void)c;
