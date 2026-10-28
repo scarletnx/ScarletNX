@@ -417,8 +417,41 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance};
     rec_commit();
 }
+/* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer buf, count_buf;
+    VkDeviceSize off, count_off;
+    u32 kind, max, stride;
+} DrawIndirectArgs;
+static void draw_indirect_now(const DrawIndirectArgs* x) {
+    switch (x->kind) {
+        case 0: vkCmdDrawIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
+        case 1: vkCmdDrawIndexedIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
+        case 2: vkCmdDrawIndirectCount(x->cb, x->buf, x->off, x->count_buf, x->count_off, x->max, x->stride); break;
+        default:
+            vkCmdDrawIndexedIndirectCount(x->cb, x->buf, x->off, x->count_buf, x->count_off, x->max, x->stride);
+            break;
+    }
+}
+static void draw_indirect_run(const void* p) {
+    if (!rec_drop_draw()) draw_indirect_now((const DrawIndirectArgs*)p);
+}
+void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
+                         VkDeviceSize count_off, u32 max, u32 stride) {
+    DrawIndirectArgs a = {cb, buf, count_buf, off, count_off, (indexed ? 1u : 0u) | (count_buf ? 2u : 0u), max,
+                          stride};
+    if (!rec_on(cb)) {
+        draw_indirect_now(&a);
+        return;
+    }
+    DrawIndirectArgs* x = rec_push(draw_indirect_run, sizeof *x);
+    *x = a;
+    rec_commit();
+}
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
 REC3(CmdDispatch, u32, u32, u32)
+REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
 REC0(CmdEndRendering)
 REC1(CmdSetCullMode, VkCullModeFlags)
 REC1(CmdSetFrontFace, VkFrontFace)
