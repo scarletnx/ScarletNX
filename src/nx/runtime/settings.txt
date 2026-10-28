@@ -707,6 +707,15 @@ setting Hook families off
     startup
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
     help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
+setting Hook families verified
+    key hooks_verify
+    text 256
+    default ""
+    startup
+    help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
+    help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
+    help and the log names each call whose result, registers or bytes differ (docs/HOOKS.md). Slow: for checking a
+    help hook, never for playing. Empty: none
 setting NVN trace
     key nvn_trace
     int 0 1

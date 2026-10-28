@@ -56,6 +56,17 @@
    hook_table, the view hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it
    for the machine it runs on (cmake/hookgen.cmake).
 
+   Verify mode (verify.h). A hook says `pure` after its handler (and its uses) when its function depends on nothing but
+   its arguments, the memory they point to and constant data, and changes nothing but its result and the memory its
+   buffer arguments name. A buffer is an addr argument followed by its use and its length in bytes:
+
+     hook memcpy(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
+
+   in[...] is read, out[...] written and inout[...] both; the length is a number, or an integer argument's name
+   optionally times a number, plus a number (in[count * 4 + 8]). A hook has at most 4 buffers, and only a pure one has
+   any. The table's hook_verify gives each entry's: verify mode runs a pure hook's function on copies of its buffers
+   and its handler on the live ones, and compares them.
+
    Usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC (NAME, hook by default, names the tables)
    Each output is only rewritten when it changes. */
 #include <ctype.h>
@@ -89,6 +100,11 @@ static const struct {
 enum { K_ANY, K_SDK, K_NVN };
 static const char* const key_name[] = {"any", "sdk", "nvn"};
 static const char* const key_macro[] = {"HOOK_ANY", "HOOK_SDK", "HOOK_NVN"};
+/* a result's kind for verify mode (verify.h), by Kind */
+static const char* const ret_macro[] = {"HOOK_RET_VOID", "HOOK_RET_BOOL", "HOOK_RET_X8",   "HOOK_RET_X16",
+                                        "HOOK_RET_X32",  "HOOK_RET_X64",  "HOOK_RET_X8",   "HOOK_RET_X16",
+                                        "HOOK_RET_X32",  "HOOK_RET_X64",  "HOOK_RET_ADDR", "HOOK_RET_F32",
+                                        "HOOK_RET_F64"};
 
 /* the versions [lo, hi) of key; K_ANY (0 to UNBOUNDED) for none given */
 typedef struct {
@@ -96,16 +112,25 @@ typedef struct {
     unsigned long lo, hi;
 } Range;
 
+/* how a buffer argument is used, as verify.h numbers them: 0 for an argument that isn't one */
+enum { B_NONE, B_IN, B_OUT, B_INOUT };
+static const char* const buf_mode[] = {"", "in", "out", "inout"};
+
 typedef struct {
     Kind kind;
     char name[MAX_NAME];
     int reg; /* its x or v register */
+    /* a buffer (an address with in[...], out[...] or inout[...]): its use and its length, len_add bytes and the
+       argument len_name's value times len_mul, when there is one (len_arg its index once the arguments are read) */
+    int mode, len_arg;
+    char len_name[MAX_NAME];
+    unsigned long len_mul, len_add;
 } Arg;
 
 typedef struct {
     char symbol[MAX_NAME], handler[MAX_NAME];
     Arg args[MAX_ARGS];
-    int nargs, line, family, nuses;
+    int nargs, line, family, nuses, pure, nbufs;
     Kind ret;
     Range range;
     char use_name[MAX_USES][MAX_NAME];
@@ -352,7 +377,51 @@ static const char* parse_version(const char* p, Range* r, int line) {
     return p + 1;
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] = HANDLER [uses STRUCT, ...] */
+/* an address argument's buffer, p at "in[", "out[" or "inout[": its length [NAME [* NUMBER]] [+ NUMBER] | NUMBER */
+static const char* parse_buffer(const char* p, Arg* a, int line) {
+    char mode[MAX_NAME];
+    int i;
+    p = word(p, mode, line, "buffer's use");
+    for (i = B_IN; i <= B_INOUT && strcmp(mode, buf_mode[i]); i++) {
+    }
+    if (i > B_INOUT) fail(line, "expected in[...], out[...] or inout[...] after %s, not %s", a->name, mode);
+    if (a->kind != T_ADDR) fail(line, "only an addr argument is a buffer, not %s", a->name);
+    a->mode = i;
+    a->len_arg = -1;
+    a->len_mul = 1;
+    p = expect(p, "[", line);
+    p = skip_space(p);
+    if (isalpha((unsigned char)*p) || *p == '_') {
+        p = word(p, a->len_name, line, "buffer's length");
+        p = skip_space(p);
+        if (*p == '*') p = number(p + 1, &a->len_mul, line, "length's factor");
+        p = skip_space(p);
+        if (*p == '+') p = number(p + 1, &a->len_add, line, "length's addend");
+    } else {
+        p = number(p, &a->len_add, line, "buffer's length");
+    }
+    return expect(p, "]", line);
+}
+
+/* the arguments the buffers' lengths name, which may come after them: integers in x registers */
+static void resolve_buffers(Hook* h, int line) {
+    int i, j;
+    for (i = 0; i < h->nargs; i++) {
+        Arg* a = &h->args[i];
+        if (!a->mode) continue;
+        if (++h->nbufs > 4) fail(line, "a hook has at most 4 buffers");
+        if (!a->len_name[0]) continue;
+        for (j = 0; j < h->nargs && strcmp(h->args[j].name, a->len_name); j++) {
+        }
+        if (j == h->nargs) fail(line, "%s's length names %s, which isn't an argument", a->name, a->len_name);
+        if (h->args[j].kind < T_U8 || h->args[j].kind > T_I64)
+            fail(line, "%s's length %s is not an integer", a->name, a->len_name);
+        a->len_arg = j;
+    }
+    if (h->nbufs && !h->pure) fail(line, "only a pure hook's buffers are checked: say pure, or drop the buffers");
+}
+
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] = HANDLER [uses STRUCT, ...] [pure] */
 static void parse_hook(const char* p, int line, const Range* range) {
     Hook* h;
     char type[MAX_NAME];
@@ -379,6 +448,7 @@ static void parse_hook(const char* p, int line, const Range* range) {
         a->reg = is_float(a->kind) ? v++ : x++;
         if (x > NREGS || v > NREGS) fail(line, "an argument past x7 or v7 would be on the stack, which no hook reads");
         p = skip_space(p);
+        if (isalpha((unsigned char)*p)) p = parse_buffer(p, a, line);
         if (*p == ',')
             p = skip_space(p + 1);
         else if (*p != ')')
@@ -415,7 +485,12 @@ static void parse_hook(const char* p, int line, const Range* range) {
             p++;
         }
     }
+    if (keyword(p, "pure")) {
+        h->pure = 1;
+        p = skip_space(p + 4);
+    }
     if (*p) fail(line, "unexpected text after the handler");
+    resolve_buffers(h, line);
 }
 
 /* family NAME: the hooks after it, until the next */
@@ -864,7 +939,22 @@ static void write_table(const char* path) {
         }
         out("\",\n");
     }
-    out("    0};\nstatic const char* const %s_family_name[%s_FAMILIES + 1] = {\n", prefix, upper);
+    out("    0};\n/* verify mode (verify.h): the pure hooks' buffers and results */\n");
+    out("static const HookVerify %s_verify[%s_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries; i++) {
+        const Hook* h = &hooks[entries[i].hook];
+        int n = 0;
+        out("    {%d, %s, %d, {", h->pure, ret_macro[h->ret], h->nbufs);
+        for (k = 0; k < h->nargs; k++) {
+            const Arg* a = &h->args[k];
+            if (!a->mode) continue;
+            out("%s{%d, %d, %d, %lu, %lu}", n++ ? ", " : "", a->reg, a->mode,
+                a->len_arg < 0 ? 0xFF : h->args[a->len_arg].reg, a->len_arg < 0 ? 0ul : a->len_mul, a->len_add);
+        }
+        out("%s}},\n", n ? "" : "{0, 0, 0, 0, 0}"); /* C99 has no empty initializer */
+    }
+    out("    {0, 0, 0, {{0, 0, 0, 0, 0}}}};\n");
+    out("static const char* const %s_family_name[%s_FAMILIES + 1] = {\n", prefix, upper);
     for (i = 0; i < nfamilies; i++) out("    \"%s\",\n", families[i]);
     out("    0};\n");
     out("static const HookTable %s_table = {%s_COUNT, %s_symbol, %s_key, %s_lo, %s_hi};\n", prefix, upper, prefix,

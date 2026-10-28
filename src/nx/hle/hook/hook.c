@@ -5,15 +5,16 @@
    version */
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/hle.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
 
-/* whether the hooks_off setting names family: one of its words, separated by commas or spaces */
-static int family_off(const char* family) {
-    const char* p = g_settings.hook_families_off;
+/* whether a setting's list (hooks_off, hooks_verify) names family: one of its words, separated by commas or spaces */
+static int family_listed(const char* list, const char* family) {
+    const char* p = list;
     size_t n = strlen(family);
     while (*p) {
         size_t k;
@@ -23,14 +24,6 @@ static int family_off(const char* family) {
         if (k == n && !memcmp(p, family, n)) return 1;
         p += k;
     }
-    return 0;
-}
-
-static int hooked_at(u64 addr) {
-    const HleHook* h = &g_hle.hook;
-    u32 i;
-    for (i = 0; i < h->count; i++)
-        if (h->addr[i] == addr) return 1;
     return 0;
 }
 
@@ -61,12 +54,84 @@ static void module_versions(u32 sdk[HOOK_MODULES]) {
         WARN("hooks: %u modules, so the SDK versions of those past %d are unknown\n", g_mod->nmods, HOOK_MODULES);
 }
 
+/* the site of the hooked function at addr; -1 for none */
+static int site_of(u64 addr) {
+    const HleHook* h = &g_hle.hook;
+    u32 i;
+    for (i = 0; i < h->count; i++)
+        if (h->addr[i] == addr) return (int)i;
+    return -1;
+}
+
+/* a scratch slot of verify mode's, -1 when every one is taken */
+static int verify_claim(void) {
+    u32* taken = &g_hle.hook.verify_taken;
+    u32 seen = __atomic_load_n(taken, __ATOMIC_RELAXED);
+    for (;;) {
+        int i;
+        if (seen == ~0u >> (32 - HOOK_VERIFY_SLOTS)) return -1;
+        for (i = 0; seen & (1u << i); i++) {
+        }
+        if (__atomic_compare_exchange_n(taken, &seen, seen | (1u << i), 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return i;
+    }
+}
+
+/* a count of verify mode's worth logging: the first, and each power of 4 from 1024 */
+static int verify_milestone(u64 n) { return n == 1 || (n >= 1024 && !(n & (n - 1)) && __builtin_ctzll(n) % 2 == 0); }
+
+/* verify mode's check of a pure hook (verify.h), in the function's slot in place of the hook's adapter: each call
+   runs the function's own code on copies of its buffers, then the handler, and the log names the calls whose
+   results, registers or bytes differ */
+static void verify_fn(CPU* RESTRICT c, u64 entry) {
+    HleHook* h = &g_hle.hook;
+    int i = site_of(entry), slot, what;
+    u64 args[8], lr = c->x[30];
+    HookVerifyResult r;
+    u16 k;
+    if (i < 0) { /* not a site: cannot happen, as only hook_install puts this in a slot */
+        fatal("hook verify: no hook at %llx", (unsigned long long)entry);
+    }
+    k = h->hook[i];
+    memcpy(args, c->x, sizeof args);
+    slot = verify_claim();
+    what = slot < 0 ? HOOK_SKIP_SIZE
+                    : hook_verify_call(c, entry, h->orig[i], hook_fn[k], &hook_verify[k],
+                                       h->verify_base + (u64)slot * HOOK_VERIFY_SLOT, HOOK_VERIFY_SLOT, &r);
+    if (slot >= 0) __atomic_and_fetch(&h->verify_taken, ~(1u << slot), __ATOMIC_RELEASE);
+    if (what >= HOOK_SKIP_SIZE) { /* nothing ran: the handler does the call */
+        u64 n = __atomic_add_fetch(&h->skipped[i], 1, __ATOMIC_RELAXED);
+        hook_fn[k](c, entry);
+        if (verify_milestone(n))
+            LOG("hook verify: %s, %llu calls skipped (%s), the last of %llu bytes\n", hook_symbol[k],
+                (unsigned long long)n, slot < 0 ? "no scratch slot free" : hook_verify_text(what),
+                (unsigned long long)args[2]);
+        return;
+    }
+    if (what == HOOK_AGREE) {
+        u64 n = __atomic_add_fetch(&h->agreed[i], 1, __ATOMIC_RELAXED);
+        if (verify_milestone(n))
+            LOG("hook verify: %s at %llx, %llu calls agree with its own code (%llu differ, %llu skipped)\n",
+                hook_symbol[k], (unsigned long long)entry, (unsigned long long)n,
+                (unsigned long long)__atomic_load_n(&h->differed[i], __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&h->skipped[i], __ATOMIC_RELAXED));
+        return;
+    }
+    if (__atomic_add_fetch(&h->differed[i], 1, __ATOMIC_RELAXED) <= 16)
+        WARN("hook verify: %s at %llx, called from %llx with %llx %llx %llx %llx, %s: the handler's %llx, its own "
+             "code's %llx (register %d, buffer %d at +%llx)\n",
+             hook_symbol[k], (unsigned long long)entry, (unsigned long long)lr, (unsigned long long)args[0],
+             (unsigned long long)args[1], (unsigned long long)args[2], (unsigned long long)args[3],
+             hook_verify_text(what), (unsigned long long)r.a, (unsigned long long)r.b, r.reg, r.buf,
+             (unsigned long long)r.offset);
+}
+
 void hook_install(void) {
     HleHook* h = &g_hle.hook;
     const char* name;
     u64 addr;
     u32 i, sdk[HOOK_MODULES] = {0};
-    unsigned char off[HOOK_FAMILIES + 1] = {0};
+    unsigned char off[HOOK_FAMILIES + 1] = {0}, verify[HOOK_FAMILIES + 1] = {0};
+    int any_verify = 0;
     unsigned char said[HOOK_COUNT + 1] = {0};   /* the entries whose versions the log gave */
     unsigned char missed[HOOK_COUNT + 1] = {0}; /* the symbols (by their first entry) the log said had none */
     if (!g_settings.native_hooks) {
@@ -75,8 +140,15 @@ void hook_install(void) {
     }
     if (g_arm_mod || !g_disp || !g_mod) return; /* a 32-bit game's code is arm.c's blocks, which no hook replaces */
     for (i = 0; i < HOOK_FAMILIES; i++)
-        if ((off[i] = (unsigned char)family_off(hook_family_name[i])) != 0)
+        if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
+        else if (family_listed(g_settings.hook_families_verified, hook_family_name[i]))
+            verify[i] = 1, any_verify = 1;
+    if (any_verify) {
+        h->verify_base = kmem_alloc((u64)HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT, MS_KERNEL, PERM_RW);
+        LOG("hooks: verify mode for the pure hooks of the families hooks_verify names, with %u KiB of scratch at %llx\n",
+            (HOOK_VERIFY_SLOTS * HOOK_VERIFY_SLOT) >> 10, (unsigned long long)h->verify_base);
+    }
     module_versions(sdk);
     for (i = 0; kernel_symbol(i, &addr, &name); i++) {
         u32 versions[HOOK_KEYS] = {0};
@@ -84,7 +156,7 @@ void hook_install(void) {
         char range[96];
         GuestFn* slot;
         if (!name || addr < g_code_lo || addr >= g_code_hi || (addr & 3) ||
-            hook_select(&hook_table, name, versions, &first) == -1 || (m = module_of(addr)) < 0 || hooked_at(addr))
+            hook_select(&hook_table, name, versions, &first) == -1 || (m = module_of(addr)) < 0 || site_of(addr) >= 0)
             continue;
         /* the versions of the module that exports it; the NVN API version isn't read yet, so it is unknown */
         versions[HOOK_SDK] = m < HOOK_MODULES ? sdk[m] : 0;
@@ -106,8 +178,9 @@ void hook_install(void) {
         h->hook[h->count] = (u16)k;
         h->addr[h->count] = addr;
         h->orig[h->count] = *slot;
+        h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
+        __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
         h->count++;
-        __atomic_store_n(slot, hook_fn[k], __ATOMIC_RELEASE);
         if (hook_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s\n", name, (unsigned long long)addr, hook_handler[k]);
             continue;
@@ -129,14 +202,11 @@ void hook_restore(u64 addr, u64 size) {
         if (a < addr || a - addr >= size) continue;
         mem_query(a, &block);
         if (block.state == MS_FREE || !(block.perm & PERM_X)) continue; /* no longer code: the hook goes with it */
-        __atomic_store_n(&g_disp[(a - g_code_lo) >> 2], hook_fn[h->hook[i]], __ATOMIC_RELEASE);
+        __atomic_store_n(&g_disp[(a - g_code_lo) >> 2], h->fn[i], __ATOMIC_RELEASE);
     }
 }
 
 GuestFn hook_original(u64 addr) {
-    const HleHook* h = &g_hle.hook;
-    u32 i;
-    for (i = 0; i < h->count; i++)
-        if (h->addr[i] == addr) return h->orig[i];
-    return NULL;
+    int i = site_of(addr);
+    return i < 0 ? NULL : g_hle.hook.orig[i];
 }

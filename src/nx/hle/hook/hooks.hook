@@ -4,7 +4,7 @@
 # The functions the game exports that the runtime runs natively (hook.h), for tools/hookgen. A line at a time:
 #
 #   family NAME
-#   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME, ...) [-> TYPE] = HANDLER [uses STRUCT, ...]
+#   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME [BUFFER], ...) [-> TYPE] = HANDLER [uses STRUCT, ...] [pure]
 #   [@version(...)] struct NAME::NAME [@version(...)] { TYPE FIELD @OFFSET; ... } size SIZE
 #
 # A family names the hooks after it, until the next family line: the hooks_off setting turns families off by name.
@@ -15,10 +15,14 @@
 # hle/hook/hooks.hook.h. A handler does what the function is known to do and nothing the game could tell apart.
 # @version limits a hook or a struct to the versions of the module that exports the function (KEY sdk, the default, or
 # nvn; OP >=, >, <=, <, ==), a struct gives a guest struct's layout for those versions, and a handler that uses one
-# takes the layout for its module after the CPU (docs/HOOKS.md, tools/hookgen/hookgen.c).
+# takes the layout for its module after the CPU (docs/HOOKS.md, tools/hookgen/hookgen.c). A pure hook's function
+# depends only on its arguments, the memory they point to and constant data, and changes only its result and its
+# buffers: an addr argument followed by in[LENGTH], out[LENGTH] or inout[LENGTH] (bytes: a number, or an integer
+# argument times a number plus a number). The hooks_verify setting checks a pure hook against the function's own code
+# on every call (verify.h).
 
 # the C library (libc.c): the guest's own byte loops become the host's
 family libc
-hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
-hook memmove(addr dst, addr src, u64 size) -> addr = hook_memmove
-hook memset(addr dst, i32 value, u64 size) -> addr = hook_memset
+hook memcpy(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
+hook memmove(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
+hook memset(addr dst out[size], i32 value, u64 size) -> addr = hook_memset pure

@@ -690,6 +690,13 @@ snx_test_target(snx-test-hook-versions 99)
 target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
 add_test(NAME hook_versions COMMAND snx-test-hook-versions)
+# verify mode (src/nx/hle/hook/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
+# function's own code, on copies of their buffers, and each kind of difference it reports
+add_executable(snx-test-hook-verify hook_verify.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/verify.c")
+snx_test_target(snx-test-hook-verify 99)
+target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
+add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
         stack_argument 2 "would be on the stack"
@@ -711,7 +718,11 @@ foreach(bad IN ITEMS
         struct_mixed 3 "struct S is declared without @version on line 1"
         struct_past_end 3 "field a runs past the end of struct S"
         uses_unknown 2 "unknown struct 'T'"
-        uses_uncovered 3 "no declaration of struct S holds for f's versions")
+        uses_uncovered 3 "no declaration of struct S holds for f's versions"
+        buffer_length 2 "p's length names n, which isn't an argument"
+        buffer_impure 2 "only a pure hook's buffers are checked"
+        buffer_type 2 "only an addr argument is a buffer, not p"
+        buffer_length_type 2 "p's length q is not an integer")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)
