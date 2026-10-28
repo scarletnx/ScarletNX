@@ -1257,17 +1257,20 @@ typedef struct {
 } DescWrites;
 
 /* Fragment programs' storage images, written back to guest memory: each with its bytes from before the draw (original,
-   for the merge with the CPU's writes since) and the pages it covers. A release puts their write-back aside: their
-   copy is recorded into the frame's host-readable ring (sub, the submit it is in, back, wgen the write generation it
-   copies), and they land once that submit is done (vk_gfx_image_frame_done), as storage buffers' results do. Before,
-   each release copied and waited for the GPU: half of one game's frame time in vk_finish. Whatever needs their memory
-   sooner lands them at once, waiting for that submit when its copy is recorded */
+   for the merge with the CPU's writes since) and the guest memory its bytes are in. A release puts their write-back
+   aside: their copy is recorded into the frame's host-readable ring (sub, the submit it is in, back, wgen the write
+   generation it copies), and they land once that submit is done (vk_gfx_image_frame_done), as storage buffers' results
+   do. Before, each release copied and waited for the GPU: half of one game's frame time in vk_finish. Whatever needs
+   their memory sooner lands them at once, waiting for that submit when its copy is recorded */
+typedef struct {
+    u64 cpu, n;
+} MemRun;
 typedef struct {
     Surf* surf;
     u8* original;
     u32 size;
-    u64* pages;
-    size_t npages;
+    MemRun* runs; /* the guest memory of its bytes, by address, apart: the write-back changes those bytes only */
+    size_t nruns;
     u64 sub, back_off, back_size, wgen;
     u8* back;
     VmaAllocation back_mem;
@@ -1277,8 +1280,8 @@ static size_t g_img_count, g_img_cap;
 static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
 
-static int image_page_cmp(const void* a, const void* b) {
-    u64 x = *(const u64*)a, y = *(const u64*)b;
+static int mem_run_cmp(const void* a, const void* b) {
+    u64 x = ((const MemRun*)a)->cpu, y = ((const MemRun*)b)->cpu;
     return (x > y) - (x < y);
 }
 /* surf has a write-back waiting whose copy isn't recorded yet: a later draw's writes are in it */
@@ -1299,35 +1302,69 @@ static void image_record(Surf* surf, u8* original, u32 size) {
         g_img_out = next;
         g_img_cap = cap;
     }
-    size_t max_pages = (size_t)(((surf->gva & 4095) + (u64)size + 4095) >> 12);
-    u64* pages = malloc(max_pages * sizeof *pages);
-    if (!pages) fatal("Out of memory recording graphics storage image pages");
-    size_t npages = 0;
-    u64 first = surf->gva & ~4095ull;
-    for (size_t i = 0; i < max_pages; i++) {
-        u64 cpu = gmmu_translate(first + (u64)i * 4096);
-        if (cpu) pages[npages++] = cpu >> 12;
+    /* at most a run a page */
+    size_t max_runs = (size_t)(((surf->gva & GMMU_PAGE_MASK) + (u64)size + GMMU_PAGE_MASK) >> GMMU_PAGE_BITS);
+    MemRun* runs = malloc((max_runs ? max_runs : 1) * sizeof *runs);
+    if (!runs) fatal("Out of memory recording graphics storage image memory");
+    size_t nruns = 0;
+    for (u64 off = 0; off < size;) {
+        u64 cpu = 0, n = gmmu_run(surf->gva + off, size - off, &cpu);
+        if (!n) { /* an unmapped page: the write-back writes nothing there */
+            u64 left = GMMU_PAGE_SIZE - ((surf->gva + off) & GMMU_PAGE_MASK);
+            off += left < size - off ? left : size - off;
+            continue;
+        }
+        runs[nruns++] = (MemRun){cpu, n};
+        off += n;
     }
-    qsort(pages, npages, sizeof *pages, image_page_cmp);
-    g_img_out[g_img_count++] = (GfxImageOut){.surf = surf, .original = original, .size = size, .pages = pages,
-                                             .npages = npages};
+    qsort(runs, nruns, sizeof *runs, mem_run_cmp);
+    size_t kept = 0; /* runs that meet or touch made one, so their ends rise with their starts (image_meets) */
+    for (size_t i = 0; i < nruns; i++)
+        if (kept && runs[kept - 1].cpu + runs[kept - 1].n >= runs[i].cpu) {
+            u64 end = runs[i].cpu + runs[i].n;
+            if (end > runs[kept - 1].cpu + runs[kept - 1].n) runs[kept - 1].n = end - runs[kept - 1].cpu;
+        } else
+            runs[kept++] = runs[i];
+    nruns = kept;
+    g_img_out[g_img_count++] =
+        (GfxImageOut){.surf = surf, .original = original, .size = size, .runs = runs, .nruns = nruns};
     g_gfx_img_any = 1;
 }
+/* [cpu, cpu + n) meets the image's bytes: the first run ending past cpu starts before cpu + n */
+static int image_meets(const GfxImageOut* out, u64 cpu, u64 n) {
+    size_t lo = 0, hi = out->nruns;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (out->runs[mid].cpu + out->runs[mid].n <= cpu)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < out->nruns && out->runs[lo].cpu < cpu + n;
+}
+/* [gva, gva + size) meets the image's bytes, through its own address or another mapping of the same memory. By the
+   byte, not the page: NVN packs textures closer than a page, and one game's menu hashed a 480x270 texture ending in
+   the page its twin storage image starts in, every frame, landing the image with a GPU wait each time (a fifth of the
+   run in vk_finish). The write-back changes the image's bytes only */
 static int image_overlaps(const GfxImageOut* out, u64 gva, u64 size) {
     if (!size) return 0;
     u64 base = out->surf->gva;
     if (gva >= base ? gva - base < out->size : base - gva < size) return 1;
-    u64 first = gva & ~4095ull, last = (gva + size - 1) & ~4095ull;
-    for (u64 at = first; at <= last; at += 4096) {
-        u64 cpu = gmmu_translate(at), page = cpu >> 12;
-        if (cpu && bsearch(&page, out->pages, out->npages, sizeof page, image_page_cmp)) return 1;
-        if (last - at < 4096) break;
+    for (u64 off = 0; off < size;) {
+        u64 cpu = 0, n = gmmu_run(gva + off, size - off, &cpu);
+        if (!n) {
+            u64 left = GMMU_PAGE_SIZE - ((gva + off) & GMMU_PAGE_MASK);
+            off += left < size - off ? left : size - off;
+            continue;
+        }
+        if (image_meets(out, cpu, n)) return 1;
+        off += n;
     }
     return 0;
 }
 static void image_remove(size_t index) {
     free(g_img_out[index].original);
-    free(g_img_out[index].pages);
+    free(g_img_out[index].runs);
     memmove(g_img_out + index, g_img_out + index + 1, (g_img_count - index - 1) * sizeof *g_img_out);
     g_img_count--;
     g_gfx_img_any = g_img_count != 0;
