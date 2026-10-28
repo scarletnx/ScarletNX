@@ -172,11 +172,50 @@ u64 nvn_CommandBufferGetControlMemoryUsed(CPU* c, u64 cb) {
     (void)cb;
     return 0;
 }
-/* Copying recordings is calling them here: the records stay where they are. NVN copies the commands, so a game may
-   take the source's memory back at once, which the replay would then read: neither game run so far copies any */
+/* A record's snapshot pointers (a texture object copied into the record, tex_snap) that point into the record at src,
+   moved to its copy at dst */
+static void relocate(u64 dst, u64 src, u32 op, u32 size) {
+    static const struct {
+        u32 op, off, n;
+    } snaps[] = {
+        {OP_SET_RT, offsetof(NvnPSetRT, color), 8},     {OP_SET_RT, offsetof(NvnPSetRT, depth), 1},
+        {OP_COPY_B2T, offsetof(NvnPCopyB2T, texture), 1}, {OP_COPY_T2B, offsetof(NvnPCopyB2T, texture), 1},
+        {OP_COPY_T2T, offsetof(NvnPCopyT2T, src), 1},   {OP_COPY_T2T, offsetof(NvnPCopyT2T, dst), 1},
+        {OP_CLEAR_TEX, offsetof(NvnPClearTex, texture), 1},
+    };
+    size_t i;
+    u32 k;
+    for (i = 0; i < sizeof snaps / sizeof *snaps; i++)
+        for (k = 0; snaps[i].op == op && k < snaps[i].n; k++) {
+            u64 at = dst + 8 + snaps[i].off + 8 * (u64)k, v = gr64(at);
+            if (v >= src && v < src + size) gw64(at, v - src + dst);
+        }
+}
+/* NVN copies the commands of recordings into the command buffer, and the game may take the source's memory back at
+   once: each record is copied (a recording it calls is still called where it is), across the source's segments */
 void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
-    LOG_LIMIT(1, "nvn: a game copies recordings (nvnCommandBufferCopyCommands): they are called where they are\n");
-    nvn_CommandBufferCallCommands(c, cb, n, handles);
+    i32 i;
+    for (i = 0; i < n; i++) {
+        u64 p = gr64(handles + 8 * (u64)i);
+        for (;;) {
+            NvnRecHdr h;
+            u64 at;
+            memcpy(&h, GP(p), sizeof h);
+            if (h.op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
+                fatal("nvn: nvnCommandBufferCopyCommands of a record at %llx with op %u and size %u, which nvn_direct "
+                      "never writes",
+                      (unsigned long long)p, h.op, h.size);
+            if (h.op == OP_END) break;
+            if (h.op == OP_JUMP) {
+                p = gr64(p + 8);
+                continue;
+            }
+            at = alloc_keep(c, cb, h.size, OP_RESERVE); /* may run the game's memory callback */
+            memcpy(GP(at), GP(p), h.size);
+            relocate(at, p, h.op, h.size);
+            p += h.size;
+        }
+    }
 }
 void nvn_CommandBufferCallCommands(CPU* c, u64 cb, i32 n, u64 handles) {
     i32 i;
