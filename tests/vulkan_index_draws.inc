@@ -139,6 +139,52 @@ static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
     return 0;
 }
 
+/* Indirect draws (DrawCall.indirect): the arguments, and a multi-draw's count, are guest memory the GPU reads, in
+   VkDrawIndirectCommand's and VkDrawIndexedIndirectCommand's layouts, and nothing of them is read on the CPU. A fan of
+   vertices 4 to 7 (the green quad), a list through a base vertex, and two records under a count: the second draws the
+   red quad over the green one only when the count says two */
+static int put_words(u64 at, const u32* w, u32 n) {
+    u8 bytes[64];
+    for (u32 i = 0; i < n; i++) snx_st_le32(bytes + 4 * i, w[i]);
+    CHECK(!gmem_write(at, bytes, 4 * (size_t)n));
+    return 0;
+}
+static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+    IndexPixels px;
+    const u32 list0[6] = {0, 1, 3, 1, 2, 3};
+    const u32 fan[4] = {4, 1, 4, 0}; /* count, instances, first vertex, base instance */
+    CHECK(!put_words(args, fan, 4));
+    DrawCall call = {.topology = 6, .count = 1, .instances = 1, .indirect = args, .draw_count = 1, .stride = 16};
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect fan: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    /* indices 0..3 through base vertex 4 (16-bit), then the same records under a count of 1 and of 2, the second
+       record's base vertex 0 the red quad */
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u));
+    const u32 two[10] = {6, 1, 0, 4, 0, 6, 1, 0, 0, 0}; /* count, instances, first index, base vertex, base instance */
+    CHECK(!put_words(args, two, 10));
+    call = (DrawCall){.topology = 4, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1,
+                      .stride = 20};
+    CHECK(!index_draw(channel, target, &call, &px));
+    if (!index_all_green(&px)) fprintf(stderr, "indirect indexed: %u green, %u red\n", px.green, px.red);
+    CHECK(index_all_green(&px));
+    if (g_vk.has_draw_indirect_count) {
+        const u32 one = 1, both = 2;
+        CHECK(!put_words(args + 0x40, &one, 1));
+        call.indirect_count = args + 0x40;
+        call.draw_count = 2;
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(index_all_green(&px));
+        CHECK(!put_words(args + 0x40, &both, 1));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (px.red != 16) fprintf(stderr, "indirect count of 2: %u green, %u red\n", px.green, px.red);
+        CHECK(px.red == 16);
+    }
+    printf("indirect draws: a fan, indexed through a base vertex%s checked on the GPU\n",
+           g_vk.has_draw_indirect_count ? ", and a count of one and two records" : "");
+    return 0;
+}
+
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
     const u64 positions = address + 0x12000, colors = address + 0x13000, indices = address + 0x14000,
@@ -202,6 +248,7 @@ static int check_index_draws(void) {
     g_vk.has_index8 = 0; /* the widening on the GPU, which a device without 8-bit indices takes */
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
+    CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
     printf("index draws: quads, widened and native 8-bit indices and restart indices checked (8-bit indices %s)\n",
            had8 ? "native" : "unavailable");
     free(channel);

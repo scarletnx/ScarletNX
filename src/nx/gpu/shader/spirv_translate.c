@@ -71,6 +71,7 @@ int g_shader_output_layer = 1;
 int g_shader_viewport_index = 3;
 int g_shader_geometry = 1;
 int g_shader_float16 = 1;
+int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
@@ -4644,6 +4645,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (needs_f64) spv_emit_float64_capability(&c->emit);
     if (needs_clock) spv_emit_shader_clock_extension(&c->emit);
     if (needs_i64) spv_emit_capability(&c->emit, 11); /* Int64 */
+    if (needs_instance && g_shader_draw_parameters && stage == ST_VS) spv_emit_draw_parameters_capability(&c->emit);
     if (needs_subgroup || converge) spv_emit_subgroup_capabilities(&c->emit);
     if (needs_quad) spv_emit_subgroup_quad_capability(&c->emit);
     c->quad = needs_quad;
@@ -4906,7 +4908,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         point_coord = spv_emit_interface_variable(&c->emit, 1, vec2, c->u32_type, 0, 16, 0, 0);
         interfaces[count++] = point_coord;
     }
-    u32 instance_index = 0, vertex_index = 0;
+    u32 instance_index = 0, vertex_index = 0, base_instance = 0;
     u32 local_input = 0, group_input = 0;
     if (needs_local_id) {
         local_input = spv_emit_builtin_input_vec3(&c->emit, vec3_u32, 27);
@@ -4926,6 +4928,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         vertex_index = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 42);
         interfaces[count++] = instance_index;
         interfaces[count++] = vertex_index;
+        if (g_shader_draw_parameters && stage == ST_VS) {
+            base_instance = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4425); /* BaseInstance */
+            interfaces[count++] = base_instance;
+        }
     }
     if (needs_fragcoord) {
         fragcoord = spv_emit_fragcoord_input(&c->emit, vec4);
@@ -5548,6 +5554,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                         u32 base_bits =
                             spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, c->zero, c->f32_type);
                         u32 base = spv_emit_bitcast(&c->emit, c->u32_type, base_bits);
+                        /* with draw parameters the push holds what the draw's first instance adds to the base
+                           instance (render.c), which BaseInstance gives */
+                        if (base_instance)
+                            base = spv_emit_isub_u32(&c->emit, c->u32_type,
+                                                     spv_emit_load(&c->emit, c->u32_type, base_instance), base);
                         instance = spv_emit_isub_u32(&c->emit, c->u32_type, instance, base);
                     } else
                         instance = spv_emit_load(&c->emit, c->u32_type, vertex_index);
