@@ -4,6 +4,7 @@
 #ifndef SNX_NVN_DRIVER_H
 #define SNX_NVN_DRIVER_H
 #include "common/cpu/aarch64/cpu.h"
+#include <stddef.h>
 
 /* The constant the driver's nvnDeviceGetInteger at func answers for item, through the switch in it or in the first
    function it calls (tools/nvn_census.py's api_version, for any item): 1 and *out, or 0 when that item's case isn't a
@@ -14,12 +15,13 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
    make, as the hooks' nvn key takes it (hle/hook/hook.h HOOK_NVN): major << 16 | minor, 0 when either is out of
    range (a major of 0, or either past 65535) */
 u32 nvn_api_pack(i32 major, i32 minor);
-/* The NVN API versions nvn_direct describes (gpu/nvn/nvn_direct.c), those nvn_direct=auto takes the game's NVN calls
-   for: the drivers whose object footprints tools/nvn_census.py --footprints measured, which every layout in
-   gpu/nvn/nvn_obj.h fits, and whose games ran under nvn_direct, API 55.8 and 55.15, with 55.12 between them (the
-   census also measured an SDK 5.4 driver, API 53.209, which no game ran under nvn_direct yet). Inclusive */
-#define NVN_API_DESCRIBED_LO (55u << 16 | 8)
-#define NVN_API_DESCRIBED_HI (55u << 16 | 15)
+/* Whether nvn_direct describes NVN API version api (packed as nvn_api_pack does), so nvn_direct=auto takes the game's
+   NVN calls (gpu/nvn/nvn_direct.c): a driver whose object footprints tools/nvn_census.py --footprints measured, which
+   every layout in gpu/nvn/nvn_obj.h fits, whose shader control sections the runtime reads at the offsets its driver
+   reads them, and whose game ran under nvn_direct. API 53.209 (an SDK 5.4 driver) and 55.8 to 55.15 (55.12 between
+   the measured ones); the versions between them aren't described */
 int nvn_api_described(u32 api);
+/* the described versions as text ("53.209, 55.8 to 55.15") */
+void nvn_api_described_text(char* out, size_t n);
 
 #endif
