@@ -1937,6 +1937,13 @@ if(UNIX)
     # traps over pages the write tracking protects (SNX_WW=signal)
     add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own)
     set_tests_properties(memory_own_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
+    # traps by protection and the fault handler (SNX_TRAPS=signal: those of Linux before 5.13 and Android), beside
+    # userfaultfd's write tracking and beside the tracking by protection
+    add_test(NAME memory_own_signal_traps COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_traps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_TRAPS=signal)
+    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_both PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+                         ENVIRONMENT "SNX_TRAPS=signal;SNX_WW=signal")
 endif()
 
 endif() # SNX_BUILD_NX

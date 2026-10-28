@@ -115,8 +115,10 @@ u8* plat_alias_mirror(void);
 
 /* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
-   the pool and lets it go on with plat_trap_continue. Linux 5.13 and later (userfaultfd minor faults on shared
-   memory); elsewhere plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
+   the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
+   memory. Other hosts with the pool (older Linux, Android, or SNX_TRAPS=signal on any Linux) make the pages
+   inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
+   pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
    the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
