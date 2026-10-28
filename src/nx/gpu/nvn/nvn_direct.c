@@ -15,8 +15,11 @@
    The game's first nvnBootstrapLoader call, before it has any NVN function, reads the game's NVN API version: the
    driver's own lookup finds nvnDeviceGetInteger by name (it touches nothing else), and that function's switch answers
    it (gpu/nvn/nvn_driver.c). A function declared for some API versions (gpu/nvn/nvn.hook's @version(nvn ...)) takes
-   the declaration that holds for it (hle/hook/version.c hook_select) */
+   the declaration that holds for it (hle/hook/version.c hook_select). With nvn_direct=2 (auto) the same call decides
+   whether the runtime takes over at all: where the version is one nvn_direct has measured layouts for, it does, and
+   otherwise the driver runs, the bootstrap loader's slot given back before the game gets its first function */
 #include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn_trace.h"
@@ -39,15 +42,16 @@ typedef struct {
 #define MISSING_SLOTS 1024 /* a power of two above the ~530 functions NVN has */
 /* the file's state: the missing functions, the lock their table and the slots are changed under, the resolvers'
    recompiled code, the game's NVN API version (nvn_api_pack, 0 unknown) once decided (under lock) and whether the
-   runtime runs the game's NVN calls */
+   runtime runs the game's NVN calls: from nvn_direct_init on, and with auto until the first bootstrap call says no */
 typedef struct {
     Missing missing[MISSING_SLOTS];
     PMutex lock;
     GuestFn bootstrap_original, getproc_original;
+    u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
     u32 api;
     int active, decided;
 } NvnDirectState;
-static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0, 0, 0};
+static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0, 0, 0, 0};
 static void getproc(CPU* c, u64 entry);
 static void bootstrap(CPU* c, u64 entry);
 
@@ -142,6 +146,8 @@ static void getproc(CPU* c, u64 entry) {
     int valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     c->x[0] = 0;
     g_nvn_direct.getproc_original(c, entry);
+    if (g_nvn_direct.flag && gr32(g_nvn_direct.flag))
+        fatal("nvn: the driver's lookup of %s set nvnPrivate0, which turns on the game's inlined command writes", name);
     if (valid && c->x[0]) take(c->x[0], name);
 }
 
@@ -166,15 +172,39 @@ static u64 driver_lookup(CPU* c, u64 entry, const char* name) {
 }
 
 /* Once, at the game's first bootstrap call, before it has any NVN function: the game's NVN API version, from its
-   driver's nvnDeviceGetInteger. Under lock */
+   driver's nvnDeviceGetInteger, and with auto whether the runtime takes the game's NVN calls. The inlined command
+   writes a game may make (tools/nvn_census.py) run only while the driver's nvnPrivate0 is set, which only the
+   driver's lookup given a device does, and getproc never gives it one: under nvn_direct the flag stays 0 whatever the
+   game imports, so the version alone decides. Under lock */
 static void decide(CPU* c, u64 entry) {
     u64 f = driver_lookup(c, entry, "nvnDeviceGetInteger");
-    char version[32];
+    char version[32], lo[32], hi[32];
+    int described;
     if (f >= g_code_lo && f < g_code_hi && !(f & 3)) nvn_device_driver(f); /* its answers, from its code */
     g_nvn_direct.api = nvn_device_api();
-    g_nvn_direct.decided = 1;
+    described = nvn_api_described(g_nvn_direct.api);
     hook_version_text(version, sizeof version, HOOK_NVN, g_nvn_direct.api);
-    LOG("nvn: the game's NVN API version is %s\n", version);
+    hook_version_text(lo, sizeof lo, HOOK_NVN, NVN_API_DESCRIBED_LO);
+    hook_version_text(hi, sizeof hi, HOOK_NVN, NVN_API_DESCRIBED_HI);
+    g_nvn_direct.decided = 1;
+    if (g_settings.nvn_direct != 2) {
+        if (!described)
+            WARN("nvn: nvn_direct=1 with the game's NVN API %s, which nvn_direct has no measured layouts for (%s to "
+                 "%s)\n",
+                 version, lo, hi);
+        return;
+    }
+    if (described) {
+        LOG("nvn: nvn_direct=auto: the runtime runs the game's NVN calls: its NVN API %s is one nvn_direct has "
+            "measured layouts for (%s to %s), and nvnPrivate0, which turns on its inlined command writes, stays 0 (%s)\n",
+            version, lo, hi, g_nvn_direct.flag ? "the driver's lookup runs without a device" : "the driver exports none");
+        return;
+    }
+    LOG("nvn: nvn_direct=auto: the game's NVN driver runs: its NVN API %s isn't one nvn_direct has measured layouts "
+        "for (%s to %s)\n",
+        version, lo, hi);
+    __atomic_store_n(&g_disp[(entry - g_code_lo) / 4], g_nvn_direct.bootstrap_original, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_nvn_direct.active, 0, __ATOMIC_RELEASE);
 }
 
 static void bootstrap(CPU* c, u64 entry) {
@@ -185,6 +215,7 @@ static void bootstrap(CPU* c, u64 entry) {
     if (!g_nvn_direct.decided) decide(c, entry);
     pm_unlock(&g_nvn_direct.lock);
     g_nvn_direct.bootstrap_original(c, entry);
+    if (!nvn_direct_active()) return; /* auto chose the driver: it runs from here on */
     if (!valid || !c->x[0]) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {
         take(c->x[0], name);
@@ -207,15 +238,31 @@ static void bootstrap(CPU* c, u64 entry) {
 void nvn_direct_init(void) {
     u64 entry;
     GuestFn* slot;
+    int automatic = g_settings.nvn_direct == 2;
     if (!g_settings.nvn_direct) return;
+    if (automatic && g_settings.nvn_trace) {
+        LOG("nvn: nvn_direct=auto: the game's NVN driver runs, for nvn_trace to trace\n");
+        return;
+    }
     entry = kernel_find_symbol_exact("nvnBootstrapLoader");
+    if (automatic && (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3) ||
+                      !g_disp[(entry - g_code_lo) / 4])) {
+        LOG("nvn: nvn_direct=auto: the game has no recompiled nvnBootstrapLoader, so no NVN to take\n");
+        return;
+    }
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3))
         fatal("nvn: nvn_direct needs the game's nvnBootstrapLoader, which none of its executables exports");
     slot = &g_disp[(entry - g_code_lo) / 4];
     if (!*slot) fatal("nvn: the game's nvnBootstrapLoader has no recompiled code");
     g_nvn_direct.bootstrap_original = *slot;
+    g_nvn_direct.flag = kernel_find_symbol_exact("nvnPrivate0");
     *slot = bootstrap; /* before any guest thread runs */
     g_nvn_direct.active = 1;
-    LOG("nvn: nvn_direct: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n",
-        NVN_COUNT);
+    if (automatic)
+        LOG("nvn: nvn_direct=auto: the game's NVN API version decides at its first NVN call whether the runtime runs "
+            "them (%d implemented)\n",
+            NVN_COUNT);
+    else
+        LOG("nvn: nvn_direct: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n",
+            NVN_COUNT);
 }
