@@ -19,11 +19,11 @@ u8* g_mem;
 u64 g_draws;
 int g_renderer_up = 1;
 static int draws, clears;
-static void count_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o) {
+static void count_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     (void)ds, (void)c, (void)o;
     clears++;
 }
-static void count_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
+static void count_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     (void)ds, (void)dc, (void)o;
     draws++;
 }

@@ -111,7 +111,7 @@ typedef struct GpuChannel {
     /* the register groups (R3D_*) a method changed a register of since the renderer last took them (all of them
        after a reset): what it derived from the other groups' registers still holds */
     u32 r3d_dirty;
-    DrawState ds; /* what a draw reads of the registers, for the renderer (maxwell/draw_state.c mx_draw_state_sync) */
+    DsState ds; /* what a draw reads of the registers, for the renderer (maxwell/draw_state.c mx_draw_state_sync) */
     u32 r3d_shadow[MAXWELL3D_NUM_REGS]; /* the MME shadow RAM (SET_MME_SHADOW_RAM_CONTROL, 3D 0x49) */
     u32 shadow_mode;       /* 0 or 1 track, 2 passthrough, 3 replay */
     u32 rcomp[KEPLER_COMPUTE_METHODS]; /* compute's (maxwell/kepler_compute_regs.h) */

@@ -216,7 +216,7 @@ typedef struct {
     u32 draw_count, stride;
 } DrawCall;
 
-/* DrawState's groups, in its order */
+/* DsState's groups, in its order */
 enum {
     DS_PROGRAMS,
     DS_VFORMAT,
@@ -283,9 +283,9 @@ typedef struct {
     /* each group's generation (DS_), a new one whenever its bytes change: from one counter for every owner, so two
        generations are equal only when they are the same state of the same owner */
     u64 gen[DS_GENS];
-} DrawState;
+} DsState;
 
-/* a generation for DrawState.gen, from one sequence for every front end (gpu/draw_state.c) */
+/* a generation for DsState.gen, from one sequence for every front end (gpu/draw_state.c) */
 u64 ds_generation_next(void);
 
 /* an inline constant buffer block: its bytes, NULL for a buffer in guest memory */
@@ -300,7 +300,7 @@ static inline DsCbBlock ds_cb_block(u32 kind, const u8* bank0, const u8* bank2) 
     return (DsCbBlock){NULL, 0};
 }
 /* stage's constant buffer bank as an inline block of ds */
-static inline DsCbBlock ds_cb_inline(const DrawState* ds, int stage, u32 bank) {
+static inline DsCbBlock ds_cb_inline(const DsState* ds, int stage, u32 bank) {
     u32 k = bank < DS_CBUFS ? ds->bind.cb_inline[stage][bank] : DS_CB_MEMORY;
     return ds_cb_block(k, ds->inl.bank0[stage], ds->inl.bank2[stage]);
 }
@@ -345,7 +345,7 @@ typedef struct {
     u8 pad[2];
 } DrawOwner;
 
-/* A clear of the targets a DrawState names */
+/* A clear of the targets a DsState names */
 typedef struct {
     u32 aspects;    /* bit 0 depth, bit 1 stencil */
     u32 color_mask; /* the color components cleared, R in bit 0 to A in bit 3: 0 clears no color */
