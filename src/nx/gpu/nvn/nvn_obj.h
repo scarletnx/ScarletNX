@@ -154,10 +154,10 @@ NVN_FITS(NvnView, 0x10);
 /* ---- samplers ---- */
 typedef struct {
     u8 min_filter, mag_filter, wrap_s, wrap_t, wrap_r, compare_mode, compare_func, reduction;
-    f32 lod_min, lod_max, lod_bias, anisotropy, border[4];
+    f32 lod_min, lod_max, lod_bias, anisotropy, lod_snap, border[4];
 } NvnSamplerPar;
+/* no device: SDK 5.4's builder has room for one, the newer ones' 0x30 bytes only for the state */
 typedef struct {
-    u64 device;
     NvnSamplerPar p;
 } NvnSamplerBuilder;
 NVN_FITS(NvnSamplerBuilder, 0x30);
