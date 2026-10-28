@@ -27,13 +27,17 @@ typedef struct {
     u32 green, blue, red;
 } IndexPixels;
 
+/* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
+static u32 g_index_pred;
 static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
     u64 drawn = g_vk_drawn;
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
     channel->r3d_dirty = ~0u; /* the registers were set directly */
     mx_draw_state_sync(channel);
+    channel->owner.pred = g_index_pred;
     vk_render_draw(&channel->ds, call, &channel->owner);
+    channel->owner.pred = 0;
     CHECK(g_vk_drawn == drawn + 1);
     vk_render_end();
     Surf* surface = vk_rt_find(target);
@@ -179,6 +183,35 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
         CHECK(!index_draw(channel, target, &call, &px));
         if (px.red != 16) fprintf(stderr, "indirect count of 2: %u green, %u red\n", px.green, px.red);
         CHECK(px.red == 16);
+    }
+    /* a render enable comparing two 64-bit values 16 bytes apart on the GPU (vk_query_pred_compare): equal draws under
+       IF_EQUAL (VK_PRED_EQUAL), different doesn't */
+    vk_lock();
+    vk_query_reset(0x7ff0); /* an owner of its own: the query pool predicates are made with */
+    vk_unlock();
+    if (g_vk.has_cond_render && vk_query_pred_ok()) {
+        const u32 values[6] = {7, 9, 0, 0, 7, 9};
+        u32 slot = 0;
+        for (int differ = 0; differ < 2; differ++) {
+            const u32 changed[2] = {7, 10};
+            CHECK(!put_words(args + 0x80, values, 6));
+            if (differ) CHECK(!put_words(args + 0x90, changed, 2));
+            call = (DrawCall){.topology = 6, .count = 4, .first = 4, .instances = 1};
+            vk_lock();
+            CHECK(vk_query_pred_compare(args + 0x80, &slot));
+            vk_unlock();
+            g_index_pred = (slot + 1) | VK_PRED_EQUAL;
+            CHECK(!index_draw(channel, target, &call, &px));
+            g_index_pred = 0;
+            vk_lock();
+            vk_query_pred_drop(slot);
+            vk_unlock();
+            if (differ ? px.blue != 16 : !index_all_green(&px))
+                fprintf(stderr, "render enable on values %s: %u green, %u blue\n", differ ? "different" : "equal",
+                        px.green, px.blue);
+            CHECK(differ ? px.blue == 16 : index_all_green(&px));
+        }
+        puts("render enable: two values in guest memory compared on the GPU");
     }
     printf("indirect draws: a fan, indexed through a base vertex%s checked on the GPU\n",
            g_vk.has_draw_indirect_count ? ", and a count of one and two records" : "");
