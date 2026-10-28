@@ -17,6 +17,13 @@ u64 nvn_serial(void);
 u64 nvn_pool_memory(u64 pool);
 u64 nvn_pool_gpu(u64 pool);
 
+/* Around a wait for the host inside an NVN call: the game's thread off its guest core and stopped as far as a game
+   pause goes, as rt_miss waits for a compile. An NVN call comes straight from the game's code, with no SVC to give the
+   core up, and on the console a thread waiting for the GPU leaves its core to the others: one game's main thread held
+   its core through the frame's wait for its fence, and a lower-priority loading thread on that core never finished */
+void nvn_wait_begin(void);
+void nvn_wait_end(void);
+
 /* the transform feedback layout of the program SetShaders gave serial, 0 when it captures nothing */
 int nvn_program_xfb(u64 serial, ShXfb* x);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
