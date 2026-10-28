@@ -2086,7 +2086,7 @@ typedef struct {
    key[b] & 31 from its base offset key[b] >> 5 on, with pad bytes past its last stride when still inside the stream's
    limit, or the constants of the attributes without data when key[b] is ~0u. When the guest's stride isn't a multiple
    of its attributes' components (guest_stride[b], else 0), the binding reads a copy with the vertices stride[b] apart,
-   rounded up to one (copy_restrided) */
+   rounded up to a multiple of 4 (restride) */
 typedef struct {
     u32 key[33], pad[33], guest_stride[33];
     VkDeviceSize stride[33];
@@ -2409,7 +2409,7 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         u32 st = (u32)pl->stride[b], a = align[b];
         if (!st || a < 2 || !(st % a)) continue;
         pl->guest_stride[b] = st;
-        pl->stride[b] = (st + a - 1) / a * a;
+        pl->stride[b] = (st + 3) & ~3u; /* a multiple of 2 or 4, and of the words restride writes */
         if (!g_vk.has_dynamic_stride) k->bind[b].stride = (u32)pl->stride[b];
     }
 
@@ -2454,28 +2454,6 @@ static void draw_indices_prefetch(const DsIndex* ix, int indexed, u32 first, u32
     if (indexed != 1 && indexed != 2) return;
     if (!step) __builtin_prefetch(&g_top_memo[top_memo_slot(a)]);
     vk_buf_prefetch(a, (u64)count * isz, step);
-}
-/* the len bytes of a vertex stream at gva, its vertices gstride apart, copied to staging with them stride apart
-   instead: each vertex's stride bytes, so an attribute reaching past the guest's stride still reads the next vertex's
-   first bytes. The stream lands first if the GPU wrote it */
-static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, VkDeviceSize* off,
-                          VkDeviceSize* size) {
-    u64 nv = (len + gstride - 1) / gstride;
-    u8* src = malloc((size_t)len);
-    u8* dst = src ? vk_stage_upload(nv * stride, vk_stage_align(), buf, off) : NULL;
-    if (!dst) {
-        free(src);
-        return 0;
-    }
-    gmem_read(gva, src, len);
-    for (u64 i = 0; i < nv; i++) {
-        u64 at = i * gstride, n = len - at < stride ? len - at : stride;
-        memcpy(dst + i * stride, src + at, (size_t)n);
-        if (n < stride) memset(dst + i * stride + n, 0, (size_t)(stride - n));
-    }
-    free(src);
-    *size = nv * stride;
-    return 1;
 }
 /* The last vertex a draw reads, for its streams' ranges, or ~0 when that isn't known: indices outside contiguous guest
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
@@ -2573,6 +2551,26 @@ static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, V
                           .dstAccessMask = dst_access};
     VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
     rec_CmdPipelineBarrier2(cb, &d);
+}
+/* the len bytes of a vertex stream at gva, its vertices gstride apart, made on the GPU into this frame's output ring
+   with them stride apart (a multiple of 4) instead: each vertex's stride bytes, so an attribute reaching past the
+   guest's stride still reads the next vertex's first bytes, and 0 past the stream. The stream comes as the guest
+   range's buffer (vk_buf_get), a GPU result that hasn't landed read where it is. Its words are bound whole: the range
+   asked for starts and ends on them, which never takes in another page. The CPU made the copy before, a vertex at a
+   time from a whole read of the stream, each draw */
+static int restride(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* buf, VkDeviceSize* off, VkDeviceSize* size) {
+    u64 nv = (len + gstride - 1) / gstride, lo = gva & ~3ull, hi = (gva + len + 3) & ~3ull;
+    VkBuffer src;
+    u64 at;
+    if (nv > 0xFFFFFFFFu || !vk_buf_get_input(lo, hi - lo, 4, &src, &at)) return 0;
+    if (!vk_stage_output(nv * stride, vk_stage_align(), buf, off, NULL)) return 0;
+    vk_render_end(); /* dispatches happen outside rendering passes */
+    VkCommandBuffer cb = vk_cmd();
+    if (!vk_tc_restride(cb, gstride, stride, (u32)nv, src, at + (gva - lo), len, *buf, *off)) return 0;
+    index_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+    *size = nv * stride;
+    return 1;
 }
 static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
     if (nq > g_quads.quads) {
@@ -2917,8 +2915,8 @@ retry:
     for (u32 q = 0; q < nvq; q++) {
         u32 b = vq[q].b;
         if (pl->guest_stride[b]) {
-            if (!copy_restrided(vq[q].gva + vq[q].base, vq[q].len - vq[q].base, pl->guest_stride[b], (u32)pl->stride[b],
-                                &vbuf[b], &voff[b], &vsize[b])) {
+            if (!restride(vq[q].gva + vq[q].base, vq[q].len - vq[q].base, pl->guest_stride[b], (u32)pl->stride[b],
+                          &vbuf[b], &voff[b], &vsize[b])) {
                 g_vk_skipped++;
                 return;
             }

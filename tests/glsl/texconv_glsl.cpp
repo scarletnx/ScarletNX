@@ -6,7 +6,8 @@
 // four texels an invocation owns, and random ETC2 and EAC blocks of every kind (with the T, H and planar modes made
 // often) against tests/support/etc2.c and random BC1 to BC7 blocks of every kind (every BC6H and BC7 mode
 // made often) against tests/support/bcn.c, in images whose sides aren't multiples of 4, and vi's pixel formats
-// against present.c's former CPU conversion, and the 2D blit's half floats against tests/support/half.c.
+// against present.c's former CPU conversion, the 2D blit's half floats against tests/support/half.c, and vertex
+// streams restrided as render.c's CPU copy did.
 // tests/astc_vulkan.c runs the SPIR-V build of the same file on a Vulkan device.
 #include <cstdio>
 #include <cstdlib>
@@ -334,6 +335,53 @@ static void index_buffers() {
     }
 }
 
+// vertex streams with strides Vulkan can't read (vk/render.c's restride) against render.c's CPU copy before it moved
+// to the GPU: each vertex's out_stride bytes from its start in the stream, past its stride into the next vertex, and 0
+// past the stream; streams that start at any byte of a word, strides of every remainder, and more words than a row of
+// units. The input holds only the words the stream touches (an ASan build catches a read past them: the shader's bound
+// check on the second word changes no byte, the mask after it clears what that word would bring)
+static void restride_case(uint32_t gstride, uint32_t len, uint32_t lead, uint32_t units) {
+    uint32_t stride = (gstride + 3) & ~3u, nv = (len + gstride - 1) / gstride, n = nv * stride / 4;
+    uint32_t out_bias = random_word() % 5, words = (lead + len + 3) / 4;
+    std::vector<uint8_t> inb(4 * words);
+    for (auto& b : inb) b = (uint8_t)random_word();
+    std::vector<uint8_t> want(4 * (out_bias + n), 0xA5);
+    for (uint32_t i = 0; i < nv; i++) {
+        uint32_t at = i * gstride, m = len - at < stride ? len - at : stride;
+        std::memcpy(&want[4 * out_bias + i * stride], &inb[lead + at], m);
+        std::memset(&want[4 * out_bias + i * stride + m], 0, stride - m);
+    }
+    std::vector<glsl::leuint> in(words), out(want.size() / 4, 0xA5A5A5A5u);
+    std::memcpy(in.data(), inb.data(), inb.size());
+    if (!units) units = n;
+    uint32_t rows = (n + units - 1) / units;
+    glsl::dispatch<Conv>(glsl::uvec3((units + 63) / 64, rows, 1), glsl::uvec3(64, 1, 1), [&](Conv& c) {
+        c.mode = 38;
+        c.units = units;
+        c.rows = rows;
+        c.in_pitch = gstride;
+        c.out_pitch = stride / 4;
+        c.in_bias = lead;
+        c.out_bias = out_bias;
+        c.const_a = len;
+        c.line_out = n;
+        c.src = in.data();
+        c.dst = out.data();
+    });
+    for (uint32_t i = 0; i < out.size(); i++) {
+        uint32_t w = (uint32_t)want[4 * i] | (uint32_t)want[4 * i + 1] << 8 | (uint32_t)want[4 * i + 2] << 16 |
+                     (uint32_t)want[4 * i + 3] << 24;
+        CHECK((uint32_t)out[i] == w, "restride stride %u len %u lead %u word %u: %08x, not %08x", gstride, len, lead, i,
+              (uint32_t)out[i], w);
+    }
+}
+static void restrides() {
+    restride_case(69, 69 * 100, 0, 0);
+    for (int i = 0; i < 400; i++) {
+        uint32_t gstride = 1 + random_word() % 140, len = 1 + random_word() % 3000;
+        restride_case(gstride, len, random_word() % 8, random_word() % 2 ? 0 : 1 + random_word() % 70);
+    }
+}
 static void depth_float() {
     Conv c;
     for (uint32_t z = 0; z < 1u << 24; z++) {
@@ -497,6 +545,7 @@ int main() {
     nv12_uv();
     dma_remaps();
     index_buffers();
+    restrides();
     depth_float();
     halves();
     rgb32f();

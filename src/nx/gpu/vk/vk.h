@@ -726,6 +726,11 @@ int vk_tc_blit(VkCommandBuffer cb, u32 bpp, u32 fmt, u32 nb, u32 rows, VkBuffer 
    remap as the mode says (offsets multiples of 4; in_size 0 binds a word). 0 past the device's limits */
 int vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkBuffer in, u64 in_at, u64 in_size,
                 VkBuffer out, u64 out_at, u64 out_size);
+/* a vertex stream of len bytes at in_at in in, its vertices in_stride bytes apart, written to out at out_at with them
+   out_stride apart (a multiple of 4: TC_RESTRIDE), nv vertices. in must hold every word the stream touches; out_at is
+   a multiple of 4. 0 past the device's limits */
+int vk_tc_restride(VkCommandBuffer cb, u32 in_stride, u32 out_stride, u32 nv, VkBuffer in, u64 in_at, u64 len,
+                   VkBuffer out, u64 out_at);
 int vk_tc_vi_converts(u32 fmt);
 VkTcShape vk_tc_vi_shape(u32 fmt, u32 w);
 int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, u64 in_at, u32 in_pitch, VkBuffer out,

@@ -1329,6 +1329,7 @@ static int check_rt_overlap(void) {
 #include "vulkan_surface_loads.inc"
 #include "vulkan_owned_readback.inc"
 #include "vulkan_mesh_inputs.inc"
+#include "vulkan_vertex_restride.inc"
 #include "vulkan_targetless_stores.inc"
 
 int main(int argc, char** argv) {
@@ -1367,6 +1368,7 @@ int main(int argc, char** argv) {
     CHECK(!check_viewport_orientation());
     CHECK(!check_index_draws());
     CHECK(!check_mesh_inputs());
+    CHECK(!check_vertex_restride());
     CHECK(!check_targetless_stores());
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
