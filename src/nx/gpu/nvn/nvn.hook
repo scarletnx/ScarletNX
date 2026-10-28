@@ -44,6 +44,7 @@ hook nvnBufferBuilderSetDevice(addr b, addr d) = nvn_BufferBuilderSetDevice
 hook nvnBufferBuilderSetStorage(addr b, addr pool, i64 offset, u64 size) = nvn_BufferBuilderSetStorage
 hook nvnBufferFinalize(addr buf) = nvn_BufferFinalize
 hook nvnBufferFlushMappedRange(addr buf, i64 offset, u64 size) = nvn_BufferFlushMappedRange
+hook nvnBufferInvalidateMappedRange(addr buf, i64 offset, u64 size) = nvn_BufferInvalidateMappedRange
 hook nvnBufferGetAddress(addr buf) -> u64 = nvn_BufferGetAddress
 hook nvnBufferGetMemoryOffset(addr buf) -> i64 = nvn_BufferGetMemoryOffset
 hook nvnBufferGetMemoryPool(addr buf) -> addr = nvn_BufferGetMemoryPool
