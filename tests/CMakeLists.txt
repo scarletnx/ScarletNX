@@ -624,6 +624,15 @@ snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
 target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
 
+# the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
+add_executable(snx-test-fp-host fp_host_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-fp-host 11)
+snx_cpu_helpers_flags(snx-test-fp-host)
+if(NOT WIN32)
+    target_link_libraries(snx-test-fp-host PRIVATE m)
+endif()
+add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
+
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-a64-fp-arithmetic 11)

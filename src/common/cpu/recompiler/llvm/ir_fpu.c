@@ -70,7 +70,7 @@ static V call_binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_binary", ir->t_i64, operands, 4), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_binary", ir->t_i64, operands, 4), width);
 }
 static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     V operands[4];
@@ -78,14 +78,14 @@ static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     operands[1] = u64_of(ir, a);
     operands[2] = u64_of(ir, b);
     operands[3] = ir_i32(ir, width);
-    return to_width(ir, fp_call(ir, "snx_fp_fma", ir->t_i64, operands, 4), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_fma", ir->t_i64, operands, 4), width);
 }
 static V call_unary(SnxIr* ir, V a, unsigned width, unsigned op) {
     V operands[3];
     operands[0] = u64_of(ir, a);
     operands[1] = ir_i32(ir, width);
     operands[2] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_unary", ir->t_i64, operands, 3), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_unary", ir->t_i64, operands, 3), width);
 }
 static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
     V operands[5];
@@ -94,7 +94,7 @@ static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsi
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, minimum);
     operands[4] = ir_i32(ir, numeric);
-    return to_width(ir, fp_call(ir, "snx_fp_minmax", ir->t_i64, operands, 5), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_minmax", ir->t_i64, operands, 5), width);
 }
 /* the NZCV nibble (i32) */
 static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
@@ -103,7 +103,7 @@ static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, signal);
-    return fp_call(ir, "snx_fp_compare", ir->t_i32, operands, 4);
+    return fp_call(ir, "snx_fp_host_compare", ir->t_i32, operands, 4);
 }
 /* rm: an i32, FPCR's mode or the encoding's */
 static V call_convert(SnxIr* ir, V a, unsigned from, unsigned to, V rm) {
@@ -165,7 +165,9 @@ static V call_from_int(SnxIr* ir, V v, unsigned integer, unsigned width, unsigne
    otherwise the path is taken only once IXC is set: it is sticky, so an inexact result changes nothing then.
    Compares, FMAX and FMIN, widening and narrowing, and the integer conversions have guards of their own. Nothing
    reads the host's FP state, so this assumes only that the host thread never flushes denormals (x86's MXCSR.FTZ
-   and DAZ, FPCR.FZ on an AArch64 host), which the runtime never sets. Halves always take the helpers. */
+   and DAZ, FPCR.FZ on an AArch64 host), which the runtime never sets. Halves always take the helpers. The slow
+   paths call the helpers' snx_fp_host_* forms, which try the host's arithmetic on what these guards refuse (NaNs,
+   infinities, underflows) before the soft-float. */
 
 
 static SnxU64 inf_bits(unsigned width) { return width == 32 ? 0x7F800000u : 0x7FF0000000000000ull; }

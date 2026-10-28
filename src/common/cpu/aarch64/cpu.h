@@ -390,6 +390,18 @@ u64 snx_fp_jcvt(CPU* c, u64 bits); /* FJCVTZS: the W result, and Z in bit 32 */
 u64 snx_fp_bfcvt(CPU* c, u64 bits); /* BFCVT: a single's bfloat16 */
 u32 urecpe32(u32 x);
 u32 ursqrte32(u32 x);
+/* The same operations with the host's IEEE arithmetic first (helpers/fp_host.c), for the operands it gives the
+   results and flags above for (NaNs, infinities, denormals, a single's tiny or inexact result), else the above's:
+   the emitters' slow paths. They read the host thread's FP environment, take the above's unless it is IEEE's default
+   (round to nearest, no flush to zero), and may raise the host's own exception flags */
+u64 snx_fp_host_binary(CPU* c, u64 a, u64 b, int width, int op);
+u64 snx_fp_host_fma(CPU* c, u64 add, u64 a, u64 b, int width);
+u64 snx_fp_host_unary(CPU* c, u64 bits, int width, int op);
+u32 snx_fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal);
+u64 snx_fp_host_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric);
+/* a vector's lanes through one of them in one call: desc's nibbles the helper (0 binary, 1 fma x + y * z, 2 unary,
+   3 minmax), the width in bytes, the lane count, the operation and minmax's numeric */
+void snx_fp_host_lanes(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 
 /* ---- AdvSIMD helpers out of line (helpers/crypto.c, helpers/vector.c) ---- */
 void v_aes(V128* d, const V128* k, int dec);         /* AESE (dec 0), AESD (1): d = round(d ^ k) */

@@ -10,10 +10,11 @@
    conversions to and from integers and fixed point, between precisions), FEAT_FHM's widening products, FEAT_FCMA's
    complex additions and products, FEAT_FRINTTS, and FEAT_BF16's BFDOT, BFMMLA, BFMLAL and BFCVTN, on
    halves (FEAT_FP16) as on singles and doubles. Every lane is the architecture's: FPCR (FZ, FZ16, DN, AHP, RMode),
-   NaN propagation and FPSR's cumulative flags are the soft-float helpers' (helpers/fp.c), one call per lane. The
-   common single and double operations first try the host's IEEE arithmetic on whole vectors, behind the guards
-   ir_fpu.c's scalar fast paths use, checked in every lane: round to nearest, no denormal operand under FZ, a finite
-   result above the smallest normal or an exact zero, and IXC computed exactly or already set. */
+   NaN propagation and FPSR's cumulative flags are the helpers' (helpers/fp.c, through helpers/fp_host.c's host
+   arithmetic where it is exact), one call per lane. The common single and double operations first try the host's
+   IEEE arithmetic on whole vectors, behind the guards ir_fpu.c's scalar fast paths use, checked in every lane: round
+   to nearest, no denormal operand under FZ, a finite result above the smallest normal or an exact zero, and IXC
+   computed exactly or already set. */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/recompiler/llvm/ir_fp.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -57,6 +58,13 @@ typedef struct {
     V rm;                 /* the i32 rounding mode of H_CONVERT, H_ROUND, H_ROUND_INT, H_TO_INT */
 } LaneOp;
 
+/* name(c, operands...): the helpers read c->fpcr and change c->fpsr, and no register (ir_noregs, as ir_fpu.c's) */
+static V fp_lane_call(SnxIr* ir, const char* name, LLVMTypeRef ret, const V* operands, unsigned count) {
+    V r = ir_vec_call(ir, name, ret, operands, count);
+    ir_noregs(ir, LLVMGetNamedFunction(ir->mod, name));
+    return r;
+}
+
 /* the i64 result (i32 NZCV for H_COMPARE) of one lane's operands (iN) */
 static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
     V ops[6];
@@ -65,27 +73,27 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
     LLVMTypeRef ret = ir->t_i64;
     switch (o->helper) {
         case H_BINARY:
-            name = "snx_fp_binary";
+            name = "snx_fp_host_binary";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
             ops[n++] = ir_i32(ir, o->op);
             break;
         case H_FMA: /* x + y * z */
-            name = "snx_fp_fma";
+            name = "snx_fp_host_fma";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = u64_of(ir, z);
             ops[n++] = ir_i32(ir, o->width);
             break;
         case H_UNARY:
-            name = "snx_fp_unary";
+            name = "snx_fp_host_unary";
             ops[n++] = u64_of(ir, x);
             ops[n++] = ir_i32(ir, o->width);
             ops[n++] = ir_i32(ir, o->op);
             break;
         case H_MINMAX:
-            name = "snx_fp_minmax";
+            name = "snx_fp_host_minmax";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
@@ -93,7 +101,7 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             ops[n++] = ir_i32(ir, o->p1);
             break;
         case H_COMPARE:
-            name = "snx_fp_compare";
+            name = "snx_fp_host_compare";
             ret = ir->t_i32;
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
@@ -143,14 +151,34 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             ops[n++] = u64_of(ir, x);
             break;
     }
-    return ir_vec_call(ir, name, ret, ops, n);
+    return fp_lane_call(ir, name, ret, ops, n);
 }
 
-/* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits> */
+/* v in a local of its type, for a helper to read */
+static V spill(SnxIr* ir, V v) {
+    V local = ir_local(ir, LLVMTypeOf(v));
+    LLVMSetAlignment(LLVMBuildStore(B, v, local), 8);
+    return local;
+}
+
+/* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits>. The arithmetic,
+   the estimates and FMAX and FMIN take a vector in one call (snx_fp_host_lanes), the rest one call a lane */
 static V map(SnxIr* ir, const LaneOp* o, V X, V Y, V Z, unsigned out_bits) {
     unsigned lanes = ir_vec_count(X);
     LLVMTypeRef type = LLVMVectorType(LLVMIntTypeInContext(ir->ctx, out_bits), lanes);
     V r = LLVMGetUndef(type);
+    if (lanes > 1 && o->helper <= H_MINMAX) {
+        V out = ir_local(ir, type), x = spill(ir, X), ops[5];
+        ops[0] = out;
+        ops[1] = x;
+        ops[2] = Y ? spill(ir, Y) : x;
+        ops[3] = Z ? spill(ir, Z) : x;
+        ops[4] = ir_i32(ir, o->helper | (o->width / 8) << 4 | lanes << 8 | o->op << 12 | o->p1 << 16);
+        fp_lane_call(ir, "snx_fp_host_lanes", ir->t_void, ops, 5);
+        V load = LLVMBuildLoad2(B, type, out, "");
+        LLVMSetAlignment(load, 8);
+        return load;
+    }
     for (unsigned i = 0; i < lanes; ++i) {
         V at = ir_i32(ir, i), x = LLVMBuildExtractElement(B, X, at, ""), y = NULL, z = NULL;
         if (Y) y = LLVMBuildExtractElement(B, Y, at, "");
