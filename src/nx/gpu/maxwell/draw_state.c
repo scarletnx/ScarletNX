@@ -359,7 +359,7 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
 void mx_draw_state_sync(GpuChannel* ch) {
     const u32* r = ch->r3d;
     u32 dirty = ch->r3d_dirty;
-    DrawState* ds = &ch->ds;
+    DsState* ds = &ch->ds;
     if (!dirty) return;
     ch->r3d_dirty = 0;
     if (dirty & (R3D_SHADER | R3D_PIPEMISC | R3D_XFB)) {
@@ -423,8 +423,8 @@ void mx_draw_state_sync(GpuChannel* ch) {
 
 u32 mx_draw_state_stale(const GpuChannel* ch) {
     const u32* r = ch->r3d;
-    const DrawState* ds = &ch->ds;
-    DrawState f; /* every group filled again */
+    const DsState* ds = &ch->ds;
+    DsState f; /* every group filled again */
     u32 stale = 0;
     mx_draw_programs(r, &f.prog);
     mx_draw_vertex_format(r, &f.vfmt);

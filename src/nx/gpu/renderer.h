@@ -42,7 +42,7 @@ typedef struct Renderer {
     /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
        of the state ds (gpu/draw_state.h): everything they read but their own arguments, the resource bindings
        included. The front end brings it up to date before each call (a GPU channel's mx_draw_state_sync, the NVN
-       replay's own fill) and gives each group whose bytes changed a new generation (DrawState.gen, the renderer keeps
+       replay's own fill) and gives each group whose bytes changed a new generation (DsState.gen, the renderer keeps
        what it made from a group while its generation holds); the renderer only reads it. ds->owner names the
        front end's queue: the renderer keys what it keeps between draws, and the samples-passed counter, by it.
        Constant buffers are guest memory (DsBindings.cb_addr) or blocks of ds->inl (cb_inline, NVN's driver banks:
@@ -52,13 +52,13 @@ typedef struct Renderer {
        sets o->pred (the render predicate) and the capture buffers to start over (o->xfb_reload), and the renderer
        clears what it took of those and keeps which buffers' capture began (o->xfb_started). Called on the GPU
        thread */
-    void (*clear)(const DrawState* ds, const DrawClear* c, const DrawOwner* o);
-    void (*draw)(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
-    void (*draw_texture)(const DrawState* ds, const DrawTexture* t);
+    void (*clear)(const DsState* ds, const DrawClear* c, const DrawOwner* o);
+    void (*draw)(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+    void (*draw_texture)(const DsState* ds, const DrawTexture* t);
     /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
        (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
        next loaded. NULL: they are kept */
-    void (*discard)(const DrawState* ds, u32 targets);
+    void (*discard)(const DsState* ds, u32 targets);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);
@@ -122,7 +122,7 @@ typedef struct Renderer {
        clears under it run on (the channel's render_pred), held until render_predicate_drop */
     int (*render_predicate)(u64 a, int equal, u32* pred);
     void (*render_predicate_drop)(u32 pred);
-    /* the 3D engine's samples-passed counter (occlusion queries), one per draw owner (DrawState.owner: a channel's
+    /* the 3D engine's samples-passed counter (occlusion queries), one per draw owner (DsState.owner: a channel's
        id, another front end's queue): it counts that owner's draws from its reset, while SampleCounterEnable is on. A
        report writes the count at gva as a release, len 4 (the count's low word) or 16 (the count, then ticks).
        samples_report 0: no count to give (no reset yet), and the caller writes a value of its own. A render enable on a

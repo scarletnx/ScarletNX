@@ -458,7 +458,7 @@ static int trace_target(const Surf* s) {
 }
 
 /* the clear c of the targets ds names, under the owner's render predicate */
-void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o) {
+void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     u32 slot = c->slot, mask = c->color_mask, layer = c->layer, v = c->aspects;
     float cc[4], dz = c->depth;
     memcpy(cc, c->color, 16);
@@ -585,7 +585,7 @@ void vk_render_clear(const DrawState* ds, const DrawClear* c, const DrawOwner* o
 
 /* targets of ds (bit i color slot i, bit 8 the depth target) whose contents no longer matter: the open pass, before
    anything of it, loads them as DONT_CARE; otherwise their next pass does, unless something writes them first */
-void vk_render_discard(const DrawState* ds, u32 targets) {
+void vk_render_discard(const DsState* ds, u32 targets) {
     Surf* rt[8];
     Surf* zt;
     u32 n;
@@ -786,12 +786,12 @@ static u32 attr_component_bytes(u32 size) {
 /* ------------------------------------------------------------ resources of a draw */
 /* the word at byte off of stage's constant buffer bank, as ds binds it: an inline block's, or guest memory's (0 for
    an unbound buffer) */
-static u32 cb_word(const DrawState* ds, int stage, u32 bank, u64 off) {
+static u32 cb_word(const DsState* ds, int stage, u32 bank, u64 off) {
     DsCbBlock in = ds_cb_inline(ds, stage, bank);
     u64 a = bank < DS_CBUFS ? ds->bind.cb_addr[stage][bank] : 0;
     return in.bytes ? ds_inline_word(in, off) : a ? gmem_r32(a + off) : 0;
 }
-static u32 tex_handle(const DrawState* ds, int stage, u32 tcb, const ShTex* st) {
+static u32 tex_handle(const DsState* ds, int stage, u32 tcb, const ShTex* st) {
     u32 ci = (st->bindless ? st->bl_cbuf : tcb) & 31, c2i = st->bl2_cbuf & 31;
     u32 h = cb_word(ds, stage, ci, st->cbuf_off * 4);
     if (st->bindless && st->bl2) h |= cb_word(ds, stage, c2i, st->bl2_off * 4);
@@ -815,7 +815,7 @@ typedef struct {
    which samples its targets in most draws. A crop of a target, or a texture over a target's memory read from memory,
    isn't kept (their contents change with drawing) */
 typedef struct {
-    const DrawState* ds;
+    const DsState* ds;
     u64 tic_base, tsc_base, gw, adds;
     u32 handle, surf_epoch, ww_epoch;
     u32 tic[8], tsc[8];
@@ -824,7 +824,7 @@ typedef struct {
 } TexMemo;
 #define TEX_MEMO 1024
 static TexMemo g_tex_memo[TEX_MEMO];
-static void tex_resolve(const DrawState* ds, u32 handle, TexRes* x) {
+static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
     if (b->smp_mode) {
         /* samplers are taken by the handle's sampler index. Ryujinx reads this register as the sampler index mode,
@@ -946,7 +946,7 @@ u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
 
 /* the images of s, stage's program, whose bound texture is integer where the program's handle form stores floats, or
    the other way (vk_image_key): a bit each, which bits 8 on of the program's rt_int_mask take to pick its variant */
-static u32 image_variant(const DrawState* ds, int stage, const VkSh* s, u32* signed_images) {
+static u32 image_variant(const DsState* ds, int stage, const VkSh* s, u32* signed_images) {
     u64 tic_base = ds->bind.tex_pool;
     u32 bits = 0;
     *signed_images = 0;
@@ -984,7 +984,7 @@ static void rt_int_targets(const DsTargets* tg, u32* rm, u32* rs) {
 /* resolves the textures of s0, the fragment program, into res (SH_MAXTEX entries, for stage_set), and fills fk with
    the variant they and the targets (rt_int, rt_sint) key. last_out: the generic outputs the stage before rasterization
    writes */
-static void fs_key(const DrawState* ds, const VkSh* s0, TexRes* res, u32 last_out, u32 rt_int, u32 rt_sint, FsKey* fk) {
+static void fs_key(const DsState* ds, const VkSh* s0, TexRes* res, u32 last_out, u32 rt_int, u32 rt_sint, FsKey* fk) {
     u32 nd = 0;
     *fk = (FsKey){.rm = rt_int, .rs = rt_sint, .unfed = s0->si.in_mask & ~last_out};
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
@@ -1016,7 +1016,7 @@ static void fs_key(const DrawState* ds, const VkSh* s0, TexRes* res, u32 last_ou
     fk->rs |= signed_images << 8;
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
-static VkSh* fs_variant(const DrawState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
+static VkSh* fs_variant(const DsState* ds, u64 addr, VkSh* s0, const FsKey* fk) {
     if (!fk->tm && !fk->rm && !fk->rs && !fk->dm && !fk->unfed) return s0;
     return vk_shader_get(ds, addr, 0, ST_FS, fk->tm, fk->ts, fk->rm, fk->rs, 0, fk->dm, fk->df, fk->unfed, NULL);
 }
@@ -1133,7 +1133,7 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
 
 /* a constant buffer's bytes for this draw, reused while the guest can't have changed them. An inline block (in) is
    staged once a frame while its generation holds */
-static int cb_get(const DrawState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
+static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
     static struct {
         u64 a, gw, frame, cs_adds, gfx_adds;
         u32 sz, epoch;
@@ -1205,7 +1205,7 @@ static int cb_get(const DrawState* ds, int stage, int i, u32 sz, VkBuffer* buf, 
 }
 
 /* the bytes of constant buffer i that stage s reads, as its descriptor binds them */
-static u32 cb_range(const DrawState* ds, int stage, const VkSh* s, int i) {
+static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
     u32 sz = ds->bind.cb_size[stage][i];
     if (sz > 65536 || !sz) sz = 65536;
     if (s->si.cbuf_max[i] && sz > s->si.cbuf_max[i]) sz = s->si.cbuf_max[i]; /* only the bytes the shader reads */
@@ -1217,7 +1217,7 @@ static u32 cb_range(const DrawState* ds, int stage, const VkSh* s, int i) {
    cache: two cache misses in a row, the index's slot and then the entry it names, which were most of buf_get's time
    in one game. A draw fetches every slot early (step 0) and the entries they name once the slots are in (step 1), as
    it does for its vertex streams (vk_buf_prefetch) */
-static void cb_prefetch(const DrawState* ds, int stage, const VkSh* s, int step) {
+static void cb_prefetch(const DsState* ds, int stage, const VkSh* s, int step) {
     for (u32 m = s->si.cbuf_mask & 0x3FFFF; m; m &= m - 1) {
         int i = __builtin_ctz(m);
         u64 a = ds->bind.cb_addr[stage][i];
@@ -1487,8 +1487,8 @@ static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
    pool's limit (no texture on hardware either), reads as the null texture. So does a texture of another kind than
    the slot's, and a target the draw renders to (the bound path's snapshot, for every element, would copy each
    target the table names on every draw). */
-static int tex_tables_set(const DrawState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt,
-                          Surf* zt, u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
+static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
+                          u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
     const ShTex* kind = &s->si.tex[first[0]];
     VkImageViewType want = vk_tex_view_type(kind);
     int num = kind->shadow || !((s->si.tex_int_mask >> first[0]) & 1) ? 0
@@ -1629,7 +1629,7 @@ static int tex_tables_set(const DrawState* ds, int stage, const VkSh* s, const i
     return 1;
 }
 
-static void draw_storage_read(const DrawState* ds, VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
+static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
     VkSh* sh[2] = {vs, fs};
     memset(draw, 0, sizeof *draw);
     for (int s = 0; s < 2; s++) {
@@ -1710,17 +1710,17 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     *e = (typeof(cache[0])){h1, h2, frame, set};
     return set;
 }
-static VkDescriptorSet stage_set_(const DrawState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
+static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images);
 /* scaled: a bit for each texture slot bound to a scaled render target (scaled_coords in spirv_translate.c) */
-static VkDescriptorSet stage_set(const DrawState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
+static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
                                  u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     SNX_ZONE(z, "stage set");
     VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images);
     SNX_ZONE_END(z);
     return set;
 }
-static VkDescriptorSet stage_set_(const DrawState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
+static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
@@ -2118,7 +2118,7 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
     return 1;
 }
 /* whether the state kept in g_draw holds for this draw of ch, as far as what is checked before drawing tells */
-static int draw_kept(const DrawState* ds, u32 topology, u32 epoch) {
+static int draw_kept(const DsState* ds, u32 topology, u32 epoch) {
     const DrawShaders* s = &g_draw.sh;
 	if (g_draw.shader_generation != g_vk.shader_generation)
 		return 0;
@@ -2142,7 +2142,7 @@ static int draw_shaders_same(const DrawShaders* a, const DrawShaders* b) {
 }
 /* the shaders of the programs, the vertex format and the targets of ds for a draw of topology: 0 when the draw is
    skipped */
-static int draw_shaders(const DrawState* ds, u32 topology, DrawShaders* o) {
+static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     const DsPrograms* p = &ds->prog;
     const DsVertexFormat* vf = &ds->vfmt;
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
@@ -2225,7 +2225,7 @@ static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats
 }
 /* the pipeline key of the shaders (fs the fragment variant drawn), the state ds and the targets' surfaces rt and zt, all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
-static int draw_key(const DrawState* ds, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt, u32 n,
+static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Surf* const* rt, const Surf* zt, u32 n,
                     PipeKey* k, VertexPlan* pl) {
     const DsVertexBuffers* vb = &ds->vbuf;
     const DsVertexFormat* vf = &ds->vfmt;
@@ -2642,14 +2642,14 @@ static void draw_indirect(VkCommandBuffer cb, int indexed, VkBuffer abuf, u64 ao
         for (u32 i = 0; i < n; i++)
             rec_CmdDrawIndirect(cb, indexed, abuf, aoff + (u64)i * stride, VK_NULL_HANDLE, 0, 1, 0);
 }
-static void render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o);
+static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);
 /* a draw as a profiler zone (SNX_TRACY builds), around its many ways out */
-void vk_render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
+void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     SNX_ZONE(z, "draw");
     render_draw(ds, dc, o);
     SNX_ZONE_END(z);
 }
-static void render_draw(const DrawState* ds, const DrawCall* dc, DrawOwner* o) {
+static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     int indexed = (int)dc->indexed;
     u32 topology = dc->topology, first = dc->first, count = dc->count, base_vertex = dc->base_vertex,
         base_instance = dc->base_instance, instances = dc->instances;
@@ -3385,7 +3385,7 @@ static int format_has(VkFormat f, VkFormatFeatureFlags need) {
     return (p.optimalTilingFeatures & need) == need;
 }
 /* the texture draw dt onto the first color target ds names */
-void vk_render_draw_texture(const DrawState* ds, const DrawTexture* dt) {
+void vk_render_draw_texture(const DsState* ds, const DrawTexture* dt) {
     float x0 = dt->x0, y0 = dt->y0, w = dt->w, h = dt->h, sx0 = dt->sx0, sy0 = dt->sy0;
     double du = dt->du, dv = dt->dv;
     if (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) y0 = (float)ds->dyn.clip_height - y0;

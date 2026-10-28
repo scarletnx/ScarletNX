@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The 3D engine's samples-passed counter (3D 0x545 SampleCounterEnable, 0x54C ResetCounter 1, a counter report of
    selector 0x15: NVN's and deko3d's occlusion queries), counted with Vulkan occlusion queries. Each draw owner
-   (DrawState.owner: a GPU channel, or another front end's queue) has a counter of its own, as each channel's 3D
+   (DsState.owner: a GPU channel, or another front end's queue) has a counter of its own, as each channel's 3D
    context has on the console.
 
    The count runs from its reset. It is kept in segments: a segment is one query, begun at the first draw counted in a
@@ -53,7 +53,7 @@ static struct {
     int open;   /* the last segment's query is active in the rendering pass */
 } g_q;
 typedef struct {
-    u32 owner;    /* the owner's id (DrawState.owner) */
+    u32 owner;    /* the owner's id (DsState.owner) */
     int used;     /* the owner has counted */
     int disabled; /* SampleCounterEnable is off: its draws aren't counted */
     int started;  /* a reset came: counting is on from there */

@@ -435,7 +435,7 @@ static void bindings(void) {
 /* a front end's inline constant buffer blocks: the slot names a stage's block 0 or 2, read as little-endian words,
    zeros past its end */
 static void inline_blocks(void) {
-    static DrawState ds;
+    static DsState ds;
     ds.bind.cb_inline[4][0] = DS_CB_BANK0;
     ds.bind.cb_inline[4][2] = DS_CB_BANK2;
     ds.bind.cb_addr[4][3] = 0x5000;
