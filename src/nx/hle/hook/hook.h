@@ -18,6 +18,7 @@
 #define SNX_HLE_HOOK_H
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
+#include "nx/hle/hook/verify.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -108,11 +109,23 @@ static inline void hook_put_f64(CPU* c, HookField_f64 f, u64 addr, f64 v) {
 /* the functions hooked: a hook's symbol may name one in each of the game's modules */
 #define HOOK_SITES 256
 
+/* verify mode's scratch memory: slots of guest memory in the kernel region, each call verified taking one without
+   waiting (a guest thread may lose its core inside the function's own code, and another verifying a call then must
+   not wait for it) */
+#define HOOK_VERIFY_SLOTS 16
+#define HOOK_VERIFY_SLOT  (4u << 20)
+
 typedef struct {
     u32 count;
     u16 hook[HOOK_SITES];     /* its hook, in the generated table */
     u64 addr[HOOK_SITES];     /* the function's guest address */
     GuestFn orig[HOOK_SITES]; /* its recompiled code, which its slot held */
+    GuestFn fn[HOOK_SITES];   /* what its slot holds now: the hook's adapter, or verify mode's check */
+    /* verify mode (hooks_verify): the scratch slots' base and which are taken (bit i, atomic), and each site's calls
+       that agreed, differed and were skipped (atomic) */
+    u64 verify_base;
+    u32 verify_taken;
+    u64 agreed[HOOK_SITES], differed[HOOK_SITES], skipped[HOOK_SITES];
 } HleHook;
 
 /* hooks the functions the game exports that hooks.hook names (unless hooks=0), once the game's executables are
