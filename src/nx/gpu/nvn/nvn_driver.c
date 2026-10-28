@@ -11,6 +11,8 @@
    given before the BR (the default), or reads the driver's state, which is unknown here */
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "common/utilities/endian.h"
+#include "nx/hle/hook/hook.h"
+#include <stdio.h>
 
 typedef struct {
     const u8* mem;
@@ -163,7 +165,34 @@ u32 nvn_api_pack(i32 major, i32 minor) {
     return (u32)major << 16 | (u32)minor;
 }
 
-int nvn_api_described(u32 api) { return api >= NVN_API_DESCRIBED_LO && api <= NVN_API_DESCRIBED_HI; }
+/* the described versions (nvn_driver.h), inclusive ranges in order */
+static const struct {
+    u32 lo, hi;
+} described[] = {{53u << 16 | 209, 53u << 16 | 209}, {55u << 16 | 8, 55u << 16 | 15}};
+#define DESCRIBED (sizeof described / sizeof *described)
+
+int nvn_api_described(u32 api) {
+    size_t i;
+    for (i = 0; i < DESCRIBED; i++)
+        if (api >= described[i].lo && api <= described[i].hi) return 1;
+    return 0;
+}
+
+void nvn_api_described_text(char* out, size_t n) {
+    size_t i, at = 0;
+    if (!n) return;
+    out[0] = 0;
+    for (i = 0; i < DESCRIBED && at < n; i++) {
+        char lo[32], hi[32];
+        int w;
+        hook_version_text(lo, sizeof lo, HOOK_NVN, described[i].lo);
+        hook_version_text(hi, sizeof hi, HOOK_NVN, described[i].hi);
+        w = described[i].lo == described[i].hi ? snprintf(out + at, n - at, "%s%s", i ? ", " : "", lo)
+                                                : snprintf(out + at, n - at, "%s%s to %s", i ? ", " : "", lo, hi);
+        if (w < 0) return;
+        at += (size_t)w;
+    }
+}
 
 int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
     Image m;

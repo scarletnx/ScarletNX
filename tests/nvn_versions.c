@@ -115,10 +115,16 @@ int main(void) {
         assert(!strcmp(text, "nvn >= 53.0, < 55.0"));
     }
 
-    /* the versions auto takes the game's NVN calls for */
+    /* the versions auto takes the game's NVN calls for: 53.209 (SDK 5.4) and 55.8 to 55.15, none between them */
     assert(nvn_api_described(55u << 16 | 8) && nvn_api_described(55u << 16 | 12) && nvn_api_described(55u << 16 | 15));
+    assert(nvn_api_described(53u << 16 | 209) && nvn_api_described(api(0x100)));
     assert(!nvn_api_described(55u << 16 | 7) && !nvn_api_described(55u << 16 | 16) &&
-           !nvn_api_described(53u << 16 | 209) && !nvn_api_described(0));
+           !nvn_api_described(53u << 16 | 208) && !nvn_api_described(53u << 16 | 210) &&
+           !nvn_api_described(54u << 16) && !nvn_api_described(0));
+    nvn_api_described_text(text, sizeof text);
+    assert(!strcmp(text, "53.209, 55.8 to 55.15"));
+    nvn_api_described_text(text, 8); /* cut short, still terminated */
+    assert(!strcmp(text, "53.209,"));
     puts("nvn versions: ok");
     return 0;
 }
