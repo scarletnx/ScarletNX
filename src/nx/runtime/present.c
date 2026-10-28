@@ -36,7 +36,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     int known = slot >= 0 && slot < VI_SLOTS;
     g_renderer->present_buffer(a + offset, w, h, pitch, layout, bhl, fmt, crop, transform,
                                known ? __atomic_load_n(&g_pace.released_ns[slot], __ATOMIC_RELAXED) : 0,
-                               known ? __atomic_load_n(&g_pace.period_ns[slot], __ATOMIC_RELAXED) : 0);
+                               known ? __atomic_load_n(&g_pace.period_ns[slot], __ATOMIC_RELAXED) : 0, 0);
     __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
     cheats_frame(); /* the cheats run once per frame shown, as dmnt's run on the console */
     SNX_FRAME_MARK();
@@ -52,6 +52,14 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
    another, and the timer's period is the display's refresh times the refreshes nearest the swap interval's, so it
    doesn't drift from the display (a 59.94 Hz one). A display that stops taking frames (a window covered) leaves the
    timer alone until it takes them again */
+
+u64 present_display_period(u64 period, u64 refresh) {
+    u64 n, d;
+    if (!refresh) return period;
+    n = (period + refresh / 2) / refresh;
+    d = n * refresh;
+    return n && (d > period ? d - period : period - d) <= period / 32 ? d : period;
+}
 
 static void released(int slot, u64 period) {
     if (slot < 0 || slot >= VI_SLOTS) return;
@@ -75,8 +83,8 @@ void present_pace(u32 interval, int slot) {
         int r = g_renderer->display_wait(stuck ? start : start + 2 * period, &shown);
         if (r >= 0) __atomic_store_n(&g_pace.display_stuck, !r, __ATOMIC_RELAXED);
         if (r > 0 && shown) {
-            u64 n = (period + shown / 2) / shown, d = n * shown;
-            if (n && (d > period ? d - period : period - d) <= period / 32) {
+            u64 d = present_display_period(period, shown);
+            if (d != period) {
                 refresh = shown;
                 period = d;
             }
