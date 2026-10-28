@@ -698,7 +698,7 @@ target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/s
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
-# (src/nx/gpu/nvn/nvn_driver.c) and the entry hook_select picks for it
+# (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions nvn_direct=auto takes
 add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_driver.c")
 snx_test_target(snx-test-nvn-versions 99)
