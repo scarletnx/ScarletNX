@@ -224,7 +224,8 @@ static int arena_fit(u64 need) {
                               .size = cap,
                               .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* an indirect dispatch's grid */
                               /* both queues use it, one at a time, without ownership transfers */
                               .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                               .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
@@ -849,6 +850,7 @@ void vk_dispatch(const DispatchState* d) {
     CsBufImg bimg[8] = {0};
     int i;
     vk_frame_check();
+    if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
     if (!gx || !gy || !gz || !lx || !ly || !lz) return;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||
@@ -1001,6 +1003,11 @@ void vk_dispatch(const DispatchState* d) {
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
        pending compute results overlap land those first, before anything is put in the arena */
     int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
+    /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
+    gfx = gfx || d->indirect != 0;
+    VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
+    u64 grid_off = 0, cb0_off = 0;
+    u32 cb0_range = 0;
     /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
        reads the result on the GPU instead of the compute queue waiting for it to land (one game: three a frame) */
     for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
@@ -1123,6 +1130,11 @@ rebind:
             }
             memcpy(dst, g_cb[i], n);
             memset(dst + n, 0, range - n);
+            if (!i) {
+                cb0_buf = cbuf;
+                cb0_off = o;
+                cb0_range = range;
+            }
             bi[nw] = (VkDescriptorBufferInfo){cbuf, o, range};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
@@ -1376,6 +1388,15 @@ rebind:
             nw++;
         }
     }
+    /* an indirect dispatch's grid, as the GPU holds it (a compute program's results that haven't landed where they
+       are) */
+    if (d->indirect && ((d->indirect & 3) || !vk_buf_get(d->indirect, 12, &grid_buf, &grid_off))) {
+        LOG_LIMIT(4, "vulkan: an indirect dispatch's grid at %llx can't be read\n", (unsigned long long)d->indirect);
+        vk_buf_writable_abort();
+        res_unref_all(made, ng);
+        g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
+        return;
+    }
     /* reading an input landed results and submitted: what was read before may be stale, as in a draw's setup */
     if (deferred && setup_sub != vk_submit_number()) {
         for (i = 0; i < p->si.nimg && i < 8; i++)
@@ -1450,9 +1471,19 @@ rebind:
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &cmb};
         rec_CmdPipelineBarrier2(cb, &cdi);
     }
+    if (d->indirect && cb0_buf && cb0_range >= 0x20c) {
+        /* the grid into bank 0's dispatch size too, on the GPU, after whatever wrote it */
+        VkBufferCopy gc = {grid_off, cb0_off + 0x200, 12};
+        vk_all_barrier(cb);
+        rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
+        vk_all_barrier(cb);
+    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
-    rec_CmdDispatch(cb, gx, gy, gz);
+    if (d->indirect)
+        rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
+    else
+        rec_CmdDispatch(cb, gx, gy, gz);
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {

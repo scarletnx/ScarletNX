@@ -20,6 +20,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -511,17 +512,16 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->dirty & D_INLINE) keep(&d->ds.inl, &d->inl, sizeof d->inl, &d->ds.gen[DS_INLINE]);
     d->dirty = 0;
 }
-/* the 32-bit words at gva, read as the stream sees them. Indirect draws' and dispatches' arguments are read here on
-   the CPU, not by the GPU: the renderer takes a draw's counts on the CPU (it sizes the vertex ranges it reads by them),
-   as the 3D engine's indirect draws through the macros do. Arguments a compute program wrote land first (gmem_read).
-   A run of one game reads them fewer than 4096 times; the GPU would read them once the renderer takes indirect draws
-   and dispatches */
-static void words(u64 gva, u32* w, u32 n) {
-    u32 i;
-    memset(w, 0, 4 * (size_t)n);
-    if (gmem_read(gva, w, 4 * (u64)n))
-        LOG_LIMIT(4, "nvn: a draw's arguments at %llx aren't mapped\n", (unsigned long long)gva);
-    for (i = 0; i < n; i++) w[i] = snx_ld_le32((const u8*)&w[i]);
+/* An indirect draw's arguments stay in guest memory, which the GPU reads when it draws (DrawCall.indirect): NVN's
+   DrawArraysIndirect and DrawElementsIndirect records have Vulkan's indirect command layouts, {count, instances, first,
+   base instance} and {count, instances, first index, base vertex, base instance}, and a multi-draw's count is a 32-bit
+   word the GPU reads too. Nothing of them is read on the CPU: a compute program may write them just before */
+static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 record) {
+    dc->indirect = ind;
+    dc->indirect_count = count;
+    dc->draw_count = count ? (u32)max : 1;
+    dc->stride = count && stride > 0 ? (u32)stride : record;
+    dc->count = dc->instances = 1; /* the GPU's: these only say there is a draw */
 }
 static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     NvnPDraw r;
@@ -529,61 +529,62 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     memset(&r, 0, sizeof r);
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     memset(&dc, 0, sizeof dc);
-    if (r.ind) { /* {count, instances, first, base instance}, below the count the GPU wrote for a multi-draw */
-        u32 a[4];
-        if (r.mdi_count) {
-            words(r.mdi_count, a, 1);
-            if ((u32)r.mdi_index >= a[0]) return;
-        }
-        words(r.ind, a, 4);
-        r.count = (i32)a[0], r.instances = (i32)a[1], r.first = (i32)a[2], r.base_instance = (i32)a[3];
-    }
-    if (r.count <= 0) return;
     dc.topology = (u32)r.prim; /* NVN's primitives are the 3D engine's numbers */
-    dc.first = (u32)r.first;
-    dc.count = (u32)r.count;
-    dc.base_instance = (u32)r.base_instance;
-    dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    if (r.ind)
+        indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 16);
+    else {
+        if (r.count <= 0) return;
+        dc.first = (u32)r.first;
+        dc.count = (u32)r.count;
+        dc.base_instance = (u32)r.base_instance;
+        dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    }
     if (d->render_off) return;
     sync(d, 0, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
+/* how far an indirect draw's indices may reach, which NVN doesn't say (DrawElementsIndirect takes the index buffer's
+   address only, and the GPU reads the count): the guest memory mapped contiguously from that address, at most 64 MiB */
+#define INDIRECT_INDEX_SPAN (64ull << 20)
 static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     NvnPDrawIdx r;
     DrawCall dc;
     DsIndex x;
-    u32 first = 0, isz;
+    u32 isz;
+    u64 cpu;
     memset(&r, 0, sizeof r);
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
     memset(&dc, 0, sizeof dc);
-    if (r.ind) { /* {count, instances, first index, base vertex, base instance} */
-        u32 a[5];
-        if (r.mdi_count) {
-            words(r.mdi_count, a, 1);
-            if ((u32)r.mdi_index >= a[0]) return;
-        }
-        words(r.ind, a, 5);
-        r.count = (i32)a[0], r.instances = (i32)a[1], first = a[2], r.base_vertex = (i32)a[3];
-        r.base_instance = (i32)a[4];
-    }
-    if (r.count <= 0 || (u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT) return;
+    if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT || (!r.ind && r.count <= 0)) return;
     isz = 1u << r.index_type;
     memset(&x, 0, sizeof x);
     x.addr = r.index_buffer;
-    x.end = r.index_buffer + ((u64)first + (u64)r.count) * isz - 1;
+    if (r.ind) {
+        u64 run = gmmu_run(r.index_buffer, INDIRECT_INDEX_SPAN, &cpu);
+        if (run < isz) {
+            LOG_LIMIT(4, "nvn: an indirect draw's index buffer at %llx isn't mapped\n",
+                      (unsigned long long)r.index_buffer);
+            return;
+        }
+        x.end = r.index_buffer + run - 1;
+    } else
+        x.end = r.index_buffer + (u64)r.count * isz - 1;
     x.format = (u32)r.index_type; /* 8, 16 and 32-bit as the 3D engine numbers them */
     x.restart = d->restart;
     x.restart_index = d->restart_index;
     keep(&d->ds.index, &x, sizeof x, &d->ds.gen[DS_INDEX]);
     dc.topology = (u32)r.prim;
     dc.indexed = 1;
-    dc.first = first;
-    dc.count = (u32)r.count;
-    dc.base_vertex = (u32)r.base_vertex;
-    dc.base_instance = (u32)r.base_instance;
-    dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    if (r.ind)
+        indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 20);
+    else {
+        dc.count = (u32)r.count;
+        dc.base_vertex = (u32)r.base_vertex;
+        dc.base_instance = (u32)r.base_instance;
+        dc.instances = r.instances > 0 ? (u32)r.instances : 1;
+    }
     if (d->render_off) return;
-    sync(d, r.base_vertex, dc.base_instance);
+    sync(d, (i32)dc.base_vertex, dc.base_instance);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
 
@@ -798,15 +799,16 @@ static void clear_texture(NvnDraw* d, u64 payload) {
 static void dispatch(NvnDraw* d, u64 payload) {
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
     u32 g[3];
-    if (r->ind)
-        words(r->ind, g, 3);
-    else
-        g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
-    if (!d->dx.code || !g[0] || !g[1] || !g[2] || !g_renderer->dispatch) return;
-    memcpy(d->dx.grid, g, sizeof g);
-    snx_st_le32(d->dx.bank0 + 0x200, g[0]);
-    snx_st_le32(d->dx.bank0 + 0x204, g[1]);
-    snx_st_le32(d->dx.bank0 + 0x208, g[2]);
+    g[0] = (u32)r->x, g[1] = (u32)r->y, g[2] = (u32)r->z;
+    if (!d->dx.code || !g_renderer->dispatch || (!r->ind && (!g[0] || !g[1] || !g[2]))) return;
+    /* DispatchComputeIndirect's grid stays in guest memory, which the GPU reads (DispatchState.indirect) */
+    d->dx.indirect = r->ind;
+    if (!r->ind) {
+        memcpy(d->dx.grid, g, sizeof g);
+        snx_st_le32(d->dx.bank0 + 0x200, g[0]);
+        snx_st_le32(d->dx.bank0 + 0x204, g[1]);
+        snx_st_le32(d->dx.bank0 + 0x208, g[2]);
+    }
     g_renderer->dispatch(&d->dx);
 }
 

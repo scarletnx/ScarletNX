@@ -2763,14 +2763,28 @@ static void audit_shader_regressions(void) {
     free(code);
     g_shader_texture_arrays = 0;
     const u64 instance = 0xefd800000007ff00ull | (0x2f8ull << 20);
+    /* without draw parameters the instance ID is InstanceIndex less the guest's base instance, pushed; with them
+       InstanceIndex less BaseInstance plus what the draw's first instance adds to the guest's base (a 3D engine draw
+       that continues an earlier one's instances), so an indirect draw's base instance can come from the GPU */
+    g_shader_draw_parameters = 0;
     code = translate(&instance, 1, ST_VS, &info, &words, 1);
     check_translated(code, &info, "instance attribute translates with original guest base");
     if (code) {
         check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 0,
-              "instance uses InstanceIndex and never Vulkan BaseInstance");
-        check(count_opcode(code, words, 130, 0xffffffffu) > 0,
+              "instance without draw parameters uses InstanceIndex and not BaseInstance");
+        check(count_opcode(code, words, 130, 0xffffffffu) == 1,
               "instance subtracts the original guest base");
         save_fixture(audit_paths[1], code, words);
+    }
+    free(code);
+    g_shader_draw_parameters = 1;
+    code = translate(&instance, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "instance attribute translates with draw parameters");
+    if (code) {
+        check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 1,
+              "instance with draw parameters uses InstanceIndex and BaseInstance");
+        check(count_opcode(code, words, 130, 0xffffffffu) == 2,
+              "instance subtracts BaseInstance less the pushed offset");
     }
     free(code);
     const u64 tlds = 0xD244012030570A02ull;

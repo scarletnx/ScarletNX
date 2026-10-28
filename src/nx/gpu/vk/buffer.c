@@ -1937,6 +1937,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                                        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
@@ -2226,8 +2227,8 @@ static Win g_win[WIN_N];
 static int win_live(const Win* w) {
     return w->end && w->gen == g_vb_map_gen && (u32)(g_vk_present - w->used) < WIN_IDLE;
 }
-int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, at, cpu = 0;
+static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    u64 at, cpu = 0;
     int slot = -1;
     if (!len || gva + len < gva) return 0;
     for (int i = 0; i < WIN_N && slot < 0; i++)
@@ -2260,6 +2261,15 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if ((at + (gva - g_win[slot].start)) % (align ? align : 1)) return buf_get(gva, len, buf, off, 0, vk_stage_align());
     *off = at + (gva - g_win[slot].start);
     return 1;
+}
+int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return win_get(gva, len, g_vk.props.limits.minStorageBufferOffsetAlignment, buf, off);
+}
+/* A vertex or index range whose extent isn't known (an indirect draw's: the GPU reads the count), in a window as a
+   bare storage buffer's: a binding reads on to the window's end, and draws over the same memory share its copy.
+   align: the elements' */
+int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    return win_get(gva, len, align, buf, off);
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot
    and then the entry the slot names: 88% of buf_get's own time in one game. A caller that knows its ranges first
