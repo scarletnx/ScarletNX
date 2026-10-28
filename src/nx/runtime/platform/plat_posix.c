@@ -144,9 +144,11 @@ __attribute__((noinline)) static void run_with_alt_stack(PThreadFn fn, void* arg
     alt_stack_off();
 }
 
+static void wp_thread_start(void);
 static void* thread_start(void* p) {
     ThreadStart s = *(ThreadStart*)p;
     free(p);
+    wp_thread_start();
     if (s.alt_stack)
         run_with_alt_stack(s.fn, s.arg);
     else
@@ -436,10 +438,13 @@ static void ww_remapped(u8* p, u64 size) {
    must not undo nor outlive. A page without WP_PROT is never WP_CLEAN. WP_ARMED marks a page a trap holds
    (plat_trap_arm): scans skip it, as Linux's skip a trapped range, since its consumers look the ownership up instead,
    and it reads as written once the trap lets it go. A system call doesn't fault into the handler:
-   it fails with EFAULT on a read-only page, so the runtime opens what the kernel will write first (plat_ww_open).
-   Each run of protected pages is a mapping of its own to the kernel, and Linux limits a process's mappings
-   (vm.max_map_count): there the tracking holds no more pages than half what the limit leaves free, and a written page
-   past that reads as written at every scan */
+   it fails with EFAULT on a read-only page, so the runtime opens what the kernel will write first (plat_ww_open), and
+   scans leave those pages alone until it is done (plat_ww_close). Each run of protected pages is a mapping of its own
+   to the kernel, and Linux limits a process's mappings (vm.max_map_count): there the tracking and the traps hold no
+   more pages than half what the limit leaves free (a trap's pages count too, as their runs split mappings as well),
+   and a written page past that reads as written at every scan. When a protection change fails for want of mappings
+   anyway (ENOMEM: the rest of the process took more than the limit assumed), the budget comes down to half what is
+   held then and the tracking lets every page it holds go (wp_shed), which only ever merges mappings */
 #define WP_MAPPED 1u
 #define WP_CLEAN  2u
 #define WP_PROT   4u
@@ -451,8 +456,8 @@ static int g_wp_track; /* scans are the states' (written-page tracking by protec
 static u8* g_wp_base;
 static u64 g_wp_pages;
 static unsigned g_wp_shift; /* the host's page, log2 */
-static u64 g_wp_budget;     /* pages the tracking may hold read only at once */
-static u64 g_wp_held;       /* atomic: pages it holds read only now */
+static u64 g_wp_budget;     /* atomic: pages the tracking and the traps may hold at once */
+static u64 g_wp_held;       /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
 /* the address a fault on a writable page was let go again at, and g_wp_opened then */
 static __thread void* t_wp_retried;
@@ -461,6 +466,24 @@ static __thread u32 t_wp_retried_at;
 static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
 static void fault_handler_install(void);
+/* Ranges the kernel is writing now (plat_ww_open to plat_ww_close), which scans don't protect again. A slot is claimed
+   (busy 1), filled, then published (busy 2) before any of its pages is opened, so a scan that locks such a page finds
+   it published */
+#define WW_OPEN_N 32
+static int g_ww_open_busy[WW_OPEN_N]; /* atomic */
+static u8* g_ww_open_lo[WW_OPEN_N];
+static u8* g_ww_open_hi[WW_OPEN_N];
+static int g_ww_open_n; /* atomic: slots claimed, to skip the search */
+
+/* the TLS the fault handler uses, touched before the thread can fault: on Darwin a thread's first access to a __thread
+   variable may allocate, which a signal handler mustn't */
+static __thread void* t_frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
+static void wp_thread_start(void) {
+    __atomic_store_n(&t_wp_retried, NULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&t_wp_retried_at, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&t_frz_retried, NULL, __ATOMIC_RELAXED);
+    (void)plat_tid();
+}
 
 static u8 wp_lock(u64 i) {
     u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
@@ -492,7 +515,8 @@ static void wp_hold(const u8* p, u64 size, u8 to) {
     for (i = lo; i < hi; i++)
         if (to || __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED)) wp_lock(i);
 }
-/* the change wp_hold locked them for is done: the pages are in state to now (changed), or as they were */
+/* the change wp_hold locked them for is done: the pages are in state to now (changed), or as they were but written:
+   a change that failed partway (an mprotect, a mapping) may have made some writable */
 static void trap_wake(void);
 static void wp_let(const u8* p, u64 size, u8 to, int changed) {
     u64 i, lo, hi, freed = 0;
@@ -503,9 +527,9 @@ static void wp_let(const u8* p, u64 size, u8 to, int changed) {
     for (i = lo; i < hi; i++) {
         u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
         if (!to && !s) continue;
-        if (changed && (s & WP_PROT) && !(to & WP_PROT)) freed++;
+        if (changed && (s & (WP_PROT | WP_TRAP))) freed++;
         if (changed && (s & WP_TRAP)) woken = 1;
-        wp_unlock(i, changed ? to : (u8)(s & ~WP_LOCK));
+        wp_unlock(i, changed ? to : (u8)(s & ~(WP_LOCK | WP_CLEAN)));
     }
     if (freed) __atomic_fetch_sub(&g_wp_held, freed, __ATOMIC_RELAXED);
     if (woken) trap_wake();
@@ -515,6 +539,54 @@ static int frozen_at(const void* a) {
     return __atomic_load_n(&g_frozen, __ATOMIC_SEQ_CST) &&
            (const u8*)a >= __atomic_load_n(&g_frz_lo, __ATOMIC_ACQUIRE) &&
            (const u8*)a < __atomic_load_n(&g_frz_hi, __ATOMIC_ACQUIRE);
+}
+/* whether the kernel is writing page i now (plat_ww_open) */
+static int wp_kernel_writing(u64 i) {
+    u8* a = g_wp_base + (i << g_wp_shift);
+    u8* e = a + ((u64)1 << g_wp_shift);
+    int k;
+    if (!__atomic_load_n(&g_ww_open_n, __ATOMIC_SEQ_CST)) return 0;
+    for (k = 0; k < WW_OPEN_N; k++)
+        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] < e && g_ww_open_hi[k] > a)
+            return 1;
+    return 0;
+}
+/* a protection change failed for want of mappings: the budget comes down to half what is held, and every page the
+   tracking holds read only is let go, which merges mappings and splits none (a run of them is whole mappings, but
+   where it meets a frozen page: a run that fails is tried again once the others merged). Runs only atomics and
+   mprotect, so a fault handler may call it, holding no page's lock */
+static void wp_shed(void) {
+    u64 i, run = 0, n = 0, k, pass;
+    __atomic_store_n(&g_wp_budget, __atomic_load_n(&g_wp_held, __ATOMIC_RELAXED) / 2, __ATOMIC_RELAXED);
+    for (pass = 0; pass < 2; pass++)
+        for (i = 0; i <= g_wp_pages; i++) {
+            if (i < g_wp_pages && (__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & WP_PROT)) {
+                if (wp_lock(i) & WP_PROT) {
+                    if (!n) run = i;
+                    n++;
+                    continue;
+                }
+                wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
+            }
+            if (!n) continue;
+            if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
+                __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
+                for (k = run; k < run + n; k++)
+                    wp_unlock(k, (u8)((__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & WP_ARMED) | WP_MAPPED));
+            } else
+                for (k = run; k < run + n; k++)
+                    wp_unlock(k, (u8)(__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & ~(WP_LOCK | WP_CLEAN)));
+            n = 0;
+        }
+}
+/* n more pages held, within the budget: 1, or 0 when it has no room for them */
+static int wp_reserve(u64 n) {
+    u64 held = __atomic_load_n(&g_wp_held, __ATOMIC_RELAXED);
+    do {
+        if (held + n > __atomic_load_n(&g_wp_budget, __ATOMIC_RELAXED)) return 0;
+    } while (!__atomic_compare_exchange_n(&g_wp_held, &held, held + n, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    return 1;
 }
 /* Traps by protection (Linux without userfaultfd's minor faults, or SNX_TRAPS=signal): plat_trap_arm makes the
    pool pages inaccessible (WP_TRAP), and a guest access faults into the handler (wp_fault) on the faulting thread.
@@ -535,8 +607,9 @@ static u32 g_trap_head;   /* atomic: the next slot a fault claims */
 static u32 g_trap_tail;   /* the trap thread's */
 static u32 g_trap_posted; /* atomic, a futex word: moves with each message */
 static u32 g_trap_gen;    /* atomic, a futex word: moves when a trap lets pages go */
-#define TRAP_WAITERS 64
+#define TRAP_WAITERS 256
 static u32 g_trap_waiting[TRAP_WAITERS]; /* atomic: the threads waiting in a trap, for plat_thread_in_fault */
+static u32 g_trap_unlisted;              /* atomic: threads waiting with no room in that table, which makes it unsure */
 
 static void trap_futex_wait(u32* w, u32 v) {
 #if defined(__linux__)
@@ -561,6 +634,7 @@ static void trap_wait(u64 i, int write) {
     for (k = 0; k < TRAP_WAITERS && slot < 0; k++, none = 0)
         if (__atomic_compare_exchange_n(&g_trap_waiting[k], &none, tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
             slot = (int)k;
+    if (slot < 0) __atomic_fetch_add(&g_trap_unlisted, 1, __ATOMIC_ACQ_REL);
     for (;;) { /* a slot whose turn it is: a full ring waits for the trap thread */
         pos = __atomic_load_n(&g_trap_head, __ATOMIC_RELAXED);
         m = &g_trap_ring[pos % TRAP_RING];
@@ -579,7 +653,10 @@ static void trap_wait(u64 i, int write) {
     while ((__atomic_load_n(&g_wp[i], __ATOMIC_ACQUIRE) & WP_TRAP) &&
            __atomic_load_n(&g_trap_gen, __ATOMIC_SEQ_CST) == gen)
         trap_futex_wait(&g_trap_gen, gen);
-    if (slot >= 0) __atomic_store_n(&g_trap_waiting[slot], 0, __ATOMIC_RELEASE);
+    if (slot >= 0)
+        __atomic_store_n(&g_trap_waiting[slot], 0, __ATOMIC_RELEASE);
+    else
+        __atomic_fetch_sub(&g_trap_unlisted, 1, __ATOMIC_RELEASE);
 }
 static void* trap_signal_thread(void* arg) {
     (void)arg;
@@ -629,12 +706,15 @@ static int wp_fault(void* a, int write) {
         return 1;
     }
     if (mprotect(g_wp_base + (i << g_wp_shift), (size_t)page, PROT_READ | PROT_WRITE)) {
+        int why = errno;
         wp_unlock(i, s);
-        return 0;
+        if (why != ENOMEM) return 0;
+        wp_shed(); /* opening one page splits a mapping: open them all, which splits none, and go again */
+        return 1;
     }
     __atomic_fetch_sub(&g_wp_held, 1, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
-    wp_unlock(i, WP_MAPPED); /* written, and writable */
+    wp_unlock(i, (u8)((s & WP_ARMED) | WP_MAPPED)); /* written, and writable */
     return 1;
 }
 /* the locked written pages [i, i + n): reported, and held read only when the budget allows */
@@ -642,27 +722,30 @@ static void wp_protect(u64 i, u64 n, void (*cb)(u8* p, u64 size)) {
     u8* a = g_wp_base + (i << g_wp_shift);
     u64 k, add = 0, len = n << g_wp_shift;
     u8 to;
+    int shed = 0;
     for (k = i; k < i + n; k++)
         if (!(__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & WP_PROT)) add++;
-    if (__atomic_load_n(&g_wp_held, __ATOMIC_RELAXED) + add > g_wp_budget)
+    if (!wp_reserve(add))
         to = 0; /* left writable, and written: reported again by the next scan */
-    else {
-        __atomic_fetch_add(&g_wp_held, add, __ATOMIC_RELAXED);
-        /* a failed mprotect may have changed part of the run: held, but written, so a fault opens it and the next
-           scan tries again */
-        to = mprotect(a, (size_t)len, PROT_READ) ? WP_MAPPED | WP_PROT : WP_MAPPED | WP_PROT | WP_CLEAN;
-    }
+    else if (mprotect(a, (size_t)len, PROT_READ)) {
+        /* it may have changed part of the run: held, but written, so a fault opens it and the next scan tries again */
+        to = WP_MAPPED | WP_PROT;
+        shed = errno == ENOMEM;
+    } else
+        to = WP_MAPPED | WP_PROT | WP_CLEAN;
     for (k = i; k < i + n; k++) wp_unlock(k, to ? to : (u8)(__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & ~WP_LOCK));
     cb(a, len);
+    if (shed) wp_shed();
 }
 static int wp_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     u64 i, lo, hi, run = 0, n = 0;
     if (wp_pages(p, size, &lo, &hi)) return size ? -1 : 0;
     for (i = lo; i < hi; i++) {
         u8 s = __atomic_load_n(&g_wp[i], __ATOMIC_RELAXED);
-        if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED)) == WP_MAPPED) {
+        if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED) {
             s = wp_lock(i);
-            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED)) == WP_MAPPED) { /* written: locked until its run is protected */
+            /* written, and no system call writing it: locked until its run is protected */
+            if ((s & (WP_MAPPED | WP_CLEAN | WP_ARMED | WP_TRAP)) == WP_MAPPED && !wp_kernel_writing(i)) {
                 if (!n) run = i;
                 n++;
                 continue;
@@ -709,32 +792,80 @@ static void wp_init(u8* p, u64 size, int track) {
     g_wp_base = p;
     g_wp_pages = size >> shift;
     g_wp_shift = shift;
-    g_wp_budget = budget;
+    __atomic_store_n(&g_wp_budget, budget, __ATOMIC_RELAXED);
     g_wp_track = track;
+    wp_thread_start();
     __atomic_store_n(&g_wp, (u8*)s, __ATOMIC_RELEASE);
+}
+/* whether [p, e) meets the range frozen now */
+static int frozen_over(const u8* p, const u8* e) {
+    return __atomic_load_n(&g_frozen, __ATOMIC_SEQ_CST) && p < __atomic_load_n(&g_frz_hi, __ATOMIC_ACQUIRE) &&
+           e > __atomic_load_n(&g_frz_lo, __ATOMIC_ACQUIRE);
+}
+static void frozen_until_thaw(const u8* p, const u8* e) {
+    while (frozen_over(p, e)) {
+#if defined(__linux__)
+        syscall(SYS_futex, &g_frozen, FUTEX_WAIT_PRIVATE, 1, NULL, NULL, 0);
+#else
+        sched_yield();
+#endif
+    }
 }
 void plat_ww_open(u8* p, u64 size) {
     u64 i, lo, hi, run = 0, n = 0, k;
+    int slot;
     if (!g_wp_track || wp_pages(p, size, &lo, &hi)) return;
+    /* a slot of the ranges scans leave alone, published before any page opens */
+    for (;;) {
+        for (slot = 0; slot < WW_OPEN_N; slot++) {
+            int free = 0;
+            if (__atomic_compare_exchange_n(&g_ww_open_busy[slot], &free, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+                break;
+        }
+        if (slot < WW_OPEN_N) break;
+        sched_yield(); /* as many system calls writing guest memory at once as there are slots */
+    }
+    g_ww_open_lo[slot] = p;
+    g_ww_open_hi[slot] = p + size;
+    __atomic_fetch_add(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_ww_open_busy[slot], 2, __ATOMIC_SEQ_CST);
+    /* a range being moved (plat_freeze) takes the write when the move is done: opened now, the kernel would write
+       the old pages, which the move has copied already */
+    frozen_until_thaw(p, p + size);
     for (i = lo; i <= hi; i++) {
-        if (i < hi && (__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & WP_PROT)) {
-            if (wp_lock(i) & WP_PROT) {
+        /* every page locked, not only those held now: a scan that locked one before the range was published may be
+           about to protect it, and holds it until it has */
+        if (i < hi) {
+            u8 s = wp_lock(i);
+            if ((s & WP_PROT) && !frozen_at(g_wp_base + (i << g_wp_shift))) {
                 if (!n) run = i;
                 n++;
                 continue;
             }
-            wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
+            wp_unlock(i, s);
         }
         if (!n) continue;
         if (!mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
             __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
             __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
-            for (k = run; k < run + n; k++) wp_unlock(k, WP_MAPPED);
+            for (k = run; k < run + n; k++)
+                wp_unlock(k, (u8)((__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & WP_ARMED) | WP_MAPPED));
         } else /* left for the system call to fail on, which it reports */
             for (k = run; k < run + n; k++)
                 wp_unlock(k, (u8)(__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & ~(WP_LOCK | WP_CLEAN)));
         n = 0;
     }
+}
+void plat_ww_close(u8* p, u64 size) {
+    int k;
+    if (!g_wp_track || !g_wp) return;
+    for (k = 0; k < WW_OPEN_N; k++)
+        if (__atomic_load_n(&g_ww_open_busy[k], __ATOMIC_SEQ_CST) == 2 && g_ww_open_lo[k] == p &&
+            g_ww_open_hi[k] == p + size) {
+            __atomic_store_n(&g_ww_open_busy[k], 0, __ATOMIC_SEQ_CST);
+            __atomic_fetch_sub(&g_ww_open_n, 1, __ATOMIC_SEQ_CST);
+            return;
+        }
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
@@ -959,7 +1090,7 @@ int plat_thread_in_fault(u32 tid) {
         u32 k;
         for (k = 0; k < TRAP_WAITERS; k++)
             if (__atomic_load_n(&g_trap_waiting[k], __ATOMIC_ACQUIRE) == tid) return 1;
-        return 0;
+        return __atomic_load_n(&g_trap_unlisted, __ATOMIC_ACQUIRE) ? -1 : 0; /* it may be one not listed */
     }
 #if defined(__linux__)
     char path[64], buf[256];
@@ -1175,8 +1306,15 @@ static void trap_open(u8* p, u64 size) {
             wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
         }
         if (!n) continue;
-        if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE))
-            fatal("Could not let trapped guest memory go (error %d)", errno);
+        if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE)) {
+            if (errno != ENOMEM) fatal("Could not let trapped guest memory go (error %d)", errno);
+            wp_shed(); /* mappings to spare, from the write tracking's */
+            if (mprotect(g_wp_base + (run << g_wp_shift), (size_t)(n << g_wp_shift), PROT_READ | PROT_WRITE))
+                fatal("Could not let trapped guest memory go (error %d)", errno);
+        }
+        __atomic_fetch_sub(&g_wp_held, n, __ATOMIC_RELAXED);
+        /* before the pages go: a fault that raced this finds them writable, and the count moved (wp_fault) */
+        __atomic_fetch_add(&g_wp_opened, 1, __ATOMIC_SEQ_CST);
         /* written: what landed came through the mirror */
         for (k = run; k < run + n; k++)
             wp_unlock(k, (u8)((__atomic_load_n(&g_wp[k], __ATOMIC_RELAXED) & WP_ARMED) | WP_MAPPED));
@@ -1226,7 +1364,7 @@ int plat_trap_init(void (*fault)(u8* p, int write, u32 tid)) {
 }
 /* traps by protection: the pages inaccessible, under their states' locks */
 static int trap_signal_arm(u8* p, u64 size) {
-    u64 i, lo, hi, freed = 0;
+    u64 i, lo, hi, added = 0;
     int r;
 #if SNX_UFFD
     if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) { /* out of the written-page scans, as below */
@@ -1235,14 +1373,23 @@ static int trap_signal_arm(u8* p, u64 size) {
     }
 #endif
     if (wp_pages(p, size, &lo, &hi)) return -1;
-    for (i = lo; i < hi; i++) wp_lock(i);
+    for (i = lo; i < hi; i++)
+        if (!(wp_lock(i) & (WP_PROT | WP_TRAP))) added++;
     r = mprotect(p, (size_t)size, PROT_NONE) ? -1 : 0;
+    if (r && errno == ENOMEM) { /* mappings to spare, from the write tracking's: its pages here stay locked */
+        for (i = lo; i < hi; i++) wp_unlock(i, (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK));
+        wp_shed();
+        added = 0;
+        for (i = lo; i < hi; i++)
+            if (!(wp_lock(i) & (WP_PROT | WP_TRAP))) added++;
+        r = mprotect(p, (size_t)size, PROT_NONE) ? -1 : 0;
+    }
+    /* counted against the budget, which the tracking then has less of: they can't be refused */
+    if (!r) __atomic_fetch_add(&g_wp_held, added, __ATOMIC_RELAXED);
     for (i = lo; i < hi; i++) {
         u8 s = (u8)(__atomic_load_n(&g_wp[i], __ATOMIC_RELAXED) & ~WP_LOCK);
-        if (!r && (s & WP_PROT)) freed++;
-        wp_unlock(i, r ? s : (u8)((s & ~(WP_PROT | WP_CLEAN)) | WP_ARMED | WP_TRAP));
+        wp_unlock(i, r ? (u8)(s & ~WP_CLEAN) : (u8)((s & ~(WP_PROT | WP_CLEAN)) | WP_ARMED | WP_TRAP));
     }
-    if (freed) __atomic_fetch_sub(&g_wp_held, freed, __ATOMIC_RELAXED);
     return r;
 }
 int plat_trap_arm(u8* p, u64 size) {
@@ -1313,12 +1460,13 @@ int plat_trap_continue(u8* p, u64 size) {
 #endif
 }
 void plat_trap_disarm(u8* p, u64 size) {
-    wp_armed(p, size, 0); /* landed through the mirror, which no protection watches */
     if (__atomic_load_n(&g_trap_signal, __ATOMIC_ACQUIRE)) {
-        trap_open(p, size); /* a page not let go yet reads the pool's contents */
+        trap_open(p, size);   /* a page not let go yet reads the pool's contents */
+        wp_armed(p, size, 0); /* landed through the mirror, which no protection watches */
         if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) ww_remapped(p, size);
         return;
     }
+    wp_armed(p, size, 0);
 #if SNX_UFFD_MINOR
     struct uffdio_range r;
     if (__atomic_load_n(&g_pagemap, __ATOMIC_ACQUIRE) >= 0) {
@@ -1335,7 +1483,6 @@ void plat_trap_disarm(u8* p, u64 size) {
 }
 
 /* ---- a range frozen while it is copied: a write to it waits in the signal handler (fault_signal) for the thaw */
-static __thread void* t_frz_retried; /* the address a thawed write was let go again at once */
 static int frozen_wait(void* a, int access);
 
 /* A SIGSEGV or SIGBUS no access raised but sent (kill, tgkill, sigqueue), told by its code's name: si_code <= 0 is

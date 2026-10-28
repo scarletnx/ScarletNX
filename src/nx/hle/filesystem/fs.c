@@ -1234,18 +1234,10 @@ static int check_transfer(i64 offset, IpcBuf buffer, i64 size) {
     R_UNLESS((i64)buffer.size >= 0 && (u64)size <= buffer.size, FS_INVALID_SIZE);
     R_SUCCEED();
 }
-static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i64 size_in) {
+/* IStorage::Read's [off, off + sz) into guest memory at a, once the arguments are checked */
+static int istorage_read(SvcObj* self, u64 off, u64 sz, u64 a) {
     FileData* data = self->data;
-    u64 off = (u64)offset, sz = (u64)size_in, a = buffer.addr;
-    int rc = check_transfer(offset, buffer, size_in);
-    if (rc) return rc;
-    if (!sz) R_SUCCEED();
-    /* the reads below go through the kernel, which can't wait on memory the GPU holds (it lands first) nor fault on
-       a page the write tracking protects (it opens) */
-    if (buffer_valid(a, sz)) {
-        own_acquire(a, sz);
-        plat_ww_open(GP(a), sz);
-    }
+    int rc = 0;
     if (!data && self->u[0] == STORAGE_AOC) { /* a DLC's image, read in place */
         SnxHacFs* fs = g_hle.fs.aocs[self->u[1]].fs;
         u64 total = snx_hac_fs_romfs_size(fs);
@@ -1271,6 +1263,20 @@ static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i6
         rc = FS_OUT_OF_RANGE;
     }
     pm_unlock(&g_hle.fs.tree.lock);
+    return rc;
+}
+static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i64 size_in) {
+    u64 off = (u64)offset, sz = (u64)size_in, a = buffer.addr;
+    int rc = check_transfer(offset, buffer, size_in);
+    if (rc) return rc;
+    if (!sz) R_SUCCEED();
+    if (!buffer_valid(a, sz)) return istorage_read(self, off, sz, a); /* which refuses it */
+    /* the reads go through the kernel, which can't wait on memory the GPU holds (it lands first) nor fault on a page
+       the write tracking protects (it opens, and stays open until the read is done) */
+    own_acquire(a, sz);
+    plat_ww_open(GP(a), sz);
+    rc = istorage_read(self, off, sz, a);
+    plat_ww_close(GP(a), sz);
     return rc;
 }
 /* the read-only storages: their backend rejects Write and SetSize, after the adapter's argument checks. Flush
@@ -1350,19 +1356,24 @@ static int nn_fssrv_sf_IFile_Read(SvcObj* self, nn_fs_ReadOption option, i64 off
     R_UNLESS(off <= f->node->size, FS_OUT_OF_RANGE);
     if (sz > f->node->size - off) sz = f->node->size - off;
     R_UNLESS(buffer_valid(a, sz), FS_OUT_OF_RANGE);
-    /* read() can't wait on memory the GPU holds (it lands first) nor fault on a page the write tracking protects */
+    /* read() can't wait on memory the GPU holds (it lands first) nor fault on a page the write tracking protects (it
+       opens, and stays open until the read is done) */
     own_acquire(a, sz);
     plat_ww_open(GP(a), sz);
     SNX_ZONE_TV(z, "fs read", sz, "%s", f->node->name);
     u64 n = sz;
+    int rc = 0;
     if (node_in_memory(f->node)) {
         if (sz) memcpy(GP(a), node_memory(f->node) + off, (size_t)sz);
-    } else {
-        R_UNLESS(!file_seek(f->f, off), FS_OUT_OF_RANGE);
+    } else if (file_seek(f->f, off))
+        rc = FS_OUT_OF_RANGE;
+    else {
         clearerr(f->f);
         n = fread(GP(a), 1, (size_t)sz, f->f);
-        R_UNLESS(!ferror(f->f), FS_OUT_OF_RANGE);
+        if (ferror(f->f)) rc = FS_OUT_OF_RANGE;
     }
+    plat_ww_close(GP(a), sz);
+    if (rc) return rc;
     __atomic_add_fetch(&g_fs_bytes_read, n, __ATOMIC_RELAXED);
     *bytes_read = (i64)n;
     R_SUCCEED();

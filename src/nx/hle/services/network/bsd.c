@@ -548,7 +548,7 @@ static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, 
     SnxSockAddr from = {0};
     int64_t r;
     /* the kernel writes the buffer, and can't wait on memory the GPU holds nor fault on a page the write tracking
-       protects */
+       protects (open until the receive is done) */
     if (n && a) {
         own_acquire(a, n);
         plat_ww_open(GP(a), n);
@@ -561,6 +561,7 @@ static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, 
         r = recv_either(s, c, GP(a), n, msg_in(gflags), &from);
     else
         r = snx_socket_recv(s, GP(a), n, msg_in(gflags), addrlen ? &from : NULL, NULL);
+    if (n && a) plat_ww_close(GP(a), n);
     snx_socket_unref(c);
     if (r > 0 && from.family && g_settings.log_level >= 2) {
         char t[64];

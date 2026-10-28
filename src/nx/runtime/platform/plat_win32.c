@@ -229,6 +229,10 @@ void plat_ww_open(u8* p, u64 size) {
     (void)p;
     (void)size;
 }
+void plat_ww_close(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+}
 
 int plat_vm_commit(u8* p, u64 size) {
     /* MEM_COMMIT charges the whole range to the commit limit at once */

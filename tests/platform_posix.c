@@ -94,6 +94,82 @@ static void writers_pause(void) {
     for (i = 0; i < WRITERS; i++)
         while (!__atomic_load_n(&g_writer_idle[i], __ATOMIC_SEQ_CST)) sched_yield();
 }
+/* system calls that write guest memory while another thread scans it: the pages plat_ww_open opened stay writable
+   until plat_ww_close, so the kernel's write never meets a page a scan protected again (EFAULT, a short read) */
+static int g_kernel_fd = -1, g_kernel_stop;
+static u64 g_kernel_reads, g_kernel_failed;
+static void* kernel_reader(void* arg) {
+    (void)arg;
+    while (!__atomic_load_n(&g_kernel_stop, __ATOMIC_SEQ_CST)) {
+        u8* at = g_base + 16 * 4096 + (g_kernel_reads % 8) * 4096 + 4000; /* over two pages */
+        plat_ww_open(at, 1000);
+        if (pread(g_kernel_fd, at, 1000, 0) != 1000) g_kernel_failed++;
+        plat_ww_close(at, 1000);
+        g_kernel_reads++;
+    }
+    return NULL;
+}
+static void test_kernel_writes(const char* dir) {
+    static u8 data[1000];
+    char path[1200];
+    pthread_t t;
+    u64 scans = 0;
+    printf("written-page tracking by protection: the kernel's writes against scans\n");
+    snprintf(path, sizeof path, "%s/platform_posix.kernel", dir);
+    g_kernel_fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    CHECK(g_kernel_fd >= 0 && write(g_kernel_fd, data, sizeof data) == (ssize_t)sizeof data, "no file to read");
+    unlink(path);
+    CHECK(!pthread_create(&t, NULL, kernel_reader, NULL), "no reader");
+    while (__atomic_load_n(&g_kernel_reads, __ATOMIC_RELAXED) < 20000) {
+        plat_ww_scan(g_base + 16 * 4096, 16 * 4096, on_seen);
+        scans++;
+    }
+    __atomic_store_n(&g_kernel_stop, 1, __ATOMIC_SEQ_CST);
+    pthread_join(t, NULL);
+    close(g_kernel_fd);
+    CHECK(g_kernel_failed == 0, "a read into opened guest memory failed");
+    printf("  %llu reads, %llu failed, %llu scans\n", (unsigned long long)g_kernel_reads,
+           (unsigned long long)g_kernel_failed, (unsigned long long)scans);
+}
+/* a system call into memory being moved (plat_freeze) waits for the move: opened before it, the kernel would write
+   the old pages, which the move has copied already */
+static int g_open_done;
+static void* frozen_opener(void* arg) {
+    (void)arg;
+    plat_ww_open(g_base + 12 * 4096, 100);
+    __atomic_store_n(&g_open_done, 1, __ATOMIC_SEQ_CST);
+    g_base[12 * 4096] = 7; /* as the kernel's write would */
+    plat_ww_close(g_base + 12 * 4096, 100);
+    return NULL;
+}
+static void test_open_frozen(void) {
+    pthread_t t;
+    printf("written-page tracking by protection: a system call into memory being moved\n");
+    scan();
+    plat_freeze(g_base + 12 * 4096, 2 * 4096);
+    CHECK(!pthread_create(&t, NULL, frozen_opener, NULL), "no opener");
+    plat_sleep_ns(50000000);
+    CHECK(!__atomic_load_n(&g_open_done, __ATOMIC_SEQ_CST), "plat_ww_open did not wait for the thaw");
+    plat_thaw();
+    pthread_join(t, NULL);
+    CHECK(g_open_done && g_base[12 * 4096] == 7, "the write after the thaw did not land");
+    CHECK(scan() == 3ull << 12, "the thawed and written pages were not reported");
+}
+/* a protection change that fails for want of mappings lets every held page go (wp_shed): writable without a fault,
+   written for the next scan, and the budget halved */
+static void test_shed(void) {
+    u64 budget = __atomic_load_n(&g_wp_budget, __ATOMIC_RELAXED);
+    printf("written-page tracking by protection: letting every page go\n");
+    scan();
+    g_base[0] = 1;
+    g_base[2 * 4096] = 1;
+    scan();
+    CHECK(__atomic_load_n(&g_wp_held, __ATOMIC_RELAXED) >= 64, "a scan held no pages");
+    wp_shed();
+    CHECK(__atomic_load_n(&g_wp_held, __ATOMIC_RELAXED) == 0, "pages still held after the shed");
+    CHECK(scan() == ~0ull >> (64 - 64), "the pages let go were not reported written");
+    __atomic_store_n(&g_wp_budget, budget, __ATOMIC_RELAXED); /* as it was, for what follows */
+}
 static void test_protection_tracking(void) {
     static u8 before[32 * 4096];
     pthread_t t[WRITERS];
@@ -187,9 +263,15 @@ static void test_guest_memory(const char* dir) {
             CHECK(read(fd, g_base + 7 * 4096, 10) == -1 && errno == EFAULT, "read() into a protected page worked");
         plat_ww_open(g_base + 7 * 4096, 10);
         CHECK(pread(fd, g_base + 7 * 4096, 10, 0) == 10, "read into guest memory failed");
+        plat_ww_close(g_base + 7 * 4096, 10);
         close(fd);
         CHECK(scan() == 1ull << 7, "a read() into page 7 was not reported");
-        if (g_wp) test_protection_tracking();
+        if (g_wp) {
+            test_protection_tracking();
+            test_kernel_writes(dir);
+            test_open_frozen();
+            test_shed();
+        }
     }
     printf("decommit\n");
     g_base[9 * 4096] = 9;
