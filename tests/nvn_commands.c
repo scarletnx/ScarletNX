@@ -110,7 +110,7 @@ int main(void) {
     check(b.at[1] >= 0x18000 && b.at[3] < 0x19000, "the copy lies in the copying buffer's memory");
     snap = gr64(b.at[1] + 8 + offsetof(NvnPSetRT, color));
     check(snap > b.at[1] && snap < b.at[1] + b.size[1], "the render target's snapshot moved into the copy");
-    check(snap && !memcmp(GP(snap), &t, sizeof t), "the snapshot holds the texture");
+    check(snap && !memcmp(GP(snap), &t, NVN_TEX_SNAP), "the snapshot holds the texture");
     check(snx_ld_le32(GP(b.at[2] + 8 + offsetof(NvnPDraw, first))) == 6, "the draw copied");
     check(gr64(b.at[3] + 8) == gr64(called), "the call still calls the recording where it is");
     if (failures) return 1;

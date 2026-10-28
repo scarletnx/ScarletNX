@@ -218,7 +218,8 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
             NvnTexture t;
             memcpy(&r, GP(payload), sizeof r);
             if (!r.texture) return 1;
-            memcpy(&t, GP(r.texture), sizeof t);
+            memset(&t, 0, sizeof t);
+            memcpy(&t, GP(r.texture), NVN_TEX_SNAP);
             copy_buffer_texture(&r, &t, op == OP_COPY_B2T, stride, NULL);
             return 1;
         }
@@ -227,8 +228,10 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
             NvnTexture s, d;
             memcpy(&r, GP(payload), sizeof r);
             if (!r.src || !r.dst) return 1;
-            memcpy(&s, GP(r.src), sizeof s);
-            memcpy(&d, GP(r.dst), sizeof d);
+            memset(&s, 0, sizeof s);
+            memset(&d, 0, sizeof d);
+            memcpy(&s, GP(r.src), NVN_TEX_SNAP);
+            memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
             copy_texture_texture(&r, &s, &d);
             return 1;
         }

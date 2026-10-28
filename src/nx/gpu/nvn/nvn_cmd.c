@@ -70,8 +70,9 @@ static u64 alloc_keep(CPU* c, u64 cb, u32 size, u32 keep) {
            guest memory for the queue and the replay, and no game has needed it yet */
         if (!o->callback || tries == 2)
             fatal("nvn: command buffer %llx needs %u bytes of command memory, and the game's memory callback (%llx) "
-                  "didn't add them",
-                  (unsigned long long)cb, size + keep, (unsigned long long)o->callback);
+                  "didn't add them (%llu bytes free)",
+                  (unsigned long long)cb, size + keep, (unsigned long long)o->callback,
+                  (unsigned long long)(o->cur ? o->end - o->cur : 0));
         LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
                   (unsigned long long)cb, (unsigned long long)o->callback);
         guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, size + keep,
@@ -284,14 +285,14 @@ void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer
    texture as recorded keeps its address, read at submit */
 #define SNAP_OFF(T) ((sizeof(T) + 7) & ~(size_t)7)
 static u64 tex_snap(u64 payload, size_t off, int k, u64 t) {
-    u64 s = payload + off + (u64)k * sizeof(NvnTexture);
+    u64 s = payload + off + (u64)k * NVN_TEX_SNAP;
     if (!t) return 0;
     if (NVN_OBJ(NvnTexture, t)->magic != NVN_MAGIC('T', 'E', 'X', 0)) {
         LOG_LIMIT(4, "nvn: texture %llx isn't a live texture as a command is recorded: read at submit\n",
                   (unsigned long long)t);
         return t;
     }
-    memcpy(GP(s), GP(t), sizeof(NvnTexture));
+    memcpy(GP(s), GP(t), NVN_TEX_SNAP);
     return s;
 }
 static void copy_view(NvnView* dst, u8* has, u64 v) {
@@ -306,7 +307,7 @@ void nvn_CommandBufferSetRenderTargets(CPU* c, u64 cb, i32 n, u64 colors, u64 vi
         LOG_LIMIT(4, "nvn: nvnCommandBufferSetRenderTargets with %d targets\n", n);
         n = n < 0 ? 0 : 8;
     }
-    payload = rec(c, cb, OP_SET_RT, SNAP_OFF(NvnPSetRT) + (size_t)(n + 1) * sizeof(NvnTexture));
+    payload = rec(c, cb, OP_SET_RT, SNAP_OFF(NvnPSetRT) + (size_t)(n + 1) * NVN_TEX_SNAP);
     r = (NvnPSetRT*)(void*)GP(payload);
     r->count = n;
     for (i = 0; i < n; i++) {
@@ -317,7 +318,7 @@ void nvn_CommandBufferSetRenderTargets(CPU* c, u64 cb, i32 n, u64 colors, u64 vi
     copy_view(&r->dview, &r->has_dview, depth_view);
 }
 void nvn_CommandBufferCopyBufferToTexture(CPU* c, u64 cb, u64 src, u64 t, u64 v, u64 region, i32 flags) {
-    u64 payload = rec(c, cb, OP_COPY_B2T, SNAP_OFF(NvnPCopyB2T) + sizeof(NvnTexture));
+    u64 payload = rec(c, cb, OP_COPY_B2T, SNAP_OFF(NvnPCopyB2T) + NVN_TEX_SNAP);
     NvnPCopyB2T* r = (NvnPCopyB2T*)(void*)GP(payload);
     r->buffer = src;
     r->texture = tex_snap(payload, SNAP_OFF(NvnPCopyB2T), 0, t);
@@ -326,7 +327,7 @@ void nvn_CommandBufferCopyBufferToTexture(CPU* c, u64 cb, u64 src, u64 t, u64 v,
     r->flags = flags;
 }
 void nvn_CommandBufferCopyTextureToBuffer(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 dst, i32 flags) {
-    u64 payload = rec(c, cb, OP_COPY_T2B, SNAP_OFF(NvnPCopyB2T) + sizeof(NvnTexture));
+    u64 payload = rec(c, cb, OP_COPY_T2B, SNAP_OFF(NvnPCopyB2T) + NVN_TEX_SNAP);
     NvnPCopyB2T* r = (NvnPCopyB2T*)(void*)GP(payload);
     r->buffer = dst;
     r->texture = tex_snap(payload, SNAP_OFF(NvnPCopyB2T), 0, t);
@@ -335,7 +336,7 @@ void nvn_CommandBufferCopyTextureToBuffer(CPU* c, u64 cb, u64 t, u64 v, u64 regi
     r->flags = flags;
 }
 static NvnPCopyT2T* copy_t2t(CPU* c, u64 cb, u64 s, u64 sv, u64 d, u64 dv) {
-    u64 payload = rec(c, cb, OP_COPY_T2T, SNAP_OFF(NvnPCopyT2T) + 2 * sizeof(NvnTexture));
+    u64 payload = rec(c, cb, OP_COPY_T2T, SNAP_OFF(NvnPCopyT2T) + 2 * NVN_TEX_SNAP);
     NvnPCopyT2T* r = (NvnPCopyT2T*)(void*)GP(payload);
     r->src = tex_snap(payload, SNAP_OFF(NvnPCopyT2T), 0, s);
     r->dst = tex_snap(payload, SNAP_OFF(NvnPCopyT2T), 1, d);
@@ -371,7 +372,7 @@ void nvn_CommandBufferDownsampleTextureView(CPU* c, u64 cb, u64 s, u64 sv, u64 d
     downsample(c, cb, s, sv, d, dv);
 }
 static void clear_tex(CPU* c, u64 cb, u64 t, u64 v, u64 region, u64 value, i32 mask, u8 is_uint) {
-    u64 payload = rec(c, cb, OP_CLEAR_TEX, SNAP_OFF(NvnPClearTex) + sizeof(NvnTexture));
+    u64 payload = rec(c, cb, OP_CLEAR_TEX, SNAP_OFF(NvnPClearTex) + NVN_TEX_SNAP);
     NvnPClearTex* r = (NvnPClearTex*)(void*)GP(payload);
     r->texture = tex_snap(payload, SNAP_OFF(NvnPClearTex), 0, t);
     copy_view(&r->view, &r->has_view, v);
@@ -992,4 +993,12 @@ void nvn_CommandBufferDrawTransformFeedback(CPU* c, u64 cb, i32 prim, u64 contro
     (void)prim;
     (void)control;
     LOG_LIMIT(1, "nvn: nvnCommandBufferDrawTransformFeedback isn't recorded\n");
+}
+u64 nvn_CommandBufferGetMemoryCallback(CPU* c, u64 cb) {
+    (void)c;
+    return CB(cb)->callback;
+}
+u64 nvn_CommandBufferGetMemoryCallbackData(CPU* c, u64 cb) {
+    (void)c;
+    return CB(cb)->callback_data;
 }

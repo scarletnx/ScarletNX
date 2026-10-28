@@ -253,7 +253,8 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     unsigned th, td;
     memset(s, 0, sizeof *s);
     if (!snapshot) return 0;
-    memcpy(&t, GP(snapshot), sizeof t);
+    memset(&t, 0, sizeof t);
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
     if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
     format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
     s->format = nvn_rt_format(format, depth);
