@@ -57,7 +57,7 @@ static void core_unlink_nl(int k, KThread* t) {
     u32* l = &g_hle.thread.core_wait[k];
     u32 i = kt_ix(t);
     while (*l && *l != i) l = &kt_at(*l)->core_next;
-    if (*l) *l = t->core_next;
+    if (*l) __atomic_store_n(l, t->core_next, __ATOMIC_RELAXED); /* core_yield reads the heads without the lock */
     t->core_next = 0;
     core_rebest_nl(k);
 }
@@ -115,7 +115,7 @@ static void core_wait_nl(KThread* t, int k) {
     t->on_core = -2;
     t->core_ticket = ++g_hle.thread.core_ticket;
     t->core_next = g_hle.thread.core_wait[k];
-    g_hle.thread.core_wait[k] = kt_ix(t);
+    __atomic_store_n(&g_hle.thread.core_wait[k], kt_ix(t), __ATOMIC_RELAXED);
     if (t->prio < g_hle.thread.core_best[k]) g_hle.thread.core_best[k] = t->prio;
     core_flag_nl(k);
     u64 t0 = plat_ns(), waited;
@@ -166,11 +166,15 @@ static void core_pin(KThread* t) {
         len += snprintf(list + len, sizeof list - len, " %d", cpus[i]);
     LOG("kernel: core %d runs on host CPUs%s\n", k, list);
 }
+/* Only t's own thread lets go of a core t holds (another thread hands one only to a thread blocked waiting for it), so
+   a thread that holds one sees it here without the lock: the path of nearly every SVC's entry and exit */
 void core_enter(KThread* t) {
     if (!t || !g_settings.emulated_cores) return;
-    pm_lock(&g_host.thread.core_lk);
-    if (t->on_core < 0) core_take_nl(t);
-    pm_unlock(&g_host.thread.core_lk);
+    if (t->on_core < 0) {
+        pm_lock(&g_host.thread.core_lk);
+        if (t->on_core < 0) core_take_nl(t);
+        pm_unlock(&g_host.thread.core_lk);
+    }
     core_pin(t);
 }
 void core_leave(KThread* t) {
@@ -239,6 +243,10 @@ void core_yield(KThread* t, int migrate) {
         plat_yield();
         return;
     }
+    /* nobody waits for any core: nothing to hand over or take in, so no lock. One that lines up meanwhile has
+       flagged t if it would preempt it, and otherwise comes after this yield, as if it had arrived a moment later */
+    for (k = 0; k < NCORES && !__atomic_load_n(&g_hle.thread.core_wait[k], __ATOMIC_RELAXED); k++) {}
+    if (k == NCORES) return;
     pm_lock(&g_host.thread.core_lk);
     k = t->on_core;
     if (k >= 0 && g_hle.thread.core_wait[k]) {
