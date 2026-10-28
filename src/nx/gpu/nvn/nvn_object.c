@@ -903,11 +903,9 @@ void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
 /* ============================================================ samplers */
 #define SB(b) (&NVN_OBJ(NvnSamplerBuilder, b)->p)
 void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
-    u64 device = NVN_OBJ(NvnSamplerBuilder, b)->device;
     NvnSamplerPar* o = SB(b);
     (void)c;
     memset(GP(b), 0, sizeof(NvnSamplerBuilder));
-    NVN_OBJ(NvnSamplerBuilder, b)->device = device;
     o->min_filter = NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR; /* GL's defaults */
     o->mag_filter = NVN_MAG_FILTER_LINEAR;
     o->wrap_s = o->wrap_t = o->wrap_r = NVN_WRAP_MODE_REPEAT;
@@ -916,9 +914,11 @@ void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
     o->lod_max = 1000.f;
     o->anisotropy = 1.f;
 }
+/* the runtime has one device, which the builder needn't keep: its bytes hold the sampler's state */
 void nvn_SamplerBuilderSetDevice(CPU* c, u64 b, u64 d) {
     (void)c;
-    NVN_OBJ(NvnSamplerBuilder, b)->device = d;
+    (void)b;
+    (void)d;
 }
 void nvn_SamplerBuilderSetMinMagFilter(CPU* c, u64 b, i32 min, i32 mag) {
     (void)c;
@@ -957,6 +957,16 @@ void nvn_SamplerBuilderSetReductionFilter(CPU* c, u64 b, i32 filter) {
 void nvn_SamplerBuilderSetMaxAnisotropy(CPU* c, u64 b, f32 anisotropy) {
     (void)c;
     SB(b)->anisotropy = anisotropy;
+}
+/* the LOD snap, kept for its getter: the hardware's trilinear optimization (TSC word 1, 26-30), which Vulkan's
+   samplers have no counterpart of */
+void nvn_SamplerBuilderSetLodSnap(CPU* c, u64 b, f32 snap) {
+    (void)c;
+    SB(b)->lod_snap = snap;
+}
+f32 nvn_SamplerBuilderGetLodSnap(CPU* c, u64 b) {
+    (void)c;
+    return SB(b)->lod_snap;
 }
 int nvn_SamplerInitialize(CPU* c, u64 s, u64 b) {
     NvnSampler o = {0};
@@ -1018,6 +1028,7 @@ int nvn_SamplerCompare(CPU* c, u64 a, u64 b) {
            x->wrap_t == y->wrap_t && x->wrap_r == y->wrap_r && x->compare_mode == y->compare_mode &&
            x->compare_func == y->compare_func && x->reduction == y->reduction && x->lod_min == y->lod_min &&
            x->lod_max == y->lod_max && x->lod_bias == y->lod_bias && x->anisotropy == y->anisotropy &&
+           x->lod_snap == y->lod_snap &&
            !memcmp(x->border, y->border, sizeof x->border);
 }
 void nvn_SamplerFinalize(CPU* c, u64 s) {

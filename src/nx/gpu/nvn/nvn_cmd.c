@@ -572,6 +572,15 @@ void nvn_CommandBufferDiscardDepthStencil(CPU* c, u64 cb) {
     (void)c;
     (void)cb;
 }
+/* ZCull's stencil criteria: what the hardware's coarse culling may assume of the stencil test, which only speeds it
+   up. The renderer has no ZCull, so the draws' tests give the same pixels without it */
+void nvn_CommandBufferSetStencilCullCriteria(CPU* c, u64 cb, i32 func, i32 ref, i32 mask) {
+    (void)c;
+    (void)cb;
+    (void)func;
+    (void)ref;
+    (void)mask;
+}
 void nvn_CommandBufferSaveZCullData(CPU* c, u64 cb, u64 address, u64 size) {
     (void)c;
     (void)cb;
