@@ -22,5 +22,8 @@ int nvn_program_xfb(u64 serial, ShXfb* x);
 /* the game's driver resolved nvnDeviceGetInteger to func: its answers are read from its code (gpu/nvn/nvn_driver.c)
    before the game can ask */
 void nvn_device_driver(u64 func);
+/* the NVN API version the game's driver answers (nvn_api_pack), 0 until nvn_device_driver read it from the driver's
+   code, or when it couldn't */
+u32 nvn_device_api(void);
 
 #endif
