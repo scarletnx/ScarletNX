@@ -7,6 +7,7 @@
 #include "gui_screen.h"
 #include "common/cpu/aarch64/cpu.h" /* SNX_ABI, which a save state names */
 #include <assert.h>
+#include <miniz.h> /* Share Log's zip, read back */
 #ifdef _WIN32
 #include "win32_crash.h"
 #include <windows.h> /* the queue's recompile's priority class */
@@ -26,6 +27,41 @@ static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255
                        pink = {255, 85, 255, 255}, black = {0, 0, 0, 255};
 
 /* the question's box and its choices, as the theme places them (ask_place) */
+/* the zip Share Log's message names ("Logs saved to <path>", " (path copied)" after it or not), owned; NULL for none */
+static char* shared_path(const App* app) {
+    const char *at = strstr(app->message, "Logs saved to "), *end;
+    if (at != app->message) return NULL;
+    at += 14;
+    end = strstr(at, " (path copied)");
+    return snx_format("%.*s", (int)(end ? (size_t)(end - at) : strlen(at)), at);
+}
+/* the file named name of the zip at path, as text, owned; NULL when it has none */
+static char* zip_text(const char* path, const char* name) {
+    size_t size = 0, n = 0;
+    unsigned char* bytes = path ? snx_read_file(path, &size) : NULL;
+    mz_zip_archive zip;
+    char *data = NULL, *text = NULL;
+    mz_zip_zero_struct(&zip);
+    if (bytes && mz_zip_reader_init_mem(&zip, bytes, size, 0)) {
+        data = (char*)mz_zip_reader_extract_file_to_heap(&zip, name, &n, 0);
+        mz_zip_reader_end(&zip);
+    }
+    if (data) text = snx_format("%.*s", (int)n, data);
+    mz_free(data);
+    free(bytes);
+    return text;
+}
+/* whether folder holds a file of path's name: the zip went there, not only to where path is */
+static bool leaf_in(const char* path, const char* folder) {
+    const char* leaf = path + strlen(path);
+    char* there;
+    bool found;
+    while (leaf > path && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+    there = snx_path_join(folder, leaf);
+    found = snx_path_exists(there);
+    free(there);
+    return found;
+}
 /* the launcher's log of today in folder (gui_log_console_name), owned */
 static char* console_in(const char* folder) {
     char name[64];
@@ -2766,18 +2802,24 @@ static void recompile_queue(App* app) {
     {
         size_t size;
         char *log = (char*)snx_read_file(app->job_log, &size), *shared;
-        const char *at, *end;
         assert(log && strstr(log, "queue game one") && strstr(log, "queue game two") &&
                strstr(log, "queue game fails") && strstr(log, "[ended, status 3]"));
         free(log);
         share_log(app);
-        assert((at = strstr(app->message, "Log saved to ")) != NULL);
-        at += 13;
-        end = strstr(at, " (path copied)");
-        shared = snx_format("%.*s", (int)(end ? (size_t)(end - at) : strlen(at)), at);
-        log = (char*)snx_read_file(shared, &size);
+        shared = shared_path(app);
+        log = zip_text(shared, "summary.txt");
         snprintf(line, sizeof line, "== the last recompile of the queue: %s ==", app->job_log);
         assert(log && strstr(log, line) && strstr(log, "[ended, status 3]") && !app->log_due);
+        free(log);
+        { /* the queue's own log in the zip too, whole, with the launcher's */
+            const char* leaf = app->job_log + strlen(app->job_log);
+            char* name;
+            while (leaf > app->job_log && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+            name = snx_format("launcher/%s", leaf);
+            log = zip_text(shared, name);
+            assert(log && strstr(log, "queue game fails") && strstr(log, "[ended, status 3]"));
+            free(name);
+        }
         app->log_due = true; /* for the checks below */
         free(log);
         free(shared);
@@ -10307,11 +10349,11 @@ int main(int argc, char** argv) {
         app.browser = (GuiBrowser){0};
         app.theme = *gui_theme_builtin("default");
     }
-    /* Share Log off Android: scarletnx.log with the message and the last run's output, in the state folder of a data
-       folder that keeps its kinds apart, else in the working folder */
+    /* Share Log off Android: scarletnx-logs-<when>.zip, its summary.txt with the message and the last run's output, in
+       the state folder of a data folder that keeps its kinds apart, else in the working folder */
     {
-        char *saved = snx_path_join(temporary, "scarletnx.log"), *installed_dir = app.data_dir;
-        char *portable = snx_path_join(temporary, ".scarletnx"), *kept = snx_path_join(portable, "state/scarletnx.log");
+        char *installed_dir = app.data_dir, *portable = snx_path_join(temporary, ".scarletnx");
+        char *kept = snx_path_join(portable, "state"), *zip;
         size_t size = 0;
         char* text;
         SDL_free(app.cwd);
@@ -10321,13 +10363,15 @@ int main(int argc, char** argv) {
 #ifdef SNX_XDG
         /* an installed build's in its state folder, as the working folder is the home folder from the desktop */
         {
-            char *state = snx_path_join(temporary, "state"), *logged = snx_path_join(state, "scarletnx/scarletnx.log");
+            char *state = snx_path_join(temporary, "state"), *logged = snx_path_join(state, "scarletnx");
             set_env("XDG_STATE_HOME", state);
             key(&app, SDLK_RETURN);
-            assert(strstr(app.message, logged) && !snx_path_exists(saved));
-            text = (char*)snx_read_file(logged, &size);
+            zip = shared_path(&app);
+            assert(zip && snx_path_within(zip, logged) && !leaf_in(zip, temporary));
+            text = zip_text(zip, "summary.txt");
             assert(text && strstr(text, "Message: before the log"));
             free(text);
+            free(zip);
             free(logged);
             free(state);
         }
@@ -10336,10 +10380,12 @@ int main(int argc, char** argv) {
         app.data_dir = snx_strdup(portable);
         snprintf(app.message, sizeof(app.message), "before the log");
         key(&app, SDLK_RETURN);
-        assert(strstr(app.message, "scarletnx.log") && snx_is_file(kept) && !snx_path_exists(saved));
-        text = (char*)snx_read_file(kept, &size);
+        zip = shared_path(&app);
+        assert(zip && snx_path_within(zip, kept) && snx_is_file(zip) && !leaf_in(zip, temporary));
+        text = zip_text(zip, "summary.txt");
         assert(text && strstr(text, "Message: before the log"));
         free(text);
+        free(zip);
         /* any other build's (a checkout) in the working folder, with the newest game log's summary at its top: how the
            run ended, demangled, before the run's output and the log itself */
         free(app.data_dir);
@@ -10374,8 +10420,27 @@ int main(int argc, char** argv) {
             assert(!snx_mkdirs(game) && !snx_write_file(log, crashed, sizeof crashed - 1));
             snprintf(app.message, sizeof(app.message), "before the log");
             key(&app, SDLK_RETURN);
-            assert(!strncmp(app.message, "Log saved to ", 13) && strstr(app.message, "scarletnx.log"));
-            text = (char*)snx_read_file(saved, &size);
+            zip = shared_path(&app);
+            assert(zip && snx_path_within(zip, temporary) && snx_is_file(zip));
+            { /* beside the summary: the launcher's logs whole, and the game's log under its game and its date */
+                char stamp[32], *name, *inside;
+                inside = zip_text(zip, "launcher/" SNX_ERROR_LOG);
+                assert(inside && strstr(inside, "] a fatal error the log keeps\n"));
+                free(inside);
+                name = snx_format("launcher/%s", console + strlen(logs) + 1);
+                inside = zip_text(zip, name);
+                assert(inside && strstr(inside, "] a failure the log keeps\n"));
+                free(inside);
+                free(name);
+                log_stamp(snx_file_time(log), stamp, sizeof stamp);
+                name = snx_format("games/Some Game/%s.log", stamp);
+                inside = zip_text(zip, name);
+                assert(inside && strstr(inside, "*** The game called svcBreak (reason 0"));
+                free(inside);
+                free(name);
+            }
+            text = zip_text(zip, "summary.txt");
+            free(zip);
             assert(text && strstr(text, "Message: before the log") && strstr(text, "== the last run: "));
             mine = snx_format("== the launcher's log: %s ==\n", console);
             assert((line = strstr(text, mine)) && strstr(line, "] a failure the log keeps\n") &&
@@ -10404,11 +10469,13 @@ int main(int argc, char** argv) {
         }
         /* a working folder that is gone: the file it was to be and the system's reason */
         {
-            char *cwd = app.cwd, *gone = snx_path_join(temporary, "gone"), *log = snx_path_join(gone, "scarletnx.log");
-            char* said = snx_format("The log could not be saved to %s: ", log);
+            char *cwd = app.cwd, *gone = snx_path_join(temporary, "gone"),
+                 *log = snx_path_join(gone, "scarletnx-logs-");
+            char* said = snx_format("The logs could not be saved: %s", log);
             app.cwd = gone;
             key(&app, SDLK_RETURN);
-            assert(!strncmp(app.message, said, strlen(said)) && app.message[strlen(said)] && !snx_path_exists(log));
+            assert(!strncmp(app.message, said, strlen(said)) && strstr(app.message, ".zip could not be written: ") &&
+                   !snx_path_exists(gone));
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, app.message));
             key(&app, SDLK_RETURN); /* in the box too, whole, until OK */
             app.cwd = cwd;
@@ -10421,7 +10488,6 @@ int main(int argc, char** argv) {
         assert(!snx_remove_tree(portable));
         free(kept);
         free(portable);
-        free(saved);
     }
     /* two launchers open on one Logs folder: the first holds last-run.log and last-recompile.log, the next takes
        last-run-2.log and last-recompile-2.log, its log saying so; the first gone, the pair is free again (#675) */
@@ -10554,9 +10620,9 @@ int main(int argc, char** argv) {
                (UI_ATTR_FAILURE | UI_ATTR_BLINK));
         share_log(&app);
         assert(!app.log_due && !(ui_menu_entries_attr_cb(&app, GUI_LOG) & UI_ATTR_FAILURE));
-        path = snx_path_join(state, "scarletnx.log");
-        text = (char*)snx_read_file(path, &size);
-        assert(text && strstr(text, SAY_LEFT_CLEAR "\n"));
+        path = shared_path(&app);
+        text = zip_text(path, "summary.txt");
+        assert(path && snx_path_within(path, state) && text && strstr(text, SAY_LEFT_CLEAR "\n"));
         free(text);
         free(path);
         /* every older file where it was, as it was */

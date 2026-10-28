@@ -168,6 +168,9 @@ const SnxLogSym* snx_logscan_function(const SnxLogScan* s);
    demangle may be NULL */
 char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle);
 char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* heading, int brief, SnxDemangle demangle);
+/* the n bytes of text with each home folder's part as ~, as a report writes it (/home/<user>, C:\Users\<user>, Android's
+   /data/user/<n>/<package>...), allocated and ended by a 0, its length in *size; NULL out of memory */
+char* snx_logscan_tilde(const char* text, size_t n, size_t* size);
 /* scarletnx --scan-log: LOG... (- for stdin) [--format json|markdown] [--name NAME], a JSON object a line or a summary
    a log, NAME the markdown's title for a log without a title line (its path otherwise). argv[0] is the command's name */
 int snx_logscan_main(int argc, char** argv, SnxDemangle demangle);

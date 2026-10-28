@@ -275,9 +275,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   which it took. A language written in two scripts goes by its script, written or implied by its country (`zh-CN`,
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
-- **Share Log** saves the last run's output, the queue's recompiles' (`last-recompile.log`), the launcher's own log
-  and its fatal errors (below) and the game log to `scarletnx.log`. After a run or a recompile of the queue that ended abnormally (not by ESC) it blinks red, as
-  Install Keys does, until its log is saved or a run ends well. On the
+- **Share Log** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
+  the newest game log's summary, the last run's output, the queue's recompiles' (`last-recompile.log`), the launcher's
+  own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
+  games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
+  written; in every file a home folder is written `~`. After a run or a recompile of the queue that ended abnormally
+  (not by ESC) it blinks red, as Install Keys does, until its logs are saved or a run ends well. On the
   desktop it goes in the working folder with its path copied. On Android it goes to the
   data folder's `state/` and is shared.
 - **Open Data Folder**, on Android, opens the data folder, the app's own storage, in the

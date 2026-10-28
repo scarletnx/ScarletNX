@@ -245,6 +245,23 @@ static unsigned add_c(SnxLogScan* s, const char* text) { return add(s, cstr(text
 
 const char* snx_logscan_text(const SnxLogScan* s, unsigned at) { return at && s->pool ? s->pool + at : ""; }
 
+char* snx_logscan_tilde(const char* text, size_t n, size_t* size) {
+    char* out = (char*)malloc(n + 1); /* a home becomes one byte: never longer */
+    size_t i = 0, o = 0, home;
+    if (!out) return NULL;
+    while (i < n) {
+        home = home_at(span(text + i, n - i));
+        if (home) {
+            out[o++] = '~';
+            i += home;
+        } else
+            out[o++] = text[i++];
+    }
+    out[o] = 0;
+    *size = o;
+    return out;
+}
+
 /* ============================================================ lines */
 /* "<name+off>": the function or module and the offset after the last + when that is hex */
 static SnxLogSym symbol(SnxLogScan* s, Span text) {

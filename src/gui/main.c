@@ -22,6 +22,7 @@
 #include "gui/icons.h"
 #include "gui/latin.h"
 #include "gui/log.h"
+#include "gui/logzip.h"
 #include "gui/wide.h"
 #include "gui/model.h"
 #include "gui/place.h"
@@ -58,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 /* the checkout the drivers were built from and its build tree, where an older version kept games/ and work/ */
 #ifdef SNX_SOURCE_DIR
 #define GUI_CHECKOUT SNX_SOURCE_DIR
@@ -12425,9 +12427,130 @@ static char* log_summary(const char* path) {
     free(markdown);
     return out;
 }
+/* Share Log's files, each a path and the name it takes in the zip, both owned */
+typedef struct {
+    GuiZipFile* files;
+    size_t count, cap;
+} LogFiles;
+static void log_files_add(LogFiles* l, char* path, char* name) {
+    if (l->count == l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 32;
+        l->files = (GuiZipFile*)snx_realloc(l->files, l->cap * sizeof *l->files);
+    }
+    l->files[l->count++] = (GuiZipFile){path, name};
+}
+static void log_files_free(LogFiles* l) {
+    for (size_t i = 0; i < l->count; ++i) {
+        free((char*)l->files[i].path);
+        free((char*)l->files[i].name);
+    }
+    free(l->files);
+}
+static bool named_log(const char* name, const char* prefix) {
+    size_t n = strlen(name), k = strlen(prefix);
+    return n > k + 3 && !strncmp(name, prefix, k) && !strcmp(name + n - 4, ".log");
+}
+/* the launcher's logs in folder, under launcher/: its log a day and the older versions' one, its fatal errors, and the
+   last run's and recompile's of each launcher open */
+static void launcher_logs(LogFiles* l, const char* folder) {
+    char** names = NULL;
+    size_t count = 0, i;
+    if (!folder || snx_list_dir(folder, &names, &count)) return;
+    for (i = 0; i < count; ++i)
+        if (named_log(names[i], "scarletnx-console") || !strcmp(names[i], SNX_ERROR_LOG) ||
+            named_log(names[i], "last-run") || named_log(names[i], "last-recompile"))
+            log_files_add(l, snx_path_join(folder, names[i]), snx_format("launcher/%s", names[i]));
+    snx_free_strings(names, count);
+}
+/* path under launcher/ unless it is there already, when it is a file */
+static void launcher_log(LogFiles* l, const char* path) {
+    const char* leaf;
+    if (!path || !snx_is_file(path)) return;
+    for (size_t i = 0; i < l->count; ++i)
+        if (!strcmp(l->files[i].path, path)) return;
+    for (leaf = path + strlen(path); leaf > path && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
+    log_files_add(l, snx_strdup(path), snx_format("launcher/%s", leaf));
+}
+/* folder, a game's in the state folder, as the zip names it: as Games shows the game, with the folder after it in
+   brackets (its title ID, or the name its recompile gave it), the letters a zip's folder cannot take as _ */
+static char* zip_game_label(const App* app, const char* folder) {
+    const char* shown = NULL;
+    char *label, *c;
+    for (size_t i = 0; i < app->games.count && !shown; ++i) {
+        char* dir = app->games.paths[i] ? snx_dirname(app->games.paths[i]) : NULL;
+        const char* leaf = dir ? dir + strlen(dir) : NULL;
+        while (leaf && leaf > dir && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
+        if (leaf && !strcmp(leaf, folder) && app->games.shown[i] && strcmp(app->games.shown[i], folder))
+            shown = app->games.shown[i];
+        free(dir);
+    }
+    label = shown ? snx_format("%s [%s]", shown, folder) : snx_strdup(folder);
+    for (c = label; *c; ++c)
+        if ((unsigned char)*c < 0x20 || strchr("/\\:*?\"<>|", *c)) *c = '_';
+    return label;
+}
+/* when path was last written, as a run's log is named: 2026-10-28_14-05-33 */
+static void log_stamp(SnxU64 when, char* out, size_t size) {
+    time_t t = (time_t)when;
+    struct tm tm;
+    out[0] = 0;
+#ifdef _WIN32
+    if (!localtime_s(&tm, &t)) strftime(out, size, "%Y-%m-%d_%H-%M-%S", &tm);
+#else
+    if (localtime_r(&t, &tm)) strftime(out, size, "%Y-%m-%d_%H-%M-%S", &tm);
+#endif
+}
+/* the games' logs written in the last GUI_LOG_DAYS days, under games/<zip_game_label>/: each game's of this run by when
+   it was last written, as it is named once the next run moves it into logs/, and its runs before in logs/; an older
+   version's games/<game>.log under its name */
+static void games_logs(const App* app, LogFiles* l) {
+    char *state = snx_user_path(app->games_dir, SNX_USER_STATE), **names = NULL, stamp[32];
+    size_t count = 0, i, j;
+    SnxU64 since = (SnxU64)time(NULL) - (SnxU64)GUI_LOG_DAYS * 86400;
+    if (!state || snx_list_dir(state, &names, &count)) {
+        free(state);
+        return;
+    }
+    for (i = 0; i < count; ++i) {
+        char *path = snx_path_join(state, names[i]), *own, *log, *runs, *label, **old = NULL;
+        size_t olds = 0;
+        if (!snx_is_dir(path)) {
+            if (named_log(names[i], "") && snx_file_time(path) >= since)
+                log_files_add(l, path, snx_format("games/%s", names[i]));
+            else
+                free(path);
+            continue;
+        }
+        label = zip_game_label(app, names[i]);
+        own = snx_format("%s.log", names[i]);
+        log = snx_path_join(path, own);
+        if (snx_file_time(log) >= since) {
+            log_stamp(snx_file_time(log), stamp, sizeof stamp);
+            log_files_add(l, log, snx_format("games/%s/%s.log", label, stamp));
+        } else
+            free(log);
+        runs = snx_path_join(path, "logs");
+        if (!snx_list_dir(runs, &old, &olds))
+            for (j = 0; j < olds; ++j) {
+                char* run = snx_path_join(runs, old[j]);
+                if (named_log(old[j], "") && snx_file_time(run) >= since)
+                    log_files_add(l, run, snx_format("games/%s/%s", label, old[j]));
+                else
+                    free(run);
+            }
+        snx_free_strings(old, olds);
+        free(runs);
+        free(own);
+        free(label);
+        free(path);
+    }
+    snx_free_strings(names, count);
+    free(state);
+}
 /* the message on the screen, the summary of the newest game log, the last run's output, the launcher's own log and its
-   fatal errors, and that game log, as scarletnx.log in the data folder's state folder (the working folder without one:
-   started from the desktop, that is the home folder), then on Android handed to the share sheet, elsewhere its path
+   fatal errors, and that game log, as summary.txt of scarletnx-logs-<when>.zip in the data folder's state folder (the
+   working folder without one: started from the desktop, that is the home folder), beside the launcher's logs and the
+   games' of the last GUI_LOG_DAYS days (gui/logzip.h); then on Android handed to the share sheet, elsewhere its path
    copied */
 static void share_log(App* app) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved, *state = NULL;
@@ -12458,30 +12581,51 @@ static void share_log(App* app) {
         app->cleaned.count ? "Clean Old Settings:\n" : "", app->cleaned.text ? app->cleaned.text : "", summary,
         app->run_log ? app->run_log : "", run, app->job_log ? app->job_log : "", recompiled,
         console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, game ? game : "no game log", played);
-    saved = folder ? snx_path_join(folder, "scarletnx.log") : NULL;
-    written = saved && !snx_write_file(saved, text, strlen(text));
-    if (written) app->log_due = false; /* the crash's log is out */
-    if (!saved) {
-        snprintf(app->message, sizeof(app->message), "%s", snx_tr("The log could not be saved: no working folder"));
-        say_failure(app, app->message);
-    } else if (!written) {
-        char why[256];
-        snprintf(app->message, sizeof(app->message), snx_tr("The log could not be saved to %s: %s"), saved,
-                 snx_os_error(why, sizeof why));
-        say_failure(app, app->message);
+    {
+        char stamp[32], *zip_name, error[sizeof app->message], *at[3];
+        LogFiles files = {0};
+        /* the launcher's log's folder, and the run logs' wherever they are kept apart */
+        at[0] = console[0] ? snx_dirname(console) : NULL;
+        at[1] = app->run_log ? snx_dirname(app->run_log) : NULL;
+        at[2] = app->job_log ? snx_dirname(app->job_log) : NULL;
+        for (int k = 0; k < 3; ++k) {
+            bool seen = false;
+            for (int j = 0; j < k && !seen; ++j) seen = at[j] && at[k] && !strcmp(at[j], at[k]);
+            if (at[k] && !seen) launcher_logs(&files, at[k]);
+        }
+        launcher_log(&files, app->run_log); /* this launcher's two, whatever their names */
+        launcher_log(&files, app->job_log);
+        games_logs(app, &files);
+        log_stamp((SnxU64)time(NULL), stamp, sizeof stamp);
+        zip_name = snx_format("scarletnx-logs-%s.zip", stamp);
+        saved = folder ? snx_path_join(folder, zip_name) : NULL;
+        written = saved && !gui_logs_zip(saved, text, files.files, files.count, error, sizeof error);
+        if (saved && !written) {
+            snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), error);
+            say_failure(app, app->message);
+        }
+        log_files_free(&files);
+        free(zip_name);
+        for (int k = 0; k < 3; ++k) free(at[k]);
     }
+    if (!saved) {
+        snprintf(app->message, sizeof(app->message), "%s", snx_tr("The logs could not be saved: no working folder"));
+        say_failure(app, app->message);
+    } else if (written) {
+        app->log_due = false; /* the crash's log is out */
 #ifdef SDL_PLATFORM_ANDROID
-    else if (gui_android_share(saved, app->message, sizeof(app->message)))
-        snprintf(app->message, sizeof(app->message), snx_tr("Log saved to %s"), saved);
+        if (gui_android_share(saved, app->message, sizeof(app->message)))
+            snprintf(app->message, sizeof(app->message), snx_tr("Logs saved to %s"), saved);
 #elif defined(SDL_PLATFORM_APPLE)
-    else if (gui_apple_share(app->window, saved, app->message, sizeof(app->message)))
-        snprintf(app->message, sizeof(app->message), snx_tr("Log saved to %s"), saved);
+        if (gui_apple_share(app->window, saved, app->message, sizeof(app->message)))
+            snprintf(app->message, sizeof(app->message), snx_tr("Logs saved to %s"), saved);
 #else
-    else if (SDL_SetClipboardText(saved))
-        snprintf(app->message, sizeof(app->message), snx_tr("Log saved to %s (path copied)"), saved);
-    else
-        snprintf(app->message, sizeof(app->message), snx_tr("Log saved to %s"), saved);
+        if (SDL_SetClipboardText(saved))
+            snprintf(app->message, sizeof(app->message), snx_tr("Logs saved to %s (path copied)"), saved);
+        else
+            snprintf(app->message, sizeof(app->message), snx_tr("Logs saved to %s"), saved);
 #endif
+    }
     free(saved);
     free(text);
     free(summary);

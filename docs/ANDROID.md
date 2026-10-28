@@ -51,8 +51,8 @@ recompiles on the phone, then the game opens.
   its window is made anew when it comes back.
 - **Share Log**, in the menu, saves the message on the screen, the last run's output (`last-run.log`, which the
   menu keeps on every system), the menu's own log and fatal errors (`scarletnx-console-<date>.log`, `scarletnx-error.log`,
-  [GUI](GUI.md)) and the newest game log to `scarletnx.log` in the data folder's `state/`, then opens the share sheet
-  with that file.
+  [GUI](GUI.md)) and the newest game log as `summary.txt` of `scarletnx-logs-<date>.zip` in the data folder's
+  `state/`, the logs themselves beside it, then opens the share sheet with that zip.
 
 The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
 the code of the device it runs on. It installs from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without

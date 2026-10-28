@@ -3324,22 +3324,22 @@ msgid "Drop one local file path, not a list or remote URL."
 msgstr ""
 
 #: src/gui/main.c
-msgid "The log could not be saved: no working folder"
+#, c-format
+msgid "The logs could not be saved: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The logs could not be saved: no working folder"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The log could not be saved to %s: %s"
+msgid "Logs saved to %s"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Log saved to %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Log saved to %s (path copied)"
+msgid "Logs saved to %s (path copied)"
 msgstr ""
 
 #: src/gui/main.c
