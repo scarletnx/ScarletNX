@@ -218,6 +218,51 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
     return 0;
 }
 
+/* The highest index a draw reads (render.c's draw_last_vertex) bounds its streams' ranges, and is kept for an index
+   range until the range's memory changes. In a stream of 512 vertices, 0 to 3 a red quad and 508 to 511 a green one,
+   indices of the red quad bound the range to its first 4 KiB. The same indices rewritten to the green quad's must
+   bound it again: a kept bound of 3 leaves vertices 508 to 511 past the range, which strict bounds read as zeros */
+static int index_bound_cases(GpuChannel* channel, u64 target, u64 indices, u64 positions, u64 colors) {
+    const float corner[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
+    u32* r = channel->r3d;
+    u8 bytes[16];
+    for (u32 v = 0; v < 512; v++) {
+        int green = v >= 508;
+        const float p[4] = {corner[(v & 3) * 2], corner[(v & 3) * 2 + 1], 0, 1};
+        const float c[4] = {green ? 0.0f : 1.0f, green ? 1.0f : 0.0f, 0, 1};
+        if (v >= 4 && !green) continue;
+        for (u32 k = 0; k < 2; k++) {
+            for (u32 i = 0; i < 4; i++) {
+                u32 word;
+                memcpy(&word, k ? c + i : p + i, 4);
+                snx_st_le32(bytes + i * 4, word);
+            }
+            CHECK(!gmem_write((k ? colors : positions) + v * 16, bytes, 16));
+        }
+    }
+    for (u32 stream = 0; stream < 2; stream++) {
+        u64 source = stream ? colors : positions;
+        r[0x701 + stream * 4] = (u32)(source >> 32);
+        r[0x702 + stream * 4] = (u32)source;
+        r[0x7c0 + stream * 2] = (u32)((source + 512 * 16 - 1) >> 32);
+        r[0x7c1 + stream * 2] = (u32)(source + 512 * 16 - 1);
+    }
+    const u32 red[4] = {0, 1, 2, 3}, green[4] = {508, 509, 510, 511};
+    DrawCall call = {.topology = 7, .indexed = 1, .count = 4, .instances = 1};
+    IndexPixels px;
+    for (u32 isz = 2; isz <= 4; isz *= 2) {
+        CHECK(!index_buffer(channel, indices, red, 4, isz, ~0u));
+        CHECK(!index_draw(channel, target, &call, &px));
+        CHECK(px.red == 16);
+        CHECK(!index_buffer(channel, indices, green, 4, isz, ~0u));
+        CHECK(!index_draw(channel, target, &call, &px));
+        if (g_vk.has_vertex_robustness2 && !index_all_green(&px))
+            fprintf(stderr, "rewritten %u byte indices: %u green, %u blue, %u red\n", isz, px.green, px.blue, px.red);
+        CHECK(!g_vk.has_vertex_robustness2 || index_all_green(&px));
+    }
+    return 0;
+}
+
 static int check_index_draws(void) {
     const u64 address = 0x478000000ull, cpu = HEAP_BASE + 0x7A0000;
     const u64 positions = address + 0x12000, colors = address + 0x13000, indices = address + 0x14000,
@@ -282,7 +327,9 @@ static int check_index_draws(void) {
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
-    printf("index draws: quads, widened and native 8-bit indices and restart indices checked (8-bit indices %s)\n",
+    CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
+    printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
+           "(8-bit indices %s)\n",
            had8 ? "native" : "unavailable");
     free(channel);
     return 0;
