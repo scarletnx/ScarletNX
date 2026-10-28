@@ -241,8 +241,10 @@ NVN_FITS(NvnWindow, 0x148);
 /* ---- command buffers ---- */
 /* cur, end: the current command memory segment (guest addresses). begin: the recording's first record, its handle.
    recording: 0 no, 1 yes, 2 yes with no record yet. used: bytes written since the game last added command memory, the
-   segments' JUMPs included (GetCommandMemoryUsed). +0x10 is the game's: its inlined NVN code writes the byte 1 there
-   after AddCommandMemory (an internal flag of the driver's) */
+   segments' JUMPs included (GetCommandMemoryUsed). lent: the current segment is the runtime's (nvn_cmd.c's lend), not
+   the game's, and takes nothing of used; origin: where the memory the game last added starts, which the segments lent
+   after it go back with. +0x10 is the game's: its inlined NVN code writes the byte 1 there after AddCommandMemory (an
+   internal flag of the driver's) */
 typedef struct {
     u32 magic, recording;
     u64 cur;
@@ -250,6 +252,8 @@ typedef struct {
     u64 end, begin;
     u64 callback, callback_data;
     u64 device, used;
+    u32 lent, pad;
+    u64 origin;
 } NvnCmdBuf;
 NVN_FITS(NvnCmdBuf, 0x90);
 typedef char nvn_check_cmd_flag[offsetof(NvnCmdBuf, game_flag10) == 0x10 ? 1 : -1];

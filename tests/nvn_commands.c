@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's command buffers (gpu/nvn/nvn_cmd.c): recordings across command memory segments, and
-   nvnCommandBufferCopyCommands, which copies a recording's records into another command buffer so the game can take the
-   source's memory back at once: the copy follows the source's JUMPs, keeps its CALLs, and moves the texture snapshots
-   a record carries to its own copy. The records are walked here as the replay walks them (gpu/nvn/nvn_replay.c) */
+/* nvn_direct's command buffers (gpu/nvn/nvn_cmd.c): recordings across command memory segments, the runtime's memory
+   lent when the game's runs out, and nvnCommandBufferCopyCommands, which copies a recording's records into another
+   command buffer so the game can take the source's memory back at once: the copy follows the source's JUMPs, keeps its
+   CALLs, and moves the texture snapshots a record carries to its own copy. The records are walked here as the replay
+   walks them (gpu/nvn/nvn_replay.c) */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "common/filesystem/host.h" /* PMutex */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +19,17 @@ u8* g_mem = memory; /* guest address a is memory + a */
 /* the one pool: command memory from 0x10000 on */
 u64 nvn_pool_memory(u64 pool) { return pool ? 0x10000 : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? 0x10000 : 0; }
+/* the runtime's own memory a command buffer is lent: from 0x80000 on */
+static u64 g_lent = 0x80000;
+u64 kmem_alloc(u64 size, u32 state, u32 perm) {
+    u64 at = g_lent;
+    (void)state;
+    (void)perm;
+    g_lent += size;
+    return at;
+}
+void pm_lock(PMutex* m) { (void)m; }
+void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;
     (void)fmt;
@@ -113,6 +126,31 @@ int main(void) {
     check(snap && !memcmp(GP(snap), &t, NVN_TEX_SNAP), "the snapshot holds the texture");
     check(snx_ld_le32(GP(b.at[2] + 8 + offsetof(NvnPDraw, first))) == 6, "the draw copied");
     check(gr64(b.at[3] + 8) == gr64(called), "the call still calls the recording where it is");
+    /* a command buffer whose memory runs out with no callback to add more (one game's is a bare ret): the recording
+       goes on in memory lent to it, which counts nothing of the game's used bytes */
+    {
+        const u64 cb3 = 0x500;
+        u64 h3;
+        nvn_CommandBufferInitialize(&cpu, cb3, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cb3, 1, 0x3000, 0x60);
+        nvn_CommandBufferBeginRecording(&cpu, cb3);
+        for (int i = 0; i < 6; i++) nvn_CommandBufferDrawArrays(&cpu, cb3, 4, i, 3);
+        h3 = nvn_CommandBufferEndRecording(&cpu, cb3);
+        walk(h3, &a);
+        check(a.n == 6 && a.op[5] == OP_DRAW && snx_ld_le32(GP(a.at[5] + 8 + offsetof(NvnPDraw, first))) == 5,
+              "the recording goes on past the game's memory");
+        check(a.at[0] >= 0x13000 && a.at[0] < 0x13060 && a.at[5] >= 0x80000, "its last records are in lent memory");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb3) <= 0x60, "lent bytes count nothing of used");
+        /* the game adds the same memory again for its next recording: what was lent after it comes back, and the next
+           overflow takes it again rather than more */
+        u64 lent_at = a.at[5] & ~0xffffull, top = g_lent;
+        nvn_CommandBufferAddCommandMemory(&cpu, cb3, 1, 0x3000, 0x60);
+        nvn_CommandBufferBeginRecording(&cpu, cb3);
+        for (int i = 0; i < 6; i++) nvn_CommandBufferDrawArrays(&cpu, cb3, 4, i, 3);
+        h3 = nvn_CommandBufferEndRecording(&cpu, cb3);
+        walk(h3, &a);
+        check(a.n == 6 && (a.at[5] & ~0xffffull) == lent_at && g_lent == top, "the lent memory is taken again");
+    }
     if (failures) return 1;
     puts("nvn_commands: ok");
     return 0;
