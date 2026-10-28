@@ -365,9 +365,8 @@ static void acquire(NvnWindow* o, NvnSync* s, u64 index) {
     o->next = o->count ? (i + 1) % o->count : 0;
     gw32(index, (u32)i);
     if (i < 4) {
-        u64 now;
         slot_wait(o, i);
-        now = plat_ns();
+        u64 now = plat_ns();
         o->released[i] = o->available[i] > now ? o->available[i] : now;
         fence_at(s, o->syncpt[i], o->value[i], o->on_display[1], o->available[i]);
     } else
