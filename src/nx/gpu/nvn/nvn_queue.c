@@ -469,3 +469,10 @@ void nvn_WindowGetCrop(CPU* c, u64 w, u64 rect) {
     (void)c;
     for (i = 0; i < 4; i++) gw32(rect + 4 * (u64)i, (u32)o->crop[i]);
 }
+/* no error: the replay's work has no channel of the GPU's that could fault (NVNqueueErrorInfo is only for errors) */
+i32 nvn_QueueGetError(CPU* c, u64 q, u64 info) {
+    (void)c;
+    (void)q;
+    (void)info;
+    return NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR;
+}
