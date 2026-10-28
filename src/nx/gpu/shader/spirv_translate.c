@@ -1390,6 +1390,14 @@ static int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u
     }
 }
 
+/* Whether a flow instruction whose targets aren't known at k can be left out of a search that only cares about targets
+   at or below limit: every case of a jump table lies after its BRX (shader_brx_targets), so one at or after limit
+   cannot reach the search's region. A JMP takes a register's target and can go anywhere, so it never can. */
+static int direct_flow_below(const u64* insn, u32 k, u32 limit) {
+    const Op* op = decode(insn[k]);
+    return op && op->id == O_BRX && k >= limit;
+}
+
 /* Whether control goes from the instruction at from straight on to the one at to, with nothing between that leaves */
 static int direct_straight(const u64* insn, u32 from, u32 to) {
     u32 k;
@@ -1427,7 +1435,14 @@ static int direct_straight(const u64* insn, u32 from, u32 to) {
    after def (the compiler loads a handle first thing in the block whose reconvergence point samples it). A branch
    back into the region from after use is a loop the region grows to take in: a handle loaded before a loop and
    sampled in its body (a blur's taps) reaches every iteration when the rest of the body keeps reg. */
-static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 reg) {
+static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u32* off, u32* bank2, u32* off2,
+                                    int depth);
+static int direct_same_handle(const u64* insn, u32 n, u32 a, u32 b, int depth);
+static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
+                                    int (*same)(const u64*, u32, u32, u32, int), int depth);
+
+static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 reg,
+                                int (*same)(const u64*, u32, u32, u32, int), int depth) {
     u32 end = use;
     for (;;) {
         u32 k, grown = end;
@@ -1440,12 +1455,21 @@ static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 re
             const Op* op = decode(insn[k]);
             if (!op) return 0;
             count = direct_flow_targets(insn, n, k, targets, elsewhere);
-            if (count < 0) return 0;
+            if (count < 0) {
+                if (direct_flow_below(insn, k, end)) continue;
+                return 0;
+            }
             for (t = 0; t < count; t++) {
                 if (targets[t] <= def || targets[t] > end) continue;
                 if (elsewhere[t]) return 0;
                 if (k < def) {
                     if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, def)) continue;
+                    /* a path that leaves before def carries def's value on if reg already has it there (a loop's
+                       exit branch, taken before the loop's last write of reg) */
+                    if (same) {
+                        int jk = direct_reaching_def_same(insn, n, k, reg, same, depth + 1);
+                        if (jk >= 0 && same(insn, n, def, (u32)jk, depth + 1)) continue;
+                    }
                     return 0;
                 }
                 if (k > grown) grown = k;
@@ -1456,7 +1480,12 @@ static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use, u32 re
             const Op* op;
             if (!IDX_OK(k)) continue;
             op = decode(insn[k]);
-            if (!op || shader_writes_reg(insn[k], op->id, reg)) return 0;
+            if (!op) return 0;
+            if (shader_writes_reg(insn[k], op->id, reg)) {
+                /* a loop that rewrites reg with the definition def has doesn't hide def's value */
+                if (same && B(insn[k], 0, 8) == reg && same(insn, n, def, k, depth + 1)) continue;
+                return 0;
+            }
         }
         end = grown;
     }
@@ -1531,11 +1560,265 @@ static int direct_same_guard(const u64* insn, u32 floor, u32 definition, u32 use
     return 1;
 }
 
+/* Whether pred changes between lo and hi: a requirement's value at one end describes the other only while it
+   doesn't. */
+static int direct_pred_written(const u64* insn, u32 lo, u32 hi, u32 pred) {
+    u32 k;
+    for (k = lo + 1; k < hi; k++) {
+        const Op* op;
+        if (!IDX_OK(k)) continue;
+        op = decode(insn[k]);
+        if (!op) return 1;
+        if (direct_pred_writes(insn[k], op->id) >> pred & 1) return 1;
+    }
+    return 0;
+}
+
+/* the words of a program: the 0x20000-byte window vk_shader_get reads it from (SH_CODE), which direct_can_reach's
+   reachability bitset holds */
+#define DIRECT_WORDS_MAX 16384u
+
+static int direct_mark(u8* seen, u32 use, u32 at) {
+    if (at > use || (seen[at >> 3] >> (at & 7) & 1)) return 0;
+    seen[at >> 3] |= (u8)(1u << (at & 7));
+    return 1;
+}
+
+/* Whether control from from can reach use, by the flow instructions as far as they are known: -1 when a jump's target
+   isn't (an indirect jump, a token's BRK or CONT), so the caller keeps what it asked about. The bitset is walked to a
+   fixed point, which reaches through loops as well as forward edges. */
+static int direct_can_reach(const u64* insn, u32 n, u32 from, u32 use) {
+    u8 seen[DIRECT_WORDS_MAX / 8];
+    u32 k;
+    int changed = 1;
+    if (from > use) return 0;
+    if (use >= DIRECT_WORDS_MAX) return -1;
+    memset(seen, 0, sizeof seen);
+    seen[from >> 3] |= (u8)(1u << (from & 7));
+    while (changed) {
+        changed = 0;
+        for (k = from; k <= use; k++) {
+            const Op* op;
+            u32 targets[64];
+            u8 elsewhere[64];
+            int count;
+            int t;
+            int fall = 1;
+            if (!(seen[k >> 3] >> (k & 7) & 1)) continue;
+            if (!IDX_OK(k)) {
+                changed |= direct_mark(seen, use, k + 1);
+                continue;
+            }
+            op = decode(insn[k]);
+            if (!op) return -1;
+            switch (op->id) {
+                case O_EXIT:
+                case O_KIL:
+                case O_RET:
+                case O_PRET:
+                case O_PEXIT: fall = 0; break;
+                case O_BRK:
+                case O_CONT:
+                case O_JMP: return -1;
+                case O_BRA: fall = B(insn[k], 16, 4) != 7; break;
+                case O_BRX: fall = 0; break;
+                default: break;
+            }
+            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            if (count < 0) return -1;
+            if (op->id == O_BRX && !count) return -1;
+            for (t = 0; t < count; t++)
+                if (!elsewhere[t]) changed |= direct_mark(seen, use, targets[t]);
+            if (fall) changed |= direct_mark(seen, use, k + 1);
+        }
+    }
+    return seen[use >> 3] >> (use & 7) & 1;
+}
+
+/* Where index's basic block starts: the last place control can arrive at before it, as direct_reaching_def finds it. */
+static u32 direct_block_start(const u64* insn, u32 n, u32 index) {
+    u32 start = 11;
+    u32 k;
+    for (k = 11; k < n; k++) {
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        int t;
+        if (!IDX_OK(k)) continue;
+        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        if (count < 0) return start;
+        for (t = 0; t < count; t++)
+            if (targets[t] > start && targets[t] <= index) start = targets[t];
+    }
+    return start;
+}
+
+/* Whether control reaches use only through def and only forwards from it: no branch enters (def, use] from before def
+   or from after it, and none in the region jumps back. A branch in between then tests a predicate def also saw, with
+   no earlier pass through the region to change it. */
+static int direct_forward_only(const u64* insn, u32 n, u32 def, u32 use) {
+    u32 k;
+    for (k = 11; k < n; k++) {
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        int t;
+        const Op* op;
+        if (!IDX_OK(k)) continue;
+        op = decode(insn[k]);
+        if (!op) return 0;
+        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        if (count < 0) {
+            if (direct_flow_below(insn, k, use)) continue;
+            return 0;
+        }
+        for (t = 0; t < count; t++) {
+            if (targets[t] <= def || targets[t] > use) continue;
+            if (elsewhere[t]) return 0;
+            if (k < def) {
+                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, def)) continue;
+                return 0;
+            }
+            if (targets[t] <= k) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Whether every path to use passes the branch at from: a branch before from that lands past it is a way around. The
+   edges in (def, use] all run forwards when direct_forward_only passed, so one scan is enough. */
+static int direct_branch_dominates(const u64* insn, u32 n, u32 from, u32 use) {
+    u32 k;
+    for (k = 11; k < n; k++) {
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        int t;
+        const Op* op;
+        if (!IDX_OK(k)) continue;
+        op = decode(insn[k]);
+        if (!op) return 0;
+        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        if (count < 0) {
+            if (direct_flow_below(insn, k, use)) continue;
+            return 0;
+        }
+        for (t = 0; t < count; t++) {
+            if (targets[t] <= from || targets[t] > use) continue;
+            if (elsewhere[t]) return 0;
+            if (k < from) {
+                if ((op->id == O_SSY || op->id == O_PBK) && direct_straight(insn, k, from)) continue;
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* A three-valued boolean combine: 1 true, 0 false, -1 unknown. */
+static int direct_pred_combine(u32 op, int a, int b) {
+    if (op == 0) return a == 0 || b == 0 ? 0 : a == 1 && b == 1 ? 1 : -1;
+    if (op == 1) return a == 1 || b == 1 ? 1 : a == 0 && b == 0 ? 0 : -1;
+    if (op == 2) return a < 0 || b < 0 ? -1 : a != b;
+    return a;
+}
+
+/* Whether a guard predicate must hold, given the values the branches to use force at def (known and value, bit p set
+   when predicate p's value is known there). The guard resolves through the PSETP instructions that set it, which
+   have to run on every path to def (floor starts def's straight run). A requirement is a value at def, so it describes
+   a predicate read earlier only while nothing writes the predicate between. 1 when the guard holds, 0 when it doesn't,
+   -1 when this can't tell. */
+static int direct_guard_under(const u64* insn, u32 index, u32 floor, u32 guard, u32 known, u32 value, int depth) {
+    u32 pred = guard & 7;
+    int neg = (int)(guard >> 3);
+    u32 j;
+    if (pred == 7) return 1;
+    if (depth > 8) return -1;
+    if (known >> pred & 1) {
+        int v = (int)(value >> pred & 1);
+        return neg ? !v : v;
+    }
+    for (j = index; j-- > floor;) {
+        const Op* op;
+        u64 w;
+        u32 pa, pb, pc, ka, kb, kc;
+        int va, vb, vc, first;
+        if (!IDX_OK(j)) continue;
+        w = insn[j];
+        op = decode(w);
+        if (!op) return -1;
+        if (!(direct_pred_writes(w, op->id) >> pred & 1)) continue;
+        if (B(w, 16, 4) != 7 || op->id != O_PSETP) return -1;
+        pa = B(w, 12, 3);
+        pb = B(w, 29, 3);
+        pc = B(w, 39, 3);
+        ka = known;
+        kb = known;
+        kc = known;
+        if ((known >> pa & 1) && direct_pred_written(insn, j, index, pa)) ka &= ~(1u << pa);
+        if ((known >> pb & 1) && direct_pred_written(insn, j, index, pb)) kb &= ~(1u << pb);
+        if ((known >> pc & 1) && direct_pred_written(insn, j, index, pc)) kc &= ~(1u << pc);
+        va = direct_guard_under(insn, j, floor, pa | B(w, 15, 1) << 3, ka, value, depth + 1);
+        vb = direct_guard_under(insn, j, floor, pb | B(w, 32, 1) << 3, kb, value, depth + 1);
+        vc = direct_guard_under(insn, j, floor, pc | B(w, 42, 1) << 3, kc, value, depth + 1);
+        first = direct_pred_combine(B(w, 24, 2), va, vb);
+        if (B(w, 0, 3) == pred) /* the second output is written last */
+            first = direct_pred_combine(B(w, 24, 2), va < 0 ? -1 : !va, vb);
+        else if (B(w, 3, 3) != pred)
+            return -1;
+        return direct_pred_combine(B(w, 45, 2), first, vc);
+    }
+    return -1;
+}
+
+/* Whether the branches on the way to use make def's predicated write run. A conditional branch that every path to
+   use passes, and whose other edge doesn't reach use, forces its predicate's value at def; a guard those values make
+   true under PSETP combinators then runs def on every path. The compiler guards a whole block's handles this way: one
+   branch tests the predicate it later composes, so the def runs unguarded at the use. */
+static int direct_guard_implied(const u64* insn, u32 n, u32 def, u32 use) {
+    u32 known = 0, value = 0;
+    u32 floor = direct_block_start(insn, n, def);
+    u32 b;
+    if (!direct_forward_only(insn, n, def, use)) return 0;
+    /* the predicate setters resolved below have to run on every path to def */
+    if (!direct_straight(insn, floor, def)) return 0;
+    for (b = def + 1; b < use; b++) {
+        const Op* op;
+        u32 g, pred, target;
+        int taken, fall, val;
+        if (!IDX_OK(b)) continue;
+        op = decode(insn[b]);
+        if (!op) return 0;
+        if (op->id != O_BRA) continue;
+        g = B(insn[b], 16, 4);
+        if ((g & 7) == 7) continue;
+        if (!direct_branch_dominates(insn, n, b, use)) continue;
+        target = bra_target(insn[b], b);
+        taken = direct_can_reach(insn, n, target, use);
+        fall = direct_can_reach(insn, n, b + 1, use);
+        if (taken < 0 || fall < 0) return 0;
+        if (taken == fall) continue; /* both ways reach use: the branch doesn't force its predicate */
+        /* the branch is taken when the predicate is the negation bit's opposite */
+        pred = g & 7;
+        val = taken ? !(int)(g >> 3) : (int)(g >> 3);
+        if (direct_pred_written(insn, def, b, pred)) continue;
+        if (known >> pred & 1) {
+            if ((int)(value >> pred & 1) != val) return 0;
+            continue;
+        }
+        known |= 1u << pred;
+        if (val) value |= 1u << pred;
+    }
+    if (!known) return 0;
+    return direct_guard_under(insn, def, floor, B(insn[def], 16, 4), known, value, 0) == 1;
+}
+
 /* The instruction that last wrote reg before index, as its first destination, or -1. In index's basic block, a
    write under a predicate reaches only an instruction under the same one, with that predicate not written between
-   them (others may be): the compiler loads a handle and uses it under the guard of one side of a branch it made predicated. Across flow,
-   the write has to be unconditional and dominate index. */
-static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
+   them (others may be): the compiler loads a handle and uses it under the guard of one side of a branch it made
+   predicated. Across flow, the write has to be unconditional and dominate index. */
+static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
+                                    int (*same)(const u64*, u32, u32, u32, int), int depth) {
     u32 guard, pred_written = 0;
     int crossed = 0;
     /* where index's basic block starts: the last place control can arrive at before it */
@@ -1551,7 +1834,10 @@ static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
         int t;
         if (!IDX_OK(k)) continue;
         count = direct_flow_targets(insn, n, k, targets, elsewhere);
-        if (count < 0) return -1;
+        if (count < 0) {
+            if (direct_flow_below(insn, k, index)) continue;
+            return -1;
+        }
         for (t = 0; t < count; t++)
             if (targets[t] > block_start && targets[t] <= index) block_start = targets[t];
     }
@@ -1567,14 +1853,23 @@ static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
             pred_written |= direct_pred_writes(insn[j], op->id);
             continue;
         }
+        /* A write in an earlier block that control never carries to index isn't the value there: the block's branch
+           jumped past the use. */
+        if (j < block_start && direct_can_reach(insn, n, j + 1, index) == 0) continue;
         /* A write that reaches reg from a lower destination leaves no single source. */
         if (B(insn[j], 0, 8) != reg) return -1;
         if (B(insn[j], 16, 4) != 7 &&
-            (crossed || ((B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
-                         !direct_same_guard(insn, block_start, j, index)))) return -1;
-        return !crossed || direct_def_dominates(insn, n, j, index, reg) ? (int)j : -1;
+            (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
+            !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index))
+            return -1;
+        if (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)) return -1;
+        return (int)j;
     }
     return -1;
+}
+
+static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
+    return direct_reaching_def_same(insn, n, index, reg, NULL, 0);
 }
 
 static int direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
@@ -1671,6 +1966,18 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
                : 0;
 }
 
+/* Whether the write of reg at b defines the same handle as the one at a: a loop that rewrites reg with the same
+   constant buffer reads leaves the handle at a use in the loop unchanged (the second tap of a blur, or its next
+   iteration's first). */
+static int direct_same_handle(const u64* insn, u32 n, u32 a, u32 b, int depth) {
+    u32 ab, ao, ab2, ao2, bb, bo, bb2, bo2;
+    int ca, cb;
+    if (depth > 6) return 0;
+    ca = direct_handle_definition(insn, n, a, &ab, &ao, &ab2, &ao2, depth);
+    cb = ca ? direct_handle_definition(insn, n, b, &bb, &bo, &bb2, &bo2, depth) : 0;
+    return ca && ca == cb && ab == bb && ao == bo && (ca == 1 || (ab2 == bb2 && ao2 == bo2));
+}
+
 /* At a forward branch merge, two different definitions can hold the same
    descriptor. Prove the value on every edge bypassing the nearest definition,
    rather than binding whichever side happens to appear last in the program.
@@ -1720,7 +2027,7 @@ static int direct_track_image_handle_pair(const u64* insn, u32 n, u32 index, u32
                                           u32* off2, int depth) {
     int j;
     if (depth > 6 || reg == 255) return 0;
-    j = direct_reaching_def(insn, n, index, reg);
+    j = direct_reaching_def_same(insn, n, index, reg, direct_same_handle, depth);
     if (j >= 0) return direct_handle_definition(insn, n, (u32)j, bank, off, bank2, off2, depth);
     return direct_joined_handle(insn, n, index, reg, bank, off, bank2, off2, depth);
 }

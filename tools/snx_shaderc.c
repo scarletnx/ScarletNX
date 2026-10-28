@@ -103,6 +103,10 @@ int main(int argc, char** argv) {
             continue;
         }
         size_t words = 0;
+        if (verbose) {
+            u32 hlen = 0;
+            printf("%s: hash %016llx stage %d\n", base, (unsigned long long)shader_hash(code, max_bytes, &hlen), stage);
+        }
         u32* spv = shader_to_spirv(code, max_bytes, stage, &info, &words, flush, 1, 1, 1);
         free(code);
         if (!spv) {

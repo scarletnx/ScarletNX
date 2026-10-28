@@ -25,7 +25,10 @@
 #include "common/utilities/common.h"
 #include <sys/stat.h>
 
-#define SH_CODE 0x10000u /* the bytes of a program vk_shader_get reads, from its SPH */
+/* the bytes of a program vk_shader_get reads, from its SPH. The SPH has no size, so shader_hash ends the program at
+   its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past the
+   largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes), without going on into the next program */
+#define SH_CODE 0x20000u
 
 /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
