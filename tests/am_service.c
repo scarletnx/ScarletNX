@@ -536,6 +536,7 @@ static SvcObj* swkbd(u32 max, u32 min, int utf8, const char* initial) {
 }
 /* SetCpuBoostMode hands its mode to apm, and GetCurrentPerformanceConfiguration is apm's for the console's mode */
 extern u32 g_test_apm_boost;
+extern int g_test_unattended;
 static void test_cpu_boost(void) {
     u32 config = 0;
     CHECK(nn_am_service_ICommonStateGetter_SetCpuBoostMode(NULL, 1) == 0 && g_test_apm_boost == 1);
@@ -655,6 +656,15 @@ static void test_swkbd(void) {
     CHECK(log_has("am: the software keyboard answers \"h\" (swkbd_text \"hi\", cut to the game's 1 character)\n"));
     svcobj_unref(out);
     g_settings.keyboard_text[0] = 0;
+    CHECK(box_shows == shows);
+    /* a run nobody is at the screen of, without that text: the game's own initial text, and no box */
+    g_settings.seconds = 60;
+    shows = box_shows;
+    out = swkbd(0, 0, 1, "Ann");
+    CHECK(box_shows == shows && get32(((StorageData*)out->data)->d) == 0 &&
+          !strcmp((char*)((StorageData*)out->data)->d + 4, "Ann"));
+    svcobj_unref(out);
+    g_settings.seconds = 0;
     CHECK(box_shows == shows);
 }
 /* the other applets' outputs: the controller applet's players against the game's minimum, a web applet's return

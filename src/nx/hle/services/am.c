@@ -19,6 +19,7 @@
 #include "nx/hle/services/hid.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/unattended.h"
 
 #include "hle/services/am.swipc.inc"
 
@@ -1089,6 +1090,7 @@ static int am_kb_unasked(const char* what, const OverlayKeyboard* k, char* out, 
    out, 1 cancelled, -1 when no box can show (no window) */
 static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
     int r;
+    if (unattended_active()) return -1; /* nobody is at the screen: the box would wait for nobody, and outlive the run */
     pm_lock(&g_host.am.lock);
     k->ticket = am_kb_ticket(NULL);
     pm_unlock(&g_host.am.lock);
@@ -1112,6 +1114,10 @@ static int am_kb_wait(OverlayKeyboard* k, char* out, size_t size) {
    (am_kb_unasked's without a window). KeyboardConfig (SwkbdConfigCommon, the second storage, as Eden's
    applet_software_keyboard_types.h lays it out) gives the texts, the kind, the length limits, whether the answer is
    UTF-8, and where the initial text is in the work buffer (the third) */
+/* the software keyboard as a whole applet: the host's text dialog with the game's initial text, or the text of
+   swkbd_text (--swkbd_text=, for scripted runs). KeyboardConfig (SwkbdConfigCommon, the second storage) gives the
+   length limits, whether the answer is UTF-8, and where the initial text is in the work buffer (the third). The
+   dialog is asked again until the text is long enough, or cancelled */
 #define AM_SWKBD_OUT   0x7d8                       /* SwkbdResult and the 0x7d4 byte string buffer */
 #define AM_SWKBD_UNITS ((AM_SWKBD_OUT - 4) / 2 - 1) /* the UTF-16 text that fits with its terminator */
 static SvcObj* am_swkbd(LibApplet* a) {
@@ -1120,7 +1126,6 @@ static SvcObj* am_swkbd(LibApplet* a) {
     u16 wide[AM_SWKBD_UNITS + 1];
     u32 off = 0, len = 0, n = 0, v;
     int utf8 = 0, r;
-    const char* env = g_settings.keyboard_text[0] ? g_settings.keyboard_text : NULL;
     SvcObj* out;
     u8* d;
     k.max = AM_SWKBD_UNITS;
@@ -1158,6 +1163,23 @@ static SvcObj* am_swkbd(LibApplet* a) {
     else if ((r = am_kb_wait(&k, text, sizeof text)) < 0)
         r = am_kb_unasked("software keyboard", &k, text, sizeof text);
     if (!r) n = am_utf8_to_16(text, wide, k.max);
+    if (env) {
+        n = am_utf8_to_16(env, wide, max);
+        r = n < min; /* too short: cancelled, as a player can't send it */
+    } else
+        for (;;) {
+            r = plat_text_input(text, sizeof text, initial);
+            if (r < 0) {
+                WARN_LIMIT(1, "am: no text dialog on this host (zenity or kdialog), the software keyboard is "
+                              "cancelled\n");
+                r = 1;
+            }
+            if (r) break;
+            n = am_utf8_to_16(text, wide, max);
+            if (n >= min) break;
+            LOG("am: the software keyboard needs %u characters or more, it asks again\n", min);
+            am_utf16_to_8(wide, n, initial, sizeof initial);
+        }
     out = am_storage_new(AM_SWKBD_OUT, NULL);
     d = am_storage_bytes(out);
     am_put32(d, r ? 1 : 0); /* SwkbdResult: Ok, Cancel */
@@ -1215,6 +1237,19 @@ static void kb_text_reply(LibApplet* a, int decided) {
 /* the inline keyboard's answer: the text given (NULL: cancelled), its replies, and the keyboard hidden. Under the lock */
 static void kb_decide(LibApplet* a, const char* text) {
     if (!text)
+/* Appear: shown, then the host's dialog decides at once, and the keyboard hides again */
+static void kb_appear(LibApplet* a) {
+    char text[SWKBD_UTF8_SIZE], initial[SWKBD_UTF8_SIZE];
+    int r;
+    kb_show(a, SWKBD_SHOWN);
+    am_utf16_to_8(a->kb_text, a->kb_len, initial, sizeof initial);
+    r = plat_text_input(text, sizeof text, initial);
+    if (r < 0) {
+        LOG("am: no text dialog on this host, the inline keyboard answers \"%s\"\n", initial);
+        memcpy(text, initial, sizeof text);
+        r = 0;
+    }
+    if (r)
         kb_reply(a, SWKBD_CANCEL, 8);
     else {
         a->kb_len = am_utf8_to_16(text, a->kb_text, a->kb_max);
@@ -1246,7 +1281,7 @@ static void kb_appear(LibApplet* a, const u8* arg) {
         return;
     }
     k.ticket = am_kb_ticket(a);
-    if (!backend_keyboard_show(&k)) {
+    if (!unattended_active() && !backend_keyboard_show(&k)) {
         LOG("am: the inline keyboard asks in its box, %u to %u characters\n", k.min, k.max);
         return;
     }

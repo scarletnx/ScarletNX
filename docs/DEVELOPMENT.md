@@ -193,7 +193,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   (`prepare_shaders=2`, which the first run after a rebuild spends translating the game's shaders again);
   `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
   `--script=ms:hexbuttons,...` (or `Nf:hexbuttons` to press at present N), `--press_len=ms` (default 300).
-  `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game.
+  `--swkbd_text=TEXT`: the software keyboard answers TEXT instead of showing its box over the game. Without it, a run given `--seconds` or `--frames` answers the game's own initial text and never opens the box.
   `--pause=at:length,...` pauses the whole game at `at` ms of the script's clock for `length` ms, and logs whether
   guest memory and guest time stayed unchanged while it held (`pause:` lines).
   `--state_save=at:slot,...` and `--state_load=at:slot,...` save the game to a save state slot and load one at those

@@ -1048,7 +1048,7 @@ setting Keyboard text
     text 2004
     default ""
     once
-    help The text the software keyboard answers instead of asking (shorter than the game's minimum: cancelled)
+    help The text the software keyboard answers instead of asking (too short: cancelled). Timed runs: the game's own
 setting Pauses
     key pause
     text 512
