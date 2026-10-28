@@ -469,19 +469,46 @@ int main(void) {
     vk_submit(0, 0, 0); /* the second waits for a later submit, so the first is performed alone */
     vk_release_write(0x37ab4, &word4, 4);
     u64 seq_b = g_rhead - 1;
-    u32 home = rix_home(0x1100);
-    assert(home == rix_home(0x7ab4) && !g_rodd);
-    assert(g_rix[home].word == 0x1100 && g_rix[home].seq == seq_a && g_rix[(home + 1) & (RIX_N - 1)].word == 0x7ab4);
+    u32 home = rix_home(0x1100, RIX_N - 1);
+    assert(home == rix_home(0x7ab4, RIX_N - 1) && !g_rodd);
+    assert(g_rix[home].key == 0x1100 && g_rix[home].seq == seq_a && g_rix[(home + 1) & (RIX_N - 1)].key == 0x7ab4);
     assert(count_queued(0x10100) == -2 && count_queued(0x37ab4) == -2); /* queued, though not samples counts */
     vk_release_need(0x10100, 4);
-    assert(g_rtail == seq_b && g_rix[home].word == 0x7ab4 && g_rix[home].seq == seq_b && g_rix[home].n == 1);
-    assert(!g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x10100) == -1 && count_queued(0x37ab4) == -2);
+    assert(g_rtail == seq_b && g_rix[home].key == 0x7ab4 && g_rix[home].seq == seq_b && g_rix[home].n == 1);
+    assert(!g_rix[(home + 1) & (RIX_N - 1)].key && count_queued(0x10100) == -1 && count_queued(0x37ab4) == -2);
     /* the slot it left holds no count: a word of that home (guest 0x5254) queued there goes when it is performed */
-    assert(rix_home(0x5254) == ((home + 1) & (RIX_N - 1)) && !g_rix[(home + 1) & (RIX_N - 1)].n);
+    assert(rix_home(0x5254, RIX_N - 1) == ((home + 1) & (RIX_N - 1)) && !g_rix[(home + 1) & (RIX_N - 1)].n);
     vk_release_write(0x35254, &word4, 4);
-    assert(g_rix[(home + 1) & (RIX_N - 1)].word == 0x5254 && g_rix[(home + 1) & (RIX_N - 1)].n == 1);
+    assert(g_rix[(home + 1) & (RIX_N - 1)].key == 0x5254 && g_rix[(home + 1) & (RIX_N - 1)].n == 1);
     vk_release_drain();
-    assert(!g_rix[home].word && !g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x37ab4) == -1);
+    assert(!g_rix[home].key && !g_rix[(home + 1) & (RIX_N - 1)].key && count_queued(0x37ab4) == -1);
+    /* a range finds the latest release over it by its pages (latest_over), through the words' index or the page's
+       releases: of three payloads in one page each queued after a submit, a read of the oldest performs it alone, one
+       over the page's other words none, and one over the newest the two left; with one queued in another page, which a
+       range over both performs */
+    u64 seq0 = g_rhead;
+    for (u32 i = 0; i < 3; i++) {
+        word4 = 30 + i;
+        vk_submit(0, 0, 0);
+        vk_release_write(0x10200 + 0x100 * i, &word4, 4);
+    }
+    vk_submit(0, 0, 0);
+    vk_release_write(0x37000, &word4, 4);
+    assert(g_rhead == seq0 + 4 && !g_rodd && g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].n == 3);
+    vk_release_need(0x10200, 4);
+    assert(g_rtail == seq0 + 1 && snx_ld_le32(memory + 4096 + 0x200) == 30 && snx_ld_le32(memory + 4096 + 0x300) == 0);
+    vk_release_need(0x10500, 0x100); /* by the page's releases (more words than releases) */
+    vk_release_need(0x10304, 0xfc);
+    vk_release_need(0x10304, 4); /* by the words' index */
+    assert(g_rtail == seq0 + 1);
+    vk_release_need(0x10380, 0x100);
+    assert(g_rtail == seq0 + 3 && snx_ld_le32(memory + 4096 + 0x400) == 32 && !g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key);
+    vk_submit(0, 0, 0);
+    for (u32 i = 0; i < 3; i++) vk_release_write(0x10200 + 0x100 * i, &word4, 4); /* the page path again */
+    vk_release_need(0x36ffc, 8);
+    assert(g_rtail == seq0 + 4 && snx_ld_le32(memory + 0x7000) == 32);
+    vk_release_drain();
+    assert(!g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key && !g_rpg[rix_find(g_rpg, RPG_N - 1, 0x7000)].key);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
     return 0;
