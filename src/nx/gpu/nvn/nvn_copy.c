@@ -9,6 +9,7 @@
    (docs/BLOCKLINEAR.md): the source's bytes are read as the game calls, and the GPU writes them in order with the
    queues' work */
 #include "nx/gpu/nvn/nvn_copy.h"
+#include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -115,22 +116,109 @@ static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int t
         launch(&o);
     }
 }
+/* A texture's slice z as a 2D engine surface (gpu.h Surf2D), the render target the 3D engine would bind there
+   (gpu/nvn/nvn_draw.c): its format a target's, its bytes a pixel (0 for a depth format). 0 when it takes no target */
+static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u32* bpp) {
+    DsSurf t;
+    int depth;
+    memset(o, 0, sizeof *o);
+    if (!nvn_draw_surface(snapshot, has_v ? v : NULL, &t, &depth) || (t.mem >> 16 & 1) || z < 0) return 0;
+    *bpp = depth ? 0 : gpu_color_bpp(t.format);
+    o->format = t.format;
+    o->linear = t.mem >> 12 & 1;
+    o->bh = t.mem >> 4 & 15;
+    o->depth = 1;
+    o->height = t.height;
+    o->addr = t.gva + (u64)z * t.layer_stride;
+    o->width = t.width;
+    if (o->linear) { /* a pitch-linear target's width is its row pitch in bytes */
+        o->pitch = t.width;
+        o->width = *bpp ? t.width / *bpp : 0;
+    }
+    return o->width && o->height;
+}
+/* a surface as a plane of the GPU's blit from memory: its slice's rows, as fermi2d.c's f2d_plane lays a 2D surface */
+static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
+    GpuDmaSide p;
+    memset(&p, 0, sizeof p);
+    p.addr = s->addr;
+    p.bl = !s->linear;
+    p.pitch = s->pitch;
+    p.wb = s->width * bpp;
+    p.h = s->height;
+    p.bh = s->bh;
+    return p;
+}
+/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit, done as the 3D engine's
+   channels' blits are (maxwell/fermi2d.c): the renderer's image blit when the source is a render target, filtered when
+   it scales, else its blit from memory, nearest sampled, between formats of the same bytes a pixel */
+static void blit_texture(const NvnPCopyT2T* r) {
+    i32 k, depth = r->sr.depth > 0 ? r->sr.depth : 1;
+    double sdx, sdy;
+    if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0) return;
+    sdx = (double)r->sr.width / r->dr.width;
+    sdy = (double)r->sr.height / r->dr.height;
+    LOG_LIMIT(1, "nvn: the first texture blit, %dx%d to %dx%d\n", r->sr.width, r->sr.height, r->dr.width, r->dr.height);
+    for (k = 0; k < depth; k++) {
+        Surf2D s, d;
+        u32 bs = 0, bd = 0, n, i, *tab;
+        GpuBlit b;
+        if (!surf2d(r->src, &r->sv, r->has_sv, r->sr.zoffset + k, &s, &bs) ||
+            !surf2d(r->dst, &r->dv, r->has_dv, r->dr.zoffset + k, &d, &bd)) {
+            LOG_LIMIT(4, "nvn: a texture blit of a texture no render target takes isn't replayed\n");
+            return;
+        }
+        if (g_renderer_up && g_renderer->blit &&
+            g_renderer->blit(&s, &d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, r->sr.xoffset,
+                             r->sr.yoffset, sdx, sdy))
+            continue; /* the destination target holds the pixels: nothing to load from memory (fermi2d.c's too) */
+        if (!bs || bs != bd || !g_renderer_up || !g_renderer->blit_mem) {
+            LOG_LIMIT(4, "nvn: a texture blit from format %#x to %#x isn't replayed\n", s.format, d.format);
+            continue;
+        }
+        /* the destination rectangle within the destination, each column and row its source's, nearest */
+        memset(&b, 0, sizeof b);
+        b.x0 = r->dr.xoffset > 0 ? (u32)r->dr.xoffset : 0;
+        b.y0 = r->dr.yoffset > 0 ? (u32)r->dr.yoffset : 0;
+        b.x1 = (u32)((i64)r->dr.xoffset + r->dr.width < (i64)d.width ? (i64)r->dr.xoffset + r->dr.width : d.width);
+        b.y1 = (u32)((i64)r->dr.yoffset + r->dr.height < (i64)d.height ? (i64)r->dr.yoffset + r->dr.height
+                                                                         : d.height);
+        if (b.x0 >= b.x1 || b.y0 >= b.y1) continue;
+        n = b.x1 - b.x0;
+        tab = (u32*)malloc(sizeof *tab * ((size_t)n + (b.y1 - b.y0)));
+        if (!tab) fatal("nvn: out of memory for a texture blit %u pixels wide", n);
+        for (i = 0; i < n; i++) {
+            double at = r->sr.xoffset + ((double)((i64)b.x0 + i - r->dr.xoffset) + 0.5) * sdx;
+            tab[i] = at <= 0 ? 0 : at >= (double)s.width ? s.width - 1 : (u32)at;
+        }
+        for (i = b.y0; i < b.y1; i++) {
+            double at = r->sr.yoffset + ((double)((i64)i - r->dr.yoffset) + 0.5) * sdy;
+            tab[n + i - b.y0] = at <= 0 ? 0 : at >= (double)s.height ? s.height - 1 : (u32)at;
+        }
+        b.src = blit_plane(&s, bs);
+        b.dst = blit_plane(&d, bd);
+        b.bpp = bs;
+        b.scol = tab;
+        b.srow = tab + n;
+        if (!g_renderer->blit_mem(&b))
+            LOG_LIMIT(4, "nvn: the GPU could not do a texture blit, skipped\n");
+        else if (g_renderer->rt_reload)
+            g_renderer->rt_reload(d.addr);
+        free(tab);
+    }
+}
 /* between two textures' regions of the same size and block bytes */
 static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, const NvnTexture* d) {
     TexPlane ps, pd;
     GpuDmaOp o;
     i32 k, depth = r->sr.depth > 0 ? r->sr.depth : 1;
-    if (r->flags & NVN_COPY_RESOLVE) {
-        LOG_LIMIT(1, "nvn: a multisample resolve (Downsample) isn't replayed yet\n");
-        return;
-    }
+    /* a multisample resolve (Downsample): the renderer draws a multisample target with one sample, its width by its
+       height in texels at the texture's address (gpu/nvn/nvn_draw.c's target), so the resolve copies those */
+    if (r->flags & NVN_COPY_RESOLVE) LOG_LIMIT(1, "nvn: a multisample resolve, of the one sample drawn\n");
     if (!tex_plane(s, r->has_sv ? &r->sv : NULL, &ps) || !tex_plane(d, r->has_dv ? &r->dv : NULL, &pd)) return;
     if (r->sr.width != r->dr.width || r->sr.height != r->dr.height || ps.bpb != pd.bpb || ps.bw != pd.bw ||
         ps.bhp != pd.bhp) {
-        LOG_LIMIT(1,
-                  "nvn: a texture copy that scales or converts (%dx%d to %dx%d, %u to %u bytes a block) isn't "
-                  "replayed yet\n",
-                  r->sr.width, r->sr.height, r->dr.width, r->dr.height, ps.bpb, pd.bpb);
+        blit_texture(r);
         return;
     }
     if (r->sr.width <= 0 || r->sr.height <= 0) return;

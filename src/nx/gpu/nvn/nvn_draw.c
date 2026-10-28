@@ -303,6 +303,9 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     }
     return 1;
 }
+int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth) {
+    return target(snapshot, v, v != NULL, s, depth);
+}
 static void set_targets(NvnDraw* d, u64 payload) {
     NvnPSetRT r;
     DsTargets t;
