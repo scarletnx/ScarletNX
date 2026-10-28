@@ -16,6 +16,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -452,6 +453,31 @@ int nvn_TexturePoolInitialize(CPU* c, u64 tp, u64 pool, i64 offset, i32 count) {
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
     (void)c;
     return desc_pool_init(sp, pool, offset, count, "sampler");
+}
+/* what a descriptor pool was initialized with */
+u64 nvn_TexturePoolGetMemoryPool(CPU* c, u64 tp) {
+    (void)c;
+    return NVN_OBJ(const NvnDescPool, tp)->pool;
+}
+i64 nvn_TexturePoolGetMemoryOffset(CPU* c, u64 tp) {
+    (void)c;
+    return (i64)NVN_OBJ(const NvnDescPool, tp)->offset;
+}
+i32 nvn_TexturePoolGetSize(CPU* c, u64 tp) {
+    (void)c;
+    return NVN_OBJ(const NvnDescPool, tp)->count;
+}
+u64 nvn_SamplerPoolGetMemoryPool(CPU* c, u64 sp) {
+    (void)c;
+    return NVN_OBJ(const NvnDescPool, sp)->pool;
+}
+i64 nvn_SamplerPoolGetMemoryOffset(CPU* c, u64 sp) {
+    (void)c;
+    return (i64)NVN_OBJ(const NvnDescPool, sp)->offset;
+}
+i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
+    (void)c;
+    return NVN_OBJ(const NvnDescPool, sp)->count;
 }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
 static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
@@ -1050,7 +1076,7 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
 }
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
-   0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper, which it requires),
+   0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper in a graphics stage),
    0x714 the stage, for a vertex program 0x748/0x74c and 0x754/0x758 VertexA's and VertexB's offsets and sizes,
    both nonzero when it is dual, and for a compute program 0x6fc its constants' bytes, 0x748-0x750 its workgroup size
    and 0x754 its shared memory. data: the code area's GPU address. 0 when the section isn't one */
@@ -1058,7 +1084,12 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
-    if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 || off < 0x30 || cb < off ||
+    /* a graphics stage's program follows the driver's 0x30-byte wrapper; an older SDK's compute program (format 14)
+       starts its code area at 0, with no wrapper (its first words are a scheduling word, 0x001fc000e22007f0): its
+       SetShaders failing, one game's effects system went on to read the program's interface table, which the
+       failure left out, and crashed */
+    if (magic != 0x98761234u || one != 1 || format < 5 || format > 16 || stage > 5 ||
+        (off < 0x30 && stage != NVN_SHADER_STAGE_COMPUTE) || cb < off ||
         size < cb || (cb & 0xff) || (size & 0xff) || size >> 24 || !data) {
         LOG_LIMIT(8, "nvn: a shader's control section at %llx isn't one the runtime reads (magic %x, format %u, stage %u, "
                      "program at %#x, constants %#x of %#x)\n",
@@ -1444,4 +1475,295 @@ void nvn_VertexStreamStateSetStride(CPU* c, u64 s, i64 stride) {
 void nvn_VertexStreamStateSetDivisor(CPU* c, u64 s, i32 divisor) {
     (void)c;
     st32(s + 4, (u32)divisor);
+}
+
+/* ============================================================ state getters */
+/* each what its setter put in the packed state (gpu/nvn/nvn_obj.h), the enums as the game gave them, as the driver's
+   getters read its own packed fields back */
+void nvn_BlendStateGetBlendEquation(CPU* c, u64 s, u64 rgb, u64 alpha) {
+    u64 w = ld64(s);
+    (void)c;
+    gw32(rgb, (u32)nvn_field(w, NVN_BLEND_EQ_RGB));
+    gw32(alpha, (u32)nvn_field(w, NVN_BLEND_EQ_A));
+}
+void nvn_BlendStateGetBlendFunc(CPU* c, u64 s, u64 src, u64 dst, u64 src_a, u64 dst_a) {
+    u64 w = ld64(s);
+    (void)c;
+    gw32(src, (u32)nvn_field(w, NVN_BLEND_SRC_RGB));
+    gw32(dst, (u32)nvn_field(w, NVN_BLEND_DST_RGB));
+    gw32(src_a, (u32)nvn_field(w, NVN_BLEND_SRC_A));
+    gw32(dst_a, (u32)nvn_field(w, NVN_BLEND_DST_A));
+}
+i32 nvn_BlendStateGetBlendTarget(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld64(s), NVN_BLEND_TARGET);
+}
+void nvn_ChannelMaskStateGetChannelMask(CPU* c, u64 s, i32 i, u64 r, u64 g, u64 b, u64 a) {
+    u32 m = i >= 0 && i < 8 ? ld32(s) >> (4 * i) : 0;
+    (void)c;
+    *(u8*)GP(r) = (u8)(m & 1); /* NVNbooleans */
+    *(u8*)GP(g) = (u8)(m >> 1 & 1);
+    *(u8*)GP(b) = (u8)(m >> 2 & 1);
+    *(u8*)GP(a) = (u8)(m >> 3 & 1);
+}
+i32 nvn_ColorStateGetAlphaTest(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_COLOR_ALPHA_FUNC);
+}
+i32 nvn_ColorStateGetLogicOp(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_COLOR_LOGIC_OP);
+}
+int nvn_DepthStencilStateGetDepthTestEnable(CPU* c, u64 s) {
+    (void)c;
+    return (int)nvn_field(ld64(s), NVN_DS_TEST);
+}
+int nvn_DepthStencilStateGetDepthWriteEnable(CPU* c, u64 s) {
+    (void)c;
+    return (int)nvn_field(ld64(s), NVN_DS_WRITE);
+}
+i32 nvn_DepthStencilStateGetDepthFunc(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld64(s), NVN_DS_FUNC);
+}
+int nvn_DepthStencilStateGetStencilTestEnable(CPU* c, u64 s) {
+    (void)c;
+    return (int)nvn_field(ld64(s), NVN_DS_STENCIL);
+}
+/* a face's stencil state: the back's for NVN_FACE_BACK, else the front's, as the driver reads it */
+i32 nvn_DepthStencilStateGetStencilFunc(CPU* c, u64 s, i32 face) {
+    (void)c;
+    return (i32)(face == NVN_FACE_BACK ? nvn_field(ld64(s), NVN_DS_SFUNC_B) : nvn_field(ld64(s), NVN_DS_SFUNC_F));
+}
+void nvn_DepthStencilStateGetStencilOp(CPU* c, u64 s, i32 face, u64 fail, u64 zfail, u64 zpass) {
+    u64 w = ld64(s);
+    int back = face == NVN_FACE_BACK;
+    (void)c;
+    gw32(fail, (u32)(back ? nvn_field(w, NVN_DS_FAIL_B) : nvn_field(w, NVN_DS_FAIL_F)));
+    gw32(zfail, (u32)(back ? nvn_field(w, NVN_DS_ZFAIL_B) : nvn_field(w, NVN_DS_ZFAIL_F)));
+    gw32(zpass, (u32)(back ? nvn_field(w, NVN_DS_ZPASS_B) : nvn_field(w, NVN_DS_ZPASS_F)));
+}
+i32 nvn_PolygonStateGetCullFace(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_POLY_CULL);
+}
+i32 nvn_PolygonStateGetFrontFace(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_POLY_FRONT);
+}
+i32 nvn_PolygonStateGetPolygonMode(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_POLY_MODE);
+}
+i32 nvn_PolygonStateGetPolygonOffsetEnables(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_POLY_OFFSET_EN);
+}
+/* the format, and the offset as a 64-bit ptrdiff_t (the driver stores it with str x) */
+void nvn_VertexAttribStateGetFormat(CPU* c, u64 s, u64 format, u64 offset) {
+    u32 w = ld32(s);
+    (void)c;
+    gw32(format, (u32)nvn_field(w, NVN_VA_FORMAT));
+    gw64(offset, nvn_field(w, NVN_VA_OFFSET));
+}
+i32 nvn_VertexAttribStateGetStreamIndex(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld32(s), NVN_VA_STREAM);
+}
+i64 nvn_VertexStreamStateGetStride(CPU* c, u64 s) {
+    (void)c;
+    return (i64)NVN_OBJ(const NvnVertexStream, s)->stride;
+}
+i32 nvn_VertexStreamStateGetDivisor(CPU* c, u64 s) {
+    (void)c;
+    return (i32)NVN_OBJ(const NvnVertexStream, s)->divisor;
+}
+/* the multisample state's other fields: kept for their getters, the renderer drawing one sample (gpu/nvn/nvn_draw.c) */
+#define MS(s) NVN_OBJ(NvnMultisample, s)
+int nvn_MultisampleStateGetMultisampleEnable(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->enable;
+}
+i32 nvn_MultisampleStateGetSamples(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->samples;
+}
+int nvn_MultisampleStateGetAlphaToCoverageEnable(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->alpha_to_coverage;
+}
+void nvn_MultisampleStateSetAlphaToCoverageDither(CPU* c, u64 s, int on) {
+    (void)c;
+    MS(s)->a2c_dither = on != 0;
+}
+int nvn_MultisampleStateGetAlphaToCoverageDither(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->a2c_dither;
+}
+void nvn_MultisampleStateSetRasterSamples(CPU* c, u64 s, i32 n) {
+    (void)c;
+    MS(s)->raster_samples = (u8)n;
+}
+i32 nvn_MultisampleStateGetRasterSamples(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->raster_samples;
+}
+void nvn_MultisampleStateSetCoverageModulationMode(CPU* c, u64 s, i32 mode) {
+    (void)c;
+    MS(s)->coverage_mod = (u8)mode;
+}
+i32 nvn_MultisampleStateGetCoverageModulationMode(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->coverage_mod;
+}
+void nvn_MultisampleStateSetCoverageToColorEnable(CPU* c, u64 s, int on) {
+    (void)c;
+    MS(s)->cov_to_color = on != 0;
+}
+int nvn_MultisampleStateGetCoverageToColorEnable(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->cov_to_color;
+}
+void nvn_MultisampleStateSetCoverageToColorOutput(CPU* c, u64 s, i32 output) {
+    (void)c;
+    MS(s)->cov_to_color_out = (u8)output;
+}
+i32 nvn_MultisampleStateGetCoverageToColorOutput(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->cov_to_color_out;
+}
+void nvn_MultisampleStateSetSampleLocationsEnable(CPU* c, u64 s, int on) {
+    (void)c;
+    MS(s)->sample_locations = on != 0;
+}
+int nvn_MultisampleStateGetSampleLocationsEnable(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->sample_locations;
+}
+void nvn_MultisampleStateSetSampleLocationsGridEnable(CPU* c, u64 s, int on) {
+    (void)c;
+    MS(s)->sample_grid = on != 0;
+}
+int nvn_MultisampleStateGetSampleLocationsGridEnable(CPU* c, u64 s) {
+    (void)c;
+    return MS(s)->sample_grid;
+}
+
+/* ============================================================ debug labels, which nothing reads back */
+static void no_label(u64 o, u64 label) {
+    (void)o;
+    (void)label;
+}
+void nvn_CommandBufferSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_DeviceSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_ProgramSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_QueueSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_SyncSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_SamplerPoolSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_TexturePoolSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+void nvn_WindowSetDebugLabel(CPU* c, u64 o, u64 label) {
+    (void)c;
+    no_label(o, label);
+}
+
+/* ============================================================ device getters */
+i32 nvn_DeviceGetWindowOriginMode(CPU* c, u64 d) {
+    (void)c;
+    return (i32)NVN_OBJ(const NvnDevice, d)->origin;
+}
+i32 nvn_DeviceGetDepthMode(CPU* c, u64 d) {
+    (void)c;
+    return (i32)NVN_OBJ(const NvnDevice, d)->depth_mode;
+}
+/* the GPU's timestamp now, in nanoseconds: its 19.2 MHz ticks, as GetTimestampInNanoseconds converts a counter's */
+u64 nvn_DeviceGetCurrentTimestampInNanoseconds(CPU* c, u64 d) {
+    (void)c;
+    (void)d;
+    return guest_ticks() * 625 / 12;
+}
+
+/* ============================================================ builder getters: what was set */
+u64 nvn_MemoryPoolBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnPoolBuilder, b)->device;
+}
+u64 nvn_MemoryPoolBuilderGetMemory(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnPoolBuilder, b)->memory;
+}
+u64 nvn_MemoryPoolBuilderGetSize(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnPoolBuilder, b)->size;
+}
+i32 nvn_MemoryPoolBuilderGetFlags(CPU* c, u64 b) {
+    (void)c;
+    return (i32)NVN_OBJ(const NvnPoolBuilder, b)->flags;
+}
+u64 nvn_BufferBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnBufferBuilder, b)->device;
+}
+u64 nvn_BufferBuilderGetMemoryPool(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnBufferBuilder, b)->pool;
+}
+i64 nvn_BufferBuilderGetMemoryOffset(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnBufferBuilder, b)->offset;
+}
+u64 nvn_BufferBuilderGetSize(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnBufferBuilder, b)->size;
+}
+u64 nvn_TextureBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->device;
+}
+u64 nvn_TextureBuilderGetMemoryPool(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->pool;
+}
+u64 nvn_TextureBuilderGetPackagedTextureData(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->packaged_data;
+}
+void nvn_TextureBuilderGetSwizzle(CPU* c, u64 b, u64 r, u64 g, u64 bl, u64 a) {
+    u32 w = tex_swizzle(&TB(b)->d);
+    (void)c;
+    if (r) gw32(r, w & 7);
+    if (g) gw32(g, w >> 3 & 7);
+    if (bl) gw32(bl, w >> 6 & 7);
+    if (a) gw32(a, w >> 9 & 7);
+}
+i32 nvn_TextureBuilderGetDepthStencilMode(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->d.bits & NVN_TEX_STENCIL ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : 0;
+}
+/* a recording's handle given up: the game's own driver returns at once (a bare ret), only its debug layer tracks
+   handles. The records stay in the game's command memory, which it reuses as it likes */
+void nvn_DeviceFinalizeCommandHandle(CPU* c, u64 d, u64 handle) {
+    (void)c;
+    (void)d;
+    (void)handle;
 }
