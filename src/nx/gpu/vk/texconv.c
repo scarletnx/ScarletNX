@@ -270,3 +270,22 @@ int vk_tc_index(VkCommandBuffer cb, u32 mode, u32 remap, u32 restart, u32 n, VkB
     return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, (in_at + (in_size ? in_size : 4) - in_off + 3) & ~3ull,
                        out, out_off, out_at + out_size - out_off);
 }
+int vk_tc_restride(VkCommandBuffer cb, u32 in_stride, u32 out_stride, u32 nv, VkBuffer in, u64 in_at, u64 len,
+                   VkBuffer out, u64 out_at) {
+    u64 align = storage_align(), in_off = in_at & ~(align - 1), out_off = out_at & ~(align - 1);
+    u64 n = (u64)nv * (out_stride / 4), in_end = (in_at + len + 3) & ~3ull;
+    if ((out_stride | out_at) & 3 || !out_stride || n > 0xFFFFFFFFu || len > 0xFFFFFFFFu) return 0;
+    if (!n) return 1;
+    u32 units = n < 65535u * 64 ? (u32)n : 65535u * 64, rows = (u32)((n + units - 1) / units);
+    TcParams p = {.mode = TC_RESTRIDE,
+                  .units = units,
+                  .rows = rows,
+                  .in_pitch = in_stride, /* bytes, for this mode */
+                  .out_pitch = out_stride / 4,
+                  .in_bias = (u32)(in_at - in_off), /* bytes */
+                  .out_bias = (u32)((out_at - out_off) / 4),
+                  .const_a = (u32)len,
+                  .line_out = (u32)n};
+    return tc_dispatch(cb, &p, (units + 63) / 64, rows, 1, in, in_off, in_end - in_off, out, out_off,
+                       out_at + n * 4 - out_off);
+}

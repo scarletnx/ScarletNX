@@ -72,5 +72,10 @@
 /* quads as two triangles each, (0 1 2) and (0 2 3), as 32-bit indices, a quad an invocation: from indices of remap
    bytes (1, 2 or 4), or with remap 0 from the vertex numbers themselves */
 #define TC_INDEX_QUADS 37u
+/* a vertex stream whose stride (in_pitch bytes) Vulkan can't read made one it can (vk/render.c's restride): output word
+   e of line_out, as for the index modes, is word e % out_pitch of vertex e / out_pitch, the stream's bytes from that
+   vertex's start on, read past its stride into the next vertex as the guest's attributes do. The stream starts at
+   byte in_bias of the bound range, which holds every word its const_a bytes touch; bytes past them are 0 */
+#define TC_RESTRIDE 38u
 
 #endif
