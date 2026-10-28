@@ -936,15 +936,44 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64
     if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
     return c.ok;
 }
+/* A result of an earlier submit of this frame that a draw of this one writes again in place, landing at this submit's
+   end instead: its copy back for landing is recorded again then (the earlier one is left unread), and it moves to the
+   end of the list, which is the order results land in. Only when no result recorded after it has bytes of it: such a
+   result took its bytes as they were and lands before it, and it would land over those bytes as written since. A
+   game binding a suffix of a storage buffer for each of its passes, about thirty submits a frame, made a new result
+   for nearly every one: half a megabyte copied from guest memory and compared at landing each time */
+static int out_take_into_submit(GfxOut* m) {
+    RangePages q;
+    u64 local[16], *rmap = NULL;
+    int later = 0;
+    if (m->frame_id != vk_frame_id() || m->frame >= vk_submit_number()) return 0;
+    range_pages(m->addr, m->size, &q);
+    GfxOut* lists[2] = {m->next, g_prep};
+    for (int l = 0; l < 2 && !later; l++)
+        for (GfxOut* o = lists[l]; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    if (later) return 0;
+    m->frame = vk_submit_number();
+    if (m != g_out_tail) {
+        GfxOut** pp = &g_out;
+        while (*pp != m) pp = &(*pp)->next;
+        *pp = m->next;
+        m->next = NULL;
+        g_out_tail->next = m;
+        g_out_tail = m;
+    }
+    return 1;
+}
 /* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
    that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
    at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
-   recorded at its submit's end), from this frame otherwise. Returns 2 when pending results cover the range and can
-   all be copied over guest memory on the GPU (gfx_overlay), 0 when none do, or after landing them because one can't:
-   the guest wrote its original bytes since. A result counts only with bytes of the range (out_meets): two storage
-   buffers sharing a page, one after the other, made each read of one compose with the other's results, which gave it
-   nothing. A result of the frame before is read where it is too (transform feedback captures the same buffers every
-   frame, over the last frame's capture), its frame's rings held until the reader is done (vk_frame_hold) */
+   recorded at its submit's end) or taken into it (out_take_into_submit), from this frame otherwise. Returns 2 when
+   pending results cover the range and can all be copied over guest memory on the GPU (gfx_overlay), 0 when none do,
+   or after landing them because one can't: the guest wrote its original bytes since. A result counts only with bytes
+   of the range (out_meets): two storage buffers sharing a page, one after the other, made each read of one compose
+   with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
+   feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
+   reader is done (vk_frame_hold) */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align) {
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
@@ -993,7 +1022,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (before) vk_frame_hold(vk_frame_id() - 1);
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
-        (!writable || match->frame == vk_submit_number())) {
+        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
         /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
            either may read it next (a dispatch on the graphics queue binds like a draw) */
         static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
@@ -1513,7 +1542,13 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             *off = p->off;
             return 1;
         }
-    int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align());
+    /* bound as a storage buffer, a storage texel buffer (a compute buffer image) or a transform feedback buffer (a
+       multiple of 4): an earlier result is taken in place at any offset those accept */
+    u64 bind_align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
+        bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
+    if (bind_align < 4) bind_align = 4;
+    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align);
     if (pending == 1) return 1;
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);

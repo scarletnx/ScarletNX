@@ -833,7 +833,7 @@ void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used fo
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off);
-/* the same for a vertex or index buffer, whose offset needs only to be a multiple of align (a power of two) */
+/* the same for a vertex, index or storage buffer, whose offset needs only to be a multiple of align (a power of two) */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the same inside a window shared with the ranges it overlaps (a storage buffer with no size of its own): *off is the
    range's offset in it, a multiple of minStorageBufferOffsetAlignment */
