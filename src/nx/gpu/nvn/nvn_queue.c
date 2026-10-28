@@ -6,7 +6,8 @@
    comes free once the display has taken the frames before it, and no earlier than one period after its own present's
    slot (nxnative's pacer, on the display's refresh where the renderer knows it); the sync AcquireTexture hands out
    signals then, a queue that waits for that sync finishes its later work no earlier, and the fences after it signal
-   then. A game waits for those as it waits for the GPU, never in AcquireTexture or on the GPU thread */
+   then. A game waits for those as it waits for the GPU, never on the GPU thread, and in AcquireTexture only for a
+   texture whose last present's slot hasn't come yet */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -44,8 +45,6 @@ static void fence_at(NvnSync* s, u32 syncpt, u32 value, u32 shown, u64 ready) {
     s->ready = ready;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
 }
-/* the later of two values of the presents' syncpoint, 0 for none */
-static u32 later_shown(u32 a, u32 b) { return !a || (b && (i32)(b - a) > 0) ? b : a; }
 
 /* ============================================================ queue */
 #define QB(b) NVN_OBJ(NvnQueueBuilder, b)
@@ -140,11 +139,7 @@ void nvn_QueueFinish(CPU* c, u64 q) {
     nvn_wait_end();
 }
 /* the queue's later work waits on the GPU for the sync, so it is done no earlier than the sync signals */
-static void wait_sync(NvnQueue* o, const NvnSync* s) {
-    if (!s->fenced) return;
-    if (s->ready > o->ready) o->ready = s->ready;
-    o->shown = later_shown(o->shown, s->shown);
-}
+static void wait_sync(NvnQueue* o, const NvnSync* s) { nvn_sync_hold(&o->ready, &o->shown, s); }
 int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
     (void)c;
     wait_sync(NVN_OBJ(NvnQueue, q), NVN_OBJ(const NvnSync, sync));
@@ -157,7 +152,11 @@ void nvn_QueueSubmitCommands(CPU* c, u64 q, i32 n, u64 handles) {
     (void)c;
     __atomic_add_fetch(&g_nvn_queue.submits, 1, __ATOMIC_RELAXED);
     o->submits++;
-    if (n > 0) nvn_replay_submit(o->replay, (u32)n, handles, queue_ready(o), o->shown);
+    if (n > 0) {
+        u64 ready = queue_ready(o);
+        nvn_replay_submit(o->replay, (u32)n, handles, &ready, &o->shown);
+        o->ready = ready;
+    }
 }
 /* signals when the work submitted before it is replayed and done */
 void nvn_QueueFenceSync(CPU* c, u64 q, u64 sync, i32 condition, i32 flags) {
@@ -344,13 +343,31 @@ static u64 present_period(const NvnWindow* o, int* paced) {
    keeps it where frames are shown as they come. Where they are held until their refresh (frame_pacing 2), vi's pace
    waits for the last too, but a game whose frame takes it longer than a period from its release to its present (one
    that waits for its earlier frames' fences within the frame) then lost a refresh most frames: with the last frame
-   left out, a frame has two periods to get to its refresh, and is held there */
+   left out, a frame has two periods to get to its refresh, and is held there.
+
+   The one wait in AcquireTexture is for a texture whose last present's slot hasn't come yet: the game's driver
+   takes the texture from the display's buffer queue there, which never hands back a buffer the display hasn't taken,
+   so a game is never more than its window's textures ahead of the display. A game that waits for its syncs isn't
+   held there (one that renders a frame ahead acquires about a period before the texture's sync signals, after its
+   present's slot), but one whose GPU alone waits for them (nvnCommandBufferWaitSync), and which never waits for the
+   GPU on the CPU, ran on without it: one game presented 141 frames a second with an interval of 1, its presents'
+   slots a minute ahead of the clock. Only the pacer's slot is waited for: the display's showing of the frame is the
+   sync's (on_display), which such a game's queue carries to its fences */
+static void slot_wait(const NvnWindow* o, i32 i) {
+    u64 now = plat_ns();
+    if (o->shown_at[i] <= now) return;
+    nvn_wait_begin();
+    plat_sleep_ns((i64)(o->shown_at[i] - now));
+    nvn_wait_end();
+}
 static void acquire(NvnWindow* o, NvnSync* s, u64 index) {
     i32 i = o->count ? o->next % o->count : 0;
     o->next = o->count ? (i + 1) % o->count : 0;
     gw32(index, (u32)i);
     if (i < 4) {
-        u64 now = plat_ns();
+        u64 now;
+        slot_wait(o, i);
+        now = plat_ns();
         o->released[i] = o->available[i] > now ? o->available[i] : now;
         fence_at(s, o->syncpt[i], o->value[i], o->on_display[1], o->available[i]);
     } else
@@ -454,7 +471,10 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
             (unsigned long long)__atomic_load_n(&g_nvn_queue.submits, __ATOMIC_RELAXED));
     __atomic_store_n(&g_nvn_queue.period, period, __ATOMIC_RELAXED);
     slot = pace(o, queue_ready(queue), period);
-    if (index >= 0 && index < 4) o->available[index] = period ? slot + period : 0;
+    if (index >= 0 && index < 4) {
+        o->available[index] = period ? slot + period : 0;
+        o->shown_at[index] = period ? slot : 0;
+    }
     __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
 }
 

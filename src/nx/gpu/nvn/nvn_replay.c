@@ -103,15 +103,31 @@ static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
     }
 }
 
-/* at submission: each fence the recordings hold gets the syncpoint value its point reaches */
+void nvn_sync_hold(u64* ready, u32* shown, const NvnSync* s) {
+    if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE)) return;
+    if (s->ready > *ready) *ready = s->ready;
+    if (!*shown || (s->shown && (i32)(s->shown - *shown) > 0)) *shown = s->shown;
+}
+
+/* at submission, in record order: each fence the recordings hold gets the syncpoint value its point reaches, and the
+   work after a wait is held behind its sync (the GPU thread has nothing to wait for: what a sync fenced before the
+   submission waits for is replayed before it, in order) */
 typedef struct {
     u32 syncpt, shown;
     u64 ready;
 } Promise;
 static void promise(void* ctx, u32 op, u64 payload, u32 size) {
-    const Promise* pr = (const Promise*)ctx;
+    Promise* pr = (Promise*)ctx;
     NvnSync* s;
     (void)size;
+    if (op == OP_WAIT_SYNC) {
+        s = NVN_OBJ(NvnSync, gr64(payload));
+        if (!__atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE))
+            LOG_LIMIT(4, "nvn: a recording waits for sync %llx, which nothing fenced before its submission\n",
+                      (unsigned long long)gr64(payload));
+        nvn_sync_hold(&pr->ready, &pr->shown, s);
+        return;
+    }
     if (op != OP_FENCE_SYNC) return;
     s = NVN_OBJ(NvnSync, gr64(payload));
     s->syncpt = pr->syncpt;
@@ -178,6 +194,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
     ReplayQueue* q = ((Replay*)ctx)->q;
     switch (op) {
         case OP_FENCE_SYNC: effect(FX_FENCE, 0, NULL, 0); break;
+        case OP_WAIT_SYNC: break; /* held at submission (promise) */
         case OP_REPORT_COUNTER: {
             /* {counter, timestamp}, written in order with the stream, as the 3D engine's reports are (a render enable
                later in the same submission reads it, maxwell/engines.c): samples passed as the renderer counts the
@@ -253,13 +270,13 @@ static Job* job(u32 queue, u32 kind, u32 n) {
     j->n = n;
     return j;
 }
-void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64 ready, u32 shown) {
+void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     Job* j = job(queue, JOB_SUBMIT, n);
     Promise p;
     u32 i;
     p.syncpt = nvn_replay_syncpt(queue);
-    p.shown = shown;
-    p.ready = ready;
+    p.shown = *shown;
+    p.ready = *ready;
     for (i = 0; i < n; i++) j->handles[i] = gr64(handles + 8 * (u64)i);
     /* what the CPU wrote before the submission is for its work to see: the renderer's caches check guest memory
        again (gpu.c does the same before a GPFIFO job) */
@@ -268,6 +285,8 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64 ready, u32 shown) {
     for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
     gpu_call(run, j, NULL, 0);
     pm_unlock(&g_nvn_replay.lock);
+    *ready = p.ready;
+    *shown = p.shown;
 }
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     NvnSync* s = NVN_OBJ(NvnSync, sync);
