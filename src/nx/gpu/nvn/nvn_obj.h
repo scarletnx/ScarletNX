@@ -45,7 +45,7 @@ NVN_FITS(NvnDevice, 0x18);
 
 /* ---- queue ---- */
 typedef struct {
-    u32 flags, pad;
+    u32 flags, priority;
     u64 cmd_size, compute_size, control_size, flush_threshold, memory, memory_size;
 } NvnQueueBuilder; /* nxnative's device field doesn't fit an SDK 5 builder's 0x38: the runtime has one device */
 NVN_FITS(NvnQueueBuilder, 0x38);
@@ -128,13 +128,19 @@ NVN_FITS(NvnTexBuilder, 0x68);
 typedef struct {
     u32 magic;
     NvnTexDesc d;
+    u64 gpu;
     u64 pool;
     i64 offset;
     u64 memory, size;
     u8 layout[8];
-    u64 serial, gpu;
+    u64 serial;
 } NvnTexture;
 NVN_FITS(NvnTexture, 0x70); /* one game's SDK (NVN 55.8) allocates NVNtexture as 0x70 bytes */
+/* A command's snapshot of a texture (gpu/nvn/nvn_cmd.c tex_snap): the texture's first bytes, all its replay reads
+   (magic, description, GPU address). Records stay small: games size the command memory they add by what NVN's own
+   commands take, and one game adds less than 1056 bytes at a time, where eight render targets' whole objects took more */
+#define NVN_TEX_SNAP offsetof(NvnTexture, pool)
+typedef char nvn_check_tex_snap[NVN_TEX_SNAP == 40 ? 1 : -1];
 /* NVNtextureView: 16 bytes in newer SDKs (a game keeps one in a 16-byte stack slot). set: which parts were set */
 typedef struct {
     u8 set, target, base_level, levels;
