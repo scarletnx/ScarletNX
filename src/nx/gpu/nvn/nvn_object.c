@@ -24,11 +24,11 @@
 
 #define DEVICE_INFO_ITEMS 0x69
 /* the file's state: the serials handed out, and nvnDeviceGetInteger's answers once read from the game's driver
-   (driver: 1) */
+   (driver: 1; read_api: its API version among them) */
 typedef struct {
     u64 serial;
     i32 info[DEVICE_INFO_ITEMS];
-    int driver;
+    int driver, read_api;
     u32 formats[8]; /* bit f: a texture of NVN format f was initialized (logged once) */
 } NvnObjectState;
 static NvnObjectState g_nvn_object;
@@ -125,8 +125,9 @@ void nvn_device_driver(u64 func) {
     u32 i, n = 0;
     memcpy(g_nvn_object.info, device_info, sizeof device_info);
     for (i = 0; i < DEVICE_INFO_ITEMS; i++) n += (u32)nvn_driver_info(g_mem, g_code_lo, hi, func, i, &g_nvn_object.info[i]);
-    if (!nvn_driver_info(g_mem, g_code_lo, hi, func, 0, &g_nvn_object.info[0]) ||
-        !nvn_driver_info(g_mem, g_code_lo, hi, func, 1, &g_nvn_object.info[1]))
+    g_nvn_object.read_api = nvn_driver_info(g_mem, g_code_lo, hi, func, 0, &g_nvn_object.info[0]) &&
+                            nvn_driver_info(g_mem, g_code_lo, hi, func, 1, &g_nvn_object.info[1]);
+    if (!g_nvn_object.read_api)
         WARN("nvn: the game's nvnDeviceGetInteger at %llx doesn't read as a known switch: the device answers API "
              "%d.%d from its own table, which the game may refuse\n",
              (unsigned long long)func, g_nvn_object.info[0], g_nvn_object.info[1]);
@@ -134,6 +135,10 @@ void nvn_device_driver(u64 func) {
     LOG("nvn: the game's driver answers API %d.%d and GPU code %d.%d to %d.%d, %u items in all from its code\n",
         g_nvn_object.info[0], g_nvn_object.info[1], g_nvn_object.info[0x2f], g_nvn_object.info[0x31],
         g_nvn_object.info[0x2e], g_nvn_object.info[0x30], n);
+}
+u32 nvn_device_api(void) {
+    if (!__atomic_load_n(&g_nvn_object.driver, __ATOMIC_ACQUIRE) || !g_nvn_object.read_api) return 0;
+    return nvn_api_pack(g_nvn_object.info[0], g_nvn_object.info[1]);
 }
 void nvn_DeviceGetInteger(CPU* c, u64 d, i32 what, u64 out) {
     u32 w = (u32)what;

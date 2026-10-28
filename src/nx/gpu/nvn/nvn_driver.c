@@ -158,6 +158,11 @@ static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
     return 0;
 }
 
+u32 nvn_api_pack(i32 major, i32 minor) {
+    if (major <= 0 || major > 0xFFFF || minor < 0 || minor > 0xFFFF) return 0;
+    return (u32)major << 16 | (u32)minor;
+}
+
 int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
     Image m;
     u64 starts[2];

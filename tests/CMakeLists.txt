@@ -697,6 +697,15 @@ snx_test_target(snx-test-hook-verify 99)
 target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
+# the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
+# (src/nx/gpu/nvn/nvn_driver.c) and the entry hook_select picks for it
+add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_driver.c")
+snx_test_target(snx-test-nvn-versions 99)
+target_include_directories(snx-test-nvn-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-nvn-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/nvn_versions.hook" PREFIX nvn
+    NAME gpu/nvn/nvn_versions.hook)
+add_test(NAME nvn_versions COMMAND snx-test-nvn-versions)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
         stack_argument 2 "would be on the stack"
