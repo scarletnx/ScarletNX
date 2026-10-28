@@ -15,6 +15,8 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define CB(a) NVN_OBJ(NvnCmdBuf, a)
@@ -52,10 +54,76 @@ static void new_segment(NvnCmdBuf* o, u64 memory, u64 size) {
     if (o->recording == 1 && o->cur) {
         put_hdr(o->cur, OP_JUMP, 16);
         memcpy(GP(o->cur + 8), &start, 8);
-        o->used += 16;
+        if (!o->lent) o->used += 16;
     }
     o->cur = start;
     o->end = memory + size;
+    o->lent = 0;
+}
+
+/* Records take more room than the driver's methods for the same commands (a draw's 32 bytes against its 16, render
+   targets' texture snapshots), and a game sizes its command memory by the driver's. One game's display lists have a
+   memory callback that adds nothing (a bare ret): when the game's memory runs out and its callback adds none, the
+   recording goes on in guest memory of the runtime's own, from the kernel region the game never maps, as nxnative
+   lent memory of its own. Its bytes aren't the game's, so they count nothing of GetCommandMemoryUsed.
+   A lent segment belongs to the game's memory it continues (its origin): when the game adds that memory again, it is
+   done with what it recorded there, as on the console, and so with what the runtime lent after it, which goes back
+   for the next lend. That game re-records its display lists into the same buffers every frame */
+#define LEND_SEGMENT (64u << 10)
+typedef struct {
+    u64 at, size, origin;
+    u32 taken, pad;
+} Lent;
+static struct {
+    PMutex lock; /* the game's threads record into several command buffers at once */
+    Lent* l;
+    u32 n, cap;
+    u64 total; /* bytes of the kernel region lent */
+} g_lend = {PMUTEX_INIT, NULL, 0, 0, 0};
+static void lend(u64 cb, u32 need) {
+    NvnCmdBuf* o = CB(cb);
+    u64 size = need > LEND_SEGMENT / 2 ? ((u64)need * 2 + 0xffff) & ~0xffffull : LEND_SEGMENT, at = 0;
+    u32 i;
+    pm_lock(&g_lend.lock);
+    for (i = 0; i < g_lend.n && !at; i++)
+        if (!g_lend.l[i].taken && g_lend.l[i].size >= size) at = g_lend.l[i].at;
+    if (at)
+        i--;
+    else {
+        u64 was = g_lend.total;
+        if (g_lend.n == g_lend.cap) {
+            u32 cap = g_lend.cap ? g_lend.cap * 2 : 64;
+            Lent* l = (Lent*)realloc(g_lend.l, cap * sizeof *l);
+            if (!l) fatal("nvn: out of memory for the command memory lent");
+            g_lend.l = l;
+            g_lend.cap = cap;
+        }
+        at = kmem_alloc(size, MS_KERNEL, PERM_RW);
+        i = g_lend.n++;
+        g_lend.l[i].at = at;
+        g_lend.l[i].size = size;
+        g_lend.total += size;
+        LOG_LIMIT(4, "nvn: command buffer %llx is out of the game's command memory, which its callback doesn't add to: "
+                     "%llu KiB of the runtime's lent\n",
+                  (unsigned long long)cb, (unsigned long long)(size >> 10));
+        if ((g_lend.total ^ was) > was) /* a new power of two of the total */
+            LOG("nvn: %llu KiB of the runtime's memory lent to command buffers in all\n",
+                (unsigned long long)(g_lend.total >> 10));
+    }
+    g_lend.l[i].taken = 1;
+    g_lend.l[i].origin = o->origin;
+    size = g_lend.l[i].size;
+    pm_unlock(&g_lend.lock);
+    new_segment(o, at, size);
+    o->lent = 1;
+}
+/* the game adds [memory, memory + size) again: what was lent after it comes back */
+static void lend_return(u64 memory, u64 size) {
+    u32 i;
+    pm_lock(&g_lend.lock);
+    for (i = 0; i < g_lend.n; i++)
+        if (g_lend.l[i].taken && g_lend.l[i].origin - memory < size) g_lend.l[i].taken = 0;
+    pm_unlock(&g_lend.lock);
 }
 
 /* room for one record of size bytes with keep bytes after it (OP_RESERVE, 0 for the END), asking the game's memory
@@ -66,13 +134,11 @@ static u64 alloc_keep(CPU* c, u64 cb, u32 size, u32 keep) {
     int tries;
     size = (size + 7) & ~7u;
     for (tries = 0; !o->cur || o->cur + size + keep > o->end; tries++) {
-        /* nxnative lends a segment of host memory here (the game's callback didn't add enough): the records must be in
-           guest memory for the queue and the replay, and no game has needed it yet */
-        if (!o->callback || tries == 2)
-            fatal("nvn: command buffer %llx needs %u bytes of command memory, and the game's memory callback (%llx) "
-                  "didn't add them (%llu bytes free)",
-                  (unsigned long long)cb, size + keep, (unsigned long long)o->callback,
-                  (unsigned long long)(o->cur ? o->end - o->cur : 0));
+        /* the game's callback once, then memory of the runtime's own (lend) */
+        if (!o->callback || tries == 1) {
+            lend(cb, size + keep);
+            continue;
+        }
         LOG_LIMIT(4, "nvn: command buffer %llx is out of command memory: the game's callback %llx adds more\n",
                   (unsigned long long)cb, (unsigned long long)o->callback);
         guest_call(c, o->callback, cb, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, size + keep,
@@ -80,7 +146,7 @@ static u64 alloc_keep(CPU* c, u64 cb, u32 size, u32 keep) {
     }
     at = o->cur;
     o->cur += size;
-    o->used += size;
+    if (!o->lent) o->used += size;
     put_hdr(at, 0, size);
     if (o->recording == 2) { /* the recording's first record is its handle */
         o->begin = at;
@@ -140,7 +206,9 @@ void nvn_CommandBufferAddCommandMemory(CPU* c, u64 cb, u64 pool, i64 offset, u64
         fatal("nvn: command buffer %llx was given %llx bytes of command memory from pool %llx (memory %llx), which "
               "nvn_direct doesn't lend memory for",
               (unsigned long long)cb, (unsigned long long)size, (unsigned long long)pool, (unsigned long long)memory);
+    if (g_lend.n) lend_return(memory + (u64)offset, size);
     new_segment(CB(cb), memory + (u64)offset, size);
+    CB(cb)->origin = memory + (u64)offset;
     CB(cb)->used = 0; /* GetCommandMemoryUsed counts from the memory the game last added, across recordings */
 }
 /* the control memory is the driver's own bookkeeping: the records need none */
