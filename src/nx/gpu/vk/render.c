@@ -1779,12 +1779,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         const VkDrawGbuf* gb = &draw->b[stage ? 1 : 0][i];
         u64 addr = gb->addr;
         u32 size = gb->size;
+        u64 sa = g_vk.props.limits.minStorageBufferOffsetAlignment; /* an earlier draw's result is read in place */
         VkBuffer b;
         u64 o;
         int ok = gb->aliased            ? (b = gb->buf, o = gb->off, 1)
                  : addr && gb->writable ? vk_buf_copy_writable(addr, size, &b, &o)
                  : addr && gb->bare     ? vk_buf_get_window(addr, size, &b, &o)
-                 : addr                 ? vk_buf_get(addr, size, &b, &o)
+                 : addr                 ? vk_buf_get_input(addr, size, sa, &b, &o)
                                         : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
