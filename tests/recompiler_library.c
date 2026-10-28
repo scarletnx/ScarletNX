@@ -366,6 +366,18 @@ static void invalidate64(struct snx_recompiler* r, uint8_t* mem) {
     check(snx_recompiled_function(module, helper) == NULL &&
               snx_recompiled_function(module, CODE64) != NULL,
           "invalidation: clear only the helper's dispatch entries");
+    {
+        /* the module's own copy of the code, which its JIT compiles from, follows the guest's bytes */
+        uint32_t words[2] = {0xd503201f, 0xd65f03c0}; /* nop; ret */
+        check(snx_recompiled_update_code(module, helper, words, sizeof(words)) == sizeof(words),
+              "update_code: the words inside the module's ranges are taken");
+        check(snx_recompiled_update_code(module, helper + 2, words, 4) == 0,
+              "update_code: a misaligned address is refused");
+        check(snx_recompiled_update_code(module, 0x10, words, 4) == 0,
+              "update_code: an address outside the ranges is not taken");
+        check(snx_recompiled_update_code(module, helper, mem + helper, sizeof(words)) == sizeof(words),
+              "update_code: the original bytes go back");
+    }
     snx_runtime_defaults(&rt);
     rt.svc = svc64;
     rt.undef = undef64;

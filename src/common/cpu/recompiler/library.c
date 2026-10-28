@@ -1374,6 +1374,31 @@ int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu) {
 /* cpu.h's snx_lookup over the module's table, and the JIT's code for a pc the table lacks */
 GuestFn snx_recompiled_lookup(struct snx_recompiled* m, uint64_t pc) { return module_code(m, pc); }
 
+/* The module's copy of the code, which its JIT compiles from, brought up to what the guest has now: the NX runtime's
+   JIT reads the guest's memory itself, an embedder's module holds a copy (keep_code), and code the guest patches
+   (IC IVAU) is otherwise rebuilt from the bytes it replaced. Whole words, each a relaxed store: a JIT worker may be
+   reading the same view. Returns the number of bytes updated. */
+size_t snx_recompiled_update_code(struct snx_recompiled* m, uint64_t addr, const void* code, size_t size) {
+    size_t i, updated = 0;
+    const unsigned char* bytes = (const unsigned char*)code;
+    if (!m || !code || (addr & 3) || (size & 3) || size > UINT64_MAX - addr) return 0;
+    for (i = 0; i < m->view_count; ++i) {
+        const SnxCodeImage* view = &m->views[i];
+        uint64_t lo = addr > view->base ? addr : view->base;
+        uint64_t hi = addr + size < view->base + view->image_size ? addr + size : view->base + view->image_size;
+        uint64_t at;
+        if (lo >= hi) continue;
+        for (at = lo; at < hi; at += 4) {
+            uint32_t word;
+            memcpy(&word, bytes + (at - addr), sizeof(word));
+            __atomic_store_n((uint32_t*)(void*)((unsigned char*)view->image + (at - view->base)), word,
+                             __ATOMIC_RELAXED);
+        }
+        updated += (size_t)(hi - lo);
+    }
+    return updated;
+}
+
 GuestFn snx_recompiled_function(const struct snx_recompiled* m, uint64_t pc) {
     uint64_t o = pc - m->code_lo;
     return o < m->code_hi - m->code_lo && !(pc & 3) ? atomic_load_explicit(&m->dispatch[o >> 2], memory_order_acquire)
