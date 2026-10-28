@@ -5,6 +5,8 @@
 #ifndef SNX_NVN_DRAW_H
 #define SNX_NVN_DRAW_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/gpu/draw_state.h"
+#include "nx/gpu/nvn/nvn_obj.h"
 
 typedef struct NvnDraw NvnDraw;
 
@@ -19,5 +21,9 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks);
 /* the device's window origin and depth mode (NVN_WINDOW_ORIGIN_MODE_*, NVN_DEPTH_MODE_*), which every queue's draws
    take from now on */
 void nvn_draw_device(u32 origin, u32 depth_mode);
+/* the render target a texture snapshot (a command's, gpu/nvn/nvn_cmd.c) and its view (NULL: none) are, as the 3D
+   engine's registers describe one (gpu/draw_state.h's DsSurf), and whether it is a depth target: 0 when the
+   texture's format takes no target */
+int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth);
 
 #endif
