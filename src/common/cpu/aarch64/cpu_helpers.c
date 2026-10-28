@@ -8,6 +8,7 @@
 #include "cpu.h"
 
 #include "helpers/fp.c"
+#include "helpers/fp_host.c"
 #include "helpers/integer.c"
 #include "helpers/crypto.c"
 #include "helpers/vector.c"
