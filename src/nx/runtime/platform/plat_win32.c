@@ -224,6 +224,12 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     return -1; /* pages may be left unreported: the caller compares contents */
 }
 
+/* the write watch sees the kernel's writes (ReadFile, recv) as it sees any other */
+void plat_ww_open(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+}
+
 int plat_vm_commit(u8* p, u64 size) {
     /* MEM_COMMIT charges the whole range to the commit limit at once */
     if (VirtualAlloc(p, (SIZE_T)size, MEM_COMMIT, PAGE_READWRITE)) return 0;

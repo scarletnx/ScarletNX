@@ -1922,6 +1922,9 @@ if(UNIX)
     # the same calls with the alias pool off (alias_pool=0): views are copies, as on Windows
     add_test(NAME memory_alias_copies COMMAND snx-test-memory-alias --copies)
     set_tests_properties(memory_alias_copies PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+    # views over pages the write tracking protects (SNX_WW=signal: the tracking of hosts without Linux 6.7's)
+    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias)
+    set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
     # GPU-owned memory over the real pool and traps, owners whose GPU copy is host memory (77 without traps)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
@@ -1931,6 +1934,9 @@ if(UNIX)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME memory_own COMMAND snx-test-memory-own)
     set_tests_properties(memory_own PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # traps over pages the write tracking protects (SNX_WW=signal)
+    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
 endif()
 
 endif() # SNX_BUILD_NX
@@ -1976,6 +1982,17 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
+    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler
+    add_test(NAME platform_posix_signal_ww COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(platform_posix_signal_ww PROPERTIES ENVIRONMENT SNX_WW=signal)
+endif()
+if(WIN32 AND TARGET SDL3::SDL3)
+    # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
+    add_executable(snx-test-platform-win32 platform_win32.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
+        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+    snx_test_target(snx-test-platform-win32 11)
+    target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3)
+    add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-shader-brx shader_brx.c)

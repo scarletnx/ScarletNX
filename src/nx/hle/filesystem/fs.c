@@ -1240,8 +1240,12 @@ static int nn_fssrv_sf_IStorage_Read(SvcObj* self, i64 offset, IpcBuf buffer, i6
     int rc = check_transfer(offset, buffer, size_in);
     if (rc) return rc;
     if (!sz) R_SUCCEED();
-    /* the reads below go through the kernel, which can't wait on memory the GPU holds: it lands first */
-    if (buffer_valid(a, sz)) own_acquire(a, sz);
+    /* the reads below go through the kernel, which can't wait on memory the GPU holds (it lands first) nor fault on
+       a page the write tracking protects (it opens) */
+    if (buffer_valid(a, sz)) {
+        own_acquire(a, sz);
+        plat_ww_open(GP(a), sz);
+    }
     if (!data && self->u[0] == STORAGE_AOC) { /* a DLC's image, read in place */
         SnxHacFs* fs = g_hle.fs.aocs[self->u[1]].fs;
         u64 total = snx_hac_fs_romfs_size(fs);
@@ -1346,7 +1350,9 @@ static int nn_fssrv_sf_IFile_Read(SvcObj* self, nn_fs_ReadOption option, i64 off
     R_UNLESS(off <= f->node->size, FS_OUT_OF_RANGE);
     if (sz > f->node->size - off) sz = f->node->size - off;
     R_UNLESS(buffer_valid(a, sz), FS_OUT_OF_RANGE);
-    own_acquire(a, sz); /* read() can't wait on memory the GPU holds: it lands first */
+    /* read() can't wait on memory the GPU holds (it lands first) nor fault on a page the write tracking protects */
+    own_acquire(a, sz);
+    plat_ww_open(GP(a), sz);
     SNX_ZONE_TV(z, "fs read", sz, "%s", f->node->name);
     u64 n = sz;
     if (node_in_memory(f->node)) {

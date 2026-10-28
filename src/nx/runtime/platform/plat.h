@@ -82,10 +82,15 @@ int plat_address_space(u64* mapped, u64* largest_free);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
-   -1 when the host can't tell (the caller then compares contents). Linux uses userfaultfd's asynchronous write
-   protection with PAGEMAP_SCAN, Windows the write watch of the reservation; SNX_NO_WW in the environment turns both
-   off */
+   -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
+   write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
+   FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
+   SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
+/* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
+   which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written. Nothing to do
+   where the kernel's writes are tracked as they come (Linux's userfaultfd, Windows' write watch) */
+void plat_ww_open(u8* p, u64 size);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and
