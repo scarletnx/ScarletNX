@@ -269,8 +269,11 @@ static VkAccessFlags2 out_access(void) {
 }
 /* an output with its page lists and its original bytes after it, in one block */
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
-    GfxOut* o = calloc(1, sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
+    /* not calloc: its caller fills the original bytes and out_map the page lists, and zeroing them first was a tenth
+       of one game's GPU thread's copying */
+    GfxOut* o = malloc(sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
     if (!o) return NULL;
+    *o = (GfxOut){0};
     o->pages = (u64*)(o + 1);
     o->vmap = o->pages + npages;
     o->npages = npages;
@@ -893,9 +896,14 @@ static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     v->from = from;
     if (!cover_take(v->cov, at, at + n, overlay_part, v)) overlay_part(v, at, at + n);
 }
-/* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off, which holds
-   guest memory's bytes (after gfx_gpu_src said they can be): each byte from the newest result over it */
-static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
+/* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off (after
+   gfx_gpu_src said they can be): each byte from the newest result over it. gap(user, a, b) fills each run [a, b) of
+   the destination no result gives with guest memory's bytes on the CPU. A result gives most of a composed range in the
+   end, and copying all of it before (a few results over storage ranges of half a megabyte, bound and read a few hundred
+   times a frame) was a fifth of one game's GPU thread. The CPU writes the gaps before the submit that copies the
+   results, and a run cover_take couldn't record is filled too, then copied over on the GPU as before */
+static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, void (*gap)(void* user, u64 a, u64 b),
+                        void* user) {
     CopyBatch c;
     Covered cov;
     GfxOut *nlocal[64], **newest;
@@ -910,6 +918,12 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
         out_spans(newest[i], gva, len, rmap, overlay_span, &v);
     }
     copy_end(&c);
+    u64 at = 0;
+    for (u32 i = 0; i < cov.n && at < len; i++) {
+        if (cov.v[i].a > at) gap(user, at, cov.v[i].a < len ? cov.v[i].a : len);
+        if (cov.v[i].b > at) at = cov.v[i].b;
+    }
+    if (at < len) gap(user, at, len);
     cover_free(&cov);
     if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
@@ -999,12 +1013,20 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (copy_stats_on()) g_wb_draw_miss[count > 1 ? 1 : 3]++; /* composed: several results, or an offset or submit */
     return 2;
 }
+typedef struct {
+    u64 gva;
+    u8* dst;
+} GapRead;
+static void gap_read(void* user, u64 a, u64 b) {
+    const GapRead* g = user;
+    read_untracked(g->gva + a, g->dst + a, b - a);
+}
 /* the range for reading on the GPU, with its pending results composed over guest memory in staging */
 static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u8* p = vk_stage(len, vk_stage_align(), buf, off);
     if (!p) return 0;
-    read_untracked(gva, p, len);
-    gfx_overlay(gva, len, *buf, *off);
+    GapRead g = {gva, p};
+    gfx_overlay(gva, len, *buf, *off, gap_read, &g);
     return 1;
 }
 
@@ -1471,6 +1493,14 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     return 1;
 }
 
+typedef struct {
+    u8* dst;
+    const u8* src;
+} GapCopy;
+static void gap_copy(void* user, u64 a, u64 b) {
+    const GapCopy* g = user;
+    memcpy(g->dst + a, g->src + a, b - a);
+}
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
@@ -1514,9 +1544,11 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             free(o);
             return 0;
         }
+    } else if (pending == 2) {
+        GapCopy g = {o->ptr, o->org};
+        gfx_overlay(gva, len, *buf, *off, gap_copy, &g);
     } else
         memcpy(o->ptr, o->org, len);
-    if (pending == 2) gfx_overlay(gva, len, *buf, *off);
     o->addr = gva;
     o->size = len;
     o->buf = *buf;
