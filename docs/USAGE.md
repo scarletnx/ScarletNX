@@ -762,5 +762,7 @@ was moved (`controls_a=0.930 0.470 100`: its middle across the screen and its si
 shown once that changed (`controls_a_shown=0`). The launcher's Settings have the same, but the layout.
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
-in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`).
+in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
+1024, default 16; [Debug](DEVELOPMENT.md)) the log keeps the run's start and its last lines, with a line saying how
+much went between them, and the game's picture says so once.
 Scripts/disasm/shaders: [DEVELOPMENT](DEVELOPMENT.md).

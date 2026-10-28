@@ -108,6 +108,10 @@ picture while it runs (`Debug on: log=2, gdbstub`, a text setting by its key alo
 (`debug: log=2 (default 1), gdbstub`), and in the launcher, as `(Debug on)` on the game's row and its Play and the list
 beside it:
 
+- `--log_max=MiB` (1 to 1024, default 16): the game log's size. Past it the log keeps the run's start (its first
+  64 KiB) and its last lines, half of `log_max` in all, with a line saying how much went between them
+  (`log: reached log_max=16 MiB: 7.4 MiB of lines between the run's start and here cut`), and the first time the
+  game's picture says so for 3 s. `--log=2` with a long run is what fills it.
 - `--gpu_trace_target=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`, at most 64 lines of each kind) the clears
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size

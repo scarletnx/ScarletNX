@@ -14,7 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <io.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -24,6 +26,7 @@ __thread void* tls_thread;
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096
 #define LOG_RUNS  5          /* the runs' logs kept: this one's in <game>.log, the ones before in logs/ */
+#define LOG_HEAD  (64 << 10) /* what a cut keeps of the run's start (log_cut_nl), to a line's end */
 
 /* Initialised statically: threads log from the first moments of the run, and a lazy init would race */
 static PMutex g_log_lock = PMUTEX_INIT;
@@ -37,6 +40,11 @@ static char g_early[EARLY_MAX]; /* lines from before the log exists, written at 
 static size_t g_early_len;
 static int g_early_full; /* a line did not fit: no more are kept, so the saved part has no gap */
 static u64 g_log_t0;     /* plat_ns() of the first line, atomic */
+static char g_log_path[1400];
+static u64 g_log_size;       /* what the log holds, about (text mode's \r not counted): a cut when past log_max */
+static int g_log_cuts;       /* the cuts made; one that failed stops them */
+static long g_log_head = -1; /* the run's start a cut keeps, from the first: the line saying what went comes after it */
+static int g_log_full;       /* log_max in MiB from the first cut until log_full_take, atomic */
 /* written by every line, apart from the flag every line reads */
 static int g_mid_line __attribute__((aligned(64))); /* the last text written did not end its line, atomic */
 static int g_crashing __attribute__((aligned(64))); /* log_crash_mode was called, atomic */
@@ -116,9 +124,11 @@ static void log_create_nl(void) {
         g_log_gave_up = 1;
         fprintf(stderr, "Could not create the log %s, so it only goes to the console.\n", path);
     } else {
+        snprintf(g_log_path, sizeof g_log_path, "%s", path);
         if (g_early_len) fwrite(g_early, 1, g_early_len, file);
+        g_log_size = g_early_len;
         if (why[0]) {
-            log_compose(out, sizeof out, why);
+            g_log_size += log_compose(out, sizeof out, why);
             fputs(out, file);
             fputs(why, stderr);
         }
@@ -175,6 +185,88 @@ static void log_crash_write(const char* text) {
 #endif
 }
 
+/* The log past log_max (limit bytes): the run's start (its first LOG_HEAD bytes, to a line's end, the same at each
+   cut), a line saying what went, and the last lines, half the limit in all, so a long run's log ends where it does. Moved in place through
+   a second handle, in binary (Windows' text mode would move a "\r\n" by halves); the first cut for the frontend's
+   toast. A crash's line written while a cut runs may land in what the cut drops. Under g_log_lock */
+static void log_cut_nl(long limit) {
+    static char buf[1 << 16];
+#if defined(_WIN32)
+    static const char eol[] = "\r\n";
+#else
+    static const char eol[] = "\n";
+#endif
+    char mark[320];
+    long size, head = 0, from, to, n;
+    size_t got, i;
+    int moved;
+    u64 t0 = __atomic_load_n(&g_log_t0, __ATOMIC_RELAXED);
+    FILE* f;
+    fflush(g_log);
+    f = fopen(g_log_path, "r+b");
+    if (!f || fseek(f, 0, SEEK_END) || (size = ftell(f)) <= limit / 2) {
+        if (!f) {
+            g_log_cuts = -1;
+            snprintf(mark, sizeof mark, "log: cannot cut %s past log_max=%ld MiB (%s): it grows on\n", g_log_path,
+                     limit >> 20, strerror(errno));
+            fputs(mark, g_log);
+            fputs(mark, stderr);
+        } else
+            fclose(f);
+        g_log_size = 0;
+        return;
+    }
+    if (g_log_head < 0) {
+        rewind(f);
+        got = fread(buf, 1, (size_t)(size < LOG_HEAD ? size : LOG_HEAD), f);
+        for (i = got; i > 0; --i)
+            if (buf[i - 1] == '\n') break;
+        g_log_head = (long)i;
+    }
+    head = g_log_head;
+    from = size - (limit / 2 - head);
+    if (!fseek(f, from, SEEK_SET) && (got = fread(buf, 1, sizeof buf, f)) > 0) { /* to the next line's start */
+        for (i = 0; i < got && buf[i] != '\n'; ++i) continue;
+        from += (long)(i < got ? i + 1 : got);
+    }
+    n = snprintf(
+        mark, sizeof mark,
+        "[%7.2f] log: reached log_max=%ld MiB: %.1f MiB of lines between the run's start and here cut (Debug > "
+        "Log size limit raises it)%s",
+        (double)(plat_ns() - t0) / 1e9, limit >> 20, (double)(from - head) / (1 << 20), eol);
+    to = head + n;
+    moved = !fseek(f, head, SEEK_SET) && fwrite(mark, 1, (size_t)n, f) == (size_t)n;
+    while (moved && from < size) {
+        size_t want = (size_t)(size - from < (long)sizeof buf ? size - from : (long)sizeof buf);
+        moved = !fseek(f, from, SEEK_SET) && (got = fread(buf, 1, want, f)) > 0 && !fseek(f, to, SEEK_SET) &&
+                fwrite(buf, 1, got, f) == got;
+        from += (long)got;
+        to += (long)got;
+    }
+    moved = !fflush(f) && moved;
+#if defined(_WIN32)
+    moved = moved && !_chsize_s(_fileno(f), to);
+#else
+    moved = moved && !ftruncate(fileno(f), to);
+#endif
+    if (!moved) { /* a disk's failure halfway: the lines stay, some twice, and no more cuts are tried */
+        g_log_cuts = -1;
+        to = size;
+        snprintf(mark, sizeof mark, "log: cutting %s past log_max=%ld MiB failed (%s): it grows on\n", g_log_path,
+                 limit >> 20, strerror(errno));
+        fputs(mark, stderr);
+    }
+    fclose(f);
+    fseek(g_log, 0, SEEK_END); /* the descriptor's offset too, which crash mode writes at */
+    g_log_size = (u64)to;
+    if (!moved)
+        fputs(mark, g_log);
+    else if (!g_log_cuts++)
+        __atomic_store_n(&g_log_full, (int)(limit >> 20), __ATOMIC_RELEASE);
+}
+
+int log_full_take(void) { return __atomic_exchange_n(&g_log_full, 0, __ATOMIC_ACQ_REL); }
+
 void logf_(int lvl, const char* fmt, ...) {
     char text[LINE_MAX_], out[LINE_MAX_ + 32];
     va_list ap;
@@ -199,8 +291,11 @@ void logf_(int lvl, const char* fmt, ...) {
     log_create_nl();
     n = log_compose(out, sizeof out, text);
     if (g_log) {
+        long limit = (long)__atomic_load_n(&g_settings.log_size_limit, __ATOMIC_RELAXED) << 20;
         fputs(out, g_log);
         fflush(g_log);
+        g_log_size += n;
+        if (g_log_cuts >= 0 && g_log_size > (u64)limit) log_cut_nl(limit);
         if (lvl <= 1 || g_settings.log_level >= 2) {
             fputs(text, stderr); /* the console gets the line without its time stamp, which only the log file keeps */
             fflush(stderr);

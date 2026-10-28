@@ -1527,8 +1527,15 @@ const char* backend_pressed(void) {
 }
 void frontend_frame(void) {
     char p[1200];
+    int full = log_full_take();
     g_press.listening = 0; /* the game's first thread runs: its presses are its own */
     g_press.kind = PRESS_NONE;
+    if (full) { /* the log's first cut (plat.c), said over the game once */
+        snprintf(p, sizeof p, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
+        ui_lock();
+        overlay_toast(p, plat_ns());
+        ui_unlock();
+    }
     /* the controls and the menu stay on the window while the game shows nothing new, and so does its last frame while
        it is paused */
     if (g_renderer->refresh &&

@@ -3,6 +3,7 @@
 /* The .ini's settings tables (runtime/ini.c): a value read into its variable, clamped, and written back; and as the
    menus word it and step it */
 #include "nx/runtime/ini.h"
+#include "snx_settings.h" /* the game's Debug table, g_debug_ini */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -193,6 +194,19 @@ int main(void) {
         speed = 1.0f;
         folder[0] = 0;
         assert(ini_changed(changed, INI_CHANGED_DEFAULT, list, sizeof list) == 0 && !strcmp(list, ""));
+    }
+    /* the game's Debug table: log_max past its default is said at the top of the picture ("Debug on: ...") and in the
+       log's header, as every Debug setting not at its default */
+    {
+        char list[2048];
+        assert(g_settings.log_size_limit == 16);
+        ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list);
+        assert(!strstr(list, "log_max"));
+        g_settings.log_size_limit = 64;
+        assert(ini_changed(g_debug_ini, INI_CHANGED_NO_TEXT, list, sizeof list) >= 1 && strstr(list, "log_max=64"));
+        assert(ini_changed(g_debug_ini, INI_CHANGED_DEFAULT, list, sizeof list) >= 1 &&
+               strstr(list, "log_max=64 (default 16)"));
+        g_settings.log_size_limit = 16;
     }
     puts("ini passed");
     return 0;

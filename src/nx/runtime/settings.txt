@@ -530,6 +530,13 @@ setting Log level
     int 0 2
     default 1
     help The log's detail, 0 to 2: 2 logs everything, which slows the game down
+setting Log size limit
+    key log_max
+    int 1 1024
+    default 16
+    help The game log's size in MiB, 1 to 1024: past it the run's start stays and the oldest lines after it go, said in
+    help the log and once over the game, so the log always ends with the last lines. The 5 last runs' logs are kept,
+    help the ones before this run's in logs/ beside it, named by when each was last written
 setting Answer unknown commands
     key auto_stub_ipc
     int 0 1
