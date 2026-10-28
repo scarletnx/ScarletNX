@@ -39,9 +39,9 @@ u64 nvmap_addr_by_id(u32 id) { return id == 7 ? 0x1000 : 0; }
 void cheats_frame(void) {}
 static u64 presented;
 static void test_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 t,
-                         u64 released, u64 period) {
+                         u64 released, u64 period, u32 shown_syncpt) {
     (void)w, (void)h, (void)pitch, (void)layout, (void)bhl, (void)fmt, (void)crop, (void)t, (void)released,
-        (void)period;
+        (void)period, (void)shown_syncpt;
     presented = a;
 }
 static Renderer test_renderer;
@@ -132,12 +132,25 @@ static void display_pacing(void) {
     test_renderer.display_wait = NULL;
 }
 
+/* a frame period onto the display's refresh: the nearest whole number of refreshes within 1/32 of it, else as it is */
+static void display_period(void) {
+    const u64 p60 = 1000000000u / 60, r5994 = 16683350, r144 = 6944444;
+    CHECK(present_display_period(p60, r5994) == r5994, "one refresh of a 59.94 Hz display");
+    CHECK(present_display_period(2 * p60, r5994) == 2 * r5994, "two refreshes of a 59.94 Hz display");
+    CHECK(present_display_period(p60, r144) == p60, "a 144 Hz display keeps no whole number of refreshes of 60 Hz");
+    CHECK(present_display_period(2 * p60, 2 * r144) == 2 * p60, "nor 72 Hz of 30 Hz");
+    CHECK(present_display_period(p60, p60 / 2) == p60, "two refreshes of a 120 Hz display");
+    CHECK(present_display_period(p60, 0) == p60, "an unknown refresh");
+    CHECK(present_display_period(p60, 3 * p60) == p60, "a refresh longer than the period");
+}
+
 int main(void) {
     i32 crop[4] = {0, 0, 0, 0};
     clock_start();
     ticks();
     pacing();
     display_pacing();
+    display_period();
     test_renderer.present_buffer = test_present;
     vi_show_buffer(7, 0x40, 1, 1, 4, 1, 0, 1, crop, 0, 0);
     vi_show_buffer(8, 0, 1, 1, 4, 1, 0, 1, crop, 0, 0);

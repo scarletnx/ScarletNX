@@ -15,8 +15,12 @@
    on a 60 Hz display had frames shown for one refresh or three wherever its time to draw one varied.
 
    The game's pace (renderer.h display_wait, runtime/present.c) waits here for the display to take its frames, and
-   every STATS game frames the log says how evenly they were displayed and how long they took to get there */
+   every STATS game frames the log says how evenly they were displayed and how long they took to get there. A frame
+   given a syncpoint (renderer.h present_buffer's shown_syncpt: nvn_direct's window) increments it once displayed or
+   let go, in the order the frames came: one not presented, or presented without an id, goes into the queue as a
+   marker behind those still watched, and only goes up at once when none are */
 #include "nx/gpu/vk/vk.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
@@ -41,6 +45,7 @@ typedef struct {
     int game;         /* a frame of the game's, not the menu's or a black screen's */
     int clock;        /* the swapchain's VkClock: how the display time is learned */
     int made;         /* under lock: 0 not yet presented (vk_display_made), 1 presented, -1 the present failed */
+    u32 syncpt;       /* incremented once displayed or let go (0 none); with id 0, a marker for a frame not watched */
 } DPresent;
 
 static struct {
@@ -157,6 +162,7 @@ static void displayed(const DPresent* p, u64 t, int exact) {
     if (p->game) g_dc.done++;
     pc_broadcast(&g_dc.shown);
     pm_unlock(&g_dc.lock);
+    if (p->syncpt) syncpt_incr(p->syncpt);
 }
 
 /* p's display time from VK_GOOGLE_display_timing (sc_lock held): VK_SUCCESS with *at (plat_ns), VK_TIMEOUT while not
@@ -197,6 +203,12 @@ static void display_thread(void* arg) {
         pm_lock(&g_dc.lock);
         while (g_dc.head == g_dc.tail) pc_wait(&g_dc.work, &g_dc.lock, -1);
         p = g_dc.q[g_dc.tail % DQ];
+        if (!p.id) { /* a frame not watched, behind those that were: done with now */
+            g_dc.tail++;
+            pm_unlock(&g_dc.lock);
+            syncpt_incr(p.syncpt);
+            continue;
+        }
         pm_unlock(&g_dc.lock);
         /* due a refresh after the present before it, or as it is queued, or at the refresh it is held until: polled
            from a little before */
@@ -235,7 +247,7 @@ static void display_thread(void* arg) {
             }
             if (r != VK_TIMEOUT || now - p.presented_ns > GIVE_UP_NS) { /* gone, or not shown: let go */
                 g_dc.last_game_ns = 0;
-                displayed(&(DPresent){.game = p.game}, now, 0);
+                displayed(&(DPresent){.game = p.game, .syncpt = p.syncpt}, now, 0);
                 break;
             }
             failed = now;
@@ -252,8 +264,19 @@ u64 vk_display_id(void) {
     return id;
 }
 
-void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns) {
-    if (!id) return;
+void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, u32 syncpt) {
+    if (!id) { /* not watched: its syncpoint after those of the frames still watched */
+        if (!syncpt) return;
+        pm_lock(&g_dc.lock);
+        if (g_dc.started && g_dc.head != g_dc.tail && g_dc.head - g_dc.tail < DQ) {
+            g_dc.q[g_dc.head++ % DQ] = (DPresent){.syncpt = syncpt};
+            pc_signal(&g_dc.work);
+            syncpt = 0;
+        }
+        pm_unlock(&g_dc.lock);
+        if (syncpt) syncpt_add_quiet(syncpt, 1); /* under vk_lock */
+        return;
+    }
     pm_lock(&g_dc.lock);
     if (!g_dc.started) {
         pc_init(&g_dc.work);
@@ -261,20 +284,31 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns) 
         if (plat_thread(display_thread, NULL, (size_t)1 << 20)) {
             pm_unlock(&g_dc.lock);
             WARN_LIMIT(1, "vulkan: the thread that learns when frames are displayed could not start\n");
+            if (syncpt) syncpt_add_quiet(syncpt, 1); /* nothing watched: done with now */
             return;
         }
         __atomic_store_n(&g_dc.started, 1, __ATOMIC_RELEASE);
     }
     if (g_dc.head - g_dc.tail < DQ) { /* else unwatched: the queue is a refresh's worth of presents many times over */
-        g_dc.q[g_dc.head++ % DQ] =
-            (DPresent){sc, id, plat_ns(), released_ns, game ? g_dc.due_next : 0, g_dc.seq, game, g_vk.sc_clock, 0};
+        g_dc.q[g_dc.head++ % DQ] = (DPresent){.sc = sc,
+                                              .id = id,
+                                              .presented_ns = plat_ns(),
+                                              .released_ns = released_ns,
+                                              .due = game ? g_dc.due_next : 0,
+                                              .seq = g_dc.seq,
+                                              .game = game,
+                                              .clock = g_vk.sc_clock,
+                                              .made = 0,
+                                              .syncpt = syncpt};
         if (game) {
             g_dc.handed++;
             g_dc.held = g_dc.due_next != 0;
         }
         pc_signal(&g_dc.work);
+        syncpt = 0;
     }
     pm_unlock(&g_dc.lock);
+    if (syncpt) syncpt_add_quiet(syncpt, 1); /* unwatched, under vk_lock */
 }
 
 void vk_display_made(u64 id, VkResult r) {

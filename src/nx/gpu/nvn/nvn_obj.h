@@ -50,10 +50,12 @@ typedef struct {
 } NvnQueueBuilder; /* nxnative's device field doesn't fit an SDK 5 builder's 0x38: the runtime has one device */
 NVN_FITS(NvnQueueBuilder, 0x38);
 /* replay: the queue's replay state (gpu/nvn/nvn_replay.c), by index. ready: when its work so far is done on the
-   pacer's clock (plat_ns): only the syncs the queue waits for (a window texture's) hold it back there */
+   pacer's clock (plat_ns), and shown: the present on the display it waited for (nvn_replay_shown_syncpt's value, 0
+   none): only the syncs the queue waits for (a window texture's) hold it back there */
 typedef struct {
     u32 magic, replay;
     u64 submits, ready;
+    u32 shown, pad;
 } NvnQueue;
 NVN_FITS(NvnQueue, 0x1748);
 
@@ -185,13 +187,15 @@ typedef struct {
     u16 block[3], pad;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
-/* A fenced sync signals when the syncpoint reaches value (0: no syncpoint, a window texture's) and the pacer's clock
-   (plat_ns) reaches ready: its queue's work before it replayed and done, and what the queue waited for before it (a
-   window's texture comes free at the display's pace) */
+/* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
+   none; nvn_replay_shown_syncpt, a present on the display) and the pacer's clock (plat_ns) reaches ready: its queue's
+   work before it replayed and done, and what the queue waited for before it (a window's texture comes free at the
+   display's pace) */
 typedef struct {
     u32 magic, fenced;
     u32 syncpt, value;
     u64 ready;
+    u32 shown, pad;
 } NvnSync;
 NVN_FITS(NvnSync, 0x20);
 
@@ -215,13 +219,16 @@ typedef struct {
 NVN_FITS(NvnWindowBuilder, 0x2c);
 /* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
    its last present's slot plus one period (0: at once); syncpt[i], value[i]: the point the replay reaches once texture
-   i is off the display (0: none), the present after its own, or its own while none came yet (shown: those) */
+   i is off the display (0: none), the present after its own, or its own while none came yet (shown: those);
+   on_display[0], [1]: the presents' syncpoint value once the last present, and the one before it, are on the display
+   (0: not waited for); released[i]: when the game could draw in texture i, as far as the window knows (for the
+   renderer's display times) */
 typedef struct {
     u32 magic;
     i32 count, interval, next, crop[4];
     u64 texture[4];
-    u64 presents, pace, available[4];
-    u32 syncpt[4], value[4], shown;
+    u64 presents, pace, available[4], released[4];
+    u32 syncpt[4], value[4], on_display[2], shown;
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 

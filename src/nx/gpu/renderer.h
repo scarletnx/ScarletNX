@@ -153,9 +153,11 @@ typedef struct Renderer {
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
     /* released_ns: when the game was given the buffer to draw the frame in (plat_ns), 0 unknown: the log's display
        times count from there. period_ns: the game's own pace, a frame every period (its swap interval), 0 for none
-       (fps_limit not game, or a swap interval of 0): a renderer that can holds each frame until its refresh */
+       (fps_limit not game, or a swap interval of 0): a renderer that can holds each frame until its refresh.
+       shown_syncpt: a syncpoint the renderer increments once the frame is on the display, or once it knows the frame
+       won't be (not shown, or no display clock to say), the frames in the order they were given (0: none) */
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                           u32 transform, u64 released_ns, u64 period_ns);
+                           u32 transform, u64 released_ns, u64 period_ns, u32 shown_syncpt);
     /* the display's clock, before the game is given a buffer for its next frame at its own pace: waits until the
        game's frames presented have been displayed (all but one where the display doesn't hold them until their
        refresh, and one more when deadline_ns has passed already), or until deadline_ns (plat_ns), and sets

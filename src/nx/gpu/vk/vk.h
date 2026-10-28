@@ -1044,7 +1044,9 @@ void vk_pipeline_prepare(struct RendererPrepare* p);
 
 /* display.c: the display's clock (sc_clock). vk_display_id gives the next present's id (0 without a clock),
    vk_display_presented hands a present queued with it to the thread that learns when
-   it is displayed (game: a frame of the game's, released by it at released_ns), on the GPU thread. vk_display_fifo
+   it is displayed (game: a frame of the game's, released by it at released_ns), on the GPU thread under vk_lock.
+   syncpt (0 none) is incremented once it is displayed or let go: a frame with no id (not presented, or no clock) is
+   handed over too, and its syncpoint goes up once the presents before it are done with. vk_display_fifo
    says whether the swapchain shows each present for a refresh at least (FIFO), which pacing on the display needs.
    vk_display_wait is renderer.h's display_wait */
 u64 vk_display_id(void);
@@ -1052,7 +1054,7 @@ void vk_display_dropped(void); /* a game frame not shown: no swapchain image was
 /* with sc_hold, a game frame's display target for a frame period of period_ns (0 for none): the refresh it goes
    to, held there, in CLOCK_MONOTONIC ns (vk_rec_present's target), 0 to show it at once. GPU thread */
 u64 vk_display_target(u64 period_ns);
-void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns);
+void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, u32 syncpt);
 /* the present with that id (vk_display_presented before) was made, with that result: display.c waits for it only
    then (a present wait 2 for an id not presented yet is invalid). Any thread */
 void vk_display_made(u64 id, VkResult r);
