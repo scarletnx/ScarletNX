@@ -2464,7 +2464,14 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
         k->alpha_to_coverage = rk->alpha_to_coverage && n && rt[0];
         k->alpha_to_one = rk->alpha_to_one && n && rt[0] && g_vk.feat.alphaToOne;
         if (rk->alpha_to_one && !g_vk.feat.alphaToOne) LOG_LIMIT(1, "vulkan: this GPU has no alpha to one\n");
+        k->sample_shading = rk->sample_shading && g_vk.feat.sampleRateShading;
+        if (rk->sample_shading && !g_vk.feat.sampleRateShading)
+            LOG_LIMIT(1, "vulkan: this GPU has no sample shading: a program asked for per sample is shaded per pixel\n");
     }
+    if (rk->conservative && g_vk.has_conservative)
+        k->conservative = rk->conservative;
+    else if (rk->conservative)
+        LOG_LIMIT(1, "vulkan: this GPU has no conservative rasterization: such draws cover only the pixels they center\n");
     return 1;
 }
 
