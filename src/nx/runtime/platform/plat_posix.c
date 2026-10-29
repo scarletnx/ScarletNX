@@ -505,9 +505,18 @@ static unsigned g_wp_shift; /* the host's page, log2 */
 static u64 g_wp_budget;     /* atomic: pages the tracking and the traps may hold at once */
 static u64 g_wp_held;       /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
-/* the address a fault on a writable page was let go again at, and g_wp_opened then */
-static _Thread_local void* t_wp_retried;
-static _Thread_local u32 t_wp_retried_at;
+/* this thread's state. The fault handlers read it, so wp_thread_start touches it before the thread can fault: on
+   Darwin a thread's first access to a _Thread_local variable may allocate, which a signal handler mustn't */
+static _Thread_local struct {
+    /* the address a fault on a writable page was let go again at, and g_wp_opened then */
+    void* wp_retried;
+    u32 wp_retried_at;
+    void* frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
+    int crashed;       /* this thread faulted already */
+#if defined(__linux__)
+    u32 tid; /* plat_tid's */
+#endif
+} t_plat_posix;
 /* a range frozen while it is copied (plat_freeze, below) */
 static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
@@ -521,13 +530,11 @@ static u8* g_ww_open_lo[WW_OPEN_N];
 static u8* g_ww_open_hi[WW_OPEN_N];
 static int g_ww_open_n; /* atomic: slots claimed, to skip the search */
 
-/* the TLS the fault handler uses, touched before the thread can fault: on Darwin a thread's first access to a _Thread_local
-   variable may allocate, which a signal handler mustn't */
-static _Thread_local void* t_frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
+/* touches t_plat_posix, which the fault handlers use, before the thread can fault */
 static void wp_thread_start(void) {
-    __atomic_store_n(&t_wp_retried, NULL, __ATOMIC_RELAXED);
-    __atomic_store_n(&t_wp_retried_at, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&t_frz_retried, NULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&t_plat_posix.wp_retried, NULL, __ATOMIC_RELAXED);
+    __atomic_store_n(&t_plat_posix.wp_retried_at, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&t_plat_posix.frz_retried, NULL, __ATOMIC_RELAXED);
     (void)plat_tid();
 }
 
@@ -746,9 +753,9 @@ static int wp_fault(void* a, int write) {
     if (!(s & WP_PROT)) {
         u32 opened = __atomic_load_n(&g_wp_opened, __ATOMIC_SEQ_CST);
         wp_unlock(i, s);
-        if (!(s & WP_MAPPED) || (t_wp_retried == a && t_wp_retried_at == opened)) return 0;
-        t_wp_retried = a;
-        t_wp_retried_at = opened;
+        if (!(s & WP_MAPPED) || (t_plat_posix.wp_retried == a && t_plat_posix.wp_retried_at == opened)) return 0;
+        t_plat_posix.wp_retried = a;
+        t_plat_posix.wp_retried_at = opened;
         return 1;
     }
     if (mprotect(g_wp_base + (i << g_wp_shift), (size_t)page, PROT_READ | PROT_WRITE)) {
@@ -1122,9 +1129,8 @@ u32 plat_tid(void) {
 #if defined(__linux__)
     /* kept per thread: vk_lock asks it on every acquire, thousands of times a frame in one game, and each was a
        system call */
-    static _Thread_local u32 t_tid;
-    if (!t_tid) t_tid = (u32)syscall(SYS_gettid);
-    return t_tid;
+    if (!t_plat_posix.tid) t_plat_posix.tid = (u32)syscall(SYS_gettid);
+    return t_plat_posix.tid;
 #else
     return (u32)(uintptr_t)pthread_self();
 #endif
@@ -1646,16 +1652,16 @@ static int frozen_wait(void* a, int access) {
     u8* lo = __atomic_load_n(&g_frz_lo, __ATOMIC_ACQUIRE);
     if (!lo) return 0;
     if ((u8*)a < lo || (u8*)a >= __atomic_load_n(&g_frz_hi, __ATOMIC_ACQUIRE)) {
-        if (!access || t_frz_retried == a) return 0;
-        t_frz_retried = a;
+        if (!access || t_plat_posix.frz_retried == a) return 0;
+        t_plat_posix.frz_retried = a;
         return 1;
     }
     if (!__atomic_load_n(&g_frozen, __ATOMIC_SEQ_CST)) {
-        if (t_frz_retried == a) return 0; /* faulted again after the thaw: not the freeze's */
-        t_frz_retried = a;
+        if (t_plat_posix.frz_retried == a) return 0; /* faulted again after the thaw: not the freeze's */
+        t_plat_posix.frz_retried = a;
         return 1;
     }
-    t_frz_retried = NULL;
+    t_plat_posix.frz_retried = NULL;
     while (__atomic_load_n(&g_frozen, __ATOMIC_SEQ_CST)) {
 #if defined(__linux__)
         syscall(SYS_futex, &g_frozen, FUTEX_WAIT_PRIVATE, 1, NULL, NULL, 0);
@@ -1734,7 +1740,6 @@ void plat_file_unmap(PFileMap* m) {
 }
 /* ================================================================ the crash handler */
 static int g_crash_reporting; /* a thread is reporting a crash */
-static _Thread_local int t_crashed; /* this thread faulted already */
 static char g_main_alt_stack[ALT_STACK_SIZE];
 
 static void* context_pc(void* ctx) {
@@ -1777,8 +1782,8 @@ static void crash_signal(int sig, siginfo_t* si, void* ctx) {
         return;
     }
     /* a fault inside the report itself */
-    if (t_crashed) _exit(1);
-    t_crashed = 1;
+    if (t_plat_posix.crashed) _exit(1);
+    t_plat_posix.crashed = 1;
     /* one report at a time: it ends the process, so a second crashing thread just waits for that */
     if (!__atomic_compare_exchange_n(&g_crash_reporting, &idle, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
         for (;;) pause();
