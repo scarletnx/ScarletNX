@@ -21,7 +21,6 @@ const RtAPI g_rtapi;
 const SnxArmModule* g_arm_mod; /* a 64-bit game */
 const SnxArmRt g_arm_rt;
 void arm_thread_run(KThread* t) { (void)t; }
-__thread void* tls_thread;
 /* fatal ends the test, but where the test catches it (fatal_jump set): its message kept, back to the test; the last
    line logged kept too */
 static jmp_buf* fatal_jump;
@@ -142,7 +141,7 @@ enum { SNX_KCT_THREADS = 4 };
 static int snx_kct_host[256] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, snx_kct_nhost = 12;
 static char snx_kct_moved[256], snx_kct_moved_by[SNX_KCT_THREADS + 1][256];
 static int snx_kct_moves;
-static __thread int snx_kct_who = SNX_KCT_THREADS;
+static _Thread_local int snx_kct_who = SNX_KCT_THREADS;
 static pthread_mutex_t snx_kct_lk = PTHREAD_MUTEX_INITIALIZER;
 int plat_cpus(int* ids, int max) {
     int n = snx_kct_nhost < max ? snx_kct_nhost : max;

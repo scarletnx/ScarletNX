@@ -595,7 +595,7 @@ u32 plat_tid(void) {
 #if defined(__linux__)
     /* kept per thread: vk_lock asks it on every acquire, thousands of times a frame in one game, and each was a
        system call */
-    static __thread u32 t_tid;
+    static _Thread_local u32 t_tid;
     if (!t_tid) t_tid = (u32)syscall(SYS_gettid);
     return t_tid;
 #else
@@ -903,7 +903,7 @@ void plat_trap_disarm(u8* p, u64 size) {
 /* ---- a range frozen while it is copied: a write to it waits in the signal handler (fault_signal) for the thaw */
 static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
-static __thread void* t_frz_retried; /* the address a thawed write was let go again at once */
+static _Thread_local void* t_frz_retried; /* the address a thawed write was let go again at once */
 static int frozen_wait(void* a, int access);
 
 /* A SIGSEGV or SIGBUS no access raised but sent (kill, tgkill, sigqueue), told by its code's name: si_code <= 0 is
@@ -1081,7 +1081,7 @@ void plat_file_unmap(PFileMap* m) {
 }
 /* ================================================================ the crash handler */
 static int g_crash_reporting; /* a thread is reporting a crash */
-static __thread int t_crashed; /* this thread faulted already */
+static _Thread_local int t_crashed; /* this thread faulted already */
 static char g_main_alt_stack[ALT_STACK_SIZE];
 
 static void* context_pc(void* ctx) {

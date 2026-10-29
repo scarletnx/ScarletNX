@@ -36,7 +36,7 @@ typedef struct {
     uint64_t conn; /* the connection attached mirrors: a new one is re-announced to its server */
     char name[64];
 } TracyThread;
-static __thread TracyThread t_tracy;
+static _Thread_local TracyThread t_tracy;
 
 /* The launcher's tracy-capture process; it writes the trace when the client disconnects. */
 static SDL_Process* g_tracy_capture;

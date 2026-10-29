@@ -20,8 +20,7 @@
 #include <unistd.h>
 #endif
 
-__thread FILE* tls_log_redirect;
-__thread void* tls_thread;
+_Thread_local FILE* tls_log_redirect;
 
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096

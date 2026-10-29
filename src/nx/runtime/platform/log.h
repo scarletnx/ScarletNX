@@ -36,7 +36,7 @@ void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn))
 
 /* While set, the calling thread's lines go to this file and nowhere else (the main loop's threads.txt dump). It is
    per thread so the others keep writing the log during the dump */
-extern __thread FILE* tls_log_redirect;
+extern _Thread_local FILE* tls_log_redirect;
 
 /* log_max in MiB once, after the log first went past it and was cut (the oldest lines after the run's start gone), for
    the frontend to say over the game; 0 before that and after it was taken */

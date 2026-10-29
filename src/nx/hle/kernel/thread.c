@@ -220,6 +220,7 @@ void core_set_prio(KThread* t, int prio) {
 }
 
 /* ============================================================ threads */
+_Thread_local void* tls_thread;
 KThread* kthread_cur(void) { return (KThread*)tls_thread; }
 
 /* the host's CPUs, which the cores pin to (the locks and the cores' wait lists start in hle_init) */

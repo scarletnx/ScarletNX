@@ -158,7 +158,7 @@ static MemBlock* g_blk;
 static u32 g_nblk, g_capblk;
 /* whether this thread holds g_mem_lk: a crash inside mem.c is reported by the thread that holds it, and the report's
    queries (mem_query) read the list without taking the lock again */
-static __thread int t_mem_held;
+static _Thread_local int t_mem_held;
 static void mem_lock(void) {
     pm_lock(&g_mem_lk);
     t_mem_held = 1;
@@ -176,7 +176,7 @@ static void mem_unlock(void) {
 static u64 g_unmap_gen = 1;
 #define MEM_RUNS 64
 #define MEM_RUN_SLOT(a) (((a) >> 20) & (MEM_RUNS - 1))
-static __thread struct {
+static _Thread_local struct {
     u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
 } t_runs;
 static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }

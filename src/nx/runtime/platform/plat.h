@@ -53,8 +53,6 @@ void plat_sleep_ns(i64 ns); /* 0 or less yields */
 /* Ends the process with code at once: stdio is flushed, but atexit handlers don't run and other threads are left
    where they are */
 void plat_exit_now(int code) __attribute__((noreturn));
-/* the guest thread a host thread runs (hle/kernel/thread.c sets it) */
-extern __thread void* tls_thread;
 
 /* ---- time */
 u64 plat_ns(void);        /* a monotonic clock in nanoseconds */

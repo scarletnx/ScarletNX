@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* the guest thread a host thread runs (thread.c); not in plat.h, which C99 code includes too */
+extern _Thread_local void* tls_thread;
+
 /* The kernel's results (module 1), as RC(1, description) gives them */
 #define R_OUTOFMEM      0xD001  /* 104 OutOfMemory */
 #define R_BADSIZE       0xCA01  /* 101 InvalidSize */
