@@ -24,16 +24,16 @@
 
 #define BASE     0x200000u
 #define TEXT_OFF 0x1000u
-#define TEXT     (BASE + TEXT_OFF)
-#define LOOP     (TEXT + 0x00) /* subs r0, r0, #1; bne LOOP */
-#define AFTER    (TEXT + 0x08) /* add r1, r1, #1; bx lr */
-#define CALL     (TEXT + 0x10) /* mov r4, lr; blx THUMB */
-#define BACK     (TEXT + 0x18) /* bx r4 */
-#define THUMB    (TEXT + 0x1C) /* subs r0, #1; bne THUMB; adds r1, #1; bx lr */
-#define SVC      (TEXT + 0x30) /* svc #0x27 */
-#define STATE    (TEXT + 0x42) /* cmp r0, #0; it eq; bx r3 */
-#define FALL     (TEXT + 0x48) /* adds r1, #1; bx lr: STATE's next instruction, and r3, an A32 address */
-#define RETURN   0x300000u     /* lr: no code there */
+#define START    (BASE + TEXT_OFF)
+#define LOOP     (START + 0x00) /* subs r0, r0, #1; bne LOOP */
+#define AFTER    (START + 0x08) /* add r1, r1, #1; bx lr */
+#define CALL     (START + 0x10) /* mov r4, lr; blx THUMB */
+#define BACK     (START + 0x18) /* bx r4 */
+#define THUMB    (START + 0x1C) /* subs r0, #1; bne THUMB; adds r1, #1; bx lr */
+#define SVC      (START + 0x30) /* svc #0x27 */
+#define STATE    (START + 0x42) /* cmp r0, #0; it eq; bx r3 */
+#define FALL     (START + 0x48) /* adds r1, #1; bx lr: STATE's next instruction, and r3, an A32 address */
+#define RETURN   0x300000u      /* lr: no code there */
 #define TURNS    10000000u
 #ifdef _WIN32
 #define SUFFIX ".dll"
@@ -78,14 +78,14 @@ static void program(void) {
     for (i = 0; i < sizeof a32 / sizeof *a32; ++i)
         for (j = 0; j < 4; ++j) text[4 * i + j] = (unsigned char)(a32[i] >> (8 * j));
     for (i = 0; i < sizeof thumb / sizeof *thumb; ++i) {
-        text[THUMB - TEXT + 2 * i] = (unsigned char)thumb[i];
-        text[THUMB - TEXT + 2 * i + 1] = (unsigned char)(thumb[i] >> 8);
+        text[THUMB - START + 2 * i] = (unsigned char)thumb[i];
+        text[THUMB - START + 2 * i + 1] = (unsigned char)(thumb[i] >> 8);
     }
     for (i = 0; i < sizeof svc / sizeof *svc; ++i)
-        for (j = 0; j < 4; ++j) text[SVC - TEXT + 4 * i + j] = (unsigned char)(svc[i] >> (8 * j));
+        for (j = 0; j < 4; ++j) text[SVC - START + 4 * i + j] = (unsigned char)(svc[i] >> (8 * j));
     for (i = 0; i < sizeof state / sizeof *state; ++i) {
-        text[STATE - TEXT + 2 * i] = (unsigned char)state[i];
-        text[STATE - TEXT + 2 * i + 1] = (unsigned char)(state[i] >> 8);
+        text[STATE - START + 2 * i] = (unsigned char)state[i];
+        text[STATE - START + 2 * i + 1] = (unsigned char)(state[i] >> 8);
     }
 }
 
