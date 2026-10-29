@@ -300,3 +300,7 @@ void snx_ctr_vk_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0, NULL,
                          0, NULL);
 }
+void snx_ctr_vk_compute_barrier(VkCommandBuffer cb) {
+    snx_ctr_vk_render_close(); /* compute may follow a draw in the same recording */
+    snx_ctr_vk_barrier(cb);
+}

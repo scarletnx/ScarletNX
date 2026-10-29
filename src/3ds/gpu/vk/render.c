@@ -610,7 +610,7 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
     VkDeviceSize pixels = (VkDeviceSize)k->width * k->height;
     SnxCtrVkWindow w[3];
     uint32_t inside;
-    if (store && &g.targets[g.open] == t) end_rendering();
+    if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
         uint32_t push[6] = {inside, k->width, k->height, k->color_format, k->flip, store};
@@ -893,6 +893,8 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (!snx_ctr_vk_window(pa[f], bytes, &windows[f], &inside[f])) return SNX_CTR_PICA_OK; /* outside RAM */
     Texture* t = texture_slot(width, height, levels, cube ? 6 : 1);
+    /* the image's layout transition and the decode below cannot be recorded inside a target's pass */
+    end_rendering();
     if (!texture_image(t, width, height, levels, cube ? 6 : 1)) return SNX_CTR_PICA_UNSUPPORTED;
     memcpy(t->pa, pa, sizeof pa);
     t->format = format;
@@ -902,7 +904,6 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     t->bytes = bytes;
     t->cube = cube;
     t->used = serial;
-    end_rendering();
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_barrier(cb);
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) {

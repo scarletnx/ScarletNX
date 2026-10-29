@@ -280,7 +280,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     snx_ctr_vk_sync(pa, pitch * (height - 1) + width * bytes, false); /* the draws over it stored first, on the GPU */
     VkCommandBuffer cb = snx_ctr_vk_commands();
     unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose semaphores it takes */
-    snx_ctr_vk_barrier(cb); /* after what the GPU wrote to the framebuffer */
+    snx_ctr_vk_compute_barrier(cb);    /* after what the GPU wrote to the framebuffer */
     image_barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the shader writes all of it */
     f->layout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorSet set = snx_ctr_vk_set(g_present.decode.set);

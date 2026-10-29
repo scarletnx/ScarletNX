@@ -210,12 +210,18 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
-        # the window's clear and blits under Khronos validation, when the run has a window: the blits overwrite the
-        # clear's pixels, so a missing barrier between them is a write-after-write hazard
-        add_test(NAME 3ds_vk_draw_present_validation
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
-                $<TARGET_FILE:snx-test-3ds-vk-draw> --present)
-        set_tests_properties(3ds_vk_draw_present_validation PROPERTIES SKIP_RETURN_CODE 77)
+        # the draw test's modes that record only the commands under test, run under Khronos validation: any error it
+        # reports fails the test, such as a missing barrier (a synchronization hazard), or a dispatch, barrier or image
+        # transition inside a draw's open rendering
+        set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
+            3ds_vk_draw_texture_after_draw_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw)
+        foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
+            add_test(NAME ${snx_test}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                    $<TARGET_FILE:snx-test-3ds-vk-draw> ${snx_mode})
+            set_tests_properties(${snx_test} PROPERTIES SKIP_RETURN_CODE 77)
+        endforeach()
     endif()
     add_executable(snx-test-3ds-gsp 3ds_gsp.c)
     snx_test_target(snx-test-3ds-gsp 11)
