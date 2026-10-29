@@ -381,6 +381,7 @@ static int tex_upload_(Surf* t) {
     t->took_drawn = 0;            /* memory's own texels again, until tex_take_drawn copies targets in */
     vk_surf_relist(t);
     vk_render_end();              /* copies and clears happen outside rendering passes */
+    if (t->msaa) return t->upload_valid = vk_ms_load(t); /* its samples drawn from the guest's layout of them */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -476,10 +477,25 @@ static int format_samples(VkFormat f) {
     return r;
 }
 
+/* a texture of w by h pixels, with the samples of the sample layout msaa (DS_MSAA_, canonical) */
 static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, VkImageViewType type, VkFmt f, u32 fkey,
-                        u32 bl, u32 bh, u32 bd, u32 pitch, u64 layer_size) {
+                        u32 bl, u32 bh, u32 bd, u32 pitch, u64 layer_size, u32 msaa) {
+    /* a multisampled one is loaded by drawing its samples from the guest's layout of them, through a view of their
+       raw bytes (gpu/vk/msaa.c) */
+    VkFormat raw = msaa ? vk_raw_format(f.bpp) : VK_FORMAT_UNDEFINED;
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | (msaa ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0);
+    if (msaa && (f.depth || f.conv || !raw ||
+                 !vk_ms_supported(raw, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, msaa) ||
+                 !vk_ms_supported(f.vk, usage, raw != f.vk ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0, msaa))) {
+        LOG_LIMIT(4, "vulkan: a %u-sample texture of format %d can't be loaded from memory (not drawn)\n",
+                  ds_msaa_samples(msaa), (int)f.vk);
+        return NULL;
+    }
     Surf* t = calloc(1, sizeof *t);
     if (!t) return NULL;
+    t->msaa = (u8)msaa;
+    t->ms_raw = msaa != 0;
     t->gva = gva;
     t->w = t->sw = w;
     t->h = t->sh = h;
@@ -501,20 +517,19 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
                             .extent = {w, h, type == VK_IMAGE_VIEW_TYPE_3D ? d3 : 1},
                             .mipLevels = levels,
                             .arrayLayers = layers,
-                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .samples = vk_surf_samples(t),
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .usage = usage,
                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkFormatProperties format_props;
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, f.vk, &format_props);
-    if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) {
+    if (!msaa && (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
         ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
         t->storage_capable = 1;
     }
-    if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h) ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h && !msaa) ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VkViewFormats vf;
-    vk_view_formats(&ii, &vf);
+    vk_view_formats(&ii, &vf, raw);
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay */
     if (!vk_cache_image_create(&ii, &t->img, &t->mem, &t->bytes)) {
         free(t);
@@ -561,19 +576,25 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
         c->fkey = rt->fkey;
         c->type = rt->type;
         c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
+        c->msaa = rt->msaa; /* a multisampled target's copy has its samples, which a copy takes as they are */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (c->msaa && !vk_ms_supported(f.vk, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+                                        c->msaa)) {
+            free(c);
+            return rt;
+        }
         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                 .imageType = VK_IMAGE_TYPE_2D,
                                 .format = f.vk,
                                 .extent = {c->sw, c->sh, 1},
                                 .mipLevels = 1,
                                 .arrayLayers = rt->layers,
-                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .samples = vk_surf_samples(c),
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VkViewFormats vf;
-        vk_view_formats(&ii, &vf);
+        vk_view_formats(&ii, &vf, VK_FORMAT_UNDEFINED);
         if (!vk_cache_image_create(&ii, &c->img, &c->mem, &c->bytes)) { /* rt was used now: it stays */
             free(c);
             return rt;
@@ -755,7 +776,10 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         bl = 0;
         bh = bd = 0;
     }
-    if (tf.msaa) LOG_LIMIT(1, "vulkan: multisampled textures are read as single-sampled\n");
+    /* a multisampled texture (2D, 2D array, 2D without levels) is its pixels' size; guest memory holds its samples, a
+       block of them for each pixel (gpu/vk/msaa.c), one level */
+    u32 msaa = type == 1 || type == 5 || type == 7 ? ds_msaa_canonical(tf.msaa) : DS_MSAA_1X1;
+    if (msaa) glevels = 1;
     if (type == 0 || type == 4) h = 1;
     if (type == 3)
         d = 6;
@@ -774,7 +798,8 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     if (type == 6 && f.bpp && w <= UINT32_MAX / f.bpp) pitch = w * f.bpp;
     if (!f.bpp || !w || w > 16384 || h > 16384 || d > 2048) return NULL;
     if ((u64)w * h * d * (f.bw > 1 ? 1 : f.bpp) > (512ull << 20)) return NULL;
-    if (!bl && pitch < (w + f.bw - 1) / f.bw * f.bpp) {
+    u32 gw = w << ds_msaa_log2_x(msaa), gh = h << ds_msaa_log2_y(msaa); /* the guest's texels: samples */
+    if (!bl && pitch < (gw + f.bw - 1) / f.bw * f.bpp) {
         LOG_LIMIT(1, "vulkan: a pitch-linear texture's pitch (%u bytes) is shorter than its rows (not drawn)\n", pitch);
         return NULL;
     }
@@ -784,7 +809,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     u32 layers = vt == VK_IMAGE_VIEW_TYPE_3D ? 1 : d, d3 = vt == VK_IMAGE_VIEW_TYPE_3D ? d : 1;
     if (vt == VK_IMAGE_VIEW_TYPE_3D && !raw) f = vk_tic_format_3d(tic[0], srgb);
     /* bytes from one layer to the next: all the levels the header has, whichever of them it shows */
-    u64 stride = bl ? bl_layer_size(w, h, d3, &f, bh, bd, glevels) : (u64)pitch * ((h + f.bh - 1) / f.bh) * d3;
+    u64 stride = bl ? bl_layer_size(gw, gh, d3, &f, bh, bd, glevels) : (u64)pitch * ((gh + f.bh - 1) / f.bh) * d3;
     /* A texture upload reads guest memory. Complete any compute storage writes that overlap it first. */
     if (g_cs_any) vk_compute_mem_need(gva, stride * layers);
     /* the levels the shader sees, base level to max level (word 7), as a texture of their own the way Ryujinx makes
@@ -811,7 +836,7 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     /* a texture of several levels isn't the target (its other levels are other targets' memory, a mip chain drawn level
        by level): loaded from memory */
     if (rt && rt->layout != VK_IMAGE_LAYOUT_UNDEFINED && f.bw == 1 && (!f.conv || f.depth) && type != 2 && rt->w >= w &&
-        rt->h >= h && (d == 1 || type == 1 || type == 7) && levels == 1) {
+        rt->h >= h && (d == 1 || type == 1 || type == 7) && levels == 1 && rt->msaa == msaa) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
@@ -851,16 +876,16 @@ texture_from_memory:
     for (Surf* t = vk_surf_first(gva); t; t = t->next) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
             t->fkey != fkey || t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
-            t->pitch != pitch || t->layer_size != stride)
+            t->pitch != pitch || t->layer_size != stride || t->msaa != msaa)
             continue;
         return tex_check(t, gva);
     }
     if (!format_samples(f.vk)) return NULL;
-    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, pitch, stride);
+    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, pitch, stride, msaa);
     if (!t) return NULL;
     /* this texture's levels in one layer; the layers before the last one take their whole stride */
     u64 sz = 0;
-    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(w, h, d3, &f, bh, bd, l, NULL, NULL) : stride;
+    for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(gw, gh, d3, &f, bh, bd, l, NULL, NULL) : stride;
     t->size = stride * (layers - 1) + sz;
     t->wseen = vk_ww_now();
     vk_written_since(gmem_host(gva, t->size), t->size, 0); /* starts tracking it */
@@ -947,15 +972,19 @@ VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type) {
 
 /* empty textures for slots whose texture is missing or doesn't match the shader: zero, or depth 1.0 for shadow
    samplers, which compare against depth formats only */
-VkImageView vk_null_view(VkImageViewType type, int num) {
-    static VkImageView views[8][4];
-    static Surf* imgs[2][4]; /* [3D][num] */
+VkImageView vk_null_view(VkImageViewType type, int num, int ms) {
+    static VkImageView views[2][8][4];
+    static Surf* imgs[3][4]; /* [3D, or 2 multisampled][num] */
     if ((unsigned)type >= 8 || num < 0 || num > 3) return VK_NULL_HANDLE;
     if (num == 3 && type == VK_IMAGE_VIEW_TYPE_3D) num = 0; /* no 3D depth images (nor 3D shadow samplers) */
-    if (views[type][num]) return views[type][num];
+    ms = ms != 0;
+    /* multisampled: 4 samples, which every format sampled as a color image has (sampledImageColorSampleCounts) */
+    if (ms && (num == 3 || (type != VK_IMAGE_VIEW_TYPE_2D && type != VK_IMAGE_VIEW_TYPE_2D_ARRAY)))
+        return VK_NULL_HANDLE;
+    if (views[ms][type][num]) return views[ms][type][num];
     if (type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && !g_vk.feat.imageCubeArray) return VK_NULL_HANDLE;
     int is3d = type == VK_IMAGE_VIEW_TYPE_3D;
-    Surf* s = imgs[is3d][num];
+    Surf* s = imgs[ms ? 2 : is3d][num];
     if (!s) {
         static const VkFormat fm[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_SINT,
                                        VK_FORMAT_D16_UNORM};
@@ -963,18 +992,19 @@ VkImageView vk_null_view(VkImageViewType type, int num) {
         if (!s) return VK_NULL_HANDLE;
         s->w = s->h = s->sw = s->sh = s->levels = s->depth3d = 1;
         s->layers = is3d ? 1 : 6;
+        s->msaa = ms ? DS_MSAA_2X2 : DS_MSAA_1X1;
         s->type = is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         s->f = num == 3 ? (VkFmt){.vk = fm[3], .bpp = 2, .bw = 1, .bh = 1, .depth = 1}
                         : (VkFmt){fm[num], 4, 1, 1, 0, 0, (u8)(num != 0), 0, (u8)(num == 2)};
         s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                                .flags = is3d ? 0 : VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+                                .flags = is3d || ms ? 0 : VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
                                 .imageType = is3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
                                 .format = fm[num],
                                 .extent = {1, 1, 1},
                                 .mipLevels = 1,
                                 .arrayLayers = s->layers,
-                                .samples = VK_SAMPLE_COUNT_1_BIT,
+                                .samples = vk_surf_samples(s),
                                 .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
@@ -998,11 +1028,11 @@ VkImageView vk_null_view(VkImageViewType type, int num) {
         }
         vk_surf_use(cb, s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        imgs[is3d][num] = s;
+        imgs[ms ? 2 : is3d][num] = s;
     }
     VkComponentMapping id = {0};
-    views[type][num] = vk_tex_view(s, type, 0, &id, 0);
-    return views[type][num];
+    views[ms][type][num] = vk_tex_view(s, type, 0, &id, 0);
+    return views[ms][type][num];
 }
 
 /* ------------------------------------------------------------ samplers */
@@ -1253,8 +1283,32 @@ static void tex_take_drawn(Surf* t) {
         Surf* s = d[i];
         /* depth targets feed depth textures of the same host format, with their stencil when it has one (a depth
            pyramid of a D24S8 target: Pokemon Legends Z-A's lighting samples it with all its levels) */
+        /* a multisampled target read as a single-sampled texture of its samples' size, the guest's layout of them
+           (gpu/vk/msaa.c: a program resolving the samples itself): each layer's samples unpacked into that layout and
+           copied into the texture's first level. A multisampled texture takes nothing of targets: memory has them */
+        if (s->msaa && !t->msaa && s->gva == t->gva && t->type != VK_IMAGE_VIEW_TYPE_3D && !t->f.depth &&
+            !s->f.depth && t->f.bw == 1 && s->f.bpp == t->f.bpp && t->w == s->w << ds_msaa_log2_x(s->msaa) &&
+            t->h == s->h << ds_msaa_log2_y(s->msaa) && (s->layers == 1 || s->layer_size == stride) &&
+            vk_ms_moves(s) && !copied_into(s, t) && vk_rt_drawn_fresh(s)) {
+            u32 count = s->layers < t->layers ? s->layers : t->layers;
+            vk_render_end();
+            VkCommandBuffer cb = vk_cmd();
+            for (u32 k = 0; k < count; k++) {
+                VkImage grid = vk_ms_unpack(cb, s, k);
+                if (!grid) break;
+                vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, k, 1},
+                                 .extent = {t->w, t->h, 1}};
+                rec_CmdCopyImage(cb, grid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+            }
+            mark_copied(s, t);
+            continue;
+        }
         if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
-            (t->f.depth && s->f.vk != t->f.vk) || copied_into(s, t))
+            (t->f.depth && s->f.vk != t->f.vk) || copied_into(s, t) || s->msaa || t->msaa)
             continue;
         /* a blit converts formats where a copy keeps the bits: a scaled target only into a texture of its own format */
         int scaled = s->sw != s->w || s->sh != s->h;

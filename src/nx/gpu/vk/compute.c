@@ -1213,13 +1213,11 @@ rebind:
             vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
             vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             VkImageViewType want = vk_tex_view_type(st);
-            if (st->flags & 2) {
-                LOG_LIMIT(4, "vulkan: multisample texture upload is unavailable (skipped)\n");
-                g_cs_skips[CS_SKIP_TEXTURE]++;
-                cs_abandon_binding(originals);
-                return;
-            }
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
+               image of other samples reads zeros, as a missing texture does */
+            int ms = (st->flags & 2) != 0;
+            if (t && ms != (t->msaa != 0)) t = NULL;
             if ((st->flags & 1) && !t) {
                 LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
                 g_cs_skips[CS_SKIP_TEXTURE]++;
@@ -1239,7 +1237,7 @@ rebind:
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else {
-                v = vk_null_view(want, num);
+                v = vk_null_view(want, num, ms);
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
             VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);

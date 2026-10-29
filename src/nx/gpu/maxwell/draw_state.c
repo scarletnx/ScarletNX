@@ -143,7 +143,6 @@ void mx_draw_dynamic(const u32* r, DsDynamic* d) {
     memcpy(d->blend_const, &r[0x4C7], 16);
     memcpy(&d->alpha_ref, &r[0x4C4], 4);
     d->clip_height = r[0x3FE] >> 16;
-    d->msaa_mode = r[0x574];
     d->depth_word = r[0x50E];
 }
 
@@ -240,6 +239,9 @@ void mx_draw_blend(const u32* r, DsBlend* b) {
     if (r[0x671] & 1) b->logic_op = (u8)((r[0x672] & 15) + 1);
 }
 
+/* ANTI_ALIAS_ALPHA_CONTROL (0x54F, Eden's anti_alias_alpha_control): alpha to coverage in bit 0, alpha to one in
+   bit 4. The sample mask stays all samples: the 3D engine's per-pixel masks of a 2x2 quad (0x3EF-0x3F2) aren't
+   taken */
 void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     u32 clip = (r[0x64F] >> 11) & 7;
     memset(k, 0, sizeof *k);
@@ -247,7 +249,10 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->provoking_last = r[0x5A1] & 1; /* PROVOKING_VERTEX: 1 the last vertex, GL's and NVN's default */
     /* GeometryClip: Passthrough, FrustumXYZ and FrustumZ clip depth; the remaining modes clamp it */
     k->depth_clamp = clip != 1 && clip != 3 && clip != 5;
+    k->alpha_to_coverage = r[0x54F] & 1;
+    k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];
+    k->sample_mask = ~0u;
 }
 
 /* Transform feedback: each buffer's control at 0x1C0 + 4 i (its stream, the words of a vertex, their stride in
@@ -267,13 +272,16 @@ void mx_draw_xfb(const u32* r, ShXfb* x) {
    takes, 0x200 + 0x10 j: the address (2 words), width, height, format, memory layout, third dimension (bits 0-27) and
    array pitch in words. The depth target at 0x3F8-0x3FC (address, format, memory layout, array pitch) with its size
    at 0x48A-0x48C, bound when 0x54E is set: ZETA_SIZE's dimension control (bit 16) forces one layer, else its
-   depth (bits 0-15) is the array size. 0x56E: the sRGB write */
+   depth (bits 0-15) is the array size. 0x56E: the sRGB write. ANTI_ALIAS_SAMPLES_MODE (0x574): the targets' sample
+   layout, whose samples the sizes count (Eden's ImageInfo takes the registers' sizes for the surface in memory and
+   makes the image that much smaller, as Ryujinx does) */
 void mx_draw_targets(const u32* r, DsTargets* t) {
     u32 ctl = r[0x487], count = ctl & 15;
     if (count > DS_TARGETS_MAX) count = DS_TARGETS_MAX;
     memset(t, 0, sizeof *t);
     t->count = count;
     t->srgb_write = r[0x56E] & 1;
+    t->msaa = (u8)(r[0x574] & 15);
     for (u32 i = 0; i < count; i++) {
         const u32* c = &r[0x200 + ((ctl >> (4 + i * 3)) & 7) * 0x10];
         DsSurf* s = &t->color[i];
@@ -349,7 +357,7 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
 }
 /* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
 static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
-    if (t->count != u->count || t->srgb_write != u->srgb_write) return 1;
+    if (t->count != u->count || t->srgb_write != u->srgb_write || t->msaa != u->msaa) return 1;
     for (u32 i = 0; i < DS_TARGETS_MAX; i++)
         if (t->color[i].format != u->color[i].format) return 1;
     return 0;
