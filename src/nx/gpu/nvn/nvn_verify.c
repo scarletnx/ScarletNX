@@ -1790,6 +1790,9 @@ static int compare(const At* at, const DsState* l, const DrawCall* ld, const DsS
     CMP("raster.alpha_to_one", 0, l->rkey.alpha_to_one, s->rkey.alpha_to_one);
     if (ld->topology == 14) CMP("raster.patch_vertices", 0, l->rkey.patch_vertices, s->rkey.patch_vertices);
     CMP("raster.sample_mask", 0, l->rkey.sample_mask, s->rkey.sample_mask);
+    /* the enable alone: the 3D engine's registers don't show the dilation (maxwell/draw_state.c mx_draw_raster_key),
+       and the sample shading goes into the driver's program, not a register the shadow's draw state reads */
+    CMP("raster.conservative", 0, l->rkey.conservative != 0, s->rkey.conservative != 0);
     /* dynamic state */
     CMP("dynamic.cull", 0, l->dyn.cull, s->dyn.cull);
     CMP("dynamic.front_cw", 0, l->dyn.front_cw, s->dyn.front_cw);

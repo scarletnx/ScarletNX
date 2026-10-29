@@ -5,6 +5,7 @@
    OpenGL's enumerants, both in Vulkan's order */
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
+#include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/gpu.h"
 
 static u32 cmp_op(u32 v) {
@@ -253,6 +254,9 @@ void mx_draw_raster_key(const u32* r, DsRasterKey* k) {
     k->alpha_to_one = (r[0x54F] >> 4) & 1;
     k->patch_vertices = r[0x373];
     k->sample_mask = ~0u;
+    /* CONSERVATIVE_RASTER (0x452). Its dilation goes to a GPC register through a macro of NVN's (0x418800), which no
+       3D register shows: taken as none */
+    k->conservative = r[MAXWELL3D_CONSERVATIVE_RASTER] & 1;
 }
 
 /* Transform feedback: each buffer's control at 0x1C0 + 4 i (its stream, the words of a vertex, their stride in
