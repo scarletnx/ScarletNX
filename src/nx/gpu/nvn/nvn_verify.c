@@ -15,8 +15,8 @@
    An argument the shadow has no counterpart for skips the driver's call (counted per function). The driver's calls
    that act on the game or the host are never made: waits, the window and its presents (a present flushes the shadow
    queue instead), the game's callbacks. The driver's calls into other NVN functions go through their slots and so
-   through verify_fn, which runs the driver's code directly while the thread is in a shadow call (s_tls.t_shadow). A shadow
-   call runs on a stack of the runtime's (shadow_stack).
+   through verify_fn, which runs the driver's code directly while the thread is in a shadow call
+   (t_nvn.verify.shadow). A shadow call runs on a stack of the runtime's (shadow_stack).
 
    The driver's queue opens its GPU channel from such a call, so nvdrv marks the fd (nvn_verify_fd) and gives its
    GPFIFO submissions here instead of to the GPU thread: their words are copied (nvn_verify_gpfifo) into the queue's
@@ -113,16 +113,10 @@ static const u32 lend_min[2] = {64u << 10, 64u << 10};
 #define CB_CUR(v, k) ((u32)((v) >> (16 * (k))) & 0xFFFF)
 #define CB_REC(v)    ((u32)((v) >> 32) & 0xFFFF)
 #define CB_RECORDING (1ull << 48)
-static _Thread_local struct {
-    int t_shadow;          /* in a shadow call: slots run the driver's code */
-    u32 t_queue;           /* the replay queue (1 up) of the shadow call's queue, 0 none */
-    const char* t_running; /* the function the shadow call runs */
-    u64 t_stack;           /* the top of the thread's shadow stack (shadow_stack) */
-} s_tls;
-const char* nvn_verify_running(void) { return s_tls.t_running; }
+const char* nvn_verify_running(void) { return t_nvn.verify.running; }
 
 int nvn_verify_on(void) { return g_nvn.verify.on; }
-int nvn_verify_shadow_thread(void) { return s_tls.t_shadow; }
+int nvn_verify_shadow_thread(void) { return t_nvn.verify.shadow; }
 
 /* ---- maps */
 static u64 mix(u64 k) {
@@ -380,20 +374,20 @@ static u32 flags_of(const char* n, const VfKinds* k) {
    game's frames above it */
 #define SHADOW_STACK (1u << 20)
 static u64 shadow_stack(void) {
-    if (!s_tls.t_stack) s_tls.t_stack = shadow_map(SHADOW_STACK) + SHADOW_STACK;
-    return s_tls.t_stack;
+    if (!t_nvn.verify.stack) t_nvn.verify.stack = shadow_map(SHADOW_STACK) + SHADOW_STACK;
+    return t_nvn.verify.stack;
 }
 #define REGS_SIZE offsetof(CPU, mem)
 /* fn's code at entry on c, args already in c, until it returns to lr with the stack pointer sp */
 static void run(CPU* c, GuestFn fn, u64 entry, u64 lr, u64 sp) {
-    int outer = !s_tls.t_shadow;
+    int outer = !t_nvn.verify.shadow;
     u32 flag = nvn_direct_flag();
     c->x[30] = lr;
     c->x[31] = sp;
-    s_tls.t_shadow = 1;
+    t_nvn.verify.shadow = 1;
     fn(c, entry);
     while (c->pc != lr || c->x[31] != sp) snx_lookup(c, c->pc)(c, c->pc);
-    if (outer) s_tls.t_shadow = 0;
+    if (outer) t_nvn.verify.shadow = 0;
     if (nvn_direct_flag() != flag) { /* it would turn on the game's inlined command writes into nvn_direct's memory */
         nvn_direct_flag_set(flag);
         LOG_LIMIT(4, "nvn verify: the driver changed nvnPrivate0 in a shadow call: put back\n");
@@ -1117,7 +1111,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     u32 i, queue = 0, serial = 0;
     int ok;
     if (!f) fatal("nvn verify: no function at %llx", (unsigned long long)entry);
-    if (s_tls.t_shadow) { /* the driver calling NVN: its own code, or its memory callback (lend_ready) */
+    if (t_nvn.verify.shadow) { /* the driver calling NVN: its own code, or its memory callback (lend_ready) */
         if (entry == g_nvn.verify.lend.callback && c->x[1] < 2 &&
             __atomic_load_n(&g_nvn.verify.lend.state, __ATOMIC_ACQUIRE) == 2)
             shadow_memory(c);
@@ -1185,10 +1179,10 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     {
         CPU base;
         u64 run_sp = (scratch - 16) & ~15ull;
-        u32 prev_queue = s_tls.t_queue;
+        u32 prev_queue = t_nvn.verify.queue;
         GuestFn fn = f->original;
         u64 at = entry;
-        s_tls.t_queue = queue;
+        t_nvn.verify.queue = queue;
         memcpy(&base, c, REGS_SIZE);
         if (__atomic_add_fetch(&f->ran, 1, __ATOMIC_RELAXED) == 1) /* what ran last when the driver faults */
             LOG("nvn verify: the shadow runs %s for the first time (the driver's code at %llx)\n", f->k->name,
@@ -1226,7 +1220,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
                 c->x[2] = before.x[2];
             }
         }
-        s_tls.t_running = f->k->name;
+        t_nvn.verify.running = f->k->name;
         if (f->flags & F_PRESENT) {
             shadow_flush(c, &base, run_sp, base.x[0]);
             pm_lock(&g_nvn.verify.lock);
@@ -1234,7 +1228,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
             pm_unlock(&g_nvn.verify.lock);
         } else
             run(c, fn, at, lr, run_sp);
-        s_tls.t_running = NULL;
+        t_nvn.verify.running = NULL;
         if (f->flags & F_BEGIN) lend_begin(base.x[0]);
         if (f->flags & F_CALLS) lend_calls(base.x[0], before.x[2], (u32)before.x[1]);
         if (f->flags & F_END) lend_end(base.x[0], after.x[0]);
@@ -1245,7 +1239,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
             memcpy(c, &done, REGS_SIZE);
         }
         (void)serial;
-        s_tls.t_queue = prev_queue;
+        t_nvn.verify.queue = prev_queue;
     }
     /* what the call left */
     if ((f->flags & F_INIT) && f->k->ret == NVK_RET_BOOL && !(c->x[0] & 0xFF)) { /* no object: the next calls skip */
@@ -1355,11 +1349,10 @@ GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn ori
 
 /* ---- nvdrv: the shadow's channels */
 void nvn_verify_fd(u32 fd, int open) {
+    u32 q = t_nvn.verify.queue;
     if (fd >= sizeof g_nvn.verify.fd_queue) return;
-    __atomic_store_n(&g_nvn.verify.fd_queue[fd],
-                     (u8)(open ? (s_tls.t_queue && s_tls.t_queue <= VF_QUEUES ? s_tls.t_queue : 0x80) : 0),
-                     __ATOMIC_RELEASE);
-    if (open) LOG("nvn verify: fd %u is the shadow driver's (queue %u)\n", fd, s_tls.t_queue);
+    __atomic_store_n(&g_nvn.verify.fd_queue[fd], (u8)(open ? (q && q <= VF_QUEUES ? q : 0x80) : 0), __ATOMIC_RELEASE);
+    if (open) LOG("nvn verify: fd %u is the shadow driver's (queue %u)\n", fd, q);
 }
 int nvn_verify_fd_is(u32 fd) {
     return fd < sizeof g_nvn.verify.fd_queue && __atomic_load_n(&g_nvn.verify.fd_queue[fd], __ATOMIC_ACQUIRE);
