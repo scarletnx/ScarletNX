@@ -245,7 +245,7 @@ typedef struct {
 } SnxKctGame;
 static void* game_body(void* p) {
     SnxKctGame* g = (SnxKctGame*)p;
-    tls_thread = g->t;
+    t_hle.thread.cur = g->t;
     if (g->mode == 2) {
         pm_lock(&g->m);
         while (!g->signaled) kthread_wait(&g->cv, &g->m, -1);

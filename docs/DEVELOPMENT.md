@@ -71,7 +71,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
   (`mcp_gdb.c`, [USAGE.md](USAGE.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
   resumes as `-exec-*` commands in the background). They find a guest thread's `KThread` through its host thread's
-  `tls_thread`, by the runtime's debug information, and guest memory at `g_mem`. The game reports
+  `t_hle.thread.cur`, by the runtime's debug information, and guest memory at `g_mem`. The game reports
   on GitHub come from GitHub's own MCP server or `scripts/game-reports.py index`.
 - Game reports: `.github/workflows/game-reports.yml` builds `snx-logscan` and runs `scripts/game-reports.py triage` on
   each issue and comment. An issue with a log attached (`.log`, `.txt`, `.gz`, `.zip`) or pasted in a fenced block gets
