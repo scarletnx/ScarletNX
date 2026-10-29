@@ -1228,6 +1228,12 @@ snx_test_target(snx-test-unit-cache 11)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME unit_cache COMMAND snx-test-unit-cache)
 set_tests_properties(unit_cache PROPERTIES TIMEOUT 120)
+# a 32-bit game's blocks going on to the next by themselves (nx/loader/module_arm.c): loops, interworking, the poll
+add_executable(snx-test-arm-module-chain arm_module_chain.c)
+snx_test_target(snx-test-arm-module-chain 11)
+target_link_libraries(snx-test-arm-module-chain PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
+set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
 # the runtime looking a pc up in the AOT variant table instead of compiling it
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)

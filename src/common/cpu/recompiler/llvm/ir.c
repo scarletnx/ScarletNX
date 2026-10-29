@@ -354,12 +354,17 @@ static void ppc_tail_calls(SnxIr* ir) {
             for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = next) {
                 LLVMValueRef stub, args[2];
                 char name[160], text[160];
+                unsigned nargs, i;
                 next = LLVMGetNextInstruction(inst);
                 if (!LLVMIsACallInst(inst) || LLVMGetTailCallKind(inst) != LLVMTailCallKindMustTail) continue;
                 LLVMValueRef callee = LLVMGetCalledValue(inst);
                 LLVMTypeRef type = LLVMGetCalledFunctionType(inst);
                 if (LLVMIsAFunction(callee) && !LLVMIsDeclaration(callee)) continue; /* LLVM jumps there itself */
-                if (LLVMCountParamTypes(type) != 2) continue; /* only guest calls (c, pc) are musttail */
+                /* the musttail calls: a guest call (c, pc), to a declaration or a pointer, and an AArch32 block's
+                   going on to the next (c, module_arm.c's chain_block), to a declaration. A pointer's stub is
+                   snx_lookup's, for (c, pc) alone */
+                nargs = LLVMGetNumArgOperands(inst);
+                if (nargs > 2 || (!LLVMIsAFunction(callee) && nargs != 2)) continue;
                 if (LLVMIsAFunction(callee)) {
                     size_t length;
                     const char* target = LLVMGetValueName2(callee, &length);
@@ -369,10 +374,9 @@ static void ppc_tail_calls(SnxIr* ir) {
                     stub = ppc_stub(ir, type, name, text);
                 } else
                     stub = ppc_dynamic_stub(ir, type);
-                args[0] = LLVMGetOperand(inst, 0);
-                args[1] = LLVMGetOperand(inst, 1);
+                for (i = 0; i < nargs; ++i) args[i] = LLVMGetOperand(inst, i);
                 LLVMPositionBuilderBefore(ir->b, inst);
-                LLVMValueRef site = LLVMBuildCall2(ir->b, type, stub, args, 2, "");
+                LLVMValueRef site = LLVMBuildCall2(ir->b, type, stub, args, nargs, "");
                 LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
                 LLVMInstructionEraseFromParent(inst);
             }
