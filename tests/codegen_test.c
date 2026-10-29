@@ -277,7 +277,9 @@ static const SnxU32 g_words[] = {
     0x6E61D820UL, /* UCVTF V0.2D,V1.2D: lanes that fit, 0 is +0 under round toward minus infinity. */
     0x6E21D820UL, /* UCVTF V0.4S,V1.4S: the same for singles. */
     0x7EA1D820UL, /* FRSQRTE S0,S1: an even exponent's estimate, the upper lanes cleared. */
-    0x4EA1D820UL  /* FRECPE V0.4S,V1.4S under FZ: the estimates of normals, the smallest normal's of 2^126. */
+    0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under FZ: the estimates of normals, the smallest normal's of 2^126. */
+    0x6E218820UL, /* FRINTA V0.4S,V1.4S: ties away from zero, a tie's neighbours, -0.5 to -1. */
+    0x1E664020UL  /* FRINTA D0,D1: the half's predecessor rounds to +0. */
 };
 #define WORDS (sizeof(g_words) / sizeof(g_words[0]))
 
@@ -515,6 +517,14 @@ static void setup(unsigned i, CPU* c, unsigned char* memory) {
             SNX_VSET_S(c->v[1], 2, 0x00800000);
             SNX_VSET_S(c->v[1], 3, 0x7E7FFFFF);
             break;
+        /* FRINTA's, the same */
+        case 53:
+            SNX_VSET_S(c->v[1], 0, 0xC0200000);
+            SNX_VSET_S(c->v[1], 1, 0x3EFFFFFF);
+            SNX_VSET_S(c->v[1], 2, 0x4AFFFFFF);
+            SNX_VSET_S(c->v[1], 3, 0xBF000000);
+            break;
+        case 54: SNX_VSET_D(c->v[1], 0, 0x3FDFFFFFFFFFFFFFULL); break;
         default: break;
     }
 }
@@ -622,6 +632,10 @@ static int verify(unsigned i, const CPU* c, const unsigned char* memory) {
         case 52:
             ok = SNX_VD(c->v[0], 0) == 0xBC0500003F2A8000ULL && SNX_VD(c->v[0], 1) == 0x008000007E7F8000ULL && !c->fpsr;
             break;
+        case 53:
+            ok = SNX_VD(c->v[0], 0) == 0x00000000C0400000ULL && SNX_VD(c->v[0], 1) == 0xBF8000004B000000ULL && !c->fpsr;
+            break;
+        case 54: ok = !SNX_VD(c->v[0], 0) && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
         default: break;
     }
     return ok;
