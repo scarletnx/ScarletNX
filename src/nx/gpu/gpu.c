@@ -439,7 +439,7 @@ static GpuChannel* channel_get(u32 id) {
 /* ------------------------------------------------------------ the pushbuffer (Eden's dma_pusher.cpp) */
 /* a word of the stream (Eden's ProcessCommands): a data word the state owes is a method call (1, with *sub, *m, *v
    and *last, the header's last word); a header starts owing words (Eden's SetState) or, inline, is a call itself */
-static int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last) {
+int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last) {
     u32 mode, count;
     if (b->method_count) {
         *sub = b->subchannel;
@@ -491,6 +491,7 @@ static int engine_of(u32 cls) {
         default: return ENG_NONE;
     }
 }
+int gpu_class_known(u32 cls) { return engine_of(cls) != ENG_NONE; }
 /* Eden's ProcessSemaphoreTriggerMethod: the operation SEMAPHORED names on the semaphore at the address the puller's
    SEMAPHOREA/B hold, with SEMAPHOREC's payload. A release goes through the renderer, after the work before it */
 static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
