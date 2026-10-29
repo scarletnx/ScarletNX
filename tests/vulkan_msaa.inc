@@ -342,6 +342,39 @@ static int check_msaa(void) {
     }
     CHECK(!ms_case(ch, address, address + 0x14000, address + 0x15000, address + 0x17000, 1));
     CHECK(!ms_case(ch, address, address + 0x18000, address + 0x19000, address + 0x1B000, 0));
+    /* conservative rasterization (CONSERVATIVE_RASTER, 0x452): the triangle covers every sample of each pixel it
+       crosses (x + y <= 3), where the plain draw left the samples past its edge blue, and none of the pixels it
+       doesn't touch (x + y >= 5) */
+    int conservative = g_vk.has_conservative;
+    if (conservative) {
+        const u64 target = address + 0x1C000;
+        float blue[4] = {0, 0, 1, 1};
+        u8 samples[256];
+        DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+        ms_target(ch, target, 1);
+        memcpy(&r[0x360], blue, sizeof blue);
+        r[MAXWELL3D_CONSERVATIVE_RASTER] = 1;
+        vk_lock();
+        engine_clear(ch, 15 << 2);
+        ch->r3d_dirty = ~0u;
+        mx_draw_state_sync(ch);
+        CHECK(ch->ds.rkey.conservative == 1);
+        vk_render_draw(&ch->ds, &call, &ch->owner);
+        vk_render_end();
+        Surf* t = vk_rt_find(target);
+        CHECK(t && !ms_read_samples(t, samples));
+        vk_unlock();
+        r[MAXWELL3D_CONSERVATIVE_RASTER] = 0;
+        for (u32 y = 0; y < 8; y++)
+            for (u32 x = 0; x < 8; x++) {
+                const u8* p = samples + y * 32 + x * 4;
+                u32 px = x / 2 + y / 2;
+                if ((px <= 3 && (p[1] != 255 || p[2])) || (px >= 5 && (p[1] || p[2] != 255))) {
+                    fprintf(stderr, "msaa: conservative sample (%u, %u) is %u %u %u\n", x, y, p[0], p[1], p[2]);
+                    return 1;
+                }
+            }
+    }
     /* a 4x Z32F depth target (8x8 samples, pitch linear) cleared to 0.25: every sample written back as 0.25 through
        msaa.frag's depth unpack */
     const u64 zeta = address + 0x1E000;
@@ -367,8 +400,9 @@ static int check_msaa(void) {
     r[0x574] = 0;
     CHECK(g_vk_validation_messages == validation);
     printf("msaa: 4x targets drawn, written back and loaded in the guest's sample layout, resolved, and sampled, in "
-           "block and pitch linear memory, and a 4x depth target written back%s\n",
-           g_vk.props.limits.standardSampleLocations ? " (standard sample locations)" : "");
+           "block and pitch linear memory, and a 4x depth target written back%s%s\n",
+           g_vk.props.limits.standardSampleLocations ? " (standard sample locations)" : "",
+           conservative ? ", and a conservative triangle" : "");
     free(ch);
     return 0;
 }

@@ -313,6 +313,7 @@ static int create_device(void) {
         g_vk.has_local_read = snx_vk_extensions_has(&e, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
         has_cond = snx_vk_extensions_has(&e, VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
         has_provoking = snx_vk_extensions_has(&e, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+        g_vk.has_conservative = snx_vk_extensions_has(&e, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
         has_pipeline_robustness = snx_vk_extensions_has(&e, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
         has_robustness2 = snx_vk_extensions_has(&e, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         /* the driver's budget for each heap, the other processes' use taken out, for VMA: without it VMA took
@@ -579,6 +580,16 @@ static int create_device(void) {
     if (g_vk.has_provoking_last) {
         chain = &fprov;
         ext[next++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
+    }
+    /* conservative rasterization (the 3D engine's CONSERVATIVE_RASTER, NVN's SetConservativeRasterEnable), overestimated
+       by the dilation the game asks for up to the device's most: the extension has no features to enable */
+    if (g_vk.has_conservative) {
+        VkPhysicalDeviceConservativeRasterizationPropertiesEXT cons = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cons};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        g_vk.conservative_extra = cons.maxExtraPrimitiveOverestimationSize;
+        ext[next++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
     }
     /* the 3D engine's 8-bit indices, read as they are (render.c); without it they are widened on the GPU */
     VkPhysicalDeviceIndexTypeUint8FeaturesKHR findex8 = {

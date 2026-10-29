@@ -93,6 +93,7 @@ enum {
     MAXWELL3D_DRAW_END = 0x585,
     MAXWELL3D_DRAW_BEGIN = 0x586,
     MAXWELL3D_PROVOKING_VERTEX = 0x5A1,
+    MAXWELL3D_CONSERVATIVE_RASTER = 0x452, /* NVB197_SET_CONSERVATIVE_RASTER: bit 0 the enable */
     /* index_buffer (7 words from 0x5F2): the indexed draw's first index and count */
     MAXWELL3D_INDEX_BUFFER_FIRST = 0x5F7,
     MAXWELL3D_INDEX_BUFFER_COUNT = 0x5F8,
