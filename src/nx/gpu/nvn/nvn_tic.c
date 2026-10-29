@@ -204,7 +204,6 @@ static u32 swizzle(const TicFormat* f, u32 s) {
     }
     return SWZ_ZERO;
 }
-static u32 msaa_mode(u32 samples) { return samples == 2 ? 5 : samples == 4 ? 2 : samples == 8 ? 4 : 0; }
 
 int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8]) {
     u32 format = v && (v->set & NVN_VIEW_FORMAT) ? v->format : t->d.format;
@@ -270,7 +269,7 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
             out[6] |= 2u << 23 | 1u << 25; /* aniso fine spread: two, coarse: one */
         }
         out[5] |= (u32)!rect << 31;
-        out[7] |= msaa_mode(t->d.samples) << 8;
+        out[7] |= nvn_tex_msaa(t->d.samples) << 8;
         /* the layers: an array's count is its depth (a 1D array's its height, a cube array's in faces) */
         if (orig == NVN_TEXTURE_TARGET_1D_ARRAY) d = h;
         if (orig == NVN_TEXTURE_TARGET_1D_ARRAY || orig == NVN_TEXTURE_TARGET_2D_ARRAY ||

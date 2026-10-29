@@ -6,6 +6,7 @@
    height in blocks times 1.5, and the levels follow each other at block alignment. A packaged texture's 8 layout
    bytes (SetPackagedTextureLayout) give the block height in byte 0 (log2), which then wins */
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/draw_state.h"
 
 typedef struct {
     u8 bpb, bw, bh; /* bytes per block, block width and height (1 for uncompressed formats) */
@@ -116,6 +117,9 @@ static void shape(const NvnTexDesc* d, unsigned* dpl, int* layered, u32* w, u32*
     if (!*z) *z = 1;
 }
 
+u32 nvn_tex_msaa(int samples) {
+    return samples == 2 ? DS_MSAA_2X1_D3D : samples == 4 ? DS_MSAA_2X2 : samples == 8 ? DS_MSAA_4X2_D3D : DS_MSAA_1X1;
+}
 static void samples_xy(int s, u32* sx, u32* sy) {
     *sx = *sy = 1;
     if (s == 2)

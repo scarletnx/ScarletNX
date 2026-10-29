@@ -328,7 +328,8 @@ enum {
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
     OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
-    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC, OP_COUNT_
+    OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
+    OP_SAMPLE_MASK, OP_COUNT_
 };
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
@@ -465,6 +466,10 @@ typedef struct {
 typedef struct {
     i32 on;
 } NvnPDepthClamp;
+/* SetSampleMask: the samples a multisampled draw writes, bit i sample i */
+typedef struct {
+    i32 mask, pad;
+} NvnPSampleMask;
 /* mode 0 and 1: SetRenderEnableConditional (draw when the 64-bit counters at address and address + 16 are equal, not
    equal), 2 and 3: SetRenderEnable(true, false) */
 typedef struct {

@@ -350,3 +350,89 @@ static int check_msaa(void) {
     free(ch);
     return 0;
 }
+
+/* NVN direct's multisampled texture as a render target and its Downsample (gpu/nvn/nvn_draw.c's target,
+   nvn_copy.c's resolve): a 16x8 RGBA8 texture of 4 samples (NVN's 2x2 layout) in a one GOB high block linear
+   layout, its samples 0 and 3 green and 1 and 2 blue in guest memory, bound as the target and cleared in alpha alone
+   (a masked clear, drawn at every sample), then downsampled into a 16x8 texture of one sample: every pixel the
+   samples' average, half green and half blue, where a copy of one sample would be one or the other */
+static void ms_nvn_texture(u64 at, u64 gpu, int samples) {
+    NvnTexture t;
+    memset(&t, 0, sizeof t);
+    t.magic = NVN_MAGIC('T', 'E', 'X', 0);
+    t.d.format = NVN_FORMAT_RGBA8;
+    t.d.flags = NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT;
+    t.d.target = samples > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
+    t.d.samples = (u8)samples;
+    t.d.levels = 1;
+    t.d.width = 16;
+    t.d.height = 8;
+    t.d.depth = 1;
+    t.gpu = gpu;
+    memcpy(GP(at), &t, NVN_TEX_SNAP);
+}
+static int check_msaa_nvn(void) {
+    const u64 gpu = 0x47E000000ull, cpu = HEAP_BASE + 0x7E0000, ms = gpu, single = gpu + 0x1000;
+    const u64 snap_ms = cpu + 0x8000, snap_single = cpu + 0x8100, set_rt = cpu + 0x8200, clear = cpu + 0x8800,
+              copy = cpu + 0x8900, mask = cpu + 0x8C00;
+    static const u8 green[4] = {0, 255, 0, 255}, blue[4] = {0, 0, 255, 255};
+    u32 validation = g_vk_validation_messages;
+    u8 lay[2048], pixels[512];
+    gmmu_map(gpu, cpu, 0x8000);
+    /* the 32x16 samples: two GOBs across, two down, a GOB a block */
+    for (u32 y = 0; y < 16; y++)
+        for (u32 x = 0; x < 32; x++) {
+            u32 s = (x & 1) | (y & 1) << 1, xb = x * 4;
+            memcpy(lay + ((y / 8) * 2 + xb / 64) * 512 + gob_x_offset(xb % 64) + gob_y_offset(y % 8),
+                   s == 0 || s == 3 ? green : blue, 4);
+        }
+    CHECK(!gmem_write(ms, lay, sizeof lay));
+    ms_nvn_texture(snap_ms, ms, 4);
+    ms_nvn_texture(snap_single, single, 1);
+    NvnDraw* d = nvn_draw_new(0x80000007u);
+    NvnPSetRT rt;
+    memset(&rt, 0, sizeof rt);
+    rt.count = 1;
+    rt.color[0] = snap_ms;
+    memcpy(GP(set_rt), &rt, sizeof rt);
+    NvnPClearColor c = {.index = 0, .mask = 8};
+    const float one = 1.0f;
+    memcpy(&c.rgba[3], &one, 4);
+    memcpy(GP(clear), &c, sizeof c);
+    NvnPSampleMask sm = {.mask = 0xF};
+    memcpy(GP(mask), &sm, sizeof sm);
+    vk_lock();
+    CHECK(nvn_draw_record(d, OP_SET_RT, set_rt, sizeof rt));
+    CHECK(nvn_draw_record(d, OP_SAMPLE_MASK, mask, sizeof sm));
+    CHECK(nvn_draw_record(d, OP_CLEAR_COLOR, clear, sizeof c));
+    vk_render_end();
+    vk_unlock();
+    Surf* s = vk_rt_find(ms);
+    CHECK(s && s->msaa == DS_MSAA_2X2 && s->w == 16 && s->h == 8 && s->layout != VK_IMAGE_LAYOUT_UNDEFINED);
+    NvnPCopyT2T r;
+    memset(&r, 0, sizeof r);
+    r.src = snap_ms;
+    r.dst = snap_single;
+    r.sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1};
+    r.dr = r.sr;
+    r.flags = NVN_COPY_RESOLVE;
+    memcpy(GP(copy), &r, sizeof r);
+    i64 stride[2] = {0, 0};
+    CHECK(nvn_copy_record(OP_COPY_T2T, copy, sizeof r, stride));
+    Surf* t = vk_rt_find(single);
+    CHECK(t && !t->msaa && t->w == 16 && t->h == 8);
+    vk_lock();
+    CHECK(!ms_read_pixels(t, 16, 8, pixels));
+    vk_unlock();
+    for (u32 i = 0; i < 128; i++) {
+        const u8* p = pixels + i * 4;
+        if (p[0] || abs((int)p[1] - 128) > 1 || abs((int)p[2] - 128) > 1 || p[3] != 255) {
+            fprintf(stderr, "msaa nvn: resolved pixel %u is %u %u %u %u\n", i, p[0], p[1], p[2], p[3]);
+            return 1;
+        }
+    }
+    free(d);
+    CHECK(g_vk_validation_messages == validation);
+    puts("msaa nvn: a multisampled texture bound as NVN's render target, cleared at every sample and downsampled");
+    return 0;
+}
