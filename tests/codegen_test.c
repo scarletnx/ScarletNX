@@ -275,7 +275,9 @@ static const SnxU32 g_words[] = {
     0x4E22CC20UL, /* FMLA V0.4S,V1.4S,V2.4S: QNaN addend with inf*0, fused overflow cancelled; FPSR's NZCV, QC kept. */
     0x6E20D400UL, /* FADDP V0.4S,V0.4S,V0.4S: tie to even, SNaN priority, the destination its own source. */
     0x6E61D820UL, /* UCVTF V0.2D,V1.2D: lanes that fit, 0 is +0 under round toward minus infinity. */
-    0x6E21D820UL  /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x6E21D820UL, /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x7EA1D820UL, /* FRSQRTE S0,S1: an even exponent's estimate, the upper lanes cleared. */
+    0x4EA1D820UL  /* FRECPE V0.4S,V1.4S under FZ: the estimates of normals, the smallest normal's of 2^126. */
 };
 #define WORDS (sizeof(g_words) / sizeof(g_words[0]))
 
@@ -501,6 +503,18 @@ static void setup(unsigned i, CPU* c, unsigned char* memory) {
             SNX_VSET_S(c->v[1], 2, 0xFFFFFF);
             SNX_VSET_S(c->v[1], 3, 0x800000);
             break;
+        /* FRSQRTE and FRECPE's fast paths, which must not depend on the host's rounding mode */
+        case 51:
+            SNX_VSET_S(c->v[0], 2, 0x12345678);
+            SNX_VSET_S(c->v[1], 0, 0x40800001);
+            break;
+        case 52:
+            c->fpcr = 0x1000000;
+            SNX_VSET_S(c->v[1], 0, 0x3FC00000);
+            SNX_VSET_S(c->v[1], 1, 0xC2F6E979);
+            SNX_VSET_S(c->v[1], 2, 0x00800000);
+            SNX_VSET_S(c->v[1], 3, 0x7E7FFFFF);
+            break;
         default: break;
     }
 }
@@ -603,6 +617,10 @@ static int verify(unsigned i, const CPU* c, const unsigned char* memory) {
         case 49: ok = !SNX_VD(c->v[0], 0) && SNX_VD(c->v[0], 1) == 0x433FFFFFFFFFFFFFULL && !c->fpsr; break;
         case 50:
             ok = SNX_VD(c->v[0], 0) == 0x3F80000000000000ULL && SNX_VD(c->v[0], 1) == 0x4B0000004B7FFFFFULL && !c->fpsr;
+            break;
+        case 51: ok = SNX_VD(c->v[0], 0) == 0x3EFF8000ULL && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
+        case 52:
+            ok = SNX_VD(c->v[0], 0) == 0xBC0500003F2A8000ULL && SNX_VD(c->v[0], 1) == 0x008000007E7F8000ULL && !c->fpsr;
             break;
         default: break;
     }
