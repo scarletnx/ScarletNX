@@ -339,8 +339,7 @@ void klock_unlock(void) {
 }
 
 /* ============================================================ threads */
-_Thread_local void* tls_thread;
-KThread* kthread_cur(void) { return (KThread*)tls_thread; }
+KThread* kthread_cur(void) { return t_hle.thread.cur; }
 
 /* the host's CPUs, which the cores pin to (the locks and the cores' wait lists start in hle_init) */
 void kernel_init(void) {
@@ -448,7 +447,7 @@ static void thread_run(KThread* t, u64 pc) {
 }
 static void thread_main(void* p) {
     KThread* t = (KThread*)p;
-    tls_thread = t;
+    t_hle.thread.cur = t;
     SNX_THREAD_NAME(t->name[0] ? t->name : "guest");
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     thread_run(t, t->entry);
@@ -595,7 +594,7 @@ int kernel_retire(int timeout_ms) {
 static void thread_resume_main(void* p) {
     KThread* t = (KThread*)p;
     int park = t->park;
-    tls_thread = t;
+    t_hle.thread.cur = t;
     __atomic_add_fetch(&g_host.thread.nhost, 1, __ATOMIC_ACQ_REL);
     kthread_hold_point(t, park);
     if (park == PARK_ENTER || park == PARK_SERVICE) {

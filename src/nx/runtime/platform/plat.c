@@ -20,7 +20,7 @@
 #include <unistd.h>
 #endif
 
-_Thread_local FILE* tls_log_redirect;
+_Thread_local PlatTls t_plat;
 
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096
@@ -50,7 +50,7 @@ static _Alignas(64) int g_crashing; /* log_crash_mode was called, atomic */
 
 void log_crash_mode(void) {
     __atomic_store_n(&g_crashing, 1, __ATOMIC_SEQ_CST);
-    tls_log_redirect = NULL;
+    t_plat.log_redirect = NULL;
 }
 
 static size_t log_compose(char* out, size_t cap, const char* text);
@@ -277,8 +277,8 @@ void logf_(int lvl, const char* fmt, ...) {
     if (w < 0) return;
     /* a cut line still ends with its newline, so the next one starts on its own */
     if ((size_t)w >= sizeof text) text[sizeof text - 2] = '\n';
-    if (tls_log_redirect) {
-        fputs(text, tls_log_redirect);
+    if (t_plat.log_redirect) {
+        fputs(text, t_plat.log_redirect);
         return;
     }
     if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) {
@@ -323,7 +323,7 @@ void fatal(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    tls_log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
+    t_plat.log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
     logf_(0, "FATAL: %s\n", msg);
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */

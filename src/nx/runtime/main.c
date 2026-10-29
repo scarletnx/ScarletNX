@@ -542,9 +542,9 @@ static void write_threads(u64 second) {
     f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "second %llu, frames %d\n", (unsigned long long)second, __atomic_load_n(&g_frames, __ATOMIC_RELAXED));
-    tls_log_redirect = f; /* this thread's lines only: the others keep the log */
+    t_plat.log_redirect = f; /* this thread's lines only: the others keep the log */
     kernel_dump_threads();
-    tls_log_redirect = NULL;
+    t_plat.log_redirect = NULL;
     fclose(f);
 }
 
