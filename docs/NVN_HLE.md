@@ -79,6 +79,101 @@ and [compute class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/c
 Every `SNX_NVN_*` variable is gone: these are `[Debug]` settings now. `gpu_trace_target=address[:bytes]` (`vk/render.c`) logs the clears and
 draws that write a render target starting in that range, and replaced the older GPU trace variables.
 
+## Verify mode: nvn_direct against the game's own driver
+
+`nvn_verify=1` (the `[Debug]` setting, or `--nvn_verify=1`, with `nvn_direct`) checks nvn_direct draw by draw against
+the Maxwell path while the game runs (`src/nx/gpu/nvn/nvn_verify.c`). The two paths meet at `DsState`
+(`gpu/draw_state.h`): nvn_direct's replay fills it from its records, the Maxwell path from the 3D engine's registers
+(`maxwell/draw_state.c`). Verify mode makes both for each draw and compares them. Off, it costs a test of the
+setting at each replayed draw and submission and a compare of the channel's id in the 3D engine's draw, constant
+upload and acting methods, and the slots hold nvn_direct's handlers as before.
+
+### What runs
+
+The game's driver is still in its module, and nvn_direct keeps the address of the driver's code for each function it
+takes over (`nvn_direct.c` `take`). In verify mode the slot holds `verify_fn`, which runs nvn_direct's handler on
+the game's objects first, as always, and then the driver's code on shadows, on the game's thread and stack. The
+driver's results go nowhere but the shadows: the game sees nvn_direct's.
+
+| Shadow | What it holds | When it changes |
+| --- | --- | --- |
+| Object (device, queue, pool, buffer, texture, sampler, texture and sampler pool, program, sync, event, command buffer) | the driver's object, in guest memory of the runtime's outside every region the game maps (`shadow_map`) | made at the live object's `Initialize`, gone at its `Finalize`; keyed by the live address |
+| Builder or state object | the driver's bytes | keyed by nvn_direct's bytes: the game copies these by value, so an address names nothing. Each setter runs the driver on the copy that nvn_direct's bytes before the call stand for, and records the result for nvn_direct's bytes after it |
+| Memory the driver writes (pool storage, queue memory, control memory) | a range of the same size (queue memory: at least 8 MiB) | made at its first use, keyed by the live address |
+| Command memory | the game's chunks through the shadow pools, and 256 KiB pieces of a 1 GiB ring of the runtime's when less than a quarter is left, so the driver never calls the game's memory callback | each command buffer call |
+| Command handle | the handle the driver's `EndRecording` answered | keyed by nvn_direct's handle |
+
+`tools/nvn_verify_kinds.py` writes each function's argument kinds from `nvn.h`'s prototypes into
+`nvn_verify_kinds.inc` (the ctest `nvn_verify_kinds` checks it is current). A call whose argument has no shadow is
+skipped, and the log names the function and the reason once. Never made in the shadow: waits, the window and its
+presents (a present flushes the shadow queue instead), callbacks, virtual pool mappings, and for now
+`CallCommands` and `CopyCommands` (below). The driver's own calls into NVN go through the same slots, and run the
+driver's code while the thread is in a shadow call. The driver's lookup with a device sets `nvnPrivate0`: after
+each shadow call the word is put back, since it turns on the game's inlined command writes.
+
+### How the shadow pushbuffer gets to the decoder
+
+The driver's queue opens its GPU channel inside a shadow call, so nvdrv marks the fd (`nvn_verify_fd`). A
+`SUBMIT_GPFIFO` on a marked fd goes to `nvn_verify_gpfifo` instead of the GPU thread: its words are copied at once
+(command memory is reused) into the queue's batches, each tagged with the number of the game's submission it
+follows, and the fence's increments are made at once, so the driver's waits on its own channel return. After each
+`QueueSubmitCommands` the shadow flushes its queue, so each live submission has a batch of its own.
+
+On the GPU thread, nvn_direct's replay of submission n and each of its draws pull the batches through a verify
+channel (`gpu_verify_channel_new`, ids from `GPU_VERIFY_ID`): the Maxwell decoder with its registers, macros and
+held draw, and no draw, clear, write, release, barrier or syncpoint (`verify_inert` in `engines.c`). A verify
+channel's draw gives its `DsState` and `DrawCall` to `nvn_verify_shadow_draw`, and its constant buffer data goes to
+a table beside the decode, never to guest memory. The shadow draws of submission n pair in order with nvn_direct's;
+an extra draw on either side is counted, and the next submission starts the pairing again.
+
+### What the compare reports
+
+Each group of `DsState`, the bound targets' blending, and the draw's own arguments, field by field. A GPU address is
+compared as the guest bytes it names, an address in a shadow range as the live memory it shadows, so the two paths'
+different mappings of one buffer are the same. nvn_direct's inline banks 0 and 2 are compared word by word with the
+words the driver's stream wrote into its bank buffers. Each differing field is logged once, with the queue,
+submission and draw, and the two values (`nvn verify: queue Q submission S draw D: GROUP.field[i] nvn_direct X,
+driver Y`), then its count at 1024 and each power of 4. Also checked: the results of the calls that return a value
+(not an address or a time), and each texture descriptor `TexturePoolRegisterTexture` writes, word by word with the
+address as guest bytes. A `svcBreak` in a shadow call names the driver function it ran.
+
+### What the first runs found (one game, SDK NVN 55.15)
+
+The shadow device, pools, programs and queue initialize, and the game runs through its title and save load with the
+driver beside nvn_direct. The results the driver answers otherwise, which the game sizes its memory by:
+
+| Call | nvn_direct | Driver |
+| --- | --- | --- |
+| `nvnQueueBuilderGetQueueMemorySize` (defaults, compute memory set) | 0x100000 | 0x109000 |
+| `nvnTextureBuilderGetStorageClass` | 0 | 0x100, 0x1fe |
+| `nvnTextureBuilderGetStorageSize` | 0x200, 0x18000 | 0x10000, 0x20000 |
+| `nvnTextureBuilderGetStorageAlignment` | 0x200 | 0x10000 |
+| `nvnTextureBuilderGetZCullStorageSize` | 0x100, 0x200, 0x2c00 | 0x460, 0x860, 0xafe0 |
+| `nvnDeviceGetTextureHandle` | 0x10300107 | 0x110300107 (bit 32 set) |
+| TIC word 6 of registered textures | 0 | 0x03000000 |
+
+The queue memory size is certain: the driver's `QueueInitialize` fails with the size nvn_direct answers. The texture
+rows need the state check below before they count: they come from builders whose shadow state passed through the
+content map.
+
+### Open problems (why draws don't compare yet)
+
+- **State by content is lossy.** nvn_direct's packed builders and states keep less than the driver's objects (the
+  device pointer, and fields the driver derives, such as byte 48 of the texture builder after `SetHeight` and
+  `SetDepth`). Two driver states then share one key, the map keeps the newest, and a later setter runs on the wrong
+  one: about 140,000 such updates in 110 seconds. A key of nvn_direct's bytes plus the live address of the last
+  `SetDefaults` (builders are stack objects made and used in one function) would separate most.
+- **The driver's `CallCommands` aborts** (`nn::diag::detail::Abort` with a Result) about 7 seconds in, on a handle
+  the map gave. Until it is found, verify mode skips it, and the game's draws in called recordings are only
+  nvn_direct's: in the first run 1,024 draws paired and about 197,000 had no shadow draw.
+- **Arrays of texture views** at `SetRenderTargets` whose state the map doesn't know skip the call, so the shadow's
+  targets stay at their defaults.
+
+Not covered even when these are fixed: render-target readbacks (the plan's per-operation pixel compare), indirect
+draws' counts (the shadow reads zeros from its shadow pools), virtual pool mappings, the window and present path,
+compute dispatches, clears and copies (only draws are paired), and a game whose driver uses another NVN API version
+than the ones nvn_direct describes.
+
 ## Observing NVN calls
 
 The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. With

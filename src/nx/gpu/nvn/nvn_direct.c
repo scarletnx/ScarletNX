@@ -20,6 +20,7 @@
    otherwise the driver runs, the bootstrap loader's slot given back before the game gets its first function */
 #include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn_driver.h"
+#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/nvn_trace.h"
@@ -47,11 +48,12 @@ typedef struct {
     Missing missing[MISSING_SLOTS];
     PMutex lock;
     GuestFn bootstrap_original, getproc_original;
+    u64 bootstrap_entry;
     u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
     u32 api;
     int active, decided;
 } NvnDirectState;
-static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0, 0, 0, 0};
+static NvnDirectState g_nvn_direct = {{{0}}, PMUTEX_INIT, 0, 0, 0, 0, 0, 0, 0};
 static void getproc(CPU* c, u64 entry);
 static void bootstrap(CPU* c, u64 entry);
 
@@ -76,7 +78,7 @@ static void unimplemented(CPU* c, u64 entry) {
 /* whether a slot holds one of this file's handlers */
 static int ours(GuestFn fn) {
     int i;
-    if (fn == unimplemented) return 1;
+    if (fn == unimplemented || nvn_verify_ours(fn)) return 1;
     for (i = 0; i < NVN_COUNT; i++)
         if (nvn_fn[i] == fn) return 1;
     return 0;
@@ -134,6 +136,8 @@ static void take(u64 addr, const char* name) {
             g_nvn_direct.missing[j].name);
         __atomic_store_n(&g_nvn_direct.missing[j].addr, addr, __ATOMIC_RELEASE);
     }
+    /* verify mode: the driver's code, which the slot holds until now, runs after the handler on shadows */
+    if (g_settings.nvn_verify) fn = nvn_verify_take(addr, name, fn, ours(*slot) ? NULL : *slot, fn != unimplemented);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
     pm_unlock(&g_nvn_direct.lock);
 }
@@ -145,7 +149,12 @@ static void take(u64 addr, const char* name) {
    lookup stores device && no debug layer in it) */
 static void getproc(CPU* c, u64 entry) {
     char name[128];
-    int valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
+    int valid;
+    if (nvn_verify_shadow_thread()) { /* the shadow driver's own lookups, with its device: as they are */
+        g_nvn_direct.getproc_original(c, entry);
+        return;
+    }
+    valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     c->x[0] = 0;
     g_nvn_direct.getproc_original(c, entry);
     if (g_nvn_direct.flag && gr32(g_nvn_direct.flag))
@@ -210,8 +219,13 @@ static void decide(CPU* c, u64 entry) {
 
 static void bootstrap(CPU* c, u64 entry) {
     char name[128];
-    int valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
+    int valid;
     GuestFn* slot;
+    if (nvn_verify_shadow_thread()) {
+        g_nvn_direct.bootstrap_original(c, entry);
+        return;
+    }
+    valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     pm_lock(&g_nvn_direct.lock);
     if (!g_nvn_direct.decided) decide(c, entry);
     pm_unlock(&g_nvn_direct.lock);
@@ -256,6 +270,7 @@ void nvn_direct_init(void) {
     slot = &g_disp[(entry - g_code_lo) / 4];
     if (!*slot) fatal("nvn: the game's nvnBootstrapLoader has no recompiled code");
     g_nvn_direct.bootstrap_original = *slot;
+    g_nvn_direct.bootstrap_entry = entry;
     g_nvn_direct.flag = kernel_find_symbol_exact("nvnPrivate0");
     *slot = bootstrap; /* before any guest thread runs */
     g_nvn_direct.active = 1;
@@ -266,4 +281,12 @@ void nvn_direct_init(void) {
     else
         LOG("nvn: nvn_direct: the runtime implements %d NVN functions, and the game's NVN driver doesn't run\n",
             NVN_COUNT);
+}
+
+u64 nvn_direct_lookup(CPU* c, const char* name) {
+    return g_nvn_direct.bootstrap_original ? driver_lookup(c, g_nvn_direct.bootstrap_entry, name) : 0;
+}
+u32 nvn_direct_flag(void) { return g_nvn_direct.flag ? gr32(g_nvn_direct.flag) : 0; }
+void nvn_direct_flag_set(u32 v) {
+    if (g_nvn_direct.flag) snx_st_le32(GP(g_nvn_direct.flag), v);
 }
