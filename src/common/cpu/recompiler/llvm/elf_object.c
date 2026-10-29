@@ -205,22 +205,31 @@ long snx_elf_riscv_hi20(const Elf64_Rela* rela, size_t n, uint64_t offset) {
     return -1;
 }
 
-void snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align) {
+/* the section at the end of its kind, which grows by it */
+static void place(SnxElfObject* o, size_t j, uint64_t* size, uint64_t* kind_align) {
+    uint64_t align = o->sh[j].sh_addralign ? o->sh[j].sh_addralign : 1;
+    *size = snx_align_up(*size, align);
+    o->position[j] = *size;
+    *size += o->sh[j].sh_size;
+    if (align > *kind_align) *kind_align = align;
+}
+
+void snx_elf_layout(SnxElfObject* objs, size_t count, const SnxElfPlace* text, uint64_t* kind_size,
+                    uint64_t* kind_align) {
+    size_t text_count = 0;
     for (size_t k = 0; k < SNX_ELF_KINDS; ++k) {
         kind_size[k] = 0;
         kind_align[k] = 1;
     }
+    for (size_t i = 0; text && i < count; ++i)
+        for (size_t j = 0; j < objs[i].eh->e_shnum; ++j) text_count += objs[i].kind[j] == SNX_ELF_TEXT;
+    for (size_t i = 0; i < text_count; ++i)
+        place(&objs[text[i].object], text[i].section, &kind_size[SNX_ELF_TEXT], &kind_align[SNX_ELF_TEXT]);
     for (size_t k = 0; k < SNX_ELF_KINDS; ++k)
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count && !(text && k == SNX_ELF_TEXT); ++i) {
             SnxElfObject* o = &objs[i];
-            for (size_t j = 0; j < o->eh->e_shnum; ++j) {
-                uint64_t align = o->sh[j].sh_addralign ? o->sh[j].sh_addralign : 1;
-                if (o->kind[j] != (int)k) continue;
-                kind_size[k] = snx_align_up(kind_size[k], align);
-                o->position[j] = kind_size[k];
-                kind_size[k] += o->sh[j].sh_size;
-                if (align > kind_align[k]) kind_align[k] = align;
-            }
+            for (size_t j = 0; j < o->eh->e_shnum; ++j)
+                if (o->kind[j] == (int)k) place(o, j, &kind_size[k], &kind_align[k]);
             if (k == SNX_ELF_TEXT && o->veneers) { /* right after the object's code, in reach of all of it */
                 o->island = (kind_size[k] + 3) & ~(uint64_t)3;
                 kind_size[k] = o->island + (o->eh->e_machine == EM_PPC64 ? SNX_ELF_PPC_VENEER_SIZE : SNX_ELF_VENEER_SIZE) *

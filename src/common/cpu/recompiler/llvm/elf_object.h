@@ -241,10 +241,16 @@ int snx_elf_riscv_lo12(unsigned machine, unsigned type);
    in its section; -1 for none */
 long snx_elf_riscv_hi20(const Elf64_Rela* rela, size_t n, uint64_t offset);
 
+/* One section of the set: objs[object].sh[section] */
+typedef struct {
+    size_t object, section;
+} SnxElfPlace;
 /* Positions of the loaded sections inside their kinds, in object and section order, and each kind's size and
    alignment; an object with veneers gets its island right after its code, of its machine's veneers (AArch64's
-   SNX_ELF_VENEER_SIZE, PowerPC64's SNX_ELF_PPC_VENEER_SIZE) */
-void snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align);
+   SNX_ELF_VENEER_SIZE, PowerPC64's SNX_ELF_PPC_VENEER_SIZE). text (NULL for that order) is every code section of the
+   set in the order the code takes instead: only for objects without veneers, whose islands go after their own code */
+void snx_elf_layout(SnxElfObject* objs, size_t count, const SnxElfPlace* text, uint64_t* kind_size,
+                    uint64_t* kind_align);
 /* The objects' code with each section's alignment added, no less than what snx_elf_layout places before islands */
 uint64_t snx_elf_text_size(const SnxElfObject* objs, size_t count);
 /* Below this much code (snx_elf_text_size) every AArch64 B and BL of a module or load reaches its target (128 MiB, with
