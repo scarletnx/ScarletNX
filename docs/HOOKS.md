@@ -3,25 +3,44 @@
 A hook runs a function the game exports with a native handler of the runtime's instead of its recompiled code. The
 handlers are accelerators: each does what its function is known to do from reading the function's code, on the
 guest's own data as the function would leave it. They never copy or reference the SDK. A hook is installed when the
-game starts, so adding or changing one needs no recompile.
+game starts, so changing a handler needs no recompile. A hook of a new symbol needs one for the direct calls to its
+function (below).
 
 ## How a call reaches a hook
 
-Every call to an exported function goes through its slot in the dispatch table, `g_disp` (`snx_lookup` in `cpu.h`):
+Every call to a hooked function goes through its slot in the dispatch table, `g_disp` (`snx_lookup` in `cpu.h`):
 
 - a call into another of the game's modules, through the PLT stub and the GOT the game's own dynamic linker fills
   (the main executable's `memcpy` is the SDK module's);
 - a call through a function pointer or a virtual call (`BLR`), NVN's procedure table among them;
-- a direct call (`BL`, or a tail call's `B`) within a module: the recompiler compiles a call to an exported function
-  as a call through its slot (`snx_codegen_exported`, `ir_codegen.c`'s `call`), so LLVM never inlines one into its
-  callers either (`SNX_ABI` 15);
+- a direct call (`BL`, or a tail call's `B`) within a module to a function whose symbol a hook names: the recompiler
+  compiles it as a call through the slot (`snx_codegen_routed`, `ir_codegen.c`'s `call`), so LLVM never inlines that
+  function into its callers either;
 - a call from the runtime JIT's code, which calls an AOT function directly only while its slot still holds it
   (`jit_service.c`'s `direct`).
 
-Calls to the functions a module doesn't export stay direct calls, so they cost what they did. `hook_install`
-(`src/nx/hle/hook/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the hook's adapter
-into each matching function's slot, before the game's first thread and the JIT start. The slots never change while
-the game runs, except for `hook_restore` putting a hook back after the JIT drops the code of a range
+The recompiler routes only the symbols of the route list (`src/nx/loader/hook_routes.c`): each symbol that
+`hooks.hook` and `gpu/nvn/nvn.hook` name in any version, and the `route` lines of the functions the runtime wraps with
+code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_direct.c`). `hookgen --routes` generates
+the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every function
+that a module exports, but some games export nearly all of their main executable: 88% to 98% of its functions in
+three games, so that 51% to 64% of all their direct calls became indirect calls (`tools/hook_census.py`). On one of
+them, in a gameplay scene, routing only the list's symbols took 9% of the cycles and 3.6% of the instructions that the
+main guest thread spends in the recompiled code each frame, and a quarter of the process's mispredicted indirect
+branches. The module became 7% smaller. Small accessors that went through their slots are inlined into their callers
+again. The frame time did not change there, because the GPU thread set it.
+
+Each module carries the list it was recompiled with (`snx_routes()`, `SnxRoutes` in `module_abi.h`): the hash of the
+list and the hash of each symbol. `hook_install` logs the module's list. When it installs a hook whose symbol the
+module's list doesn't name, it warns that the hook sees only the calls through the PLT and function pointers, and
+that a recompile gives it the direct calls too. `nvn_direct` does the same for `nvnBootstrapLoader`. A module made
+before the list has no `snx_routes`, and routes every function it exports, so it works with this runtime unchanged.
+The list doesn't change `SNX_ABI`: a hook's handler keeps the guest's data as its function does, so a direct call
+that runs the function's own code is still correct, only not accelerated.
+
+`hook_install` (`src/nx/hle/hook/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the
+hook's adapter into each matching function's slot, before the game's first thread and the JIT start. The slots never
+change while the game runs, except for `hook_restore` putting a hook back after the JIT drops the code of a range
 (`jit_code_invalidate`).
 
 What no hook sees is code the game's own compiler inlined from an SDK header: there is no call to take. A handler

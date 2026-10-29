@@ -40,8 +40,10 @@ typedef struct {
     size_t symbol_count;
     SnxU64 *functions, *relptrs; /* discovery seeds, both sorted without duplicates */
     size_t function_count, relptr_count;
-    SnxU64* exported; /* the functions its dynamic symbols define, sorted without duplicates (in the functions' block) */
-    size_t exported_count;
+    /* the functions its dynamic symbols define whose names a hook names (hook_routes.h), sorted without duplicates (in
+       the functions' block): the recompiler calls them through their dispatch slots */
+    SnxU64* routed;
+    size_t routed_count;
     SnxFde* fde;
     size_t fde_count;
     char** imports; /* undefined symbols' names */
