@@ -5,7 +5,8 @@
    denormals, the normal range's ends, products and quotients around the smallest normal, sums that cancel, fused
    sums whose double rounding would land on a single's tie) and the ones they leave to the soft-float, under FPCR's
    FZ, DN and rounding modes, with FPSR's flags set and clear; in the host's default FP environment, and in its other
-   rounding modes and flushes, which the fast paths must leave to the soft-float */
+   rounding modes and flushes, which the fast paths must leave to the soft-float; a vector's lanes (snx_fp_host_lanes)
+   the same way, singles four at a time */
 #include "common/cpu/aarch64/cpu.h"
 #include <fenv.h>
 #include <stdio.h>
@@ -176,6 +177,93 @@ static void normal_edges(void) {
     fma(32, 0x01000000u, 0x80800001u, 0x3F800000u, 1u << 24, 0);
 }
 
+/* snx_fp_host_lanes against the soft-float lane by lane, bits and FPSR: four or two singles, or two doubles, of each
+   helper, each lane drawn on its own, so one vector mixes lanes the four-lane paths take with lanes they leave and
+   lanes past the count are never written */
+static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
+    static const struct {
+        unsigned helper;
+        int op, numeric;
+    } kinds[] = {
+        {0, SNX_FP_ADD, 0},
+        {0, SNX_FP_SUB, 0},
+        {0, SNX_FP_MUL, 0},
+        {0, SNX_FP_DIV, 0},
+        {0, SNX_FP_MULX, 0},
+        {0, SNX_FP_ABD, 0},
+        {0, SNX_FP_RECPS, 0},
+        {0, SNX_FP_RSQRTS, 0},
+        {1, 0, 0},
+        {2, SNX_FP_SQRT, 0},
+        {2, SNX_FP_RECPE, 0},
+        {2, SNX_FP_RSQRTE, 0},
+        {3, 0, 0},
+        {3, 1, 0},
+        {3, 0, 1},
+        {3, 1, 1},
+    };
+    unsigned bytes = (unsigned)width / 8, count = width == 32 && next() & 1 ? 4 : 2, k, i;
+    u64 mask = width == 32 ? 0xFFFFFFFFu : ~0ull;
+    for (k = 0; k < sizeof kinds / sizeof *kinds; ++k) {
+        unsigned char x[16], y[16], z[16], out[16];
+        u64 a[4], b[4], d[4], want[4];
+        CPU host = state(fpcr, fpsr), soft = host;
+        int bad = 0;
+        for (i = 0; i < count; ++i) {
+            a[i] = operand(width, near);
+            b[i] = operand(width, near);
+            d[i] = operand(width, near);
+            switch (next() % 6) {
+                case 0: b[i] = ((a[i] ^ (u64)1 << (width - 1)) + (next() % 3) - 1) & mask; break; /* sums cancel */
+                case 1: { /* a fused sum near zero: the addend near minus the product */
+                    CPU product = state(0, 0);
+                    a[i] = ((snx_fp_binary(&product, b[i], d[i], width, SNX_FP_MUL) ^ (u64)1 << (width - 1)) +
+                            (next() % 5) - 2) &
+                           mask;
+                    break;
+                }
+                case 2: /* a single's double rounding tie (fused_edges'), an addend far below deciding it */
+                    if (width == 32) {
+                        static const u32 addends[] = {0x00000000u, 0x80000000u, 0x16800000u, 0x96800000u,
+                                                      0x0D800000u, 0x8D800000u, 0x00000001u, 0x80000001u};
+                        a[i] = addends[next() % 8];
+                        b[i] = 0x3F800800u ^ (next() & 1 ? 0x80000000u : 0);
+                        d[i] = 0x3F800800u ^ (next() & 1 ? 0x80000000u : 0);
+                    }
+                    break;
+                default: break;
+            }
+            __builtin_memcpy(x + i * bytes, width == 32 ? (const void*)&(u32){(u32)a[i]} : (const void*)&a[i], bytes);
+            __builtin_memcpy(y + i * bytes, width == 32 ? (const void*)&(u32){(u32)b[i]} : (const void*)&b[i], bytes);
+            __builtin_memcpy(z + i * bytes, width == 32 ? (const void*)&(u32){(u32)d[i]} : (const void*)&d[i], bytes);
+            switch (kinds[k].helper) {
+                case 0: want[i] = snx_fp_binary(&soft, a[i], b[i], width, kinds[k].op); break;
+                case 1: want[i] = snx_fp_fma(&soft, a[i], b[i], d[i], width); break;
+                case 2: want[i] = snx_fp_unary(&soft, a[i], width, kinds[k].op); break;
+                default: want[i] = snx_fp_minmax(&soft, a[i], b[i], width, kinds[k].op, kinds[k].numeric); break;
+            }
+        }
+        for (i = 0; i < 16; ++i) out[i] = 0xA5;
+        snx_fp_host_lanes(&host, out, x, y, z,
+                          kinds[k].helper | bytes << 4 | count << 8 | (u32)kinds[k].op << 12 |
+                              (u32)kinds[k].numeric << 16);
+        g_test.checks++;
+        for (i = 0; i < count; ++i) {
+            u64 got = 0;
+            __builtin_memcpy(&got, out + i * bytes, bytes); /* little-endian hosts */
+            if (got != want[i]) {
+                report("lanes", width, (int)k, a[i], b[i], d[i], fpcr, fpsr, got, want[i], host.fpsr, soft.fpsr);
+                bad = 1;
+            }
+        }
+        for (i = count * bytes; i < 16; ++i) bad |= out[i] != 0xA5;
+        if (!bad && host.fpsr != soft.fpsr)
+            report("lanes' FPSR", width, (int)k, a[0], b[0], d[0], fpcr, fpsr, 0, 0, host.fpsr, soft.fpsr);
+        else if (bad && g_test.failures == 0)
+            report("lanes past the count", width, (int)k, 0, 0, 0, fpcr, fpsr, 0, 0, host.fpsr, soft.fpsr);
+    }
+}
+
 static void draws(unsigned count) {
     static const int nears[] = {0, -63, 63, -126, -20};
     int width, op, n;
@@ -196,6 +284,7 @@ static void draws(unsigned count) {
                        fpsr);
                 fma(width, d, a, b, fpcr, fpsr);
                 others(width, a, b, fpcr, fpsr);
+                if (i % 4 == 0) lanes(width, near, fpcr, fpsr);
             }
         }
 }
