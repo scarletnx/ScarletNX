@@ -26,6 +26,11 @@ typedef struct {
    a dylib's install name and code signature are it). 0, or -1 with the reason in error */
 int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
              const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
+/* An ELF code section named this prefix and a decimal rank (".text.snx_hot.0", ...) goes before all the other code,
+   in the order of the ranks: a profile's hot functions, each in its own section, packed together (the recompiler's
+   --layout). The ELF linker only, and only for a module without veneers: an AArch64 or PowerPC64 module large enough
+   to need them keeps each section with its object, in reach of the object's island */
+#define SNX_LINK_HOT_TEXT ".text.snx_hot."
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
