@@ -929,6 +929,28 @@ static u32 nvmap_ioc_free(u8* d) {
     if (retire) nvmap_retire(h);
     return NV_RESULT_SUCCESS;
 }
+u32 nvmap_handle_new(u64 addr, u64 size) {
+    u8 d[NVMAP_ALLOC_ADDRESS + 8]; /* the largest of the arguments */
+    u32 h;
+    if (!size || size > 0xffffffffull || !page_aligned(addr)) return 0;
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_CREATE_SIZE, (u32)size);
+    if (nvmap_ioc_create(d)) return 0;
+    h = rd32(d, NVMAP_CREATE_HANDLE);
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_ALLOC_HANDLE, h);
+    wr64(d, NVMAP_ALLOC_ADDRESS, addr);
+    if (!nvmap_ioc_alloc(d)) return h;
+    nvmap_handle_drop(h);
+    return 0;
+}
+void nvmap_handle_drop(u32 h) {
+    u8 d[NVMAP_FREE_FLAGS + 4];
+    if (!h) return;
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_FREE_HANDLE, h);
+    nvmap_ioc_free(d);
+}
 /* PARAM: one of the handle's properties (Eden's IocParam) */
 static u32 nvmap_ioc_param(u8* d) {
     u32 v = 0, r = NV_RESULT_SUCCESS;

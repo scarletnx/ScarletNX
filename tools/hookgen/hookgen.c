@@ -82,7 +82,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_HOOKS    512
+#define MAX_HOOKS    1024 /* NVN alone has about 540 functions */
 #define MAX_ENTRIES  1024
 #define MAX_FAMILIES 64
 #define MAX_ARGS     16

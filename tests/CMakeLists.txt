@@ -734,6 +734,17 @@ snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
+# the NVN functions of API 53 and 55 nvn_direct took over last, by family: records and their replay into the draw
+# state (nvn_cmd.c, nvn_draw.c), the objects' getters and setters (nvn_object.c) and the queue and window (nvn_queue.c)
+add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c")
+snx_test_target(snx-test-nvn-names 11)
+target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-nvn-names PRIVATE m)
+snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+add_test(NAME nvn_names COMMAND snx-test-nvn-names)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
         stack_argument 2 "would be on the stack"

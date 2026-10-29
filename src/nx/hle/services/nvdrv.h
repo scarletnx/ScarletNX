@@ -29,6 +29,11 @@ void nv_ioctl_abandon(u32 fd);
    outputs 0) for a dead handle */
 int nvmap_get(u32 h, u64* addr, u32* size);
 u64 nvmap_addr_by_id(u32 id); /* 0 when no live handle has that id */
+/* A handle the runtime makes for guest memory the game gave a front end (nvn_direct's memory pools), as the game's NVN
+   driver makes one for each pool: created and allocated at once, with one reference, its number its id. 0 when the
+   memory isn't page aligned, is past 4 GiB or no number is left. drop gives its reference back, as FREE does */
+u32 nvmap_handle_new(u64 addr, u64 size);
+void nvmap_handle_drop(u32 h);
 
 /* The guest address a GPU address maps to, 0 when its page isn't mapped */
 u64 gmmu_translate(u64 gva);
