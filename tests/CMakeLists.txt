@@ -601,6 +601,11 @@ snx_test_target(snx-test-nvn-descriptors 99)
 target_include_directories(snx-test-nvn-descriptors PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-descriptors PRIVATE m)
 add_test(NAME nvn_descriptors COMMAND snx-test-nvn-descriptors)
+# nvn_direct's texture storage answers (src/nx/gpu/nvn/nvn_tex.c nvn_tex_storage) against the game driver's rules
+add_executable(snx-test-nvn-tex-storage nvn_tex_storage.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c")
+snx_test_target(snx-test-nvn-tex-storage 99)
+target_include_directories(snx-test-nvn-tex-storage PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME nvn_tex_storage COMMAND snx-test-nvn-tex-storage)
 # the vector FP instructions with fast paths through the LLVM steps against the soft-float helpers, lane by lane,
 # with lanes the host's arithmetic can and can't take in one vector
 add_executable(snx-test-llvm-vfp-lanes llvm_vfp_lanes.c llvm_steps.c

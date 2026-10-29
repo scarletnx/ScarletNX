@@ -584,20 +584,20 @@ void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     memcpy(o->layout, GP(layout), sizeof o->layout);
     o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | ((o->layout[0] + 1u) & NVN_TEX_BLOCK_H));
 }
-/* the storage class is the GMMU page kind the driver picks from the format: phase 2's. nxnative answers 0 */
+/* the storage class: 0x100 with the GMMU page kind, as the game's driver answers (gpu/nvn/nvn_tex.c nvn_tex_storage) */
 i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
+    NvnTexStorage st;
     (void)c;
-    (void)b;
-    return 0;
+    nvn_tex_storage(&TB(b)->d, &st);
+    return (i32)(0x100 | st.kind);
 }
-/* The size of a depth texture's ZCull save area. The runtime does no ZCull and never touches it, but games allocate
-   it from their pools, and NVN never answers 0 (nxnative: a zero-size allocation broke one game's pool allocator).
-   nxnative's estimate, 8 bytes per 32x32 tile and layer, at least 256 */
+/* The size of a depth texture's ZCull save area, as the driver answers. The runtime does no ZCull and never touches
+   it, but games allocate it from their pools */
 u64 nvn_TextureBuilderGetZCullStorageSize(CPU* c, u64 b) {
-    const NvnTexDesc* d = &TB(b)->d;
-    u64 tiles = (u64)((d->width + 31) / 32) * ((d->height + 31) / 32) * (d->depth ? d->depth : 1);
+    NvnTexStorage st;
     (void)c;
-    return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
+    nvn_tex_storage(&TB(b)->d, &st);
+    return st.zcull;
 }
 i32 nvn_TextureBuilderGetTarget(CPU* c, u64 b) {
     (void)c;
@@ -686,18 +686,18 @@ void nvn_TextureBuilderSetPackagedTextureData(CPU* c, u64 b, u64 data) {
     TB(b)->packaged_data = data;
 }
 u64 nvn_TextureBuilderGetStorageSize(CPU* c, u64 b) {
-    NvnTexLayout l;
+    NvnTexStorage st;
     (void)c;
-    nvn_tex_layout(&TB(b)->d, &l);
-    if (!l.bpb) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn_direct doesn't know\n",
-                          TB(b)->d.format);
-    return l.size;
+    nvn_tex_storage(&TB(b)->d, &st);
+    if (!st.size) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn_direct doesn't know\n",
+                            TB(b)->d.format);
+    return st.size;
 }
 u64 nvn_TextureBuilderGetStorageAlignment(CPU* c, u64 b) {
-    NvnTexLayout l;
+    NvnTexStorage st;
     (void)c;
-    nvn_tex_layout(&TB(b)->d, &l);
-    return l.align;
+    nvn_tex_storage(&TB(b)->d, &st);
+    return st.align;
 }
 int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
     const NvnTexBuilder* s = TB(b);
@@ -771,9 +771,11 @@ i64 nvn_TextureGetStride(CPU* c, u64 t) {
     (void)c;
     return (i64)CT(t)->d.stride;
 }
-i32 nvn_TextureGetStorageSize(CPU* c, u64 t) {
+i32 nvn_TextureGetStorageSize(CPU* c, u64 t) { /* the builder's answer (nvn_tex_storage), not the extent */
+    NvnTexStorage st;
     (void)c;
-    return (i32)CT(t)->size;
+    nvn_tex_storage(&CT(t)->d, &st);
+    return (i32)st.size;
 }
 u64 nvn_TextureGetMemoryPool(CPU* c, u64 t) {
     (void)c;
@@ -850,9 +852,10 @@ i32 nvn_TextureGetDepthStencilMode(CPU* c, u64 t) {
     return CT(t)->d.bits & NVN_TEX_STENCIL ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : 0;
 }
 i32 nvn_TextureGetStorageClass(CPU* c, u64 t) {
+    NvnTexStorage st;
     (void)c;
-    (void)t;
-    return 0;
+    nvn_tex_storage(&CT(t)->d, &st);
+    return (i32)(0x100 | st.kind);
 }
 u64 nvn_TextureGetTextureAddress(CPU* c, u64 t) {
     (void)c;
@@ -866,10 +869,10 @@ int nvn_TextureCompare(CPU* c, u64 a, u64 b) {
     return !memcmp(&x->d, &y->d, sizeof x->d) && x->gpu == y->gpu;
 }
 u64 nvn_TextureGetZCullStorageSize(CPU* c, u64 t) {
-    const NvnTexDesc* d = &CT(t)->d;
-    u64 tiles = (u64)((d->width + 31) / 32) * ((d->height + 31) / 32) * (d->depth ? d->depth : 1);
+    NvnTexStorage st;
     (void)c;
-    return tiles ? (tiles * 8 + 0xff) & ~0xffull : 0x100;
+    nvn_tex_storage(&CT(t)->d, &st);
+    return st.zcull;
 }
 /* the texels written into the storage's layout on the GPU (gpu/nvn/nvn_copy.c): a swizzle is the GPU's work */
 void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
