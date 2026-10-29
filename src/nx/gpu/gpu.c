@@ -163,7 +163,7 @@ void gmem_w32(u64 gva, u32 v) {
 }
 /* Hardware fetches a program only up to its end, and TotK has compute programs ending next to an uncommitted page:
    the read stops at the first page that has no GPU mapping or no guest memory behind it */
-void gmem_read_code(u64 gva, void* dst, u64 size) {
+static u64 code_extent(u64 gva, u64 size) {
     MemBlock b;
     int have = 0;
     u64 done = 0;
@@ -181,12 +181,41 @@ void gmem_read_code(u64 gva, void* dst, u64 size) {
             break;
         done += n < size - done ? n : size - done;
     }
+    return done;
+}
+void gmem_read_code(u64 gva, void* dst, u64 size) {
+    u64 done = code_extent(gva, size);
     if (done) {
         gmem_need(gva, done);
         gmem_read_raw(gva, dst, done);
     }
     memset((u8*)dst + done, 0, (size_t)(size - done));
 }
+/* A program's window reaches past its end into whatever the game keeps after it, results of the GPU's included: one
+   game's compute lookups landed those at every dispatch's first lookup in a submit, a wait for the GPU each. The
+   CPU's bytes are read up to the first byte the GPU holds, through the pool's mirror where a page is trapped
+   (own_stage), and nothing lands */
+u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size) {
+    u64 done = code_extent(gva, size), at = 0;
+    if (done) gmem_need(gva, done);
+    while (at < done) {
+        u64 cpu = 0, n = gmmu_run(gva + at, done - at, &cpu), m;
+        OwnRange o;
+        if (!n) break;
+        if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+            memcpy((u8*)dst + at, GP(cpu), (size_t)n);
+            at += n;
+            continue;
+        }
+        m = own_lookup(cpu, n, &o, 1) ? o.addr - cpu : n;
+        if (own_stage(cpu, m, (u8*)dst + at, NULL, 0)) break; /* an owner since: from here on the GPU's */
+        at += m;
+        if (m < n) break;
+    }
+    memset((u8*)dst + at, 0, (size_t)(size - at));
+    return at;
+}
+int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && cpu < len + 16; }
 
 /* ------------------------------------------------------------ block linear layout (Eden's decoders.cpp) */
 /* A byte's offset in the layout (texture/blocklinear.h, docs/BLOCKLINEAR.md) is the sum of an x part and a (y, z)

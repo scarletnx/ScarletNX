@@ -769,17 +769,21 @@ static void cs_read_code(u64 pa, u8* dst) {
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
        clients keep the whole window. */
-    if (pa >= 0x100) {
-        const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
-        if (header) {
-            u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-            if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
-                gmem_ptr_untracked(pa, declared))
-                code_size = declared;
-        }
+    u8 header[8];
+    if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
+        u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
+        if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+            gmem_host(pa, declared))
+            code_size = declared;
     }
     memset(dst, 0, 0x10000 + 80);
-    gmem_read_code(pa, dst + 80, code_size);
+    /* what the GPU holds in the window lands only when the program may reach it (gmem_code_cut) */
+    u64 cpu = gmem_read_code_cpu(pa, dst + 80, code_size);
+    if (cpu < code_size) {
+        u32 len;
+        vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
+        if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
+    }
 }
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
