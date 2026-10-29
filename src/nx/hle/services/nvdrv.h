@@ -237,6 +237,12 @@ typedef struct {
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
 } HostNvdrv;
+/* nvdrv's thread state, t_hle.nvdrv (hle.h's) */
+typedef struct {
+    /* this thread's syncpt_add_quiet moved a syncpoint: its syncpt_events checks the event slots where syncpt_add would
+       have, so the same thread takes the kernel's lock, after vk_lock goes */
+    int events_due;
+} TlsNvdrv;
 extern const StateFnTable g_nvdrv_state_fns; /* the functions a save state may hold of nvdrv.c */
 
 #endif
