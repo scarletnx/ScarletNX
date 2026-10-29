@@ -64,6 +64,10 @@ hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
 - The handler is `ret handler(CPU* c, args...)`, declared by the generated `hle/hook/hooks.hook.h`. It reads and
   writes guest memory at `c->mem + addr`, and calls the HLE kernel for anything that waits (a guest thread holds its
   emulated core until a kernel wait releases it, so a handler never blocks on a host primitive).
+- `= HANDLER` names the handler. Without it, the handler is the symbol with a `_` before its first capital:
+  `hook nvnDeviceFinalize(addr d)` runs `nvn_DeviceFinalize`. The symbol must have a part in lower case before
+  that capital (`memcpy` and `_ZN...` don't, so they name their handlers). An `= HANDLER` that names the handler the
+  symbol gives already is refused, so that each name is written once.
 
 `tools/hookgen` generates the adapters (a `GuestFn` that unpacks the registers, calls the handler, puts the result in
 x0 or v0 and returns to x30) and the table sorted by symbol. `tests/hook_adapters.c` checks the register mapping,
