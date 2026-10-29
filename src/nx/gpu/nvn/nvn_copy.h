@@ -14,8 +14,8 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]);
    the guest memory at src (rows row bytes apart, slices image bytes apart, 0 for tightly packed), read now and
    written into the texture's storage on the GPU, in order with the queues' work */
 void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image);
-/* nvnTextureReadTexels on the game's thread: the region's texels copied out of the texture by the GPU into the guest
-   memory at dst (tightly packed), waited for */
-void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst);
+/* nvnTextureReadTexelsStrided on the game's thread: the region's texels copied out of the texture by the GPU into the
+   guest memory at dst (rows row bytes apart, slices image bytes apart, 0 for tightly packed), waited for */
+void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image);
 
 #endif

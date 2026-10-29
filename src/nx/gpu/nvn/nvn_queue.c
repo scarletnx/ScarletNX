@@ -26,10 +26,12 @@
 
 /* the file's state: the submissions made; the window's frame period on the pacer's clock (atomic), which bounds a
    wait for the display; whether the display is stuck (atomic: it didn't show a present in two periods, a window
-   covered, so syncs don't wait for it until it shows one again) */
+   covered, so syncs don't wait for it until it shows one again); the native window a window builder named last
+   (atomic: SDK 5's 0x2c bytes of builder have no room for it, and a game has one, vi's layer) */
 typedef struct {
     u64 submits, period;
     int stuck;
+    u64 native_window;
 } NvnQueueState;
 static NvnQueueState g_nvn_queue;
 
@@ -52,8 +54,10 @@ static void fence_at(NvnSync* s, u32 syncpt, u32 value, u32 shown, u64 ready) {
 #define QB(b) NVN_OBJ(NvnQueueBuilder, b)
 void nvn_QueueBuilderSetDefaults(CPU* c, u64 b) {
     NvnQueueBuilder* o = QB(b);
+    u64 device = o->device; /* SetDefaults keeps the device, as the game's driver does */
     (void)c;
     memset(o, 0, sizeof *o);
+    o->device = device;
     o->cmd_size = 65536; /* the device's defaults */
     o->compute_size = 262144;
     o->control_size = 16384;
@@ -69,23 +73,29 @@ i32 nvn_QueueBuilderGetQueuePriority(CPU* c, u64 b) {
     (void)c;
     return (i32)QB(b)->priority;
 }
-/* the runtime has one device, which the builder doesn't keep (it wouldn't fit SDK 5's builder) */
 void nvn_QueueBuilderSetDevice(CPU* c, u64 b, u64 d) {
     (void)c;
-    (void)b;
-    (void)d;
+    QB(b)->device = d;
 }
+u64 nvn_QueueBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return QB(b)->device;
+}
+/* the sizes, 32 bits as the game's driver keeps them, each marked as set */
 void nvn_QueueBuilderSetCommandMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
-    QB(b)->cmd_size = size;
+    QB(b)->cmd_size = (u32)size;
+    QB(b)->set |= NVN_QB_SET_COMMAND;
 }
 void nvn_QueueBuilderSetControlMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
-    QB(b)->control_size = size;
+    QB(b)->control_size = (u32)size;
+    QB(b)->set |= NVN_QB_SET_CONTROL;
 }
 void nvn_QueueBuilderSetCommandFlushThreshold(CPU* c, u64 b, u64 size) {
     (void)c;
-    QB(b)->flush_threshold = size;
+    QB(b)->flush_threshold = (u32)size;
+    QB(b)->set |= NVN_QB_SET_FLUSH;
 }
 void nvn_QueueBuilderSetFlags(CPU* c, u64 b, i32 flags) {
     (void)c;
@@ -93,7 +103,43 @@ void nvn_QueueBuilderSetFlags(CPU* c, u64 b, i32 flags) {
 }
 void nvn_QueueBuilderSetComputeMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
-    QB(b)->compute_size = size;
+    QB(b)->compute_size = (u32)size;
+    QB(b)->set |= NVN_QB_SET_COMPUTE;
+}
+/* The getters of the sizes, as the game's driver answers: whether the game set the size, and in *size the size it set
+   (0 when it set none: the driver's SetDefaults leaves them 0 and uses its defaults for them) */
+static int qb_size(u64 b, u8 which, u32 v, u64 size) {
+    int set = (QB(b)->set & which) != 0;
+    gw32(size, set ? v : 0);
+    return set;
+}
+int nvn_QueueBuilderGetCommandMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    return qb_size(b, NVN_QB_SET_COMMAND, QB(b)->cmd_size, size);
+}
+int nvn_QueueBuilderGetComputeMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    return qb_size(b, NVN_QB_SET_COMPUTE, QB(b)->compute_size, size);
+}
+int nvn_QueueBuilderGetControlMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    return qb_size(b, NVN_QB_SET_CONTROL, QB(b)->control_size, size);
+}
+int nvn_QueueBuilderGetCommandFlushThreshold(CPU* c, u64 b, u64 size) {
+    (void)c;
+    return qb_size(b, NVN_QB_SET_FLUSH, QB(b)->flush_threshold, size);
+}
+i32 nvn_QueueBuilderGetFlags(CPU* c, u64 b) {
+    (void)c;
+    return (i32)QB(b)->flags;
+}
+u64 nvn_QueueBuilderGetMemory(CPU* c, u64 b) {
+    (void)c;
+    return QB(b)->memory;
+}
+u64 nvn_QueueBuilderGetMemorySize(CPU* c, u64 b) {
+    (void)c;
+    return QB(b)->memory_size;
 }
 /* The queue memory the game allocates, by the game's driver's rule (NVN 55.15's GetQueueMemorySize, read from its
    code): the command and control blocks, and an area of the driver's own. The area holds the fragment interlock
@@ -113,13 +159,13 @@ u64 nvn_QueueBuilderGetQueueMemorySize(CPU* c, u64 b) {
     if (!(o->flags & NVN_QUEUE_BUILDER_FLAGS_NO_ZCULL) && NVGPU_ZCULL_CTX_SIZE)
         area = snx_align_up(area, 0x1000) + snx_align_up(NVGPU_ZCULL_CTX_SIZE, 0x1000);
     area = snx_align_up(area, 0x100) + o->compute_size / block * block;
-    return o->cmd_size + o->control_size + snx_align_up(area, 0x1000);
+    return (u64)o->cmd_size + o->control_size + snx_align_up(area, 0x1000);
 }
 void nvn_QueueBuilderSetQueueMemory(CPU* c, u64 b, u64 memory, u64 size) {
     NvnQueueBuilder* o = QB(b);
     (void)c;
     o->memory = memory;
-    o->memory_size = size;
+    o->memory_size = (u32)size;
 }
 int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     NvnQueue o = {0};
@@ -261,7 +307,8 @@ void nvn_WindowBuilderSetDefaults(CPU* c, u64 b) {
     memset(GP(b), 0, sizeof(NvnWindowBuilder));
     WB(b)->interval = 1;
 }
-/* the device and the native window: one each, which the builder doesn't keep */
+/* the device and the native window: one each, which SDK 5's 0x2c bytes of builder have no room for. The runtime has
+   one device (nvn_device), and the native window is the last one a builder named (NvnQueueState) */
 void nvn_WindowBuilderSetDevice(CPU* c, u64 b, u64 d) {
     (void)c;
     (void)b;
@@ -270,7 +317,17 @@ void nvn_WindowBuilderSetDevice(CPU* c, u64 b, u64 d) {
 void nvn_WindowBuilderSetNativeWindow(CPU* c, u64 b, u64 w) {
     (void)c;
     (void)b;
-    (void)w;
+    __atomic_store_n(&g_nvn_queue.native_window, w, __ATOMIC_RELAXED);
+}
+u64 nvn_WindowBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return nvn_device();
+}
+u64 nvn_WindowBuilderGetNativeWindow(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return __atomic_load_n(&g_nvn_queue.native_window, __ATOMIC_RELAXED);
 }
 void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
     NvnWindowBuilder* o = WB(b);
@@ -280,7 +337,7 @@ void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
         LOG("nvn: a window of %d textures: nvn_direct keeps 4\n", n);
         n = n < 0 ? 0 : 4;
     }
-    o->count = n;
+    o->count = (i16)n;
     for (i = 0; i < n; i++) o->texture[i] = gr64(textures + 8 * (u64)i);
 }
 void nvn_WindowFinalize(CPU* c, u64 w) {
@@ -291,11 +348,33 @@ void nvn_WindowBuilderSetPresentInterval(CPU* c, u64 b, i32 interval) {
     (void)c;
     WB(b)->interval = interval;
 }
-/* the window takes its textures in turn, all of them */
+/* the textures the window takes in turn: its first n (0 or more than it has: all of them) */
 void nvn_WindowBuilderSetNumActiveTextures(CPU* c, u64 b, i32 n) {
     (void)c;
-    (void)b;
-    LOG_LIMIT(1, "nvn: a window of %d active textures takes all it was given in turn\n", n);
+    WB(b)->active = (i16)(n < 0 ? 0 : n > 0x7fff ? 0x7fff : n);
+}
+i32 nvn_WindowBuilderGetNumActiveTextures(CPU* c, u64 b) {
+    (void)c;
+    return WB(b)->active;
+}
+/* the textures in turn from the next acquire on, as the game's driver tells its native window */
+void nvn_WindowSetNumActiveTextures(CPU* c, u64 w, i32 n) {
+    (void)c;
+    NVN_OBJ(NvnWindow, w)->active = n;
+}
+/* the textures the window takes in turn: the active ones, all when SetNumActiveTextures named none or too many */
+static i32 window_active(const NvnWindow* o) { return o->active > 0 && o->active < o->count ? o->active : o->count; }
+i32 nvn_WindowGetNumActiveTextures(CPU* c, u64 w) {
+    (void)c;
+    return window_active(NVN_OBJ(const NvnWindow, w));
+}
+i32 nvn_WindowGetNumTextures(CPU* c, u64 w) {
+    (void)c;
+    return NVN_OBJ(const NvnWindow, w)->count;
+}
+u64 nvn_WindowGetNativeWindow(CPU* c, u64 w) {
+    (void)c;
+    return NVN_OBJ(const NvnWindow, w)->native;
 }
 void nvn_WindowSetPresentInterval(CPU* c, u64 w, i32 interval) {
     NvnWindow* o = NVN_OBJ(NvnWindow, w);
@@ -310,6 +389,8 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     o.magic = NVN_MAGIC('W', 'I', 'N', 'D');
     o.count = s->count;
     o.interval = s->interval;
+    o.active = s->active;
+    o.native = __atomic_load_n(&g_nvn_queue.native_window, __ATOMIC_RELAXED);
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
     LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w,
@@ -376,8 +457,8 @@ static void slot_wait(const NvnWindow* o, i32 i) {
     nvn_wait_end();
 }
 static void acquire(NvnWindow* o, NvnSync* s, u64 index) {
-    i32 i = o->count ? o->next % o->count : 0;
-    o->next = o->count ? (i + 1) % o->count : 0;
+    i32 n = window_active(o), i = n ? o->next % n : 0;
+    o->next = n ? (i + 1) % n : 0;
     gw32(index, (u32)i);
     if (i < 4) {
         slot_wait(o, i);
@@ -515,6 +596,28 @@ void nvn_WindowGetCrop(CPU* c, u64 w, u64 rect) {
     int i;
     (void)c;
     for (i = 0; i < 4; i++) gw32(rect + 4 * (u64)i, (u32)o->crop[i]);
+}
+/* The queue's own memory used since ResetMemoryUsageCounts (the game's driver's command, control and compute memory,
+   which it writes its submissions' glue and compute state into): the replay writes none of the queue memory, so it
+   used none of each */
+u64 nvn_QueueGetTotalCommandMemoryUsed(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+    return 0;
+}
+u64 nvn_QueueGetTotalControlMemoryUsed(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+    return 0;
+}
+u64 nvn_QueueGetTotalComputeMemoryUsed(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
+    return 0;
+}
+void nvn_QueueResetMemoryUsageCounts(CPU* c, u64 q) {
+    (void)c;
+    (void)q;
 }
 /* no error: the replay's work has no channel of the GPU's that could fault (NVNqueueErrorInfo is only for errors) */
 i32 nvn_QueueGetError(CPU* c, u64 q, u64 info) {
