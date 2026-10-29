@@ -20,7 +20,8 @@
      compared), else the host's denormal with UFC and IXC when inexact. A double's tiny product or quotient is the
      soft-float's, and its other results need IXC set already (no cheap exact residual without FMA).
    - a single's fused multiply-add and the FRECPS and FRSQRTS steps: the product is exact in double precision and
-     the sum is rounded to odd there (TwoSum's error says which way), which a single then rounds exactly once.
+     the sum is rounded to odd there (TwoSum's error says which way), which a single then rounds exactly once;
+   - FRECPE's and FRSQRTE's special operands, and their estimates without the soft-float's unpacking.
    Only in the host thread's default FP environment (round to nearest, no flush to zero), which each call checks:
    the soft-float takes the rest, so the results never depend on the host's state, though the host's own exception
    flags may be raised. Nothing here may be contracted into an FMA a target may not have: the C operations are the
@@ -330,6 +331,22 @@ static int fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal, u32* out
     return 1;
 }
 
+/* FPRecipEstimate and FPRSqrtEstimate of singles and doubles without the soft-float's unpacking: NaNs, zeros (an
+   infinity and DZC), negative operands of FRSQRTE (the default NaN and IOC) and infinities here, numbers through
+   fp_arithmetic.c's estimates. Integer arithmetic, the same in any host environment */
+static int fp_host_estimate(CPU* c, u64 a, int width, int op, u64* out) {
+    FpHostFormat f = fp_host_format(width);
+    u32 flags = 0;
+    a = fp_host_flush(c, &f, a, &flags);
+    if (fp_host_nan(&f, a)) return fp_host_done(c, fp_host_process(c, &f, width, a, &flags), flags, out);
+    if (fp_host_zero(&f, a)) return fp_host_done(c, f.inf | (a & f.sign), flags | FPSR_DZC, out);
+    if (op == SNX_FP_RSQRTE && (a & f.sign)) return fp_host_done(c, fp_host_invalid(width, &flags), flags, out);
+    if (fp_host_inf(&f, a)) return fp_host_done(c, op == SNX_FP_RECPE ? a & f.sign : 0, flags, out);
+    c->fpsr |= flags;
+    *out = op == SNX_FP_RECPE ? fp_recpe(c, a, width) : fp_rsqrte(a, width);
+    return 1;
+}
+
 /* FPSqrt of everything but a positive number (the emitters' fast path, else the soft-float): NaNs, zeros of either
    sign, infinities and negative values */
 static int fp_host_sqrt(CPU* c, u64 a, int width, u64* out) {
@@ -573,6 +590,8 @@ SNX_INLINE u64 fp_host_lane(CPU* c, unsigned helper, int width, int op, int nume
         case 2:
 #ifdef FP_HOST_ON
             if (ready && op == SNX_FP_SQRT && fp_host_sqrt(c, a, width, &r)) return r;
+            if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && fp_host_estimate(c, a, width, op, &r))
+                return r;
 #endif
             return snx_fp_unary(c, a, width, op);
         default:
