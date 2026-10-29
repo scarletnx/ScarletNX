@@ -156,18 +156,6 @@ static PMutex g_mem_lk = PMUTEX_INIT;
 static u64 g_host_page = PAGE; /* plat_vm_page: set by mem_init, before other threads */
 static MemBlock* g_blk;
 static u32 g_nblk, g_capblk;
-/* whether this thread holds g_mem_lk: a crash inside mem.c is reported by the thread that holds it, and the report's
-   queries (mem_query) read the list without taking the lock again */
-static _Thread_local int t_mem_held;
-static void mem_lock(void) {
-    pm_lock(&g_mem_lk);
-    t_mem_held = 1;
-}
-static void mem_unlock(void) {
-    t_mem_held = 0;
-    pm_unlock(&g_mem_lk);
-}
-
 /* bumped under g_mem_lk before guest pages lose their host memory or turn free or inaccessible, and by mem_init:
    until it moves, a run mem_mapped_run found mapped stays mapped, so each thread keeps the runs it found, one per
    megabyte granule of the address they were found for (direct mapped). The GPU thread asks this of every buffer and
@@ -176,10 +164,24 @@ static void mem_unlock(void) {
 static u64 g_unmap_gen = 1;
 #define MEM_RUNS 64
 #define MEM_RUN_SLOT(a) (((a) >> 20) & (MEM_RUNS - 1))
+/* this thread's state */
 static _Thread_local struct {
-    u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
-} t_runs;
+    /* whether this thread holds g_mem_lk: a crash inside mem.c is reported by the thread that holds it, and the
+       report's queries (mem_query) read the list without taking the lock again */
+    int held;
+    struct {
+        u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
+    } runs;
+} t_mem;
 static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
+static void mem_lock(void) {
+    pm_lock(&g_mem_lk);
+    t_mem.held = 1;
+}
+static void mem_unlock(void) {
+    t_mem.held = 0;
+    pm_unlock(&g_mem_lk);
+}
 
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_code_invalidate = fn; }
@@ -742,7 +744,7 @@ void mem_query(u64 addr, MemBlock* out) {
         out->state = MS_INACCESSIBLE;
         return;
     }
-    if (t_mem_held) {
+    if (t_mem.held) {
         *out = g_blk[blk_index_nl(addr)];
         return;
     }
@@ -753,11 +755,11 @@ void mem_query(u64 addr, MemBlock* out) {
 u64 mem_mapped_run(u64 addr, u64 size) {
     u64 end, lo, lim = addr, run, gen;
     u32 i;
-    int mine = !t_mem_held; /* a crash report's queries come from the thread that holds the lock */
+    int mine = !t_mem.held; /* a crash report's queries come from the thread that holds the lock */
     if (!size) return 0;
     i = MEM_RUN_SLOT(addr);
-    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_runs.gen && addr >= t_runs.lo[i] &&
-        addr < t_runs.hi[i] && size <= t_runs.hi[i] - addr)
+    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_mem.runs.gen && addr >= t_mem.runs.lo[i] &&
+        addr < t_mem.runs.hi[i] && size <= t_mem.runs.hi[i] - addr)
         return size;
     if (mine) mem_lock();
     gen = __atomic_load_n(&g_unmap_gen, __ATOMIC_RELAXED);
@@ -778,12 +780,12 @@ u64 mem_mapped_run(u64 addr, u64 size) {
         }
         run = (lim < end ? lim : end) - addr;
         if (lim > addr) {
-            if (t_runs.gen != gen) { /* the runs kept are of an older generation */
-                memset(&t_runs, 0, sizeof t_runs);
-                t_runs.gen = gen;
+            if (t_mem.runs.gen != gen) { /* the runs kept are of an older generation */
+                memset(&t_mem.runs, 0, sizeof t_mem.runs);
+                t_mem.runs.gen = gen;
             }
-            t_runs.lo[i] = lo;
-            t_runs.hi[i] = lim;
+            t_mem.runs.lo[i] = lo;
+            t_mem.runs.hi[i] = lim;
         }
     }
     if (mine) mem_unlock();
