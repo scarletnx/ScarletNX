@@ -640,13 +640,75 @@ static void flush_wait(VkCommandBuffer cb) {
     vk_finish();
     vk_readback_ready();
 }
+/* A write-back keeps what the CPU wrote over a target after its draws. On the console the GPU's writes reached memory
+   as it drew, and a game reuses that memory once its sync wait says the GPU is done: the CPU's bytes there are newer
+   than the pixels. The renderer holds the pixels until something needs them, by then over the CPU's bytes. One game
+   records command lists where a target it no longer draws was: a GPU write beside the target wrote it back over a
+   queued job's records. Write tracking tells the pages written since the target's draw baseline (draw_wseen, taken
+   at its first draw in a present). A page the CPU wrote between two draws keeps the CPU's bytes too, the later
+   draw's pixels on it lost: what the page rule costs */
+#define CPU_RUNS 64
+typedef struct {
+    u64 run[CPU_RUNS][2]; /* [from, to) of the span, in order */
+    u32 n;
+} CpuRuns;
+static void cpu_run(void* user, u64 at, u64 n) {
+    CpuRuns* r = (CpuRuns*)user;
+    if (r->n == CPU_RUNS) { /* more: the last run reaches to this one's end, the pages between keeping memory too */
+        r->run[CPU_RUNS - 1][1] = at + n;
+        return;
+    }
+    r->run[r->n][0] = at;
+    r->run[r->n][1] = at + n;
+    r->n++;
+}
+/* the runs of s's span [s->gva, s->gva + size) the CPU wrote since s's draw baseline: 0 when none, or when write
+   tracking can't tell (the old write-back of every pixel then) */
+static u32 cpu_newer(const Surf* s, u64 size, CpuRuns* r) {
+    const u8* host = s->draw_wseen ? gmem_host(s->gva, size) : NULL;
+    r->n = 0;
+    if (host && vk_written_since(host, size, s->draw_wseen) > 0)
+        vk_written_runs(host, size, s->draw_wseen, cpu_run, r);
+    return r->n;
+}
+/* after a write-back of s: a new draw baseline, so what the CPU writes from now on is newer, and the write-back's own
+   writes aren't. With pages kept (kept), s's image isn't memory there: no baseline, and its generation from before
+   (gw0), with the span marked written, so its next use loads it from memory again (vk_rt_note_read) */
+static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
+    const u8* host = gmem_host(s->gva, size);
+    if (kept) {
+        gpu_mem_written(s->gva, size);
+        s->gw = gw0;
+        s->draw_wseen = 0;
+        return;
+    }
+    s->gw = gpu_mem_generation();
+    if (s->draw_wseen && host) {
+        (void)vk_written_since(host, size, 0);
+        s->draw_wseen = vk_ww_now();
+    }
+}
+/* the guest pages [gva + from, gva + to) a write-back wrote, for write tracking: they hold the GPU's bytes, which a
+   later scan doesn't count as the CPU's while they stay as written (vk_ww_landed). The scan reads them through the
+   alias pool's mirror, as own.c's landings give them: a page the GPU holds by then is trapped where the guest sees
+   it. A page outside the pool isn't noted, and its write counts as the CPU's */
+static void flush_note_landed(u64 gva, u64 from, u64 to) {
+    u64 lo = (gva + from) & ~0xfffull, hi = (gva + to + 0xfff) & ~0xfffull, off;
+    u8* host = to > from ? gmem_host(lo, hi - lo) : NULL;
+    u8* mirror = plat_alias_mirror();
+    if (!host || !mirror) return;
+    for (u64 cpu = (u64)(host - g_mem), end = cpu + (hi - lo); cpu < end; cpu += 0x1000)
+        if (!mem_pool_offset(cpu, &off)) vk_ww_landed(cpu, 0x1000, mirror + off);
+}
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
-   storage image's merge) */
+   storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
 static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
     u32 gh = guest_h(s);
     u64 gva = s->gva, row = (u64)guest_w(s) * s->f.bpp, slice = row * gh;
-    u64 sz = rt_bytes(s);
-    u8* dst = original ? NULL : gmem_ptr(gva, sz);
+    u64 sz = rt_bytes(s), gw0 = gpu_mem_generation();
+    CpuRuns newer;
+    u32 kept = original ? 0 : cpu_newer(s, sz, &newer);
+    u8* dst = original || kept ? NULL : gmem_ptr(gva, sz);
     u8* tmp = NULL;
     if (!dst) {
         tmp = malloc(sz);
@@ -684,14 +746,31 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
         s->mem_wgen = wgen; /* avoid flushing this target again when writeback checks overlapping targets */
         vk_write_changed(gva, dst, original, (u32)sz);
         free(tmp);
+    } else if (kept) { /* the runs between the CPU's */
+        u64 at = 0;
+        for (u32 i = 0; i <= kept; i++) {
+            u64 to = i < kept ? newer.run[i][0] : sz;
+            if (to > at) {
+                gmem_write(gva + at, tmp + at, to - at);
+                flush_note_landed(gva, at, to);
+            }
+            if (i < kept) at = newer.run[i][1];
+        }
+        free(tmp);
     } else if (tmp) {
         gmem_write(gva, tmp, sz);
+        flush_note_landed(gva, 0, sz);
         free(tmp);
-    } else
+    } else {
         gpu_mem_written(gva, sz); /* caches built from this memory check it again */
+        flush_note_landed(gva, 0, sz);
+    }
     g_rt_flushing = flushing;
     s->mem_wgen = wgen;
-    s->gw = gpu_mem_generation();
+    if (original)
+        s->gw = gpu_mem_generation();
+    else
+        flush_rebase(s, sz, kept != 0, gw0);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
     if (guest_changed) {
@@ -818,6 +897,10 @@ int vk_surf_publish(Surf* s) {
         size = rt_bytes(s);
     }
     vk_render_end();
+    CpuRuns newer;
+    u32 kept = cpu_newer(s, size, &newer);
+    u64 gw0 = gpu_mem_generation(), kat = 0, kbytes = 0;
+    VkBuffer kbuf = VK_NULL_HANDLE;
     r = vk_own_res_new(size);
     if (!r) return 0;
     u8* p = vk_stage(size, vk_stage_align(), &staged, &at);
@@ -826,6 +909,22 @@ int vk_surf_publish(Surf* s) {
         return 0;
     }
     vk_guest_read(s->gva, size, p, staged, at);
+    for (u32 i = 0; i < kept; i++) kbytes += newer.run[i][1] - newer.run[i][0];
+    if (kept) { /* the CPU's runs as guest memory has them, before other targets go over the staged copy */
+        u64 k = 0;
+        if (!vk_stage(kbytes, vk_stage_align(), &kbuf, &kat)) {
+            vk_own_res_unref(r);
+            return 0;
+        }
+        cb = vk_cmd();
+        vk_all_barrier(cb);
+        for (u32 i = 0; i < kept; i++) {
+            VkBufferCopy kc = {at + newer.run[i][0], kat + k, newer.run[i][1] - newer.run[i][0]};
+            rec_CmdCopyBuffer(cb, staged, kbuf, 1, &kc);
+            k += kc.size;
+        }
+        vk_all_barrier(cb);
+    }
     /* the other targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
        itself out (its tight rows would be a pitch-linear one's padding) */
     s->mem_wgen = s->wgen;
@@ -842,6 +941,12 @@ int vk_surf_publish(Surf* s) {
         return 0;
     }
     vk_all_barrier(cb);
+    for (u64 i = 0, k = 0; i < kept; i++) { /* the CPU's runs over the image (cpu_newer) */
+        VkBufferCopy kc = {kat + k, newer.run[i][0], newer.run[i][1] - newer.run[i][0]};
+        rec_CmdCopyBuffer(cb, kbuf, r->buf, 1, &kc);
+        k += kc.size;
+    }
+    if (kept) vk_all_barrier(cb);
     /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
     rt_retire_over(s->gva, size);
@@ -857,7 +962,7 @@ int vk_surf_publish(Surf* s) {
     gpu_mem_written(s->gva, size);
     vk_own_res_unref(r);
     /* guest memory (its owner) has the image's pixels now: the texture cache finds them current, by their owner */
-    s->gw = gpu_mem_generation();
+    flush_rebase(s, size, kept != 0, gw0);
     vk_surf_relist(s);
     if (!s->is_rt) vk_tex_note_writeback(s);
     return 1;

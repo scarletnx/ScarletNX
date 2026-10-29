@@ -953,6 +953,9 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
+/* fn(user, at, n) for each run of [host, host + len) on pages written after since, at the range's byte offset at: for
+   a range vk_written_since(host, len, since) has just found written, so its pages are marked */
+void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user);
 u32 vk_ww_now(void);
 void vk_ww_new_epoch(void); /* the CPU may have written what a GPU stream reads next: write tracking scans again */
 u32 vk_ww_epoch(void);

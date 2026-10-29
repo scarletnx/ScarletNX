@@ -1325,6 +1325,20 @@ static int check_rt_overlap(void) {
     vk_lock();
     if (tracking) CHECK(!vk_rt_drawn_fresh(target));
     vk_unlock();
+    /* A target the program wrote part of after its draw, as when a game gives a target's memory to its command lists:
+       a GPU write in its span writes it back, but for the pages the program wrote, which keep its bytes. The program
+       wrote them after the GPU drew there. Without write tracking, the write-back can't tell them */
+    rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    memset(GP(DMA_A + 0x8000), 0x5a, 0x2000);
+    g_renderer->mem_may_have_changed();
+    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    if (tracking) CHECK(all_bytes(GP(DMA_A + 0x8000), 0x2000, 0x5a));
+    CHECK(all_blue(GP(DMA_A), 0x8000));
+    CHECK(all_blue(GP(DMA_A + 0xa000), 0x28000 - 0xa000));
+    /* drawn over whole again: its next write-back is every pixel, the program's bytes no longer newer */
+    rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    CHECK(all_blue(GP(DMA_A), 0x28000));
     free(ch);
     return 0;
 }
