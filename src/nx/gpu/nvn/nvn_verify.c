@@ -3,8 +3,8 @@
 /* nvn_verify=1: nvn_direct against the game's own NVN driver, draw by draw (docs/NVN_HLE.md, "Verify mode").
 
    The game side, on the game's threads. Every NVN function the game resolves runs verify_fn: nvn_direct's handler
-   first, on the game's objects and memory as always, then the driver's own code on shadows, with the game's thread
-   and stack. The shadows are guest memory of the runtime's (shadow_alloc, outside every region the game knows):
+   first, on the game's objects and memory as always, then the driver's own code on shadows, on the game's thread.
+   The shadows are guest memory of the runtime's (shadow_alloc, outside every region the game knows):
    - an object the game keeps at one address (a device, queue, pool, buffer, texture, sampler, program, sync...) has a
      shadow from its Initialize to its Finalize (g_v.obj, live address to shadow address);
    - a builder or state object the game may copy by value has its shadow by content: the driver's bytes for each
@@ -15,7 +15,8 @@
    An argument the shadow has no counterpart for skips the driver's call (counted per function). The driver's calls
    that act on the game or the host are never made: waits, the window and its presents (a present flushes the shadow
    queue instead), the game's callbacks. The driver's calls into other NVN functions go through their slots and so
-   through verify_fn, which runs the driver's code directly while the thread is in a shadow call (t_shadow).
+   through verify_fn, which runs the driver's code directly while the thread is in a shadow call (t_shadow). A shadow
+   call runs on a stack of the runtime's (shadow_stack).
 
    The driver's queue opens its GPU channel from such a call, so nvdrv marks the fd (nvn_verify_fd) and gives its
    GPFIFO submissions here instead of to the GPU thread: their words are copied (nvn_verify_gpfifo) into the queue's
@@ -179,6 +180,7 @@ static Verify g_v = {PMUTEX_INIT};
 static _Thread_local int t_shadow;  /* in a shadow call: slots run the driver's code */
 static _Thread_local u32 t_queue;   /* the replay queue (1 up) of the shadow call's queue, 0 none */
 static _Thread_local const char* t_running; /* the function the shadow call runs */
+static _Thread_local u64 t_stack;           /* the top of the thread's shadow stack (shadow_stack) */
 const char* nvn_verify_running(void) { return t_running; }
 
 int nvn_verify_on(void) { return g_v.on; }
@@ -401,7 +403,10 @@ static u32 flags_of(const char* n, const Kinds* k) {
         "nvnQueueAcquireTexture", "nvnQueueFinish", "nvnSyncWait", "nvnDeviceInstallDebugCallback",
         "nvnCommandBufferSetMemoryCallback", "nvnCommandBufferSetMemoryCallbackData", "nvnEventWait",
         "nvnQueueGetError", "nvnMemoryPoolMapVirtual", "nvnDeviceSetIntermediateShaderCache",
-        "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle"};
+        "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle",
+        /* a CPU read of the texels of a region into the game's memory: nothing the GPU draws, and the shadow has no
+           room of the region's size for them (the 0x100 bytes of an output argument) */
+        "nvnTextureReadTexels"};
     u32 f = 0, i;
     if (k && k->kinds && k->kinds[0] && ends(n, "Initialize") && !strstr(n, "Builder")) f |= F_INIT;
     if (ends(n, "Finalize")) f |= F_FINAL;
@@ -431,6 +436,15 @@ static u32 flags_of(const char* n, const Kinds* k) {
 }
 
 /* ---- running the driver's code */
+/* The stack a shadow call runs on: guest memory of the runtime's for each thread, never the game's. On the game's
+   stack the copies of the arguments and the driver's frames went below the game's stack pointer, where a thread with
+   little stack left has another's memory, and a call that writes more than its argument copy holds wrote over the
+   game's frames above it */
+#define SHADOW_STACK (1u << 20)
+static u64 shadow_stack(void) {
+    if (!t_stack) t_stack = shadow_map(SHADOW_STACK) + SHADOW_STACK;
+    return t_stack;
+}
 #define REGS_SIZE offsetof(CPU, mem)
 /* fn's code at entry on c, args already in c, until it returns to lr with the stack pointer sp */
 static void run(CPU* c, GuestFn fn, u64 entry, u64 lr, u64 sp) {
@@ -1198,7 +1212,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     CPU before, after;
     Arg a[NVK_ARGS];
     const char* why = NULL;
-    u64 scratch, sp, lr, live_ret;
+    u64 scratch, lr, live_ret;
     u32 i, queue = 0, serial = 0;
     int ok;
     if (!f) fatal("nvn verify: no function at %llx", (unsigned long long)entry);
@@ -1231,8 +1245,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     memcpy(&after, c, REGS_SIZE);
     live_ret = result_bits(&after, f->k->ret);
     lr = before.x[30];
-    sp = before.x[31];
-    scratch = (sp - 0x100) & ~15ull; /* below the red zone the caller may keep */
+    scratch = shadow_stack();
     memcpy(c, &before, REGS_SIZE);
     if (f->flags & F_QUEUE) { /* the queue's replay index, which a channel the driver opens now is for */
         const NvnQueue* q = NVN_OBJ(const NvnQueue, before.x[0]);
