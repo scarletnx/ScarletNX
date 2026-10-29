@@ -37,6 +37,8 @@ static void usage(void) {
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
          "  --jobs N               Parallel compiles (default: CPU count), the setting aot_threads");
     puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
+         "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
+         "                         a profile's hot functions, as tools/layout.py orders them\n"
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)");
     puts("  --KEY=VALUE            A recompile setting: opt, aot_threads, unit_cache_gb, llvm_pass_<pass>=0\n"
@@ -164,15 +166,15 @@ static char* settings_path(const char* out, const char* title) {
     free(folder);
     return path;
 }
-/* the hints file: code addresses the runtime met that the recompiler hadn't found. A64 code is word aligned; an
-   AArch32 address has the Thumb bit (bit 0) for a Thumb block, and A32 ones are word aligned */
-static SnxU64* read_hints(const char* base, int is64, size_t* count) {
-    char *path = snx_format("%s.hints", base), line[256], *s;
+/* a file of code addresses, hex, one per line, in its order (none when it is not there): the hints file, code
+   addresses the runtime met that the recompiler hadn't found, or --layout's. A64 code is word aligned; an AArch32
+   address has the Thumb bit (bit 0) for a Thumb block, and A32 ones are word aligned */
+static SnxU64* read_addresses(const char* path, int is64, size_t* count) {
+    char line[256], *s;
     FILE* f = snx_fopen(path, "r");
     SnxU64 *hints = NULL, value;
     size_t n = 0;
     int digits, invalid, c;
-    free(path);
     if (f) {
         while (fgets(line, sizeof(line), f)) {
             value = 0;
@@ -195,6 +197,12 @@ static SnxU64* read_hints(const char* base, int is64, size_t* count) {
         fclose(f);
     }
     *count = n;
+    return hints;
+}
+static SnxU64* read_hints(const char* base, int is64, size_t* count) {
+    char* path = snx_format("%s.hints", base);
+    SnxU64* hints = read_addresses(path, is64, count);
+    free(path);
     return hints;
 }
 /* an ExeFS file of a dump read in place (SnxExefsReader) */
@@ -361,7 +369,7 @@ static int patch_modules(SnxProgram* program, const char* mods, const char* off,
 }
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     const char *input = NULL, *name = NULL, *outdir = NULL, *runtime = NULL, *target = "auto", *jit_cache = NULL,
-               *keys = NULL, *title_keys = NULL, *arg, *value;
+               *layout = NULL, *keys = NULL, *title_keys = NULL, *arg, *value;
     SnxPaths key_paths;
     SnxU64 addon = 0, owner = 0, version = SNX_NO_VERSION; /* an update, its game and version, as its content meta
                                                                 names them */
@@ -442,7 +450,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--keys") && strcmp(arg, "--title-keys") && strcmp(arg, "--outdir") &&
                 strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "-O") && strcmp(arg, "--jobs") &&
-                strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache"))
+                strcmp(arg, "--chunk") && strcmp(arg, "--jit-cache") && strcmp(arg, "--layout"))
                 return snx_error("unknown option: %s (scarletnx -r -h lists them)", arg);
             if (!value) {
                 if (++i == argc) return snx_error("%s requires a value", arg);
@@ -472,6 +480,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
                 if (!g_settings.aot_threads) return snx_error("--jobs %s: not a whole number from 1 to 1024", value);
             } else if (!strcmp(arg, "--jit-cache")) {
                 jit_cache = value;
+            } else if (!strcmp(arg, "--layout")) {
+                layout = value;
             } else {
                 g_settings.unit_size = (int)number(value, INT_MAX);
                 if (!g_settings.unit_size)
@@ -672,6 +682,13 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         llvm.quiet = compile.quiet;
         llvm.keep_ir = kept;
         llvm.found = &found;
+        if (layout && !snx_is_file(layout)) {
+            snx_error("--layout %s: no such file", layout);
+            free(kept);
+            free(units);
+            goto done;
+        }
+        if (layout) llvm.layout = read_addresses(layout, 1, &llvm.layout_count);
         {
             /* the user's cache folder, or a portable copy's: every game's recompile shares it */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);
@@ -746,6 +763,7 @@ done:
     free(mods_off);
     free(mods_stamp);
     free((void*)gen.hints);
+    free((void*)llvm.layout);
     free(title);
     free(game);
     free(out);

@@ -1136,7 +1136,7 @@ static int load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count,
     if (scan(loader, &ld, error, error_size)) goto done;
     /* the unit's parts, each at its region's next free byte: [code with its islands, stubs] [read-only data, GOT]
        [data, bss] */
-    snx_elf_layout(ld.objs, count, kind_size, kind_align);
+    snx_elf_layout(ld.objs, count, NULL, kind_size, kind_align);
     start[CODE] =
         snx_align_up(next_free(loader, CODE),
                      kind_align[SNX_ELF_TEXT] > CODE_LINE ? kind_align[SNX_ELF_TEXT] : CODE_LINE);

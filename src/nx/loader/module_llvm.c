@@ -33,11 +33,14 @@ typedef struct {
     char key[65];
 } Unit;
 
+#define NO_RANK ((size_t)-1)
+
 typedef struct {
     SnxCodegen* codegen;
     const SnxLlvmBuild* build;
     SnxUnitCache* cache; /* NULL: every unit compiled */
     Unit* units;
+    size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
     int failed;
     char error[1024];
@@ -103,7 +106,8 @@ static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, s
                          : snx_ir_new(name, build->opt, error, error_size);
 }
 
-/* one chunk of functions, as module.c's code_NNN.c */
+/* one chunk of functions, as module.c's code_NNN.c. A function of the --layout order gets its own code section, which
+   the linker places by its rank: the function's code is the same, only where it goes changes */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     char name[32];
@@ -115,7 +119,14 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
-    for (i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    for (i = u->first; i < u->last; ++i) {
+        snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+        if (q->rank && q->rank[i] != NO_RANK) {
+            char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
+            sprintf(section, SNX_LINK_HOT_TEXT "%lu", (unsigned long)q->rank[i]);
+            LLVMSetSection(snx_ir_guest_function(ir, q->codegen->functions[i].start), section);
+        }
+    }
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
     if (!rc && q->cache)
@@ -580,6 +591,27 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
+    if (build->layout_count) {
+#if defined(_WIN32) || defined(__APPLE__)
+        int elf = 0;
+#else
+        int elf = !build->triple;
+#endif
+        size_t placed = 0;
+        if (!elf)
+            fprintf(stderr, "--layout: only an ELF module for this host takes an order: the code keeps its own\n");
+        else if (codegen.function_count) {
+            q.rank = (size_t*)snx_alloc(codegen.function_count * sizeof(*q.rank));
+            for (i = 0; i < codegen.function_count; ++i) q.rank[i] = NO_RANK;
+            for (i = 0; i < build->layout_count; ++i) {
+                const SnxFunction* f = snx_codegen_function(&codegen, build->layout[i]);
+                if (f && q.rank[f - codegen.functions] == NO_RANK) q.rank[f - codegen.functions] = placed++;
+            }
+        }
+        if (elf && !options->quiet)
+            printf("layout: %lu functions first, in the order of %lu addresses\n", (unsigned long)placed,
+                   (unsigned long)build->layout_count);
+    }
     if (build->unit_cache) {
         char llvm[128];
         SnxUnitIdentity identity;
@@ -710,6 +742,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
 done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
     free(q.units);
+    free(q.rank);
     free(inputs);
     free(module_object);
     free(rtlib_object);

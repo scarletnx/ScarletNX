@@ -31,6 +31,11 @@ typedef struct {
     size_t* wrappers;
     /* when set, the instructions the analysis found and the module makes ahead of time (0 with --jit-only) */
     size_t* found;
+    /* --layout: the guest addresses of functions in the order their code takes at the start of the module, each in a
+       code section of its own (link.h's SNX_LINK_HOT_TEXT). A profile's hot functions, the others after them in
+       address order. Addresses that start no function are skipped. An ELF module for this host only */
+    const SnxU64* layout;
+    size_t layout_count;
 } SnxLlvmBuild;
 /* g_settings' LLVM Internals (settings.txt's llvm table) for -O<opt>: the pipeline with the passes turned off cut
    out, the options set. Static, made again at each call. NULL with the reason in error when nothing at all is left

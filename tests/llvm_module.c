@@ -27,6 +27,9 @@
 #else
 #include <dlfcn.h>
 #endif
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <elf.h>
+#endif
 
 /* assembled with clang -target aarch64-linux-gnu: main at 0x80 (reached by the B at 0), func, tail at 0x200 */
 static const u32 program[] = {0xD2800000, 0xD2800181, 0x1E6F1001, 0x6F00E402, 0x94000016, 0x9E620003, 0x1E632800,
@@ -323,6 +326,71 @@ static void expected(Run* want, const unsigned char* image, u64 base) {
     want->calls.x0[0] = 0x49A;
 }
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+/* the address of a symbol of the module's symbol table, 0 for none */
+static u64 symbol_address(const unsigned char* elf, size_t size, const char* name) {
+    Elf64_Ehdr eh;
+    if (size < sizeof(eh)) return 0;
+    memcpy(&eh, elf, sizeof(eh));
+    for (size_t i = 0; i < eh.e_shnum && eh.e_shoff + (i + 1) * sizeof(Elf64_Shdr) <= size; ++i) {
+        Elf64_Shdr sh, strings;
+        memcpy(&sh, elf + eh.e_shoff + i * sizeof(sh), sizeof(sh));
+        if (sh.sh_type != SHT_SYMTAB || sh.sh_link >= eh.e_shnum) continue;
+        memcpy(&strings, elf + eh.e_shoff + sh.sh_link * sizeof(strings), sizeof(strings));
+        for (size_t j = 0; (j + 1) * sizeof(Elf64_Sym) <= sh.sh_size && sh.sh_offset + sh.sh_size <= size; ++j) {
+            Elf64_Sym sym;
+            memcpy(&sym, elf + sh.sh_offset + j * sizeof(sym), sizeof(sym));
+            if (sym.st_name < strings.sh_size && !strcmp((const char*)elf + strings.sh_offset + sym.st_name, name))
+                return sym.st_value;
+        }
+    }
+    return 0;
+}
+/* the address of the module's function for the guest's at address */
+static u64 function_address(const unsigned char* elf, size_t size, u64 address) {
+    char name[32];
+    sprintf(name, "F_%llX", (unsigned long long)address);
+    return symbol_address(elf, size, name);
+}
+
+/* --layout: the functions of its file go first in the module's code, in the file's order, and the code runs the
+   same. func (0xE8) first, then the image's entry (0, with main, which its B reaches), before the runtime library */
+static void layout(const char* scarletnx, const char* repo, const char* root, const char* input, const char* self,
+                   const unsigned char* image, const Run* plain) {
+    char *dir = snx_path_join(root, "layout"), *file = snx_path_join(root, "order.layout"), *text = NULL;
+    char *module = snx_path_join(dir, "Program/Program_code.so"), *order;
+    const char* args[16] = {scarletnx,   "--repo", repo,      "-r", input,      "Program", "--outdir", dir,
+                            "--runtime", self,     "--chunk", "4",  "--layout", file,      NULL};
+    unsigned char* elf;
+    size_t size = 0;
+    u64 func_at, entry_at, library_at;
+    static Run laid;
+    order = snx_format("%llx\n0x%llX\n", (unsigned long long)(plain->base + 0xE8), (unsigned long long)plain->base);
+    check(!snx_write_file(file, order, strlen(order)), "write the layout file");
+    if (snx_run(args, root, NULL, &text)) fprintf(stderr, "%s\n", text ? text : "");
+    check(text && strstr(text, "layout: 2 functions first, in the order of 2 addresses"), "a build with --layout");
+    elf = snx_read_file(module, &size);
+    func_at = elf ? function_address(elf, size, plain->base + 0xE8) : 0;
+    entry_at = elf ? function_address(elf, size, plain->base) : 0;
+    /* the runtime library's first function, where the module's code starts without an order */
+    library_at = elf ? symbol_address(elf, size, "snx_fp_compare") : 0;
+    if (!(func_at && func_at < entry_at && entry_at < library_at))
+        fprintf(stderr, "func %llx, entry %llx, runtime library %llx\n", (unsigned long long)func_at,
+                (unsigned long long)entry_at, (unsigned long long)library_at);
+    check(func_at && func_at < entry_at && entry_at < library_at,
+          "--layout's functions start the module's code, in its order");
+    check(!run(module, image, 0, 0, 0, &laid), "the run of the laid-out module");
+    if (!same(plain, &laid)) differences(plain, &laid, "layout");
+    check(same(plain, &laid), "the laid-out module runs the same");
+    free(elf);
+    free(text);
+    free(order);
+    free(module);
+    free(file);
+    free(dir);
+}
+#endif
+
 int main(int argc, char** argv) {
     static Run runs[1], want, hooked, unhooked, stale, stale_running;
     unsigned char image[IMAGE];
@@ -415,6 +483,9 @@ int main(int argc, char** argv) {
     printf("x0=%llx x9=%llx d0=%llx v2=%llx:%llx\n", (unsigned long long)runs[0].cpu.x[0],
            (unsigned long long)runs[0].cpu.x[9], (unsigned long long)runs[0].cpu.v[0].d[0],
            (unsigned long long)runs[0].cpu.v[2].d[1], (unsigned long long)runs[0].cpu.v[2].d[0]);
+#if !defined(_WIN32) && !defined(__APPLE__)
+    layout(argv[1], argv[2], root, input, self, image, &runs[0]);
+#endif
     /* the setting unit_instructions sizes the code units as --chunk does: one instruction makes a unit of each
        function, a million one unit of them all */
     for (b = 0; b < 2; ++b) {
