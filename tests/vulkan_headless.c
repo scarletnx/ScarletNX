@@ -12,6 +12,8 @@
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/maxwell/gob.h"
 #include "nx/gpu/texture/blocklinear.h"
+#include "nx/gpu/nvn/nvn_copy.h"
+#include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -1359,6 +1361,7 @@ int main(int argc, char** argv) {
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
+        CHECK(!check_msaa_nvn());
         printf("PASS headless Vulkan multisampling only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
@@ -1389,6 +1392,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_msaa());
+    CHECK(!check_msaa_nvn());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());
     CHECK(!check_sampler_reduction());

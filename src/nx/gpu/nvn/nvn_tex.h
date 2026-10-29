@@ -25,6 +25,9 @@ u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d);
 /* the bytes from a block-linear volume level's start to its depth slice z */
 u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z);
+/* the 3D engine's sample layout (gpu/draw_state.h DS_MSAA_) of NVN's sample count, as the game's driver writes it
+   into a texture header: 2 samples 2x1 (D3D), 4 2x2, 8 4x2 (D3D), others one sample */
+u32 nvn_tex_msaa(int samples);
 /* bytes per block (0 for a format it doesn't know), and the block's width and height */
 int nvn_fmt_bpb(int format, int* bw, int* bh);
 
