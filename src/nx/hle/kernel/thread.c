@@ -307,31 +307,23 @@ void core_set_prio(KThread* t, int prio) {
 }
 
 /* ============================================================ waiting and waking a thread */
-/* the threads this host thread changed the word of with kt_notify_later, to wake once it lets go of its lock: a
-   wait's end comes with the lock held, and a thread woken then would only wait again for that lock. Too many for the
-   list are woken at once */
-enum { KT_LATER = 16 };
-static _Thread_local struct {
-    u32 n;
-    u32 ix[KT_LATER];
-} t_later;
 u32 kt_seq(const KThread* t) { return __atomic_load_n(kt_word(t), __ATOMIC_ACQUIRE); }
 void kt_notify(KThread* t) {
     __atomic_add_fetch(kt_word(t), 1u, __ATOMIC_RELEASE);
     plat_wake_word(kt_word(t));
 }
 void kt_notify_later(KThread* t) {
-    if (t_later.n == KT_LATER) {
+    if (t_hle.thread.later.n == KT_LATER) {
         kt_notify(t);
         return;
     }
     __atomic_add_fetch(kt_word(t), 1u, __ATOMIC_RELEASE);
-    t_later.ix[t_later.n++] = kt_ix(t);
+    t_hle.thread.later.ix[t_hle.thread.later.n++] = kt_ix(t);
 }
 void kt_flush(void) {
-    u32 n = t_later.n;
-    t_later.n = 0;
-    for (u32 i = 0; i < n; i++) plat_wake_word(kt_word(kt_at(t_later.ix[i])));
+    u32 n = t_hle.thread.later.n;
+    t_hle.thread.later.n = 0;
+    for (u32 i = 0; i < n; i++) plat_wake_word(kt_word(kt_at(t_hle.thread.later.ix[i])));
 }
 void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns) {
     if (held) pm_unlock(held);

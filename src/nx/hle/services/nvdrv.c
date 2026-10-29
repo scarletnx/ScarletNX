@@ -617,17 +617,14 @@ void syncpt_add(u32 id, u32 n) {
     nv_events_check();
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
-/* this thread's syncpt_add_quiet moved a syncpoint: its syncpt_events checks the event slots where syncpt_add would
-   have, so the same thread takes the kernel's lock, after vk_lock goes */
-static _Thread_local int t_events_due;
 void syncpt_add_quiet(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
-    t_events_due = 1;
+    t_hle.nvdrv.events_due = 1;
     gpu_kick();
 }
 void syncpt_events(void) {
-    if (!t_events_due) return;
-    t_events_due = 0;
+    if (!t_hle.nvdrv.events_due) return;
+    t_hle.nvdrv.events_due = 0;
     nv_events_check();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
