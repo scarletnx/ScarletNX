@@ -371,21 +371,26 @@ typedef struct {
 } ShA;
 static ShA g_sha[4096];
 
+/* the program's own bytes: what the GPU holds beside them on their pages stays there */
 static int code_hash(u64 gva, u32 len, u64* hash) {
-    u8* p = gmem_ptr(gva, len);
-    if (p) {
-        *hash = vk_hash(p, len);
-        return 1;
-    }
     u8* t = malloc(len ? len : 1);
     if (!t) return 0;
-    gmem_read(gva, t, len);
+    if (gmem_read_code_cpu(gva, t, len) < len) gmem_read_code(gva, t, len);
     *hash = vk_hash(t, len);
     free(t);
     return 1;
 }
+/* a program's SH_CODE bytes from gva, and its length: what the GPU holds past its end stays there */
+static void sh_read_code(u64 gva, u8* code, u32* len) {
+    u64 cpu = gmem_read_code_cpu(gva, code, SH_CODE);
+    vk_shader_hash(code, SH_CODE, len, sh_cb_read);
+    if (!gmem_code_cut(*len, cpu, SH_CODE)) return;
+    gmem_read_code(gva, code, SH_CODE);
+    vk_shader_hash(code, SH_CODE, len, sh_cb_read);
+}
 static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
-    if (!gpu_mem_dirty_since(ca->gw, gva, len) && vk_written_since(gmem_ptr(gva, len), len, ca->wseen) == 0) return 1;
+    gmem_need(gva, len); /* pending results over the code land first, as the write tracking then sees them */
+    if (!gpu_mem_dirty_since(ca->gw, gva, len) && vk_written_since(gmem_host(gva, len), len, ca->wseen) == 0) return 1;
     u64 hash;
     return code_hash(gva, len, &hash) && hash == qh;
 }
@@ -541,10 +546,9 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     u64 gw = gpu_mem_generation();
     u8* code = malloc(SH_CODE);
     if (!code) return NULL;
-    gmem_read_code(gva, code, SH_CODE);
     u32 len, len_a = 0;
     u64 qh, qh_a = 0;
-    vk_shader_hash(code, SH_CODE, &len, sh_cb_read);
+    sh_read_code(gva, code, &len);
     qh = vk_hash(code, len);
     if (gva_a) { /* VertexA + VertexB: one merged program */
         u8* a = malloc(SH_CODE);
@@ -552,8 +556,7 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
             free(code);
             return NULL;
         }
-        gmem_read_code(gva_a, a, SH_CODE);
-        vk_shader_hash(a, SH_CODE, &len_a, sh_cb_read);
+        sh_read_code(gva_a, a, &len_a);
         qh_a = vk_hash(a, len_a);
         u8* m = malloc(SH_CODE);
         if (!m) {
