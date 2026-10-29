@@ -210,6 +210,21 @@ void nvn_sync_hold(u64* ready, u32* shown, const NvnSync* s) {
     (void)s;
 }
 
+/* ---- a renderer that keeps what it was given */
+static DsState g_ds;
+static DrawTexture g_tex;
+static int g_test_draws, g_test_tex_draws;
+static void r_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    (void)dc;
+    (void)o;
+    g_ds = *ds;
+    g_test_draws++;
+}
+static void r_draw_texture(const DsState* ds, const DrawTexture* t) {
+    (void)ds;
+    g_tex = *t;
+    g_test_tex_draws++;
+}
 static Renderer g_test_renderer;
 const Renderer* g_renderer = &g_test_renderer;
 
@@ -227,10 +242,107 @@ static f32 rdf(u64 a) {
 }
 static void wrf(u64 a, f32 v) { memcpy(GP(a), &v, 4); }
 
+/* the replay of a recording: every record, in order, as the queue's replay hands them over (gpu/nvn/nvn_replay.c) */
+static u32 replay(NvnDraw* d, u64 p, u32 want) {
+    u32 found = 0;
+    for (;;) {
+        NvnRecHdr h;
+        memcpy(&h, GP(p), sizeof h);
+        if (h.op == OP_END) return found;
+        if (h.op == OP_JUMP) {
+            p = gr64(p + 8);
+            continue;
+        }
+        if (h.op == want) found++;
+        nvn_draw_record(d, h.op, p + 8, h.size - 8);
+        p += h.size;
+    }
+}
+
 static void pool_init(void) {
     nvn_MemoryPoolBuilderSetDefaults(NULL, POOL_B);
     nvn_MemoryPoolBuilderSetStorage(NULL, POOL_B, POOL_MEM, 0x100000);
     check(nvn_MemoryPoolInitialize(NULL, POOL, POOL_B), "the pool initializes");
+}
+
+/* ---- command buffers */
+static void test_command_buffer(void) {
+    NvnDraw* d = nvn_draw_new(1);
+    u64 h, ranges = SCRATCH, images = SCRATCH2;
+    nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
+    nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0, 0x8000);
+    nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
+    check(nvn_CommandBufferGetCommandMemorySize(NULL, CMDBUF) == 0x8000, "command memory size: what the game added");
+    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 0x8000 - 16,
+          "command memory free: all but a JUMP's room");
+    check(nvn_CommandBufferGetControlMemorySize(NULL, CMDBUF) == 0x400 &&
+              nvn_CommandBufferGetControlMemoryFree(NULL, CMDBUF) == 0x400,
+          "control memory: what the game added, none of it used");
+    nvn_CommandBufferBeginRecording(NULL, CMDBUF);
+    nvn_CommandBufferSetCopyRowStride(NULL, CMDBUF, 0x140);
+    nvn_CommandBufferSetCopyImageStride(NULL, CMDBUF, 0x5000);
+    check(nvn_CommandBufferGetCopyRowStride(NULL, CMDBUF) == 0x140 &&
+              nvn_CommandBufferGetCopyImageStride(NULL, CMDBUF) == 0x5000,
+          "the copy strides' getters");
+    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) < 0x8000 - 16, "records take command memory");
+    /* the rasterizer's state: a line width, the first vertex provoking, conservative rasterization of 0.3 pixels
+       (rounded up to 2 quarters), every sample shaded */
+    nvn_CommandBufferSetLineWidth(NULL, CMDBUF, 3.0f);
+    nvn_CommandBufferSetProvokingVertexMode(NULL, CMDBUF, 0);
+    nvn_CommandBufferSetConservativeRasterEnable(NULL, CMDBUF, 1);
+    nvn_CommandBufferSetConservativeRasterDilate(NULL, CMDBUF, 0.3f);
+    check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
+    nvn_ProgramSetSampleShading(NULL, PROGRAM, 1);
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    check(nvn_ProgramSetShaders(NULL, PROGRAM, 0, 0), "SetShaders of no stages");
+    nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+    /* deferred binds: the ranges and handles as they are when the GPU runs the command */
+    gw64(ranges, 0x111000);
+    gw64(ranges + 8, 0x100);
+    gw64(ranges + 16, 0x222000);
+    gw64(ranges + 24, 0x200);
+    nvn_CommandBufferBindUniformBuffersDeferred(NULL, CMDBUF, NVN_SHADER_STAGE_VERTEX, 1, 2, ranges);
+    gw64(images, 0x33);
+    nvn_CommandBufferBindImagesDeferred(NULL, CMDBUF, NVN_SHADER_STAGE_FRAGMENT, 2, 1, images);
+    nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
+    /* a texture's rectangle: 100x50 pixels at (10, 20) from 50x25 texels */
+    wrf(SCRATCH + 0x200, 10.0f), wrf(SCRATCH + 0x204, 20.0f), wrf(SCRATCH + 0x208, 110.0f), wrf(SCRATCH + 0x20c, 70.0f);
+    wrf(SCRATCH + 0x210, 0.0f), wrf(SCRATCH + 0x214, 0.0f), wrf(SCRATCH + 0x218, 50.0f), wrf(SCRATCH + 0x21c, 25.0f);
+    nvn_CommandBufferDrawTexture(NULL, CMDBUF, 7u | 5u << 20, SCRATCH + 0x200, SCRATCH + 0x210);
+    /* an empty destination draws nothing */
+    wrf(SCRATCH + 0x220, 5.0f), wrf(SCRATCH + 0x224, 5.0f), wrf(SCRATCH + 0x228, 5.0f), wrf(SCRATCH + 0x22c, 9.0f);
+    nvn_CommandBufferDrawTexture(NULL, CMDBUF, 7u | 5u << 20, SCRATCH + 0x220, SCRATCH + 0x210);
+    check(nvn_CommandBufferInsertCheckpointStatic(NULL, CMDBUF, 0) && nvn_CommandBufferInsertCheckpointDynamic(NULL, CMDBUF, 0),
+          "checkpoints answer 1, as the release driver does");
+    /* the hints with nothing to record */
+    nvn_CommandBufferSetColorReductionEnable(NULL, CMDBUF, 1);
+    nvn_CommandBufferSetColorReductionThresholds(NULL, CMDBUF, 0, 10, 20);
+    nvn_CommandBufferResolveDepthBuffer(NULL, CMDBUF);
+    nvn_CommandBufferSetZCullZF32CompressionEnable(NULL, CMDBUF, 1);
+    nvn_CommandBufferOverrideSubtileSize(NULL, CMDBUF, 1, 16);
+    nvn_CommandBufferSetSubpixelPrecisionBias(NULL, CMDBUF, 1, 1);
+    h = nvn_CommandBufferEndRecording(NULL, CMDBUF);
+    /* the deferred binds read what is there at the replay */
+    gw64(ranges + 16, 0x444000);
+    gw64(images, 0x55);
+    g_test_renderer.draw = r_draw;
+    g_test_renderer.draw_texture = r_draw_texture;
+    check(replay(d, h, OP_DRAW) == 2, "the recording replays its two draws");
+    check(g_test_draws == 2, "both draws reach the renderer");
+    check(g_ds.dyn.line_width == 3.0f, "the line width reaches the draw state");
+    check(g_ds.rkey.provoking_last == 0, "the first vertex provokes");
+    check(g_ds.rkey.conservative == 3, "conservative rasterization with 2 quarter pixels of dilation");
+    check(g_ds.rkey.sample_shading == 1, "the program's sample shading, as its SetShaders applied it");
+    check(g_ds.bind.cb_addr[0][4] == 0x111000 && g_ds.bind.cb_addr[0][5] == 0x444000 &&
+              g_ds.bind.cb_size[0][5] == 0x200,
+          "deferred uniform buffers: the ranges as the GPU reads them");
+    check(snx_ld_le64(g_ds.inl.bank2[4] + 0x120 + 16) == 0x55, "deferred images: the handles as the GPU reads them");
+    check(g_test_tex_draws == 1, "one texture draw, the empty one skipped");
+    check(g_tex.handle == (7u | 5u << 20) && g_tex.x0 == 10.0f && g_tex.y0 == 20.0f && g_tex.w == 100.0f &&
+              g_tex.h == 50.0f && g_tex.du == 0.5 && g_tex.dv == 0.5 && g_tex.sx0 == 0.0f && g_tex.sy0 == 0.0f,
+          "the texture draw's rectangle and steps");
+    free(d);
 }
 
 /* ---- the device and its debug API */
@@ -494,6 +606,7 @@ static void test_queue_window(void) {
 int main(void) {
     test_device();
     pool_init();
+    test_command_buffer();
     test_texture();
     test_sampler();
     test_objects();

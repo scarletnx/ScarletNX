@@ -24,6 +24,7 @@
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,6 +66,9 @@ struct NvnDraw {
     u32 svalue[2], smask[2], sref[2]; /* the stencil's compare mask, write mask and reference, front and back */
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
     u8 discard, depth_clamp, restart, render_off;
+    u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
+    u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
+    float line_width;
     u8 samples; /* the samples-passed counter was reset: the renderer counts it */
     u32 restart_index;
     float vp[16][4], depth[2]; /* x, y, w, h; depth range 0 */
@@ -132,6 +136,8 @@ NvnDraw* nvn_draw_new(u32 owner) {
     d->dss =
         nvn_set_field(nvn_set_field(nvn_set_field(d->dss, NVN_DS_FAIL_B, 1), NVN_DS_ZFAIL_B, 1), NVN_DS_ZPASS_B, 1);
     d->svalue[0] = d->svalue[1] = d->smask[0] = d->smask[1] = 0xff;
+    d->provoking_last = 1; /* NVN's default, as GL's */
+    d->line_width = 1.0f;
     d->depth[1] = 1.0f;
     d->scissor[2] = d->scissor[3] = 0x10000;
     d->bind.tex_bank = 2;
@@ -415,8 +421,10 @@ static void make_raster_key(NvnDraw* d) {
     k.polygon = (u8)(mode == NVN_POLYGON_MODE_POINT  ? DS_POLYGON_POINT
                      : mode == NVN_POLYGON_MODE_LINE ? DS_POLYGON_LINE
                                                      : DS_POLYGON_FILL);
-    k.provoking_last = 1; /* NVN's default, as GL's */
+    k.provoking_last = d->provoking_last;
     k.depth_clamp = d->depth_clamp;
+    k.conservative = d->conservative ? (u8)(1 + d->dilate) : 0;
+    k.sample_shading = d->sample_shading == 1; /* NVN_SAMPLE_SHADING_ENABLE: every sample */
     k.alpha_to_coverage = d->ms.alpha_to_coverage;
     k.sample_mask = ~d->sample_off;
     keep(&d->ds.rkey, &k, sizeof k, &d->ds.gen[DS_RASTER_KEY]);
@@ -461,7 +469,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
         y.face[f].cmask = d->svalue[f];
         y.face[f].wmask = d->smask[f];
     }
-    y.line_width = 1.0f;
+    y.line_width = d->line_width;
     y.bias_slope = d->bias[0];
     /* the 3D engine's units register holds twice NVN's units: the game's driver writes -11.32 for a game's -5.66 */
     y.bias_units = d->bias[1] * 2.0f;
@@ -630,8 +638,7 @@ static void put64(NvnDraw* d, u8* block, u32 size, u32 off, u64 v) {
     snx_st_le64(block + off, v);
     d->dirty |= D_INLINE;
 }
-static void bind_buffer(NvnDraw* d, u32 op, u64 payload) {
-    const NvnPBindBuf* r = NVN_OBJ(const NvnPBindBuf, payload);
+static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
     int s = gfx_stage(r->stage);
     if (r->index < 0 || r->index >= 16) return;
     if (r->stage == NVN_SHADER_STAGE_COMPUTE) {
@@ -716,6 +723,10 @@ static void bind_program(NvnDraw* d, u64 payload) {
         /* bank 1: the program's constants, after its code */
         d->bind.cb_addr[s][1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
         d->bind.cb_size[s][1] = 256 * (u32)st->cb_size;
+    }
+    if ((u32)r.stages & NVN_SHADER_STAGE_FRAGMENT_BIT) {
+        d->sample_shading = (u8)(r.sample_shading >> 8); /* as its SetShaders applied it */
+        d->dirty |= D_RASTER;
     }
     if ((u32)r.stages & NVN_SHADER_STAGE_COMPUTE_BIT) {
         const NvnStage* st = &r.st[NVN_SHADER_STAGE_COMPUTE];
@@ -847,6 +858,31 @@ static void dispatch(NvnDraw* d, u64 payload) {
     g_renderer->dispatch(&d->dx);
 }
 
+/* DrawTexture: the 3D engine's DRAW_TEXTURE as the game's driver writes it, in its fixed point: the destination's
+   corner and size in 1/256 pixel steps, the source's corner the same, and the source's texels per destination pixel
+   in 32.32. An empty destination draws nothing */
+static double draw_texture_fixed(f32 v) { return floor((double)v * 256.0 + 0.5) / 256.0; }
+static void draw_texture(NvnDraw* d, u64 payload) {
+    NvnPDrawTexture r;
+    DrawTexture t;
+    double x0, y0, x1, y1;
+    memcpy(&r, GP(payload), sizeof r);
+    x0 = draw_texture_fixed(r.dst[0]), y0 = draw_texture_fixed(r.dst[1]);
+    x1 = draw_texture_fixed(r.dst[2]), y1 = draw_texture_fixed(r.dst[3]);
+    if (x0 == x1 || y0 == y1 || d->render_off || !g_renderer->draw_texture) return;
+    memset(&t, 0, sizeof t);
+    t.handle = (u32)r.handle; /* the texture's index in bits 0-19, its sampler's in 20-31 */
+    t.x0 = (float)x0;
+    t.y0 = (float)y0;
+    t.w = (float)(x1 - x0);
+    t.h = (float)(y1 - y0);
+    t.du = floor((double)(r.src[2] - r.src[0]) / (x1 - x0) * 4294967296.0 + 0.5) / 4294967296.0;
+    t.dv = floor((double)(r.src[3] - r.src[1]) / (y1 - y0) * 4294967296.0 + 0.5) / 4294967296.0;
+    t.sx0 = (float)draw_texture_fixed(r.src[0]);
+    t.sy0 = (float)draw_texture_fixed(r.src[1]);
+    sync(d, 0, 0);
+    g_renderer->draw_texture(&d->ds, &t);
+}
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     switch (op) {
         case OP_SET_RT: set_targets(d, payload); return 1;
@@ -943,7 +979,34 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             return 1;
         }
         case OP_BIND_UBO:
-        case OP_BIND_SSBO: bind_buffer(d, op, payload); return 1;
+        case OP_BIND_SSBO: bind_buffer(d, op, NVN_OBJ(const NvnPBindBuf, payload)); return 1;
+        case OP_BIND_BUFS: { /* deferred: the ranges where they are now, as the GPU reads them when it runs this */
+            const NvnPBindBufs* r = NVN_OBJ(const NvnPBindBufs, payload);
+            i32 i;
+            for (i = 0; i < r->count && i < 16; i++) {
+                NvnPBindBuf b;
+                b.stage = r->stage;
+                b.index = r->first + i;
+                b.address = gr64(r->src + 16 * (u64)i);
+                b.size = gr64(r->src + 16 * (u64)i + 8);
+                bind_buffer(d, (u32)r->op, &b);
+            }
+            return 1;
+        }
+        case OP_LINE_WIDTH: memcpy(&d->line_width, GP(payload), 4), d->dirty |= D_DYNAMIC; return 1;
+        case OP_PROVOKING:
+            d->provoking_last = NVN_OBJ(const NvnPProvoking, payload)->mode == 1, d->dirty |= D_RASTER;
+            return 1;
+        case OP_CONSERVATIVE: {
+            const NvnPConservative* r = NVN_OBJ(const NvnPConservative, payload);
+            if (r->which)
+                d->dilate = (u8)r->dilate;
+            else
+                d->conservative = r->on != 0;
+            d->dirty |= D_RASTER;
+            return 1;
+        }
+        case OP_DRAW_TEXTURE: draw_texture(d, payload); return 1;
         case OP_BIND_TEX:
         case OP_BIND_SAMP:
         case OP_BIND_IMG: bind_handles(d, op, payload); return 1;
