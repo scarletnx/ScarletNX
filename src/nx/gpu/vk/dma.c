@@ -113,14 +113,9 @@ static u64 side_span(const GpuDmaSide* s, u32 lines, u32 line) {
 static u32 side_rows(const GpuDmaSide* s, u32 lines) {
     return s->oy >= s->h ? 0 : s->h - s->oy < lines ? s->h - s->oy : lines;
 }
-/* guest bytes [gva, gva + span) staged as the GPU sees them: what the CPU holds, what the GPU holds (copied on the
-   GPU), render targets drawn over them */
-static u8* stage_range(u64 gva, u64 span, VkBuffer* buf, u64* at) {
-    u8* p = vk_stage(span, vk_stage_align(), buf, at);
-    if (!p) return NULL;
-    vk_guest_read(gva, span, p, *buf, *at);
-    vk_rt_overlay(gva, span, *buf, *at);
-    return p;
+/* guest bytes [gva, gva + span) as the GPU sees them, in the frame's device memory, for a side that is only read */
+static int stage_range(u64 gva, u64 span, VkBuffer* buf, u64* at) {
+    return vk_stage_device(span, vk_stage_align(), buf, at) && vk_guest_read_seen(gva, span, *buf, *at);
 }
 
 static int dma(const GpuDmaOp* o) {
@@ -131,38 +126,35 @@ static int dma(const GpuDmaOp* o) {
     int remap = o->remap && (o->fill || o->shuffle);
     /* the scratch rows: the source's (block linear), the destination's (block linear), the remapped lines */
     u64 at_a = 0, at_b = up(o->src.bl ? (u64)pa * lines : 0, 16), at_c = at_b + up(o->dst.bl ? (u64)pb * lines : 0, 16);
-    u64 scratch_size = at_c + (remap ? (u64)pc * lines : 0) + 16, cap, sat = 0, dat;
-    VkBuffer sb = VK_NULL_HANDLE, db, scr;
+    u64 scratch_size = at_c + (remap ? (u64)pc * lines : 0) + 16, cap, sat = 0;
+    VkBuffer sb = VK_NULL_HANDLE, scr;
     VkCommandBuffer cb;
     VkOwnRes* d;
     vk_render_end();
     if (dspan > g_vk.alloc_cap || sspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(scratch_size, &cap))) return 0;
     if (!o->fill) {
-        u8* p;
+        int got;
         if (o->snap_id) { /* the source as it was at submission, where it was read into */
             const SnapMem* m = (const SnapMem*)(uintptr_t)o->snap_id;
             const SnapChunk* c = &g_snap.c[m->chunk]; /* chunks stay once made */
             if (!VK_OK(vmaFlushAllocation(g_vk.vma, c->mem, m->off, sspan))) return 0;
-            p = c->ptr + m->off;
             sb = c->buf;
             sat = m->off;
+            got = 1;
         } else if (o->snap) { /* the same in the submitting thread's memory */
-            p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
-            if (p) memcpy(p, o->snap, sspan);
+            u8* p = vk_stage(sspan, vk_stage_align(), &sb, &sat);
+            if ((got = p != NULL)) memcpy(p, o->snap, sspan);
         } else
-            p = stage_range(o->src.addr, sspan, &sb, &sat);
-        if (!p) return 0;
+            got = stage_range(o->src.addr, sspan, &sb, &sat);
+        if (!got) return 0;
     }
+    /* the destination's span as it is, read straight into the buffer that becomes its owner */
     d = vk_own_res_new(dspan);
-    if (!d || !stage_range(o->dst.addr, dspan, &db, &dat)) {
+    if (!d || !vk_guest_read_seen(o->dst.addr, dspan, d->buf, 0)) {
         if (d) vk_own_res_unref(d);
         return 0;
     }
     cb = vk_cmd();
-    {
-        VkBufferCopy c = {dat, 0, dspan};
-        rec_CmdCopyBuffer(cb, db, d->buf, 1, &c);
-    }
     vk_all_barrier(cb);
     /* the lines in: the source's rows (block linear: taken apart, rows past its surface zero) */
     VkBuffer ib = sb;

@@ -699,6 +699,11 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off);
    vk_lock */
 void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at);
 void vk_cpu_read(u64 cpu, u64 size, u8* host, VkBuffer buf, u64 at);
+/* the same into device memory (buf, which the CPU doesn't map): 0 when staging has no room */
+int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at);
+/* guest bytes [gva, gva + size) into device memory as the GPU sees them: vk_guest_read_device, with the render targets
+   drawn over them (vk_rt_overlay). 0 when there is no room */
+int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at);
 /* guest bytes [gva, gva + size) into dst for change detection, as gmem_read reads them, except that bytes the GPU
    holds come back as a pattern of their owner (which a new owner changes, and the CPU's own bytes replace once it
    touches them): nothing lands */

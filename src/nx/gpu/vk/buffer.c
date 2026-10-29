@@ -2123,8 +2123,8 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
-/* A range over bytes the GPU holds: copied into this frame's staging ring, the CPU's bytes by the CPU and the owned
-   ones from their owners by the GPU (vk_guest_read), with nothing landed. It isn't hashed (the CPU's copy of the
+/* A range over bytes the GPU holds: copied into this frame's device ring, the CPU's bytes staged by the CPU and the
+   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's copy of the
    owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
    (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
    for the GPU each */
@@ -2141,9 +2141,9 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     e->hash = 0;
     e->stable = 0;
     vk_render_end(); /* the GPU's copies happen outside rendering passes */
-    u8* p = vk_stage_upload(len, vk_stage_align(), &sb, &so);
-    if (!p) return 0;
-    vk_guest_read(gva, len, p, sb, so);
+    /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU copied
+       its own bytes out over PCIe and every draw read them back over it */
+    if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
     if (copy_stats_on()) g_copy_stage += len;
     e->buf = sb;
     e->off = so;
