@@ -89,6 +89,9 @@ typedef struct {
     int has_border_color; /* VK_EXT_custom_border_color */
     u32 border_color_max; /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp; /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
+    /* filterMinmaxImageComponentMapping: a min/max sampler reads a view of any swizzle. Without it the view's r must
+       be the identity, and the other components are poison */
+    int has_minmax_swizzle;
     int has_shader_draw_parameters;
     u64 alloc_cap; /* the most one device memory allocation may be (memory.c) */
     int sparse;    /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
@@ -1028,7 +1031,7 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
    the texture whose own view is bound (NULL for none) and its view type, say whether anisotropy= may raise it, and
-   with tic (unread when t is NULL) whether its view's format takes the TSC's min/max reduction */
+   with tic (unread when t is NULL) whether its view's format and swizzle take the TSC's min/max reduction */
 VkImageViewType vk_tex_view_type(const ShTex* st);
 VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, const u32* tsc, int num);
 VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* t,

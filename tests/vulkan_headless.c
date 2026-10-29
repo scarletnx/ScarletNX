@@ -532,7 +532,8 @@ static int check_direct_spirv(void) {
 /* A sampler's min/max reduction (the TSC's word 1, bits 10-11) where a linear filter reads texels 0 and 1 of an R32F
    row, 0.0 and 1.0, at their middle: their average, the least, the greatest, and the average for 3, which names no
    mode. Where the device or the view's format takes no min/max filter, or the texture is the null one or an integer
-   one, the filter nearest or the sampler a depth compare, the sampler is the averaging one */
+   one, the filter nearest or the sampler a depth compare, the sampler is the averaging one. So is it for a swizzled
+   view where the device's min/max filter takes no swizzle */
 static int check_sampler_reduction(void) {
     static const float texels[2] = {0.0f, 1.0f}, want[4] = {0.5f, 0.0f, 1.0f, 0.5f};
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -597,7 +598,8 @@ static int check_sampler_reduction(void) {
     size_t words = 0;
     u32* code = snx_test_spirv_sample(&words);
     CHECK(code);
-    u32 tic[8] = {0};
+    /* the swizzle R, G, B, A: a view of its own components */
+    u32 tic[8] = {2u << 19 | 3u << 22 | 4u << 25 | 5u << 28}, swizzled[8] = {3u << 19 | 3u << 22 | 4u << 25 | 5u << 28};
     ShTex plain = {0}, shadow = {0};
     Surf tex = {0};
     shadow.shadow = 1;
@@ -610,8 +612,13 @@ static int check_sampler_reduction(void) {
     CHECK(g_vk.feat12.samplerFilterMinmax == has12.samplerFilterMinmax);
     int minmax = vk_format_minmax_filter(VK_FORMAT_R32_SFLOAT);
     printf("Sampler reduction: %s\n", minmax ? "the device filters R32F min/max" : "no min/max filter for R32F");
+    /* a linear filter of R32F is optional: without it the reads below would be invalid */
+    VkFormatProperties r32f;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R32_SFLOAT, &r32f);
+    int filtered = (r32f.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+    if (!filtered) printf("Sampler reduction: R32F has no linear filter, its reads are skipped\n");
     /* clamp to edge; linear magnification and minification, no mip filter; mode the reduction */
-    for (u32 mode = 0; mode < 4; mode++) {
+    for (u32 mode = 0; filtered && mode < 4; mode++) {
         u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | mode << 10};
         VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
         u32 bits = 0;
@@ -642,6 +649,15 @@ static int check_sampler_reduction(void) {
     CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
     g_vk.feat12.samplerFilterMinmax = had;
     CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    /* a device whose min/max filter takes no swizzle: a view of its own components keeps the reduction, and one that
+       reads g into r averages */
+    int had_swizzle = g_vk.has_minmax_swizzle;
+    g_vk.has_minmax_swizzle = 0;
+    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    g_vk.has_minmax_swizzle = 1;
+    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    g_vk.has_minmax_swizzle = had_swizzle;
     vkDestroyImageView(g_vk.dev, view, NULL);
     vmaDestroyImage(g_vk.vma, image, image_memory);
     return 0;
