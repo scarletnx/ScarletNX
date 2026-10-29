@@ -698,7 +698,8 @@ static void semantics_test(void) {
 }
 
 /* A loop of generated code runs with CPU.poll set: its backward branch calls rt->poll, the runtime's chance to take
-   the core from a thread that makes no SVC, and the loop still runs to its end; without the flag it never polls */
+   the core from a thread that makes no SVC, then calls the function again at the loop's head (its entry mismatch and
+   dispatch block), and the loop still runs to its end with the registers it had; without the flag it never polls */
 static void on_poll(CPU* c) {
     ++g_polls;
     __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
@@ -716,12 +717,14 @@ static int run_loop(GuestFn f, u64 count, u32 flag) {
     c.poll = flag;
     g_polls = 0;
     f(&c, SNX_CODE_BASE);
-    return c.x[0] == 0 && c.pc == 0x2000 ? g_polls : -1;
+    return c.x[0] == 0 && c.x[1] == count && c.pc == 0x2000 ? g_polls : -1;
 }
 
 static void poll_test(void) {
-    static const SnxU32 words[] = {0xF1000400UL,  /* SUBS X0,X0,#1 */
-                                   0x54FFFFE1UL,  /* B.NE back to it */
+    static const SnxU32 words[] = {0xD2800001UL,  /* MOV X1,#0 */
+                                   0x91000421UL,  /* ADD X1,X1,#1: the loop's head, not the function's start */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
                                    0xD65F03C0UL}; /* RET */
     unsigned char image[sizeof(words)];
     SnxProgram program;
