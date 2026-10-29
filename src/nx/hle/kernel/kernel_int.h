@@ -14,9 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the guest thread a host thread runs (thread.c); not in plat.h, which C99 code includes too */
-extern _Thread_local void* tls_thread;
-
 /* The kernel's results (module 1), as RC(1, description) gives them */
 #define R_OUTOFMEM      0xD001  /* 104 OutOfMemory */
 #define R_BADSIZE       0xCA01  /* 101 InvalidSize */
@@ -250,6 +247,7 @@ typedef struct {
 /* thread's thread state, t_hle.thread (hle.h's) */
 enum { KT_LATER = 16 };
 typedef struct {
+    KThread* cur; /* the guest thread this host thread runs, NULL in a thread of the runtime's own */
     /* the threads this host thread changed the word of with kt_notify_later, to wake once it lets go of its lock: a
        wait's end comes with the lock held, and a thread woken then would only wait again for that lock. Too many for
        the list are woken at once */
