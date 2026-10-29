@@ -26,6 +26,10 @@ static int has_features(VkFormat f, VkFormatFeatureFlags2 need) {
     return (features.optimalTilingFeatures & need) == need;
 }
 
+int vk_format_minmax_filter(VkFormat f) {
+    return g_vk.feat12.samplerFilterMinmax && has_features(f, VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT);
+}
+
 int vk_format_storage_write(VkFormat f) {
     return g_vk.feat.shaderStorageImageWriteWithoutFormat &&
            has_features(f, VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT);

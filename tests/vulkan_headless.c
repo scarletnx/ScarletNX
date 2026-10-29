@@ -405,17 +405,23 @@ static int check_multisample_shader_gate(void) {
 /* Execute the direct writer's module, not only spirv-val's structural check. */
 /* code, a compute module of one invocation over set 0 binding 0, run once on count words of data, read back
    into data */
-static int run_storage_compute(const u32* code, size_t words, u32* data, u32 count) {
+/* code run once on data, count words at set 0 binding 0, with view and sampler at binding 1 when view isn't null */
+static int run_compute(const u32* code, size_t words, u32* data, u32 count, VkImageView view, VkSampler sampler) {
     VkShaderModuleCreateInfo smi = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = code};
     VkShaderModule module;
     CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
-    VkDescriptorSetLayoutBinding binding = {.binding = 0,
-                                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                            .descriptorCount = 1,
-                                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+    u32 nbindings = view ? 2 : 1;
+    VkDescriptorSetLayoutBinding bindings[2] = {{.binding = 0,
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                 .descriptorCount = 1,
+                                                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+                                                {.binding = 1,
+                                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                 .descriptorCount = 1,
+                                                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
     VkDescriptorSetLayoutCreateInfo dli = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &binding};
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = nbindings, .pBindings = bindings};
     VkDescriptorSetLayout dlayout;
     CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &dli, NULL, &dlayout) == VK_SUCCESS);
     VkPipelineLayoutCreateInfo pli = {
@@ -443,11 +449,12 @@ static int run_storage_compute(const u32* code, size_t words, u32* data, u32 cou
     CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
     memcpy(allocation.pMappedData, data, (size_t)count * sizeof(u32));
     CHECK(vmaFlushAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
-    VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+                                          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
     VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                       .maxSets = 1,
-                                      .poolSizeCount = 1,
-                                      .pPoolSizes = &pool_size};
+                                      .poolSizeCount = nbindings,
+                                      .pPoolSizes = pool_sizes};
     VkDescriptorPool pool;
     CHECK(vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &pool) == VK_SUCCESS);
     VkDescriptorSetAllocateInfo dsi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -457,13 +464,20 @@ static int run_storage_compute(const u32* code, size_t words, u32* data, u32 cou
     VkDescriptorSet set;
     CHECK(vkAllocateDescriptorSets(g_vk.dev, &dsi, &set) == VK_SUCCESS);
     VkDescriptorBufferInfo dbi = {buffer, 0, (VkDeviceSize)count * sizeof(u32)};
-    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                  .dstSet = set,
-                                  .dstBinding = 0,
-                                  .descriptorCount = 1,
-                                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                  .pBufferInfo = &dbi};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
+    VkDescriptorImageInfo dii = {sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 0,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &dbi},
+                                      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = 1,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                       .pImageInfo = &dii}};
+    vkUpdateDescriptorSets(g_vk.dev, nbindings, writes, 0, NULL);
     VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                    .queueFamilyIndex = g_vk.gfx_family};
     VkCommandPool cpool;
@@ -502,12 +516,150 @@ static int run_storage_compute(const u32* code, size_t words, u32* data, u32 cou
     return 0;
 }
 
+static int run_storage_compute(const u32* code, size_t words, u32* data, u32 count) {
+    return run_compute(code, words, data, count, VK_NULL_HANDLE, VK_NULL_HANDLE);
+}
+
 static int check_direct_spirv(void) {
     size_t words = 0;
     u32* code = snx_test_spirv_compute(&words), value = 0;
     int r = run_storage_compute(code, words, &value, 1);
     free(code);
     CHECK(!r && value == 42);
+    return 0;
+}
+
+/* A sampler's min/max reduction (the TSC's word 1, bits 10-11) where a linear filter reads texels 0 and 1 of an R32F
+   row, 0.0 and 1.0, at their middle: their average, the least, the greatest, and the average for 3, which names no
+   mode. Where the device or the view's format takes no min/max filter, or the texture is the null one or an integer
+   one, the filter nearest or the sampler a depth compare, the sampler is the averaging one. So is it for a swizzled
+   view where the device's min/max filter takes no swizzle */
+static int check_sampler_reduction(void) {
+    static const float texels[2] = {0.0f, 1.0f}, want[4] = {0.5f, 0.0f, 1.0f, 0.5f};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R32_SFLOAT,
+                            .extent = {2, 1, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo device = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VkImage image;
+    VmaAllocation image_memory;
+    CHECK(vmaCreateImage(g_vk.vma, &ii, &device, &image, &image_memory, NULL) == VK_SUCCESS);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = sizeof texels,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VmaAllocationCreateInfo host = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                             VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                    .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VkBuffer staging;
+    VmaAllocation staging_memory;
+    VmaAllocationInfo allocation;
+    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &host, &staging, &staging_memory, &allocation) == VK_SUCCESS);
+    memcpy(allocation.pMappedData, texels, sizeof texels);
+    CHECK(vmaFlushAllocation(g_vk.vma, staging_memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    VkImageMemoryBarrier2 to_copy = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                     .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                     .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                     .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .image = image,
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkImageMemoryBarrier2 to_read = to_copy;
+    to_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_read.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1};
+    dep.pImageMemoryBarriers = &to_copy;
+    rec_CmdPipelineBarrier2(cb, &dep);
+    VkBufferImageCopy region = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {2, 1, 1}};
+    rec_CmdCopyBufferToImage(cb, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    dep.pImageMemoryBarriers = &to_read;
+    rec_CmdPipelineBarrier2(cb, &dep);
+    vk_finish();
+    vmaDestroyBuffer(g_vk.vma, staging, staging_memory);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = image,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R32_SFLOAT,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkImageView view;
+    CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &view) == VK_SUCCESS);
+    size_t words = 0;
+    u32* code = snx_test_spirv_sample(&words);
+    CHECK(code);
+    /* the swizzle R, G, B, A: a view of its own components */
+    u32 tic[8] = {2u << 19 | 3u << 22 | 4u << 25 | 5u << 28}, swizzled[8] = {3u << 19 | 3u << 22 | 4u << 25 | 5u << 28};
+    ShTex plain = {0}, shadow = {0};
+    Surf tex = {0};
+    shadow.shadow = 1;
+    tex.f.vk = VK_FORMAT_R32_SFLOAT;
+    tex.levels = 1;
+    /* the device takes the feature wherever the GPU has it */
+    VkPhysicalDeviceVulkan12Features has12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 has = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &has12};
+    vkGetPhysicalDeviceFeatures2(g_vk.phys, &has);
+    CHECK(g_vk.feat12.samplerFilterMinmax == has12.samplerFilterMinmax);
+    int minmax = vk_format_minmax_filter(VK_FORMAT_R32_SFLOAT);
+    printf("Sampler reduction: %s\n", minmax ? "the device filters R32F min/max" : "no min/max filter for R32F");
+    /* a linear filter of R32F is optional: without it the reads below would be invalid */
+    VkFormatProperties r32f;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, VK_FORMAT_R32_SFLOAT, &r32f);
+    int filtered = (r32f.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+    if (!filtered) printf("Sampler reduction: R32F has no linear filter, its reads are skipped\n");
+    /* clamp to edge; linear magnification and minification, no mip filter; mode the reduction */
+    for (u32 mode = 0; filtered && mode < 4; mode++) {
+        u32 tsc[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6 | mode << 10};
+        VkSampler sampler = vk_tex_bind_sampler(tsc, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
+        u32 bits = 0;
+        float got;
+        CHECK(sampler && !run_compute(code, words, &bits, 1, view, sampler));
+        memcpy(&got, &bits, 4);
+        if (got != (minmax || mode == 3 ? want[mode] : 0.5f)) {
+            fprintf(stderr, "vulkan_headless: reduction %u read %g between 0 and 1\n", mode, got);
+            return 1;
+        }
+    }
+    free(code);
+    u32 average[8] = {2u | 2u << 3 | 2u << 6, 2u | 2u << 4 | 1u << 6}, least[8];
+    memcpy(least, average, sizeof least);
+    least[1] |= 1u << 10;
+    VkSampler avg = vk_tex_bind_sampler(average, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D);
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D) ==
+          vk_tex_bind_sampler(average, tic, &plain, 0, NULL, VK_IMAGE_VIEW_TYPE_2D));
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
+          vk_tex_bind_sampler(average, tic, &plain, 1, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    CHECK(vk_tex_bind_sampler(least, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
+          vk_tex_bind_sampler(average, tic, &shadow, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    u32 nearest[8] = {average[0], 1u | 1u << 4 | 1u << 6}, nearest_least[8] = {average[0], nearest[1] | 1u << 10};
+    CHECK(vk_tex_bind_sampler(nearest_least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) ==
+          vk_tex_bind_sampler(nearest, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D));
+    VkBool32 had = g_vk.feat12.samplerFilterMinmax;
+    g_vk.feat12.samplerFilterMinmax = VK_FALSE;
+    CHECK(vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
+    g_vk.feat12.samplerFilterMinmax = had;
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    /* a device whose min/max filter takes no swizzle: a view of its own components keeps the reduction, and one that
+       reads g into r averages */
+    int had_swizzle = g_vk.has_minmax_swizzle;
+    g_vk.has_minmax_swizzle = 0;
+    CHECK(vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) == avg);
+    CHECK(!minmax || vk_tex_bind_sampler(least, tic, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    g_vk.has_minmax_swizzle = 1;
+    CHECK(!minmax || vk_tex_bind_sampler(least, swizzled, &plain, 0, &tex, VK_IMAGE_VIEW_TYPE_2D) != avg);
+    g_vk.has_minmax_swizzle = had_swizzle;
+    vkDestroyImageView(g_vk.dev, view, NULL);
+    vmaDestroyImage(g_vk.vma, image, image_memory);
     return 0;
 }
 
@@ -1071,7 +1223,8 @@ int main(int argc, char** argv) {
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());
-	CHECK(!check_shader_invalidation());
+    CHECK(!check_sampler_reduction());
+    CHECK(!check_shader_invalidation());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());

@@ -870,6 +870,8 @@ texture_from_memory:
     return tex_upload(t) ? t : NULL;
 }
 
+VkFormat vk_tex_view_format(const Surf* s, int srgb) { return s->f.depth ? s->f.vk : vk_srgb_as(s->f.vk, srgb); }
+
 static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil,
                             u32 levels) {
     /* what a view of each image type can be */
@@ -899,7 +901,7 @@ static VkImageView tex_view(Surf* s, VkImageViewType type, int srgb, const VkCom
             break;
         default: return VK_NULL_HANDLE;
     }
-    VkFormat fmt = s->f.depth ? s->f.vk : vk_srgb_as(s->f.vk, srgb);
+    VkFormat fmt = vk_tex_view_format(s, srgb);
     stencil = stencil && s->f.stencil;
     u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |
               (u64)stencil << 60 | (u64)(levels != s->levels) << 61;
@@ -1056,8 +1058,16 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
        filtering (2D art, the HUD), samplers without a mip filter and depth compares (shadow maps) keep the game's */
     if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
         af = (float)g_vk_anisotropy;
-    if ((tsc[1] >> 10) & 3)
-        LOG_LIMIT(1, "vulkan: min/max sampler reduction isn't supported (filtered as an average)\n");
+    /* tsc[1] bits 10-11: the least (1) or the greatest (2) of the texels the filter reads, not their weighted average
+       (0), which vk_tex_bind_sampler leaves only where the view's format and the device take it */
+    u32 reduction = (tsc[1] >> 10) & 3;
+    if (reduction == 3) {
+        LOG_LIMIT(1, "vulkan: sampler reduction 3 names no mode: the texels are averaged\n");
+        reduction = 0;
+    }
+    VkSamplerReductionModeCreateInfo rm = {.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+                                           .reductionMode = reduction == 1 ? VK_SAMPLER_REDUCTION_MODE_MIN
+                                                                           : VK_SAMPLER_REDUCTION_MODE_MAX};
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                               .magFilter = mag == 2 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                               .minFilter = min == 2 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
@@ -1114,6 +1124,10 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
         si.borderColor = integer ? VK_BORDER_COLOR_INT_OPAQUE_BLACK : VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     else
         si.borderColor = integer ? VK_BORDER_COLOR_INT_OPAQUE_WHITE : VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    if (reduction) {
+        rm.pNext = si.pNext;
+        si.pNext = &rm;
+    }
     VkSampler s;
     if (!VK_OK(vkCreateSampler(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
     memcpy(tab[j].tsc, tsc, 32);

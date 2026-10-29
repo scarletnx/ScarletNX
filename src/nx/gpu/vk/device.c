@@ -185,6 +185,7 @@ static int create_device(void) {
     /* MoltenVK fails every pipeline that lists VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (Metal's dynamic stride) */
     g_vk.has_dynamic_stride = p12.driverID != VK_DRIVER_ID_MOLTENVK;
     g_vk_preserve_infnan64 = p12.shaderSignedZeroInfNanPreserveFloat64 != 0;
+    g_vk.has_minmax_swizzle = p12.filterMinmaxImageComponentMapping != 0;
     /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too.
        Qualcomm's driver claims the mode but miscompiles with it: a fragment shader of one game's waterfalls, all of
        its FMUL, FADD and FFMA FTZ as NVIDIA's compiler made them, drew the background's colour on an Adreno 740
@@ -409,6 +410,7 @@ static int create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .pNext = &f11,
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
+                                            .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
