@@ -761,6 +761,13 @@ int snx_seek(FILE* f, SnxU64 offset) {
     return fseeko(f, (off_t)offset, SEEK_SET) != 0;
 #endif
 }
+int64_t snx_tell(FILE* f) {
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return (int64_t)ftello(f);
+#endif
+}
 int snx_copy_file_range(const char* src, SnxU64 offset, SnxU64 size, const char* dst) {
     unsigned char buf[65536];
     FILE *in = snx_fopen(src, "rb"), *out;

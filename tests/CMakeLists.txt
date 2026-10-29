@@ -189,6 +189,12 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-blz 11)
     target_link_libraries(snx-test-3ds-blz PRIVATE snx_ctr_loader)
     add_test(NAME 3ds_blz COMMAND snx-test-3ds-blz)
+    # snx_seek and snx_tell on a sparse file, at an offset past 2 GiB
+    add_executable(snx-test-3ds-file-position 3ds_file_position.c support/sparse_file.c)
+    snx_test_target(snx-test-3ds-file-position 11)
+    target_link_libraries(snx-test-3ds-file-position PRIVATE snx_ctr_loader)
+    add_test(NAME 3ds_file_position COMMAND snx-test-3ds-file-position)
+    set_tests_properties(3ds_file_position PROPERTIES SKIP_RETURN_CODE 77)
 
     # The GPU, presentation and DSP tests need neither Python nor POSIX, and Windows is a 3DS target too
     # the GPU's transfer engine against the CPU reference (gpu/transfer.c), on whatever Vulkan device there is

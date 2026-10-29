@@ -7,6 +7,7 @@
 #include "3ds/services/romfs.h"
 #include "common/filesystem/tree.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -433,7 +434,7 @@ bool snx_ctr_romfs_read(SnxCtrRomfs* r, uint64_t offset, void* output, size_t si
         else {
             FILE* file = fs_tree_open(r->tree, node, "rb");
             if (!file) goto error;
-            bool ok = !fseek(file, (long)at, SEEK_SET) && fread(dest, 1, n, file) == n;
+            bool ok = !snx_seek(file, at) && fread(dest, 1, n, file) == n;
             if (fclose(file)) ok = false;
             if (!ok) goto error;
         }
