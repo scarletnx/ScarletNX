@@ -1221,7 +1221,8 @@ snx_test_target(snx-test-aot-variants 11)
 target_link_libraries(snx-test-aot-variants PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME aot_variants COMMAND snx-test-aot-variants)
 set_tests_properties(aot_variants PROPERTIES TIMEOUT 120)
-# the code units' cache (nx/loader/unit_cache.c) under the LLVM module build: reuse, keys, broken objects, the limit
+# the code units' cache (nx/loader/unit_cache.c) under the LLVM module builds, a 32-bit game's too: reuse, keys, broken
+# objects, the limit
 add_executable(snx-test-unit-cache unit_cache.c)
 snx_test_target(snx-test-unit-cache 11)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
