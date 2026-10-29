@@ -13,6 +13,7 @@
    Every NVN command is only recorded here: the queue's replay runs the records on the GPU thread once they are
    submitted (gpu/nvn/nvn_replay.c) */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_verify.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -122,7 +123,10 @@ static void lend_return(u64 memory, u64 size) {
     u32 i;
     pm_lock(&g_lend.lock);
     for (i = 0; i < g_lend.n; i++)
-        if (g_lend.l[i].taken && g_lend.l[i].origin - memory < size) g_lend.l[i].taken = 0;
+        if (g_lend.l[i].taken && g_lend.l[i].origin - memory < size) {
+            g_lend.l[i].taken = 0;
+            nvn_verify_memory_back(g_lend.l[i].at, g_lend.l[i].size);
+        }
     pm_unlock(&g_lend.lock);
 }
 

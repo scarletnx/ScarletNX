@@ -17,6 +17,10 @@ typedef struct {
     u32 method;       /* the method the next word goes to */
     u32 method_count; /* the words still owed */
 } PbState;
+/* a word of the stream: 1 when it is a method call (*sub, *m, *v, and *last, its header's last word), 0 for a header */
+int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last);
+/* whether an engine here runs the class a subchannel binds */
+int gpu_class_known(u32 cls);
 
 /* The macro engine (mme.c) of a channel, kept between steps: a method a macro sends can make the stream wait
    (gpu_park), and the macro goes on from here (mme_resume) once the wait ends */
