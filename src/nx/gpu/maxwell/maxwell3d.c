@@ -151,9 +151,12 @@ static int dirty_check(void) {
     }
     return on;
 }
+void (*g_gpu_verify_draw)(GpuChannel* ch, const DrawCall* dc);
+void (*g_gpu_verify_cb)(u64 gva, const u32* words, u32 n);
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
-    if (ch->render_off || !g_renderer->draw) return;
+    int verify = gpu_channel_verify(ch);
+    if (ch->render_off || (!verify && !g_renderer->draw)) return;
     mx_draw_state_sync(ch);
     if (dirty_check()) {
         u32 stale = mx_draw_state_stale(ch);
@@ -172,7 +175,10 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
                    0,
                    0,
                    0};
-    g_renderer->draw(&ch->ds, &dc, &ch->owner);
+    if (verify)
+        g_gpu_verify_draw(ch, &dc);
+    else
+        g_renderer->draw(&ch->ds, &dc, &ch->owner);
 }
 /* guest memory without the renderer's hooks: only for the clear below, made while no renderer runs */
 static void raw_write(u64 gva, const u8* src, u32 n) {
@@ -249,7 +255,7 @@ void r3d_clear(GpuChannel* ch, u32 v) {
 }
 /* DRAW_TEXTURE: not gated by the render enable here, the renderer reads its registers as Eden does */
 void r3d_draw_texture(GpuChannel* ch) {
-    if (!g_renderer->draw_texture) return;
+    if (!g_renderer->draw_texture || gpu_channel_verify(ch)) return;
     DrawTexture t;
     mx_draw_state_sync(ch);
     mx_draw_texture(ch->r3d, &t);
@@ -287,6 +293,11 @@ void r3d_const_upload(GpuChannel* ch, u32 v, int last) {
 }
 void r3d_const_flush(GpuChannel* ch) {
     if (!ch->cb_n) return;
+    if (gpu_channel_verify(ch)) { /* the words, kept beside the decode, never in guest memory */
+        g_gpu_verify_cb(ch->cb_addr, ch->cb_words, ch->cb_n);
+        ch->cb_n = 0;
+        return;
+    }
     snx_le32_array(ch->cb_words, ch->cb_n); /* guest memory's order: the words aren't read again */
     gmem_write(ch->cb_addr, ch->cb_words, (u64)ch->cb_n * 4);
     ch->cb_n = 0;

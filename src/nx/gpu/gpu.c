@@ -569,6 +569,35 @@ static void method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
     }
 }
 
+GpuChannel* gpu_verify_channel_new(u32 id) {
+    GpuChannel* ch = (GpuChannel*)calloc(1, sizeof *ch);
+    if (!ch) fatal("gpu: out of memory for verify channel %x\n", id);
+    ch->id = id;
+    channel_reset(ch);
+    return ch;
+}
+void gpu_verify_channel_free(GpuChannel* ch) {
+    if (!ch) return;
+    free(ch->inline_indices);
+    free(ch);
+}
+void gpu_verify_word(GpuChannel* ch, u32 w) {
+    u32 sub, m, v;
+    int last;
+    if (!pb_decode(&ch->pb, w, &sub, &m, &v, &last)) return;
+    if (m < PULLER_NON_PULLER_METHODS) { /* the semaphores and syncpoints are the live stream's business */
+        ch->puller[m] = v;
+        if (m == PULLER_BIND_OBJECT) ch->sub_class[sub] = v & CLASS_ID_MASK;
+        return;
+    }
+    if (engine_of(ch->sub_class[sub]) == ENG_3D) {
+        maxwell3d_method(ch, m, v, last);
+        return;
+    }
+    r3d_const_flush(ch);
+    r3d_pending_flush();
+}
+
 /* ------------------------------------------------------------ waits */
 #define WAIT_POLL_NS 500000ull /* a release the CPU writes has no wake: semaphore waits look again this often */
 /* how long a wait nothing ends lasts before the stream goes on (the console raises an interrupt instead): a report

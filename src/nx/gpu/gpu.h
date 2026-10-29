@@ -163,6 +163,11 @@ typedef struct GpuChannel {
     u64 park_addr; /* the semaphore's GPU address, or the syncpoint id */
     u64 park_end;  /* the plat_ns() past which the stream goes on anyway */
 } GpuChannel;
+/* A verify channel (gpu/nvn/nvn_verify.c): the game's NVN driver's stream, decoded into its registers on the GPU
+   thread for nvn_verify_shadow_draw to compare, with no effect anywhere else (no draw, write, release, barrier or
+   syncpoint). Its id, from GPU_VERIFY_ID, is no syncpoint's, and it is no channel of g_gpu's */
+#define GPU_VERIFY_ID 0x40000000u
+static inline int gpu_channel_verify(const GpuChannel* ch) { return ch->id >= GPU_VERIFY_ID; }
 enum {
     GPU_PARK_SEMAPHORE = 1, /* the puller's SemaphoreOperation acquire */
     GPU_PARK_REPORT,        /* the 3D or compute engine's report semaphore acquire */
@@ -347,6 +352,16 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* a verify channel with its id (from GPU_VERIFY_ID), reset as a new channel is, and freed; and a word of its stream,
+   decoded at once: its 3D engine's methods only, the puller's binds, and the 3D engine's held constants and draw
+   flushed before any other engine's method, as method_call does. On the GPU thread */
+GpuChannel* gpu_verify_channel_new(u32 id);
+/* where a verify channel's draws (with the DsState its registers give, ch->ds) and constant buffer data (host-order
+   words) go: nvn_verify's, set before it makes a channel (maxwell/maxwell3d.c) */
+extern void (*g_gpu_verify_draw)(GpuChannel* ch, const DrawCall* dc);
+extern void (*g_gpu_verify_cb)(u64 gva, const u32* words, u32 n);
+void gpu_verify_channel_free(GpuChannel* ch);
+void gpu_verify_word(GpuChannel* ch, u32 w);
 void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,

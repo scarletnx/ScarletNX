@@ -194,6 +194,13 @@ static void render_enable_update(GpuChannel* ch) {
     u64 a = gpu_packed_va(r[MAXWELL3D_RENDER_ENABLE_ADDRESS_HIGH], r[MAXWELL3D_RENDER_ENABLE_ADDRESS_LOW]);
     u32 mode = r[MAXWELL3D_RENDER_ENABLE_MODE] & MAXWELL3D_RENDER_ENABLE_MODE_MASK, pred = 0;
     int on = 1, known;
+    if (gpu_channel_verify(ch)) { /* no report to read: a conditional enable draws, as the live replay's does */
+        u32 o = r[MAXWELL3D_RENDER_ENABLE_OVERRIDE] & MAXWELL3D_RENDER_ENABLE_OVERRIDE_MASK;
+        ch->render_off = o == MAXWELL3D_RENDER_ENABLE_OVERRIDE_NEVER_RENDER ||
+                         (o != MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER && mode == MAXWELL3D_RENDER_ENABLE_FALSE);
+        (void)a;
+        return;
+    }
     if (ch->owner.pred) {
         g_renderer->render_predicate_drop(ch->owner.pred);
         ch->owner.pred = 0;
@@ -557,6 +564,29 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     } else if (g_engines.deferred.ch && g_engines.deferred.ch != ch)
         plain_flushed(ch, m, v);
 }
+/* the methods a verify channel (gpu.h gpu_channel_verify) only stores: what they do reaches the renderer, guest
+   memory or a syncpoint, which the live stream does */
+static int verify_inert(u32 m) {
+    switch (m) {
+        case MAXWELL3D_WAIT_FOR_IDLE:
+        case MAXWELL3D_LAUNCH_DMA:
+        case MAXWELL3D_INLINE_DATA:
+        case MAXWELL3D_SYNC_INFO:
+        case MAXWELL3D_INVALIDATE_SHADER_CACHE:
+        case MAXWELL3D_INVALIDATE_SHADER_CACHE_NO_WFI:
+        case MAXWELL3D_FRAGMENT_BARRIER:
+        case MAXWELL3D_INVALIDATE_TEXTURE_DATA_CACHE:
+        case MAXWELL3D_TILED_CACHE_BARRIER:
+        case MAXWELL3D_DRAW_TEXTURE_SRC_Y0:
+        case MAXWELL3D_INVALIDATE_SAMPLER_CACHE_NO_WFI:
+        case MAXWELL3D_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI:
+        case MAXWELL3D_ZPASS_PIXEL_COUNT_ENABLE:
+        case MAXWELL3D_CLEAR_REPORT_VALUE:
+        case MAXWELL3D_CLEAR_SURFACE:
+        case MAXWELL3D_REPORT_SEMAPHORE_QUERY: return 1;
+        default: return 0;
+    }
+}
 static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
     u32* r = ch->r3d;
     /* a plain register after the held constant buffer data */
@@ -582,6 +612,7 @@ static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
     if (g_engines.deferred.ch && (g_engines.deferred.ch != ch || !keeps_draw(r, m, v))) r3d_pending_flush();
     if (r[m] != v) ch->r3d_dirty |= g_m3d_group[m] & ~G_ACTS;
     r[m] = v;
+    if (gpu_channel_verify(ch) && verify_inert(m)) return;
     switch (m) { /* a new case, or a new one in keeps_draw, needs G_ACTS in its g_m3d_group too */
         case MAXWELL3D_WAIT_FOR_IDLE:
             /* The idle wait and the texture cache invalidation below order GPU work, which method_barrier gives
