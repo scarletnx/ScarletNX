@@ -311,12 +311,53 @@ static void timeline_wait(u64 value, int kind) {
         g_vk_waits[kind]++;
     }
 }
+/* A buffer that one object hands to every frame in flight (the block linear scratch): its replacement is made while
+   the submissions that read the old one may still be running, and the frame slot that would defer it knows only its
+   own submissions. Each goes with the timeline value of the submission that follows its replacement, and is freed
+   once the GPU has passed that value: at the next landing, and at a vk_finish, so no game has to call one to release
+   it */
+typedef struct {
+    VkBuffer b;
+    VmaAllocation a;
+    u64 value;
+} Retired;
+static Retired* g_retired;
+static u32 g_nretired, g_capretired;
+void vk_retire_buffer(VkBuffer b, VmaAllocation a) {
+    if (g_nretired == g_capretired) {
+        u32 cap = g_capretired ? g_capretired * 2 : 8;
+        Retired* grown = realloc(g_retired, cap * sizeof *grown);
+        /* out of memory for the list: the frame slot's deferral, as this did before */
+        if (!grown) {
+            vk_defer_buffer(b, a);
+            return;
+        }
+        g_retired = grown;
+        g_capretired = cap;
+    }
+    g_retired[g_nretired++] = (Retired){b, a, vk_submit_number()};
+}
+/* the retirements the timeline value done, or an earlier one, has passed */
+static void retired_free(u64 done) {
+    for (u32 i = 0; i < g_nretired;) {
+        if (g_retired[i].value > done) {
+            i++;
+            continue;
+        }
+        Retired r = g_retired[i];
+        g_retired[i] = g_retired[--g_nretired];
+        vk_mem_untrack(r.a);
+        vmaDestroyBuffer(g_vk.vma, r.b, r.a);
+    }
+}
+
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
 static void land_through(u64 value) {
     while (g_landed < value) {
         vk_buf_frame_done(++g_landed);
         vk_gfx_image_frame_done(g_landed);
     }
+    retired_free(value);
 }
 
 static void pool_recycle(Frame* f);
@@ -836,7 +877,7 @@ void vk_finish(void) {
     SNX_ZONE(z_finish, "vk finish");
     submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
     timeline_wait(g_gval, VK_WAIT_FINISH);
-    land_through(g_gval);
+    land_through(g_gval); /* frees the buffers retired before this submission too */
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
 }

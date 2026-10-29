@@ -73,8 +73,9 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     *cap_out = g_blocklinear.cap;
     if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
     if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;
-    /* the old one stays alive until the frame's work that may use it is done */
-    if (g_blocklinear.scratch) vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem);
+    /* one scratch serves every frame in flight, so no frame slot owns its lifetime: it waits for a timeline value
+       that every submission after it comes after (vk_retire_buffer) */
+    if (g_blocklinear.scratch) vk_retire_buffer(g_blocklinear.scratch, g_blocklinear.mem);
     g_blocklinear.scratch = VK_NULL_HANDLE;
     g_blocklinear.cap = 0;
     u64 cap = 4ull << 20;
