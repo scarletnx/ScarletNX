@@ -126,6 +126,11 @@ the game's image read from that image.
   forms. `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
   `tests/llvm_module.c` a whole program against the end state QEMU gives it, `tests/llvm_bench.c` times it on
   assembly kernels.
+- `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
+  (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
+  as lld's `CallGraphSort.cpp`) and writes their guest addresses. `module_llvm.c` gives each listed function a code
+  section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
+  No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
   does, so a loop without SVCs gives its core to a waiting thread of higher priority.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
