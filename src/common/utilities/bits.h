@@ -22,6 +22,10 @@ static inline uint32_t snx_bits(uint32_t v, unsigned at, unsigned count) { retur
 static inline int snx_in_range(uint64_t offset, uint64_t length, uint64_t total) {
     return offset <= total && length <= total - offset;
 }
+/* whether two ranges of bytes share one; an empty range shares none */
+static inline int snx_ranges_overlap(uint64_t a, uint64_t a_size, uint64_t b, uint64_t b_size) {
+    return a_size && b_size && a < b + b_size && b < a + a_size;
+}
 
 static inline int snx_clamp_int(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline float snx_clamp_float(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }

@@ -543,6 +543,31 @@ be portable safe components (maximum 255 UTF-8 bytes); unsafe/reserved names
 are rejected rather than silently renamed. Host paths with control characters
 are refused to prevent log/banner injection. Larger/unsupported inputs fail closed.
 
+**The CRO loader** implements ldr:ro's `Initialize` (0x1), `LoadCRO` (0x4), `LoadCRO_New` (0x9),
+`UnloadCRO` (0x5), `Link` (0x6), `Unlink` (0x7) and `Shutdown` (0x8), ported from Azahar's
+`ldr_ro.cpp` and `cro_helper.cpp` at `a4b335e`.
+
+- A load aliases the caller's private buffer into the process image, rebases and links the module,
+  registers it, applies its fix level and returns the retained size. The tail is released.
+- Retained images are read-only and code pages are executable. The source and live data buffers
+  stay held until unload. A failed operation rolls back its guest writes.
+- `LoadCRO_New` applies imports to the image's `.data` before transferring it. The older command
+  keeps its original order.
+- Unload unrebases the retained image. It leaves the discarded tables and `FIXD` of a nonzero fix
+  level as they are and does not reconstruct the original file byte for byte.
+- Load, unload, link and unlink drop the blocks the run-time compiler made. Its native code is
+  released between dispatcher blocks, never inside the IPC or SVC that dropped it.
+- Names are compared within the guest string tables, with no fixed host length. Relocation batches
+  and export searches use the validated table extents, with no separate entry limit.
+- A relocation that rewrites a word of the static text takes the AOT tables out of use only for
+  the blocks that can contain that word. A table block has at most 32 instructions, so the runtime
+  marks the 128-byte window of the word and the window before it, and the dispatcher compiles
+  blocks that start in a marked window at run time. The rest of the static text keeps running from
+  the AOT tables. Marks are never cleared, even when an unload restores the word. This needs the
+  run-time compiler.
+- CRR commands (0x2 and 0x3) acknowledge requests without authenticating CRO hashes. Relocation
+  kinds other than 0, 2, 3 and 38 are unsupported.
+
 **Hashes are integrity checks, not signature authentication.** RSA/ECDSA
 signatures, certificate trust, ticket rights and ExHeader access-descriptor
 signatures are not authenticated. The headers' and superblocks' hashes (NCCH

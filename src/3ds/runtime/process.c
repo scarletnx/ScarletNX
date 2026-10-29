@@ -133,6 +133,7 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     }
     snx_ctr_space_free(p->space);
     snx_ctr_memory_free(p->memory);
+    free(p->ldr_modules);
     free(p->aot_stale);
     free(p);
 }

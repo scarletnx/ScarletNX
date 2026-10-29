@@ -21,6 +21,7 @@ enum {
     SNX_CTR_SERVICE_SYSTEM, /* the system services the runtime has no model of (services/system.c) */
     SNX_CTR_SERVICE_AM,     /* am:app (services/am.c) */
     SNX_CTR_SERVICE_Y2R,    /* y2r:u (services/y2r.c) */
+    SNX_CTR_SERVICE_LDR_RO, /* ldr:ro (services/ldr.c) */
     SNX_CTR_SERVICE_COUNT
 };
 /* SNX_CTR_IPC_UNKNOWN: a command the service does not have, as opposed to a form of a known one it does not

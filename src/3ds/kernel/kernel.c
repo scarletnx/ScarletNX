@@ -12,6 +12,7 @@
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include "3ds/services/gsp.h"
+#include "3ds/services/ldr.h"
 #include <string.h>
 #include <stdio.h>
 #include "common/utilities/common.h"
@@ -230,23 +231,22 @@ static uint32_t current_value(SnxCtrProcess* p, uint32_t name, uint64_t* value) 
     *value = name == 1 ? memory_used(p) : name < 10 && types[name] ? live_objects(p, types[name]) : 0;
     return OK;
 }
-static bool overlaps(uint32_t a, uint32_t a_size, uint32_t b, uint32_t b_size) {
-    return (uint64_t)a < (uint64_t)b + b_size && (uint64_t)b < (uint64_t)a + a_size;
-}
 /* A range that is not plain private memory, which ControlMemory may not free and which cannot be a MAP source or a
    memory block's owner range: part of a MAP pair, a mapped memory block (whose pages another range may own), or the
    owner's range of a memory block */
 static bool held(SnxCtrProcess* p, uint32_t va, uint32_t size) {
+    if (snx_ctr_ldr_held(p, va, size)) return true;
     for (unsigned i = 0; i < sizeof p->aliases / sizeof *p->aliases; ++i)
-        if (p->aliases[i].size && (overlaps(va, size, p->aliases[i].target, p->aliases[i].size) ||
-                                   overlaps(va, size, p->aliases[i].source, p->aliases[i].size)))
+        if (p->aliases[i].size && (snx_ranges_overlap(va, size, p->aliases[i].target, p->aliases[i].size) ||
+                                   snx_ranges_overlap(va, size, p->aliases[i].source, p->aliases[i].size)))
             return true;
     for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
-        if (p->shared_maps[i].object && overlaps(va, size, p->shared_maps[i].va, p->shared_maps[i].size)) return true;
+        if (p->shared_maps[i].object && snx_ranges_overlap(va, size, p->shared_maps[i].va, p->shared_maps[i].size))
+            return true;
     for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
         const CtrObject* o = &p->objects[i];
         if (o->type == CTR_OBJ_SHARED && o->data.shared.address &&
-            overlaps(va, size, o->data.shared.address, o->data.shared.size))
+            snx_ranges_overlap(va, size, o->data.shared.address, o->data.shared.size))
             return true;
     }
     return false;
@@ -409,7 +409,7 @@ uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint3
         return result;
     }
     /* FREE leaves what is not plain private memory alone; PROTECT reprotects any of it, as Azahar's ReprotectRange */
-    if (op == 1 && held(p, va, size)) return INVALID_STATE;
+    if ((op == 1 && held(p, va, size)) || (op == 6 && snx_ctr_ldr_held(p, va, size))) return INVALID_STATE;
     uint32_t base = linear ? CTR_LINEAR : CTR_HEAP;
     uint32_t end = linear ? CTR_LINEAR + p->app_limit : CTR_HEAP_END;
     if (op != 3) {

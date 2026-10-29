@@ -198,6 +198,14 @@ struct SnxCtrProcess {
     uint64_t archive_sequence;
     uint32_t fs_priority; /* fs:USER's SetPriority, UINT32_MAX until one */
     SnxCtrGsp gsp;
+    /* ldr:ro's static module (services/ldr.c): where Initialize mapped the CRS and the buffer it was mapped from, 0
+       until it did */
+    uint32_t ldr_crs, ldr_crs_size, ldr_buffer;
+    /* the loaded CROs, in a list of their own because the guest can rewrite the headers that would also link them */
+    struct SnxCtrLdrModule* ldr_modules;
+    size_t ldr_count, ldr_capacity;
+    /* the open transaction that journals the writes of one ldr:ro command (services/cro.c), NULL between commands */
+    struct SnxCtrCroTransaction* cro_transaction;
     /* one bit per 128 bytes of the static text (aot/dispatch.c): set where an AOT block may hold a word a CRO's
        relocation rewrote, and allocated by the first such rewrite */
     uint32_t* aot_stale;
