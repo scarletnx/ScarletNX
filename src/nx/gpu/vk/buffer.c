@@ -353,8 +353,18 @@ static u64* range_map(u64 gva, u64 len, u64 local[16]) {
     return map;
 }
 
-/* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
-static _Thread_local int g_out_landing;
+typedef struct WwStage WwStage;
+/* this thread's state */
+static _Thread_local struct {
+    /* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
+    int out_landing;
+    /* A job on the GPU thread checks against the newest epoch when it started (vk_ww_stream), not one a later
+       submission starts while it runs: what the CPU wrote for that submission is the later job's to see. That leaves
+       the scanner thread (ww_scanner) the time until the job starts to scan what it will check */
+    u32 ww_stream;
+    int ww_streaming;
+    WwStage* wstage; /* the running scan's, for ww_note */
+} t_buffer;
 
 void vk_buf_writable_abort(void) {
     while (g_prep) {
@@ -500,7 +510,7 @@ void vk_buf_frame_done(u64 frame) {
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
     g_gfx_any = g_out != NULL || done != NULL;
     VmaAllocation invalidated = VK_NULL_HANDLE;
-    g_out_landing++;
+    t_buffer.out_landing++;
     while (done) {
         GfxOut* o = done;
         done = o->next;
@@ -525,7 +535,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         free(o);
     }
-    g_out_landing--;
+    t_buffer.out_landing--;
     g_gfx_any = g_out != NULL;
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
@@ -581,9 +591,9 @@ static void wait_finish(int reason) {
     }
 }
 static void land_reason(int reason) {
-    if (!g_gfx_any || g_out_landing) return;
+    if (!g_gfx_any || t_buffer.out_landing) return;
     vk_lock();
-    if (g_gfx_any && !g_out_landing) wait_finish(reason);
+    if (g_gfx_any && !t_buffer.out_landing) wait_finish(reason);
     vk_unlock();
 }
 void vk_buf_land(void) { land_reason(WB_SIGNAL); }
@@ -670,7 +680,7 @@ static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, u64
 static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
     u64 local[16], *rmap = NULL;
-    if (!g_gfx_any || g_out_landing || !len) return;
+    if (!g_gfx_any || t_buffer.out_landing || !len) return;
     vk_lock();
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) {
         vk_unlock();
@@ -1024,7 +1034,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     int count = 0, before = 0;
     RangePages q;
     u64 local[16], *rmap = NULL;
-    if (!g_gfx_any || g_out_landing || !gva || !len) return 0;
+    if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
@@ -1117,11 +1127,6 @@ static u32 g_wleaf_max[AS_MAX >> WW_LEAF_SHIFT];
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
 static u32 g_wleaf_seen[AS_MAX >> WW_LEAF_SHIFT];
 static u32 g_ww_epoch; /* atomic */
-/* A job on the GPU thread checks against the newest epoch when it started (vk_ww_stream), not one a later submission
-   starts while it runs: what the CPU wrote for that submission is the later job's to see. That leaves the scanner
-   thread (ww_scanner) the time until the job starts to scan what it will check */
-static _Thread_local u32 t_ww_stream;
-static _Thread_local int t_ww_streaming;
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
 static void ww_mark(u8* p, u64 n) {
@@ -1212,12 +1217,11 @@ static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks 
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
-typedef struct {
+struct WwStage {
     WwRange r[WW_RES_N];
     int n;
-} WwStage;
+};
 static WwStage g_wstage_scanner, g_wstage_check;
-static _Thread_local WwStage* t_wstage; /* the running scan's, for ww_note */
 static WwRange g_wres[WW_RES_N]; /* what scans found written, for the next check to mark */
 static int g_wres_n;             /* atomic: read without the lock to skip it */
 static PMutex g_wres_lk = PMUTEX_INIT; /* after a leaf's claim */
@@ -1228,7 +1232,7 @@ static PCond g_wscan_cv;
 /* plat_ww_scan's callback: a run of written pages. When the stage is full its last range grows over the new one
    (scans go up through memory), marking more than was written: a cache over the rest only checks its contents once */
 static void ww_note(u8* p, u64 n) {
-    WwStage* st = t_wstage;
+    WwStage* st = t_buffer.wstage;
     u64 a = (u64)(p - g_mem);
     if (a >= AS_SIZE || !n) return;
     if (st->n && st->r[st->n - 1].e == a)
@@ -1245,7 +1249,7 @@ static int ww_claim(u64 l) {
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
-    t_wstage = st;
+    t_buffer.wstage = st;
     int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
@@ -1399,17 +1403,20 @@ static void ww_scanner(void* arg) {
 }
 void vk_ww_new_epoch(void) {
     u32 e = __atomic_add_fetch(&g_ww_epoch, 1, __ATOMIC_RELEASE);
-    if (t_ww_streaming) t_ww_stream = e; /* a wait of the running job ended: what the CPU wrote before is its to see */
+    if (t_buffer.ww_streaming)
+        t_buffer.ww_stream = e; /* a wait of the running job ended: what the CPU wrote before is its to see */
     if (__atomic_load_n(&g_wscan_on, __ATOMIC_ACQUIRE)) {
         pm_lock(&g_wscan_wlk);
         pc_signal(&g_wscan_cv);
         pm_unlock(&g_wscan_wlk);
     }
 }
-u32 vk_ww_epoch(void) { return t_ww_streaming ? t_ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE); }
+u32 vk_ww_epoch(void) {
+    return t_buffer.ww_streaming ? t_buffer.ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+}
 void vk_ww_stream(int on) {
-    t_ww_streaming = on;
-    t_ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+    t_buffer.ww_streaming = on;
+    t_buffer.ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
 }
 /* a check in the epoch seen - 1 needs leaves: the scanner's next passes scan what the last epochs needed */
 static void ww_used_epoch(u32 seen) {
@@ -1785,7 +1792,7 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
     /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy */
-    for (GfxOut* o = g_out; o && !landed && !g_out_landing; o = o->next)
+    for (GfxOut* o = g_out; o && !landed && !t_buffer.out_landing; o = o->next)
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
@@ -1807,7 +1814,8 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     Covered cov;
     GfxOut *nlocal[64], **newest = NULL;
     u32 n = 0;
-    if (!g_out_landing && !(newest = out_newest_first(nlocal, 64, &n))) fatal("Out of memory composing a draw's atlas");
+    if (!t_buffer.out_landing && !(newest = out_newest_first(nlocal, 64, &n)))
+        fatal("Out of memory composing a draw's atlas");
     cover_init(&cov, (u64)unique * 4096);
     for (u32 k = 0; k < n && !cover_full(&cov); k++) {
         const GfxOut* o = newest[k];
