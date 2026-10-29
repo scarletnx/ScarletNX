@@ -272,6 +272,9 @@ void nvn_direct_init(void) {
     g_nvn_direct.bootstrap_original = *slot;
     g_nvn_direct.bootstrap_entry = entry;
     g_nvn_direct.flag = kernel_find_symbol_exact("nvnPrivate0");
+    if (!hook_routed("nvnBootstrapLoader"))
+        WARN("nvn: the module's route list doesn't name nvnBootstrapLoader, so nvn_direct sees only its calls through "
+             "the PLT and function pointers. Recompile the game for its direct calls\n");
     *slot = bootstrap; /* before any guest thread runs */
     g_nvn_direct.active = 1;
     if (automatic)

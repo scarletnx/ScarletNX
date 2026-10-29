@@ -63,3 +63,22 @@ function(snx_hookgen target)
     target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
     target_include_directories(${target} PUBLIC "${out}")
 endfunction()
+
+# snx_hook_routes(<target> [SPECS <file>...]): generates nx/loader/hook_routes.inc, the symbols that the specs name
+# (hookgen --routes), which nx/loader/hook_routes.c includes, and gives <target> its include root. The specs are
+# hle/hook/hooks.hook and gpu/nvn/nvn.hook unless a test names its own
+function(snx_hook_routes target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SPECS")
+    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook")
+    if(arg_SPECS)
+        set(specs ${arg_SPECS})
+    endif()
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
+    add_custom_command(OUTPUT "${out}/nx/loader/hook_routes.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/nx/loader"
+        COMMAND snx-hookgen --routes "${out}/nx/loader/hook_routes.inc" ${specs}
+        DEPENDS snx-hookgen ${specs}
+        COMMENT "Generating nx/loader/hook_routes.inc" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/nx/loader/hook_routes.inc")
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()

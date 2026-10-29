@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # what the backends share: function discovery over NX images, chunk labels, progress lines, the entry table
-add_library(snx_nx_module STATIC ../../loader/module.c ../../loader/codegen_view.c)
+add_library(snx_nx_module STATIC ../../loader/module.c ../../loader/codegen_view.c ../../loader/hook_routes.c)
 set_target_properties(snx_nx_module PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_nx_module PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
+# the route list (loader/hook_routes.c): the symbols the hooks name, whose calls go through their dispatch slots
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+snx_hook_routes(snx_nx_module)
 add_library(snx_driver STATIC driver.c container.c extract.c game_name.c recompile.c setup.c toolchain.c mcp.c
                               mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c)
 set_target_properties(snx_driver PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

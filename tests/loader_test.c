@@ -160,6 +160,7 @@ static void expect_rich(const SnxModuleImage* m) {
     CHECK(m->symbol_count == 1 && m->symbols[0].value == 0x20 && !strcmp(m->symbols[0].name, "entry"));
     CHECK(m->import_count == 1 && !strcmp(m->imports[0], "imported"));
     CHECK(m->function_count == 3 && m->functions[0] == 0x20 && m->functions[1] == 0x40 && m->functions[2] == 0x50);
+    CHECK(m->routed_count == 0); /* entry is exported, but no hook names it: its calls stay direct */
     CHECK(m->relptr_count == 1 && m->relptrs[0] == 0x30);
     CHECK(m->fde_count == 2 && m->fde[0].start == 0x40 && m->fde[0].size == 16 && m->fde[1].start == 0x50);
     CHECK(m->eh_error == NULL);
