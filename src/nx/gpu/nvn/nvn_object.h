@@ -7,6 +7,30 @@
 #include "nx/gpu/nvn/nvn_obj.h"
 #include "nx/memory/mem.h"
 #include "nx/gpu/shader/shader.h"
+#include "common/filesystem/host.h"
+
+#define NVN_DEVICE_INFO_ITEMS 0x69
+/* a program whose last stage before rasterization captures: its serial and its transform feedback layout (128 bytes,
+   which don't fit the program object) */
+typedef struct {
+    u64 serial;
+    ShXfb x;
+} NvnXfbEntry;
+/* the file's state, g_nvn.object (gpu/nvn/nvn_state.h): the serials handed out, and nvnDeviceGetInteger's answers
+   once read from the game's driver (driver: 1; read_api: its API version among them); the transform feedback layouts
+   of the programs that capture, by serial, under their lock: programs that capture are few, and their entries stay */
+typedef struct {
+    u64 serial;
+    i32 info[NVN_DEVICE_INFO_ITEMS];
+    int driver, read_api;
+    u32 formats[8];   /* bit f: a texture of NVN format f was initialized (logged once) */
+    u64 device;       /* the device the game made last (atomic): the runtime has one */
+    u32 debug_domain; /* the debug domains generated (atomic) */
+    u32 device_flags; /* the flags of that device (atomic) */
+    PMutex xfb_lock;
+    NvnXfbEntry* xfb;
+    u32 nxfb, xfb_cap;
+} NvnObjectState;
 
 /* an NVN object of type T at guest address a, in place in the game's memory */
 #define NVN_OBJ(T, a) ((T*)(void*)GP(a))

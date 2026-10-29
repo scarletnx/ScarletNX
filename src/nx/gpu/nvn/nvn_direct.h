@@ -3,6 +3,28 @@
 #ifndef SNX_NVN_DIRECT_H
 #define SNX_NVN_DIRECT_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/filesystem/host.h"
+
+/* the functions the game resolved that aren't implemented: their addresses and names, for the message when one is
+   called. Filled under lock, read by the handler of a call, which only runs once its entry was published */
+typedef struct {
+    u64 addr;
+    char name[128];
+} NvnMissing;
+#define NVN_MISSING_SLOTS 1024 /* a power of two above the ~530 functions NVN has */
+/* the file's state: the missing functions, the lock their table and the slots are changed under, the resolvers'
+   recompiled code, the game's NVN API version (nvn_api_pack, 0 unknown) once decided (under lock) and whether the
+   runtime runs the game's NVN calls: from nvn_direct_init on, and with auto until the first bootstrap call says no.
+   g_nvn.direct (gpu/nvn/nvn_state.h) */
+typedef struct {
+    NvnMissing missing[NVN_MISSING_SLOTS];
+    PMutex lock;
+    GuestFn bootstrap_original, getproc_original;
+    u64 bootstrap_entry;
+    u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
+    u32 api;
+    int active, decided;
+} NvnDirectState;
 
 /* nvn_direct=1: the runtime runs the game's NVN calls itself, and the game's NVN driver doesn't run; 2 (auto): where
    the game's NVN API version is one nvn_direct has measured layouts for (gpu/nvn/nvn_direct.c). Init runs once the
