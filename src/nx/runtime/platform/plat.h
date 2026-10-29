@@ -35,6 +35,12 @@ void pc_broadcast(PCond* c);
 /* m held. timeout_ns < 0 waits without limit. Returns 1 when the time ran out, 0 when woken (or spuriously) */
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns);
 
+/* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
+   timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
+   on w. The waker changes *w before it wakes them */
+void plat_wait_word(u32* w, u32 v, i64 timeout_ns);
+void plat_wake_word(u32* w);
+
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
 /* A detached thread running fn(arg) on a stack of that many bytes (0: the system's default). 0, or -1 when it

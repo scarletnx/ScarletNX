@@ -69,6 +69,7 @@ struct KThread {
     int pinned;     /* the core whose host CPUs its host thread runs on (core_pin), -1 before it first ran */
     u32 core_next;  /* the core's wait list (kt_at) */
     u64 core_ticket;    /* arrival order there, which breaks priority ties */
+    u64 core_queued;    /* when it lined up there (plat_ns), for the report */
     /* for the report at exit (kernel_core_report), under core_lk: the time it waited for a core, and how often, and
        the time it held one */
     u64 core_wait_ns, core_held_ns;

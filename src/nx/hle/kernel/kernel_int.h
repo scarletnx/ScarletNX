@@ -80,6 +80,17 @@ int h_close(u32 h);
 void waiter_add(KObj* o, KThread* t);
 void waiter_del(KObj* o, KThread* t);
 void wake(KThread* t, int result);
+/* A thread blocked in the kernel waits on its word (kt_word), with no lock held: kt_seq reads it before the thread
+   checks what it waits for, and kt_wait blocks while the word still holds that value, so a change made after the check
+   ends the wait at once. kt_notify changes t's word and wakes it now; kt_notify_later changes it now and wakes it when
+   the caller next lets go of g_klock (klock_unlock) or of core_lk, or waits itself, so that the woken thread doesn't
+   wake only to wait for the lock its waker still holds. kt_wait lets go of held (if any) while it waits */
+u32 kt_seq(const KThread* t);
+void kt_notify(KThread* t);
+void kt_notify_later(KThread* t);
+void kt_flush(void);
+void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns);
+void klock_unlock(void);
 void kobj_signal_nl(KObj* o);
 int sleep_nl(KThread* t, i64 timeout);
 
@@ -200,8 +211,9 @@ typedef struct {
        one core comes from here: a core that falls free goes to its best waiter (lowest priority value, then the
        earliest), never to whichever host thread wakes first. Every field below and each thread's on_core, core,
        core_next and core_ticket change under core_lk, which is taken after g_klock when both are held (sleep_nl lets
-       go of its core with g_klock held), and never the other way round. The heads of core_wait are also read without
-       it, with __atomic loads, by core_yield, and a thread's on_core by the thread itself in core_enter */
+       go of its core with g_klock held), and never the other way round. Two are read without it, with __atomic loads:
+       a thread's on_core by the thread itself (only it lets go of a core it holds, and it waits for one handed to it
+       on its word), and the heads of core_wait by core_yield */
     u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
     u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
@@ -218,7 +230,9 @@ typedef struct {
 } HleThread;
 /* thread's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {
-    PCond cv[KTHREAD_MAX]; /* each thread's, which it waits on (kt_cv) */
+    /* each thread's wait word (kt_word), which it blocks on in the kernel's waits: whoever ends the wait changes the
+       word, then wakes it (kt_notify) */
+    u32 wword[KTHREAD_MAX];
     PMutex core_lk;
     /* for kernel_core_report, under core_lk: when each core's holder took it (plat_ns), and per core the time it was
        held and the time threads waited for it */
