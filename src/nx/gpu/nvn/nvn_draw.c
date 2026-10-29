@@ -59,6 +59,7 @@ struct NvnDraw {
     u64 blend[DS_TARGETS_MAX], dss;
     u32 color, chmask, poly;
     NvnMultisample ms;
+    u32 sample_off; /* the samples SetSampleMask leaves out (NVN's default mask has every one) */
     u32 svalue[2], smask[2], sref[2]; /* the stencil's compare mask, write mask and reference, front and back */
     float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
     u8 discard, depth_clamp, restart, render_off;
@@ -241,18 +242,20 @@ static int attr_format(u32 f, u8* size, u8* type) {
 /* whether the targets t and u differ in what DS_TARGET_FORMATS covers */
 static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
     u32 i;
-    if (t->count != u->count || t->srgb_write != u->srgb_write) return 1;
+    if (t->count != u->count || t->srgb_write != u->srgb_write || t->msaa != u->msaa) return 1;
     for (i = 0; i < DS_TARGETS_MAX; i++)
         if (t->color[i].format != u->color[i].format) return 1;
     return 0;
 }
-/* a render target from a texture snapshot and its view, as the 3D engine's registers describe one */
-static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth) {
+/* a render target from a texture snapshot and its view, as the 3D engine's registers describe one: a multisampled
+   texture's size in samples, its sample layout in *msaa (the texture header's, nvn_tic.c) */
+static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa) {
     NvnTexture t;
     NvnTexLayout l;
-    u32 format, level = 0, layer = 0, layers = 1;
+    u32 format, level = 0, layer = 0, layers = 1, mode;
     unsigned th, td;
     memset(s, 0, sizeof *s);
+    *msaa = DS_MSAA_1X1;
     if (!snapshot) return 0;
     memset(&t, 0, sizeof t);
     memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
@@ -274,8 +277,10 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
         }
     }
     s->gva = t.gpu + nvn_tex_level_offset(&t.d, level) + (u64)layer * l.layer_size;
-    s->width = t.d.width >> level ? t.d.width >> level : 1;
-    s->height = t.d.height >> level ? t.d.height >> level : 1;
+    mode = nvn_tex_msaa(t.d.samples);
+    *msaa = mode;
+    s->width = (t.d.width >> level ? t.d.width >> level : 1) << ds_msaa_log2_x(mode);
+    s->height = (t.d.height >> level ? t.d.height >> level : 1) << ds_msaa_log2_y(mode);
     s->layers = layers;
     s->layer_stride = l.layer_size;
     if (t.d.flags & NVN_TEX_LINEAR) {
@@ -303,22 +308,37 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
     }
     return 1;
 }
-int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth) {
-    return target(snapshot, v, v != NULL, s, depth);
+int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32* msaa) {
+    return target(snapshot, v, v != NULL, s, depth, msaa);
 }
 static void set_targets(NvnDraw* d, u64 payload) {
     NvnPSetRT r;
     DsTargets t;
     i32 i;
-    int depth;
+    int depth, have = 0;
+    u32 msaa;
     memcpy(&r, GP(payload), sizeof r);
     memset(&t, 0, sizeof t);
     t.count = r.count > 0 && r.count <= DS_TARGETS_MAX ? (u32)r.count : 0;
     t.srgb_write = 1; /* NVN writes sRGB targets as sRGB */
-    for (i = 0; i < (i32)t.count; i++)
-        if (!target(r.color[i], &r.cview[i], r.has_cview[i], &t.color[i], &depth) || depth)
-            memset(&t.color[i], 0, sizeof t.color[i]);
-    if (!target(r.depth, &r.dview, r.has_dview, &t.depth, &depth) || !depth) memset(&t.depth, 0, sizeof t.depth);
+    /* NVN requires every target of a draw to have the same samples: the first one bound gives the layout, and one
+       with other samples isn't bound */
+    for (i = 0; i <= (i32)t.count; i++) {
+        DsSurf* s = i < (i32)t.count ? &t.color[i] : &t.depth;
+        int ok = i < (i32)t.count ? target(r.color[i], &r.cview[i], r.has_cview[i], s, &depth, &msaa) && !depth
+                                  : target(r.depth, &r.dview, r.has_dview, s, &depth, &msaa) && depth;
+        if (ok && have && msaa != t.msaa) {
+            LOG_LIMIT(4, "nvn: render targets of sample layouts %u and %u bound together: the second isn't bound\n",
+                      (unsigned)t.msaa, (unsigned)msaa);
+            ok = 0;
+        }
+        if (!ok) {
+            memset(s, 0, sizeof *s);
+            continue;
+        }
+        t.msaa = (u8)msaa;
+        have = 1;
+    }
     if (target_formats_differ(&t, &d->ds.tgt)) new_gen(&d->ds.gen[DS_TARGET_FORMATS]);
     keep(&d->ds.tgt, &t, sizeof t, &d->ds.gen[DS_TARGETS]);
     d->dirty |= D_DYNAMIC | D_VIEWPORTS; /* the surface's height, which a lower-left origin measures from */
@@ -395,6 +415,8 @@ static void make_raster_key(NvnDraw* d) {
                                                      : DS_POLYGON_FILL);
     k.provoking_last = 1; /* NVN's default, as GL's */
     k.depth_clamp = d->depth_clamp;
+    k.alpha_to_coverage = d->ms.alpha_to_coverage;
+    k.sample_mask = ~d->sample_off;
     keep(&d->ds.rkey, &k, sizeof k, &d->ds.gen[DS_RASTER_KEY]);
 }
 /* the height of the targets' surface, which a lower-left window origin measures from */
@@ -444,8 +466,11 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.bias_clamp = d->bias[2];
     memcpy(y.blend_const, d->blend_color, sizeof y.blend_const);
     y.clip_height = surface_height(&d->ds.tgt);
-    if (d->ms.enable && d->ms.samples > 1)
-        LOG_LIMIT(1, "nvn: %u-sample rendering is drawn with one sample\n", (unsigned)d->ms.samples);
+    /* NVN's multisample state names its targets' samples, which the targets themselves give here; with
+       multisampling off a multisampled target is still drawn at every sample (Vulkan has no single-sample
+       rasterization into one) */
+    if (d->ds.tgt.msaa != DS_MSAA_1X1 && !d->ms.enable)
+        LOG_LIMIT(1, "nvn: a multisampled target drawn with multisampling off is drawn at every sample\n");
     y.depth_word = base_instance; /* the base instance, as the 3D engine's draws push it */
     keep(&d->ds.dyn, &y, sizeof y, &d->ds.gen[DS_DYNAMIC]);
 }
@@ -716,7 +741,7 @@ static void bind_state(NvnDraw* d, u64 payload) {
         case 0: d->blend[nvn_field(w, NVN_BLEND_TARGET)] = w, d->dirty |= D_BLEND; break;
         case 1: d->color = v, d->dirty |= D_BLEND | D_DYNAMIC; break;
         case 2: d->chmask = v, d->dirty |= D_BLEND; break;
-        case 3: memcpy(&d->ms, r->bytes, sizeof d->ms), d->dirty |= D_DYNAMIC; break;
+        case 3: memcpy(&d->ms, r->bytes, sizeof d->ms), d->dirty |= D_DYNAMIC | D_RASTER; break;
         case 4: d->poly = v, d->dirty |= D_DYNAMIC | D_RASTER; break;
         case 5: d->dss = w, d->dirty |= D_DYNAMIC; break;
     }
@@ -767,12 +792,15 @@ static void clear_texture(NvnDraw* d, u64 payload) {
     DsTargets t;
     i32 k, depth;
     int is_depth;
+    u32 msaa;
     memcpy(&r, GP(payload), sizeof r);
     if (r.r.width <= 0 || r.r.height <= 0 || !(r.mask & 15) || !g_renderer->clear) return;
     memset(&t, 0, sizeof t);
     t.count = 1;
     t.srgb_write = 1;
-    if (!target(r.texture, &r.view, r.has_view, &t.color[0], &is_depth) || is_depth) {
+    int ok = target(r.texture, &r.view, r.has_view, &t.color[0], &is_depth, &msaa);
+    t.msaa = (u8)msaa; /* a multisampled texture's every sample, in a region of its pixels */
+    if (!ok || is_depth) {
         if (is_depth) LOG_LIMIT(1, "nvn: a ClearTexture of a depth texture isn't replayed yet\n");
         return;
     }
@@ -876,6 +904,9 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             return 1;
         case OP_DEPTH_CLAMP:
             d->depth_clamp = NVN_OBJ(const NvnPDepthClamp, payload)->on != 0, d->dirty |= D_RASTER;
+            return 1;
+        case OP_SAMPLE_MASK:
+            d->sample_off = ~(u32)NVN_OBJ(const NvnPSampleMask, payload)->mask, d->dirty |= D_RASTER;
             return 1;
         case OP_PRIM_RESTART:
             d->restart = NVN_OBJ(const NvnPPrimRestart, payload)->on != 0;

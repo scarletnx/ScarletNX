@@ -585,6 +585,9 @@ void nvn_CommandBufferSetLineWidth(CPU* c, u64 cb, f32 width) {
     (void)cb;
     if (width != 1.0f) LOG_LIMIT(1, "nvn: line width %.2f isn't recorded\n", (double)width);
 }
+void nvn_CommandBufferSetSampleMask(CPU* c, u64 cb, i32 mask) {
+    REC(c, cb, OP_SAMPLE_MASK, NvnPSampleMask)->mask = mask;
+}
 void nvn_CommandBufferSetDepthClamp(CPU* c, u64 cb, int on) {
     REC(c, cb, OP_DEPTH_CLAMP, NvnPDepthClamp)->on = on != 0;
 }
@@ -654,17 +657,12 @@ void nvn_CommandBufferWaitEvent(CPU* c, u64 cb, u64 e, i32 mode, u32 value) {
     (void)mode;
     (void)value;
 }
-/* hints the replay has no use for, as nxnative: an alpha reference without an alpha test, the sample mask,
-   conservative rasterization, discards (the contents are undefined after, so keeping them is right), ZCull */
+/* hints the replay has no use for, as nxnative: an alpha reference without an alpha test, conservative
+   rasterization, discards (the contents are undefined after, so keeping them is right), ZCull */
 void nvn_CommandBufferSetAlphaRef(CPU* c, u64 cb, f32 ref) {
     (void)c;
     (void)cb;
     (void)ref;
-}
-void nvn_CommandBufferSetSampleMask(CPU* c, u64 cb, i32 mask) {
-    (void)c;
-    (void)cb;
-    if ((mask & 0xffff) != 0xffff) LOG_LIMIT(1, "nvn: sample mask %#x isn't recorded\n", (unsigned)mask);
 }
 void nvn_CommandBufferSetConservativeRasterEnable(CPU* c, u64 cb, int on) {
     (void)c;

@@ -13,6 +13,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/plat.h"
@@ -117,12 +118,14 @@ static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int t
     }
 }
 /* A texture's slice z as a 2D engine surface (gpu.h Surf2D), the render target the 3D engine would bind there
-   (gpu/nvn/nvn_draw.c): its format a target's, its bytes a pixel (0 for a depth format). 0 when it takes no target */
+   (gpu/nvn/nvn_draw.c): its format a target's, its bytes a pixel (0 for a depth format), a multisampled texture's
+   size in samples, as the 2D engine sees one. 0 when it takes no target */
 static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u32* bpp) {
     DsSurf t;
     int depth;
+    u32 msaa;
     memset(o, 0, sizeof *o);
-    if (!nvn_draw_surface(snapshot, has_v ? v : NULL, &t, &depth) || (t.mem >> 16 & 1) || z < 0) return 0;
+    if (!nvn_draw_surface(snapshot, has_v ? v : NULL, &t, &depth, &msaa) || (t.mem >> 16 & 1) || z < 0) return 0;
     *bpp = depth ? 0 : gpu_color_bpp(t.format);
     o->format = t.format;
     o->linear = t.mem >> 12 & 1;
@@ -212,9 +215,19 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
     TexPlane ps, pd;
     GpuDmaOp o;
     i32 k, depth = r->sr.depth > 0 ? r->sr.depth : 1;
-    /* a multisample resolve (Downsample): the renderer draws a multisample target with one sample, its width by its
-       height in texels at the texture's address (gpu/nvn/nvn_draw.c's target), so the resolve copies those */
-    if (r->flags & NVN_COPY_RESOLVE) LOG_LIMIT(1, "nvn: a multisample resolve, of the one sample drawn\n");
+    /* a multisample resolve (Downsample): the 2D engine's blit of the source's samples onto the destination's
+       pixels, which the renderer resolves on the GPU when the source is its multisampled target (vk_blit2d) */
+    if (r->flags & NVN_COPY_RESOLVE) {
+        NvnPCopyT2T q = *r;
+        u32 mode = nvn_tex_msaa(s->d.samples);
+        i32 bx = (i32)(1u << ds_msaa_log2_x(mode)), by = (i32)(1u << ds_msaa_log2_y(mode));
+        q.sr.xoffset *= bx;
+        q.sr.width *= bx;
+        q.sr.yoffset *= by;
+        q.sr.height *= by;
+        blit_texture(&q);
+        return;
+    }
     if (!tex_plane(s, r->has_sv ? &r->sv : NULL, &ps) || !tex_plane(d, r->has_dv ? &r->dv : NULL, &pd)) return;
     if (r->sr.width != r->dr.width || r->sr.height != r->dr.height || ps.bpb != pd.bpb || ps.bw != pd.bw ||
         ps.bhp != pd.bhp) {
