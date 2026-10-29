@@ -13,10 +13,11 @@ typedef struct {
     SnxU64 base, text_off, text_size;
     const SnxU64 *functions, *relptrs;
     size_t function_count, relptr_count;
-    /* the functions the module exports (its dynamic symbols, sorted, as offsets like the functions'): calls to them
-       go through their dispatch slot, where a hook of the runtime's can take them (nx/hle/hook/hook.h) */
-    const SnxU64* exported;
-    size_t exported_count;
+    /* the functions of the module whose calls go through their dispatch slot, where a hook of the runtime's can take
+       them (nx/hle/hook/hook.h), sorted, as offsets like the functions'. The NX loader puts here the functions whose
+       dynamic symbol a hook names (nx/loader/hook_routes.h); every other call is a direct call */
+    const SnxU64* routed;
+    size_t routed_count;
     const SnxFde* fde;
     size_t fde_count;
 } SnxCodeImage;

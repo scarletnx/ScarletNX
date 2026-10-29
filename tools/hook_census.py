@@ -9,7 +9,7 @@ cost compared with routing only the calls to functions with a symbol through the
 
 For each A64 module: its functions (.eh_frame_hdr, the dynamic symbols in its text, and every BL target, as
 tools/nvn_census.py finds them), those a dynamic symbol names (the only symbols an NSO carries: the exported ones,
-which the recompiler calls through their slot, snx_codegen_exported), the direct calls (BL) and tail branches (a B to
+which SNX_ABI 15 and 16 called through their slot before the route list, snx_codegen_routed), the direct calls (BL) and tail branches (a B to
 another function's start), how many of them target a function with a symbol, and the indirect calls (BLR, which go
 through dispatch already). A call through a slot costs a load and an indirect call instead of a direct call, and
 keeps LLVM from inlining the callee; a check at every function's entry costs a load and a compare on every call,

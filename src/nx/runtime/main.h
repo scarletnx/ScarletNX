@@ -12,6 +12,10 @@ int snx_main(int argc, char** argv); /* runs the game the arguments or the progr
 /* The AOT module's runtime code variants, from its snx_variants() (main.c's load_module); NULL for a module built
    without a profile cache */
 extern const SnxVariants* g_variants;
+/* The route list the AOT module was recompiled with, from its snx_routes() (main.c's load_module): the symbols whose
+   calls it sends through their dispatch slots. NULL for a module made before the list, which sends the calls to every
+   function it exports through their slots */
+extern const struct SnxRoutes* g_routes; /* nx/loader/module_abi.h */
 /* the launcher's menu (src/gui), for an executable built with it: a bare start of the runtime opens it, with the
    program's own path */
 extern int (*snx_menu)(const char* self);

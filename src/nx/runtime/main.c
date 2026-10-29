@@ -76,6 +76,7 @@ int (*snx_menu)(const char* self);
 void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
 const SnxVariants* g_variants;
+const SnxRoutes* g_routes;
 GuestFn* g_disp;
 
 /* A build that links a game's code into the runtime defines it; none does yet (src/nx/CMakeLists.txt) */
@@ -84,6 +85,7 @@ const SnxModule* snx_module_static(void) __attribute__((weak));
 typedef const SnxModule* (*ModuleFn)(void);
 typedef const SnxArmModule* (*ArmModuleFn)(void);
 typedef const SnxVariants* (*VariantsFn)(void);
+typedef const SnxRoutes* (*RoutesFn)(void);
 
 static int is_separator(char c) { return c == '/' || c == '\\'; }
 
@@ -170,6 +172,18 @@ static const char* program_path(const char* argv0) {
 
 /* ---- the game's code ---- */
 
+/* the module's route list (snx_routes, module_abi.h): NULL for a module made before it, which routes every function it
+   exports, and for one of another version, said once */
+static void routes_load(RoutesFn get) {
+    g_routes = get();
+    if (g_routes && g_routes->version != SNX_ROUTES_VERSION) {
+        WARN("game: its route list is of version %u, where this runtime reads %u: the hooks can't tell which of their "
+             "functions it calls directly\n",
+             (unsigned)g_routes->version, (unsigned)SNX_ROUTES_VERSION);
+        g_routes = NULL;
+    }
+}
+
 #ifdef MODULE_PACK
 /* The pack's objects loaded into an arena of the JIT loader's, after the runtime library this app embeds (the pack has
    none: its host had none for this machine). Each of the arena's regions is what the two loads take of it
@@ -209,12 +223,14 @@ static const SnxModule* load_pack(const char* path) {
     free(data); /* the loaded code is a copy */
     {
         SnxU64 variants = 0;
+        SnxU64 routes = 0;
         if (snx_code_lookup(loader, "snx_variants", &variants)) { /* a global of the pack, in the loader's table */
             VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
             g_variants = get_variants();
             if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
                 fatal("%s has a runtime variant table of another version", path);
         }
+        if (snx_code_lookup(loader, "snx_routes", &routes)) routes_load((RoutesFn)(uintptr_t)routes);
     }
     get = (ModuleFn)(uintptr_t)address;
     return get();
@@ -263,6 +279,11 @@ static const SnxModule* load_module(const char* path) {
         g_variants = get_variants();
         if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
             fatal("%s has a runtime variant table of another version", path);
+    }
+    if ((sym = plat_dl_sym(lib, "snx_routes")) != NULL) {
+        RoutesFn get_routes;
+        memcpy(&get_routes, &sym, sizeof get_routes);
+        routes_load(get_routes);
     }
     return m;
 }

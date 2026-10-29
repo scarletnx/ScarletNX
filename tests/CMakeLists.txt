@@ -704,6 +704,14 @@ snx_test_target(snx-test-hook-versions 99)
 target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
 add_test(NAME hook_versions COMMAND snx-test-hook-versions)
+# the route list (src/nx/loader/hook_routes.c): hookgen --routes over two specs (tests/hook/routes.hook and
+# versions.hook), and the runtime's own list, its lookup and the hashes a module carries
+add_executable(snx-test-hook-routes hook_routes.c)
+snx_test_target(snx-test-hook-routes 99)
+target_link_libraries(snx-test-hook-routes PRIVATE snx_test_common snx_nx_module)
+snx_hook_routes(snx-test-hook-routes SPECS "${CMAKE_CURRENT_SOURCE_DIR}/hook/routes.hook"
+                "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
+add_test(NAME hook_routes COMMAND snx-test-hook-routes)
 # verify mode (src/nx/hle/hook/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
 # function's own code, on copies of their buffers, and each kind of difference it reports
 add_executable(snx-test-hook-verify hook_verify.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/verify.c")
@@ -751,7 +759,10 @@ foreach(bad IN ITEMS
         buffer_length 2 "p's length names n, which isn't an argument"
         buffer_impure 2 "only a pure hook's buffers are checked"
         buffer_type 2 "only an addr argument is a buffer, not p"
-        buffer_length_type 2 "p's length q is not an integer")
+        buffer_length_type 2 "p's length q is not an integer"
+        route_twice 3 "f is routed on line 1 too"
+        route_hooked 3 "f is hooked on line 2, which routes it already"
+        route_versioned 1 "@version goes before a hook or a struct")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)
@@ -1168,7 +1179,7 @@ add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
-target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle)
+target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
     target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1243,7 +1254,7 @@ add_test(NAME extraction_native COMMAND snx-test-extract)
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-loader 99)
-target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto)
+target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto snx_nx_module) # the route list
 add_test(NAME loader_native COMMAND snx-test-loader)
 
 add_executable(snx-test-runtime-nro runtime_nro.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/loader.c")

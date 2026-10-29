@@ -8,6 +8,8 @@
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
 #include "nx/loader/module_abi.h"
+#include "nx/loader/hook_routes.h"
+#include "common/utilities/bits.h"
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "snx_settings.h"
@@ -463,6 +465,44 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     return 0;
 }
 
+/* SNX_EXPORT const SnxRoutes* snx_routes(void): the route list the module's calls were compiled with (module_abi.h),
+   for hook_install to say which hook of the runtime's the module calls directly */
+static int emit_routes(SnxIr* ir, int all, char* error, size_t error_size) {
+    size_t count = snx_hook_route_count();
+    SnxU64* hashes = (SnxU64*)snx_alloc((count ? count : 1) * sizeof(*hashes));
+    LLVMValueRef* values = (LLVMValueRef*)snx_alloc((count ? count : 1) * sizeof(*values));
+    for (size_t i = 0; i < count; ++i) hashes[i] = snx_hook_route_hash(snx_hook_route_name(i));
+    qsort(hashes, count, sizeof(*hashes), snx_compare_u64);
+    for (size_t i = 0; i < count; ++i) values[i] = ir_i64(ir, hashes[i]);
+    LLVMValueRef names = global(ir, LLVMArrayType(ir->t_i64, (unsigned)count), "ROUTE_NAMES",
+                                LLVMConstArray(ir->t_i64, values, (unsigned)count), 1);
+    free(values);
+    free(hashes);
+    LLVMTypeRef fields[6] = {ir->t_i32, ir->t_i32, ir->t_i64, ir->t_ptr, ir->t_i32, ir->t_i32};
+    LLVMTypeRef type = LLVMStructTypeInContext(ir->ctx, fields, 6, 0);
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(ir->mod);
+    if (LLVMABISizeOfType(layout, type) != sizeof(SnxRoutes) ||
+        LLVMOffsetOfElement(layout, type, 2) != offsetof(SnxRoutes, list) ||
+        LLVMOffsetOfElement(layout, type, 3) != offsetof(SnxRoutes, names) ||
+        LLVMOffsetOfElement(layout, type, 4) != offsetof(SnxRoutes, all)) {
+        snprintf(error, error_size, "SnxRoutes layout differs between the recompiler and the LLVM target");
+        return -1;
+    }
+    LLVMValueRef f[6] = {ir_i32(ir, SNX_ROUTES_VERSION),
+                         ir_i32(ir, (SnxU32)count),
+                         ir_i64(ir, snx_hook_route_list_hash()),
+                         names,
+                         ir_i32(ir, all != 0),
+                         ir_i32(ir, 0)};
+    LLVMValueRef routes = global(ir, type, "ROUTES", LLVMConstStructInContext(ir->ctx, f, 6, 0), 1);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, "snx_routes", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+    LLVMBuildRet(ir->b, routes);
+    return 0;
+}
+
 unsigned snx_module_abi(void) { return SNX_ABI; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
@@ -494,7 +534,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
-    const char* exports[2];
+    const char* exports[3];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1;
@@ -575,6 +615,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         goto done;
     }
     if (build->wrappers) *build->wrappers = wrapped;
+    if (emit_routes(ir, options->hook_direct_calls, error, sizeof(error))) {
+        snx_error("LLVM backend: %s", error);
+        goto done;
+    }
     if (cache_count &&
         snx_module_variants_emit(ir, cache, &variant_count, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
@@ -622,6 +666,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         inputs[n++].name = record->name;
     }
     exports[0] = "snx_module";
+    exports[export_count++] = "snx_routes";
     if (variant_count) exports[export_count++] = "snx_variants";
     tmp = snx_format("%s.tmp", build->output);
     if (build->triple) {

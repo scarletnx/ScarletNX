@@ -6,11 +6,11 @@
    reads the same state. The hooks are declared in hooks.hook (their symbols, as the game's dynamic symbol table
    spells them, their C arguments and handlers) and tools/hookgen generates their adapters.
 
-   A hook takes the function's slot in the dispatch table (g_disp), which every call to an exported function goes
+   A hook takes the function's slot in the dispatch table (g_disp), which every call to a hooked function goes
    through: the game's calls into another of its modules (through the PLT and GOT the game's dynamic linker fills),
-   its calls through function pointers, its direct calls within a module (the recompiler calls an exported function
-   through its slot, snx_codegen_exported) and the runtime JIT's calls (jit_service.c calls an AOT function directly
-   only while its slot still holds it). Hooks are installed once the game's executables are loaded, before its first
+   its calls through function pointers, its direct calls within a module (the recompiler calls a function whose symbol
+   a hook names through its slot, snx_codegen_routed and nx/loader/hook_routes.h) and the runtime JIT's calls
+   (jit_service.c calls an AOT function directly only while its slot still holds it). Hooks are installed once the game's executables are loaded, before its first
    thread, and stay for the whole run. A hook may hold only for some versions of the SDK that built the module
    exporting its function, and its handler may read guest structs through the layout for that version
    (docs/HOOKS.md) */
@@ -131,6 +131,10 @@ typedef struct {
 /* hooks the functions the game exports that hooks.hook names (unless hooks=0), once the game's executables are
    loaded and their symbols read (kernel_load_symbols), before the JIT starts */
 void hook_install(void);
+/* whether the module calls the function of symbol name through its dispatch slot: its route list (main.h's g_routes)
+   names it, or the module has no list (it routes every function it exports) or routes every call (--hook-direct-calls).
+   When not, a hook in the slot sees only the calls through the PLT and function pointers */
+int hook_routed(const char* name);
 /* puts the hooks in [addr, addr + size) back in their slots after the JIT dropped what was compiled there
    (jit_code_invalidate), where the function is still executable code */
 void hook_restore(u64 addr, u64 size);

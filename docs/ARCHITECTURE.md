@@ -185,6 +185,11 @@ too for an addition the games should get though older modules would run without 
 change to the recompiler's own output for the same contract leaves it alone, and every game keeps its old code until
 it is recompiled (`-r`, or R in Games).
 
+The module's `snx_routes()` table (`SnxRoutes`, with its own `SNX_ROUTES_VERSION`) is read as optional and left
+`SNX_ABI` alone: it names the symbols whose calls the module sends through their dispatch slots
+([Hooks](HOOKS.md#how-a-call-reaches-a-hook)). A module without it sends the calls to every function it exports through
+their slots, which every hook also works with.
+
 A bump costs little. The recompile it starts takes each code unit's object from the unit cache
 (`src/nx/loader/unit_cache.c`), which keys it on the unit's IR, not on `SNX_ABI`: a bump that leaves the IR alone
 reuses every unit, and one that changes it (a field moved) compiles them again, as it must. For a game of 255 units
