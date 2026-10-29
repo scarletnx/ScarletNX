@@ -199,7 +199,11 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         tile_d = pick_tile(z + z / 2);
     o->tile_h = tile_h;
     o->tile_d = tile_d;
-    levels = d->levels ? d->levels : 1;
+    /* multisampled and rectangle textures have one level, whatever the builder says (the driver's layout) */
+    levels = d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE || d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
+                     d->target == NVN_TEXTURE_TARGET_RECTANGLE || !d->levels
+                 ? 1
+                 : d->levels;
     ls = level_offset(d, levels, dpl, w, h, z, tile_h, tile_d, t);
     if (sparse_of(d)) ls = (ls + SPARSE_TILE - 1) & ~(u64)(SPARSE_TILE - 1);
     if (layered) { /* a layer is block aligned */
@@ -257,4 +261,61 @@ u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
     rows = blk(blk(mip(d->height, level), t.bh), 8u << th);
     slab = gobs_x * rows * (512ull << th << td);
     return (u64)(z >> td) * slab + (u64)(z & ((1u << td) - 1)) * (512ull << th);
+}
+
+/* The game's NVN driver's storage answers, read from its code (two drivers, NVN 12.3 and 55.15, the same rules):
+   - the kind (the GMMU page kind, GetStorageClass's low byte, above 0x100): 0 for a buffer or a linear texture; for a
+     block-linear one, a depth kind for a depth or stencil format, a compression kind for a COMPRESSIBLE color format
+     of one-texel blocks and 4 bytes or more, else 0xfe. The driver asks the GPU library to choose it from the format's
+     kind class and the sample count, and the GPU's kind table to accept it: these are the kinds a Tegra X1 accepts
+   - the alignment: 0x80 for LINEAR_RENDER_TARGET, 0x20 for LINEAR (both before the buffer test), a buffer's element
+     size, else 512, and the big page (64 KiB) for every kind but 0 and 0xfe
+   - the size: the layout's, rounded up to the big page for those kinds too. A format the driver doesn't take gives 0
+   - the ZCull area: 0 unless the format has depth bits (or stencil bits with ZCULL_SUPPORT_STENCIL), else 0x20 bytes
+     for each 32x32 tile of each layer (the depth field, not times 6 for a cube) and 0xE0 of headers: the ZCULL_GET_INFO
+     answer nvdrv gives (region byte multiplier 0x20, alignments 0x20, 0x400 pixels a tile, headers 0x20 and 0xC0) */
+#define BIG_PAGE 0x10000u
+static u32 kind_of(const NvnTexDesc* d, Fmt t) {
+    u32 f = (u32)d->format, comp = (d->flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) != 0, s = d->samples;
+    static const struct {
+        u32 format;
+        u8 plain, comp;
+    } depth[] = {{NVN_FORMAT_STENCIL8, 0x2a, 0x2b},       {NVN_FORMAT_DEPTH16, 0x01, 0x08},
+                 {NVN_FORMAT_DEPTH24, 0x46, 0x52},        {NVN_FORMAT_DEPTH32F, 0x7b, 0x87},
+                 {NVN_FORMAT_DEPTH24_STENCIL8, 0x46, 0x52}, {NVN_FORMAT_DEPTH32F_STENCIL8, 0xc3, 0xcf}};
+    size_t i;
+    if (d->target == NVN_TEXTURE_TARGET_BUFFER || (d->flags & NVN_TEX_LINEAR)) return 0;
+    for (i = 0; i < sizeof depth / sizeof depth[0]; i++)
+        if (depth[i].format == f) {
+            if (f == NVN_FORMAT_DEPTH32F && comp && s >= 4) return s >= 8 ? 0x89 : 0x88;
+            return comp ? depth[i].comp : depth[i].plain;
+        }
+    if (!comp || t.bw > 1 || t.bpb < 4) return 0xfe;
+    /* the compression kinds by element size and samples (1 and 2 samples share one) */
+    if (t.bpb >= 16) return s >= 8 ? 0xfb : s >= 4 ? 0xf9 : 0xf7;
+    if (t.bpb >= 8) return s >= 8 ? 0xf3 : s >= 4 ? 0xee : 0xcd;
+    return s >= 8 ? 0xe5 : s >= 4 ? 0xe0 : 0xcc;
+}
+void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s) {
+    Fmt t = fmt_of(d->format);
+    NvnTexLayout l;
+    u32 f = (u32)d->format;
+    int depth_bits = f >= NVN_FORMAT_DEPTH16 && f <= NVN_FORMAT_DEPTH32F_STENCIL8;
+    int stencil_bits = f == NVN_FORMAT_STENCIL8 || f == NVN_FORMAT_DEPTH24_STENCIL8 || f == NVN_FORMAT_DEPTH32F_STENCIL8;
+    nvn_tex_layout(d, &l);
+    s->kind = kind_of(d, t);
+    s->size = l.size;
+    s->align = (d->flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) ? 0x80
+               : (d->flags & NVN_TEXTURE_FLAGS_LINEAR)              ? 0x20
+               : d->target == NVN_TEXTURE_TARGET_BUFFER             ? (t.bpb == 12 ? 4u : t.bpb)
+                                                                    : 0x200;
+    if (s->kind && s->kind != 0xfe) {
+        s->align = BIG_PAGE;
+        s->size = (s->size + BIG_PAGE - 1) & ~(u64)(BIG_PAGE - 1);
+    }
+    s->zcull = 0;
+    if (depth_bits || (stencil_bits && (d->flags & NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL))) {
+        u64 w = (d->width + 31u) & ~31u, h = (d->height + 31u) & ~31u, n = (w * h + 0x3FF) / 0x400;
+        s->zcull = 0x20 * n * (d->depth ? d->depth : 1) + 0x20 + 0xC0;
+    }
 }
