@@ -156,7 +156,7 @@ static u64 rec(CPU* c, u64 cb, u32 op, size_t payload) {
     u32 size = (u32)((8 + payload + 7) & ~(size_t)7);
     u64 at = alloc_keep(c, cb, size, OP_RESERVE);
     put_hdr(at, op, size);
-    memset(GP(at + 8), 0, size - 8);
+    memset(GP(at + 8), 0, size - 8); /* guest memory: every byte the game sees */
     return at + 8;
 }
 #define REC(c, cb, OP, T)            ((T*)(void*)GP(rec((c), (cb), (OP), sizeof(T))))
@@ -167,7 +167,7 @@ static u64 rec(CPU* c, u64 cb, u32 op, size_t payload) {
 int nvn_CommandBufferInitialize(CPU* c, u64 cb, u64 d) {
     NvnCmdBuf* o = CB(cb);
     (void)c;
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
     o->magic = NVN_MAGIC('C', 'M', 'D', 'B');
     o->device = d;
     return 1;
@@ -1229,7 +1229,7 @@ void nvn_CommandBufferDispatchComputeIndirect(CPU* c, u64 cb, u64 ind) {
    x0 y0 x1 y1. An empty destination draws nothing */
 void nvn_CommandBufferDrawTexture(CPU* c, u64 cb, u64 handle, u64 dst, u64 src) {
     NvnPDrawTexture r;
-    memset(&r, 0, sizeof r);
+    memset(&r, 0, sizeof r); /* every byte: the record is guest memory */
     r.handle = handle;
     memcpy(r.dst, GP(dst), sizeof r.dst);
     memcpy(r.src, GP(src), sizeof r.src);
