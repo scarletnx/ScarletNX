@@ -14,5 +14,5 @@ fi
 python3 "$CHECK" fixtures/no-such-file.c >/dev/null 2>&1
 [ $? -eq 2 ] || { echo "FAIL: an unreadable path must exit 2"; fail=1; }
 [ -z "$(python3 "$CHECK" fixtures/clean.c 2>/dev/null)" ] || { echo "FAIL: clean.c has candidates"; fail=1; }
-[ $fail -eq 0 ] && echo "check.py: 7 candidates in flagged.c, none in clean.c, exit codes: passed"
+[ $fail -eq 0 ] && echo "check.py: 8 candidates in flagged.c, none in clean.c, exit codes: passed"
 exit $fail

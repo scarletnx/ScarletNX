@@ -5,3 +5,4 @@ fixtures/flagged.c:19: atomics: 2 atomics in one struct (submitted, completed), 
 fixtures/flagged.c:31: allocs: 2 separate allocations into members of 'b'
 fixtures/flagged.c:26: atomics: 2 atomics at file scope (g_first, g_second), nothing keeps g_second off the one before
 fixtures/flagged.c:26: globals: 2 variables of static duration (g_first, g_second): one struct holds a file's state
+fixtures/flagged.c:41: tls: 2 thread-local variables (t_depth, t_busy): one thread-local struct holds a file's thread state
