@@ -7,7 +7,8 @@
    the probe must have no call left, the soft-float helpers' included. A guard that is always false for the case
    keeps its helper call: llvm_vfp_lanes checks the results the paths give, this checks that the fast one is used.
    A probe in round towards plus infinity, which the fast paths leave to the helpers, must keep its call, so a probe
-   folded away entirely can't pass, except for the FRINTs that round in their encoding's mode */
+   folded away entirely can't pass, except for the instructions whose results don't depend on FPCR's rounding (the
+   FRINTs that round in their encoding's mode, the estimates) */
 #include "llvm_steps.h"
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <stddef.h>
@@ -23,19 +24,27 @@ typedef struct {
     u32 word;
     int dbl;   /* doubles (else singles) */
     int fma;   /* needs the host's FMA for its fast path */
-    int round; /* needs the host's rounding instructions (SSE4.1 on x86); 2: and rounds in the encoding's mode, so
-                  round towards plus infinity takes it too */
+    int round; /* needs the host's rounding instructions (SSE4.1 on x86) */
+    int modeless; /* the result doesn't depend on FPCR.RMode (an encoding's own rounding, an estimate), so round
+                     towards plus infinity takes the fast path too */
 } Insn;
 static const Insn g_insns[] = {
-    {"FADD S", 0x1E222820u, 0, 0, 0},    {"FMUL S", 0x1E220820u, 0, 0, 0},    {"FDIV S", 0x1E221820u, 0, 0, 0},
-    {"FSQRT S", 0x1E21C020u, 0, 0, 0},   {"FADD D", 0x1E622820u, 1, 0, 0},    {"FMUL D", 0x1E620820u, 1, 0, 0},
-    {"FDIV D", 0x1E621820u, 1, 0, 0},    {"FMADD S", 0x1F020C20u, 0, 1, 0},   {"FADD 4S", 0x4E22D420u, 0, 0, 0},
-    {"FMUL 4S", 0x6E22DC20u, 0, 0, 0},   {"FDIV 4S", 0x6E22FC20u, 0, 0, 0},   {"FMLA 4S", 0x4E22CC20u, 0, 1, 0},
-    {"FADD 2D", 0x4E62D420u, 1, 0, 0},   {"FMUL 2D", 0x6E62DC20u, 1, 0, 0},   {"FDIV 2D", 0x6E62FC20u, 1, 0, 0},
-    {"FSQRT 2D", 0x6EE1F820u, 1, 0, 0},  {"FABD S", 0x7EA2D420u, 0, 0, 0},    {"FABD 4S", 0x6EA2D420u, 0, 0, 0},
-    {"FABD 2D", 0x6EE2D420u, 1, 0, 0},   {"FRINTM S", 0x1E254020u, 0, 0, 2},  {"FRINTM D", 0x1E654020u, 1, 0, 2},
-    {"FRINTX S", 0x1E274020u, 0, 0, 1},  {"FRINTM 4S", 0x4E219820u, 0, 0, 2}, {"FRINTI 4S", 0x6EA19820u, 0, 0, 1},
-    {"FRINTX 2D", 0x6E619820u, 1, 0, 1},
+    {"FADD S", 0x1E222820u, 0, 0, 0, 0},     {"FMUL S", 0x1E220820u, 0, 0, 0, 0},
+    {"FDIV S", 0x1E221820u, 0, 0, 0, 0},     {"FSQRT S", 0x1E21C020u, 0, 0, 0, 0},
+    {"FADD D", 0x1E622820u, 1, 0, 0, 0},     {"FMUL D", 0x1E620820u, 1, 0, 0, 0},
+    {"FDIV D", 0x1E621820u, 1, 0, 0, 0},     {"FMADD S", 0x1F020C20u, 0, 1, 0, 0},
+    {"FADD 4S", 0x4E22D420u, 0, 0, 0, 0},    {"FMUL 4S", 0x6E22DC20u, 0, 0, 0, 0},
+    {"FDIV 4S", 0x6E22FC20u, 0, 0, 0, 0},    {"FMLA 4S", 0x4E22CC20u, 0, 1, 0, 0},
+    {"FADD 2D", 0x4E62D420u, 1, 0, 0, 0},    {"FMUL 2D", 0x6E62DC20u, 1, 0, 0, 0},
+    {"FDIV 2D", 0x6E62FC20u, 1, 0, 0, 0},    {"FSQRT 2D", 0x6EE1F820u, 1, 0, 0, 0},
+    {"FABD S", 0x7EA2D420u, 0, 0, 0, 0},     {"FABD 4S", 0x6EA2D420u, 0, 0, 0, 0},
+    {"FABD 2D", 0x6EE2D420u, 1, 0, 0, 0},    {"FRINTM S", 0x1E254020u, 0, 0, 1, 1},
+    {"FRINTM D", 0x1E654020u, 1, 0, 1, 1},   {"FRINTX S", 0x1E274020u, 0, 0, 1, 0},
+    {"FRINTM 4S", 0x4E219820u, 0, 0, 1, 1},  {"FRINTI 4S", 0x6EA19820u, 0, 0, 1, 0},
+    {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 0},  {"FRECPE S", 0x5EA1D820u, 0, 0, 0, 1},
+    {"FRECPE D", 0x5EE1D820u, 1, 0, 0, 1},   {"FRSQRTE S", 0x7EA1D820u, 0, 0, 0, 1},
+    {"FRSQRTE D", 0x7EE1D820u, 1, 0, 0, 1},  {"FRECPE 4S", 0x4EA1D820u, 0, 0, 0, 1},
+    {"FRSQRTE 2D", 0x6EE1D820u, 1, 0, 0, 1},
 };
 #define NINSNS (sizeof(g_insns) / sizeof(g_insns[0]))
 
@@ -147,7 +156,7 @@ int main(void) {
     for (k = 0; k < NCASES; ++k)
         for (i = 0; i < NINSNS; ++i) {
             unsigned n;
-            int fast = g_cases[k].fast || g_insns[i].round == 2;
+            int fast = g_cases[k].fast || g_insns[i].modeless;
             if (!probes[k][i]) continue;
             first[0] = 0;
             n = calls(probes[k][i], first, sizeof(first));
