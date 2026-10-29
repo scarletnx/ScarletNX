@@ -9,6 +9,12 @@
 #include "nx/gpu/nvn/nvn_obj.h"
 
 typedef struct NvnDraw NvnDraw;
+/* the file's state, g_nvn.draw (gpu/nvn/nvn_state.h): the device's window origin and depth mode, for every queue (set
+   on the game's threads, read on the GPU thread; atomic). Zero is NVN's default of each, the lower left origin and
+   near at -w */
+typedef struct {
+    u32 origin, depth_mode;
+} NvnDrawState;
 
 /* a queue's state, NVN's defaults, its draws owner as renderer.h numbers it (one allocation, the caller's) */
 NvnDraw* nvn_draw_new(u32 owner);

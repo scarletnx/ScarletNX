@@ -10,7 +10,9 @@
    texture whose last present's slot hasn't come yet */
 #include "common/utilities/bits.h"
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_queue.h"
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/renderer.h"
@@ -23,17 +25,6 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
-
-/* the file's state: the submissions made; the window's frame period on the pacer's clock (atomic), which bounds a
-   wait for the display; whether the display is stuck (atomic: it didn't show a present in two periods, a window
-   covered, so syncs don't wait for it until it shows one again); the native window a window builder named last
-   (atomic: SDK 5's 0x2c bytes of builder have no room for it, and a game has one, vi's layer) */
-typedef struct {
-    u64 submits, period;
-    int stuck;
-    u64 native_window;
-} NvnQueueState;
-static NvnQueueState g_nvn_queue;
 
 /* when the queue's work so far is done: its last wait, or now */
 static u64 queue_ready(const NvnQueue* q) {
@@ -211,7 +202,7 @@ int nvn_QueueWaitSync(CPU* c, u64 q, u64 sync) {
 void nvn_QueueSubmitCommands(CPU* c, u64 q, i32 n, u64 handles) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
-    __atomic_add_fetch(&g_nvn_queue.submits, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_nvn.queue.submits, 1, __ATOMIC_RELAXED);
     o->submits++;
     if (n > 0) {
         u64 ready = queue_ready(o);
@@ -236,12 +227,12 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
     u64 now, bound, until;
     i64 wait;
     if (syncpt_wait(id, s->shown, 0)) {
-        __atomic_store_n(&g_nvn_queue.stuck, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_nvn.queue.stuck, 0, __ATOMIC_RELAXED);
         return 1;
     }
-    if (__atomic_load_n(&g_nvn_queue.stuck, __ATOMIC_RELAXED)) return 1;
+    if (__atomic_load_n(&g_nvn.queue.stuck, __ATOMIC_RELAXED)) return 1;
     now = plat_ns();
-    bound = (s->ready > now ? s->ready : now) + 2 * __atomic_load_n(&g_nvn_queue.period, __ATOMIC_RELAXED);
+    bound = (s->ready > now ? s->ready : now) + 2 * __atomic_load_n(&g_nvn.queue.period, __ATOMIC_RELAXED);
     until = left >= 0 && start + (u64)left < bound ? start + (u64)left : bound;
     wait = until > now ? (i64)(until - now) : 0;
     if (wait && syncpt_wait(id, s->shown, wait)) {
@@ -249,7 +240,7 @@ static int shown_wait(const NvnSync* s, u64 start, i64 left, int* waited) {
         return 1;
     }
     if (until < bound) return 0;
-    __atomic_store_n(&g_nvn_queue.stuck, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_nvn.queue.stuck, 1, __ATOMIC_RELAXED);
     LOG_LIMIT(8, "nvn: the display didn't show a frame in two periods: frames don't wait for it until it does\n");
     return 1;
 }
@@ -317,7 +308,7 @@ void nvn_WindowBuilderSetDevice(CPU* c, u64 b, u64 d) {
 void nvn_WindowBuilderSetNativeWindow(CPU* c, u64 b, u64 w) {
     (void)c;
     (void)b;
-    __atomic_store_n(&g_nvn_queue.native_window, w, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_nvn.queue.native_window, w, __ATOMIC_RELAXED);
 }
 u64 nvn_WindowBuilderGetDevice(CPU* c, u64 b) {
     (void)c;
@@ -327,7 +318,7 @@ u64 nvn_WindowBuilderGetDevice(CPU* c, u64 b) {
 u64 nvn_WindowBuilderGetNativeWindow(CPU* c, u64 b) {
     (void)c;
     (void)b;
-    return __atomic_load_n(&g_nvn_queue.native_window, __ATOMIC_RELAXED);
+    return __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
 }
 void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
     NvnWindowBuilder* o = WB(b);
@@ -390,7 +381,7 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     o.count = s->count;
     o.interval = s->interval;
     o.active = s->active;
-    o.native = __atomic_load_n(&g_nvn_queue.native_window, __ATOMIC_RELAXED);
+    o.native = __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
     LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w,
@@ -563,8 +554,8 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     if (!o->presents++) LOG("nvn: first present, texture %d of window %llx\n", index, (unsigned long long)w);
     if (!(o->presents % 1800))
         LOG("nvn: %llu presents, %llu submissions\n", (unsigned long long)o->presents,
-            (unsigned long long)__atomic_load_n(&g_nvn_queue.submits, __ATOMIC_RELAXED));
-    __atomic_store_n(&g_nvn_queue.period, period, __ATOMIC_RELAXED);
+            (unsigned long long)__atomic_load_n(&g_nvn.queue.submits, __ATOMIC_RELAXED));
+    __atomic_store_n(&g_nvn.queue.period, period, __ATOMIC_RELAXED);
     slot = pace(o, queue_ready(queue), period);
     if (index >= 0 && index < 4) {
         o->available[index] = period ? slot + period : 0;

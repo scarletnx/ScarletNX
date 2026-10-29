@@ -11,6 +11,7 @@
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/filesystem/fs.h"
@@ -847,6 +848,7 @@ int snx_main(int argc, char** argv) {
     const SnxModule* mod;
     int status, i;
     hle_init(); /* before anything, the options included, touches g_hle */
+    nvn_init(); /* and g_nvn */
     /* The driver's dump-play options also belong to the runtime when it reads the dump in place. */
     status = runtime_key_options(&argc, argv, &keys, &title_keys);
     if (status) {

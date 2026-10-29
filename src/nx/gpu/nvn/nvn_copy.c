@@ -12,6 +12,7 @@
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
@@ -383,11 +384,6 @@ void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
 }
 
 /* ---- the CPU's texel reads */
-/* the syncpoint the texel reads wait on, made at the first */
-static struct {
-    PMutex lock;
-    u32 syncpt;
-} g_nvn_read = {PMUTEX_INIT, 0};
 typedef struct {
     TexelWrite w; /* the region and texture, the destination at w.r.buffer */
     u32 syncpt;
@@ -433,13 +429,13 @@ void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     if (!va) fatal("nvn: no GPU address space left for a texel read of %llu bytes", (unsigned long long)span);
     gmmu_space_map(va, first, size);
     r->w.r.buffer = va + (dst - first);
-    pm_lock(&g_nvn_read.lock);
-    if (!g_nvn_read.syncpt) g_nvn_read.syncpt = syncpt_alloc();
-    r->syncpt = g_nvn_read.syncpt;
+    pm_lock(&g_nvn.copy.read_lock);
+    if (!g_nvn.copy.read_syncpt) g_nvn.copy.read_syncpt = syncpt_alloc();
+    r->syncpt = g_nvn.copy.read_syncpt;
     value = syncpt_promise(r->syncpt, 1);
     gpu_call(texel_read, r, NULL, 0);
-    pm_unlock(&g_nvn_read.lock);
-    syncpt_wait(g_nvn_read.syncpt, value, -1);
+    pm_unlock(&g_nvn.copy.read_lock);
+    syncpt_wait(g_nvn.copy.read_syncpt, value, -1);
     gmmu_space_unmap(va, size);
     gmmu_space_free(va, size);
 }

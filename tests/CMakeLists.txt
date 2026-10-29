@@ -732,7 +732,8 @@ snx_hookgen(snx-test-nvn-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/nvn_ver
     NAME gpu/nvn/nvn_versions.hook)
 add_test(NAME nvn_versions COMMAND snx-test-nvn-versions)
 # nvn_direct's command buffers: recordings across segments, and CopyCommands' copies of them
-add_executable(snx-test-nvn-commands nvn_commands.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c")
+add_executable(snx-test-nvn-commands nvn_commands.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
@@ -742,7 +743,7 @@ add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
 add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
