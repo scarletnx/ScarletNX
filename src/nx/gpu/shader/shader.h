@@ -138,6 +138,8 @@ extern int g_shader_viewport_index;
 extern int g_shader_geometry;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
+extern int g_shader_quad;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
 extern int g_shader_tessellation;
 /* VK_KHR_shader_clock's scopes: bit 0 subgroup, bit 1 device */

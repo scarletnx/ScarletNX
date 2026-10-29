@@ -2964,6 +2964,91 @@ static void fswzadd_forms(void) {
     free(code);
 }
 
+/* SHFL R0, R1 with this mode (0 IDX, 1 UP, 3 BFLY) and mask, its lane an immediate or RZ */
+static u64 shfl(u32 mode, int immediate, u32 index, u32 mask) {
+    return 0xEF10000000070000ull | (u64)mask << 34 | 1ull << 29 | (u64)(immediate != 0) << 28 | (u64)mode << 30 |
+           (u64)(immediate ? index : 255) << 20 | 1ull << 8;
+}
+static u32* shfl_spirv(u64 instruction, int stage, ShaderInfo* info, size_t* words) {
+    size_t slots;
+    u64* code = guest_program(&instruction, 1, NULL, &slots);
+    if (!code) return NULL;
+    memset(info, 0, sizeof *info);
+    if (stage == ST_CS) info->cs_local[0] = 32, info->cs_local[1] = info->cs_local[2] = 1;
+    u32* result = spirv_of(code, slots * sizeof *code, stage, info, words, 0, 1, 1, 1);
+    free(code);
+    return result;
+}
+/* the constant operand (lane or direction) of the module's one instruction of this opcode, ~0u without exactly one */
+static u32 quad_operand(const u32* code, size_t words, u32 opcode) {
+    u32 id = 0, found = ~0u;
+    int count = 0;
+    for (size_t i = 5; i < words && code[i] >> 16; i += code[i] >> 16)
+        if ((code[i] & 0xffff) == opcode && code[i] >> 16 == 6) id = code[i + 5], count++;
+    for (size_t i = 5; count == 1 && i < words && code[i] >> 16; i += code[i] >> 16)
+        if ((code[i] & 0xffff) == 43 && code[i] >> 16 == 4 && code[i + 2] == id) found = code[i + 3]; /* OpConstant */
+    return found;
+}
+
+/* A fragment program's SHFL within its quad (mask 0x1c03) from a lane known when translated is a quad operation:
+   the quad's helper lanes, which a triangle's edge leaves out, take part in it, as the console's lanes do in SHFL. One
+   game's edge pass read its upper left lane so and drew blue lines along every edge. Other SHFL stay shuffles */
+static void shfl_quad_forms(void) {
+    static const struct {
+        u32 mode, index, opcode, operand;
+        int immediate;
+        const char* what;
+    } quad[] = {
+        {0, 0, 365, 0, 1, "SHFL.IDX 0 in a quad broadcasts lane 0"},
+        {0, 3, 365, 3, 1, "SHFL.IDX 3 in a quad broadcasts lane 3"},
+        {0, 6, 365, 2, 1, "SHFL.IDX 6 in a quad broadcasts lane 6 & 3"},
+        {0, 0, 365, 0, 0, "SHFL.IDX RZ in a quad broadcasts lane 0"},
+        {3, 1, 366, 0, 1, "SHFL.BFLY 1 in a quad swaps horizontally"},
+        {3, 2, 366, 1, 1, "SHFL.BFLY 2 in a quad swaps vertically"},
+        {3, 3, 366, 2, 1, "SHFL.BFLY 3 in a quad swaps diagonally"},
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    for (size_t k = 0; k < sizeof quad / sizeof *quad; k++) {
+        u32* code = shfl_spirv(shfl(quad[k].mode, quad[k].immediate, quad[k].index, 0x1c03), ST_FS, &info, &words);
+        check_translated(code, &info, quad[k].what);
+        if (code) {
+            check(quad_operand(code, words, quad[k].opcode) == quad[k].operand, quad[k].what);
+            check(count_opcode(code, words, 345, 0xffffffffu) == 0, "a quad's SHFL leaves no subgroup shuffle");
+            check(count_opcode(code, words, 17, 68) == 1, "a quad's SHFL declares GroupNonUniformQuad");
+        }
+        free(code);
+    }
+    const struct {
+        u64 instruction;
+        int stage;
+        const char* what;
+    } plain[] = {
+        {shfl(3, 1, 4, 0x1c03), ST_FS, "SHFL.BFLY 4 leaves the quad: a shuffle"},
+        {shfl(1, 1, 1, 0x1c03), ST_FS, "SHFL.UP in a quad: a shuffle"},
+        {shfl(0, 1, 0, 0x1f), ST_FS, "SHFL.IDX over the whole warp: a shuffle"},
+        {shfl(0, 1, 0, 0x1c03), ST_CS, "SHFL.IDX in a compute program's quad: a shuffle"},
+    };
+    for (size_t k = 0; k < sizeof plain / sizeof *plain; k++) {
+        u32* code = shfl_spirv(plain[k].instruction, plain[k].stage, &info, &words);
+        check_translated(code, &info, plain[k].what);
+        if (code)
+            check(count_opcode(code, words, 345, 0xffffffffu) == 1 &&
+                      count_opcode(code, words, 365, 0xffffffffu) == 0 &&
+                      count_opcode(code, words, 366, 0xffffffffu) == 0 && count_opcode(code, words, 17, 68) == 0,
+                  plain[k].what);
+        free(code);
+    }
+    g_shader_quad = 0;
+    u32* code = shfl_spirv(shfl(0, 1, 0, 0x1c03), ST_FS, &info, &words);
+    check_translated(code, &info, "SHFL in a quad translates on a device without quad operations");
+    if (code)
+        check(count_opcode(code, words, 345, 0xffffffffu) == 1 && count_opcode(code, words, 17, 68) == 0,
+              "SHFL in a quad is a shuffle on a device without quad operations");
+    free(code);
+    g_shader_quad = 1;
+}
+
 int main(int argc, char** argv) {
     g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
@@ -3087,6 +3172,7 @@ int main(int argc, char** argv) {
     indexed_attribute_load();
     structured_flow();
     fswzadd_forms();
+    shfl_quad_forms();
     for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
     return failures ? 1 : 0;
 }
