@@ -777,6 +777,26 @@ void vk_surf_flush(Surf* s, const u8* original) {
     vk_result_end();
 }
 void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
+/* The pending targets wholly in [gva, gva + size), whose pixels vk_rt_overlay copied into a buffer about to be
+   published over those bytes: guest memory (its owner) has them from then on, so they are pending no more. Left
+   pending, publishing the buffer flushed each again (vk_rt_before_write_cpu), a wait for the GPU and its readback, and
+   the landing of the bytes' last owner under it: one game draws four 32x32 targets of 256 KB and writes them with a
+   compute program every frame, four waits and four landings a frame. Their images keep their pixels, older than
+   memory's (the publish stamps the bytes written), so they load memory's before they are used again, as after a
+   flush */
+static void rt_retire_over(u64 gva, u64 size) {
+    Surf *local[16], **list;
+    u32 count;
+    if (!pend_hit_va(&g_rt_pages, gva, size)) return;
+    count = rt_pending_over(gva, size, local, 16, &list);
+    for (u32 i = 0; i < count; i++) {
+        Surf* t = list[i];
+        if (t->gva < gva || t->gva + rt_bytes(t) > gva + size) continue; /* vk_rt_overlay flushed those */
+        t->mem_wgen = t->wgen;
+        vk_surf_relist(t);
+    }
+    if (list != local) free(list);
+}
 /* A storage image's results kept on the GPU (docs/GPU_OWNERSHIP.md), as the DMA engine's destination is: its span
    staged as the GPU sees it into a buffer of its own (the bytes between its texels keep theirs), its texels laid out
    over that in the guest's layout, and the buffer published over the span run by run of guest memory. Nothing waits:
@@ -822,9 +842,9 @@ int vk_surf_publish(Surf* s) {
         return 0;
     }
     vk_all_barrier(cb);
-    /* The buffer now holds this image. Publishing it retires older images over
-       the same backing, and must not flush this image a second time. */
+    /* The buffer now holds this image, and the targets under it: publishing it must not flush them again */
     s->mem_wgen = s->wgen;
+    rt_retire_over(s->gva, size);
     while (off < size) {
         u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
         if (!n) { /* an unmapped page takes no write */
