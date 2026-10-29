@@ -940,6 +940,78 @@ static int ppc64le_tail_call(void) {
     return 0;
 }
 
+/* an AArch32 block going on to the next block, in another object, as module_arm.c's chain_block makes it: after the
+   load of a hidden global the other object defines, a one-argument musttail call of a declaration, which ir.c makes a
+   stub of on PowerPC64. The two link, and the block's jump lands on a branch to the next block's local entry */
+static int ppc64le_block_chain(void) {
+    char error[1024];
+    const char* exports[2] = {"A_00201000", "A_00201008"};
+    const char* triple = "powerpc64le-unknown-linux-gnu";
+    unsigned char* data[2];
+    size_t size[2], i;
+    SnxLinkInput inputs[2];
+    SnxLinkOutput linked;
+    uint64_t block, next, at, stub = 0, target = 0;
+    if (snx_elf_host_data() != ELFDATA2LSB) return 0;
+    LLVMInitializeAllAsmParsers(); /* the stub is inline assembly */
+    for (i = 0; i < 2; ++i) {
+        SnxIr* ir = snx_ir_new_target(i ? "next" : "block", '2', triple, error, sizeof(error));
+        LLVMTypeRef type;
+        LLVMValueRef fn, global;
+        if (!ir) {
+            printf("skipped the PowerPC64 block chain: %s\n", error);
+            return 0;
+        }
+        type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+        global = LLVMAddGlobal(ir->mod, ir->t_i64, "snx_arm_poll_offset");
+        LLVMSetVisibility(global, LLVMHiddenVisibility);
+        fn = LLVMAddFunction(ir->mod, exports[i], type);
+        LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+        if (i) {
+            LLVMSetInitializer(global, LLVMConstInt(ir->t_i64, 0, 0));
+            LLVMBuildRetVoid(ir->b);
+        } else {
+            LLVMBasicBlockRef go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "go"),
+                              out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
+            LLVMValueRef cpu = LLVMGetParam(fn, 0), off = LLVMBuildLoad2(ir->b, ir->t_i64, global, ""), call;
+            LLVMValueRef poll = LLVMBuildLoad2(ir->b, ir->t_i32, LLVMBuildGEP2(ir->b, ir->t_i8, cpu, &off, 1, ""), "");
+            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, poll, LLVMConstInt(ir->t_i32, 0, 0), ""), go, out);
+            LLVMPositionBuilderAtEnd(ir->b, go);
+            call = LLVMBuildCall2(ir->b, type, LLVMAddFunction(ir->mod, exports[1], type), &cpu, 1, "");
+            LLVMSetTailCallKind(call, LLVMTailCallKindMustTail);
+            LLVMBuildRetVoid(ir->b);
+            LLVMPositionBuilderAtEnd(ir->b, out);
+            LLVMBuildRetVoid(ir->b);
+        }
+        if (snx_ir_object(ir, '2', &data[i], &size[i], error, sizeof(error)))
+            return snx_error("PowerPC64 block chain: %s", error);
+        snx_ir_free(ir);
+        inputs[i].data = data[i];
+        inputs[i].size = size[i];
+        inputs[i].name = exports[i];
+    }
+    if (snx_link(inputs, 2, exports, 2, "block.so", &linked, error, sizeof(error))) {
+        printf("FAIL: a PowerPC64 block's tail call of the next block links: %s\n", error);
+        ++failures;
+    } else {
+        block = export_address(linked.data, exports[0]);
+        next = export_address(linked.data, exports[1]);
+        for (at = block; block && at < block + 64 && !stub; at += 4) {
+            uint32_t insn = host32(linked.data + at);
+            if ((insn & 0xFC000003u) == 0x48000000u) /* b */
+                stub = at + (uint64_t)(int64_t)(int32_t)((insn & 0x03FFFFFCu) << 6) / 64;
+        }
+        if (stub && (host32(linked.data + stub) & 0xFC000003u) == 0x48000000u)
+            target = stub + (uint64_t)(int64_t)(int32_t)((host32(linked.data + stub) & 0x03FFFFFCu) << 6) / 64;
+        check(next && (target == next || (target == next + 8 && (host32(linked.data + next) >> 16) == 0x3C4Cu)),
+              "PowerPC64 block's jump to its stub, a branch to the next block's local entry");
+        free(linked.data);
+    }
+    free(data[0]);
+    free(data[1]);
+    return 0;
+}
+
 /* Where caller's first call and first GOT load go, decoded from the module: RISC-V's AUIPC with the JALR or LD after
    it (compressed instructions skipped by their length), LoongArch's PCADDU18I with JIRL and PCALAU12I with LD.D */
 static void decode_caller(unsigned machine, const unsigned char* module, uint64_t caller, uint64_t* call,
@@ -1056,7 +1128,7 @@ int main(void) {
     need_too_large();
     if (llvm_objects()) ++failures;
 #ifndef __APPLE__ /* AOT modules, which macOS doesn't link as ELF (link_elf.c) */
-    if (ppc64le_objects() || ppc64le_tail_call()) ++failures;
+    if (ppc64le_objects() || ppc64le_tail_call() || ppc64le_block_chain()) ++failures;
     if (other_objects("riscv64-unknown-linux-gnu", EM_RISCV, "RISC-V") ||
         other_objects("loongarch64-unknown-linux-gnu", EM_LOONGARCH, "LoongArch"))
         ++failures;
