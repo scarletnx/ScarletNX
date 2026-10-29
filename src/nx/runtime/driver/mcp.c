@@ -848,7 +848,7 @@ static cJSON* tools(void) {
         "the game's own functions, which can do anything the game can. A resume (continue, next, step, stepi, nexti, "
         "finish, until, advance, jump) runs in the background and waits up to wait seconds (10, at most 600) for the "
         "game to stop, at a breakpoint or a crash, then interrupts it; wait 0 leaves it running, and nothing else runs "
-        "until \"interrupt\" stops it. Example: p *(KThread*)tls_thread, the selected thread's guest thread.";
+        "until \"interrupt\" stops it. Example: p *(KThread*)t_hle.thread.cur, the selected thread's guest thread.";
     static const char threads_says[] =
         "Every thread of the stopped game: the runtime's own, and each guest thread with its id, name (the SDK's), "
         "whether it is in an SVC (its registers then exact; in game code they may be stale), its guest pc and lr, "
