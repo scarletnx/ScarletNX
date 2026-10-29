@@ -773,7 +773,9 @@ foreach(bad IN ITEMS
         buffer_length_type 2 "p's length q is not an integer"
         route_twice 3 "f is routed on line 1 too"
         route_hooked 3 "f is hooked on line 2, which routes it already"
-        route_versioned 1 "@version goes before a hook or a struct")
+        route_versioned 1 "@version goes before a hook or a struct"
+        handler_underived 2 "memcpy names no handler"
+        handler_derived 2 "nvn_DeviceFinalize is the handler that nvnDeviceFinalize names already")
     if(NOT DEFINED bad_name)
         set(bad_name "${bad}")
     elseif(NOT DEFINED bad_line)

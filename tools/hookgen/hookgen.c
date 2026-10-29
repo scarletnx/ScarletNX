@@ -9,9 +9,12 @@
      # a comment
      family libc
      hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
+     hook nvnDeviceFinalize(addr d)
 
    A family names the hooks after it, up to the next family line, so the hooks_off setting can turn them off
-   together; each hook belongs to one.
+   together; each hook belongs to one. The handler's name follows '='. Without it, the handler is the symbol's name
+   with a '_' before its first capital (nvnDeviceFinalize: nvn_DeviceFinalize), which the symbol must have after a
+   part in lower case; an '= HANDLER' that names that handler is refused, as the symbol says it already.
 
    The types are void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address, u64), f32
    and f64. Under AAPCS64 an integer, bool or address takes the next of x0-x7 and a float the next of v0-v7, so
@@ -433,10 +436,23 @@ static void resolve_buffers(Hook* h, int line) {
     if (h->nbufs && !h->pure) fail(line, "only a pure hook's buffers are checked: say pure, or drop the buffers");
 }
 
-/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] = HANDLER [uses STRUCT, ...] [pure] */
+/* the handler a symbol names: a '_' before its first capital, after a part in lower case (nvnDeviceFinalize:
+   nvn_DeviceFinalize), into buf. 0 when the symbol has no such part */
+static int derived_handler(const char* symbol, char* buf) {
+    size_t i = 0;
+    if (!islower((unsigned char)symbol[0])) return 0;
+    while (islower((unsigned char)symbol[i]) || isdigit((unsigned char)symbol[i])) i++;
+    if (!isupper((unsigned char)symbol[i]) || strlen(symbol) + 2 > MAX_NAME) return 0;
+    memcpy(buf, symbol, i);
+    buf[i] = '_';
+    strcpy(buf + i + 1, symbol + i);
+    return is_identifier(buf);
+}
+
+/* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] */
 static void parse_hook(const char* p, int line, const Range* range) {
     Hook* h;
-    char type[MAX_NAME];
+    char type[MAX_NAME], derived[MAX_NAME];
     int x = 0, v = 0;
     if (nhooks == MAX_HOOKS) fail(line, "more than %d hooks", MAX_HOOKS);
     if (!nfamilies) fail(line, "a hook comes after a family line, which names its family");
@@ -472,9 +488,16 @@ static void parse_hook(const char* p, int line, const Range* range) {
         p = word(p + 2, type, line, "result's type");
         h->ret = find_kind(type, line);
     }
-    p = expect(p, "=", line);
-    p = word(p, h->handler, line, "handler");
-    if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
+    p = skip_space(p);
+    if (*p == '=') {
+        p = word(p + 1, h->handler, line, "handler");
+        if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
+        if (derived_handler(h->symbol, derived) && !strcmp(derived, h->handler))
+            fail(line, "%s is the handler that %s names already: drop '= %s'", h->handler, h->symbol, h->handler);
+    } else if (!derived_handler(h->symbol, h->handler)) {
+        fail(line, "%s names no handler (no capital follows a part in lower case): give one with '= HANDLER'",
+             h->symbol);
+    }
     p = skip_space(p);
     if (keyword(p, "uses")) {
         p += 4;
@@ -501,7 +524,7 @@ static void parse_hook(const char* p, int line, const Range* range) {
         h->pure = 1;
         p = skip_space(p + 4);
     }
-    if (*p) fail(line, "unexpected text after the handler");
+    if (*p) fail(line, "unexpected text after the hook's handler");
     resolve_buffers(h, line);
 }
 

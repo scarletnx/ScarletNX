@@ -4,7 +4,7 @@
 # The functions the game exports that the runtime runs natively (hook.h), for tools/hookgen. A line at a time:
 #
 #   family NAME
-#   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME [BUFFER], ...) [-> TYPE] = HANDLER [uses STRUCT, ...] [pure]
+#   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME [BUFFER], ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure]
 #   [@version(...)] struct NAME::NAME [@version(...)] { TYPE FIELD @OFFSET; ... } size SIZE
 #
 # A family names the hooks after it, until the next family line: the hooks_off setting turns families off by name.
@@ -12,7 +12,8 @@
 # (_ZN2nn2os...), never demangled. The arguments are the function's as C sees it (a C++ method's this first), of the
 # types void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address) f32 and f64. The
 # handler is a function of the runtime's, `ret HANDLER(CPU* c, args...)`, declared by the generated
-# hle/hook/hooks.hook.h. A handler does what the function is known to do and nothing the game could tell apart.
+# hle/hook/hooks.hook.h. Without '= HANDLER' it is SYMBOL with a '_' before its first capital (nvnDeviceFinalize:
+# nvn_DeviceFinalize). A handler does what the function is known to do and nothing the game could tell apart.
 # @version limits a hook or a struct to the versions of the module that exports the function (KEY sdk, the default, or
 # nvn; OP >=, >, <=, <, ==), a struct gives a guest struct's layout for those versions, and a handler that uses one
 # takes the layout for its module after the CPU (docs/HOOKS.md, tools/hookgen/hookgen.c). A pure hook's function
