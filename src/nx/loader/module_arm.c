@@ -672,7 +672,8 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
                 ++reused;
                 bytes += q.units[i].size;
             }
-        snx_unit_cache_report(build->unit_cache, build->unit_cache_limit, reused, q.count, bytes, options->quiet);
+        snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q.count, bytes,
+                              options->quiet);
     }
     rc = 0;
 done:

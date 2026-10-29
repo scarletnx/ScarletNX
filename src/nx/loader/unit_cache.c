@@ -490,18 +490,20 @@ int snx_unit_cache_trim(const char* folder, SnxU64 limit, SnxUnitTrim* trim, cha
     snprintf(why, sizeof why, "a size limit of %llu bytes", (unsigned long long)limit);
     return trim_files(folder, limit, 0, why, NULL, trim, error, error_size);
 }
-void snx_unit_cache_report(const char* folder, SnxU64 limit, size_t reused, size_t count, SnxU64 bytes, int quiet) {
+void snx_unit_cache_report(FILE* out, const char* folder, SnxU64 limit, size_t reused, size_t count, SnxU64 bytes,
+                           int quiet) {
     SnxUnitTrim trim;
     char error[512];
     if (!quiet)
-        printf("unit cache: %zu of %zu units reused (%.1f MB) from %s\n", reused, count, (double)bytes / 1000000.0,
-               folder);
+        fprintf(out, "unit cache: %zu of %zu units reused (%.1f MB) from %s\n", reused, count,
+                (double)bytes / 1000000.0, folder);
     if (!limit) return;
     if (snx_unit_cache_trim(folder, limit, &trim, error, sizeof error))
         snx_error("unit cache: %s: not cut to its %.1f MB limit", error, (double)limit / 1000000.0);
     else if (trim.removed && !quiet)
-        printf("unit cache: %zu files held %.1f MB, over the limit of %.1f MB: the %zu oldest removed (%.1f MB), %.1f "
-               "MB left\n",
-               trim.files, (double)trim.held / 1000000.0, (double)limit / 1000000.0, trim.removed,
-               (double)trim.removed_bytes / 1000000.0, (double)(trim.held - trim.removed_bytes) / 1000000.0);
+        fprintf(out,
+                "unit cache: %zu files held %.1f MB, over the limit of %.1f MB: the %zu oldest removed (%.1f MB), %.1f "
+                "MB left\n",
+                trim.files, (double)trim.held / 1000000.0, (double)limit / 1000000.0, trim.removed,
+                (double)trim.removed_bytes / 1000000.0, (double)(trim.held - trim.removed_bytes) / 1000000.0);
 }

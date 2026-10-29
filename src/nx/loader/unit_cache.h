@@ -8,6 +8,7 @@
 #define SNX_NX_UNIT_CACHE_H
 
 #include "common/cpu/recompiler/llvm/ir.h"
+#include <stdio.h>
 
 /* What every unit's key holds besides the unit's own target machine and IR (and SNX_IR_OBJECT_VERSION) */
 typedef struct {
@@ -67,8 +68,9 @@ unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, s
    last write or reuse) removed first, then by name; 0 for no limit. Each file it cannot remove is said on stderr. 0, or
    -1 with why in error when the folder cannot be listed */
 int snx_unit_cache_trim(const char* folder, SnxU64 limit, SnxUnitTrim* trim, char* error, size_t error_size);
-/* A module build's last word on its units: how many of count the cache in folder gave (reused, bytes of them), unless
-   quiet, then the folder held to limit bytes (0: none), what that removed said */
-void snx_unit_cache_report(const char* folder, SnxU64 limit, size_t reused, size_t count, SnxU64 bytes, int quiet);
+/* A module build's last word on its units, on out (stdout): how many of count the cache in folder gave (reused, bytes
+   of them), unless quiet, then the folder held to limit bytes (0: none), what that removed said */
+void snx_unit_cache_report(FILE* out, const char* folder, SnxU64 limit, size_t reused, size_t count, SnxU64 bytes,
+                           int quiet);
 
 #endif

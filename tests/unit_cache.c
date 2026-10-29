@@ -27,10 +27,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <io.h> /* dup, dup2: stdout caught in a file */
 #else
 #include <dlfcn.h>
-#include <unistd.h>
 #endif
 
 #define TEXT_OFF  0x1000
@@ -653,23 +651,23 @@ int main(void) {
         snx_remove_tree(out[4]);
         snx_remove_tree(out[5]);
     }
-    /* a build's last word on its units, from the 32-bit build as from the 64-bit one; nothing when quiet */
+    /* a build's last word on its units, from the 32-bit build as from the 64-bit one; nothing when quiet. A file in
+       binary, whose newline Windows leaves alone */
     {
         const char* said_to = "snx-test-unit-cache.report";
-        char* text;
-        size_t size = 0;
-        int saved;
-        fflush(stdout);
-        saved = dup(1);
-        CHECK(saved >= 0 && freopen(said_to, "w", stdout) != NULL);
-        snx_unit_cache_report("units here", 0, 3, 5, 2500000, 0);
-        snx_unit_cache_report("units here", 0, 1, 1, 0, 1);
-        fflush(stdout);
-        CHECK(dup2(saved, 1) == 1);
-        close(saved);
-        text = (char*)snx_read_file(said_to, &size);
-        CHECK(text && !strcmp(text, "unit cache: 3 of 5 units reused (2.5 MB) from units here\n"));
-        free(text);
+        FILE* out = fopen(said_to, "w+b");
+        char text[256] = {0};
+        CHECK(out != NULL);
+        if (out) {
+            size_t got;
+            snx_unit_cache_report(out, "units here", 0, 3, 5, 2500000, 0);
+            snx_unit_cache_report(out, "units here", 0, 1, 1, 0, 1);
+            rewind(out);
+            got = fread(text, 1, sizeof text - 1, out);
+            text[got] = 0;
+            fclose(out);
+        }
+        CHECK(!strcmp(text, "unit cache: 3 of 5 units reused (2.5 MB) from units here\n"));
         snx_remove_tree(said_to);
     }
     /* an abort asked of a build: it stops before its next unit, saying how many it compiled, and keeps none */

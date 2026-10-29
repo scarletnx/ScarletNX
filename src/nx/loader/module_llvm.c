@@ -480,7 +480,7 @@ static void report_units(const Queue* q, const SnxLlvmBuild* build, int quiet) {
             ++reused;
             bytes += q->units[i].size;
         }
-    snx_unit_cache_report(build->unit_cache, build->unit_cache_limit, reused, q->count, bytes, quiet);
+    snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q->count, bytes, quiet);
 }
 
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
