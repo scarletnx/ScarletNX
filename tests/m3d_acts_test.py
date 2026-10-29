@@ -58,11 +58,10 @@ def main():
     table_src = src[src.index('static const u8 g_m3d_group'):]
     table_src = table_src[:table_src.index('};')]
     table = set()
-    for lo, hi in re.findall(r'\[([^\]]+?) \.\.\. ([^\]]+?)\] = G_ACTS', table_src):
-        table |= set(range(val(lo), val(hi) + 1))
+    for n, base in re.findall(r'\bM3D_RANGE([0-9]+)\(([^,]+), G_ACTS\)', table_src):
+        table |= set(range(val(base), val(base) + int(n)))
     for m in re.findall(r'\[([^\]]+)\] = G_ACTS', table_src):
-        if '...' not in m:
-            table.add(val(m))
+        table.add(val(m))
     label = r'\bcase\s+([A-Z0-9_x]+(?:\([0-9]+\))?)\s*:'
     cases = {}
     for name, start in (('the method switch', '\nstatic void method_acts('), ('keeps_draw', 'static int keeps_draw(')):
