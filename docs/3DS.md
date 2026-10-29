@@ -939,8 +939,10 @@ The selected profile supplies the console username, limited to the 3DS's ten cha
 
 The backend implements discovery, host/join, node status, channel bindings, packet send/pull
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
-not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. LAN mode is
-not implemented by this backend and does not silently join a public room.
+not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
+(the default), Initialize succeeds, scans find no network and hosting works with no peer.
+The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
+leaves the machine and no room is joined.
 
 No game image or synchronization window is patched. NSMB2 internet co-op still has
 input-delay and synchronization limits. The development runs with title-specific
