@@ -2592,7 +2592,10 @@ retry:
                     break;
                 }
         }
-    if (!n && !zt && !xfb_on) { /* nothing drawn to and nothing captured */
+    /* nothing drawn to, captured or stored. A program's stores to memory or images still run in a pass without
+       attachments: a per-pixel pass may set every target's format to 0 and keep only what it stores */
+    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg));
+    if (!n && !zt && !xfb_on && !stores) {
         g_vk_skipped++;
         return;
     }
