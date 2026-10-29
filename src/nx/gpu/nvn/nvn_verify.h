@@ -141,10 +141,10 @@ typedef struct {
 
 /* the setting, once nvn_direct runs the game's NVN calls */
 int nvn_verify_on(void);
-/* nvn_direct took the function name at addr for handler, where the slot held original (the driver's code): what the
+/* nvn_direct took the function name (len characters) at addr for handler, where the slot held original (the driver's code): what the
    slot holds from now on. One nvn_direct doesn't implement keeps its handler, and the shadow can still call the
    driver's code */
-GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn original, int implemented);
+GuestFn nvn_verify_take(u64 addr, const char* name, u32 len, GuestFn handler, GuestFn original, int implemented);
 /* whether fn is the adapter nvn_verify_take returns */
 int nvn_verify_ours(GuestFn fn);
 

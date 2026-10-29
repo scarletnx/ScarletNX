@@ -325,12 +325,13 @@ static const VfKinds* kinds_of(const char* name) {
     }
     return NULL;
 }
-static int ends(const char* s, const char* tail) {
-    size_t a = strlen(s), b = strlen(tail);
-    return a >= b && !strcmp(s + a - b, tail);
-}
-static int starts(const char* s, const char* head) { return !strncmp(s, head, strlen(head)); }
-static u32 flags_of(const char* n, const VfKinds* k) {
+/* a string literal and its length, for the functions below that take both */
+#define LIT(s) (s), sizeof(s) - 1
+/* whether s (a characters) ends with tail (b characters), starts with head */
+static int ends(const char* s, size_t a, const char* tail, size_t b) { return a >= b && !memcmp(s + a - b, tail, b); }
+static int starts(const char* s, size_t a, const char* head, size_t b) { return a >= b && !memcmp(s, head, b); }
+/* the function n (len characters) is to the shadow */
+static u32 flags_of(const char* n, u32 len, const VfKinds* k) {
     static const char* const skip[] = {
         "nvnQueueAcquireTexture", "nvnQueueFinish", "nvnSyncWait", "nvnDeviceInstallDebugCallback",
         "nvnCommandBufferSetMemoryCallback", "nvnCommandBufferSetMemoryCallbackData", "nvnEventWait",
@@ -340,12 +341,12 @@ static u32 flags_of(const char* n, const VfKinds* k) {
            room of the region's size for them (the 0x100 bytes of an output argument) */
         "nvnTextureReadTexels"};
     u32 f = 0, i;
-    if (k && k->kinds && k->kinds[0] && ends(n, "Initialize") && !strstr(n, "Builder")) f |= F_INIT;
-    if (ends(n, "Finalize")) f |= F_FINAL;
+    if (k && k->kinds && k->kinds[0] && ends(n, len, LIT("Initialize")) && !strstr(n, "Builder")) f |= F_INIT;
+    if (ends(n, len, LIT("Finalize"))) f |= F_FINAL;
     /* a builder's first calls: NVN sets its device before its defaults */
-    if (ends(n, "SetDefaults") || (strstr(n, "Builder") && ends(n, "SetDevice"))) f |= F_DEFAULTS;
-    if (starts(n, "nvnWindow")) f |= F_SKIP;
-    if (ends(n, "State") == 0 && strstr(n, "StateSet") && !strstr(n, "Builder")) f |= F_STATESET;
+    if (ends(n, len, LIT("SetDefaults")) || (strstr(n, "Builder") && ends(n, len, LIT("SetDevice")))) f |= F_DEFAULTS;
+    if (starts(n, len, LIT("nvnWindow"))) f |= F_SKIP;
+    if (ends(n, len, LIT("State")) == 0 && strstr(n, "StateSet") && !strstr(n, "Builder")) f |= F_STATESET;
     for (i = 0; i < sizeof skip / sizeof skip[0]; i++)
         if (!strcmp(n, skip[i])) f |= F_SKIP;
     if (!strcmp(n, "nvnQueueSubmitCommands")) f |= F_SUBMIT | F_HANDLES;
@@ -357,11 +358,12 @@ static u32 flags_of(const char* n, const VfKinds* k) {
     if (!strcmp(n, "nvnCommandBufferBeginRecording")) f |= F_BEGIN;
     if (!strcmp(n, "nvnCommandBufferCallCommands")) f |= F_CALLS;
     if (!strcmp(n, "nvnTexturePoolRegisterTexture")) f |= F_TEXREG;
-    if (starts(n, "nvnQueue") && !starts(n, "nvnQueueBuilder")) f |= F_QUEUE;
-    if (starts(n, "nvnCommandBuffer")) f |= F_CMD;
-    if (strstr(n, "Address") || ends(n, "Map") || strstr(n, "Timestamp") || strstr(n, "MemoryPool") ||
+    if (starts(n, len, LIT("nvnQueue")) && !starts(n, len, LIT("nvnQueueBuilder"))) f |= F_QUEUE;
+    if (starts(n, len, LIT("nvnCommandBuffer"))) f |= F_CMD;
+    if (strstr(n, "Address") || ends(n, len, LIT("Map")) || strstr(n, "Timestamp") || strstr(n, "MemoryPool") ||
         strstr(n, "GetDevice") || strstr(n, "Callback") || strstr(n, "MemoryUsed") || strstr(n, "MemoryFree") ||
-        ends(n, "GetMemory") || ends(n, "EndRecording") || strstr(n, "DebugLabel") || ends(n, "GetPool"))
+        ends(n, len, LIT("GetMemory")) || ends(n, len, LIT("EndRecording")) || strstr(n, "DebugLabel") ||
+        ends(n, len, LIT("GetPool")))
         f |= F_NORESULT;
     if (k && k->kinds && strchr(k->kinds, 'f')) f |= F_SKIP;
     return f;
@@ -394,8 +396,8 @@ static void run(CPU* c, GuestFn fn, u64 entry, u64 lr, u64 sp) {
     }
 }
 /* the driver's code of the function name, 0 when it has none */
-static u64 drv_addr(CPU* c, const char* name, GuestFn* fn) {
-    u64 a = nvn_direct_lookup(c, name);
+static u64 drv_addr(CPU* c, const char* name, size_t n, GuestFn* fn) {
+    u64 a = nvn_direct_lookup(c, name, n);
     const VfFn* f;
     if (!a || a < g_code_lo || a >= g_code_hi || (a & 3)) return 0;
     f = fn_at(a);
@@ -403,12 +405,12 @@ static u64 drv_addr(CPU* c, const char* name, GuestFn* fn) {
     return *fn && !nvn_verify_ours(*fn) ? a : 0;
 }
 /* the driver's name(x0, x1, x2, x3) on c, from a shadow call's registers base: its x0 */
-static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, u64 a0, u64 a1, u64 a2, u64 a3) {
+static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, size_t n, u64 a0, u64 a1, u64 a2, u64 a3) {
     GuestFn fn = NULL;
     u64 at, lr = base->x[30];
     memcpy(c, base, REGS_SIZE);
     c->x[31] = sp; /* the lookup puts the name below it, past the shadow call's copies */
-    at = drv_addr(c, name, &fn);
+    at = drv_addr(c, name, n, &fn);
     if (!at) {
         LOG_LIMIT(8, "nvn verify: the driver has no %s for the shadow\n", name);
         return 0;
@@ -419,7 +421,9 @@ static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, u64 a0, u
 }
 
 /* the shadow queue's commands so far, sent as the game's submission serial's batch */
-static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) { drv_call(c, base, sp, "nvnQueueFlush", queue, 0, 0, 0); }
+static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) {
+    drv_call(c, base, sp, LIT("nvnQueueFlush"), queue, 0, 0, 0);
+}
 
 /* ---- the shadow driver's command and control memory
    The game places its command and control memory by what the driver takes: it places each recording by
@@ -459,17 +463,17 @@ static int lend_ready(CPU* c, const CPU* base, u64 sp) {
         g_nvn.verify.lend.area[LEND_CTRL] = shadow_map(lend_area[LEND_CTRL]);
         g_nvn.verify.lend.pool = obj_alloc(sizeof(NVNmemoryPool));
         b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDevice", b, dev, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetFlags", b,
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDefaults"), b, 0, 0, 0);
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDevice"), b, dev, 0, 0);
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetFlags"), b,
                  NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, g_nvn.verify.lend.area[LEND_CMD],
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetStorage"), b, g_nvn.verify.lend.area[LEND_CMD],
                  lend_area[LEND_CMD], 0);
         /* the callback: the driver's SetMemoryCallback, which the shadow never runs, at an address whose slot is
            verify_fn (an event, 0 or 1, is never a function's address in x1) */
-        g_nvn.verify.lend.callback = drv_addr(c, "nvnCommandBufferSetMemoryCallback", &fn);
+        g_nvn.verify.lend.callback = drv_addr(c, LIT("nvnCommandBufferSetMemoryCallback"), &fn);
         if (!dev || !g_nvn.verify.lend.callback || !fn_at(g_nvn.verify.lend.callback) ||
-            !(drv_call(c, base, sp, "nvnMemoryPoolInitialize", g_nvn.verify.lend.pool, b, 0, 0) & 0xFF)) {
+            !(drv_call(c, base, sp, LIT("nvnMemoryPoolInitialize"), g_nvn.verify.lend.pool, b, 0, 0) & 0xFF)) {
             WARN("nvn verify: no memory for the shadow driver when it runs short (device %llx, callback %llx): it "
                  "aborts then\n",
                  (unsigned long long)dev, (unsigned long long)g_nvn.verify.lend.callback);
@@ -507,12 +511,12 @@ static u64 cmd_pool(CPU* c, const CPU* base, u64 sp, u64 live) {
         p->storage = shadow_map(lp->size * CMD_SCALE);
         p->pool = obj_alloc(sizeof(NVNmemoryPool));
         b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDevice", b, g_nvn.verify.device, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetFlags", b,
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDefaults"), b, 0, 0, 0);
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDevice"), b, g_nvn.verify.device, 0, 0);
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetFlags"), b,
                  NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, p->storage, lp->size * CMD_SCALE, 0);
-        if (drv_call(c, base, sp, "nvnMemoryPoolInitialize", p->pool, b, 0, 0) & 0xFF) {
+        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetStorage"), b, p->storage, lp->size * CMD_SCALE, 0);
+        if (drv_call(c, base, sp, LIT("nvnMemoryPoolInitialize"), p->pool, b, 0, 0) & 0xFF) {
             pool = p->pool;
             g_nvn.verify.cmd.n++;
         } else {
@@ -538,7 +542,7 @@ static void cmd_pool_final(CPU* c, const CPU* base, u64 sp, u64 live) {
     }
     pm_unlock(&g_nvn.verify.cmd.lock);
     if (!p.pool) return;
-    drv_call(c, base, sp, "nvnMemoryPoolFinalize", p.pool, 0, 0, 0);
+    drv_call(c, base, sp, LIT("nvnMemoryPoolFinalize"), p.pool, 0, 0, 0);
     obj_free(p.pool, sizeof(NVNmemoryPool));
     mem_unmap(p.storage, (p.size * CMD_SCALE + 0xFFFF) & ~0xFFFFull);
 }
@@ -759,9 +763,9 @@ static void shadow_memory(CPU* c) {
     at = lend_take(kind, cb, kind == LEND_CMD ? min * 4 : min, &size);
     if (at != ~0ull) {
         if (kind == LEND_CMD)
-            drv_call(c, &saved, sp, "nvnCommandBufferAddCommandMemory", cb, g_nvn.verify.lend.pool, at, size);
+            drv_call(c, &saved, sp, LIT("nvnCommandBufferAddCommandMemory"), cb, g_nvn.verify.lend.pool, at, size);
         else
-            drv_call(c, &saved, sp, "nvnCommandBufferAddControlMemory", cb, at, size, 0);
+            drv_call(c, &saved, sp, LIT("nvnCommandBufferAddControlMemory"), cb, at, size, 0);
     }
     memcpy(c, &saved, REGS_SIZE);
     c->pc = saved.x[30];
@@ -1041,9 +1045,13 @@ static void storage_sweep(CPU* c, const CPU* base, u64 sp) {
                                    {1000, 3}, {1280, 720}, {1600, 896}, {4096, 2048}};
     static const i32 flags[] = {0, NVN_TEXTURE_FLAGS_COMPRESSIBLE, NVN_TEXTURE_FLAGS_IMAGE};
     static const char* const what[4] = {"size", "alignment", "class", "zcull size"};
-    static const char* const getter[4] = {"nvnTextureBuilderGetStorageSize", "nvnTextureBuilderGetStorageAlignment",
-                                          "nvnTextureBuilderGetStorageClass",
-                                          "nvnTextureBuilderGetZCullStorageSize"};
+    static const struct {
+        const char* name;
+        size_t len;
+    } getter[4] = {{LIT("nvnTextureBuilderGetStorageSize")},
+                   {LIT("nvnTextureBuilderGetStorageAlignment")},
+                   {LIT("nvnTextureBuilderGetStorageClass")},
+                   {LIT("nvnTextureBuilderGetZCullStorageSize")}};
     u64 live = obj_alloc(sizeof(NVNtextureBuilder)), shadow = obj_alloc(sizeof(NVNtextureBuilder)), n = 0;
     u64 differ_n[4] = {0};
     size_t t, f, z, l, g;
@@ -1072,16 +1080,17 @@ static void storage_sweep(CPU* c, const CPU* base, u64 sp) {
                         a[1] = nvn_TextureBuilderGetStorageAlignment(c, live);
                         a[2] = (u32)nvn_TextureBuilderGetStorageClass(c, live);
                         a[3] = nvn_TextureBuilderGetZCullStorageSize(c, live);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetDevice", shadow, g_nvn.verify.device, 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetDefaults", shadow, 0, 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetTarget", shadow, (u64)targets[t].target, 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetFormat", shadow, (u64)formats[f], 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetSize3D", shadow, w, h, (u64)d);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetLevels", shadow, (u64)levels, 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetSamples", shadow, (u64)targets[t].samples, 0, 0);
-                        drv_call(c, base, sp, "nvnTextureBuilderSetFlags", shadow, (u64)flags[g], 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetDevice"), shadow, g_nvn.verify.device, 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetDefaults"), shadow, 0, 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetTarget"), shadow, (u64)targets[t].target, 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetFormat"), shadow, (u64)formats[f], 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetSize3D"), shadow, w, h, (u64)d);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetLevels"), shadow, (u64)levels, 0, 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetSamples"), shadow, (u64)targets[t].samples, 0,
+                                 0);
+                        drv_call(c, base, sp, LIT("nvnTextureBuilderSetFlags"), shadow, (u64)flags[g], 0, 0);
                         for (k = 0; k < 4; k++) {
-                            b[k] = drv_call(c, base, sp, getter[k], shadow, 0, 0, 0);
+                            b[k] = drv_call(c, base, sp, getter[k].name, getter[k].len, shadow, 0, 0, 0);
                             if (k == 2) b[k] = (u32)b[k];
                         }
                         n++;
@@ -1261,7 +1270,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         cb = map_get(&g_nvn.verify.obj, before.x[0]);
         pm_unlock(&g_nvn.verify.lock);
         if (cb && lend_ready(c, &before, sp_))
-            drv_call(c, &before, sp_, "nvnCommandBufferSetMemoryCallback", cb, g_nvn.verify.lend.callback, 0, 0);
+            drv_call(c, &before, sp_, LIT("nvnCommandBufferSetMemoryCallback"), cb, g_nvn.verify.lend.callback, 0, 0);
         memcpy(c, &ran, REGS_SIZE);
     }
     if ((f->flags & F_END) && after.x[0] && c->x[0]) {
@@ -1310,7 +1319,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
 
 int nvn_verify_ours(GuestFn fn) { return fn == verify_fn; }
 
-GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn original, int implemented) {
+GuestFn nvn_verify_take(u64 addr, const char* name, u32 len, GuestFn handler, GuestFn original, int implemented) {
     u32 n, i;
     if (!g_nvn.verify.on) {
         if (!g_settings.nvn_verify) return handler;
@@ -1337,7 +1346,7 @@ GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn ori
             f->handler = handler;
             f->original = original;
             f->k = kinds_of(name);
-            f->flags = flags_of(name, f->k);
+            f->flags = flags_of(name, len, f->k);
             __atomic_store_n(&f->addr, addr, __ATOMIC_RELEASE);
             break;
         }

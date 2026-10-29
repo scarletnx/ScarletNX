@@ -33,10 +33,12 @@ static struct {
     u32 nseg;
 } g_shipped_pass;
 
-static int snapshot_seg(void* ctx, const char* name, const u8* bytes, u64 gva, u64 size, int writable) {
+static int snapshot_seg(void* ctx, const char* name, size_t name_len, const u8* bytes, u64 gva, u64 size,
+                        int writable) {
     Segment* seg = realloc(g_shipped_pass.seg, (g_shipped_pass.nseg + 1) * sizeof *seg);
     Segment* s;
     (void)ctx;
+    (void)name_len;
     if (!seg) return 1;
     g_shipped_pass.seg = seg;
     s = &seg[g_shipped_pass.nseg];

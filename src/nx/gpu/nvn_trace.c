@@ -42,7 +42,7 @@ static int readable(u64 addr) {
     return block.state != MS_FREE && block.state != MS_INACCESSIBLE && (block.perm & PERM_R);
 }
 
-int nvn_read_name(u64 ptr, char name[128]) {
+u32 nvn_read_name(u64 ptr, char name[128]) {
     u64 readable_end = 0;
     size_t i;
     for (i = 0; i < 127 && ptr + i >= ptr; i++) {
@@ -52,7 +52,7 @@ int nvn_read_name(u64 ptr, char name[128]) {
             readable_end = (at | 0xFFF) + 1;
         }
         name[i] = *(const char*)GP(at);
-        if (!name[i]) return i != 0;
+        if (!name[i]) return (u32)i;
     }
     name[i] = 0;
     return 0;
@@ -120,7 +120,7 @@ static void trace_proc(u64 addr, const char* name) {
 
 static void getproc_trace(CPU* c, u64 entry) {
     char name[128];
-    int valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
+    u32 valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     GuestFn original = __atomic_load_n(&getproc_original, __ATOMIC_ACQUIRE);
     if (!original) { /* as in proc_trace: the lock orders a host where g_disp's plain load doesn't */
         pm_lock(&procs_lock);
@@ -136,7 +136,7 @@ static void getproc_trace(CPU* c, u64 entry) {
 
 static void bootstrap_trace(CPU* c, u64 entry) {
     char name[128];
-    int valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
+    u32 valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     bootstrap_original(c, entry);
     if (!valid) return;
     LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
