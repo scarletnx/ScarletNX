@@ -1,0 +1,2 @@
+family f
+hook nvnDeviceFinalize(addr d) = nvn_DeviceFinalize
