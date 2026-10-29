@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The guest's registers as locals of the whole function. The emitters read and write X0-X30 and SP, NZCV and V0-V31
    in the CPU structure, and a call that takes c can read or change any of them, so LLVM keeps each in memory across
-   every loop that has one, even a call it never makes (the poll on each backward branch, an FP helper's slow path).
+   every loop that has one, even a call it never makes (an FP helper's slow path). The poll on a backward branch is
+   not in the loop: it leaves the function (ir_codegen.c's poll).
    Once the function is emitted, ir_promote_registers moves those accesses onto a stack slot per register, which
    SROA and mem2reg make SSA values. It runs at O1 and above: at O0 those passes do not run, so the slots and the
    copies at every site stay, which costs call-heavy code and grows the JIT's arena. Two passes over the function's
