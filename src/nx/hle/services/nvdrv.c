@@ -34,6 +34,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/runtime/clock.h"
+#include "nx/gpu/nvn/nvn_verify.h"
 #include <stdlib.h>
 #include <string.h>
 static void nv_events_check(void);
@@ -1460,6 +1461,16 @@ static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, 
        them */
     incs = host + ((flags & GPU_SUBMIT_INCREMENT_VALUE) ? fval : 0);
     sp = gpu_channel_syncpt(f);
+    if (nvn_verify_fd_is((u32)(f - g_hle.nvdrv.nvf))) { /* the shadow driver's: decoded for nvn_verify, never run */
+        nvn_verify_gpfifo((u32)(f - g_hle.nvdrv.nvf), entries, num);
+        pm_lock(&g_host.nvdrv.submit_lk);
+        promised = syncpt_promise(sp, incs);
+        pm_unlock(&g_host.nvdrv.submit_lk);
+        if (incs) syncpt_add(sp, incs);
+        wr32(d, GPU_SUBMIT_FENCE_ID, sp);
+        wr32(d, GPU_SUBMIT_FENCE_VALUE, promised);
+        return NV_RESULT_SUCCESS;
+    }
     /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
     pm_lock(&g_host.nvdrv.submit_lk);
     promised = syncpt_promise(sp, incs);
@@ -1536,6 +1547,7 @@ static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32
         }
     pm_unlock(&g_host.nvdrv.lock);
     if (slot < 0) host1x_close(h1x);
+    if (slot >= 0) nvn_verify_fd((u32)slot, nvn_verify_shadow_thread());
     LOG("nvdrv: open %s -> %d\n", name, slot);
     *fd = (u32)slot;
     *error = slot < 0 ? NV_RESULT_FILE_OPERATION_FAILED : NV_RESULT_SUCCESS; /* every fd taken (or no memory) */

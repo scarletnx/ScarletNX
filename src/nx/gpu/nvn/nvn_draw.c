@@ -19,6 +19,8 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
+#include "nx/gpu/nvn/nvn_verify.h"
+#include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
@@ -569,6 +571,7 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     }
     if (d->render_off) return;
     sync(d, 0, dc.base_instance);
+    if (g_settings.nvn_verify) nvn_verify_live_draw(&d->ds, &dc);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
 /* how far an indirect draw's indices may reach, which NVN doesn't say (DrawElementsIndirect takes the index buffer's
@@ -613,6 +616,7 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     }
     if (d->render_off) return;
     sync(d, (i32)dc.base_vertex, dc.base_instance);
+    if (g_settings.nvn_verify) nvn_verify_live_draw(&d->ds, &dc);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
 

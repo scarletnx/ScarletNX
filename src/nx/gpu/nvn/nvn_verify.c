@@ -1,0 +1,1321 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* nvn_verify=1: nvn_direct against the game's own NVN driver, draw by draw (docs/NVN_HLE.md, "Verify mode").
+
+   The game side, on the game's threads. Every NVN function the game resolves runs verify_fn: nvn_direct's handler
+   first, on the game's objects and memory as always, then the driver's own code on shadows, with the game's thread
+   and stack. The shadows are guest memory of the runtime's (shadow_alloc, outside every region the game knows):
+   - an object the game keeps at one address (a device, queue, pool, buffer, texture, sampler, program, sync...) has a
+     shadow from its Initialize to its Finalize (g_v.obj, live address to shadow address);
+   - a builder or state object the game may copy by value has its shadow by content: the driver's bytes for each
+     state nvn_direct's bytes stand for (g_v.state), learned as the game calls the setters;
+   - memory the driver writes (a pool's storage, queue and control memory) has a shadow range of its size (g_v.mem);
+   - a command handle the driver's EndRecording answered stands for nvn_direct's (g_v.handle).
+   An argument the shadow has no counterpart for skips the driver's call (counted per function). The driver's calls
+   that act on the game or the host are never made: waits, the window and its presents (a present flushes the shadow
+   queue instead), callbacks. The driver's calls into other NVN functions go through their slots and so through
+   verify_fn, which runs the driver's code directly while the thread is in a shadow call (t_shadow).
+
+   The driver's queue opens its GPU channel from such a call, so nvdrv marks the fd (nvn_verify_fd) and gives its
+   GPFIFO submissions here instead of to the GPU thread: their words are copied (nvn_verify_gpfifo) into the queue's
+   batches, each tagged with the number of the game's submission it follows. A submission is flushed in the shadow at
+   once, so each live submission has its own batch.
+
+   The GPU thread side. nvn_direct's replay of a submission (nvn_verify_replay_submit) and each of its draws
+   (nvn_verify_live_draw) pull the shadow's batches through a verify channel (gpu.h gpu_channel_verify): the Maxwell
+   decoder with its registers and macros and nothing else, whose draws come back through nvn_verify_shadow_draw with
+   the DsState the 3D engine's registers give (maxwell/draw_state.c). The two draws of the same submission, in order,
+   are compared group by group; GPU addresses are compared as the guest bytes they name, a shadow range standing for
+   the live memory it shadows. Each difference is logged once, with its count at each power of 4 */
+#include "nx/gpu/nvn/nvn_verify.h"
+#include "common/utilities/bits.h"
+#include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn.h"
+#include "nx/gpu/nvn/nvn_object.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/memory/mem.h"
+#include "nx/runtime/loader.h"
+#include "nx/runtime/options.h"
+#include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/plat.h"
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- the kinds of each function's arguments (tools/nvn_verify_kinds.py) */
+enum { NVK_RET_NONE, NVK_RET_ADDR, NVK_RET_BOOL, NVK_RET_X32, NVK_RET_X64, NVK_RET_F32 };
+#define NVK_ARGS 8
+typedef struct {
+    const char* name;
+    const char* kinds; /* NULL: nvn.h declares no prototype, and the shadow doesn't run it */
+    int ret;
+    u32 size[NVK_ARGS];
+} Kinds;
+static const Kinds g_kinds[] = {
+#include "nx/gpu/nvn/nvn_verify_kinds.inc"
+};
+
+/* ---- the file's state */
+#define FNS        1024 /* functions, a power of two above the ~530 NVN has */
+#define QUEUES     16
+#define STATE_MAX  0x180 /* the largest state object or builder (NVNtextureBuilder's 0x80, NVNqueueBuilder's...) */
+#define SCRATCH    0x2000 /* guest stack the shadow call's copies take below the game's stack pointer */
+#define OBJ_SLAB   (256ull << 20)
+#define STATE_SLOTS 0x8000
+#define CB_SLOTS   (1u << 20)
+#define DIFF_KEYS  256
+#define RANGES     8192
+
+enum { /* what a function is to the shadow, from its name */
+    F_INIT = 1,      /* arg 0 is the object it makes */
+    F_FINAL = 2,     /* arg 0 is the object it ends */
+    F_DEFAULTS = 4,  /* arg 0 is a builder or state it sets to its defaults */
+    F_SKIP = 8,      /* never run in the shadow */
+    F_SUBMIT = 16,   /* nvnQueueSubmitCommands */
+    F_PRESENT = 32,  /* nvnQueuePresentTexture: the shadow queue flushes instead */
+    F_END = 64,      /* nvnCommandBufferEndRecording: its handle */
+    F_HANDLES = 128, /* arg 2 is an array of command handles, as many as arg 1 */
+    F_QUEUE = 256,   /* arg 0 is a queue: an fd opened in its call is that queue's channel */
+    F_CMD = 512,     /* arg 0 is a command buffer */
+    F_TEXREG = 1024, /* nvnTexturePoolRegisterTexture: the descriptors compared */
+    F_NORESULT = 2048, /* its result is an address or a time, which the two sides make apart */
+    F_STATESET = 4096  /* a state object's setter: a state never seen is the zeroed memory the game started from */
+};
+typedef struct {
+    u64 addr;
+    GuestFn handler, original;
+    const Kinds* k;
+    u32 flags;
+    u64 calls, skipped, differed, ran;
+    const char* why; /* the first reason a call was skipped */
+} Fn;
+
+typedef struct { /* u64 to u64, open addressing (key 0 free, ~0 a removed one) */
+    u64* key;
+    u64* val;
+    u32 cap, used;
+} Map;
+
+typedef struct {
+    u64 live, shadow, size;
+} Range;
+
+typedef struct {
+    u32 len, filled;
+    u64 hash;
+    u8 live[STATE_MAX], drv[STATE_MAX];
+} State;
+
+/* a shadow channel's words after one live submission */
+typedef struct Batch {
+    struct Batch* next;
+    u32 serial, n;
+    u32 w[];
+} Batch;
+typedef struct {
+    DsState ds;
+    DrawCall dc;
+    u32 serial;
+} Pending;
+#define PENDING 64
+typedef struct {
+    /* the game's side, under g_v.lock */
+    Batch *head, *tail;
+    u32 shadow_serial; /* the live submissions so far, which the batches are tagged with */
+    u64 words;         /* in the batches not decoded */
+    /* the GPU thread's */
+    GpuChannel* ch;
+    u32 live_serial, draw; /* the submission replaying, and its draws so far */
+    u32 batch_serial;      /* the serial of the words decoding */
+    Pending pend[PENDING];
+    u32 npend;
+    u64 compared, matched, live_only, shadow_only;
+} VQueue;
+
+typedef struct {
+    const char* what;
+    u64 n;
+} DiffKey;
+
+typedef struct {
+    PMutex lock;
+    Fn fn[FNS];
+    Map obj, handle;
+    Range mem[RANGES]; /* append only: the GPU thread reads them without the lock, up to nmem */
+    u32 nmem;
+    u64 device; /* the last shadow device made */
+    State* state; /* STATE_SLOTS, by hash */
+    u64 slab, slab_used;
+    u64 free_list[16][64]; /* freed objects by size class (a few sizes): small stacks */
+    u32 free_n[16], free_size[16];
+    u8 fd_queue[256]; /* nvdrv fd: 0 not the shadow's, else 1 + the replay queue (0x80 the shadow's, no queue) */
+    VQueue q[QUEUES];
+    u32 cb_key_bits;
+    u64* cb_key; /* the shadow's constant buffer words: GPU address of a word, and its value */
+    u32* cb_val;
+    DiffKey diff[DIFF_KEYS];
+    u32 ndiff;
+    u64 lossy, unknown_state, unknown_obj, texreg_diff;
+    int on;
+} Verify;
+static Verify g_v = {PMUTEX_INIT};
+static _Thread_local int t_shadow;  /* in a shadow call: slots run the driver's code */
+static _Thread_local u32 t_queue;   /* the replay queue (1 up) of the shadow call's queue, 0 none */
+static _Thread_local const char* t_running; /* the function the shadow call runs */
+const char* nvn_verify_running(void) { return t_running; }
+
+int nvn_verify_on(void) { return g_v.on; }
+int nvn_verify_shadow_thread(void) { return t_shadow; }
+
+/* ---- maps */
+static u64 mix(u64 k) {
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdull;
+    k ^= k >> 33;
+    return k;
+}
+#define MAP_GONE (~0ull)
+static void map_put(Map* m, u64 key, u64 val);
+static void map_grow(Map* m) {
+    Map old = *m;
+    u32 i;
+    m->cap = old.cap ? old.cap * 2 : 1024;
+    m->used = 0;
+    m->key = (u64*)calloc(m->cap, sizeof *m->key);
+    m->val = (u64*)calloc(m->cap, sizeof *m->val);
+    if (!m->key || !m->val) fatal("nvn verify: out of memory for a map of %u", m->cap);
+    for (i = 0; i < old.cap; i++)
+        if (old.key[i] && old.key[i] != MAP_GONE) map_put(m, old.key[i], old.val[i]);
+    free(old.key);
+    free(old.val);
+}
+static u64* map_slot(const Map* m, u64 key) {
+    u32 i, n;
+    if (!m->cap) return NULL;
+    for (n = 0, i = (u32)mix(key) & (m->cap - 1); n < m->cap; n++, i = (i + 1) & (m->cap - 1)) {
+        if (m->key[i] == key) return &m->val[i];
+        if (!m->key[i]) return NULL;
+    }
+    return NULL;
+}
+static u64 map_get(const Map* m, u64 key) {
+    const u64* v = map_slot(m, key);
+    return v ? *v : 0;
+}
+static void map_put(Map* m, u64 key, u64 val) {
+    u32 i;
+    u64* v = map_slot(m, key);
+    if (v) {
+        *v = val;
+        return;
+    }
+    if ((m->used + 1) * 2 > m->cap) map_grow(m);
+    for (i = (u32)mix(key) & (m->cap - 1); m->key[i] && m->key[i] != MAP_GONE; i = (i + 1) & (m->cap - 1)) {
+    }
+    m->key[i] = key;
+    m->val[i] = val;
+    m->used++;
+}
+static void map_del(Map* m, u64 key) {
+    u64* v = map_slot(m, key);
+    if (v) m->key[v - m->val] = MAP_GONE;
+}
+
+/* ---- the shadow's guest memory: outside every region the game maps in */
+static u64 shadow_map(u64 size) {
+    /* the runs no region covers: past the kernel's pages, past the stack region, below the first region */
+    const u64 lo[3] = {g_layout.kern_end, g_layout.stack + g_layout.stack_size, g_layout.base};
+    const u64 hi[3] = {g_layout.end, g_layout.kern, g_layout.alias < g_layout.heap ? g_layout.alias : g_layout.heap};
+    u64 a = 0;
+    int i, r = -1;
+    size = (size + 0xFFFF) & ~0xFFFFull;
+    for (i = 0; i < 3 && r; i++) /* another thread may map the run found first: look again */
+        while (lo[i] < hi[i] && (a = mem_find_free(lo[i], hi[i], size, 0x10000)) != 0 &&
+               (r = mem_map(a, size, MS_NORMAL, PERM_RW)) != 0) {
+        }
+    if (r)
+        fatal("nvn verify: no guest memory for %llu KiB of shadow (heap %llx+%llx alias %llx+%llx stack %llx+%llx "
+              "kernel %llx-%llx end %llx)",
+              (unsigned long long)(size >> 10), (unsigned long long)g_layout.heap,
+              (unsigned long long)g_layout.heap_size, (unsigned long long)g_layout.alias,
+              (unsigned long long)g_layout.alias_size, (unsigned long long)g_layout.stack,
+              (unsigned long long)g_layout.stack_size, (unsigned long long)g_layout.kern,
+              (unsigned long long)g_layout.kern_end, (unsigned long long)g_layout.end);
+    return a;
+}
+/* a shadow object of size bytes, zeroed. Without the lock: mapping memory takes the renderer's, which the GPU thread
+   may hold while it takes this file's */
+static u64 obj_alloc(u32 size) {
+    u32 c;
+    u64 a = 0, slab = 0;
+    size = (size + 15) & ~15u;
+    for (;;) {
+        pm_lock(&g_v.lock);
+        for (c = 0; c < 16 && g_v.free_size[c] && g_v.free_size[c] != size; c++) {
+        }
+        if (c < 16 && g_v.free_size[c] == size && g_v.free_n[c])
+            a = g_v.free_list[c][--g_v.free_n[c]];
+        else {
+            if (slab && (!g_v.slab || g_v.slab_used + size > OBJ_SLAB)) {
+                g_v.slab = slab;
+                g_v.slab_used = 0;
+                slab = 0;
+            }
+            if (g_v.slab && g_v.slab_used + size <= OBJ_SLAB) {
+                a = g_v.slab + g_v.slab_used;
+                g_v.slab_used += size;
+            }
+        }
+        pm_unlock(&g_v.lock);
+        if (a) break;
+        slab = shadow_map(OBJ_SLAB);
+    }
+    memset(GP(a), 0, size);
+    return a;
+}
+static void obj_free(u64 a, u32 size) {
+    u32 c;
+    size = (size + 15) & ~15u;
+    for (c = 0; c < 16 && g_v.free_size[c] && g_v.free_size[c] != size; c++) {
+    }
+    if (c == 16) return; /* a 17th size: left */
+    g_v.free_size[c] = size;
+    if (g_v.free_n[c] < 64) g_v.free_list[c][g_v.free_n[c]++] = a;
+}
+/* the shadow range for the live memory [live, live + size), made at its first use. Without the lock (obj_alloc) */
+static u64 mem_find(u64 live, u64 size) {
+    u32 i, n = __atomic_load_n(&g_v.nmem, __ATOMIC_ACQUIRE);
+    for (i = n; i-- > 0;)
+        if (g_v.mem[i].live == live && g_v.mem[i].size >= size) return g_v.mem[i].shadow;
+    return 0;
+}
+static u64 mem_shadow(u64 live, u64 size) {
+    u64 s = mem_find(live, size), m;
+    if (s) return s;
+    m = shadow_map(size);
+    pm_lock(&g_v.lock);
+    s = mem_find(live, size);
+    if (!s && g_v.nmem < RANGES) {
+        Range* r = &g_v.mem[g_v.nmem];
+        r->live = live;
+        r->size = size;
+        r->shadow = s = m;
+        __atomic_store_n(&g_v.nmem, g_v.nmem + 1, __ATOMIC_RELEASE);
+        m = 0;
+    }
+    pm_unlock(&g_v.lock);
+    if (m) mem_unmap(m, (size + 0xFFFF) & ~0xFFFFull);
+    if (!s) fatal("nvn verify: more than %u shadow memory ranges", RANGES);
+    return s;
+}
+/* the live guest address a shadow range's address stands for, 0 when it is in none. From any thread, no lock */
+static u64 mem_live(u64 shadow) {
+    u32 i, n = __atomic_load_n(&g_v.nmem, __ATOMIC_ACQUIRE);
+    for (i = 0; i < n; i++)
+        if (shadow >= g_v.mem[i].shadow && shadow - g_v.mem[i].shadow < g_v.mem[i].size)
+            return g_v.mem[i].live + (shadow - g_v.mem[i].shadow);
+    return 0;
+}
+
+/* ---- states by content */
+static u64 fnv(const u8* p, u32 n) {
+    u64 h = 0xcbf29ce484222325ull;
+    while (n--) h = (h ^ *p++) * 0x100000001b3ull;
+    return h;
+}
+static State* state_find(const u8* live, u32 len, int make) {
+    u64 h = fnv(live, len) ^ len;
+    u32 i, n;
+    for (n = 0, i = (u32)h & (STATE_SLOTS - 1); n < 64; n++, i = (i + 1) & (STATE_SLOTS - 1)) {
+        State* s = &g_v.state[i];
+        if (!s->len) {
+            if (!make) return NULL;
+            s->len = len;
+            s->filled = 0;
+            s->hash = h;
+            memcpy(s->live, live, len);
+            return s;
+        }
+        if (s->hash == h && s->len == len && !memcmp(s->live, live, len)) return s;
+    }
+    if (!make) return NULL;
+    { /* full here: the slot it hashes to is taken over */
+        State* s = &g_v.state[(u32)h & (STATE_SLOTS - 1)];
+        s->len = len;
+        s->filled = 0;
+        s->hash = h;
+        memcpy(s->live, live, len);
+        return s;
+    }
+}
+
+/* ---- functions */
+static u32 fn_hash(u64 addr) { return (u32)((addr >> 2) * 2654435761u) & (FNS - 1); }
+static Fn* fn_at(u64 addr) {
+    u32 n, i;
+    for (n = 0, i = fn_hash(addr); n < FNS; n++, i = (i + 1) & (FNS - 1)) {
+        Fn* f = &g_v.fn[i];
+        u64 a = __atomic_load_n(&f->addr, __ATOMIC_ACQUIRE);
+        if (a == addr) return f;
+        if (!a) return NULL;
+    }
+    return NULL;
+}
+static const Kinds* kinds_of(const char* name) {
+    size_t lo = 0, hi = sizeof g_kinds / sizeof g_kinds[0];
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        int c = strcmp(g_kinds[mid].name, name);
+        if (!c) return &g_kinds[mid];
+        if (c < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return NULL;
+}
+static int ends(const char* s, const char* tail) {
+    size_t a = strlen(s), b = strlen(tail);
+    return a >= b && !strcmp(s + a - b, tail);
+}
+static int starts(const char* s, const char* head) { return !strncmp(s, head, strlen(head)); }
+static u32 flags_of(const char* n, const Kinds* k) {
+    static const char* const skip[] = {
+        "nvnQueueAcquireTexture", "nvnQueueFinish", "nvnSyncWait", "nvnDeviceInstallDebugCallback",
+        "nvnCommandBufferSetMemoryCallback", "nvnCommandBufferSetMemoryCallbackData", "nvnEventWait",
+        "nvnQueueGetError", "nvnMemoryPoolMapVirtual", "nvnDeviceSetIntermediateShaderCache",
+        "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle",
+        /* the driver's CallCommands aborts on a game's handle some seconds in (docs/NVN_HLE.md, verify mode) */
+        "nvnCommandBufferCallCommands", "nvnCommandBufferCopyCommands"};
+    u32 f = 0, i;
+    if (k && k->kinds && k->kinds[0] && ends(n, "Initialize") && !strstr(n, "Builder")) f |= F_INIT;
+    if (ends(n, "Finalize")) f |= F_FINAL;
+    /* a builder's first calls: NVN sets its device before its defaults */
+    if (ends(n, "SetDefaults") || (strstr(n, "Builder") && ends(n, "SetDevice"))) f |= F_DEFAULTS;
+    if (starts(n, "nvnWindow")) f |= F_SKIP;
+    if (ends(n, "State") == 0 && strstr(n, "StateSet") && !strstr(n, "Builder")) f |= F_STATESET;
+    for (i = 0; i < sizeof skip / sizeof skip[0]; i++)
+        if (!strcmp(n, skip[i])) f |= F_SKIP;
+    if (!strcmp(n, "nvnQueueSubmitCommands")) f |= F_SUBMIT | F_HANDLES;
+    if (!strcmp(n, "nvnCommandBufferCallCommands") || !strcmp(n, "nvnCommandBufferCopyCommands")) f |= F_HANDLES;
+    if (!strcmp(n, "nvnQueuePresentTexture")) f |= F_PRESENT;
+    if (!strcmp(n, "nvnCommandBufferEndRecording")) f |= F_END;
+    if (!strcmp(n, "nvnTexturePoolRegisterTexture")) f |= F_TEXREG;
+    if (starts(n, "nvnQueue") && !starts(n, "nvnQueueBuilder")) f |= F_QUEUE;
+    if (starts(n, "nvnCommandBuffer")) f |= F_CMD;
+    if (strstr(n, "Address") || ends(n, "Map") || strstr(n, "Timestamp") || strstr(n, "MemoryPool") ||
+        strstr(n, "GetDevice") || strstr(n, "Callback") || strstr(n, "MemoryUsed") || strstr(n, "MemoryFree") ||
+        ends(n, "GetMemory") || ends(n, "EndRecording") || strstr(n, "DebugLabel") || ends(n, "GetPool"))
+        f |= F_NORESULT;
+    if (k && k->kinds && strchr(k->kinds, 'f')) f |= F_SKIP;
+    return f;
+}
+
+/* ---- running the driver's code */
+#define REGS_SIZE offsetof(CPU, mem)
+/* fn's code at entry on c, args already in c, until it returns to lr with the stack pointer sp */
+static void run(CPU* c, GuestFn fn, u64 entry, u64 lr, u64 sp) {
+    int outer = !t_shadow;
+    u32 flag = nvn_direct_flag();
+    c->x[30] = lr;
+    c->x[31] = sp;
+    t_shadow = 1;
+    fn(c, entry);
+    while (c->pc != lr || c->x[31] != sp) snx_lookup(c, c->pc)(c, c->pc);
+    if (outer) t_shadow = 0;
+    if (nvn_direct_flag() != flag) { /* it would turn on the game's inlined command writes into nvn_direct's memory */
+        nvn_direct_flag_set(flag);
+        LOG_LIMIT(4, "nvn verify: the driver changed nvnPrivate0 in a shadow call: put back\n");
+    }
+}
+/* the driver's code of the function name, 0 when it has none */
+static u64 drv_addr(CPU* c, const char* name, GuestFn* fn) {
+    u64 a = nvn_direct_lookup(c, name);
+    const Fn* f;
+    if (!a || a < g_code_lo || a >= g_code_hi || (a & 3)) return 0;
+    f = fn_at(a);
+    *fn = f ? f->original : g_disp[(a - g_code_lo) / 4];
+    return *fn && !nvn_verify_ours(*fn) ? a : 0;
+}
+/* the driver's name(x0, x1, x2, x3) on c, from a shadow call's registers base: its x0 */
+static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, u64 a0, u64 a1, u64 a2, u64 a3) {
+    GuestFn fn = NULL;
+    u64 at, lr = base->x[30];
+    memcpy(c, base, REGS_SIZE);
+    c->x[31] = sp; /* the lookup puts the name below it, past the shadow call's copies */
+    at = drv_addr(c, name, &fn);
+    if (!at) {
+        LOG_LIMIT(8, "nvn verify: the driver has no %s for the shadow\n", name);
+        return 0;
+    }
+    c->x[0] = a0, c->x[1] = a1, c->x[2] = a2, c->x[3] = a3;
+    run(c, fn, at, lr, sp);
+    return c->x[0];
+}
+
+/* the shadow queue's commands so far, sent as the game's submission serial's batch */
+static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) { drv_call(c, base, sp, "nvnQueueFlush", queue, 0, 0, 0); }
+
+/* a live command buffer's shadow is fed command and control memory of the runtime's before it can run short, so the
+   driver never calls the game's memory callback (the shadow has none): a piece of a ring of the runtime's when less
+   than a quarter of a piece is left. The game's own memory comes too, so pieces are seldom needed; a ring that went
+   round (1 GiB of commands) reuses pieces a recording the game still calls may hold */
+#define FEED_PIECE (256u << 10)
+#define FEED_RING  (1u << 30)
+#define FEED_CTRL  (64u << 10)
+typedef struct {
+    u64 pool;        /* the shadow memory pool the command pieces come from */
+    u64 storage;     /* its storage */
+    u32 at, ctrl_at; /* the next pieces */
+    u64 ctrl;        /* control memory ring */
+} Feed;
+static Feed g_feed;
+static void feed(CPU* c, const CPU* base, u64 sp, u64 cmd) {
+    u64 cfree = drv_call(c, base, sp, "nvnCommandBufferGetCommandMemoryFree", cmd, 0, 0, 0);
+    u64 kfree = drv_call(c, base, sp, "nvnCommandBufferGetControlMemoryFree", cmd, 0, 0, 0);
+    if (!g_feed.pool) { /* the pool, on the first shadow command buffer's device */
+        u64 dev = g_v.device, b;
+        if (!dev) return;
+        g_feed.storage = shadow_map(FEED_RING);
+        g_feed.ctrl = shadow_map(FEED_RING / 4);
+        g_feed.pool = obj_alloc(sizeof(NVNmemoryPool));
+        b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDevice", b, dev, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetFlags", b,
+                 NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, g_feed.storage, FEED_RING, 0);
+        if (!(drv_call(c, base, sp, "nvnMemoryPoolInitialize", g_feed.pool, b, 0, 0) & 0xFF)) {
+            WARN("nvn verify: the driver's pool for the shadow's command memory didn't initialize\n");
+            g_feed.pool = 0;
+            return;
+        }
+        LOG("nvn verify: the shadow's command memory: %u MiB at %llx\n", FEED_RING >> 20,
+            (unsigned long long)g_feed.storage);
+    }
+    if (cfree < FEED_PIECE / 4) {
+        u32 at = __atomic_fetch_add(&g_feed.at, FEED_PIECE, __ATOMIC_RELAXED) % FEED_RING;
+        drv_call(c, base, sp, "nvnCommandBufferAddCommandMemory", cmd, g_feed.pool, at, FEED_PIECE);
+    }
+    if (kfree < FEED_CTRL / 4) {
+        u32 at = __atomic_fetch_add(&g_feed.ctrl_at, FEED_CTRL, __ATOMIC_RELAXED) % (FEED_RING / 4);
+        drv_call(c, base, sp, "nvnCommandBufferAddControlMemory", cmd, g_feed.ctrl + at, FEED_CTRL, 0);
+    }
+}
+
+/* ---- a call */
+typedef struct {
+    u64 live;   /* the argument's live value */
+    u64 at;     /* its scratch copy (states) */
+    u32 len, n; /* a state's bytes, and an array's count */
+    u8 before[STATE_MAX];
+} Arg;
+
+static void skip(Fn* f, const char* why) {
+    if (__atomic_add_fetch(&f->skipped, 1, __ATOMIC_RELAXED) == 1) {
+        f->why = why;
+        LOG("nvn verify: the shadow skips %s: %s\n", f->k ? f->k->name : "a function", why);
+    }
+}
+/* the driver's bytes for a state, copied to the scratch at *at: 0 when the shadow doesn't know it */
+static int state_in(const u8* live, u32 len, int defaults, u64* at) {
+    State* s;
+    *at = (*at - len) & ~15ull;
+    pm_lock(&g_v.lock);
+    s = state_find(live, len, 0);
+    if (s && !s->filled) s = NULL;
+    if (!s && !defaults) { /* never set: the zeroed memory the game made it in stands for the driver's zeros */
+        u32 k;
+        for (k = 0; k < len && !live[k]; k++) {
+        }
+        defaults = k == len;
+    }
+    if (s)
+        memcpy(GP(*at), s->drv, len);
+    else if (defaults)
+        memset(GP(*at), 0, len);
+    pm_unlock(&g_v.lock);
+    return s || defaults;
+}
+/* the state the driver made of a scratch copy, for the live bytes the same call left */
+static void state_out(Fn* f, const u8* live, u32 len, u64 at) {
+    State* s;
+    pm_lock(&g_v.lock);
+    s = state_find(live, len, 1);
+    if (s->filled && memcmp(s->drv, GP(at), len)) {
+        /* the same live bytes for other driver bytes: nvn_direct keeps less of the state than the driver */
+        if (__atomic_add_fetch(&g_v.lossy, 1, __ATOMIC_RELAXED) <= 8) {
+            u32 k;
+            for (k = 0; k < len && s->drv[k] == GP(at)[k]; k++) {
+            }
+            WARN("nvn verify: after %s, nvn_direct's state stands for two of the driver's (they differ at byte %u: "
+                 "%02x, now %02x)\n",
+                 f->k->name, k, s->drv[k], GP(at)[k]);
+        }
+    }
+    memcpy(s->drv, GP(at), len);
+    s->filled = 1;
+    pm_unlock(&g_v.lock);
+}
+
+/* the arguments for the driver, from the live ones in c (the call's registers before nvn_direct's handler):
+   1, or 0 with the reason when the shadow has no counterpart for one */
+static int shadow_args(Fn* f, CPU* c, Arg* a, u64* scratch, const char** why) {
+    const char* k = f->k->kinds;
+    u32 i, xi = 0, count = 0; /* an array's count: the last integer argument before it */
+    for (i = 0; k[i] && i < NVK_ARGS; i++) {
+        u32 size = f->k->size[i];
+        u64 v;
+        if (k[i] == 'F') continue;
+        if (xi >= 8) {
+            *why = "an argument on the stack";
+            return 0;
+        }
+        v = a[i].live = c->x[xi];
+        switch (k[i]) {
+            case 'o':
+                if (v) {
+                    u64 s;
+                    pm_lock(&g_v.lock);
+                    s = map_get(&g_v.obj, v);
+                    pm_unlock(&g_v.lock);
+                    if (!s && i == 0 && (f->flags & F_INIT)) {
+                        s = obj_alloc(size);
+                        pm_lock(&g_v.lock);
+                        map_put(&g_v.obj, v, s);
+                        pm_unlock(&g_v.lock);
+                    }
+                    if (!s) {
+                        __atomic_add_fetch(&g_v.unknown_obj, 1, __ATOMIC_RELAXED);
+                        *why = "an object the shadow didn't see made";
+                        return 0;
+                    }
+                    c->x[xi] = s;
+                }
+                break;
+            case 'v': count = (u32)v; break;
+            case 'O':
+            case 'T': {
+                u32 n = count, j;
+                u64 arr;
+                if (!v || !n) break;
+                if (n > 32) {
+                    *why = "an array longer than 32";
+                    return 0;
+                }
+                *scratch = (*scratch - n * 8) & ~15ull;
+                arr = *scratch;
+                for (j = 0; j < n; j++) {
+                    u64 p, s = 0;
+                    memcpy(&p, GP(v + j * 8), 8);
+                    if (p && k[i] == 'O') {
+                        pm_lock(&g_v.lock);
+                        s = map_get(&g_v.obj, p);
+                        pm_unlock(&g_v.lock);
+                        if (!s) {
+                            *why = "an object the shadow didn't see made, in an array";
+                            return 0;
+                        }
+                    } else if (p) {
+                        if (!state_in(GP(p), size, 0, scratch)) {
+                            *why = "a state the shadow doesn't know, in an array";
+                            return 0;
+                        }
+                        s = *scratch;
+                    }
+                    memcpy(GP(arr + j * 8), &s, 8);
+                }
+                c->x[xi] = arr;
+                break;
+            }
+            case 's':
+                if (v) {
+                    a[i].len = size;
+                    if (!state_in(a[i].before, size, i == 0 && (f->flags & (F_DEFAULTS | F_STATESET)), scratch)) {
+                        __atomic_add_fetch(&g_v.unknown_state, 1, __ATOMIC_RELAXED);
+                        *why = "a state the shadow doesn't know";
+                        return 0;
+                    }
+                    a[i].at = *scratch;
+                    c->x[xi] = *scratch;
+                }
+                break;
+            case 'S': {
+                u32 n = count, j;
+                u64 arr;
+                if (!v || !n) break;
+                if (n > 64) {
+                    *why = "a state array longer than 64";
+                    return 0;
+                }
+                *scratch = (*scratch - n * size) & ~15ull;
+                arr = *scratch;
+                for (j = 0; j < n; j++) {
+                    u64 one = *scratch;
+                    if (!state_in(GP(v + j * size), size, 0, &one)) {
+                        *why = "a state the shadow doesn't know, in an array";
+                        return 0;
+                    }
+                    memmove(GP(arr + j * size), GP(one), size);
+                }
+                c->x[xi] = arr;
+                break;
+            }
+            case 'm':
+                if (v && c->x[xi + 1]) {
+                    /* queue memory: the size the driver asks for may be more than nvn_direct told the game (the
+                       call's result compare says so), and the shadow's has room for it */
+                    u64 n = c->x[xi + 1];
+                    if (!strcmp(f->k->name, "nvnQueueBuilderSetQueueMemory") && n < (8u << 20)) n = 8u << 20;
+                    c->x[xi] = mem_shadow(v, n);
+                    c->x[xi + 1] = n;
+                }
+                break;
+            case 'w':
+                *scratch = (*scratch - 0x100) & ~15ull;
+                memset(GP(*scratch), 0, 0x100);
+                c->x[xi] = *scratch;
+                break;
+            case 'r': *why = "mapping requests"; return 0;
+            default: break;
+        }
+        if (k[i] == 'p' && (f->flags & F_HANDLES) && i == 2 && v) { /* command handles: the shadow's */
+            u32 n = (u32)c->x[1], j;
+            if (n > 4096) {
+                *why = "more than 4096 command handles";
+                return 0;
+            }
+            *scratch = (*scratch - n * 8) & ~15ull;
+            for (j = 0; j < n; j++) {
+                u64 h, s;
+                memcpy(&h, GP(v + j * 8), 8);
+                pm_lock(&g_v.lock);
+                s = map_get(&g_v.handle, h);
+                pm_unlock(&g_v.lock);
+                if (!s) {
+                    *why = "a command handle the shadow didn't record";
+                    return 0;
+                }
+                memcpy(GP(*scratch + j * 8), &s, 8);
+            }
+            c->x[xi] = *scratch;
+        }
+        xi++;
+    }
+    return 1;
+}
+
+/* the result's bits as compared */
+static u64 result_bits(const CPU* c, int ret) {
+    switch (ret) {
+        case NVK_RET_BOOL: return (c->x[0] & 0xFF) != 0;
+        case NVK_RET_X32: return (u32)c->x[0];
+        case NVK_RET_F32: return (u32)SNX_VS(c->v[0], 0);
+        default: return c->x[0];
+    }
+}
+
+/* a texture descriptor (TIC entry) the same call registered on both sides: the same words but for the address
+   (word 1 and the low half of word 2), which is compared as the guest bytes it names */
+static void texreg_check(u64 live_pool, u32 id) {
+    const NvnDescPool* lp = NVN_OBJ(const NvnDescPool, live_pool);
+    u64 live_mem = nvn_pool_memory(lp->pool), at = (u64)lp->offset + (u64)id * NVN_DESCRIPTOR_SIZE, sm;
+    u32 lw[8], sw[8], i;
+    if (!live_mem || !(sm = mem_find(live_mem, at + NVN_DESCRIPTOR_SIZE))) return;
+    memcpy(lw, GP(live_mem + at), sizeof lw);
+    memcpy(sw, GP(sm + at), sizeof sw);
+    for (i = 0; i < 8; i++) {
+        u32 mask = i == 1 ? 0 : i == 2 ? 0xFFFF0000u : ~0u;
+        if ((lw[i] ^ sw[i]) & mask && __atomic_add_fetch(&g_v.texreg_diff, 1, __ATOMIC_RELAXED) <= 8)
+            WARN("nvn verify: texture %u's descriptor word %u: nvn_direct %08x, driver %08x\n", id, i, lw[i], sw[i]);
+    }
+    {
+        u64 la = (u64)lw[1] | (u64)(lw[2] & 0xFFFF) << 32, sa = (u64)sw[1] | (u64)(sw[2] & 0xFFFF) << 32;
+        u64 lt = gmmu_translate(la), st = gmmu_translate(sa), sl = st ? mem_live(st) : 0;
+        if (lt && sl && lt != sl && __atomic_add_fetch(&g_v.texreg_diff, 1, __ATOMIC_RELAXED) <= 8)
+            WARN("nvn verify: texture %u's descriptor address: nvn_direct's names %llx, the driver's %llx\n", id,
+                 (unsigned long long)lt, (unsigned long long)sl);
+    }
+}
+
+static void verify_fn(CPU* RESTRICT c, u64 entry) {
+    Fn* f = fn_at(entry);
+    CPU before, after;
+    Arg a[NVK_ARGS];
+    const char* why = NULL;
+    u64 scratch, sp, lr, live_ret;
+    u32 i, queue = 0, serial = 0;
+    int ok;
+    if (!f) fatal("nvn verify: no function at %llx", (unsigned long long)entry);
+    if (t_shadow) { /* the driver calling NVN: its own code */
+        f->original(c, entry);
+        return;
+    }
+    memcpy(&before, c, REGS_SIZE);
+    memset(a, 0, sizeof a);
+    if (f->k && f->k->kinds) /* the states as they are before nvn_direct's handler changes them */
+        for (i = 0; f->k->kinds[i] && i < NVK_ARGS; i++)
+            if (f->k->kinds[i] == 's') {
+                u32 xi = 0, j;
+                for (j = 0; j < i; j++) xi += f->k->kinds[j] != 'F';
+                if (xi < 8 && c->x[xi]) memcpy(a[i].before, GP(c->x[xi]), f->k->size[i]);
+            }
+    f->handler(c, entry);
+    __atomic_add_fetch(&f->calls, 1, __ATOMIC_RELAXED);
+    if (!f->k || !f->k->kinds) {
+        skip(f, "no prototype in nvn.h");
+        return;
+    }
+    if ((f->flags & F_SKIP) && !(f->flags & F_PRESENT)) {
+        skip(f, "the shadow never makes it");
+        return;
+    }
+    memcpy(&after, c, REGS_SIZE);
+    live_ret = result_bits(&after, f->k->ret);
+    lr = before.x[30];
+    sp = before.x[31];
+    scratch = (sp - 0x100) & ~15ull; /* below the red zone the caller may keep */
+    memcpy(c, &before, REGS_SIZE);
+    if (f->flags & F_QUEUE) { /* the queue's replay index, which a channel the driver opens now is for */
+        const NvnQueue* q = NVN_OBJ(const NvnQueue, before.x[0]);
+        queue = before.x[0] ? q->replay : 0;
+    }
+    if (f->flags & F_SUBMIT) { /* the game's submission count, which this one's batch is tagged with */
+        if ((i32)before.x[1] <= 0) {
+            memcpy(c, &after, REGS_SIZE);
+            return;
+        }
+        if (queue && queue <= QUEUES) {
+            pm_lock(&g_v.lock);
+            serial = ++g_v.q[queue - 1].shadow_serial;
+            pm_unlock(&g_v.lock);
+        }
+    }
+    if (f->flags & F_PRESENT) { /* the queue alone: the window has no shadow */
+        pm_lock(&g_v.lock);
+        c->x[0] = map_get(&g_v.obj, before.x[0]);
+        pm_unlock(&g_v.lock);
+        ok = c->x[0] != 0;
+        why = "a queue the shadow didn't see made";
+    } else
+        ok = shadow_args(f, c, a, &scratch, &why);
+    if (!ok) {
+        skip(f, why);
+        if (f->flags & F_INIT) { /* an object the shadow can't make: none */
+            pm_lock(&g_v.lock);
+            map_del(&g_v.obj, before.x[0]);
+            pm_unlock(&g_v.lock);
+        }
+        memcpy(c, &after, REGS_SIZE);
+        return;
+    }
+    {
+        CPU base;
+        u64 run_sp = (scratch - 16) & ~15ull;
+        u32 prev_queue = t_queue;
+        GuestFn fn = f->original;
+        u64 at = entry;
+        t_queue = queue;
+        memcpy(&base, c, REGS_SIZE);
+        if (__atomic_add_fetch(&f->ran, 1, __ATOMIC_RELAXED) == 1) /* what ran last when the driver faults */
+            LOG("nvn verify: the shadow runs %s for the first time\n", f->k->name);
+        if ((f->flags & F_CMD) && !(f->flags & (F_INIT | F_FINAL)) && c->x[0]) {
+            CPU args = base;
+            feed(c, &base, run_sp, base.x[0]);
+            memcpy(c, &args, REGS_SIZE);
+        }
+        t_running = f->k->name;
+        if (f->flags & F_PRESENT)
+            shadow_flush(c, &base, run_sp, base.x[0]);
+        else
+            run(c, fn, at, lr, run_sp);
+        t_running = NULL;
+        if ((f->flags & F_SUBMIT) && serial) {
+            CPU done;
+            memcpy(&done, c, REGS_SIZE);
+            shadow_flush(c, &base, run_sp, base.x[0]);
+            memcpy(c, &done, REGS_SIZE);
+        }
+        (void)serial;
+        t_queue = prev_queue;
+    }
+    /* what the call left */
+    if ((f->flags & F_END) && after.x[0] && c->x[0]) {
+        pm_lock(&g_v.lock);
+        map_put(&g_v.handle, after.x[0], c->x[0]);
+        pm_unlock(&g_v.lock);
+    }
+    for (i = 0; f->k->kinds[i] && i < NVK_ARGS; i++)
+        if (f->k->kinds[i] == 's' && a[i].at && a[i].live) state_out(f, GP(a[i].live), a[i].len, a[i].at);
+    if (f->k->ret != NVK_RET_NONE && f->k->ret != NVK_RET_ADDR && !(f->flags & (F_NORESULT | F_PRESENT))) {
+        u64 got = result_bits(c, f->k->ret);
+        if (got != live_ret && __atomic_add_fetch(&f->differed, 1, __ATOMIC_RELAXED) <= 4)
+            WARN("nvn verify: %s(%llx, %llx, %llx, %llx) returns %llx, the driver %llx\n", f->k->name,
+                 (unsigned long long)before.x[0], (unsigned long long)before.x[1], (unsigned long long)before.x[2],
+                 (unsigned long long)before.x[3], (unsigned long long)live_ret, (unsigned long long)got);
+    }
+    if (f->flags & F_TEXREG) texreg_check(before.x[0], (u32)before.x[1]);
+    if (!strcmp(f->k->name, "nvnDeviceInitialize") && a[0].live) {
+        pm_lock(&g_v.lock);
+        g_v.device = map_get(&g_v.obj, a[0].live);
+        pm_unlock(&g_v.lock);
+    }
+    if (f->flags & F_FINAL) {
+        u64 s;
+        pm_lock(&g_v.lock);
+        s = map_get(&g_v.obj, before.x[0]);
+        map_del(&g_v.obj, before.x[0]);
+        if (s) obj_free(s, f->k->size[0]);
+        pm_unlock(&g_v.lock);
+    }
+    memcpy(c, &after, REGS_SIZE);
+}
+
+int nvn_verify_ours(GuestFn fn) { return fn == verify_fn; }
+
+GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn original, int implemented) {
+    u32 n, i;
+    if (!g_v.on) {
+        if (!g_settings.nvn_verify) return handler;
+        pm_lock(&g_v.lock);
+        if (!g_v.on) {
+            g_v.state = (State*)calloc(STATE_SLOTS, sizeof *g_v.state);
+            g_v.cb_key_bits = 20;
+            g_v.cb_key = (u64*)calloc(CB_SLOTS, sizeof *g_v.cb_key);
+            g_v.cb_val = (u32*)calloc(CB_SLOTS, sizeof *g_v.cb_val);
+            if (!g_v.state || !g_v.cb_key || !g_v.cb_val) fatal("nvn verify: out of memory");
+            LOG("nvn verify: on: each NVN call runs the game's driver too, on shadows, and each draw is compared\n");
+            __atomic_store_n(&g_v.on, 1, __ATOMIC_RELEASE);
+        }
+        pm_unlock(&g_v.lock);
+    }
+    if (!original || nvn_verify_ours(original)) return handler;
+    pm_lock(&g_v.lock);
+    for (n = 0, i = fn_hash(addr); n < FNS; n++, i = (i + 1) & (FNS - 1)) {
+        Fn* f = &g_v.fn[i];
+        if (f->addr == addr) break;
+        if (!f->addr) {
+            f->handler = handler;
+            f->original = original;
+            f->k = kinds_of(name);
+            f->flags = flags_of(name, f->k);
+            __atomic_store_n(&f->addr, addr, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    pm_unlock(&g_v.lock);
+    if (n == FNS) fatal("nvn verify: more than %u NVN functions", FNS);
+    return implemented ? verify_fn : handler;
+}
+
+/* ---- nvdrv: the shadow's channels */
+void nvn_verify_fd(u32 fd, int open) {
+    if (fd >= sizeof g_v.fd_queue) return;
+    __atomic_store_n(&g_v.fd_queue[fd], (u8)(open ? (t_queue && t_queue <= QUEUES ? t_queue : 0x80) : 0),
+                     __ATOMIC_RELEASE);
+    if (open) LOG("nvn verify: fd %u is the shadow driver's (queue %u)\n", fd, t_queue);
+}
+int nvn_verify_fd_is(u32 fd) { return fd < sizeof g_v.fd_queue && __atomic_load_n(&g_v.fd_queue[fd], __ATOMIC_ACQUIRE); }
+
+void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n) {
+    u32 q = fd < sizeof g_v.fd_queue ? __atomic_load_n(&g_v.fd_queue[fd], __ATOMIC_ACQUIRE) : 0, i, words = 0, at = 0;
+    VQueue* v;
+    Batch* b;
+    if (!q || q > QUEUES) return; /* a channel of no queue's */
+    v = &g_v.q[q - 1];
+    for (i = 0; i < n; i++) {
+        u64 e;
+        memcpy(&e, entries + (size_t)i * 8, 8);
+        words += gpfifo_size(e);
+    }
+    b = (Batch*)malloc(sizeof *b + (size_t)words * 4);
+    if (!b) fatal("nvn verify: out of memory for %u words", words);
+    for (i = 0; i < n; i++) {
+        u64 e, gva, left;
+        memcpy(&e, entries + (size_t)i * 8, 8);
+        gva = gpfifo_addr(e);
+        left = (u64)gpfifo_size(e) * 4;
+        while (left) {
+            u64 cpu, run = gmmu_run(gva, left, &cpu);
+            if (!run) { /* unmapped: zeros, as nothing */
+                memset(b->w + at, 0, (size_t)left);
+                at += (u32)(left / 4);
+                break;
+            }
+            memcpy(b->w + at, GP(cpu), (size_t)run);
+            at += (u32)(run / 4);
+            gva += run;
+            left -= run;
+        }
+    }
+    b->next = NULL;
+    b->n = at;
+    pm_lock(&g_v.lock);
+    b->serial = v->shadow_serial;
+    if (v->tail)
+        v->tail->next = b;
+    else
+        v->head = b;
+    v->tail = b;
+    v->words += at;
+    pm_unlock(&g_v.lock);
+}
+
+/* ---- the GPU thread: decode and compare */
+static VQueue* vqueue(u32 queue) { return queue && queue <= QUEUES ? &g_v.q[queue - 1] : NULL; }
+
+void nvn_verify_shadow_cb(u64 gva, const u32* words, u32 n) {
+    u32 i;
+    for (i = 0; i < n; i++) {
+        u64 a = gva + (u64)i * 4;
+        u32 slot = (u32)mix(a) & (CB_SLOTS - 1);
+        g_v.cb_key[slot] = a;
+        g_v.cb_val[slot] = words[i];
+    }
+}
+static int cb_word(u64 a, u32* v) {
+    u32 slot = (u32)mix(a) & (CB_SLOTS - 1);
+    if (g_v.cb_key[slot] != a) return 0;
+    *v = g_v.cb_val[slot];
+    return 1;
+}
+
+static VQueue* g_decoding; /* the queue whose channel is decoding (the GPU thread's) */
+void nvn_verify_shadow_draw(GpuChannel* ch, const DrawCall* dc) {
+    VQueue* v = g_decoding;
+    Pending* p;
+    (void)ch;
+    if (!v) return;
+    if (v->npend == PENDING) { /* a macro's many draws, none compared yet: the oldest go */
+        memmove(v->pend, v->pend + 1, (PENDING - 1) * sizeof *v->pend);
+        v->npend--;
+        v->shadow_only++;
+    }
+    p = &v->pend[v->npend++];
+    p->ds = ch->ds;
+    p->dc = *dc;
+    p->dc.inline_indices = NULL;
+    p->serial = v->batch_serial;
+}
+
+/* decodes v's batches up to (with serials at most) last, or until a draw of serial last is pending */
+static void decode(VQueue* v, u32 last, int one_draw) {
+    for (;;) {
+        Batch* b;
+        u32 i;
+        if (one_draw && v->npend && v->pend[v->npend - 1].serial == last) return;
+        pm_lock(&g_v.lock);
+        b = v->head;
+        if (b && b->serial <= last) {
+            v->head = b->next;
+            if (!v->head) v->tail = NULL;
+            v->words -= b->n;
+        } else
+            b = NULL;
+        pm_unlock(&g_v.lock);
+        if (!b) return;
+        if (!v->ch) {
+            g_gpu_verify_draw = nvn_verify_shadow_draw;
+            g_gpu_verify_cb = nvn_verify_shadow_cb;
+            v->ch = gpu_verify_channel_new(GPU_VERIFY_ID + (u32)(v - g_v.q));
+        }
+        g_decoding = v;
+        v->batch_serial = b->serial;
+        r3d_pending_flush();
+        for (i = 0; i < b->n; i++) gpu_verify_word(v->ch, b->w[i]);
+        r3d_pending_flush(); /* the held draw is this batch's */
+        g_decoding = NULL;
+        free(b);
+    }
+}
+
+/* drops the pending draws of submissions before serial: the shadow drew them, the live replay didn't */
+static void drop_before(VQueue* v, u32 serial) {
+    u32 k = 0;
+    while (k < v->npend && v->pend[k].serial < serial) k++;
+    if (!k) return;
+    v->shadow_only += k;
+    if (v->shadow_only <= 4 || !(v->shadow_only & (v->shadow_only - 1)))
+        LOG("nvn verify: queue %u submission %u: the driver drew %u more times than nvn_direct (%llu such draws)\n",
+            (u32)(v - g_v.q) + 1, v->pend[0].serial, k, (unsigned long long)v->shadow_only);
+    memmove(v->pend, v->pend + k, (v->npend - k) * sizeof *v->pend);
+    v->npend -= k;
+}
+
+void nvn_verify_replay_submit(u32 queue) {
+    VQueue* v = vqueue(queue);
+    if (!g_v.on || !v) return;
+    v->live_serial++;
+    v->draw = 0;
+    decode(v, v->live_serial - 1, 0); /* every batch before this submission's */
+    drop_before(v, v->live_serial);
+}
+
+/* ---- the comparison */
+typedef struct {
+    u32 queue, serial, draw;
+} At;
+static void differ(const At* at, const char* what, u32 i, u64 a, u64 b, int fl) {
+    DiffKey* d = NULL;
+    u32 k;
+    for (k = 0; k < g_v.ndiff; k++)
+        if (g_v.diff[k].what == what) d = &g_v.diff[k];
+    if (!d && g_v.ndiff < DIFF_KEYS) {
+        d = &g_v.diff[g_v.ndiff++];
+        d->what = what;
+    }
+    if (!d) return;
+    d->n++;
+    if (d->n == 1) {
+        if (fl) {
+            float x, y;
+            u32 xa = (u32)a, xb = (u32)b;
+            memcpy(&x, &xa, 4);
+            memcpy(&y, &xb, 4);
+            WARN("nvn verify: queue %u submission %u draw %u: %s[%u] nvn_direct %g, driver %g\n", at->queue,
+                 at->serial, at->draw, what, i, (double)x, (double)y);
+        } else
+            WARN("nvn verify: queue %u submission %u draw %u: %s[%u] nvn_direct %llx, driver %llx\n", at->queue,
+                 at->serial, at->draw, what, i, (unsigned long long)a, (unsigned long long)b);
+    } else if (d->n >= 1024 && !(d->n & (d->n - 1)) && __builtin_ctzll(d->n) % 2 == 0)
+        LOG("nvn verify: %s differed in %llu draws\n", what, (unsigned long long)d->n);
+}
+#define CMP(what, i, x, y)                                                                                             \
+    do {                                                                                                               \
+        if ((u64)(x) != (u64)(y)) differ(at, what, (u32)(i), (u64)(x), (u64)(y), 0), same = 0;                        \
+    } while (0)
+#define CMPF(what, i, x, y)                                                                                            \
+    do {                                                                                                               \
+        u32 xa_, xb_;                                                                                                  \
+        float fx_ = (x), fy_ = (y);                                                                                    \
+        memcpy(&xa_, &fx_, 4);                                                                                         \
+        memcpy(&xb_, &fy_, 4);                                                                                         \
+        if (xa_ != xb_) differ(at, what, (u32)(i), xa_, xb_, 1), same = 0;                                             \
+    } while (0)
+/* GPU addresses: the guest bytes they name, a shadow range's as the live memory it shadows; one the page table
+   doesn't map, or the driver's own memory, isn't compared */
+#define CMPA(what, i, x, y)                                                                                            \
+    do {                                                                                                               \
+        u64 xa_ = (x), xb_ = (y), ga_, gb_, lb_;                                                                       \
+        if (!xa_ || !xb_) {                                                                                            \
+            CMP(what, i, xa_, xb_);                                                                                    \
+            break;                                                                                                     \
+        }                                                                                                              \
+        ga_ = gmmu_translate(xa_), gb_ = gmmu_translate(xb_);                                                          \
+        lb_ = gb_ ? mem_live(gb_) : 0;                                                                                 \
+        if (ga_ && gb_ && !lb_) lb_ = gb_;                                                                             \
+        if (ga_ && lb_ && ga_ != lb_) differ(at, what, (u32)(i), ga_, lb_, 0), same = 0;                               \
+    } while (0)
+
+static int compare(const At* at, const DsState* l, const DrawCall* ld, const DsState* s, const DrawCall* sd) {
+    int same = 1;
+    u32 i, j;
+    /* programs */
+    CMP("programs.on", 0, l->prog.on, s->prog.on);
+    for (i = 0; i < DS_PROGRAM_SLOTS; i++)
+        if ((l->prog.on & s->prog.on) >> i & 1) CMPA("programs.code", i, l->prog.code[i], s->prog.code[i]);
+    CMP("programs.clip_enable", 0, l->prog.clip_enable, s->prog.clip_enable);
+    CMP("programs.tess_params", 0, l->prog.tess_params, s->prog.tess_params);
+    CMP("programs.early_z", 0, l->prog.early_z, s->prog.early_z);
+    CMP("programs.xfb_on", 0, l->prog.xfb_on, s->prog.xfb_on);
+    /* vertex format */
+    CMP("vfmt.constant", 0, l->vfmt.constant, s->vfmt.constant);
+    for (i = 0; i < DS_ATTRS; i++) {
+        if ((l->vfmt.constant & s->vfmt.constant) >> i & 1) continue;
+        CMP("vfmt.stream", i, l->vfmt.stream[i], s->vfmt.stream[i]);
+        CMP("vfmt.size", i, l->vfmt.size[i], s->vfmt.size[i]);
+        CMP("vfmt.type", i, l->vfmt.type[i], s->vfmt.type[i]);
+        CMP("vfmt.offset", i, l->vfmt.offset[i], s->vfmt.offset[i]);
+        CMP("vfmt.is_int", i, l->vfmt.is_int >> i & 1, s->vfmt.is_int >> i & 1);
+        CMP("vfmt.bgra", i, l->vfmt.bgra >> i & 1, s->vfmt.bgra >> i & 1);
+    }
+    CMP("vfmt.stream_on", 0, l->vfmt.stream_on, s->vfmt.stream_on);
+    for (i = 0; i < DS_STREAMS; i++)
+        if ((l->vfmt.stream_on & s->vfmt.stream_on) >> i & 1) {
+            CMP("vfmt.stride", i, l->vfmt.stride[i], s->vfmt.stride[i]);
+            CMP("vfmt.instanced", i, l->vfmt.instanced >> i & 1, s->vfmt.instanced >> i & 1);
+            if (l->vfmt.instanced >> i & 1) CMP("vfmt.divisor", i, l->vfmt.divisor[i], s->vfmt.divisor[i]);
+            CMPA("vbuf.addr", i, l->vbuf.addr[i], s->vbuf.addr[i]);
+            CMP("vbuf.size", i, l->vbuf.size[i], s->vbuf.size[i]);
+        }
+    /* targets */
+    CMP("targets.count", 0, l->tgt.count, s->tgt.count);
+    CMP("targets.srgb_write", 0, l->tgt.srgb_write, s->tgt.srgb_write);
+    CMP("targets.msaa", 0, l->tgt.msaa, s->tgt.msaa);
+    for (i = 0; i <= DS_TARGETS_MAX; i++) {
+        const DsSurf* a = i < DS_TARGETS_MAX ? &l->tgt.color[i] : &l->tgt.depth;
+        const DsSurf* b = i < DS_TARGETS_MAX ? &s->tgt.color[i] : &s->tgt.depth;
+        if (i < DS_TARGETS_MAX && (i >= l->tgt.count || i >= s->tgt.count)) continue;
+        CMPA("targets.gva", i, a->gva, b->gva);
+        if (!a->gva || !b->gva) continue;
+        CMP("targets.width", i, a->width, b->width);
+        CMP("targets.height", i, a->height, b->height);
+        CMP("targets.format", i, a->format, b->format);
+        CMP("targets.mem", i, a->mem, b->mem);
+        CMP("targets.layers", i, a->layers ? a->layers : 1, b->layers ? b->layers : 1);
+        if ((a->layers > 1 || b->layers > 1)) CMP("targets.layer_stride", i, a->layer_stride, b->layer_stride);
+        /* blending and the color write, of the bound targets */
+        if (i < DS_TARGETS_MAX) {
+            CMP("blend.mask", i, l->blend.mask[i], s->blend.mask[i]);
+            CMP("blend.en", i, l->blend.en[i], s->blend.en[i]);
+            if (l->blend.en[i] && s->blend.en[i]) {
+                CMP("blend.cop", i, l->blend.cop[i], s->blend.cop[i]);
+                CMP("blend.sc", i, l->blend.sc[i], s->blend.sc[i]);
+                CMP("blend.dc", i, l->blend.dc[i], s->blend.dc[i]);
+                CMP("blend.aop", i, l->blend.aop[i], s->blend.aop[i]);
+                CMP("blend.sa", i, l->blend.sa[i], s->blend.sa[i]);
+                CMP("blend.da", i, l->blend.da[i], s->blend.da[i]);
+            }
+        }
+    }
+    CMP("blend.logic_op", 0, l->blend.logic_op, s->blend.logic_op);
+    /* rasterization */
+    CMP("raster.polygon", 0, l->rkey.polygon, s->rkey.polygon);
+    CMP("raster.provoking_last", 0, l->rkey.provoking_last, s->rkey.provoking_last);
+    CMP("raster.depth_clamp", 0, l->rkey.depth_clamp, s->rkey.depth_clamp);
+    CMP("raster.alpha_to_coverage", 0, l->rkey.alpha_to_coverage, s->rkey.alpha_to_coverage);
+    CMP("raster.alpha_to_one", 0, l->rkey.alpha_to_one, s->rkey.alpha_to_one);
+    if (ld->topology == 14) CMP("raster.patch_vertices", 0, l->rkey.patch_vertices, s->rkey.patch_vertices);
+    CMP("raster.sample_mask", 0, l->rkey.sample_mask, s->rkey.sample_mask);
+    /* dynamic state */
+    CMP("dynamic.cull", 0, l->dyn.cull, s->dyn.cull);
+    CMP("dynamic.front_cw", 0, l->dyn.front_cw, s->dyn.front_cw);
+    CMP("dynamic.discard", 0, l->dyn.discard, s->dyn.discard);
+    CMP("dynamic.bias_on", 0, l->dyn.bias_on, s->dyn.bias_on);
+    if (l->tgt.depth.gva && s->tgt.depth.gva) {
+        CMP("dynamic.depth_test", 0, l->dyn.depth_test, s->dyn.depth_test);
+        CMP("dynamic.depth_write", 0, l->dyn.depth_write, s->dyn.depth_write);
+        if (l->dyn.depth_test) CMP("dynamic.depth_cmp", 0, l->dyn.depth_cmp, s->dyn.depth_cmp);
+        CMP("dynamic.stencil_test", 0, l->dyn.stencil_test, s->dyn.stencil_test);
+        if (l->dyn.stencil_test)
+            for (i = 0; i < 2; i++) {
+                CMP("dynamic.stencil.fail", i, l->dyn.face[i].fail, s->dyn.face[i].fail);
+                CMP("dynamic.stencil.zfail", i, l->dyn.face[i].zfail, s->dyn.face[i].zfail);
+                CMP("dynamic.stencil.pass", i, l->dyn.face[i].pass, s->dyn.face[i].pass);
+                CMP("dynamic.stencil.cmp", i, l->dyn.face[i].cmp, s->dyn.face[i].cmp);
+                CMP("dynamic.stencil.ref", i, l->dyn.face[i].ref & 0xFF, s->dyn.face[i].ref & 0xFF);
+                CMP("dynamic.stencil.cmask", i, l->dyn.face[i].cmask & 0xFF, s->dyn.face[i].cmask & 0xFF);
+                CMP("dynamic.stencil.wmask", i, l->dyn.face[i].wmask & 0xFF, s->dyn.face[i].wmask & 0xFF);
+            }
+    }
+    CMP("dynamic.alpha_test", 0, l->dyn.alpha_test, s->dyn.alpha_test);
+    if (l->dyn.alpha_test) {
+        CMP("dynamic.alpha_func", 0, l->dyn.alpha_func, s->dyn.alpha_func);
+        CMPF("dynamic.alpha_ref", 0, l->dyn.alpha_ref, s->dyn.alpha_ref);
+    }
+    CMP("dynamic.window_origin", 0, l->dyn.window_origin, s->dyn.window_origin);
+    CMP("dynamic.sprite_origin", 0, l->dyn.sprite_origin, s->dyn.sprite_origin);
+    CMP("dynamic.depth_mode", 0, l->dyn.depth_mode, s->dyn.depth_mode);
+    CMP("dynamic.point_nudge", 0, l->dyn.point_nudge, s->dyn.point_nudge);
+    CMPF("dynamic.line_width", 0, l->dyn.line_width, s->dyn.line_width);
+    if (l->dyn.bias_on) {
+        CMPF("dynamic.bias_units", 0, l->dyn.bias_units, s->dyn.bias_units);
+        CMPF("dynamic.bias_slope", 0, l->dyn.bias_slope, s->dyn.bias_slope);
+        CMPF("dynamic.bias_clamp", 0, l->dyn.bias_clamp, s->dyn.bias_clamp);
+    }
+    for (i = 0; i < 4; i++) CMPF("dynamic.blend_const", i, l->dyn.blend_const[i], s->dyn.blend_const[i]);
+    if (l->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) CMP("dynamic.clip_height", 0, l->dyn.clip_height, s->dyn.clip_height);
+    CMP("dynamic.depth_word", 0, l->dyn.depth_word, s->dyn.depth_word);
+    /* viewports: the first, and those either side scissors */
+    CMP("viewports.transform_on", 0, l->vp.transform_on, s->vp.transform_on);
+    CMP("viewports.scissor_on", 0, l->vp.scissor_on, s->vp.scissor_on);
+    for (i = 0; i < DS_VIEWPORTS_MAX; i++) {
+        if (i && !((l->vp.scissor_on | s->vp.scissor_on) >> i & 1)) continue;
+        for (j = 0; j < 3; j++) {
+            CMPF("viewports.scale", i * 3 + j, l->vp.scale[i][j], s->vp.scale[i][j]);
+            CMPF("viewports.translate", i * 3 + j, l->vp.translate[i][j], s->vp.translate[i][j]);
+        }
+        CMP("viewports.swizzle", i, l->vp.swizzle[i], s->vp.swizzle[i]);
+        CMPF("viewports.z_near", i, l->vp.z_near[i], s->vp.z_near[i]);
+        CMPF("viewports.z_far", i, l->vp.z_far[i], s->vp.z_far[i]);
+        if ((l->vp.scissor_on & s->vp.scissor_on) >> i & 1) {
+            CMP("viewports.scissor_x", i, l->vp.scissor_x[i], s->vp.scissor_x[i]);
+            CMP("viewports.scissor_y", i, l->vp.scissor_y[i], s->vp.scissor_y[i]);
+        }
+    }
+    /* the index buffer */
+    if (ld->indexed == 1) {
+        CMPA("index.addr", 0, l->index.addr, s->index.addr);
+        CMP("index.format", 0, l->index.format, s->index.format);
+        CMP("index.restart", 0, l->index.restart, s->index.restart);
+        if (l->index.restart) CMP("index.restart_index", 0, l->index.restart_index, s->index.restart_index);
+    }
+    /* bindings: the constant buffers in memory, the pools */
+    for (i = 0; i < DS_GFX_STAGES; i++) {
+        if (!(l->prog.on >> (i + 1) & 1) && i) continue;
+        for (j = 0; j < DS_CBUFS; j++) {
+            u8 lk = l->bind.cb_inline[i][j];
+            if (lk == DS_CB_MEMORY) {
+                CMPA("bind.cb_addr", i * DS_CBUFS + j, l->bind.cb_addr[i][j], s->bind.cb_addr[i][j]);
+                if (l->bind.cb_addr[i][j] && s->bind.cb_addr[i][j])
+                    CMP("bind.cb_size", i * DS_CBUFS + j, l->bind.cb_size[i][j], s->bind.cb_size[i][j]);
+            } else if (s->bind.cb_addr[i][j]) { /* an inline bank against the driver's bank in memory */
+                const u8* bank = lk == DS_CB_BANK0 ? l->inl.bank0[i] : l->inl.bank2[i];
+                u32 len = lk == DS_CB_BANK0 ? DS_INLINE_BANK0 : DS_INLINE_BANK2, off;
+                for (off = 0; off < len; off += 4) {
+                    u32 sv, lv;
+                    if (!cb_word(s->bind.cb_addr[i][j] + off, &sv)) continue;
+                    memcpy(&lv, bank + off, 4);
+                    if (lv != sv) {
+                        differ(at, lk == DS_CB_BANK0 ? "inline.bank0" : "inline.bank2", i * 0x10000 + off, lv, sv, 0);
+                        same = 0;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    CMPA("bind.tex_pool", 0, l->bind.tex_pool, s->bind.tex_pool);
+    CMPA("bind.smp_pool", 0, l->bind.smp_pool, s->bind.smp_pool);
+    CMP("bind.tex_max", 0, l->bind.tex_max, s->bind.tex_max);
+    CMP("bind.smp_max", 0, l->bind.smp_max, s->bind.smp_max);
+    CMP("bind.smp_mode", 0, l->bind.smp_mode, s->bind.smp_mode);
+    CMP("bind.tex_bank", 0, l->bind.tex_bank, s->bind.tex_bank);
+    /* the draw */
+    CMP("draw.topology", 0, ld->topology, sd->topology);
+    CMP("draw.indexed", 0, ld->indexed, sd->indexed);
+    if (!ld->indirect) {
+        CMP("draw.first", 0, ld->first, sd->first);
+        CMP("draw.count", 0, ld->count, sd->count);
+        CMP("draw.base_vertex", 0, ld->base_vertex, sd->base_vertex);
+        CMP("draw.base_instance", 0, ld->base_instance, sd->base_instance);
+        CMP("draw.instances", 0, ld->instances, sd->instances);
+    }
+    return same;
+}
+
+void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
+    VQueue* v;
+    At at;
+    if (!g_v.on || !(ds->owner & 0x80000000u)) return;
+    v = vqueue((ds->owner & 0x7FFFFFFFu) + 1);
+    if (!v) return;
+    v->draw++;
+    drop_before(v, v->live_serial);
+    if (!v->npend || v->pend[0].serial != v->live_serial) decode(v, v->live_serial, 1);
+    drop_before(v, v->live_serial);
+    at.queue = (u32)(v - g_v.q) + 1;
+    at.serial = v->live_serial;
+    at.draw = v->draw;
+    if (!v->npend || v->pend[0].serial != v->live_serial) {
+        v->live_only++;
+        if (v->live_only <= 4 || !(v->live_only & (v->live_only - 1)))
+            LOG("nvn verify: queue %u submission %u draw %u: nvn_direct drew, the driver didn't (%llu such draws)\n",
+                at.queue, at.serial, at.draw, (unsigned long long)v->live_only);
+        return;
+    }
+    v->compared++;
+    if (compare(&at, ds, dc, &v->pend[0].ds, &v->pend[0].dc)) v->matched++;
+    memmove(v->pend, v->pend + 1, (v->npend - 1) * sizeof *v->pend);
+    v->npend--;
+    if (v->compared == 1 || (v->compared >= 1024 && !(v->compared & (v->compared - 1)) &&
+                             __builtin_ctzll(v->compared) % 2 == 0))
+        LOG("nvn verify: queue %u: %llu draws compared, %llu the same; %llu only nvn_direct's, %llu only the "
+            "driver's; %llu shadow calls skipped for unknown objects, %llu for unknown states, %llu lossy states\n",
+            at.queue, (unsigned long long)v->compared, (unsigned long long)v->matched,
+            (unsigned long long)v->live_only, (unsigned long long)v->shadow_only,
+            (unsigned long long)g_v.unknown_obj, (unsigned long long)g_v.unknown_state,
+            (unsigned long long)g_v.lossy);
+}

@@ -735,6 +735,15 @@ setting NVN direct
     help 2 = it does where the game's NVN API version is one nvn_direct has measured layouts for, read from the game's
     help driver at its first NVN call, and the driver runs elsewhere (the log says which once); 0 = the driver runs.
     help Unfinished: the game stops at the first NVN function it calls that isn't implemented yet, naming it
+setting NVN verify
+    key nvn_verify
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with nvn_direct, the game's own NVN driver also runs every NVN call, on shadow objects of its own, and its
+    help command stream is decoded beside nvn_direct's replay: the log names each part of a draw's state where the two
+    help differ, once (gpu/nvn/nvn_verify.c, docs/NVN_HLE.md). Slow: for checking nvn_direct, never for playing
 setting Shader corpus
     key shader_corpus
     text 1024
