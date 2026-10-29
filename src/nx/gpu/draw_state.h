@@ -160,7 +160,9 @@ typedef struct {
     u8 depth_clamp;       /* depth is clamped rather than clipped */
     u8 alpha_to_coverage; /* multisampling: the first color output's alpha masks the samples written */
     u8 alpha_to_one;      /* and is then taken as 1 */
-    u8 pad[3];
+    u8 conservative;      /* conservative rasterization: 0 off, else 1 plus its dilation in quarter pixels (0 to 3) */
+    u8 sample_shading;    /* the fragment program runs for every sample of a multisampled target */
+    u8 pad;
     u32 patch_vertices; /* control points of a patch, 0 as asked (the renderer takes it as 1) */
     u32 sample_mask;    /* the samples a multisampled draw may write, bit i sample i: ~0 for all */
 } DsRasterKey;

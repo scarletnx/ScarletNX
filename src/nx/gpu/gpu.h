@@ -87,7 +87,7 @@ enum {
     R3D_PIPEMISC = 1u << 5, /* the rest of the pipeline key and the programs' keys: polygon mode 0x36B, patch size
                                0x373, tessellation parameters 0xC8, user clip enable 0x544, the geometry passthrough
                                mask 0x490-0x497, the provoking vertex 0x5A1, the clip mode 0x64F, alpha to coverage
-                               0x54F */
+                               0x54F, conservative rasterization 0x452 */
     R3D_XFB = 1u << 6,      /* transform feedback: enable 0x1D1, buffer controls 0x1C0-0x1CF, layouts 0xA00-0xA7F */
     /* the rest of what the draw state (maxwell/draw_state.c) reads */
     R3D_TARGETS = 1u << 7,   /* RT_CONTROL 0x487, the color targets' first 8 words (0x200 + 0x10 * i), the depth
