@@ -189,11 +189,10 @@ void nvn_DeviceSetIntermediateShaderCache(CPU* c, u64 d, i32 on) {
 typedef struct {
     u64 func, start, end;
 } RoAfter;
-static int ro_after(void* ctx, const char* name, const u8* bytes, u64 gva, u64 size, int writable) {
+static int ro_after(void* ctx, const char* name, size_t n, const u8* bytes, u64 gva, u64 size, int writable) {
     RoAfter* r = (RoAfter*)ctx;
-    size_t n = strlen(name);
     (void)bytes;
-    if (!writable && n > 3 && !strcmp(name + n - 3, ".ro") && gva > r->func && (!r->start || gva < r->start)) {
+    if (!writable && n > 3 && !memcmp(name + n - 3, ".ro", 3) && gva > r->func && (!r->start || gva < r->start)) {
         r->start = gva;
         r->end = gva + size;
     }

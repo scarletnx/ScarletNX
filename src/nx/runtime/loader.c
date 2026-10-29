@@ -187,17 +187,22 @@ int loader_load(void) {
         if (load_module(&g_mod->mods[i])) return -1;
     return 0;
 }
+/* "module.segment" in out (size bytes): its length, as snprintf truncated it */
+static size_t seg_name(char* out, size_t size, const char* module, const char* segment) {
+    int n = snprintf(out, size, "%s.%s", module, segment);
+    return n < 0 ? 0 : (size_t)n < size ? (size_t)n : size - 1;
+}
 void loader_segments(LoaderSegEach each, void* ctx) {
     for (u32 i = 0; g_mod && i < g_mod->nmods; i++) {
         const SnxModInfo* mi = &g_mod->mods[i];
         char name[96];
-        snprintf(name, sizeof name, "%s.ro", mi->name);
+        size_t n = seg_name(name, sizeof name, mi->name, "ro");
         if (mi->ro_size && inside(mi->ro_off, mi->ro_size, mi->size) &&
-            each(ctx, name, GP(mi->base + mi->ro_off), mi->base + mi->ro_off, mi->ro_size, 0))
+            each(ctx, name, n, GP(mi->base + mi->ro_off), mi->base + mi->ro_off, mi->ro_size, 0))
             return;
-        snprintf(name, sizeof name, "%s.data", mi->name);
+        n = seg_name(name, sizeof name, mi->name, "data");
         if (mi->data_size && inside(mi->data_off, mi->data_size, mi->size) &&
-            each(ctx, name, GP(mi->base + mi->data_off), mi->base + mi->data_off, mi->data_size, 1))
+            each(ctx, name, n, GP(mi->base + mi->data_off), mi->base + mi->data_off, mi->data_size, 1))
             return;
     }
 }

@@ -11,7 +11,7 @@ void nvn_trace_report(void);
 /* 1 once nvn_trace_init found nvn_trace=1: wrappers replace dispatch slots */
 int nvn_trace_active(void);
 /* a NUL-terminated name of at most 127 characters in guest memory, read a page at a time (memory permissions are per
-   page): 1, or 0 when it is empty, unreadable or longer */
-int nvn_read_name(u64 ptr, char name[128]);
+   page): its length, or 0 when it is empty, unreadable or longer */
+u32 nvn_read_name(u64 ptr, char name[128]);
 
 #endif

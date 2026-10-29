@@ -17,7 +17,8 @@ int loader_load(void);
    in guest memory, guest address and size, and whether the game can write them (its data segment, which changes once
    it runs). The game's executables carry shaders of their own, the SDK's and the game's, which the renderer
    translates before they are drawn with (gpu/shipped_pass.c copies the writable ones before the game starts) */
-typedef int (*LoaderSegEach)(void* ctx, const char* name, const u8* bytes, u64 gva, u64 size, int writable);
+typedef int (*LoaderSegEach)(void* ctx, const char* name, size_t name_len, const u8* bytes, u64 gva, u64 size,
+                             int writable);
 void loader_segments(LoaderSegEach each, void* ctx);
 /* The guest code range g_disp covers */
 extern u64 g_code_lo, g_code_hi;
