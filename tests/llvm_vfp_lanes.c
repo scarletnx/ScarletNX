@@ -6,8 +6,8 @@
    operands mix lanes the host can take (normal values) with lanes it can't (zeros, denormals, infinities, NaNs, the
    normal range's ends) in one vector, which the fast paths must leave to the helpers or get exactly right; FPCR and
    FPSR are drawn too (round to nearest or not, FZ, DN, IXC set or clear). With the host's extensions and in the
-   portable form, which has no FMA on x86. The estimates, whose fast path doesn't take the host's rounding, run in
-   each of the host's rounding modes too */
+   portable form, which has no FMA on x86. The instructions whose fast paths don't take the host's rounding (the
+   FRINTs and FCVTs to integers, the estimates) run in each of the host's rounding modes too */
 #include "llvm_steps.h"
 #include <fenv.h>
 #include <stdio.h>
@@ -72,6 +72,18 @@ static const Round g_rounds[] = {
 };
 #define NROUND (sizeof g_rounds / sizeof *g_rounds)
 
+/* Xd or Vd = FCVT*(Vn) to integers of the float's width, d 0, n 1: the 4S form (W from S for a scalar), bit 22 the
+   2D (X from D: bit 31 too) one */
+typedef struct {
+    const char* name;
+    u32 word;
+    int rm, uns, scalar;
+} Convert;
+static const Convert g_converts[] = {
+    {"FCVTAS", 0x4E21C820u, 4, 0, 0}, {"FCVTAU", 0x6E21C820u, 4, 1, 0}, {"FCVTNS", 0x4E21A820u, 0, 0, 0},
+    {"FCVTAS", 0x1E240020u, 4, 0, 1}, {"FCVTAU", 0x1E250020u, 4, 1, 1}, {"FCVTMS", 0x1E300020u, 2, 0, 1},
+};
+#define NCONVERT (sizeof g_converts / sizeof *g_converts)
 static const int g_host_modes[] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
 
 /* a lane: a normal value three times in four, else one of the values the fast paths leave to the helpers */
@@ -93,6 +105,31 @@ static u64 lane_value(u64* s, int width) {
         default: /* exponents near 1, so sums cancel and products and quotients stay in range */
             e = bias - 8 + (next(s) % 17);
             return sign | e << fbits | frac;
+    }
+}
+
+/* a value to round: one with a fraction, a tie (n + 1/2) or a neighbour of one, of either sign, else lane_value's */
+static u64 round_value(u64* s, int width) {
+    u64 r = next(s), sign = (r >> 63) << (width - 1), v;
+    switch (r % 4) {
+        case 0:
+            return sign | (width == 64 ? 0x4030000000000000ull : 0x41800000u) |
+                   (next(s) & (width == 64 ? 0xFFFFFFFFFFFFull : 0x7FFFFu));
+        case 1: { /* n + 1/2 for n below 2^22 (2^51), one encoding up or down, or exact */
+            unsigned shift = (unsigned)(next(s) % (width == 64 ? 52 : 23));
+            u64 n = next(s) & (((u64)1 << shift) - 1);
+            if (width == 64) {
+                double d = (double)n + 0.5;
+                memcpy(&v, &d, 8);
+            } else {
+                float f = (float)n + 0.5f;
+                u32 u;
+                memcpy(&u, &f, 4);
+                v = u;
+            }
+            return (sign | v) + (next(s) % 3) - 1;
+        }
+        default: return lane_value(s, width);
     }
 }
 
@@ -257,13 +294,8 @@ int main(void) {
                     if (r & 8) fpcr = 0;          /* mostly round to nearest */
                     if (r & 16) fpcr |= 1u << 24; /* FZ */
                     if (r & 32) fpcr |= 1u << 25; /* DN */
-                    for (lane = 0; lane < lanes; lane++) {
-                        u64 v = lane_value(&seed, width);
-                        if (next(&seed) % 3 == 0) /* a value with a fraction to round */
-                            v = (v & ((u64)1 << (width - 1))) | (dbl ? 0x4030000000000000ull : 0x41800000u) |
-                                (next(&seed) & (dbl ? 0xFFFFFFFFFFFFull : 0x7FFFFu));
-                        set_lane(&c.v[1], width, lane, v);
-                    }
+                    fesetround(g_host_modes[i % 4]); /* the generated code's rounding is the host's in none */
+                    for (lane = 0; lane < lanes; lane++) set_lane(&c.v[1], width, lane, round_value(&seed, width));
                     c.fpcr = fpcr;
                     c.fpsr = fpsr;
                     ref = c;
@@ -272,6 +304,7 @@ int main(void) {
                                                   g_rounds[k].rm < 0 ? (int)(fpcr >> 22 & 3) : g_rounds[k].rm,
                                                   g_rounds[k].exact);
                     step(&c);
+                    fesetround(FE_TONEAREST);
                     checks++;
                     for (lane = 0; lane < lanes; lane++)
                         if (get_lane(&c.v[0], width, lane) != (width == 32 ? (u32)want[lane] : want[lane])) break;
@@ -289,6 +322,65 @@ int main(void) {
                                     (unsigned long long)get_lane(&ref.v[1], width, lane),
                                     (unsigned long long)get_lane(&c.v[0], width, lane),
                                     (unsigned long long)(width == 32 ? (u32)want[lane] : want[lane]));
+                        fprintf(stderr, " FPSR %08x, expected %08x\n", c.fpsr, ref.fpsr);
+                    }
+                }
+            }
+        llvm_steps_end(&steps);
+        if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
+        for (k = 0; k < NCONVERT; k++)
+            for (dbl = 0; dbl < 2; dbl++)
+                llvm_steps_add(&steps, g_converts[k].word | (u32)dbl << 22 | (u32)(dbl && g_converts[k].scalar) << 31,
+                               0x1000, 0);
+        if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
+        for (k = 0; k < NCONVERT; k++)
+            for (dbl = 0; dbl < 2; dbl++) {
+                int width = dbl ? 64 : 32, lanes = g_converts[k].scalar ? 1 : 128 / width;
+                LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
+                for (i = 0; i < 20000; i++) {
+                    CPU c, ref;
+                    RtAPI rt;
+                    u64 r = next(&seed), want[4], got;
+                    u32 fpcr = r & 16 ? 1u << 24 : 0, fpsr = r & 4 ? 0x10u : 0;
+                    memset(&c, 0, sizeof c);
+                    memset(&rt, 0, sizeof rt);
+                    c.rt = &rt;
+                    if (r % 7 == 0) fpcr |= (u32)(next(&seed) % 4) << 22; /* FPCR's mode, which these ignore */
+                    for (lane = 0; lane < lanes; lane++) {
+                        u64 v = round_value(&seed, width);
+                        if (next(&seed) % 4 == 0) /* near the integers' range */
+                            v = (v & ((u64)1 << (width - 1))) |
+                                (u64)((width == 32 ? 127 : 1023) + width - 2 + next(&seed) % 3)
+                                    << (width == 32 ? 23 : 52) |
+                                (next(&seed) & 0xFF);
+                        set_lane(&c.v[1], width, lane, v);
+                    }
+                    c.fpcr = fpcr;
+                    c.fpsr = fpsr;
+                    ref = c;
+                    for (lane = 0; lane < lanes; lane++)
+                        want[lane] = snx_fp_to_int(&ref, get_lane(&c.v[1], width, lane), width, width,
+                                                   g_converts[k].uns, 0, g_converts[k].rm);
+                    fesetround(g_host_modes[i % 4]);
+                    step(&c);
+                    fesetround(FE_TONEAREST);
+                    checks++;
+                    for (lane = 0; lane < lanes; lane++) {
+                        got = g_converts[k].scalar ? c.x[0] : get_lane(&c.v[0], width, lane);
+                        if (got != (width == 32 ? (u32)want[lane] : want[lane])) break;
+                    }
+                    if ((lane < lanes || c.fpsr != ref.fpsr) && failures++ < 8) {
+                        fprintf(stderr, "%s %s %s, FPCR %08x, FPSR %08x:", forms[portable], g_converts[k].name,
+                                g_converts[k].scalar ? (dbl ? "X, D" : "W, S")
+                                : dbl                ? "2D"
+                                                     : "4S",
+                                fpcr, fpsr);
+                        for (lane = 0; lane < lanes; lane++)
+                            fprintf(
+                                stderr, " [%llx: %llx, expected %llx]",
+                                (unsigned long long)get_lane(&ref.v[1], width, lane),
+                                (unsigned long long)(g_converts[k].scalar ? c.x[0] : get_lane(&c.v[0], width, lane)),
+                                (unsigned long long)(width == 32 ? (u32)want[lane] : want[lane]));
                         fprintf(stderr, " FPSR %08x, expected %08x\n", c.fpsr, ref.fpsr);
                     }
                 }

@@ -416,14 +416,13 @@ static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
 }
 
 /* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's, taken in round to nearest); exact: FRINTX's
-   IXC. The host's rounding instructions give the modes exactly for all but a NaN or a flushed denormal, and raise
-   nothing (ties away from zero only AArch64's FRINTA); FRINTX's IXC is a value rounding changed */
+   IXC. The host's rounding (host_rint) gives the modes exactly for all but a NaN or a flushed denormal, and raises
+   nothing; FRINTX's IXC is a value rounding changed */
 static void fp_round(SnxIr* ir, const SnxA64Args* a, int rm, unsigned exact) {
     unsigned width = width_of(a->esz);
     V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm), n = fp_reg(ir, (unsigned)a->rn, width), r;
-    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
-        static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
-        V fn = as_float(ir, n, width), f = ir_intrinsic(ir, names[rm < 0 ? 0 : rm], LLVMTypeOf(fn), &fn, 1), ok;
+    if (width != 16 && host_round(ir)) {
+        V fn = as_float(ir, n, width), f = host_rint(ir, fn, rm < 0 ? 0 : (unsigned)rm), ok;
         Split s;
         ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
         if (rm < 0) ok = both(ir, ok, fpcr_clear(ir, FPCR_RMODE));
@@ -569,20 +568,18 @@ static void fp_from_int(SnxIr* ir, const SnxA64Args* a, unsigned uns) {
 /* FCVT[NPMZA][SU] to Wd or Xd, fixed point with shift fraction bits, rounding mode rm (do_fcvt_g). On the host when
    the scaled value (exact: a product by a power of two that overflows only out of range) rounds to an integer in
    range and no denormal is flushed; IXC when rounding changed it. Toward zero is the conversion's own rounding, the
-   other modes need the host's rounding instructions (ties away from zero only AArch64's FRINTA) */
+   other modes need the host's rounding (host_rint) */
 static void fp_to_int(SnxIr* ir, const SnxA64Args* a, unsigned rm, unsigned uns) {
     unsigned width = width_of(a->esz), integer = a->sf ? 64 : 32, fbits = (unsigned)a->shift;
     unsigned precision = width == 32 ? 24 : 53;
     V n = fp_reg(ir, (unsigned)a->rn, width), r;
-    int fast_path = width != 16 && (rm == 3 || (host_round(ir) && (rm != 4 || ir->features->aarch64)));
-    if (fast_path) {
-        static const char* const rounding[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", NULL, "llvm.round"};
+    if (width != 16 && (rm == 3 || host_round(ir))) {
         LLVMTypeRef type = ir_int_type(ir, integer);
         V f = as_float(ir, n, width), low;
         Split s;
         double top = (double)((SnxU64)1 << (integer - 1)) * (uns ? 2.0 : 1.0);
         if (fbits) f = LLVMBuildFMul(B, f, kfloat(ir, width, (double)((SnxU64)1 << (fbits - 1)) * 2.0), "");
-        V rounded = rm == 3 ? f : ir_intrinsic(ir, rounding[rm], LLVMTypeOf(f), &f, 1);
+        V rounded = rm == 3 ? f : host_rint(ir, f, rm);
         /* the lowest integer in range less one, where the format holds it (trunc of anything above it is in
            range), else the lowest integer itself */
         if (uns)

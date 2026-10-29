@@ -8,7 +8,7 @@
    keeps its helper call: llvm_vfp_lanes checks the results the paths give, this checks that the fast one is used.
    A probe in round towards plus infinity, which the fast paths leave to the helpers, must keep its call, so a probe
    folded away entirely can't pass, except for the instructions whose results don't depend on FPCR's rounding (the
-   FRINTs that round in their encoding's mode, the estimates) */
+   FRINTs and FCVTs that round in their encoding's mode, the estimates) */
 #include "llvm_steps.h"
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <stddef.h>
@@ -41,7 +41,10 @@ static const Insn g_insns[] = {
     {"FABD 2D", 0x6EE2D420u, 1, 0, 0, 0},    {"FRINTM S", 0x1E254020u, 0, 0, 1, 1},
     {"FRINTM D", 0x1E654020u, 1, 0, 1, 1},   {"FRINTX S", 0x1E274020u, 0, 0, 1, 0},
     {"FRINTM 4S", 0x4E219820u, 0, 0, 1, 1},  {"FRINTI 4S", 0x6EA19820u, 0, 0, 1, 0},
-    {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 0},  {"FRECPE S", 0x5EA1D820u, 0, 0, 0, 1},
+    {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 0},  {"FRINTA S", 0x1E264020u, 0, 0, 1, 1},
+    {"FRINTA D", 0x1E664020u, 1, 0, 1, 1},   {"FRINTA 4S", 0x6E218820u, 0, 0, 1, 1},
+    {"FRINTA 2D", 0x6E618820u, 1, 0, 1, 1},  {"FCVTAS W S", 0x1E240020u, 0, 0, 1, 1},
+    {"FCVTAU 4S", 0x6E21C820u, 0, 0, 1, 1},  {"FRECPE S", 0x5EA1D820u, 0, 0, 0, 1},
     {"FRECPE D", 0x5EE1D820u, 1, 0, 0, 1},   {"FRSQRTE S", 0x7EA1D820u, 0, 0, 0, 1},
     {"FRSQRTE D", 0x7EE1D820u, 1, 0, 0, 1},  {"FRECPE 4S", 0x4EA1D820u, 0, 0, 0, 1},
     {"FRSQRTE 2D", 0x6EE1D820u, 1, 0, 0, 1},

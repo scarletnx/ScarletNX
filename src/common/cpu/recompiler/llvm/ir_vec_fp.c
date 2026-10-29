@@ -579,16 +579,14 @@ static V compare(SnxIr* ir, unsigned cmp, unsigned width, V a, V b, int abs) {
 }
 
 /* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR, taken in round to nearest; exact: FRINTX's IXC). The
-   host's rounding instructions give the modes exactly for every lane but a NaN or a flushed denormal, and raise
-   nothing (ties away from zero only on AArch64). FRINTX's IXC is a lane that rounding changed */
+   host's rounding (host_rint) gives the modes exactly for every lane but a NaN or a flushed denormal, and raises
+   nothing. FRINTX's IXC is a lane that rounding changed */
 static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a) {
     LaneOp o = op_simple(H_ROUND, width);
     o.p1 = exact;
     o.rm = rm == RM_FPCR ? fpcr_rmode(ir) : ir_i32(ir, rm);
-    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
-        static const char* const names[] = {"llvm.roundeven", "llvm.ceil",  "llvm.floor",
-                                            "llvm.trunc",     "llvm.round", "llvm.roundeven"};
-        V fa = as_float(ir, a, width), r = ir_intrinsic(ir, names[rm], LLVMTypeOf(fa), &fa, 1), ok;
+    if (width != 16 && host_round(ir)) {
+        V fa = as_float(ir, a, width), r = host_rint(ir, fa, rm == RM_FPCR ? 0 : rm), ok;
         Split s;
         ok = both(ir, no_nan(ir, width, a), unflushed(ir, width, a));
         if (rm == RM_FPCR) ok = both(ir, ok, fpcr_clear(ir, FPCR_RMODE));
@@ -637,15 +635,14 @@ static V to_int(SnxIr* ir, unsigned width, unsigned integer, unsigned uns, unsig
     o.p2 = uns;
     o.p3 = fbits;
     o.rm = ir_i32(ir, rm);
-    if (width != 16 && integer == width && (rm == 3 || (host_round(ir) && (rm != 4 || ir->features->aarch64)))) {
-        static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", NULL, "llvm.round"};
+    if (width != 16 && integer == width && (rm == 3 || host_round(ir))) {
         unsigned precision = width == 32 ? 24 : 53, lanes = ir_vec_count(a);
         LLVMTypeRef type = ir_vec_type(ir, esz_of(integer), lanes);
         V f = as_float(ir, a, width), low;
         double top = (double)((SnxU64)1 << (integer - 1)) * (uns ? 2.0 : 1.0);
         Split s;
         if (fbits) f = LLVMBuildFMul(B, f, KF(ir, width, lanes, (double)((SnxU64)1 << (fbits - 1)) * 2.0), "");
-        V rounded = rm == 3 ? f : ir_intrinsic(ir, names[rm], LLVMTypeOf(f), &f, 1);
+        V rounded = rm == 3 ? f : host_rint(ir, f, rm);
         if (uns)
             low = LLVMBuildFCmp(B, LLVMRealOGT, rounded, KF(ir, width, lanes, -1.0), "");
         else if (integer < precision)
