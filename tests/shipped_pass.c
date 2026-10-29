@@ -57,7 +57,9 @@ int romfs_peek(u64 off, void* dst, u64 size) {
 }
 /* the executable: one writable segment with a program */
 static u8 g_data[0x200];
-void loader_segments(LoaderSegEach each, void* ctx) { each(ctx, "main.data", g_data, 0x8000000, sizeof g_data, 1); }
+void loader_segments(LoaderSegEach each, void* ctx) {
+    each(ctx, "main.data", sizeof "main.data" - 1, g_data, 0x8000000, sizeof g_data, 1);
+}
 
 /* the sink: the ids marked (SHIP_FILE ones and SHIP_ALL's), the programs handed on, and what to answer for them */
 static struct {

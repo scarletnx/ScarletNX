@@ -81,8 +81,9 @@ static int implemented(const char* name, int* versioned) {
     return k >= 0 ? k : -1;
 }
 
-/* the game resolved name to addr: its slot takes the runtime's implementation, or the handler that names it */
-static void take(u64 addr, const char* name) {
+/* the game resolved name (len characters) to addr: its slot takes the runtime's implementation, or the handler that
+   names it */
+static void take(u64 addr, const char* name, u32 len) {
     int versioned, i = implemented(name, &versioned);
     GuestFn fn = i >= 0 ? nvn_fn[i] : unimplemented, *slot;
     if (addr < g_code_lo || addr >= g_code_hi || (addr & 3))
@@ -118,7 +119,8 @@ static void take(u64 addr, const char* name) {
         __atomic_store_n(&g_nvn.direct.missing[j].addr, addr, __ATOMIC_RELEASE);
     }
     /* verify mode: the driver's code, which the slot holds until now, runs after the handler on shadows */
-    if (g_settings.nvn_verify) fn = nvn_verify_take(addr, name, fn, ours(*slot) ? NULL : *slot, fn != unimplemented);
+    if (g_settings.nvn_verify)
+        fn = nvn_verify_take(addr, name, len, fn, ours(*slot) ? NULL : *slot, fn != unimplemented);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
     pm_unlock(&g_nvn.direct.lock);
 }
@@ -129,28 +131,27 @@ static void take(u64 addr, const char* name) {
    runtime's state. With no device the lookup answers the same address and leaves the flag 0 (one game's driver: its
    lookup stores device && no debug layer in it) */
 static void getproc(CPU* c, u64 entry) {
-    char name[128];
-    int valid;
     if (nvn_verify_shadow_thread()) { /* the shadow driver's own lookups, with its device: as they are */
         g_nvn.direct.getproc_original(c, entry);
         return;
     }
-    valid = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
+    char name[128];
+    u32 len = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     c->x[0] = 0;
     g_nvn.direct.getproc_original(c, entry);
     if (g_nvn.direct.flag && gr32(g_nvn.direct.flag))
         fatal("nvn: the driver's lookup of %s set nvnPrivate0, which turns on the game's inlined command writes", name);
-    if (valid && c->x[0]) take(c->x[0], name);
+    if (len && c->x[0]) take(c->x[0], name, len);
 }
 
-/* The driver's own lookup of name, run on c from inside the game's bootstrap call (entry: the loader's address) as
+/* The driver's own lookup of name (n characters), run on c from inside the game's bootstrap call (entry: the loader's address) as
    nvn_cmd.c runs a callback: the name goes below the stack pointer, the call runs until it returns to the game's
    return address, which nothing else returns to, and the game's x0, link register and stack pointer are put back. The
    function's address, 0 for none */
-static u64 driver_lookup(CPU* c, u64 entry, const char* name) {
-    size_t n = strlen(name) + 1;
-    u64 sp = c->x[31], lr = c->x[30], arg = c->x[0], at = (sp - n) & ~15ull, pc, found;
+static u64 driver_lookup(CPU* c, u64 entry, const char* name, size_t n) {
+    u64 sp = c->x[31], lr = c->x[30], arg = c->x[0], at = (sp - (n + 1)) & ~15ull, pc, found;
     memcpy(GP(at), name, n);
+    *(char*)GP(at + n) = 0;
     c->x[31] = at;
     c->x[0] = at;
     g_nvn.direct.bootstrap_original(c, entry);
@@ -169,7 +170,8 @@ static u64 driver_lookup(CPU* c, u64 entry, const char* name) {
    driver's lookup given a device does, and getproc never gives it one: under nvn_direct the flag stays 0 whatever the
    game imports, so the version alone decides. Under lock */
 static void decide(CPU* c, u64 entry) {
-    u64 f = driver_lookup(c, entry, "nvnDeviceGetInteger");
+    static const char get_integer[] = "nvnDeviceGetInteger";
+    u64 f = driver_lookup(c, entry, get_integer, sizeof get_integer - 1);
     char version[32], described_text[64];
     int described;
     if (f >= g_code_lo && f < g_code_hi && !(f & 3)) nvn_device_driver(f); /* its answers, from its code */
@@ -199,22 +201,21 @@ static void decide(CPU* c, u64 entry) {
 }
 
 static void bootstrap(CPU* c, u64 entry) {
-    char name[128];
-    int valid;
     GuestFn* slot;
     if (nvn_verify_shadow_thread()) {
         g_nvn.direct.bootstrap_original(c, entry);
         return;
     }
-    valid = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
+    char name[128];
+    u32 len = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     pm_lock(&g_nvn.direct.lock);
     if (!g_nvn.direct.decided) decide(c, entry);
     pm_unlock(&g_nvn.direct.lock);
     g_nvn.direct.bootstrap_original(c, entry);
     if (!nvn_direct_active()) return; /* auto chose the driver: it runs from here on */
-    if (!valid || !c->x[0]) return;
+    if (!len || !c->x[0]) return;
     if (strcmp(name, "nvnDeviceGetProcAddress")) {
-        take(c->x[0], name);
+        take(c->x[0], name, len);
         return;
     }
     /* the resolver: wrapped, so the names it answers are taken too */
@@ -267,8 +268,8 @@ void nvn_direct_init(void) {
             NVN_COUNT);
 }
 
-u64 nvn_direct_lookup(CPU* c, const char* name) {
-    return g_nvn.direct.bootstrap_original ? driver_lookup(c, g_nvn.direct.bootstrap_entry, name) : 0;
+u64 nvn_direct_lookup(CPU* c, const char* name, size_t n) {
+    return g_nvn.direct.bootstrap_original ? driver_lookup(c, g_nvn.direct.bootstrap_entry, name, n) : 0;
 }
 u32 nvn_direct_flag(void) { return g_nvn.direct.flag ? gr32(g_nvn.direct.flag) : 0; }
 void nvn_direct_flag_set(u32 v) {
