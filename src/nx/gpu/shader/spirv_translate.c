@@ -5748,10 +5748,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (B(w, 40, 1)) value = spv_emit_not_u32(&c->emit, c->u32_type, value);
             reg_write(c, d, spv_emit_bit_count(&c->emit, c->u32_type, value));
         } else if (op == O_SHFL && c->quad && shfl_quad(w, NULL)) {
-            u32 lane;
-            int swap = shfl_quad(w, &lane) == 2;
-            lane = spv_emit_constant_u32(&c->emit, c->u32_type, lane);
-            u32 value = spv_emit_subgroup_quad_u32(&c->emit, c->u32_type, reg_read(c, a), swap, lane);
+            u32 operand;
+            int swap = shfl_quad(w, &operand) == 2;
+            u32 value = spv_emit_subgroup_quad_u32(&c->emit, c->u32_type, reg_read(c, a), swap,
+                                                   spv_emit_constant_u32(&c->emit, c->u32_type, operand));
             pred_write(c, B(w, 48, 3), c->true_value);
             reg_write(c, d, value);
         } else if (op == O_SHFL) {

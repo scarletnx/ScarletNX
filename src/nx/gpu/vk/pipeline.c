@@ -1507,9 +1507,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                      (unsigned)sizeof(PfSource), (unsigned)sizeof(PfPipe), (unsigned)sizeof(ShXfb));
     *guest = g > 0 && (size_t)g < n ? (size_t)g : 0;
     if (*guest)
-        snprintf(out + *guest, n - *guest, " %s%s driver=%u api=%u uuid=%s ftz=%d sizes=%u,%u vertex_bounds=%d", snx_build_info(), exe,
-                 d->driverVersion, d->apiVersion, uuid, g_vk_ftz, (unsigned)sizeof(ShaderInfo),
-                 (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
+        snprintf(out + *guest, n - *guest, " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d sizes=%u,%u vertex_bounds=%d",
+                 snx_build_info(), exe, d->driverVersion, d->apiVersion, uuid, g_vk_ftz, g_shader_quad,
+                 (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
 }
 
 /* ---- the shaders of the programs the game ships (gpu/shipped_pass.c finds them), translated before a draw asks */
