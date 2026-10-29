@@ -22,7 +22,6 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
-#include <stdlib.h>
 #include <string.h>
 
 u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn.object.serial, 1, __ATOMIC_RELAXED); }
@@ -1514,13 +1513,8 @@ static void xfb_of(u64 control, u64 serial) {
         }
     }
     pm_lock(&g_nvn.object.xfb_lock);
-    if (g_nvn.object.nxfb == g_nvn.object.xfb_cap) {
-        u32 cap = g_nvn.object.xfb_cap ? 2 * g_nvn.object.xfb_cap : 16;
-        NvnXfbEntry* m = (NvnXfbEntry*)realloc(g_nvn.object.xfb, cap * sizeof *m);
-        if (!m) fatal("nvn: out of memory for transform feedback layouts");
-        g_nvn.object.xfb = m;
-        g_nvn.object.xfb_cap = cap;
-    }
+    if (g_nvn.object.nxfb == NVN_XFB_MAX)
+        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn_direct holds", NVN_XFB_MAX);
     g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
     pm_unlock(&g_nvn.object.xfb_lock);
 }

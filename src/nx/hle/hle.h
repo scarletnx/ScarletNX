@@ -24,6 +24,7 @@
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/pool.h"
 
 typedef struct {
     /* the kernel and the SVCs */
@@ -90,13 +91,4 @@ static inline u32 kt_ix(const KThread* t) { return t ? (u32)(t - g_hle.thread.th
 static inline KThread* kt_at(u32 i) { return i && i <= KTHREAD_MAX ? &g_hle.thread.threads[i - 1] : NULL; }
 static inline u32* kt_word(const KThread* t) { return &g_host.thread.wword[t - g_hle.thread.threads]; }
 
-/* a free slot of the count at base, each size bytes, searched from *next on and wrapping: the slot, *next past it.
-   The caller holds the lock that guards the pool, and makes the slot non-zero before it lets go of it */
-void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what);
-/* the slot freed (zeroed), under the pool's lock */
-void pool_put(void* slot, size_t size);
-/* the same for a pool that is an array, arr, whose search starts at next (a u32) */
-#define POOL_TAKE(arr, next, what) pool_take((arr), sizeof *(arr), (u32)(sizeof(arr) / sizeof *(arr)), &(next), (what))
-#define POOL_PUT(p)                pool_put((p), sizeof *(p))
-#define POOL_INDEX(arr, p)         ((u32)((p) - (arr)))
 #endif

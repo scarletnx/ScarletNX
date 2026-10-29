@@ -13,7 +13,9 @@
 
 struct GpuChannel;
 
-/* ---- the file's state, g_nvn.verify (gpu/nvn/nvn_state.h) */
+/* ---- the file's state, g_nvn.verify (gpu/nvn/nvn_state.h). Verify mode is a debug mode: its large tables (the
+   states by content and by address, the shadow's constant buffer words, the maps, which grow) and the batches of the
+   shadow's words, whose size the driver's submissions give, are the heap's, made when the mode starts */
 #define VF_FNS        1024 /* functions, a power of two above the ~530 NVN has */
 #define VF_QUEUES     16
 #define VF_DIFF_KEYS  256
