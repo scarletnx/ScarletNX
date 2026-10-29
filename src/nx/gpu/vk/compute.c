@@ -791,15 +791,13 @@ static void cs_read_code(u64 pa, u8* dst) {
    Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/GPU_OWNERSHIP.md), so that the
    guest's own pages are trapped and land only when the CPU touches them, not at a sync point. A range one resource
    holds whole is bound where it is. Any other is copied, the CPU's bytes by the CPU and the GPU's by the GPU
-   (vk_guest_read): into staging when it is only read, into a resource of its own when it is written, which then
+   (vk_guest_read_device): into staging when it is only read, into a resource of its own when it is written, which then
    holds those bytes (res_publish). Nothing is waited for, compared or written back */
 /* how recently the CPU must have made a written range land for a dispatch writing it to run on the compute queue */
 #define CS_CPU_READ_PRESENTS 1200
 static int res_bind(u64 gva, u64 len, int written, VkBuffer* buf, u64* off, VkOwnRes** made) {
     OwnRange o[2];
-    VkBuffer sb;
-    u64 cpu = 0, so;
-    u8* p;
+    u64 cpu = 0;
     *made = NULL;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     if (gmmu_run(gva, len, &cpu) == len && own_lookup(cpu, len, o, 2) == 1 && o[0].addr == cpu && o[0].size == len &&
@@ -814,12 +812,12 @@ static int res_bind(u64 gva, u64 len, int written, VkBuffer* buf, u64* off, VkOw
        four buffers for every one they write) */
     if (!written) return vk_buf_get_strict(gva, len, buf, off);
     vk_render_end(); /* the copies happen outside rendering passes */
-    if (!(p = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
-    vk_guest_read(gva, len, p, sb, so);
     VkOwnRes* r = vk_own_res_new(len);
     if (!r) return 0;
-    VkBufferCopy c = {so, 0, len};
-    rec_CmdCopyBuffer(vk_cmd(), sb, r->buf, 1, &c);
+    if (!vk_guest_read_device(gva, len, r->buf, 0)) { /* straight into it: the GPU's bytes stay on the GPU */
+        vk_own_res_unref(r);
+        return 0;
+    }
     *buf = r->buf;
     *off = 0;
     *made = r;
