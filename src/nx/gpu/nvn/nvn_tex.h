@@ -28,6 +28,15 @@ u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z);
 /* the 3D engine's sample layout (gpu/draw_state.h DS_MSAA_) of NVN's sample count, as the game's driver writes it
    into a texture header: 2 samples 2x1 (D3D), 4 2x2, 8 4x2 (D3D), others one sample */
 u32 nvn_tex_msaa(int samples);
+/* What nvnTextureBuilderGetStorageSize and its kin answer for a texture, as the game's NVN driver computes them
+   (gpu/nvn/nvn_tex.c nvn_tex_storage). The layout (nvn_tex_layout) stays the texture's extent, never past size */
+typedef struct {
+    u64 size;  /* the layout's size, rounded up to the big page (64 KiB) when the kind is a compression kind */
+    u32 align; /* 0x80 linear render target, 0x20 linear, a buffer's element size, 0x200, or 64 KiB as above */
+    u32 kind;  /* the GMMU page kind: 0 pitch, 0xfe block linear, else a depth or compression kind */
+    u64 zcull; /* the ZCull save area of a depth texture, 0 for any other */
+} NvnTexStorage;
+void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s);
 /* bytes per block (0 for a format it doesn't know), and the block's width and height */
 int nvn_fmt_bpb(int format, int* bw, int* bh);
 
