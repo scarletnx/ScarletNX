@@ -994,6 +994,15 @@ int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at) {
     return n;
 }
 
+int vk_rt_over(u64 gva, u64 size) {
+    Surf *local[16], **list;
+    u32 count;
+    if (!size || !pend_hit_va(&g_rt_pages, gva, size)) return 0;
+    count = rt_pending_over(gva, size, local, 16, &list);
+    if (list != local) free(list);
+    return count != 0;
+}
+
 void vk_rt_before_write(u64 gva, u64 size) {
     Surf *local[16], **list;
     u32 count, i;
