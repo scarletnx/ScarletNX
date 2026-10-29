@@ -68,6 +68,11 @@ if(SNX_TEST_SANITIZERS)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
+# the GNU extensions with an ISO C counterpart stay out of our own sources (#68)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
+                                         --repo "${PROJECT_SOURCE_DIR}")
+endif()
 # CLAUDE.md and .claude/ in ASD-STE100 (.claude/skills/ste100), and the checker's own test
 if(Python3_Interpreter_FOUND)
     add_test(NAME claude_ste100 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/.claude/skills/ste100/check.py" --all)
