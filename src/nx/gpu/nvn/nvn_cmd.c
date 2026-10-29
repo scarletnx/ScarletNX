@@ -19,7 +19,6 @@
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
-#include <stdlib.h>
 #include <string.h>
 
 #define CB(a) NVN_OBJ(NvnCmdBuf, a)
@@ -84,13 +83,10 @@ static void lend(u64 cb, u32 need) {
         i--;
     else {
         u64 was = g_nvn.cmd.total;
-        if (g_nvn.cmd.n == g_nvn.cmd.cap) {
-            u32 cap = g_nvn.cmd.cap ? g_nvn.cmd.cap * 2 : 64;
-            NvnLent* l = (NvnLent*)realloc(g_nvn.cmd.l, cap * sizeof *l);
-            if (!l) fatal("nvn: out of memory for the command memory lent");
-            g_nvn.cmd.l = l;
-            g_nvn.cmd.cap = cap;
-        }
+        if (g_nvn.cmd.n == NVN_LEND_MAX)
+            fatal("nvn: command buffers ran out of the game's command memory more than %u times at once, the segments "
+                  "of the runtime's own nvn_direct holds (%llu KiB lent)",
+                  NVN_LEND_MAX, (unsigned long long)(g_nvn.cmd.total >> 10));
         at = kmem_alloc(size, MS_KERNEL, PERM_RW);
         i = g_nvn.cmd.n++;
         g_nvn.cmd.l[i].at = at;

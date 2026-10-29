@@ -26,7 +26,6 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* the inline banks' layout (above) */
@@ -54,41 +53,6 @@ enum {
     D_INLINE = 1u << DS_INLINE
 };
 
-/* the NVN state a queue's records set: the state objects' words as the game packed them (nvn_obj.h) */
-struct NvnDraw {
-    DsState ds; /* what the renderer reads */
-    DrawOwner own;
-    DsBindings bind; /* the bindings and inline blocks as the records left them */
-    DsInline inl;
-    u64 blend[DS_TARGETS_MAX], dss;
-    u32 color, chmask, poly;
-    NvnMultisample ms;
-    u32 sample_off; /* the samples SetSampleMask leaves out (NVN's default mask has every one) */
-    u32 svalue[2], smask[2], sref[2]; /* the stencil's compare mask, write mask and reference, front and back */
-    float blend_color[4], bias[3];    /* the polygon offset's factor, units and clamp */
-    u8 discard, depth_clamp, restart, render_off;
-    u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
-    u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
-    float line_width;
-    u8 samples; /* the samples-passed counter was reset: the renderer counts it */
-    u32 restart_index;
-    float vp[16][4], depth[2]; /* x, y, w, h; depth range 0 */
-    i32 scissor[4];
-    u8 swizzle[16][4]; /* XOR the identity, as recorded */
-    u32 attr[16], nattr;
-    NvnVertexStream stream[16];
-    u32 nstream;
-    NVNbufferRange vbuf[16];
-    u64 code[DS_PROGRAM_SLOTS];
-    u32 prog_on;
-    ShXfb xfb;            /* the bound program's capture layout (zero: none) */
-    NVNbufferRange tf[4]; /* the transform feedback buffers */
-    u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
-    u32 dirty;
-    DsState scratch;   /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
-    DispatchState dx;  /* the compute stage's program and bindings, a dispatch's state */
-};
-
 void nvn_draw_device(u32 origin, u32 depth_mode) {
     __atomic_store_n(&g_nvn.draw.origin, origin, __ATOMIC_RELAXED);
     __atomic_store_n(&g_nvn.draw.depth_mode, depth_mode, __ATOMIC_RELAXED);
@@ -103,10 +67,8 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
     new_gen(gen);
 }
 
-NvnDraw* nvn_draw_new(u32 owner) {
-    NvnDraw* d = (NvnDraw*)calloc(1, sizeof *d);
+void nvn_draw_init(NvnDraw* d, u32 owner) {
     int i, s;
-    if (!d) fatal("nvn: out of memory for a queue's draw state");
     d->ds.owner = owner;
     /* NVN's state before anything is bound: the state objects' defaults (nvn_object.c's SetDefaults) */
     for (i = 0; i < DS_TARGETS_MAX; i++) {
@@ -151,7 +113,6 @@ NvnDraw* nvn_draw_new(u32 owner) {
     d->dx.tex_bank = 2;
     for (s = 0; s < 8; s++) snx_st_le32(d->dx.bank2 + 4 * (u32)s, (u32)s);
     d->dirty = ~0u;
-    return d;
 }
 
 /* ---- conversions of NVN's enumerants */

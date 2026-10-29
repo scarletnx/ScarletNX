@@ -18,13 +18,13 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_verify.h"
+#include "nx/hle/pool.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
-#include <stdlib.h>
 #include <string.h>
 
 /* What the CPU sees of a submission: a fence's syncpoint increment, or bytes the stream writes (counter reports, event
@@ -32,11 +32,6 @@
 enum { FX_FENCE, FX_WRITE, FX_ADD };
 
 enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT };
-typedef struct {
-    u32 queue, kind, n;
-    NvnReplayPresent present;
-    u64 handles[]; /* n of them */
-} Job;
 
 u32 nvn_replay_queue(void) {
     u32 i;
@@ -44,7 +39,7 @@ u32 nvn_replay_queue(void) {
     if (g_nvn.replay.n == NVN_QUEUES) fatal("nvn: more than %d queues", NVN_QUEUES);
     if (!g_nvn.replay.shown) g_nvn.replay.shown = syncpt_alloc();
     i = g_nvn.replay.n++;
-    g_nvn.replay.q[i].d = nvn_draw_new(0x80000000u | i); /* renderer.h: the NVN replay's queues from 0x80000000 */
+    nvn_draw_init(&g_nvn.replay.q[i].d, 0x80000000u | i); /* renderer.h: the NVN replay's queues from 0x80000000 */
     g_nvn.replay.q[i].syncpt = syncpt_alloc();
     pm_unlock(&g_nvn.replay.lock);
     return i + 1;
@@ -133,15 +128,9 @@ typedef struct {
    work, which is later than the console but never earlier */
 static void effect(u32 kind, u64 gva, const void* data, u32 len) {
     NvnReplayState* st = &g_nvn.replay;
-    NvnEffect* e;
-    if (st->nfx == st->fx_cap) {
-        u32 cap = st->fx_cap ? st->fx_cap * 2 : 64;
-        NvnEffect* fx = (NvnEffect*)realloc(st->fx, cap * sizeof *fx);
-        if (!fx) fatal("nvn: out of memory for a submission's effects");
-        st->fx = fx;
-        st->fx_cap = cap;
-    }
-    e = &st->fx[st->nfx++];
+    if (st->nfx == NVN_EFFECTS)
+        fatal("nvn: a submission signals more than %u fences and events, which nvn_direct holds", NVN_EFFECTS);
+    NvnEffect* e = &st->fx[st->nfx++];
     e->kind = kind;
     e->gva = gva;
     e->len = len;
@@ -182,7 +171,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             const NvnPReportCounter* r = NVN_OBJ(const NvnPReportCounter, payload);
             u8 v[16];
             u64 ticks = guest_ticks();
-            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(q->d, r->address, ticks)) break;
+            if (r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && nvn_draw_samples(&q->d, r->address, ticks)) break;
             snx_st_le64(v, r->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 1000 : 0);
             snx_st_le64(v + 8, ticks);
             gpu_release_write(r->address, v, sizeof v);
@@ -194,7 +183,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
             break;
         }
         default:
-            if (!nvn_draw_record(q->d, op, payload, size) && !nvn_copy_record(op, payload, size, q->stride) &&
+            if (!nvn_draw_record(&q->d, op, payload, size) && !nvn_copy_record(op, payload, size, q->stride) &&
                 !(g_nvn.replay.unknown >> op & 1)) {
                 g_nvn.replay.unknown |= 1ull << op; /* each once */
                 LOG("nvn: records of op %u aren't replayed yet\n", op);
@@ -204,7 +193,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
 }
 
 static void run(void* arg) {
-    Job* j = (Job*)arg;
+    NvnJob* j = (NvnJob*)arg;
     NvnReplayQueue* q = &g_nvn.replay.q[j->queue - 1];
     switch (j->kind) {
         case JOB_SUBMIT: {
@@ -237,19 +226,30 @@ static void run(void* arg) {
     /* the stream stops here, as gpu.c's job_end: the renderer holds a stream's releases (its increments and writes)
        until then (release.c), and the game may now look at them */
     if (g_renderer->stream_end) g_renderer->stream_end();
-    free(j);
+    pm_lock(&g_nvn.replay.lock);
+    POOL_PUT(j);
+    pm_unlock(&g_nvn.replay.lock);
 }
 
-static Job* job(u32 queue, u32 kind, u32 n) {
-    Job* j = (Job*)calloc(1, sizeof *j + n * sizeof j->handles[0]);
-    if (!j) fatal("nvn: out of memory queueing a submission");
+/* work for the GPU thread, from the pool (under g_nvn.replay.lock): non-zero before the lock is let go, as its queue
+   is 1 up */
+static NvnJob* job(u32 queue, u32 kind, u32 n) {
+    if (n > NVN_JOB_HANDLES)
+        fatal("nvn: a submission of %u command handles, more than the %u nvn_direct holds", n, NVN_JOB_HANDLES);
+    NvnJob* j = POOL_TAKE(g_nvn.replay.jobs, g_nvn.replay.next_job, "NVN jobs");
+    if (!j)
+        fatal("nvn: more than %u submissions, fences and presents queued for the GPU thread at once, which nvn_direct "
+              "holds",
+              NVN_JOBS);
     j->queue = queue;
     j->kind = kind;
     j->n = n;
     return j;
 }
 void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
-    Job* j = job(queue, JOB_SUBMIT, n);
+    pm_lock(&g_nvn.replay.lock);
+    NvnJob* j = job(queue, JOB_SUBMIT, n);
+    pm_unlock(&g_nvn.replay.lock);
     Promise p;
     u32 i;
     p.syncpt = nvn_replay_syncpt(queue);
@@ -286,10 +286,10 @@ void nvn_replay_finish(u32 queue) {
     syncpt_wait(id, value, -1);
 }
 u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown) {
-    Job* j = job(queue, JOB_PRESENT, 0);
     u32 value;
-    j->present = *p;
     pm_lock(&g_nvn.replay.lock);
+    NvnJob* j = job(queue, JOB_PRESENT, 0);
+    j->present = *p;
     value = syncpt_promise(nvn_replay_syncpt(queue), 1);
     *shown = syncpt_promise(g_nvn.replay.shown, 1); /* the presents reach the display in the order queued here */
     gpu_call(run, j, NULL, 0);
