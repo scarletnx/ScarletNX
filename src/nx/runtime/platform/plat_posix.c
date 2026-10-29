@@ -51,6 +51,10 @@
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #endif
+#if defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/umtx.h>
+#endif
 
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0 /* FreeBSD never reserves swap for a mapping */
@@ -115,6 +119,48 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     r = cond_wait(c, m, timeout_ns);
     pm_wait_note(NULL, NULL, 0);
     return r;
+}
+
+#if defined(__APPLE__)
+/* libSystem's, which libc++'s atomic waits use too: the public os_sync_wait_on_address needs macOS 14.4 */
+extern int __ulock_wait(u32 operation, void* addr, u64 value, u32 timeout_us);
+extern int __ulock_wake(u32 operation, void* addr, u64 wake_value);
+#define SNX_UL_COMPARE_AND_WAIT 1u
+#define SNX_ULF_WAKE_ALL        0x100u
+#define SNX_ULF_NO_ERRNO        0x1000000u
+#endif
+void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
+#if defined(__linux__)
+    struct timespec ts;
+    if (timeout_ns >= 0) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000);
+    }
+    syscall(SYS_futex, w, FUTEX_WAIT_PRIVATE, v, timeout_ns >= 0 ? &ts : NULL, NULL, 0);
+#elif defined(__FreeBSD__)
+    struct _umtx_time ut = {0};
+    if (timeout_ns < 0) {
+        _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, NULL, NULL);
+        return;
+    }
+    ut._timeout.tv_sec = (time_t)(timeout_ns / 1000000000);
+    ut._timeout.tv_nsec = (long)(timeout_ns % 1000000000);
+    ut._clockid = CLOCK_MONOTONIC;
+    _umtx_op(w, UMTX_OP_WAIT_UINT_PRIVATE, v, (void*)(uintptr_t)sizeof ut, &ut);
+#else
+    /* 0 waits without limit: a timeout is at least a microsecond, and at most what the 32 bits hold */
+    u64 us = timeout_ns < 0 ? 0 : (u64)timeout_ns / 1000u + 1u;
+    __ulock_wait(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_NO_ERRNO, w, v, us > 0xFFFFFFFFu ? 0xFFFFFFFFu : (u32)us);
+#endif
+}
+void plat_wake_word(u32* w) {
+#if defined(__linux__)
+    syscall(SYS_futex, w, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+#elif defined(__FreeBSD__)
+    _umtx_op(w, UMTX_OP_WAKE_PRIVATE, INT_MAX, NULL, NULL);
+#else
+    __ulock_wake(SNX_UL_COMPARE_AND_WAIT | SNX_ULF_WAKE_ALL | SNX_ULF_NO_ERRNO, w, 0);
+#endif
 }
 
 /* ================================================================ threads */

@@ -115,13 +115,29 @@ void pc_init(PCond* c) { pthread_cond_init(&c->c, NULL); }
 void plat_yield(void) { sched_yield(); }
 void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
 void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
+/* a service's wait (kthread_wait) */
 int pc_wait(PCond* c, PMutex* m, i64 ns) {
     int r;
-    (void)ns; /* the core model only waits without a timeout */
+    (void)ns; /* the test's service waits have no timeout */
     /* a failed wait (EINVAL on macOS for a condition variable never initialized) returns at once without
        releasing the lock, and the caller's loop would spin holding it */
     if ((r = pthread_cond_wait(&c->c, &m->l)) != 0) fatal("pthread_cond_wait: %d\n", r);
     return r;
+}
+/* a thread waits on its word, polled here until the word moves: a wait the word never ends fails the test after 2 s
+   instead of hanging it, and each wake of a word is counted (snx_kct_woken, by the word's thread) */
+static unsigned snx_kct_woken[KTHREAD_MAX];
+void plat_wait_word(u32* w, u32 v, i64 ns) {
+    struct timespec pause = {0, 100000};
+    (void)ns; /* the waits here have no timeout */
+    for (int i = 0; i < 20000 && __atomic_load_n(w, __ATOMIC_ACQUIRE) == v; i++) nanosleep(&pause, NULL);
+    if (__atomic_load_n(w, __ATOMIC_ACQUIRE) == v) fatal("a wait on a thread's word was never ended\n");
+}
+void plat_wake_word(u32* w) { __atomic_add_fetch(&snx_kct_woken[w - g_host.thread.wword], 1u, __ATOMIC_SEQ_CST); }
+void pm_wait_note(const void* m, const void* at, int cond) {
+    (void)m;
+    (void)at;
+    (void)cond;
 }
 
 static unsigned checks, failures;
@@ -166,9 +182,6 @@ void plat_thread_cpus(const int* ids, int n) {
 static KThread* thread(int i, int prio, int core, u64 mask) {
     KThread* t = &snx_kct_thread[i];
     memset(t, 0, sizeof *t);
-    /* a thread waits for its core on its own cv, as kthread_create sets it up: all zeros is a valid condition
-       variable on glibc but not on macOS */
-    pc_init(kt_cv(t));
     t->prio = t->base_prio = prio;
     t->core = core;
     t->affinity = mask;
@@ -653,6 +666,34 @@ int main(void) {
         CHECK(g[0].steps > seen[0] && g[1].steps > seen[1], "both went on after the pause");
         for (int i = 0; i < 2; i++) g[i].t->state = 2;
         g_settings.emulated_cores = 1;
+    }
+
+    /* a wake under g_klock: the woken thread's word moves at once, so a wait that read the word before the wake
+       returns, but its host thread is woken only once its waker lets go of the lock (klock_unlock), where it would
+       otherwise wake to wait for that lock. Past the list's room the wakes go out at once */
+    {
+        KThread* s = thread(0, 44, 0, 1);
+        u32 seq = kt_seq(s);
+        unsigned before = snx_kct_woken[0];
+        pm_lock(&g_host.kernel.klock);
+        kt_notify_later(s);
+        CHECK(kt_seq(s) != seq && snx_kct_woken[0] == before, "moved, not yet woken: %u %u", kt_seq(s) - seq,
+              snx_kct_woken[0] - before);
+        kt_wait(s, seq, &g_host.kernel.klock, -1); /* returns: the word moved after it was read */
+        CHECK(snx_kct_woken[0] == before + 1, "the wait woke the thread its caller owed a wake: %u",
+              snx_kct_woken[0] - before);
+        kt_notify_later(s);
+        klock_unlock();
+        CHECK(snx_kct_woken[0] == before + 2, "the unlock woke it: %u", snx_kct_woken[0] - before);
+        unsigned was[18];
+        for (int i = 1; i <= 17; i++) was[i] = snx_kct_woken[i];
+        pm_lock(&g_host.kernel.klock);
+        for (int i = 1; i <= 17; i++) kt_notify_later(thread(i, 44, 0, 1));
+        CHECK(snx_kct_woken[17] == was[17] + 1 && snx_kct_woken[1] == was[1], "the seventeenth at once, the first "
+              "later: %u %u", snx_kct_woken[17] - was[17], snx_kct_woken[1] - was[1]);
+        klock_unlock();
+        CHECK(snx_kct_woken[1] == was[1] + 1 && snx_kct_woken[16] == was[16] + 1 && snx_kct_woken[17] == was[17] + 1,
+              "the rest at the unlock");
     }
 
     printf("%u checks, %u failed\n", checks, failures);
