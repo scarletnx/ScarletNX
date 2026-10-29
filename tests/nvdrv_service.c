@@ -142,6 +142,21 @@ static KObj* handle_object(u32 h) {
     return test_handles[h - 0x100];
 }
 
+/* nvn_verify: no shadow driver runs here, so no fd is its */
+int nvn_verify_shadow_thread(void) { return 0; }
+void nvn_verify_fd(u32 fd, int open) {
+    (void)fd;
+    (void)open;
+}
+int nvn_verify_fd_is(u32 fd) {
+    (void)fd;
+    return 0;
+}
+void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n) {
+    (void)fd;
+    (void)entries;
+    (void)n;
+}
 /* the GPU: submissions, calls, kicks and retired channels, recorded */
 static struct {
     u64 entries[8];
