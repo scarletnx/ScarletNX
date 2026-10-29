@@ -59,7 +59,9 @@ void (*g_gpu_mapping_end)(void);
 #define MEM_STATE_TYPE_MASK 0xFFu
 /* the runs of guest memory behind [gva, gva + size), copied in or out: 1 when every page was mapped. An unmapped
    page, or one the guest freed after mapping it here (gmmu_run), reads as zero and takes no write. What the GPU holds
-   of a run lands first (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then */
+   of a run lands first (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then.
+   A read lands only bytes it reads: what the GPU holds beside them on their pages stays there (a shader's constant
+   buffer words beside a copy engine's result, in one game every frame) */
 static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
     int all = 1;
     while (size) {
@@ -71,7 +73,12 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             all = 0;
             goto next;
         }
-        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, n);
+        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+            /* a read none of whose bytes are the GPU's: own_stage copied them, through the mirror where a page is
+               trapped */
+            if (in && !own_stage(cpu, n, in, NULL, 0)) goto next;
+            own_acquire(cpu, n);
+        }
         if (in)
             memcpy(in, GP(cpu), (size_t)n);
         else
