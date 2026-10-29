@@ -92,7 +92,7 @@ upload and acting methods, and the slots hold nvn_direct's handlers as before.
 
 The game's driver is still in its module, and nvn_direct keeps the address of the driver's code for each function it
 takes over (`nvn_direct.c` `take`). In verify mode the slot holds `verify_fn`, which runs nvn_direct's handler on
-the game's objects first, as always, and then the driver's code on shadows, on the game's thread and stack. The
+the game's objects first, as always, and then the driver's code on shadows, on the game's thread. The
 driver's results go nowhere but the shadows: the game sees nvn_direct's.
 
 | Shadow | What it holds | When it changes |
@@ -107,10 +107,11 @@ driver's results go nowhere but the shadows: the game sees nvn_direct's.
 `tools/nvn_verify_kinds.py` writes each function's argument kinds from `nvn.h`'s prototypes into
 `nvn_verify_kinds.inc` (the ctest `nvn_verify_kinds` checks it is current). A call whose argument has no shadow is
 skipped, and the log names the function and the reason once. Never made in the shadow: waits, the window and its
-presents (a present flushes the shadow queue instead), the game's callbacks and virtual pool mappings. The driver's
-own calls into NVN go through the same slots, and run the driver's code while the thread is in a shadow call. The
-driver's lookup with a device sets `nvnPrivate0`: after each shadow call the word is put back, since it turns on the
-game's inlined command writes.
+presents (a present flushes the shadow queue instead), the game's callbacks, virtual pool mappings, and
+`TextureReadTexels` (its output is no draw state). The driver's own calls into NVN go through the same slots, and run
+the driver's code while the thread is in a shadow call. The driver's lookup with a device sets `nvnPrivate0`: after
+each shadow call the word is put back, since it turns on the game's inlined command writes. A shadow call runs on a
+stack of the runtime's, 1 MiB for each thread, never on the game's.
 
 ### The shadow's command and control memory
 
@@ -213,10 +214,11 @@ the device's GPU characteristics, not yet matched to nvdrv's answers.
 
 ### Open problems (why draws don't compare yet)
 
-- **Verify mode makes one game crash.** In 5 runs of 100 seconds without verify mode the game didn't crash, in 5 with
-  it the game crashed 3 times, each at the same instruction of the game's code (a null pointer plus an offset).
-  Not traced: the shadow driver's allocations through the game's graphics allocator, or its stack copies, are what
-  verify mode changes for the game.
+- **Verify mode made one game crash** (3 of 5 runs, a null pointer plus an offset in the game's code). With the
+  shadow's own memory (above), 1 of 5 runs stopped on a corrupt nvn_direct record in the game's command memory, a
+  stop seen once without verify mode too. With the shadow's own stack too, 5 of 5 runs of 100 seconds ended clean.
+  Not proven: which of the shadow's writes on the game's stack did it. The open-world game's `ReadTexels` wrote past
+  the top of its thread's stack and crashed.
 - **Arrays of texture views** at `SetRenderTargets` whose state the map doesn't know skip the call, so the shadow's
   targets stay at their defaults.
 
