@@ -212,7 +212,27 @@ size nvn_direct answers. The driver's rule adds to the command and control sizes
 game set none) an area of its own, which grows with the compute memory size (default 0x40000) and with six words of
 the device's GPU characteristics, not yet matched to nvdrv's answers.
 
-### Open problems (why draws don't compare yet)
+### What the draws compare now
+
+Each shadow batch is decoded one draw at a time, as nvn_direct's replay asks for the next one: a submission has
+hundreds of draws in one batch, and the 64 pending ones dropped the oldest, so every later draw paired with the wrong
+one. The compare leaves out what doesn't reach a draw: VertexB's enable bit (it runs whatever the bit says, and the
+driver leaves it 0), and the viewports and scissors nvn_direct doesn't use (the driver sets all 16 at its start).
+
+In one 170-second run of the open-world scene, 1,048,576 draws paired, and 2.5% of nvn_direct's and 3.6% of the
+driver's had no pair. No draw compared the same yet. The differences, each in most draws:
+
+- `dynamic.window_origin` (nvn_direct 0x10, the driver 0) and `dynamic.sprite_origin` (0 against 1). The driver
+  writes 0x10 to the window origin register (0x4EB) in a stream of default state that the verify channel doesn't
+  get, so the shadow's register stays 0. Not traced: where that stream goes.
+- `vfmt.*` of attributes and streams the program doesn't read: the driver leaves its earlier formats and enables all
+  16 streams. DsState doesn't say which attributes the program reads, so the compare can't leave them out yet.
+- `bind.cb_addr` and `bind.cb_size` of constant buffers the driver binds for itself (64 KiB at slot 3 of a stage),
+  and sizes the driver rounds up (one game: nvn_direct 0xA0, the driver 0x100). Not traced: the driver's rule.
+- A draw on one side only shifts the pairs after it in its submission, so the targets, blending and draw arguments
+  of different draws are compared: the pairing has to match draws by their arguments before those count.
+
+### Open problems
 
 - **Verify mode made one game crash** (3 of 5 runs, a null pointer plus an offset in the game's code). With the
   shadow's own memory (above), 1 of 5 runs stopped on a corrupt nvn_direct record in the game's command memory, a

@@ -141,6 +141,8 @@ typedef struct {
     int rel_lost;      /* and whether the stream went out of step */
     /* the GPU thread's */
     GpuChannel* ch;
+    Batch* cur;            /* the batch decoding, from its word at */
+    u32 at;
     u32 live_serial, draw; /* the submission replaying, and its draws so far */
     u32 batch_serial;      /* the serial of the words decoding */
     Pending pend[PENDING];
@@ -1289,7 +1291,8 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         t_queue = queue;
         memcpy(&base, c, REGS_SIZE);
         if (__atomic_add_fetch(&f->ran, 1, __ATOMIC_RELAXED) == 1) /* what ran last when the driver faults */
-            LOG("nvn verify: the shadow runs %s for the first time\n", f->k->name);
+            LOG("nvn verify: the shadow runs %s for the first time (the driver's code at %llx)\n", f->k->name,
+                (unsigned long long)entry);
         /* memory the game adds: command memory in the pool's scaled shadow (cmd_pool), or a piece for memory outside
            the pool; control memory in a piece (the lend section) */
         if (f->flags & F_ADDCMD) {
@@ -1597,19 +1600,22 @@ void nvn_verify_shadow_draw(GpuChannel* ch, const DrawCall* dc) {
 /* decodes v's batches up to (with serials at most) last, or until a draw of serial last is pending */
 static void decode(VQueue* v, u32 last, int one_draw) {
     for (;;) {
-        Batch* b;
-        u32 i;
+        Batch* b = v->cur;
         if (one_draw && v->npend && v->pend[v->npend - 1].serial == last) return;
-        pm_lock(&g_v.lock);
-        b = v->head;
-        if (b && b->serial <= last) {
-            v->head = b->next;
-            if (!v->head) v->tail = NULL;
-            v->words -= b->n;
-        } else
-            b = NULL;
-        pm_unlock(&g_v.lock);
-        if (!b) return;
+        if (!b) {
+            pm_lock(&g_v.lock);
+            b = v->head;
+            if (b && b->serial <= last) {
+                v->head = b->next;
+                if (!v->head) v->tail = NULL;
+                v->words -= b->n;
+            } else
+                b = NULL;
+            pm_unlock(&g_v.lock);
+            if (!b) return;
+            v->cur = b;
+            v->at = 0;
+        }
         if (!v->ch) {
             g_gpu_verify_draw = nvn_verify_shadow_draw;
             g_gpu_verify_cb = nvn_verify_shadow_cb;
@@ -1617,11 +1623,17 @@ static void decode(VQueue* v, u32 last, int one_draw) {
         }
         g_decoding = v;
         v->batch_serial = b->serial;
-        r3d_pending_flush();
-        for (i = 0; i < b->n; i++) gpu_verify_word(v->ch, b->w[i]);
+        if (!v->at) r3d_pending_flush();
+        /* one draw at a time: a submission's draws, hundreds in one batch, pair with nvn_direct's as they come (the
+           pending ones are few, each a DsState of its own) */
+        while (v->at < b->n && !(one_draw && v->npend && v->pend[v->npend - 1].serial == last))
+            gpu_verify_word(v->ch, b->w[v->at++]);
         r3d_pending_flush(); /* the held draw is this batch's */
         g_decoding = NULL;
-        free(b);
+        if (v->at == b->n) {
+            free(b);
+            v->cur = NULL;
+        }
     }
 }
 
@@ -1707,9 +1719,10 @@ static int compare(const At* at, const DsState* l, const DrawCall* ld, const DsS
     int same = 1;
     u32 i, j;
     /* programs */
-    CMP("programs.on", 0, l->prog.on, s->prog.on);
+    /* VertexB runs whatever its bit says (draw_state.h), and the driver leaves it 0 */
+    CMP("programs.on", 0, l->prog.on & ~2u, s->prog.on & ~2u);
     for (i = 0; i < DS_PROGRAM_SLOTS; i++)
-        if ((l->prog.on & s->prog.on) >> i & 1) CMPA("programs.code", i, l->prog.code[i], s->prog.code[i]);
+        if (((l->prog.on & s->prog.on) | 2) >> i & 1) CMPA("programs.code", i, l->prog.code[i], s->prog.code[i]);
     CMP("programs.clip_enable", 0, l->prog.clip_enable, s->prog.clip_enable);
     CMP("programs.tess_params", 0, l->prog.tess_params, s->prog.tess_params);
     CMP("programs.early_z", 0, l->prog.early_z, s->prog.early_z);
@@ -1812,11 +1825,12 @@ static int compare(const At* at, const DsState* l, const DrawCall* ld, const DsS
     for (i = 0; i < 4; i++) CMPF("dynamic.blend_const", i, l->dyn.blend_const[i], s->dyn.blend_const[i]);
     if (l->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) CMP("dynamic.clip_height", 0, l->dyn.clip_height, s->dyn.clip_height);
     CMP("dynamic.depth_word", 0, l->dyn.depth_word, s->dyn.depth_word);
-    /* viewports: the first, and those either side scissors */
+    /* viewports: the first, and those nvn_direct scissors. The driver sets all 16 at its start, with full scissors,
+       and nvn_direct only those the game sets: the others draw nothing unless a shader picks its viewport */
     CMP("viewports.transform_on", 0, l->vp.transform_on, s->vp.transform_on);
-    CMP("viewports.scissor_on", 0, l->vp.scissor_on, s->vp.scissor_on);
+    CMP("viewports.scissor_on", 0, l->vp.scissor_on, s->vp.scissor_on & (l->vp.scissor_on | 1));
     for (i = 0; i < DS_VIEWPORTS_MAX; i++) {
-        if (i && !((l->vp.scissor_on | s->vp.scissor_on) >> i & 1)) continue;
+        if (i && !(l->vp.scissor_on >> i & 1)) continue;
         for (j = 0; j < 3; j++) {
             CMPF("viewports.scale", i * 3 + j, l->vp.scale[i][j], s->vp.scale[i][j]);
             CMPF("viewports.translate", i * 3 + j, l->vp.translate[i][j], s->vp.translate[i][j]);
