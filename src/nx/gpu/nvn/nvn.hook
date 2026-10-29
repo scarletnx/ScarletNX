@@ -8,6 +8,11 @@
 # here stops the game with its name when it is called. The handlers: gpu/nvn/nvn_object.c (device, pools, buffers,
 # textures, samplers, programs, syncs, state objects), nvn_cmd.c (command buffers) and nvn_queue.c (queue, window).
 
+# The resolvers, which nvn_direct.c and nvn_trace.c wrap with C of their own: the recompiler calls them through their
+# dispatch slots, as it calls a hooked function (hookgen's route lines)
+route nvnBootstrapLoader
+route nvnDeviceGetProcAddress
+
 family device
 hook nvnDeviceBuilderSetDefaults(addr b) = nvn_DeviceBuilderSetDefaults
 hook nvnDeviceBuilderSetFlags(addr b, i32 flags) = nvn_DeviceBuilderSetFlags

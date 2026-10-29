@@ -5,9 +5,12 @@
    version */
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/hle.h"
+#include "nx/loader/hook_routes.h"
+#include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
+#include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "hle/hook/hooks.hook.h"
 #include "hle/hook/hooks.hook.inc"
@@ -125,6 +128,39 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
              (unsigned long long)r.offset);
 }
 
+int hook_routed(const char* name) {
+    const SnxRoutes* r = g_routes;
+    if (!r || r->all) return 1;
+    u64 hash = snx_hook_route_hash(name);
+    size_t lo = 0, hi = r->count;
+    while (lo < hi) {
+        size_t middle = lo + (hi - lo) / 2;
+        if (r->names[middle] < hash)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    return lo < r->count && r->names[lo] == hash;
+}
+
+/* which calls the module sends through the dispatch slots, once */
+static void routes_say(void) {
+    const SnxRoutes* r = g_routes;
+    u64 own = snx_hook_route_list_hash();
+    if (!r)
+        LOG("hooks: the module calls every function it exports through its dispatch slot (it has no route list)\n");
+    else if (r->all)
+        LOG("hooks: the module calls every function through its dispatch slot (--hook-direct-calls)\n");
+    else if (r->list == own)
+        LOG("hooks: the module calls the functions of the %u symbols the hooks name through their dispatch slots, and "
+            "every other function directly (route list %016llx, this runtime's too)\n",
+            (unsigned)r->count, (unsigned long long)r->list);
+    else
+        LOG("hooks: the module calls the functions of the %u symbols its build's hooks named through their dispatch "
+            "slots, and every other function directly (route list %016llx; this runtime's, %016llx, names %u)\n",
+            (unsigned)r->count, (unsigned long long)r->list, (unsigned long long)own, (unsigned)snx_hook_route_count());
+}
+
 void hook_install(void) {
     HleHook* h = &g_hle.hook;
     const char* name;
@@ -139,6 +175,7 @@ void hook_install(void) {
         return;
     }
     if (g_arm_mod || !g_disp || !g_mod) return; /* a 32-bit game's code is arm.c's blocks, which no hook replaces */
+    routes_say();
     for (i = 0; i < HOOK_FAMILIES; i++)
         if ((off[i] = (unsigned char)family_listed(g_settings.hook_families_off, hook_family_name[i])) != 0)
             LOG("hooks: the %s family is off (hooks_off)\n", hook_family_name[i]);
@@ -181,6 +218,10 @@ void hook_install(void) {
         h->fn[h->count] = verify[hook_family[k]] && hook_verify[k].pure ? verify_fn : hook_fn[k];
         __atomic_store_n(slot, h->fn[h->count], __ATOMIC_RELEASE);
         h->count++;
+        if (!hook_routed(name))
+            WARN("hooks: %s at %llx runs %s only for the calls through the PLT and function pointers: the module's "
+                 "route list doesn't name it, so its direct calls run its own code. Recompile the game for them\n",
+                 name, (unsigned long long)addr, hook_handler[k]);
         if (hook_key[k] == HOOK_ANY || said[k]) {
             LOG("hook: %s at %llx runs %s\n", name, (unsigned long long)addr, hook_handler[k]);
             continue;

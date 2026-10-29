@@ -67,7 +67,14 @@
    any. The table's hook_verify gives each entry's: verify mode runs a pure hook's function on copies of its buffers
    and its handler on the live ones, and compares them.
 
+   Routes. The recompiler calls a function through its dispatch slot, where a hook can take the call, only when a
+   hook names the function's symbol (snx_codegen_routed): every other call stays a direct call. A function the runtime
+   wraps with C code of its own, with no adapter, is named on a line of its own, `route SYMBOL`
+   (gpu/nvn/nvn.hook's nvnBootstrapLoader).
+
    Usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC (NAME, hook by default, names the tables)
+          hookgen --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC name, sorted by
+          strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for nx/loader/hook_routes.c)
    Each output is only rewritten when it changes. */
 #include <ctype.h>
 #include <stdarg.h>
@@ -83,6 +90,8 @@
 #define MAX_VARIANTS 256
 #define MAX_FIELDS   64
 #define MAX_NAME     256
+#define MAX_ROUTES   64
+#define MAX_SPECS    8
 #define NREGS        8
 #define UNBOUNDED    0xFFFFFFFFul
 
@@ -170,6 +179,9 @@ static Entry entries[MAX_ENTRIES];
 static int nentries;
 static char families[MAX_FAMILIES][MAX_NAME];
 static int nfamilies;
+static char routes[MAX_ROUTES][MAX_NAME]; /* the route lines' symbols */
+static int route_lines[MAX_ROUTES];
+static int nroutes;
 static const char* spec_path;
 
 static char* obuf;
@@ -505,6 +517,14 @@ static void parse_family(const char* p, int line) {
     nfamilies++;
 }
 
+/* route SYMBOL: a function the runtime wraps itself, routed through its slot as a hook's is */
+static void parse_route(const char* p, int line) {
+    if (nroutes == MAX_ROUTES) fail(line, "more than %d route lines", MAX_ROUTES);
+    p = word(p, routes[nroutes], line, "symbol");
+    if (*skip_space(p)) fail(line, "unexpected text after the symbol");
+    route_lines[nroutes++] = line;
+}
+
 /* struct NAME [@version(...)] {: the variant whose fields follow */
 static const char* parse_struct(const char* p, int line, const Range* range, int versioned) {
     Variant* s;
@@ -606,8 +626,11 @@ static void read_spec(const char* path) {
         } else if (keyword(p, "family")) {
             if (versioned) fail(version_line, "@version goes before a hook or a struct");
             parse_family(p + 6, line);
+        } else if (keyword(p, "route")) {
+            if (versioned) fail(version_line, "@version goes before a hook or a struct");
+            parse_route(p + 5, line);
         } else {
-            fail(line, "expected a family, a hook, a struct or a comment");
+            fail(line, "expected a family, a hook, a struct, a route or a comment");
         }
         versioned = 0;
     }
@@ -728,6 +751,14 @@ static void check_hooks(void) {
                     fail(b->line, "%s is hooked on line %d too", b->symbol, a->line);
                 check_ranges(b->symbol, &a->range, a->line, &b->range, b->line);
             }
+    for (i = 0; i < nroutes; i++) {
+        for (j = 0; j < i; j++)
+            if (!strcmp(routes[i], routes[j]))
+                fail(route_lines[i], "%s is routed on line %d too", routes[i], route_lines[j]);
+        for (j = 0; j < nhooks; j++)
+            if (!strcmp(routes[i], hooks[j].symbol))
+                fail(route_lines[i], "%s is hooked on line %d, which routes it already", routes[i], hooks[j].line);
+    }
     qsort(hooks, (size_t)nhooks, sizeof *hooks, by_symbol);
     for (i = 0; i < nhooks; i++) {
         Hook* h = &hooks[i];
@@ -962,25 +993,79 @@ static void write_table(const char* path) {
     flush(path);
 }
 
+static int by_name(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
+
+/* --routes: the symbols each spec's hooks and route lines name, each spec read and checked alone */
+static void write_routes(const char* path, char** specs, int nspecs) {
+    char** names = NULL;
+    size_t count = 0, kept = 0, cap = 0, i;
+    int s, k;
+    for (s = 0; s < nspecs; s++) {
+        spec_path = specs[s];
+        nhooks = nvariants = nentries = nfamilies = nroutes = 0;
+        read_spec(spec_path);
+        check_structs();
+        check_hooks();
+        for (k = 0; k < nhooks + nroutes; k++) {
+            const char* name = k < nhooks ? hooks[k].symbol : routes[k - nhooks];
+            if (count == cap) {
+                cap = cap ? cap * 2 : 256;
+                names = (char**)realloc(names, cap * sizeof *names);
+                if (!names) fail(0, "out of memory");
+            }
+            names[count] = (char*)malloc(strlen(name) + 1);
+            if (!names[count]) fail(0, "out of memory");
+            strcpy(names[count++], name);
+        }
+    }
+    qsort(names, count, sizeof *names, by_name);
+    for (i = 0; i < count; i++) /* a symbol of several versions, or one that two specs name */
+        if (!kept || strcmp(names[kept - 1], names[i]))
+            names[kept++] = names[i];
+        else
+            free(names[i]);
+    out("/* Generated by hookgen --routes: the symbols that a hook or a route line names, sorted by strcmp, which the "
+        "recompiler calls through their dispatch slots. Don't edit */\n");
+    out("#define HOOK_ROUTE_COUNT %lu\n", (unsigned long)kept);
+    out("static const char* const hook_route_names[HOOK_ROUTE_COUNT + 1] = {\n");
+    for (i = 0; i < kept; i++) {
+        out("    \"%s\",\n", names[i]);
+        free(names[i]);
+    }
+    out("    0};\n");
+    free(names);
+    flush(path);
+}
+
 int main(int argc, char** argv) {
-    const char *header = NULL, *table = NULL;
-    int i;
+    const char *header = NULL, *table = NULL, *routes_path = NULL;
+    char* specs[MAX_SPECS];
+    int i, nspecs = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--header") && i + 1 < argc)
             header = argv[++i];
         else if (!strcmp(argv[i], "--out") && i + 1 < argc)
             table = argv[++i];
+        else if (!strcmp(argv[i], "--routes") && i + 1 < argc)
+            routes_path = argv[++i];
         else if (!strcmp(argv[i], "--prefix") && i + 1 < argc)
             prefix = argv[++i];
-        else if (argv[i][0] != '-' && !spec_path)
-            spec_path = argv[i];
+        else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
+            specs[nspecs++] = argv[i];
         else
-            spec_path = NULL, i = argc;
+            nspecs = 0, i = argc;
     }
-    if (!spec_path || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC\n");
+    if (routes_path && nspecs && !header && !table) {
+        write_routes(routes_path, specs, nspecs);
+        free(obuf);
+        return 0;
+    }
+    if (nspecs != 1 || (!header && !table)) {
+        fprintf(stderr, "usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC\n"
+                        "       hookgen --routes OUT.inc SPEC...\n");
         return 2;
     }
+    spec_path = specs[0];
     for (i = 0; prefix[i]; i++) { /* an identifier, its macros' prefix the same in capitals */
         char ch = prefix[i];
         if (i == MAX_NAME - 1 || !(ch == '_' || (ch >= 'a' && ch <= 'z') || (i && ch >= '0' && ch <= '9'))) {

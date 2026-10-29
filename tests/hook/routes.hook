@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# a second spec for the route list (tests/hook_routes.c): a symbol versions.hook names too, a mangled one and a route
+# line
+route wrapped
+family libc
+hook lock(addr m) -> u32 = other_lock
+hook _ZN2nn2os4WaitEv() = os_wait
