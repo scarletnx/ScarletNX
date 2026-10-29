@@ -21,7 +21,6 @@ guest programs the tests compile for the console (tests/gnuabi, tests/qemu_ref) 
 
 import argparse
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -111,12 +110,13 @@ def main():
         print('gnu_extensions: the rules miss their own sample: %s' % lines)
         return 1
     repo = Path(args.repo)
-    files = subprocess.run(
-        ['git', '-C', str(repo), 'ls-files', '--', *['src/' + s for s in SOURCES], *['tests/' + s for s in SOURCES]],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    # the tree as it is, not git's index: git refuses a checkout another user owns, as a CI container's root sees it
+    files = sorted(
+        str(path.relative_to(repo)).replace('\\', '/')
+        for top in ('src', 'tests')
+        for path in (repo / top).rglob('*')
+        if path.is_file() and any(path.match(s) for s in SOURCES)
+    )
     found = []
     for name in files:
         if not name.startswith(LEFT_OUT):
