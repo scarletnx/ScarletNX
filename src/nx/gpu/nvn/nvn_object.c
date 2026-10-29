@@ -78,7 +78,7 @@ static const i32 device_info[NVN_DEVICE_INFO_ITEMS] = {
 
 void nvn_DeviceBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
-    memset(GP(b), 0, sizeof(NvnDeviceBuilder));
+    memset(GP(b), 0, sizeof(NvnDeviceBuilder)); /* guest memory: every byte the game sees */
 }
 void nvn_DeviceBuilderSetFlags(CPU* c, u64 b, i32 flags) {
     (void)c;
@@ -305,7 +305,7 @@ int nvn_DeviceRegisterFastClearDepth(CPU* c, u64 d, f32 depth) {
 /* ============================================================ memory pools */
 void nvn_MemoryPoolBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
-    memset(GP(b), 0, sizeof(NvnPoolBuilder));
+    memset(GP(b), 0, sizeof(NvnPoolBuilder)); /* guest memory: every byte the game sees */
 }
 void nvn_MemoryPoolBuilderSetDevice(CPU* c, u64 b, u64 d) {
     (void)c;
@@ -445,7 +445,7 @@ u64 nvn_MemoryPoolGetSize(CPU* c, u64 p) {
 void nvn_BufferBuilderSetDefaults(CPU* c, u64 b) {
     u64 device = NVN_OBJ(NvnBufferBuilder, b)->device;
     (void)c;
-    memset(GP(b), 0, sizeof(NvnBufferBuilder));
+    memset(GP(b), 0, sizeof(NvnBufferBuilder)); /* guest memory: every byte the game sees */
     NVN_OBJ(NvnBufferBuilder, b)->device = device;
 }
 void nvn_BufferBuilderSetDevice(CPU* c, u64 b, u64 d) {
@@ -612,7 +612,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u32 tic[8];
     if (!slot) return;
     if (!t) { /* no texture: an empty descriptor */
-        memset(GP(slot), 0, sizeof tic);
+        memset(GP(slot), 0, sizeof tic); /* guest memory: every byte the game sees */
         return;
     }
     memcpy(&tex, GP(t), sizeof tex);
@@ -654,7 +654,7 @@ void nvn_TextureBuilderSetDefaults(CPU* c, u64 b) {
     u64 device = TB(b)->device;
     NvnTexBuilder* o = TB(b);
     (void)c;
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
     o->device = device;
     o->d.target = NVN_TEXTURE_TARGET_2D;
     o->d.width = o->d.height = o->d.depth = o->d.levels = 1;
@@ -700,7 +700,7 @@ void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     NvnTexBuilder* o = TB(b);
     (void)c;
     o->d.bits &= (u8)~(NVN_TEX_HAS_LAYOUT | NVN_TEX_BLOCK_H);
-    memset(o->layout, 0, sizeof o->layout);
+    memset(o->layout, 0, sizeof o->layout); /* guest memory: every byte the game sees */
     if (!layout) return;
     memcpy(o->layout, GP(layout), sizeof o->layout);
     o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | ((o->layout[0] + 1u) & NVN_TEX_BLOCK_H));
@@ -1090,15 +1090,13 @@ void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
         {NVN_FORMAT_BGRA8_SRGB, 0x200d12120ull},
     };
     const NvnTexture* o = CT(t);
-    u8 s[0x58];
     u64 color = 0, size = 0, flags = 0;
-    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0, bits;
-    size_t i;
+    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0;
     (void)c;
     (void)unused;
-    for (i = 0; i < sizeof colors / sizeof *colors; i++)
+    for (size_t i = 0; i < sizeof colors / sizeof *colors; i++)
         if (colors[i].format == o->d.format) color = colors[i].color;
-    bits = (u32)(color & 0xff); /* the format's bits per pixel */
+    u32 bits = (u32)(color & 0xff); /* the format's bits per pixel */
     if (o->d.flags & NVN_TEX_LINEAR) {
         layout = 1;
         pitch = o->d.stride;
@@ -1114,7 +1112,7 @@ void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
         size = (u64)pitch * (((u64)height + (8u << th) - 1) & ~((u64)(8u << th) - 1));
     }
     if (size) flags = 1ull << 63;
-    memset(s, 0, sizeof s);
+    u8 s[0x58] = {0};
     snx_st_le32(s, width);
     snx_st_le32(s + 0x04, height);
     snx_st_le64(s + 0x08, color);
@@ -1145,7 +1143,7 @@ int nvn_TextureViewCompare(CPU* c, u64 a, u64 b) {
 }
 void nvn_TextureViewSetDefaults(CPU* c, u64 v) {
     (void)c;
-    memset(GP(v), 0, sizeof(NvnView));
+    memset(GP(v), 0, sizeof(NvnView)); /* guest memory: every byte the game sees */
 }
 void nvn_TextureViewSetLevels(CPU* c, u64 v, i32 base, i32 n) {
     NvnView* o = VW(v);
@@ -1234,7 +1232,7 @@ void nvn_TextureViewSetSwizzle(CPU* c, u64 v, i32 r, i32 g, i32 b, i32 a) {
 void nvn_SamplerBuilderSetDefaults(CPU* c, u64 b) {
     NvnSamplerPar* o = SB(b);
     (void)c;
-    memset(GP(b), 0, sizeof(NvnSamplerBuilder));
+    memset(GP(b), 0, sizeof(NvnSamplerBuilder));          /* guest memory: every byte the game sees */
     o->min_filter = NVN_MIN_FILTER_NEAREST_MIPMAP_LINEAR; /* GL's defaults */
     o->mag_filter = NVN_MAG_FILTER_LINEAR;
     o->wrap_s = o->wrap_t = o->wrap_r = NVN_WRAP_MODE_REPEAT;
@@ -1425,7 +1423,7 @@ void nvn_SamplerFinalize(CPU* c, u64 s) {
 int nvn_ProgramInitialize(CPU* c, u64 p, u64 d) {
     (void)c;
     (void)d;
-    memset(GP(p), 0, sizeof(NvnProgram));
+    memset(GP(p), 0, sizeof(NvnProgram)); /* guest memory: every byte the game sees */
     NVN_OBJ(NvnProgram, p)->magic = NVN_MAGIC('P', 'R', 'O', 'G');
     return 1;
 }
@@ -1499,22 +1497,21 @@ static void xfb_of(u64 control, u64 serial) {
                                    0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
                                    0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
     const u8* c = GP(control);
-    NvnXfbEntry e;
-    u32 i, j, k;
     if (!c[0x6ec]) return;
-    memset(&e, 0, sizeof e);
+    NvnXfbEntry e = {0};
     e.serial = serial;
-    for (i = 0; i < 4; i++) {
+    for (u32 i = 0; i < 4; i++) {
         u32 stride = gr16(control + 0x6dc + 2 * (u64)i), groups = c[0x6e8 + i], n = 0;
         if (c[0x6e4 + i])
             LOG_LIMIT(1, "nvn: transform feedback into stream %u is captured as stream 0\n", c[0x6e4 + i]);
         e.x.stride[i] = (u16)stride;
         e.x.count[i] = (u8)(stride / 4 > 128 ? 128 : stride / 4);
-        for (j = 0; j < groups && j < 0x80; j++) {
+        for (u32 j = 0; j < groups && j < 0x80; j++) {
             i32 loc = (i8)c[0xdc + 0x80 * i + j];
             u32 start = c[0x2dc + 0x80 * i + j], count = c[0x4dc + 0x80 * i + j];
             u32 word = loc < 0 ? 0xff : loc < 32 ? word_of[loc] : 0x20 + 4 * (u32)(loc - 0x20);
-            for (k = 0; k < count && n < 128; k++) e.x.layout[i][n++] = (u8)(word == 0xff ? 0xff : word + start + k);
+            for (u32 k = 0; k < count && n < 128; k++)
+                e.x.layout[i][n++] = (u8)(word == 0xff ? 0xff : word + start + k);
         }
     }
     pm_lock(&g_nvn.object.xfb_lock);
@@ -1538,6 +1535,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         LOG_LIMIT(8, "nvn: nvnProgramSetShaders with %d stages\n", n);
         return 0;
     }
+    /* guest memory: every byte the game sees */
     memset(o->st, 0, sizeof o->st);
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
@@ -1607,7 +1605,7 @@ int nvn_SyncInitializeFromFencedGLSync(CPU* c, u64 s, u64 d, u32 gl_sync, u64 st
     (void)c;
     (void)d;
     (void)gl_sync;
-    memset(GP(s), 0, sizeof(NvnSync));
+    memset(GP(s), 0, sizeof(NvnSync)); /* guest memory: every byte the game sees */
     if (status) gw32(status, 1);
     LOG_LIMIT(1, "nvn: the game asked for an OpenGL sync, which the runtime has no OpenGL for\n");
     return 0;
@@ -1636,7 +1634,7 @@ void nvn_SyncFinalize(CPU* c, u64 s) {
 /* ============================================================ events */
 void nvn_EventBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
-    memset(GP(b), 0, sizeof(NvnEventBuilder));
+    memset(GP(b), 0, sizeof(NvnEventBuilder)); /* guest memory: every byte the game sees */
 }
 void nvn_EventBuilderSetStorage(CPU* c, u64 b, u64 pool, i64 offset) {
     NvnEventBuilder* o = NVN_OBJ(NvnEventBuilder, b);

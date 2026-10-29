@@ -212,7 +212,7 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
     u32 sw[4], w = t->d.width, h = t->d.height, d = t->d.depth, layer = 0, i;
     u64 address = t->gpu;
     NvnTexLayout l;
-    memset(out, 0, 8 * sizeof *out);
+    memset(out, 0, 8 * sizeof *out); /* every word: the descriptor goes to guest memory */
     if (format >= sizeof tic_formats / sizeof *tic_formats || !tic_formats[format].word) return 0;
     f = &tic_formats[format];
     nvn_tex_layout(&t->d, &l);
@@ -332,7 +332,7 @@ void nvn_tsc_encode(const NvnSamplerPar* p, u32 out[8]) {
     u32 a = (u32)(clampf(p->anisotropy, 1.0f, 16.0f) + 0.5f) - 1;
     u32 m = p->min_filter < 6 ? p->min_filter : 0;
     if (hi < lo) hi = lo;
-    memset(out, 0, 8 * sizeof *out);
+    memset(out, 0, 8 * sizeof *out); /* every word: the descriptor goes to guest memory */
     out[0] = (u32)wrap[p->wrap_s & 7] | (u32)wrap[p->wrap_t & 7] << 3 | (u32)wrap[p->wrap_r & 7] << 6 |
              (u32)(p->compare_mode == NVN_COMPARE_MODE_COMPARE_R_TO_TEXTURE) << 9 |
              (u32)((p->compare_func ? p->compare_func - 1u : 0) & 7) << 10 | 1u << 13 | 1u << 14 | 1u << 17 |

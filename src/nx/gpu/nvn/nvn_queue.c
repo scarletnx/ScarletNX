@@ -47,7 +47,7 @@ void nvn_QueueBuilderSetDefaults(CPU* c, u64 b) {
     NvnQueueBuilder* o = QB(b);
     u64 device = o->device; /* SetDefaults keeps the device, as the game's driver does */
     (void)c;
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
     o->device = device;
     o->cmd_size = 65536; /* the device's defaults */
     o->compute_size = 262144;
@@ -295,7 +295,7 @@ i32 nvn_SyncWait(CPU* c, u64 sync, u64 timeout) {
 #define WB(b) NVN_OBJ(NvnWindowBuilder, b)
 void nvn_WindowBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
-    memset(GP(b), 0, sizeof(NvnWindowBuilder));
+    memset(GP(b), 0, sizeof(NvnWindowBuilder)); /* guest memory: every byte the game sees */
     WB(b)->interval = 1;
 }
 /* the device and the native window: one each, which SDK 5's 0x2c bytes of builder have no room for. The runtime has
@@ -506,13 +506,12 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
     NvnWindow* o = NVN_OBJ(NvnWindow, w);
     NvnQueue* queue = NVN_OBJ(NvnQueue, q);
     u64 tex = index >= 0 && index < 4 && index < o->count ? o->texture[index] : 0;
-    NvnReplayPresent p;
     NvnTexture t;
     u32 value, shown;
     int paced;
     u64 period = present_period(o, &paced), slot;
     (void)c;
-    memset(&p, 0, sizeof p);
+    NvnReplayPresent p = {0};
     if (o->crop[2] > 0 && o->crop[3] > 0) {
         p.crop[0] = o->crop[0];
         p.crop[1] = o->crop[1];

@@ -32,17 +32,15 @@ typedef struct {
     int bw, bhp; /* a block's texels */
 } TexPlane;
 static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
-    NvnTexLayout l;
-    unsigned level = v && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0, th, td;
-    u32 w, h;
-    int bpb;
-    memset(p, 0, sizeof *p);
+    unsigned level = v && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0;
+    *p = (TexPlane){0};
     if (t->magic != NVN_MAGIC('T', 'E', 'X', 0) || !t->gpu) return 0;
-    bpb = nvn_fmt_bpb((int)(v && (v->set & NVN_VIEW_FORMAT) ? v->format : t->d.format), &p->bw, &p->bhp);
+    int bpb = nvn_fmt_bpb((int)(v && (v->set & NVN_VIEW_FORMAT) ? v->format : t->d.format), &p->bw, &p->bhp);
     if (bpb <= 0 || p->bw <= 0 || p->bhp <= 0) return 0;
+    NvnTexLayout l;
     nvn_tex_layout(&t->d, &l);
-    w = t->d.width >> level ? t->d.width >> level : 1;
-    h = t->d.height >> level ? t->d.height >> level : 1;
+    u32 w = t->d.width >> level ? t->d.width >> level : 1;
+    u32 h = t->d.height >> level ? t->d.height >> level : 1;
     p->bpb = (u32)bpb;
     p->wb = (w + (u32)p->bw - 1) / (u32)p->bw * (u32)bpb;
     p->rows = (h + (u32)p->bhp - 1) / (u32)p->bhp;
@@ -55,6 +53,7 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
         p->pitch = t->d.stride ? t->d.stride : p->wb;
         return 1;
     }
+    unsigned th, td;
     nvn_tex_level_tiles(&t->d, level, &th, &td);
     p->bl = 1;
     p->bh = th;
@@ -63,7 +62,7 @@ static int tex_plane(const NvnTexture* t, const NvnView* v, TexPlane* p) {
 }
 /* the plane's side of a copy of the region at texels (x, y) of slice or layer z */
 static void tex_side(const TexPlane* p, i32 x, i32 y, i32 z, GpuDmaSide* s) {
-    memset(s, 0, sizeof *s);
+    *s = (GpuDmaSide){0};
     s->addr = p->base + (p->volume ? 0 : (u64)z * p->layer);
     s->bl = p->bl;
     s->pitch = p->pitch;
@@ -95,23 +94,21 @@ static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
 /* between a buffer at buf and a texture's region, either way (to_tex: the buffer is the source) */
 static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int to_tex, const i64 stride[2],
                                 const u8* snap) {
-    TexPlane p;
-    GpuDmaOp o;
-    i32 k, depth = r->r.depth > 0 ? r->r.depth : 1;
-    u64 row, image;
+    i32 depth = r->r.depth > 0 ? r->r.depth : 1;
     if (r->r.width <= 0 || r->r.height <= 0) return;
+    TexPlane p;
     if (!tex_plane(t, r->has_view ? &r->view : NULL, &p)) {
         LOG_LIMIT(4, "nvn: a copy of a texture of format %#x, which the runtime can't lay out\n", t->d.format);
         return;
     }
-    memset(&o, 0, sizeof o);
+    GpuDmaOp o = {0};
     region_lines(&p, r->r.width, r->r.height, &o);
-    row = stride[0] ? (u64)stride[0] : o.width;
-    image = stride[1] ? (u64)stride[1] : row * o.lines;
-    for (k = 0; k < depth; k++) {
+    u64 row = stride[0] ? (u64)stride[0] : o.width;
+    u64 image = stride[1] ? (u64)stride[1] : row * o.lines;
+    for (i32 k = 0; k < depth; k++) {
         GpuDmaSide* b = to_tex ? &o.src : &o.dst;
         tex_side(&p, r->r.xoffset, r->r.yoffset, r->r.zoffset + k, to_tex ? &o.dst : &o.src);
-        memset(b, 0, sizeof *b);
+        *b = (GpuDmaSide){0};
         b->addr = r->buffer + image * (u64)k;
         b->pitch = (u32)row;
         o.snap = snap ? snap + image * (u64)k : NULL;
@@ -125,7 +122,7 @@ static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u
     DsSurf t;
     int depth;
     u32 msaa;
-    memset(o, 0, sizeof *o);
+    *o = (Surf2D){0};
     if (!nvn_draw_surface(snapshot, has_v ? v : NULL, &t, &depth, &msaa) || (t.mem >> 16 & 1) || z < 0) return 0;
     *bpp = depth ? 0 : gpu_color_bpp(t.format);
     o->format = t.format;
@@ -143,8 +140,7 @@ static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u
 }
 /* a surface as a plane of the GPU's blit from memory: its slice's rows, as fermi2d.c's f2d_plane lays a 2D surface */
 static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
-    GpuDmaSide p;
-    memset(&p, 0, sizeof p);
+    GpuDmaSide p = {0};
     p.addr = s->addr;
     p.bl = !s->linear;
     p.pitch = s->pitch;
@@ -157,16 +153,14 @@ static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
    channels' blits are (maxwell/fermi2d.c): the renderer's image blit when the source is a render target, filtered when
    it scales, else its blit from memory, nearest sampled, between formats of the same bytes a pixel */
 static void blit_texture(const NvnPCopyT2T* r) {
-    i32 k, depth = r->sr.depth > 0 ? r->sr.depth : 1;
-    double sdx, sdy;
+    i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0) return;
-    sdx = (double)r->sr.width / r->dr.width;
-    sdy = (double)r->sr.height / r->dr.height;
+    double sdx = (double)r->sr.width / r->dr.width;
+    double sdy = (double)r->sr.height / r->dr.height;
     LOG_LIMIT(1, "nvn: the first texture blit, %dx%d to %dx%d\n", r->sr.width, r->sr.height, r->dr.width, r->dr.height);
-    for (k = 0; k < depth; k++) {
+    for (i32 k = 0; k < depth; k++) {
         Surf2D s, d;
-        u32 bs = 0, bd = 0, n, i, *tab;
-        GpuBlit b;
+        u32 bs = 0, bd = 0;
         if (!surf2d(r->src, &r->sv, r->has_sv, r->sr.zoffset + k, &s, &bs) ||
             !surf2d(r->dst, &r->dv, r->has_dv, r->dr.zoffset + k, &d, &bd)) {
             LOG_LIMIT(4, "nvn: a texture blit of a texture no render target takes isn't replayed\n");
@@ -181,21 +175,21 @@ static void blit_texture(const NvnPCopyT2T* r) {
             continue;
         }
         /* the destination rectangle within the destination, each column and row its source's, nearest */
-        memset(&b, 0, sizeof b);
+        GpuBlit b = {0};
         b.x0 = r->dr.xoffset > 0 ? (u32)r->dr.xoffset : 0;
         b.y0 = r->dr.yoffset > 0 ? (u32)r->dr.yoffset : 0;
         b.x1 = (u32)((i64)r->dr.xoffset + r->dr.width < (i64)d.width ? (i64)r->dr.xoffset + r->dr.width : d.width);
         b.y1 = (u32)((i64)r->dr.yoffset + r->dr.height < (i64)d.height ? (i64)r->dr.yoffset + r->dr.height
                                                                          : d.height);
         if (b.x0 >= b.x1 || b.y0 >= b.y1) continue;
-        n = b.x1 - b.x0;
-        tab = (u32*)malloc(sizeof *tab * ((size_t)n + (b.y1 - b.y0)));
+        u32 n = b.x1 - b.x0;
+        u32* tab = (u32*)malloc(sizeof *tab * ((size_t)n + (b.y1 - b.y0)));
         if (!tab) fatal("nvn: out of memory for a texture blit %u pixels wide", n);
-        for (i = 0; i < n; i++) {
+        for (u32 i = 0; i < n; i++) {
             double at = r->sr.xoffset + ((double)((i64)b.x0 + i - r->dr.xoffset) + 0.5) * sdx;
             tab[i] = at <= 0 ? 0 : at >= (double)s.width ? s.width - 1 : (u32)at;
         }
-        for (i = b.y0; i < b.y1; i++) {
+        for (u32 i = b.y0; i < b.y1; i++) {
             double at = r->sr.yoffset + ((double)((i64)i - r->dr.yoffset) + 0.5) * sdy;
             tab[n + i - b.y0] = at <= 0 ? 0 : at >= (double)s.height ? s.height - 1 : (u32)at;
         }
@@ -213,9 +207,7 @@ static void blit_texture(const NvnPCopyT2T* r) {
 }
 /* between two textures' regions of the same size and block bytes */
 static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, const NvnTexture* d) {
-    TexPlane ps, pd;
-    GpuDmaOp o;
-    i32 k, depth = r->sr.depth > 0 ? r->sr.depth : 1;
+    i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     /* a multisample resolve (Downsample): the 2D engine's blit of the source's samples onto the destination's
        pixels, which the renderer resolves on the GPU when the source is its multisampled target (vk_blit2d) */
     if (r->flags & NVN_COPY_RESOLVE) {
@@ -229,6 +221,7 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
         blit_texture(&q);
         return;
     }
+    TexPlane ps, pd;
     if (!tex_plane(s, r->has_sv ? &r->sv : NULL, &ps) || !tex_plane(d, r->has_dv ? &r->dv : NULL, &pd)) return;
     if (r->sr.width != r->dr.width || r->sr.height != r->dr.height || ps.bpb != pd.bpb || ps.bw != pd.bw ||
         ps.bhp != pd.bhp) {
@@ -236,9 +229,9 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
         return;
     }
     if (r->sr.width <= 0 || r->sr.height <= 0) return;
-    memset(&o, 0, sizeof o);
+    GpuDmaOp o = {0};
     region_lines(&ps, r->sr.width, r->sr.height, &o);
-    for (k = 0; k < depth; k++) {
+    for (i32 k = 0; k < depth; k++) {
         tex_side(&ps, r->sr.xoffset, r->sr.yoffset, r->sr.zoffset + k, &o.src);
         tex_side(&pd, r->dr.xoffset, r->dr.yoffset, r->dr.zoffset + k, &o.dst);
         launch(&o);
@@ -247,10 +240,9 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
 /* n bytes between buffers, as lines of up to 64 KiB */
 static void copy_buffer_buffer(u64 src, u64 dst, u64 n) {
     const u32 line = 1u << 16;
-    GpuDmaOp o;
     while (n) {
         u64 lines = n / line;
-        memset(&o, 0, sizeof o);
+        GpuDmaOp o = {0};
         o.multi = 1;
         if (lines) {
             o.width = line;
@@ -275,11 +267,10 @@ static void copy_buffer_buffer(u64 src, u64 dst, u64 n) {
    component, reading nothing */
 static void fill_buffer(u64 dst, u64 n, u32 value) {
     const u32 line = 1u << 14; /* elements of 4 bytes a line */
-    GpuDmaOp o;
     n /= 4;
     while (n) {
         u64 lines = n / line;
-        memset(&o, 0, sizeof o);
+        GpuDmaOp o = {0};
         o.multi = o.remap = o.fill = 1;
         o.cs = 4;
         o.ns = o.nd = 1;
@@ -317,21 +308,18 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_B2T:
         case OP_COPY_T2B: {
             NvnPCopyB2T r;
-            NvnTexture t;
             memcpy(&r, GP(payload), sizeof r);
             if (!r.texture) return 1;
-            memset(&t, 0, sizeof t);
+            NvnTexture t = {0}; /* past the snapshot's bytes */
             memcpy(&t, GP(r.texture), NVN_TEX_SNAP);
             copy_buffer_texture(&r, &t, op == OP_COPY_B2T, stride, NULL);
             return 1;
         }
         case OP_COPY_T2T: {
             NvnPCopyT2T r;
-            NvnTexture s, d;
             memcpy(&r, GP(payload), sizeof r);
             if (!r.src || !r.dst) return 1;
-            memset(&s, 0, sizeof s);
-            memset(&d, 0, sizeof d);
+            NvnTexture s = {0}, d = {0}; /* past the snapshots' bytes */
             memcpy(&s, GP(r.src), NVN_TEX_SNAP);
             memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
             copy_texture_texture(&r, &s, &d);

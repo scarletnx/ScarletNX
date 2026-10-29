@@ -255,24 +255,21 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
 /* a render target from a texture snapshot and its view, as the 3D engine's registers describe one: a multisampled
    texture's size in samples, its sample layout in *msaa (the texture header's, nvn_tic.c) */
 static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* depth, u32* msaa) {
-    NvnTexture t;
-    NvnTexLayout l;
-    u32 format, level = 0, layer = 0, layers = 1, mode;
-    unsigned th, td;
-    memset(s, 0, sizeof *s);
+    memset(s, 0, sizeof *s); /* every byte: the targets are compared as bytes (keep) */
     *msaa = DS_MSAA_1X1;
     if (!snapshot) return 0;
-    memset(&t, 0, sizeof t);
+    NvnTexture t = {0}; /* past the snapshot's bytes */
     memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
     if (t.magic != NVN_MAGIC('T', 'E', 'X', 0) || !t.gpu) return 0;
-    format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
+    u32 format = has_view && (v->set & NVN_VIEW_FORMAT) ? v->format : t.d.format;
     s->format = nvn_rt_format(format, depth);
     if (!s->format) {
         LOG_LIMIT(8, "nvn: a render target of format %#x, which no target takes\n", format);
         return 0;
     }
+    NvnTexLayout l;
     nvn_tex_layout(&t.d, &l);
-    if (has_view && (v->set & NVN_VIEW_LEVELS)) level = v->base_level;
+    u32 level = has_view && (v->set & NVN_VIEW_LEVELS) ? v->base_level : 0, layer = 0, layers = 1;
     if (t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY || t.d.target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY ||
         t.d.target == NVN_TEXTURE_TARGET_CUBEMAP || t.d.target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY) {
         layers = t.d.target == NVN_TEXTURE_TARGET_CUBEMAP ? 6 : t.d.depth;
@@ -282,7 +279,7 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
         }
     }
     s->gva = t.gpu + nvn_tex_level_offset(&t.d, level) + (u64)layer * l.layer_size;
-    mode = nvn_tex_msaa(t.d.samples);
+    u32 mode = nvn_tex_msaa(t.d.samples);
     *msaa = mode;
     s->width = (t.d.width >> level ? t.d.width >> level : 1) << ds_msaa_log2_x(mode);
     s->height = (t.d.height >> level ? t.d.height >> level : 1) << ds_msaa_log2_y(mode);
@@ -297,6 +294,7 @@ static int target(u64 snapshot, const NvnView* v, int has_view, DsSurf* s, int* 
         /* the width a whole number of GOBs (64 bytes) across, as the game's driver gives a block-linear target */
         int bw, bh, bpb = nvn_fmt_bpb((int)format, &bw, &bh);
         if (bpb > 0 && bw == 1) s->width = ((u32)bpb * s->width + 63) / 64 * 64 / (u32)bpb;
+        unsigned th, td;
         nvn_tex_level_tiles(&t.d, level, &th, &td);
         if (t.d.target == NVN_TEXTURE_TARGET_3D) { /* a volume: its slices, the GOB slices of the 3D surface */
             u32 slices = t.d.depth >> level ? t.d.depth >> level : 1;
@@ -318,18 +316,18 @@ int nvn_draw_surface(u64 snapshot, const NvnView* v, DsSurf* s, int* depth, u32*
 }
 static void set_targets(NvnDraw* d, u64 payload) {
     NvnPSetRT r;
-    DsTargets t;
-    i32 i;
-    int depth, have = 0;
-    u32 msaa;
     memcpy(&r, GP(payload), sizeof r);
-    memset(&t, 0, sizeof t);
+    DsTargets t;
+    memset(&t, 0, sizeof t); /* every byte: keep compares the bytes */
     t.count = r.count > 0 && r.count <= DS_TARGETS_MAX ? (u32)r.count : 0;
     t.srgb_write = 1; /* NVN writes sRGB targets as sRGB */
     /* NVN requires every target of a draw to have the same samples: the first one bound gives the layout, and one
        with other samples isn't bound */
-    for (i = 0; i <= (i32)t.count; i++) {
+    int have = 0;
+    for (i32 i = 0; i <= (i32)t.count; i++) {
         DsSurf* s = i < (i32)t.count ? &t.color[i] : &t.depth;
+        int depth;
+        u32 msaa;
         int ok = i < (i32)t.count ? target(r.color[i], &r.cview[i], r.has_cview[i], s, &depth, &msaa) && !depth
                                   : target(r.depth, &r.dview, r.has_dview, s, &depth, &msaa) && depth;
         if (ok && have && msaa != t.msaa) {
@@ -338,7 +336,7 @@ static void set_targets(NvnDraw* d, u64 payload) {
             ok = 0;
         }
         if (!ok) {
-            memset(s, 0, sizeof *s);
+            memset(s, 0, sizeof *s); /* every byte: the targets are compared as bytes (keep) */
             continue;
         }
         t.msaa = (u8)msaa;
@@ -352,7 +350,7 @@ static void set_targets(NvnDraw* d, u64 payload) {
 /* ---- the groups, made of the NVN state at a draw */
 static void make_programs(NvnDraw* d) {
     DsPrograms p;
-    memset(&p, 0, sizeof p);
+    memset(&p, 0, sizeof p); /* every byte: keep compares the bytes */
     memcpy(p.code, d->code, sizeof p.code);
     p.on = d->prog_on;
     p.clip_enable = 0xff; /* NVN has no clip distance enables: those the program writes clip */
@@ -362,9 +360,8 @@ static void make_programs(NvnDraw* d) {
 }
 static void make_vertex_format(NvnDraw* d) {
     DsVertexFormat f;
-    u32 i;
-    memset(&f, 0, sizeof f);
-    for (i = 0; i < DS_ATTRS; i++) {
+    memset(&f, 0, sizeof f); /* every byte: keep compares the bytes */
+    for (u32 i = 0; i < DS_ATTRS; i++) {
         u32 a = i < d->nattr ? d->attr[i] : 0, s = (u32)nvn_field(a, NVN_VA_STREAM);
         u8 size, type;
         if (!nvn_field(a, NVN_VA_FORMAT) || !attr_format((u32)nvn_field(a, NVN_VA_FORMAT), &size, &type)) {
@@ -382,7 +379,7 @@ static void make_vertex_format(NvnDraw* d) {
         if (nvn_field(a, NVN_VA_FORMAT) == NVN_FORMAT_BGRA8) f.bgra |= 1u << i;
         f.stream_on |= 1u << s;
     }
-    for (i = 0; i < 16 && i < d->nstream; i++) {
+    for (u32 i = 0; i < 16 && i < d->nstream; i++) {
         f.stride[i] = (u16)d->stream[i].stride;
         f.divisor[i] = d->stream[i].divisor;
         if (d->stream[i].divisor) f.instanced |= 1u << i;
@@ -390,10 +387,10 @@ static void make_vertex_format(NvnDraw* d) {
     keep(&d->ds.vfmt, &f, sizeof f, &d->ds.gen[DS_VFORMAT]);
 }
 static void make_blend(NvnDraw* d) {
+    u32 logic = (u32)nvn_field(d->color, NVN_COLOR_LOGIC_OP);
     DsBlend b;
-    u32 i, logic = (u32)nvn_field(d->color, NVN_COLOR_LOGIC_OP);
-    memset(&b, 0, sizeof b);
-    for (i = 0; i < DS_TARGETS_MAX; i++) {
+    memset(&b, 0, sizeof b); /* every byte: keep compares the bytes */
+    for (u32 i = 0; i < DS_TARGETS_MAX; i++) {
         u64 w = d->blend[i];
         b.en[i] = (u8)((nvn_field(d->color, NVN_COLOR_BLEND_EN) >> i) & 1);
         b.cop[i] = from1(nvn_field(w, NVN_BLEND_EQ_RGB), DS_BLEND_MAX, DS_BLEND_ADD);
@@ -412,9 +409,9 @@ static void make_blend(NvnDraw* d) {
     keep(&d->ds.blend, &b, sizeof b, &d->ds.gen[DS_BLEND]);
 }
 static void make_raster_key(NvnDraw* d) {
-    DsRasterKey k;
     u32 mode = (u32)nvn_field(d->poly, NVN_POLY_MODE);
-    memset(&k, 0, sizeof k);
+    DsRasterKey k;
+    memset(&k, 0, sizeof k); /* every byte: keep compares the bytes */
     k.polygon = (u8)(mode == NVN_POLYGON_MODE_POINT  ? DS_POLYGON_POINT
                      : mode == NVN_POLYGON_MODE_LINE ? DS_POLYGON_LINE
                                                      : DS_POLYGON_FILL);
@@ -434,11 +431,10 @@ static u32 surface_height(const DsTargets* t) {
     return t->depth.gva ? t->depth.height : 0;
 }
 static void make_dynamic(NvnDraw* d, u32 base_instance) {
-    DsDynamic y;
     u64 s = d->dss;
     u32 alpha = (u32)nvn_field(d->color, NVN_COLOR_ALPHA_FUNC);
-    int f;
-    memset(&y, 0, sizeof y);
+    DsDynamic y;
+    memset(&y, 0, sizeof y);                        /* every byte: keep compares the bytes */
     y.cull = (u8)nvn_field(d->poly, NVN_POLY_CULL); /* NVN's faces are Vulkan's cull modes */
     y.front_cw = nvn_field(d->poly, NVN_POLY_FRONT) == NVN_FRONT_FACE_CW;
     y.discard = d->discard;
@@ -457,7 +453,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
-    for (f = 0; f < 2; f++) {
+    for (int f = 0; f < 2; f++) {
         y.face[f].fail = from1(nvn_field(s, f ? NVN_DS_FAIL_B : NVN_DS_FAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
         y.face[f].zfail = from1(nvn_field(s, f ? NVN_DS_ZFAIL_B : NVN_DS_ZFAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
         y.face[f].pass = from1(nvn_field(s, f ? NVN_DS_ZPASS_B : NVN_DS_ZPASS_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
@@ -484,15 +480,14 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
 /* clamped to the 3D engine's 16-bit window coordinates */
 static u32 clamp16(i64 v) { return v < 0 ? 0 : v > 0xffff ? 0xffff : (u32)v; }
 static void make_viewports(NvnDraw* d) {
-    DsViewports v;
     int near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     /* clip space's y points up in both origins: an upper-left window's rows count down, so its scale is negative */
     int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
-    u32 j, k;
-    memset(&v, 0, sizeof v);
+    DsViewports v;
+    memset(&v, 0, sizeof v); /* every byte: keep compares the bytes */
     v.transform_on = 1;
     v.scissor_on = 1; /* scissor 0, the only one recorded: NVN's covers everything until it is set */
-    for (j = 0; j < DS_VIEWPORTS_MAX; j++) {
+    for (u32 j = 0; j < DS_VIEWPORTS_MAX; j++) {
         float x = d->vp[j][0], y = d->vp[j][1], w = d->vp[j][2], h = d->vp[j][3];
         float n = j ? 0.0f : d->depth[0], f = j ? 1.0f : d->depth[1];
         v.scale[j][0] = w * 0.5f;
@@ -501,7 +496,7 @@ static void make_viewports(NvnDraw* d) {
         v.translate[j][1] = y + h * 0.5f;
         v.scale[j][2] = near_zero ? f - n : (f - n) * 0.5f;
         v.translate[j][2] = near_zero ? n : (n + f) * 0.5f;
-        for (k = 0; k < 4; k++) v.swizzle[j] |= (u32)((d->swizzle[j][k] ^ (2 * k)) & 7) << (4 * k);
+        for (u32 k = 0; k < 4; k++) v.swizzle[j] |= (u32)((d->swizzle[j][k] ^ (2 * k)) & 7) << (4 * k);
         v.clip_x[j] = clamp16((i64)x) | clamp16((i64)w) << 16;
         v.clip_y[j] = clamp16((i64)y) | clamp16((i64)h) << 16;
         v.z_near[j] = n;
@@ -513,9 +508,8 @@ static void make_viewports(NvnDraw* d) {
 }
 static void make_vertex_buffers(NvnDraw* d) {
     DsVertexBuffers b;
-    u32 i;
-    memset(&b, 0, sizeof b);
-    for (i = 0; i < 16; i++) {
+    memset(&b, 0, sizeof b); /* every byte: keep compares the bytes */
+    for (u32 i = 0; i < 16; i++) {
         b.addr[i] = d->vbuf[i].address;
         b.size[i] = d->vbuf[i].size;
     }
@@ -559,11 +553,9 @@ static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 
     dc->count = dc->instances = 1; /* the GPU's: these only say there is a draw */
 }
 static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
-    NvnPDraw r;
-    DrawCall dc;
-    memset(&r, 0, sizeof r);
+    NvnPDraw r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
-    memset(&dc, 0, sizeof dc);
+    DrawCall dc = {0};
     dc.topology = (u32)r.prim; /* NVN's primitives are the 3D engine's numbers */
     if (r.ind)
         indirect(&dc, r.ind, r.mdi_count, r.mdi_max, r.mdi_stride, 16);
@@ -583,20 +575,16 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
    address only, and the GPU reads the count): the guest memory mapped contiguously from that address, at most 64 MiB */
 #define INDIRECT_INDEX_SPAN (64ull << 20)
 static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
-    NvnPDrawIdx r;
-    DrawCall dc;
-    DsIndex x;
-    u32 isz;
-    u64 cpu;
-    memset(&r, 0, sizeof r);
+    NvnPDrawIdx r = {0}; /* past the record's bytes */
     memcpy(&r, GP(payload), size < sizeof r ? size : sizeof r);
-    memset(&dc, 0, sizeof dc);
+    DrawCall dc = {0};
     if ((u32)r.index_type > NVN_INDEX_TYPE_UNSIGNED_INT || (!r.ind && r.count <= 0)) return;
-    isz = 1u << r.index_type;
-    memset(&x, 0, sizeof x);
+    u32 isz = 1u << r.index_type;
+    DsIndex x;
+    memset(&x, 0, sizeof x); /* every byte: keep compares the bytes */
     x.addr = r.index_buffer;
     if (r.ind) {
-        u64 run = gmmu_run(r.index_buffer, INDIRECT_INDEX_SPAN, &cpu);
+        u64 cpu, run = gmmu_run(r.index_buffer, INDIRECT_INDEX_SPAN, &cpu);
         if (run < isz) {
             LOG_LIMIT(4, "nvn: an indirect draw's index buffer at %llx isn't mapped\n",
                       (unsigned long long)r.index_buffer);
@@ -738,7 +726,8 @@ static void bind_program(NvnDraw* d, u64 payload) {
     /* the capture layout of the program's last stage before rasterization, when it binds one */
     if ((u32)r.stages & (NVN_SHADER_STAGE_VERTEX_BIT | NVN_SHADER_STAGE_TESS_CONTROL_BIT |
                          NVN_SHADER_STAGE_TESS_EVALUATION_BIT | NVN_SHADER_STAGE_GEOMETRY_BIT)) {
-        if (!r.serial || !nvn_program_xfb(r.serial, &d->xfb)) memset(&d->xfb, 0, sizeof d->xfb);
+        if (!r.serial || !nvn_program_xfb(r.serial, &d->xfb))
+            memset(&d->xfb, 0, sizeof d->xfb); /* every byte: keep compares them, the pipeline key hashes them */
         tf_buffers(d);
     }
     d->dirty |= D_PROGRAMS | D_BIND;
@@ -800,16 +789,14 @@ int nvn_draw_samples(NvnDraw* d, u64 address, u64 ticks) {
 static void clear_texture(NvnDraw* d, u64 payload) {
     NvnPClearTex r;
     DsState* x = &d->scratch;
-    DrawClear c;
-    DsTargets t;
-    i32 k, depth;
-    int is_depth;
-    u32 msaa;
     memcpy(&r, GP(payload), sizeof r);
     if (r.r.width <= 0 || r.r.height <= 0 || !(r.mask & 15) || !g_renderer->clear) return;
-    memset(&t, 0, sizeof t);
+    DsTargets t;
+    memset(&t, 0, sizeof t); /* every byte: keep compares the bytes */
     t.count = 1;
     t.srgb_write = 1;
+    int is_depth;
+    u32 msaa;
     int ok = target(r.texture, &r.view, r.has_view, &t.color[0], &is_depth, &msaa);
     t.msaa = (u8)msaa; /* a multisampled texture's every sample, in a region of its pixels */
     if (!ok || is_depth) {
@@ -821,18 +808,18 @@ static void clear_texture(NvnDraw* d, u64 payload) {
     x->owner = d->ds.owner;
     {
         DsViewports v;
-        memcpy(&v, &x->vp, sizeof v);
+        memcpy(&v, &x->vp, sizeof v); /* every byte, padding too: keep compares them */
         v.scissor_on = 1;
         v.scissor_x[0] = clamp16(r.r.xoffset) | clamp16((i64)r.r.xoffset + r.r.width) << 16;
         v.scissor_y[0] = clamp16(r.r.yoffset) | clamp16((i64)r.r.yoffset + r.r.height) << 16;
         keep(&x->vp, &v, sizeof v, &x->gen[DS_VIEWPORTS]);
     }
-    memset(&c, 0, sizeof c);
+    DrawClear c = {0};
     c.color_mask = (u32)r.mask & 15;
     c.scissored = 1;
     memcpy(c.color, r.c, sizeof c.color); /* floats, or the integers of an integer texture */
-    depth = r.r.depth > 0 ? r.r.depth : 1;
-    for (k = 0; k < depth; k++) {
+    i32 depth = r.r.depth > 0 ? r.r.depth : 1;
+    for (i32 k = 0; k < depth; k++) {
         c.layer = (u32)(r.r.zoffset + k);
         g_renderer->clear(x, &c, &d->own);
     }
@@ -861,13 +848,11 @@ static void dispatch(NvnDraw* d, u64 payload) {
 static double draw_texture_fixed(f32 v) { return floor((double)v * 256.0 + 0.5) / 256.0; }
 static void draw_texture(NvnDraw* d, u64 payload) {
     NvnPDrawTexture r;
-    DrawTexture t;
-    double x0, y0, x1, y1;
     memcpy(&r, GP(payload), sizeof r);
-    x0 = draw_texture_fixed(r.dst[0]), y0 = draw_texture_fixed(r.dst[1]);
-    x1 = draw_texture_fixed(r.dst[2]), y1 = draw_texture_fixed(r.dst[3]);
+    double x0 = draw_texture_fixed(r.dst[0]), y0 = draw_texture_fixed(r.dst[1]);
+    double x1 = draw_texture_fixed(r.dst[2]), y1 = draw_texture_fixed(r.dst[3]);
     if (x0 == x1 || y0 == y1 || d->render_off || !g_renderer->draw_texture) return;
-    memset(&t, 0, sizeof t);
+    DrawTexture t = {0};
     t.handle = (u32)r.handle; /* the texture's index in bits 0-19, its sampler's in 20-31 */
     t.x0 = (float)x0;
     t.y0 = (float)y0;
@@ -885,9 +870,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         case OP_SET_RT: set_targets(d, payload); return 1;
         case OP_CLEAR_COLOR: {
             NvnPClearColor r;
-            DrawClear c;
             memcpy(&r, GP(payload), sizeof r);
-            memset(&c, 0, sizeof c);
+            DrawClear c = {0};
             c.color_mask = (u32)r.mask & 15;
             c.slot = (u32)r.index;
             memcpy(c.color, r.rgba, sizeof c.color);
@@ -896,9 +880,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
         }
         case OP_CLEAR_DS: {
             NvnPClearDS r;
-            DrawClear c;
             memcpy(&r, GP(payload), sizeof r);
-            memset(&c, 0, sizeof c);
+            DrawClear c = {0};
             c.aspects = (r.depth_mask ? 1u : 0) | (r.stencil_mask ? 2u : 0);
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
