@@ -132,7 +132,9 @@ the game's image read from that image.
   section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
   No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
-  does, so a loop without SVCs gives its core to a waiting thread of higher priority.
+  does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
+  leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
+  target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers) and guest accesses are volatile (each happens, as on the hardware); logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is

@@ -7,13 +7,15 @@
    hand): every register, the flags, FP state, the stack memory and the SVC call. A miss (RtAPI.miss) stands in for
    the runtime JIT compiling the code at its pc: the module's function there, made live again, or the image's words
    as LLVM steps where no function is (the BR's target).
-   CPU.poll is set when each run starts: the AOT code must call rt->poll at the loop's backward branch, resuming at
-   its head. A second LLVM module built with --hook-direct-calls must run the same, with main's BL to func reaching
-   func through CPU.disp, where a wrapper counts it. With func's functions stale (SnxModule.stale, as the runtime
-   marks them when the guest patches their code: SNX_ABI 14) and out of CPU.disp, main's direct BL must leave the AOT
-   code at func's entry for rt->miss, and the run end the same. With main made stale while it runs (from rt->poll,
-   as a mod patches its caller from inside a call), the next call that returns into main must leave its AOT code
-   too, for the dispatch loop the runtime's threads run, and end the same.
+   CPU.poll is set when each run starts: the AOT code must call rt->poll at the loop's backward branch, and go on at
+   its head (a tail call of main itself, entered there). A second LLVM module built with --hook-direct-calls must run
+   the same, with main's BL to func reaching func through CPU.disp, where a wrapper counts it. With func's functions
+   stale (SnxModule.stale, as the runtime marks them when the guest patches their code: SNX_ABI 14) and out of
+   CPU.disp, main's direct BL must leave the AOT code at func's entry for rt->miss, and the run end the same. With main
+   made stale at the poll, the loop must go on through rt->miss, not main's AOT code, and end the same. With main made
+   stale while it runs (from func's call through the hooked slot, as a mod patches its caller from inside a call), the
+   next call that returns into main must leave its AOT code too, for the dispatch loop the runtime's threads run, and
+   end the same.
      llvm_module SCARLETNX REPO */
 #include "llvm_steps.h"
 #include "common/utilities/common.h"
@@ -81,16 +83,13 @@ typedef struct {
     u64 poll_pc;
     int watched; /* calls through the dispatch entry run() wrapped */
     int stale, stale_misses; /* functions run() made stale, and rt->miss calls at the pc it made them stale at */
-    int stale_on_poll, left;  /* main made stale at the first poll; returns to run()'s loop before the end */
+    int stale_when, left;    /* main made stale at the first poll (1) or watched call (2); returns to run()'s loop
+                                before the end */
     int misses, stepped, lost; /* rt->miss calls, those the steps ran, and those nothing could run */
     u64 base;                 /* the image's */
 } Run;
 static Run* current;
 static GuestFn watched_entry;
-static void watch(CPU* c, u64 e) {
-    ++current->watched;
-    watched_entry(c, e);
-}
 static u64 g_stale_pc;
 /* what jit_code_changed does to the functions covering pc: out of dispatch first, then the byte. Their number */
 static const SnxModule* g_running;
@@ -107,11 +106,16 @@ static int make_stale(CPU* c, u64 pc) {
         }
     return n;
 }
+static void watch(CPU* c, u64 e) {
+    if (!current->watched++ && current->stale_when == 2)
+        current->stale += make_stale(c, g_running->mods[0].base + 0x80);
+    watched_entry(c, e);
+}
 /* the runtime takes the thread off its core here, then gives it back: once, the flag cleared */
 static void on_poll(CPU* c) {
     if (!current->polls++) {
         current->poll_pc = c->pc;
-        if (current->stale_on_poll) current->stale += make_stale(c, g_running->mods[0].base + 0x80);
+        if (current->stale_when == 1) current->stale += make_stale(c, g_running->mods[0].base + 0x80);
     }
     c->poll = 0;
 }
@@ -181,7 +185,7 @@ static void miss(CPU* c, u64 pc) {
 }
 
 /* watch_at: an offset in the image whose dispatch entry counts its calls (0: none) */
-static int run(const char* path, const unsigned char* image, u64 watch_at, u64 stale_at, int stale_on_poll, Run* out) {
+static int run(const char* path, const unsigned char* image, u64 watch_at, u64 stale_at, int stale_when, Run* out) {
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
     const SnxModule* mod;
@@ -200,7 +204,7 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
     mod = get();
     g_running = mod;
     memset(out, 0, sizeof(*out));
-    out->stale_on_poll = stale_on_poll;
+    out->stale_when = stale_when;
     memset(&rt, 0, sizeof(rt));
     rt.svc = svc;
     rt.undef = undefined;
@@ -243,7 +247,7 @@ static int run(const char* path, const unsigned char* image, u64 watch_at, u64 s
         }
     }
     memcpy(out->memory, memory + mod->mods[0].base, MEMORY);
-    if (stale_at || stale_on_poll) memset(mod->stale, 0, mod->nfns); /* the module's own data, should it stay loaded */
+    if (stale_at || stale_when) memset(mod->stale, 0, mod->nfns); /* the module's own data, should it stay loaded */
     free(memory);
     free(out->cpu.disp);
 #ifdef _WIN32
@@ -392,7 +396,7 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
 #endif
 
 int main(int argc, char** argv) {
-    static Run runs[1], want, hooked, unhooked, stale, stale_running;
+    static Run runs[1], want, hooked, unhooked, stale, stale_polling, stale_running;
     unsigned char image[IMAGE];
     char *root, *input, *self, *out[2], *module[2], *text = NULL;
     const char* args[24];
@@ -455,14 +459,19 @@ int main(int argc, char** argv) {
     check(!run(module[0], image, 0xE8, 0, 0, &unhooked) && !run(module[1], image, 0xE8, 0, 0, &hooked),
           "hooked and unhooked runs");
     check(!run(module[0], image, 0, 0xE8, 0, &stale), "a run with func stale");
-    check(!run(module[0], image, 0, 0, 1, &stale_running), "a run with main made stale while it runs");
+    check(!run(module[0], image, 0, 0, 1, &stale_polling), "a run with main made stale at its poll");
+    check(stale_polling.stale > 0 && stale_polling.misses > runs[0].misses,
+          "a loop whose function was made stale at its poll goes on through rt->miss");
+    if (!same(&runs[0], &stale_polling)) differences(&runs[0], &stale_polling, "stale at the poll");
+    check(same(&runs[0], &stale_polling), "the run with main made stale at its poll is the same");
+    check(!run(module[1], image, 0xE8, 0, 2, &stale_running), "a run with main made stale while it runs");
     check(stale_running.stale > 0 && stale_running.left > 0,
           "a call returning into a function made stale while it ran leaves its AOT code for dispatch");
     if (!same(&runs[0], &stale_running)) differences(&runs[0], &stale_running, "stale while running");
     check(same(&runs[0], &stale_running), "the run with main made stale while it runs is the same");
     check(runs[0].left == 0, "an ordinary run never leaves its AOT code early");
     check(runs[0].misses == 1 && runs[0].stepped == 1, "the BR's target, no function's code, is the run's one miss");
-    check(!runs[0].lost && !stale.lost && !stale_running.lost && !hooked.lost && !unhooked.lost,
+    check(!runs[0].lost && !stale.lost && !stale_polling.lost && !stale_running.lost && !hooked.lost && !unhooked.lost,
           "every miss runs");
     check(stale.stale > 0 && stale.stale_misses > 0, "a stale function's direct caller reaches it through rt->miss");
     if (!same(&runs[0], &stale)) differences(&runs[0], &stale, "stale");
