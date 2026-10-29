@@ -5,7 +5,9 @@
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "3ds/services/apt.h"
+#include "3ds/services/font.h"
 #include "services/apt.swipc.inc"
+#define APT_NO_SHARED_FONT 0xffffffffu /* Azahar's answer (-1) when it has no font to serve */
 static uint32_t snx_ctr_apt_wire_GetLockHandle(SnxCtrIpc* c, uint32_t attributes, uint32_t* corrected, uint32_t* state,
                                                uint32_t* lock) {
     SnxCtrProcess* p = c->process;
@@ -75,6 +77,9 @@ static uint32_t snx_ctr_apt_wire_NotifyToWait(SnxCtrIpc* c, uint32_t app_id) {
        kernel wait completion; the queued parameter must still be received. */
     p->apt_phase = 2;
     return 0;
+}
+static uint32_t snx_ctr_apt_wire_GetSharedFont(SnxCtrIpc* c, uint32_t* address, uint32_t* font) {
+    return snx_ctr_font_shared(c->process, address, font) ? 0 : APT_NO_SHARED_FONT;
 }
 static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;

@@ -21,6 +21,10 @@ bool snx_ctr_romfs_open_image(const unsigned char* image, uint64_t size, uint64_
 void snx_ctr_romfs_free(SnxCtrRomfs* fs);
 uint64_t snx_ctr_romfs_size(const SnxCtrRomfs* fs);
 bool snx_ctr_romfs_read(SnxCtrRomfs* fs, uint64_t offset, void* data, size_t size);
+/* The file that path names (relative, '/'-separated UTF-8) in a level-3 image of size bytes, as
+   snx_ctr_romfs_open_image reads one: the offset in the image of its data and the data's length. False for a folder,
+   a path that names nothing, or data outside the image. */
+bool snx_ctr_romfs_file(const unsigned char* image, uint64_t size, const char* path, uint64_t* data, uint64_t* length);
 /* FSUSER ControlArchive GET_TIMESTAMP over the RomFS view. path16 is the raw
    bounded UTF-16LE request input (NUL-terminated within bytes, <= 12 bytes).
    Returns the backing file's real host modification time as a 3DS datetime:

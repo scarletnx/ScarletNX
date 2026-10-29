@@ -39,6 +39,9 @@
 #define LOADER_END          0x04000000u
 #define WRONG_PERMISSION    0xd900182eu /* ResultWrongPermission */
 
+uint32_t snx_ctr_linear_address(uint32_t physical) {
+    return physical < CTR_PHYS_BASE ? 0 : CTR_LINEAR + (physical - CTR_PHYS_BASE);
+}
 uint32_t snx_ctr_handle_object(SnxCtrProcess* p, uint32_t handle) {
     if (handle == CTR_PROCESS_HANDLE) return 1;
     if (handle == CTR_THREAD_HANDLE) return p->current_thread;
@@ -948,7 +951,11 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
                 r[0] = map_own_block(p, id, r[1], r[2], r[3]);
             else {
                 CtrObject* o = &p->objects[id];
-                if ((r[1] & 4095) || r[1] < 0x10000000 || (uint64_t)r[1] + o->data.shared.size > 0x1f800000)
+                /* address 0 maps a block with pages at the old linear heap address of those pages, as Azahar's
+                   SharedMemory::Map does for every block a service makes (the font, GSP and HID); a block without
+                   pages has no such address */
+                uint32_t at = r[1] ? r[1] : snx_ctr_linear_address(o->data.shared.physical);
+                if ((at & 4095) || at < 0x10000000 || (uint64_t)at + o->data.shared.size > 0x1f800000)
                     r[0] = INVALID_ADDRESS;
                 else if (r[2] != o->data.shared.permissions || (r[3] != 0 && r[3] != 0x10000000))
                     return SNX_CTR_SVC_UNSUPPORTED;
@@ -958,8 +965,8 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
                     /* each mapping has its own record and reference, as map_own_block's do: a block mapped twice
                        is unmapped address by address */
                     SnxCtrMemResult mapped =
-                        snx_ctr_map(p->space, r[1], o->data.shared.physical, o->data.shared.size, r[2]);
-                    r[0] = mapped == SNX_CTR_MEM_OK      ? record_map(p, id, r[1], o->data.shared.size)
+                        snx_ctr_map(p->space, at, o->data.shared.physical, o->data.shared.size, r[2]);
+                    r[0] = mapped == SNX_CTR_MEM_OK      ? record_map(p, id, at, o->data.shared.size)
                            : mapped == SNX_CTR_MEM_NOMEM ? OUT_OF_MEMORY
                                                          : INVALID_STATE;
                 }

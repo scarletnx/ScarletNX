@@ -87,6 +87,7 @@ typedef struct {
             void* node;        /* FsNode*, retained for the file's lifetime */
         } file;
         struct {
+            /* physical: a service block's FCRAM pages (font, GSP, HID); 0 for a block the application made */
             uint32_t physical, size, permissions;
             /* a block the application made with CreateMemoryBlock: its own range at address (heap-backed, Locked
                while the block lives, physical 0) or a new zeroed one (address 0); permissions are then its own and
@@ -190,6 +191,7 @@ struct SnxCtrProcess {
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
+    uint32_t apt_font;       /* the shared font's block (services/font.c), made at the first GetSharedFont */
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
     uint32_t shell_closed; /* virtual console starts with its shell open */
@@ -283,6 +285,8 @@ void snx_ctr_shared_page_time(SnxCtrProcess* p);
 /* HLE shared pages live past the application pool but inside board FCRAM;
    each call reserves the next page-aligned block, or returns 0. */
 uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size);
+/* The old linear heap address of the FCRAM page at `physical`; 0 below FCRAM, as for a block with no pages */
+uint32_t snx_ctr_linear_address(uint32_t physical);
 uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t name_address, uint32_t* out);
 SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* transport_result);
 /* SVC helpers use only RAM transactions, never MMIO or a flat pointer. */

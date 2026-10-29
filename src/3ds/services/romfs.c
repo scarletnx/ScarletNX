@@ -260,20 +260,22 @@ bool snx_ctr_romfs_open_image(const unsigned char* image, uint64_t size, uint64_
     return true;
 }
 void snx_ctr_romfs_free(SnxCtrRomfs* r) { free(r); /* the shared tree, or the CIA's mapping, is the process's */ }
-static uint32_t image32(const SnxCtrRomfs* r, uint64_t at) {
-    if (at > r->image_size || r->image_size - at < 4) return NONE;
-    const unsigned char* p = r->image + at;
-    return snx_ld_le32(p);
+static uint32_t image32(const unsigned char* image, uint64_t image_size, uint64_t at) {
+    if (at > image_size || image_size - at < 4) return NONE;
+    return snx_ld_le32(image + at);
 }
 /* whether path (relative, '/'-separated UTF-8) names an entry of the image's level-3 tables: the root for "", then
    each component among the folder's child folders, the last also among its files. The loader walked the tables
-   already; the bounds are checked again all the same */
-static bool image_has(const SnxCtrRomfs* r, const char* path) {
-    uint32_t dir_table = image32(r, 12), dir_size = image32(r, 16), file_table = image32(r, 28),
-             file_size = image32(r, 32);
+   already; the bounds are checked again all the same. For the entry found, *file says whether it is a file and
+   *record is its offset in its table. */
+static bool walk(const unsigned char* image, uint64_t image_size, const char* path, bool* file, uint32_t* record) {
+    uint32_t dir_table = image32(image, image_size, 12), dir_size = image32(image, image_size, 16),
+             file_table = image32(image, image_size, 28), file_size = image32(image, image_size, 32);
     uint32_t dir = 0;
+    if (file) *file = false;
+    if (record) *record = 0;
     if (dir_table == NONE || file_table == NONE || dir_size == NONE || file_size == NONE ||
-        (uint64_t)dir_table + dir_size > r->image_size || (uint64_t)file_table + file_size > r->image_size)
+        (uint64_t)dir_table + dir_size > image_size || (uint64_t)file_table + file_size > image_size)
         return false;
     while (*path) {
         const char* end = strchr(path, '/');
@@ -290,32 +292,58 @@ static bool image_has(const SnxCtrRomfs* r, const char* path) {
         part[length] = 0;
         if (!name16(part, name, &bytes)) return false;
         bool found = false;
+        unsigned found_kind = 0;
+        uint32_t found_at = 0;
         /* the folder's children, then (for the last component) its files */
         for (unsigned kind = 0; kind < (end ? 1u : 2u) && !found; ++kind) {
             uint32_t base = kind ? file_table : dir_table, size = kind ? file_size : dir_size, head = kind ? 32 : 24;
-            uint32_t at = image32(r, (uint64_t)dir_table + dir + (kind ? 12 : 8));
+            uint32_t at = image32(image, image_size, (uint64_t)dir_table + dir + (kind ? 12 : 8));
             for (unsigned guard = 0; at != NONE && guard < 100000; ++guard) {
                 if (at > size || size - at < head) return false;
-                uint32_t length16 = image32(r, (uint64_t)base + at + head - 4);
+                uint32_t length16 = image32(image, image_size, (uint64_t)base + at + head - 4);
                 if (length16 > size - at - head) return false;
                 if (length16 == bytes) {
                     bool same = true;
                     for (uint32_t i = 0; i < bytes / 2 && same; ++i) {
-                        const unsigned char* q = r->image + base + at + head + i * 2;
+                        const unsigned char* q = image + base + at + head + i * 2;
                         same = (uint16_t)(q[0] | q[1] << 8) == name[i];
                     }
                     if (same) {
                         found = true;
-                        if (!kind) dir = at;
+                        found_kind = kind;
+                        found_at = at;
                         break;
                     }
                 }
-                at = image32(r, (uint64_t)base + at + 4);
+                at = image32(image, image_size, (uint64_t)base + at + 4);
             }
         }
         if (!found) return false;
+        if (!found_kind) dir = found_at;
+        if (file) *file = found_kind == 1;
+        if (record) *record = found_at;
         path += length + (end ? 1 : 0);
     }
+    return true;
+}
+static bool image_has(const SnxCtrRomfs* r, const char* path) {
+    return walk(r->image, r->image_size, path, NULL, NULL);
+}
+/* The file that path names in a level-3 image of size bytes (as snx_ctr_romfs_open_image reads one): the offset in the
+   image of its data and the data's length. False for a folder, a path that names nothing, or data outside the image. */
+bool snx_ctr_romfs_file(const unsigned char* image, uint64_t size, const char* path, uint64_t* data, uint64_t* length) {
+    bool file = false;
+    uint32_t record = 0;
+    if (!walk(image, size, path, &file, &record) || !file) return false;
+    uint32_t table = image32(image, size, 28), base = image32(image, size, 36);
+    if (base == NONE) return false;
+    const unsigned char* entry = image + table + record;
+    uint64_t offset = snx_ld_le64(entry + 8), bytes = snx_ld_le64(entry + 16);
+    if (offset > size || base > size - offset) return false;
+    uint64_t start = base + offset;
+    if (bytes > size - start) return false;
+    *data = start;
+    *length = bytes;
     return true;
 }
 /* 3DS datetime milliseconds since 1900-01-01; the Unix epoch starts

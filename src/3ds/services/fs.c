@@ -5,6 +5,7 @@
    shared tree: romfs/exefs read-only and always open, sdmc read-write. */
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
+#include "3ds/services/archives.h"
 #include "3ds/services/fs.h"
 #include "services/fs.swipc.inc"
 #include <stdio.h>
@@ -202,10 +203,6 @@ static void open_self(SnxCtrIpc* c, const unsigned char path[12]) {
     }
     if (!snx_ctr_fs_file_object(c, CTR_FILE_HOST, 0, 0, host, node) && host) fclose(host);
 }
-/* the system archives' open stand-ins (cmake/ctr_system_archives.cmake) */
-extern const unsigned char snx_ctr_mii_data[], snx_ctr_country_list[], snx_ctr_shared_font[], snx_ctr_bad_word_list[];
-extern const size_t snx_ctr_mii_data_size, snx_ctr_country_list_size, snx_ctr_shared_font_size,
-    snx_ctr_bad_word_list_size;
 /* The system titles whose RomFS a stand-in replaces, as Azahar's NCCHArchive::OpenFile picks them: the shared font
    for the Chinese, Korean and Taiwanese ones too (their text will not show right) */
 static const unsigned char* system_archive(uint64_t title, size_t* size) {
