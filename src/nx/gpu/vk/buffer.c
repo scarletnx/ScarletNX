@@ -1479,7 +1479,7 @@ static int page_written(u64 pg, u32 since) {
     u64 l = pg >> (WW_LEAF_SHIFT - 12);
     return g_wleaf_max[l] > since && (!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since);
 }
-static void written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
+void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 o = (u64)(host - g_mem), first = o >> 12, last = (o + len - 1) >> 12, run = 0, pg;
     int in = 0;
     for (pg = first; pg <= last + 1; pg++) {
@@ -1920,7 +1920,7 @@ static void drop_own(u32 i) {
     e->own = 0;
     e->buf = VK_NULL_HANDLE;
 }
-/* A big own buffer takes the pages of its range written since it last matched memory (written_runs), through this
+/* A big own buffer takes the pages of its range written since it last matched memory (vk_written_runs), through this
    frame's staging ring, with a copy on the GPU between the draws before and after: a write anywhere in a 64 MiB window
    (vk_buf_get_window) made it hash and copy all of it, again at each submit until it held still for two checks. In
    one game's underground, where terrain streams in as the player moves, that was most of each hitch */
@@ -1942,7 +1942,7 @@ static int patch_apply(const Vb* e, Patch* pt);
 static int patch_own(u32 i, const u8* host, u32 since) {
     Vb* e = &g_vb[i];
     Patch pt = {.src = host};
-    written_runs(host, e->len, since, patch_note, &pt);
+    vk_written_runs(host, e->len, since, patch_note, &pt);
     if (pt.n > PATCH_RUNS) { /* scattered: from the first written byte to the end of the last run, in one copy */
         u64 o = (u64)(host - g_mem), a = pt.r[0].dstOffset, b = e->len;
         for (u64 pg = (o + e->len - 1) >> 12; pg > o >> 12 && !page_written(pg, since); pg--) b = (pg << 12) - o;
