@@ -1,0 +1,2 @@
+family f
+hook memcpy(addr dst, addr src, u64 size) -> addr
