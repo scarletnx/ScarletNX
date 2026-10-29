@@ -269,8 +269,10 @@ static void pool_init(void) {
 
 /* ---- command buffers */
 static void test_command_buffer(void) {
-    NvnDraw* d = nvn_draw_new(1);
+    static NvnDraw draw; /* a queue's, in its replay state in the runtime */
+    NvnDraw* d = &draw;
     u64 h, ranges = SCRATCH, images = SCRATCH2;
+    nvn_draw_init(d, 1);
     nvn_CommandBufferInitialize(NULL, CMDBUF, DEVICE);
     nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0, 0x8000);
     nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
@@ -344,7 +346,6 @@ static void test_command_buffer(void) {
     check(g_tex.handle == (7u | 5u << 20) && g_tex.x0 == 10.0f && g_tex.y0 == 20.0f && g_tex.w == 100.0f &&
               g_tex.h == 50.0f && g_tex.du == 0.5 && g_tex.dv == 0.5 && g_tex.sx0 == 0.0f && g_tex.sy0 == 0.0f,
           "the texture draw's rectangle and steps");
-    free(d);
 }
 
 /* ---- the device and its debug API */

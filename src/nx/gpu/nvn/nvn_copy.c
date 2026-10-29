@@ -183,8 +183,10 @@ static void blit_texture(const NvnPCopyT2T* r) {
                                                                          : d.height);
         if (b.x0 >= b.x1 || b.y0 >= b.y1) continue;
         u32 n = b.x1 - b.x0;
-        u32* tab = (u32*)malloc(sizeof *tab * ((size_t)n + (b.y1 - b.y0)));
-        if (!tab) fatal("nvn: out of memory for a texture blit %u pixels wide", n);
+        if (n > NVN_BLIT_MAX || b.y1 - b.y0 > NVN_BLIT_MAX)
+            fatal("nvn: a texture blit %u pixels wide and %u high, larger than the %u a side nvn_direct holds", n,
+                  b.y1 - b.y0, NVN_BLIT_MAX);
+        u32* tab = g_nvn.copy.blit; /* the GPU thread's: blit_mem copies the tables before it returns */
         for (u32 i = 0; i < n; i++) {
             double at = r->sr.xoffset + ((double)((i64)b.x0 + i - r->dr.xoffset) + 0.5) * sdx;
             tab[i] = at <= 0 ? 0 : at >= (double)s.width ? s.width - 1 : (u32)at;
@@ -202,7 +204,6 @@ static void blit_texture(const NvnPCopyT2T* r) {
             LOG_LIMIT(4, "nvn: the GPU could not do a texture blit, skipped\n");
         else if (g_renderer->rt_reload)
             g_renderer->rt_reload(d.addr);
-        free(tab);
     }
 }
 /* between two textures' regions of the same size and block bytes */
@@ -329,99 +330,97 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     return 0;
 }
 
-/* ---- the CPU's texel writes */
+/* ---- the CPU's texel writes and reads */
+/* A copy between a texture's region and a buffer: the region (the buffer's address in r.buffer for a read), with the
+   texture snapshot below for its texture, and the buffer's row and image strides */
 typedef struct {
-    NvnPCopyB2T r; /* the region, with the texture snapshot below for its texture */
+    NvnPCopyB2T r;
     NvnTexture t;
     i64 stride[2];
-    u8* bytes; /* the source's span, as it was when the game wrote */
+} TexelCopy;
+/* the copy of the region at guest address region of texture t (its view v, 0 for none), with rows row bytes apart and
+   slices image bytes apart (0 for tightly packed): 1 and in *span the bytes of the buffer it covers, 0 when the
+   runtime can't lay it out */
+static int texel_copy(u64 t, u64 v, u64 region, i64 row, i64 image, TexelCopy* x, u64* span) {
+    *x = (TexelCopy){0};
+    memcpy(&x->t, GP(t), sizeof x->t);
+    memcpy(&x->r.r, GP(region), sizeof x->r.r);
+    if (v) {
+        memcpy(&x->r.view, GP(v), sizeof x->r.view);
+        x->r.has_view = 1;
+    }
+    TexPlane p;
+    if (!tex_plane(&x->t, x->r.has_view ? &x->r.view : NULL, &p) || x->r.r.width <= 0 || x->r.r.height <= 0) return 0;
+    u64 width = ((u64)x->r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
+    u64 lines = ((u64)x->r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
+    u64 depth = x->r.r.depth > 0 ? (u64)x->r.r.depth : 1;
+    x->stride[0] = row ? row : (i64)width;
+    x->stride[1] = image ? image : x->stride[0] * (i64)lines;
+    *span = (u64)x->stride[1] * (depth - 1) + (u64)x->stride[0] * (lines - 1) + width;
+    return 1;
+}
+/* A texel write in flight to the GPU thread: one block, the copy and the source's bytes as they were when the game
+   wrote. Its size is the game's (a whole texture's upload), and how many are in flight at once is how far the GPU
+   thread is behind, so it is the heap's, not a pool's */
+typedef struct {
+    TexelCopy c;
+    u8 bytes[];
 } TexelWrite;
 static void texel_write(void* arg) {
     TexelWrite* w = (TexelWrite*)arg;
-    copy_buffer_texture(&w->r, &w->t, 1, w->stride, w->bytes);
-    free(w->bytes);
+    copy_buffer_texture(&w->c.r, &w->c.t, 1, w->c.stride, w->bytes);
     free(w);
 }
 void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
-    TexelWrite* w = (TexelWrite*)calloc(1, sizeof *w);
-    TexPlane p;
-    u64 lines, width, span, depth;
-    if (!w) fatal("nvn: out of memory for a texel write");
-    memcpy(&w->t, GP(t), sizeof w->t);
-    memcpy(&w->r.r, GP(region), sizeof w->r.r);
-    if (v) {
-        memcpy(&w->r.view, GP(v), sizeof w->r.view);
-        w->r.has_view = 1;
-    }
-    if (!tex_plane(&w->t, w->r.has_view ? &w->r.view : NULL, &p) || w->r.r.width <= 0 || w->r.r.height <= 0) {
+    TexelCopy x;
+    u64 span;
+    if (!texel_copy(t, v, region, row, image, &x, &span)) {
         LOG_LIMIT(4, "nvn: a texel write into texture %llx (format %#x, %dx%d) the runtime can't lay out\n",
-                  (unsigned long long)t, w->t.d.format, w->r.r.width, w->r.r.height);
-        free(w);
+                  (unsigned long long)t, x.t.d.format, x.r.r.width, x.r.r.height);
         return;
     }
-    width = ((u64)w->r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
-    lines = ((u64)w->r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
-    depth = w->r.r.depth > 0 ? (u64)w->r.r.depth : 1;
-    w->stride[0] = row ? row : (i64)width;
-    w->stride[1] = image ? image : w->stride[0] * (i64)lines;
-    span = (u64)w->stride[1] * (depth - 1) + (u64)w->stride[0] * (lines - 1) + width;
-    w->bytes = (u8*)malloc(span);
-    if (!w->bytes) fatal("nvn: out of memory for a texel write's %llu bytes", (unsigned long long)span);
+    TexelWrite* w = span <= SIZE_MAX - sizeof *w ? (TexelWrite*)malloc(sizeof *w + (size_t)span) : NULL;
+    if (!w) fatal("nvn: out of memory for a texel write's %llu bytes", (unsigned long long)span);
+    w->c = x;
     memcpy(w->bytes, GP(src), span); /* the source's whole span, read as the game writes it */
     gpu_call(texel_write, w, NULL, 0);
 }
 
-/* ---- the CPU's texel reads */
+/* A texel read: the copy, on the stack of the game's thread, which waits for the GPU thread's increment of syncpt
+   after it */
 typedef struct {
-    TexelWrite w; /* the region and texture, the destination at w.r.buffer */
+    TexelCopy c; /* the destination at c.r.buffer */
     u32 syncpt;
 } TexelRead;
 static void texel_read(void* arg) {
-    TexelRead* r = (TexelRead*)arg;
-    copy_buffer_texture(&r->w.r, &r->w.t, 0, r->w.stride, NULL);
+    const TexelRead* r = (const TexelRead*)arg;
+    copy_buffer_texture(&r->c.r, &r->c.t, 0, r->c.stride, NULL);
     if (g_renderer->stream_incr) /* once the copy is done */
         g_renderer->stream_incr(r->syncpt);
     else
         syncpt_incr(r->syncpt);
-    free(r);
 }
 void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
-    TexelRead* r = (TexelRead*)calloc(1, sizeof *r);
-    TexPlane p;
-    u64 lines, width, depth, span, first, size, va;
-    u32 value;
-    if (!r) fatal("nvn: out of memory for a texel read");
-    memcpy(&r->w.t, GP(t), sizeof r->w.t);
-    memcpy(&r->w.r.r, GP(region), sizeof r->w.r.r);
-    if (v) {
-        memcpy(&r->w.r.view, GP(v), sizeof r->w.r.view);
-        r->w.r.has_view = 1;
-    }
-    if (!tex_plane(&r->w.t, r->w.r.has_view ? &r->w.r.view : NULL, &p) || r->w.r.r.width <= 0 || r->w.r.r.height <= 0) {
+    TexelRead r;
+    u64 span;
+    if (!texel_copy(t, v, region, row, image, &r.c, &span)) {
         LOG_LIMIT(4, "nvn: a texel read from texture %llx (format %#x) the runtime can't lay out\n",
-                  (unsigned long long)t, r->w.t.d.format);
-        free(r);
+                  (unsigned long long)t, r.c.t.d.format);
         return;
     }
-    width = ((u64)r->w.r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
-    lines = ((u64)r->w.r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
-    depth = r->w.r.r.depth > 0 ? (u64)r->w.r.r.depth : 1;
-    r->w.stride[0] = row ? row : (i64)width;
-    r->w.stride[1] = image ? image : r->w.stride[0] * (i64)lines;
-    span = (u64)r->w.stride[1] * (depth - 1) + (u64)r->w.stride[0] * (lines - 1) + width;
     /* the destination, mapped in the GPU's page table while the copy runs: the GPU writes it, and the CPU's read of
        it lands what the GPU wrote (a readback of host-cached memory the GPU copied into, gpu/vk/owned.c) */
-    first = dst & ~0xfffull;
-    size = (dst + span - first + 0xfff) & ~0xfffull;
-    va = gmmu_space_alloc(size, 0x1000);
+    u64 first = dst & ~0xfffull;
+    u64 size = (dst + span - first + 0xfff) & ~0xfffull;
+    u64 va = gmmu_space_alloc(size, 0x1000);
     if (!va) fatal("nvn: no GPU address space left for a texel read of %llu bytes", (unsigned long long)span);
     gmmu_space_map(va, first, size);
-    r->w.r.buffer = va + (dst - first);
+    r.c.r.buffer = va + (dst - first);
     pm_lock(&g_nvn.copy.read_lock);
     if (!g_nvn.copy.read_syncpt) g_nvn.copy.read_syncpt = syncpt_alloc();
-    r->syncpt = g_nvn.copy.read_syncpt;
-    value = syncpt_promise(r->syncpt, 1);
-    gpu_call(texel_read, r, NULL, 0);
+    r.syncpt = g_nvn.copy.read_syncpt;
+    u32 value = syncpt_promise(r.syncpt, 1);
+    gpu_call(texel_read, &r, NULL, 0);
     pm_unlock(&g_nvn.copy.read_lock);
     syncpt_wait(g_nvn.copy.read_syncpt, value, -1);
     gmmu_space_unmap(va, size);

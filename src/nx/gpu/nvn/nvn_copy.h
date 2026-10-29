@@ -7,11 +7,14 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/filesystem/host.h"
 
+/* the columns and rows a texture blit's tables hold: NVN's largest texture's (16384 texels a side) */
+#define NVN_BLIT_MAX 16384
 /* the file's state, g_nvn.copy (gpu/nvn/nvn_state.h): the syncpoint the texel reads wait on, made at the first, under
-   its lock */
+   its lock; and the GPU thread's tables of a texture blit, each column's source column then each row's source row */
 typedef struct {
     PMutex read_lock;
     u32 read_syncpt;
+    u32 blit[2 * NVN_BLIT_MAX];
 } NvnCopyState;
 
 /* On the GPU thread, a copy record a queue replays (OP_COPY_*, OP_CLEAR_BUF). stride: the queue's copy row and image strides
