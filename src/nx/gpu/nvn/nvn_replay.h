@@ -4,6 +4,35 @@
 #ifndef SNX_NVN_REPLAY_H
 #define SNX_NVN_REPLAY_H
 #include "nx/gpu/nvn/nvn_obj.h"
+#include "nx/gpu/nvn/nvn_draw.h"
+#include "common/filesystem/host.h"
+
+#define NVN_QUEUES 8
+
+/* a queue's replay state: its rendering and copy state (gpu/nvn/nvn_draw.c, nvn_copy.c), and the syncpoint its
+   fences count */
+typedef struct {
+    NvnDraw* d;
+    i64 stride[2]; /* the copies' row and image strides (gpu/nvn/nvn_copy.c) */
+    u32 syncpt;
+} NvnReplayQueue;
+/* a submission's effect on what the CPU sees (nvn_replay.c's FX_*), at gva */
+typedef struct {
+    u32 kind, len;
+    u64 gva;
+    u8 data[16];
+} NvnEffect;
+/* the file's state, g_nvn.replay (gpu/nvn/nvn_state.h): the queues, the lock that keeps their submissions' promises
+   in the order they are queued, and the GPU thread's list of the submission being replayed's effects */
+typedef struct {
+    NvnReplayQueue q[NVN_QUEUES];
+    u32 n;
+    PMutex lock;
+    NvnEffect* fx;
+    u32 nfx, fx_cap;
+    u64 unknown; /* the ops logged as not replayed (GPU thread) */
+    u32 shown;   /* the presents' syncpoint: up by one as each reaches the display, 0 before the first queue */
+} NvnReplayState;
 
 /* a new queue's replay state: its index (1 up), whose syncpoint its fences count on */
 u32 nvn_replay_queue(void);
