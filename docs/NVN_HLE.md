@@ -207,10 +207,19 @@ driver beside nvn_direct. The results the driver answers otherwise, which the ga
 | `nvnDeviceGetTextureHandle` | 0x10300107 | 0x110300107 (bit 32 set) |
 | TIC word 6 of registered textures | 0 | 0x03000000 |
 
-The texture rows are fixed (above). The queue memory size is certain: the driver's `QueueInitialize` fails with the
-size nvn_direct answers. The driver's rule adds to the command and control sizes (defaults 0x10000 and 0x4000 when the
-game set none) an area of its own, which grows with the compute memory size (default 0x40000) and with six words of
-the device's GPU characteristics, not yet matched to nvdrv's answers.
+The texture rows are fixed (above). The queue memory size is fixed too (`nvn_queue.c`): the driver's
+`QueueInitialize` fails with less. Its rule (`sdk`'s `GetQueueMemorySize` of NVN 55.15) adds to the command and control
+sizes (defaults 0x10000 and 0x4000) an area of its own, rounded up to 4 KiB:
+
+- the fragment interlock buffer, unless the queue flags have `NO_FRAGMENT_INTERLOCK`: 1 KiB for each GPC and 4 bytes
+  for each warp of each SM, rounded up to 0x100;
+- 0x7B00 bytes of the driver's own (0x9400 with `ENABLE_SEPARATE_SAMPLER_TEXTURE_SUPPORT` on the device);
+- the ZCULL context, unless the flags have `NO_ZCULL`: the area and the context size each rounded up to 4 KiB;
+- the compute memory (default 0x40000), in whole blocks of 0x800 bytes (0xD00 with separate samplers).
+
+The six device words the rule reads are nvdrv's answers, which the driver keeps in its device: 1 GPC
+(`num_gpc`), 2 SMs (`NUM_VSMS`), 0x80 warps (`sm_arch_warp_count`), the ZCULL context size 1 (`ZCULL_GET_CTX_SIZE`)
+and its 4 KiB alignment, and the device flags.
 
 ### What the draws compare now
 

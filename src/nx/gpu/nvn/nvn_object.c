@@ -39,6 +39,8 @@ u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn_object.serial, 1, __ATOM
 
 u64 nvn_pool_memory(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->memory : 0; }
 u64 nvn_pool_gpu(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->gpu : 0; }
+static u32 g_device_flags;
+u32 nvn_device_flags(void) { return __atomic_load_n(&g_device_flags, __ATOMIC_RELAXED); }
 
 /* the small state objects are copied by value and may sit anywhere in the game's structures: read and written whole */
 static u32 ld32(u64 a) {
@@ -99,6 +101,7 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     o.flags = NVN_OBJ(NvnDeviceBuilder, b)->flags;
     o.origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; /* NVN's defaults: lower-left origin, near = -w */
     memcpy(GP(d), &o, sizeof o);
+    __atomic_store_n(&g_device_flags, o.flags, __ATOMIC_RELAXED);
     nvn_draw_device(o.origin, o.depth_mode);
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
     return 1;

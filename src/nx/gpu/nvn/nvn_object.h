@@ -15,6 +15,8 @@
 u64 nvn_serial(void);
 /* a memory pool object's storage: its guest address (0 for none), and its GPU address */
 u64 nvn_pool_memory(u64 pool);
+/* the flags of the device the game made last (the runtime has one) */
+u32 nvn_device_flags(void);
 u64 nvn_pool_gpu(u64 pool);
 
 /* Around a wait for the host inside an NVN call: the game's thread off its guest core and stopped as far as a game

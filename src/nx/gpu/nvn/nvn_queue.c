@@ -8,12 +8,14 @@
    signals then, a queue that waits for that sync finishes its later work no earlier, and the fences after it signal
    then. A game waits for those as it waits for the GPU, never on the GPU thread, and in AcquireTexture only for a
    texture whose last present's slot hasn't come yet */
+#include "common/utilities/bits.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/hle/services/nvdrv_ctrl_gpu.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/main.h"
@@ -93,12 +95,25 @@ void nvn_QueueBuilderSetComputeMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
     QB(b)->compute_size = size;
 }
-/* the memory the queue's command, compute and control blocks take, rounded to 4 KiB: nothing uses it, but the game
-   allocates it */
+/* The queue memory the game allocates, by the game's driver's rule (NVN 55.15's GetQueueMemorySize, read from its
+   code): the command and control blocks, and an area of the driver's own. The area holds the fragment interlock
+   buffer (1 KiB for each GPC and 4 bytes for each warp of each SM), the driver's state (more with separate samplers
+   and textures), the ZCULL context and the compute memory, in blocks of 0x800 bytes (0xD00 with separate samplers).
+   The GPU's shape is nvdrv's answers, which the driver reads into its device: GPCs and SMs, warps (characteristics),
+   and the ZCULL context size (ZCULL_GET_CTX_SIZE), at the driver's alignment of 4 KiB. The driver's queue fails to
+   initialize with less memory */
 u64 nvn_QueueBuilderGetQueueMemorySize(CPU* c, u64 b) {
     const NvnQueueBuilder* o = QB(b);
+    int separate = (nvn_device_flags() & NVN_DEVICE_FLAG_ENABLE_SEPARATE_SAMPLER_TEXTURE_SUPPORT) != 0;
+    u64 block = separate ? 0xD00 : 0x800, area = 0;
     (void)c;
-    return (o->cmd_size + o->compute_size + o->control_size + 4095) & ~4095ull;
+    if (!(o->flags & NVN_QUEUE_BUILDER_FLAGS_NO_FRAGMENT_INTERLOCK))
+        area = snx_align_up(((u64)NVGPU_NUM_GPCS << 10) + (u64)NVGPU_SM_WARPS * NVGPU_NUM_SMS * 4, 0x100);
+    area += separate ? 0x9400 : 0x7B00;
+    if (!(o->flags & NVN_QUEUE_BUILDER_FLAGS_NO_ZCULL) && NVGPU_ZCULL_CTX_SIZE)
+        area = snx_align_up(area, 0x1000) + snx_align_up(NVGPU_ZCULL_CTX_SIZE, 0x1000);
+    area = snx_align_up(area, 0x100) + o->compute_size / block * block;
+    return o->cmd_size + o->control_size + snx_align_up(area, 0x1000);
 }
 void nvn_QueueBuilderSetQueueMemory(CPU* c, u64 b, u64 memory, u64 size) {
     NvnQueueBuilder* o = QB(b);
