@@ -17,6 +17,7 @@
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/nvn/nvn_verify.h"
@@ -88,13 +89,9 @@ struct NvnDraw {
     DispatchState dx;  /* the compute stage's program and bindings, a dispatch's state */
 };
 
-/* the device's, for every queue (set on the game's threads, read on the GPU thread) */
-static struct {
-    u32 origin, depth_mode;
-} g_nvn_device = {NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W};
 void nvn_draw_device(u32 origin, u32 depth_mode) {
-    __atomic_store_n(&g_nvn_device.origin, origin, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_nvn_device.depth_mode, depth_mode, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_nvn.draw.origin, origin, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_nvn.draw.depth_mode, depth_mode, __ATOMIC_RELAXED);
 }
 
 /* DsState.gen: a new generation of group *gen, from the sequence every front end shares */
@@ -454,10 +451,10 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
     /* lower left: y counts up from the surface's bottom; upper left reverses the facing (one game's NVN queue writes
        the window origin register 0x10, the flip, after its first submission) */
-    y.window_origin = __atomic_load_n(&g_nvn_device.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT
+    y.window_origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT
                           ? DS_ORIGIN_FLIP_Y
                           : DS_ORIGIN_LOWER_LEFT;
-    y.depth_mode = __atomic_load_n(&g_nvn_device.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    y.depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
     for (f = 0; f < 2; f++) {
@@ -488,9 +485,9 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
 static u32 clamp16(i64 v) { return v < 0 ? 0 : v > 0xffff ? 0xffff : (u32)v; }
 static void make_viewports(NvnDraw* d) {
     DsViewports v;
-    int near_zero = __atomic_load_n(&g_nvn_device.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    int near_zero = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     /* clip space's y points up in both origins: an upper-left window's rows count down, so its scale is negative */
-    int upper_left = __atomic_load_n(&g_nvn_device.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    int upper_left = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
     u32 j, k;
     memset(&v, 0, sizeof v);
     v.transform_on = 1;

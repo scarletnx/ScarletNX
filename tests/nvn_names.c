@@ -8,6 +8,7 @@
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/gpu.h"
@@ -67,6 +68,7 @@ void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
     (void)ds;
     (void)dc;
 }
+void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
@@ -604,6 +606,7 @@ static void test_queue_window(void) {
 }
 
 int main(void) {
+    nvn_init();
     test_device();
     pool_init();
     test_command_buffer();

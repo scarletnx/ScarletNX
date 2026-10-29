@@ -6,6 +6,7 @@
    CALLs, and moves the texture snapshots a record carries to its own copy. The records are walked here as the replay
    walks them (gpu/nvn/nvn_replay.c) */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "common/filesystem/host.h" /* PMutex */
 #include <stdarg.h>
@@ -33,6 +34,7 @@ void nvn_verify_memory_back(u64 mem, u64 size) {
     (void)mem;
     (void)size;
 }
+void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
@@ -85,6 +87,7 @@ int main(void) {
     NvnTexture t;
     Walk a, b;
     u64 h, h2, snap;
+    nvn_init();
     memset(&cpu, 0, sizeof cpu);
     memset(&t, 0, sizeof t);
     t.magic = NVN_MAGIC('T', 'E', 'X', 0);
