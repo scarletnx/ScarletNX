@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* g_nvn, nvn_direct's state, and its initialization (gpu/nvn/nvn_state.h) */
+/* g_nvn, nvn_direct's state, its initialization, and t_nvn, its thread state (gpu/nvn/nvn_state.h) */
 #include "nx/gpu/nvn/nvn_state.h"
 
 /* zero, in .bss: nvn_init sets what starts out non-zero */
 Nvn g_nvn;
+_Thread_local NvnThread t_nvn;
 
 void nvn_init(void) {
     /* every lock: PMUTEX_INIT's value isn't all zero on every platform */
