@@ -45,8 +45,8 @@ static int g_log_cuts;       /* the cuts made; one that failed stops them */
 static long g_log_head = -1; /* the run's start a cut keeps, from the first: the line saying what went comes after it */
 static int g_log_full;       /* log_max in MiB from the first cut until log_full_take, atomic */
 /* written by every line, apart from the flag every line reads */
-static int g_mid_line __attribute__((aligned(64))); /* the last text written did not end its line, atomic */
-static int g_crashing __attribute__((aligned(64))); /* log_crash_mode was called, atomic */
+static _Alignas(64) int g_mid_line; /* the last text written did not end its line, atomic */
+static _Alignas(64) int g_crashing; /* log_crash_mode was called, atomic */
 
 void log_crash_mode(void) {
     __atomic_store_n(&g_crashing, 1, __ATOMIC_SEQ_CST);

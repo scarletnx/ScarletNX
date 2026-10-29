@@ -4,6 +4,7 @@
  * and yuzu Emulator Project (2020, GPL-2.0-or-later). Source: eden-emulator/mirror at
  * d8c6c59b679867d2595fdc0953df033475e23380, host1x/codecs/vp9.cpp and codec_types.h.
  */
+#include "common/utilities/bits.h"
 #include "nx/gpu/video/vp9_rebuild.h"
 #include <algorithm>
 #include <array>
@@ -1342,10 +1343,8 @@ struct SnxVp9Builder {
 // The reserved words stay as they came, since Layout() reads a byte among them.
 static void picture_to_host(SnxVp9::PictureInfo& pic) {
     if constexpr (std::endian::native == std::endian::big) {
-        const auto s16 = [](SnxVp9::s16& v) {
-            v = static_cast<SnxVp9::s16>(__builtin_bswap16(static_cast<SnxVp9::u16>(v)));
-        };
-        pic.bitstream_size = __builtin_bswap32(pic.bitstream_size);
+        const auto s16 = [](SnxVp9::s16& v) { v = static_cast<SnxVp9::s16>(snx_bswap16(static_cast<SnxVp9::u16>(v))); };
+        pic.bitstream_size = snx_bswap32(pic.bitstream_size);
         for (SnxVp9::Vp9FrameDimensions* d :
              {&pic.last_frame_size, &pic.golden_frame_size, &pic.alt_frame_size, &pic.current_frame_size}) {
             s16(d->width);
@@ -1353,7 +1352,7 @@ static void picture_to_host(SnxVp9::PictureInfo& pic) {
             s16(d->luma_pitch);
             s16(d->chroma_pitch);
         }
-        pic.vp9_flags = static_cast<SnxVp9::FrameFlags>(__builtin_bswap32(static_cast<SnxVp9::u32>(pic.vp9_flags)));
+        pic.vp9_flags = static_cast<SnxVp9::FrameFlags>(snx_bswap32(static_cast<SnxVp9::u32>(pic.vp9_flags)));
         for (auto& row : pic.segmentation.feature_data)
             for (SnxVp9::s16& v : row) s16(v);
     }

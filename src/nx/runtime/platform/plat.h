@@ -50,9 +50,15 @@ void plat_thread_cpus(const int* ids, int n);
 void plat_system_info(char* out, size_t cap);
 void plat_yield(void);
 void plat_sleep_ns(i64 ns); /* 0 or less yields */
+/* C11's _Noreturn, which C99 code (it includes this) has not */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define SNX_NORETURN _Noreturn
+#else
+#define SNX_NORETURN
+#endif
 /* Ends the process with code at once: stdio is flushed, but atexit handlers don't run and other threads are left
    where they are */
-void plat_exit_now(int code) __attribute__((noreturn));
+SNX_NORETURN void plat_exit_now(int code);
 
 /* ---- time */
 u64 plat_ns(void);        /* a monotonic clock in nanoseconds */

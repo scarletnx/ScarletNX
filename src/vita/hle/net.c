@@ -11,6 +11,7 @@
    error (vita_net_offline_error): a game that took a network function's 0 for success went on to wait for a server
    that never answers, and one whose sceNetInit failed quit as it booted. The trophies (SceNpTrophy,
    vita/hle/dialog.c) and the licenses (SceNpDrm) are the console's own, not the network's */
+#include "common/utilities/bits.h"
 #include "vita/hle/hle.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
@@ -134,8 +135,8 @@ static uint32_t zero(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* the guest is little-endian, so its network order is always a swap */
-static uint32_t net_htonl(VitaProcess* p, VitaThread* t) { return __builtin_bswap32(vita_arg(p, t, 0)); }
-static uint32_t net_htons(VitaProcess* p, VitaThread* t) { return __builtin_bswap16((uint16_t)vita_arg(p, t, 0)); }
+static uint32_t net_htonl(VitaProcess* p, VitaThread* t) { return snx_bswap32(vita_arg(p, t, 0)); }
+static uint32_t net_htons(VitaProcess* p, VitaThread* t) { return snx_bswap16((uint16_t)vita_arg(p, t, 0)); }
 /* sceNetErrnoLoc: the thread's */
 static uint32_t net_errno_loc(VitaProcess* p, VitaThread* t) {
     (void)p;

@@ -4,7 +4,7 @@
 #define SNX_BITS_H
 
 /* Small integer helpers every part of the program had its own copy of: rounding to a multiple, clamping, 128-bit
-   products and quotients, and the FNV-1a hash the caches key their entries with. */
+   products and quotients, byte swaps and bit counts, and the FNV-1a hash the caches key their entries with. */
 
 #include "common/utilities/bits.h"
 #include <stddef.h>
@@ -101,6 +101,44 @@ static inline int64_t snx_div_shl_s64(int64_t a, unsigned k, int64_t d) {
     return (int64_t)((a < 0) != (d < 0) ? 0 - q : q);
 #endif
 }
+
+/* byte swaps and bit counts (a count of 0 is the width): the compiler's builtins where it has GNU's, the same values in
+   ISO C elsewhere and under SNX_BITS_PORTABLE */
+#if defined(__GNUC__) && !defined(SNX_BITS_PORTABLE)
+static inline uint16_t snx_bswap16(uint16_t v) { return __builtin_bswap16(v); }
+static inline uint32_t snx_bswap32(uint32_t v) { return __builtin_bswap32(v); }
+static inline uint64_t snx_bswap64(uint64_t v) { return __builtin_bswap64(v); }
+static inline unsigned snx_clz32(uint32_t v) { return v ? (unsigned)__builtin_clz(v) : 32; }
+static inline unsigned snx_clz64(uint64_t v) { return v ? (unsigned)__builtin_clzll(v) : 64; }
+static inline unsigned snx_ctz32(uint32_t v) { return v ? (unsigned)__builtin_ctz(v) : 32; }
+static inline unsigned snx_ctz64(uint64_t v) { return v ? (unsigned)__builtin_ctzll(v) : 64; }
+static inline unsigned snx_popcount64(uint64_t v) { return (unsigned)__builtin_popcountll(v); }
+#else
+static inline uint16_t snx_bswap16(uint16_t v) { return (uint16_t)(v << 8 | v >> 8); }
+static inline uint32_t snx_bswap32(uint32_t v) { return v << 24 | (v & 0xFF00u) << 8 | (v >> 8 & 0xFF00u) | v >> 24; }
+static inline uint64_t snx_bswap64(uint64_t v) {
+    return (uint64_t)snx_bswap32((uint32_t)v) << 32 | snx_bswap32(v >> 32);
+}
+static inline unsigned snx_clz64(uint64_t v) {
+    unsigned n = 0;
+    if (!v) return 64;
+    for (; !(v >> 63); v <<= 1) ++n;
+    return n;
+}
+static inline unsigned snx_clz32(uint32_t v) { return v ? snx_clz64(v) - 32 : 32; }
+static inline unsigned snx_ctz64(uint64_t v) {
+    unsigned n = 0;
+    if (!v) return 64;
+    for (; !(v & 1); v >>= 1) ++n;
+    return n;
+}
+static inline unsigned snx_ctz32(uint32_t v) { return v ? snx_ctz64(v) : 32; }
+static inline unsigned snx_popcount64(uint64_t v) {
+    unsigned n = 0;
+    for (; v; v &= v - 1) ++n;
+    return n;
+}
+#endif
 
 /* 64-bit FNV-1a: SNX_FNV_BASIS to start, each call continuing the hash of the bytes before */
 #define SNX_FNV_BASIS 0xcbf29ce484222325ull

@@ -7,6 +7,7 @@
 
    A draw reads the 3D engine's registers for its state. Signed viewport scales and coordinate swizzles map the
    guest's position. Window-origin bit 4 controls triangle facing independently of that mapping. */
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1123,7 +1124,7 @@ static u32 cb_range(const GpuChannel* ch, int stage, const VkSh* s, int i) {
    it does for its vertex streams (vk_buf_prefetch) */
 static void cb_prefetch(const GpuChannel* ch, int stage, const VkSh* s, int step) {
     for (u32 m = s->si.cbuf_mask & 0x3FFFF; m; m &= m - 1) {
-        int i = __builtin_ctz(m);
+        int i = snx_ctz32(m);
         if (ch->cbind[stage][i]) vk_buf_prefetch(ch->cbind[stage][i], cb_range(ch, stage, s, i), step);
     }
 }
@@ -2024,7 +2025,7 @@ static void vertex_regs_keep(const u32* r, u32 in) {
         g_draw.vattr[i] = in >> i & 1 ? r[0x458 + i] : 0;
         if (in >> i & 1) g_draw.vstreams |= 1u << (r[0x458 + i] & 31);
     }
-    for (u32 m = g_draw.vstreams; m; m &= m - 1) stream_regs(r, (u32)__builtin_ctz(m), g_draw.vstream[__builtin_ctz(m)]);
+    for (u32 m = g_draw.vstreams; m; m &= m - 1) stream_regs(r, (u32)snx_ctz32(m), g_draw.vstream[snx_ctz32(m)]);
 }
 /* whether what the kept state read of the vertex registers is as it was: all that the shaders, the key and the
    vertex bindings take from them */
@@ -2033,10 +2034,10 @@ static int vertex_regs_hold(const u32* r, const DrawShaders* s) {
     attr_ints(r, &ai, &as);
     if (ai != s->attr_int || as != s->attr_sint) return 0;
     for (u32 m = in; m; m &= m - 1)
-        if (r[0x458 + __builtin_ctz(m)] != g_draw.vattr[__builtin_ctz(m)]) return 0;
+        if (r[0x458 + snx_ctz32(m)] != g_draw.vattr[snx_ctz32(m)]) return 0;
     for (u32 m = g_draw.vstreams; m; m &= m - 1) {
-        stream_regs(r, (u32)__builtin_ctz(m), w);
-        if (memcmp(w, g_draw.vstream[__builtin_ctz(m)], sizeof w)) return 0;
+        stream_regs(r, (u32)snx_ctz32(m), w);
+        if (memcmp(w, g_draw.vstream[snx_ctz32(m)], sizeof w)) return 0;
     }
     return 1;
 }
@@ -2143,7 +2144,7 @@ static u64 stream_len(const u32* r, u32 s) {
 static u32 attributes_empty(const u32* r, u32 inputs) {
     u32 e = 0;
     while (inputs) {
-        u32 i = (u32)__builtin_ctz(inputs), attribute = r[0x458 + i];
+        u32 i = (u32)snx_ctz32(inputs), attribute = r[0x458 + i];
         inputs &= inputs - 1;
         if (stream_len(r, attribute & 31) <= ((attribute >> 7) & 0x3fff)) e |= 1u << i;
     }

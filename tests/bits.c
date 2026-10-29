@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* bits.h's 128-bit products and quotients of 64-bit values, built twice (tests/CMakeLists.txt): as a host with the
-   compiler's 128-bit integer takes them, and from 32-bit halves alone (SNX_BITS_PORTABLE), as a host without one
-   would. Each against values worked out by hand, which any host checks, and where the compiler has the 128-bit
-   integer against it too, over a million pseudo-random operands and every edge (0, 1, the extremes) */
+/* bits.h's 128-bit products and quotients of 64-bit values, byte swaps and bit counts, built twice
+   (tests/CMakeLists.txt): as a host with GNU's builtins and 128-bit integer takes them, and in ISO C alone
+   (SNX_BITS_PORTABLE), as a host without them would. Each against values worked out by hand, which any host checks,
+   and where the compiler has them against its own, over a million pseudo-random operands and every edge (0, 1, the
+   extremes) */
 #include "common/utilities/bits.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -96,6 +97,16 @@ static void against_int128(void) {
               k);
         CHECK(snx_div_shl_s64(sa, k, sd) == (int64_t)((i128)sa * ((i128)1 << k) / sd), "%" PRId64 " * 2^%u / %" PRId64,
               sa, k, sd);
+        uint32_t w = (uint32_t)a;
+        CHECK(snx_bswap64(a) == __builtin_bswap64(a) && snx_bswap32(w) == __builtin_bswap32(w) &&
+                  snx_bswap16((uint16_t)w) == __builtin_bswap16((uint16_t)w),
+              "byte swaps of %016" PRIx64, a);
+        CHECK((!a || snx_clz64(a) == (unsigned)__builtin_clzll(a)) &&
+                  (!a || snx_ctz64(a) == (unsigned)__builtin_ctzll(a)) &&
+                  (!w || snx_clz32(w) == (unsigned)__builtin_clz(w)) &&
+                  (!w || snx_ctz32(w) == (unsigned)__builtin_ctz(w)) &&
+                  snx_popcount64(a) == (unsigned)__builtin_popcountll(a),
+              "bit counts of %016" PRIx64, a);
     }
 }
 #endif
@@ -118,13 +129,24 @@ int main(void) {
         int64_t r = snx_div_shl_s64(g_div_shl[i].a, g_div_shl[i].k, g_div_shl[i].d);
         CHECK(r == g_div_shl[i].r, "div_shl %zu: %" PRId64 ", not %" PRId64, i, r, g_div_shl[i].r);
     }
+    CHECK(snx_bswap16(0x1234) == 0x3412 && snx_bswap32(0x12345678u) == 0x78563412u &&
+              snx_bswap64(0x0123456789ABCDEFull) == 0xEFCDAB8967452301ull,
+          "byte swaps");
+    CHECK(snx_clz32(0) == 32 && snx_clz32(1) == 31 && snx_clz32(0x80000000u) == 0 && snx_clz64(0) == 64 &&
+              snx_clz64(1) == 63 && snx_clz64(0x0000800000000000ull) == 16,
+          "leading zeros");
+    CHECK(snx_ctz32(0) == 32 && snx_ctz32(0x80000000u) == 31 && snx_ctz32(12) == 2 && snx_ctz64(0) == 64 &&
+              snx_ctz64(0x8000000000000000ull) == 63 && snx_ctz64(1) == 0,
+          "trailing zeros");
+    CHECK(snx_popcount64(0) == 0 && snx_popcount64(~0ull) == 64 && snx_popcount64(0x8000000000000001ull) == 2,
+          "population count");
 #ifdef __SIZEOF_INT128__
     against_int128();
 #endif
 #ifdef SNX_BITS_INT128
-    printf("%s: the compiler's 128-bit integer\n", g_failures ? "FAIL" : "ok");
+    printf("%s: the compiler's builtins and 128-bit integer\n", g_failures ? "FAIL" : "ok");
 #else
-    printf("%s: 32-bit halves\n", g_failures ? "FAIL" : "ok");
+    printf("%s: ISO C alone\n", g_failures ? "FAIL" : "ok");
 #endif
     return g_failures != 0;
 }

@@ -39,6 +39,7 @@
 // little-endian host these are plain words.
 #ifndef SNX_TESTS_GLSL_HPP
 #define SNX_TESTS_GLSL_HPP
+#include "common/utilities/bits.h"
 #include <atomic>
 #include <barrier>
 #include <bit>
@@ -103,7 +104,7 @@ using bvec2 = vec<bool, 2>;
 // a buffer's 32-bit word: the device's (little-endian) bytes, read and written as a uint
 inline uint le_order(uint v) {
     if constexpr (std::endian::native == std::endian::big)
-        return __builtin_bswap32(v);
+        return snx_bswap32(v);
     else
         return v;
 }

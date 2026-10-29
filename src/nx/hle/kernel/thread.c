@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* guest threads (each on a host thread of its own), the thread table, process exit, and the four cores the threads
    take turns on */
+#include "common/utilities/bits.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include <errno.h>
 #include <string.h>
@@ -137,12 +138,12 @@ static void core_release_nl(KThread* t) {
 /* after t took a core: its host thread moves to the core's share of the host CPUs, if it was on another one. Fewer
    host CPUs than cores leave nothing to share out */
 static void core_pin(KThread* t) {
-    int k = t->on_core, n = __builtin_popcountll(g_hle.svcmem.core_mask), cpus[256], m = 0, len = 0;
+    int k = t->on_core, n = snx_popcount64(g_hle.svcmem.core_mask), cpus[256], m = 0, len = 0;
     char list[256] = "";
     if (k == t->pinned) return;
     t->pinned = k;
     if (g_hle.thread.host_ncpu < n || !((g_hle.svcmem.core_mask >> k) & 1)) return;
-    for (int i = __builtin_popcountll(g_hle.svcmem.core_mask & ((1ull << k) - 1)); i < g_hle.thread.host_ncpu; i += n)
+    for (int i = snx_popcount64(g_hle.svcmem.core_mask & ((1ull << k) - 1)); i < g_hle.thread.host_ncpu; i += n)
         cpus[m++] = g_hle.thread.host_cpu[i];
     plat_thread_cpus(cpus, m);
     if (__atomic_exchange_n(&g_hle.thread.pin_said[k], 1, __ATOMIC_RELAXED)) return;

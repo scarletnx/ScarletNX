@@ -33,7 +33,7 @@ extern int missing(void) __attribute__((weak_import));
 int test_entry(void);
 int test_entry(void) { return missing ? missing() : 0; }
 #elif PART == 4 /* refused: data aligned to more than a 16 KiB page */
-__attribute__((aligned(32768))) char big[16] = {1};
+_Alignas(32768) char big[16] = {1};
 char* test_entry(void);
 char* test_entry(void) { return big; }
 #endif

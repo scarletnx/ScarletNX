@@ -14,7 +14,7 @@
 typedef uint32_t (*Cas)(uint64_t*, uint64_t, uint64_t, uint64_t, uint64_t);
 
 static void one(Cas cas) {
-    uint64_t p[2] __attribute__((aligned(16)));
+    _Alignas(16) uint64_t p[2];
     p[0] = 1;
     p[1] = 2;
     assert(cas(p, 1, 2, 3, 4) && p[0] == 3 && p[1] == 4);  /* both match: both stored */
@@ -26,7 +26,7 @@ static void one(Cas cas) {
 #ifndef _WIN32
 #define THREADS 4
 #define ADDS    20000
-static uint64_t g_pair[2] __attribute__((aligned(16)));
+static _Alignas(16) uint64_t g_pair[2];
 static Cas g_cas;
 static void* adder(void* unused) {
     int i;

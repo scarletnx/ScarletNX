@@ -64,7 +64,7 @@ static void rec_thread(void* arg) {
             __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
             pm_unlock(&g_m);
         }
-        u64 records __attribute__((unused)) = 0; /* the zone's value; only the profiler reads it */
+        [[maybe_unused]] u64 records = 0; /* the zone's value; only the profiler reads it */
         SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
             const RecHdr* h = (const RecHdr*)(g_ring + (tail & (REC_CAP - 1)));

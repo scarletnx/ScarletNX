@@ -22,7 +22,7 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) { return c->rt->c
    takes the doublewords as the host reads p[0] and p[1], each byte-reversed on a big-endian host */
 u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    o0 = __builtin_bswap64(o0), o1 = __builtin_bswap64(o1), n0 = __builtin_bswap64(n0), n1 = __builtin_bswap64(n1);
+    o0 = snx_bswap64(o0), o1 = snx_bswap64(o1), n0 = snx_bswap64(n0), n1 = snx_bswap64(n1);
 #endif
     return c->rt->cas128(p, o0, o1, n0, n1);
 }
@@ -40,8 +40,8 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
     /* the guest's 16 bytes are two little-endian doublewords, the first at p: a big-endian host reads the first as
        the high half, each one byte-reversed */
-    snx_u128 expected = ((snx_u128)__builtin_bswap64(o0) << 64) | __builtin_bswap64(o1),
-             desired = ((snx_u128)__builtin_bswap64(n0) << 64) | __builtin_bswap64(n1);
+    snx_u128 expected = ((snx_u128)snx_bswap64(o0) << 64) | snx_bswap64(o1),
+             desired = ((snx_u128)snx_bswap64(n0) << 64) | snx_bswap64(n1);
 #else
     snx_u128 expected = ((snx_u128)o1 << 64) | o0, desired = ((snx_u128)n1 << 64) | n0;
 #endif

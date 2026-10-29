@@ -9,6 +9,7 @@
    layout below is the binary contract that SNX_ABI versions. */
 #ifndef SNX_CPU_H
 #define SNX_CPU_H
+#include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -130,9 +131,9 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
    host (ppc64) swaps what it reads and writes as numbers, as the IR emitters' ir_rd and ir_wr do ---- */
 #define MP(a) (M + (u64)(a))
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-#define SNX_GUEST16(v) __builtin_bswap16(v)
-#define SNX_GUEST32(v) __builtin_bswap32(v)
-#define SNX_GUEST64(v) __builtin_bswap64(v)
+#define SNX_GUEST16(v) snx_bswap16(v)
+#define SNX_GUEST32(v) snx_bswap32(v)
+#define SNX_GUEST64(v) snx_bswap64(v)
 #else
 #define SNX_GUEST16(v) (v)
 #define SNX_GUEST32(v) (v)
@@ -277,14 +278,14 @@ SNX_INLINE u64 ext64(u64 x, u32 opt, u32 sh) {
 }
 
 /* ---- bit counts and reversals ---- */
-SNX_INLINE u32 clz64(u64 x) { return x ? (u32)__builtin_clzll(x) : 64; }
-SNX_INLINE u32 clz32(u32 x) { return x ? (u32)__builtin_clz(x) : 32; }
+SNX_INLINE u32 clz64(u64 x) { return snx_clz64(x); }
+SNX_INLINE u32 clz32(u32 x) { return snx_clz32(x); }
 /* FreeBSD defines these */
 #ifndef bswap32
-SNX_INLINE u32 bswap32(u32 x) { return __builtin_bswap32(x); }
+SNX_INLINE u32 bswap32(u32 x) { return snx_bswap32(x); }
 #endif
 #ifndef bswap64
-SNX_INLINE u64 bswap64(u64 x) { return __builtin_bswap64(x); }
+SNX_INLINE u64 bswap64(u64 x) { return snx_bswap64(x); }
 #endif
 /* CLS: the leading bits equal to the sign bit, the sign bit itself not counted */
 SNX_INLINE u32 cls64(u64 x) { return clz64(x ^ (u64)((i64)x >> 1)) - 1; }
@@ -441,10 +442,10 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1);
 /* ABI 3 made these and snx_cas128 atomic, so modules from before are refused */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 /* the T's byte-swapped, as one access (T of 1, 2, 4 or 8 bytes) */
-#define SNX_GUEST_T(T, v)                                                                                             \
-    ((T)(sizeof(T) == 2   ? __builtin_bswap16((u16)(v))                                                              \
-         : sizeof(T) == 4 ? __builtin_bswap32((u32)(v))                                                              \
-         : sizeof(T) == 8 ? __builtin_bswap64((u64)(v))                                                              \
+#define SNX_GUEST_T(T, v)                                                                                              \
+    ((T)(sizeof(T) == 2   ? snx_bswap16((u16)(v))                                                                      \
+         : sizeof(T) == 4 ? snx_bswap32((u32)(v))                                                                      \
+         : sizeof(T) == 8 ? snx_bswap64((u64)(v))                                                                      \
                           : (v)))
 #define LDACQ(T, a)    SNX_GUEST_T(T, __atomic_load_n((snx_guest_##T*)MP(a), __ATOMIC_SEQ_CST))
 #else

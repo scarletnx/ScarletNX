@@ -455,7 +455,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         /* the time from the last present, for the stats line: frames slower than 50 ms (a hitch at any pace a game
            runs at) and the slowest, since the last line */
         static u64 last_present_ns, slow_frames, slowest_ns;
-        static u64 was_drawn __attribute__((unused)); /* the draws plot's base; only the profiler reads it */
+        [[maybe_unused]] static u64 was_drawn; /* the draws plot's base; only the profiler reads it */
         /* the counters as of the last present: a slow frame says what it did, which names what a hitch waited for */
         static u64 was[12];
         u64 now_ns = plat_ns(), is[11];

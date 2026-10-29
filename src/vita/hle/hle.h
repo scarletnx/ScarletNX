@@ -4,6 +4,7 @@
 #define SNX_VITA_HLE_H
 #include "vita/runtime/process.h"
 #include <stdio.h>
+#include <string.h>
 
 /* An imported function, answered by the runtime: its arguments in the calling thread's registers (r0 to r3, then the
    stack: vita_arg), its result returned into r0 (a 64-bit one's high word put in r1 first). One that waits calls
@@ -21,23 +22,23 @@ uint32_t vita_arg(VitaProcess* p, VitaThread* t, unsigned n);
 static inline float vita_float(const VitaThread* t, unsigned n) {
     uint32_t bits = (uint32_t)(t->cpu.d[n / 2] >> (n & 1 ? 32 : 0));
     float f;
-    __builtin_memcpy(&f, &bits, sizeof f);
+    memcpy(&f, &bits, sizeof f);
     return f;
 }
 static inline double vita_double(const VitaThread* t, unsigned n) {
     double d;
-    __builtin_memcpy(&d, &t->cpu.d[n], sizeof d);
+    memcpy(&d, &t->cpu.d[n], sizeof d);
     return d;
 }
 /* a floating-point result, in S0 or D0; the function returns r0 as it was, to keep it */
 static inline uint32_t vita_return_float(VitaThread* t, float f) {
     uint32_t bits;
-    __builtin_memcpy(&bits, &f, sizeof bits);
+    memcpy(&bits, &f, sizeof bits);
     t->cpu.d[0] = (t->cpu.d[0] & ~0xffffffffull) | bits;
     return t->cpu.r[0];
 }
 static inline uint32_t vita_return_double(VitaThread* t, double d) {
-    __builtin_memcpy(&t->cpu.d[0], &d, sizeof d);
+    memcpy(&t->cpu.d[0], &d, sizeof d);
     return t->cpu.r[0];
 }
 /* a 64-bit result: its high word into r1, the low one returned */

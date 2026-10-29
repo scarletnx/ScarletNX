@@ -3,6 +3,7 @@
    Geometry invocation information follows Citron's emit_spirv_context_get_set.cpp:
    SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project */
 /* Direct Maxwell to SPIR-V translation. Unsupported instructions reject the entire module. */
+#include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
 #include <assert.h>
@@ -192,7 +193,7 @@ static u32 texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 com
    7 ALWAYS), or -1 for a slot that samples a depth texture */
 static int dc_color_func(const ShaderInfo* si, int slot) {
     if (!(si->tex_dc_color_mask >> slot & 1)) return -1;
-    u32 index = (u32)__builtin_popcountll(si->tex_dc_color_mask & ((1ull << slot) - 1));
+    u32 index = (u32)snx_popcount64(si->tex_dc_color_mask & ((1ull << slot) - 1));
     return index < SH_DC_COLOR_MAX ? (int)(si->tex_dc_color_funcs >> (3 * index) & 7) : 3;
 }
 /* 1.0 when reference <func> texel passes, as a compare sampler returns (GL's order: the reference on the left) */
