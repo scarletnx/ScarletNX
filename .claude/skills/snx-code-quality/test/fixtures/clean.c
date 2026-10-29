@@ -48,3 +48,7 @@ static void touch(PaddedQueue* q, OneAtomic* o, Ring* r) {
     __atomic_store_n(&g_alone, __atomic_load_n(&g_elsewhere_1, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
     (void)__atomic_load_n(&g_elsewhere_2, __ATOMIC_ACQUIRE);
 }
+static _Thread_local struct { /* one thread-local for the file thread state */
+    u32 depth;
+    int busy;
+} t_clean;
