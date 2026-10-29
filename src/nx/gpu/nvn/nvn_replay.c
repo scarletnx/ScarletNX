@@ -16,6 +16,8 @@
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_verify.h"
+#include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
@@ -234,6 +236,7 @@ static void run(void* arg) {
             Replay r;
             u32 i;
             r.q = q;
+            if (g_settings.nvn_verify) nvn_verify_replay_submit(j->queue);
             if (g_renderer->stream_run) g_renderer->stream_run(1);
             for (i = 0; i < j->n; i++) walk(j->handles[i], replay, &r, 0);
             effects(q);

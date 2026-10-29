@@ -8,6 +8,7 @@
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
 /* the SVC dispatch: each SVC's registers in the 64-bit ABI (and the 32-bit one's, through snx_svc32), the thread's
    entry and exit (its core, pausing), and the SVCs that aren't memory or synchronization */
+#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
@@ -465,6 +466,7 @@ static void svc_break(CPU* c, u32 reason, u64 info, u64 size) {
     if (reason & 0x80000000u) return;
     WARN("\n*** The game called svcBreak (reason %x, info %llx, %llu bytes) ***\n", reason, (unsigned long long)info,
          (unsigned long long)size);
+    if (nvn_verify_running()) WARN("  in nvn_verify's shadow call of the NVN driver's %s\n", nvn_verify_running());
     if (size && size <= 0x400) { /* what the info points at, as far as it is mapped: a message, or words */
         u64 n = readable_len(info, size), i, len = 0;
         const u8* p = GP(info);
