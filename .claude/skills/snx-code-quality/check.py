@@ -185,8 +185,9 @@ def check_globals(path, text, report, used):
 
 
 def check_state(path, text, report):
-    """A file's variables of static duration, at file scope or static in a function, when two or more aren't const."""
-    variables, depth, start, brace = [], 0, 0, -1
+    """A file's variables of static duration, at file scope or static in a function, when two or more aren't const;
+    and its thread-locals, when there are two or more, or any in a subsystem that keeps one thread-local for all."""
+    variables, tls, depth, start, brace = [], [], 0, 0, -1
     for i, c in enumerate(text):
         if c == "{":
             if depth == 0:
@@ -203,8 +204,12 @@ def check_state(path, text, report):
             while re.search(r"\{[^{}]*\}", decl):
                 decl = re.sub(r"\{[^{}]*\}", "", decl)
             head = decl.split("=")[0]
-            # a thread's own variables (rule 6 exempts them) can't be members of one global
+            # a thread's own variables can't be members of one global: rule 6 gathers them in one thread-local
             thread_local = re.match(r"(?:static\s+)?(?:_Thread_local|thread_local|__thread)\b", decl)
+            if thread_local and "(" not in head:
+                names = re.findall(r"(\w+)\s*(?:\[[^\]]*\]\s*)*$", head.strip())
+                if names:
+                    tls.append((names[0], start + lead))
             if decl and not thread_local and "(" not in head and not re.match(r"(?:extern|typedef)\b", decl) and \
                     not re.fullmatch(r"(?:struct|union|enum)\b\s*\w*\s*", head.strip()) and not const_object(head):
                 for part in head.split(","):
@@ -231,6 +236,19 @@ def check_state(path, text, report):
         report(path, line_of(text, variables[0][1]), "globals",
                f"{len(variables)} variables of static duration ({', '.join(n for n, _ in variables)}): one struct "
                f"holds a file's state")
+    # thread state: one thread-local struct a file, and in a subsystem with one global, one for the subsystem
+    unix = path.replace(os.sep, "/")
+    slot = "t_hle" if "src/nx/hle/" in unix else "t_nvn" if "src/nx/gpu/nvn/" in unix else None
+    loose = [v for v in tls if v[0] != slot] if slot else []
+    tls.sort(key=lambda v: v[1])
+    if loose:
+        report(path, line_of(text, loose[0][1]), "tls",
+               f"{len(loose)} thread-local variable{'s' if len(loose) > 1 else ''} "
+               f"({', '.join(n for n, _ in loose)}): the subsystem's thread state is a member of {slot}")
+    elif len(tls) > 1:
+        report(path, line_of(text, tls[0][1]), "tls",
+               f"{len(tls)} thread-local variables ({', '.join(n for n, _ in tls)}): one thread-local struct holds "
+               f"a file's thread state")
 
 
 def files(paths):

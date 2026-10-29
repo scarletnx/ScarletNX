@@ -60,13 +60,20 @@ Put a helper that two files need there, or in a header beside the two files. Nev
 6. **One global per file.** The mutable state of a file is the members of one struct in one global, `g_<file>`, not
    loose globals. That state is every variable of static duration, and also function-local `static`s. Declare what
    other files read one time, in the header beside the file, through the struct or a function. The rule does not
-   apply to `const` tables (they are data, not state), or to `_Thread_local`.
+   apply to `const` tables (they are data, not state).
+
+   Thread state obeys the same rule. The `_Thread_local` variables of a file are the members of one thread-local
+   struct, `t_<file>`, not loose thread-locals. Then the thread state of a file is in one place, as its other state
+   is.
 
    **In `src/nx/hle/`**, the state of the HLE is one global for the whole subsystem. The state struct of each file is
    a member of `g_hle` (`hle/hle.h`). The header beside the file declares its type and initializer. The objects that
    the file makes and frees come from bounded pools in that struct (an all-zero slot is free). `pool_take` searches
    on from the last slot that it took, and asserts when the pool is full. No file there defines a variable of static
    duration.
+
+   The thread state of the HLE is one thread-local, `t_hle`, with one member for each file that has thread state.
+   **In `src/nx/gpu/nvn/`**, NVN does the same with `g_nvn` and `t_nvn`.
 
 Review: `python3 .claude/skills/snx-code-quality/check.py FILES` lists candidates for rules 1, 3, 4 and 6. A candidate
 is not a finding until you read the code. Read the diff for rules 2 and 5. Report `file:line`, the rule and the fix. A
