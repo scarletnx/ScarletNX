@@ -342,10 +342,32 @@ static int check_msaa(void) {
     }
     CHECK(!ms_case(ch, address, address + 0x14000, address + 0x15000, address + 0x17000, 1));
     CHECK(!ms_case(ch, address, address + 0x18000, address + 0x19000, address + 0x1B000, 0));
+    /* a 4x Z32F depth target (8x8 samples, pitch linear) cleared to 0.25: every sample written back as 0.25 through
+       msaa.frag's depth unpack */
+    const u64 zeta = address + 0x1E000;
+    float quarter = 0.25f;
+    r[0x574] = DS_MSAA_2X2;
+    r[0x487] = 0;
+    r[0x54E] = 1;
+    r[0x3F8] = (u32)(zeta >> 32), r[0x3F9] = (u32)zeta, r[0x3FA] = 0x0A, r[0x3FB] = 0x1000, r[0x3FC] = 0;
+    r[0x48A] = r[0x48B] = 8;
+    r[0x48C] = 1;
+    memcpy(&r[0x364], &quarter, 4);
+    vk_lock();
+    engine_clear(ch, 1);
+    vk_render_end();
+    vk_unlock();
+    Surf* z = vk_rt_find(zeta);
+    CHECK(z && z->f.depth && z->msaa == DS_MSAA_2X2 && z->w == 4 && vk_ms_moves(z));
+    g_renderer->rt_flush(zeta);
+    u8 depth[256];
+    CHECK(!gmem_read(zeta, depth, sizeof depth));
+    for (u32 i = 0; i < 256; i += 4) CHECK(snx_ld_le32(depth + i) == 0x3E800000u);
+    r[0x54E] = 0;
     r[0x574] = 0;
     CHECK(g_vk_validation_messages == validation);
     printf("msaa: 4x targets drawn, written back and loaded in the guest's sample layout, resolved, and sampled, in "
-           "block and pitch linear memory%s\n",
+           "block and pitch linear memory, and a 4x depth target written back%s\n",
            g_vk.props.limits.standardSampleLocations ? " (standard sample locations)" : "");
     free(ch);
     return 0;
