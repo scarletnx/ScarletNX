@@ -93,7 +93,7 @@ u32 h_new(KObj* o) {
     } else if (g_hle.kernel.htop < H_MAX)
         i = g_hle.kernel.htop++;
     else {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         WARN_LIMIT(4, "kernel: the handle table is full (%d handles), %s gets none\n", H_MAX, o->name);
         return 0;
     }
@@ -102,7 +102,7 @@ u32 h_new(KObj* o) {
     g_hle.kernel.htab[i].obj = kobj_id(o);
     g_hle.kernel.htab[i].linear = lin;
     kobj_ref(o);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return ((u32)lin << 15) | (u32)i;
 }
 /* the table's entry for h, or -1. Pseudo-handles have the reserved bits set, so they are never in it */
@@ -132,7 +132,7 @@ KObj* h_get_type(u32 h, int t) {
     KObj* o;
     pm_lock(&g_host.kernel.klock);
     o = h_resolve_nl(h, t);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return o;
 }
 KObj* h_get_ref(u32 h, int t) {
@@ -140,7 +140,7 @@ KObj* h_get_ref(u32 h, int t) {
     pm_lock(&g_host.kernel.klock);
     o = h_resolve_nl(h, t);
     kobj_ref(o);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return o;
 }
 /* the table's reference goes after the lock is dropped: closing the last handle to a session destroys its service */
@@ -150,14 +150,14 @@ int h_close(u32 h) {
     pm_lock(&g_host.kernel.klock);
     i = h_index_nl(h);
     if (i < 0) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_THROW(R_BADHANDLE);
     }
     o = kobj_at(g_hle.kernel.htab[i].obj);
     g_hle.kernel.htab[i].obj = 0;
     g_hle.kernel.htab[i].next = (i16)g_hle.kernel.hfree;
     g_hle.kernel.hfree = i;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     kobj_unref(o);
     R_SUCCEED();
 }
@@ -201,12 +201,13 @@ static void wake_waiters_nl(KObj* o, int kind) {
 }
 void kobj_wake_nl(KObj* o, int kind) { wake_waiters_nl(o, kind); }
 /* ends t's wait with result. Only the first wake of a wait counts: a thread signaled by an object and then cancelled
-   before it runs again returns the signal, as the console's NotifyAvailable makes the thread no longer cancellable */
+   before it runs again returns the signal, as the console's NotifyAvailable makes the thread no longer cancellable.
+   Its host thread wakes once its waker has let go of g_klock, which it takes again first */
 void wake(KThread* t, int result) {
     if (t->woken) return;
     t->woken = 1;
     t->wait_result = result;
-    pc_broadcast(kt_cv(t));
+    kt_notify_later(t);
 }
 /* wakes the threads waiting on o, if it is signaled. A WaitSynchronization waiter is told which object it was (in
    wait_key, which its wait doesn't use otherwise): by the time it runs, another thread may have cleared the event */
@@ -218,7 +219,8 @@ void kobj_signal_nl(KObj* o) {
    checks). It lets go of its core first, as a console thread leaves the CPU when it blocks: the SVC takes it back on
    the way out (svc_leave), never here, where it would wait for a core with g_klock held. 1 when woken, 0 timed out.
    The deadline is in guest time, which stops while the game is paused (clock.c), and the thread counts as stopped for
-   a game pause while it waits: a wake or a timeout during one waits for its end */
+   a game pause while it waits: a wake or a timeout during one waits for its end. It waits on its word (kt_wait), not
+   holding g_klock */
 int sleep_nl(KThread* t, i64 timeout) {
     u64 end = 0;
     int r = 1;
@@ -230,9 +232,11 @@ int sleep_nl(KThread* t, i64 timeout) {
     core_leave(t);
     t->park = PARK_WAIT;
     __atomic_store_n(&t->stopped, 1, __ATOMIC_SEQ_CST);
-    while (!t->woken) {
+    for (;;) {
+        u32 seq = kt_seq(t);
         i64 left = -1;
         kthread_retire_check(&g_host.kernel.klock);
+        if (t->woken) break;
         if (timeout > 0 && !g_hle.thread.hold) {
             u64 now = guest_ns();
             if (now >= end) {
@@ -241,11 +245,13 @@ int sleep_nl(KThread* t, i64 timeout) {
             }
             left = (i64)(end - now);
         }
-        pc_wait(kt_cv(t), &g_host.kernel.klock, left);
+        kt_wait(t, seq, &g_host.kernel.klock, left);
     }
-    while (g_hle.thread.hold) {
+    for (;;) {
+        u32 seq = kt_seq(t);
+        if (!g_hle.thread.hold) break;
         kthread_retire_check(&g_host.kernel.klock);
-        pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+        kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
     __atomic_store_n(&t->stopped, 0, __ATOMIC_SEQ_CST);
     return r;
@@ -270,10 +276,10 @@ void kevent_signal(KEvent* e) {
     pm_lock(&g_host.kernel.klock);
     e->signaled = 1;
     kobj_signal_nl(&e->o);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
 }
 void kevent_clear(KEvent* e) {
     pm_lock(&g_host.kernel.klock);
     e->signaled = 0;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
 }

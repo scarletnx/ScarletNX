@@ -155,12 +155,12 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     R_TRY(check_word(addr));
     pm_lock(&g_host.kernel.klock);
     if (word_load(uword(addr)) != (owner | HANDLE_WAIT)) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_SUCCEED();
     }
     o = h_get_nl(owner);
     if (!o || o->type != KO_THREAD) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_THROW(R_BADHANDLE);
     }
     t->woken = 0;
@@ -170,7 +170,7 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     mutex_wait_nl((KThread*)o, t);
     sleep_nl(t, -1); /* until it is handed the mutex: nothing cancels this wait */
     r = (u32)t->wait_result;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return r;
 }
 /* svcArbitrateUnlock (Eden's KConditionVariable::SignalToAddress): the owner unlocks a mutex with waiters, the best of
@@ -183,7 +183,7 @@ u32 svc_arbitrate_unlock(u64 addr) {
     n = mutex_next_nl(addr, &more);
     word_store(uword(addr), mutex_tag(n, more));
     if (n) wake(n, 0);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     R_SUCCEED();
 }
 
@@ -233,7 +233,7 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     word_store(uword(maddr), mutex_tag(n, more));
     if (n) wake(n, 0);
     if (!timeout) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_THROW(R_TIMEOUT);
     }
     t->woken = 0;
@@ -244,7 +244,7 @@ u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout) {
     t->wait_svc = WAIT_SVC_CV;
     list_add(wait_list(t), t);
     r = cv_finish_nl(t, sleep_nl(t, timeout));
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return r;
 }
 /* svcSignalProcessWideKey (Eden's KConditionVariable::Signal): wakes count waiters (all of them when count <= 0), and
@@ -263,7 +263,7 @@ u32 svc_signal_cv(u64 key, i32 count) {
         n++;
     }
     if (!list_best(*l, 1, key) && key <= AS_SIZE - 4) word_store(uword(key), 0u);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     R_SUCCEED();
 }
 
@@ -290,11 +290,11 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
     if (type == 1)
         while ((i32)cur < value && !word_cas(p, &cur, cur - 1u, 1)) {}
     if (type == 2 ? (i32)cur != value : (i32)cur >= value) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_THROW(R_BADSTATE);
     }
     if (!timeout) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         R_THROW(R_TIMEOUT);
     }
     t->woken = 0;
@@ -303,7 +303,7 @@ u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout) {
     t->wait_svc = WAIT_SVC_ADDR;
     list_add(wait_list(t), t);
     r = addr_finish_nl(t, sleep_nl(t, timeout));
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return r;
 }
 /* svcSignalToAddress (Eden's KAddressArbiter::Signal, SignalAndIncrementIfEqual and
@@ -338,7 +338,7 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
         else
             cur = word_load(p);
         if (cur != (u32)value) {
-            pm_unlock(&g_host.kernel.klock);
+            klock_unlock();
             R_THROW(R_BADSTATE);
         }
     }
@@ -348,7 +348,7 @@ u32 svc_signal_addr(u64 addr, u32 type, i32 value, i32 count) {
         wake(w, 0);
         n++;
     }
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     R_SUCCEED();
 }
 
@@ -395,7 +395,7 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         objs[i] = h_get_nl(hs[i]);
         if (!objs[i] || !kobj_waitable(objs[i])) {
             u32 k = g_hle.sync.bad_waits++, bad = hs[i];
-            pm_unlock(&g_host.kernel.klock);
+            klock_unlock();
             while (i--) kobj_unref(objs[i]);
             if (k < 20 || !(k & 0xFFFF))
                 WARN("kernel: WaitSynchronization on %x, which names nothing that can be waited on: InvalidHandle "
@@ -427,7 +427,7 @@ u32 svc_wait_sync(KThread* t, u64 hptr, u32 n, i64 timeout, u32* out_idx) {
         for (i = 0; i < n; i++) waiter_add(objs[i], t);
         r = sync_finish_nl(t, objs, n, sleep_nl(t, timeout), out_idx);
     }
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     for (i = 0; i < n; i++) kobj_unref(objs[i]);
     return r;
 }
@@ -465,7 +465,7 @@ void sync_resume(KThread* t) {
             break;
         default: outputs = 0; break;
     }
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     for (i = 0; i < n; i++) kobj_unref(objs[i]);
     if (!outputs) return;
     if (g_arm_mod) {
