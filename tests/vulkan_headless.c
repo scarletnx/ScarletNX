@@ -11,6 +11,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/maxwell/gob.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -493,26 +494,30 @@ static int check_sparse_while_submitting(void) {
     return 0;
 }
 
+/* A fetch of a multisampled texture's sample (TLDS.MS and TLD.MS, the sample in Rb) translates into a module the
+   device takes (the validation layer checks its SPIR-V), with a multisampled texture slot */
 static int check_multisample_shader_gate(void) {
     u64 guest[14] = {0};
-    ShaderInfo info = {0};
-    size_t words = 0;
     guest[10] = 0x001f8000fc0007e0ull; /* scheduler */
-    guest[11] = 0xd000000000000000ull | 6ull << 53 | 1ull << 57 | 0x10ull << 36 | 0xffull << 28 | 4ull << 20 |
-                7ull << 16 | 2ull << 8; /* TLDS.MS */
-    guest[12] = 0xe30000000007000full;  /* EXIT */
-    u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
-    CHECK(!spirv && info.unsupported);
-    CHECK(strstr(info.first_unsupported, "multisample texture binding unavailable"));
-    free(spirv);
-    guest[11] = 0xdc00000000000000ull | 7ull << 51 | 1ull << 50 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 |
-                4ull << 20 | 7ull << 16 | 2ull << 8; /* bound TLD.MS */
-    memset(&info, 0, sizeof info);
-    words = 0;
-    spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
-    CHECK(!spirv && info.unsupported);
-    CHECK(strstr(info.first_unsupported, "multisample texture binding unavailable"));
-    free(spirv);
+    guest[12] = 0xe30000000007000full; /* EXIT */
+    const u64 fetch[2] = {0xd000000000000000ull | 6ull << 53 | 1ull << 57 | 0x10ull << 36 | 0xffull << 28 | 4ull << 20 |
+                              7ull << 16 | 2ull << 8, /* TLDS.MS */
+                          0xdc00000000000000ull | 7ull << 51 | 1ull << 50 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 |
+                              4ull << 20 | 7ull << 16 | 2ull << 8}; /* bound TLD.MS */
+    for (int k = 0; k < 2; k++) {
+        ShaderInfo info = {0};
+        size_t words = 0;
+        guest[11] = fetch[k];
+        u32* spirv = vk_translate_spirv((const u8*)guest, sizeof guest, ST_FS, &info, &words, NULL, NULL);
+        if (!spirv) fprintf(stderr, "multisample fetch %d: %s\n", k, info.first_unsupported);
+        CHECK(spirv && !info.unsupported && info.ntex == 1 && (info.tex[0].flags & 2));
+        VkShaderModuleCreateInfo smi = {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = spirv};
+        VkShaderModule module;
+        CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+        vkDestroyShaderModule(g_vk.dev, module, NULL);
+        free(spirv);
+    }
     return 0;
 }
 
@@ -1330,6 +1335,7 @@ static int check_rt_overlap(void) {
 #include "vulkan_owned_readback.inc"
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_vertex_restride.inc"
+#include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
 
 int main(int argc, char** argv) {
@@ -1350,6 +1356,12 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
+        CHECK(!check_multisample_shader_gate());
+        CHECK(!check_msaa());
+        printf("PASS headless Vulkan multisampling only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
     if (getenv("SNX_TEST_VIC_ONLY")) { /* the validation test: VIC's bindings, none of the other checks' traffic */
         CHECK(!check_vic());
         CHECK(!check_vic_chain(shot));
@@ -1376,6 +1388,7 @@ int main(int argc, char** argv) {
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
+    CHECK(!check_msaa());
     CHECK(!check_direct_spirv());
     CHECK(!check_flush_subnormal());
     CHECK(!check_sampler_reduction());
