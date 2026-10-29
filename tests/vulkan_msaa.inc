@@ -501,7 +501,9 @@ static int check_msaa_nvn(void) {
     CHECK(!gmem_write(ms, lay, sizeof lay));
     ms_nvn_texture(snap_ms, ms, 4);
     ms_nvn_texture(snap_single, single, 1);
-    NvnDraw* d = nvn_draw_new(0x80000007u);
+    static NvnDraw draw; /* a queue's, in its replay state in the runtime */
+    NvnDraw* d = &draw;
+    nvn_draw_init(d, 0x80000007u);
     NvnPSetRT rt;
     memset(&rt, 0, sizeof rt);
     rt.count = 1;
@@ -544,7 +546,6 @@ static int check_msaa_nvn(void) {
         }
     }
     CHECK(!check_msaa_nvn_depth(d, gpu, cpu));
-    free(d);
     CHECK(g_vk_validation_messages == validation);
     puts("msaa nvn: a multisampled texture bound as NVN's render target, cleared at every sample and downsampled, "
          "and a multisampled depth texture downsampled on the GPU");
