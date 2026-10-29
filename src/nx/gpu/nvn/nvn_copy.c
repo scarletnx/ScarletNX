@@ -401,7 +401,7 @@ static void texel_read(void* arg) {
         syncpt_incr(r->syncpt);
     free(r);
 }
-void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst) {
+void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     TexelRead* r = (TexelRead*)calloc(1, sizeof *r);
     TexPlane p;
     u64 lines, width, depth, span, first, size, va;
@@ -422,7 +422,9 @@ void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst) {
     width = ((u64)r->w.r.r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
     lines = ((u64)r->w.r.r.height + (u64)p.bhp - 1) / (u64)p.bhp;
     depth = r->w.r.r.depth > 0 ? (u64)r->w.r.r.depth : 1;
-    span = width * lines * depth; /* tightly packed */
+    r->w.stride[0] = row ? row : (i64)width;
+    r->w.stride[1] = image ? image : r->w.stride[0] * (i64)lines;
+    span = (u64)r->w.stride[1] * (depth - 1) + (u64)r->w.stride[0] * (lines - 1) + width;
     /* the destination, mapped in the GPU's page table while the copy runs: the GPU writes it, and the CPU's read of
        it lands what the GPU wrote (a readback of host-cached memory the GPU copied into, gpu/vk/owned.c) */
     first = dst & ~0xfffull;

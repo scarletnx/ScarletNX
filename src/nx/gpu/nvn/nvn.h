@@ -1760,3 +1760,60 @@ typedef void (*PFNNVNCOMMANDBUFFERWAITEVENTPROC)(NVNcommandBuffer*, const NVNeve
 typedef void (*PFNNVNCOMMANDBUFFERSIGNALEVENTPROC)(NVNcommandBuffer*, const NVNevent*,
                                                    NVNeventSignalMode, NVNeventSignalLocation, int,
                                                    uint32_t);
+/* The prototypes h1k421's reconstruction lacks, added for ScarletNX from the code of the games' NVN drivers (NVN API
+   53 and 55): what each reads and writes of its arguments, and what it answers */
+typedef NVNboolean (*PFNNVNCOMMANDBUFFERINSERTCHECKPOINTSTATICPROC)(NVNcommandBuffer*, const char*);
+typedef NVNboolean (*PFNNVNCOMMANDBUFFERINSERTCHECKPOINTDYNAMICPROC)(NVNcommandBuffer*, const char*);
+typedef void (*PFNNVNCOMMANDBUFFERBINDIMAGESDEFERREDPROC)(NVNcommandBuffer*, NVNshaderStage, int, int,
+                                                          const NVNimageHandle*);
+typedef void (*PFNNVNCOMMANDBUFFERBINDSEPARATESAMPLERSDEFERREDPROC)(NVNcommandBuffer*, NVNshaderStage, int, int,
+                                                                    const NVNseparateSamplerHandle*);
+typedef void (*PFNNVNCOMMANDBUFFERBINDSEPARATETEXTURESDEFERREDPROC)(NVNcommandBuffer*, NVNshaderStage, int, int,
+                                                                    const NVNseparateTextureHandle*);
+typedef void (*PFNNVNCOMMANDBUFFERBINDSTORAGEBUFFERSDEFERREDPROC)(NVNcommandBuffer*, NVNshaderStage, int, int,
+                                                                  const NVNbufferRange*);
+typedef void (*PFNNVNCOMMANDBUFFERBINDUNIFORMBUFFERSDEFERREDPROC)(NVNcommandBuffer*, NVNshaderStage, int, int,
+                                                                  const NVNbufferRange*);
+typedef void (*PFNNVNCOMMANDBUFFEROVERRIDESUBTILESIZEPROC)(NVNcommandBuffer*, NVNboolean, int);
+typedef void (*PFNNVNCOMMANDBUFFERSETCOLORREDUCTIONENABLEPROC)(NVNcommandBuffer*, NVNboolean);
+typedef void (*PFNNVNCOMMANDBUFFERSETCOLORREDUCTIONTHRESHOLDSPROC)(NVNcommandBuffer*, int, int, int);
+typedef void (*PFNNVNCOMMANDBUFFERSETCONTROLMEMORYCALLBACKENABLEDPROC)(NVNcommandBuffer*, NVNboolean);
+typedef void (*PFNNVNCOMMANDBUFFERSETPROVOKINGVERTEXMODEPROC)(NVNcommandBuffer*, int);
+typedef void (*PFNNVNCOMMANDBUFFERSETZCULLZF32COMPRESSIONENABLEPROC)(NVNcommandBuffer*, NVNboolean);
+typedef int (*PFNNVNDEVICEBUILDERGETFLAGSPROC)(const NVNdeviceBuilder*);
+typedef NVNboolean (*PFNNVNDEVICESETAUTOMATICCHECKPOINTSENABLEPROC)(NVNdevice*, NVNboolean);
+typedef NVNboolean (*PFNNVNDEVICESETAUTOMATICCHECKPOINTSBYDEBUGGROUPPROC)(NVNdevice*, NVNboolean);
+typedef NVNboolean (*PFNNVNDEVICESETAUTOMATICCHECKPOINTSMASKPROC)(NVNdevice*, uint32_t);
+typedef NVNboolean (*PFNNVNDEVICESETAUTOMATICCHECKPOINTSSAMPLINGINTERVALPROC)(NVNdevice*, uint32_t);
+typedef NVNboolean (*PFNNVNDEVICESETCHECKPOINTCALLSTACKSENABLEPROC)(NVNdevice*, NVNboolean);
+typedef NVNboolean (*PFNNVNDEVICESETCHECKPOINTMAXCALLSTACKSDEPTHPROC)(NVNdevice*, int);
+typedef ptrdiff_t (*PFNNVNEVENTBUILDERGETMEMORYOFFSETPROC)(const NVNeventBuilder*);
+typedef const NVNmemoryPool* (*PFNNVNEVENTBUILDERGETMEMORYPOOLPROC)(const NVNeventBuilder*);
+typedef const NVNmemoryPool* (*PFNNVNEVENTBUILDERGETSTORAGEPROC)(const NVNeventBuilder*, int64_t*);
+typedef ptrdiff_t (*PFNNVNEVENTGETMEMORYOFFSETPROC)(const NVNevent*);
+typedef const NVNmemoryPool* (*PFNNVNEVENTGETMEMORYPOOLPROC)(const NVNevent*);
+typedef int (*PFNNVNPROGRAMGETSUBTILESIZEPROC)(const NVNprogram*);
+typedef void (*PFNNVNPROGRAMSETSAMPLESHADINGPROC)(NVNprogram*, int);
+typedef NVNboolean (*PFNNVNQUEUEBUILDERGETCOMMANDFLUSHTHRESHOLDPROC)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*PFNNVNQUEUEBUILDERGETCOMMANDMEMORYSIZEPROC)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*PFNNVNQUEUEBUILDERGETCOMPUTEMEMORYSIZEPROC)(const NVNqueueBuilder*, int*);
+typedef NVNboolean (*PFNNVNQUEUEBUILDERGETCONTROLMEMORYSIZEPROC)(const NVNqueueBuilder*, int*);
+typedef NVNdevice* (*PFNNVNQUEUEBUILDERGETDEVICEPROC)(const NVNqueueBuilder*);
+typedef int (*PFNNVNQUEUEBUILDERGETFLAGSPROC)(const NVNqueueBuilder*);
+typedef void* (*PFNNVNQUEUEBUILDERGETMEMORYPROC)(const NVNqueueBuilder*);
+typedef size_t (*PFNNVNQUEUEBUILDERGETMEMORYSIZEPROC)(const NVNqueueBuilder*);
+typedef NVNdevice* (*PFNNVNSAMPLERBUILDERGETDEVICEPROC)(const NVNsamplerBuilder*);
+typedef int (*PFNNVNSYNCCREATEGLSYNCPROC)(const NVNsync*, uint64_t*);
+typedef NVNboolean (*PFNNVNSYNCINITIALIZEFROMFENCEDGLSYNCPROC)(NVNsync*, NVNdevice*, uint32_t, int*);
+typedef NVNboolean (*PFNNVNTEXTUREBUILDERGETPACKAGEDTEXTURELAYOUTPROC)(const NVNtextureBuilder*,
+                                                                      NVNpackagedTextureLayout*);
+typedef int (*PFNNVNTEXTUREBUILDERGETRAWSTORAGECLASSPROC)(const NVNtextureBuilder*);
+typedef ptrdiff_t (*PFNNVNTEXTUREBUILDERGETVIEWOFFSETPROC)(const NVNtextureBuilder*, const NVNtextureView*);
+typedef int (*PFNNVNTEXTUREGETRAWSTORAGECLASSPROC)(const NVNtexture*);
+/* NVIDIA's private extension: the NvRm surface (0x58 bytes) the texture's storage is, for NVIDIA's multimedia */
+typedef void (*PFNNVNTEXTUREGETNVRMSURFACENVXPROC)(const NVNtexture*, void*, void*);
+typedef NVNdevice* (*PFNNVNWINDOWBUILDERGETDEVICEPROC)(const NVNwindowBuilder*);
+typedef int (*PFNNVNWINDOWBUILDERGETNUMACTIVETEXTURESPROC)(const NVNwindowBuilder*);
+typedef int (*PFNNVNWINDOWGETNUMACTIVETEXTURESPROC)(const NVNwindow*);
+typedef int (*PFNNVNWINDOWGETNUMTEXTURESPROC)(const NVNwindow*);
+typedef void (*PFNNVNWINDOWSETNUMACTIVETEXTURESPROC)(NVNwindow*, int);
