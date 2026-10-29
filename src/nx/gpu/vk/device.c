@@ -240,6 +240,7 @@ static int create_device(void) {
     WANT(samplerAnisotropy);
     WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
+    WANT(alphaToOne); /* multisampled draws asking for it (pipeline.c) */
     /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
        decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
        astc_bc asks for it */

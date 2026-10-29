@@ -480,7 +480,7 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
     M3D_STREAM(28), M3D_STREAM(29), M3D_STREAM(30), M3D_STREAM(31),
     [MAXWELL3D_RT_CONTROL] = R3D_RTFORMAT | R3D_TARGETS, M3D_RT(0), M3D_RT(1), M3D_RT(2), M3D_RT(3), M3D_RT(4),
     M3D_RT(5), M3D_RT(6), M3D_RT(7), [0x3F8 ... 0x3FC] = R3D_TARGETS, [0x48A ... 0x48C] = R3D_TARGETS,
-    [0x54E] = R3D_TARGETS,
+    [0x54E] = R3D_TARGETS, [0x574] = R3D_RTFORMAT | R3D_TARGETS, [0x54F] = R3D_PIPEMISC,
     [MAXWELL3D_COLOR_MASK_COMMON] = R3D_BLEND, [MAXWELL3D_BLEND_PER_TARGET_ENABLED] = R3D_BLEND,
     [MAXWELL3D_BLEND + 1 ... MAXWELL3D_BLEND + 0x10] = R3D_BLEND, [MAXWELL3D_FRAMEBUFFER_SRGB] = R3D_TARGETS,
     [MAXWELL3D_LOGIC_OP ... MAXWELL3D_LOGIC_OP + 1] = R3D_BLEND,
@@ -496,13 +496,13 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
     /* mx_draw_dynamic's: rasterize enable, depth mode, bias enables, the back stencil's reference and masks, the
        surface clip, depth test and write, alpha test, its reference and function, blend constants, the front stencil,
        line widths, the base instance word, bias factor, smooth lines, two-sided stencil and the back's operations,
-       bias units, MSAA mode, point sprite origin, the OpenGL point center, bias clamp, cull and facing, half-integer
+       bias units, point sprite origin, the OpenGL point center, bias clamp, cull and facing, half-integer
        pixel centers */
     [0xDF] = R3D_DYNAMIC, [0x35F] = R3D_DYNAMIC, [0x370 ... 0x372] = R3D_DYNAMIC, [0x3D5 ... 0x3D7] = R3D_DYNAMIC,
     [0x3FE] = R3D_DYNAMIC, [0x4B3] = R3D_DYNAMIC, [0x4BA ... 0x4BB] = R3D_DYNAMIC, [0x4C3 ... 0x4C5] = R3D_DYNAMIC,
     [0x4C7 ... 0x4CA] = R3D_DYNAMIC, [0x4E0 ... 0x4E7] = R3D_DYNAMIC, [0x4EC ... 0x4ED] = R3D_DYNAMIC,
     [0x50E] = R3D_DYNAMIC, [0x55B ... 0x55C] = R3D_DYNAMIC, [0x565 ... 0x569] = R3D_DYNAMIC, [0x56F] = R3D_DYNAMIC,
-    [0x574] = R3D_DYNAMIC, [0x581] = R3D_DYNAMIC, [0x597] = R3D_DYNAMIC, [0x61F] = R3D_DYNAMIC,
+    [0x581] = R3D_DYNAMIC, [0x597] = R3D_DYNAMIC, [0x61F] = R3D_DYNAMIC,
     [0x646 ... 0x648] = R3D_DYNAMIC, [0x649] = R3D_DYNAMIC,
     [0x280 ... 0x33F] = R3D_VIEWPORTS, [0x380 ... 0x3BF] = R3D_VIEWPORTS, [0x64B] = R3D_VIEWPORTS,
     [0x7C0 ... 0x7FF] = R3D_VBUF, [0x591 ... 0x592] = R3D_INDEX, [0x5F2 ... 0x5F6] = R3D_INDEX,

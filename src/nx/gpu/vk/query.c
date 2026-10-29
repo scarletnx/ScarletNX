@@ -45,8 +45,8 @@ static VkBuffer g_qbuf;
 static VmaAllocation g_qmem;
 static u64* g_qres;   /* segment s's count at s % QN, once its copy has run */
 static int g_qfailed; /* the pool couldn't be made: reports keep the made-up value */
-/* each slot's segment: its counter (1 + its index in g_qc, 0 none) and its guest sample count */
-static u8 g_qown[QN], g_qmul[QN];
+/* each slot's segment: its counter (1 + its index in g_qc, 0 none) */
+static u8 g_qown[QN];
 static struct {
     u64 next;   /* segments begun */
     u64 copied; /* segments whose results have their copy recorded */
@@ -134,12 +134,6 @@ static u64 live_oldest(void) {
         if (g_qc[i].used && g_qc[i].started && live_from(&g_qc[i]) < oldest) oldest = live_from(&g_qc[i]);
     return oldest;
 }
-/* the guest sample count of an MsaaMode (3D 0x574): 1x1, 2x1, 2x2, 4x2, 4x2 D3D, 2x1 D3D, 4x4, and the 2x2 and 4x2
-   virtual coverage modes */
-static u32 msaa_samples(u32 mode) {
-    static const u8 n[16] = {1, 2, 4, 8, 8, 2, 16, 1, 4, 4, 8, 8, 1, 1, 1, 1};
-    return n[mode & 15];
-}
 
 /* A counter's live segments run from its oldest report not performed yet, or from its last report: a game that keeps
    counting without reporting (one game draws its loading screens with the counter on, at thousands of passes a
@@ -162,18 +156,17 @@ static void fold_done(void) {
             c->sum = 0;
         }
         for (u64 s = c->sum_end; s < upto; s++)
-            if (g_qown[s % QN] == i + 1) c->sum += snx_le64(g_qres[s % QN]) * g_qmul[s % QN];
+            if (g_qown[s % QN] == i + 1) c->sum += snx_le64(g_qres[s % QN]);
         if (upto > c->sum_end) c->sum_end = upto;
         c->reported = c->sum_end;
     }
 }
-void vk_query_draw(VkCommandBuffer cb, u32 owner, u32 msaa_mode) {
+void vk_query_draw(VkCommandBuffer cb, u32 owner) {
     QCounter* c = counter(owner, 0);
-    u32 mul = msaa_samples(msaa_mode);
     int own = c ? (int)(c - g_qc) + 1 : 0;
     if (g_q.open) {
         u32 at = (u32)((g_q.next - 1) % QN);
-        if (g_qown[at] == own && g_qmul[at] == mul) return; /* the segment open now counts this draw too */
+        if (g_qown[at] == own) return; /* the segment open now counts this draw too */
         vk_query_pass_end(cb);
     }
     if (!c || !c->started || c->disabled || c->bad) return;
@@ -186,7 +179,6 @@ void vk_query_draw(VkCommandBuffer cb, u32 owner, u32 msaa_mode) {
     }
     u32 at = (u32)(g_q.next % QN);
     g_qown[at] = (u8)own;
-    g_qmul[at] = (u8)mul;
     rec_CmdBeginQuery(cb, g_qpool, at, g_vk.feat.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
     g_q.next++;
     g_q.open = 1;
@@ -264,7 +256,7 @@ u64 vk_query_value(u32 ci, u64 first, u64 end) {
         c->sum = 0;
     }
     for (u64 s = c->sum_end; s < end; s++)
-        if (g_qown[s % QN] == ci % QCH + 1) c->sum += snx_le64(g_qres[s % QN]) * g_qmul[s % QN]; /* the device's */
+        if (g_qown[s % QN] == ci % QCH + 1) c->sum += snx_le64(g_qres[s % QN]); /* the device's */
     if (end > c->sum_end) c->sum_end = end;
     if (c->whead != c->wtail) c->wtail++;
     double area = (double)g_vk_scale * (double)g_vk_scale;

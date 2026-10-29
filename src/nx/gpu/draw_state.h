@@ -102,7 +102,6 @@ typedef struct {
     float blend_const[4];
     float alpha_ref;
     u32 clip_height; /* the surface clip's height, which a lower-left origin measures from */
-    u32 msaa_mode;   /* the 3D engine's sample layout code */
     u32 depth_word;  /* the vertex stage's viewport and depth word, pushed as it is */
 } DsDynamic;
 
@@ -156,15 +155,19 @@ typedef struct {
 
 /* Rasterization state a Vulkan 1.3 pipeline is made with */
 typedef struct {
-    u8 polygon;        /* DS_POLYGON_ */
-    u8 provoking_last; /* the last vertex provokes (Vulkan's default is the first) */
-    u8 depth_clamp;    /* depth is clamped rather than clipped */
-    u8 pad;
+    u8 polygon;           /* DS_POLYGON_ */
+    u8 provoking_last;    /* the last vertex provokes (Vulkan's default is the first) */
+    u8 depth_clamp;       /* depth is clamped rather than clipped */
+    u8 alpha_to_coverage; /* multisampling: the first color output's alpha masks the samples written */
+    u8 alpha_to_one;      /* and is then taken as 1 */
+    u8 pad[3];
     u32 patch_vertices; /* control points of a patch, 0 as asked (the renderer takes it as 1) */
+    u32 sample_mask;    /* the samples a multisampled draw may write, bit i sample i: ~0 for all */
 } DsRasterKey;
 
 /* A render target as the guest lays it out, in the 3D engine's vocabulary (its surfaces are guest memory): what
-   vk_rt_array and vk_zt_array take, before the renderer checks and clamps it */
+   vk_rt_array and vk_zt_array take, before the renderer checks and clamps it. A multisampled target's width and
+   height are its samples' (DsTargets.msaa): pixels times the sample layout's block */
 typedef struct {
     u64 gva;   /* 0: none */
     u32 width; /* in texels, or the row pitch in bytes for a pitch-linear color target */
@@ -176,11 +179,38 @@ typedef struct {
     u64 layer_stride; /* bytes between layers */
 } DsSurf;
 
+/* The 3D engine's sample layouts (its MSAA mode, the texture header's word 7 bits 8-11): the samples a pixel has,
+   laid out in guest memory as a block of DS_MSAA_X by DS_MSAA_Y texels, sample i at (i % X, i / X) in it (the D3D
+   and virtual coverage variants share their base mode's block) */
+enum {
+    DS_MSAA_1X1,
+    DS_MSAA_2X1,
+    DS_MSAA_2X2,
+    DS_MSAA_4X2,
+    DS_MSAA_4X2_D3D,
+    DS_MSAA_2X1_D3D,
+    DS_MSAA_4X4,
+    DS_MSAA_2X2_VC4 = 8,
+    DS_MSAA_2X2_VC12,
+    DS_MSAA_4X2_VC8,
+    DS_MSAA_4X2_VC24
+};
+/* log2 of a sample layout's block width and height (unknown codes: one sample) */
+static inline u32 ds_msaa_log2_x(u32 mode) { return (0xA52694u >> ((mode & 15) * 2)) & 3; }
+static inline u32 ds_msaa_log2_y(u32 mode) { return (0x552150u >> ((mode & 15) * 2)) & 3; }
+static inline u32 ds_msaa_samples(u32 mode) { return 1u << (ds_msaa_log2_x(mode) + ds_msaa_log2_y(mode)); }
+/* the base mode of a sample layout's block: the variants place the samples elsewhere in the pixel, not in memory */
+static inline u32 ds_msaa_canonical(u32 mode) {
+    u32 x = ds_msaa_log2_x(mode), y = ds_msaa_log2_y(mode);
+    return y == 0 ? x : y == 2 ? (u32)DS_MSAA_4X4 : x == 1 ? (u32)DS_MSAA_2X2 : (u32)DS_MSAA_4X2;
+}
+
 /* The targets a draw renders to */
 typedef struct {
     u32 count;     /* color slots 0 to count - 1 are bound (some may have no surface) */
     u8 srgb_write; /* sRGB targets are written as sRGB */
-    u8 pad[3];
+    u8 msaa;       /* DS_MSAA_: every target's sample layout. Its surfaces' widths and heights count samples */
+    u8 pad[2];
     DsSurf color[DS_TARGETS_MAX]; /* by slot, filled up to count */
     DsSurf depth;                 /* gva 0 when no depth target is bound */
 } DsTargets;
@@ -230,7 +260,7 @@ enum {
     DS_INDEX,
     DS_BIND,
     DS_INLINE,
-    DS_TARGET_FORMATS, /* a generation without a struct: DsTargets' count, formats and sRGB write, which the pipeline
+    DS_TARGET_FORMATS, /* a generation without a struct: DsTargets' count, formats, sRGB write and sample layout, which the pipeline
                           key reads where the rest of the targets change every pass */
     DS_GENS
 };

@@ -88,8 +88,10 @@ static VkAttachmentLoadOp load_op(Surf* s, int undefined) {
     return undefined || discarded ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
 }
 
-/* the surfaces of the targets tg names, without opening anything */
+/* the surfaces of the targets tg names, without opening anything: a multisampled one's pixels are its samples
+   (DsSurf's sizes) by its sample layout's block */
 static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
+    u32 lx = ds_msaa_log2_x(tg->msaa), ly = ds_msaa_log2_y(tg->msaa);
     *n = 0;
     for (u32 i = 0; i < 8; i++) {
         rt[i] = NULL;
@@ -106,18 +108,19 @@ static void read_targets(const DsTargets* tg, Surf** rt, Surf** zt, u32* n) {
                their layer output (the color LUT passes render all slices in one draw). */
             u32 layers = t->layers;
             if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
-            if (w)
-                rt[i] = vk_rt_array(a, w, t->height, t->format, t->mem, linear ? t->width : w * bpp, layers,
-                                    t->layer_stride, (t->mem >> 16) & 1);
+            if (w >> lx && t->height >> ly)
+                rt[i] = vk_rt_array(a, w >> lx, t->height >> ly, t->format, t->mem, linear ? t->width : w * bpp, layers,
+                                    t->layer_stride, (t->mem >> 16) & 1, tg->msaa);
             if (rt[i]) *n = i + 1;
         }
     }
     *zt = NULL;
     const DsSurf* z = &tg->depth;
-    if (z->gva && z->width && z->height) {
+    if (z->gva && z->width >> lx && z->height >> ly) {
         u32 layers = z->layers;
         if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
-        *zt = vk_zt_array(z->gva, z->width, z->height, z->format, z->mem, layers, z->layer_stride);
+        *zt = vk_zt_array(z->gva, z->width >> lx, z->height >> ly, z->format, z->mem, layers, z->layer_stride,
+                          tg->msaa);
     }
 }
 
@@ -413,6 +416,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     for (u32 i = 0; i < g_rp.n; i++)
         k.color[i] =
             g_rp.rt[i] ? (g_rp.srgb_write ? g_rp.rt[i]->f.vk : vk_srgb_as(g_rp.rt[i]->f.vk, 0)) : VK_FORMAT_UNDEFINED;
+    k.samples = vk_surf_samples(g_rp.rt[slot]); /* every sample of the pass's targets */
     k.blend[slot].mask = ((mask & 1) ? VK_COLOR_COMPONENT_R_BIT : 0) | ((mask & 2) ? VK_COLOR_COMPONENT_G_BIT : 0) |
                          ((mask & 4) ? VK_COLOR_COMPONENT_B_BIT : 0) | ((mask & 8) ? VK_COLOR_COMPONENT_A_BIT : 0);
     if (g_rp.zt) {
@@ -1533,9 +1537,9 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                                                       : 1;
     ShTex plain = *kind;
     if (kind->shadow) plain.shadow = 0;
-    VkImageView none = vk_null_view(want, num);
+    VkImageView none = vk_null_view(want, num, 0);
     /* not far: windef.h defines it away */
-    VkImageView farthest = kind->shadow ? vk_null_view(want, 3) : VK_NULL_HANDLE;
+    VkImageView farthest = kind->shadow ? vk_null_view(want, 3, 0) : VK_NULL_HANDLE;
     if (!none || (kind->shadow && !farthest)) return 0;
     u32 handles[SNX_TEX_ARRAY] = {0};
     u32 null_tsc[8] = {0};
@@ -1828,7 +1832,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             tex_resolve(ds, handle, x);
         }
         Surf* t = x->t;
-        if (st->flags & 2) return VK_NULL_HANDLE;
+        /* a multisampled texture's program fetches its samples (flags bit 1), and an image of other samples than
+           the program's reads zeros, as a missing texture does */
+        int ms = (st->flags & 2) != 0;
+        if (t && ms != (t->msaa != 0)) {
+            LOG_LIMIT(4, "vulkan: a texture of %u samples bound where the program fetches %s (read as empty)\n",
+                      ds_msaa_samples(t->msaa), ms ? "samples" : "pixels");
+            t = NULL;
+        }
         if (st->flags & 1) t = vk_tex_from_tic_raw(x->tic);
         /* a raw load's header without 4-byte texels, or no header at all, reads zeros through the null view, as a
            missing texture does: the draw still runs (it was dropped, from one game's movie and gameplay passes) */
@@ -1879,7 +1890,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         else if (view)
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else {
-            view = vk_null_view(want, st->shadow ? 3 : num);
+            view = vk_null_view(want, st->shadow ? 3 : num, ms);
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (!view) return VK_NULL_HANDLE;
@@ -2098,6 +2109,7 @@ typedef struct {
 typedef struct {
     u32 n, present, is_int, stencil;
     u32 color[8], depth;
+    u32 samples; /* every surface's sample count, 0 when they differ */
 } TargetFormats;
 /* What the last draw made from its state, kept for the next draw while nothing it was made from changed: the state's
    owner and the generations of the groups it was made from (g_draw_groups and the vertex format), the draw's topology,
@@ -2249,16 +2261,20 @@ static u32 attributes_empty(const DsVertexBuffers* b, const DsVertexFormat* vf, 
 }
 static void target_formats(Surf* const* rt, const Surf* zt, u32 n, TargetFormats* tf) {
     *tf = (TargetFormats){.n = n};
+    u32 samples = ~0u;
     for (u32 i = 0; i < n; i++)
         if (rt[i]) {
             tf->present |= 1u << i;
             tf->is_int |= (rt[i]->f.is_int ? 1u : 0u) << i;
             tf->color[i] = rt[i]->f.vk;
+            samples = samples == ~0u || samples == vk_surf_samples(rt[i]) ? vk_surf_samples(rt[i]) : 0;
         }
     if (zt) {
         tf->depth = zt->f.vk;
         tf->stencil = zt->f.stencil ? 1 : 0;
+        samples = samples == ~0u || samples == vk_surf_samples(zt) ? vk_surf_samples(zt) : 0;
     }
+    tf->samples = samples == ~0u ? VK_SAMPLE_COUNT_1_BIT : samples;
 }
 /* the pipeline key of the shaders (fs the fragment variant drawn), the state ds and the targets' surfaces rt and zt, all but the feedback loop, and the vertex bindings it
    describes: 0 when the draw is skipped */
@@ -2432,6 +2448,21 @@ static int draw_key(const DsState* ds, const DrawShaders* sh, const VkSh* fs, Su
     if (zt) {
         k->depth = zt->f.vk;
         k->stencil = zt->f.stencil ? zt->f.vk : VK_FORMAT_UNDEFINED;
+    }
+    /* the samples the targets have, which rasterization takes: a draw to targets of different counts (one of them
+       couldn't be made multisampled) is skipped */
+    TargetFormats tf;
+    target_formats(rt, zt, n, &tf);
+    if (!tf.samples) {
+        LOG_LIMIT(1, "vulkan: a draw's targets have different sample counts (skipped)\n");
+        return 0;
+    }
+    k->samples = tf.samples;
+    if (k->samples > 1) {
+        k->sample_off = ~rk->sample_mask & ((1u << k->samples) - 1);
+        k->alpha_to_coverage = rk->alpha_to_coverage && n && rt[0];
+        k->alpha_to_one = rk->alpha_to_one && n && rt[0] && g_vk.feat.alphaToOne;
+        if (rk->alpha_to_one && !g_vk.feat.alphaToOne) LOG_LIMIT(1, "vulkan: this GPU has no alpha to one\n");
     }
     return 1;
 }
@@ -3365,7 +3396,8 @@ retry:
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
-    vk_query_draw(cb, ds->owner, ds->dyn.msaa_mode); /* counted by the channel's samples-passed counter when it runs */
+    /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are */
+    vk_query_draw(cb, ds->owner);
     VkBuffer counters[4] = {g_xfb.buf, g_xfb.buf, g_xfb.buf, g_xfb.buf};
     VkDeviceSize counter_offs[4] = {0, 4, 8, 12};
     /* the buffers from 0 to the last one bound, as begin and end take the counters of: one between that isn't bound
@@ -3440,6 +3472,10 @@ void vk_render_draw_texture(const DsState* ds, const DrawTexture* dt) {
         return;
     }
     Surf* d = rt[0];
+    if (t->msaa || d->msaa) { /* a blit reaches no image of several samples */
+        LOG_LIMIT(1, "vulkan: a draw texture to or from a multisampled image (not drawn)\n");
+        return;
+    }
     if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int ||
         !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         LOG_LIMIT(1, "vulkan: a draw texture between formats %d and %d can't be blitted (not drawn)\n", (int)t->f.vk,

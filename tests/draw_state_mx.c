@@ -139,7 +139,7 @@ static void bias(void) {
 }
 
 /* depth 0x4B3 test, 0x4BA write, 0x4C3 function; alpha 0x4BB bit 0, 0x4C5 function (the compare's decoding), 0x4C4
-   reference; 0x4C7-0x4CA blend constants; 0xDF rasterize enable; 0x574 the samples; 0x50E the pushed word */
+   reference; 0x4C7-0x4CA blend constants; 0xDF rasterize enable; 0x50E the pushed word */
 static void others(void) {
     u32 r[REGS] = {0};
     DsDynamic d;
@@ -154,14 +154,13 @@ static void others(void) {
     setf(r, 0x4C8, 0.2f);
     setf(r, 0x4C9, 0.3f);
     setf(r, 0x4CA, 0.4f);
-    r[0x574] = 3;
     r[0x50E] = 0x3F800000u;
     mx_draw_dynamic(r, &d);
     mx_draw_viewports(r, &v);
     CHECK(d.depth_test == 1 && d.depth_write == 0 && d.depth_cmp == DS_CMP_LESS);
     CHECK(d.alpha_test == 1 && d.alpha_func == DS_CMP_GREATER_OR_EQUAL && d.alpha_ref == 0.5f);
     CHECK(d.blend_const[0] == 0.1f && d.blend_const[1] == 0.2f && d.blend_const[2] == 0.3f && d.blend_const[3] == 0.4f);
-    CHECK(d.discard == 1 && d.msaa_mode == 3 && d.depth_word == 0x3F800000u);
+    CHECK(d.discard == 1 && d.depth_word == 0x3F800000u);
     r[0xDF] = 1;
     r[0x4BB] = 2;
     r[0x4C5] = 0x300; /* unknown: always */
@@ -326,7 +325,20 @@ static void raster_key(void) {
     CHECK(k.polygon == DS_POLYGON_LINE && k.provoking_last == 0);
     r[0x36B] = 0x1B02;
     mx_draw_raster_key(r, &k);
-    CHECK(k.polygon == DS_POLYGON_FILL);
+    CHECK(k.polygon == DS_POLYGON_FILL && !k.alpha_to_coverage && !k.alpha_to_one && k.sample_mask == ~0u);
+    /* 0x54F: alpha to coverage in bit 0, alpha to one in bit 4 */
+    r[0x54F] = 0x11;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.alpha_to_coverage == 1 && k.alpha_to_one == 1);
+    r[0x54F] = 0x10;
+    mx_draw_raster_key(r, &k);
+    CHECK(k.alpha_to_coverage == 0 && k.alpha_to_one == 1);
+    /* the sample layouts' blocks (DS_MSAA_): 1x1 2x1 2x2 4x2 4x2 2x1 4x4, then the virtual coverage modes */
+    static const u8 bx[12] = {1, 2, 2, 4, 4, 2, 4, 1, 2, 2, 4, 4}, by[12] = {1, 1, 2, 2, 2, 1, 4, 1, 2, 2, 2, 2};
+    for (u32 m = 0; m < 12; m++)
+        CHECK(1u << ds_msaa_log2_x(m) == bx[m] && 1u << ds_msaa_log2_y(m) == by[m] &&
+              ds_msaa_samples(m) == (u32)bx[m] * by[m]);
+    for (u32 m = 12; m < 16; m++) CHECK(ds_msaa_samples(m) == 1);
 }
 
 /* buffer i's words at 0x1C1 + 4 i (at most 128), stride 0x1C2 + 4 i, layout bytes from 0xA00 + 0x20 i */
@@ -374,7 +386,10 @@ static void targets(void) {
           t.depth.mem == 0x20 && t.depth.layers == 1 && t.depth.layer_stride == 0x200);
     r[0x48C] = 0x0006;
     mx_draw_targets(r, &t);
-    CHECK(t.depth.layers == 6);
+    CHECK(t.depth.layers == 6 && t.msaa == DS_MSAA_1X1);
+    r[0x574] = DS_MSAA_4X2_D3D; /* the sample layout every target has */
+    mx_draw_targets(r, &t);
+    CHECK(t.msaa == DS_MSAA_4X2_D3D);
 }
 
 /* stream s: start 0x701 + 4 s (high, low), limit 0x7C0 + 2 s (high, low, inclusive) */

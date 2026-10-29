@@ -4724,8 +4724,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         depth_output = spv_emit_frag_depth_output(&c->emit, c->f32_type);
         interfaces[count++] = depth_output;
     }
-    /* Render targets are single-sampled. Only guest SampleMask bit 0 covers the host sample; masks containing only
-       higher bits discard it. PIXLD.COVMASK likewise reports the host's single-sample coverage. */
+    /* The guest's SampleMask output is the host's: a render target has the guest's samples (vk/msaa.c), bit i
+       sample i, and a single-sampled one only bit 0. PIXLD.COVMASK likewise reports the host's coverage */
     u32 sample_mask_output = 0; /* SampleMask, an array of one word */
     if (stage == ST_FS && (sph[19] & 1u)) {
         sample_mask_output = spv_emit_interface_variable(&c->emit, 3, c->u32_type, c->u32_type, 1, 20, 0, 0);

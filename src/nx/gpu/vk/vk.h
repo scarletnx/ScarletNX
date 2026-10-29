@@ -372,6 +372,8 @@ void rec_CmdCopyImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
                       const VkImageCopy* r);
 void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
                       const VkImageBlit* r, VkFilter filter);
+void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                         const VkImageResolve* r);
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
                               const VkBufferImageCopy* r);
 void rec_CmdCopyImageToBuffer(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkBuffer dst, u32 n,
@@ -441,11 +443,15 @@ int vk_tic_reads_stencil(const u32* tic);
 VkFormat vk_srgb_as(VkFormat f, int srgb);
 typedef struct {
     VkImageFormatListCreateInfo list;
-    VkFormat f[2];
+    VkFormat f[3];
 } VkViewFormats;
-/* an image of a color format that has an sRGB twin is viewed as both: sets MUTABLE_FORMAT and chains the list of
-   the two to ii (vf has to live until the image is created) */
-void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf);
+/* an image of a color format that has an sRGB twin is viewed as both, and as raw (not VK_FORMAT_UNDEFINED, the
+   unsigned format of its texels' bytes, vk_raw_format): sets MUTABLE_FORMAT and chains the list of them to ii (vf has
+   to live until the image is created) */
+void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf, VkFormat raw);
+/* the unsigned integer format whose texels are bpp bytes (1, 2, 4, 8 or 16): the same bytes as any color format of
+   that size, which a view of it moves without converting them. VK_FORMAT_UNDEFINED for other sizes */
+VkFormat vk_raw_format(u32 bpp);
 
 /* gpu/vk/surface.c: a render target or a texture */
 typedef struct {
@@ -466,6 +472,9 @@ typedef struct Surf {
     int is_rt;
     int storage_capable;  /* image was created with VK_IMAGE_USAGE_STORAGE_BIT */
     int volume;           /* render target layers use 3D block-linear memory rather than array strides */
+    u8 msaa;              /* DS_MSAA_: a multisampled image's sample layout. w and h count its pixels, the guest's
+                             memory its samples (w << ds_msaa_log2_x(msaa) by h << ds_msaa_log2_y(msaa) texels) */
+    u8 ms_raw;            /* multisampled: its samples move to and from guest memory (gpu/vk/msaa.c) */
     VkImageViewType type; /* what it was created as */
     VkImage img;
     VmaAllocation mem;
@@ -530,8 +539,16 @@ u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */
 /* w in pixels; pitch: bytes per row of a pitch-linear target (the register holds it in place of the width) */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
-Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume);
-Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size);
+/* the array and depth targets: w and h in pixels, of the sample layout msaa (DS_MSAA_) */
+Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume,
+                  u32 msaa);
+Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size, u32 msaa);
+/* a surface's sample count */
+static inline VkSampleCountFlagBits vk_surf_samples(const Surf* s) {
+    return (VkSampleCountFlagBits)ds_msaa_samples(s->msaa);
+}
+/* whether the device makes images of format f, usage and flags with samples of the sample layout msaa */
+int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa);
 Surf* vk_rt_find(u64 gva);
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
@@ -768,6 +785,18 @@ void vk_snap_free(u64 id);
 u64 vk_snap_bytes(void);
 /* blit.c: a 2D blit from memory on the GPU (gpu.h's GpuBlit), its destination published: 1 when done. Takes vk_lock */
 int vk_blit_mem(const GpuBlit* b);
+/* msaa.c: a multisampled surface's samples moved between its image and the guest's layout of them (sample i of pixel
+   (x, y) at texel (x X + i % X, y Y + i / X) of a surface X by Y times its size, DS_MSAA_), through a single-sampled
+   image of that size (the grid), by draws. Under vk_lock, outside a rendering pass (they end an open one) */
+int vk_ms_moves(const Surf* s); /* s's samples can move: multisampled, unscaled, with a raw view (Surf.ms_raw) */
+/* layer's samples drawn into a new grid of s's move format, left in TRANSFER_SRC_OPTIMAL for copies recorded in this
+   frame (it is freed with it): VK_NULL_HANDLE when they can't be */
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer);
+/* layer's samples drawn from a grid loaded with rows of pitch bytes from off in buf: 0 when they can't be (a depth
+   surface's never are) */
+int vk_ms_pack(VkCommandBuffer cb, Surf* s, u32 layer, VkBuffer buf, u64 off, u32 pitch);
+/* surface.c: a multisampled surface's samples loaded from guest memory (a texture's upload): 0 when they can't be */
+int vk_ms_load(Surf* s);
 
 /* n little-endian words of guest memory at gva as host numbers (texture and sampler headers, constant buffer words),
    as gmem_read reads them */
@@ -793,8 +822,9 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
 VkFormat vk_tex_view_format(const Surf* s, int srgb);
 /* One selected mip for storage; the sampled view retains the complete chain. */
 VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
-/* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
-VkImageView vk_null_view(VkImageViewType type, int num);
+/* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers);
+   ms: a multisampled one (2D and 2D array views, not depth) */
+VkImageView vk_null_view(VkImageViewType type, int num, int ms);
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
@@ -875,7 +905,7 @@ void vk_release_drain(void);
 /* query.c: the samples-passed counter with occlusion queries (renderer.h samples_*), under vk_lock. vk_query_draw before
    a game's draw in a rendering pass, vk_query_pass_end before the pass ends or a draw of the renderer's own in it
    (render.c), vk_query_flush outside a pass before a submit (cmd.c) */
-void vk_query_draw(VkCommandBuffer cb, u32 owner, u32 msaa_mode); /* msaa_mode: 3D 0x574 */
+void vk_query_draw(VkCommandBuffer cb, u32 owner); /* counted as the targets' samples, the guest's */
 void vk_query_pass_end(VkCommandBuffer cb);
 void vk_query_flush(VkCommandBuffer cb);
 void vk_query_reset(u32 owner);
@@ -1028,6 +1058,9 @@ typedef struct {
     u32 provoking_last; /* the last vertex provokes (has_provoking_last) */
     u32 logic_op;       /* 0, or the VkLogicOp the color targets take in place of blending, plus 1 */
     u32 arrays;   /* the sets with texture arrays: its layout, vk_playout(arrays) */
+    u32 samples;  /* the targets' VkSampleCountFlagBits (0 taken as 1) */
+    /* with several samples, DsRasterKey's: the samples the sample mask leaves out, alpha to coverage and to one */
+    u32 sample_off, alpha_to_coverage, alpha_to_one;
 } PipeKey;
 /* the pipeline for k, made when new and waited for while a worker makes it: NULL only when it can't be made */
 VkPipeline vk_pipeline_get(const PipeKey* k);

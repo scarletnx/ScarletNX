@@ -394,14 +394,35 @@ VkFormat vk_srgb_as(VkFormat f, int srgb) {
     return f;
 }
 
-void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf) {
-    vf->f[0] = vk_srgb_as(ii->format, 0);
-    vf->f[1] = vk_srgb_as(ii->format, 1);
-    if (vf->f[0] == vf->f[1]) return; /* one format: no MUTABLE_FORMAT, which costs compression on some GPUs */
+void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf, VkFormat raw) {
+    u32 n = 0;
+    vf->f[n++] = vk_srgb_as(ii->format, 0);
+    if (vk_srgb_as(ii->format, 1) != vf->f[0]) vf->f[n++] = vk_srgb_as(ii->format, 1);
+    if (raw != VK_FORMAT_UNDEFINED && raw != vf->f[0]) vf->f[n++] = raw;
+    if (n == 1) return; /* one format: no MUTABLE_FORMAT, which costs compression on some GPUs */
     vf->list = (VkImageFormatListCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
                                              .pNext = ii->pNext,
-                                             .viewFormatCount = 2,
+                                             .viewFormatCount = n,
                                              .pViewFormats = vf->f};
     ii->pNext = &vf->list;
     ii->flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+}
+
+VkFormat vk_raw_format(u32 bpp) {
+    switch (bpp) {
+        case 1: return VK_FORMAT_R8_UINT;
+        case 2: return VK_FORMAT_R16_UINT;
+        case 4: return VK_FORMAT_R32_UINT;
+        case 8: return VK_FORMAT_R32G32_UINT;
+        case 16: return VK_FORMAT_R32G32B32A32_UINT;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+
+int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa) {
+    VkImageFormatProperties p;
+    if (vkGetPhysicalDeviceImageFormatProperties(g_vk.phys, f, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, flags,
+                                                 &p) != VK_SUCCESS)
+        return 0;
+    return (p.sampleCounts & ds_msaa_samples(msaa)) != 0;
 }

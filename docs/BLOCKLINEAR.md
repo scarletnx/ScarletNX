@@ -11,8 +11,9 @@ GOB apart, never converts a texel, and never reads GPU memory to do either.
 | --- | --- | --- |
 | Textures (every format, every level, layer and slice) | deswizzle, then convert when needed | `vk/texture.c` |
 | ASTC textures | deswizzle, then `astc.comp` | `vk/texture.c` (`astc_rows`), `vk/astc.c` |
-| Render targets reloaded after the CPU wrote their memory | deswizzle | `vk/surface.c` (`rt_reload_bl`) |
+| Render targets reloaded after the CPU wrote their memory | deswizzle | `vk/surface.c` (`surf_load_bl`) |
 | Render targets written back to guest memory | swizzle into the readback buffer | `vk/surface.c` (`flush_record`) |
+| Multisampled targets and textures, both ways | the above, with a draw between the rows and the samples | `vk/msaa.c` |
 | Frames vi presents from memory (drawn on the CPU) | deswizzle, then convert to RGBA8 | `vk/renderer.c` (`cpu_frame`) |
 
 A write back is the one place bytes come back from the GPU, and it already did before: the guest's CPU reads that
@@ -67,6 +68,22 @@ lavapipe each pipeline is an LLVM compile) and to keep in the pipeline cache. Th
 a dispatch converts one level of one format, so their branches on the mode never diverge, and one pipeline replaces
 twenty. Both pipelines are made on first use, from SPIR-V the build compiles (`cmake/glsl.cmake`), and kept for the
 device's lifetime like the backend's other internal pipelines.
+
+## Multisampled surfaces
+
+The 3D engine lays a multisampled surface out as a single-sampled one of its samples. Each pixel's samples are a block
+of X by Y texels: 2x1 for 2 samples, 2x2 for 4, 4x2 for 8 and 4x4 for 16 (the MSAA mode of the render target
+registers, 0x574, and of the texture header's word 7). Sample i of pixel (x, y) is texel (x X + i % X, y Y + i / X).
+The render target registers give the size in samples (Eden's `ImageInfo` takes them as the surface's size and makes
+the image X and Y times smaller, as Ryujinx does). A texture header gives it in pixels. Ryujinx's
+`ColorCopyToNonMs` shaders (MIT) take the samples in the same order.
+
+Copies can't reach the samples of a multisampled image. So `vk/msaa.c` draws them into a single-sampled image of
+the guest's size (the grid), or from it, and the copies and block linear moves above take the grid as they take any
+single-sampled target. Color goes through views in the unsigned format of the texel's bytes (`vk_raw_format`), so
+no bit changes. A pack shades each sample on its own and writes it alone. Depth (Z32F and Z16) goes back to memory the
+same way through `gl_FragDepth`, and it isn't loaded from memory, as no depth target is. A scaled multisampled
+target doesn't move: its samples aren't the guest's.
 
 ## Batches and barriers
 

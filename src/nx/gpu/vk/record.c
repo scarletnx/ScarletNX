@@ -760,6 +760,10 @@ static void blit_run(const void* p) {
     const XferArgs* x = p;
     vkCmdBlitImage(x->cb, (VkImage)x->h1, x->l1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x), (VkFilter)x->e);
 }
+static void resolve_run(const void* p) {
+    const XferArgs* x = p;
+    vkCmdResolveImage(x->cb, (VkImage)x->h1, x->l1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x));
+}
 static void buffer_to_image_run(const void* p) {
     const XferArgs* x = p;
     vkCmdCopyBufferToImage(x->cb, (VkBuffer)x->h1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x));
@@ -825,6 +829,15 @@ void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
         return;
     }
     rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
+    rec_commit();
+}
+void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                         const VkImageResolve* r) {
+    if (!rec_on(cb)) {
+        vkCmdResolveImage(cb, src, sl, dst, dl, n, r);
+        return;
+    }
+    rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
     rec_commit();
 }
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,

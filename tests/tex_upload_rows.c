@@ -288,7 +288,28 @@ VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem) {
     (void)s, (void)layers, (void)mem;
     return VK_NULL_HANDLE;
 }
-void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf) { (void)ii, (void)vf; }
+void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf, VkFormat raw) { (void)ii, (void)vf, (void)raw; }
+/* multisampled surfaces: none here */
+VkFormat vk_raw_format(u32 bpp) {
+    (void)bpp;
+    return VK_FORMAT_UNDEFINED;
+}
+int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa) {
+    (void)f, (void)usage, (void)flags, (void)msaa;
+    return 0;
+}
+int vk_ms_moves(const Surf* s) {
+    (void)s;
+    return 0;
+}
+int vk_ms_load(Surf* s) {
+    (void)s;
+    return 0;
+}
+VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
+    (void)cb, (void)s, (void)layer;
+    return VK_NULL_HANDLE;
+}
 static struct {
     int on;
     u32 clock, stamp, epoch;

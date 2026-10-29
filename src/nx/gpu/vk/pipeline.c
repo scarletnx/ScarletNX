@@ -155,10 +155,6 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
     }
     if (result) {
         const char* reason = vk_spirv_unavailable(result, *words);
-        /* Texture uploads and render targets are single-sampled. Reject a shader whose descriptor needs MS before
-           the draw reaches vk_stage_set's null descriptor path. */
-        for (int i = 0; i < si->ntex && !reason; i++)
-            if (si->tex[i].flags & 2) reason = "multisample texture binding unavailable";
         if (reason) {
             snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s", reason);
             si->unsupported = 1;
@@ -804,8 +800,16 @@ static VkPipeline pipe_create(const Pipe* e) {
                                                  .depthClampEnable = k->depth_clamp,
                                                  .polygonMode = (VkPolygonMode)k->polygon,
                                                  .lineWidth = 1.0f};
-    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    /* a multisampled draw's samples: those of its targets, the ones the mask leaves, alpha to coverage and to one.
+       A program that reads its sample (SampleId) or interpolates at it is shaded per sample, as the console shades
+       it: SPIR-V's rules make that so whatever sampleShadingEnable says */
+    VkSampleMask sample_mask = ~k->sample_off;
+    VkPipelineMultisampleStateCreateInfo ms = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = k->samples ? (VkSampleCountFlagBits)k->samples : VK_SAMPLE_COUNT_1_BIT,
+        .pSampleMask = k->samples > 1 ? &sample_mask : NULL,
+        .alphaToCoverageEnable = k->alpha_to_coverage != 0,
+        .alphaToOneEnable = k->alpha_to_one != 0};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cba[8];
     int changed = 0;
