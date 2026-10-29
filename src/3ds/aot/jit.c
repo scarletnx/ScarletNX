@@ -14,6 +14,7 @@
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     uint64_t key; /* (pc << 1 | thumb) + 1, 0 for an empty slot */
@@ -44,8 +45,32 @@ static bool grow(SnxCtrJit* j) {
     free(old);
     return true;
 }
+/* The native code of a dropped block may belong to the one that is running the IPC or SVC that dropped it, so the
+   executor goes at the dispatcher's next block and the next compile makes a new one */
+static void reclaim(void* context) {
+    SnxCtrJit* j = context;
+    snx_arm_exec_free(j->exec);
+    j->exec = NULL;
+    j->process->reclaim = NULL;
+}
+/* A CRO loaded over an address another one left would otherwise run the blocks made from the previous occupant */
+static void flush(void* context) {
+    SnxCtrJit* j = context;
+    if (j->slots) memset(j->slots, 0, j->capacity * sizeof *j->slots);
+    j->count = 0;
+    j->process->reclaim = reclaim;
+}
+static bool ensure_exec(SnxCtrJit* j, char* error, size_t error_size) {
+    if (!j->exec) j->exec = snx_arm_exec_new(error, error_size);
+    return j->exec != NULL;
+}
 static SnxArmBlock compile(void* context, uint32_t pc, bool thumb, bool stale) {
     SnxCtrJit* j = context;
+    char error[512];
+    if (!ensure_exec(j, error, sizeof error)) {
+        fprintf(stderr, "3ds jit: cannot create the executor: %s\n", error);
+        return NULL;
+    }
     uint64_t key = ((uint64_t)pc << 1 | thumb) + 1;
     if (!grow(j)) return NULL;
     size_t slot = slot_of(j, key);
@@ -82,12 +107,14 @@ SnxCtrJit* snx_ctr_jit_new(SnxCtrProcess* process, char* error, size_t error_siz
         return NULL;
     }
     j->process = process;
-    if (!(j->exec = snx_arm_exec_new(error, error_size))) {
+    if (!ensure_exec(j, error, error_size)) {
         free(j);
         return NULL;
     }
     process->compile = compile;
     process->compiler = j;
+    process->flush = flush;
+    process->reclaim = NULL;
     return j;
 }
 size_t snx_ctr_jit_save_hints(SnxCtrJit* j, const char* directory) {
@@ -118,7 +145,12 @@ size_t snx_ctr_jit_save_hints(SnxCtrJit* j, const char* directory) {
 uint64_t snx_ctr_jit_compiled(const SnxCtrJit* j) { return j ? j->compiled : 0; }
 void snx_ctr_jit_free(SnxCtrJit* j) {
     if (!j) return;
-    if (j->process->compiler == j) j->process->compile = NULL, j->process->compiler = NULL;
+    if (j->process->compiler == j) {
+        j->process->compile = NULL;
+        j->process->compiler = NULL;
+        j->process->flush = NULL;
+        j->process->reclaim = NULL;
+    }
     snx_arm_exec_free(j->exec);
     free(j->slots);
     free(j);

@@ -8,6 +8,7 @@
    Independent serialized implementation; no reference runtime dependency. */
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/runtime/internal.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include "3ds/services/gsp.h"
@@ -33,6 +34,8 @@
 #define OUT_OF_RANGE        0xd8e007fdu
 #define TIMED_OUT           CTR_TIMED_OUT
 #define DONT_CARE           0x10000000u /* MemoryPermission::DontCare */
+#define LOADER_BASE         0x00100000u /* the range ldr:ro may map a CRO in */
+#define LOADER_END          0x04000000u
 #define WRONG_PERMISSION    0xd900182eu /* ResultWrongPermission */
 
 uint32_t snx_ctr_handle_object(SnxCtrProcess* p, uint32_t handle) {
@@ -293,6 +296,30 @@ static bool mirror(SnxCtrProcess* p, uint32_t va, uint32_t source, uint32_t size
     }
     for (uint32_t off = 0; off < size; off += 4096) (void)snx_ctr_unmap(p->space, va + off, 4096);
     return false;
+}
+bool snx_ctr_kernel_private(SnxCtrProcess* p, uint32_t address, uint32_t size) {
+    if (!size) return true;
+    uint64_t end = (uint64_t)address + size;
+    const SnxCtrSegment* data = &p->segment[2];
+    uint64_t data_end = (uint64_t)data->address + data->pages * 0x1000ull + snx_align_up(p->bss_size, 4096);
+    bool heap = address >= CTR_HEAP && end <= CTR_HEAP_END;
+    if ((!heap && !(address >= data->address && end <= data_end)) || held(p, address, size) ||
+        snx_ctr_check_ram(p->space, address, size, SNX_CTR_READ | SNX_CTR_WRITE) != SNX_CTR_MEM_OK)
+        return false;
+    if (heap)
+        for (uint64_t at = snx_align_down(address, 4096); at < end; at += 4096) {
+            uint32_t pa;
+            if (snx_ctr_query(p->space, (uint32_t)at, &pa, NULL) != SNX_CTR_MEM_OK || pa < CTR_PHYS_BASE ||
+                pa >= p->physical_end || p->physical_owner[(pa - CTR_PHYS_BASE) / 4096] != CTR_HEAP_PAGE)
+                return false;
+        }
+    return true;
+}
+bool snx_ctr_kernel_loader_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size) {
+    if (!size || ((target | source | size) & 4095) || target < LOADER_BASE || (uint64_t)target + size > LOADER_END ||
+        !available(p, target, size) || !snx_ctr_kernel_private(p, source, size))
+        return false;
+    return mirror(p, target, source, size, SNX_CTR_READ | SNX_CTR_WRITE);
 }
 /* ControlMemory MAP and UNMAP (Azahar Process::Map and Unmap, non-privileged): target mirrors heap pages at source
    with the given permissions; the source stays mapped, and neither can be freed until the UNMAP of the same pair.

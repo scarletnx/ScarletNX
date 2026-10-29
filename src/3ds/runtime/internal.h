@@ -198,6 +198,9 @@ struct SnxCtrProcess {
     uint64_t archive_sequence;
     uint32_t fs_priority; /* fs:USER's SetPriority, UINT32_MAX until one */
     SnxCtrGsp gsp;
+    /* one bit per 128 bytes of the static text (aot/dispatch.c): set where an AOT block may hold a word a CRO's
+       relocation rewrote, and allocated by the first such rewrite */
+    uint32_t* aot_stale;
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
@@ -225,9 +228,17 @@ struct SnxCtrProcess {
        when it cannot be. stale drops the one compiled before, whose code changed */
     SnxArmBlock (*compile)(void* compiler, uint32_t pc, bool thumb, bool stale);
     void* compiler;
+    /* the blocks compiled so far dropped (aot/jit.c), when the driver sets it: a CRO loaded or unloaded at an address
+       would otherwise run the blocks a previous occupant left there. NULL in a build without the run-time compiler */
+    void (*flush)(void* compiler);
+    /* set by flush, and run by the dispatcher before its next block */
+    void (*reclaim)(void* compiler);
     unsigned char physical_owner[];
 };
 CtrThread* snx_ctr_thread(SnxCtrProcess* p);
+/* The static text in [address, address + size) was rewritten: the AOT blocks that can hold any of it stop being used.
+   False when the bit map cannot be allocated. */
+bool snx_ctr_aot_mark_stale(SnxCtrProcess* p, uint32_t address, uint32_t size);
 uint32_t snx_ctr_thread_create(SnxCtrProcess* p, const uint32_t* registers, uint32_t* out);
 /* snx_ctr_schedule's answer: no thread will ever run again, a thread runs now, or the host slept to a vblank or an
    audio frame that woke nobody (the caller can look at its window, then schedule again) */
@@ -269,4 +280,8 @@ SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* tr
 /* SVC helpers use only RAM transactions, never MMIO or a flat pointer. */
 uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t operation, uint32_t va, uint32_t source, uint32_t size,
                                uint32_t permissions, uint32_t* output);
+/* Loader aliases use private heap or data backing, and the loader registers their lifetime before it returns. */
+bool snx_ctr_kernel_loader_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
+/* Private read-write application data, possibly unaligned, with no outstanding alias or service owner. */
+bool snx_ctr_kernel_private(SnxCtrProcess* p, uint32_t address, uint32_t size);
 #endif
