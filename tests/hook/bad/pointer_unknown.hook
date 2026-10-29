@@ -1,0 +1,4 @@
+include "nx/gpu/nvn/nvn.h"
+family f
+hook f(const NVNtexture* t) = h
+hook g(const NVNtextur* t) = h2

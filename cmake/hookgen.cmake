@@ -34,8 +34,9 @@ else()
     target_compile_options(snx-hookgen PRIVATE -pedantic-errors -Wall -Wextra -Werror)
 endif()
 
-# snx_hookgen(<target> [SPEC <file>] [PREFIX <name>] [NAME <path>]): generates NAME.h (the handlers' declarations)
-# and NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
+# snx_hookgen(<target> [SPEC <file>] [PREFIX <name>] [NAME <path>]): generates NAME.h (the handlers' declarations,
+# and the hooked functions' PFN...PROC types for a spec with an include line, which hookgen finds under src/) and
+# NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
 # gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook unless a test names its own, NAME is
 # hle/hook/hooks.hook, and PREFIX (hook) names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements,
 # is a second spec with its own
@@ -57,7 +58,8 @@ function(snx_hookgen target)
     set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
     add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
-        COMMAND snx-hookgen --prefix "${prefix}" --header "${out}/${name}.h" --out "${out}/${name}.inc" "${spec}"
+        COMMAND snx-hookgen --prefix "${prefix}" -I "${PROJECT_SOURCE_DIR}/src" --header "${out}/${name}.h"
+                --out "${out}/${name}.inc" "${spec}"
         DEPENDS snx-hookgen "${spec}"
         COMMENT "Generating ${name}" VERBATIM)
     target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
@@ -76,7 +78,7 @@ function(snx_hook_routes target)
     set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
     add_custom_command(OUTPUT "${out}/nx/loader/hook_routes.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/nx/loader"
-        COMMAND snx-hookgen --routes "${out}/nx/loader/hook_routes.inc" ${specs}
+        COMMAND snx-hookgen -I "${PROJECT_SOURCE_DIR}/src" --routes "${out}/nx/loader/hook_routes.inc" ${specs}
         DEPENDS snx-hookgen ${specs}
         COMMENT "Generating nx/loader/hook_routes.inc" VERBATIM)
     target_sources(${target} PRIVATE "${out}/nx/loader/hook_routes.inc")
