@@ -33,6 +33,7 @@
 #include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn.h"
 #include "nx/gpu/nvn/nvn_object.h"
+#include "gpu/nvn/nvn.hook.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
@@ -104,7 +105,7 @@ typedef struct {
 
 typedef struct {
     u32 len, filled;
-    u64 hash;
+    u64 hash, addr; /* addr: the live address (g_v.astate), 0 in the content map */
     u8 live[STATE_MAX], drv[STATE_MAX];
 } State;
 
@@ -145,8 +146,10 @@ typedef struct {
     Map obj, handle;
     Range mem[RANGES]; /* append only: the GPU thread reads them without the lock, up to nmem */
     u32 nmem;
-    u64 device; /* the last shadow device made */
-    State* state; /* STATE_SLOTS, by hash */
+    u64 device, live_device; /* the last device made: the shadow's, and the game's */
+    int swept;                /* storage_sweep ran */
+    State* state;  /* STATE_SLOTS, by the hash of nvn_direct's bytes */
+    State* astate; /* STATE_SLOTS, by live address: the state made at that address, with its live bytes then */
     u64 slab, slab_used;
     u64 free_list[16][64]; /* freed objects by size class (a few sizes): small stacks */
     u32 free_n[16], free_size[16];
@@ -387,7 +390,8 @@ static u32 flags_of(const char* n, const Kinds* k) {
         "nvnCommandBufferSetMemoryCallback", "nvnCommandBufferSetMemoryCallbackData", "nvnEventWait",
         "nvnQueueGetError", "nvnMemoryPoolMapVirtual", "nvnDeviceSetIntermediateShaderCache",
         "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle",
-        /* the driver's CallCommands aborts on a game's handle some seconds in (docs/NVN_HLE.md, verify mode) */
+        /* the driver aborts in CallCommands ("out of control memory with no out-of-memory callback") some seconds in,
+           even with 4 MiB of control memory fed before each call (docs/NVN_HLE.md): not made until that is found */
         "nvnCommandBufferCallCommands", "nvnCommandBufferCopyCommands"};
     u32 f = 0, i;
     if (k && k->kinds && k->kinds[0] && ends(n, "Initialize") && !strstr(n, "Builder")) f |= F_INIT;
@@ -459,9 +463,9 @@ static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, u64 a0, u
 static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) { drv_call(c, base, sp, "nvnQueueFlush", queue, 0, 0, 0); }
 
 /* a live command buffer's shadow is fed command and control memory of the runtime's before it can run short, so the
-   driver never calls the game's memory callback (the shadow has none): a piece of a ring of the runtime's when less
-   than a quarter of a piece is left. The game's own memory comes too, so pieces are seldom needed; a ring that went
-   round (1 GiB of commands) reuses pieces a recording the game still calls may hold */
+   driver never calls the game's memory callback (the shadow has none): a piece of a ring of the runtime's when less is
+   left than the call can take. The game's own memory comes too (a shadow of each chunk, reused as the game reuses it),
+   so pieces are seldom needed. A ring that went round reuses pieces a recording the game still calls may hold */
 #define FEED_PIECE (256u << 10)
 #define FEED_RING  (1u << 30)
 #define FEED_CTRL  (64u << 10)
@@ -472,14 +476,14 @@ typedef struct {
     u64 ctrl;        /* control memory ring */
 } Feed;
 static Feed g_feed;
-static void feed(CPU* c, const CPU* base, u64 sp, u64 cmd) {
+static void feed(CPU* c, const CPU* base, u64 sp, u64 cmd, u64 cmd_need, u64 ctrl_need) {
     u64 cfree = drv_call(c, base, sp, "nvnCommandBufferGetCommandMemoryFree", cmd, 0, 0, 0);
     u64 kfree = drv_call(c, base, sp, "nvnCommandBufferGetControlMemoryFree", cmd, 0, 0, 0);
     if (!g_feed.pool) { /* the pool, on the first shadow command buffer's device */
         u64 dev = g_v.device, b;
         if (!dev) return;
         g_feed.storage = shadow_map(FEED_RING);
-        g_feed.ctrl = shadow_map(FEED_RING / 4);
+        g_feed.ctrl = shadow_map(FEED_RING / 2);
         g_feed.pool = obj_alloc(sizeof(NVNmemoryPool));
         b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
         drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
@@ -495,14 +499,35 @@ static void feed(CPU* c, const CPU* base, u64 sp, u64 cmd) {
         LOG("nvn verify: the shadow's command memory: %u MiB at %llx\n", FEED_RING >> 20,
             (unsigned long long)g_feed.storage);
     }
-    if (cfree < FEED_PIECE / 4) {
-        u32 at = __atomic_fetch_add(&g_feed.at, FEED_PIECE, __ATOMIC_RELAXED) % FEED_RING;
-        drv_call(c, base, sp, "nvnCommandBufferAddCommandMemory", cmd, g_feed.pool, at, FEED_PIECE);
+    if (cfree < cmd_need) {
+        u32 piece = cmd_need * 2 > FEED_PIECE ? (u32)((cmd_need * 2 + 0xFFF) & ~0xFFFull) : FEED_PIECE;
+        u32 at = __atomic_fetch_add(&g_feed.at, piece, __ATOMIC_RELAXED) % FEED_RING;
+        if (at + piece > FEED_RING) at = 0;
+        drv_call(c, base, sp, "nvnCommandBufferAddCommandMemory", cmd, g_feed.pool, at, piece);
     }
-    if (kfree < FEED_CTRL / 4) {
-        u32 at = __atomic_fetch_add(&g_feed.ctrl_at, FEED_CTRL, __ATOMIC_RELAXED) % (FEED_RING / 4);
-        drv_call(c, base, sp, "nvnCommandBufferAddControlMemory", cmd, g_feed.ctrl + at, FEED_CTRL, 0);
+    if (kfree < ctrl_need) {
+        u32 piece = ctrl_need * 2 > FEED_CTRL ? (u32)((ctrl_need * 2 + 0xFFF) & ~0xFFFull) : FEED_CTRL;
+        u32 at = __atomic_fetch_add(&g_feed.ctrl_at, piece, __ATOMIC_RELAXED) % (FEED_RING / 2);
+        if (at + piece > FEED_RING / 2) at = 0; /* a piece in one run of the ring */
+        drv_call(c, base, sp, "nvnCommandBufferAddControlMemory", cmd, g_feed.ctrl + at, piece, 0);
     }
+}
+
+/* The control memory CallCommands and CopyCommands take of the command buffer they add to (args: their registers,
+   the shadow's handles at x2): each handle's ranges are copied there, 0x18 bytes a range, and each copy checks for
+   0x20 bytes more, and in one game a call took about 0x80000 bytes. The driver aborts when a command buffer without a memory callback runs short ("out of control
+   memory with no out-of-memory callback"). A handle points at its record in the recording's control memory, the
+   count of its ranges in bits 32-63 of its first word (a tagged handle, bit 0 set, counts 64) */
+static u64 calls_control(const CPU* args) {
+    u32 n = (u32)args->x[1], j;
+    u64 need = 0x100;
+    for (j = 0; j < n && j < 4096; j++) {
+        u64 h, w = 0;
+        memcpy(&h, GP(args->x[2] + j * 8), 8);
+        if (!(h & 1) && h && h < AS_END - 8) memcpy(&w, GP(h), 8);
+        need += ((h & 1) || !h ? 256 : (w >> 32) > 4096 ? 4096 : (w >> 32) + 8) * 0x18 + 0x20;
+    }
+    return need;
 }
 
 /* ---- a call */
@@ -519,13 +544,21 @@ static void skip(Fn* f, const char* why) {
         LOG("nvn verify: the shadow skips %s: %s\n", f->k ? f->k->name : "a function", why);
     }
 }
-/* the driver's bytes for a state, copied to the scratch at *at: 0 when the shadow doesn't know it */
-static int state_in(const u8* live, u32 len, int defaults, u64* at) {
+/* the slot of the state the game made at addr (a builder or state on its stack or in its objects), by address */
+static State* astate_slot(u64 addr) { return &g_v.astate[(u32)mix(addr) & (STATE_SLOTS - 1)]; }
+/* The driver's bytes for the state at live address addr, whose bytes are live, copied to the scratch at *at: 0 when
+   the shadow doesn't know it. First the state the calls at that address made, while the game left its bytes as they
+   were: nvn_direct's bytes keep less than the driver's (the device, fields the driver derives), so two driver states
+   can share them, and only the address tells which. Else the state by content: a copy the game made by value */
+static int state_in(u64 addr, const u8* live, u32 len, int defaults, u64* at) {
     State* s;
     *at = (*at - len) & ~15ull;
     pm_lock(&g_v.lock);
-    s = state_find(live, len, 0);
-    if (s && !s->filled) s = NULL;
+    s = astate_slot(addr);
+    if (!(s->filled && s->addr == addr && s->len == len && !memcmp(s->live, live, len))) {
+        s = state_find(live, len, 0);
+        if (s && !s->filled) s = NULL;
+    }
     if (!s && !defaults) { /* never set: the zeroed memory the game made it in stands for the driver's zeros */
         u32 k;
         for (k = 0; k < len && !live[k]; k++) {
@@ -539,10 +572,15 @@ static int state_in(const u8* live, u32 len, int defaults, u64* at) {
     pm_unlock(&g_v.lock);
     return s || defaults;
 }
-/* the state the driver made of a scratch copy, for the live bytes the same call left */
-static void state_out(Fn* f, const u8* live, u32 len, u64 at) {
-    State* s;
+/* the state the driver made of a scratch copy, for the live address and the bytes the same call left there */
+static void state_out(Fn* f, u64 addr, const u8* live, u32 len, u64 at) {
+    State* s = astate_slot(addr);
     pm_lock(&g_v.lock);
+    s->addr = addr;
+    s->len = len;
+    memcpy(s->live, live, len);
+    memcpy(s->drv, GP(at), len);
+    s->filled = 1;
     s = state_find(live, len, 1);
     if (s->filled && memcmp(s->drv, GP(at), len)) {
         /* the same live bytes for other driver bytes: nvn_direct keeps less of the state than the driver */
@@ -550,8 +588,8 @@ static void state_out(Fn* f, const u8* live, u32 len, u64 at) {
             u32 k;
             for (k = 0; k < len && s->drv[k] == GP(at)[k]; k++) {
             }
-            WARN("nvn verify: after %s, nvn_direct's state stands for two of the driver's (they differ at byte %u: "
-                 "%02x, now %02x)\n",
+            LOG("nvn verify: after %s, nvn_direct's bytes stand for two of the driver's states (they differ at byte "
+                "%u: %02x, now %02x): a copy by value of such a state is ambiguous\n",
                  f->k->name, k, s->drv[k], GP(at)[k]);
         }
     }
@@ -619,7 +657,7 @@ static int shadow_args(Fn* f, CPU* c, Arg* a, u64* scratch, const char** why) {
                             return 0;
                         }
                     } else if (p) {
-                        if (!state_in(GP(p), size, 0, scratch)) {
+                        if (!state_in(p, GP(p), size, 0, scratch)) {
                             *why = "a state the shadow doesn't know, in an array";
                             return 0;
                         }
@@ -633,7 +671,7 @@ static int shadow_args(Fn* f, CPU* c, Arg* a, u64* scratch, const char** why) {
             case 's':
                 if (v) {
                     a[i].len = size;
-                    if (!state_in(a[i].before, size, i == 0 && (f->flags & (F_DEFAULTS | F_STATESET)), scratch)) {
+                    if (!state_in(v, a[i].before, size, i == 0 && (f->flags & (F_DEFAULTS | F_STATESET)), scratch)) {
                         __atomic_add_fetch(&g_v.unknown_state, 1, __ATOMIC_RELAXED);
                         *why = "a state the shadow doesn't know";
                         return 0;
@@ -654,7 +692,7 @@ static int shadow_args(Fn* f, CPU* c, Arg* a, u64* scratch, const char** why) {
                 arr = *scratch;
                 for (j = 0; j < n; j++) {
                     u64 one = *scratch;
-                    if (!state_in(GP(v + j * size), size, 0, &one)) {
+                    if (!state_in(v + j * size, GP(v + j * size), size, 0, &one)) {
                         *why = "a state the shadow doesn't know, in an array";
                         return 0;
                     }
@@ -740,6 +778,88 @@ static void texreg_check(u64 live_pool, u32 id) {
     }
 }
 
+/* Once, at the game's first texture storage query: nvn_direct's and the driver's texture builder getters on the same
+   builder states, over targets, formats, sizes, levels, samples and flags. The live builder is the runtime's guest
+   memory, set by nvn_direct's own handlers; the shadow's by the driver's setters. The log names each getter's
+   differences, the first few with their state */
+static void storage_sweep(CPU* c, const CPU* base, u64 sp) {
+    static const i32 formats[] = {NVN_FORMAT_R8, NVN_FORMAT_RG16F, NVN_FORMAT_RGBA8, NVN_FORMAT_RGBA8_SRGB,
+                                  NVN_FORMAT_RGBA16F, NVN_FORMAT_RGBA32F, NVN_FORMAT_R32F, NVN_FORMAT_RGB10A2,
+                                  NVN_FORMAT_R11G11B10F, NVN_FORMAT_DEPTH16, NVN_FORMAT_DEPTH32F,
+                                  NVN_FORMAT_DEPTH24_STENCIL8, NVN_FORMAT_STENCIL8, NVN_FORMAT_RGBA_DXT1,
+                                  NVN_FORMAT_RGBA_DXT5, NVN_FORMAT_BPTC_UNORM, NVN_FORMAT_RGBA_ASTC_4x4,
+                                  NVN_FORMAT_RGBA_ASTC_8x8};
+    static const struct {
+        i32 target, depth, samples;
+    } targets[] = {{NVN_TEXTURE_TARGET_1D, 1, 0},       {NVN_TEXTURE_TARGET_2D, 1, 0},
+                   {NVN_TEXTURE_TARGET_2D_ARRAY, 6, 0}, {NVN_TEXTURE_TARGET_3D, 16, 0},
+                   {NVN_TEXTURE_TARGET_CUBEMAP, 6, 0},  {NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 1, 4},
+                   {NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 1, 2}, {NVN_TEXTURE_TARGET_RECTANGLE, 1, 0}};
+    static const u32 sizes[][2] = {{1, 1}, {7, 5}, {16, 16}, {33, 17}, {64, 64}, {100, 60}, {256, 256},
+                                   {1000, 3}, {1280, 720}, {1600, 896}, {4096, 2048}};
+    static const i32 flags[] = {0, NVN_TEXTURE_FLAGS_COMPRESSIBLE, NVN_TEXTURE_FLAGS_IMAGE};
+    static const char* const what[4] = {"size", "alignment", "class", "zcull size"};
+    static const char* const getter[4] = {"nvnTextureBuilderGetStorageSize", "nvnTextureBuilderGetStorageAlignment",
+                                          "nvnTextureBuilderGetStorageClass",
+                                          "nvnTextureBuilderGetZCullStorageSize"};
+    u64 live = obj_alloc(sizeof(NVNtextureBuilder)), shadow = obj_alloc(sizeof(NVNtextureBuilder)), n = 0;
+    u64 differ_n[4] = {0};
+    size_t t, f, z, l, g;
+    if (!g_v.device || !g_v.live_device) return;
+    for (t = 0; t < sizeof targets / sizeof targets[0]; t++)
+        for (f = 0; f < sizeof formats / sizeof formats[0]; f++)
+            for (z = 0; z < sizeof sizes / sizeof sizes[0]; z++)
+                for (l = 0; l < 2; l++)
+                    for (g = 0; g < sizeof flags / sizeof flags[0]; g++) {
+                        u32 w = sizes[z][0], h = targets[t].target == NVN_TEXTURE_TARGET_1D ? 1 : sizes[z][1];
+                        i32 d = targets[t].depth, levels = 1, k;
+                        u64 a[4], b[4];
+                        if (targets[t].target == NVN_TEXTURE_TARGET_CUBEMAP) h = w;
+                        if (l)
+                            for (u32 m = w > h ? w : h; m > 1; m >>= 1) levels++;
+                        if (targets[t].samples && (l || f >= 13)) continue; /* no multisampled levels or BCn */
+                        nvn_TextureBuilderSetDevice(c, live, g_v.live_device);
+                        nvn_TextureBuilderSetDefaults(c, live);
+                        nvn_TextureBuilderSetTarget(c, live, targets[t].target);
+                        nvn_TextureBuilderSetFormat(c, live, formats[f]);
+                        nvn_TextureBuilderSetSize3D(c, live, (i32)w, (i32)h, d);
+                        nvn_TextureBuilderSetLevels(c, live, levels);
+                        nvn_TextureBuilderSetSamples(c, live, targets[t].samples);
+                        nvn_TextureBuilderSetFlags(c, live, flags[g]);
+                        a[0] = nvn_TextureBuilderGetStorageSize(c, live);
+                        a[1] = nvn_TextureBuilderGetStorageAlignment(c, live);
+                        a[2] = (u32)nvn_TextureBuilderGetStorageClass(c, live);
+                        a[3] = nvn_TextureBuilderGetZCullStorageSize(c, live);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetDevice", shadow, g_v.device, 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetDefaults", shadow, 0, 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetTarget", shadow, (u64)targets[t].target, 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetFormat", shadow, (u64)formats[f], 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetSize3D", shadow, w, h, (u64)d);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetLevels", shadow, (u64)levels, 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetSamples", shadow, (u64)targets[t].samples, 0, 0);
+                        drv_call(c, base, sp, "nvnTextureBuilderSetFlags", shadow, (u64)flags[g], 0, 0);
+                        for (k = 0; k < 4; k++) {
+                            b[k] = drv_call(c, base, sp, getter[k], shadow, 0, 0, 0);
+                            if (k == 2) b[k] = (u32)b[k];
+                        }
+                        n++;
+                        for (k = 0; k < 4; k++)
+                            if (a[k] != b[k]) {
+                                if (++differ_n[k] <= 16)
+                                    LOG("nvn verify: storage %s: target %d format %#x %ux%ux%d levels %d samples %d "
+                                        "flags %#x: nvn_direct %llx, driver %llx\n",
+                                        what[k], targets[t].target, formats[f], w, h, d, levels, targets[t].samples,
+                                        flags[g], (unsigned long long)a[k], (unsigned long long)b[k]);
+                            }
+                    }
+    LOG("nvn verify: storage sweep of %llu builder states: %llu sizes, %llu alignments, %llu classes and %llu zcull "
+        "sizes differ from the driver's\n",
+        (unsigned long long)n, (unsigned long long)differ_n[0], (unsigned long long)differ_n[1],
+        (unsigned long long)differ_n[2], (unsigned long long)differ_n[3]);
+    obj_free(live, sizeof(NVNtextureBuilder));
+    obj_free(shadow, sizeof(NVNtextureBuilder));
+}
+
 static void verify_fn(CPU* RESTRICT c, u64 entry) {
     Fn* f = fn_at(entry);
     CPU before, after;
@@ -823,7 +943,11 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
             LOG("nvn verify: the shadow runs %s for the first time\n", f->k->name);
         if ((f->flags & F_CMD) && !(f->flags & (F_INIT | F_FINAL)) && c->x[0]) {
             CPU args = base;
-            feed(c, &base, run_sp, base.x[0]);
+            /* what one call can take: a uniform update its data inline, CallCommands the handles' ranges */
+            u64 cmd_need = 0x4000, ctrl_need = (f->flags & F_HANDLES) ? (4u << 20) + calls_control(&base) : 0x400;
+            if (!strcmp(f->k->name, "nvnCommandBufferUpdateUniformBuffer")) cmd_need += base.x[4];
+            if (f->flags & F_HANDLES) cmd_need += base.x[1] * 0x40;
+            feed(c, &base, run_sp, base.x[0], cmd_need, ctrl_need);
             memcpy(c, &args, REGS_SIZE);
         }
         t_running = f->k->name;
@@ -848,7 +972,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         pm_unlock(&g_v.lock);
     }
     for (i = 0; f->k->kinds[i] && i < NVK_ARGS; i++)
-        if (f->k->kinds[i] == 's' && a[i].at && a[i].live) state_out(f, GP(a[i].live), a[i].len, a[i].at);
+        if (f->k->kinds[i] == 's' && a[i].at && a[i].live) state_out(f, a[i].live, GP(a[i].live), a[i].len, a[i].at);
     if (f->k->ret != NVK_RET_NONE && f->k->ret != NVK_RET_ADDR && !(f->flags & (F_NORESULT | F_PRESENT))) {
         u64 got = result_bits(c, f->k->ret);
         if (got != live_ret && __atomic_add_fetch(&f->differed, 1, __ATOMIC_RELAXED) <= 4)
@@ -860,7 +984,12 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     if (!strcmp(f->k->name, "nvnDeviceInitialize") && a[0].live) {
         pm_lock(&g_v.lock);
         g_v.device = map_get(&g_v.obj, a[0].live);
+        g_v.live_device = a[0].live;
         pm_unlock(&g_v.lock);
+    }
+    if (!strcmp(f->k->name, "nvnTextureBuilderGetStorageSize") && !__atomic_exchange_n(&g_v.swept, 1, __ATOMIC_ACQ_REL)) {
+        memcpy(c, &before, REGS_SIZE);
+        storage_sweep(c, &before, (scratch - 16) & ~15ull);
     }
     if (f->flags & F_FINAL) {
         u64 s;
@@ -882,10 +1011,11 @@ GuestFn nvn_verify_take(u64 addr, const char* name, GuestFn handler, GuestFn ori
         pm_lock(&g_v.lock);
         if (!g_v.on) {
             g_v.state = (State*)calloc(STATE_SLOTS, sizeof *g_v.state);
+            g_v.astate = (State*)calloc(STATE_SLOTS, sizeof *g_v.astate);
             g_v.cb_key_bits = 20;
             g_v.cb_key = (u64*)calloc(CB_SLOTS, sizeof *g_v.cb_key);
             g_v.cb_val = (u32*)calloc(CB_SLOTS, sizeof *g_v.cb_val);
-            if (!g_v.state || !g_v.cb_key || !g_v.cb_val) fatal("nvn verify: out of memory");
+            if (!g_v.state || !g_v.astate || !g_v.cb_key || !g_v.cb_val) fatal("nvn verify: out of memory");
             LOG("nvn verify: on: each NVN call runs the game's driver too, on shadows, and each draw is compared\n");
             __atomic_store_n(&g_v.on, 1, __ATOMIC_RELEASE);
         }
