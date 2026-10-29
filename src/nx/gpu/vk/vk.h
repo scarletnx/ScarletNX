@@ -206,6 +206,11 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem);
 /* Host-cached memory for the current frame's GPU -> host copies, read after its fence once invalidated. */
 u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
+/* Device memory for the current frame's data that the GPU writes and reads itself, with the same lifetime as vk_stage:
+   0 when none could be made */
+int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* logs what each ring handed out since the last report, by where its memory is (vk_buffer_stats) */
+void vk_stage_report(void);
 /* ends and submits the commands recorded since the last submit, waiting for wait (at wait_stage) and signaling signal.
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
