@@ -237,6 +237,8 @@ static void show_screens(VkCommandBuffer cb, VkImage target) {
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    /* the blits below overwrite the clear's pixels: their writes must wait for it */
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     double y = y0;
     for (unsigned i = 0; i < 2; ++i) {
         Frame* f = &g_present.frames[i];

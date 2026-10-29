@@ -7,10 +7,12 @@
    against the host's rules) and round interpolated values differently, so a pixel may differ by a few steps, a depth
    by a thousandth of its range, and a few pixels on edges by more. */
 #include "3ds/gpu/pica.h"
+#include "3ds/gpu/present.h"
 #include "3ds/gpu/texture.h"
 #include "3ds/gpu/transfer.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "common/utilities/bits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -251,15 +253,34 @@ static void array_draw(Scene* s) {
     put(&s->list, SNX_PICA_TRIGGER_DRAW, 1);
 }
 
-int main(void) {
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
-    char why[256];
-    if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
-        printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
-        snx_ctr_memory_free(m);
-        return 77;
+/* The presenter clears the window's image and blits the decoded screens over it, and the blits' writes must wait for
+   the clear's: synchronization validation checks that when the run has a window. A bottom screen presented alone
+   shows at its second present. Both presents must hash as the CPU decode of the framebuffer. */
+#define PRESENT_FB         (VRAM + 0x200000u)
+/* what present.c starts a frame's hash from: the decimal digits of SNX_FNV_BASIS without the last one */
+#define PRESENT_HASH_BASIS 1469598103934665603ull
+static void present_screens(SnxCtrMemory* m) {
+    if (!snx_ctr_present_init(m, NULL)) {
+        ++failures;
+        return;
     }
+    /* four uniform RGBA8 pixels in the guest's A,B,G,R byte order: any pixel order decodes to the same bytes */
+    static const unsigned char abgr[16] = {0x40, 0x30, 0x20, 0x10, 0x40, 0x30, 0x20, 0x10,
+                                           0x40, 0x30, 0x20, 0x10, 0x40, 0x30, 0x20, 0x10};
+    static const unsigned char expect[16] = {0x10, 0x20, 0x30, 0x40, 0x10, 0x20, 0x30, 0x40,
+                                             0x10, 0x20, 0x30, 0x40, 0x10, 0x20, 0x30, 0x40};
+    uint64_t want = snx_fnv1a(PRESENT_HASH_BASIS, expect, sizeof expect);
+    uint64_t first = 0, second = 0;
+    bool ok = snx_ctr_phys_write(m, PRESENT_FB, abgr, sizeof abgr) == SNX_CTR_MEM_OK;
+    ok = ok && snx_ctr_present_frame(1, PRESENT_FB, 2, 2, 0, 2 * 4, &first);
+    ok = ok && snx_ctr_present_frame(1, PRESENT_FB, 2, 2, 0, 2 * 4, &second);
+    bool pass = ok && first == want && second == want;
+    printf("%-24s hash %016llx and %016llx, CPU %016llx: %s\n", "screens presented", (unsigned long long)first,
+           (unsigned long long)second, (unsigned long long)want, pass ? "ok" : "FAIL");
+    if (!pass) ++failures;
+}
+
+static void all_scenes(SnxCtrMemory* m) {
     static const char* const color_names[5] = {"colour RGBA8", "colour RGB8", "colour RGB5A1", "colour RGB565",
                                                "colour RGBA4"};
     for (unsigned f = 0; f < 5; ++f) { /* vertex colours into each colour format */
@@ -434,12 +455,44 @@ int main(void) {
         run(m, s);
         free(s);
     }
+}
+
+typedef struct {
+    const char* flag;
+    const char* what;
+    void (*run)(SnxCtrMemory* memory);
+} Mode;
+static const Mode scenes = {NULL, "the scenes", all_scenes};
+/* the validation runs record only the commands under test */
+static const Mode modes[] = {{"--present", "the presented screens", present_screens}};
+
+int main(int argc, char** argv) {
+    const Mode* mode = &scenes;
+    if (argc > 1) {
+        mode = NULL;
+        if (argc == 2)
+            for (size_t i = 0; i < sizeof modes / sizeof *modes; ++i)
+                if (!strcmp(argv[1], modes[i].flag)) mode = &modes[i];
+        if (!mode) {
+            fprintf(stderr, "usage: %s [", argv[0]);
+            for (size_t i = 0; i < sizeof modes / sizeof *modes; ++i)
+                fprintf(stderr, i ? " | %s" : "%s", modes[i].flag);
+            fputs("]\n", stderr);
+            return 2;
+        }
+    }
+    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    char why[256];
+    if (!m) return 1;
+    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+        printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
+        snx_ctr_memory_free(m);
+        return 77;
+    }
+    mode->run(m);
+    snx_ctr_present_free();
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);
-    if (failures) {
-        printf("3ds vk draw: %d scenes differ from the CPU reference\n", failures);
-        return 1;
-    }
-    puts("3ds vk draw: every scene agrees with the CPU reference");
-    return 0;
+    printf("3ds vk draw: %s %s the CPU reference\n", mode->what, failures ? "differ from" : "agree with");
+    return failures != 0;
 }

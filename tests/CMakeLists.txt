@@ -209,6 +209,14 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the window's clear and blits under Khronos validation, when the run has a window: the blits overwrite the
+        # clear's pixels, so a missing barrier between them is a write-after-write hazard
+        add_test(NAME 3ds_vk_draw_present_validation
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                $<TARGET_FILE:snx-test-3ds-vk-draw> --present)
+        set_tests_properties(3ds_vk_draw_present_validation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     add_executable(snx-test-3ds-gsp 3ds_gsp.c)
     snx_test_target(snx-test-3ds-gsp 11)
     target_link_libraries(snx-test-3ds-gsp PRIVATE snx_ctr_process)
