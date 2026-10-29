@@ -28,6 +28,11 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     g_lent += size;
     return at;
 }
+/* verify mode is off: nothing shadows the lent memory */
+void nvn_verify_memory_back(u64 mem, u64 size) {
+    (void)mem;
+    (void)size;
+}
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void logf_(int lvl, const char* fmt, ...) {
