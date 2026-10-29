@@ -59,6 +59,7 @@ void wake(KThread* t, int result) {
     if (g_watch) g_watched = snx_ld_le32(g_mem + g_watch);
 }
 void core_set_prio(KThread* t, int prio) { t->prio = prio; }
+void klock_unlock(void) {}
 
 enum { SNX_KMT_THREADS = 6, SNX_KMT_HANDLE = 0x100 };
 /* the threads are the pool's first slots, where the kernel's lists find them (kt_at) */

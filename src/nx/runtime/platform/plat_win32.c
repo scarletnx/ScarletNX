@@ -62,6 +62,17 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     return r;
 }
 
+void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
+    DWORD ms = INFINITE;
+    if (timeout_ns >= 0) {
+        u64 r = (u64)timeout_ns / 1000000u + ((u64)timeout_ns % 1000000u != 0); /* as cond_wait rounds it */
+        ms = r >= (u64)INFINITE ? INFINITE - 1 : (DWORD)r;
+        timer_period_1ms();
+    }
+    WaitOnAddress(w, &v, sizeof v, ms);
+}
+void plat_wake_word(u32* w) { WakeByAddressAll(w); }
+
 /* ================================================================ threads */
 typedef struct {
     PThreadFn fn;
