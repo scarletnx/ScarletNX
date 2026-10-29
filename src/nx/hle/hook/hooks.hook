@@ -4,26 +4,29 @@
 # The functions the game exports that the runtime runs natively (hook.h), for tools/hookgen. A line at a time:
 #
 #   family NAME
+#   include "HEADER"
 #   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME [BUFFER], ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure]
 #   [@version(...)] struct NAME::NAME [@version(...)] { TYPE FIELD @OFFSET; ... } size SIZE
 #
 # A family names the hooks after it, until the next family line: the hooks_off setting turns families off by name.
 # SYMBOL is the function's name as the game's dynamic symbol table spells it: a C++ function by its mangled name
 # (_ZN2nn2os...), never demangled. The arguments are the function's as C sees it (a C++ method's this first), of the
-# types void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address) f32 and f64. The
-# handler is a function of the runtime's, `ret HANDLER(CPU* c, args...)`, declared by the generated
+# types void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address), f32 and f64, each
+# of its size in the guest, and pointers (const char* name, NVNtexture* const* textures): to void, char, those types,
+# or a type of the C header the include line names (gpu/nvn/nvn.hook's). No arrays. The handler is a function of the
+# runtime's, `ret HANDLER(CPU* c, args...)` (a pointer is a u64 guest address), declared by the generated
 # hle/hook/hooks.hook.h. Without '= HANDLER' it is SYMBOL with a '_' before its first capital (nvnDeviceFinalize:
 # nvn_DeviceFinalize). A handler does what the function is known to do and nothing the game could tell apart.
 # @version limits a hook or a struct to the versions of the module that exports the function (KEY sdk, the default, or
 # nvn; OP >=, >, <=, <, ==), a struct gives a guest struct's layout for those versions, and a handler that uses one
 # takes the layout for its module after the CPU (docs/HOOKS.md, tools/hookgen/hookgen.c). A pure hook's function
 # depends only on its arguments, the memory they point to and constant data, and changes only its result and its
-# buffers: an addr argument followed by in[LENGTH], out[LENGTH] or inout[LENGTH] (bytes: a number, or an integer
-# argument times a number plus a number). The hooks_verify setting checks a pure hook against the function's own code
-# on every call (verify.h).
+# buffers: an addr or pointer argument followed by in[LENGTH], out[LENGTH] or inout[LENGTH] (bytes: a number, or an
+# integer argument times a number plus a number). The hooks_verify setting checks a pure hook against the function's
+# own code on every call (verify.h).
 
 # the C library (libc.c): the guest's own byte loops become the host's
 family libc
-hook memcpy(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
-hook memmove(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
-hook memset(addr dst out[size], i32 value, u64 size) -> addr = hook_memset pure
+hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
+hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
+hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pure

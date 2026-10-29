@@ -54,7 +54,7 @@ enum { NVK_RET_NONE, NVK_RET_ADDR, NVK_RET_BOOL, NVK_RET_X32, NVK_RET_X64, NVK_R
 #define NVK_ARGS 8
 typedef struct {
     const char* name;
-    const char* kinds; /* NULL: nvn.h declares no prototype, and the shadow doesn't run it */
+    const char* kinds; /* NULL: no prototype, and the shadow doesn't run it (each nvn.hook function has one) */
     int ret;
     u32 size[NVK_ARGS];
 } Kinds;
@@ -1241,7 +1241,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     f->handler(c, entry);
     __atomic_add_fetch(&f->calls, 1, __ATOMIC_RELAXED);
     if (!f->k || !f->k->kinds) {
-        skip(f, "no prototype in nvn.h");
+        skip(f, "no prototype in nvn.hook");
         return;
     }
     if ((f->flags & F_SKIP) && !(f->flags & F_PRESENT)) {
