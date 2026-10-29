@@ -98,7 +98,7 @@ driver's results go nowhere but the shadows: the game sees nvn_direct's.
 | Shadow | What it holds | When it changes |
 | --- | --- | --- |
 | Object (device, queue, pool, buffer, texture, sampler, texture and sampler pool, program, sync, event, command buffer) | the driver's object, in guest memory of the runtime's outside every region the game maps (`shadow_map`) | made at the live object's `Initialize`, gone at its `Finalize`; keyed by the live address |
-| Builder or state object | the driver's bytes | keyed by nvn_direct's bytes: the game copies these by value, so an address names nothing. Each setter runs the driver on the copy that nvn_direct's bytes before the call stand for, and records the result for nvn_direct's bytes after it |
+| Builder or state object | the driver's bytes | keyed by the live address and nvn_direct's bytes there: the state the calls at that address made, while the game leaves its bytes as they were. Else by nvn_direct's bytes alone, for a copy the game made by value (nvn_direct keeps less than the driver, such as the device, so such a copy is ambiguous). Each setter runs the driver on that state and records the result for both keys |
 | Memory the driver writes (pool storage, queue memory, control memory) | a range of the same size (queue memory: at least 8 MiB) | made at its first use, keyed by the live address |
 | Command memory | the game's chunks through the shadow pools, and 256 KiB pieces of a 1 GiB ring of the runtime's when less than a quarter is left, so the driver never calls the game's memory callback | each command buffer call |
 | Command handle | the handle the driver's `EndRecording` answered | keyed by nvn_direct's handle |
@@ -137,6 +137,27 @@ driver Y`), then its count at 1024 and each power of 4. Also checked: the result
 (not an address or a time), and each texture descriptor `TexturePoolRegisterTexture` writes, word by word with the
 address as guest bytes. A `svcBreak` in a shadow call names the driver function it ran.
 
+### Texture storage answers
+
+Games place textures in their pools by `nvnTextureBuilderGetStorageSize`, `GetStorageAlignment`, `GetStorageClass`
+and `GetZCullStorageSize`. `nvn_tex_storage` (`gpu/nvn/nvn_tex.c`) answers them with the rules read from two
+drivers' code (NVN 12.3 and 55.15, the same rules):
+
+- The kind (the class is 0x100 with it): 0 for a buffer or a linear texture. A depth or stencil format has a depth
+  kind. A COMPRESSIBLE color format of one-texel blocks and 4 bytes or more has a compression kind. Else 0xfe.
+- The alignment: 0x80 for LINEAR_RENDER_TARGET, 0x20 for LINEAR, a buffer's element size, else 0x200. Every kind but 0
+  and 0xfe takes the big page, 64 KiB, and its size is rounded up to it.
+- The ZCull area: 0 for a format without depth bits (stencil only counts with ZCULL_SUPPORT_STENCIL). Else 0x20 bytes
+  for each 32x32 tile of each layer, plus 0xE0 of headers (nvdrv's ZCULL_GET_INFO answer).
+- A multisampled or rectangle texture has one level, whatever the builder says.
+
+The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
+size over targets, formats, sizes, levels, samples and flags. Verify mode's storage sweep runs the driver's getters
+and nvn_direct's on the same 7,986 builder states at the game's first query: sizes, alignments and ZCull areas agree.
+The compression kinds of some formats still differ (RG16F: the driver's 0xdb, nvn_direct's 0xcc): the driver picks
+them from a kind class in its format table, which nvn_direct doesn't have yet. The size and alignment don't depend
+on which compression kind it is.
+
 ### What the first runs found (one game, SDK NVN 55.15)
 
 The shadow device, pools, programs and queue initialize, and the game runs through its title and save load with the
@@ -152,20 +173,23 @@ driver beside nvn_direct. The results the driver answers otherwise, which the ga
 | `nvnDeviceGetTextureHandle` | 0x10300107 | 0x110300107 (bit 32 set) |
 | TIC word 6 of registered textures | 0 | 0x03000000 |
 
-The queue memory size is certain: the driver's `QueueInitialize` fails with the size nvn_direct answers. The texture
-rows need the state check below before they count: they come from builders whose shadow state passed through the
-content map.
+The texture rows are fixed (above). The queue memory size is certain: the driver's `QueueInitialize` fails with the
+size nvn_direct answers. The driver's rule adds to the command and control sizes (defaults 0x10000 and 0x4000 when the
+game set none) an area of its own, which grows with the compute memory size (default 0x40000) and with six words of
+the device's GPU characteristics, not yet matched to nvdrv's answers.
 
 ### Open problems (why draws don't compare yet)
 
-- **State by content is lossy.** nvn_direct's packed builders and states keep less than the driver's objects (the
-  device pointer, and fields the driver derives, such as byte 48 of the texture builder after `SetHeight` and
-  `SetDepth`). Two driver states then share one key, the map keeps the newest, and a later setter runs on the wrong
-  one: about 140,000 such updates in 110 seconds. A key of nvn_direct's bytes plus the live address of the last
-  `SetDefaults` (builders are stack objects made and used in one function) would separate most.
-- **The driver's `CallCommands` aborts** (`nn::diag::detail::Abort` with a Result) about 7 seconds in, on a handle
-  the map gave. Until it is found, verify mode skips it, and the game's draws in called recordings are only
-  nvn_direct's: in the first run 1,024 draws paired and about 197,000 had no shadow draw.
+- **The driver's `CallCommands` aborts** about 7 to 25 seconds in: "CommandBuffer has run out of control memory with
+  no out-of-memory callback". Each call copies the called recordings' command ranges into the calling buffer's
+  control memory, 0x18 bytes a range, and one game's calls took about 0x80000 bytes each. The shadow feeds control
+  memory before each call (4 MiB for CallCommands) and the abort still comes, so something else is short. Until it
+  is found, verify mode skips both calls, and the game's draws in called recordings are only nvn_direct's: in the
+  first run 1,024 draws paired and about 197,000 had no shadow draw.
+- **Verify mode makes one game crash.** In 5 runs of 100 seconds without verify mode the game didn't crash, in 5 with
+  it the game crashed 3 times, each at the same instruction of the game's code (a null pointer plus an offset).
+  Not traced: the shadow driver's allocations through the game's graphics allocator, or its stack copies, are what
+  verify mode changes for the game.
 - **Arrays of texture views** at `SetRenderTargets` whose state the map doesn't know skip the call, so the shadow's
   targets stay at their defaults.
 
