@@ -1348,8 +1348,8 @@ int shader_writes_reg(u64 w, int op, u32 reg) {
     return d != 255 && reg >= d && reg - d < count;
 }
 
-/* The predicates w may write, a bit each (p0 to p6). The comparisons write two, in bits 3-5 and 0-2; LOP, LOP3 and
-   LEA name theirs in bits 48-50; PT is none. The rest that write any are taken to write them all. */
+/* The predicates w may write, a bit each (p0 to p6). The comparisons write two, in bits 3-5 and 0-2; LOP, LOP3, LEA
+   and SHFL name theirs in bits 48-50; PT is none. The rest that write any are taken to write them all. */
 static u32 sparse_predicate(u64 w, int op);
 static u32 direct_pred_writes(u64 w, int op) {
     u32 p;
@@ -1375,7 +1375,6 @@ static u32 direct_pred_writes(u64 w, int op) {
         case O_R2P_R:
         case O_R2P_C:
         case O_R2P_I:
-        case O_SHFL:
         case O_VOTE: return 0x7f;
         case O_LOP_R:
         case O_LOP_C:
@@ -1385,7 +1384,8 @@ static u32 direct_pred_writes(u64 w, int op) {
         case O_LEA_HC:
         case O_LEA_LR:
         case O_LEA_LC:
-        case O_LEA_LI: p = B(w, 48, 3); break;
+        case O_LEA_LI:
+        case O_SHFL: p = B(w, 48, 3); break;
         default: p = sparse_predicate(w, op); break;
     }
     return p < 7 ? 1u << p : 0;

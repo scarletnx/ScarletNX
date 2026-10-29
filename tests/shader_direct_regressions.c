@@ -2993,6 +2993,27 @@ static u32 quad_operand(const u32* code, size_t words, u32 opcode) {
 /* A fragment program's SHFL within its quad (mask 0x1c03) from a lane known when translated is a quad operation:
    the quad's helper lanes, which a triangle's edge leaves out, take part in it, as the console's lanes do in SHFL. One
    game's edge pass read its upper left lane so and drew blue lines along every edge. Other SHFL stay shuffles */
+/* A SHFL writes the one predicate its bits 48-50 name, none for PT: a handle loaded under @P0 reaches a surface store
+   under @P0 past a SHFL to PT, as a fragment program of a game has them, and not past one that writes P0 */
+static void shfl_predicate(void) {
+    const u64 shfl_pt = 0xef17007cf0370207ull; /* SHFL PT, R7, R2, ... */
+    for (u32 writes_p0 = 0; writes_p0 < 2; writes_p0++) {
+        const u64 instructions[] = {
+            0x4c98078804a0000aull, /* @P0 MOV R10, c[0x2][0x128] */
+            writes_p0 ? shfl_pt & ~(7ull << 48) : shfl_pt,
+            0xeb20050600f00804ull, /* @P0 SUST.P R4, [R8], R10 */
+        };
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(instructions, 3, ST_FS, &info, &words, 1);
+        if (writes_p0)
+            check_refused(code, &info, "untracked surface handle", "a SHFL writing P0 leaves the handle's guard open");
+        else
+            check_translated(code, &info, "a handle under @P0 reaches its surface store past a SHFL to PT");
+        free(code);
+    }
+}
+
 static void shfl_quad_forms(void) {
     static const struct {
         u32 mode, index, opcode, operand;
@@ -3173,6 +3194,7 @@ int main(int argc, char** argv) {
     structured_flow();
     fswzadd_forms();
     shfl_quad_forms();
+    shfl_predicate();
     for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
     return failures ? 1 : 0;
 }
