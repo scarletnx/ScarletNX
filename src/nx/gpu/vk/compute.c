@@ -1225,7 +1225,7 @@ rebind:
                 v = vk_null_view(want, num);
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
-            VkSampler smp = vk_tex_bind_sampler(tsc, st, num, sampled, want);
+            VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_cs_skips[CS_SKIP_TEXTURE]++;
                 cs_abandon_binding(originals);

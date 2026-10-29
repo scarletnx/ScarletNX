@@ -407,6 +407,7 @@ static int create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .pNext = &f11,
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
+                                            .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,

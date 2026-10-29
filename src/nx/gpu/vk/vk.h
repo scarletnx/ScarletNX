@@ -390,6 +390,8 @@ VkFmt vk_tic_format(u32 w0, int srgb); /* bpp 0: not supported */
 VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
 int vk_format_storage_write(VkFormat f);
+/* whether a sampler may take the least or greatest of the texels its linear filter reads of f (min/max reduction) */
+int vk_format_minmax_filter(VkFormat f);
 int vk_tic_reads_stencil(const u32* tic);
 /* sRGB and linear views of the same bytes: the twin of a color format, or the format itself when it has none */
 VkFormat vk_srgb_as(VkFormat f, int srgb);
@@ -723,6 +725,8 @@ Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes
    VK_NULL_HANDLE when the image can't be viewed that way */
 /* stencil: a depth/stencil surface's stencil aspect instead of its depth */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil);
+/* the format of s's views, its sRGB form when srgb (a depth format stays) */
+VkFormat vk_tex_view_format(const Surf* s, int srgb);
 /* One selected mip for storage; the sampled view retains the complete chain. */
 VkImageView vk_tex_storage_view(Surf* s, VkImageViewType type);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
@@ -1023,10 +1027,12 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
    the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
-   the texture whose own view is bound (NULL for none) and its view type, say whether anisotropy= may raise it */
+   the texture whose own view is bound (NULL for none) and its view type, say whether anisotropy= may raise it, and
+   with tic (unread when t is NULL) whether its view's format takes the TSC's min/max reduction */
 VkImageViewType vk_tex_view_type(const ShTex* st);
 VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, const u32* tsc, int num);
-VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num, const Surf* t, VkImageViewType want);
+VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* t,
+                              VkImageViewType want);
 /* Draws and compute key, read and bind their programs' resources alike, here, so that the two don't drift apart.
    vk_tex_num: the number type num a texture is declared with (ShaderInfo.tex_int_mask and tex_sint_mask, 0 float,
    1 unsigned, 2 signed) for its header tic, matching what vk_tex_bind_view binds. t is the surface the header resolves
