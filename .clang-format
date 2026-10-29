@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Format with clang-format 23 (scripts/format.sh checks the version). The whole history is formatted with this file:
+# Format with clang-format 23. The whole history is formatted with this file:
 # change it only together with a reformat of the tree.
 BasedOnStyle: LLVM
 Language: Cpp

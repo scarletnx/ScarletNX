@@ -18,12 +18,11 @@ Nothing of a game goes into git, an issue, a pull request or a comment: keys, du
 cmake -DCMAKE_BUILD_TYPE=Release -Bbuild -S.
 cmake --build build
 ctest --test-dir build --output-on-failure
-scripts/format.sh --check
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
 ```
 
-`scripts/format.sh` without `--check` formats in place (clang-format 23 and the pinned Ruff, through `uvx`). CI
-doesn't check formatting, so run it locally. Configuring with `-DSNX_TEST_SANITIZERS=ON` builds the native
+Nothing checks formatting. `.clang-format` (clang-format 23) has the style, and `git clang-format` formats only the
+lines a change touches. Configuring with `-DSNX_TEST_SANITIZERS=ON` builds the native
 regression tests, and the programs and libraries they run or link, with ASan and UBSan. That build is for tests only and
 is not deployed.
 
