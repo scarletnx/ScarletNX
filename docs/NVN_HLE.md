@@ -99,24 +99,57 @@ driver's results go nowhere but the shadows: the game sees nvn_direct's.
 | --- | --- | --- |
 | Object (device, queue, pool, buffer, texture, sampler, texture and sampler pool, program, sync, event, command buffer) | the driver's object, in guest memory of the runtime's outside every region the game maps (`shadow_map`) | made at the live object's `Initialize`, gone at its `Finalize`; keyed by the live address |
 | Builder or state object | the driver's bytes | keyed by the live address and nvn_direct's bytes there: the state the calls at that address made, while the game leaves its bytes as they were. Else by nvn_direct's bytes alone, for a copy the game made by value (nvn_direct keeps less than the driver, such as the device, so such a copy is ambiguous). Each setter runs the driver on that state and records the result for both keys |
-| Memory the driver writes (pool storage, queue memory, control memory) | a range of the same size (queue memory: at least 8 MiB) | made at its first use, keyed by the live address |
-| Command memory | the game's chunks through the shadow pools, and 256 KiB pieces of a 1 GiB ring of the runtime's when less than a quarter is left, so the driver never calls the game's memory callback | each command buffer call |
+| Memory the driver writes (pool storage, queue memory) | a range of the same size (queue memory: at least 8 MiB) | made at its first use, keyed by the live address |
+| Command memory | a shadow of the game's pool at 4 times each offset, made at the pool's first command memory; memory outside the pool, a piece of the runtime's | the scaled pool lives as long as the game's |
+| Control memory, and memory the driver runs short of | a piece of the runtime's (at least 64 KiB) for each `AddControlMemory`, and for each call of the shadow's own memory callback | free when no recording the game can call has records in it, and 4 presents after that |
 | Command handle | the handle the driver's `EndRecording` answered | keyed by nvn_direct's handle |
 
 `tools/nvn_verify_kinds.py` writes each function's argument kinds from `nvn.h`'s prototypes into
 `nvn_verify_kinds.inc` (the ctest `nvn_verify_kinds` checks it is current). A call whose argument has no shadow is
 skipped, and the log names the function and the reason once. Never made in the shadow: waits, the window and its
-presents (a present flushes the shadow queue instead), callbacks, virtual pool mappings, and for now
-`CallCommands` and `CopyCommands` (below). The driver's own calls into NVN go through the same slots, and run the
-driver's code while the thread is in a shadow call. The driver's lookup with a device sets `nvnPrivate0`: after
-each shadow call the word is put back, since it turns on the game's inlined command writes.
+presents (a present flushes the shadow queue instead), the game's callbacks and virtual pool mappings. The driver's
+own calls into NVN go through the same slots, and run the driver's code while the thread is in a shadow call. The
+driver's lookup with a device sets `nvnPrivate0`: after each shadow call the word is put back, since it turns on the
+game's inlined command writes.
+
+### The shadow's command and control memory
+
+The game places its command and control memory by `GetCommandMemoryUsed` and `GetControlMemoryUsed`, and those are
+nvn_direct's answers: its records are other sizes than the driver's methods, and it keeps no control memory, so its
+`GetControlMemoryUsed` is 0. In shadows of the game's memory, offset for offset, the driver wrote recordings over each
+other. One game gave several command buffers, one after the other, the same control memory, which to it was still
+empty, while it still called the recordings made there. The driver's `CallCommands` copies each callee's records
+into the caller's control memory, 0x18 bytes a range, read garbage there, and aborted "CommandBuffer has run out of
+control memory with no out-of-memory callback" (in `sdk` at the record copy that the abort's backtrace names). The
+1 GiB ring the shadow fed memory from earlier went round in about 3 seconds and did the same.
+
+So (`nvn_verify.c`, the lend section):
+
+- Command memory is a shadow of the game's pool at 4 times each offset (`cmd_pool`). Each recording keeps the place
+  the game gave it, with 4 times the room nvn_direct's records took there, and the game reuses it when it reuses its
+  own. Memory outside the pool is a piece of the runtime's: one game computes its offsets from addresses it read, and
+  some fell in memory nvn_direct lent.
+- Control memory is the runtime's: each `AddControlMemory` adds a piece of at least its size.
+- Each shadow command buffer has a memory callback of the runtime's (the address of the driver's
+  `SetMemoryCallback`, whose slot is `verify_fn`; an event, 0 or 1, is never a code address). When the driver's own
+  check finds too little, it adds a piece at least as big as the driver asks for.
+- A piece counts its users: the command buffer writing in it, each recording made in it, and each recording that
+  calls one with commands in it. A recording is done when the game records again at its handle, or when the memory
+  its handle is in is reused: the game adds that command memory again, or nvn_direct takes back what it lent there
+  (`nvn_verify_memory_back`). A free piece is taken again only after 4 presents: one game records a recording, gives
+  its command memory to another command buffer, and calls it from there, since the driver kept all of it in control
+  memory.
 
 ### How the shadow pushbuffer gets to the decoder
 
 The driver's queue opens its GPU channel inside a shadow call, so nvdrv marks the fd (`nvn_verify_fd`). A
 `SUBMIT_GPFIFO` on a marked fd goes to `nvn_verify_gpfifo` instead of the GPU thread: its words are copied at once
 (command memory is reused) into the queue's batches, each tagged with the number of the game's submission it
-follows, and the fence's increments are made at once, so the driver's waits on its own channel return. After each
+follows, and the fence's increments are made at once, so the driver's waits on its own channel return. The batch's
+semaphore releases (the puller's, and the 3D and compute engines' report semaphores) are made at once too: the
+driver's queue reuses its memory once the GPU wrote a semaphore of its own there, and without them a present's flush
+spun forever in one game. A batch that binds a class no engine here runs is out of step: the log says so once, and
+that queue's releases stop. After each
 `QueueSubmitCommands` the shadow flushes its queue, so each live submission has a batch of its own.
 
 On the GPU thread, nvn_direct's replay of submission n and each of its draws pull the batches through a verify
@@ -180,12 +213,6 @@ the device's GPU characteristics, not yet matched to nvdrv's answers.
 
 ### Open problems (why draws don't compare yet)
 
-- **The driver's `CallCommands` aborts** about 7 to 25 seconds in: "CommandBuffer has run out of control memory with
-  no out-of-memory callback". Each call copies the called recordings' command ranges into the calling buffer's
-  control memory, 0x18 bytes a range, and one game's calls took about 0x80000 bytes each. The shadow feeds control
-  memory before each call (4 MiB for CallCommands) and the abort still comes, so something else is short. Until it
-  is found, verify mode skips both calls, and the game's draws in called recordings are only nvn_direct's: in the
-  first run 1,024 draws paired and about 197,000 had no shadow draw.
 - **Verify mode makes one game crash.** In 5 runs of 100 seconds without verify mode the game didn't crash, in 5 with
   it the game crashed 3 times, each at the same instruction of the game's code (a null pointer plus an offset).
   Not traced: the shadow driver's allocations through the game's graphics allocator, or its stack copies, are what

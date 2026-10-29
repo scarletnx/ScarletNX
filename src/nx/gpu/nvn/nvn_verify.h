@@ -28,6 +28,8 @@ const char* nvn_verify_running(void);
 void nvn_verify_fd(u32 fd, int open);
 int nvn_verify_fd_is(u32 fd);
 void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n);
+/* nvn_direct takes back the command memory [memory, memory + size) it lent: the recordings with handles there are gone */
+void nvn_verify_memory_back(u64 memory, u64 size);
 
 /* On the GPU thread: nvn_direct's replay starts a submission of queue (its 1-up index), and draws */
 void nvn_verify_replay_submit(u32 queue);

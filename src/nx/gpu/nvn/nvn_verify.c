@@ -9,17 +9,18 @@
      shadow from its Initialize to its Finalize (g_v.obj, live address to shadow address);
    - a builder or state object the game may copy by value has its shadow by content: the driver's bytes for each
      state nvn_direct's bytes stand for (g_v.state), learned as the game calls the setters;
-   - memory the driver writes (a pool's storage, queue and control memory) has a shadow range of its size (g_v.mem);
+   - memory the driver writes (a pool's storage, queue memory) has a shadow range of its size (g_v.mem), and its
+     command and control memory are the runtime's (Lend, cmd_pool);
    - a command handle the driver's EndRecording answered stands for nvn_direct's (g_v.handle).
    An argument the shadow has no counterpart for skips the driver's call (counted per function). The driver's calls
    that act on the game or the host are never made: waits, the window and its presents (a present flushes the shadow
-   queue instead), callbacks. The driver's calls into other NVN functions go through their slots and so through
-   verify_fn, which runs the driver's code directly while the thread is in a shadow call (t_shadow).
+   queue instead), the game's callbacks. The driver's calls into other NVN functions go through their slots and so
+   through verify_fn, which runs the driver's code directly while the thread is in a shadow call (t_shadow).
 
    The driver's queue opens its GPU channel from such a call, so nvdrv marks the fd (nvn_verify_fd) and gives its
    GPFIFO submissions here instead of to the GPU thread: their words are copied (nvn_verify_gpfifo) into the queue's
-   batches, each tagged with the number of the game's submission it follows. A submission is flushed in the shadow at
-   once, so each live submission has its own batch.
+   batches, each tagged with the number of the game's submission it follows, and their semaphore releases are made
+   at once (releases). A submission is flushed in the shadow at once, so each live submission has its own batch.
 
    The GPU thread side. nvn_direct's replay of a submission (nvn_verify_replay_submit) and each of its draws
    (nvn_verify_live_draw) pull the shadow's batches through a verify channel (gpu.h gpu_channel_verify): the Maxwell
@@ -29,7 +30,9 @@
    the live memory it shadows. Each difference is logged once, with its count at each power of 4 */
 #include "nx/gpu/nvn/nvn_verify.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/maxwell/maxwell_3d_regs.h"
 #include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn.h"
 #include "nx/gpu/nvn/nvn_object.h"
@@ -82,14 +85,18 @@ enum { /* what a function is to the shadow, from its name */
     F_CMD = 512,     /* arg 0 is a command buffer */
     F_TEXREG = 1024, /* nvnTexturePoolRegisterTexture: the descriptors compared */
     F_NORESULT = 2048, /* its result is an address or a time, which the two sides make apart */
-    F_STATESET = 4096  /* a state object's setter: a state never seen is the zeroed memory the game started from */
+    F_STATESET = 4096, /* a state object's setter: a state never seen is the zeroed memory the game started from */
+    F_ADDCMD = 8192,   /* nvnCommandBufferAddCommandMemory: the command buffer writes in the game's memory, or a piece */
+    F_ADDCTRL = 16384, /* nvnCommandBufferAddControlMemory: the command buffer writes in the game's memory */
+    F_BEGIN = 32768,   /* nvnCommandBufferBeginRecording: a recording, which may have records in lent pieces */
+    F_CALLS = 65536    /* nvnCommandBufferCallCommands: the recording points at the callees' commands */
 };
 typedef struct {
     u64 addr;
     GuestFn handler, original;
     const Kinds* k;
     u32 flags;
-    u64 calls, skipped, differed, ran;
+    u64 calls, skipped, differed, ran, failed;
     const char* why; /* the first reason a call was skipped */
 } Fn;
 
@@ -126,6 +133,11 @@ typedef struct {
     Batch *head, *tail;
     u32 shadow_serial; /* the live submissions so far, which the batches are tagged with */
     u64 words;         /* in the batches not decoded */
+    PbState rel_pb;    /* the releases made at once (releases): the stream's decode state, */
+    u32 rel_class[8];  /* the subchannels' classes, */
+    u32 rel_sem[3];    /* the puller's semaphore address and payload, */
+    u32 rel_rep[2][3]; /* the 3D and compute engines' report semaphore address and payload, */
+    int rel_lost;      /* and whether the stream went out of step */
     /* the GPU thread's */
     GpuChannel* ch;
     u32 live_serial, draw; /* the submission replaying, and its draws so far */
@@ -389,10 +401,7 @@ static u32 flags_of(const char* n, const Kinds* k) {
         "nvnQueueAcquireTexture", "nvnQueueFinish", "nvnSyncWait", "nvnDeviceInstallDebugCallback",
         "nvnCommandBufferSetMemoryCallback", "nvnCommandBufferSetMemoryCallbackData", "nvnEventWait",
         "nvnQueueGetError", "nvnMemoryPoolMapVirtual", "nvnDeviceSetIntermediateShaderCache",
-        "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle",
-        /* the driver aborts in CallCommands ("out of control memory with no out-of-memory callback") some seconds in,
-           even with 4 MiB of control memory fed before each call (docs/NVN_HLE.md): not made until that is found */
-        "nvnCommandBufferCallCommands", "nvnCommandBufferCopyCommands"};
+        "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle"};
     u32 f = 0, i;
     if (k && k->kinds && k->kinds[0] && ends(n, "Initialize") && !strstr(n, "Builder")) f |= F_INIT;
     if (ends(n, "Finalize")) f |= F_FINAL;
@@ -405,7 +414,11 @@ static u32 flags_of(const char* n, const Kinds* k) {
     if (!strcmp(n, "nvnQueueSubmitCommands")) f |= F_SUBMIT | F_HANDLES;
     if (!strcmp(n, "nvnCommandBufferCallCommands") || !strcmp(n, "nvnCommandBufferCopyCommands")) f |= F_HANDLES;
     if (!strcmp(n, "nvnQueuePresentTexture")) f |= F_PRESENT;
+    if (!strcmp(n, "nvnCommandBufferAddCommandMemory")) f |= F_ADDCMD;
+    if (!strcmp(n, "nvnCommandBufferAddControlMemory")) f |= F_ADDCTRL;
     if (!strcmp(n, "nvnCommandBufferEndRecording")) f |= F_END;
+    if (!strcmp(n, "nvnCommandBufferBeginRecording")) f |= F_BEGIN;
+    if (!strcmp(n, "nvnCommandBufferCallCommands")) f |= F_CALLS;
     if (!strcmp(n, "nvnTexturePoolRegisterTexture")) f |= F_TEXREG;
     if (starts(n, "nvnQueue") && !starts(n, "nvnQueueBuilder")) f |= F_QUEUE;
     if (starts(n, "nvnCommandBuffer")) f |= F_CMD;
@@ -462,72 +475,387 @@ static u64 drv_call(CPU* c, const CPU* base, u64 sp, const char* name, u64 a0, u
 /* the shadow queue's commands so far, sent as the game's submission serial's batch */
 static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) { drv_call(c, base, sp, "nvnQueueFlush", queue, 0, 0, 0); }
 
-/* a live command buffer's shadow is fed command and control memory of the runtime's before it can run short, so the
-   driver never calls the game's memory callback (the shadow has none): a piece of a ring of the runtime's when less is
-   left than the call can take. The game's own memory comes too (a shadow of each chunk, reused as the game reuses it),
-   so pieces are seldom needed. A ring that went round reuses pieces a recording the game still calls may hold */
-#define FEED_PIECE (256u << 10)
-#define FEED_RING  (1u << 30)
-#define FEED_CTRL  (64u << 10)
+/* ---- the shadow driver's command and control memory
+   The game places its command and control memory by what the driver takes: it places each recording by
+   GetCommandMemoryUsed and GetControlMemoryUsed, and its memory callback adds more when the driver runs short. Under
+   nvn_direct those answers are nvn_direct's: its records are other sizes than the driver's methods, and it keeps no
+   control memory (GetControlMemoryUsed is 0). In shadows of the game's memory, offset for offset, the driver wrote
+   recordings over each other: the game gave several command buffers, one after the other, the same control memory,
+   which to it was still empty, and placed command memory after recordings the driver's methods made longer than
+   nvn_direct's records. The recordings it still called were garbage: CallCommands, copying a callee's records,
+   aborted "out of control memory with no out-of-memory callback", and the shadow's command streams went out of step.
+
+   So the shadow's command memory is a shadow of the game's pool at CMD_SCALE times each offset (cmd_pool): each
+   recording keeps the place the game gave it, with more room, and is reused when the game reuses its own. Its control
+   memory is the runtime's, in pieces (lend_take): each AddControlMemory of the game adds a piece of at least its size
+   in place of the game's memory. Command memory the shadow pool doesn't hold (a game can place it by an address it
+   read, as an offset from its pool: one game's offsets put it in memory nvn_direct lent, gpu/nvn/nvn_cmd.c) is a
+   piece too. Each shadow command buffer has this file's memory callback (shadow_memory): when the driver's own check
+   finds too little, it adds a piece at least as big as the driver asks for.
+
+   A piece is free again when no recording the game can still call or submit has records in it. Each piece counts its
+   users (refs): the command buffer writing in it, each recording made in it, and each recording that calls one with
+   commands in it, until the game records again at that recording's handle, or the memory the handle is in is reused
+   (nvn_direct's handle is its first record's address: the game adds that command memory again, or nvn_direct takes
+   back the memory it lent there). A game can still call a recording right after it adds the memory its handle is in
+   again (one game records a recording, gives its command memory to another command buffer, and calls it from there:
+   the driver kept all of it in control memory), so a free piece is taken again only after COOL presents */
+enum { LEND_CMD, LEND_CTRL };
+#define LEND_MAX   16384
+#define REC_MAX    16384
+#define REC_PIECES 15
+#define PINNED     0xFFFFFFFFu /* refs of a piece a recording took more than REC_PIECES of: never free */
+#define COOL       4           /* the presents a piece stays unused after it is free (lend_added) */
+static const u64 lend_area[2] = {2ull << 30, 2ull << 30};
+static const u32 lend_min[2] = {64u << 10, 64u << 10};
 typedef struct {
-    u64 pool;        /* the shadow memory pool the command pieces come from */
-    u64 storage;     /* its storage */
-    u32 at, ctrl_at; /* the next pieces */
-    u64 ctrl;        /* control memory ring */
-} Feed;
-static Feed g_feed;
-static void feed(CPU* c, const CPU* base, u64 sp, u64 cmd, u64 cmd_need, u64 ctrl_need) {
-    u64 cfree = drv_call(c, base, sp, "nvnCommandBufferGetCommandMemoryFree", cmd, 0, 0, 0);
-    u64 kfree = drv_call(c, base, sp, "nvnCommandBufferGetControlMemoryFree", cmd, 0, 0, 0);
-    if (!g_feed.pool) { /* the pool, on the first shadow command buffer's device */
-        u64 dev = g_v.device, b;
-        if (!dev) return;
-        g_feed.storage = shadow_map(FEED_RING);
-        g_feed.ctrl = shadow_map(FEED_RING / 2);
-        g_feed.pool = obj_alloc(sizeof(NVNmemoryPool));
+    u64 at;                /* the pool offset (command) or the guest address (control) */
+    u32 size, kind, refs;
+    u32 next;              /* the next free or cooling piece, 1 up */
+    u32 freed;             /* the present it was free at (cooling) */
+} Piece;
+typedef struct { /* the pieces a recording has records in, 1 up */
+    u16 p[REC_PIECES], n;
+} Rec;
+/* a shadow command buffer's pieces, packed in a map value: the one it writes in of each kind (1 up), the recording
+   it makes (1 up), and whether it is recording */
+#define CB_CUR(v, k) ((u32)((v) >> (16 * (k))) & 0xFFFF)
+#define CB_REC(v)    ((u32)((v) >> 32) & 0xFFFF)
+#define CB_RECORDING (1ull << 48)
+typedef struct {
+    u32 state;         /* 0 not made, 1 making, 2 made, 3 failed */
+    u64 pool, area[2]; /* the shadow memory pool of the command pieces; the two areas (the pool's storage first) */
+    u64 used[2];       /* of each area, in pieces made (a piece is never given back to its area) */
+    u64 callback;      /* the guest address of the shadow's memory callback */
+    Piece piece[LEND_MAX];
+    u32 n, nrec, rec_free;
+    u32 free[2][32];  /* the free pieces of each kind and size (log2), 1 up */
+    u32 cool, cool_tail, presents; /* the pieces free since fewer than COOL presents, oldest first, 1 up */
+    Rec rec[REC_MAX]; /* a free one's n is the next free one, 1 up */
+    Map cb, handle;   /* shadow command buffer to its pieces (CB_*); nvn_direct's handle to its recording, 1 up */
+} Lend;
+static Lend g_lend; /* under g_v.lock, but state and what is written before state is 2 (pool, area, callback) */
+static u32 log2_of(u64 pow2) { return 63u - (u32)__builtin_clzll(pow2); }
+
+/* the areas and the pool, on the first shadow command buffer's device. Another thread waits for the one that makes
+   them */
+static int lend_ready(CPU* c, const CPU* base, u64 sp) {
+    u32 st = 0;
+    u64 dev = g_v.device, b;
+    GuestFn fn;
+    if (__atomic_compare_exchange_n(&g_lend.state, &st, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        g_lend.area[LEND_CMD] = shadow_map(lend_area[LEND_CMD]);
+        g_lend.area[LEND_CTRL] = shadow_map(lend_area[LEND_CTRL]);
+        g_lend.pool = obj_alloc(sizeof(NVNmemoryPool));
         b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
         drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
         drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDevice", b, dev, 0, 0);
         drv_call(c, base, sp, "nvnMemoryPoolBuilderSetFlags", b,
                  NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
-        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, g_feed.storage, FEED_RING, 0);
-        if (!(drv_call(c, base, sp, "nvnMemoryPoolInitialize", g_feed.pool, b, 0, 0) & 0xFF)) {
-            WARN("nvn verify: the driver's pool for the shadow's command memory didn't initialize\n");
-            g_feed.pool = 0;
-            return;
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, g_lend.area[LEND_CMD], lend_area[LEND_CMD], 0);
+        /* the callback: the driver's SetMemoryCallback, which the shadow never runs, at an address whose slot is
+           verify_fn (an event, 0 or 1, is never a function's address in x1) */
+        g_lend.callback = drv_addr(c, "nvnCommandBufferSetMemoryCallback", &fn);
+        if (!dev || !g_lend.callback || !fn_at(g_lend.callback) ||
+            !(drv_call(c, base, sp, "nvnMemoryPoolInitialize", g_lend.pool, b, 0, 0) & 0xFF)) {
+            WARN("nvn verify: no memory for the shadow driver when it runs short (device %llx, callback %llx): it "
+                 "aborts then\n",
+                 (unsigned long long)dev, (unsigned long long)g_lend.callback);
+            st = 3;
+        } else {
+            LOG("nvn verify: the shadow driver's command memory: %llu MiB at %llx\n",
+                (unsigned long long)(lend_area[LEND_CMD] >> 20), (unsigned long long)g_lend.area[LEND_CMD]);
+            st = 2;
         }
-        LOG("nvn verify: the shadow's command memory: %u MiB at %llx\n", FEED_RING >> 20,
-            (unsigned long long)g_feed.storage);
+        __atomic_store_n(&g_lend.state, st, __ATOMIC_RELEASE);
     }
-    if (cfree < cmd_need) {
-        u32 piece = cmd_need * 2 > FEED_PIECE ? (u32)((cmd_need * 2 + 0xFFF) & ~0xFFFull) : FEED_PIECE;
-        u32 at = __atomic_fetch_add(&g_feed.at, piece, __ATOMIC_RELAXED) % FEED_RING;
-        if (at + piece > FEED_RING) at = 0;
-        drv_call(c, base, sp, "nvnCommandBufferAddCommandMemory", cmd, g_feed.pool, at, piece);
-    }
-    if (kfree < ctrl_need) {
-        u32 piece = ctrl_need * 2 > FEED_CTRL ? (u32)((ctrl_need * 2 + 0xFFF) & ~0xFFFull) : FEED_CTRL;
-        u32 at = __atomic_fetch_add(&g_feed.ctrl_at, piece, __ATOMIC_RELAXED) % (FEED_RING / 2);
-        if (at + piece > FEED_RING / 2) at = 0; /* a piece in one run of the ring */
-        drv_call(c, base, sp, "nvnCommandBufferAddControlMemory", cmd, g_feed.ctrl + at, piece, 0);
-    }
+    while ((st = __atomic_load_n(&g_lend.state, __ATOMIC_ACQUIRE)) == 1) plat_yield();
+    return st == 2;
 }
 
-/* The control memory CallCommands and CopyCommands take of the command buffer they add to (args: their registers,
-   the shadow's handles at x2): each handle's ranges are copied there, 0x18 bytes a range, and each copy checks for
-   0x20 bytes more, and in one game a call took about 0x80000 bytes. The driver aborts when a command buffer without a memory callback runs short ("out of control
-   memory with no out-of-memory callback"). A handle points at its record in the recording's control memory, the
-   count of its ranges in bits 32-63 of its first word (a tagged handle, bit 0 set, counts 64) */
-static u64 calls_control(const CPU* args) {
-    u32 n = (u32)args->x[1], j;
-    u64 need = 0x100;
-    for (j = 0; j < n && j < 4096; j++) {
-        u64 h, w = 0;
-        memcpy(&h, GP(args->x[2] + j * 8), 8);
-        if (!(h & 1) && h && h < AS_END - 8) memcpy(&w, GP(h), 8);
-        need += ((h & 1) || !h ? 256 : (w >> 32) > 4096 ? 4096 : (w >> 32) + 8) * 0x18 + 0x20;
+/* A pool the game takes command memory from has a shadow of CMD_SCALE times its size for that memory (cmd_pool), at
+   CMD_SCALE times each offset: each recording keeps the place the game gives it, with CMD_SCALE times the room
+   nvn_direct's records took there, and its memory is reused when the game reuses its own. The pool's own shadow,
+   offset for offset, stays for the buffers and textures in it */
+#define CMD_SCALE 4
+#define CMD_POOLS 256
+typedef struct {
+    u64 live, pool, storage, size; /* the game's pool, the scaled one, its storage, the game's size */
+} CmdPool;
+static struct {
+    PMutex lock; /* the pools are made outside g_v.lock: making one maps guest memory */
+    CmdPool p[CMD_POOLS];
+    u32 n;
+} g_cmd = {PMUTEX_INIT};
+/* the scaled pool for the live pool, made at its first use (0 when there is none) */
+static u64 cmd_pool(CPU* c, const CPU* base, u64 sp, u64 live) {
+    const NvnPool* lp = NVN_OBJ(const NvnPool, live);
+    u64 pool = 0, b;
+    u32 i;
+    pm_lock(&g_cmd.lock);
+    for (i = 0; i < g_cmd.n && g_cmd.p[i].live != live; i++) {
     }
-    return need;
+    if (i < g_cmd.n)
+        pool = g_cmd.p[i].pool;
+    else if (g_cmd.n < CMD_POOLS && lp->size && g_v.device) {
+        CmdPool* p = &g_cmd.p[g_cmd.n];
+        p->live = live;
+        p->size = lp->size;
+        p->storage = shadow_map(lp->size * CMD_SCALE);
+        p->pool = obj_alloc(sizeof(NVNmemoryPool));
+        b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDefaults", b, 0, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetDevice", b, g_v.device, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetFlags", b,
+                 NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
+        drv_call(c, base, sp, "nvnMemoryPoolBuilderSetStorage", b, p->storage, lp->size * CMD_SCALE, 0);
+        if (drv_call(c, base, sp, "nvnMemoryPoolInitialize", p->pool, b, 0, 0) & 0xFF) {
+            pool = p->pool;
+            g_cmd.n++;
+        } else {
+            WARN("nvn verify: the shadow's pool for the command memory of pool %llx didn't initialize\n",
+                 (unsigned long long)live);
+            mem_unmap(p->storage, (lp->size * CMD_SCALE + 0xFFFF) & ~0xFFFFull);
+        }
+        obj_free(b, sizeof(NVNmemoryPoolBuilder));
+    }
+    pm_unlock(&g_cmd.lock);
+    return pool;
+}
+/* the game finalizes the live pool: so is its scaled one */
+static void cmd_pool_final(CPU* c, const CPU* base, u64 sp, u64 live) {
+    CmdPool p = {0};
+    u32 i;
+    pm_lock(&g_cmd.lock);
+    for (i = 0; i < g_cmd.n && g_cmd.p[i].live != live; i++) {
+    }
+    if (i < g_cmd.n) {
+        p = g_cmd.p[i];
+        g_cmd.p[i] = g_cmd.p[--g_cmd.n];
+    }
+    pm_unlock(&g_cmd.lock);
+    if (!p.pool) return;
+    drv_call(c, base, sp, "nvnMemoryPoolFinalize", p.pool, 0, 0, 0);
+    obj_free(p.pool, sizeof(NVNmemoryPool));
+    mem_unmap(p.storage, (p.size * CMD_SCALE + 0xFFFF) & ~0xFFFFull);
+}
+
+/* the users of the pieces, under g_v.lock (i: 1 up) */
+static void piece_unref(u32 i) {
+    Piece* p = i ? &g_lend.piece[i - 1] : NULL;
+    if (p && p->refs != PINNED && !--p->refs) {
+        p->next = 0;
+        p->freed = g_lend.presents;
+        if (g_lend.cool_tail)
+            g_lend.piece[g_lend.cool_tail - 1].next = i;
+        else
+            g_lend.cool = i;
+        g_lend.cool_tail = i;
+    }
+}
+/* the pieces free since COOL presents can be taken */
+static void pieces_cooled(void) {
+    while (g_lend.cool && g_lend.presents - g_lend.piece[g_lend.cool - 1].freed >= COOL) {
+        u32 i = g_lend.cool;
+        Piece* p = &g_lend.piece[i - 1];
+        g_lend.cool = p->next;
+        if (!g_lend.cool) g_lend.cool_tail = 0;
+        p->next = g_lend.free[p->kind][log2_of(p->size)];
+        g_lend.free[p->kind][log2_of(p->size)] = i;
+    }
+}
+static void rec_drop(u32 r) { /* a recording no one can call */
+    u32 j;
+    if (!r) return;
+    for (j = 0; j < g_lend.rec[r - 1].n; j++) piece_unref(g_lend.rec[r - 1].p[j]);
+    g_lend.rec[r - 1].n = (u16)g_lend.rec_free;
+    g_lend.rec_free = r;
+}
+/* piece i (1 up) has records of the recording r (1 up) */
+static void rec_add(u32 r, u32 i) {
+    Rec* rec = &g_lend.rec[r - 1];
+    u32 j;
+    if (!i) return;
+    for (j = 0; j < rec->n; j++)
+        if (rec->p[j] == i) return;
+    if (rec->n < REC_PIECES) {
+        rec->p[rec->n++] = (u16)i;
+        if (g_lend.piece[i - 1].refs != PINNED) g_lend.piece[i - 1].refs++;
+    } else {
+        LOG_LIMIT(4, "nvn verify: a shadow recording has records in more than %u pieces of the runtime's memory: "
+                     "they are never free again\n", REC_PIECES);
+        g_lend.piece[i - 1].refs = PINNED;
+    }
+}
+/* the recordings whose handles are in [memory, memory + size) are gone */
+static void handles_gone(u64 memory, u64 size) {
+    u32 i;
+    for (i = 0; i < g_lend.handle.cap; i++) {
+        u64 h = g_lend.handle.key[i];
+        if (h && h != MAP_GONE && h - memory < size) {
+            rec_drop((u32)g_lend.handle.val[i]);
+            g_lend.handle.key[i] = MAP_GONE;
+        }
+    }
+}
+void nvn_verify_memory_back(u64 memory, u64 size) {
+    if (!g_v.on) return;
+    pm_lock(&g_v.lock);
+    handles_gone(memory, size);
+    pm_unlock(&g_v.lock);
+}
+/* the shadow command buffer cb's packed pieces, with a recording if it records and has none (0 when none is left) */
+static u64 cb_get(u64 cb) {
+    u64 v = map_get(&g_lend.cb, cb);
+    if ((v & CB_RECORDING) && !CB_REC(v)) {
+        u32 r = g_lend.rec_free;
+        if (r)
+            g_lend.rec_free = g_lend.rec[r - 1].n;
+        else if (g_lend.nrec < REC_MAX)
+            r = ++g_lend.nrec;
+        if (r) {
+            g_lend.rec[r - 1].n = 0;
+            v |= (u64)r << 32;
+        } else
+            LOG_LIMIT(4, "nvn verify: more than %u shadow recordings in the runtime's memory: the next ones' pieces "
+                         "are free while they are called\n", REC_MAX);
+    }
+    return v;
+}
+/* cb writes in piece i of kind from now on (i 1 up, 0 the game's memory) */
+static void cb_moves(u64 cb, u32 kind, u32 i) {
+    u64 v = cb_get(cb);
+    piece_unref(CB_CUR(v, kind));
+    if (i) {
+        g_lend.piece[i - 1].refs++;
+        if (CB_REC(v)) rec_add(CB_REC(v), i);
+    }
+    v = (v & ~(0xFFFFull << (16 * kind))) | (u64)i << (16 * kind);
+    map_put(&g_lend.cb, cb, v);
+}
+/* a piece of kind for the shadow command buffer cb, of at least min bytes, which cb writes in from now on: ~0 when
+   there is none */
+static u64 lend_take(u32 kind, u64 cb, u64 min, u32* size) {
+    u64 want = lend_min[kind], at = ~0ull;
+    u32 i;
+    while (want < min) want <<= 1;
+    pm_lock(&g_v.lock);
+    pieces_cooled();
+    i = g_lend.free[kind][log2_of(want)];
+    if (i)
+        g_lend.free[kind][log2_of(want)] = g_lend.piece[i - 1].next;
+    else if (g_lend.n < LEND_MAX && g_lend.used[kind] + want <= lend_area[kind]) {
+        Piece* p = &g_lend.piece[g_lend.n];
+        p->at = (kind == LEND_CTRL ? g_lend.area[kind] : 0) + g_lend.used[kind];
+        p->size = (u32)want;
+        p->kind = kind;
+        p->refs = 0;
+        g_lend.used[kind] += want;
+        i = ++g_lend.n;
+        if (!(i & (i - 1)))
+            LOG("nvn verify: %u pieces of the runtime's memory for the shadow driver (%llu KiB command, %llu KiB "
+                "control)\n",
+                i, (unsigned long long)(g_lend.used[LEND_CMD] >> 10),
+                (unsigned long long)(g_lend.used[LEND_CTRL] >> 10));
+    }
+    if (i) {
+        cb_moves(cb, kind, i);
+        at = g_lend.piece[i - 1].at;
+        *size = (u32)want;
+    }
+    pm_unlock(&g_v.lock);
+    if (at == ~0ull)
+        LOG_LIMIT(4, "nvn verify: the shadow driver needs %s memory, and the runtime's is used up\n",
+                  kind == LEND_CMD ? "command" : "control");
+    return at;
+}
+/* the game's calls that change what the pieces are used by: cb is the shadow command buffer */
+static void lend_added(u64 cb, u64 memory, u64 size) { /* the game added its own command memory */
+    pm_lock(&g_v.lock);
+    cb_moves(cb, LEND_CMD, 0);
+    handles_gone(memory, size);
+    pm_unlock(&g_v.lock);
+}
+static void lend_begin(u64 cb) { /* a recording starts in the pieces cb writes in */
+    u64 v;
+    pm_lock(&g_v.lock);
+    v = map_get(&g_lend.cb, cb) | CB_RECORDING;
+    map_put(&g_lend.cb, cb, v);
+    if (CB_CUR(v, LEND_CMD) || CB_CUR(v, LEND_CTRL)) {
+        v = cb_get(cb);
+        if (CB_REC(v)) {
+            rec_add(CB_REC(v), CB_CUR(v, LEND_CMD));
+            rec_add(CB_REC(v), CB_CUR(v, LEND_CTRL));
+        }
+        map_put(&g_lend.cb, cb, v);
+    }
+    pm_unlock(&g_v.lock);
+}
+/* cb's recording calls the recordings of n of nvn_direct's handles: its records point at their commands, which stay
+   while it does (the game may record again at a callee's handle before it submits the caller). Their control records
+   are copied */
+static void lend_calls(u64 cb, u64 handles, u32 n) {
+    u32 i, j;
+    u64 v;
+    pm_lock(&g_v.lock);
+    v = map_get(&g_lend.cb, cb);
+    for (i = 0; i < n && (v & CB_RECORDING); i++) {
+        u64 h;
+        u32 r;
+        memcpy(&h, GP(handles + 8 * (u64)i), 8);
+        r = (u32)map_get(&g_lend.handle, h);
+        if (!r) continue;
+        if (!CB_REC(v)) {
+            v = cb_get(cb);
+            map_put(&g_lend.cb, cb, v);
+            if (!CB_REC(v)) break;
+        }
+        for (j = 0; j < g_lend.rec[r - 1].n; j++) /* control records are copied */
+            if (g_lend.piece[g_lend.rec[r - 1].p[j] - 1].kind == LEND_CMD) rec_add(CB_REC(v), g_lend.rec[r - 1].p[j]);
+    }
+    pm_unlock(&g_v.lock);
+}
+static void lend_end(u64 cb, u64 handle) { /* the recording is nvn_direct's handle's, in place of the one before */
+    u64 v;
+    pm_lock(&g_v.lock);
+    v = map_get(&g_lend.cb, cb);
+    rec_drop((u32)map_get(&g_lend.handle, handle));
+    if (CB_REC(v))
+        map_put(&g_lend.handle, handle, CB_REC(v));
+    else
+        map_del(&g_lend.handle, handle);
+    if (v) map_put(&g_lend.cb, cb, v & ~(CB_RECORDING | 0xFFFFull << 32));
+    pm_unlock(&g_v.lock);
+}
+static void lend_final(u64 cb) { /* cb is gone: a recording it didn't end too */
+    u64 v;
+    pm_lock(&g_v.lock);
+    v = map_get(&g_lend.cb, cb);
+    piece_unref(CB_CUR(v, LEND_CMD));
+    piece_unref(CB_CUR(v, LEND_CTRL));
+    rec_drop(CB_REC(v));
+    map_del(&g_lend.cb, cb);
+    pm_unlock(&g_v.lock);
+}
+/* the shadow's memory callback, called by the driver in a shadow call: x0 the command buffer, w1 the event (0 command
+   memory, 1 control memory), x2 the least it needs. It returns as a guest function returns, its registers as they were */
+static void shadow_memory(CPU* c) {
+    CPU saved;
+    u64 cb = c->x[0], min = c->x[2], sp, at;
+    u32 kind = c->x[1] ? LEND_CTRL : LEND_CMD, size = 0;
+    memcpy(&saved, c, REGS_SIZE);
+    sp = (saved.x[31] - 0x100) & ~15ull;
+    /* the command event's least is in words or bytes (the driver's checks before and after the call differ): taken
+       as words */
+    at = lend_take(kind, cb, kind == LEND_CMD ? min * 4 : min, &size);
+    if (at != ~0ull) {
+        if (kind == LEND_CMD)
+            drv_call(c, &saved, sp, "nvnCommandBufferAddCommandMemory", cb, g_lend.pool, at, size);
+        else
+            drv_call(c, &saved, sp, "nvnCommandBufferAddControlMemory", cb, at, size, 0);
+    }
+    memcpy(c, &saved, REGS_SIZE);
+    c->pc = saved.x[30];
 }
 
 /* ---- a call */
@@ -707,6 +1035,11 @@ static int shadow_args(Fn* f, CPU* c, Arg* a, u64* scratch, const char** why) {
                        call's result compare says so), and the shadow's has room for it */
                     u64 n = c->x[xi + 1];
                     if (!strcmp(f->k->name, "nvnQueueBuilderSetQueueMemory") && n < (8u << 20)) n = 8u << 20;
+                    if (f->flags & F_ADDCTRL) break; /* control memory: a piece of the runtime's (verify_fn) */
+                    if (n >> 36) {
+                        *why = "a memory size past 64 GiB";
+                        return 0;
+                    }
                     c->x[xi] = mem_shadow(v, n);
                     c->x[xi + 1] = n;
                 }
@@ -869,8 +1202,11 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
     u32 i, queue = 0, serial = 0;
     int ok;
     if (!f) fatal("nvn verify: no function at %llx", (unsigned long long)entry);
-    if (t_shadow) { /* the driver calling NVN: its own code */
-        f->original(c, entry);
+    if (t_shadow) { /* the driver calling NVN: its own code, or its memory callback (lend_ready) */
+        if (entry == g_lend.callback && c->x[1] < 2 && __atomic_load_n(&g_lend.state, __ATOMIC_ACQUIRE) == 2)
+            shadow_memory(c);
+        else
+            f->original(c, entry);
         return;
     }
     memcpy(&before, c, REGS_SIZE);
@@ -941,21 +1277,51 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         memcpy(&base, c, REGS_SIZE);
         if (__atomic_add_fetch(&f->ran, 1, __ATOMIC_RELAXED) == 1) /* what ran last when the driver faults */
             LOG("nvn verify: the shadow runs %s for the first time\n", f->k->name);
-        if ((f->flags & F_CMD) && !(f->flags & (F_INIT | F_FINAL)) && c->x[0]) {
-            CPU args = base;
-            /* what one call can take: a uniform update its data inline, CallCommands the handles' ranges */
-            u64 cmd_need = 0x4000, ctrl_need = (f->flags & F_HANDLES) ? (4u << 20) + calls_control(&base) : 0x400;
-            if (!strcmp(f->k->name, "nvnCommandBufferUpdateUniformBuffer")) cmd_need += base.x[4];
-            if (f->flags & F_HANDLES) cmd_need += base.x[1] * 0x40;
-            feed(c, &base, run_sp, base.x[0], cmd_need, ctrl_need);
-            memcpy(c, &args, REGS_SIZE);
+        /* memory the game adds: command memory in the pool's scaled shadow (cmd_pool), or a piece for memory outside
+           the pool; control memory in a piece (the lend section) */
+        if (f->flags & F_ADDCMD) {
+            const NvnPool* lp = NVN_OBJ(const NvnPool, before.x[1]);
+            u64 off = before.x[2], size = before.x[3], pool = 0;
+            u32 got;
+            lend_added(base.x[0], lp->memory + off, size);
+            if (off <= lp->size && size <= lp->size - off) pool = cmd_pool(c, &base, run_sp, before.x[1]);
+            memcpy(c, &base, REGS_SIZE);
+            if (pool) {
+                c->x[1] = pool;
+                c->x[2] = off * CMD_SCALE;
+                c->x[3] = size * CMD_SCALE;
+            } else if (__atomic_load_n(&g_lend.state, __ATOMIC_ACQUIRE) == 2 &&
+                       (off = lend_take(LEND_CMD, base.x[0], size, &got)) != ~0ull) {
+                c->x[1] = g_lend.pool;
+                c->x[2] = off;
+                c->x[3] = got;
+            }
+        }
+        if (f->flags & F_ADDCTRL) {
+            u32 got;
+            u64 at = __atomic_load_n(&g_lend.state, __ATOMIC_ACQUIRE) == 2
+                         ? lend_take(LEND_CTRL, base.x[0], before.x[2], &got)
+                         : ~0ull;
+            if (at != ~0ull) {
+                c->x[1] = at;
+                c->x[2] = got;
+            } else {
+                c->x[1] = mem_shadow(before.x[1], before.x[2]);
+                c->x[2] = before.x[2];
+            }
         }
         t_running = f->k->name;
-        if (f->flags & F_PRESENT)
+        if (f->flags & F_PRESENT) {
             shadow_flush(c, &base, run_sp, base.x[0]);
-        else
+            pm_lock(&g_v.lock);
+            g_lend.presents++;
+            pm_unlock(&g_v.lock);
+        } else
             run(c, fn, at, lr, run_sp);
         t_running = NULL;
+        if (f->flags & F_BEGIN) lend_begin(base.x[0]);
+        if (f->flags & F_CALLS) lend_calls(base.x[0], before.x[2], (u32)before.x[1]);
+        if (f->flags & F_END) lend_end(base.x[0], after.x[0]);
         if ((f->flags & F_SUBMIT) && serial) {
             CPU done;
             memcpy(&done, c, REGS_SIZE);
@@ -966,6 +1332,28 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         t_queue = prev_queue;
     }
     /* what the call left */
+    if ((f->flags & F_INIT) && f->k->ret == NVK_RET_BOOL && !(c->x[0] & 0xFF)) { /* no object: the next calls skip */
+        u64 s;
+        pm_lock(&g_v.lock);
+        s = map_get(&g_v.obj, before.x[0]);
+        map_del(&g_v.obj, before.x[0]);
+        if (s) obj_free(s, f->k->size[0]);
+        pm_unlock(&g_v.lock);
+        if (__atomic_add_fetch(&f->failed, 1, __ATOMIC_RELAXED) <= 4)
+            WARN("nvn verify: the driver's %s(%llx) failed where nvn_direct's %s: the shadow has no such object\n",
+                 f->k->name, (unsigned long long)before.x[0], (after.x[0] & 0xFF) ? "didn't" : "failed too");
+    }
+    if ((f->flags & (F_CMD | F_INIT)) == (F_CMD | F_INIT) && (c->x[0] & 0xFF)) { /* the shadow's memory callback */
+        CPU ran;
+        u64 cb, sp_ = (scratch - 16) & ~15ull;
+        memcpy(&ran, c, REGS_SIZE);
+        pm_lock(&g_v.lock);
+        cb = map_get(&g_v.obj, before.x[0]);
+        pm_unlock(&g_v.lock);
+        if (cb && lend_ready(c, &before, sp_))
+            drv_call(c, &before, sp_, "nvnCommandBufferSetMemoryCallback", cb, g_lend.callback, 0, 0);
+        memcpy(c, &ran, REGS_SIZE);
+    }
     if ((f->flags & F_END) && after.x[0] && c->x[0]) {
         pm_lock(&g_v.lock);
         map_put(&g_v.handle, after.x[0], c->x[0]);
@@ -998,6 +1386,13 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         map_del(&g_v.obj, before.x[0]);
         if (s) obj_free(s, f->k->size[0]);
         pm_unlock(&g_v.lock);
+        if (!strcmp(f->k->name, "nvnMemoryPoolFinalize")) {
+            memcpy(c, &before, REGS_SIZE);
+            cmd_pool_final(c, &before, (scratch - 16) & ~15ull, before.x[0]);
+        }
+        if (s && (f->flags & F_CMD)) { /* the pieces it writes in, and a recording it didn't end */
+            lend_final(s);
+        }
     }
     memcpy(c, &after, REGS_SIZE);
 }
@@ -1049,6 +1444,61 @@ void nvn_verify_fd(u32 fd, int open) {
 }
 int nvn_verify_fd_is(u32 fd) { return fd < sizeof g_v.fd_queue && __atomic_load_n(&g_v.fd_queue[fd], __ATOMIC_ACQUIRE); }
 
+/* a release's bytes at the GPU address a, in guest memory now */
+static void release_write(u64 a, const u8* d, u32 n) {
+    while (n) {
+        u64 cpu, run = gmmu_run(a, n, &cpu);
+        if (!run) return;
+        memcpy(GP(cpu), d, (size_t)run);
+        a += run;
+        d += run;
+        n -= (u32)run;
+    }
+}
+/* The semaphore releases of a shadow batch, made when it is submitted, as its syncpoint increments are: the driver
+   waits for them (its queue reuses its memory once the GPU wrote a semaphore of its own there, and in one game its
+   wait spun forever), and the verify channel makes none. They write the shadow driver's memory only: each address in
+   the shadow's stream is one the shadow driver mapped. A stream out of step makes none from then on */
+static void releases(VQueue* v, const u32* w, u32 n) {
+    u32 i, sub, m, val;
+    int last;
+    for (i = 0; i < n; i++) {
+        u8 d[16];
+        if (!pb_decode(&v->rel_pb, w[i], &sub, &m, &val, &last)) continue;
+        if (m < PULLER_NON_PULLER_METHODS) {
+            if (m == PULLER_BIND_OBJECT) {
+                v->rel_class[sub & 7] = val & CLASS_ID_MASK;
+                if ((val >> 16 || !gpu_class_known(val)) && !v->rel_lost) {
+                    v->rel_lost = 1;
+                    WARN("nvn verify: queue %u's shadow stream binds class %x, which no engine here runs: its words are "
+                         "out of step, and its releases are made no more\n",
+                         (u32)(v - g_v.q) + 1, val);
+                }
+            }
+            if (m >= PULLER_SEMAPHORE_ADDRESS_HIGH && m <= PULLER_SEMAPHORE_SEQUENCE_PAYLOAD)
+                v->rel_sem[m - PULLER_SEMAPHORE_ADDRESS_HIGH] = val;
+            if (m == PULLER_SEMAPHORE_OPERATION && (val & PULLER_SEMAPHORE_OP_MASK) == PULLER_SEMAPHORE_OP_RELEASE &&
+                !v->rel_lost) {
+                snx_st_le32(d, v->rel_sem[2]);
+                snx_st_le32(d + 4, 0);
+                snx_st_le64(d + 8, gpu_ticks());
+                release_write(((u64)(v->rel_sem[0] & PULLER_SEMAPHORE_ADDRESS_HIGH_MASK) << 32) | v->rel_sem[1], d,
+                              (val & PULLER_SEMAPHORE_RELEASE_SIZE_4BYTE) ? 4 : 16);
+            }
+        } else if ((v->rel_class[sub & 7] == CLASS_MAXWELL_B || v->rel_class[sub & 7] == CLASS_KEPLER_COMPUTE_B) &&
+                   m >= MAXWELL3D_REPORT_SEMAPHORE && m <= MAXWELL3D_REPORT_SEMAPHORE_QUERY) {
+            u32* r = v->rel_rep[v->rel_class[sub & 7] == CLASS_KEPLER_COMPUTE_B];
+            if (m < MAXWELL3D_REPORT_SEMAPHORE_QUERY)
+                r[m - MAXWELL3D_REPORT_SEMAPHORE] = val;
+            else if (report_semaphore_operation(val) == REPORT_SEMAPHORE_OPERATION_RELEASE && !v->rel_lost) {
+                /* as engines.c report_write: one word, or the payload's 64 bits and the timestamp */
+                snx_st_le64(d, r[2]);
+                snx_st_le64(d + 8, gpu_ticks());
+                release_write(((u64)(r[0] & 0xFF) << 32) | r[1], d, report_semaphore_short_query(val) ? 4 : 16);
+            }
+        }
+    }
+}
 void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n) {
     u32 q = fd < sizeof g_v.fd_queue ? __atomic_load_n(&g_v.fd_queue[fd], __ATOMIC_ACQUIRE) : 0, i, words = 0, at = 0;
     VQueue* v;
@@ -1083,6 +1533,7 @@ void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n) {
     b->next = NULL;
     b->n = at;
     pm_lock(&g_v.lock);
+    releases(v, b->w, at);
     b->serial = v->shadow_serial;
     if (v->tail)
         v->tail->next = b;
