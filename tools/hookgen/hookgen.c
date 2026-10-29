@@ -8,8 +8,8 @@
 
      # a comment
      family libc
-     hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
-     hook nvnDeviceFinalize(addr d)
+     hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
+     hook nvnDeviceFinalize(NVNdevice* d)
 
    A family names the hooks after it, up to the next family line, so the hooks_off setting can turn them off
    together; each hook belongs to one. The handler's name follows '='. Without it, the handler is the symbol's name
@@ -17,8 +17,19 @@
    part in lower case; an '= HANDLER' that names that handler is refused, as the symbol says it already.
 
    The types are void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address, u64), f32
-   and f64. Under AAPCS64 an integer, bool or address takes the next of x0-x7 and a float the next of v0-v7, so
-   nine of one kind would need the stack, which no hook takes. The result goes back in x0 or v0.
+   and f64, each the size its name says in the guest (AArch64, LP64), and pointers: a type followed by '*', each '*'
+   optionally followed by const, after an optional const (const NVNtexture* const* textures). A pointer points to
+   void, char, one of the types above, or a type of the header that the spec's include line names (include
+   "nx/gpu/nvn/nvn.h", found in the folders -I gives): hookgen reads the names its typedefs declare, and refuses an
+   unknown one. A type of the header is passed by value only when it is an enum (an int under AAPCS64, as an i32)
+   or a pointer (typedef void* NVNnativeWindow, or a function pointer, as an addr). The language has no arrays: an
+   array argument is a pointer to its first element. Under AAPCS64 an integer, bool, pointer or address takes the
+   next of x0-x7 and a float the next of v0-v7, so nine of one kind would need the stack, which no hook takes. The
+   result goes back in x0 or v0.
+
+   A pointer is a guest address: the adapter reads it from its x register as a u64 and the handler takes it as one,
+   so no handler can mistake it for a host pointer. The pointer types say what the function's argument is, for the
+   function types below and for the tools that read the spec (tools/hook_spec.py).
 
    Versions. A hook or a struct may hold only for some versions of what built the module that exports its function:
 
@@ -50,20 +61,25 @@
 
    It writes two files. The header (--header) declares each struct's layout type, <Prefix>Layout_<name with :: as _>
    (its size, and each field as a HookField_<type> holding its offset, for hook.h's hook_get_<type> and
-   hook_put_<type>), and each handler, `ret handler(CPU* c, layouts..., args...)` (bool as int, addr as u64), for the
-   files that define them. The table (--out, hle/hook/hook.c includes it) has each struct's variants, an adapter for
-   each entry, a GuestFn that reads the arguments from the CPU, calls the handler, puts its result in x0 or v0 and
-   returns to x30 as the function's ret would, and the entries sorted by symbol and then by version (hook_symbol,
-   hook_fn, hook_handler, hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions
-   [lo, hi) of key, hook.h's HOOK_ANY for unversioned), hook_layouts (the variants it passes, for the log) and
-   hook_table, the view hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it
-   for the machine it runs on (cmake/hookgen.cmake).
+   hook_put_<type>), and each handler, `ret handler(CPU* c, layouts..., args...)` (bool as int, an address or a
+   pointer as u64, an enum as i32), for the files that define them. A spec with an include line also gets each hooked
+   function's type, as the guest calls it: PFN<SYMBOL in capitals>PROC, with the spec's C types (bool as uint8_t, an
+   integer as the <stdint.h> type of its guest size, an addr as uint64_t, a pointer as its host pointer). Nothing
+   calls through these types: a guest function runs at a guest address. They say what the arguments are, and a host
+   pointer has the guest's 8 bytes (the header asserts it). All of one symbol's declarations take the same types.
+   The table (--out, hle/hook/hook.c includes it) has each struct's variants, an adapter for each entry, a GuestFn
+   that reads the arguments from the CPU, calls the handler, puts its result in x0 or v0 and returns to x30 as the
+   function's ret would, and the entries sorted by symbol and then by version (hook_symbol, hook_fn, hook_handler,
+   hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions [lo, hi) of key,
+   hook.h's HOOK_ANY for unversioned), hook_layouts (the variants it passes, for the log) and hook_table, the view
+   hook_select searches. It is strict C99 and depends on nothing, so a cross build can build it for the machine it
+   runs on (cmake/hookgen.cmake).
 
    Verify mode (verify.h). A hook says `pure` after its handler (and its uses) when its function depends on nothing but
    its arguments, the memory they point to and constant data, and changes nothing but its result and the memory its
-   buffer arguments name. A buffer is an addr argument followed by its use and its length in bytes:
+   buffer arguments name. A buffer is an addr or pointer argument followed by its use and its length in bytes:
 
-     hook memcpy(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
+     hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 
    in[...] is read, out[...] written and inout[...] both; the length is a number, or an integer argument's name
    optionally times a number, plus a number (in[count * 4 + 8]). A hook has at most 4 buffers, and only a pure one has
@@ -75,9 +91,11 @@
    wraps with C code of its own, with no adapter, is named on a line of its own, `route SYMBOL`
    (gpu/nvn/nvn.hook's nvnBootstrapLoader).
 
-   Usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC (NAME, hook by default, names the tables)
-          hookgen --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC name, sorted by
-          strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for nx/loader/hook_routes.c)
+   Usage: hookgen [--prefix NAME] [-I DIR]... --header OUT.h --out OUT.inc SPEC (NAME, hook by default, names the
+          tables; each -I DIR a folder to find the include line's header in)
+          hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
+          name, sorted by strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for
+          nx/loader/hook_routes.c)
    Each output is only rewritten when it changes. */
 #include <ctype.h>
 #include <stdarg.h>
@@ -95,6 +113,8 @@
 #define MAX_NAME     256
 #define MAX_ROUTES   64
 #define MAX_SPECS    8
+#define MAX_DIRS     8
+#define MAX_TYPES    1024 /* the include line's header's typedefs: nvn.h has about 110 */
 #define NREGS        8
 #define UNBOUNDED    0xFFFFFFFFul
 
@@ -103,10 +123,13 @@ typedef enum { T_VOID, T_BOOL, T_U8, T_U16, T_U32, T_U64, T_I8, T_I16, T_I32, T_
 static const struct {
     const char* name;  /* in the declarations */
     const char* ctype; /* the handler's */
+    const char* cname; /* the function type's: its size in the guest */
     unsigned bytes;    /* as a struct's field */
-} kinds[] = {{"void", "void", 0}, {"bool", "int", 1}, {"u8", "u8", 1},   {"u16", "u16", 2}, {"u32", "u32", 4},
-             {"u64", "u64", 8},   {"i8", "i8", 1},    {"i16", "i16", 2}, {"i32", "i32", 4}, {"i64", "i64", 8},
-             {"addr", "u64", 8},  {"f32", "f32", 4},  {"f64", "f64", 8}};
+} kinds[] = {{"void", "void", "void", 0},   {"bool", "int", "uint8_t", 1},  {"u8", "u8", "uint8_t", 1},
+             {"u16", "u16", "uint16_t", 2}, {"u32", "u32", "uint32_t", 4},  {"u64", "u64", "uint64_t", 8},
+             {"i8", "i8", "int8_t", 1},     {"i16", "i16", "int16_t", 2},   {"i32", "i32", "int32_t", 4},
+             {"i64", "i64", "int64_t", 8},  {"addr", "u64", "uint64_t", 8}, {"f32", "f32", "float", 4},
+             {"f64", "f64", "double", 8}};
 
 /* the version keys, as hook.h numbers them */
 enum { K_ANY, K_SDK, K_NVN };
@@ -131,7 +154,8 @@ static const char* const buf_mode[] = {"", "in", "out", "inout"};
 typedef struct {
     Kind kind;
     char name[MAX_NAME];
-    int reg; /* its x or v register */
+    char cname[MAX_NAME]; /* its C type, in the function type: const NVNtexture* const* */
+    int reg;              /* its x or v register */
     /* a buffer (an address with in[...], out[...] or inout[...]): its use and its length, len_add bytes and the
        argument len_name's value times len_mul, when there is one (len_arg its index once the arguments are read) */
     int mode, len_arg;
@@ -144,6 +168,7 @@ typedef struct {
     Arg args[MAX_ARGS];
     int nargs, line, family, nuses, pure, nbufs;
     Kind ret;
+    char ret_cname[MAX_NAME];
     Range range;
     char use_name[MAX_USES][MAX_NAME];
     int use[MAX_USES]; /* the structs' first variants */
@@ -186,6 +211,16 @@ static char routes[MAX_ROUTES][MAX_NAME]; /* the route lines' symbols */
 static int route_lines[MAX_ROUTES];
 static int nroutes;
 static const char* spec_path;
+/* the include line's header (the spec's at most one), and the names its typedefs declare */
+enum { H_OTHER, H_ENUM, H_POINTER };
+static char include_name[MAX_NAME];
+static struct {
+    char name[MAX_NAME];
+    int what;
+} types[MAX_TYPES];
+static int ntypes;
+static const char* include_dirs[MAX_DIRS];
+static int ninclude_dirs;
 
 static char* obuf;
 static size_t olen, ocap;
@@ -300,6 +335,175 @@ static const char* number(const char* p, unsigned long* v, int line, const char*
     return p;
 }
 
+/* ============================================================ the include line's header */
+/* the next token of the C text at *pp: 1 for an identifier (into tok), a punctuation character as itself, 0 at the
+   end. Spaces, comments, preprocessor lines, strings, characters and numbers are skipped */
+static int c_token(const char** pp, char* tok, const char* path) {
+    const char* p = *pp;
+    int t;
+    for (;;) {
+        while (isspace((unsigned char)*p)) p++;
+        if (p[0] == '/' && p[1] == '*') {
+            const char* end = strstr(p + 2, "*/");
+            p = end ? end + 2 : p + strlen(p);
+        } else if (p[0] == '/' && p[1] == '/') {
+            p += strcspn(p, "\n");
+        } else if (*p == '#') { /* to the end of the line, and the lines a backslash continues it on */
+            while (*p && *p != '\n') p += p[0] == '\\' && p[1] ? 2 : 1;
+        } else if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while (*p && *p != quote) p += p[0] == '\\' && p[1] ? 2 : 1;
+            if (*p) p++;
+        } else if (isdigit((unsigned char)*p)) {
+            while (isalnum((unsigned char)*p) || *p == '_' || *p == '.') p++;
+        } else {
+            break;
+        }
+    }
+    if (isalpha((unsigned char)*p) || *p == '_') {
+        size_t n = 0;
+        while (isalnum((unsigned char)*p) || *p == '_') {
+            if (n + 1 >= MAX_NAME) fail(0, "%s: an identifier is too long", path);
+            tok[n++] = *p++;
+        }
+        tok[n] = 0;
+        t = 1;
+    } else {
+        t = (unsigned char)*p;
+        if (*p) p++;
+    }
+    *pp = p;
+    return t;
+}
+
+/* the names the typedefs of the include line's header declare, each an enum, a pointer (typedef void* P, or a
+   function pointer, typedef R (*P)(...)) or another type, which only a pointer argument may point to */
+static void read_header(int line) {
+    char path[1024], tok[MAX_NAME];
+    const char* p;
+    char* text;
+    long size = 0;
+    FILE* f = NULL;
+    int i, t;
+    for (i = 0; !f && i < ninclude_dirs; i++) {
+        snprintf(path, sizeof path, "%s/%s", include_dirs[i], include_name);
+        f = fopen(path, "rb");
+    }
+    if (!f) fail(line, "cannot find %s: give the folder it is in with -I", include_name);
+    if (fseek(f, 0, SEEK_END) || (size = ftell(f)) < 0 || fseek(f, 0, SEEK_SET)) fail(line, "cannot read %s", path);
+    text = (char*)malloc((size_t)size + 1);
+    if (!text) fail(0, "out of memory");
+    if (fread(text, 1, (size_t)size, f) != (size_t)size) fail(line, "cannot read %s", path);
+    text[size] = 0;
+    fclose(f);
+    p = text;
+    while ((t = c_token(&p, tok, path)) != 0) {
+        char name[MAX_NAME] = {0}, last_name[MAX_NAME] = {0}, fn_name[MAX_NAME] = {0};
+        int depth = 0, what = H_OTHER, star = 0, last[3] = {0, 0, 0};
+        if (t != 1 || strcmp(tok, "typedef")) continue;
+        t = c_token(&p, tok, path);
+        if (t == 1 && !strcmp(tok, "enum")) what = H_ENUM;
+        for (; t && !(t == ';' && !depth); t = c_token(&p, tok, path)) {
+            if (t == ')' && depth == 1 && last[0] == '(' && last[1] == '*' && last[2] == 1) /* (*NAME) */
+                strcpy(fn_name, last_name);
+            if (t == '{' || t == '(' || t == '[') depth++;
+            if (t == '}' || t == ')' || t == ']') depth--;
+            if (t == '*' && !depth) star = 1;
+            if (t == 1) {
+                strcpy(last_name, tok);
+                if (!depth) strcpy(name, tok);
+            }
+            last[0] = last[1], last[1] = last[2], last[2] = t;
+        }
+        if (fn_name[0]) strcpy(name, fn_name), star = 1;
+        if (!name[0]) continue;
+        if (ntypes == MAX_TYPES) fail(line, "%s declares more than %d types", include_name, MAX_TYPES);
+        strcpy(types[ntypes].name, name);
+        types[ntypes++].what = star ? H_POINTER : what;
+    }
+    free(text);
+}
+
+/* include "PATH": the header that declares the types the hooks' pointers name, which the generated header includes */
+static void parse_include(const char* p, int line, int first_line) {
+    size_t n = 0;
+    if (include_name[0]) fail(line, "a spec has one include line, on line %d", first_line);
+    p = expect(p, "\"", line);
+    while (*p && *p != '"') {
+        if (n + 1 >= MAX_NAME) fail(line, "the header's name is too long");
+        include_name[n++] = *p++;
+    }
+    include_name[n] = 0;
+    if (*p != '"' || !n) fail(line, "expected the header's name in quotes");
+    if (*skip_space(p + 1)) fail(line, "unexpected text after the header's name");
+    read_header(line);
+}
+
+/* whether p starts with the keyword const */
+static int const_word(const char* p) { return !strncmp(p, "const", 5) && !isalnum((unsigned char)p[5]) && p[5] != '_'; }
+
+/* a type: a kind, a type of the include line's header, or either followed by '*'s (each optionally followed by
+   const) after an optional const, for an argument or a result (what). Its kind (T_ADDR for a pointer) and its C type
+   for the function type into cname; the text after it */
+static const char* parse_type(const char* p, Kind* kind, char* cname, int line, const char* what) {
+    char base[MAX_NAME];
+    int is_const = 0, stars = 0, k = -1, t = -1, i;
+    p = skip_space(p);
+    if (const_word(p)) is_const = 1, p += 5;
+    p = word(p, base, line, what);
+    for (i = 0; k < 0 && i < (int)(sizeof kinds / sizeof *kinds); i++)
+        if (!strcmp(kinds[i].name, base)) k = i;
+    for (i = 0; k < 0 && t < 0 && i < ntypes; i++)
+        if (!strcmp(types[i].name, base)) t = i;
+    if (k < 0 && t < 0 && strcmp(base, "char")) fail(line, "unknown type '%s'", base);
+    snprintf(cname, MAX_NAME, "%s%s", is_const ? "const " : "", k >= 0 ? kinds[k].cname : base);
+    for (;;) {
+        const char* q = skip_space(p);
+        size_t n = strlen(cname);
+        if (*q == '*') {
+            if (n + 2 > MAX_NAME) fail(line, "the %s is too long", what);
+            strcpy(cname + n, "*");
+            stars++;
+            p = q + 1;
+        } else if (stars && const_word(q) && *skip_space(q + 5) == '*') {
+            if (n + 7 > MAX_NAME) fail(line, "the %s is too long", what);
+            strcpy(cname + n, " const");
+            p = q + 5;
+        } else {
+            break;
+        }
+    }
+    if (stars && const_word(skip_space(p)))
+        fail(line, "a const after the last '*' of %s says nothing the guest's caller sees: drop it", cname);
+    if (stars) {
+        *kind = T_ADDR;
+        return p;
+    }
+    if (is_const) fail(line, "const %s has no '*' after it: a value isn't const to its caller", base);
+    if (k >= 0) {
+        *kind = (Kind)k;
+        return p;
+    }
+    if (t < 0 || types[t].what == H_OTHER)
+        fail(line, "%s is passed by value, but it isn't %s's enum or pointer: write the type of its size (i32, u64...)",
+             base, include_name[0] ? include_name : "the include line");
+    *kind = types[t].what == H_ENUM ? T_I32 : T_ADDR; /* an enum is an int under AAPCS64 */
+    return p;
+}
+
+/* the handler a symbol names: a '_' before its first capital, after a part in lower case (nvnDeviceFinalize:
+   nvn_DeviceFinalize), into buf. 0 when the symbol has no such part */
+static int derived_handler(const char* symbol, char* buf) {
+    size_t i = 0;
+    if (!islower((unsigned char)symbol[0])) return 0;
+    while (islower((unsigned char)symbol[i]) || isdigit((unsigned char)symbol[i])) i++;
+    if (!isupper((unsigned char)symbol[i]) || strlen(symbol) + 2 > MAX_NAME) return 0;
+    memcpy(buf, symbol, i);
+    buf[i] = '_';
+    strcpy(buf + i + 1, symbol + i);
+    return is_identifier(buf);
+}
+
 /* a version of key, its parts packed as hook.h's hook_version_text reads them */
 static const char* version(const char* p, int key, unsigned long* v, int line) {
     char text[64];
@@ -400,7 +604,7 @@ static const char* parse_buffer(const char* p, Arg* a, int line) {
     for (i = B_IN; i <= B_INOUT && strcmp(mode, buf_mode[i]); i++) {
     }
     if (i > B_INOUT) fail(line, "expected in[...], out[...] or inout[...] after %s, not %s", a->name, mode);
-    if (a->kind != T_ADDR) fail(line, "only an addr argument is a buffer, not %s", a->name);
+    if (a->kind != T_ADDR) fail(line, "only an addr or a pointer argument is a buffer, not %s", a->name);
     a->mode = i;
     a->len_arg = -1;
     a->len_mul = 1;
@@ -436,23 +640,10 @@ static void resolve_buffers(Hook* h, int line) {
     if (h->nbufs && !h->pure) fail(line, "only a pure hook's buffers are checked: say pure, or drop the buffers");
 }
 
-/* the handler a symbol names: a '_' before its first capital, after a part in lower case (nvnDeviceFinalize:
-   nvn_DeviceFinalize), into buf. 0 when the symbol has no such part */
-static int derived_handler(const char* symbol, char* buf) {
-    size_t i = 0;
-    if (!islower((unsigned char)symbol[0])) return 0;
-    while (islower((unsigned char)symbol[i]) || isdigit((unsigned char)symbol[i])) i++;
-    if (!isupper((unsigned char)symbol[i]) || strlen(symbol) + 2 > MAX_NAME) return 0;
-    memcpy(buf, symbol, i);
-    buf[i] = '_';
-    strcpy(buf + i + 1, symbol + i);
-    return is_identifier(buf);
-}
-
 /* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] */
 static void parse_hook(const char* p, int line, const Range* range) {
     Hook* h;
-    char type[MAX_NAME], derived[MAX_NAME];
+    char derived[MAX_NAME];
     int x = 0, v = 0;
     if (nhooks == MAX_HOOKS) fail(line, "more than %d hooks", MAX_HOOKS);
     if (!nfamilies) fail(line, "a hook comes after a family line, which names its family");
@@ -468,14 +659,16 @@ static void parse_hook(const char* p, int line, const Range* range) {
         Arg* a;
         if (h->nargs == MAX_ARGS) fail(line, "more than %d arguments", MAX_ARGS);
         a = &h->args[h->nargs++];
-        p = word(p, type, line, "argument's type");
-        a->kind = find_kind(type, line);
+        p = parse_type(p, &a->kind, a->cname, line, "argument's type");
         if (a->kind == T_VOID) fail(line, "an argument can't be void");
         p = word(p, a->name, line, "argument's name");
         if (!is_identifier(a->name) || !strcmp(a->name, "c")) fail(line, "'%s' can't name an argument", a->name);
         a->reg = is_float(a->kind) ? v++ : x++;
         if (x > NREGS || v > NREGS) fail(line, "an argument past x7 or v7 would be on the stack, which no hook reads");
         p = skip_space(p);
+        if (*p == '[')
+            fail(line, "%s is an array, which the language doesn't take: write a pointer to its first element",
+                 a->name);
         if (isalpha((unsigned char)*p)) p = parse_buffer(p, a, line);
         if (*p == ',')
             p = skip_space(p + 1);
@@ -484,10 +677,8 @@ static void parse_hook(const char* p, int line, const Range* range) {
     }
     p = skip_space(p + 1);
     h->ret = T_VOID;
-    if (!strncmp(p, "->", 2)) {
-        p = word(p + 2, type, line, "result's type");
-        h->ret = find_kind(type, line);
-    }
+    strcpy(h->ret_cname, "void");
+    if (!strncmp(p, "->", 2)) p = parse_type(p + 2, &h->ret, h->ret_cname, line, "result's type");
     p = skip_space(p);
     if (*p == '=') {
         p = word(p + 1, h->handler, line, "handler");
@@ -621,7 +812,7 @@ static int parse_fields(const char* p, int line) {
 
 static void read_spec(const char* path) {
     char buf[2048];
-    int line = 0, versioned = 0, version_line = 0, open = 0;
+    int line = 0, versioned = 0, version_line = 0, open = 0, include_line = 0;
     Range range = {K_ANY, 0, UNBOUNDED}, any = {K_ANY, 0, UNBOUNDED};
     FILE* f = fopen(path, "r");
     if (!f) fail(0, "cannot open %s", path);
@@ -652,8 +843,12 @@ static void read_spec(const char* path) {
         } else if (keyword(p, "route")) {
             if (versioned) fail(version_line, "@version goes before a hook or a struct");
             parse_route(p + 5, line);
+        } else if (keyword(p, "include")) {
+            if (versioned) fail(version_line, "@version goes before a hook or a struct");
+            parse_include(p + 7, line, include_line);
+            include_line = line;
         } else {
-            fail(line, "expected a family, a hook, a struct, a route or a comment");
+            fail(line, "expected a family, a hook, a struct, a route, an include or a comment");
         }
         versioned = 0;
     }
@@ -845,6 +1040,24 @@ static void check_handlers(void) {
         }
 }
 
+/* with an include line, each symbol's function type: an identifier's, and one for all its declarations */
+static void check_function_types(void) {
+    int i, k;
+    if (!include_name[0]) return;
+    for (i = 0; i < nhooks; i++) {
+        const Hook *a = &hooks[i], *b = i ? &hooks[i - 1] : NULL; /* sorted by symbol */
+        int same;
+        if (!is_identifier(a->symbol)) fail(a->line, "%s can't name a function type", a->symbol);
+        if (!b || strcmp(a->symbol, b->symbol)) continue;
+        same = !strcmp(a->ret_cname, b->ret_cname) && a->nargs == b->nargs;
+        for (k = 0; same && k < a->nargs; k++) same = !strcmp(a->args[k].cname, b->args[k].cname);
+        if (!same)
+            fail(a->line > b->line ? a->line : b->line,
+                 "%s takes other types on line %d: its function type is one for every version", a->symbol,
+                 a->line > b->line ? b->line : a->line);
+    }
+}
+
 /* ============================================================ the output */
 /* the generated tables' names: hook_symbol, HOOK_COUNT, HookLayout_ and the rest, or another prefix's (--prefix nvn:
    nvn_symbol, NVN_COUNT, NvnLayout_) for a second spec beside the hooks', such as the NVN functions the runtime
@@ -913,11 +1126,32 @@ static void adapter(const Entry* e, int index) {
     out("}\n");
 }
 
+/* the hooked functions' types, PFN<SYMBOL>PROC, as the guest calls them */
+static void function_types(void) {
+    int i, k;
+    out("\n/* each hooked function's type as the guest calls it, for the reader: nothing calls through it, as a guest "
+        "function\n   runs at a guest address. An integer has its guest size, and a pointer, a host pointer here, the "
+        "guest's 8 bytes */\n");
+    out("typedef char %s_pointer_size[sizeof(void*) == 8 ? 1 : -1];\n", prefix);
+    for (i = 0; i < nhooks; i++) {
+        const Hook* h = &hooks[i];
+        char name[MAX_NAME];
+        if (i && !strcmp(hooks[i - 1].symbol, h->symbol)) continue; /* its other versions take the same types */
+        for (k = 0; h->symbol[k]; k++) name[k] = (char)toupper((unsigned char)h->symbol[k]);
+        name[k] = 0;
+        out("typedef %s (*PFN%sPROC)(", h->ret_cname, name);
+        for (k = 0; k < h->nargs; k++) out("%s%s %s", k ? ", " : "", h->args[k].cname, h->args[k].name);
+        out("%s);\n", h->nargs ? "" : "void");
+    }
+}
+
 static void write_header(const char* path) {
     int i, j;
     out("/* Generated by hookgen from %s: the structs' layouts and the hooks' handlers. Don't edit */\n", spec_path);
     out("#ifndef SNX_%s_HOOK_H\n#define SNX_%s_HOOK_H\n", upper, upper);
-    out("#include \"nx/hle/hook/hook.h\"\n\n");
+    out("#include \"nx/hle/hook/hook.h\"\n");
+    if (include_name[0]) out("#include \"%s\"\n", include_name);
+    out("\n");
     for (i = 0; i < nvariants; i++) {
         const Variant* s = &variants[i];
         if (s->index) continue;
@@ -934,6 +1168,7 @@ static void write_header(const char* path) {
         }
         if (j == i) prototype(&hooks[i]);
     }
+    if (include_name[0]) function_types();
     out("#endif\n");
     flush(path);
 }
@@ -1025,7 +1260,8 @@ static void write_routes(const char* path, char** specs, int nspecs) {
     int s, k;
     for (s = 0; s < nspecs; s++) {
         spec_path = specs[s];
-        nhooks = nvariants = nentries = nfamilies = nroutes = 0;
+        nhooks = nvariants = nentries = nfamilies = nroutes = ntypes = 0;
+        include_name[0] = 0;
         read_spec(spec_path);
         check_structs();
         check_hooks();
@@ -1073,6 +1309,8 @@ int main(int argc, char** argv) {
             routes_path = argv[++i];
         else if (!strcmp(argv[i], "--prefix") && i + 1 < argc)
             prefix = argv[++i];
+        else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
+            include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
             specs[nspecs++] = argv[i];
         else
@@ -1084,8 +1322,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (nspecs != 1 || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] --header OUT.h --out OUT.inc SPEC\n"
-                        "       hookgen --routes OUT.inc SPEC...\n");
+        fprintf(stderr, "usage: hookgen [--prefix NAME] [-I DIR]... --header OUT.h --out OUT.inc SPEC\n"
+                        "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
     spec_path = specs[0];
@@ -1102,6 +1340,7 @@ int main(int argc, char** argv) {
     check_structs();
     check_hooks();
     check_handlers();
+    check_function_types();
     if (header) write_header(header);
     if (table) write_table(table);
     free(obuf);

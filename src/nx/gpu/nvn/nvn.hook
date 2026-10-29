@@ -3,11 +3,15 @@
 #
 # The NVN functions the runtime implements under nvn_direct (gpu/nvn/nvn_direct.c), for tools/hookgen with
 # --prefix nvn: hooks.hook's grammar, each function by the name the game resolves it by (nvnBootstrapLoader and
-# nvnDeviceGetProcAddress), with its arguments as src/nx/gpu/nvn/nvn.h declares them (a pointer is an addr, an enum
-# an i32, an NVNboolean a bool) and its handler: the function's name with a '_' after nvn (nvn_DeviceFinalize) unless
-# '= HANDLER' names another. A family per NVN object. A function the game resolves that isn't here stops the game with
-# its name when it is called. The handlers: gpu/nvn/nvn_object.c (device, pools, buffers, textures, samplers,
-# programs, syncs, state objects), nvn_cmd.c (command buffers) and nvn_queue.c (queue, window).
+# nvnDeviceGetProcAddress), with its arguments and result in the types of src/nx/gpu/nvn/nvn.h (an NVNboolean is a
+# bool, an int an i32, a size_t a u64 and a ptrdiff_t an i64: the guest's sizes). This file is the one prototype of
+# each function: hookgen makes its PFNNVN...PROC type of them (the generated gpu/nvn/nvn.hook.h), and
+# tools/nvn_verify_kinds.py and tools/nvn_hash.py read them here. The handler is the function's name with a '_' after
+# nvn (nvn_DeviceFinalize) unless '= HANDLER' names another. A family per NVN object. A function the game resolves
+# that isn't here stops the game with its name when it is called. The handlers: gpu/nvn/nvn_object.c (device, pools,
+# buffers, textures, samplers, programs, syncs, state objects), nvn_cmd.c (command buffers) and nvn_queue.c (queue,
+# window).
+include "nx/gpu/nvn/nvn.h"
 
 # The resolvers, which nvn_direct.c and nvn_trace.c wrap with C of their own: the recompiler calls them through their
 # dispatch slots, as it calls a hooked function (hookgen's route lines)
@@ -15,563 +19,564 @@ route nvnBootstrapLoader
 route nvnDeviceGetProcAddress
 
 family device
-hook nvnDeviceApplyDeferredFinalizes(addr d, i32 age)
-hook nvnDeviceBuilderGetFlags(addr b) -> i32
-hook nvnDeviceFinalize(addr d)
-hook nvnDeviceGenerateDebugDomainId(addr d, addr name) -> i32
-hook nvnDeviceInstallDebugCallback(addr d, addr fn, addr data, bool enable)
-hook nvnDeviceIsExternalDebuggerAttached(addr d) -> bool
-hook nvnDeviceRegisterFastClearColori(addr d, addr color, i32 format) -> bool
-hook nvnDeviceRegisterFastClearColorui(addr d, addr color, i32 format) -> bool
-hook nvnDeviceSetAutomaticCheckpointsByDebugGroup(addr d, bool on) -> bool
-hook nvnDeviceSetAutomaticCheckpointsEnable(addr d, bool on) -> bool
-hook nvnDeviceSetAutomaticCheckpointsMask(addr d, u32 mask) -> bool
-hook nvnDeviceSetAutomaticCheckpointsSamplingInterval(addr d, u32 interval) -> bool
-hook nvnDeviceSetCheckpointCallStacksEnable(addr d, bool on) -> bool
-hook nvnDeviceSetCheckpointMaxCallStacksDepth(addr d, i32 depth) -> bool
-hook nvnDeviceSetIntermediateShaderCache(addr d, i32 on)
-hook nvnDeviceWalkDebugDatabase(addr d, i32 type, addr fn, addr data)
-hook nvnDeviceBuilderSetDefaults(addr b)
-hook nvnDeviceBuilderSetFlags(addr b, i32 flags)
-hook nvnDeviceGetImageHandle(addr d, i32 id) -> u64
-hook nvnDeviceFinalizeCommandHandle(addr d, u64 handle)
-hook nvnDeviceGetCurrentTimestampInNanoseconds(addr d) -> u64
-hook nvnDeviceGetDepthMode(addr d) -> i32
-hook nvnDeviceGetInteger(addr d, i32 what, addr out)
-hook nvnDeviceGetWindowOriginMode(addr d) -> i32
-hook nvnDeviceGetSeparateSamplerHandle(addr d, i32 id) -> u64
-hook nvnDeviceGetSeparateTextureHandle(addr d, i32 id) -> u64
-hook nvnDeviceGetTexelFetchHandle(addr d, i32 id) -> u64
-hook nvnDeviceGetTextureHandle(addr d, i32 texture, i32 sampler) -> u64
-hook nvnDeviceGetTimestampInNanoseconds(addr d, addr counter) -> u64
-hook nvnDeviceInitialize(addr d, addr b) -> bool
-hook nvnDeviceRegisterFastClearColor(addr d, addr color, i32 format) -> bool
-hook nvnDeviceRegisterFastClearDepth(addr d, f32 depth) -> bool
-hook nvnDeviceSetDepthMode(addr d, i32 mode)
-hook nvnDeviceSetWindowOriginMode(addr d, i32 mode)
+hook nvnDeviceApplyDeferredFinalizes(NVNdevice* d, i32 age)
+hook nvnDeviceBuilderGetFlags(const NVNdeviceBuilder* b) -> i32
+hook nvnDeviceFinalize(NVNdevice* d)
+hook nvnDeviceGenerateDebugDomainId(const NVNdevice* d, const char* name) -> i32
+hook nvnDeviceInstallDebugCallback(NVNdevice* d, PFNNVNDEBUGCALLBACKPROC fn, void* data, bool enable)
+hook nvnDeviceIsExternalDebuggerAttached(const NVNdevice* d) -> bool
+hook nvnDeviceRegisterFastClearColori(NVNdevice* d, const i32* color, NVNformat format) -> bool
+hook nvnDeviceRegisterFastClearColorui(NVNdevice* d, const u32* color, NVNformat format) -> bool
+hook nvnDeviceSetAutomaticCheckpointsByDebugGroup(NVNdevice* d, bool on) -> bool
+hook nvnDeviceSetAutomaticCheckpointsEnable(NVNdevice* d, bool on) -> bool
+hook nvnDeviceSetAutomaticCheckpointsMask(NVNdevice* d, u32 mask) -> bool
+hook nvnDeviceSetAutomaticCheckpointsSamplingInterval(NVNdevice* d, u32 interval) -> bool
+hook nvnDeviceSetCheckpointCallStacksEnable(NVNdevice* d, bool on) -> bool
+hook nvnDeviceSetCheckpointMaxCallStacksDepth(NVNdevice* d, i32 depth) -> bool
+hook nvnDeviceSetIntermediateShaderCache(NVNdevice* d, i32 on)
+hook nvnDeviceWalkDebugDatabase(const NVNdevice* d, NVNdebugObjectType type, PFNNVNWALKDEBUGDATABASECALLBACKPROC fn, void* data)
+hook nvnDeviceBuilderSetDefaults(NVNdeviceBuilder* b)
+hook nvnDeviceBuilderSetFlags(NVNdeviceBuilder* b, i32 flags)
+hook nvnDeviceGetImageHandle(const NVNdevice* d, i32 id) -> u64
+hook nvnDeviceFinalizeCommandHandle(NVNdevice* d, u64 handle)
+hook nvnDeviceGetCurrentTimestampInNanoseconds(const NVNdevice* d) -> u64
+hook nvnDeviceGetDepthMode(const NVNdevice* d) -> NVNdepthMode
+hook nvnDeviceGetInteger(const NVNdevice* d, NVNdeviceInfo what, i32* out)
+hook nvnDeviceGetWindowOriginMode(const NVNdevice* d) -> NVNwindowOriginMode
+hook nvnDeviceGetSeparateSamplerHandle(const NVNdevice* d, i32 id) -> u64
+hook nvnDeviceGetSeparateTextureHandle(const NVNdevice* d, i32 id) -> u64
+hook nvnDeviceGetTexelFetchHandle(const NVNdevice* d, i32 id) -> u64
+hook nvnDeviceGetTextureHandle(const NVNdevice* d, i32 texture, i32 sampler) -> u64
+hook nvnDeviceGetTimestampInNanoseconds(const NVNdevice* d, const NVNcounterData* counter) -> u64
+hook nvnDeviceInitialize(NVNdevice* d, const NVNdeviceBuilder* b) -> bool
+hook nvnDeviceRegisterFastClearColor(NVNdevice* d, const f32* color, NVNformat format) -> bool
+hook nvnDeviceRegisterFastClearDepth(NVNdevice* d, f32 depth) -> bool
+hook nvnDeviceSetDepthMode(NVNdevice* d, NVNdepthMode mode)
+hook nvnDeviceSetWindowOriginMode(NVNdevice* d, NVNwindowOriginMode mode)
 
 family memory_pool
-hook nvnMemoryPoolBuilderGetDevice(addr b) -> addr
-hook nvnMemoryPoolBuilderGetFlags(addr b) -> i32
-hook nvnMemoryPoolBuilderGetMemory(addr b) -> addr
-hook nvnMemoryPoolBuilderGetSize(addr b) -> u64
-hook nvnMemoryPoolBuilderSetDefaults(addr b)
-hook nvnMemoryPoolBuilderSetDevice(addr b, addr d)
-hook nvnMemoryPoolBuilderSetFlags(addr b, i32 flags)
-hook nvnMemoryPoolBuilderSetStorage(addr b, addr memory, u64 size)
-hook nvnMemoryPoolFinalize(addr p)
-hook nvnMemoryPoolFlushMappedRange(addr p, i64 offset, u64 size)
-hook nvnMemoryPoolGetBufferAddress(addr p) -> u64
-hook nvnMemoryPoolGetFlags(addr p) -> i32
-hook nvnMemoryPoolGetSize(addr p) -> u64
-hook nvnMemoryPoolInitialize(addr p, addr b) -> bool
-hook nvnMemoryPoolInvalidateMappedRange(addr p, i64 offset, u64 size)
-hook nvnMemoryPoolMap(addr p) -> addr
-hook nvnMemoryPoolMapVirtual(addr p, i32 n, addr requests) -> bool
-hook nvnMemoryPoolSetDebugLabel(addr p, addr label)
+hook nvnMemoryPoolBuilderGetDevice(const NVNmemoryPoolBuilder* b) -> NVNdevice*
+hook nvnMemoryPoolBuilderGetFlags(const NVNmemoryPoolBuilder* b) -> NVNmemoryPoolFlags
+hook nvnMemoryPoolBuilderGetMemory(const NVNmemoryPoolBuilder* b) -> void*
+hook nvnMemoryPoolBuilderGetSize(const NVNmemoryPoolBuilder* b) -> u64
+hook nvnMemoryPoolBuilderSetDefaults(NVNmemoryPoolBuilder* b)
+hook nvnMemoryPoolBuilderSetDevice(NVNmemoryPoolBuilder* b, NVNdevice* d)
+hook nvnMemoryPoolBuilderSetFlags(NVNmemoryPoolBuilder* b, i32 flags)
+hook nvnMemoryPoolBuilderSetStorage(NVNmemoryPoolBuilder* b, void* memory, u64 size)
+hook nvnMemoryPoolFinalize(NVNmemoryPool* p)
+hook nvnMemoryPoolFlushMappedRange(const NVNmemoryPool* p, i64 offset, u64 size)
+hook nvnMemoryPoolGetBufferAddress(const NVNmemoryPool* p) -> u64
+hook nvnMemoryPoolGetFlags(const NVNmemoryPool* p) -> NVNmemoryPoolFlags
+hook nvnMemoryPoolGetSize(const NVNmemoryPool* p) -> u64
+hook nvnMemoryPoolInitialize(NVNmemoryPool* p, const NVNmemoryPoolBuilder* b) -> bool
+hook nvnMemoryPoolInvalidateMappedRange(const NVNmemoryPool* p, i64 offset, u64 size)
+hook nvnMemoryPoolMap(const NVNmemoryPool* p) -> void*
+hook nvnMemoryPoolMapVirtual(NVNmemoryPool* p, i32 n, const NVNmappingRequest* requests) -> bool
+hook nvnMemoryPoolSetDebugLabel(NVNmemoryPool* p, const char* label)
 
 family buffer
-hook nvnBufferGetDebugID(addr buf) -> u64
-hook nvnBufferBuilderGetDevice(addr b) -> addr
-hook nvnBufferBuilderGetMemoryOffset(addr b) -> i64
-hook nvnBufferBuilderGetMemoryPool(addr b) -> addr
-hook nvnBufferBuilderGetSize(addr b) -> u64
-hook nvnBufferBuilderSetDefaults(addr b)
-hook nvnBufferBuilderSetDevice(addr b, addr d)
-hook nvnBufferBuilderSetStorage(addr b, addr pool, i64 offset, u64 size)
-hook nvnBufferFinalize(addr buf)
-hook nvnBufferFlushMappedRange(addr buf, i64 offset, u64 size)
-hook nvnBufferInvalidateMappedRange(addr buf, i64 offset, u64 size)
-hook nvnBufferGetAddress(addr buf) -> u64
-hook nvnBufferGetMemoryOffset(addr buf) -> i64
-hook nvnBufferGetMemoryPool(addr buf) -> addr
-hook nvnBufferGetSize(addr buf) -> u64
-hook nvnBufferInitialize(addr buf, addr b) -> bool
-hook nvnBufferMap(addr buf) -> addr
-hook nvnBufferSetDebugLabel(addr buf, addr label)
+hook nvnBufferGetDebugID(const NVNbuffer* buf) -> u64
+hook nvnBufferBuilderGetDevice(const NVNbufferBuilder* b) -> NVNdevice*
+hook nvnBufferBuilderGetMemoryOffset(const NVNbufferBuilder* b) -> i64
+hook nvnBufferBuilderGetMemoryPool(const NVNbufferBuilder* b) -> NVNmemoryPool*
+hook nvnBufferBuilderGetSize(const NVNbufferBuilder* b) -> u64
+hook nvnBufferBuilderSetDefaults(NVNbufferBuilder* b)
+hook nvnBufferBuilderSetDevice(NVNbufferBuilder* b, NVNdevice* d)
+hook nvnBufferBuilderSetStorage(NVNbufferBuilder* b, NVNmemoryPool* pool, i64 offset, u64 size)
+hook nvnBufferFinalize(NVNbuffer* buf)
+hook nvnBufferFlushMappedRange(const NVNbuffer* buf, i64 offset, u64 size)
+hook nvnBufferInvalidateMappedRange(const NVNbuffer* buf, i64 offset, u64 size)
+hook nvnBufferGetAddress(const NVNbuffer* buf) -> u64
+hook nvnBufferGetMemoryOffset(const NVNbuffer* buf) -> i64
+hook nvnBufferGetMemoryPool(const NVNbuffer* buf) -> NVNmemoryPool*
+hook nvnBufferGetSize(const NVNbuffer* buf) -> u64
+hook nvnBufferInitialize(NVNbuffer* buf, const NVNbufferBuilder* b) -> bool
+hook nvnBufferMap(const NVNbuffer* buf) -> void*
+hook nvnBufferSetDebugLabel(NVNbuffer* buf, const char* label)
 
 family texture
-hook nvnTextureBuilderGetGLTextureName(addr b) -> u32
-hook nvnTextureBuilderGetMemoryOffset(addr b) -> i64
-hook nvnTextureBuilderGetPackagedTextureLayout(addr b, addr layout) -> bool
-hook nvnTextureBuilderGetRawStorageClass(addr b) -> i32
-hook nvnTextureBuilderGetSparseTileLayout(addr b, addr layout)
-hook nvnTextureBuilderGetViewOffset(addr b, addr v) -> i64
-hook nvnTextureBuilderSetGLTextureName(addr b, u32 name)
-hook nvnTextureGetDebugID(addr t) -> u64
-hook nvnTextureGetNvRmSurfaceNVX(addr t, addr unused, addr surface)
-hook nvnTextureGetRawStorageClass(addr t) -> i32
-hook nvnTextureGetSparseTileLayout(addr t, addr layout)
-hook nvnTextureInvalidateTexels(addr t, addr v, addr region)
-hook nvnTextureReadTexelsStrided(addr t, addr v, addr region, addr dst, i64 row, i64 image)
-hook nvnTextureViewCompare(addr a, addr b) -> bool
-hook nvnTextureBuilderGetDepthStencilMode(addr b) -> i32
-hook nvnTextureBuilderGetDevice(addr b) -> addr
-hook nvnTextureBuilderGetMemoryPool(addr b) -> addr
-hook nvnTextureBuilderGetPackagedTextureData(addr b) -> addr
-hook nvnTextureBuilderGetSwizzle(addr b, addr r, addr g, addr bl, addr a)
-hook nvnTextureBuilderGetDepth(addr b) -> i32
-hook nvnTextureBuilderGetFlags(addr b) -> i32
-hook nvnTextureBuilderGetFormat(addr b) -> i32
-hook nvnTextureBuilderGetHeight(addr b) -> i32
-hook nvnTextureBuilderGetLevels(addr b) -> i32
-hook nvnTextureBuilderGetSamples(addr b) -> i32
-hook nvnTextureBuilderGetStorageAlignment(addr b) -> u64
-hook nvnTextureBuilderGetStorageClass(addr b) -> i32
-hook nvnTextureBuilderGetStorageSize(addr b) -> u64
-hook nvnTextureBuilderGetStride(addr b) -> i64
-hook nvnTextureBuilderGetTarget(addr b) -> i32
-hook nvnTextureBuilderGetWidth(addr b) -> i32
-hook nvnTextureBuilderGetZCullStorageSize(addr b) -> u64
-hook nvnTextureBuilderSetDefaults(addr b)
-hook nvnTextureBuilderSetDepth(addr b, i32 depth)
-hook nvnTextureBuilderSetDepthStencilMode(addr b, i32 mode)
-hook nvnTextureBuilderSetDevice(addr b, addr d)
-hook nvnTextureBuilderSetFlags(addr b, i32 flags)
-hook nvnTextureBuilderSetFormat(addr b, i32 format)
-hook nvnTextureBuilderSetHeight(addr b, i32 h)
-hook nvnTextureBuilderSetLevels(addr b, i32 levels)
-hook nvnTextureBuilderSetPackagedTextureData(addr b, addr data)
-hook nvnTextureBuilderSetPackagedTextureLayout(addr b, addr layout)
-hook nvnTextureBuilderSetSamples(addr b, i32 samples)
-hook nvnTextureBuilderSetSize1D(addr b, i32 w)
-hook nvnTextureBuilderSetSize2D(addr b, i32 w, i32 h)
-hook nvnTextureBuilderSetSize3D(addr b, i32 w, i32 h, i32 d)
-hook nvnTextureBuilderSetStorage(addr b, addr pool, i64 offset)
-hook nvnTextureBuilderSetStride(addr b, i64 stride)
-hook nvnTextureBuilderSetSwizzle(addr b, i32 r, i32 g, i32 bl, i32 a)
-hook nvnTextureBuilderSetTarget(addr b, i32 target)
-hook nvnTextureBuilderSetWidth(addr b, i32 w)
-hook nvnTextureCompare(addr a, addr b) -> bool
-hook nvnTextureFinalize(addr t)
-hook nvnTextureFlushTexels(addr t, addr v, addr region)
-hook nvnTextureGetDepth(addr t) -> i32
-hook nvnTextureGetDepthStencilMode(addr t) -> i32
-hook nvnTextureGetFlags(addr t) -> i32
-hook nvnTextureGetFormat(addr t) -> i32
-hook nvnTextureGetHeight(addr t) -> i32
-hook nvnTextureGetLevels(addr t) -> i32
-hook nvnTextureGetMemoryOffset(addr t) -> i64
-hook nvnTextureGetMemoryPool(addr t) -> addr
-hook nvnTextureGetSamples(addr t) -> i32
-hook nvnTextureGetStorageClass(addr t) -> i32
-hook nvnTextureGetStorageSize(addr t) -> i32
-hook nvnTextureGetStride(addr t) -> i64
-hook nvnTextureGetSwizzle(addr t, addr r, addr g, addr b, addr a)
-hook nvnTextureGetTarget(addr t) -> i32
-hook nvnTextureGetTextureAddress(addr t) -> u64
-hook nvnTextureGetViewOffset(addr t, addr v) -> i64
-hook nvnTextureGetWidth(addr t) -> i32
-hook nvnTextureGetZCullStorageSize(addr t) -> u64
-hook nvnTextureInitialize(addr t, addr b) -> bool
-hook nvnTexturePoolFinalize(addr tp)
-hook nvnTexturePoolGetMemoryOffset(addr tp) -> i64
-hook nvnTexturePoolGetMemoryPool(addr tp) -> addr
-hook nvnTexturePoolGetSize(addr tp) -> i32
-hook nvnTexturePoolInitialize(addr tp, addr pool, i64 offset, i32 count) -> bool
-hook nvnTexturePoolRegisterImage(addr tp, i32 id, addr t, addr v)
-hook nvnTexturePoolRegisterTexture(addr tp, i32 id, addr t, addr v)
-hook nvnTextureReadTexels(addr t, addr v, addr region, addr dst)
-hook nvnTextureSetDebugLabel(addr t, addr label)
-hook nvnTextureViewGetDepthStencilMode(addr v, addr mode) -> bool
-hook nvnTextureViewGetFormat(addr v, addr format) -> bool
-hook nvnTextureViewGetLayers(addr v, addr min, addr n) -> bool
-hook nvnTextureViewGetLevels(addr v, addr base, addr n) -> bool
-hook nvnTextureViewGetSwizzle(addr v, addr r, addr g, addr b, addr a) -> bool
-hook nvnTextureViewGetTarget(addr v, addr target) -> bool
-hook nvnTextureViewSetDefaults(addr v)
-hook nvnTextureViewSetDepthStencilMode(addr v, i32 mode)
-hook nvnTextureViewSetFormat(addr v, i32 format)
-hook nvnTextureViewSetLayers(addr v, i32 min, i32 n)
-hook nvnTextureViewSetLevels(addr v, i32 base, i32 n)
-hook nvnTextureViewSetSwizzle(addr v, i32 r, i32 g, i32 b, i32 a)
-hook nvnTextureViewSetTarget(addr v, i32 target)
-hook nvnTextureWriteTexels(addr t, addr v, addr region, addr src)
-hook nvnTextureWriteTexelsStrided(addr t, addr v, addr region, addr src, i64 row, i64 image)
+hook nvnTextureBuilderGetGLTextureName(const NVNtextureBuilder* b) -> u32
+hook nvnTextureBuilderGetMemoryOffset(const NVNtextureBuilder* b) -> i64
+hook nvnTextureBuilderGetPackagedTextureLayout(const NVNtextureBuilder* b, NVNpackagedTextureLayout* layout) -> bool
+hook nvnTextureBuilderGetRawStorageClass(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetSparseTileLayout(const NVNtextureBuilder* b, NVNtextureSparseTileLayout* layout)
+hook nvnTextureBuilderGetViewOffset(const NVNtextureBuilder* b, const NVNtextureView* v) -> i64
+hook nvnTextureBuilderSetGLTextureName(NVNtextureBuilder* b, u32 name)
+hook nvnTextureGetDebugID(const NVNtexture* t) -> u64
+# NVIDIA's private extension: the NvRm surface (0x58 bytes) the texture's storage is, for NVIDIA's multimedia
+hook nvnTextureGetNvRmSurfaceNVX(const NVNtexture* t, void* unused, void* surface)
+hook nvnTextureGetRawStorageClass(const NVNtexture* t) -> i32
+hook nvnTextureGetSparseTileLayout(const NVNtexture* t, NVNtextureSparseTileLayout* layout)
+hook nvnTextureInvalidateTexels(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region)
+hook nvnTextureReadTexelsStrided(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, void* dst, i64 row, i64 image)
+hook nvnTextureViewCompare(const NVNtextureView* a, const NVNtextureView* b) -> bool
+hook nvnTextureBuilderGetDepthStencilMode(const NVNtextureBuilder* b) -> NVNtextureDepthStencilMode
+hook nvnTextureBuilderGetDevice(const NVNtextureBuilder* b) -> NVNdevice*
+hook nvnTextureBuilderGetMemoryPool(const NVNtextureBuilder* b) -> NVNmemoryPool*
+hook nvnTextureBuilderGetPackagedTextureData(const NVNtextureBuilder* b) -> const void*
+hook nvnTextureBuilderGetSwizzle(const NVNtextureBuilder* b, NVNtextureSwizzle* r, NVNtextureSwizzle* g, NVNtextureSwizzle* bl, NVNtextureSwizzle* a)
+hook nvnTextureBuilderGetDepth(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetFlags(const NVNtextureBuilder* b) -> NVNtextureFlags
+hook nvnTextureBuilderGetFormat(const NVNtextureBuilder* b) -> NVNformat
+hook nvnTextureBuilderGetHeight(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetLevels(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetSamples(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetStorageAlignment(const NVNtextureBuilder* b) -> u64
+hook nvnTextureBuilderGetStorageClass(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetStorageSize(const NVNtextureBuilder* b) -> u64
+hook nvnTextureBuilderGetStride(const NVNtextureBuilder* b) -> i64
+hook nvnTextureBuilderGetTarget(const NVNtextureBuilder* b) -> NVNtextureTarget
+hook nvnTextureBuilderGetWidth(const NVNtextureBuilder* b) -> i32
+hook nvnTextureBuilderGetZCullStorageSize(const NVNtextureBuilder* b) -> u64
+hook nvnTextureBuilderSetDefaults(NVNtextureBuilder* b)
+hook nvnTextureBuilderSetDepth(NVNtextureBuilder* b, i32 depth)
+hook nvnTextureBuilderSetDepthStencilMode(NVNtextureBuilder* b, NVNtextureDepthStencilMode mode)
+hook nvnTextureBuilderSetDevice(NVNtextureBuilder* b, NVNdevice* d)
+hook nvnTextureBuilderSetFlags(NVNtextureBuilder* b, i32 flags)
+hook nvnTextureBuilderSetFormat(NVNtextureBuilder* b, NVNformat format)
+hook nvnTextureBuilderSetHeight(NVNtextureBuilder* b, i32 h)
+hook nvnTextureBuilderSetLevels(NVNtextureBuilder* b, i32 levels)
+hook nvnTextureBuilderSetPackagedTextureData(NVNtextureBuilder* b, const void* data)
+hook nvnTextureBuilderSetPackagedTextureLayout(NVNtextureBuilder* b, const NVNpackagedTextureLayout* layout)
+hook nvnTextureBuilderSetSamples(NVNtextureBuilder* b, i32 samples)
+hook nvnTextureBuilderSetSize1D(NVNtextureBuilder* b, i32 w)
+hook nvnTextureBuilderSetSize2D(NVNtextureBuilder* b, i32 w, i32 h)
+hook nvnTextureBuilderSetSize3D(NVNtextureBuilder* b, i32 w, i32 h, i32 d)
+hook nvnTextureBuilderSetStorage(NVNtextureBuilder* b, NVNmemoryPool* pool, i64 offset)
+hook nvnTextureBuilderSetStride(NVNtextureBuilder* b, i64 stride)
+hook nvnTextureBuilderSetSwizzle(NVNtextureBuilder* b, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle bl, NVNtextureSwizzle a)
+hook nvnTextureBuilderSetTarget(NVNtextureBuilder* b, NVNtextureTarget target)
+hook nvnTextureBuilderSetWidth(NVNtextureBuilder* b, i32 w)
+hook nvnTextureCompare(const NVNtexture* a, const NVNtexture* b) -> bool
+hook nvnTextureFinalize(NVNtexture* t)
+hook nvnTextureFlushTexels(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region)
+hook nvnTextureGetDepth(const NVNtexture* t) -> i32
+hook nvnTextureGetDepthStencilMode(const NVNtexture* t) -> NVNtextureDepthStencilMode
+hook nvnTextureGetFlags(const NVNtexture* t) -> NVNtextureFlags
+hook nvnTextureGetFormat(const NVNtexture* t) -> NVNformat
+hook nvnTextureGetHeight(const NVNtexture* t) -> i32
+hook nvnTextureGetLevels(const NVNtexture* t) -> i32
+hook nvnTextureGetMemoryOffset(const NVNtexture* t) -> i64
+hook nvnTextureGetMemoryPool(const NVNtexture* t) -> NVNmemoryPool*
+hook nvnTextureGetSamples(const NVNtexture* t) -> i32
+hook nvnTextureGetStorageClass(const NVNtexture* t) -> i32
+hook nvnTextureGetStorageSize(const NVNtexture* t) -> i32
+hook nvnTextureGetStride(const NVNtexture* t) -> i64
+hook nvnTextureGetSwizzle(const NVNtexture* t, NVNtextureSwizzle* r, NVNtextureSwizzle* g, NVNtextureSwizzle* b, NVNtextureSwizzle* a)
+hook nvnTextureGetTarget(const NVNtexture* t) -> NVNtextureTarget
+hook nvnTextureGetTextureAddress(const NVNtexture* t) -> u64
+hook nvnTextureGetViewOffset(const NVNtexture* t, const NVNtextureView* v) -> i64
+hook nvnTextureGetWidth(const NVNtexture* t) -> i32
+hook nvnTextureGetZCullStorageSize(const NVNtexture* t) -> u64
+hook nvnTextureInitialize(NVNtexture* t, const NVNtextureBuilder* b) -> bool
+hook nvnTexturePoolFinalize(NVNtexturePool* tp)
+hook nvnTexturePoolGetMemoryOffset(const NVNtexturePool* tp) -> i64
+hook nvnTexturePoolGetMemoryPool(const NVNtexturePool* tp) -> const NVNmemoryPool*
+hook nvnTexturePoolGetSize(const NVNtexturePool* tp) -> i32
+hook nvnTexturePoolInitialize(NVNtexturePool* tp, const NVNmemoryPool* pool, i64 offset, i32 count) -> bool
+hook nvnTexturePoolRegisterImage(const NVNtexturePool* tp, i32 id, const NVNtexture* t, const NVNtextureView* v)
+hook nvnTexturePoolRegisterTexture(const NVNtexturePool* tp, i32 id, const NVNtexture* t, const NVNtextureView* v)
+hook nvnTextureReadTexels(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, void* dst)
+hook nvnTextureSetDebugLabel(NVNtexture* t, const char* label)
+hook nvnTextureViewGetDepthStencilMode(const NVNtextureView* v, NVNtextureDepthStencilMode* mode) -> bool
+hook nvnTextureViewGetFormat(const NVNtextureView* v, NVNformat* format) -> bool
+hook nvnTextureViewGetLayers(const NVNtextureView* v, i32* min, i32* n) -> bool
+hook nvnTextureViewGetLevels(const NVNtextureView* v, i32* base, i32* n) -> bool
+hook nvnTextureViewGetSwizzle(const NVNtextureView* v, NVNtextureSwizzle* r, NVNtextureSwizzle* g, NVNtextureSwizzle* b, NVNtextureSwizzle* a) -> bool
+hook nvnTextureViewGetTarget(const NVNtextureView* v, NVNtextureTarget* target) -> bool
+hook nvnTextureViewSetDefaults(NVNtextureView* v)
+hook nvnTextureViewSetDepthStencilMode(NVNtextureView* v, NVNtextureDepthStencilMode mode)
+hook nvnTextureViewSetFormat(NVNtextureView* v, NVNformat format)
+hook nvnTextureViewSetLayers(NVNtextureView* v, i32 min, i32 n)
+hook nvnTextureViewSetLevels(NVNtextureView* v, i32 base, i32 n)
+hook nvnTextureViewSetSwizzle(NVNtextureView* v, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle b, NVNtextureSwizzle a)
+hook nvnTextureViewSetTarget(NVNtextureView* v, NVNtextureTarget target)
+hook nvnTextureWriteTexels(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const void* src)
+hook nvnTextureWriteTexelsStrided(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const void* src, i64 row, i64 image)
 
 family sampler
-hook nvnSamplerBuilderGetBorderColor(addr b, addr rgba)
-hook nvnSamplerBuilderGetBorderColori(addr b, addr rgba)
-hook nvnSamplerBuilderGetBorderColorui(addr b, addr rgba)
-hook nvnSamplerBuilderGetCompare(addr b, addr mode, addr func)
-hook nvnSamplerBuilderGetDevice(addr b) -> addr
-hook nvnSamplerBuilderGetLodBias(addr b) -> f32
-hook nvnSamplerBuilderGetLodClamp(addr b, addr min, addr max)
-hook nvnSamplerBuilderGetMaxAnisotropy(addr b) -> f32
-hook nvnSamplerBuilderGetMinMagFilter(addr b, addr min, addr mag)
-hook nvnSamplerBuilderGetReductionFilter(addr b) -> i32
-hook nvnSamplerBuilderGetWrapMode(addr b, addr ws, addr wt, addr wr)
-hook nvnSamplerBuilderSetBorderColori(addr b, addr color)
-hook nvnSamplerBuilderSetBorderColorui(addr b, addr color)
-hook nvnSamplerGetBorderColori(addr s, addr rgba)
-hook nvnSamplerGetBorderColorui(addr s, addr rgba)
-hook nvnSamplerGetDebugID(addr s) -> u64
-hook nvnSamplerPoolRegisterSamplerBuilder(addr sp, i32 id, addr b)
-hook nvnSamplerBuilderSetBorderColor(addr b, addr color)
-hook nvnSamplerBuilderSetCompare(addr b, i32 mode, i32 func)
-hook nvnSamplerBuilderSetDefaults(addr b)
-hook nvnSamplerBuilderSetDevice(addr b, addr d)
-hook nvnSamplerBuilderSetLodBias(addr b, f32 bias)
-hook nvnSamplerBuilderSetLodClamp(addr b, f32 min, f32 max)
-hook nvnSamplerBuilderGetLodSnap(addr b) -> f32
-hook nvnSamplerBuilderSetLodSnap(addr b, f32 snap)
-hook nvnSamplerBuilderSetMaxAnisotropy(addr b, f32 anisotropy)
-hook nvnSamplerBuilderSetMinMagFilter(addr b, i32 min, i32 mag)
-hook nvnSamplerBuilderSetReductionFilter(addr b, i32 filter)
-hook nvnSamplerBuilderSetWrapMode(addr b, i32 s, i32 t, i32 r)
-hook nvnSamplerCompare(addr a, addr b) -> bool
-hook nvnSamplerFinalize(addr s)
-hook nvnSamplerGetBorderColor(addr s, addr rgba)
-hook nvnSamplerGetCompare(addr s, addr mode, addr func)
-hook nvnSamplerGetLodBias(addr s) -> f32
-hook nvnSamplerGetLodClamp(addr s, addr min, addr max)
-hook nvnSamplerGetMaxAnisotropy(addr s) -> f32
-hook nvnSamplerGetMinMagFilter(addr s, addr min, addr mag)
-hook nvnSamplerGetReductionFilter(addr s) -> i32
-hook nvnSamplerGetWrapMode(addr s, addr ws, addr wt, addr wr)
-hook nvnSamplerInitialize(addr s, addr b) -> bool
-hook nvnSamplerPoolFinalize(addr sp)
-hook nvnSamplerPoolGetMemoryOffset(addr sp) -> i64
-hook nvnSamplerPoolGetMemoryPool(addr sp) -> addr
-hook nvnSamplerPoolGetSize(addr sp) -> i32
-hook nvnSamplerPoolInitialize(addr sp, addr pool, i64 offset, i32 count) -> bool
-hook nvnSamplerPoolRegisterSampler(addr sp, i32 id, addr s)
-hook nvnSamplerSetDebugLabel(addr s, addr label)
+hook nvnSamplerBuilderGetBorderColor(const NVNsamplerBuilder* b, f32* rgba)
+hook nvnSamplerBuilderGetBorderColori(const NVNsamplerBuilder* b, i32* rgba)
+hook nvnSamplerBuilderGetBorderColorui(const NVNsamplerBuilder* b, u32* rgba)
+hook nvnSamplerBuilderGetCompare(const NVNsamplerBuilder* b, NVNcompareMode* mode, NVNcompareFunc* func)
+hook nvnSamplerBuilderGetDevice(const NVNsamplerBuilder* b) -> NVNdevice*
+hook nvnSamplerBuilderGetLodBias(const NVNsamplerBuilder* b) -> f32
+hook nvnSamplerBuilderGetLodClamp(const NVNsamplerBuilder* b, f32* min, f32* max)
+hook nvnSamplerBuilderGetMaxAnisotropy(const NVNsamplerBuilder* b) -> f32
+hook nvnSamplerBuilderGetMinMagFilter(const NVNsamplerBuilder* b, NVNminFilter* min, NVNmagFilter* mag)
+hook nvnSamplerBuilderGetReductionFilter(const NVNsamplerBuilder* b) -> NVNsamplerReduction
+hook nvnSamplerBuilderGetWrapMode(const NVNsamplerBuilder* b, NVNwrapMode* ws, NVNwrapMode* wt, NVNwrapMode* wr)
+hook nvnSamplerBuilderSetBorderColori(NVNsamplerBuilder* b, const i32* color)
+hook nvnSamplerBuilderSetBorderColorui(NVNsamplerBuilder* b, const u32* color)
+hook nvnSamplerGetBorderColori(const NVNsampler* s, i32* rgba)
+hook nvnSamplerGetBorderColorui(const NVNsampler* s, u32* rgba)
+hook nvnSamplerGetDebugID(const NVNsampler* s) -> u64
+hook nvnSamplerPoolRegisterSamplerBuilder(const NVNsamplerPool* sp, i32 id, const NVNsamplerBuilder* b)
+hook nvnSamplerBuilderSetBorderColor(NVNsamplerBuilder* b, const f32* color)
+hook nvnSamplerBuilderSetCompare(NVNsamplerBuilder* b, NVNcompareMode mode, NVNcompareFunc func)
+hook nvnSamplerBuilderSetDefaults(NVNsamplerBuilder* b)
+hook nvnSamplerBuilderSetDevice(NVNsamplerBuilder* b, NVNdevice* d)
+hook nvnSamplerBuilderSetLodBias(NVNsamplerBuilder* b, f32 bias)
+hook nvnSamplerBuilderSetLodClamp(NVNsamplerBuilder* b, f32 min, f32 max)
+hook nvnSamplerBuilderGetLodSnap(const NVNsamplerBuilder* b) -> f32
+hook nvnSamplerBuilderSetLodSnap(NVNsamplerBuilder* b, f32 snap)
+hook nvnSamplerBuilderSetMaxAnisotropy(NVNsamplerBuilder* b, f32 anisotropy)
+hook nvnSamplerBuilderSetMinMagFilter(NVNsamplerBuilder* b, NVNminFilter min, NVNmagFilter mag)
+hook nvnSamplerBuilderSetReductionFilter(NVNsamplerBuilder* b, NVNsamplerReduction filter)
+hook nvnSamplerBuilderSetWrapMode(NVNsamplerBuilder* b, NVNwrapMode s, NVNwrapMode t, NVNwrapMode r)
+hook nvnSamplerCompare(const NVNsampler* a, const NVNsampler* b) -> bool
+hook nvnSamplerFinalize(NVNsampler* s)
+hook nvnSamplerGetBorderColor(const NVNsampler* s, f32* rgba)
+hook nvnSamplerGetCompare(const NVNsampler* s, NVNcompareMode* mode, NVNcompareFunc* func)
+hook nvnSamplerGetLodBias(const NVNsampler* s) -> f32
+hook nvnSamplerGetLodClamp(const NVNsampler* s, f32* min, f32* max)
+hook nvnSamplerGetMaxAnisotropy(const NVNsampler* s) -> f32
+hook nvnSamplerGetMinMagFilter(const NVNsampler* s, NVNminFilter* min, NVNmagFilter* mag)
+hook nvnSamplerGetReductionFilter(const NVNsampler* s) -> NVNsamplerReduction
+hook nvnSamplerGetWrapMode(const NVNsampler* s, NVNwrapMode* ws, NVNwrapMode* wt, NVNwrapMode* wr)
+hook nvnSamplerInitialize(NVNsampler* s, const NVNsamplerBuilder* b) -> bool
+hook nvnSamplerPoolFinalize(NVNsamplerPool* sp)
+hook nvnSamplerPoolGetMemoryOffset(const NVNsamplerPool* sp) -> i64
+hook nvnSamplerPoolGetMemoryPool(const NVNsamplerPool* sp) -> const NVNmemoryPool*
+hook nvnSamplerPoolGetSize(const NVNsamplerPool* sp) -> i32
+hook nvnSamplerPoolInitialize(NVNsamplerPool* sp, const NVNmemoryPool* pool, i64 offset, i32 count) -> bool
+hook nvnSamplerPoolRegisterSampler(const NVNsamplerPool* sp, i32 id, const NVNsampler* s)
+hook nvnSamplerSetDebugLabel(NVNsampler* s, const char* label)
 
 family program
-hook nvnProgramGetSubtileSize(addr p) -> i32
-hook nvnProgramSetSampleShading(addr p, i32 mode)
-hook nvnProgramSetSubroutineLinkage(addr p, i32 n, addr maps) -> bool
-hook nvnProgramFinalize(addr p)
-hook nvnProgramInitialize(addr p, addr d) -> bool
-hook nvnProgramSetShaders(addr p, i32 n, addr sd) -> bool
-hook nvnProgramSetShadersExt(addr p, i32 n, addr sd) -> bool
+hook nvnProgramGetSubtileSize(const NVNprogram* p) -> i32
+hook nvnProgramSetSampleShading(NVNprogram* p, i32 mode)
+hook nvnProgramSetSubroutineLinkage(NVNprogram* p, i32 n, const NVNsubroutineLinkageMapPtr* maps) -> bool
+hook nvnProgramFinalize(NVNprogram* p)
+hook nvnProgramInitialize(NVNprogram* p, NVNdevice* d) -> bool
+hook nvnProgramSetShaders(NVNprogram* p, i32 n, const NVNshaderData* sd) -> bool
+hook nvnProgramSetShadersExt(NVNprogram* p, i32 n, const void* sd) -> bool
 
 family sync
-hook nvnSyncCreateGLSync(addr s, addr gl_sync) -> i32
-hook nvnSyncInitializeFromFencedGLSync(addr s, addr d, u32 gl_sync, addr status) -> bool
-hook nvnSyncFinalize(addr s)
-hook nvnSyncInitialize(addr s, addr d) -> bool
-hook nvnSyncWait(addr sync, u64 timeout) -> i32
+hook nvnSyncCreateGLSync(const NVNsync* s, u64* gl_sync) -> i32
+hook nvnSyncInitializeFromFencedGLSync(NVNsync* s, NVNdevice* d, u32 gl_sync, i32* status) -> bool
+hook nvnSyncFinalize(NVNsync* s)
+hook nvnSyncInitialize(NVNsync* s, NVNdevice* d) -> bool
+hook nvnSyncWait(const NVNsync* sync, u64 timeout) -> NVNsyncWaitResult
 
 family event
-hook nvnEventBuilderGetMemoryOffset(addr b) -> i64
-hook nvnEventBuilderGetMemoryPool(addr b) -> addr
-hook nvnEventBuilderGetStorage(addr b, addr offset) -> addr
-hook nvnEventGetMemoryOffset(addr e) -> i64
-hook nvnEventGetMemoryPool(addr e) -> addr
-hook nvnEventBuilderSetDefaults(addr b)
-hook nvnEventBuilderSetStorage(addr b, addr pool, i64 offset)
-hook nvnEventFinalize(addr e)
-hook nvnEventGetValue(addr e) -> u32
-hook nvnEventInitialize(addr e, addr b) -> bool
-hook nvnEventSignal(addr e, i32 mode, u32 value)
+hook nvnEventBuilderGetMemoryOffset(const NVNeventBuilder* b) -> i64
+hook nvnEventBuilderGetMemoryPool(const NVNeventBuilder* b) -> const NVNmemoryPool*
+hook nvnEventBuilderGetStorage(const NVNeventBuilder* b, i64* offset) -> const NVNmemoryPool*
+hook nvnEventGetMemoryOffset(const NVNevent* e) -> i64
+hook nvnEventGetMemoryPool(const NVNevent* e) -> const NVNmemoryPool*
+hook nvnEventBuilderSetDefaults(NVNeventBuilder* b)
+hook nvnEventBuilderSetStorage(NVNeventBuilder* b, const NVNmemoryPool* pool, i64 offset)
+hook nvnEventFinalize(NVNevent* e)
+hook nvnEventGetValue(const NVNevent* e) -> u32
+hook nvnEventInitialize(NVNevent* e, const NVNeventBuilder* b) -> bool
+hook nvnEventSignal(NVNevent* e, NVNeventSignalMode mode, u32 value)
 
 family queue
-hook nvnQueueBuilderGetCommandFlushThreshold(addr b, addr size) -> bool
-hook nvnQueueBuilderGetCommandMemorySize(addr b, addr size) -> bool
-hook nvnQueueBuilderGetComputeMemorySize(addr b, addr size) -> bool
-hook nvnQueueBuilderGetControlMemorySize(addr b, addr size) -> bool
-hook nvnQueueBuilderGetDevice(addr b) -> addr
-hook nvnQueueBuilderGetFlags(addr b) -> i32
-hook nvnQueueBuilderGetMemory(addr b) -> addr
-hook nvnQueueBuilderGetMemorySize(addr b) -> u64
-hook nvnQueueGetTotalCommandMemoryUsed(addr q) -> u64
-hook nvnQueueGetTotalComputeMemoryUsed(addr q) -> u64
-hook nvnQueueGetTotalControlMemoryUsed(addr q) -> u64
-hook nvnQueueResetMemoryUsageCounts(addr q)
-hook nvnQueueBuilderGetQueueMemorySize(addr b) -> u64
-hook nvnQueueBuilderSetCommandFlushThreshold(addr b, u64 size)
-hook nvnQueueBuilderSetCommandMemorySize(addr b, u64 size)
-hook nvnQueueBuilderSetComputeMemorySize(addr b, u64 size)
-hook nvnQueueBuilderSetControlMemorySize(addr b, u64 size)
-hook nvnQueueBuilderSetDefaults(addr b)
-hook nvnQueueBuilderSetDevice(addr b, addr d)
-hook nvnQueueBuilderSetFlags(addr b, i32 flags)
-hook nvnQueueBuilderGetQueuePriority(addr b) -> i32
-hook nvnQueueBuilderSetQueuePriority(addr b, i32 priority)
-hook nvnQueueBuilderSetQueueMemory(addr b, addr memory, u64 size)
-hook nvnQueueFenceSync(addr q, addr sync, i32 condition, i32 flags)
-hook nvnQueueFinalize(addr q)
-hook nvnQueueFinish(addr q)
-hook nvnQueueFlush(addr q)
-hook nvnQueueGetError(addr q, addr info) -> i32
-hook nvnQueueInitialize(addr q, addr b) -> bool
-hook nvnQueueAcquireTexture(addr q, addr w, addr index) -> i32
-hook nvnQueuePresentTexture(addr q, addr w, i32 index)
-hook nvnQueueSubmitCommands(addr q, i32 n, addr handles)
-hook nvnQueueWaitSync(addr q, addr sync) -> bool
+hook nvnQueueBuilderGetCommandFlushThreshold(const NVNqueueBuilder* b, i32* size) -> bool
+hook nvnQueueBuilderGetCommandMemorySize(const NVNqueueBuilder* b, i32* size) -> bool
+hook nvnQueueBuilderGetComputeMemorySize(const NVNqueueBuilder* b, i32* size) -> bool
+hook nvnQueueBuilderGetControlMemorySize(const NVNqueueBuilder* b, i32* size) -> bool
+hook nvnQueueBuilderGetDevice(const NVNqueueBuilder* b) -> NVNdevice*
+hook nvnQueueBuilderGetFlags(const NVNqueueBuilder* b) -> i32
+hook nvnQueueBuilderGetMemory(const NVNqueueBuilder* b) -> void*
+hook nvnQueueBuilderGetMemorySize(const NVNqueueBuilder* b) -> u64
+hook nvnQueueGetTotalCommandMemoryUsed(NVNqueue* q) -> u64
+hook nvnQueueGetTotalComputeMemoryUsed(NVNqueue* q) -> u64
+hook nvnQueueGetTotalControlMemoryUsed(NVNqueue* q) -> u64
+hook nvnQueueResetMemoryUsageCounts(NVNqueue* q)
+hook nvnQueueBuilderGetQueueMemorySize(const NVNqueueBuilder* b) -> u64
+hook nvnQueueBuilderSetCommandFlushThreshold(NVNqueueBuilder* b, u64 size)
+hook nvnQueueBuilderSetCommandMemorySize(NVNqueueBuilder* b, u64 size)
+hook nvnQueueBuilderSetComputeMemorySize(NVNqueueBuilder* b, u64 size)
+hook nvnQueueBuilderSetControlMemorySize(NVNqueueBuilder* b, u64 size)
+hook nvnQueueBuilderSetDefaults(NVNqueueBuilder* b)
+hook nvnQueueBuilderSetDevice(NVNqueueBuilder* b, NVNdevice* d)
+hook nvnQueueBuilderSetFlags(NVNqueueBuilder* b, i32 flags)
+hook nvnQueueBuilderGetQueuePriority(const NVNqueueBuilder* b) -> i32
+hook nvnQueueBuilderSetQueuePriority(NVNqueueBuilder* b, i32 priority)
+hook nvnQueueBuilderSetQueueMemory(NVNqueueBuilder* b, void* memory, u64 size)
+hook nvnQueueFenceSync(NVNqueue* q, NVNsync* sync, NVNsyncCondition condition, i32 flags)
+hook nvnQueueFinalize(NVNqueue* q)
+hook nvnQueueFinish(NVNqueue* q)
+hook nvnQueueFlush(NVNqueue* q)
+hook nvnQueueGetError(NVNqueue* q, NVNqueueErrorInfo* info) -> NVNqueueGetErrorResult
+hook nvnQueueInitialize(NVNqueue* q, const NVNqueueBuilder* b) -> bool
+hook nvnQueueAcquireTexture(NVNqueue* q, NVNwindow* w, i32* index) -> NVNqueueAcquireTextureResult
+hook nvnQueuePresentTexture(NVNqueue* q, NVNwindow* w, i32 index)
+hook nvnQueueSubmitCommands(NVNqueue* q, i32 n, const NVNcommandHandle* handles)
+hook nvnQueueWaitSync(NVNqueue* q, const NVNsync* sync) -> bool
 
 family window
-hook nvnWindowBuilderGetDevice(addr b) -> addr
-hook nvnWindowBuilderGetNativeWindow(addr b) -> addr
-hook nvnWindowBuilderGetNumActiveTextures(addr b) -> i32
-hook nvnWindowGetNativeWindow(addr w) -> addr
-hook nvnWindowGetNumActiveTextures(addr w) -> i32
-hook nvnWindowGetNumTextures(addr w) -> i32
-hook nvnWindowSetNumActiveTextures(addr w, i32 n)
-hook nvnWindowBuilderGetNumTextures(addr b) -> i32
-hook nvnWindowBuilderGetPresentInterval(addr b) -> i32
-hook nvnWindowBuilderGetTexture(addr b, i32 i) -> addr
-hook nvnWindowGetCrop(addr w, addr rect)
-hook nvnWindowGetPresentInterval(addr w) -> i32
-hook nvnWindowAcquireTexture(addr w, addr sync, addr index) -> i32
-hook nvnWindowBuilderSetDefaults(addr b)
-hook nvnWindowBuilderSetDevice(addr b, addr d)
-hook nvnWindowBuilderSetNativeWindow(addr b, addr w)
-hook nvnWindowBuilderSetNumActiveTextures(addr b, i32 n)
-hook nvnWindowBuilderSetPresentInterval(addr b, i32 interval)
-hook nvnWindowBuilderSetTextures(addr b, i32 n, addr textures)
-hook nvnWindowFinalize(addr w)
-hook nvnWindowInitialize(addr w, addr b) -> bool
-hook nvnWindowSetCrop(addr w, i32 x, i32 y, i32 width, i32 height)
-hook nvnWindowSetPresentInterval(addr w, i32 interval)
+hook nvnWindowBuilderGetDevice(const NVNwindowBuilder* b) -> NVNdevice*
+hook nvnWindowBuilderGetNativeWindow(const NVNwindowBuilder* b) -> NVNnativeWindow
+hook nvnWindowBuilderGetNumActiveTextures(const NVNwindowBuilder* b) -> i32
+hook nvnWindowGetNativeWindow(const NVNwindow* w) -> NVNnativeWindow
+hook nvnWindowGetNumActiveTextures(const NVNwindow* w) -> i32
+hook nvnWindowGetNumTextures(const NVNwindow* w) -> i32
+hook nvnWindowSetNumActiveTextures(NVNwindow* w, i32 n)
+hook nvnWindowBuilderGetNumTextures(const NVNwindowBuilder* b) -> i32
+hook nvnWindowBuilderGetPresentInterval(const NVNwindowBuilder* b) -> i32
+hook nvnWindowBuilderGetTexture(const NVNwindowBuilder* b, i32 i) -> NVNtexture*
+hook nvnWindowGetCrop(const NVNwindow* w, NVNrectangle* rect)
+hook nvnWindowGetPresentInterval(const NVNwindow* w) -> i32
+hook nvnWindowAcquireTexture(NVNwindow* w, NVNsync* sync, i32* index) -> NVNwindowAcquireTextureResult
+hook nvnWindowBuilderSetDefaults(NVNwindowBuilder* b)
+hook nvnWindowBuilderSetDevice(NVNwindowBuilder* b, NVNdevice* d)
+hook nvnWindowBuilderSetNativeWindow(NVNwindowBuilder* b, NVNnativeWindow w)
+hook nvnWindowBuilderSetNumActiveTextures(NVNwindowBuilder* b, i32 n)
+hook nvnWindowBuilderSetPresentInterval(NVNwindowBuilder* b, i32 interval)
+hook nvnWindowBuilderSetTextures(NVNwindowBuilder* b, i32 n, NVNtexture* const* textures)
+hook nvnWindowFinalize(NVNwindow* w)
+hook nvnWindowInitialize(NVNwindow* w, const NVNwindowBuilder* b) -> bool
+hook nvnWindowSetCrop(NVNwindow* w, i32 x, i32 y, i32 width, i32 height)
+hook nvnWindowSetPresentInterval(NVNwindow* w, i32 interval)
 
 family command_buffer
-hook nvnCommandBufferBindCoverageModulationTable(addr cb, addr entries)
-hook nvnCommandBufferBindImagesDeferred(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindSeparateSamplersDeferred(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindSeparateTexturesDeferred(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindStorageBuffersDeferred(addr cb, i32 stage, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferBindUniformBuffersDeferred(addr cb, i32 stage, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferClearTexturei(addr cb, addr t, addr v, addr region, addr rgba, i32 mask)
-hook nvnCommandBufferDrawTexture(addr cb, u64 handle, addr dst, addr src)
-hook nvnCommandBufferGetCommandMemoryFree(addr cb) -> u64
-hook nvnCommandBufferGetCommandMemorySize(addr cb) -> u64
-hook nvnCommandBufferGetControlMemoryFree(addr cb) -> u64
-hook nvnCommandBufferGetControlMemorySize(addr cb) -> u64
-hook nvnCommandBufferGetCopyImageStride(addr cb) -> i64
-hook nvnCommandBufferGetCopyRowStride(addr cb) -> i64
-hook nvnCommandBufferInsertCheckpointDynamic(addr cb, addr label) -> bool
-hook nvnCommandBufferInsertCheckpointStatic(addr cb, addr label) -> bool
-hook nvnCommandBufferOverrideSubtileSize(addr cb, bool on, i32 size)
-hook nvnCommandBufferResolveDepthBuffer(addr cb)
-hook nvnCommandBufferSetColorReductionEnable(addr cb, bool on)
-hook nvnCommandBufferSetColorReductionThresholds(addr cb, i32 format_class, i32 conservative, i32 aggressive)
-hook nvnCommandBufferSetConservativeRasterDilate(addr cb, f32 dilate)
-hook nvnCommandBufferSetControlMemoryCallbackEnabled(addr cb, bool on)
-hook nvnCommandBufferSetInnerTessellationLevels(addr cb, addr levels)
-hook nvnCommandBufferSetOuterTessellationLevels(addr cb, addr levels)
-hook nvnCommandBufferSetProgramSubroutines(addr cb, addr program, i32 stage, i32 first, i32 n, addr values)
-hook nvnCommandBufferSetProvokingVertexMode(addr cb, i32 mode)
-hook nvnCommandBufferSetSubpixelPrecisionBias(addr cb, i32 x, i32 y)
-hook nvnCommandBufferSetZCullZF32CompressionEnable(addr cb, bool on)
-hook nvnCommandBufferTiledDownsample(addr cb, addr s, addr d)
-hook nvnCommandBufferTiledDownsampleTextureView(addr cb, addr s, addr sv, addr d, addr dv)
-hook nvnCommandBufferAddCommandMemory(addr cb, addr pool, i64 offset, u64 size)
-hook nvnCommandBufferAddControlMemory(addr cb, addr memory, u64 size)
-hook nvnCommandBufferBarrier(addr cb, i32 bits)
-hook nvnCommandBufferBeginRecording(addr cb)
-hook nvnCommandBufferBeginTransformFeedback(addr cb, u64 control)
-hook nvnCommandBufferBindBlendState(addr cb, addr st)
-hook nvnCommandBufferBindChannelMaskState(addr cb, addr st)
-hook nvnCommandBufferBindColorState(addr cb, addr st)
-hook nvnCommandBufferBindDepthStencilState(addr cb, addr st)
-hook nvnCommandBufferBindImage(addr cb, i32 stage, i32 slot, u64 handle)
-hook nvnCommandBufferBindImages(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindMultisampleState(addr cb, addr st)
-hook nvnCommandBufferBindPolygonState(addr cb, addr st)
-hook nvnCommandBufferBindProgram(addr cb, addr program, i32 stages)
-hook nvnCommandBufferBindSeparateSampler(addr cb, i32 stage, i32 slot, u64 handle)
-hook nvnCommandBufferBindSeparateSamplers(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindSeparateTexture(addr cb, i32 stage, i32 slot, u64 handle)
-hook nvnCommandBufferBindSeparateTextures(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindStorageBuffer(addr cb, i32 stage, i32 index, u64 address, u64 size)
-hook nvnCommandBufferBindStorageBuffers(addr cb, i32 stage, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferBindTexture(addr cb, i32 stage, i32 slot, u64 handle)
-hook nvnCommandBufferBindTextures(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindTexturesDeferred(addr cb, i32 stage, i32 first, i32 n, addr handles)
-hook nvnCommandBufferBindTransformFeedbackBuffer(addr cb, i32 index, u64 address, u64 size)
-hook nvnCommandBufferBindTransformFeedbackBuffers(addr cb, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferBindUniformBuffer(addr cb, i32 stage, i32 index, u64 address, u64 size)
-hook nvnCommandBufferBindUniformBuffers(addr cb, i32 stage, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferBindVertexAttribState(addr cb, i32 n, addr st)
-hook nvnCommandBufferBindVertexBuffer(addr cb, i32 index, u64 address, u64 size)
-hook nvnCommandBufferBindVertexBuffers(addr cb, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferBindVertexStreamState(addr cb, i32 n, addr st)
-hook nvnCommandBufferCallCommands(addr cb, i32 n, addr handles)
-hook nvnCommandBufferClearBuffer(addr cb, u64 address, u64 size, u32 value)
-hook nvnCommandBufferClearColor(addr cb, i32 index, addr rgba, i32 mask)
-hook nvnCommandBufferClearColori(addr cb, i32 index, addr rgba, i32 mask)
-hook nvnCommandBufferClearColorui(addr cb, i32 index, addr rgba, i32 mask)
-hook nvnCommandBufferClearDepthStencil(addr cb, f32 depth, bool depth_mask, i32 stencil, i32 stencil_mask)
-hook nvnCommandBufferClearTexture(addr cb, addr t, addr v, addr region, addr rgba, i32 mask)
-hook nvnCommandBufferClearTextureui(addr cb, addr t, addr v, addr region, addr rgba, i32 mask)
-hook nvnCommandBufferCopyBufferToBuffer(addr cb, u64 src, u64 dst, u64 size, i32 flags)
-hook nvnCommandBufferCopyBufferToTexture(addr cb, u64 src, addr t, addr v, addr region, i32 flags)
-hook nvnCommandBufferCopyCommands(addr cb, i32 n, addr handles)
-hook nvnCommandBufferCopyTextureToBuffer(addr cb, addr t, addr v, addr region, u64 dst, i32 flags)
-hook nvnCommandBufferCopyTextureToTexture(addr cb, addr s, addr sv, addr sr, addr d, addr dv, addr dr, i32 flags)
-hook nvnCommandBufferDiscardColor(addr cb, i32 index)
-hook nvnCommandBufferDiscardDepthStencil(addr cb)
-hook nvnCommandBufferDispatchCompute(addr cb, i32 x, i32 y, i32 z)
-hook nvnCommandBufferDispatchComputeIndirect(addr cb, u64 ind)
-hook nvnCommandBufferDownsample(addr cb, addr s, addr d)
-hook nvnCommandBufferDownsampleTextureView(addr cb, addr s, addr sv, addr d, addr dv)
-hook nvnCommandBufferDrawArrays(addr cb, i32 prim, i32 first, i32 count)
-hook nvnCommandBufferDrawArraysIndirect(addr cb, i32 prim, u64 ind)
-hook nvnCommandBufferDrawArraysInstanced(addr cb, i32 prim, i32 first, i32 count, i32 base_instance, i32 instances)
-hook nvnCommandBufferDrawElements(addr cb, i32 prim, i32 type, i32 count, u64 ib)
-hook nvnCommandBufferDrawElementsBaseVertex(addr cb, i32 prim, i32 type, i32 count, u64 ib, i32 base_vertex)
-hook nvnCommandBufferDrawElementsIndirect(addr cb, i32 prim, i32 type, u64 ib, u64 ind)
-hook nvnCommandBufferDrawElementsInstanced(addr cb, i32 prim, i32 type, i32 count, u64 ib, i32 base_vertex, i32 base_instance, i32 instances)
-hook nvnCommandBufferDrawTransformFeedback(addr cb, i32 prim, u64 control)
-hook nvnCommandBufferEndRecording(addr cb) -> u64
-hook nvnCommandBufferEndTransformFeedback(addr cb, u64 control)
-hook nvnCommandBufferFenceSync(addr cb, addr sync, i32 condition, i32 flags)
-hook nvnCommandBufferFinalize(addr cb)
-hook nvnCommandBufferGetCommandMemoryUsed(addr cb) -> u64
-hook nvnCommandBufferGetControlMemoryUsed(addr cb) -> u64
-hook nvnCommandBufferGetMemoryCallback(addr cb) -> addr
-hook nvnCommandBufferGetMemoryCallbackData(addr cb) -> addr
-hook nvnCommandBufferInitialize(addr cb, addr d) -> bool
-hook nvnCommandBufferInsertDebugMarker(addr cb, addr text)
-hook nvnCommandBufferInsertDebugMarkerDynamic(addr cb, u32 domain, addr text)
-hook nvnCommandBufferInsertDebugMarkerStatic(addr cb, u32 domain, addr text)
-hook nvnCommandBufferIsRecording(addr cb) -> bool
-hook nvnCommandBufferMultiDrawArraysIndirectCount(addr cb, i32 prim, u64 ind, u64 count, i32 max, i64 stride)
-hook nvnCommandBufferMultiDrawElementsIndirectCount(addr cb, i32 prim, i32 type, u64 ib, u64 ind, u64 count, i32 max, i64 stride)
-hook nvnCommandBufferPauseTransformFeedback(addr cb, u64 control)
-hook nvnCommandBufferPopDebugGroup(addr cb)
-hook nvnCommandBufferPopDebugGroupId(addr cb, u32 domain)
-hook nvnCommandBufferPushDebugGroup(addr cb, u32 domain, addr text)
-hook nvnCommandBufferPushDebugGroupDynamic(addr cb, u32 domain, addr text)
-hook nvnCommandBufferPushDebugGroupStatic(addr cb, u32 domain, addr text)
-hook nvnCommandBufferReportCounter(addr cb, i32 type, u64 address)
-hook nvnCommandBufferReportValue(addr cb, u32 value, u64 address)
-hook nvnCommandBufferResetCounter(addr cb, i32 type)
-hook nvnCommandBufferRestoreZCullData(addr cb, u64 address, u64 size)
-hook nvnCommandBufferResumeTransformFeedback(addr cb, u64 control)
-hook nvnCommandBufferSaveZCullData(addr cb, u64 address, u64 size)
-hook nvnCommandBufferSetAlphaRef(addr cb, f32 ref)
-hook nvnCommandBufferSetBlendColor(addr cb, addr rgba)
-hook nvnCommandBufferSetCommandMemoryCallbackEnabled(addr cb, bool on)
-hook nvnCommandBufferSetConservativeRasterEnable(addr cb, bool on)
-hook nvnCommandBufferSetCopyImageStride(addr cb, i64 stride)
-hook nvnCommandBufferSetCopyRowStride(addr cb, i64 stride)
-hook nvnCommandBufferSetDepthBounds(addr cb, bool on, f32 min, f32 max)
-hook nvnCommandBufferSetDepthClamp(addr cb, bool on)
-hook nvnCommandBufferSetDepthRange(addr cb, f32 n, f32 f)
-hook nvnCommandBufferSetDepthRanges(addr cb, i32 first, i32 n, addr ranges)
-hook nvnCommandBufferSetLineWidth(addr cb, f32 width)
-hook nvnCommandBufferSetMemoryCallback(addr cb, addr fn)
-hook nvnCommandBufferSetMemoryCallbackData(addr cb, addr data)
-hook nvnCommandBufferSetPatchSize(addr cb, i32 size)
-hook nvnCommandBufferSetPointSize(addr cb, f32 size)
-hook nvnCommandBufferSetPolygonOffsetClamp(addr cb, f32 factor, f32 units, f32 clamp)
-hook nvnCommandBufferSetPrimitiveRestart(addr cb, bool on, i32 index)
-hook nvnCommandBufferSetRasterizerDiscard(addr cb, bool on)
-hook nvnCommandBufferSetRenderEnable(addr cb, bool on)
-hook nvnCommandBufferSetRenderEnableConditional(addr cb, i32 mode, u64 address)
-hook nvnCommandBufferSetRenderTargets(addr cb, i32 n, addr colors, addr views, addr depth, addr depth_view)
-hook nvnCommandBufferSetSampleMask(addr cb, i32 mask)
-hook nvnCommandBufferSetSamplerPool(addr cb, addr sp)
-hook nvnCommandBufferSetScissor(addr cb, i32 x, i32 y, i32 w, i32 h)
-hook nvnCommandBufferSetScissors(addr cb, i32 first, i32 n, addr rects)
-hook nvnCommandBufferSetShaderScratchMemory(addr cb, addr pool, i64 offset, u64 size)
-hook nvnCommandBufferSetStencilCullCriteria(addr cb, i32 func, i32 ref, i32 mask)
-hook nvnCommandBufferSetStencilMask(addr cb, i32 face, i32 mask)
-hook nvnCommandBufferSetStencilRef(addr cb, i32 face, i32 ref)
-hook nvnCommandBufferSetStencilValueMask(addr cb, i32 face, i32 mask)
-hook nvnCommandBufferSetTexturePool(addr cb, addr tp)
-hook nvnCommandBufferSetTiledCacheAction(addr cb, i32 action)
-hook nvnCommandBufferSetTiledCacheTileSize(addr cb, i32 w, i32 h)
-hook nvnCommandBufferSetViewport(addr cb, i32 x, i32 y, i32 w, i32 h)
-hook nvnCommandBufferSetViewportSwizzles(addr cb, i32 first, i32 n, addr swizzles)
-hook nvnCommandBufferSetViewports(addr cb, i32 first, i32 n, addr v)
-hook nvnCommandBufferSignalEvent(addr cb, addr e, i32 mode, i32 location, i32 flags, u32 value)
-hook nvnCommandBufferUpdateUniformBuffer(addr cb, u64 buffer, u64 buffer_size, i64 offset, u64 size, addr data)
-hook nvnCommandBufferWaitEvent(addr cb, addr e, i32 mode, u32 value)
-hook nvnCommandBufferWaitSync(addr cb, addr sync)
+hook nvnCommandBufferBindCoverageModulationTable(NVNcommandBuffer* cb, const f32* entries)
+hook nvnCommandBufferBindImagesDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNimageHandle* handles)
+hook nvnCommandBufferBindSeparateSamplersDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNseparateSamplerHandle* handles)
+hook nvnCommandBufferBindSeparateTexturesDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNseparateTextureHandle* handles)
+hook nvnCommandBufferBindStorageBuffersDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferBindUniformBuffersDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferClearTexturei(NVNcommandBuffer* cb, const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const i32* rgba, i32 mask)
+hook nvnCommandBufferDrawTexture(NVNcommandBuffer* cb, u64 handle, const NVNdrawTextureRegion* dst, const NVNdrawTextureRegion* src)
+hook nvnCommandBufferGetCommandMemoryFree(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetCommandMemorySize(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetControlMemoryFree(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetControlMemorySize(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetCopyImageStride(const NVNcommandBuffer* cb) -> i64
+hook nvnCommandBufferGetCopyRowStride(const NVNcommandBuffer* cb) -> i64
+hook nvnCommandBufferInsertCheckpointDynamic(NVNcommandBuffer* cb, const char* label) -> bool
+hook nvnCommandBufferInsertCheckpointStatic(NVNcommandBuffer* cb, const char* label) -> bool
+hook nvnCommandBufferOverrideSubtileSize(NVNcommandBuffer* cb, bool on, i32 size)
+hook nvnCommandBufferResolveDepthBuffer(NVNcommandBuffer* cb)
+hook nvnCommandBufferSetColorReductionEnable(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetColorReductionThresholds(NVNcommandBuffer* cb, i32 format_class, i32 conservative, i32 aggressive)
+hook nvnCommandBufferSetConservativeRasterDilate(NVNcommandBuffer* cb, f32 dilate)
+hook nvnCommandBufferSetControlMemoryCallbackEnabled(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetInnerTessellationLevels(NVNcommandBuffer* cb, const f32* levels)
+hook nvnCommandBufferSetOuterTessellationLevels(NVNcommandBuffer* cb, const f32* levels)
+hook nvnCommandBufferSetProgramSubroutines(NVNcommandBuffer* cb, NVNprogram* program, NVNshaderStage stage, i32 first, i32 n, const i32* values)
+hook nvnCommandBufferSetProvokingVertexMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferSetSubpixelPrecisionBias(NVNcommandBuffer* cb, i32 x, i32 y)
+hook nvnCommandBufferSetZCullZF32CompressionEnable(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferTiledDownsample(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtexture* d)
+hook nvnCommandBufferTiledDownsampleTextureView(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtextureView* sv, const NVNtexture* d, const NVNtextureView* dv)
+hook nvnCommandBufferAddCommandMemory(NVNcommandBuffer* cb, const NVNmemoryPool* pool, i64 offset, u64 size)
+hook nvnCommandBufferAddControlMemory(NVNcommandBuffer* cb, void* memory, u64 size)
+hook nvnCommandBufferBarrier(NVNcommandBuffer* cb, i32 bits)
+hook nvnCommandBufferBeginRecording(NVNcommandBuffer* cb)
+hook nvnCommandBufferBeginTransformFeedback(NVNcommandBuffer* cb, u64 control)
+hook nvnCommandBufferBindBlendState(NVNcommandBuffer* cb, const NVNblendState* st)
+hook nvnCommandBufferBindChannelMaskState(NVNcommandBuffer* cb, const NVNchannelMaskState* st)
+hook nvnCommandBufferBindColorState(NVNcommandBuffer* cb, const NVNcolorState* st)
+hook nvnCommandBufferBindDepthStencilState(NVNcommandBuffer* cb, const NVNdepthStencilState* st)
+hook nvnCommandBufferBindImage(NVNcommandBuffer* cb, NVNshaderStage stage, i32 slot, u64 handle)
+hook nvnCommandBufferBindImages(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNimageHandle* handles)
+hook nvnCommandBufferBindMultisampleState(NVNcommandBuffer* cb, const NVNmultisampleState* st)
+hook nvnCommandBufferBindPolygonState(NVNcommandBuffer* cb, const NVNpolygonState* st)
+hook nvnCommandBufferBindProgram(NVNcommandBuffer* cb, const NVNprogram* program, i32 stages)
+hook nvnCommandBufferBindSeparateSampler(NVNcommandBuffer* cb, NVNshaderStage stage, i32 slot, u64 handle)
+hook nvnCommandBufferBindSeparateSamplers(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNseparateSamplerHandle* handles)
+hook nvnCommandBufferBindSeparateTexture(NVNcommandBuffer* cb, NVNshaderStage stage, i32 slot, u64 handle)
+hook nvnCommandBufferBindSeparateTextures(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNseparateTextureHandle* handles)
+hook nvnCommandBufferBindStorageBuffer(NVNcommandBuffer* cb, NVNshaderStage stage, i32 index, u64 address, u64 size)
+hook nvnCommandBufferBindStorageBuffers(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferBindTexture(NVNcommandBuffer* cb, NVNshaderStage stage, i32 slot, u64 handle)
+hook nvnCommandBufferBindTextures(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNtextureHandle* handles)
+hook nvnCommandBufferBindTexturesDeferred(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNtextureHandle* handles)
+hook nvnCommandBufferBindTransformFeedbackBuffer(NVNcommandBuffer* cb, i32 index, u64 address, u64 size)
+hook nvnCommandBufferBindTransformFeedbackBuffers(NVNcommandBuffer* cb, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferBindUniformBuffer(NVNcommandBuffer* cb, NVNshaderStage stage, i32 index, u64 address, u64 size)
+hook nvnCommandBufferBindUniformBuffers(NVNcommandBuffer* cb, NVNshaderStage stage, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferBindVertexAttribState(NVNcommandBuffer* cb, i32 n, const NVNvertexAttribState* st)
+hook nvnCommandBufferBindVertexBuffer(NVNcommandBuffer* cb, i32 index, u64 address, u64 size)
+hook nvnCommandBufferBindVertexBuffers(NVNcommandBuffer* cb, i32 first, i32 n, const NVNbufferRange* ranges)
+hook nvnCommandBufferBindVertexStreamState(NVNcommandBuffer* cb, i32 n, const NVNvertexStreamState* st)
+hook nvnCommandBufferCallCommands(NVNcommandBuffer* cb, i32 n, const NVNcommandHandle* handles)
+hook nvnCommandBufferClearBuffer(NVNcommandBuffer* cb, u64 address, u64 size, u32 value)
+hook nvnCommandBufferClearColor(NVNcommandBuffer* cb, i32 index, const f32* rgba, i32 mask)
+hook nvnCommandBufferClearColori(NVNcommandBuffer* cb, i32 index, const i32* rgba, i32 mask)
+hook nvnCommandBufferClearColorui(NVNcommandBuffer* cb, i32 index, const u32* rgba, i32 mask)
+hook nvnCommandBufferClearDepthStencil(NVNcommandBuffer* cb, f32 depth, bool depth_mask, i32 stencil, i32 stencil_mask)
+hook nvnCommandBufferClearTexture(NVNcommandBuffer* cb, const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const f32* rgba, i32 mask)
+hook nvnCommandBufferClearTextureui(NVNcommandBuffer* cb, const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const u32* rgba, i32 mask)
+hook nvnCommandBufferCopyBufferToBuffer(NVNcommandBuffer* cb, u64 src, u64 dst, u64 size, i32 flags)
+hook nvnCommandBufferCopyBufferToTexture(NVNcommandBuffer* cb, u64 src, const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, i32 flags)
+hook nvnCommandBufferCopyCommands(NVNcommandBuffer* cb, i32 n, const NVNcommandHandle* handles)
+hook nvnCommandBufferCopyTextureToBuffer(NVNcommandBuffer* cb, const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, u64 dst, i32 flags)
+hook nvnCommandBufferCopyTextureToTexture(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtextureView* sv, const NVNcopyRegion* sr, const NVNtexture* d, const NVNtextureView* dv, const NVNcopyRegion* dr, i32 flags)
+hook nvnCommandBufferDiscardColor(NVNcommandBuffer* cb, i32 index)
+hook nvnCommandBufferDiscardDepthStencil(NVNcommandBuffer* cb)
+hook nvnCommandBufferDispatchCompute(NVNcommandBuffer* cb, i32 x, i32 y, i32 z)
+hook nvnCommandBufferDispatchComputeIndirect(NVNcommandBuffer* cb, u64 ind)
+hook nvnCommandBufferDownsample(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtexture* d)
+hook nvnCommandBufferDownsampleTextureView(NVNcommandBuffer* cb, const NVNtexture* s, const NVNtextureView* sv, const NVNtexture* d, const NVNtextureView* dv)
+hook nvnCommandBufferDrawArrays(NVNcommandBuffer* cb, NVNdrawPrimitive prim, i32 first, i32 count)
+hook nvnCommandBufferDrawArraysIndirect(NVNcommandBuffer* cb, NVNdrawPrimitive prim, u64 ind)
+hook nvnCommandBufferDrawArraysInstanced(NVNcommandBuffer* cb, NVNdrawPrimitive prim, i32 first, i32 count, i32 base_instance, i32 instances)
+hook nvnCommandBufferDrawElements(NVNcommandBuffer* cb, NVNdrawPrimitive prim, NVNindexType type, i32 count, u64 ib)
+hook nvnCommandBufferDrawElementsBaseVertex(NVNcommandBuffer* cb, NVNdrawPrimitive prim, NVNindexType type, i32 count, u64 ib, i32 base_vertex)
+hook nvnCommandBufferDrawElementsIndirect(NVNcommandBuffer* cb, NVNdrawPrimitive prim, NVNindexType type, u64 ib, u64 ind)
+hook nvnCommandBufferDrawElementsInstanced(NVNcommandBuffer* cb, NVNdrawPrimitive prim, NVNindexType type, i32 count, u64 ib, i32 base_vertex, i32 base_instance, i32 instances)
+hook nvnCommandBufferDrawTransformFeedback(NVNcommandBuffer* cb, NVNdrawPrimitive prim, u64 control)
+hook nvnCommandBufferEndRecording(NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferEndTransformFeedback(NVNcommandBuffer* cb, u64 control)
+hook nvnCommandBufferFenceSync(NVNcommandBuffer* cb, NVNsync* sync, NVNsyncCondition condition, i32 flags)
+hook nvnCommandBufferFinalize(NVNcommandBuffer* cb)
+hook nvnCommandBufferGetCommandMemoryUsed(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetControlMemoryUsed(const NVNcommandBuffer* cb) -> u64
+hook nvnCommandBufferGetMemoryCallback(const NVNcommandBuffer* cb) -> PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC
+hook nvnCommandBufferGetMemoryCallbackData(const NVNcommandBuffer* cb) -> void*
+hook nvnCommandBufferInitialize(NVNcommandBuffer* cb, NVNdevice* d) -> bool
+hook nvnCommandBufferInsertDebugMarker(NVNcommandBuffer* cb, const char* text)
+hook nvnCommandBufferInsertDebugMarkerDynamic(NVNcommandBuffer* cb, u32 domain, const char* text)
+hook nvnCommandBufferInsertDebugMarkerStatic(NVNcommandBuffer* cb, u32 domain, const char* text)
+hook nvnCommandBufferIsRecording(const NVNcommandBuffer* cb) -> bool
+hook nvnCommandBufferMultiDrawArraysIndirectCount(NVNcommandBuffer* cb, NVNdrawPrimitive prim, u64 ind, u64 count, i32 max, i64 stride)
+hook nvnCommandBufferMultiDrawElementsIndirectCount(NVNcommandBuffer* cb, NVNdrawPrimitive prim, NVNindexType type, u64 ib, u64 ind, u64 count, i32 max, i64 stride)
+hook nvnCommandBufferPauseTransformFeedback(NVNcommandBuffer* cb, u64 control)
+hook nvnCommandBufferPopDebugGroup(NVNcommandBuffer* cb)
+hook nvnCommandBufferPopDebugGroupId(NVNcommandBuffer* cb, u32 domain)
+hook nvnCommandBufferPushDebugGroup(NVNcommandBuffer* cb, u32 domain, const char* text)
+hook nvnCommandBufferPushDebugGroupDynamic(NVNcommandBuffer* cb, u32 domain, const char* text)
+hook nvnCommandBufferPushDebugGroupStatic(NVNcommandBuffer* cb, u32 domain, const char* text)
+hook nvnCommandBufferReportCounter(NVNcommandBuffer* cb, NVNcounterType type, u64 address)
+hook nvnCommandBufferReportValue(NVNcommandBuffer* cb, u32 value, u64 address)
+hook nvnCommandBufferResetCounter(NVNcommandBuffer* cb, NVNcounterType type)
+hook nvnCommandBufferRestoreZCullData(NVNcommandBuffer* cb, u64 address, u64 size)
+hook nvnCommandBufferResumeTransformFeedback(NVNcommandBuffer* cb, u64 control)
+hook nvnCommandBufferSaveZCullData(NVNcommandBuffer* cb, u64 address, u64 size)
+hook nvnCommandBufferSetAlphaRef(NVNcommandBuffer* cb, f32 ref)
+hook nvnCommandBufferSetBlendColor(NVNcommandBuffer* cb, const f32* rgba)
+hook nvnCommandBufferSetCommandMemoryCallbackEnabled(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetConservativeRasterEnable(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetCopyImageStride(NVNcommandBuffer* cb, i64 stride)
+hook nvnCommandBufferSetCopyRowStride(NVNcommandBuffer* cb, i64 stride)
+hook nvnCommandBufferSetDepthBounds(NVNcommandBuffer* cb, bool on, f32 min, f32 max)
+hook nvnCommandBufferSetDepthClamp(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetDepthRange(NVNcommandBuffer* cb, f32 n, f32 f)
+hook nvnCommandBufferSetDepthRanges(NVNcommandBuffer* cb, i32 first, i32 n, const f32* ranges)
+hook nvnCommandBufferSetLineWidth(NVNcommandBuffer* cb, f32 width)
+hook nvnCommandBufferSetMemoryCallback(NVNcommandBuffer* cb, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC fn)
+hook nvnCommandBufferSetMemoryCallbackData(NVNcommandBuffer* cb, void* data)
+hook nvnCommandBufferSetPatchSize(NVNcommandBuffer* cb, i32 size)
+hook nvnCommandBufferSetPointSize(NVNcommandBuffer* cb, f32 size)
+hook nvnCommandBufferSetPolygonOffsetClamp(NVNcommandBuffer* cb, f32 factor, f32 units, f32 clamp)
+hook nvnCommandBufferSetPrimitiveRestart(NVNcommandBuffer* cb, bool on, i32 index)
+hook nvnCommandBufferSetRasterizerDiscard(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetRenderEnable(NVNcommandBuffer* cb, bool on)
+hook nvnCommandBufferSetRenderEnableConditional(NVNcommandBuffer* cb, NVNconditionalRenderMode mode, u64 address)
+hook nvnCommandBufferSetRenderTargets(NVNcommandBuffer* cb, i32 n, const NVNtexture* const* colors, const NVNtextureView* const* views, const NVNtexture* depth, const NVNtextureView* depth_view)
+hook nvnCommandBufferSetSampleMask(NVNcommandBuffer* cb, i32 mask)
+hook nvnCommandBufferSetSamplerPool(NVNcommandBuffer* cb, const NVNsamplerPool* sp)
+hook nvnCommandBufferSetScissor(NVNcommandBuffer* cb, i32 x, i32 y, i32 w, i32 h)
+hook nvnCommandBufferSetScissors(NVNcommandBuffer* cb, i32 first, i32 n, const i32* rects)
+hook nvnCommandBufferSetShaderScratchMemory(NVNcommandBuffer* cb, const NVNmemoryPool* pool, i64 offset, u64 size)
+hook nvnCommandBufferSetStencilCullCriteria(NVNcommandBuffer* cb, NVNstencilFunc func, i32 ref, i32 mask)
+hook nvnCommandBufferSetStencilMask(NVNcommandBuffer* cb, NVNface face, i32 mask)
+hook nvnCommandBufferSetStencilRef(NVNcommandBuffer* cb, NVNface face, i32 ref)
+hook nvnCommandBufferSetStencilValueMask(NVNcommandBuffer* cb, NVNface face, i32 mask)
+hook nvnCommandBufferSetTexturePool(NVNcommandBuffer* cb, const NVNtexturePool* tp)
+hook nvnCommandBufferSetTiledCacheAction(NVNcommandBuffer* cb, NVNtiledCacheAction action)
+hook nvnCommandBufferSetTiledCacheTileSize(NVNcommandBuffer* cb, i32 w, i32 h)
+hook nvnCommandBufferSetViewport(NVNcommandBuffer* cb, i32 x, i32 y, i32 w, i32 h)
+hook nvnCommandBufferSetViewportSwizzles(NVNcommandBuffer* cb, i32 first, i32 n, const NVNviewportSwizzle* swizzles)
+hook nvnCommandBufferSetViewports(NVNcommandBuffer* cb, i32 first, i32 n, const f32* v)
+hook nvnCommandBufferSignalEvent(NVNcommandBuffer* cb, const NVNevent* e, NVNeventSignalMode mode, NVNeventSignalLocation location, i32 flags, u32 value)
+hook nvnCommandBufferUpdateUniformBuffer(NVNcommandBuffer* cb, u64 buffer, u64 buffer_size, i64 offset, u64 size, const void* data)
+hook nvnCommandBufferWaitEvent(NVNcommandBuffer* cb, const NVNevent* e, NVNeventWaitMode mode, u32 value)
+hook nvnCommandBufferWaitSync(NVNcommandBuffer* cb, const NVNsync* sync)
 
 family state
-hook nvnBlendStateGetAdvancedMode(addr s) -> i32
-hook nvnBlendStateGetAdvancedNormalizedDst(addr s) -> bool
-hook nvnBlendStateGetAdvancedOverlap(addr s) -> i32
-hook nvnBlendStateGetAdvancedPremultipliedSrc(addr s) -> bool
-hook nvnBlendStateSetAdvancedMode(addr s, i32 mode)
-hook nvnBlendStateSetAdvancedNormalizedDst(addr s, bool on)
-hook nvnBlendStateSetAdvancedOverlap(addr s, i32 overlap)
-hook nvnBlendStateSetAdvancedPremultipliedSrc(addr s, bool on)
-hook nvnMultisampleStateGetSampleLocationsGrid(addr s, addr w, addr h)
-hook nvnMultisampleStateSetSampleLocations(addr s, i32 first, i32 n, addr xy)
-hook nvnBlendStateSetBlendEquation(addr s, i32 rgb, i32 alpha)
-hook nvnBlendStateSetBlendFunc(addr s, i32 src_rgb, i32 dst_rgb, i32 src_a, i32 dst_a)
-hook nvnBlendStateSetBlendTarget(addr s, i32 target)
-hook nvnBlendStateSetDefaults(addr s)
-hook nvnChannelMaskStateSetChannelMask(addr s, i32 i, bool r, bool g, bool b, bool a)
-hook nvnChannelMaskStateSetDefaults(addr s)
-hook nvnColorStateGetBlendEnable(addr s, i32 i) -> bool
-hook nvnColorStateSetAlphaTest(addr s, i32 func)
-hook nvnColorStateSetBlendEnable(addr s, i32 i, bool enable)
-hook nvnColorStateSetDefaults(addr s)
-hook nvnColorStateSetLogicOp(addr s, i32 op)
-hook nvnDepthStencilStateSetDefaults(addr s)
-hook nvnDepthStencilStateSetDepthFunc(addr s, i32 func)
-hook nvnDepthStencilStateSetDepthTestEnable(addr s, bool enable)
-hook nvnDepthStencilStateSetDepthWriteEnable(addr s, bool enable)
-hook nvnDepthStencilStateSetStencilFunc(addr s, i32 face, i32 func)
-hook nvnDepthStencilStateSetStencilOp(addr s, i32 face, i32 fail, i32 zfail, i32 zpass)
-hook nvnDepthStencilStateSetStencilTestEnable(addr s, bool enable)
-hook nvnMultisampleStateSetAlphaToCoverageEnable(addr s, bool enable)
-hook nvnMultisampleStateSetDefaults(addr s)
-hook nvnMultisampleStateSetMultisampleEnable(addr s, bool enable)
-hook nvnMultisampleStateSetSamples(addr s, i32 n)
-hook nvnPolygonStateSetCullFace(addr s, i32 face)
-hook nvnPolygonStateSetDefaults(addr s)
-hook nvnPolygonStateSetFrontFace(addr s, i32 face)
-hook nvnPolygonStateSetPolygonMode(addr s, i32 mode)
-hook nvnPolygonStateSetPolygonOffsetEnables(addr s, i32 enables)
-hook nvnVertexAttribStateSetDefaults(addr s)
-hook nvnVertexAttribStateSetFormat(addr s, i32 format, i64 offset)
-hook nvnVertexAttribStateSetStreamIndex(addr s, i32 i)
-hook nvnVertexStreamStateSetDefaults(addr s)
-hook nvnVertexStreamStateSetDivisor(addr s, i32 divisor)
-hook nvnVertexStreamStateSetStride(addr s, i64 stride)
-hook nvnBlendStateGetBlendEquation(addr s, addr rgb, addr alpha)
-hook nvnBlendStateGetBlendFunc(addr s, addr src, addr dst, addr src_a, addr dst_a)
-hook nvnBlendStateGetBlendTarget(addr s) -> i32
-hook nvnChannelMaskStateGetChannelMask(addr s, i32 i, addr r, addr g, addr b, addr a)
-hook nvnColorStateGetAlphaTest(addr s) -> i32
-hook nvnColorStateGetLogicOp(addr s) -> i32
-hook nvnDepthStencilStateGetDepthFunc(addr s) -> i32
-hook nvnDepthStencilStateGetDepthTestEnable(addr s) -> bool
-hook nvnDepthStencilStateGetDepthWriteEnable(addr s) -> bool
-hook nvnDepthStencilStateGetStencilFunc(addr s, i32 face) -> i32
-hook nvnDepthStencilStateGetStencilOp(addr s, i32 face, addr fail, addr zfail, addr zpass)
-hook nvnDepthStencilStateGetStencilTestEnable(addr s) -> bool
-hook nvnMultisampleStateGetAlphaToCoverageDither(addr s) -> bool
-hook nvnMultisampleStateGetAlphaToCoverageEnable(addr s) -> bool
-hook nvnMultisampleStateGetCoverageModulationMode(addr s) -> i32
-hook nvnMultisampleStateGetCoverageToColorEnable(addr s) -> bool
-hook nvnMultisampleStateGetCoverageToColorOutput(addr s) -> i32
-hook nvnMultisampleStateGetMultisampleEnable(addr s) -> bool
-hook nvnMultisampleStateGetRasterSamples(addr s) -> i32
-hook nvnMultisampleStateGetSampleLocationsEnable(addr s) -> bool
-hook nvnMultisampleStateGetSampleLocationsGridEnable(addr s) -> bool
-hook nvnMultisampleStateGetSamples(addr s) -> i32
-hook nvnMultisampleStateSetAlphaToCoverageDither(addr s, bool on)
-hook nvnMultisampleStateSetCoverageModulationMode(addr s, i32 mode)
-hook nvnMultisampleStateSetCoverageToColorEnable(addr s, bool on)
-hook nvnMultisampleStateSetCoverageToColorOutput(addr s, i32 output)
-hook nvnMultisampleStateSetRasterSamples(addr s, i32 n)
-hook nvnMultisampleStateSetSampleLocationsEnable(addr s, bool on)
-hook nvnMultisampleStateSetSampleLocationsGridEnable(addr s, bool on)
-hook nvnPolygonStateGetCullFace(addr s) -> i32
-hook nvnPolygonStateGetFrontFace(addr s) -> i32
-hook nvnPolygonStateGetPolygonMode(addr s) -> i32
-hook nvnPolygonStateGetPolygonOffsetEnables(addr s) -> i32
-hook nvnVertexAttribStateGetFormat(addr s, addr format, addr offset)
-hook nvnVertexAttribStateGetStreamIndex(addr s) -> i32
-hook nvnVertexStreamStateGetDivisor(addr s) -> i32
-hook nvnVertexStreamStateGetStride(addr s) -> i64
+hook nvnBlendStateGetAdvancedMode(const NVNblendState* s) -> NVNblendAdvancedMode
+hook nvnBlendStateGetAdvancedNormalizedDst(const NVNblendState* s) -> bool
+hook nvnBlendStateGetAdvancedOverlap(const NVNblendState* s) -> NVNblendAdvancedOverlap
+hook nvnBlendStateGetAdvancedPremultipliedSrc(const NVNblendState* s) -> bool
+hook nvnBlendStateSetAdvancedMode(NVNblendState* s, NVNblendAdvancedMode mode)
+hook nvnBlendStateSetAdvancedNormalizedDst(NVNblendState* s, bool on)
+hook nvnBlendStateSetAdvancedOverlap(NVNblendState* s, NVNblendAdvancedOverlap overlap)
+hook nvnBlendStateSetAdvancedPremultipliedSrc(NVNblendState* s, bool on)
+hook nvnMultisampleStateGetSampleLocationsGrid(NVNmultisampleState* s, i32* w, i32* h)
+hook nvnMultisampleStateSetSampleLocations(NVNmultisampleState* s, i32 first, i32 n, const f32* xy)
+hook nvnBlendStateSetBlendEquation(NVNblendState* s, NVNblendEquation rgb, NVNblendEquation alpha)
+hook nvnBlendStateSetBlendFunc(NVNblendState* s, NVNblendFunc src_rgb, NVNblendFunc dst_rgb, NVNblendFunc src_a, NVNblendFunc dst_a)
+hook nvnBlendStateSetBlendTarget(NVNblendState* s, i32 target)
+hook nvnBlendStateSetDefaults(NVNblendState* s)
+hook nvnChannelMaskStateSetChannelMask(NVNchannelMaskState* s, i32 i, bool r, bool g, bool b, bool a)
+hook nvnChannelMaskStateSetDefaults(NVNchannelMaskState* s)
+hook nvnColorStateGetBlendEnable(const NVNcolorState* s, i32 i) -> bool
+hook nvnColorStateSetAlphaTest(NVNcolorState* s, NVNalphaFunc func)
+hook nvnColorStateSetBlendEnable(NVNcolorState* s, i32 i, bool enable)
+hook nvnColorStateSetDefaults(NVNcolorState* s)
+hook nvnColorStateSetLogicOp(NVNcolorState* s, NVNlogicOp op)
+hook nvnDepthStencilStateSetDefaults(NVNdepthStencilState* s)
+hook nvnDepthStencilStateSetDepthFunc(NVNdepthStencilState* s, NVNdepthFunc func)
+hook nvnDepthStencilStateSetDepthTestEnable(NVNdepthStencilState* s, bool enable)
+hook nvnDepthStencilStateSetDepthWriteEnable(NVNdepthStencilState* s, bool enable)
+hook nvnDepthStencilStateSetStencilFunc(NVNdepthStencilState* s, NVNface face, NVNstencilFunc func)
+hook nvnDepthStencilStateSetStencilOp(NVNdepthStencilState* s, NVNface face, NVNstencilOp fail, NVNstencilOp zfail, NVNstencilOp zpass)
+hook nvnDepthStencilStateSetStencilTestEnable(NVNdepthStencilState* s, bool enable)
+hook nvnMultisampleStateSetAlphaToCoverageEnable(NVNmultisampleState* s, bool enable)
+hook nvnMultisampleStateSetDefaults(NVNmultisampleState* s)
+hook nvnMultisampleStateSetMultisampleEnable(NVNmultisampleState* s, bool enable)
+hook nvnMultisampleStateSetSamples(NVNmultisampleState* s, i32 n)
+hook nvnPolygonStateSetCullFace(NVNpolygonState* s, NVNface face)
+hook nvnPolygonStateSetDefaults(NVNpolygonState* s)
+hook nvnPolygonStateSetFrontFace(NVNpolygonState* s, NVNfrontFace face)
+hook nvnPolygonStateSetPolygonMode(NVNpolygonState* s, NVNpolygonMode mode)
+hook nvnPolygonStateSetPolygonOffsetEnables(NVNpolygonState* s, i32 enables)
+hook nvnVertexAttribStateSetDefaults(NVNvertexAttribState* s)
+hook nvnVertexAttribStateSetFormat(NVNvertexAttribState* s, NVNformat format, i64 offset)
+hook nvnVertexAttribStateSetStreamIndex(NVNvertexAttribState* s, i32 i)
+hook nvnVertexStreamStateSetDefaults(NVNvertexStreamState* s)
+hook nvnVertexStreamStateSetDivisor(NVNvertexStreamState* s, i32 divisor)
+hook nvnVertexStreamStateSetStride(NVNvertexStreamState* s, i64 stride)
+hook nvnBlendStateGetBlendEquation(const NVNblendState* s, NVNblendEquation* rgb, NVNblendEquation* alpha)
+hook nvnBlendStateGetBlendFunc(const NVNblendState* s, NVNblendFunc* src, NVNblendFunc* dst, NVNblendFunc* src_a, NVNblendFunc* dst_a)
+hook nvnBlendStateGetBlendTarget(const NVNblendState* s) -> i32
+hook nvnChannelMaskStateGetChannelMask(const NVNchannelMaskState* s, i32 i, NVNboolean* r, NVNboolean* g, NVNboolean* b, NVNboolean* a)
+hook nvnColorStateGetAlphaTest(const NVNcolorState* s) -> NVNalphaFunc
+hook nvnColorStateGetLogicOp(const NVNcolorState* s) -> NVNlogicOp
+hook nvnDepthStencilStateGetDepthFunc(const NVNdepthStencilState* s) -> NVNdepthFunc
+hook nvnDepthStencilStateGetDepthTestEnable(const NVNdepthStencilState* s) -> bool
+hook nvnDepthStencilStateGetDepthWriteEnable(const NVNdepthStencilState* s) -> bool
+hook nvnDepthStencilStateGetStencilFunc(const NVNdepthStencilState* s, NVNface face) -> NVNstencilFunc
+hook nvnDepthStencilStateGetStencilOp(const NVNdepthStencilState* s, NVNface face, NVNstencilOp* fail, NVNstencilOp* zfail, NVNstencilOp* zpass)
+hook nvnDepthStencilStateGetStencilTestEnable(const NVNdepthStencilState* s) -> bool
+hook nvnMultisampleStateGetAlphaToCoverageDither(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetAlphaToCoverageEnable(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetCoverageModulationMode(const NVNmultisampleState* s) -> NVNcoverageModulationMode
+hook nvnMultisampleStateGetCoverageToColorEnable(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetCoverageToColorOutput(const NVNmultisampleState* s) -> i32
+hook nvnMultisampleStateGetMultisampleEnable(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetRasterSamples(NVNmultisampleState* s) -> i32
+hook nvnMultisampleStateGetSampleLocationsEnable(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetSampleLocationsGridEnable(const NVNmultisampleState* s) -> bool
+hook nvnMultisampleStateGetSamples(const NVNmultisampleState* s) -> i32
+hook nvnMultisampleStateSetAlphaToCoverageDither(NVNmultisampleState* s, bool on)
+hook nvnMultisampleStateSetCoverageModulationMode(NVNmultisampleState* s, NVNcoverageModulationMode mode)
+hook nvnMultisampleStateSetCoverageToColorEnable(NVNmultisampleState* s, bool on)
+hook nvnMultisampleStateSetCoverageToColorOutput(NVNmultisampleState* s, i32 output)
+hook nvnMultisampleStateSetRasterSamples(NVNmultisampleState* s, i32 n)
+hook nvnMultisampleStateSetSampleLocationsEnable(NVNmultisampleState* s, bool on)
+hook nvnMultisampleStateSetSampleLocationsGridEnable(NVNmultisampleState* s, bool on)
+hook nvnPolygonStateGetCullFace(const NVNpolygonState* s) -> NVNface
+hook nvnPolygonStateGetFrontFace(const NVNpolygonState* s) -> NVNfrontFace
+hook nvnPolygonStateGetPolygonMode(const NVNpolygonState* s) -> NVNpolygonMode
+hook nvnPolygonStateGetPolygonOffsetEnables(const NVNpolygonState* s) -> NVNpolygonOffsetEnable
+hook nvnVertexAttribStateGetFormat(const NVNvertexAttribState* s, NVNformat* format, i64* offset)
+hook nvnVertexAttribStateGetStreamIndex(const NVNvertexAttribState* s) -> i32
+hook nvnVertexStreamStateGetDivisor(const NVNvertexStreamState* s) -> i32
+hook nvnVertexStreamStateGetStride(const NVNvertexStreamState* s) -> i64
 
 family debug
-hook nvnCommandBufferSetDebugLabel(addr o, addr label)
-hook nvnDeviceSetDebugLabel(addr o, addr label)
-hook nvnProgramSetDebugLabel(addr o, addr label)
-hook nvnQueueSetDebugLabel(addr o, addr label)
-hook nvnSamplerPoolSetDebugLabel(addr o, addr label)
-hook nvnSyncSetDebugLabel(addr o, addr label)
-hook nvnTexturePoolSetDebugLabel(addr o, addr label)
-hook nvnWindowSetDebugLabel(addr o, addr label)
+hook nvnCommandBufferSetDebugLabel(NVNcommandBuffer* o, const char* label)
+hook nvnDeviceSetDebugLabel(NVNdevice* o, const char* label)
+hook nvnProgramSetDebugLabel(NVNprogram* o, const char* label)
+hook nvnQueueSetDebugLabel(NVNqueue* o, const char* label)
+hook nvnSamplerPoolSetDebugLabel(NVNsamplerPool* o, const char* label)
+hook nvnSyncSetDebugLabel(NVNsync* o, const char* label)
+hook nvnTexturePoolSetDebugLabel(NVNtexturePool* o, const char* label)
+hook nvnWindowSetDebugLabel(NVNwindow* o, const char* label)

@@ -1,2 +1,2 @@
 family f
-hook nvnDeviceFinalize(addr d) = nvn_DeviceFinalize
+hook nvnDeviceFinalize(void* d) = nvn_DeviceFinalize

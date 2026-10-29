@@ -38,9 +38,9 @@ hashes the closures of the procedures with a role.
 
 Layout signatures don't depend on the code's form at all: each SetDefaults, Set* and Get* procedure of a builder,
 state or view type runs on a small A64 emulator (Emu) over an object of distinct bytes, with its arguments typed by
-nvn.h's PFNNVN...PROC declarations and set to distinct values, and its signature is the bytes it changes and what it
-returns. The semantic key hashes the signatures, the device's constant answers, the command buffer's offsets and the
-footprints.
+its prototype in gpu/nvn/nvn.hook (tools/hook_spec.py) and set to distinct values, and its signature is the bytes
+it changes and what it returns. The semantic key hashes the signatures, the device's constant answers, the command
+buffer's offsets and the footprints.
 
 --graphics reads each module's dynamic symbols (exports and imports) and strings for nvnBootstrapLoader, Vulkan
 (vkGetInstanceProcAddr, vkCreateInstance), EGL and OpenGL (eglGetProcAddress, glGetString). Pure Python with
@@ -62,6 +62,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
+import hook_spec  # noqa: E402
 import moduledump  # noqa: E402
 import nvn_census as nc  # noqa: E402
 
@@ -684,21 +685,20 @@ class Emu:
 
 
 SETTER = re.compile(r'^([A-Z][A-Za-z]*?(Builder|State|View))(SetDefaults|Set[A-Za-z0-9]+|Get[A-Za-z0-9]+)$')
-PROTO = re.compile(r'typedef\s+(.+?)\s*\(\*PFNNVN([A-Z0-9_]+)PROC\)\s*\(([^)]*)\)\s*;', re.S)
-FLOATS = ('float', 'double')
+NVN_HOOK = os.path.join(HERE, '..', 'src', 'nx', 'gpu', 'nvn', 'nvn.hook')
+FLOATS = ('f32', 'f64')
 
 
-def prototypes(path=nc.NVN_H):
-    """{procedure name in upper case: (return type, [argument types])} from nvn.h's PFNNVN...PROC typedefs"""
+def prototypes(path=NVN_HOOK, header=nc.NVN_H):
+    """{procedure name in upper case: (return kind, [argument types])} from gpu/nvn/nvn.hook's prototypes, in the
+    spec's types (a pointer as 'const NVNtexture*', a float as f32): the result as the kind hookgen passes it (addr
+    for a pointer, i32 for an enum)"""
     try:
-        with open(path, encoding='utf-8') as f:
-            text = f.read()
+        protos = hook_spec.prototypes(path)
+        types = hook_spec.header_types(header)
     except OSError:
         return {}
-    out = {}
-    for ret, name, args in PROTO.findall(text):
-        out[name] = (' '.join(ret.split()), [' '.join(a.split()) for a in args.split(',') if a.strip()])
-    return out
+    return {name[3:].upper(): (hook_spec.kind(ret, types), args) for name, (ret, args, _) in protos.items()}
 
 
 def call_args(argtypes):
@@ -710,7 +710,7 @@ def call_args(argtypes):
             x[xi] = OUT + k * 0x10000
             xi += 1
         elif t in FLOATS:
-            v[vi] = struct.pack('<f' if t == 'float' else '<d', 1.5 + k)
+            v[vi] = struct.pack('<f' if t == 'f32' else '<d', 1.5 + k)
             vi += 1
         else:
             x[xi] = 0x0101010101010101 * (0x10 + k)
@@ -721,7 +721,7 @@ def call_args(argtypes):
 def layout_signatures(image, code, names, funcs, named):
     """{procedure: signature} for the SetDefaults, Set* and Get* procedures of the builder, state and view types:
     the bytes it changes in the object and through its pointer arguments ("o+off=byte", "p<n>+off=byte"), and its
-    return value as nvn.h types it, or why it couldn't be run. The arguments are distinct constants and the object
+    return value as nvn.hook types it, or why it couldn't be run. The arguments are distinct constants and the object
     and pointed-to memory distinct bytes (pattern), so a setter's stores say which bits of the object hold its
     arguments and a getter's result where it read it. Equal signatures mean the procedure keeps those fields where
     the other driver keeps them."""
@@ -745,9 +745,9 @@ def layout_signatures(image, code, names, funcs, named):
             off = a - OBJ if region == 'o' else (a - OUT) % 0x10000 if region[0] == 'p' else a
             parts.append('%s+%x=%02x' % (region, off, writes[a]))
         if ret in FLOATS:
-            parts.append('ret %s' % d0[: 4 if ret == 'float' else 8].hex())
+            parts.append('ret %s' % d0[: 4 if ret == 'f32' else 8].hex())
         elif ret not in ('void', '?'):
-            wide = '*' in ret or any(w in ret for w in ('64', 'Address', 'Handle', 'size_t', 'ptrdiff'))
+            wide = ret in ('addr', 'u64', 'i64')
             parts.append('ret %x' % (x0 & ((1 << (64 if wide else 32)) - 1)))
         out[n] = ' '.join(parts)
     return out

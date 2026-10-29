@@ -589,10 +589,13 @@ snx_test_target(snx-test-crc32-helper 11)
 target_link_libraries(snx-test-crc32-helper PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME crc32_helper COMMAND snx-test-crc32-helper)
 
-# the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/NVN_HLE.md's fields
+# the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/NVN_HLE.md's fields,
+# and the NVN functions' types that hookgen makes of gpu/nvn/nvn.hook, against prototypes in NVN's types
 add_executable(snx-test-nvn-header nvn_header.c)
 snx_test_target(snx-test-nvn-header 99)
 target_include_directories(snx-test-nvn-header PRIVATE "${PROJECT_SOURCE_DIR}/src")
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+snx_hookgen(snx-test-nvn-header SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 add_test(NAME nvn_header COMMAND snx-test-nvn-header)
 # nvn_direct's TIC and TSC encoders (src/nx/gpu/nvn/nvn_tic.c) read back through the renderer's decoders
 add_executable(snx-test-nvn-descriptors nvn_descriptors.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c"
@@ -769,11 +772,17 @@ foreach(bad IN ITEMS
         uses_uncovered 3 "no declaration of struct S holds for f's versions"
         buffer_length 2 "p's length names n, which isn't an argument"
         buffer_impure 2 "only a pure hook's buffers are checked"
-        buffer_type 2 "only an addr argument is a buffer, not p"
+        buffer_type 2 "only an addr or a pointer argument is a buffer, not p"
         buffer_length_type 2 "p's length q is not an integer"
         route_twice 3 "f is routed on line 1 too"
         route_hooked 3 "f is hooked on line 2, which routes it already"
         route_versioned 1 "@version goes before a hook or a struct"
+        argument_array 2 "v is an array, which the language doesn't take"
+        pointer_unknown 4 "unknown type 'NVNtextur'"
+        by_value_struct 3 "NVNtexture is passed by value, but it isn't nx/gpu/nvn/nvn.h's enum or pointer"
+        const_value 2 "const i32 has no '\\*' after it"
+        include_missing 2 "cannot find nx/none.h"
+        function_type_versions 4 "nvnQueueFinish takes other types on line 3"
         handler_underived 2 "memcpy names no handler"
         handler_derived 2 "nvn_DeviceFinalize is the handler that nvnDeviceFinalize names already")
     if(NOT DEFINED bad_name)
@@ -781,7 +790,8 @@ foreach(bad IN ITEMS
     elseif(NOT DEFINED bad_line)
         set(bad_line "${bad}")
     else()
-        add_test(NAME hookgen_refuses_${bad_name} COMMAND snx-hookgen --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+        add_test(NAME hookgen_refuses_${bad_name} COMMAND snx-hookgen -I "${PROJECT_SOURCE_DIR}/src"
+                 --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
                  "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/${bad_name}.hook")
         set_tests_properties(hookgen_refuses_${bad_name} PROPERTIES
                              PASS_REGULAR_EXPRESSION "${bad_name}.hook:${bad_line}: .*${bad}")

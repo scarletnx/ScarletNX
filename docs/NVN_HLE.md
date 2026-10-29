@@ -104,7 +104,7 @@ driver's results go nowhere but the shadows: the game sees nvn_direct's.
 | Control memory, and memory the driver runs short of | a piece of the runtime's (at least 64 KiB) for each `AddControlMemory`, and for each call of the shadow's own memory callback | free when no recording the game can call has records in it, and 4 presents after that |
 | Command handle | the handle the driver's `EndRecording` answered | keyed by nvn_direct's handle |
 
-`tools/nvn_verify_kinds.py` writes each function's argument kinds from `nvn.h`'s prototypes into
+`tools/nvn_verify_kinds.py` writes each function's argument kinds from its prototype in `nvn.hook` into
 `nvn_verify_kinds.inc` (the ctest `nvn_verify_kinds` checks it is current). A call whose argument has no shadow is
 skipped, and the log names the function and the reason once. Never made in the shadow: waits, the window and its
 presents (a present flushes the shadow queue instead), the game's callbacks, virtual pool mappings, and

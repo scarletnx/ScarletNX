@@ -52,22 +52,61 @@ Hooks are declared in `src/nx/hle/hook/hooks.hook`, one per line, each under the
 
 ```
 family libc
-hook memcpy(addr dst, addr src, u64 size) -> addr = hook_memmove
+hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
 ```
 
 - The symbol is the function's name as the game's dynamic symbol table spells it. A C++ function goes by its mangled
   name (`_ZN2nn2os...`). Names are never parsed, demangled or mangled.
 - The arguments and result are the function's as C sees them. A C++ method takes `this` as its first argument. The
-  types are `void` (a result only), `bool`, `u8` to `u64`, `i8` to `i64`, `addr` (a guest address) and `f32`/`f64`.
-  Integers take x0 to x7 and floats v0 to v7 under AAPCS64, counted apart. An argument that would go on the stack is
-  refused.
+  types are `void` (a result only), `bool`, `u8` to `u64`, `i8` to `i64`, `addr` (a guest address) and `f32`/`f64`,
+  each of the size its name says in the guest (AArch64, LP64), and pointers. Integers take x0 to x7 and floats v0 to
+  v7 under AAPCS64, counted apart. An argument that would go on the stack is refused.
+- A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
+  `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
+  that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).
+  hookgen reads the names that the header's typedefs declare, and refuses a name it doesn't declare. A type of the
+  header is passed by value only when it is an enum (an `int` under AAPCS64, so an `i32`) or a pointer
+  (`typedef void* NVNnativeWindow`, or a function pointer type, so an `addr`). The language has no arrays: an array
+  argument is a pointer to its first element. A `const` without a `*` after it is refused, as it says nothing the
+  caller sees.
+- A pointer is a guest address. The adapter reads it from its x register as a `u64`, and the handler takes it as a
+  `u64`, as an `addr`: the type only says what it points to, for the function types below and for the tools that
+  read the spec (`tools/hook_spec.py`). No handler can take it for a host pointer.
 - The handler is `ret handler(CPU* c, args...)`, declared by the generated `hle/hook/hooks.hook.h`. It reads and
   writes guest memory at `c->mem + addr`, and calls the HLE kernel for anything that waits (a guest thread holds its
   emulated core until a kernel wait releases it, so a handler never blocks on a host primitive).
 - `= HANDLER` names the handler. Without it, the handler is the symbol with a `_` before its first capital:
-  `hook nvnDeviceFinalize(addr d)` runs `nvn_DeviceFinalize`. The symbol must have a part in lower case before
+  `hook nvnDeviceFinalize(NVNdevice* d)` runs `nvn_DeviceFinalize`. The symbol must have a part in lower case before
   that capital (`memcpy` and `_ZN...` don't, so they name their handlers). An `= HANDLER` that names the handler the
   symbol gives already is refused, so that each name is written once.
+
+### Function types
+
+With an `include` line, the generated header also includes that header, and gives each hooked function its type as
+the guest calls it, `PFN<SYMBOL in capitals>PROC`:
+
+```
+hook nvnTextureWriteTexelsStrided(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const void* src, i64 row, i64 image)
+typedef void (*PFNNVNTEXTUREWRITETEXELSSTRIDEDPROC)(const NVNtexture* t, const NVNtextureView* v, const NVNcopyRegion* region, const void* src, int64_t row, int64_t image);
+```
+
+`gpu/nvn/nvn.hook` is thus the one prototype of each NVN function the runtime implements: `nvn.h` keeps only the
+types of the callbacks and the resolvers, which no hook declares, and `tools/nvn_verify_kinds.py` and
+`tools/nvn_hash.py` read the prototypes from `nvn.hook` (`tools/hook_spec.py`). Each type has the guest's size,
+whatever the host:
+
+- An integer is the `<stdint.h>` type of its size (`int32_t`, `int64_t`), and `bool` a `uint8_t` (NVN's
+  `NVNboolean`), never a host type that changes with the host: `long` is 32 bits on Windows, and a `size_t` or a
+  `ptrdiff_t` is as wide as the host's pointers. A `ptrdiff_t` of the guest is an `i64` in the spec, and a `size_t` a
+  `u64`.
+- A pointer is the host pointer to the type it points to, which the reader needs. The guest's pointers are 8 bytes,
+  and so are the host's on every host ScarletNX builds for: the generated header asserts it (`nvn_pointer_size`).
+- An enum stays an enum. AAPCS64 makes it an `int` when its values fit in one, and each of NVN's has a
+  `0x7FFFFFFF` member to make it 32 bits.
+
+Nothing calls through these types: a guest function runs at a guest address, through its dispatch slot. All the
+declarations of one symbol take the same types, as it has one function type. `tests/nvn_header.c` checks some of
+them against prototypes in NVN's own types, with `-pedantic-errors`.
 
 `tools/hookgen` generates the adapters (a `GuestFn` that unpacks the registers, calls the handler, puts the result in
 x0 or v0 and returns to x30) and the table sorted by symbol. `tests/hook_adapters.c` checks the register mapping,
@@ -151,12 +190,12 @@ function's own recompiled code. The two can't both run on the game's live memory
 twice, so a hook says what its function touches:
 
 ```
-hook memcpy(addr dst out[size], addr src in[size], u64 size) -> addr = hook_memmove pure
+hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
 ```
 
 - `pure` (after the handler and its `uses`) says the function depends on nothing but its arguments, the memory they
   point to and constant data, and changes nothing but its result and the memory its buffers name.
-- A buffer is an `addr` argument followed by its use, `in[...]` (read), `out[...]` (written) or `inout[...]`, and its
+- A buffer is an `addr` or pointer argument followed by its use, `in[...]` (read), `out[...]` (written) or `inout[...]`, and its
   length in bytes: a number, or an integer argument's name times an optional number, plus an optional number
   (`in[count * 4 + 8]`). A hook has at most four, and only a pure hook has any.
 
