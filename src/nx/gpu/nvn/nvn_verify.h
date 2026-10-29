@@ -131,6 +131,13 @@ typedef struct {
         u32 n;
     } cmd;
 } NvnVerifyState;
+/* the file's thread state, t_nvn.verify (gpu/nvn/nvn_state.h) */
+typedef struct {
+    int shadow;          /* in a shadow call: slots run the driver's code */
+    u32 queue;           /* the replay queue (1 up) of the shadow call's queue, 0 none */
+    const char* running; /* the function the shadow call runs */
+    u64 stack;           /* the top of the thread's shadow stack (shadow_stack) */
+} NvnVerifyThread;
 
 /* the setting, once nvn_direct runs the game's NVN calls */
 int nvn_verify_on(void);
