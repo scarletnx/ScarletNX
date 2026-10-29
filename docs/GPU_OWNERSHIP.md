@@ -109,6 +109,11 @@ macOS have no alias pool yet, so no mirror and no traps.
 - Landing is a memcpy into the mirror. A producer's GPU copy keeps the range's layout (block linear surfaces are
   swizzled on the GPU), and covers the range's padding: it is filled from guest memory when the producer takes the
   range.
+- The runtime's reads land only the bytes they read. `gmem_read` (`copy_runs`) reads a run none of whose bytes are
+  owned through `own_stage`, which reads a trapped page through the mirror, so an owner beside the run on its pages
+  stays on the GPU. A shader's code window (`gmem_read_code_cpu`) stops at the first owned byte, and lands only when
+  the program reaches that byte (`gmem_code_cut`). Before, each of these landed GPU results in one game several times
+  a frame.
 
 ## Phases
 
