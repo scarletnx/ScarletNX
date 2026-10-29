@@ -4,6 +4,7 @@
    scripted presses, as a Switch game reads them (the SDL backend and unattended.c), in hid:USER's terms */
 #ifndef SNX_CTR_INPUT_H
 #define SNX_CTR_INPUT_H
+#include <stdbool.h>
 #include <stdint.h>
 
 /* hid:USER's pad bits (Azahar's PadState, 3dbrew's HID Shared Memory): the circle pad's direction bits are HID's to
@@ -26,12 +27,18 @@ enum {
 typedef struct {
     uint32_t buttons; /* SNX_CTR_PAD_* held */
     float circle[2];  /* the circle pad, -1 to 1 on each axis, x to the right and y up */
+    bool touch;       /* the touch screen pressed */
+    uint32_t touch_x, touch_y; /* the last touch position in the screen's 320x240 pixels, kept after a release */
 } SnxCtrInput;
 union SDL_Event;
 /* The gamepads and the script: from now on scripted presses count their time */
 void snx_ctr_input_init(void);
 /* An event of the presenter's window pump: a gamepad connected or gone */
 void snx_ctr_input_event(const union SDL_Event* event);
+/* The presenter's pointer: a press on the touch screen at x and y in its pixels, or a release */
+void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y);
+/* Whether the touch screen is pressed */
+bool snx_ctr_input_touched(void);
 /* What the player holds now */
 void snx_ctr_input_read(SnxCtrInput* input);
 void snx_ctr_input_free(void);
