@@ -4,6 +4,7 @@
    exact at any uptime, fps_limit's pacing of DequeueBuffer, and the buffer vi_show_buffer hands the renderer. A
    buffer no render target holds is converted on the GPU (vk/renderer.c's cpu_frame): tests/glsl/texconv_glsl.cpp
    checks its formats, tests/astc_vulkan.c a block linear one on a device */
+#include "common/utilities/bits.h"
 #include "nx/runtime/clock.c"
 #include "nx/runtime/present.c"
 #include <stdarg.h>
@@ -49,7 +50,7 @@ static void ticks(void) {
                              0x7FFFFFFFFFFFFFFFull};
     size_t i;
     for (i = 0; i < sizeof at / sizeof *at; i++) {
-        unsigned __int128 exact = (unsigned __int128)at[i] * 192 / 10000;
+        u64 hi, rem, lo = snx_mul_wide(at[i], 192, &hi), exact = snx_div_wide(hi, lo, 10000, &rem);
         now_ns = at[i]; /* clock_start ran at 0 */
         CHECK(guest_ticks() == (u64)exact, "ticks at %llu ns: %llu, not %llu", (unsigned long long)at[i],
               (unsigned long long)guest_ticks(), (unsigned long long)exact);

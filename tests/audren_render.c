@@ -3,6 +3,7 @@
 /* The audio renderer's DSP offline: updates written field by field as edenprobe's audio family writes them
    (revision 4, 48 kHz, 240 samples a frame), frames rendered, and what the aux, the circular buffer sinks and the
    voices' counters show. Levels are one bin of a Fourier transform over a frame of whole periods */
+#include "common/utilities/bits.h"
 #include "nx/hle/services/audren_dsp.c"
 #include "nx/hle/hle.c"
 #include <math.h>
@@ -432,8 +433,8 @@ static void ref_delay(int nch, const i16* const* in, i16* const* out, int n, int
 
 /* Eden's FixedPoint<50, 14>, as the reverb's expected values use it */
 static i64 tq(float f) { return (i64)(f * 16384.0f); }
-static i64 tmul(i64 a, i64 b) { return (i64)(((__int128)a * b) >> 14); }
-static i64 tdiv(i64 a, i64 b) { return (i64)(((__int128)a * 16384) / b); }
+static i64 tmul(i64 a, i64 b) { return snx_mul_shr_s64(a, b, 14); }
+static i64 tdiv(i64 a, i64 b) { return snx_div_shl_s64(a, 14, b); }
 static i32 tint(i64 q) { return (i32)((q + ((q & 0x3FFF) >> 1)) >> 14); }
 static i16 tsat(i32 v) { return (i16)(v > 32767 ? 32767 : v < -32768 ? -32768 : v); }
 

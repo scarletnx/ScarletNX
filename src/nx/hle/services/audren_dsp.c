@@ -6,6 +6,7 @@
    through its splitter; the submixes, each before the mixes it feeds, through its effects and then into those; the
    final mix through its effects and its volume; then the device sinks, then the circular buffer sinks. The mix
    buffers hold samples on the 16-bit scale, as floats */
+#include "common/utilities/bits.h"
 #include "nx/hle/services/audren_dsp.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/platform/log.h"
@@ -1060,7 +1061,7 @@ static void effect_biquad(ARState* s, ARMix* m, AREffect* e) {
 
 /* delay and reverbs, in Eden's FixedPoint: Q14 gains, samples Q14 at 64 times the 16-bit scale */
 static i32 q14mul(i32 a, i32 b) { return (i32)(((i64)a * b) >> 14); }
-static i64 q14mul64(i64 a, i64 b) { return (i64)(((__int128)a * b) >> 14); }
+static i64 q14mul64(i64 a, i64 b) { return snx_mul_shr_s64(a, b, 14); }
 
 /* before revision 11, six channels take the old order: fronts, backs, centre, LFE (Eden's UseOldChannelMapping) */
 static void old_channel_order(i8* in, i8* out) {
@@ -1118,7 +1119,7 @@ static void delay_init(AREffect* e, const u8* p) {
     time = (i32)(rd32(p + 0x14) * 16384u);
     time = q14mul(time, (i32)(((i64)rate << 14) / (1000 * 16384)));
     n_max = (u32)(rate >> 14) * rd32(p + 0x10);
-    len_max = (i64)(((__int128)274877920 * (i64)((u64)n_max << 32)) >> 32); /* 0.064f in Q32.32 */
+    len_max = snx_mul_shr_s64(274877920, (i64)((u64)n_max << 32), 32); /* 0.064f in Q32.32 */
     len = (i64)(((u64)(i64)(time >> 14) << 32) | ((u64)(time & 0x3FFF) << 18));
     if (len > len_max) len = len_max;
     samples = (i32)(len >> 32);
@@ -1203,7 +1204,7 @@ static void effect_delay(ARState* s, ARMix* m, AREffect* e) {
 static i64 fq(float f) { return (i64)(f * 16384.0f); }
 static float qf(i64 q) { return (float)q / 16384.0f; }
 static i32 q_int(i64 q) { return (i32)((q + ((q & 0x3FFF) >> 1)) >> 14); }
-static i64 q_div(i64 a, i64 b) { return b ? (i64)(((__int128)a * 16384) / b) : 0; }
+static i64 q_div(i64 a, i64 b) { return b ? snx_div_shl_s64(a, 14, b) : 0; }
 
 /* Eden's ReverbDelayLine: a ring of max + 1 samples */
 typedef struct {
