@@ -221,7 +221,7 @@ static u64 obj_alloc(u32 size) {
         if (a) break;
         slab = shadow_map(OBJ_SLAB);
     }
-    memset(GP(a), 0, size);
+    memset(GP(a), 0, size); /* guest memory: every byte the game sees */
     return a;
 }
 static void obj_free(u64 a, u32 size) {
@@ -805,7 +805,7 @@ static int state_in(u64 addr, const u8* live, u32 len, int defaults, u64* at) {
     if (s)
         memcpy(GP(*at), s->drv, len);
     else if (defaults)
-        memset(GP(*at), 0, len);
+        memset(GP(*at), 0, len); /* guest memory: every byte the game sees */
     pm_unlock(&g_nvn.verify.lock);
     return s || defaults;
 }
@@ -955,7 +955,7 @@ static int shadow_args(VfFn* f, CPU* c, Arg* a, u64* scratch, const char** why) 
                 break;
             case 'w':
                 *scratch = (*scratch - 0x100) & ~15ull;
-                memset(GP(*scratch), 0, 0x100);
+                memset(GP(*scratch), 0, 0x100); /* guest memory: every byte the game sees */
                 c->x[xi] = *scratch;
                 break;
             case 'r': *why = "mapping requests"; return 0;
@@ -1120,7 +1120,7 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         return;
     }
     memcpy(&before, c, REGS_SIZE);
-    memset(a, 0, sizeof a);
+    memset(a, 0, sizeof a);  /* over a kilobyte: memset, not a stack temporary */
     if (f->k && f->k->kinds) /* the states as they are before nvn_direct's handler changes them */
         for (i = 0; f->k->kinds[i] && i < NVK_ARGS; i++)
             if (f->k->kinds[i] == 's') {
@@ -1436,7 +1436,7 @@ void nvn_verify_gpfifo(u32 fd, const u8* entries, u32 n) {
         while (left) {
             u64 cpu, run = gmmu_run(gva, left, &cpu);
             if (!run) { /* unmapped: zeros, as nothing */
-                memset(b->w + at, 0, (size_t)left);
+                memset(b->w + at, 0, (size_t)left); /* a byte range */
                 at += (u32)(left / 4);
                 break;
             }
