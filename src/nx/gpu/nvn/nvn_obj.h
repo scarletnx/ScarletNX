@@ -44,10 +44,20 @@ typedef struct {
 NVN_FITS(NvnDevice, 0x18);
 
 /* ---- queue ---- */
+/* The sizes as the game's driver keeps them, 32 bits each; set: which of them the game set (NVN_QB_SET_*), which their
+   getters answer (the driver's own defaults apply to the others) */
 typedef struct {
     u32 flags, priority;
-    u64 cmd_size, compute_size, control_size, flush_threshold, memory, memory_size;
-} NvnQueueBuilder; /* nxnative's device field doesn't fit an SDK 5 builder's 0x38: the runtime has one device */
+    u32 cmd_size, compute_size, control_size, flush_threshold;
+    u64 memory;
+    u32 memory_size;
+    u8 set, pad[3];
+    u64 device;
+} NvnQueueBuilder;
+#define NVN_QB_SET_COMMAND 0x01u
+#define NVN_QB_SET_COMPUTE 0x02u
+#define NVN_QB_SET_CONTROL 0x04u
+#define NVN_QB_SET_FLUSH   0x08u
 NVN_FITS(NvnQueueBuilder, 0x38);
 /* replay: the queue's replay state (gpu/nvn/nvn_replay.c), by index. ready: when its work so far is done on the
    pacer's clock (plat_ns), and shown: the present on the display it waited for (nvn_replay_shown_syncpt's value, 0
@@ -67,9 +77,12 @@ typedef struct {
 NVN_FITS(NvnPoolBuilder, 0x40);
 /* memory: the storage's guest address (0 for a virtual pool, which has none); gpu: its GPU address, the page table
    showing memory there (a virtual pool's pages show what its mapping requests put there) */
+/* nvmap: the nvmap handle of the storage (nvdrv.c nvmap_handle_new, 0 for none), which a texture's NvRm surface names
+   (nvnTextureGetNvRmSurfaceNVX) for a decoder of the game's to write into */
 typedef struct {
     u32 magic, flags;
     u64 memory, size, gpu;
+    u32 nvmap, pad;
 } NvnPool;
 NVN_FITS(NvnPool, 0x100);
 
@@ -115,7 +128,7 @@ typedef struct {
 typedef struct {
     u64 device;
     NvnTexDesc d;
-    u32 pad;
+    u32 gl_name; /* SetGLTextureName's, for its getter */
     u64 pool;
     i64 offset;
     u8 layout[8];      /* SetPackagedTextureLayout's bytes */
@@ -186,11 +199,12 @@ typedef struct {
 } NvnStage;
 /* st: by NVN shader stage (NVN_SHADER_STAGE_*). off_a: a dual vertex program's VertexA (0 for none), or a compute
    program's shared memory bytes; block: a compute program's workgroup size */
+/* sample_shading: SetSampleShading's mode (NVN_SAMPLE_SHADING_*), which the program's draws take */
 typedef struct {
     u32 magic, off_a;
     NvnStage st[6];
     u64 serial;
-    u16 block[3], pad;
+    u16 block[3], sample_shading;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
@@ -214,14 +228,18 @@ NVN_FITS(NvnEventBuilder, 0x10);
 typedef struct {
     u32 magic, pad;
     u64 value, gpu; /* the u32's guest and GPU addresses */
+    u64 pool;       /* the storage the builder gave, for the getters */
+    i64 offset;
 } NvnEvent;
 NVN_FITS(NvnEvent, 0x28);
 
 /* ---- windows ---- */
+/* active: SetNumActiveTextures's, 0 for all of them (count is at most 4) */
 typedef struct {
     u64 texture[4];
-    i32 count, interval;
-} NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window, which the runtime doesn't use */
+    i16 count, active;
+    i32 interval;
+} NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window (nvn_queue.c keeps the last one) */
 NVN_FITS(NvnWindowBuilder, 0x2c);
 /* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
    its last present's slot plus one period (0: at once); syncpt[i], value[i]: the point the replay reaches once texture
@@ -236,6 +254,8 @@ typedef struct {
     u64 texture[4];
     u64 presents, pace, available[4], released[4], shown_at[4];
     u32 syncpt[4], value[4], on_display[2], shown;
+    i32 active;           /* the textures acquired in turn: the first active ones (SetNumActiveTextures) */
+    u64 native;           /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
 
@@ -255,6 +275,9 @@ typedef struct {
     u64 device, used;
     u32 lent, pad;
     u64 origin;
+    u64 game_end;           /* the end of the memory the game last added (the getters' size and room) */
+    u64 control_size;       /* the control memory the game last added: the records use none of it */
+    i64 row_stride, image_stride; /* SetCopyRowStride's and SetCopyImageStride's, for their getters */
 } NvnCmdBuf;
 NVN_FITS(NvnCmdBuf, 0x90);
 typedef char nvn_check_cmd_flag[offsetof(NvnCmdBuf, game_flag10) == 0x10 ? 1 : -1];
@@ -274,8 +297,9 @@ static inline u64 nvn_set_field(u64 w, unsigned lo, unsigned n, u64 v) {
 #define NVN_BLEND_EQ_RGB  31, 3
 #define NVN_BLEND_EQ_A    34, 3
 #define NVN_BLEND_ADV     37, 6 /* the advanced mode, 0 none */
-#define NVN_BLEND_ADV_NPM 43, 1
+#define NVN_BLEND_ADV_NPM 43, 1 /* the advanced mode's destination is normalized */
 #define NVN_BLEND_ADV_OVL 44, 2
+#define NVN_BLEND_ADV_PMS 46, 1 /* the advanced mode's source is premultiplied */
 /* NVNcolorState (4 bytes, one u32) */
 #define NVN_COLOR_BLEND_EN   0, 8
 #define NVN_COLOR_LOGIC_OP   8, 4
@@ -303,11 +327,16 @@ static inline u64 nvn_set_field(u64 w, unsigned lo, unsigned n, u64 v) {
 #define NVN_VA_FORMAT 0, 8
 #define NVN_VA_OFFSET 8, 19
 #define NVN_VA_STREAM 27, 5
-/* NVNmultisampleState (0x18 bytes) */
+/* NVNmultisampleState (0x18 bytes). flags: NVN_MS_*. location[i]: sample i's position in its pixel (or in the grid's
+   pixels), x in bits 0-3 and y in 4-7 in sixteenths, as the game's driver keeps them (SetSampleLocations) */
 typedef struct {
-    u8 enable, samples, alpha_to_coverage, a2c_dither, raster_samples, coverage_mod, cov_to_color, cov_to_color_out;
-    u8 sample_locations, sample_grid;
+    u8 enable, samples, alpha_to_coverage, raster_samples, coverage_mod, cov_to_color_out, flags, pad;
+    u8 location[16];
 } NvnMultisample;
+#define NVN_MS_A2C_DITHER   0x01u
+#define NVN_MS_COV_TO_COLOR 0x02u
+#define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
+#define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
 NVN_FITS(NvnMultisample, 0x18);
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
@@ -329,7 +358,7 @@ enum {
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
     OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
     OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
-    OP_SAMPLE_MASK, OP_COUNT_
+    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_COUNT_
 };
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
@@ -376,7 +405,7 @@ typedef struct {
     u32 off_a;
     NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
-    u16 block[3], pad;
+    u16 block[3], sample_shading;
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {
@@ -466,6 +495,27 @@ typedef struct {
 typedef struct {
     i32 on;
 } NvnPDepthClamp;
+/* OP_LINE_WIDTH: f32 width */
+/* SetProvokingVertexMode: the mode, the 3D engine's PROVOKING_VERTEX (1 the last vertex) */
+typedef struct {
+    i32 mode;
+} NvnPProvoking;
+/* SetConservativeRasterEnable and SetConservativeRasterDilate: which: 0 the enable, 1 the dilation; dilate: quarter
+   pixels, 0 to 3, as the game's driver rounds it (up, from a dilation in pixels) */
+typedef struct {
+    i32 which, on, dilate, pad;
+} NvnPConservative;
+/* DrawTexture: the combined handle, and the destination (pixels) and source (texels) rectangles, x0 y0 x1 y1 */
+typedef struct {
+    u64 handle;
+    f32 dst[4], src[4];
+} NvnPDrawTexture;
+/* BindUniformBuffersDeferred and BindStorageBuffersDeferred: count NVNbufferRanges at src, which the GPU reads as it
+   runs the command (op: OP_BIND_UBO or OP_BIND_SSBO) */
+typedef struct {
+    i32 op, stage, first, count;
+    u64 src;
+} NvnPBindBufs;
 /* SetSampleMask: the samples a multisampled draw writes, bit i sample i */
 typedef struct {
     i32 mask, pad;

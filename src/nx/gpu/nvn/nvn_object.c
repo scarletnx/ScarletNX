@@ -32,6 +32,8 @@ typedef struct {
     i32 info[DEVICE_INFO_ITEMS];
     int driver, read_api;
     u32 formats[8]; /* bit f: a texture of NVN format f was initialized (logged once) */
+    u64 device;     /* the device the game made last (atomic): the runtime has one */
+    u32 debug_domain; /* the debug domains generated (atomic) */
 } NvnObjectState;
 static NvnObjectState g_nvn_object;
 
@@ -41,6 +43,7 @@ u64 nvn_pool_memory(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->memory : 0
 u64 nvn_pool_gpu(u64 pool) { return pool ? NVN_OBJ(NvnPool, pool)->gpu : 0; }
 static u32 g_device_flags;
 u32 nvn_device_flags(void) { return __atomic_load_n(&g_device_flags, __ATOMIC_RELAXED); }
+u64 nvn_device(void) { return __atomic_load_n(&g_nvn_object.device, __ATOMIC_RELAXED); }
 
 /* the small state objects are copied by value and may sit anywhere in the game's structures: read and written whole */
 static u32 ld32(u64 a) {
@@ -102,9 +105,98 @@ int nvn_DeviceInitialize(CPU* c, u64 d, u64 b) {
     o.origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; /* NVN's defaults: lower-left origin, near = -w */
     memcpy(GP(d), &o, sizeof o);
     __atomic_store_n(&g_device_flags, o.flags, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_nvn_object.device, d, __ATOMIC_RELAXED);
     nvn_draw_device(o.origin, o.depth_mode);
     LOG("nvn: device %llx initialized, flags %#x\n", (unsigned long long)d, o.flags);
     return 1;
+}
+void nvn_DeviceFinalize(CPU* c, u64 d) {
+    u64 was = d;
+    (void)c;
+    NVN_OBJ(NvnDevice, d)->magic = 0;
+    __atomic_compare_exchange_n(&g_nvn_object.device, &was, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+i32 nvn_DeviceBuilderGetFlags(CPU* c, u64 b) {
+    (void)c;
+    return (i32)NVN_OBJ(const NvnDeviceBuilder, b)->flags;
+}
+/* The objects the game finalized with DEFERRED_FINALIZE, freed once they are age submissions old: the game's driver
+   (NVN 53) returns at once, and the runtime frees nothing at a Finalize */
+void nvn_DeviceApplyDeferredFinalizes(CPU* c, u64 d, i32 age) {
+    (void)c;
+    (void)d;
+    (void)age;
+}
+/* ---- the debug layer's API, which the release driver answers as below (NVN 55.15): it installs no callback, walks
+   no object database, has no external debugger, and records no checkpoints (each setter answers 1). A debug domain is
+   the next number of a counter from 0 */
+void nvn_DeviceInstallDebugCallback(CPU* c, u64 d, u64 fn, u64 data, int enable) {
+    (void)c;
+    (void)d;
+    (void)fn;
+    (void)data;
+    (void)enable;
+}
+void nvn_DeviceWalkDebugDatabase(CPU* c, u64 d, i32 type, u64 fn, u64 data) {
+    (void)c;
+    (void)d;
+    (void)type;
+    (void)fn;
+    (void)data;
+}
+i32 nvn_DeviceGenerateDebugDomainId(CPU* c, u64 d, u64 name) {
+    (void)c;
+    (void)d;
+    (void)name;
+    return (i32)__atomic_fetch_add(&g_nvn_object.debug_domain, 1, __ATOMIC_RELAXED);
+}
+int nvn_DeviceIsExternalDebuggerAttached(CPU* c, u64 d) {
+    (void)c;
+    (void)d;
+    return 0;
+}
+int nvn_DeviceSetAutomaticCheckpointsEnable(CPU* c, u64 d, int on) {
+    (void)c;
+    (void)d;
+    (void)on;
+    return 1;
+}
+int nvn_DeviceSetAutomaticCheckpointsByDebugGroup(CPU* c, u64 d, int on) {
+    (void)c;
+    (void)d;
+    (void)on;
+    return 1;
+}
+int nvn_DeviceSetAutomaticCheckpointsMask(CPU* c, u64 d, u32 mask) {
+    (void)c;
+    (void)d;
+    (void)mask;
+    return 1;
+}
+int nvn_DeviceSetAutomaticCheckpointsSamplingInterval(CPU* c, u64 d, u32 interval) {
+    (void)c;
+    (void)d;
+    (void)interval;
+    return 1;
+}
+int nvn_DeviceSetCheckpointCallStacksEnable(CPU* c, u64 d, int on) {
+    (void)c;
+    (void)d;
+    (void)on;
+    return 1;
+}
+int nvn_DeviceSetCheckpointMaxCallStacksDepth(CPU* c, u64 d, i32 depth) {
+    (void)c;
+    (void)d;
+    (void)depth;
+    return 1;
+}
+/* the offline compiler's intermediate shader cache: the release driver returns at once, and the runtime's shaders
+   come compiled */
+void nvn_DeviceSetIntermediateShaderCache(CPU* c, u64 d, i32 on) {
+    (void)c;
+    (void)d;
+    (void)on;
 }
 /* the end of the read-only segment that follows func's code: the module's jump tables are there */
 typedef struct {
@@ -209,6 +301,12 @@ int nvn_DeviceRegisterFastClearColor(CPU* c, u64 d, u64 color, i32 format) {
     (void)format;
     return 1;
 }
+int nvn_DeviceRegisterFastClearColori(CPU* c, u64 d, u64 color, i32 format) {
+    return nvn_DeviceRegisterFastClearColor(c, d, color, format);
+}
+int nvn_DeviceRegisterFastClearColorui(CPU* c, u64 d, u64 color, i32 format) {
+    return nvn_DeviceRegisterFastClearColor(c, d, color, format);
+}
 int nvn_DeviceRegisterFastClearDepth(CPU* c, u64 d, f32 depth) {
     (void)c;
     (void)d;
@@ -267,8 +365,26 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u64 lead = o->gpu & 0xfff;
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
     o->magic = 0;
     o->gpu = 0;
+}
+/* The nvmap handle of a pool's storage, made at its first use: the game's driver makes one for every pool, and only an
+   NvRm surface (nvnTextureGetNvRmSurfaceNVX) names it, for a decoder of the game's, which maps it through host1x.
+   Two threads can ask at once: the first handle stored stays. 0 for a pool without storage of its own */
+static u32 pool_nvmap(u64 pool) {
+    NvnPool* o = NVN_OBJ(NvnPool, pool);
+    u32 h = __atomic_load_n(&o->nvmap, __ATOMIC_ACQUIRE), none = 0;
+    if (h || o->magic != NVN_MAGIC('P', 'O', 'O', 'L') || !o->memory) return h;
+    h = nvmap_handle_new(o->memory, o->size);
+    if (!h) {
+        LOG_LIMIT(4, "nvn: memory pool %llx (%llx bytes at %llx) has no nvmap handle for an NvRm surface\n",
+                  (unsigned long long)pool, (unsigned long long)o->size, (unsigned long long)o->memory);
+        return 0;
+    }
+    if (__atomic_compare_exchange_n(&o->nvmap, &none, h, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return h;
+    nvmap_handle_drop(h);
+    return none;
 }
 /* the CPU and the GPU share guest memory in phase 1: nothing to flush */
 void nvn_MemoryPoolFlushMappedRange(CPU* c, u64 p, i64 offset, u64 size) {
@@ -394,6 +510,11 @@ u64 nvn_BufferMap(CPU* c, u64 buf) {
 u64 nvn_BufferGetSize(CPU* c, u64 buf) {
     (void)c;
     return NVN_OBJ(NvnBuffer, buf)->size;
+}
+u64 nvn_BufferGetDebugID(CPU* c, u64 buf) {
+    (void)c;
+    (void)buf;
+    return 0; /* the release driver's: only its debug layer numbers objects */
 }
 void nvn_BufferSetDebugLabel(CPU* c, u64 buf, u64 label) {
     (void)c;
@@ -527,6 +648,15 @@ void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
     (void)c;
     if (!slot) return;
     nvn_tsc_encode(&NVN_OBJ(const NvnSampler, s)->p, tsc);
+    memcpy(GP(slot), tsc, sizeof tsc);
+}
+/* a sampler's descriptor straight from a builder's state, as the game's driver writes it with no sampler object */
+void nvn_SamplerPoolRegisterSamplerBuilder(CPU* c, u64 sp, i32 id, u64 b) {
+    u64 slot = desc_slot(sp, id, "sampler");
+    u32 tsc[8];
+    (void)c;
+    if (!slot) return;
+    nvn_tsc_encode(&NVN_OBJ(const NvnSamplerBuilder, b)->p, tsc);
     memcpy(GP(slot), tsc, sizeof tsc);
 }
 
@@ -793,21 +923,23 @@ void nvn_TextureSetDebugLabel(CPU* c, u64 t, u64 label) {
     (void)t;
     (void)label;
 }
-/* where a view's first level and layer start in the storage */
-i64 nvn_TextureGetViewOffset(CPU* c, u64 t, u64 v) {
-    const NvnTexture* o = CT(t);
+/* where a view's first level and layer start in the storage of a texture described by d */
+static i64 view_offset(const NvnTexDesc* d, u64 v) {
     const NvnView* w;
     NvnTexLayout l;
     u64 off = 0;
-    (void)c;
     if (!v) return 0;
     w = NVN_OBJ(const NvnView, v);
-    if (w->set & NVN_VIEW_LEVELS) off = nvn_tex_level_offset(&o->d, w->base_level);
+    if (w->set & NVN_VIEW_LEVELS) off = nvn_tex_level_offset(d, w->base_level);
     if (w->set & NVN_VIEW_LAYERS) {
-        nvn_tex_layout(&o->d, &l);
+        nvn_tex_layout(d, &l);
         off += (u64)w->min_layer * l.layer_size;
     }
     return (i64)off;
+}
+i64 nvn_TextureGetViewOffset(CPU* c, u64 t, u64 v) {
+    (void)c;
+    return view_offset(&CT(t)->d, v);
 }
 /* the CPU and the GPU share guest memory in phase 1: nothing to flush */
 void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
@@ -833,7 +965,7 @@ void nvn_wait_end(void) {
 void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
     (void)c;
     nvn_wait_begin();
-    nvn_read_texels(t, v, region, dst);
+    nvn_read_texels(t, v, region, dst, 0, 0);
     nvn_wait_end();
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
@@ -882,9 +1014,147 @@ void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i6
     (void)c;
     nvn_write_texels(t, v, region, src, row, image);
 }
+/* ReadTexels with the destination's rows row bytes apart and its slices image bytes apart (0: tightly packed) */
+void nvn_TextureReadTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
+    (void)c;
+    nvn_wait_begin();
+    nvn_read_texels(t, v, region, dst, row, image);
+    nvn_wait_end();
+}
+/* The CPU's caches dropped over the texels of a region, for a CPU read of what the GPU wrote: the CPU and the GPU share
+   guest memory here, and the GPU's writes land there before the CPU reads them (GPU-owned memory lands when the CPU
+   touches it, nx/memory/own.c), so there is nothing to drop, as for FlushTexels */
+void nvn_TextureInvalidateTexels(CPU* c, u64 t, u64 v, u64 region) {
+    (void)c;
+    (void)t;
+    (void)v;
+    (void)region;
+}
+u64 nvn_TextureGetDebugID(CPU* c, u64 t) {
+    (void)c;
+    (void)t;
+    return 0; /* the release driver's: only its debug layer numbers objects */
+}
+/* the raw storage class (NVNrawStorageClass) of a description, by the game's driver's rule: LINEAR (1) for a pitch
+   linear texture, else by the format: none (0) for no format, S8 and Z16 (3) for stencil 8 and depth 16, ZF24S8 (4)
+   for the 24-bit depths, ZF32_X24S8 (5) for 32-bit float depth with stencil, and color and ZF32 (2) for the rest */
+static i32 raw_storage_class(const NvnTexDesc* d) {
+    if (d->flags & NVN_TEX_LINEAR) return 1;
+    switch (d->format) {
+        case 0: return 0;
+        case NVN_FORMAT_STENCIL8:
+        case NVN_FORMAT_DEPTH16: return 3;
+        case NVN_FORMAT_DEPTH24:
+        case NVN_FORMAT_DEPTH24_STENCIL8: return 4;
+        case NVN_FORMAT_DEPTH32F_STENCIL8: return 5;
+        default: return 2;
+    }
+}
+i32 nvn_TextureGetRawStorageClass(CPU* c, u64 t) {
+    (void)c;
+    return raw_storage_class(&CT(t)->d);
+}
+/* A sparse texture's tile: the texels of one 64 KiB page of its block-linear layout, as the game's driver answers
+   (a 2D tile of 1, 2, 4, 8 or 16 bytes a block is 256x256, 256x128, 128x128, 128x64 or 64x64 blocks, a 3D one
+   64x32x32, 32x32x32, 32x32x16, 32x16x16 or 16x16x16), and the levels at least a tile in each dimension, before the
+   mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
+static void sparse_tile_layout(const NvnTexDesc* d, u64 out) {
+    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
+    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
+    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, b = nvn_fmt_bpb(d->format, &bw, &bh), k = 0, level;
+    int is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    while (k < 5 && (1 << k) != b) k++;
+    if ((d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) && k < 5 &&
+        (is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+         d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)) {
+        v[1] = (is3d ? tile3d[k][0] : tile2d[k][0]) * bw;
+        v[2] = (is3d ? tile3d[k][1] : tile2d[k][1]) * bh;
+        v[3] = is3d ? tile3d[k][2] : 1;
+        for (level = 0; level < (i32)d->levels; level++) {
+            u32 w = d->width >> level, h = d->height >> level, z = is3d ? d->depth >> level : 1;
+            if (w < (u32)v[1] || h < (u32)v[2] || z < (u32)v[3]) break;
+        }
+        v[0] = level;
+    }
+    memcpy(GP(out), v, sizeof v);
+}
+void nvn_TextureGetSparseTileLayout(CPU* c, u64 t, u64 out) {
+    (void)c;
+    sparse_tile_layout(&CT(t)->d, out);
+}
+/* The surface description NVIDIA's NvRm library keeps of the texture (NvRmSurface, 0x58 bytes), which one movie
+   player takes to have its decoder write into the texture, as the game's driver fills it (SDK 12.3.9, NVN 55):
+   0x00 the width and height of level 0, 0x08 the color format (NvColorFormat: the driver knows eight NVN formats,
+   others are 0), 0x10 the layout (1 pitch linear, 3 block linear), 0x14 the pitch in bytes, 0x18 the nvmap handle of
+   the texture's pool, 0x1c the texture's offset in it, 0x20 the GMMU kind (0 pitch, 0xfe block linear), 0x24 the block
+   height (log2 of the GOBs), 0x30 bit 63 once the size is known, 0x38 the size. A block-linear pitch is the row's
+   bytes rounded up to the 64-byte GOB (NvRmSurfaceComputePitch), the size the pitch times the rows rounded up to whole
+   blocks (NvRmSurfaceComputeSize). The second argument is unused, as in the driver */
+void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
+    static const struct {
+        u16 format;
+        u64 color;
+    } colors[] = {
+        {NVN_FORMAT_R8, 0xf09200408ull},          {NVN_FORMAT_RG8, 0xf08440710ull},
+        {NVN_FORMAT_RGBA8, 0x200532120ull},       {NVN_FORMAT_DEPTH32F_STENCIL8, 0x20a532120ull},
+        {NVN_FORMAT_RGBX8_SRGB, 0x200532120ull},  {NVN_FORMAT_RGB565, 0x20a881210ull},
+        {NVN_FORMAT_RGBX8, 0x20a532120ull},       {NVN_FORMAT_BGRA8, 0x200d12120ull},
+        {NVN_FORMAT_BGRA8_SRGB, 0x200d12120ull},
+    };
+    const NvnTexture* o = CT(t);
+    u8 s[0x58];
+    u64 color = 0, size = 0, flags = 0;
+    u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0, bits;
+    size_t i;
+    (void)c;
+    (void)unused;
+    for (i = 0; i < sizeof colors / sizeof *colors; i++)
+        if (colors[i].format == o->d.format) color = colors[i].color;
+    bits = (u32)(color & 0xff); /* the format's bits per pixel */
+    if (o->d.flags & NVN_TEX_LINEAR) {
+        layout = 1;
+        pitch = o->d.stride;
+        kind = 0;
+        size = (u64)pitch * height;
+    } else {
+        unsigned th, td;
+        nvn_tex_level_tiles(&o->d, 0, &th, &td);
+        layout = 3;
+        kind = 0xfe;
+        block_h = th;
+        pitch = (u32)((((u64)width * bits + 7) / 8 + 63) & ~63ull);
+        size = (u64)pitch * (((u64)height + (8u << th) - 1) & ~((u64)(8u << th) - 1));
+    }
+    if (size) flags = 1ull << 63;
+    memset(s, 0, sizeof s);
+    snx_st_le32(s, width);
+    snx_st_le32(s + 0x04, height);
+    snx_st_le64(s + 0x08, color);
+    snx_st_le32(s + 0x10, layout);
+    snx_st_le32(s + 0x14, pitch);
+    snx_st_le32(s + 0x18, o->pool ? pool_nvmap(o->pool) : 0);
+    snx_st_le32(s + 0x1c, (u32)o->offset);
+    snx_st_le32(s + 0x20, kind);
+    snx_st_le32(s + 0x24, block_h);
+    snx_st_le64(s + 0x30, flags);
+    snx_st_le64(s + 0x38, (u32)size);
+    memcpy(GP(surface), s, sizeof s);
+}
 
 /* ============================================================ texture views */
 #define VW(v) NVN_OBJ(NvnView, v)
+/* the same view: the same parts set, and each part set the same */
+int nvn_TextureViewCompare(CPU* c, u64 a, u64 b) {
+    const NvnView *x = NVN_OBJ(const NvnView, a), *y = NVN_OBJ(const NvnView, b);
+    (void)c;
+    if (x->set != y->set) return 0;
+    if ((x->set & NVN_VIEW_LEVELS) && (x->base_level != y->base_level || x->levels != y->levels)) return 0;
+    if ((x->set & NVN_VIEW_LAYERS) && (x->min_layer != y->min_layer || x->layers != y->layers)) return 0;
+    if ((x->set & NVN_VIEW_FORMAT) && x->format != y->format) return 0;
+    if ((x->set & NVN_VIEW_TARGET) && x->target != y->target) return 0;
+    if ((x->set & NVN_VIEW_SWIZZLE) && memcmp(x->swizzle, y->swizzle, sizeof x->swizzle)) return 0;
+    return 1;
+}
 void nvn_TextureViewSetDefaults(CPU* c, u64 v) {
     (void)c;
     memset(GP(v), 0, sizeof(NvnView));
@@ -1039,6 +1309,54 @@ f32 nvn_SamplerBuilderGetLodSnap(CPU* c, u64 b) {
     (void)c;
     return SB(b)->lod_snap;
 }
+/* integer border colors: their words as given, in the same place as the floats' (the game's driver keeps all three
+   kinds as raw words, and the sampler descriptor takes them so) */
+void nvn_SamplerBuilderSetBorderColori(CPU* c, u64 b, u64 color) { nvn_SamplerBuilderSetBorderColor(c, b, color); }
+void nvn_SamplerBuilderSetBorderColorui(CPU* c, u64 b, u64 color) { nvn_SamplerBuilderSetBorderColor(c, b, color); }
+void nvn_SamplerBuilderGetBorderColor(CPU* c, u64 b, u64 rgba) {
+    (void)c;
+    memcpy(GP(rgba), SB(b)->border, sizeof SB(b)->border);
+}
+void nvn_SamplerBuilderGetBorderColori(CPU* c, u64 b, u64 rgba) { nvn_SamplerBuilderGetBorderColor(c, b, rgba); }
+void nvn_SamplerBuilderGetBorderColorui(CPU* c, u64 b, u64 rgba) { nvn_SamplerBuilderGetBorderColor(c, b, rgba); }
+u64 nvn_SamplerBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    (void)b;
+    return nvn_device();
+}
+void nvn_SamplerBuilderGetMinMagFilter(CPU* c, u64 b, u64 min, u64 mag) {
+    (void)c;
+    gw32(min, SB(b)->min_filter);
+    gw32(mag, SB(b)->mag_filter);
+}
+void nvn_SamplerBuilderGetWrapMode(CPU* c, u64 b, u64 ws, u64 wt, u64 wr) {
+    (void)c;
+    gw32(ws, SB(b)->wrap_s);
+    gw32(wt, SB(b)->wrap_t);
+    gw32(wr, SB(b)->wrap_r);
+}
+void nvn_SamplerBuilderGetLodClamp(CPU* c, u64 b, u64 min, u64 max) {
+    (void)c;
+    memcpy(GP(min), &SB(b)->lod_min, 4);
+    memcpy(GP(max), &SB(b)->lod_max, 4);
+}
+f32 nvn_SamplerBuilderGetLodBias(CPU* c, u64 b) {
+    (void)c;
+    return SB(b)->lod_bias;
+}
+void nvn_SamplerBuilderGetCompare(CPU* c, u64 b, u64 mode, u64 func) {
+    (void)c;
+    gw32(mode, SB(b)->compare_mode);
+    gw32(func, SB(b)->compare_func);
+}
+f32 nvn_SamplerBuilderGetMaxAnisotropy(CPU* c, u64 b) {
+    (void)c;
+    return SB(b)->anisotropy;
+}
+i32 nvn_SamplerBuilderGetReductionFilter(CPU* c, u64 b) {
+    (void)c;
+    return SB(b)->reduction;
+}
 int nvn_SamplerInitialize(CPU* c, u64 s, u64 b) {
     NvnSampler o = {0};
     (void)c;
@@ -1082,6 +1400,14 @@ void nvn_SamplerGetCompare(CPU* c, u64 s, u64 mode, u64 func) {
 void nvn_SamplerGetBorderColor(CPU* c, u64 s, u64 rgba) {
     (void)c;
     memcpy(GP(rgba), SP(s)->border, 16);
+}
+void nvn_SamplerGetBorderColori(CPU* c, u64 s, u64 rgba) { nvn_SamplerGetBorderColor(c, s, rgba); }
+void nvn_SamplerGetBorderColorui(CPU* c, u64 s, u64 rgba) { nvn_SamplerGetBorderColor(c, s, rgba); }
+/* the release driver's debug IDs are all 0: only its debug layer numbers objects */
+u64 nvn_SamplerGetDebugID(CPU* c, u64 s) {
+    (void)c;
+    (void)s;
+    return 0;
 }
 f32 nvn_SamplerGetMaxAnisotropy(CPU* c, u64 s) {
     (void)c;
@@ -1254,6 +1580,8 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         }
     }
     o->serial = nvn_serial();
+    /* the sample shading SetSampleShading asked for takes effect here, as the game's driver applies it in SetShaders */
+    o->sample_shading = (u16)((o->sample_shading & 0xff) | (o->sample_shading & 0xff) << 8);
     if (last) xfb_of(last, o->serial);
     return 1;
 }
@@ -1268,7 +1596,50 @@ int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     return set_shaders(p, n, sd, 0x18);
 }
 
+/* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2
+   not every sample), kept in the low byte until SetShaders applies it (the high byte, which the draws read) */
+void nvn_ProgramSetSampleShading(CPU* c, u64 p, i32 mode) {
+    NvnProgram* o = NVN_OBJ(NvnProgram, p);
+    (void)c;
+    o->sample_shading = (u16)((o->sample_shading & 0xff00) | ((u32)mode & 0x3f));
+}
+/* the tiled cache's subtile size a program asks for: the game's driver's SetShaders sets it to 0 and nothing in the
+   API sets it otherwise (NVN 55.15). The renderer has no tiled cache */
+i32 nvn_ProgramGetSubtileSize(CPU* c, u64 p) {
+    (void)c;
+    (void)p;
+    return 0;
+}
+/* Subroutine linkage maps the program's subroutine uniforms to their functions. The game's driver answers false for
+   a program whose stages have none, which is every program here: the translator runs no subroutines, so a program
+   with them couldn't draw as the game asks */
+int nvn_ProgramSetSubroutineLinkage(CPU* c, u64 p, i32 n, u64 maps) {
+    (void)c;
+    if (n > 0 && maps)
+        LOG_LIMIT(1, "nvn: program %llx's subroutine linkage (%d stages): the runtime's programs have no subroutines\n",
+                  (unsigned long long)p, n);
+    return 0;
+}
+
 /* ============================================================ syncs */
+/* OpenGL interop: there is no OpenGL here. InitializeFromFencedGLSync fails as the game's driver fails without one
+   (status 1, false), and CreateGLSync answers 4, its failure, writing nothing */
+int nvn_SyncInitializeFromFencedGLSync(CPU* c, u64 s, u64 d, u32 gl_sync, u64 status) {
+    (void)c;
+    (void)d;
+    (void)gl_sync;
+    memset(GP(s), 0, sizeof(NvnSync));
+    if (status) gw32(status, 1);
+    LOG_LIMIT(1, "nvn: the game asked for an OpenGL sync, which the runtime has no OpenGL for\n");
+    return 0;
+}
+i32 nvn_SyncCreateGLSync(CPU* c, u64 s, u64 gl_sync) {
+    (void)c;
+    (void)s;
+    (void)gl_sync;
+    LOG_LIMIT(1, "nvn: the game asked for an OpenGL sync, which the runtime has no OpenGL for\n");
+    return 4;
+}
 int nvn_SyncInitialize(CPU* c, u64 s, u64 d) {
     NvnSync o = {0};
     (void)c;
@@ -1306,6 +1677,8 @@ int nvn_EventInitialize(CPU* c, u64 e, u64 b) {
     o.magic = NVN_MAGIC('E', 'V', 'N', 'T');
     o.value = memory + (u64)s->offset;
     o.gpu = nvn_pool_gpu(s->pool) + (u64)s->offset;
+    o.pool = s->pool;
+    o.offset = s->offset;
     memcpy(GP(e), &o, sizeof o);
     return 1;
 }
@@ -1322,6 +1695,29 @@ void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     (void)c;
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
 }
+u64 nvn_EventBuilderGetMemoryPool(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnEventBuilder, b)->pool;
+}
+i64 nvn_EventBuilderGetMemoryOffset(CPU* c, u64 b) {
+    (void)c;
+    return NVN_OBJ(const NvnEventBuilder, b)->offset;
+}
+/* the pool, with the offset written at *offset */
+u64 nvn_EventBuilderGetStorage(CPU* c, u64 b, u64 offset) {
+    const NvnEventBuilder* o = NVN_OBJ(const NvnEventBuilder, b);
+    (void)c;
+    gw64(offset, (u64)o->offset);
+    return o->pool;
+}
+u64 nvn_EventGetMemoryPool(CPU* c, u64 e) {
+    (void)c;
+    return NVN_OBJ(const NvnEvent, e)->pool;
+}
+i64 nvn_EventGetMemoryOffset(CPU* c, u64 e) {
+    (void)c;
+    return NVN_OBJ(const NvnEvent, e)->offset;
+}
 
 /* ============================================================ state objects (nvn_obj.h's packed fields) */
 void nvn_BlendStateSetDefaults(CPU* c, u64 s) {
@@ -1333,7 +1729,45 @@ void nvn_BlendStateSetDefaults(CPU* c, u64 s) {
     w = nvn_set_field(w, NVN_BLEND_DST_A, NVN_BLEND_FUNC_ZERO);
     w = nvn_set_field(w, NVN_BLEND_EQ_RGB, NVN_BLEND_EQUATION_ADD);
     w = nvn_set_field(w, NVN_BLEND_EQ_A, NVN_BLEND_EQUATION_ADD);
+    /* the advanced mode's: a premultiplied source and a normalized destination, uncorrelated (the driver's) */
+    w = nvn_set_field(w, NVN_BLEND_ADV_PMS, 1);
+    w = nvn_set_field(w, NVN_BLEND_ADV_NPM, 1);
     st64(s, w);
+}
+/* The advanced blend modes (NV_blend_equation_advanced): kept in the state, as the game's driver keeps them. The
+   renderer draws a target with an advanced mode as plain blending (gpu/nvn/nvn_draw.c make_blend logs it): Vulkan has
+   them only with VK_EXT_blend_operation_advanced, which it doesn't use */
+void nvn_BlendStateSetAdvancedMode(CPU* c, u64 s, i32 mode) {
+    (void)c;
+    SET64(s, NVN_BLEND_ADV, mode);
+}
+i32 nvn_BlendStateGetAdvancedMode(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld64(s), NVN_BLEND_ADV);
+}
+void nvn_BlendStateSetAdvancedOverlap(CPU* c, u64 s, i32 overlap) {
+    (void)c;
+    SET64(s, NVN_BLEND_ADV_OVL, overlap);
+}
+i32 nvn_BlendStateGetAdvancedOverlap(CPU* c, u64 s) {
+    (void)c;
+    return (i32)nvn_field(ld64(s), NVN_BLEND_ADV_OVL);
+}
+void nvn_BlendStateSetAdvancedPremultipliedSrc(CPU* c, u64 s, int on) {
+    (void)c;
+    SET64(s, NVN_BLEND_ADV_PMS, on != 0);
+}
+int nvn_BlendStateGetAdvancedPremultipliedSrc(CPU* c, u64 s) {
+    (void)c;
+    return (int)nvn_field(ld64(s), NVN_BLEND_ADV_PMS);
+}
+void nvn_BlendStateSetAdvancedNormalizedDst(CPU* c, u64 s, int on) {
+    (void)c;
+    SET64(s, NVN_BLEND_ADV_NPM, on != 0);
+}
+int nvn_BlendStateGetAdvancedNormalizedDst(CPU* c, u64 s) {
+    (void)c;
+    return (int)nvn_field(ld64(s), NVN_BLEND_ADV_NPM);
 }
 void nvn_BlendStateSetBlendTarget(CPU* c, u64 s, i32 target) {
     (void)c;
@@ -1637,13 +2071,15 @@ int nvn_MultisampleStateGetAlphaToCoverageEnable(CPU* c, u64 s) {
     (void)c;
     return MS(s)->alpha_to_coverage;
 }
+/* a flag of the state's flags (NVN_MS_*) */
+static void ms_flag(u64 s, u8 flag, int on) { MS(s)->flags = (u8)(on ? MS(s)->flags | flag : MS(s)->flags & ~flag); }
 void nvn_MultisampleStateSetAlphaToCoverageDither(CPU* c, u64 s, int on) {
     (void)c;
-    MS(s)->a2c_dither = on != 0;
+    ms_flag(s, NVN_MS_A2C_DITHER, on);
 }
 int nvn_MultisampleStateGetAlphaToCoverageDither(CPU* c, u64 s) {
     (void)c;
-    return MS(s)->a2c_dither;
+    return (MS(s)->flags & NVN_MS_A2C_DITHER) != 0;
 }
 void nvn_MultisampleStateSetRasterSamples(CPU* c, u64 s, i32 n) {
     (void)c;
@@ -1663,11 +2099,11 @@ i32 nvn_MultisampleStateGetCoverageModulationMode(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetCoverageToColorEnable(CPU* c, u64 s, int on) {
     (void)c;
-    MS(s)->cov_to_color = on != 0;
+    ms_flag(s, NVN_MS_COV_TO_COLOR, on);
 }
 int nvn_MultisampleStateGetCoverageToColorEnable(CPU* c, u64 s) {
     (void)c;
-    return MS(s)->cov_to_color;
+    return (MS(s)->flags & NVN_MS_COV_TO_COLOR) != 0;
 }
 void nvn_MultisampleStateSetCoverageToColorOutput(CPU* c, u64 s, i32 output) {
     (void)c;
@@ -1679,19 +2115,57 @@ i32 nvn_MultisampleStateGetCoverageToColorOutput(CPU* c, u64 s) {
 }
 void nvn_MultisampleStateSetSampleLocationsEnable(CPU* c, u64 s, int on) {
     (void)c;
-    MS(s)->sample_locations = on != 0;
+    ms_flag(s, NVN_MS_LOCATIONS, on);
 }
 int nvn_MultisampleStateGetSampleLocationsEnable(CPU* c, u64 s) {
     (void)c;
-    return MS(s)->sample_locations;
+    return (MS(s)->flags & NVN_MS_LOCATIONS) != 0;
 }
 void nvn_MultisampleStateSetSampleLocationsGridEnable(CPU* c, u64 s, int on) {
     (void)c;
-    MS(s)->sample_grid = on != 0;
+    ms_flag(s, NVN_MS_GRID, on);
 }
 int nvn_MultisampleStateGetSampleLocationsGridEnable(CPU* c, u64 s) {
     (void)c;
-    return MS(s)->sample_grid;
+    return (MS(s)->flags & NVN_MS_GRID) != 0;
+}
+/* the pixels the sample locations cover, as the game's driver answers: 16 locations in all, so a 4x4 grid of pixels
+   for one sample, 2x4 for two, 2x2 for four, 1x2 for eight and 1x1 for sixteen, by the larger of the samples and the
+   raster samples. Other counts write nothing */
+void nvn_MultisampleStateGetSampleLocationsGrid(CPU* c, u64 s, u64 w, u64 h) {
+    u32 n = MS(s)->samples > MS(s)->raster_samples ? MS(s)->samples : MS(s)->raster_samples, gw, gh;
+    (void)c;
+    switch (n) {
+        case 0:
+        case 1: gw = 4, gh = 4; break;
+        case 2: gw = 2, gh = 4; break;
+        case 4: gw = 2, gh = 2; break;
+        case 8: gw = 1, gh = 2; break;
+        case 16: gw = 1, gh = 1; break;
+        default: return;
+    }
+    gw32(w, gw);
+    gw32(h, gh);
+}
+/* n locations from first on, x and y each in [0, 1] of a pixel: kept as the game's driver keeps them, in sixteenths
+   (clamped to [0, 1], a NaN taken as 0, rounded to the nearest, at most 15). The renderer draws at the standard locations: Vulkan's are programmable only with
+   VK_EXT_sample_locations, which it doesn't use, and a pixel's samples are averaged alike by a resolve */
+void nvn_MultisampleStateSetSampleLocations(CPU* c, u64 s, i32 first, i32 n, u64 xy) {
+    NvnMultisample* o = MS(s);
+    i32 i;
+    (void)c;
+    for (i = 0; i < n; i++) {
+        f32 v[2];
+        u8 q[2];
+        int k;
+        if (first + i < 0 || first + i >= 16) continue;
+        memcpy(v, GP(xy + 8 * (u64)i), sizeof v);
+        for (k = 0; k < 2; k++) {
+            f32 t = v[k] >= 0.0f ? v[k] : 0.0f; /* a NaN takes 0 */
+            q[k] = (u8)(t < 0.9375f ? (int)(t * 16.0f + 0.5f) : 15);
+        }
+        o->location[first + i] = (u8)(q[0] | q[1] << 4);
+    }
 }
 
 /* ============================================================ debug labels, which nothing reads back */
@@ -1804,6 +2278,41 @@ void nvn_TextureBuilderGetSwizzle(CPU* c, u64 b, u64 r, u64 g, u64 bl, u64 a) {
 i32 nvn_TextureBuilderGetDepthStencilMode(CPU* c, u64 b) {
     (void)c;
     return TB(b)->d.bits & NVN_TEX_STENCIL ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : 0;
+}
+i64 nvn_TextureBuilderGetMemoryOffset(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->offset;
+}
+/* an OpenGL texture's name for interop: kept for its getter, as there is no OpenGL here */
+void nvn_TextureBuilderSetGLTextureName(CPU* c, u64 b, u32 name) {
+    (void)c;
+    TB(b)->gl_name = name;
+}
+u32 nvn_TextureBuilderGetGLTextureName(CPU* c, u64 b) {
+    (void)c;
+    return TB(b)->gl_name;
+}
+/* whether SetPackagedTextureLayout gave one, and the layout's first 4 bytes: its 12 bits the game's driver keeps (the
+   rest 0) */
+int nvn_TextureBuilderGetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
+    const NvnTexBuilder* o = TB(b);
+    u32 w = 0;
+    (void)c;
+    if (o->d.bits & NVN_TEX_HAS_LAYOUT) w = (u32)(o->layout[0] | o->layout[1] << 8) & 0xfff;
+    gw32(layout, w);
+    return (o->d.bits & NVN_TEX_HAS_LAYOUT) != 0;
+}
+i32 nvn_TextureBuilderGetRawStorageClass(CPU* c, u64 b) {
+    (void)c;
+    return raw_storage_class(&TB(b)->d);
+}
+void nvn_TextureBuilderGetSparseTileLayout(CPU* c, u64 b, u64 out) {
+    (void)c;
+    sparse_tile_layout(&TB(b)->d, out);
+}
+i64 nvn_TextureBuilderGetViewOffset(CPU* c, u64 b, u64 v) {
+    (void)c;
+    return view_offset(&TB(b)->d, v);
 }
 /* a recording's handle given up: the game's own driver returns at once (a bare ret), only its debug layer tracks
    handles. The records stay in the game's command memory, which it reuses as it likes */

@@ -14,6 +14,22 @@ route nvnBootstrapLoader
 route nvnDeviceGetProcAddress
 
 family device
+hook nvnDeviceApplyDeferredFinalizes(addr d, i32 age) = nvn_DeviceApplyDeferredFinalizes
+hook nvnDeviceBuilderGetFlags(addr b) -> i32 = nvn_DeviceBuilderGetFlags
+hook nvnDeviceFinalize(addr d) = nvn_DeviceFinalize
+hook nvnDeviceGenerateDebugDomainId(addr d, addr name) -> i32 = nvn_DeviceGenerateDebugDomainId
+hook nvnDeviceInstallDebugCallback(addr d, addr fn, addr data, bool enable) = nvn_DeviceInstallDebugCallback
+hook nvnDeviceIsExternalDebuggerAttached(addr d) -> bool = nvn_DeviceIsExternalDebuggerAttached
+hook nvnDeviceRegisterFastClearColori(addr d, addr color, i32 format) -> bool = nvn_DeviceRegisterFastClearColori
+hook nvnDeviceRegisterFastClearColorui(addr d, addr color, i32 format) -> bool = nvn_DeviceRegisterFastClearColorui
+hook nvnDeviceSetAutomaticCheckpointsByDebugGroup(addr d, bool on) -> bool = nvn_DeviceSetAutomaticCheckpointsByDebugGroup
+hook nvnDeviceSetAutomaticCheckpointsEnable(addr d, bool on) -> bool = nvn_DeviceSetAutomaticCheckpointsEnable
+hook nvnDeviceSetAutomaticCheckpointsMask(addr d, u32 mask) -> bool = nvn_DeviceSetAutomaticCheckpointsMask
+hook nvnDeviceSetAutomaticCheckpointsSamplingInterval(addr d, u32 interval) -> bool = nvn_DeviceSetAutomaticCheckpointsSamplingInterval
+hook nvnDeviceSetCheckpointCallStacksEnable(addr d, bool on) -> bool = nvn_DeviceSetCheckpointCallStacksEnable
+hook nvnDeviceSetCheckpointMaxCallStacksDepth(addr d, i32 depth) -> bool = nvn_DeviceSetCheckpointMaxCallStacksDepth
+hook nvnDeviceSetIntermediateShaderCache(addr d, i32 on) = nvn_DeviceSetIntermediateShaderCache
+hook nvnDeviceWalkDebugDatabase(addr d, i32 type, addr fn, addr data) = nvn_DeviceWalkDebugDatabase
 hook nvnDeviceBuilderSetDefaults(addr b) = nvn_DeviceBuilderSetDefaults
 hook nvnDeviceBuilderSetFlags(addr b, i32 flags) = nvn_DeviceBuilderSetFlags
 hook nvnDeviceGetImageHandle(addr d, i32 id) -> u64 = nvn_DeviceGetImageHandle
@@ -54,6 +70,7 @@ hook nvnMemoryPoolMapVirtual(addr p, i32 n, addr requests) -> bool = nvn_MemoryP
 hook nvnMemoryPoolSetDebugLabel(addr p, addr label) = nvn_MemoryPoolSetDebugLabel
 
 family buffer
+hook nvnBufferGetDebugID(addr buf) -> u64 = nvn_BufferGetDebugID
 hook nvnBufferBuilderGetDevice(addr b) -> addr = nvn_BufferBuilderGetDevice
 hook nvnBufferBuilderGetMemoryOffset(addr b) -> i64 = nvn_BufferBuilderGetMemoryOffset
 hook nvnBufferBuilderGetMemoryPool(addr b) -> addr = nvn_BufferBuilderGetMemoryPool
@@ -73,6 +90,20 @@ hook nvnBufferMap(addr buf) -> addr = nvn_BufferMap
 hook nvnBufferSetDebugLabel(addr buf, addr label) = nvn_BufferSetDebugLabel
 
 family texture
+hook nvnTextureBuilderGetGLTextureName(addr b) -> u32 = nvn_TextureBuilderGetGLTextureName
+hook nvnTextureBuilderGetMemoryOffset(addr b) -> i64 = nvn_TextureBuilderGetMemoryOffset
+hook nvnTextureBuilderGetPackagedTextureLayout(addr b, addr layout) -> bool = nvn_TextureBuilderGetPackagedTextureLayout
+hook nvnTextureBuilderGetRawStorageClass(addr b) -> i32 = nvn_TextureBuilderGetRawStorageClass
+hook nvnTextureBuilderGetSparseTileLayout(addr b, addr layout) = nvn_TextureBuilderGetSparseTileLayout
+hook nvnTextureBuilderGetViewOffset(addr b, addr v) -> i64 = nvn_TextureBuilderGetViewOffset
+hook nvnTextureBuilderSetGLTextureName(addr b, u32 name) = nvn_TextureBuilderSetGLTextureName
+hook nvnTextureGetDebugID(addr t) -> u64 = nvn_TextureGetDebugID
+hook nvnTextureGetNvRmSurfaceNVX(addr t, addr unused, addr surface) = nvn_TextureGetNvRmSurfaceNVX
+hook nvnTextureGetRawStorageClass(addr t) -> i32 = nvn_TextureGetRawStorageClass
+hook nvnTextureGetSparseTileLayout(addr t, addr layout) = nvn_TextureGetSparseTileLayout
+hook nvnTextureInvalidateTexels(addr t, addr v, addr region) = nvn_TextureInvalidateTexels
+hook nvnTextureReadTexelsStrided(addr t, addr v, addr region, addr dst, i64 row, i64 image) = nvn_TextureReadTexelsStrided
+hook nvnTextureViewCompare(addr a, addr b) -> bool = nvn_TextureViewCompare
 hook nvnTextureBuilderGetDepthStencilMode(addr b) -> i32 = nvn_TextureBuilderGetDepthStencilMode
 hook nvnTextureBuilderGetDevice(addr b) -> addr = nvn_TextureBuilderGetDevice
 hook nvnTextureBuilderGetMemoryPool(addr b) -> addr = nvn_TextureBuilderGetMemoryPool
@@ -158,6 +189,23 @@ hook nvnTextureWriteTexels(addr t, addr v, addr region, addr src) = nvn_TextureW
 hook nvnTextureWriteTexelsStrided(addr t, addr v, addr region, addr src, i64 row, i64 image) = nvn_TextureWriteTexelsStrided
 
 family sampler
+hook nvnSamplerBuilderGetBorderColor(addr b, addr rgba) = nvn_SamplerBuilderGetBorderColor
+hook nvnSamplerBuilderGetBorderColori(addr b, addr rgba) = nvn_SamplerBuilderGetBorderColori
+hook nvnSamplerBuilderGetBorderColorui(addr b, addr rgba) = nvn_SamplerBuilderGetBorderColorui
+hook nvnSamplerBuilderGetCompare(addr b, addr mode, addr func) = nvn_SamplerBuilderGetCompare
+hook nvnSamplerBuilderGetDevice(addr b) -> addr = nvn_SamplerBuilderGetDevice
+hook nvnSamplerBuilderGetLodBias(addr b) -> f32 = nvn_SamplerBuilderGetLodBias
+hook nvnSamplerBuilderGetLodClamp(addr b, addr min, addr max) = nvn_SamplerBuilderGetLodClamp
+hook nvnSamplerBuilderGetMaxAnisotropy(addr b) -> f32 = nvn_SamplerBuilderGetMaxAnisotropy
+hook nvnSamplerBuilderGetMinMagFilter(addr b, addr min, addr mag) = nvn_SamplerBuilderGetMinMagFilter
+hook nvnSamplerBuilderGetReductionFilter(addr b) -> i32 = nvn_SamplerBuilderGetReductionFilter
+hook nvnSamplerBuilderGetWrapMode(addr b, addr ws, addr wt, addr wr) = nvn_SamplerBuilderGetWrapMode
+hook nvnSamplerBuilderSetBorderColori(addr b, addr color) = nvn_SamplerBuilderSetBorderColori
+hook nvnSamplerBuilderSetBorderColorui(addr b, addr color) = nvn_SamplerBuilderSetBorderColorui
+hook nvnSamplerGetBorderColori(addr s, addr rgba) = nvn_SamplerGetBorderColori
+hook nvnSamplerGetBorderColorui(addr s, addr rgba) = nvn_SamplerGetBorderColorui
+hook nvnSamplerGetDebugID(addr s) -> u64 = nvn_SamplerGetDebugID
+hook nvnSamplerPoolRegisterSamplerBuilder(addr sp, i32 id, addr b) = nvn_SamplerPoolRegisterSamplerBuilder
 hook nvnSamplerBuilderSetBorderColor(addr b, addr color) = nvn_SamplerBuilderSetBorderColor
 hook nvnSamplerBuilderSetCompare(addr b, i32 mode, i32 func) = nvn_SamplerBuilderSetCompare
 hook nvnSamplerBuilderSetDefaults(addr b) = nvn_SamplerBuilderSetDefaults
@@ -190,17 +238,27 @@ hook nvnSamplerPoolRegisterSampler(addr sp, i32 id, addr s) = nvn_SamplerPoolReg
 hook nvnSamplerSetDebugLabel(addr s, addr label) = nvn_SamplerSetDebugLabel
 
 family program
+hook nvnProgramGetSubtileSize(addr p) -> i32 = nvn_ProgramGetSubtileSize
+hook nvnProgramSetSampleShading(addr p, i32 mode) = nvn_ProgramSetSampleShading
+hook nvnProgramSetSubroutineLinkage(addr p, i32 n, addr maps) -> bool = nvn_ProgramSetSubroutineLinkage
 hook nvnProgramFinalize(addr p) = nvn_ProgramFinalize
 hook nvnProgramInitialize(addr p, addr d) -> bool = nvn_ProgramInitialize
 hook nvnProgramSetShaders(addr p, i32 n, addr sd) -> bool = nvn_ProgramSetShaders
 hook nvnProgramSetShadersExt(addr p, i32 n, addr sd) -> bool = nvn_ProgramSetShadersExt
 
 family sync
+hook nvnSyncCreateGLSync(addr s, addr gl_sync) -> i32 = nvn_SyncCreateGLSync
+hook nvnSyncInitializeFromFencedGLSync(addr s, addr d, u32 gl_sync, addr status) -> bool = nvn_SyncInitializeFromFencedGLSync
 hook nvnSyncFinalize(addr s) = nvn_SyncFinalize
 hook nvnSyncInitialize(addr s, addr d) -> bool = nvn_SyncInitialize
 hook nvnSyncWait(addr sync, u64 timeout) -> i32 = nvn_SyncWait
 
 family event
+hook nvnEventBuilderGetMemoryOffset(addr b) -> i64 = nvn_EventBuilderGetMemoryOffset
+hook nvnEventBuilderGetMemoryPool(addr b) -> addr = nvn_EventBuilderGetMemoryPool
+hook nvnEventBuilderGetStorage(addr b, addr offset) -> addr = nvn_EventBuilderGetStorage
+hook nvnEventGetMemoryOffset(addr e) -> i64 = nvn_EventGetMemoryOffset
+hook nvnEventGetMemoryPool(addr e) -> addr = nvn_EventGetMemoryPool
 hook nvnEventBuilderSetDefaults(addr b) = nvn_EventBuilderSetDefaults
 hook nvnEventBuilderSetStorage(addr b, addr pool, i64 offset) = nvn_EventBuilderSetStorage
 hook nvnEventFinalize(addr e) = nvn_EventFinalize
@@ -209,6 +267,18 @@ hook nvnEventInitialize(addr e, addr b) -> bool = nvn_EventInitialize
 hook nvnEventSignal(addr e, i32 mode, u32 value) = nvn_EventSignal
 
 family queue
+hook nvnQueueBuilderGetCommandFlushThreshold(addr b, addr size) -> bool = nvn_QueueBuilderGetCommandFlushThreshold
+hook nvnQueueBuilderGetCommandMemorySize(addr b, addr size) -> bool = nvn_QueueBuilderGetCommandMemorySize
+hook nvnQueueBuilderGetComputeMemorySize(addr b, addr size) -> bool = nvn_QueueBuilderGetComputeMemorySize
+hook nvnQueueBuilderGetControlMemorySize(addr b, addr size) -> bool = nvn_QueueBuilderGetControlMemorySize
+hook nvnQueueBuilderGetDevice(addr b) -> addr = nvn_QueueBuilderGetDevice
+hook nvnQueueBuilderGetFlags(addr b) -> i32 = nvn_QueueBuilderGetFlags
+hook nvnQueueBuilderGetMemory(addr b) -> addr = nvn_QueueBuilderGetMemory
+hook nvnQueueBuilderGetMemorySize(addr b) -> u64 = nvn_QueueBuilderGetMemorySize
+hook nvnQueueGetTotalCommandMemoryUsed(addr q) -> u64 = nvn_QueueGetTotalCommandMemoryUsed
+hook nvnQueueGetTotalComputeMemoryUsed(addr q) -> u64 = nvn_QueueGetTotalComputeMemoryUsed
+hook nvnQueueGetTotalControlMemoryUsed(addr q) -> u64 = nvn_QueueGetTotalControlMemoryUsed
+hook nvnQueueResetMemoryUsageCounts(addr q) = nvn_QueueResetMemoryUsageCounts
 hook nvnQueueBuilderGetQueueMemorySize(addr b) -> u64 = nvn_QueueBuilderGetQueueMemorySize
 hook nvnQueueBuilderSetCommandFlushThreshold(addr b, u64 size) = nvn_QueueBuilderSetCommandFlushThreshold
 hook nvnQueueBuilderSetCommandMemorySize(addr b, u64 size) = nvn_QueueBuilderSetCommandMemorySize
@@ -232,6 +302,13 @@ hook nvnQueueSubmitCommands(addr q, i32 n, addr handles) = nvn_QueueSubmitComman
 hook nvnQueueWaitSync(addr q, addr sync) -> bool = nvn_QueueWaitSync
 
 family window
+hook nvnWindowBuilderGetDevice(addr b) -> addr = nvn_WindowBuilderGetDevice
+hook nvnWindowBuilderGetNativeWindow(addr b) -> addr = nvn_WindowBuilderGetNativeWindow
+hook nvnWindowBuilderGetNumActiveTextures(addr b) -> i32 = nvn_WindowBuilderGetNumActiveTextures
+hook nvnWindowGetNativeWindow(addr w) -> addr = nvn_WindowGetNativeWindow
+hook nvnWindowGetNumActiveTextures(addr w) -> i32 = nvn_WindowGetNumActiveTextures
+hook nvnWindowGetNumTextures(addr w) -> i32 = nvn_WindowGetNumTextures
+hook nvnWindowSetNumActiveTextures(addr w, i32 n) = nvn_WindowSetNumActiveTextures
 hook nvnWindowBuilderGetNumTextures(addr b) -> i32 = nvn_WindowBuilderGetNumTextures
 hook nvnWindowBuilderGetPresentInterval(addr b) -> i32 = nvn_WindowBuilderGetPresentInterval
 hook nvnWindowBuilderGetTexture(addr b, i32 i) -> addr = nvn_WindowBuilderGetTexture
@@ -377,6 +454,16 @@ hook nvnCommandBufferWaitEvent(addr cb, addr e, i32 mode, u32 value) = nvn_Comma
 hook nvnCommandBufferWaitSync(addr cb, addr sync) = nvn_CommandBufferWaitSync
 
 family state
+hook nvnBlendStateGetAdvancedMode(addr s) -> i32 = nvn_BlendStateGetAdvancedMode
+hook nvnBlendStateGetAdvancedNormalizedDst(addr s) -> bool = nvn_BlendStateGetAdvancedNormalizedDst
+hook nvnBlendStateGetAdvancedOverlap(addr s) -> i32 = nvn_BlendStateGetAdvancedOverlap
+hook nvnBlendStateGetAdvancedPremultipliedSrc(addr s) -> bool = nvn_BlendStateGetAdvancedPremultipliedSrc
+hook nvnBlendStateSetAdvancedMode(addr s, i32 mode) = nvn_BlendStateSetAdvancedMode
+hook nvnBlendStateSetAdvancedNormalizedDst(addr s, bool on) = nvn_BlendStateSetAdvancedNormalizedDst
+hook nvnBlendStateSetAdvancedOverlap(addr s, i32 overlap) = nvn_BlendStateSetAdvancedOverlap
+hook nvnBlendStateSetAdvancedPremultipliedSrc(addr s, bool on) = nvn_BlendStateSetAdvancedPremultipliedSrc
+hook nvnMultisampleStateGetSampleLocationsGrid(addr s, addr w, addr h) = nvn_MultisampleStateGetSampleLocationsGrid
+hook nvnMultisampleStateSetSampleLocations(addr s, i32 first, i32 n, addr xy) = nvn_MultisampleStateSetSampleLocations
 hook nvnBlendStateSetBlendEquation(addr s, i32 rgb, i32 alpha) = nvn_BlendStateSetBlendEquation
 hook nvnBlendStateSetBlendFunc(addr s, i32 src_rgb, i32 dst_rgb, i32 src_a, i32 dst_a) = nvn_BlendStateSetBlendFunc
 hook nvnBlendStateSetBlendTarget(addr s, i32 target) = nvn_BlendStateSetBlendTarget
