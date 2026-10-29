@@ -603,6 +603,8 @@ u32 vk_surf_gen(void);       /* a write generation no image has held yet */
    memory instead (g_vk_rt_readbacks counts those). How many were recorded: the caller orders their writes (a barrier)
    before what reads buf */
 int vk_rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at);
+/* whether vk_rt_overlay has a render target to record over [gva, gva + size) */
+int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);

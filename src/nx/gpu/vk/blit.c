@@ -43,7 +43,10 @@ static int blit(const GpuBlit* b) {
     vk_render_end();
     if (sspan > g_vk.alloc_cap || dspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(used, &cap))) return 0;
     u32* t = (u32*)vk_stage(4ull * (n + rows), vk_stage_align(), &tb, &tat);
-    if (!t || !stage_range(b->src.addr, sspan, &sb, &sat)) return 0;
+    /* a source no render target is drawn over: the buffer cache's copy, made again only when its bytes change */
+    if (!t || !(vk_rt_over(b->src.addr, sspan) ? stage_range(b->src.addr, sspan, &sb, &sat)
+                                               : vk_buf_get_strict(b->src.addr, sspan, &sb, &sat)))
+        return 0;
     memcpy(t, b->scol, 4ull * n);
     memcpy(t + n, b->srow, 4ull * rows);
     snx_le32_array(t, (size_t)n + rows); /* the device reads the tables' words little-endian */
