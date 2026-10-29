@@ -247,6 +247,17 @@ typedef struct {
     /* the request each thread serves changed what a service holds (kthread_commit), until its SVC leaves */
     u8 committed[KTHREAD_MAX];
 } HostThread;
+/* thread's thread state, t_hle.thread (hle.h's) */
+enum { KT_LATER = 16 };
+typedef struct {
+    /* the threads this host thread changed the word of with kt_notify_later, to wake once it lets go of its lock: a
+       wait's end comes with the lock held, and a thread woken then would only wait again for that lock. Too many for
+       the list are woken at once */
+    struct {
+        u32 n;
+        u32 ix[KT_LATER];
+    } later;
+} TlsThread;
 /* sync.c: the threads blocked in each kind of wait, in arrival order, linked by next_waiter (sync.c says how the
    lists are kept: one for mutexes, one per bucket of the word for the others). Under g_host.kernel.klock */
 #define WAIT_BUCKETS 256

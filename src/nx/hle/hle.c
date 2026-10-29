@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* g_hle, the HLE's state, its initialization, and its pools (hle.h) */
+/* g_hle, the HLE's state, its initialization, its pools, and t_hle, its thread state (hle.h) */
 #include "nx/hle/hle.h"
 #include <assert.h>
 
 /* zero, in .bss: hle_init sets what starts out non-zero */
 Hle g_hle;
 HleHost g_host;
+_Thread_local HleTls t_hle;
 
 void hle_init(void) {
     int i;

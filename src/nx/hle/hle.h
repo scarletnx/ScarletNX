@@ -84,6 +84,13 @@ typedef struct {
     HostFs fs;
 } HleHost;
 extern HleHost g_host;
+/* The HLE's thread state: each thread's own, all zero when it starts, one member for each file that keeps any
+   (t_hle.thread is thread.c's), whose type is declared in the header beside that file */
+typedef struct {
+    TlsThread thread;
+    TlsNvdrv nvdrv;
+} HleTls;
+extern _Thread_local HleTls t_hle;
 void hle_init(void);
 
 /* a thread as a number, which the kernel's lists hold: its slot in g_hle.thread.threads plus 1, 0 for none */
