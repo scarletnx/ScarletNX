@@ -915,6 +915,22 @@ static void overlay_part(void* user, u64 a, u64 b) {
     const Overlay* v = user;
     copy_add(v->c, v->o->buf, v->o->off + v->from + (a - v->at), v->dst_off + a, b - a);
 }
+/* the run [a, b) of an overlay's destination that no result gives: written in place, or staged and copied on the GPU
+   (0 when staging has no room) */
+static int overlay_gap(CopyBatch* c, u64 dst_off, u8* host, u64 a, u64 b, void (*gap)(void* user, u8* to, u64 a, u64 b),
+                       void* user) {
+    VkBuffer sb;
+    u64 so;
+    u8* p;
+    if (host) {
+        gap(user, host + a, a, b);
+        return 1;
+    }
+    if (!(p = vk_stage_upload(b - a, 4, &sb, &so))) return 0;
+    gap(user, p, a, b);
+    copy_add(c, sb, so, dst_off + a, b - a);
+    return 1;
+}
 static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     Overlay* v = user;
     v->at = at;
@@ -922,13 +938,15 @@ static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     if (!cover_take(v->cov, at, at + n, overlay_part, v)) overlay_part(v, at, at + n);
 }
 /* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off (after
-   gfx_gpu_src said they can be): each byte from the newest result over it. gap(user, a, b) fills each run [a, b) of
-   the destination no result gives with guest memory's bytes on the CPU. A result gives most of a composed range in the
-   end, and copying all of it before (a few results over storage ranges of half a megabyte, bound and read a few hundred
-   times a frame) was a fifth of one game's GPU thread. The CPU writes the gaps before the submit that copies the
-   results, and a run cover_take couldn't record is filled too, then copied over on the GPU as before */
-static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, void (*gap)(void* user, u64 a, u64 b),
-                        void* user) {
+   gfx_gpu_src said they can be): each byte from the newest result over it. gap(user, to, a, b) writes the bytes of
+   each run [a, b) of the destination no result gives at to: into host, the destination's mapping, or (host NULL, dst
+   in device memory) into staging, which the GPU copies into dst with the results. A result gives most of a composed
+   range in the end, and copying all of it before (a few results over storage ranges of half a megabyte, bound and read
+   a few hundred times a frame) was a fifth of one game's GPU thread. The CPU writes the gaps before the submit that
+   copies the results, and a run cover_take couldn't record is filled too, then copied over on the GPU as before. 0 when
+   a gap couldn't be staged (never with host) */
+static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
+                       void (*gap)(void* user, u8* to, u64 a, u64 b), void* user) {
     CopyBatch c;
     Covered cov;
     GfxOut *nlocal[64], **newest;
@@ -942,16 +960,18 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, void (*gap)
         Overlay v = {&c, newest[i], dst_off, 0, 0, &cov};
         out_spans(newest[i], gva, len, rmap, overlay_span, &v);
     }
-    copy_end(&c);
     u64 at = 0;
-    for (u32 i = 0; i < cov.n && at < len; i++) {
-        if (cov.v[i].a > at) gap(user, at, cov.v[i].a < len ? cov.v[i].a : len);
-        if (cov.v[i].b > at) at = cov.v[i].b;
+    int ok = 1;
+    for (u32 i = 0; i <= cov.n && at < len && ok; i++) {
+        u64 a = i < cov.n ? cov.v[i].a : len, b = a < len ? a : len;
+        if (b > at) ok = overlay_gap(&c, dst_off, host, at, b, gap, user);
+        if (i < cov.n && cov.v[i].b > at) at = cov.v[i].b;
     }
-    if (at < len) gap(user, at, len);
+    copy_end(&c);
     cover_free(&cov);
     if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
+    return ok;
 }
 
 /* whether the guest still holds o's original bytes in [gva, gva + len) (rmap: made on first use) */
@@ -1069,19 +1089,18 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
 }
 typedef struct {
     u64 gva;
-    u8* dst;
 } GapRead;
-static void gap_read(void* user, u64 a, u64 b) {
+static void gap_read(void* user, u8* to, u64 a, u64 b) {
     const GapRead* g = user;
-    read_untracked(g->gva + a, g->dst + a, b - a);
+    read_untracked(g->gva + a, to, b - a);
 }
-/* the range for reading on the GPU, with its pending results composed over guest memory in staging */
+/* the range for reading on the GPU, with its pending results composed over guest memory in device memory: the draws
+   that bind it read it there. In staging, the GPU's copies of the results went out over PCIe and every read came back
+   over it: about 45 MB a frame of composed storage ranges in one game, most of its GPU-to-host traffic */
 static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    u8* p = vk_stage(len, vk_stage_align(), buf, off);
-    if (!p) return 0;
-    GapRead g = {gva, p};
-    gfx_overlay(gva, len, *buf, *off, gap_read, &g);
-    return 1;
+    if (!vk_stage_device(len, vk_stage_align(), buf, off)) return 0;
+    GapRead g = {gva};
+    return gfx_overlay(gva, len, *buf, *off, NULL, gap_read, &g);
 }
 
 /* written-page tracking (plat_ww_scan): a generation per 4K page of guest memory, bumped when a scan finds it
@@ -1548,12 +1567,11 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
 }
 
 typedef struct {
-    u8* dst;
     const u8* src;
 } GapCopy;
-static void gap_copy(void* user, u64 a, u64 b) {
+static void gap_copy(void* user, u8* to, u64 a, u64 b) {
     const GapCopy* g = user;
-    memcpy(g->dst + a, g->src + a, b - a);
+    memcpy(to, g->src + a, b - a);
 }
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
@@ -1605,8 +1623,8 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             return 0;
         }
     } else if (pending == 2) {
-        GapCopy g = {o->ptr, o->org};
-        gfx_overlay(gva, len, *buf, *off, gap_copy, &g);
+        GapCopy g = {o->org};
+        (void)gfx_overlay(gva, len, *buf, *off, o->ptr, gap_copy, &g); /* in place: nothing to stage */
     } else
         memcpy(o->ptr, o->org, len);
     o->addr = gva;
@@ -2408,6 +2426,7 @@ void vk_buf_frame(void) {
             (unsigned long long)g_wb_waits, (unsigned long long)(g_wb_wait_ns / 1000000),
             (unsigned long long)g_wb_reuses);
         stage_report();
+        vk_stage_report();
         LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",
             (unsigned long long)g_wb_reason[WB_DRAW], (unsigned long long)(g_wb_reason_ns[WB_DRAW] / 1000000),
             (unsigned long long)g_wb_reason[WB_READ], (unsigned long long)(g_wb_reason_ns[WB_READ] / 1000000),
