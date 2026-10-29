@@ -1593,6 +1593,108 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
     return 1;
 }
 
+/* A multisampled depth target's resolve (NVN's Downsample of a depth texture): its depth and stencil at sample 0, the
+   resolve every Vulkan device has for depth (SAMPLE_ZERO: AVERAGE isn't one for depth), made by a dynamic rendering
+   pass with no draws over the rectangle into an image of the source's pixels, which a blit then copies into the
+   destination, a depth target of the source's format. sx, sy, sdx and sdy are in the source's pixels. 0 when the
+   destination isn't one (another format: then nothing takes the resolve) */
+static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
+                         double sdy) {
+    u32 fmt = st->fkey & 0xFFFF, tile = (d->linear ? 0x1000u : 0) | (d->bh << 4);
+    if (d->format != fmt || !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        return 0;
+    vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
+    Surf* dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
+    if (!dt || dt == st || dt->f.vk != st->f.vk) return 0;
+    float S = g_vk_scale;
+    i32 x0 = (i32)(sx * S), y0 = (i32)(sy * S), x1 = (i32)((sx + sdx * dw) * S + 0.5),
+        y1 = (i32)((sy + sdy * dh) * S + 0.5);
+    i32 X1 = (i32)((dx + dw) * S + 0.5f), Y1 = (i32)((dy + dh) * S + 0.5f);
+    dx = (i32)(dx * S);
+    dy = (i32)(dy * S);
+    if (x1 > (i32)st->sw) x1 = (i32)st->sw;
+    if (y1 > (i32)st->sh) y1 = (i32)st->sh;
+    if (X1 > (i32)dt->sw) X1 = (i32)dt->sw;
+    if (Y1 > (i32)dt->sh) Y1 = (i32)dt->sh;
+    if (x1 <= x0 || y1 <= y0 || X1 <= dx || Y1 <= dy || x0 < 0 || y0 < 0 || dx < 0 || dy < 0) return 0;
+    vk_rt_note_read(st);
+    if (st->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    VmaAllocation tm;
+    VkImage tmp;
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = st->f.vk,
+                            .extent = {st->sw, st->sh, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    if (!vk_image_create(&ii, &tmp, &tm)) return 0;
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = st->img,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = st->f.vk,
+                                .subresourceRange = {aspect, 0, 1, 0, 1}};
+    VkImageView sv = VK_NULL_HANDLE, tv = VK_NULL_HANDLE;
+    int ok = VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &sv));
+    vi.image = tmp;
+    ok = ok && VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &tv));
+    vk_defer_image(tmp, tm, sv, tv); /* once the frame's commands that use them are done */
+    if (!ok) return 0;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    /* the resolve reads the samples and writes the image in the color attachment output stage, as every resolve does;
+       the pass loads the samples (depth and stencil tests' accesses) and stores them unchanged */
+    const VkPipelineStageFlags2 rs = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+                                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    vk_surf_use(cb, st, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, rs,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+    vk_barrier(cb, tmp, aspect, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, rs,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo att = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                     .imageView = sv,
+                                     .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                     .resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                                     .resolveImageView = tv,
+                                     .resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                          .renderArea = {{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}},
+                          .layerCount = 1,
+                          .pDepthAttachment = &att,
+                          .pStencilAttachment = st->f.stencil ? &att : NULL};
+    rec_CmdBeginRendering(cb, &ri);
+    rec_CmdEndRendering(cb);
+    vk_barrier(cb, tmp, aspect, rs, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+               VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    /* one aspect a region; nearest, as filtering depth and stencil would only mix them */
+    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                         .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
+                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                         .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
+    b[1] = b[0];
+    b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+    rec_CmdBlitImage(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     st->f.stencil ? 2 : 1, b, VK_FILTER_NEAREST);
+    vk_surf_wrote(dt);
+    if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
+        vk_rt_drawn_full(dt);
+    else
+        vk_rt_drawn(dt);
+    vk_surf_touch(dt);
+    return 1;
+}
+
 /* the 2D engine's blit between render targets, on the GPU. The surfaces are gpu/gpu.h's
    Surf2D. 0 when it can't be done there: the front end then copies through guest memory.
    A multisampled source is the resolve (NVN's Downsample, a game's blit of its multisampled target): the 2D engine
@@ -1610,7 +1712,9 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
         sy /= by;
         sdy /= by;
         if (st->f.depth) {
-            LOG_LIMIT(1, "vulkan: a multisampled depth target's resolve isn't done on the GPU\n");
+            if (st->layout == VK_IMAGE_LAYOUT_UNDEFINED || dw <= 0 || dh <= 0) return 0;
+            if (resolve_depth(st, d, dx, dy, dw, dh, sx, sy, sdx, sdy)) return 1;
+            LOG_LIMIT(1, "vulkan: a multisampled depth target's resolve into format %#x isn't done\n", d->format);
             return 0;
         }
     }

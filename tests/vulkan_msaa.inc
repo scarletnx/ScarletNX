@@ -378,11 +378,11 @@ static int check_msaa(void) {
    layout, its samples 0 and 3 green and 1 and 2 blue in guest memory, bound as the target and cleared in alpha alone
    (a masked clear, drawn at every sample), then downsampled into a 16x8 texture of one sample: every pixel the
    samples' average, half green and half blue, where a copy of one sample would be one or the other */
-static void ms_nvn_texture(u64 at, u64 gpu, int samples) {
+static void ms_nvn_texture_of(u64 at, u64 gpu, int samples, u16 format) {
     NvnTexture t;
     memset(&t, 0, sizeof t);
     t.magic = NVN_MAGIC('T', 'E', 'X', 0);
-    t.d.format = NVN_FORMAT_RGBA8;
+    t.d.format = format;
     t.d.flags = NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT;
     t.d.target = samples > 1 ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D;
     t.d.samples = (u8)samples;
@@ -392,6 +392,62 @@ static void ms_nvn_texture(u64 at, u64 gpu, int samples) {
     t.d.depth = 1;
     t.gpu = gpu;
     memcpy(GP(at), &t, NVN_TEX_SNAP);
+}
+static void ms_nvn_texture(u64 at, u64 gpu, int samples) { ms_nvn_texture_of(at, gpu, samples, NVN_FORMAT_RGBA8); }
+/* NVN direct's multisampled depth texture and its Downsample on the GPU (gpu/vk/surface.c resolve_depth): a 16x8
+   DEPTH32F texture of 4 samples bound as the depth target and cleared to 0.25, then downsampled into a 16x8 DEPTH32F
+   texture of one sample, whose every pixel is 0.25 */
+static int check_msaa_nvn_depth(NvnDraw* d, u64 gpu, u64 cpu) {
+    const u64 ms = gpu + 0x4000, single = gpu + 0x6000, snap_ms = cpu + 0x9000, snap_single = cpu + 0x9100,
+              set_rt = cpu + 0x9200, clear = cpu + 0x9800, copy = cpu + 0x9900;
+    ms_nvn_texture_of(snap_ms, ms, 4, NVN_FORMAT_DEPTH32F);
+    ms_nvn_texture_of(snap_single, single, 1, NVN_FORMAT_DEPTH32F);
+    NvnPSetRT rt;
+    memset(&rt, 0, sizeof rt);
+    rt.depth = snap_ms;
+    memcpy(GP(set_rt), &rt, sizeof rt);
+    NvnPClearDS c = {.depth = 0.25f, .depth_mask = 1};
+    memcpy(GP(clear), &c, sizeof c);
+    vk_lock();
+    CHECK(nvn_draw_record(d, OP_SET_RT, set_rt, sizeof rt));
+    CHECK(nvn_draw_record(d, OP_CLEAR_DS, clear, sizeof c));
+    vk_render_end();
+    vk_unlock();
+    Surf* z = vk_rt_find(ms);
+    CHECK(z && z->f.depth && z->msaa == DS_MSAA_2X2 && z->w == 16 && z->h == 8);
+    NvnPCopyT2T r;
+    memset(&r, 0, sizeof r);
+    r.src = snap_ms;
+    r.dst = snap_single;
+    r.sr = (NVNcopyRegion){0, 0, 0, 16, 8, 1};
+    r.dr = r.sr;
+    r.flags = NVN_COPY_RESOLVE;
+    memcpy(GP(copy), &r, sizeof r);
+    i64 stride[2] = {0, 0};
+    CHECK(nvn_copy_record(OP_COPY_T2T, copy, sizeof r, stride));
+    Surf* t = vk_rt_find(single);
+    CHECK(t && t->f.depth && !t->msaa && t->w == 16 && t->h == 8 && t->layout != VK_IMAGE_LAYOUT_UNDEFINED);
+    vk_lock();
+    VkBuffer buffer;
+    u8* data = vk_readback_buffer(16 * 8 * 4, &buffer);
+    CHECK(data);
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy bc = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .imageExtent = {16, 8, 1}};
+    rec_CmdCopyImageToBuffer(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &bc);
+    vk_finish();
+    vk_readback_ready();
+    vk_unlock();
+    for (u32 i = 0; i < 16 * 8; i++) {
+        float v;
+        memcpy(&v, data + 4 * i, 4);
+        if (v != 0.25f) {
+            fprintf(stderr, "msaa nvn: resolved depth %u is %g\n", i, (double)v);
+            return 1;
+        }
+    }
+    return 0;
 }
 static int check_msaa_nvn(void) {
     const u64 gpu = 0x47E000000ull, cpu = HEAP_BASE + 0x7E0000, ms = gpu, single = gpu + 0x1000;
@@ -453,8 +509,10 @@ static int check_msaa_nvn(void) {
             return 1;
         }
     }
+    CHECK(!check_msaa_nvn_depth(d, gpu, cpu));
     free(d);
     CHECK(g_vk_validation_messages == validation);
-    puts("msaa nvn: a multisampled texture bound as NVN's render target, cleared at every sample and downsampled");
+    puts("msaa nvn: a multisampled texture bound as NVN's render target, cleared at every sample and downsampled, "
+         "and a multisampled depth texture downsampled on the GPU");
     return 0;
 }
