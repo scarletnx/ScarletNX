@@ -4,7 +4,8 @@
    has a player's own agent do. JSON-RPC 2.0 over stdin and stdout, a message a line (MCP's stdio transport), nothing
    else on stdout. Its tools read only this machine:
 
-   - scan_log: the log summary (common/utilities/logscan.h) of a game's log or the launcher's Share Log file.
+   - scan_log: the log summary (common/utilities/logscan.h) of a game's log (a path, or the game itself) or the
+     launcher's Share Log file.
    - read_log: parts of a log by text (with lines of context) or by line range, or its last lines, never the whole of a
      large one.
    - find_game: the games the data folder holds: the extractions in its work/ folders and the games made in its
@@ -24,22 +25,24 @@
      started with the GDB stub, the runtime's process read and driven through it.
 
    scan_log, read_log, symbolize and disassemble read only under ScarletNX's own folders on this machine, and the game
-   tools work only there too: the data
-   folder (DIR, else snx_data_dir's) with its state, cache and settings folders, the folders each of its games keeps
-   its own files in, and the work folders its extractions live in. A game's log, settings and caches are stored
-   wherever the game's <name>.folders redirects them, which is rarely the data folder itself. The edenprobe tools work
-   in the clone and on the NRO the person names, and answer only their own results. The GDB tools reach the game's
-   process only, on this machine's loopback: gdb_command runs a list of GDB's reading, breakpoint and execution
-   commands, none that runs a shell or a script or writes a file, though print and call evaluate the game's own
-   functions.
+   tools work only there too: the data folder (DIR, else snx_data_dir's) with its state, cache and settings folders,
+   the folders each of its games keeps its own files in, and the work folders its extractions live in. A game's log,
+   settings and caches are stored wherever the game's <name>.folders redirects them, which is rarely the data folder
+   itself. The launcher's Share Log is written beside the launcher when the machine's folders are not there for it:
+   its path is recorded in the machine's state folder, and read from there. The edenprobe tools work in the clone and
+   on the NRO the person names, and answer only their own results. The GDB tools reach the game's process only, on
+   this machine's loopback: gdb_command runs a list of GDB's reading, breakpoint and execution commands, none that
+   runs a shell or a script or writes a file, though print and call evaluate the game's own functions.
 
    game_recompile and game_run write under ScarletNX's data folder or its cache folder, and game_run's process is the
-   game's own runtime with a per-run command line: its .ini's selections are never rewritten. A game's code goes to the agent's context the
-   way a session's tools/disasm.py output does, and nowhere else. An answer is cut at MAX_LINES lines: the agent's
-   context is the scarce part */
+   game's own runtime with a per-run command line: its .ini's selections are never rewritten. A game's code goes to
+   the agent's context the way a session's tools/disasm.py output does, and nowhere else. An answer is cut at
+   MAX_LINES lines: the agent's context is the scarce part */
 #include "nx/runtime/driver/mcp.h"
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
+#include "nx/runtime/driver/container.h"
+#include "nx/runtime/gdbstub.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/demangle.h"
@@ -195,6 +198,28 @@ static void add_game_folders(Mcp* m) {
         free(library);
     }
 }
+/* The launcher's Share Log file (src/gui/main.c's share_log) goes beside the launcher when the machine's own folders
+   are not there for it: where it went is recorded in the machine's state folder, which these tools read, so the Share
+   Log the launcher wrote last is readable as well */
+static void add_share_log(Mcp* m) {
+    char *state = snx_menu_dir(NULL, SNX_USER_STATE), *record, *saved = NULL;
+    unsigned char* text;
+    size_t size = 0;
+    record = state ? snx_path_join(state, "share-log.path") : NULL;
+    text = record ? snx_read_file(record, &size) : NULL;
+    if (text) {
+        char* at;
+        saved = (char*)text;
+        for (at = saved + size; at > saved && (at[-1] == '\n' || at[-1] == '\r' || at[-1] == ' ' || at[-1] == '\t');)
+            *--at = 0;
+    }
+    if (saved && snx_is_file(saved))
+        add_root(m, saved); /* the Share Log file itself, not its folder: add_root keeps it */
+    else
+        free(saved);
+    free(record);
+    free(state);
+}
 static int mcp_open(Mcp* m, int argc, char** argv) {
     char *self, *dir, *work;
     int i, kind;
@@ -221,6 +246,7 @@ static int mcp_open(Mcp* m, int argc, char** argv) {
        user's data folder: a recompiled game of a checkout logs in the machine's state folder all the same */
     for (kind = SNX_USER_CONFIG; kind <= SNX_USER_CACHE; kind++) add_root(m, snx_menu_dir(NULL, kind));
     add_game_folders(m);
+    add_share_log(m);
     /* snx_work_dir without its notice, which would go to stdout */
     work = snx_path_join(m->data, "work");
     m->works[0] = snx_user_path(work, SNX_USER_CACHE);
@@ -258,9 +284,44 @@ static int readable(const Mcp* m, const char* path) {
     return ok;
 }
 static const char outside[] = "outside the folders the tools read (ScarletNX's data folder, its state, cache and "
-                              "settings folders, its games' own folders and its work folders)";
+                              "settings folders, its games' own folders, its work folders and the Share Log file the "
+                              "launcher recorded)";
 
 /* ============================================================ scan_log, read_log */
+/* The log one of the two reads: path's, or a game's own log when game names a game (a title ID, a folder, a program
+   in it or the name it was made by, as game_info takes it). A folder given for path is the game's folder: its log is
+   what game_info names, never a directory read as a log. threads asks for the game's threads.txt, the runtime's dump
+   of every guest thread, instead of its log. Owned, NULL with why in err */
+static char* log_path(const Mcp* m, const char* path, const char* game, int threads, Text* err) {
+    char* log;
+    if (path && !snx_is_dir(path)) {
+        if (!readable(m, path)) {
+            mcp_put(err, outside);
+            return NULL;
+        }
+        return snx_strdup(path);
+    }
+    if (!path && !game) {
+        mcp_put(err, "path: the log, or game: the game whose log to read");
+        return NULL;
+    }
+    log = threads ? mcp_game_threads(m->data, path ? path : game, err)
+                  : mcp_game_log(m->data, path ? path : game, err);
+    if (!log) return NULL;
+    if (!snx_is_file(log)) {
+        mcp_put(err, threads ? "that game has no threads.txt yet: the runtime writes one every 15 s, and on a stall"
+                             : path ? "that is a folder, and the game in it has no log yet"
+                                    : "that game has no log yet (game_info names its log)");
+        free(log);
+        return NULL;
+    }
+    if (!readable(m, log)) {
+        mcp_put(err, outside);
+        free(log);
+        return NULL;
+    }
+    return log;
+}
 static char* scan_log(const char* path, Text* err) {
     FILE* f = fopen(path, "rb");
     SnxLogScan s;
@@ -604,7 +665,17 @@ static char* game_found(const Mcp* m, const char* game, Text* err) {
         yyjson_mut_doc_free(d);
         return out;
     }
-    if (snx_is_dir(game) || snx_is_file(game)) return snx_strdup(game); /* a folder, or an NRO */
+    if (snx_is_dir(game) || snx_is_file(game)) return snx_absolute(game); /* a folder, or an NRO */
+    /* a name under the data folder (work/Game, recompiled/<title ID>) before one of the work folders itself */
+    {
+        char* under = snx_path_join(m->data, game);
+        if (under && (snx_is_dir(under) || snx_is_file(under))) {
+            char* absolute = snx_absolute(under);
+            free(under);
+            return absolute;
+        }
+        free(under);
+    }
     for (w = 0; w < 2; w++) {
         char* path = m->works[w] ? snx_path_join(m->works[w], game) : NULL;
         if (path && snx_is_dir(path)) return path;
