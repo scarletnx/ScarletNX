@@ -270,11 +270,11 @@ if(TARGET snx_ctr_board)
     set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
         # the draw test's modes that record only the commands under test, run under Khronos validation: any error it
-        # reports fails the test, such as a missing barrier (a synchronization hazard), or a dispatch, barrier or image
-        # transition inside a draw's open rendering
+        # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
+        # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
         set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
-            3ds_vk_draw_texture_after_draw_validation)
-        set(snx_vk_validation_modes --present --after-draw --texture-after-draw)
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy)
         foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
             add_test(NAME ${snx_test}
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"

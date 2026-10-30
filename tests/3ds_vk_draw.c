@@ -15,6 +15,7 @@
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -174,6 +175,14 @@ static void setup_clear(SnxCtrMemory* m, const Scene* s) {
     static const unsigned char clear[W * H * 4];
     setup(m, s, clear, clear);
 }
+/* a scene that did not draw on one of the renderers has nothing to compare */
+static bool drew(const Scene* s, bool cpu, bool gpu) {
+    if (!cpu || !gpu) {
+        printf("%-24s did not draw on the %s\n", s->name, cpu ? "GPU" : "CPU");
+        ++failures;
+    }
+    return cpu && gpu;
+}
 /* the scene's list through host, its commands recorded and not submitted */
 static bool record(SnxCtrMemory* m, const Scene* s, const SnxCtrPicaHost* host) {
     SnxCtrPica* p = calloc(1, sizeof *p);
@@ -256,12 +265,7 @@ static void run(SnxCtrMemory* m, Scene* s) {
     bool a = draw(m, s, &software, sw, sw_depth);
     setup(m, s, color, depth);
     bool b = draw(m, s, &vulkan, gpu, gpu_depth);
-    if (!a || !b) {
-        printf("%-24s did not draw on the %s\n", s->name, a ? "GPU" : "CPU");
-        ++failures;
-        return;
-    }
-    compare(s, sw, gpu, sw_depth, gpu_depth);
+    if (drew(s, a, b)) compare(s, sw, gpu, sw_depth, gpu_depth);
 }
 
 static void triangles(Scene* s, unsigned count) {
@@ -509,6 +513,68 @@ static void texture_after_draw(SnxCtrMemory* m) {
     free(b);
 }
 
+/* A draw whose indices a texture copy writes, recorded before it in the same command buffer, must be drawn: the
+   indices' page is the GPU's until the copy's submission is done, and the draw's scan of them waits for that. The copy
+   is the indices' only source. */
+#define INDEX_SOURCE     (FCRAM + 0x180000u)
+#define INDEX_COPY_SMALL 24
+#define INDEX_COPY_LARGE 2088 /* more bytes than one 4096-byte chunk of the scan */
+static void index_copy_case(SnxCtrMemory* m, const char* name, unsigned count) {
+    static unsigned char color[W * H * 4], sw[W * H * 4], gpu[W * H * 4];
+    static unsigned char indices[INDEX_COPY_LARGE * 2], copy[INDEX_COPY_LARGE * 2];
+    static const unsigned char zeros[INDEX_COPY_LARGE * 2];
+    unsigned bytes = count * 2;
+    Scene* s = scene(name, 0, 0xff);
+    for (unsigned t = 0; t < 8; ++t) { /* eight nondegenerate triangles, a grid across the target */
+        float x = (float)(t & 3) * 0.4f - 0.8f, y = (float)(t >> 2) * 0.6f - 0.8f;
+        s->vertices[s->vertex_count++] = vertex(x, y, -0.5f, 0xff0000ffu, 0, 0);
+        s->vertices[s->vertex_count++] = vertex(x + 0.4f, y, -0.5f, 0xff00ff00u, 0, 0);
+        s->vertices[s->vertex_count++] = vertex(x, y + 0.6f, -0.5f, 0xffff0000u, 0, 0);
+    }
+    for (unsigned i = 0; i < count; ++i) snx_st_le16(indices + i * 2, (uint16_t)(i % s->vertex_count));
+    put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
+    put(&s->list, 0x228, count);
+    put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
+    list_end(&s->list);
+    random_fill(color, sizeof color);
+    SnxCtrTextureCopy tc = {bytes, 0, 0}; /* contiguous: no gap, so no line widths */
+    setup(m, s, color, color);            /* no depth target */
+    bool a = snx_ctr_texture_copy(&tc, indices, bytes, copy, bytes) == SNX_CTR_XFER_OK;
+    a = a && snx_ctr_phys_write(m, INDICES, copy, bytes) == SNX_CTR_MEM_OK && record(m, s, &software);
+    snx_ctr_phys_read(m, COLOR, sw, sizeof sw);
+    setup(m, s, color, color);
+    bool b = snx_ctr_phys_write(m, INDEX_SOURCE, indices, bytes) == SNX_CTR_MEM_OK;
+    b = b && snx_ctr_phys_write(m, INDICES, zeros, bytes) == SNX_CTR_MEM_OK; /* only the copy may fill them */
+    b = b && snx_ctr_vk_texture_copy(&tc, INDEX_SOURCE, INDICES) == SNX_CTR_XFER_OK;
+    b = b && record(m, s, &vulkan) && snx_ctr_vk_finish();
+    snx_ctr_phys_read(m, COLOR, gpu, sizeof gpu);
+    if (drew(s, a, b)) compare(s, sw, gpu, NULL, NULL);
+    free(s);
+}
+static void draw_after_index_copy(SnxCtrMemory* m) {
+    index_copy_case(m, "draw after index copy", INDEX_COPY_SMALL);
+    index_copy_case(m, "indices over a scan chunk", INDEX_COPY_LARGE);
+}
+/* A count of 2^31 16-bit indices spans 2^32 bytes, which wraps to none in 32-bit arithmetic: the draw reaches outside
+   guest RAM and must draw nothing. */
+static void index_count_past_ram(SnxCtrMemory* m) {
+    static unsigned char color[W * H * 4], after[W * H * 4];
+    Scene* s = scene("indices past the RAM", 0, 0xff);
+    triangles(s, 2);
+    put(&s->list, 0x227, (INDICES - VERTICES) | 1u << 31);
+    put(&s->list, 0x228, 1u << 31);
+    put(&s->list, SNX_PICA_TRIGGER_DRAW_INDEXED, 1);
+    list_end(&s->list);
+    random_fill(color, sizeof color);
+    setup(m, s, color, color); /* no depth target */
+    bool ok = record(m, s, &vulkan) && snx_ctr_vk_finish() &&
+              snx_ctr_phys_read(m, COLOR, after, sizeof after) == SNX_CTR_MEM_OK;
+    bool same = ok && !memcmp(color, after, sizeof color);
+    printf("%-24s the target %s: %s\n", s->name, same ? "is unchanged" : "changed", same ? "ok" : "FAIL");
+    if (!same) ++failures;
+    free(s);
+}
+
 static void commands_after_draw(SnxCtrMemory* m) {
     y2r_after_draw(m);
     transfer_after_draw(m);
@@ -698,6 +764,8 @@ static void all_scenes(SnxCtrMemory* m) {
     }
     commands_after_draw(m);
     texture_after_draw(m);
+    draw_after_index_copy(m);
+    index_count_past_ram(m);
 }
 
 typedef struct {
@@ -709,7 +777,8 @@ static const Mode scenes = {NULL, "the scenes", all_scenes};
 /* the validation runs record only the commands under test */
 static const Mode modes[] = {{"--present", "the presented screens", screens},
                              {"--after-draw", "the commands after a draw", presented_after_draw},
-                             {"--texture-after-draw", "the textures after a draw", texture_after_draw}};
+                             {"--texture-after-draw", "the textures after a draw", texture_after_draw},
+                             {"--draw-after-index-copy", "the indices copied before a draw", draw_after_index_copy}};
 
 int main(int argc, char** argv) {
     const Mode* mode = &scenes;
