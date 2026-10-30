@@ -262,12 +262,17 @@ char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.
    home isolates HOME/USERPROFILE and removes XDG_CONFIG_HOME in the child. */
 int snx_run(const char* const* argv, const char* cwd, const char* home, char** output);
-/* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is */
+/* snx_run calling tick(data) about once a second while the child runs: a long tool can say how far it is.
+   timeout_ms (0: no limit) ends the child at that deadline, *timed_out is 1 when it did, and the exit is 124: a game
+   ends its own run at --seconds, and this is the host-side net for one that stops answering at all */
 int snx_run_ticking(const char* const* argv, const char* cwd, const char* home, char** output, void (*tick)(void*),
-                    void* data);
-/* snx_run ending the child after timeout_ms (0: no limit); *timed_out is 1 when it did. The exit is 124 then */
+                    void* data, int timeout_ms, int* timed_out);
 int snx_run_timed(const char* const* argv, const char* cwd, const char* home, char** output, int timeout_ms,
                   int* timed_out);
+/* argv run with its output written to the file at log_path, its stdin the null device, and *pid (when not NULL) its
+   process's: the child outlives the call, so a caller that registered it ends it when its use is over. 0, or 1 when
+   it could not be started */
+int snx_run_detached(const char* const* argv, const char* cwd, const char* home, const char* log_path, long* pid);
 /* Foreground workflow stage with inherited stdio, interruption forwarding and diagnostics.
    A stopped POSIX child is aborted so a rerun can restart that stage. Not thread safe. */
 int snx_run_stage(const char* const* argv, const char* cwd, const char* stage);

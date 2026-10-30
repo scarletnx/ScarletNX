@@ -57,14 +57,14 @@ int main(int argc, char** argv) {
     ticks = 0;
     output = NULL;
     start = snx_seconds();
-    rc = snx_run_ticking(command, NULL, NULL, &output, count, &ticks);
+    rc = snx_run_ticking(command, NULL, NULL, &output, count, &ticks, 0, NULL);
     took = snx_seconds() - start;
     CHECK(rc == 3 && output && strstr(output, "before") && strstr(output, "after"));
     CHECK(ticks >= 1 && ticks <= (int)took);
     free(output);
     /* not captured: the child's end is waited for, ticking too */
     ticks = 0;
-    rc = snx_run_ticking(command, NULL, NULL, NULL, count, &ticks);
+    rc = snx_run_ticking(command, NULL, NULL, NULL, count, &ticks, 0, NULL);
     CHECK(rc == 3 && ticks >= 1);
     /* snx_run, no tick */
     quick[0] = self;
