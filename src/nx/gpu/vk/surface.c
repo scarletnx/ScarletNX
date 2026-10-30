@@ -470,9 +470,38 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
     }
     return 1;
 }
+/* fn(user, at, host, n) for each run of guest memory behind the GPU range [gva, gva + size): n bytes at host, at
+   byte offset at of the range. A target's pages need not be contiguous in guest memory (a virtual pool maps them
+   page by page). Unmapped pages are skipped */
+static void span_runs(u64 gva, u64 size, void (*fn)(void*, u64, u8*, u64), void* user) {
+    for (u64 off = 0; off < size;) {
+        u64 cpu = 0, n = gmmu_run(gva + off, size - off, &cpu);
+        if (!n) {
+            n = 0x1000 - ((gva + off) & 0xfff);
+            if (n > size - off) n = size - off;
+        } else
+            fn(user, off, GP(cpu), n);
+        off += n;
+    }
+}
+/* the writes on a run so far taken into write tracking: the ones after count as later (*user: 1 when tracked) */
+static void run_take(void* user, u64 at, u8* host, u64 n) {
+    (void)at;
+    if (vk_written_since(host, n, 0) >= 0) *(int*)user = 1;
+}
+/* s's image and guest memory agree as of now, or the image replaced all of memory: the CPU's writes from now on are
+   newer than its pixels (mem_wseen). 0 without write tracking. The writes before now are taken in first, so they
+   don't count as later ones */
+static void mem_baseline(Surf* s) {
+    u64 size = rt_bytes(s);
+    int tracked = 0;
+    if (!(s->gva >> 63) && size) span_runs(s->gva, size, run_take, &tracked);
+    s->mem_wseen = tracked ? vk_ww_now() : 0;
+}
 static void rt_loaded(Surf* s) {
     s->mem_wgen = s->wgen; /* memory and image hold the same now: nothing to write back */
     s->draw_wseen = 0;     /* a successful full load starts a new source epoch for later draws */
+    mem_baseline(s);
     s->gw = gpu_mem_generation();
     vk_surf_relist(s);
 }
@@ -651,9 +680,12 @@ static void flush_wait(VkCommandBuffer cb) {
 typedef struct {
     u64 run[CPU_RUNS][2]; /* [from, to) of the span, in order */
     u32 n;
+    u32 since; /* the clock the runs are written after */
+    u64 base;  /* the span's offset of the guest run being looked at */
 } CpuRuns;
 static void cpu_run(void* user, u64 at, u64 n) {
     CpuRuns* r = (CpuRuns*)user;
+    at += r->base;
     if (r->n == CPU_RUNS) { /* more: the last run reaches to this one's end, the pages between keeping memory too */
         r->run[CPU_RUNS - 1][1] = at + n;
         return;
@@ -662,43 +694,52 @@ static void cpu_run(void* user, u64 at, u64 n) {
     r->run[r->n][1] = at + n;
     r->n++;
 }
-/* the runs of s's span [s->gva, s->gva + size) the CPU wrote since s's draw baseline: 0 when none, or when write
-   tracking can't tell (the old write-back of every pixel then) */
+/* the runs of s's span [s->gva, s->gva + size) the CPU wrote since s's image last matched memory (mem_wseen), else
+   since its draw baseline: 0 when none, or when write tracking can't tell (the old write-back of every pixel then).
+   The draw baseline alone missed a target that a copy changed after a load, with no draw: it has none */
+static void run_newer(void* user, u64 at, u8* host, u64 n) {
+    CpuRuns* r = (CpuRuns*)user;
+    r->base = at;
+    if (vk_written_since(host, n, r->since) > 0) vk_written_runs(host, n, r->since, cpu_run, r);
+}
 static u32 cpu_newer(const Surf* s, u64 size, CpuRuns* r) {
-    const u8* host = s->draw_wseen ? gmem_host(s->gva, size) : NULL;
     r->n = 0;
-    if (host && vk_written_since(host, size, s->draw_wseen) > 0)
-        vk_written_runs(host, size, s->draw_wseen, cpu_run, r);
+    r->since = s->mem_wseen ? s->mem_wseen : s->draw_wseen;
+    if (r->since) span_runs(s->gva, size, run_newer, r);
     return r->n;
 }
 /* after a write-back of s: a new draw baseline, so what the CPU writes from now on is newer, and the write-back's own
    writes aren't. With pages kept (kept), s's image isn't memory there: no baseline, and its generation from before
    (gw0), with the span marked written, so its next use loads it from memory again (vk_rt_note_read) */
 static void flush_rebase(Surf* s, u64 size, int kept, u64 gw0) {
-    const u8* host = gmem_host(s->gva, size);
+    int tracked = 0;
     if (kept) {
         gpu_mem_written(s->gva, size);
         s->gw = gw0;
         s->draw_wseen = 0;
+        s->mem_wseen = 0;
         return;
     }
     s->gw = gpu_mem_generation();
-    if (s->draw_wseen && host) {
-        (void)vk_written_since(host, size, 0);
-        s->draw_wseen = vk_ww_now();
-    }
+    span_runs(s->gva, size, run_take, &tracked);
+    if (s->draw_wseen && tracked) s->draw_wseen = vk_ww_now();
+    s->mem_wseen = tracked ? vk_ww_now() : 0;
 }
 /* the guest pages [gva + from, gva + to) a write-back wrote, for write tracking: they hold the GPU's bytes, which a
    later scan doesn't count as the CPU's while they stay as written (vk_ww_landed). The scan reads them through the
    alias pool's mirror, as own.c's landings give them: a page the GPU holds by then is trapped where the guest sees
    it. A page outside the pool isn't noted, and its write counts as the CPU's */
-static void flush_note_landed(u64 gva, u64 from, u64 to) {
-    u64 lo = (gva + from) & ~0xfffull, hi = (gva + to + 0xfff) & ~0xfffull, off;
-    u8* host = to > from ? gmem_host(lo, hi - lo) : NULL;
-    u8* mirror = plat_alias_mirror();
-    if (!host || !mirror) return;
-    for (u64 cpu = (u64)(host - g_mem), end = cpu + (hi - lo); cpu < end; cpu += 0x1000)
+static void run_landed(void* user, u64 at, u8* host, u64 n) {
+    u8* mirror = (u8*)user;
+    u64 off;
+    (void)at;
+    for (u64 cpu = (u64)(host - g_mem), end = cpu + n; cpu < end; cpu += 0x1000)
         if (!mem_pool_offset(cpu, &off)) vk_ww_landed(cpu, 0x1000, mirror + off);
+}
+static void flush_note_landed(u64 gva, u64 from, u64 to) {
+    u64 lo = (gva + from) & ~0xfffull, hi = (gva + to + 0xfff) & ~0xfffull;
+    u8* mirror = plat_alias_mirror();
+    if (to > from && mirror) span_runs(lo, hi - lo, run_landed, mirror);
 }
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
@@ -1411,6 +1452,7 @@ void vk_rt_drawn(Surf* s) {
 void vk_rt_drawn_full(Surf* s) {
     s->draw_wseen = 0; /* every pixel was replaced, so earlier memory writes no longer matter */
     vk_rt_drawn(s);
+    mem_baseline(s);
 }
 int vk_rt_drawn_fresh(Surf* s) {
     u64 size = rt_bytes(s);
