@@ -6,10 +6,9 @@
 #include <string.h>
 
 /* VFPv2 short vectors on the ARM11. The block emitter stops a VFP data-processing word under a non-zero LEN or STRIDE
-   as SNX_ARM_BACKEND_UNSUPPORTED, unless it is a compare or a conversion, which is scalar. This backend runs the nine
-   arithmetic operations one element at a time. A word the profile rejects reaches it as SNX_ARM_UNDEFINED and keeps
-   that exit. A lane is read by its number (S(2n) = Dn[31:0]), so the host's byte order does not matter. snx_arm_fp
-   reads only the AHP, FZ and RMode bits of the FPSCR */
+   unless it is a compare or a conversion, which is scalar. This backend runs the operations that ctr_vfp_decode admits
+   one element at a time. A word the profile rejects reaches it as SNX_ARM_UNDEFINED and keeps that exit. A lane is read
+   by its number (S(2n) = Dn[31:0]), so the host's byte order does not matter. */
 #define FPSCR_LEN_SHIFT    16
 #define FPSCR_STRIDE_SHIFT 20
 #define BANK_BYTES         32u /* a bank of the register file: 8 singles or 4 doubles */
@@ -28,8 +27,12 @@ static bool ctr_vfp_decode(uint32_t word, SnxArmVector* v) {
         case AV_FNMUL:
         case AV_FADD:
         case AV_FSUB:
-        case AV_FDIV: return true;
-        default: return false; /* moves and unary operations stay unsupported */
+        case AV_FDIV:
+        case AV_MOV:
+        case AV_FABS:
+        case AV_FNEG:
+        case AV_FSQRT: return true;
+        default: return false; /* compares and conversions run in the emitter */
     }
 }
 
@@ -63,20 +66,21 @@ static bool ctr_vfp_short(SnxArmCPU* cpu, uint32_t word) {
     if (!(cpu->fpscr & SNX_ARM_FPSCR_LEN_STRIDE) || (stride != 0 && stride != 3)) return false;
     uint32_t count = len + 1;
     stride = stride == 3 ? 2 : 1;
+    bool unary = v.op == AV_MOV || v.op == AV_FABS || v.op == AV_FNEG || v.op == AV_FSQRT;
     /* a destination in the first bank makes the operation scalar. Otherwise the vector may not revisit a register of
-       its bank, and a first source in the first bank is not modelled */
+       its bank, and a first source in the first bank is not modelled. A unary operation has no first source */
     if (v.d < BANK_BYTES)
         count = 1;
-    else if (v.n < BANK_BYTES || count * stride * v.width / 8 > BANK_BYTES)
+    else if ((!unary && v.n < BANK_BYTES) || count * stride * v.width / 8 > BANK_BYTES)
         return false;
     unsigned step = v.width / 8 * stride;
-    bool broadcast = v.m < BANK_BYTES; /* a second source in the first bank is one scalar for every element */
+    bool broadcast = v.m < BANK_BYTES; /* a second source, or the only source of a unary operation, in the first bank */
     for (unsigned i = 0; i < count; ++i) {
         unsigned d = ctr_vfp_step(v.d, i, step);
-        uint64_t x = ctr_vfp_get(cpu, ctr_vfp_step(v.n, i, step), v.width);
         uint64_t y = ctr_vfp_get(cpu, broadcast ? v.m : ctr_vfp_step(v.m, i, step), v.width);
-        ctr_vfp_set(cpu, d, v.width,
-                    snx_arm_fp(cpu, x, y, ctr_vfp_get(cpu, d, v.width), v.op, v.width, FP_PARAM_CPU_FPSCR));
+        uint64_t x = unary ? y : ctr_vfp_get(cpu, ctr_vfp_step(v.n, i, step), v.width);
+        uint64_t add = ctr_vfp_get(cpu, d, v.width);
+        ctr_vfp_set(cpu, d, v.width, snx_arm_fp(cpu, x, y, add, v.op, v.width, FP_PARAM_CPU_FPSCR));
     }
     return true;
 }

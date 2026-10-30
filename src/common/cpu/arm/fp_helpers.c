@@ -213,6 +213,9 @@ uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32
             result = snx_fp_fma(&c, add, x, y, width);
             break;
         case AV_FSQRT: result = snx_fp_unary(&c, x, width, SNX_FP_SQRT); break;
+        case AV_MOV: result = x; break;
+        case AV_FABS: result = x & (sign - 1); break;
+        case AV_FNEG: result = x ^ sign; break;
         case AV_FRECPE: result = snx_fp_unary(&c, x, width, SNX_FP_RECPE); break;
         case AV_FRSQRTE: result = snx_fp_unary(&c, x, width, SNX_FP_RSQRTE); break;
         case AV_URECPE: result = urecpe32((u32)x); break;

@@ -408,9 +408,9 @@ static void scalar_convert_f64(SnxArmExec* exec) {
     snx_ctr_process_free(p);
 }
 
-static void trapped_scalar(SnxArmExec* exec, const uint32_t* words, const char* what) {
+static void trapped_word(SnxArmExec* exec, const uint32_t* words, const char* what) {
     SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3) | FPSCR_IDE);
-    check(p != NULL, "trapped scalar process");
+    check(p != NULL, "trapped word process");
     if (!p) return;
     SnxArmCPU* cpu = &p->cpu.state.cpu;
     cpu->d[4] = 0x1111111122222222ull;
@@ -419,7 +419,7 @@ static void trapped_scalar(SnxArmExec* exec, const uint32_t* words, const char* 
     SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
     if (compiled(block, what)) {
         check(run(p, block) == SNX_CTR_RUN_UNSUPPORTED, what);
-        check(cpu->d[4] == 0x1111111122222222ull && cpu->fpscr == fpscr, "the trapped scalar writes nothing");
+        check(cpu->d[4] == 0x1111111122222222ull && cpu->fpscr == fpscr, "the trapped word writes nothing");
     }
     snx_ctr_process_free(p);
 }
@@ -428,8 +428,223 @@ static void trapped_scalar(SnxArmExec* exec, const uint32_t* words, const char* 
 static void scalar_trapped(SnxArmExec* exec) {
     static const uint32_t compare[] = {0xeeb44a48u, 0xeafffffeu}; /* VCMP.F32 S8,S16 */
     static const uint32_t convert[] = {0xeebd4ac8u, 0xeafffffeu}; /* VCVT.S32.F32 S8,S16 */
-    trapped_scalar(exec, compare, "an enabled exception stops the scalar compare");
-    trapped_scalar(exec, convert, "an enabled exception stops the scalar conversion");
+    trapped_word(exec, compare, "an enabled exception stops the scalar compare");
+    trapped_word(exec, convert, "an enabled exception stops the scalar conversion");
+}
+
+static uint64_t pack32(uint32_t high, uint32_t low) { return ((uint64_t)high << 32) | low; }
+
+/* VMOV, VABS, VNEG and VSQRT on F32 under LEN=3: lane i of S8..S11 is the operation on lane i of S16..S19. The sign
+   operations read -1, 4, -9, 16, and the square root reads 1, 4, 9, 16. */
+static void unary_f32(SnxArmExec* exec) {
+    static const uint32_t signed_lanes[4] = {0xbf800000u, 0x40800000u, 0xc1100000u, 0x41800000u};
+    static const uint32_t positive_lanes[4] = {0x3f800000u, 0x40800000u, 0x41100000u, 0x41800000u};
+    static const uint32_t negated_lanes[4] = {0x3f800000u, 0xc0800000u, 0x41100000u, 0xc1800000u};
+    static const uint32_t root_lanes[4] = {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u};
+    static const struct {
+        const char* name;
+        uint32_t word;
+        const uint32_t* source;
+        const uint32_t* expected;
+    } cases[] = {
+        {"VMOV.F32", 0xeeb04a48u, signed_lanes, signed_lanes},
+        {"VABS.F32", 0xeeb04ac8u, signed_lanes, positive_lanes},
+        {"VNEG.F32", 0xeeb14a48u, signed_lanes, negated_lanes},
+        {"VSQRT.F32", 0xeeb14ac8u, positive_lanes, root_lanes},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint32_t words[] = {cases[i].word, 0xeafffffeu};
+        SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+        check(p != NULL, "unary f32 process");
+        if (!p) continue;
+        SnxArmCPU* cpu = &p->cpu.state.cpu;
+        cpu->d[4] = 0x1111111122222222ull;
+        cpu->d[5] = 0x3333333344444444ull;
+        cpu->d[8] = pack32(cases[i].source[1], cases[i].source[0]);
+        cpu->d[9] = pack32(cases[i].source[3], cases[i].source[2]);
+        SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+        if (compiled(block, cases[i].name)) {
+            check(run(p, block) == SNX_CTR_RUN_BUDGET, "the unary F32 short vector runs under LEN=3");
+            check(cpu->d[4] == pack32(cases[i].expected[1], cases[i].expected[0]) &&
+                      cpu->d[5] == pack32(cases[i].expected[3], cases[i].expected[2]),
+                  "the unary F32 lanes S8..S11 match the operation");
+            check(cpu->d[8] == pack32(cases[i].source[1], cases[i].source[0]) &&
+                      cpu->d[9] == pack32(cases[i].source[3], cases[i].source[2]),
+                  "the unary F32 source lanes keep their values");
+        }
+        snx_ctr_process_free(p);
+    }
+}
+
+/* VMOV, VABS, VNEG and VSQRT on F64 under LEN=3: lane i of D4..D7 is the operation on lane i of D8..D11. */
+static void unary_f64(SnxArmExec* exec) {
+    static const uint64_t signed_lanes[4] = {0xbff8000000000000ull, 0x4010000000000000ull, 0xc014000000000000ull,
+                                             0x4030000000000000ull};
+    static const uint64_t positive_lanes[4] = {0x3ff8000000000000ull, 0x4010000000000000ull, 0x4014000000000000ull,
+                                               0x4030000000000000ull};
+    static const uint64_t negated_lanes[4] = {0x3ff8000000000000ull, 0xc010000000000000ull, 0x4014000000000000ull,
+                                              0xc030000000000000ull};
+    static const uint64_t square_lanes[4] = {0x3ff0000000000000ull, 0x4010000000000000ull, 0x4022000000000000ull,
+                                             0x4030000000000000ull};
+    static const uint64_t root_lanes[4] = {0x3ff0000000000000ull, 0x4000000000000000ull, 0x4008000000000000ull,
+                                           0x4010000000000000ull};
+    static const struct {
+        const char* name;
+        uint32_t word;
+        const uint64_t* source;
+        const uint64_t* expected;
+    } cases[] = {
+        {"VMOV.F64", 0xeeb04b48u, signed_lanes, signed_lanes},
+        {"VABS.F64", 0xeeb04bc8u, signed_lanes, positive_lanes},
+        {"VNEG.F64", 0xeeb14b48u, signed_lanes, negated_lanes},
+        {"VSQRT.F64", 0xeeb14bc8u, square_lanes, root_lanes},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint32_t words[] = {cases[i].word, 0xeafffffeu};
+        SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+        check(p != NULL, "unary f64 process");
+        if (!p) continue;
+        SnxArmCPU* cpu = &p->cpu.state.cpu;
+        cpu->d[4] = 0x1111111111111111ull;
+        cpu->d[5] = 0x2222222222222222ull;
+        cpu->d[6] = 0x3333333333333333ull;
+        cpu->d[7] = 0x4444444444444444ull;
+        for (unsigned lane = 0; lane < 4; ++lane) cpu->d[8 + lane] = cases[i].source[lane];
+        SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+        if (compiled(block, cases[i].name)) {
+            check(run(p, block) == SNX_CTR_RUN_BUDGET, "the unary F64 short vector runs under LEN=3");
+            check(cpu->d[4] == cases[i].expected[0] && cpu->d[5] == cases[i].expected[1] &&
+                      cpu->d[6] == cases[i].expected[2] && cpu->d[7] == cases[i].expected[3],
+                  "the unary F64 lanes D4..D7 match the operation");
+            check(cpu->d[8] == cases[i].source[0] && cpu->d[9] == cases[i].source[1] &&
+                      cpu->d[10] == cases[i].source[2] && cpu->d[11] == cases[i].source[3],
+                  "the unary F64 source lanes keep their values");
+        }
+        snx_ctr_process_free(p);
+    }
+}
+
+/* A source in the first bank is one scalar for every lane: VNEG.F32 S8,S0 gives -2.0 four times. */
+static void unary_broadcast(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb14a40u, 0xeafffffeu}; /* VNEG.F32 S8,S0 */
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "unary broadcast process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[0] = 0x1111111140000000ull; /* S0 = 2.0, S1 sentinel */
+    cpu->d[4] = 0x1111111122222222ull;
+    cpu->d[5] = 0x3333333344444444ull;
+    cpu->d[8] = 0x111111113f800000ull;
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "unary broadcast")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the first-bank source of VNEG runs under LEN=3");
+        check(cpu->d[4] == 0xc0000000c0000000ull && cpu->d[5] == 0xc0000000c0000000ull,
+              "VNEG broadcasts S0 = -2.0 to S8..S11");
+        check(cpu->d[0] == 0x1111111140000000ull && cpu->d[8] == 0x111111113f800000ull,
+              "the broadcast leaves S0 and the vector source alone");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* A destination in the first bank is scalar: VABS.F32 S0,S16 writes S0 and keeps S1..S3. */
+static void unary_bank_zero(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb00ac8u, 0xeafffffeu}; /* VABS.F32 S0,S16 */
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "unary bank-zero process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[0] = 0x3333333340000000ull; /* S0 = 2.0, S1 sentinel */
+    cpu->d[1] = 0x5555555566666666ull; /* S2 and S3 sentinels */
+    cpu->d[8] = 0x11111111bf800000ull; /* S16 = -1.0, S17 sentinel */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "unary bank-zero")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the first-bank destination of VABS runs as a scalar");
+        check(cpu->d[0] == 0x333333333f800000ull, "S0 = 1.0 and S1 keeps its sentinel");
+        check(cpu->d[1] == 0x5555555566666666ull, "S2 and S3 keep their lanes");
+        check(cpu->d[8] == 0x11111111bf800000ull, "the unary source keeps S16 and S17");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* VSQRT.F32 S14,S30, LEN=3: the destination wraps inside its bank (S14, S15, S8, S9) and so does the source (S30, S31,
+   S24, S25). The square roots of 4, 16, 25 and 36 are 2, 4, 5 and 6. S10..S13 keep their lanes. */
+static void unary_wrap_f32(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb17acfu, 0xeafffffeu}; /* VSQRT.F32 S14,S30 */
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "unary wrap f32 process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111122222222ull;  /* S8 and S9 */
+    cpu->d[5] = 0x3333333344444444ull;  /* S10 and S11 */
+    cpu->d[6] = 0x5555555566666666ull;  /* S12 and S13 */
+    cpu->d[7] = 0x7777777788888888ull;  /* S14 and S15 */
+    cpu->d[12] = 0x4210000041c80000ull; /* S24 = 25.0, S25 = 36.0 */
+    cpu->d[15] = 0x4180000040800000ull; /* S30 = 4.0, S31 = 16.0 */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "unary wrap f32")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the wrapping unary F32 short vector runs");
+        check(cpu->d[7] == 0x4080000040000000ull, "S14 = 2.0 and S15 = 4.0");
+        check(cpu->d[4] == 0x40c0000040a00000ull, "the wrapped destination gives S8 = 5.0 and S9 = 6.0");
+        check(cpu->d[5] == 0x3333333344444444ull && cpu->d[6] == 0x5555555566666666ull, "S10..S13 keep their lanes");
+        check(cpu->d[12] == 0x4210000041c80000ull && cpu->d[15] == 0x4180000040800000ull,
+              "the wrapped source keeps S24..S31");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* VABS.F64 D6,D10, LEN=3: the destination wraps in D4..D7 and the source in D8..D11, so D6 = |D10|, D7 = |D11|,
+   D4 = |D8| and D5 = |D9|. */
+static void unary_wrap_f64(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb06bcau, 0xeafffffeu}; /* VABS.F64 D6,D10 */
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "unary wrap f64 process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111111111111ull;
+    cpu->d[5] = 0x2222222222222222ull;
+    cpu->d[6] = 0x3333333333333333ull;
+    cpu->d[7] = 0x4444444444444444ull;
+    cpu->d[8] = 0xbff8000000000000ull;  /* -1.5 */
+    cpu->d[9] = 0x4010000000000000ull;  /* 4.0 */
+    cpu->d[10] = 0xc014000000000000ull; /* -5.0 */
+    cpu->d[11] = 0x4030000000000000ull; /* 16.0 */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "unary wrap f64")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the wrapping unary F64 short vector runs");
+        check(cpu->d[6] == 0x4014000000000000ull && cpu->d[7] == 0x4030000000000000ull, "D6 = 5.0 and D7 = 16.0");
+        check(cpu->d[4] == 0x3ff8000000000000ull && cpu->d[5] == 0x4010000000000000ull,
+              "the wrapped destination gives D4 = 1.5 and D5 = 4.0");
+        check(cpu->d[8] == 0xbff8000000000000ull && cpu->d[11] == 0x4030000000000000ull,
+              "the wrapped source keeps D8..D11");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* VNEG.F32 S8,S16, LEN=1, STRIDE=2: the lanes step by two registers, so S8 = -S16 and S10 = -S18. */
+static void unary_stride2(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb14a48u, 0xeafffffeu}; /* VNEG.F32 S8,S16 */
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(1) | FPSCR_STRIDE(3));
+    check(p != NULL, "unary stride2 process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111122222222ull; /* S8 and S9 */
+    cpu->d[5] = 0x3333333344444444ull; /* S10 and S11 */
+    cpu->d[8] = 0x111111113f800000ull; /* S16 = 1.0, S17 sentinel */
+    cpu->d[9] = 0x2222222240800000ull; /* S18 = 4.0, S19 sentinel */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "unary stride2")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the unary STRIDE=2 short vector runs");
+        check(cpu->d[4] == 0x11111111bf800000ull && cpu->d[5] == 0x33333333c0800000ull,
+              "S8 = -1.0 and S10 = -4.0, and S9 and S11 keep their lanes");
+        check(cpu->d[8] == 0x111111113f800000ull && cpu->d[9] == 0x2222222240800000ull, "the source lanes stay");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* An enabled exception still stops a unary operation under LEN=3. */
+static void unary_trapped(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb14a48u, 0xeafffffeu}; /* VNEG.F32 S8,S16 */
+    trapped_word(exec, words, "an enabled exception stops the unary negate");
 }
 
 /* An enabled FP exception is not modelled; the backend must fail closed. */
@@ -584,6 +799,14 @@ int main(void) {
     scalar_convert_s32(exec);
     scalar_convert_f64(exec);
     scalar_trapped(exec);
+    unary_f32(exec);
+    unary_f64(exec);
+    unary_broadcast(exec);
+    unary_bank_zero(exec);
+    unary_wrap_f32(exec);
+    unary_wrap_f64(exec);
+    unary_stride2(exec);
+    unary_trapped(exec);
     enabled_exception(exec);
     profile_rejected(exec);
     vmsr(exec);
