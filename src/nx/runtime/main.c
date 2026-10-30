@@ -908,9 +908,29 @@ int snx_main(int argc, char** argv) {
         status = 0;
         goto done;
     }
-    if (g_opt_gdb && snx_gdb_start(g_opt_gdb_stop, SNX_GDB_PORT)) {
-        status = 2;
-        goto done; /* before any other thread */
+    if (g_opt_gdb) {
+        /* the stub's port, before any other thread and before the run's settings are read (the loop below reads
+           them): a --gdb_port=N on this run's command line, else the setting's default. The .ini is opened further
+           down, so its own gdb_port never reaches this stub: a game started by hand names its port on the command
+           line, and the MCP server's runs do the same */
+        int port = g_settings.gdb_port;
+        for (i = 1; i < argc && strcmp(argv[i], "--"); i++) {
+            const char* arg = argv[i];
+            char* end;
+            unsigned long value;
+            if (strncmp(arg, "--gdb_port=", 11)) continue;
+            value = strtoul(arg + 11, &end, 10);
+            if (!arg[11] || *end || value < 1 || value > 65535) {
+                snx_error("--gdb_port=%s: a port from 1 to 65535", arg + 11);
+                status = 2;
+                goto done;
+            }
+            port = (int)value;
+        }
+        if (snx_gdb_start(g_opt_gdb_stop, port)) {
+            status = 2;
+            goto done; /* before any other thread */
+        }
     }
     if (argc == 2 && !strncmp(argv[1], "--settings=", 11)) {
         fprintf(stderr, "scarletnx: %s: not --settings (the game's) or --settings=recompile\n", argv[1]);

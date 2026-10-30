@@ -152,6 +152,7 @@ int snx_gdb_start(int stop, int port) {
     pid_t helper = -1;
     char ready = '1';
     char* server;
+    const char* why = NULL; /* the failure's own reason, NULL for the syscall's errno */
     if (lifetime >= 0) return 0;
     server = snx_find_tool("gdbserver");
     if (!server) {
@@ -203,7 +204,7 @@ int snx_gdb_start(int stop, int port) {
         ssize_t n;
         do { n = read(gate[0], &ready, 1); } while (n < 0 && errno == EINTR);
         if (n != 1) {
-            fputs("scarletnx: debugger helper exited before connecting\n", stderr);
+            why = "the debugger helper exited before a client connected";
             goto failed;
         }
     }
@@ -212,7 +213,7 @@ int snx_gdb_start(int stop, int port) {
     free(server);
     return 0;
 failed:
-    fprintf(stderr, "scarletnx: cannot start GDB stub on localhost:%i: %s\n", port, strerror(errno));
+    fprintf(stderr, "scarletnx: cannot start GDB stub on localhost:%i: %s\n", port, why ? why : strerror(errno));
     if (helper > 0) {
         kill(helper, SIGKILL);
         while (waitpid(helper, NULL, 0) < 0 && errno == EINTR) {}

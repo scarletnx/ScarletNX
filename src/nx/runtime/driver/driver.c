@@ -80,6 +80,7 @@ static void usage(void) {
 #ifndef _WIN32
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
+         "  --gdb-port=PORT        The stub's port (1234), one no other stub is listening on\n"
          "Short options may be combined, for example -rx or -Hs.");
 #endif
 }

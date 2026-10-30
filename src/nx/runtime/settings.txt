@@ -839,6 +839,7 @@ setting Draw state check
     help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
     help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
     help a draw keeps
+||||||| parent of edcaf5649 ([runtime] A GDB stub takes a port of its own)
 setting Profiler
     key profile
     int 0 1
