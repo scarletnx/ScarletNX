@@ -159,16 +159,16 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. With the `astc_bc` setting (on by default, a `startup` one), `format.c`'s `TA()` gives such
-a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and `vk_astc_upload` runs a
-second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in `bc7_encode.glsl`, encodes the
-decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of the same size, and the copy
-writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so its ASTC block rows are a
-multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes too, which for a slice
-smaller than a block are more than its texels'. `device.c` turns `textureCompressionBC` on for it whatever
-`native_bc` says, and `format.c` then samples BCn as it is only when `native_bc` asks too. A 3D texture keeps RGBA8
-where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many levels
-went up as BC7 and their megabytes against RGBA8's.
+take one (4x4) or less. With the `astc_bc` setting (a `startup` one, off by default: BC7 is close but not exact),
+`format.c`'s `TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
+`vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
+`bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of
+the same size, and the copy writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so
+its ASTC block rows are a multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes
+too, which for a slice smaller than a block are more than its texels'. `device.c` turns `textureCompressionBC` on for
+it whatever `native_bc` says, and `format.c` then samples BCn as it is only when `native_bc` asks too. A 3D texture
+keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
+levels went up as BC7 and their megabytes against RGBA8's.
 
 The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
 block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
