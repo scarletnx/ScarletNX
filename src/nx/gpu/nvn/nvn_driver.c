@@ -168,7 +168,8 @@ u32 nvn_api_pack(i32 major, i32 minor) {
 /* the described versions (nvn_driver.h), inclusive ranges in order */
 static const struct {
     u32 lo, hi;
-} described[] = {{53u << 16 | 209, 53u << 16 | 209}, {55u << 16 | 8, 55u << 16 | 15}};
+} described[] = {{53u << 16 | 209, 53u << 16 | 209}, {53u << 16 | 312, 53u << 16 | 312},
+                 {55u << 16 | 8, 55u << 16 | 15}};
 #define DESCRIBED (sizeof described / sizeof *described)
 
 int nvn_api_described(u32 api) {

@@ -53,6 +53,8 @@ typedef struct {
 
 /* a queue's state d, all zero: NVN's defaults, its draws owner as renderer.h numbers it */
 void nvn_draw_init(NvnDraw* d, u32 owner);
+/* Release renderer predicate and counter state on the GPU thread after the queue's last replay. */
+void nvn_draw_free(NvnDraw* d);
 /* On the GPU thread, a record a queue replays: its render targets, clears, state, bindings and draws. 0 when the
    record is none of those */
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size);

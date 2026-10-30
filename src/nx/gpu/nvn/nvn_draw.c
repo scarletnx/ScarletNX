@@ -67,6 +67,11 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
     new_gen(gen);
 }
 
+void nvn_draw_free(NvnDraw* d) {
+    if (d->own.pred && g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(d->own.pred);
+    if (d->samples && g_renderer->samples_enable) g_renderer->samples_enable(d->ds.owner, 0);
+}
+
 void nvn_draw_init(NvnDraw* d, u32 owner) {
     int i, s;
     d->ds.owner = owner;

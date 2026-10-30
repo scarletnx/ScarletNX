@@ -19,6 +19,7 @@ route nvnBootstrapLoader
 route nvnDeviceGetProcAddress
 
 family device
+hook nvnSetExternalDebuggerEnabledNVX(bool enabled)
 hook nvnDeviceApplyDeferredFinalizes(NVNdevice* d, i32 age)
 hook nvnDeviceBuilderGetFlags(const NVNdeviceBuilder* b) -> i32
 hook nvnDeviceFinalize(NVNdevice* d)

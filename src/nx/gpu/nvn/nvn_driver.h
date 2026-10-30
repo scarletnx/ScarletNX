@@ -18,10 +18,10 @@ u32 nvn_api_pack(i32 major, i32 minor);
 /* Whether nvn_direct describes NVN API version api (packed as nvn_api_pack does), so nvn_direct=auto takes the game's
    NVN calls (gpu/nvn/nvn_direct.c): a driver whose object footprints tools/nvn_census.py --footprints measured, which
    every layout in gpu/nvn/nvn_obj.h fits, whose shader control sections the runtime reads at the offsets its driver
-   reads them, and whose game ran under nvn_direct. API 53.209 (an SDK 5.4 driver) and 55.8 to 55.15 (55.12 between
-   the measured ones); the versions between them aren't described */
+   reads them, and whose game ran under nvn_direct. API 53.209, 53.312 and 55.8 to 55.15 (55.12 between the
+   measured ones); other versions between them aren't described */
 int nvn_api_described(u32 api);
-/* the described versions as text ("53.209, 55.8 to 55.15") */
+/* the described versions as text ("53.209, 53.312, 55.8 to 55.15") */
 void nvn_api_described_text(char* out, size_t n);
 
 #endif

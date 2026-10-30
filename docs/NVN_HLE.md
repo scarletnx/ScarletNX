@@ -258,6 +258,24 @@ than the ones nvn_direct describes.
 
 ## Observing NVN calls
 
+`tools/nvn_coverage.py` builds a local index of public declarations, runtime handlers and possible Vulkan call
+paths. It retains signatures, names and locations, with no implementation bodies. Give it `--reference HEADER`,
+`--out REPORT.json` and `--cache CACHE.json` outside the checkout. `--jobs N` selects the worker processes and
+defaults to the available CPU count. Unchanged files reuse their cached index. Repeated `--log LOG` arguments
+distinguish resolved functions from unimplemented functions actually called, and collect verify-mode diagnostics.
+
+The index is lexical. A path to Vulkan does not establish equivalent rendering, and command recording defers its
+work to replay. `--contracts FILE.json --emit-bindings PROPOSAL.hook` can generate hook declarations from a JSON
+list of reviewed declarations. It checks the public ABI against an existing C handler, rejecting missing handlers,
+ambiguous definitions and incompatible arguments or results. It does not generate implementation bodies or modify
+the runtime. Hookgen supplies the actual register adapters after the declarations are reviewed and installed.
+
+API 53.312's measured object footprints fit the runtime's layouts, and format 15 control sections render through
+direct mode. Its sampler writer reaches 0x60 bytes, beyond the public header's 0x30 reserved bytes, so the header's
+size alone is not a safe bound for a shadow driver's writes. The command buffer's command and control size queries
+report the last ranges the game supplied. Runtime lending does not enlarge the advertised guest capacity, and the
+control range stays free because direct recording needs no driver control bookkeeping.
+
 The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. With
 `nvn_trace=1`, `nvn_trace.c` replaces that function's entry in the recompiler's dispatch table `g_disp`, then the
 entry of the `nvnDeviceGetProcAddress` pointer it returns, then the entry of every address either of them resolves. The

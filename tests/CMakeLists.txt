@@ -738,6 +738,13 @@ snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
+add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c")
+snx_test_target(snx-test-nvn-queue-lifetime 11)
+add_dependencies(snx-test-nvn-queue-lifetime snx_settings)
+target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
+add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
 # the NVN functions of API 53 and 55 nvn_direct took over last, by family: records and their replay into the draw
 # state (nvn_cmd.c, nvn_draw.c), the objects' getters and setters (nvn_object.c) and the queue and window (nvn_queue.c)
 add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
@@ -1089,6 +1096,7 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
+    add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME controls_atlas_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
     add_test(NAME ui_shaders_current
@@ -2073,7 +2081,7 @@ if(WIN32 AND TARGET SDL3::SDL3)
     add_executable(snx-test-platform-win32 platform_win32.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
         "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
     snx_test_target(snx-test-platform-win32 11)
-    target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3)
+    target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization)
     add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
