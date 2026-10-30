@@ -247,11 +247,98 @@ static char* game_work_find(const char* data, const char* selector, int by_id, S
     return found;
 }
 
+/* a game's log, <name>.log in the state folder the game keeps files in, as game_info names it: owned, NULL without
+   one. folder is the game's, name the folder's leaf (a recompiled game's title ID) */
+char* mcp_game_log_path(const char* folder, const char* name) {
+    char* state = game_kind_dir(folder, name, "state", SNX_USER_STATE);
+    char* log = state ? snx_format("%s/%s.log", state, name) : NULL;
+    free(state);
+    return log;
+}
+/* the runtime's dump of every guest thread, which the frontend writes next to the log (every 15 s, and on a stall),
+   as mcp_game_log_path gives the log: owned, NULL without one */
+char* mcp_game_threads_path(const char* folder, const char* name) {
+    char* state = game_kind_dir(folder, name, "state", SNX_USER_STATE);
+    char* path = state ? snx_path_join(state, "threads.txt") : NULL;
+    free(state);
+    return path;
+}
+/* the folder of the game game names: a title ID, a folder, a program in it or the name it was made by, as game_info
+   takes it. Owned, NULL with why in err */
+static char* game_folder_of(const char* data, const char* game, Text* err) {
+    char* folder = NULL;
+    if (snx_is_dir(game) || snx_is_file(game)) {
+        char* absolute = snx_absolute(game);
+        if (!absolute) {
+            mcp_put(err, "the game's path cannot be resolved");
+            return NULL;
+        }
+        folder = snx_is_file(absolute) ? snx_dirname(absolute) : absolute;
+        if (!folder) {
+            mcp_put(err, "the game's path cannot be resolved");
+            return NULL;
+        }
+    } else {
+        char *named = snx_strdup(game), *old = NULL, *cached = NULL;
+        char* roots[2];
+        int w, found = 0;
+        if (!named) {
+            mcp_put(err, "out of memory");
+            return NULL;
+        }
+        folder = snx_recompiled_game(data, named);
+        if (!folder || !snx_is_dir(folder)) { /* an extraction in the cache's work/, else the data folder's */
+            free(folder);
+            folder = NULL;
+            old = snx_path_join(data, "work");
+            cached = old ? snx_user_path(old, SNX_USER_CACHE) : NULL;
+            roots[0] = cached;
+            roots[1] = old;
+            for (w = 0; w < 2 && !found; w++) {
+                char* at = roots[w] && snx_is_dir(roots[w]) ? snx_path_join(roots[w], game) : NULL;
+                if (at && snx_is_dir(at)) {
+                    folder = at;
+                    found = 1;
+                } else
+                    free(at);
+            }
+        }
+        free(named);
+        free(cached);
+        free(old);
+        if (!folder) {
+            mcp_put(err, "no game of that title ID, folder or name under this data folder (find_game lists them)");
+            return NULL;
+        }
+    }
+    return folder;
+}
+/* the log of the game game names, as read_log and scan_log take it for a game instead of a path: a title ID, a folder,
+   a program in it or the name the game was made by, as game_info takes it. Owned, NULL with why in err */
+char* mcp_game_log(const char* data, const char* game, Text* err) {
+    char* folder = game_folder_of(data, game, err);
+    char* log;
+    if (!folder) return NULL;
+    log = mcp_game_log_path(folder, game_leaf(folder));
+    if (!log) mcp_put(err, "out of memory");
+    free(folder);
+    return log;
+}
+/* the game's threads.txt, as mcp_game_log gives its log. Owned, NULL with why in err */
+char* mcp_game_threads(const char* data, const char* game, Text* err) {
+    char* folder = game_folder_of(data, game, err);
+    char* path;
+    if (!folder) return NULL;
+    path = mcp_game_threads_path(folder, game_leaf(folder));
+    if (!path) mcp_put(err, "out of memory");
+    free(folder);
+    return path;
+}
+
 /* data names a game's title ID, its folder, a program in it, or the name it was made by. Only under the data folder or
    its cache: these tools run and rewrite what ScarletNX keeps there, and never another folder's programs. */
 static int game_open(const char* data, const char* selector, Game* g, Text* err) {
-    char *folder = NULL, *root = NULL, *cache_root = NULL, *cache_work = NULL, *file = NULL, *data_path = NULL,
-         *state = NULL;
+    char *folder = NULL, *root = NULL, *cache_root = NULL, *cache_work = NULL, *file = NULL, *data_path = NULL;
     const char* leaf;
     memset(g, 0, sizeof *g);
     if (!selector || !*selector) {
@@ -376,9 +463,7 @@ static int game_open(const char* data, const char* selector, Game* g, Text* err)
         g->ini = config ? snx_format("%s/%s.ini", config, g->name) : NULL;
         free(config);
     }
-    state = game_kind_dir(g->folder, g->name, "state", SNX_USER_STATE);
-    g->log = state ? snx_format("%s/%s.log", state, g->name) : NULL;
-    free(state);
+    g->log = mcp_game_log_path(g->folder, g->name);
     free(file);
     if (!g->has_id) { /* a game an older version named by its title, rather than its title ID */
         SnxNpdm npdm;
