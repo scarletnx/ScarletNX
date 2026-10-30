@@ -637,7 +637,8 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         goto done;
     }
     if (options->jit_cache) {
-        char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, 0); /* the Switch */
+        char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1,
+                                      loaded->npdm.is_switch2 ? (SnxU64)SNX_A64_TARGET_SWITCH2 : 0);
         if (!key) {
             snx_error("LLVM backend: cannot make the JIT cache key");
             goto done;

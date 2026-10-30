@@ -4,6 +4,7 @@
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
+#include "common/cpu/aarch64/a64_decoder.h" /* SNX_A64_TARGET_SWITCH2 */
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/build_info.h"
@@ -514,7 +515,7 @@ static void npdm_layout(void) {
 static void read_npdm(void) {
     u64 size = 0;
     u8* d = fs_read_file("exefs/main.npdm", &size);
-    u32 aci, aci_size, caps, caps_size, i;
+    u32 aci, aci_size, caps, caps_size, i, acid, acid_size;
     if (!d) return;
     if (size < 0x80 || size > 0x4000 || memcmp(d, "META", 4)) {
         WARN("npdm: exefs/main.npdm is not one, the defaults apply\n");
@@ -543,8 +544,17 @@ static void read_npdm(void) {
             break;
         }
     }
-    LOG("npdm: system resource %llu MB, cores %llx, priorities %llx\n", (unsigned long long)(g_hle.kernel.sysres_size >> 20),
-        (unsigned long long)g_hle.svcmem.core_mask, (unsigned long long)g_hle.svcmem.prio_mask);
+    /* The ACID blob with an extended ACID header before its ACID one, as a Switch 2 program has: its guest decodes with
+       the Switch 2 features (a64.profile's switch2 target), which the JIT compiles the code the recompiler left for */
+    acid = rd32le(d + 0x78);
+    acid_size = rd32le(d + 0x7c);
+    g_guest_features = acid_size >= 0x304 && (u64)acid + 0x304 <= size && memcmp(d + acid + 0x200, "ACID", 4) &&
+                               !memcmp(d + acid + 0x300, "ACID", 4)
+                           ? (u64)SNX_A64_TARGET_SWITCH2
+                           : 0;
+    LOG("npdm: system resource %llu MB, cores %llx, priorities %llx%s\n",
+        (unsigned long long)(g_hle.kernel.sysres_size >> 20), (unsigned long long)g_hle.svcmem.core_mask,
+        (unsigned long long)g_hle.svcmem.prio_mask, g_guest_features ? ", a Switch 2 program" : "");
     free(d);
 }
 
@@ -1045,8 +1055,8 @@ int snx_main(int argc, char** argv) {
     nvn_loader_init();
     /* after NVN, which says whether calls must go through the slots it takes. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */
-    if (!g_arm_mod && !nce_on()) jit_init();
     read_npdm();
+    if (!g_arm_mod && !nce_on()) jit_init(g_guest_features);
     svc_core_init();
     {
         char version[16];

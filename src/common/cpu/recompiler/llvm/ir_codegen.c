@@ -287,11 +287,11 @@ static void stale_check(SnxIr* ir, LLVMValueRef e) {
 /* the operand of a flow instruction: decode lets through only the ops ir_int.c has one for */
 static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn) { return snx_ir_int_operand(ir, insn); }
 
-/* What word does to the flow for a guest with these features, insn its decode. ir_ldst.c, ir_fpu.c and ir_vec.c
-   implement their ops for every feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT,
-   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions); ir_int.c implements the Switch's instructions, so one of its ops that
-   needs another feature is UNDEF until it does, as is an op no emitter has (the coverage report lists them): as a
-   word no row matches */
+/* What word does to the flow for a guest with these features, insn its decode. Every file's emitters cover every
+   feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT, FEAT_FRINTTS, BFCVT, the
+   AdvSIMD extensions, a Switch 2 program's FEAT_PAuth), an op's own code asking of the guest what it needs, as
+   FPCR's FZ16 does. An op no emitter has (the coverage report lists them) is UNDEF here, since plain() would refuse
+   the whole module for one: as a word no row matches */
 static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     snx_a64_decode_word(word, features, insn);
     switch (insn->flow) {
@@ -302,7 +302,10 @@ static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     }
     if (snx_ir_ldst_handles(insn->op) || snx_ir_fpu_handles(insn->op) || snx_ir_vec_handles(insn->op))
         return insn->flow;
-    if (snx_ir_int_handles(insn->op) && !(insn->feature & ~(SnxU64)SNX_A64_TARGET_SWITCH)) return insn->flow;
+    /* The other three files' emitters cover every feature the decode allows, and ir_int.c's now do too: it gates an
+       op's own code on the guest's features (FPCR's FZ16, the FP16 forms) as the row's ask. An op no emitter has is
+       UNDEF here, since plain() would refuse the whole module for one */
+    if (snx_ir_int_handles(insn->op)) return insn->flow;
     return SNX_A64_FLOW_UNDEF;
 }
 

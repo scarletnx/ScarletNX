@@ -174,7 +174,7 @@ static void jit_log(const SnxJitReport* r) {
              (unsigned long)r->instructions, (unsigned long)(r->bytes >> 10), r->seconds * 1000.0);
 }
 
-void jit_init(void) {
+void jit_init(u64 features) {
     SnxJitConfig config;
     SnxJitStats stats;
     char error[512];
@@ -222,6 +222,7 @@ void jit_init(void) {
     config.dispatch = g_disp;
     config.code_lo = g_code_lo;
     config.code_hi = g_code_hi;
+    config.features = features; /* the game module's own CPU features, so the JIT decodes as its code was */
     config.aot_addresses = g_mod->entry_addr;
     config.aot_functions = g_mod->entry_fn;
     config.aot_count = g_mod->nentries;

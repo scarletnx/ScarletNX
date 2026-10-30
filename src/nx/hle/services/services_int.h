@@ -53,6 +53,11 @@ void am_init(void); /* the applet events, and the messages queued at startup */
 SvcObj* new_appletoe(void);
 SvcObj* new_appletae(void);
 
+/* ---- nvdrv.c (nvdrv.h declares nv_init) */
+/* an INvDrvServices object besides the one nvdrv's own service handle gives: a Switch 2 title's gsv hands its nvsrv
+   session out as this interface (am.c's GetGraphicsSystemSession 1402) */
+SvcObj* nvdrv_session(void);
+
 /* ---- users.c: the console's users (common/utilities/users.h) */
 void snx_users_init(void); /* snx_users_load of the data folder's users/, the game stopped if it says no */
 

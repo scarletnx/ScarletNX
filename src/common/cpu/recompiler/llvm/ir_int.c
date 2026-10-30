@@ -601,6 +601,11 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
         case SNX_A64_OP_RET:
+        case SNX_A64_OP_RETA:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BLRA:
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRAZ:
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK:
         case SNX_A64_OP_NOP:
@@ -612,6 +617,29 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_CLREX:
         case SNX_A64_OP_DSB_DMB:
         case SNX_A64_OP_ISB:
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_PACIA:
+        case SNX_A64_OP_PACIB:
+        case SNX_A64_OP_PACDA:
+        case SNX_A64_OP_PACDB:
+        case SNX_A64_OP_AUTIA:
+        case SNX_A64_OP_AUTIB:
+        case SNX_A64_OP_AUTDA:
+        case SNX_A64_OP_AUTDB:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD:
+        case SNX_A64_OP_PACIAZ:
+        case SNX_A64_OP_PACIASP:
+        case SNX_A64_OP_PACIBZ:
+        case SNX_A64_OP_PACIBSP:
+        case SNX_A64_OP_AUTIAZ:
+        case SNX_A64_OP_AUTIASP:
+        case SNX_A64_OP_AUTIBZ:
+        case SNX_A64_OP_AUTIBSP:
+        case SNX_A64_OP_PACIA1716:
+        case SNX_A64_OP_PACIB1716:
+        case SNX_A64_OP_AUTIA1716:
+        case SNX_A64_OP_AUTIB1716:
         case SNX_A64_OP_SYS: return 1;
         default: return 0;
     }
@@ -697,6 +725,36 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         }
         case SNX_A64_OP_SEV:
         case SNX_A64_OP_SEVL: ir_rt_call(ir, ir_rt_sev(), ir->t_void, NULL, NULL, 0); break;
+        /* Pointer authentication (FEAT_PAuth): the host CPU has no PAC keys, and no emulator has Horizon's, so a
+           signature cannot be computed or verified. The SDK signs a pointer and authenticates the same one later
+           (PACIBSP at an entry, AUTIBSP at its return), so both are the identity here and every round trip the game
+           makes holds. An authentication that would fail on the console, a pointer the game did not sign itself,
+           succeeds here instead of raising the fault: no game leads with one, and the alternative is a register we
+           cannot derive. XPACI and XPACLRI strip a signature, which is also the identity. The register forms of the
+           pairing instructions write 16 and 17, or 30 with sp: unchanged too */
+        case SNX_A64_OP_PACIA:
+        case SNX_A64_OP_PACIB:
+        case SNX_A64_OP_PACDA:
+        case SNX_A64_OP_PACDB:
+        case SNX_A64_OP_AUTIA:
+        case SNX_A64_OP_AUTIB:
+        case SNX_A64_OP_AUTDA:
+        case SNX_A64_OP_AUTDB:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD:
+        case SNX_A64_OP_PACIAZ:
+        case SNX_A64_OP_PACIASP:
+        case SNX_A64_OP_PACIBZ:
+        case SNX_A64_OP_PACIBSP:
+        case SNX_A64_OP_AUTIAZ:
+        case SNX_A64_OP_AUTIASP:
+        case SNX_A64_OP_AUTIBZ:
+        case SNX_A64_OP_AUTIBSP:
+        case SNX_A64_OP_PACIA1716:
+        case SNX_A64_OP_PACIB1716:
+        case SNX_A64_OP_AUTIA1716:
+        case SNX_A64_OP_AUTIB1716:
+        case SNX_A64_OP_XPACLRI: break;
         case SNX_A64_OP_CLREX: ir_cpu_store(ir, ir_i32(ir, 0), ir_off_excl_on()); break;
         case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
         case SNX_A64_OP_ISB: ir_fence(ir); break;
@@ -719,6 +777,13 @@ LLVMValueRef snx_ir_int_operand(SnxIr* ir, const SnxA64Insn* insn) {
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
         case SNX_A64_OP_RET: return ir_rx(ir, (unsigned)a->rn);
+        /* RETAA and RETAB authenticate x30 before jumping to it, which is the identity above; BRAA, BRAB and their
+           link-register forms do the same with Xn */
+        case SNX_A64_OP_RETA: return reg(ir, 30, 1);
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRAZ:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BLRA: return ir_rx(ir, (unsigned)a->rn);
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK: return ir_i32(ir, (SnxU32)a->imm & 0xFFFFu);
         default: return NULL;

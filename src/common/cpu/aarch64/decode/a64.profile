@@ -38,6 +38,10 @@ feature EL1
 
 # The Switch's Cortex-A57: Armv8.0 with the CRC32 and Cryptographic Extensions
 target switch v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256
+# A Switch 2 program's cores: the same base with the LSE atomics, FEAT_LRCPC's RCpc load-acquire and FEAT_PAuth, whose
+# instructions the SDK signs its pointers with (PACIBSP at each entry, RETAA at each return). What a Switch 2 title
+# executes, from a scan of its modules: every other feature row stays UNDEF there
+target switch2 v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_LRCPC FEAT_PAuth
 # every feature the decoder knows
 target max *
 

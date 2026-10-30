@@ -64,6 +64,10 @@ typedef struct {
     SnxU32 stack;
     unsigned prio, core, aspace;
     int is64;
+    /* the program's ACID blob holds an extended ACID header before its ACID one, which the console builds for a
+       Switch 2 program: it returns through authenticated pointers and runs the Switch 2 CPU features (a64.profile's
+       switch2 target) */
+    int is_switch2;
     char name[17];
 } SnxNpdm;
 

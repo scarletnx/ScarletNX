@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
     snprintf(g_settings.jit_optimization, sizeof g_settings.jit_optimization, "%s", jit_opt);
     g_settings.jit_threads = 1;
 
-    jit_init();
+    jit_init(0); /* the Switch's features, as a Switch 1 game module's code */
     CHECK(g_jit_started == 1);
     check_jit_opt(jit_opt, default_level);
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {

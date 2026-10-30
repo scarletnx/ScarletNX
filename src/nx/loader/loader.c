@@ -958,7 +958,7 @@ static void default_npdm(SnxNpdm* npdm) {
 }
 
 int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* error, size_t error_size) {
-    SnxU64 aci, aci_size;
+    SnxU64 aci, aci_size, acid, acid_size;
     if (!data && !size) {
         default_npdm(npdm);
         return 0;
@@ -980,6 +980,14 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
     memcpy(npdm->name, data + 0x20, 16);
     npdm->name[16] = 0;
     npdm->title_id = rd64(data + aci + 0x10);
+    /* The ACID blob: its header after the signature, 0x200 from the blob's start, or 0x300 when an extended ACID header
+       stands before it. Only a Switch 2 program's NPDM carries one, and it is the marker the console itself goes by
+       (Eden: ProgramMetadata::Load reads the same two offsets). An NPDM without one keeps Switch 1: its absence is not
+       a parse error, since nothing here reads the blob otherwise */
+    acid = rd32(data + 0x78);
+    acid_size = rd32(data + 0x7c);
+    npdm->is_switch2 = inside(acid, acid_size, size) && acid_size >= 0x304 && memcmp(data + acid + 0x200, "ACID", 4) &&
+                       !memcmp(data + acid + 0x300, "ACID", 4);
     return 0;
 }
 

@@ -15,8 +15,8 @@
 #include "nx/runtime/driver/container.h"
 #include "nx/runtime/driver/game_name.h"
 #include "nx/runtime/driver/driver.h"
-#include "nx/runtime/driver/hactool/cJSON.h"
 #include "nx/runtime/driver/recompile.h"
+#include <yyjson.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
@@ -619,52 +619,52 @@ static Addon* addon_latest_update(Addons* a) {
 }
 
 /* ============================================================ the inventory as JSON */
-static void game_json_add_string(cJSON* object, const char* name, const char* value) {
+static void game_json_add_string(yyjson_mut_doc* d, yyjson_mut_val* object, const char* name, const char* value) {
     if (value)
-        cJSON_AddStringToObject(object, name, value);
+        yyjson_mut_obj_add_strcpy(d, object, name, value);
     else
-        cJSON_AddNullToObject(object, name);
+        yyjson_mut_obj_add_null(d, object, name);
 }
-static cJSON* addons_json(Addons* addons, int updates) {
-    cJSON* list = cJSON_CreateArray();
+static yyjson_mut_val* addons_json(yyjson_mut_doc* d, Addons* addons, int updates) {
+    yyjson_mut_val* list = yyjson_mut_arr(d);
     size_t i;
     for (i = 0; i < addons->n; ++i) {
         const Addon* a = &addons->v[i];
-        cJSON* item;
+        yyjson_mut_val* item;
         char id[17];
         if (a->update != updates) continue;
-        item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "entry", a->entry);
+        item = yyjson_mut_obj(d);
+        yyjson_mut_obj_add_strcpy(d, item, "entry", a->entry);
         game_title_text(a->id, id);
-        cJSON_AddStringToObject(item, "title_id", id);
-        cJSON_AddStringToObject(item, "kind", a->update ? "update" : "dlc");
+        yyjson_mut_obj_add_strcpy(d, item, "title_id", id);
+        yyjson_mut_obj_add_str(d, item, "kind", a->update ? "update" : "dlc");
         if (a->version != SNX_NO_VERSION)
-            cJSON_AddNumberToObject(item, "version", (double)a->version);
+            yyjson_mut_obj_add_uint(d, item, "version", a->version);
         else
-            cJSON_AddNullToObject(item, "version");
-        cJSON_AddBoolToObject(item, "installed", a->installed);
-        cJSON_AddBoolToObject(item, "built", a->built);
-        cJSON_AddBoolToObject(item, "current", a->current);
-        game_json_add_string(item, "program", a->update && a->built ? a->program : NULL);
-        game_json_add_string(item, "data", a->installed ? a->data : NULL);
-        game_json_add_string(item, "source", a->source);
-        cJSON_AddItemToArray(list, item);
+            yyjson_mut_obj_add_null(d, item, "version");
+        yyjson_mut_obj_add_bool(d, item, "installed", a->installed);
+        yyjson_mut_obj_add_bool(d, item, "built", a->built);
+        yyjson_mut_obj_add_bool(d, item, "current", a->current);
+        game_json_add_string(d, item, "program", a->update && a->built ? a->program : NULL);
+        game_json_add_string(d, item, "data", a->installed ? a->data : NULL);
+        game_json_add_string(d, item, "source", a->source);
+        yyjson_mut_arr_append(list, item);
     }
     return list;
 }
-static cJSON* mods_json(const char* folder, const char* off) {
+static yyjson_mut_val* mods_json(yyjson_mut_doc* d, const char* folder, const char* off) {
     char** names = NULL;
     size_t count = snx_mods_list(folder, &names), i;
-    cJSON* list = cJSON_CreateArray();
+    yyjson_mut_val* list = yyjson_mut_arr(d);
     for (i = 0; i < count; ++i) {
         char *mod = snx_path_join(folder, names[i]), *exefs = snx_path_join(mod, "exefs"),
              *romfs = snx_path_join(mod, "romfs");
-        cJSON* item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "name", names[i]);
-        cJSON_AddBoolToObject(item, "enabled", !snx_mod_off(off, names[i]));
-        cJSON_AddBoolToObject(item, "exefs", snx_is_dir(exefs));
-        cJSON_AddBoolToObject(item, "romfs", snx_is_dir(romfs));
-        cJSON_AddItemToArray(list, item);
+        yyjson_mut_val* item = yyjson_mut_obj(d);
+        yyjson_mut_obj_add_strcpy(d, item, "name", names[i]);
+        yyjson_mut_obj_add_bool(d, item, "enabled", !snx_mod_off(off, names[i]));
+        yyjson_mut_obj_add_bool(d, item, "exefs", snx_is_dir(exefs));
+        yyjson_mut_obj_add_bool(d, item, "romfs", snx_is_dir(romfs));
+        yyjson_mut_arr_append(list, item);
         free(exefs);
         free(romfs);
         free(mod);
@@ -672,28 +672,28 @@ static cJSON* mods_json(const char* folder, const char* off) {
     snx_free_strings(names, count);
     return list;
 }
-static cJSON* cheats_json(const char* folder, const char* off) {
+static yyjson_mut_val* cheats_json(yyjson_mut_doc* d, const char* folder, const char* off) {
     char** names = NULL;
     size_t count = snx_cheats_list(folder, &names), i;
-    cJSON* list = cJSON_CreateArray();
+    yyjson_mut_val* list = yyjson_mut_arr(d);
     for (i = 0; i < count; ++i) {
-        cJSON* item = cJSON_CreateObject();
-        cJSON_AddStringToObject(item, "name", names[i]);
-        cJSON_AddBoolToObject(item, "enabled", !snx_cheat_off(off, names[i]));
-        cJSON_AddItemToArray(list, item);
+        yyjson_mut_val* item = yyjson_mut_obj(d);
+        yyjson_mut_obj_add_strcpy(d, item, "name", names[i]);
+        yyjson_mut_obj_add_bool(d, item, "enabled", !snx_cheat_off(off, names[i]));
+        yyjson_mut_arr_append(list, item);
     }
     snx_free_strings(names, count);
     return list;
 }
-static void current_addons_json(cJSON* current, Addons* addons) {
+static void current_addons_json(yyjson_mut_doc* d, yyjson_mut_val* current, Addons* addons) {
     Addon* update = addon_current_update(addons);
-    cJSON* dlcs = cJSON_CreateArray();
+    yyjson_mut_val* dlcs = yyjson_mut_arr(d);
     size_t i;
-    game_json_add_string(current, "update", update ? update->entry : NULL);
+    game_json_add_string(d, current, "update", update ? update->entry : NULL);
     for (i = 0; i < addons->n; ++i)
         if (addons->v[i].current && !addons->v[i].update)
-            cJSON_AddItemToArray(dlcs, cJSON_CreateString(addons->v[i].entry));
-    cJSON_AddItemToObject(current, "dlcs", dlcs);
+            yyjson_mut_arr_append(dlcs, yyjson_mut_strcpy(d, addons->v[i].entry));
+    yyjson_mut_obj_add_val(d, current, "dlcs", dlcs);
 }
 /* why a program cannot be run: NULL when it can. base is the program without its suffix (game_program_base) */
 static char* game_build_ready_why(const char* program, const char* data, int has_data, const char* mods,
@@ -740,25 +740,27 @@ static char* game_ready_why(const Game* g, Addons* addons, const char* mods_off)
     return why;
 }
 static int game_capability_tracy(void) { return snx_setting_known && snx_setting_known("tracy_profiler"); }
-static void game_capabilities_json(cJSON* root) {
-    cJSON* caps = cJSON_CreateObject();
-    cJSON_AddBoolToObject(caps, "tracy", game_capability_tracy());
+static void game_capabilities_json(yyjson_mut_doc* d, yyjson_mut_val* root) {
+    yyjson_mut_val* caps = yyjson_mut_obj(d);
+    yyjson_mut_obj_add_bool(d, caps, "tracy", game_capability_tracy());
 #ifdef _WIN32
-    cJSON_AddBoolToObject(caps, "gdb", 0);
+    yyjson_mut_obj_add_bool(d, caps, "gdb", 0);
 #else
-    cJSON_AddBoolToObject(caps, "gdb", 1);
+    yyjson_mut_obj_add_bool(d, caps, "gdb", 1);
 #endif
-    cJSON_AddItemToObject(root, "capabilities", caps);
+    yyjson_mut_obj_add_val(d, root, "capabilities", caps);
 }
 char* mcp_build_info(void) {
-    cJSON* root = cJSON_CreateObject();
+    yyjson_mut_doc* d = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val* root = yyjson_mut_obj(d);
     char* out;
-    cJSON_AddStringToObject(root, "build", snx_build_info());
-    cJSON_AddStringToObject(root, "commit", snx_build_commit());
-    cJSON_AddNumberToObject(root, "abi", (double)snx_game_abi());
-    game_capabilities_json(root);
-    out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
+    yyjson_mut_obj_add_strcpy(d, root, "build", snx_build_info());
+    yyjson_mut_obj_add_strcpy(d, root, "commit", snx_build_commit());
+    yyjson_mut_obj_add_uint(d, root, "abi", snx_game_abi());
+    game_capabilities_json(d, root);
+    yyjson_mut_doc_set_root(d, root);
+    out = yyjson_mut_write(d, 0, NULL);
+    yyjson_mut_doc_free(d);
     return out;
 }
 char* mcp_game_info(const char* data, const char* game, Text* err) {
@@ -766,7 +768,8 @@ char* mcp_game_info(const char* data, const char* game, Text* err) {
     Addons addons = {0};
     char *mods = NULL, *mods_off = NULL, *cheats = NULL, *cheats_off = NULL, *version = NULL, *why = NULL;
     char* out;
-    cJSON *root, *what, *current, *paths;
+    yyjson_mut_doc* d;
+    yyjson_mut_val *root, *what, *current, *paths;
     if (game_open(data, game, &g, err)) return NULL;
     addons_scan(&g, &addons);
     mods = game_mods_folder(&g);
@@ -777,41 +780,43 @@ char* mcp_game_info(const char* data, const char* game, Text* err) {
     if (!cheats_off) cheats_off = snx_strdup("");
     version = game_nacp_version(g.data);
     why = game_ready_why(&g, &addons, mods_off);
-    root = cJSON_CreateObject();
-    what = cJSON_CreateObject();
-    cJSON_AddStringToObject(what, "path", g.folder);
-    cJSON_AddStringToObject(what, "name", g.name);
+    d = yyjson_mut_doc_new(NULL);
+    root = yyjson_mut_obj(d);
+    what = yyjson_mut_obj(d);
+    yyjson_mut_obj_add_strcpy(d, what, "path", g.folder);
+    yyjson_mut_obj_add_strcpy(d, what, "name", g.name);
     if (g.has_id) {
         char id[17];
         game_title_text(g.id, id);
-        cJSON_AddStringToObject(what, "title_id", id);
+        yyjson_mut_obj_add_strcpy(d, what, "title_id", id);
     } else
-        cJSON_AddNullToObject(what, "title_id");
-    game_json_add_string(what, "version", version);
-    cJSON_AddStringToObject(what, "data", g.data);
-    cJSON_AddStringToObject(what, "program", g.program);
-    cJSON_AddStringToObject(what, "ini", g.ini);
-    cJSON_AddStringToObject(what, "log", g.log);
-    cJSON_AddBoolToObject(what, "built", g.built);
-    cJSON_AddBoolToObject(what, "ready", !why);
-    game_json_add_string(what, "not_ready", why);
-    cJSON_AddItemToObject(root, "game", what);
-    current = cJSON_CreateObject();
-    current_addons_json(current, &addons);
-    cJSON_AddStringToObject(current, "mods_off", mods_off);
-    cJSON_AddStringToObject(current, "cheats_off", cheats_off);
-    cJSON_AddItemToObject(root, "current", current);
-    cJSON_AddItemToObject(root, "updates", addons_json(&addons, 1));
-    cJSON_AddItemToObject(root, "dlcs", addons_json(&addons, 0));
-    cJSON_AddItemToObject(root, "mods", mods_json(mods, mods_off));
-    cJSON_AddItemToObject(root, "cheats", cheats_json(cheats, cheats_off));
-    paths = cJSON_CreateObject();
-    game_json_add_string(paths, "mods", mods);
-    game_json_add_string(paths, "cheats", cheats);
-    cJSON_AddItemToObject(root, "paths", paths);
-    game_capabilities_json(root);
-    out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
+        yyjson_mut_obj_add_null(d, what, "title_id");
+    game_json_add_string(d, what, "version", version);
+    yyjson_mut_obj_add_strcpy(d, what, "data", g.data);
+    yyjson_mut_obj_add_strcpy(d, what, "program", g.program);
+    yyjson_mut_obj_add_strcpy(d, what, "ini", g.ini);
+    yyjson_mut_obj_add_strcpy(d, what, "log", g.log);
+    yyjson_mut_obj_add_bool(d, what, "built", g.built);
+    yyjson_mut_obj_add_bool(d, what, "ready", !why);
+    game_json_add_string(d, what, "not_ready", why);
+    yyjson_mut_obj_add_val(d, root, "game", what);
+    current = yyjson_mut_obj(d);
+    current_addons_json(d, current, &addons);
+    yyjson_mut_obj_add_strcpy(d, current, "mods_off", mods_off);
+    yyjson_mut_obj_add_strcpy(d, current, "cheats_off", cheats_off);
+    yyjson_mut_obj_add_val(d, root, "current", current);
+    yyjson_mut_obj_add_val(d, root, "updates", addons_json(d, &addons, 1));
+    yyjson_mut_obj_add_val(d, root, "dlcs", addons_json(d, &addons, 0));
+    yyjson_mut_obj_add_val(d, root, "mods", mods_json(d, mods, mods_off));
+    yyjson_mut_obj_add_val(d, root, "cheats", cheats_json(d, cheats, cheats_off));
+    paths = yyjson_mut_obj(d);
+    game_json_add_string(d, paths, "mods", mods);
+    game_json_add_string(d, paths, "cheats", cheats);
+    yyjson_mut_obj_add_val(d, root, "paths", paths);
+    game_capabilities_json(d, root);
+    yyjson_mut_doc_set_root(d, root);
+    out = yyjson_mut_write(d, 0, NULL);
+    yyjson_mut_doc_free(d);
     free(version);
     free(why);
     free(mods);
@@ -824,19 +829,18 @@ char* mcp_game_info(const char* data, const char* game, Text* err) {
 }
 
 /* ============================================================ the caller's choices */
-static const char* game_arg_string(const cJSON* args, const char* key) {
-    const cJSON* value = cJSON_GetObjectItemCaseSensitive(args, key);
-    return cJSON_IsString(value) ? value->valuestring : NULL;
+static const char* game_arg_string(const yyjson_val* args, const char* key) {
+    return yyjson_get_str(yyjson_obj_get(args, key));
 }
-static long game_arg_number(const cJSON* args, const char* key, long otherwise) {
-    const cJSON* value = cJSON_GetObjectItemCaseSensitive(args, key);
-    if (!cJSON_IsNumber(value) || value->valuedouble < (double)LONG_MIN || value->valuedouble > (double)LONG_MAX)
-        return otherwise;
-    return (long)value->valuedouble;
+static long game_arg_number(const yyjson_val* args, const char* key, long otherwise) {
+    const yyjson_val* value = yyjson_obj_get(args, key);
+    double n = yyjson_get_num(value);
+    if (!yyjson_is_num(value) || n < (double)LONG_MIN || n > (double)LONG_MAX) return otherwise;
+    return (long)n;
 }
-static int game_arg_bool(const cJSON* args, const char* key, int otherwise) {
-    const cJSON* value = cJSON_GetObjectItemCaseSensitive(args, key);
-    if (cJSON_IsBool(value)) return cJSON_IsTrue(value);
+static int game_arg_bool(const yyjson_val* args, const char* key, int otherwise) {
+    const yyjson_val* value = yyjson_obj_get(args, key);
+    if (yyjson_is_bool(value)) return yyjson_is_true(value);
     return otherwise;
 }
 static void game_list_close(char** list, size_t count) { snx_free_strings(list, count); }
@@ -847,12 +851,12 @@ static int game_list_has(char** list, size_t count, const char* name) {
     return 0;
 }
 /* a string's comma-separated words, or an array's strings, owned; -1 when it is neither */
-static int game_choice_list(const cJSON* value, char*** out, size_t* count, Text* err) {
+static int game_choice_list(const yyjson_val* value, char*** out, size_t* count, Text* err) {
     *out = NULL;
     *count = 0;
-    if (!value || cJSON_IsNull(value)) return 0;
-    if (cJSON_IsString(value)) {
-        const char* text = value->valuestring;
+    if (!value || yyjson_is_null(value)) return 0;
+    if (yyjson_is_str(value)) {
+        const char* text = yyjson_get_str(value);
         char** list = NULL;
         size_t n = 0, at = 0, length = strlen(text);
         while (at < length) {
@@ -875,18 +879,18 @@ static int game_choice_list(const cJSON* value, char*** out, size_t* count, Text
         *count = n;
         return 0;
     }
-    if (cJSON_IsArray(value)) {
-        int size = cJSON_GetArraySize(value), i;
-        char** list = size > 0 ? (char**)snx_alloc((size_t)size * sizeof *list) : NULL;
+    if (yyjson_is_arr(value)) {
+        size_t size = yyjson_arr_size(value), i;
+        char** list = size > 0 ? (char**)snx_alloc(size * sizeof *list) : NULL;
         size_t n = 0;
         for (i = 0; i < size; ++i) {
-            const cJSON* item = cJSON_GetArrayItem(value, i);
-            if (!cJSON_IsString(item)) {
+            const yyjson_val* item = yyjson_arr_get(value, i);
+            if (!yyjson_is_str(item)) {
                 game_list_close(list, n);
                 mcp_put(err, "a list of choices holds strings");
                 return -1;
             }
-            list[n++] = snx_strdup(item->valuestring);
+            list[n++] = snx_strdup(yyjson_get_str(item));
         }
         *out = list;
         *count = n;
@@ -901,7 +905,7 @@ static char* game_current_cheats_off(const Game* g) {
     return off ? off : snx_strdup("");
 }
 /* the mods this run leaves out: current (the .ini's), all, none, or the list of mods it plays */
-static char* game_mods_off(const Game* g, const cJSON* choice, const char* direct, Text* err) {
+static char* game_mods_off(const Game* g, const yyjson_val* choice, const char* direct, Text* err) {
     char *folder = NULL, *current, *off = NULL;
     char** all = NULL;
     size_t count;
@@ -909,17 +913,17 @@ static char* game_mods_off(const Game* g, const cJSON* choice, const char* direc
     folder = game_mods_folder(g);
     current = snx_ini_value(g->ini, "mods_off");
     if (!current) current = snx_strdup("");
-    if (!choice || cJSON_IsNull(choice) || (cJSON_IsString(choice) && !strcmp(choice->valuestring, "current"))) {
+    if (!choice || yyjson_is_null(choice) || (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "current"))) {
         free(folder);
         return current;
     }
-    if (cJSON_IsString(choice) && !strcmp(choice->valuestring, "all")) {
+    if (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "all")) {
         free(folder);
         free(current);
         return snx_strdup("");
     }
     count = snx_mods_list(folder, &all);
-    if (cJSON_IsString(choice) && (!strcmp(choice->valuestring, "none") || !strcmp(choice->valuestring, "off"))) {
+    if (yyjson_is_str(choice) && (!strcmp(yyjson_get_str(choice), "none") || !strcmp(yyjson_get_str(choice), "off"))) {
         Text t = {0};
         size_t i;
         for (i = 0; i < count; ++i) {
@@ -967,7 +971,7 @@ static char* game_mods_off(const Game* g, const cJSON* choice, const char* direc
     return off;
 }
 /* the cheats this run leaves out, as game_mods_off does for mods */
-static char* game_cheats_off(const Game* g, const cJSON* choice, const char* direct, Text* err) {
+static char* game_cheats_off(const Game* g, const yyjson_val* choice, const char* direct, Text* err) {
     char *folder = snx_cheats_folder(g->data), *current = game_current_cheats_off(g), *off = NULL;
     char** all = NULL;
     size_t count;
@@ -976,17 +980,17 @@ static char* game_cheats_off(const Game* g, const cJSON* choice, const char* dir
         free(current);
         return snx_strdup(direct);
     }
-    if (!choice || cJSON_IsNull(choice) || (cJSON_IsString(choice) && !strcmp(choice->valuestring, "current"))) {
+    if (!choice || yyjson_is_null(choice) || (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "current"))) {
         free(folder);
         return current;
     }
-    if (cJSON_IsString(choice) && !strcmp(choice->valuestring, "all")) {
+    if (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "all")) {
         free(folder);
         free(current);
         return snx_strdup("");
     }
     count = snx_cheats_list(folder, &all);
-    if (cJSON_IsString(choice) && (!strcmp(choice->valuestring, "none") || !strcmp(choice->valuestring, "off"))) {
+    if (yyjson_is_str(choice) && (!strcmp(yyjson_get_str(choice), "none") || !strcmp(yyjson_get_str(choice), "off"))) {
         Text t = {0};
         size_t i;
         for (i = 0; i < count; ++i) {
@@ -1056,11 +1060,11 @@ static int game_select_update(Addons* addons, const char* selector, Addon** out,
     return 0;
 }
 /* the DLCs the caller named: current (the .ini's), all, none, entries or title IDs */
-static int game_select_dlcs(Addons* addons, const cJSON* choice, char*** out, size_t* count, Text* err) {
+static int game_select_dlcs(Addons* addons, const yyjson_val* choice, char*** out, size_t* count, Text* err) {
     size_t i, n = 0;
     *out = NULL;
     *count = 0;
-    if (!choice || cJSON_IsNull(choice) || (cJSON_IsString(choice) && !strcmp(choice->valuestring, "current"))) {
+    if (!choice || yyjson_is_null(choice) || (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "current"))) {
         for (i = 0; i < addons->n; ++i)
             if (addons->v[i].current && !addons->v[i].update) ++n;
         *out = n ? (char**)snx_alloc(n * sizeof **out) : NULL;
@@ -1080,9 +1084,9 @@ static int game_select_dlcs(Addons* addons, const cJSON* choice, char*** out, si
         }
         return 0;
     }
-    if (cJSON_IsString(choice) && (!strcmp(choice->valuestring, "none") || !strcmp(choice->valuestring, "off")))
+    if (yyjson_is_str(choice) && (!strcmp(yyjson_get_str(choice), "none") || !strcmp(yyjson_get_str(choice), "off")))
         return 0;
-    if (cJSON_IsString(choice) && !strcmp(choice->valuestring, "all")) {
+    if (yyjson_is_str(choice) && !strcmp(yyjson_get_str(choice), "all")) {
         for (i = 0; i < addons->n; ++i)
             if (!addons->v[i].update && addons->v[i].installed) ++n;
         *out = n ? (char**)snx_alloc(n * sizeof **out) : NULL;
@@ -1152,8 +1156,8 @@ char* mcp_game_program_source(const char* folder, const char* name) {
 static char* game_recompile_source(const Game* g) { return mcp_game_program_source(g->folder, g->name); }
 
 /* ============================================================ recompiling */
-static void game_command_add(cJSON* command, const char* text) {
-    if (text) cJSON_AddItemToArray(command, cJSON_CreateString(text));
+static void game_command_add(yyjson_mut_doc* d, yyjson_mut_val* command, const char* text) {
+    if (text) yyjson_mut_arr_append(command, yyjson_mut_strcpy(d, text));
 }
 static char* game_output_tail(const char* text, int lines) {
     const char *at, *end;
@@ -1169,8 +1173,8 @@ static char* game_output_tail(const char* text, int lines) {
     if (at > text && *at == '\n') ++at;
     return snx_strdup(at);
 }
-char* mcp_game_recompile(const char* self, const char* data, const char* game, const struct cJSON* args, Text* err) {
-    const cJSON* cj = (const cJSON*)args;
+char* mcp_game_recompile(const char* self, const char* data, const char* game, const yyjson_val* args, Text* err) {
+    const yyjson_val* cj = args;
     Game g;
     Addons addons = {0};
     Addon* update = NULL;
@@ -1180,7 +1184,7 @@ char* mcp_game_recompile(const char* self, const char* data, const char* game, c
     const char* direct_off = game_arg_string(cj, "mods_off");
     const char* optimization = game_arg_string(cj, "optimization");
     const char* jit_cache = game_arg_string(cj, "jit_cache");
-    const cJSON* mods_choice = cJSON_GetObjectItemCaseSensitive(cj, "mods");
+    const yyjson_val* mods_choice = yyjson_obj_get(cj, "mods");
     long jobs = game_arg_number(cj, "jobs", 0);
     int force = game_arg_bool(cj, "force", 0);
     int dry_run = game_arg_bool(cj, "dry_run", 0);
@@ -1190,7 +1194,8 @@ char* mcp_game_recompile(const char* self, const char* data, const char* game, c
     const char* argv[32];
     size_t argc = 0, i;
     int rc = 1, up_to_date = 0;
-    cJSON *root, *command;
+    yyjson_mut_doc* d = NULL;
+    yyjson_mut_val *root, *command;
     if (game_open(data, game, &g, err)) return NULL;
     if (!self) {
         mcp_put(err, "this program's path is unknown: it cannot recompile the game");
@@ -1249,87 +1254,88 @@ char* mcp_game_recompile(const char* self, const char* data, const char* game, c
     stamp = snx_game_stamp_for(snx_game_abi(), snx_mods_stamp(mods, mods_off));
     up_to_date = snx_is_file(program) && code && snx_is_file(code) && snx_game_stamp_is(base, stamp) && !force &&
                  !rebuild_options;
-    command = cJSON_CreateArray();
-    game_command_add(command, self);
-    game_command_add(command, "-r");
-    game_command_add(command, "--data");
-    game_command_add(command, data);
-    game_command_add(command, "--outdir");
-    game_command_add(command, outdir);
+    d = yyjson_mut_doc_new(NULL);
+    command = yyjson_mut_arr(d);
+    game_command_add(d, command, self);
+    game_command_add(d, command, "-r");
+    game_command_add(d, command, "--data");
+    game_command_add(d, command, data);
+    game_command_add(d, command, "--outdir");
+    game_command_add(d, command, outdir);
     if (!update) { /* an update is named after its game and itself: --name names a game alone */
         char* arg = snx_format("--name=%s", name ? name : g.name);
-        game_command_add(command, arg);
+        game_command_add(d, command, arg);
         free(arg);
     }
     {
         char* arg = snx_format("--mods_off=%s", mods_off);
-        game_command_add(command, arg);
+        game_command_add(d, command, arg);
         free(arg);
     }
     if (optimization) {
-        game_command_add(command, "-O");
-        game_command_add(command, optimization);
+        game_command_add(d, command, "-O");
+        game_command_add(d, command, optimization);
     }
     if (jobs) {
         char* arg = snx_format("--jobs=%ld", jobs);
-        game_command_add(command, arg);
+        game_command_add(d, command, arg);
         free(arg);
     }
-    if (keep_ir) game_command_add(command, "--keep-ir");
-    if (hook) game_command_add(command, "--hook-direct-calls");
+    if (keep_ir) game_command_add(d, command, "--keep-ir");
+    if (hook) game_command_add(d, command, "--hook-direct-calls");
     if (jit_cache) {
         char* arg = snx_format("--jit-cache=%s", jit_cache);
-        game_command_add(command, arg);
+        game_command_add(d, command, arg);
         free(arg);
     }
-    game_command_add(command, "--");
-    game_command_add(command, source);
-    root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "game", g.folder);
+    game_command_add(d, command, "--");
+    game_command_add(d, command, source);
+    root = yyjson_mut_obj(d);
+    yyjson_mut_obj_add_strcpy(d, root, "game", g.folder);
     if (g.has_id) {
         char id[17];
         game_title_text(g.id, id);
-        cJSON_AddStringToObject(root, "title_id", id);
+        yyjson_mut_obj_add_strcpy(d, root, "title_id", id);
     }
-    game_json_add_string(root, "update", update ? update->entry : NULL);
-    cJSON_AddStringToObject(root, "mods_off", mods_off);
-    cJSON_AddStringToObject(root, "source", source);
-    cJSON_AddStringToObject(root, "program", program);
-    cJSON_AddStringToObject(root, "stamp", stamp);
-    cJSON_AddItemToObject(root, "command", command);
+    game_json_add_string(d, root, "update", update ? update->entry : NULL);
+    yyjson_mut_obj_add_strcpy(d, root, "mods_off", mods_off);
+    yyjson_mut_obj_add_strcpy(d, root, "source", source);
+    yyjson_mut_obj_add_strcpy(d, root, "program", program);
+    yyjson_mut_obj_add_strcpy(d, root, "stamp", stamp);
+    yyjson_mut_obj_add_val(d, root, "command", command);
     if (dry_run) {
-        cJSON_AddStringToObject(root, "status", "dry_run");
-        cJSON_AddBoolToObject(root, "ok", 1);
-        out = cJSON_PrintUnformatted(root);
-        cJSON_Delete(root);
+        yyjson_mut_obj_add_str(d, root, "status", "dry_run");
+        yyjson_mut_obj_add_bool(d, root, "ok", 1);
+        yyjson_mut_doc_set_root(d, root);
+        out = yyjson_mut_write(d, 0, NULL);
         goto done;
     }
     if (up_to_date) {
-        cJSON_AddStringToObject(root, "status", "up_to_date");
-        cJSON_AddBoolToObject(root, "ok", 1);
-        out = cJSON_PrintUnformatted(root);
-        cJSON_Delete(root);
+        yyjson_mut_obj_add_str(d, root, "status", "up_to_date");
+        yyjson_mut_obj_add_bool(d, root, "ok", 1);
+        yyjson_mut_doc_set_root(d, root);
+        out = yyjson_mut_write(d, 0, NULL);
         goto done;
     }
     /* argv borrows the command's strings, which live until the run has returned */
-    argc = (size_t)cJSON_GetArraySize(command);
+    argc = yyjson_mut_arr_size(command);
     if (argc >= sizeof argv / sizeof *argv) {
-        cJSON_Delete(root);
         mcp_put(err, "the recompile command is too long");
         goto done;
     }
-    for (i = 0; i < argc; ++i) argv[i] = cJSON_GetArrayItem(command, (int)i)->valuestring;
+    for (i = 0; i < argc; ++i) argv[i] = yyjson_mut_get_str(yyjson_mut_arr_get(command, i));
     argv[argc] = NULL;
     rc = snx_run(argv, g.folder, NULL, &output);
     tail = game_output_tail(output, GAME_OUTPUT_LINES);
-    cJSON_AddNumberToObject(root, "exit", rc);
-    cJSON_AddBoolToObject(root, "ok", rc == 0 && snx_is_file(program) && snx_game_stamp_is(base, stamp));
-    cJSON_AddStringToObject(root, "status",
-                            rc == 0 && snx_is_file(program) && snx_game_stamp_is(base, stamp) ? "built" : "failed");
-    cJSON_AddStringToObject(root, "output", tail);
-    out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
+    yyjson_mut_obj_add_int(d, root, "exit", rc);
+    yyjson_mut_obj_add_bool(d, root, "ok", rc == 0 && snx_is_file(program) && snx_game_stamp_is(base, stamp));
+    yyjson_mut_obj_add_str(d, root, "status",
+                           rc == 0 && snx_is_file(program) && snx_game_stamp_is(base, stamp) ? "built" : "failed");
+    yyjson_mut_obj_add_strcpy(d, root, "output", tail);
+    yyjson_mut_doc_set_root(d, root);
+    out = yyjson_mut_write(d, 0, NULL);
 done:
+    yyjson_mut_doc_free(d);
     free(output);
     free(tail);
     free(mods);
@@ -1419,21 +1425,22 @@ static void run_summary_parse(const char* text, RunSummary* s) {
         at = last + 7;
     }
 }
-static cJSON* run_summary_json(const RunSummary* s, long seconds, int exit_code, int timed_out, char** line, int* bad) {
-    cJSON* item = cJSON_CreateObject();
+static yyjson_mut_val* run_summary_json(yyjson_mut_doc* d, const RunSummary* s, long seconds, int exit_code,
+                                        int timed_out, char** line, int* bad) {
+    yyjson_mut_val* item = yyjson_mut_obj(d);
     Text t = {0};
     *bad = exit_code != 0 || timed_out || s->crash || s->brk;
     if (s->crash) {
         if (s->exception) {
             mcp_put(&t, "CRASH exception 0x");
             mcp_put_hex(&t, s->exception_code);
-            cJSON_AddNullToObject(item, "signal");
-            cJSON_AddNumberToObject(item, "exception", (double)s->exception_code);
+            yyjson_mut_obj_add_null(d, item, "signal");
+            yyjson_mut_obj_add_uint(d, item, "exception", s->exception_code);
         } else {
             mcp_put(&t, "CRASH signal ");
             mcp_put_num(&t, (unsigned long)s->signal);
-            cJSON_AddNumberToObject(item, "signal", s->signal);
-            cJSON_AddNullToObject(item, "exception");
+            yyjson_mut_obj_add_int(d, item, "signal", s->signal);
+            yyjson_mut_obj_add_null(d, item, "exception");
         }
         if (s->has_regs) {
             mcp_put(&t, " at pc ");
@@ -1447,17 +1454,17 @@ static cJSON* run_summary_json(const RunSummary* s, long seconds, int exit_code,
             char pc[17], lr[17];
             snprintf(pc, sizeof pc, "%016llx", (unsigned long long)s->pc);
             snprintf(lr, sizeof lr, "%016llx", (unsigned long long)s->lr);
-            cJSON_AddStringToObject(item, "pc", pc);
-            cJSON_AddStringToObject(item, "lr", lr);
+            yyjson_mut_obj_add_strcpy(d, item, "pc", pc);
+            yyjson_mut_obj_add_strcpy(d, item, "lr", lr);
         } else {
-            cJSON_AddNullToObject(item, "pc");
-            cJSON_AddNullToObject(item, "lr");
+            yyjson_mut_obj_add_null(d, item, "pc");
+            yyjson_mut_obj_add_null(d, item, "lr");
         }
     } else {
-        cJSON_AddNullToObject(item, "signal");
-        cJSON_AddNullToObject(item, "exception");
-        cJSON_AddNullToObject(item, "pc");
-        cJSON_AddNullToObject(item, "lr");
+        yyjson_mut_obj_add_null(d, item, "signal");
+        yyjson_mut_obj_add_null(d, item, "exception");
+        yyjson_mut_obj_add_null(d, item, "pc");
+        yyjson_mut_obj_add_null(d, item, "lr");
     }
     if (s->brk) {
         char reason[17];
@@ -1465,9 +1472,9 @@ static cJSON* run_summary_json(const RunSummary* s, long seconds, int exit_code,
         snprintf(reason, sizeof reason, "%016llx", s->reason);
         mcp_put(&t, "svcBreak reason ");
         mcp_put(&t, reason);
-        cJSON_AddStringToObject(item, "svcbreak", reason);
+        yyjson_mut_obj_add_strcpy(d, item, "svcbreak", reason);
     } else
-        cJSON_AddNullToObject(item, "svcbreak");
+        yyjson_mut_obj_add_null(d, item, "svcbreak");
     if (timed_out) {
         if (t.n) mcp_put(&t, "; ");
         mcp_put(&t, "timeout");
@@ -1488,19 +1495,19 @@ static cJSON* run_summary_json(const RunSummary* s, long seconds, int exit_code,
             snprintf(frames, sizeof frames, "%llu frames", s->frames);
         mcp_put(&t, ", ");
         mcp_put(&t, frames);
-        cJSON_AddNumberToObject(item, "frames", (double)s->frames);
+        yyjson_mut_obj_add_uint(d, item, "frames", s->frames);
         if (seconds > 0)
-            cJSON_AddNumberToObject(item, "fps", (double)s->frames / (double)seconds);
+            yyjson_mut_obj_add_real(d, item, "fps", (double)s->frames / (double)seconds);
         else
-            cJSON_AddNullToObject(item, "fps");
-        if (s->hash[0]) cJSON_AddStringToObject(item, "hash", s->hash);
+            yyjson_mut_obj_add_null(d, item, "fps");
+        if (s->hash[0]) yyjson_mut_obj_add_strcpy(d, item, "hash", s->hash);
     } else {
-        cJSON_AddNullToObject(item, "frames");
-        cJSON_AddNullToObject(item, "fps");
+        yyjson_mut_obj_add_null(d, item, "frames");
+        yyjson_mut_obj_add_null(d, item, "fps");
     }
-    cJSON_AddNumberToObject(item, "exit", exit_code);
-    cJSON_AddBoolToObject(item, "ok", !*bad);
-    cJSON_AddStringToObject(item, "summary", t.p ? t.p : "ok");
+    yyjson_mut_obj_add_int(d, item, "exit", exit_code);
+    yyjson_mut_obj_add_bool(d, item, "ok", !*bad);
+    yyjson_mut_obj_add_strcpy(d, item, "summary", t.p ? t.p : "ok");
     *line = t.p ? t.p : snx_strdup("ok");
     return item;
 }
@@ -1549,69 +1556,70 @@ static char* run_out_dir(const char* data, const char* cache, const Game* g, con
     return out;
 }
 /* a settings object's values as the runtime's --KEY=VALUE, in command; reserved keys are the tool's arguments */
-static int run_settings(cJSON* command, const cJSON* settings, Text* err) {
-    const cJSON* item;
-    if (!settings || cJSON_IsNull(settings)) return 0;
-    if (!cJSON_IsObject(settings)) {
+static int run_settings(yyjson_mut_doc* d, yyjson_mut_val* command, const yyjson_val* settings, Text* err) {
+    size_t at, count;
+    yyjson_val *key, *item;
+    if (!settings || yyjson_is_null(settings)) return 0;
+    if (!yyjson_is_obj(settings)) {
         mcp_put(err, "settings: an object of setting names and values");
         return -1;
     }
-    for (item = settings->child; item; item = item->next) {
-        const char* key = item->string;
+    yyjson_obj_foreach(settings, at, count, key, item) {
+        const char* name = yyjson_get_str(key);
         const char* value = NULL;
         char number[64], *arg;
-        if (!key || !*key) continue;
-        if (!strcmp(key, "addons") || !strcmp(key, "mods_off") || !strcmp(key, "cheats_off") ||
-            !strcmp(key, "seconds") || !strcmp(key, "frames") || !strcmp(key, "runs") || !strcmp(key, "runtime") ||
-            !strcmp(key, "headless") || !strcmp(key, "shot") || !strcmp(key, "script") || !strcmp(key, "tracy") ||
-            !strcmp(key, "state_save") || !strcmp(key, "state_load") || !strcmp(key, "timeout") ||
-            !strcmp(key, "out")) {
+        if (!name || !*name) continue;
+        if (!strcmp(name, "addons") || !strcmp(name, "mods_off") || !strcmp(name, "cheats_off") ||
+            !strcmp(name, "seconds") || !strcmp(name, "frames") || !strcmp(name, "runs") ||
+            !strcmp(name, "runtime") || !strcmp(name, "headless") || !strcmp(name, "shot") ||
+            !strcmp(name, "script") || !strcmp(name, "tracy") || !strcmp(name, "state_save") ||
+            !strcmp(name, "state_load") || !strcmp(name, "timeout") || !strcmp(name, "out")) {
             mcp_put(err, "settings: ");
-            mcp_put(err, key);
+            mcp_put(err, name);
             mcp_put(err, " has its own argument in game_run");
             return -1;
         }
-        if (snx_setting_known && !snx_setting_known(key)) {
+        if (snx_setting_known && !snx_setting_known(name)) {
             mcp_put(err, "settings: no setting named ");
-            mcp_put(err, key);
+            mcp_put(err, name);
             return -1;
         }
-        if (cJSON_IsString(item))
-            value = item->valuestring;
-        else if (cJSON_IsBool(item))
-            value = cJSON_IsTrue(item) ? "1" : "0";
-        else if (cJSON_IsNumber(item)) {
-            snprintf(number, sizeof number, "%.17g", item->valuedouble);
+        if (yyjson_is_str(item))
+            value = yyjson_get_str(item);
+        else if (yyjson_is_bool(item))
+            value = yyjson_is_true(item) ? "1" : "0";
+        else if (yyjson_is_num(item)) {
+            snprintf(number, sizeof number, "%.17g", yyjson_get_num(item));
             value = number;
         } else {
             mcp_put(err, "settings: ");
-            mcp_put(err, key);
+            mcp_put(err, name);
             mcp_put(err, " is not a string, number or boolean");
             return -1;
         }
-        arg = snx_format("--%s=%s", key, value);
-        game_command_add(command, arg);
+        arg = snx_format("--%s=%s", name, value);
+        game_command_add(d, command, arg);
         free(arg);
     }
     return 0;
 }
 /* the command for one run: the shared arguments and that run's screenshot */
-static cJSON* run_command(cJSON* base, const char* out, long run, int shot) {
-    cJSON* command = cJSON_Duplicate(base, 1);
+static yyjson_mut_val* run_command(yyjson_mut_doc* d, yyjson_mut_val* base, const char* out, long run, int shot) {
+    yyjson_mut_val* command = yyjson_mut_val_mut_copy(d, base);
     if (shot) {
         char* path = snx_format("%s/run%ld", out, run);
         char* arg = snx_format("--shot=%s", path);
-        game_command_add(command, arg);
+        game_command_add(d, command, arg);
         free(arg);
         free(path);
     }
     return command;
 }
 /* the argv of a command, malloc'd only for the array: its strings are the command's */
-static const char** run_argv(const cJSON* command) {
-    size_t count = (size_t)cJSON_GetArraySize(command), i;
+static const char** run_argv(const yyjson_mut_val* command) {
+    size_t count = yyjson_mut_arr_size(command), i;
     const char** argv = (const char**)snx_alloc((count + 1) * sizeof *argv);
-    for (i = 0; i < count; ++i) argv[i] = cJSON_GetArrayItem(command, (int)i)->valuestring;
+    for (i = 0; i < count; ++i) argv[i] = yyjson_mut_get_str(yyjson_mut_arr_get(command, i));
     argv[count] = NULL;
     return argv;
 }
@@ -1672,9 +1680,9 @@ static int stub_port(void) {
 #else
 static int stub_port(void) { return SNX_GDB_PORT; }
 #endif
-char* mcp_game_run(const char* self, const char* data, const char* cache, const char* game, const struct cJSON* args,
+char* mcp_game_run(const char* self, const char* data, const char* cache, const char* game, const yyjson_val* args,
                    Text* err) {
-    const cJSON* cj = (const cJSON*)args;
+    const yyjson_val* cj = args;
     Game g;
     Addons addons = {0};
     Addon* update = NULL;
@@ -1689,11 +1697,11 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     const char* requested_out = game_arg_string(cj, "out");
     const char* state_save = game_arg_string(cj, "state_save");
     const char* state_load = game_arg_string(cj, "state_load");
-    const cJSON* stub_arg = cJSON_GetObjectItemCaseSensitive(cj, "gdb_stub");
-    const cJSON* dlcs_choice = cJSON_GetObjectItemCaseSensitive(cj, "dlcs");
-    const cJSON* mods_choice = cJSON_GetObjectItemCaseSensitive(cj, "mods");
-    const cJSON* cheats_choice = cJSON_GetObjectItemCaseSensitive(cj, "cheats");
-    const cJSON* settings = cJSON_GetObjectItemCaseSensitive(cj, "settings");
+    const yyjson_val* stub_arg = yyjson_obj_get(cj, "gdb_stub");
+    const yyjson_val* dlcs_choice = yyjson_obj_get(cj, "dlcs");
+    const yyjson_val* mods_choice = yyjson_obj_get(cj, "mods");
+    const yyjson_val* cheats_choice = yyjson_obj_get(cj, "cheats");
+    const yyjson_val* settings = yyjson_obj_get(cj, "settings");
     long runs = game_arg_number(cj, "runs", 1), seconds = game_arg_number(cj, "seconds", 60);
     long frames = game_arg_number(cj, "frames", 0), timeout = game_arg_number(cj, "timeout", 0);
     int headless = game_arg_bool(cj, "headless", 1);
@@ -1704,7 +1712,8 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     int failed = 0;
     const char* stub = NULL;  /* the run's GDB stub flag, NULL for a run this call ends */
     int port = SNX_GDB_PORT;  /* the stub's port: the run's own when one is picked */
-    cJSON *root = NULL, *runs_json = NULL, *base_command = NULL, *first_command = NULL;
+    yyjson_mut_doc* d = NULL;
+    yyjson_mut_val *root = NULL, *runs_json = NULL, *base_command = NULL, *first_command = NULL;
     char* result = NULL;
     memset(&g, 0, sizeof g);
     if (!runtime || !*runtime || !strcmp(runtime, "current") || !strcmp(runtime, "self")) {
@@ -1738,8 +1747,8 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     }
     tracy_capture = tracy && !strcmp(tracy, "capture");
     tracy_client = tracy && !strcmp(tracy, "client");
-    if (cJSON_IsString(stub_arg)) {
-        const char* named = stub_arg->valuestring;
+    if (yyjson_is_str(stub_arg)) {
+        const char* named = yyjson_get_str(stub_arg);
         if (!strcmp(named, "-s") || !strcmp(named, "s"))
             stub = "-s"; /* the runtime waits before it starts, until GDB connects */
         else if (!strcmp(named, "-S") || !strcmp(named, "S"))
@@ -1748,9 +1757,9 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
             mcp_put(err, "gdb_stub: -s (the runtime waits for the debugger) or -S (the game runs until it connects)");
             return NULL;
         }
-    } else if (cJSON_IsTrue(stub_arg))
+    } else if (yyjson_is_true(stub_arg))
         stub = "-s";
-    else if (stub_arg && !cJSON_IsFalse(stub_arg) && !cJSON_IsNull(stub_arg)) {
+    else if (stub_arg && !yyjson_is_false(stub_arg) && !yyjson_is_null(stub_arg)) {
         mcp_put(err, "gdb_stub: -s (the runtime waits for the debugger) or -S (the game runs until it connects)");
         return NULL;
     }
@@ -1763,7 +1772,7 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
             mcp_put(err, "gdb_stub runs one game: runs is 1 (or left out)");
             return NULL;
         }
-        if (shot && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(cj, "shot"))) {
+        if (shot && yyjson_is_true(yyjson_obj_get(cj, "shot"))) {
             mcp_put(err, "a stub run outlives this call: it has no last frame here, so shot is left out");
             return NULL;
         }
@@ -1826,111 +1835,111 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     if (!out) goto done;
     script = snx_strdup(script_arg ? script_arg : "");
     dlc_arg = game_dlc_arg(dlcs, ndlcs);
-    base_command = cJSON_CreateArray();
+    d = yyjson_mut_doc_new(NULL);
+    base_command = yyjson_mut_arr(d);
     if (runtime && (!strcmp(runtime, "game") || !strcmp(runtime, "deployed")))
-        game_command_add(base_command, program);
+        game_command_add(d, base_command, program);
     else {
-        game_command_add(base_command, self);
+        game_command_add(d, base_command, self);
         {
             char* arg = snx_format("--game=%s", program);
-            game_command_add(base_command, arg);
+            game_command_add(d, base_command, arg);
             free(arg);
         }
     }
     {
         char* arg = snx_format("--seconds=%ld", seconds);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
     if (frames > 0) {
         char* arg = snx_format("--frames=%ld", frames);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
-    if (headless) game_command_add(base_command, "-H");
+    if (headless) game_command_add(d, base_command, "-H");
     if (stub) { /* the game waits for GDB, and this call answers before it runs */
-        game_command_add(base_command, stub);
+        game_command_add(d, base_command, stub);
         /* a stub takes the port it binds for its whole run: one another stub already listens on is skipped, so two
            games brought up for GDB on this machine do not take each other's clients (gdb_attach names the port) */
         port = stub_port();
         {
             char* arg = snx_format("--gdb_port=%d", port);
-            game_command_add(base_command, arg);
+            game_command_add(d, base_command, arg);
             free(arg);
         }
     }
     {
         char* arg = snx_format("--addons=%s", dlc_arg);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
         arg = snx_format("--mods_off=%s", mods_off);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
         arg = snx_format("--cheats_off=%s", cheats_off);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
     if (script && *script) {
         char* arg = snx_format("--script=%s", script);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
     if (state_save) {
         char* arg = snx_format("--state_save=%s", state_save);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
     if (state_load) {
         char* arg = snx_format("--state_load=%s", state_load);
-        game_command_add(base_command, arg);
+        game_command_add(d, base_command, arg);
         free(arg);
     }
-    if (run_settings(base_command, settings, err)) goto done;
+    if (run_settings(d, base_command, settings, err)) goto done;
     if (tracy_capture) {
-        game_command_add(base_command, "--tracy-capture");
-        game_command_add(base_command, "--tracy_open_trace=0");
+        game_command_add(d, base_command, "--tracy-capture");
+        game_command_add(d, base_command, "--tracy_open_trace=0");
     } else if (tracy_client)
-        game_command_add(base_command, "--tracy");
-    root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "game", g.folder);
+        game_command_add(d, base_command, "--tracy");
+    root = yyjson_mut_obj(d);
+    yyjson_mut_obj_add_strcpy(d, root, "game", g.folder);
     if (g.has_id) {
         char id[17];
         game_title_text(g.id, id);
-        cJSON_AddStringToObject(root, "title_id", id);
+        yyjson_mut_obj_add_strcpy(d, root, "title_id", id);
     }
-    game_json_add_string(root, "update", update ? update->entry : NULL);
+    game_json_add_string(d, root, "update", update ? update->entry : NULL);
     {
-        cJSON* list = cJSON_CreateArray();
-        for (i = 0; i < ndlcs; ++i) cJSON_AddItemToArray(list, cJSON_CreateString(dlcs[i]));
-        cJSON_AddItemToObject(root, "dlcs", list);
+        yyjson_mut_val* list = yyjson_mut_arr(d);
+        for (i = 0; i < ndlcs; ++i) yyjson_mut_arr_append(list, yyjson_mut_strcpy(d, dlcs[i]));
+        yyjson_mut_obj_add_val(d, root, "dlcs", list);
     }
-    cJSON_AddStringToObject(root, "mods_off", mods_off);
-    cJSON_AddStringToObject(root, "cheats_off", cheats_off);
-    cJSON_AddStringToObject(root, "runtime",
-                            runtime && (!strcmp(runtime, "game") || !strcmp(runtime, "deployed")) ? "game" : "current");
-    cJSON_AddStringToObject(root, "program", program);
-    cJSON_AddNumberToObject(root, "seconds", (double)seconds);
-    cJSON_AddNumberToObject(root, "timeout", (double)(timeout > 0 ? timeout : 2 * seconds + 60));
-    cJSON_AddNumberToObject(root, "runs", (double)runs);
-    cJSON_AddBoolToObject(root, "headless", headless);
-    cJSON_AddStringToObject(root, "out", out);
+    yyjson_mut_obj_add_strcpy(d, root, "mods_off", mods_off);
+    yyjson_mut_obj_add_strcpy(d, root, "cheats_off", cheats_off);
+    yyjson_mut_obj_add_str(d, root, "runtime",
+                           runtime && (!strcmp(runtime, "game") || !strcmp(runtime, "deployed")) ? "game" : "current");
+    yyjson_mut_obj_add_strcpy(d, root, "program", program);
+    yyjson_mut_obj_add_int(d, root, "seconds", seconds);
+    yyjson_mut_obj_add_int(d, root, "timeout", timeout > 0 ? timeout : 2 * seconds + 60);
+    yyjson_mut_obj_add_int(d, root, "runs", runs);
+    yyjson_mut_obj_add_bool(d, root, "headless", headless);
+    yyjson_mut_obj_add_strcpy(d, root, "out", out);
     if (tracy_capture)
-        cJSON_AddStringToObject(root, "tracy", "capture");
+        yyjson_mut_obj_add_str(d, root, "tracy", "capture");
     else if (tracy_client)
-        cJSON_AddStringToObject(root, "tracy", "client");
+        yyjson_mut_obj_add_str(d, root, "tracy", "client");
     else
-        cJSON_AddNullToObject(root, "tracy");
-    first_command = run_command(base_command, out, 1, shot);
-    cJSON_AddItemToObject(root, "command", first_command);
+        yyjson_mut_obj_add_null(d, root, "tracy");
+    first_command = run_command(d, base_command, out, 1, shot);
+    yyjson_mut_obj_add_val(d, root, "command", first_command);
     if (dry_run) {
-        cJSON_AddStringToObject(root, "status", "dry_run");
-        cJSON_AddBoolToObject(root, "ok", 1);
-        result = cJSON_PrintUnformatted(root);
-        cJSON_Delete(root);
+        yyjson_mut_obj_add_str(d, root, "status", "dry_run");
+        yyjson_mut_obj_add_bool(d, root, "ok", 1);
+        yyjson_mut_doc_set_root(d, root);
+        result = yyjson_mut_write(d, 0, NULL);
         goto done;
     }
     if (snx_mkdirs(out)) {
-        cJSON_Delete(root);
         mcp_put(err, "cannot make the run's folder ");
         mcp_put(err, out);
         goto done;
@@ -1939,7 +1948,7 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     if (stub) {
         /* the game is left running for the GDB tools: its output in the run's folder, and its process in this
            server's list, which ends when the server closes */
-        cJSON* command = run_command(base_command, out, 1, shot);
+        yyjson_mut_val* command = run_command(d, base_command, out, 1, shot);
         const char** argv = run_argv(command);
         char* log = snx_format("%s/run1.log", out);
         long pid = 0;
@@ -1954,34 +1963,30 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
                                  : "the game could not be started: its output goes to <out>/run1.log");
         } else {
             Text note = {0};
-            cJSON_AddStringToObject(root, "status", "running");
-            cJSON_AddBoolToObject(root, "ok", 1);
-            cJSON_AddStringToObject(root, "log", log);
-            cJSON_AddNumberToObject(root, "pid", (double)pid);
-            cJSON_AddNumberToObject(root, "gdb_port", (double)port);
-            cJSON_AddStringToObject(root, "gdb_stub", stub);
-            game_json_add_string(root, "game_log", g.log);
+            yyjson_mut_obj_add_str(d, root, "status", "running");
+            yyjson_mut_obj_add_bool(d, root, "ok", 1);
+            yyjson_mut_obj_add_strcpy(d, root, "log", log);
+            yyjson_mut_obj_add_int(d, root, "pid", pid);
+            yyjson_mut_obj_add_int(d, root, "gdb_port", port);
+            yyjson_mut_obj_add_str(d, root, "gdb_stub", stub);
+            game_json_add_string(d, root, "game_log", g.log);
             mcp_put(&note, "the game waits for GDB: gdb_attach connects it at 127.0.0.1:");
             mcp_put_num(&note, (unsigned long)port);
             mcp_put(&note, ", and gdb_detach lets it run on. This server stops it when it closes");
-            cJSON_AddStringToObject(root, "note", note.p ? note.p : "");
+            yyjson_mut_obj_add_strcpy(d, root, "note", note.p ? note.p : "");
             free(note.p);
         }
         free(log);
         free(argv);
-        cJSON_Delete(command);
-        if (!kept) {
-            cJSON_Delete(root);
-            goto done;
-        }
-        result = cJSON_PrintUnformatted(root);
-        cJSON_Delete(root);
+        if (!kept) goto done;
+        yyjson_mut_doc_set_root(d, root);
+        result = yyjson_mut_write(d, 0, NULL);
         goto done;
     }
 #endif
-    runs_json = cJSON_CreateArray();
+    runs_json = yyjson_mut_arr(d);
     for (i = 0; i < (size_t)runs; ++i) {
-        cJSON* command = run_command(base_command, out, (long)i + 1, shot);
+        yyjson_mut_val* command = run_command(d, base_command, out, (long)i + 1, shot);
         const char** argv = run_argv(command);
         char *log = snx_format("%s/run%zu.log", out, i + 1), *snapshot = snx_format("%s/run%zu.game.log", out, i + 1);
         char* shot_path = shot ? snx_format("%s/run%zu.ppm", out, i + 1) : NULL;
@@ -1989,7 +1994,7 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
         char* line = NULL;
         int rc, bad, timed_out = 0;
         RunSummary summary;
-        cJSON* item;
+        yyjson_mut_val* item;
         /* the runtime ends the run itself at --seconds, which every game_run command carries; the timeout is the
            host-side net for one that does not (a run stopped answering at all), and its default is 2*seconds+60 for
            exactly that */
@@ -2008,23 +2013,23 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
             snapshot = NULL;
         }
         run_summary_parse(output, &summary);
-        item = run_summary_json(&summary, seconds, rc, timed_out, &line, &bad);
-        cJSON_AddNumberToObject(item, "run", (double)i + 1);
-        cJSON_AddBoolToObject(item, "timed_out", timed_out);
-        cJSON_AddStringToObject(item, "log", log);
-        game_json_add_string(item, "game_log", g.log);
-        game_json_add_string(item, "game_log_copy", snapshot);
+        item = run_summary_json(d, &summary, seconds, rc, timed_out, &line, &bad);
+        yyjson_mut_obj_add_uint(d, item, "run", i + 1);
+        yyjson_mut_obj_add_bool(d, item, "timed_out", timed_out);
+        yyjson_mut_obj_add_strcpy(d, item, "log", log);
+        game_json_add_string(d, item, "game_log", g.log);
+        game_json_add_string(d, item, "game_log_copy", snapshot);
         if (shot)
-            game_json_add_string(item, "shot", shot_path);
+            game_json_add_string(d, item, "shot", shot_path);
         else
-            cJSON_AddNullToObject(item, "shot");
+            yyjson_mut_obj_add_null(d, item, "shot");
         if (tracy_capture) {
             char* capture = run_newest_tracy(g.folder);
-            game_json_add_string(item, "tracy", capture);
-            cJSON_AddItemToArray(runs_json, item);
+            game_json_add_string(d, item, "tracy", capture);
+            yyjson_mut_arr_append(runs_json, item);
             free(capture);
         } else
-            cJSON_AddItemToArray(runs_json, item);
+            yyjson_mut_arr_append(runs_json, item);
         if (bad) ++failed;
         free(line);
         free(output);
@@ -2032,22 +2037,21 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
         free(snapshot);
         free(shot_path);
         free(argv);
-        cJSON_Delete(command);
         if (bad && stop) break;
     }
-    cJSON_AddItemToObject(root, "runs", runs_json);
-    cJSON_AddNumberToObject(root, "failed", (double)failed);
-    cJSON_AddBoolToObject(root, "ok", failed == 0);
-    cJSON_AddStringToObject(root, "status", "ran");
+    yyjson_mut_obj_add_val(d, root, "runs", runs_json);
+    yyjson_mut_obj_add_int(d, root, "failed", failed);
+    yyjson_mut_obj_add_bool(d, root, "ok", failed == 0);
+    yyjson_mut_obj_add_str(d, root, "status", "ran");
     /* the newest Tracy capture, if any, as the answer's convenience: each run has its own */
     if (tracy_capture) {
         tracy_path = run_newest_tracy(g.folder);
-        game_json_add_string(root, "tracy_capture", tracy_path);
+        game_json_add_string(d, root, "tracy_capture", tracy_path);
     }
-    result = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
+    yyjson_mut_doc_set_root(d, root);
+    result = yyjson_mut_write(d, 0, NULL);
 done:
-    cJSON_Delete(base_command);
+    yyjson_mut_doc_free(d);
     free(tracy_path);
     free(dlc_arg);
     free(script);

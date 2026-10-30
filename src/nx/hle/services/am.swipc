@@ -14,6 +14,10 @@ type nn::pdm::ApplicationPlayStatistics = bytes<0x18, 8>;
 
 interface nn::am::service::IApplicationProxyService is appletOE {
     [0] OpenApplicationProxy(pid, handle<copy, process> process) -> object<nn::am::service::IApplicationProxy> proxy;
+    # A Switch 2 SDK's nn::am::InitializeApplicationInterfaces opens its proxy under 10, with 0's arguments: Eden's
+    # ApplicationProxyService answers 10 with OpenApplicationProxy's handler
+    [10] OpenApplicationProxySwitch2(pid, handle<copy, process> process)
+        -> object<nn::am::service::IApplicationProxy> proxy;
 }
 # 350 opens a system application's proxy, an IApplicationProxy as appletOE's is. The other proxies are the system
 # applets'
@@ -108,6 +112,10 @@ interface nn::am::service::ISelfController {
     [69] IsAutoSleepDisabled() -> b8 disabled;
     @stub [90] GetAccumulatedSuspendedTickValue() -> u64 tick;
     [91] GetAccumulatedSuspendedTickChangedEvent() -> handle<copy, event> event;
+    # A Switch 2 SDK's nn::gsv::BootWithRemoteMemory sends TIPC commands on the session this hands back, so it is a
+    # copy of a session handle as Eden's Switch 2 ReturnRawSession pushes one, not a domain object id. Every command
+    # of it succeeds here, until a title needs an answer of its own
+    [2000] GetGraphicsSystemSession() -> handle<copy, session> session;
     @stub [100] SetAlbumImageTakenNotificationEnabled(b8 enabled);
     @stub [110] SetApplicationAlbumUserData(buffer<u8, 0x21> data);
     @stub [120] SaveCurrentScreenshot(i32 option);
@@ -227,4 +235,13 @@ interface nn::am::service::IStorageAccessor {
     [11] Read(i64 offset, buffer<u8, 0x22> data);
 }
 interface nn::am::service::ITransferStorageAccessor {
+}
+
+# The Switch 2 graphics system's session, which ISelfController 2000 hands back: nn::gsv boots with TIPC commands on
+# it, and takes the sessions it drives the graphics stack with (its own, the syncpoint's and the GPU's) from its
+# answers. A command nothing declares answers success with zeros, as the console's geometry and memory stack aren't
+# emulated (Eden's Switch 2 work answers them the same way until each one is needed), except 1402, which hands out the
+# NVIDIA driver's session a copy handle to it, as its Switch 2 OpenNvsrvSession does with nvdrv's own devices
+interface nn::am::service::IGraphicsSystemSession {
+    [1402] OpenNvsrvSession() -> handle<copy, session> session;
 }

@@ -7,6 +7,9 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
     SnxCodeImage* views;
     size_t i;
     int result;
+    /* what the guest's CPU decodes: the Switch 2 set for a program whose NPDM has an extended ACID, the Switch's
+       otherwise (snx_a64_features reads 0 as that one) */
+    SnxU64 features = program->npdm.is_switch2 ? (SnxU64)SNX_A64_TARGET_SWITCH2 : 0;
     views = (SnxCodeImage*)snx_alloc(program->module_count * sizeof(*views));
     for (i = 0; i < program->module_count; ++i) {
         const SnxModuleImage* m = &program->modules[i];
@@ -24,7 +27,7 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
         views[i].fde = m->fde;
         views[i].fde_count = m->fde_count;
     }
-    result = snx_codegen_analyze(codegen, views, program->module_count, hints, hint_count, quiet, 0); /* the Switch */
+    result = snx_codegen_analyze(codegen, views, program->module_count, hints, hint_count, quiet, features);
     free(views);
     return result;
 }

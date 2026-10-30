@@ -28,6 +28,7 @@
 #define AM_INVALID_OFFSET  RC(128, 503) /* ResultInvalidOffset */
 #define AM_INVALID_STORAGE RC(128, 511) /* ResultInvalidStorageType */
 #define AM_OUT_OF_MEMORY   RC(128, 600)
+#define AM_OUT_OF_HANDLES  0xD201 /* the kernel's OutOfHandles, which the console answers for a session it can't give */
 
 /* nn::am::AppletMessage */
 #define AM_MSG_FOCUS_STATE_CHANGED      15
@@ -184,6 +185,11 @@ static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* s
     *proxy = am_proxy();
     R_SUCCEED();
 }
+/* 10, which a Switch 2 SDK's InitializeApplicationInterfaces calls instead of 0 (Eden answers it with 0's handler) */
+static int nn_am_service_IApplicationProxyService_OpenApplicationProxySwitch2(SvcObj* self, u64 pid, u32 process,
+                                                                              SvcObj** proxy) {
+    return nn_am_service_IApplicationProxyService_OpenApplicationProxy(self, pid, process, proxy);
+}
 static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid,
                                                                                   u32 process, SvcObj** proxy) {
     (void)self, (void)pid, (void)process;
@@ -207,6 +213,20 @@ static int nn_am_service_IApplicationProxy_GetWindowController(SvcObj* self, Svc
     (void)self;
     *controller = nn_am_service_IWindowController_new();
     R_SUCCEED();
+}
+/* 2000: the graphics system's session a Switch 2 title's gsv boot sends TIPC commands on (am.swipc): a copy of a
+   session to it, as Eden's Switch 2 ReturnRawSession pushes one */
+static int nn_am_service_ISelfController_GetGraphicsSystemSession(SvcObj* self, u32* session) {
+    (void)self;
+    *session = session_new(nn_am_service_IGraphicsSystemSession_new());
+    return *session ? 0 : AM_OUT_OF_HANDLES;
+}
+/* gsv 1402: the NVIDIA driver's session, which a Switch 2 title's nvsrv boot speaks nvdrv's protocol on. Eden's
+   Switch 2 work serves it with nvdrv's own devices, and so does this: the same interface nvdrv's service gives */
+static int nn_am_service_IGraphicsSystemSession_OpenNvsrvSession(SvcObj* self, u32* session) {
+    (void)self;
+    *session = session_new(nvdrv_session());
+    return *session ? 0 : AM_OUT_OF_HANDLES;
 }
 /* IAudioController's volumes, kept on each controller as Eden keeps them (AmVolumes, services_int.h) */
 static int nn_am_service_IApplicationProxy_GetAudioController(SvcObj* self, SvcObj** controller) {

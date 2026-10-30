@@ -1750,6 +1750,10 @@ static int nns_nvdrv_INvDrvServices_QueryEvent(SvcObj* self, u32 fd, u32 event_i
     R_SUCCEED();
 }
 static SvcObj* new_nvdrv(void) { return nns_nvdrv_INvDrvServices_new(); }
+/* One INvDrvServices object besides the one the service's own handle gives a game: a Switch 2 title's gsv hands its
+   nvsrv session out as this interface (am.c's GetGraphicsSystemSession 1402), as Eden's Switch 2 work serves nvsrv
+   with nvdrv's own devices */
+SvcObj* nvdrv_session(void) { return nns_nvdrv_INvDrvServices_new(); }
 
 void nv_init(void) {
     g_hle.nvdrv.nvh_next = 1;

@@ -52,6 +52,8 @@ void hle_init(void) {
     /* an application's cores and priorities, until the npdm says (main.c) */
     g_hle.svcmem.core_mask = 0xF;
     g_hle.svcmem.prio_mask = 0xFFFFFFFFFFFFFFF0ull;
+    /* the Switch's CPU features, until the npdm says (main.c) */
+    g_guest_features = 0;
     /* the services' defaults */
     g_hle.misc.apm_config[0] = g_hle.misc.apm_config[1] = APM_CONFIGURATION;
     g_hle.audio.device_volume = 1.0f;

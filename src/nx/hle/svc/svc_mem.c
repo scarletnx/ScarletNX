@@ -846,6 +846,23 @@ static u32 process_info(u32 id, u64* out) {
         default: R_THROW(R_BADENUM);
     }
 }
+/* The ids a Switch 2 kernel answers and a Switch 1 one refuses (Eden's svc_info.cpp, where they are guarded by
+   process.UsesPAuthReturns(), as our g_guest_features does here):
+     - 29 and 30 are the address and size of the region its SDK's VAMM reserves in, which nnosInitialize asks for and
+       a title then takes up to ~7.5 GiB of. VAMM can only map physical memory through the alias region, so the upper
+       half of it stands in for the region.
+     - 31 and 32 are the remote memory gsv and nvsrv boot with (nn::os::GetRemoteMemoryUsage): nothing backs it here.
+     - 33 is a page granule: the SDK checks its module ranges against (value - 1) and VAMM maps one granule up front. */
+static u32 switch2_info(u32 id, u64* out) {
+    switch (id) {
+        case 29: *out = ALIAS_BASE + ALIAS_SIZE / 2; R_SUCCEED();
+        case 30: *out = ALIAS_SIZE / 2; R_SUCCEED();
+        case 31:
+        case 32: *out = 0; R_SUCCEED();
+        case 33: *out = 0x1000; R_SUCCEED();
+        default: R_THROW(R_BADENUM);
+    }
+}
 /* The rest of svcGetInfo; ResourceLimit (9), which makes a handle, is svc.c's */
 u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
     switch (id0) {
@@ -876,6 +893,21 @@ u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
             R_UNLESS(id1 <= 1, R_BADCOMBO);
             *out = id1 ? 0x50 : 1;
             R_SUCCEED();
+        case 29:
+        case 30:
+        case 31:
+        case 32:
+        case 33: { /* the ids a Switch 2 program's kernel answers (npdm's extended ACID, read_npdm) */
+            KObj* p;
+            R_UNLESS(g_guest_features, R_BADENUM);
+            R_UNLESS(!id1, R_BADENUM);
+            if (h != H_CUR_PROC) {
+                p = h_get_ref(h, KO_PROCESS);
+                R_UNLESS(p, R_BADHANDLE);
+                kobj_unref(p);
+            }
+            return switch2_info(id0, out);
+        }
         case 25:
         case 0xF0000002: { /* ThreadTickCount (0xF0000002 before 13.0.0): -1 for the thread's total, or a core's */
             KObj* t;

@@ -10,7 +10,9 @@
 
 /* the one application process's id, which IPC PID descriptors carry too */
 #define K_PROCESS_ID 0x51ull
-#define NCORES       4 /* guest CPU cores */
+/* the guest cores the scheduler hands out: the Switch's four and a Switch 2 program's six, which each process's NPDM
+   ThreadInfo capability and CoreMask then pick from (main.c's read_npdm) */
+#define NCORES       6
 #define THREAD_MAX   96 /* the application's ThreadCountMax: creating one more answers R_LIMIT */
 #define H_MAX        1024 /* handles: the most the console's handle table holds */
 

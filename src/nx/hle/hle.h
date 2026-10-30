@@ -61,6 +61,11 @@ typedef struct {
 } Hle;
 
 extern Hle g_hle;
+/* What the one program's CPU decodes (a64_decoder.h): 0 is the Switch's, which every Switch 1 game module was
+   recompiled with, SNX_A64_TARGET_SWITCH2 a Switch 2 program's (its NPDM's extended ACID, read by main.c's
+   read_npdm). The JIT decodes with it, and the ids and commands only a Switch 2 kernel or service answers are
+   guarded by it. It is the process's own, so a save state does not hold it */
+extern u64 g_guest_features;
 /* The HLE's host side: what g_hle's members keep that a save state never holds, the locks and condition variables,
    one struct per file as g_hle's, beside it in .bss. hle_init sets them up */
 typedef struct {
