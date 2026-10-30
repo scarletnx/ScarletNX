@@ -190,8 +190,9 @@ The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 Text is bounded at **16 MiB**, using conservative static CFG discovery for larger
 images. This is not complete indirect-target coverage or a general 3DS runtime.
 Scalar VFPv2 now supports F32/F64 arithmetic/conversions and bounded atomic RAM
-transfers; short vectors, enabled exceptions and legacy extended-save forms
-remain unsupported. Stage 2b4 adds serialized ARM11 checked exclusives and
+transfers. Short-vector arithmetic runs in the 3DS CPU backend. Short-vector
+compares, conversions and moves, enabled exceptions and legacy extended-save
+forms remain unsupported. Stage 2b4 adds serialized ARM11 checked exclusives and
 a bounded kernel-bootstrap subset. Stage 2 still needs broader discovery/ISA
 validation and cache/resume. Initial stage 3a adds a SwIPC-derived CTR generator,
 checked transport and bounded service sessions. Initial 3b adds the minimal
@@ -716,9 +717,10 @@ would bypass process permissions, aliases and device callbacks.
 Remaining requirements beyond the initial native bootstrap pipeline:
 
 1. The initial ARM11 integer profile is implemented. Complete VFPv2 (including
-   short-vector FPSCR behavior), missing ARMv6K instructions and alignment-mode
-   validation. Current ordinary unaligned transfers model unaligned support
-   enabled/alignment checking disabled, not every ARM11 CP15 configuration.
+   short-vector compares, conversions and moves, and enabled exceptions), missing
+   ARMv6K instructions and alignment-mode validation. Current ordinary unaligned
+   transfers model unaligned support enabled/alignment checking disabled, not every
+   ARM11 CP15 configuration.
 2. The separate checked-memory ABI and CTR adapter implement integer and
    bounded scalar ARM11 VFP transfers. ARM11 checked exclusives now have serialized bus-owned reservations,
    including alias/ABA invalidation. Concurrent scheduling and broader monitor

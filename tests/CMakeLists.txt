@@ -43,7 +43,7 @@ if(SNX_TEST_SANITIZERS)
         snx_xxhash snx_vk_common
         snx-logscan
         # the recompiler and its backends
-        snx_llvm snx_arm_llvm scarletnx-recompiler scarletnx-recompiler-shared
+        snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
@@ -151,6 +151,10 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-kernel 11)
     target_link_libraries(snx-test-3ds-kernel PRIVATE snx_ctr_process)
     add_test(NAME 3ds_kernel COMMAND snx-test-3ds-kernel)
+    add_executable(snx-test-3ds-vfp 3ds_vfp.c)
+    snx_test_target(snx-test-3ds-vfp 11)
+    target_link_libraries(snx-test-3ds-vfp PRIVATE snx_ctr_process snx_llvm)
+    add_test(NAME 3ds_vfp COMMAND snx-test-3ds-vfp)
     foreach(test services threads)
         add_executable(snx-test-3ds-${test} 3ds_${test}.c)
         snx_test_target(snx-test-3ds-${test} 11)

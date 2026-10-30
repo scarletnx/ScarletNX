@@ -143,6 +143,12 @@ static void vector_memory(ArmIR* a, const SnxArmVector* v) {
     if (a->memory == SNX_ARM_MEMORY_CHECKED && !(v->flags & AV_LOAD)) transfer_commit(a);
     if (v->flags & AV_WB) setreg(a, v->n, end);
 }
+/* FPSCR bits that an ARM11 VMSR may set: NZCV, DN, FZ, RMode (23-22), STRIDE (21-20), LEN (18-16), IDC (7) and the
+   cumulative flags IXC (4), UFC (3), OFC (2), DZC (1) and IOC (0). Any other bit stops the block: the trap enables
+   (15-8), which the block does not model, and bits 27 and 26, which the ARM11 does not define */
+#define FPSCR_ARM11_WRITABLE 0xf3f7009fu
+/* FPSCR_ARM11_WRITABLE with bits 27 and 26, which the require before the store has already refused */
+#define FPSCR_ARM11_STORED   0xfff7009fu
 static void vector_transfer(ArmIR* a, const SnxArmVector* v) {
     if (v->op == AV_STATUS) {
         if (v->flags & AV_LOAD) {
@@ -152,10 +158,12 @@ static void vector_transfer(ArmIR* a, const SnxArmVector* v) {
             else
                 setreg(a, v->n, f);
         } else {
-            if (a->profile == SNX_ARM_PROFILE_ARM11)
-                require(a, cmp(a, LLVMIntEQ, band(a, reg(a, v->n), c32(a, ~0xf3c0009fu)), c32(a, 0)),
+            if (a->profile == SNX_ARM_PROFILE_ARM11) {
+                require(a, cmp(a, LLVMIntEQ, band(a, reg(a, v->n), c32(a, ~FPSCR_ARM11_WRITABLE)), c32(a, 0)),
                         SNX_ARM_BACKEND_UNSUPPORTED, c32(a, a->word));
-            PUT(a, fpscr, band(a, reg(a, v->n), c32(a, 0xffc0009f)));
+                PUT(a, fpscr, band(a, reg(a, v->n), c32(a, FPSCR_ARM11_STORED)));
+            } else
+                PUT(a, fpscr, band(a, reg(a, v->n), c32(a, 0xffc0009f)));
         }
     } else if (v->op == AV_CORE_PAIR) {
         LLVMValueRef x, y;
@@ -242,8 +250,9 @@ static void vector_instruction(ArmIR* a) {
     }
     if (a->profile == SNX_ARM_PROFILE_ARM11) {
         /* Profile decoding has excluded NEON, D16..31 and post-VFPv2 forms.
-           No short-vector or enabled-FP-exception semantics are substituted.
-           Transfers/status do not consume LEN/STRIDE or arithmetic controls. */
+           Arithmetic under a non-zero LEN/STRIDE or an enabled FP exception stops
+           the block as SNX_ARM_BACKEND_UNSUPPORTED, for the runtime's backend to
+           run or refuse. Transfers/status do not consume those controls. */
         /* Odd double-register multiple counts are legacy FSTMX/FLDMX forms
            with an extra format word, not ordinary VLDM/VSTM transactions. */
         int multiple = !(v.flags & AV_PRE) || (v.flags & AV_WB);

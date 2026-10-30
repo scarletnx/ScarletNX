@@ -64,6 +64,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
 if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
 endif()
+target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
 # The offline compiler is part of the driver, as the Switch driver's recompiler is part of scarletnx. The LLVM backend
 # (snx_llvm, which the Switch driver's tree, the GNU ABI runtime's or the top level configures) links its objects and
 # their helpers (armlib.c) with its own linker, and compiles the blocks the static module lacks at run time (exec.c)
