@@ -50,6 +50,7 @@
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/disasm.h"
 #include <yyjson.h>
+#include "nx/runtime/driver/recompile.h"
 #include <ctype.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -75,6 +76,7 @@ typedef struct {
 
 typedef struct {
     char* data;     /* the data folder */
+    SnxPaths paths; /* what reading a game's dump needs: the data folder its keys are in */
     char** roots;   /* the folders the tools read under (readable), this many of them */
     char* works[2]; /* the extractions: the cache's work/, then an older version's in the data folder */
     char* self;     /* this program, which edenprobe_run recompiles and runs edenprobe with */
@@ -237,6 +239,7 @@ static int mcp_open(Mcp* m, int argc, char** argv) {
     }
     m->self = self;
     if (!m->data) return snx_error("--mcp: no data folder (name one with --repo)");
+    m->paths.repo = m->data; /* the keys a game's dump is read with are in it, then in the user's own folder */
     add_root(m, snx_strdup(m->data));
     add_root(m, snx_user_path(m->data, SNX_USER_STATE));
     m->cache = snx_user_path(m->data, SNX_USER_CACHE);
@@ -690,12 +693,27 @@ static int by_address(const void* a, const void* b) {
     SnxU64 x = ((const Sym*)a)->address, y = ((const Sym*)b)->address;
     return x < y ? -1 : x > y;
 }
-static int game_load(Game* g, const char* folder, Text* err) {
+/* A game's program at its run-time addresses with its symbols: the folder itself (an extraction's, an NRO), else
+   what the recompiled game's _data keeps, else the dump its .ini names to read in place, as the runtime reads it
+   (mcp_game_program_source). NULL is never: the last attempt's error is in err either way */
+static int game_load(Game* g, const char* folder, const SnxPaths* paths, Text* err) {
     char error[1024];
     size_t i, j, n = 0;
+    int read = 0;
     memset(g, 0, sizeof *g);
-    if (snx_load_program(folder, &g->program, error, sizeof error)) {
-        mcp_put(err, error);
+    if (!snx_load_program(folder, &g->program, error, sizeof error)) read = 1;
+    else {
+        /* a game the recompiler made keeps its program beside itself: what its _data keeps, else its dump */
+        const char* name = snx_path_leaf(folder);
+        char* source = mcp_game_program_source(folder, name);
+        if (source && snx_is_dump(source))
+            read = !snx_load_dump_program(source, NULL, paths, 1, NULL, NULL, 0, &g->program, error, sizeof error);
+        else if (source)
+            read = !snx_load_program(source, &g->program, error, sizeof error);
+        free(source);
+    }
+    if (!read) {
+        mcp_put(err, error[0] ? error : "the game's program cannot be read");
         return -1;
     }
     for (i = 0; i < g->program.module_count; i++) n += g->program.modules[i].symbol_count;
@@ -733,7 +751,7 @@ static const Game* game_get(Mcp* m, const char* folder, Text* err) {
     if (m->game_folder) game_free(&m->game);
     free(m->game_folder);
     m->game_folder = NULL;
-    if (game_load(&m->game, full, err)) {
+    if (game_load(&m->game, full, &m->paths, err)) {
         free(full);
         return NULL;
     }
@@ -768,7 +786,26 @@ static void put_name(Text* t, const char* name) {
     mcp_put(t, plain ? plain : name);
     free(plain);
 }
-/* "<module> <name>+<off>", or "<module> ?" with the symbol it is past, as symbols.py's describe */
+/* the unwind function .eh_frame describes that holds a module offset, or NULL: the loader reads .eh_frame_hdr's
+   search table, so the ranges are sorted by their start */
+static const SnxFde* fde_at(const SnxModuleImage* mi, SnxU64 a) {
+    size_t lo = 0, hi = mi->fde_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (mi->base + mi->fde[mid].start <= a)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (!lo) return NULL;
+    {
+        const SnxFde* f = &mi->fde[lo - 1];
+        return a - mi->base - f->start < f->size || !f->size ? f : NULL;
+    }
+}
+/* "<module> <name>+<off>", or "<module> ?" with the symbol it is past, as symbols.py's describe. A function the
+   image's symbols don't name (a stripped game's) still has its range in the unwind table, which is the way in to
+   reading it: disassemble from the range's start */
 static void describe(Text* t, const Game* g, SnxU64 a) {
     const SnxModuleImage* mi = module_at(g, a);
     const Sym* s = sym_before(g, a);
@@ -778,7 +815,27 @@ static void describe(Text* t, const Game* g, SnxU64 a) {
         put_name(t, sym_name(g, s));
         mcp_put(t, "+");
         mcp_put_hex(t, a - s->address);
-    } else if (s) {
+        return;
+    }
+    if (mi) {
+        const SnxFde* f = fde_at(mi, a);
+        if (f) {
+            mcp_put(t, "? (a function at ");
+            mcp_put_hex(t, mi->base + f->start);
+            mcp_put(t, ", ");
+            mcp_put_hex(t, f->size);
+            mcp_put(t, " bytes");
+            if (s) {
+                mcp_put(t, "; nearest ");
+                put_name(t, sym_name(g, s));
+                mcp_put(t, "+");
+                mcp_put_hex(t, a - s->address);
+            }
+            mcp_put(t, ")");
+            return;
+        }
+    }
+    if (s) {
         mcp_put(t, "? (");
         put_name(t, sym_name(g, s));
         mcp_put(t, "+");

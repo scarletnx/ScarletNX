@@ -1040,16 +1040,16 @@ static char* game_dlc_arg(char** entries, size_t count) {
     return t.p ? t.p : snx_strdup("");
 }
 
-/* what the recompiler is given for a game made already, as scarletnx -r gives it: the NRO its _data keeps, else that
-   folder, else the dump its .ini names to read it in place from */
-static char* game_recompile_source(const Game* g) {
-    char *base = snx_path_join(g->folder, g->name), *source = NULL;
+/* what the recompiler is given for a game made already, as scarletnx -r gives it, and what a tool reads the game's
+   code from: the NRO its _data keeps, else that folder, else the dump its .ini names to read it in place from */
+char* mcp_game_program_source(const char* folder, const char* name) {
+    char *base = snx_path_join(folder, name), *source = NULL;
     char* nro = snx_format("%s_data/exefs/main.nro", base);
     char* exefs = snx_format("%s_data/exefs", base);
     if (snx_is_file(nro))
-        source = nro;
+        source = nro; /* the only file of the three the answer keeps: the other two are freed below */
     else if (!snx_is_dir(exefs)) {
-        char* from = snx_game_source(g->folder, g->name, NULL);
+        char* from = snx_game_source(folder, name, NULL);
         if (from && snx_is_file(from))
             source = from; /* the dump its .ini names, read in place */
         else {
@@ -1058,11 +1058,13 @@ static char* game_recompile_source(const Game* g) {
         }
     } else
         source = snx_format("%s_data", base);
-    free(nro);
+    if (source != nro) free(nro);
     free(exefs);
     free(base);
     return source;
 }
+/* what the recompiler is given for a game made already, as scarletnx -r gives it */
+static char* game_recompile_source(const Game* g) { return mcp_game_program_source(g->folder, g->name); }
 
 /* ============================================================ recompiling */
 static void game_command_add(cJSON* command, const char* text) {
