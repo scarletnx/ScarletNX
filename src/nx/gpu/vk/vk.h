@@ -508,6 +508,9 @@ typedef struct Surf {
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
     u32 draw_wseen; /* CPU write-tracking clock at that baseline, zero after a reload */
+    /* the clock when guest memory last held the image (a load, a write-back) or the image last replaced all of it (a
+       full clear or draw): zero when unknown. A write-back keeps the CPU's pages written since (surface.c cpu_newer) */
+    u32 mem_wseen;
     int draw_has_hash;
     int feeds_tex; /* a texture asked for its pixels (vk_rt_drawn_fresh): without write tracking, its baselines are hashed */
     /* render targets: the two textures last copied from it (gpu/vk/texture.c), with its wgen and the texture's upload

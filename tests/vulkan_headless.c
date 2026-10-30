@@ -1339,6 +1339,35 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
     vk_rt_before_write(DMA_GA + 0x20000, 16);
     CHECK(all_blue(GP(DMA_A), 0x28000));
+    /* A target loaded from memory and then changed by a copy, with no draw since, so no draw baseline: the pages the
+       program wrote after the load keep its bytes too. The rest is the image, as it was loaded */
+    memset(GP(DMA_A), 0x21, 0x28000);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    vk_rt_reload(DMA_GA);
+    Surf* copied = vk_rt_find(DMA_GA);
+    CHECK(copied);
+    vk_surf_wrote(copied);
+    vk_unlock();
+    memset(GP(DMA_A + 0x10000), 0x5b, 0x1000);
+    g_renderer->mem_may_have_changed();
+    vk_rt_before_write(DMA_GA + 0x20000, 16);
+    if (tracking) CHECK(all_bytes(GP(DMA_A + 0x10000), 0x1000, 0x5b));
+    CHECK(all_bytes(GP(DMA_A), 0x10000, 0x21));
+    CHECK(all_bytes(GP(DMA_A + 0x11000), 0x17000, 0x21));
+    /* A target whose pages lie in two runs of guest memory, as a virtual pool maps them: the page of the second run
+       that the program wrote keeps its bytes too */
+    const u64 split = DMA_GA + 0xa00000;
+    gmmu_map(split, DMA_B, 0x10000);
+    gmmu_map(split + 0x10000, DMA_A + 0x40000, 0x10000);
+    rt_clear(ch, split, 160, 128, 4, 1);
+    memset(GP(DMA_A + 0x41000), 0x6c, 0x1000);
+    g_renderer->mem_may_have_changed();
+    vk_rt_before_write(split + 0x13000, 16);
+    if (tracking) CHECK(all_bytes(GP(DMA_A + 0x41000), 0x1000, 0x6c));
+    CHECK(all_blue(GP(DMA_B), 0x10000));
+    CHECK(all_blue(GP(DMA_A + 0x40000), 0x1000));
+    CHECK(all_blue(GP(DMA_A + 0x42000), 0x2000));
     free(ch);
     return 0;
 }
