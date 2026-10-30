@@ -212,6 +212,13 @@ typedef struct {
     u32 armed_id[AM_SYNCPT_SLOTS], armed_thresh[AM_SYNCPT_SLOTS];
     u8 armed[AM_SYNCPT_SLOTS];
 } AmSyncpt;
+/* The Switch 2 GPU session's (am.c): the ids its SDK manages, with an event each */
+#define AM_GPU_SESSIONS 4
+#define AM_GPU_IDS     32
+typedef struct {
+    u32 obj;
+    u32 ev[AM_GPU_IDS];
+} AmGpuIds;
 /* The shared page gsv 204 attached, which every syncpoint session of the application reads (am.c). One per
    application, as the console has one graphics system: its flat part (a save state holds it as it is) and the host
    bytes the service writes, which a save state never holds (g_host.am) */
@@ -272,7 +279,8 @@ typedef struct {
     LibApplet applets[AM_APPLETS];
     AmSyncpt syncpts[AM_SYNCPT_SESSIONS];
     AmSyncptPage syncpt_page;
-    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next;
+    AmGpuIds gpu_ids[AM_GPU_SESSIONS];
+    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next, gpu_id_next;
 } HleAm;
 /* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host). And under lock, the
    software keyboard's box over the game (am.c), the host's too: the ticket of the box shown last (0 none), whether it

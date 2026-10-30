@@ -31,6 +31,7 @@
     X(AmVolumes, (h).am.volumes[0])                                                                                    \
     X(AmLock, (h).am.lock_objs[0])                                                                                     \
     X(AmSyncpt, (h).am.syncpts[0])                                                                                     \
+    X(AmGpuIds, (h).am.gpu_ids[0])                                                                                     \
     X(LibApplet, (h).am.applets[0])                                                                                    \
     X(AudOut, (h).audio.outs_pool[0])                                                                                  \
     X(AudRen, (h).audio.rens[0])                                                                                       \

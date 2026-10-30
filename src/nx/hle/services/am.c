@@ -229,10 +229,64 @@ static int nn_am_service_IGraphicsSystemSession_OpenNvsrvSession(SvcObj* self, u
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
 /* gsv 497: the GPU session a Switch 2 title's nn::gpu boots with, which it then asks for an id range and an event per
-   id on. Its commands answer with success and zeros for now, as the console's GPU stack isn't emulated here */
+   id on (IGpuSession, below) */
 static int nn_am_service_IGraphicsSystemSession_OpenGpuSession(SvcObj* self, u64 size, u32* session) {
+    SvcObj* o;
     (void)self, (void)size;
-    *session = session_new(nn_am_service_IGpuSession_new());
+    o = nn_am_service_IGpuSession_new_data(g_hle.am.gpu_ids, g_hle.am.gpu_id_next, "nx2 GPU sessions");
+    if (!o) return AM_OUT_OF_MEMORY;
+    *session = session_new(o);
+    return *session ? 0 : AM_OUT_OF_HANDLES;
+}
+
+/* The Switch 2 GPU session's ids: an id is signaled once it starts, which here is at once, since the GPU work its
+   SDK waits for isn't emulated (Eden's Switch 2 work signals it on Start as well). Its data is services_int.h's
+   AmGpuIds, one per gpu session the application opens */
+/* an id's event, made on first use (the session keeps a reference of its own, so a game closing its handle doesn't free
+   one a later Start signals) */
+static u32 am_gpu_event(AmGpuIds* s, u32 id) {
+    KEvent* e;
+    if (id >= AM_GPU_IDS) return 0;
+    if (!s->ev[id]) {
+        if (!(e = kevent_new("nx2 gpu id"))) return 0;
+        kobj_ref(&e->o);
+        s->ev[id] = kobj_id(&e->o);
+    }
+    return s->ev[id];
+}
+static AmGpuIds* am_gpu_ids(SvcObj* self) {
+    return self && self->data ? (AmGpuIds*)self->data : NULL;
+}
+static int nn_am_service_IGpuSession_GetIdRange(SvcObj* self, u32* first, u32* last) {
+    (void)self;
+    *first = 0;
+    *last = AM_GPU_IDS - 1;
+    R_SUCCEED();
+}
+static int nn_am_service_IGpuSession_GetIdEvent(SvcObj* self, u32 id, u32* event) {
+    AmGpuIds* s = am_gpu_ids(self);
+    u32 ev;
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_gpu_event(s, id);
+    if (!ev) return AM_OUT_OF_MEMORY;
+    *event = ev_handle(ev);
+    return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+static int nn_am_service_IGpuSession_StartId(SvcObj* self, u32 id) {
+    AmGpuIds* s = am_gpu_ids(self);
+    u32 ev;
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_gpu_event(s, id);
+    if (ev) ev_signal(ev);
+    R_SUCCEED();
+}
+/* 22: a second session to this same object, which the sub-session commands (a memory's registration, a job) speak
+   on. It is the object itself, as the reference serves it */
+static int nn_am_service_IGpuSession_OpenSubSession(SvcObj* self, u32* session) {
+    if (!am_gpu_ids(self)) return AM_OUT_OF_MEMORY;
+    svcobj_ref(self);
+    *session = session_new(self);
+    svcobj_unref(self);
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
 
@@ -504,6 +558,18 @@ static int nn_am_service_IApplicationProxy_GetLibraryAppletCreator(SvcObj* self,
 static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self, SvcObj** functions) {
     (void)self;
     *functions = nn_am_service_IApplicationFunctions_new();
+    R_SUCCEED();
+}
+/* 60: the graphics scale a Switch 2 SDK's nn::oe reads at startup, which scales what it renders by. The console's own
+   display is never scaled, so the answer is the unscaled one (Eden's Switch 2 work answers 10 as well) */
+static int nn_am_service_IApplicationProxy_GetGraphicsScaleController(SvcObj* self, SvcObj** controller) {
+    (void)self;
+    *controller = nn_am_service_IGraphicsScaleController_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsScaleController_GetCurrentGraphicsScale(SvcObj* self, u32* scale) {
+    (void)self;
+    *scale = 10; /* the unscaled value of nn::oe's scale enum */
     R_SUCCEED();
 }
 static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {

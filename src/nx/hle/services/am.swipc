@@ -35,6 +35,9 @@ interface nn::am::service::IApplicationProxy {
     [10] GetProcessWindingController() -> object<nn::am::service::IProcessWindingController> controller;
     [11] GetLibraryAppletCreator() -> object<nn::am::service::ILibraryAppletCreator> creator;
     [20] GetApplicationFunctions() -> object<nn::am::service::IApplicationFunctions> functions;
+    # A Switch 2 SDK's nn::oe::GetCurrentGraphicsScale reads this controller's scale (Eden's Switch 2
+    # IGraphicsScaleController): the console has no upscaling here, so it answers the unscaled value
+    [60] GetGraphicsScaleController() -> object<nn::am::service::IGraphicsScaleController> controller;
     [1000] GetDebugFunctions() -> object<nn::am::service::IDebugFunctions> functions;
 }
 
@@ -137,6 +140,11 @@ interface nn::am::service::IAudioController {
 }
 
 interface nn::am::service::IDisplayController {
+}
+# The Switch 2 graphics scale a title renders at, which IApplicationProxy 60 hands back: the console's own display is
+# never scaled here, so the answer is the unscaled one
+interface nn::am::service::IGraphicsScaleController {
+    [10] GetCurrentGraphicsScale() -> u32 scale;
 }
 @fallback(quiet_ok)
 interface nn::am::service::IProcessWindingController {
@@ -256,9 +264,18 @@ interface nn::am::service::IGraphicsSystemSession {
     [497] OpenGpuSession(u64 size) -> handle<copy, session> session;
 }
 
-# The Switch 2 GPU session, which gsv 497 hands back: the ids its SDK manages and the events it waits on. Nothing is
-# served yet: an answered command is a success with zeros, as the console's GPU stack isn't emulated
+# The Switch 2 GPU session, which gsv 497 hands back: the ids its SDK manages, an event per id, and starting an id.
+# Eden's Switch 2 work answers them as these do: an id is signaled when it starts, since nothing here runs on the GPU
+# for one
 interface nn::am::service::IGpuSession {
+    # the id range it manages, both ends
+    [11] GetIdRange() -> (u32 first, u32 last);
+    # the event of the id named
+    [12] GetIdEvent(u32 id) -> handle<copy, event> event;
+    # the id starts: its event is signaled when it is done, which here is at once
+    [21] StartId(u32 id);
+    # another session on the same object, which sub-session commands (memory, jobs) speak on
+    [22] OpenSubSession() -> handle<copy, session> session;
 }
 
 # The Switch 2 syncpoint server nn::syncpt::sdk::InitializeEx gets from gsv 202, over TIPC: it handshakes with a token
