@@ -1027,8 +1027,12 @@ static void tool(yyjson_mut_doc* d, yyjson_mut_val* list, const char* name, cons
 static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char* const path[] = {"path"};
     static const char* const s1[] = {"string"};
-    static const char* const read_names[] = {"path", "pattern", "ignore_case", "context", "start", "count"};
-    static const char* const read_types[] = {"string", "string", "boolean", "integer", "integer", "integer"};
+    static const char* const log_names[] = {"path", "game"};
+    static const char* const log_types[] = {"string", "string"};
+    static const char* const read_names[] = {"path",  "game",  "pattern",    "ignore_case", "context",
+                                             "start", "count", "threads"};
+    static const char* const read_types[] = {"string", "string", "string",   "boolean",   "integer",
+                                             "integer", "integer", "boolean"};
     static const char* const find_names[] = {"title_id"};
     static const char* const sym_names[] = {"game", "addresses"};
     static const char* const sym_types[] = {"string", "string[]"};
@@ -1036,19 +1040,23 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char* const dis_types[] = {"string", "string", "string", "string"};
     static const char* const game[] = {"game"};
     static const char scan_says[] =
-        "The summary of a game's .log or the launcher's Share Log file: build, title ID, game version, system, GPU, how the "
-        "run ended (crash, svcBreak, exception, BRK, an instruction the recompiler cannot run, fatal), the game "
-        "function it is pinned on with its backtrace, "
-        "the service commands the runtime doesn't implement, what else it missed (shaders not translated, GPU classes "
-        "and operations, macros with no native or compiled form, SVCs, guest code the JIT compiled), warnings, the "
-        "frames over 50 ms and what the slowest did, "
+        "The summary of a game's .log or the launcher's Share Log file: build, title ID, game version, system, GPU, how "
+        "the run ended (crash, svcBreak, exception, BRK, an instruction the recompiler cannot run, fatal), the game "
+        "function it is pinned on with its backtrace, game names the game whose log to read (a title ID, a folder, a "
+        "program in it or the name it was made by) instead of path, the service commands the runtime doesn't "
+        "implement, what else it missed (shaders not translated, GPU classes and operations, macros with no native or "
+        "compiled form, SVCs, guest code the JIT compiled), warnings, the frames over 50 ms and what the slowest did, "
         "and a signature shared by every log that failed the same way.";
     static const char read_says[] =
         "Parts of a log with line numbers, never the whole of a large one: the lines holding pattern (plain text, "
         "alternatives separated by |, ignore_case to match any case) with context lines around each (0 to 20), "
-        "or count lines from start (1-based), or the last count lines. 400 lines at most. Reads files under "
-        "ScarletNX's data folder, its state, cache and settings folders, its games' own folders and its work "
-        "folders.";
+        "or count lines from start (1-based), or the last count lines. 400 lines at most. game names the game whose "
+        "log to read (a title ID, a folder, a program in it or the name it was made by) instead of path. threads "
+        "reads the game's threads.txt instead: the runtime's dump of every guest thread (its SDK name, state, guest "
+        "pc and lr, a named backtrace, what it waits on and the recent SVCs), written every 15 s and on a stall. Two "
+        "reads a while apart tell a live game from a hung one: the header's second and frame count move with it. Reads "
+        "files under ScarletNX's data folder, its state, cache and settings folders, its games' own folders, its work "
+        "folders and the folder the launcher's Share Log was written to.";
     static const char find_says[] =
         "The games this machine's data folder holds: the extractions in its work/ folders and the games made in its "
         "recompiled/ and games/ libraries, with their title IDs and versions, or only title_id's. A log's addresses "
@@ -1173,16 +1181,20 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char game_run_says[] =
         "Runs a game unattended, one or more times, and returns each run's exit, crash, svcBreak and frames, the "
         "child output's path and a snapshot of the game log. update, dlcs, mods and cheats are this run's choices, "
-        "never written to the .ini; mods/cheats take current, all, none or names, dlcs current, all, none or entries. "
+        "never written to the .ini; mods/cheats take current, all, none or names, dlcs current, all, none or entries "
+        "(current is game_info's current: its mods_off and cheats_off are the strings this tool's own take, so one "
+        "reproduces a run game_info describes by passing them back). "
         "script is empty unless given (no hidden New Game sequence); seconds is the timed exit (60), and timeout "
         "seconds (default 2*seconds+60) kills a run that hangs before it. shot writes the last frame as runN.ppm "
         "(no Pillow; hash is its pixels). runtime current (this build, --game) or game (the copy in the game's "
         "folder). tracy capture/client needs a build with Tracy. out is under the data or cache folder (default: "
         "cache/mcp-runs/<name>-<time>-<n>). dry_run shows the command. A missing or stale build answers with the "
-        "game_recompile call to make; this tool never recompiles by itself.";
+        "game_recompile call to make; this tool never recompiles by itself. gdb_stub -s (or -S) starts the game with "
+        "the GDB stub and answers at once, leaving it running: gdb_attach connects to it (port 1234), gdb_detach lets "
+        "it run on, and it is stopped when this server closes. Linux only";
     yyjson_mut_val* list = yyjson_mut_arr(d);
-    tool(d, list, "scan_log", scan_says, schema(d, path, s1, 1, path, 1));
-    tool(d, list, "read_log", read_says, schema(d, read_names, read_types, 6, path, 1));
+    tool(d, list, "scan_log", scan_says, schema(d, log_names, log_types, 2, NULL, 0));
+    tool(d, list, "read_log", read_says, schema(d, read_names, read_types, 8, NULL, 0));
     tool(d, list, "find_game", find_says, schema(d, find_names, s1, 1, NULL, 0));
     tool(d, list, "state_info", states_says, schema(d, find_names, s1, 1, find_names, 1));
     tool(d, list, "symbolize", sym_says, schema(d, sym_names, sym_types, 2, sym_names, 2));
@@ -1194,7 +1206,7 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     tool(d, list, "build_info", build_says, schema(d, NULL, NULL, 0, NULL, 0));
     tool(d, list, "game_info", game_info_says, schema(d, game_info_names, game_info_types, 1, game_info_names, 1));
     tool(d, list, "game_recompile", recompile_says, schema(d, recompile_names, recompile_types, 11, recompile_names, 1));
-    tool(d, list, "game_run", game_run_says, schema(d, game_run_names, game_run_types, 22, game_run_names, 1));
+    tool(d, list, "game_run", game_run_says, schema(d, game_run_names, game_run_types, 23, game_run_names, 1));
     tool(d, list, "gdb_attach", attach_says, schema(d, attach_names, attach_types, 2, NULL, 0));
     tool(d, list, "gdb_command", command_says, schema(d, command_names, command_types, 2, command_names, 1));
     tool(d, list, "gdb_threads", threads_says, schema(d, NULL, NULL, 0, NULL, 0));
@@ -1304,21 +1316,19 @@ static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_
     char* text = NULL;
     const char* path = arg_string(args, "path");
     if (!strcmp(name, "scan_log")) {
-        if (!path)
-            mcp_put(&err, "path: the log");
-        else if (!readable(m, path))
-            mcp_put(&err, outside);
-        else
-            text = scan_log(path, &err);
+        char* log = log_path(m, path, arg_string(args, "game"), 0, &err);
+        if (log) {
+            text = scan_log(log, &err);
+            free(log);
+        }
     } else if (!strcmp(name, "read_log")) {
-        if (!path)
-            mcp_put(&err, "path: the log");
-        else if (!readable(m, path))
-            mcp_put(&err, outside);
-        else
-            text = read_log(path, arg_string(args, "pattern"), yyjson_is_true(yyjson_obj_get(args, "ignore_case")),
+        char* log = log_path(m, path, arg_string(args, "game"), yyjson_is_true(yyjson_obj_get(args, "threads")), &err);
+        if (log) {
+            text = read_log(log, arg_string(args, "pattern"), yyjson_is_true(yyjson_obj_get(args, "ignore_case")),
                             (int)arg_number(args, "context", 2), arg_number(args, "start", 0),
                             (int)arg_number(args, "count", 100), &err);
+            free(log);
+        }
     } else if (!strcmp(name, "find_game")) {
         const char* id = arg_string(args, "title_id");
         SnxU64 tid = 0;
