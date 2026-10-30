@@ -1935,6 +1935,50 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
         mcp_put(err, out);
         goto done;
     }
+#ifndef _WIN32
+    if (stub) {
+        /* the game is left running for the GDB tools: its output in the run's folder, and its process in this
+           server's list, which ends when the server closes */
+        cJSON* command = run_command(base_command, out, 1, shot);
+        const char** argv = run_argv(command);
+        char* log = snx_format("%s/run1.log", out);
+        long pid = 0;
+        int started = log && !snx_run_detached(argv, g.folder, NULL, log, &pid);
+        int kept = started && runs_keep(pid, g.folder, port);
+        if (!kept) {
+            if (started) { /* started, but this server keeps eight games already: end the one it just made */
+                kill((pid_t)pid, SIGKILL);
+                while (waitpid((pid_t)pid, NULL, 0) < 0 && errno == EINTR) {}
+            }
+            mcp_put(err, started ? "this server already has eight games running: they stop when it closes"
+                                 : "the game could not be started: its output goes to <out>/run1.log");
+        } else {
+            Text note = {0};
+            cJSON_AddStringToObject(root, "status", "running");
+            cJSON_AddBoolToObject(root, "ok", 1);
+            cJSON_AddStringToObject(root, "log", log);
+            cJSON_AddNumberToObject(root, "pid", (double)pid);
+            cJSON_AddNumberToObject(root, "gdb_port", (double)port);
+            cJSON_AddStringToObject(root, "gdb_stub", stub);
+            game_json_add_string(root, "game_log", g.log);
+            mcp_put(&note, "the game waits for GDB: gdb_attach connects it at 127.0.0.1:");
+            mcp_put_num(&note, (unsigned long)port);
+            mcp_put(&note, ", and gdb_detach lets it run on. This server stops it when it closes");
+            cJSON_AddStringToObject(root, "note", note.p ? note.p : "");
+            free(note.p);
+        }
+        free(log);
+        free(argv);
+        cJSON_Delete(command);
+        if (!kept) {
+            cJSON_Delete(root);
+            goto done;
+        }
+        result = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        goto done;
+    }
+#endif
     runs_json = cJSON_CreateArray();
     for (i = 0; i < (size_t)runs; ++i) {
         cJSON* command = run_command(base_command, out, (long)i + 1, shot);
