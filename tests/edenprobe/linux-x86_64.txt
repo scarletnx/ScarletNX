@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/EDENPROBE.md)
-# build: v0.7.0
+# build: v0.7.1
 # mode: audio cpu display fatal fs graphics kernel notime quick video
 astc: 4-bit weights 0 to 15 unquantize by bit replication
 astc: a 12x12 block infills a 6x6 weight grid
