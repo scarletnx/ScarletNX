@@ -259,6 +259,7 @@ static void game_free(Game* g);
 static void mcp_close(Mcp* m) {
     int i;
     mcp_gdb_close(); /* the game runs on */
+    mcp_runs_close(); /* the games left running for the GDB tools stop here */
     free(m->gdb_game);
     if (m->game_folder) game_free(&m->game);
     free(m->game_folder);
@@ -1002,7 +1003,8 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "contents have another layout is only refused when it is loaded).";
     static const char sym_says[] =
         "Names game addresses (a backtrace's, a crash report's, hexadecimal) by the game's symbols: module, function "
-        "and offset. game is a folder, a game folder of work/, or a title ID.";
+        "and offset. game is a folder, a game of the data folder (work/Game, recompiled/<title ID>) or a title ID. A "
+        "recompiled game's code is read from its _data, or from the dump its .ini names, as the runtime reads it";
     static const char dis_says[] =
         "Disassembles a game function named by a part of its symbol (demangled or not), or the range start to end "
         "(hexadecimal), with each branch's target named. 400 instructions at most. game as for symbolize.";
@@ -1089,18 +1091,20 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char* const game_run_names[] = {
         "game",       "update",     "dlcs",     "mods",    "cheats",   "mods_off",       "cheats_off", "seconds",
         "frames",     "runs",       "script",   "out",     "headless", "shot",           "runtime",    "tracy",
-        "state_save", "state_load", "settings", "timeout", "dry_run",  "stop_on_failure"};
+        "state_save", "state_load", "settings", "timeout", "dry_run",  "stop_on_failure", "gdb_stub"};
     static const char* const game_run_types[] = {"string",  "string",  "choice",  "choice",  "choice", "string",
                                                  "string",  "integer", "integer", "integer", "string", "string",
                                                  "boolean", "boolean", "string",  "string",  "string", "string",
-                                                 "object",  "integer", "boolean", "boolean"};
+                                                 "object",  "integer", "boolean", "boolean", "string"};
     static const char build_says[] =
         "This build's build string, commit, SNX_ABI and capabilities: whether it has the Tracy profiler and, on "
         "UNIX, GDB. A game's build stamp names this ABI; capture needs a build with Tracy.";
     static const char game_info_says[] =
         "One game's folder, program, data, version, log and .ini, whether its build is ready to run, its updates and "
         "DLCs (entry, title ID, version, installed, built, current), and its mods and cheats with whether each is "
-        "enabled. current is the .ini's selection; game_run can pick another without changing the .ini. game is a title "
+        "enabled. current (update, dlcs, mods_off, cheats_off) is the .ini's selection, and the values game_run and "
+        "game_recompile take to play or build exactly that: passing current.mods_off as their mods_off reproduces it, "
+        "as game_run's mods \"current\" does. game is a title "
         "ID, a folder under the data folder, a program in it, or the name it was made by.";
     static const char recompile_says[] =
         "Builds a game or one of its updates with the mods named, without changing the game's .ini. update: current, "
