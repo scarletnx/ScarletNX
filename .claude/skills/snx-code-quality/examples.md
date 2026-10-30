@@ -277,5 +277,6 @@ u32 ipc_ring_count(void) { return __atomic_load_n(&g_ipc.ring_n, __ATOMIC_RELAXE
 
 **Does not apply when:**
 - The object is `const`: a table is data, not state.
-- The variable is `_Thread_local`: each thread has its own, so it cannot live in a shared struct.
+- The variable is `_Thread_local`: each thread has its own, so it cannot live in the shared struct. It goes in the
+  file's one thread-local struct, `t_<file>`, instead (`t_hle` and `t_nvn` for those subsystems).
 - A third-party file (`.cache/cpm`), which nobody edits.
