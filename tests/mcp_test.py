@@ -514,6 +514,11 @@ def main():
             call('symbolize', 'game_data', game=vid, addresses=['8000080']),
             call('read_log', 'game_log', game=rid),
             call('read_log', 'game_folder', path=str(rgame), pattern='ScarletNX'),
+            call('scan_log', 'scan_game', game=rid),
+            call('scan_log', 'scan_folder', path=str(rgame)),
+            call('read_log', 'threads', game=rid, threads=True, count=7),
+            call('read_log', 'at_line', game=rid, start=5, count=1),
+            call('game_run', 'run_current_dry', game=rid, update='none', dry_run=True, out=str(data / 'runs_current')),
             call('find_game', title_id='0100aaaabbbb0000'),
             call('find_game', 'find_none', title_id='0100000000000001'),
             call('state_info', title_id='0100AAAABBBB0000'),
@@ -922,6 +927,19 @@ def main():
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
+    by_data = text('game_data').splitlines()
+    check(by_data[0].startswith('8000080 main'), f'symbolize reads a recompiled game from its _data: {by_data}')
+    by_game = text('game_log').splitlines()
+    check(str(rgame) in by_game[0] and 'svcBreak' in '\n'.join(by_game), f'read_log by game: {by_game}')
+    by_folder = text('game_folder').splitlines()
+    check(
+        str(rgame) in by_folder[0] and any(line.startswith('1: [   0.00] ScarletNX') for line in by_folder),
+        f'read_log by a game folder: {by_folder}',
+    )
+    scan_game = json.loads(text('scan_game'))
+    check(not failed('scan_game') and scan_game['signature'], f'scan_log by game: {scan_game["signature"]}')
+    scan_folder = json.loads(text('scan_folder'))
+    check(not failed('scan_folder') and scan_folder['signature'], f'scan_log by a game folder: {scan_folder}')
     # every finding names the log line it came from, so read_log can jump straight to it
     located = [entry for entry in scan_game['ipc'] + scan_game['missed'] if entry['line']]
     check(located, f'the findings carry their lines: {scan_game}')
@@ -934,6 +952,11 @@ def main():
         '--mods_off=ModB' in current_run['command']
         and json.loads(text('game_info'))['current']['mods_off'] == 'ModB',
         f"game_info's current is what game_run passes for the same selection: {current_run['command']}",
+    )
+    threads = text('threads').splitlines()
+    check('threads.txt' in threads[0], f"read_log threads reads the game's dump: {threads[0]}")
+    check(any('MainThread' in line for line in threads), f"threads.txt's guest threads: {threads}")
+    check(any('second 41, frames 1700' in line for line in threads), f"its header, so a live game shows: {threads}")
     dis = text('disassemble')
     if 'no A64 disassembler' not in dis:
         check('b\t0x80' in dis.replace(' ', '\t') or '8000080' in dis.splitlines()[0], f'the first branch:\n{dis}')
