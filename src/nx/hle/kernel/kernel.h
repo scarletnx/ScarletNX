@@ -157,6 +157,9 @@ void kevent_signal(KEvent* e);
 void kevent_clear(KEvent* e);
 
 KThread* kthread_cur(void);
+/* the name the SDK gave the thread, from the nn::os::ThreadType its TLS points at (debug.c), or 0 when it has none:
+   out gets it, empty */
+int kthread_name(const KThread* t, char* out, int n);
 /* Taking and releasing the thread's core. core_poll is where RtAPI's poll gives it up to a waiting thread, when
    generated code finds CPU.poll set at a backward branch (a loop with no SVC) */
 void core_enter(KThread* t);

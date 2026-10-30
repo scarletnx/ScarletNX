@@ -461,6 +461,10 @@ static int vi_binder_call(i32 binder_id, u32 code, IpcBuf parcel, IpcBuf reply) 
     l = vi_binder(binder_id);
     pm_unlock(&g_host.vi.lock);
     R_UNLESS(l, VI_NOT_FOUND);
+    if (g_settings.log_level >= 2) { /* the parcel is guest memory: not read on every call */
+        u32 first = snx_ld_le32((const u8*)GP(parcel.addr)); /* a binder transaction's first word is its code */
+        LOGV("vi: binder call %u, parcel %u bytes, first %u\n", code, (unsigned)parcel.size, first);
+    }
     vi_transact(l, code, parcel, reply);
     R_SUCCEED();
 }

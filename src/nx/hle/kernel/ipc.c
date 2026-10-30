@@ -480,7 +480,13 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     ipc_in(c, 4, &in[1], 4);
     snx_le32_array(in, 2);
     ring_set(seq, IPC_REC_RUNNING, o->name, c->type, c->cmd, in, 0, NULL);
-    LOGV("IPC %s cmd %u\n", o->name, c->cmd);
+    if (g_settings.log_level >= 2) { /* the SDK name reads the thread's own guest memory: not on every call */
+        const KThread* me = kthread_cur();
+        char who[24] = {0};
+        if (!(me && kthread_name(me, who, sizeof who) && who[0]))
+            snprintf(who, sizeof who, "%s", me && me->name[0] ? me->name : "?");
+        LOGV("IPC %s cmd %u (%s)\n", o->name, c->cmd, who);
+    }
     c->rc = (u32)o->dispatch(o, c);
     ring_set(seq, IPC_REC_SERVED, o->name, c->type, c->cmd, in, c->rc, NULL);
     respond(c);

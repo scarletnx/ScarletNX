@@ -263,7 +263,7 @@ void kernel_dump_regs(CPU* c) {
 /* the name the SDK gave the thread, from the nn::os::ThreadType its TLS points at (Eden's GetNameFromThreadType64 and
    GetNameFromThreadType32): only when that is the thread's argument too, or it has none, so a thread the SDK didn't
    make isn't misread */
-static int sdk_name(const KThread* t, char* out, int n) {
+int kthread_name(const KThread* t, char* out, int n) {
     int wide = !g_arm_mod, len;
     u64 type, name;
     out[0] = 0;
@@ -314,7 +314,12 @@ static const char* thread_state(const KThread* t, char* s, size_t n) {
             break;
         case 5: snprintf(s, n, "pausing a thread"); break;
         default:
-            if (t->on_core >= 0)
+            /* in ArbitrateLock the waiter names its owner before it sleeps (sync.c's mutex_wait_nl), which a hang's
+               dump needs before the sleep shows it: the thread it waits for is the one to read */
+            if (t->in_svc && t->wait_svc == WAIT_SVC_LOCK && t->lock_owner)
+                snprintf(s, n, "in ArbitrateLock, waiting for the mutex owned by thread %llu",
+                         (unsigned long long)kt_at(t->lock_owner)->id);
+            else if (t->on_core >= 0)
                 snprintf(s, n, "running on core %d", t->on_core);
             else
                 snprintf(s, n, "%s", t->in_svc ? "in an SVC off its core (a sleep or an IPC request)" : "off its core");
@@ -416,7 +421,7 @@ void kernel_dump_threads(void) {
         int wide = !g_arm_mod, k, nf;
         u64 pc, lr, sp, fp, f[10];
         if (t->o.type != KO_THREAD || t->state == 2) continue;
-        if (!sdk_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
+        if (!kthread_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
         mask[0] = 0;
         if (t->affinity != 1ull << t->core)
             snprintf(mask, sizeof mask, " (ideal %d, mask %llx)", t->ideal_core, (unsigned long long)t->affinity);
