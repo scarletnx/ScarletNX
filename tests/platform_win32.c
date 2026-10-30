@@ -49,7 +49,9 @@ static void on_written(u8* p, u64 size) {
 }
 static u64 scan(void) {
     g_written = 0;
-    return plat_ww_scan(g_base, 64 * 4096, on_written) ? ~0ull : g_written;
+    int status = plat_ww_scan(g_base, 64 * 4096, on_written);
+    printf("write-watch scan: status=%d pages=%016llx\n", status, (unsigned long long)g_written);
+    return status ? ~0ull : g_written;
 }
 
 int main(int argc, char** argv) {
@@ -73,9 +75,15 @@ int main(int argc, char** argv) {
         g_base[10 * 4096 + 77] = 2;
         CHECK(scan() == (1ull << 3 | 1ull << 10), "pages 3 and 10 not reported alone");
         CHECK(scan() == 0, "a scan did not watch its pages again");
-        (void)*(volatile u8*)&g_base[20 * 4096]; /* a read is no write */
+        /* A first read can fault in a demand-zero page that Windows reports as written. Clear that first-touch
+           report before checking that another read of the resident page does not dirty it. */
+        (void)*(volatile u8*)&g_base[20 * 4096];
+        u64 first_touch = scan();
+        CHECK((first_touch & ~(1ull << 20)) == 0, "a first read reported unrelated pages");
+        (void)*(volatile u8*)&g_base[20 * 4096];
         g_base[5 * 4096] = 3;
         CHECK(scan() == 1ull << 5, "page 5 not reported alone after a read elsewhere");
+        CHECK(scan() == 0, "pages reported again after the resident-page read");
         /* the kernel writing guest memory (ReadFile into it) counts too */
         snprintf(path, sizeof path, "%s/platform_win32.bin", dir);
         f = fopen(path, "wb");
