@@ -253,7 +253,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)
-    set_tests_properties(astc_vulkan_pieces PROPERTIES PASS_REGULAR_EXPRESSION "memory in pieces")
+    # pieces, and then the line the program prints only once every comparison passed: a pass expression alone
+    # passes the test whatever the exit code
+    set_tests_properties(astc_vulkan_pieces PROPERTIES PASS_REGULAR_EXPRESSION
+                         "memory in pieces.*All ASTC Vulkan comparisons passed")
     set_tests_properties(astc_vulkan astc_vulkan_pieces PROPERTIES TIMEOUT 300)
 endif()
 if(BUILD_TESTING)
