@@ -6,13 +6,12 @@
 #include <string.h>
 
 /* VFPv2 short vectors on the ARM11. The block emitter stops a VFP data-processing word under a non-zero LEN or STRIDE
-   as SNX_ARM_BACKEND_UNSUPPORTED, and this backend runs the nine arithmetic operations one element at a time. A word
-   the profile rejects reaches it as SNX_ARM_UNDEFINED and keeps that exit. A lane is read by its number (S(2n) =
-   Dn[31:0]), so the host's byte order does not matter. snx_arm_fp reads only the AHP, FZ and RMode bits of the FPSCR */
+   as SNX_ARM_BACKEND_UNSUPPORTED, unless it is a compare or a conversion, which is scalar. This backend runs the nine
+   arithmetic operations one element at a time. A word the profile rejects reaches it as SNX_ARM_UNDEFINED and keeps
+   that exit. A lane is read by its number (S(2n) = Dn[31:0]), so the host's byte order does not matter. snx_arm_fp
+   reads only the AHP, FZ and RMode bits of the FPSCR */
 #define FPSCR_LEN_SHIFT    16
 #define FPSCR_STRIDE_SHIFT 20
-#define FPSCR_TRAP_ENABLES 0x00009f00u
-#define FPSCR_LEN_STRIDE   0x00370000u
 #define BANK_BYTES         32u /* a bank of the register file: 8 singles or 4 doubles */
 /* snx_arm_fp's param without bit 30: rounding, flush-to-zero and default NaN come from the CPU's FPSCR */
 #define FP_PARAM_CPU_FPSCR 0u
@@ -30,7 +29,7 @@ static bool ctr_vfp_decode(uint32_t word, SnxArmVector* v) {
         case AV_FADD:
         case AV_FSUB:
         case AV_FDIV: return true;
-        default: return false; /* moves, unary operations, compares and conversions stay unsupported */
+        default: return false; /* moves and unary operations stay unsupported */
     }
 }
 
@@ -59,9 +58,9 @@ static bool ctr_vfp_short(SnxArmCPU* cpu, uint32_t word) {
     SnxArmVector v;
     if ((cpu->cpsr & SNX_ARM_T) || !ctr_vfp_decode(word, &v)) return false;
     /* an enabled exception has a trap and flags this backend doesn't model, and the emitter stopped for it */
-    if (cpu->fpscr & FPSCR_TRAP_ENABLES) return false;
+    if (cpu->fpscr & SNX_ARM_FPSCR_TRAP_ENABLES) return false;
     uint32_t len = (cpu->fpscr >> FPSCR_LEN_SHIFT) & 7, stride = (cpu->fpscr >> FPSCR_STRIDE_SHIFT) & 3;
-    if (!(cpu->fpscr & FPSCR_LEN_STRIDE) || (stride != 0 && stride != 3)) return false;
+    if (!(cpu->fpscr & SNX_ARM_FPSCR_LEN_STRIDE) || (stride != 0 && stride != 3)) return false;
     uint32_t count = len + 1;
     stride = stride == 3 ? 2 : 1;
     /* a destination in the first bank makes the operation scalar. Otherwise the vector may not revisit a register of

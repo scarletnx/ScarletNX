@@ -15,6 +15,7 @@
 #define FPSCR_STRIDE(bits) ((uint32_t)(bits) << 20)
 #define FPSCR_AHP          (1u << 26)
 #define FPSCR_QC           (1u << 27)
+#define FPSCR_C            (1u << 29)
 #define FPSCR_IDE          (1u << 15) /* an enabled exception */
 
 static unsigned failures;
@@ -343,22 +344,92 @@ static void n_bank0(SnxArmExec* exec) {
     snx_ctr_process_free(p);
 }
 
-/* VCMP.F32 S0,S0, LEN=1: compares are scalar whatever LEN says. This backend
-   does not model them, so the valid scalar-only operation stays unsupported. */
-static void scalar_only(SnxArmExec* exec) {
-    static const uint32_t words[] = {0xeeb40a60u, 0xeafffffeu};
-    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(1));
+/* VCMP.F32 S8,S16, LEN=3: a compare is scalar. NZCV comes from S8 = 2.0 against S16 = 1.0 alone, so only C is set. */
+static void scalar_compare(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb44a48u, 0xeafffffeu};
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
     check(p != NULL, "compare process");
     if (!p) return;
     SnxArmCPU* cpu = &p->cpu.state.cpu;
-    cpu->d[0] = 0x400000003f800000ull;
-    uint32_t fpscr = cpu->fpscr;
+    cpu->d[4] = 0x1111111140000000ull; /* S8 = 2.0, S9 sentinel */
+    cpu->d[5] = 0x4040000033333333ull; /* S10 sentinel, S11 = 3.0 */
+    cpu->d[8] = 0x111111113f800000ull; /* S16 = 1.0, S17 sentinel */
+    cpu->d[9] = 0x40a0000044444444ull; /* S18 sentinel, S19 = 5.0 */
     SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
     if (compiled(block, "compare")) {
-        check(run(p, block) == SNX_CTR_RUN_UNSUPPORTED, "an unmodelled scalar-only compare stays unsupported");
-        check(cpu->d[0] == 0x400000003f800000ull && cpu->fpscr == fpscr, "the compare left the state alone");
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the scalar compare runs under LEN=3");
+        check(cpu->fpscr == (FPSCR_DEFAULT | FPSCR_LEN(3) | FPSCR_C), "S8 > S16 sets only C");
+        check(cpu->d[4] == 0x1111111140000000ull && cpu->d[5] == 0x4040000033333333ull,
+              "the compare writes no register");
+        check(cpu->d[8] == 0x111111113f800000ull && cpu->d[9] == 0x40a0000044444444ull,
+              "the compare leaves the sources alone");
     }
     snx_ctr_process_free(p);
+}
+
+/* VCVT.S32.F32 S8,S16, LEN=3: a conversion is scalar. -2.5 rounds toward zero to -2 in S8, and the lanes after it keep
+   their values. */
+static void scalar_convert_s32(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeebd4ac8u, 0xeafffffeu};
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "convert s32 process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111122222222ull; /* S8 and S9 sentinels */
+    cpu->d[5] = 0x3333333344444444ull; /* S10 and S11 sentinels */
+    cpu->d[8] = 0x40f00000c0200000ull; /* S16 = -2.5, S17 = 7.5 */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "convert s32")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the scalar VCVT.S32.F32 runs under LEN=3");
+        check(cpu->d[4] == 0x11111111fffffffeull, "S8 = -2 and S9 keeps its lane");
+        check(cpu->d[5] == 0x3333333344444444ull, "S10 and S11 keep their lanes");
+        check(cpu->d[8] == 0x40f00000c0200000ull, "the conversion leaves the source alone");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* VCVT.F64.F32 D4,S16, LEN=3: a single-to-double conversion is scalar. D4 = 1.5, and D5 keeps its value. */
+static void scalar_convert_f64(SnxArmExec* exec) {
+    static const uint32_t words[] = {0xeeb74ac8u, 0xeafffffeu};
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3));
+    check(p != NULL, "convert f64 process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111122222222ull;
+    cpu->d[5] = 0x5555555566666666ull;
+    cpu->d[8] = 0x408000003fc00000ull; /* S16 = 1.5, S17 = 4.0 */
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, "convert f64")) {
+        check(run(p, block) == SNX_CTR_RUN_BUDGET, "the scalar VCVT.F64.F32 runs under LEN=3");
+        check(cpu->d[4] == 0x3ff8000000000000ull, "D4 = 1.5");
+        check(cpu->d[5] == 0x5555555566666666ull, "D5 keeps its lane");
+        check(cpu->d[8] == 0x408000003fc00000ull, "the conversion leaves the source alone");
+    }
+    snx_ctr_process_free(p);
+}
+
+static void trapped_scalar(SnxArmExec* exec, const uint32_t* words, const char* what) {
+    SnxCtrProcess* p = make_process(words, 2, FPSCR_DEFAULT | FPSCR_LEN(3) | FPSCR_IDE);
+    check(p != NULL, "trapped scalar process");
+    if (!p) return;
+    SnxArmCPU* cpu = &p->cpu.state.cpu;
+    cpu->d[4] = 0x1111111122222222ull;
+    cpu->d[8] = 0x40f00000c0200000ull;
+    uint32_t fpscr = cpu->fpscr;
+    SnxArmBlock block = compile(exec, words, 2, SNX_ARM_PROFILE_ARM11, true);
+    if (compiled(block, what)) {
+        check(run(p, block) == SNX_CTR_RUN_UNSUPPORTED, what);
+        check(cpu->d[4] == 0x1111111122222222ull && cpu->fpscr == fpscr, "the trapped scalar writes nothing");
+    }
+    snx_ctr_process_free(p);
+}
+
+/* An enabled exception still stops a compare or a conversion under LEN=3, as it stops arithmetic. */
+static void scalar_trapped(SnxArmExec* exec) {
+    static const uint32_t compare[] = {0xeeb44a48u, 0xeafffffeu}; /* VCMP.F32 S8,S16 */
+    static const uint32_t convert[] = {0xeebd4ac8u, 0xeafffffeu}; /* VCVT.S32.F32 S8,S16 */
+    trapped_scalar(exec, compare, "an enabled exception stops the scalar compare");
+    trapped_scalar(exec, convert, "an enabled exception stops the scalar conversion");
 }
 
 /* An enabled FP exception is not modelled; the backend must fail closed. */
@@ -509,7 +580,10 @@ int main(void) {
     overlength(exec);
     broadcast(exec);
     n_bank0(exec);
-    scalar_only(exec);
+    scalar_compare(exec);
+    scalar_convert_s32(exec);
+    scalar_convert_f64(exec);
+    scalar_trapped(exec);
     enabled_exception(exec);
     profile_rejected(exec);
     vmsr(exec);

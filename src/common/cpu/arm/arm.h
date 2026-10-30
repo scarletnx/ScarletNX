@@ -11,6 +11,8 @@
 #define SNX_ARM_ABI 4 /* 2: shared S/D/Q register bank and FPSCR; 3: the backend's rt; 4: the bus hook */
 #define SNX_ARM_T   (1u << 5)
 #define SNX_ARM_E   (1u << 9)
+#define SNX_ARM_FPSCR_LEN_STRIDE   0x00370000u /* LEN (18:16) and STRIDE (21:20) */
+#define SNX_ARM_FPSCR_TRAP_ENABLES 0x00009f00u /* IOE, DZE, OFE, UFE, IXE and IDE */
 
 typedef enum {
     SNX_ARM_OK,

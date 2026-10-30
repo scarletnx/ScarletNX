@@ -71,13 +71,15 @@ NEON, VFPv3/v4 and D16..D31. It recognizes the ARM11 CP15 barrier forms.
 Scalar VFPv2 F32/F64 arithmetic, non-fused multiply/accumulate, compares,
 conversions, register/status transfers and up-to-128-byte memory transfers are
 implemented. Arithmetic uses the shared raw-bit integer FP primitives, not host
-floating point or ARMv8 fused replacements. A non-zero LEN/STRIDE or an exception
-enable stops arithmetic as `SNX_ARM_BACKEND_UNSUPPORTED`. The 3DS runtime's backend
-(`src/3ds/cpu/cpu.c`) then runs the short-vector FMLA, FMLS, FNMLA, FNMLS, FMUL,
-FNMUL, FADD, FSUB and FDIV, and leaves the other operations and enabled exceptions
-unsupported. FPSCR writes outside NZCV, rounding mode, DN/FZ, LEN/STRIDE and
-cumulative exceptions stop before mutation. Traps, legacy FLDMX/FSTMX format words
-and larger transfers remain explicitly unsupported.
+floating point or ARMv8 fused replacements. Compares and conversions are scalar
+under any LEN/STRIDE. A non-zero LEN/STRIDE stops the other data-processing words
+as `SNX_ARM_BACKEND_UNSUPPORTED`, and an enabled exception stops every one of them.
+The 3DS runtime's backend (`src/3ds/cpu/cpu.c`) then runs the short-vector FMLA,
+FMLS, FNMLA, FNMLS, FMUL, FNMUL, FADD, FSUB and FDIV, and leaves moves, absolute
+value, negate, square root and enabled exceptions unsupported. FPSCR writes outside
+NZCV, rounding mode, DN/FZ, LEN/STRIDE and cumulative exceptions stop before
+mutation. Traps, legacy FLDMX/FSTMX format words and larger transfers remain
+explicitly unsupported.
 Checked VFP memory operations are aligned to four bytes and staged as one
 RAM-only transaction before register/base writeback. This is not complete VFPv2
 or a complete ARM11 ISA model; A57 checked vector operations remain unsupported.

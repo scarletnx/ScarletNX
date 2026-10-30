@@ -250,9 +250,10 @@ static void vector_instruction(ArmIR* a) {
     }
     if (a->profile == SNX_ARM_PROFILE_ARM11) {
         /* Profile decoding has excluded NEON, D16..31 and post-VFPv2 forms.
-           Arithmetic under a non-zero LEN/STRIDE or an enabled FP exception stops
-           the block as SNX_ARM_BACKEND_UNSUPPORTED, for the runtime's backend to
-           run or refuse. Transfers/status do not consume those controls. */
+           A non-zero LEN/STRIDE stops the block as SNX_ARM_BACKEND_UNSUPPORTED, for the
+           runtime's backend to run or refuse, except for compares and conversions, which
+           are scalar. An enabled FP exception stops every data-processing word. Transfers
+           and status do not consume those controls. */
         /* Odd double-register multiple counts are legacy FSTMX/FLDMX forms
            with an extra format word, not ordinary VLDM/VSTM transactions. */
         int multiple = !(v.flags & AV_PRE) || (v.flags & AV_WB);
@@ -260,9 +261,12 @@ static void vector_instruction(ArmIR* a) {
             trap(a, SNX_ARM_BACKEND_UNSUPPORTED, c32(a, a->word));
             return;
         }
-        if (v.op != AV_MEM && v.op != AV_CORE && v.op != AV_CORE_PAIR && v.op != AV_STATUS)
-            require(a, cmp(a, LLVMIntEQ, band(a, GET(a, fpscr), c32(a, 0x00379f00)), c32(a, 0)),
-                    SNX_ARM_BACKEND_UNSUPPORTED, c32(a, a->word));
+        if (v.op != AV_MEM && v.op != AV_CORE && v.op != AV_CORE_PAIR && v.op != AV_STATUS) {
+            int scalar = v.op == AV_FCMP || v.op == AV_FCMPE || v.op == AV_FCVT || v.op == AV_FTOI || v.op == AV_ITOF;
+            uint32_t stop = SNX_ARM_FPSCR_TRAP_ENABLES | (scalar ? 0 : SNX_ARM_FPSCR_LEN_STRIDE);
+            require(a, cmp(a, LLVMIntEQ, band(a, GET(a, fpscr), c32(a, stop)), c32(a, 0)), SNX_ARM_BACKEND_UNSUPPORTED,
+                    c32(a, a->word));
+        }
     }
     if (v.op == AV_CRYPTO) {
         LLVMTypeRef types[] = {a->ptr, a->i32, a->i32, a->i32, a->i32};
