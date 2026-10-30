@@ -9,6 +9,8 @@
 
 /* a new queue's replay state: its index (1 up), whose syncpoint its fences count on */
 u32 nvn_replay_queue(void);
+/* Finalize after the queue's last submitted work, releasing its draw state, syncpoint and replay slot. */
+void nvn_replay_queue_free(u32 queue);
 u32 nvn_replay_syncpt(u32 queue);
 /* the syncpoint the presents count up on as they reach the display (nvn_replay_present), every queue's */
 u32 nvn_replay_shown_syncpt(void);
@@ -68,12 +70,11 @@ typedef struct {
     NvnReplayPresent present;
     u64 handles[NVN_JOB_HANDLES];
 } NvnJob;
-/* the queues (append only: a queue is never given back), the lock that keeps their submissions' promises in the
+/* the queues (a zero syncpoint marks a retired slot), the lock that keeps their submissions' promises in the
    order they are queued and that the work's pool is taken from and given back to under, that pool (an all-zero slot
    is free), and the GPU thread's list of the submission being replayed's effects */
 typedef struct {
     NvnReplayQueue q[NVN_QUEUES];
-    u32 n;
     PMutex lock;
     NvnJob jobs[NVN_JOBS];
     u32 next_job; /* where the search for a free slot starts (hle/pool.h) */

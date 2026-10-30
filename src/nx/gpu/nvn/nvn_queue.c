@@ -165,7 +165,7 @@ int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
     o.magic = NVN_MAGIC('Q', 'U', 'E', 'U');
     o.replay = nvn_replay_queue();
     memcpy(GP(q), &o, sizeof o);
-    LOG("nvn: queue %llx initialized\n", (unsigned long long)q);
+    LOG("nvn: queue %llx initialized (replay %u)\n", (unsigned long long)q, o.replay);
     return 1;
 }
 
@@ -173,10 +173,12 @@ int nvn_QueueInitialize(CPU* c, u64 q, u64 b) {
 void nvn_QueueFinalize(CPU* c, u64 q) {
     NvnQueue* o = NVN_OBJ(NvnQueue, q);
     (void)c;
+    if (o->magic != NVN_MAGIC('Q', 'U', 'E', 'U')) return;
     nvn_wait_begin();
-    nvn_replay_finish(o->replay);
+    nvn_replay_queue_free(o->replay);
     nvn_wait_end();
-    o->magic = 0;
+    LOG("nvn: queue %llx finalized (replay %u)\n", (unsigned long long)q, o->replay);
+    *o = (NvnQueue){0};
 }
 /* submissions go to the GPU thread as they are made: nothing to flush */
 void nvn_QueueFlush(CPU* c, u64 q) {

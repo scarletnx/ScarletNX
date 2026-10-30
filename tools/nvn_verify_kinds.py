@@ -78,7 +78,14 @@ def generate():
         ret, args, _ = protos[n]
         kinds = ''.join(kind(n, i, a, args) for i, a in enumerate(args))
         types_of = [re.sub(r'\bconst\b|\*', '', a).split()[0] if '*' in a and 'PFNNVN' not in a else '' for a in args]
-        sizes = ', '.join(f'sizeof({t})' if k in 'osSTr' else '0' for k, t in zip(kinds, types_of)) or '0'
+        sizes = []
+        for k, t in zip(kinds, types_of):
+            size = f'sizeof({t})' if k in 'osSTr' else '0'
+            # Older drivers write 96 bytes to sampler shadows. This changes allocation, never live-object reads.
+            if k == 'o' and t == 'NVNsampler':
+                size = f'(sizeof({t}) < 0x60 ? 0x60 : sizeof({t}))'
+            sizes.append(size)
+        sizes = ', '.join(sizes) or '0'
         ret = {'void': 0, 'addr': 'NVK_RET_ADDR', 'f32': 'NVK_RET_F32', 'f64': 'NVK_RET_F32', 'bool': 'NVK_RET_BOOL',
                'u64': 'NVK_RET_X64', 'i64': 'NVK_RET_X64'}.get(hook_spec.kind(ret, types), 'NVK_RET_X32')
         rows.append(f'    {{"{n}", "{kinds}", {ret}, {{{sizes}}}}},')
