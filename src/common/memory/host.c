@@ -23,19 +23,25 @@ static struct {
     PVOID(WINAPI* alloc2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
     PVOID(WINAPI* map3)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER*, ULONG);
     BOOL(WINAPI* unmap2)(HANDLE, PVOID, ULONG);
-    int looked;
-} g_host;
+    INIT_ONCE looked;
+} g_host = {.looked = INIT_ONCE_STATIC_INIT};
 
-static bool calls(void) {
-    if (!g_host.looked) {
-        HMODULE k = GetModuleHandleW(L"kernelbase.dll");
-        g_host.looked = 1;
-        if (k) {
-            *(FARPROC*)&g_host.alloc2 = GetProcAddress(k, "VirtualAlloc2");
-            *(FARPROC*)&g_host.map3 = GetProcAddress(k, "MapViewOfFile3");
-            *(FARPROC*)&g_host.unmap2 = GetProcAddress(k, "UnmapViewOfFile2");
-        }
+/* the first caller looks the calls up and any other waits for it: a thread must never see the lookup begun and its
+   result not yet stored, which would read as a host with no views */
+static BOOL CALLBACK look(PINIT_ONCE once, PVOID parameter, PVOID* context) {
+    HMODULE k = GetModuleHandleW(L"kernelbase.dll");
+    (void)once;
+    (void)parameter;
+    (void)context;
+    if (k) {
+        *(FARPROC*)&g_host.alloc2 = GetProcAddress(k, "VirtualAlloc2");
+        *(FARPROC*)&g_host.map3 = GetProcAddress(k, "MapViewOfFile3");
+        *(FARPROC*)&g_host.unmap2 = GetProcAddress(k, "UnmapViewOfFile2");
     }
+    return TRUE;
+}
+static bool calls(void) {
+    InitOnceExecuteOnce(&g_host.looked, look, NULL, NULL);
     return g_host.alloc2 && g_host.map3 && g_host.unmap2;
 }
 static DWORD protection(unsigned permissions) {
@@ -71,6 +77,7 @@ unsigned char* snx_host_reserve(uint64_t size) {
                          NULL, 0);
 }
 void snx_host_release(unsigned char* base, uint64_t size) {
+    if (!calls()) return;
     /* a view, a commit and a placeholder are each an allocation of their own: each goes alone */
     for (uint64_t at = 0; at < size;) {
         MEMORY_BASIC_INFORMATION info;
@@ -100,6 +107,7 @@ bool snx_host_map(const SnxHostMemory* m, unsigned char* base, uint64_t at, uint
     return true;
 }
 bool snx_host_commit(unsigned char* base, uint64_t at, uint64_t size) {
+    if (!calls()) return false;
     VirtualFree(base + at, (SIZE_T)size, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); /* split out: fails when it is one */
     return g_host.alloc2(GetCurrentProcess(), base + at, (SIZE_T)size,
                          MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0) != NULL;

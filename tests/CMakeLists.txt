@@ -272,6 +272,16 @@ if(TARGET snx_ctr_board)
             set_tests_properties(3ds_extract PROPERTIES TIMEOUT 120)
         endif()
     endif()
+    # the static compile's worker threads each build their chunks for the host's memory model, on Windows too
+    if(Python3_Interpreter_FOUND AND NOT APPLE)
+        add_test(NAME 3ds_aot_workers COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot_workers.py"
+            "${SNX_CTR_PROGRAM}")
+        if(CMAKE_CROSSCOMPILING_EMULATOR)
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 1800)
+        else()
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 60)
+        endif()
+    endif()
     # The pinned SuperTux gate runs on Windows too, the other Python tests not yet
     if(SNX_TEST_3DS_SUPERTUX AND Python3_Interpreter_FOUND)
         get_filename_component(snx_supertux_cia "${SNX_TEST_3DS_SUPERTUX}" ABSOLUTE)
@@ -388,6 +398,11 @@ add_executable(snx-test-host-memory host_memory.c)
 snx_test_target(snx-test-host-memory 99)
 target_link_libraries(snx-test-host-memory PRIVATE scarletnx-common)
 add_test(NAME host_memory COMMAND snx-test-host-memory)
+# the threads that make its first call together, as the 3DS compile's workers do, all read the host's page
+add_executable(snx-test-host-page-threads host_page_threads.c)
+snx_test_target(snx-test-host-page-threads 11)
+target_link_libraries(snx-test-host-page-threads PRIVATE scarletnx-common Threads::Threads)
+add_test(NAME host_page_threads COMMAND snx-test-host-page-threads)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
 add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 11)
