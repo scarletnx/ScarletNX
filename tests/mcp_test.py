@@ -345,8 +345,22 @@ def call(tool, id_=None, **arguments):
     }
 
 
+def build_abi(runtime):
+    """The ABI this build stamps its games with, from its MCP server: the fixtures below carry the build's own, or
+    every game_run and game_info answers that a game is stale"""
+    with tempfile.TemporaryDirectory() as empty:
+        stdin = json.dumps({'jsonrpc': '2.0', 'id': 'init', 'method': 'initialize', 'params': {}}) + '\n'
+        stdin += json.dumps(call('build_info')) + '\n'
+        run = subprocess.run(
+            [runtime, '--mcp', '--repo', empty], input=stdin, capture_output=True, text=True, timeout=60, check=True
+        )
+    answered = [r for r in (json.loads(line) for line in run.stdout.splitlines()) if r['id'] == 'build_info'][0]
+    return str(json.loads(answered['result']['content'][0]['text'])['abi'])
+
+
 def main():
     runtime = sys.argv[1]
+    abi = build_abi(runtime)
     with tempfile.TemporaryDirectory() as tmp:
         data, outside = Path(tmp) / 'data', Path(tmp) / 'outside'
         game = data / 'work' / 'Some Game'
@@ -390,7 +404,7 @@ def main():
         udump.write_bytes(b'PFS0' + b'\0' * 0x100)
         (rgame / (rid + '_' + uentry + '.ini')).write_text(f'source={udump}\n')
         (rgame / (rid + '_' + uentry + '_code' + code)).write_text('x')
-        (rgame / (rid + '_' + uentry + '.abi')).write_text('14')
+        (rgame / (rid + '_' + uentry + '.abi')).write_text(abi)
         (rgame / (rid + '_' + did + '_data')).mkdir()
         # an update whose .ini names no dump, for the error game_recompile must answer with
         nug = data / 'recompiled' / noup
@@ -400,7 +414,25 @@ def main():
         rprogram.write_text('#!/bin/sh\necho "frames=120 hash=feedface"\nexit 0\n')
         rprogram.chmod(0o755)
         (rgame / (rid + '_code' + code)).write_text('x')
-        (rgame / (rid + '.abi')).write_text('14')
+        (rgame / (rid + '.abi')).write_text(abi)
+        (rgame / (rid + '.log')).write_text(LOG)
+        (rgame / 'threads.txt').write_text(
+            'second 41, frames 1700\n'
+            'threads (2):\n'
+            "  thread 1 'MainThread' prio 16 (base 16) core 3: running on core 3\n"
+            '    lr=81000100 main+10c pc=81000200 main+20c sp=81000300\n'
+            '    #1 81000400 main+30c\n'
+            "  thread 81 'Resource Loading' prio 20 (base 20) core 1: waiting on events (thread 3)\n"
+            '    lr=81000510 main+40c pc=81000610 main+50c sp=81000700\n'
+        )
+        # a recompiled game whose program is the NRO its _data keeps, beside the game and its data folder: symbolize
+        # reads its code from there, as the runtime reads it
+        vid = '0100CCCCDDDD0100'
+        vgame, vdata = data / 'recompiled' / vid, data / 'recompiled' / vid / (vid + '_data')
+        (vdata / 'exefs').mkdir(parents=True)
+        (vdata / 'exefs' / 'main.nro').write_bytes(make_nro())
+        (vgame / (vid + '_code' + code)).write_text('x')
+        (vgame / (vid + '.abi')).write_text(abi)
         # a recompiled game with no program, for the error game_run must answer with
         noid = '0100EEEEFFFF0000'
         (data / 'recompiled' / noid / (noid + '_data')).mkdir(parents=True)
@@ -411,7 +443,16 @@ def main():
         (tgame / (tid + ext)).write_text('#!/bin/sh\nexec sleep 5\n')
         (tgame / (tid + ext)).chmod(0o755)
         (tgame / (tid + '_code' + code)).write_text('x')
-        (tgame / (tid + '.abi')).write_text('14')
+        (tgame / (tid + '.abi')).write_text(abi)
+        # one that ends at once, so a stub run of it leaves a slot its game gives back
+        qid = '0100EEEE11110000'
+        qgame = data / 'recompiled' / qid
+        (qgame / (qid + '_data')).mkdir(parents=True)
+        qprog = qgame / (qid + ext)
+        qprog.write_text('#!/bin/sh\nexit 0\n')
+        qprog.chmod(0o755)
+        (qgame / (qid + '_code' + code)).write_text('x')
+        (qgame / (qid + '.abi')).write_text(abi)
         (data / 'fake.nsp').write_bytes(b'PFS0' + b'\0' * 0x100)
         log = data / 'games' / 'game.log'
         log.write_text(LOG)
