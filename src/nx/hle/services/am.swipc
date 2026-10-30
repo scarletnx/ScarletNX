@@ -11,6 +11,9 @@ type nn::am::service::LibraryAppletInfo = struct {
     u32 library_applet_mode;
 };
 type nn::pdm::ApplicationPlayStatistics = bytes<0x18, 8>;
+# A Switch 2 image's preference (Eden's Switch 2 work reads the width and height from its first word, the block
+# height from its third and the pitch in GOBs from its fourth)
+
 
 interface nn::am::service::IApplicationProxyService is appletOE {
     [0] OpenApplicationProxy(pid, handle<copy, process> process) -> object<nn::am::service::IApplicationProxy> proxy;
@@ -252,6 +255,19 @@ interface nn::am::service::ITransferStorageAccessor {
 # NVIDIA driver's session a copy handle to it, as its Switch 2 OpenNvsrvSession does with nvdrv's own devices, and 202
 # and 204, which open the syncpoint session nn::syncpt::sdk::InitializeEx boots with
 interface nn::am::service::IGraphicsSystemSession {
+    # The sizes a title sizes its window and its image pool from: the block-linear surface of the display's own frame
+    # buffer, which is what Eden's Switch 2 CalculateRequirements answers a title's window with
+    [1501] CalculateRequirements() -> (u64 size, u64 alignment);
+    [1502] CalculateImagePoolRequirements() -> (u64 size, u64 alignment);
+    [115] Finalize();
+    # A title asks the console for an image and releases it: neither takes an argument, as the console has the one
+    # image a title presents and lays it out from the display's own size
+    [1101] CreateNativeImage() -> u32 image;
+    [1102] DestroyNativeImage();
+    # The native memory the graphics stack runs on: the console answers an id for it, as Eden's Switch 2
+    # CreateNativeMemory does, and neither takes an argument (the console has the one it needs)
+    [401] CreateNativeMemory() -> u32 memory;
+    [402] DestroyNativeMemory();
     [202] OpenSyncpointSession() -> handle<copy, session> session;
     # Two transfer memories (read-write, then read-only), whose read-only one the server lays out: Eden's Switch 2
     # AttachSyncptMemory describes the header its offsets name. The reply is the two events the client waits between

@@ -219,6 +219,16 @@ typedef struct {
     u32 obj;
     u32 ev[AM_GPU_IDS];
 } AmGpuIds;
+/* The Switch 2 native memory and images the graphics system hands out (am.c): the console answers an id and a size
+   for one, which a later command binds to pages. A game creates few, so the id indexes these tables directly */
+#define AM_NATIVE_MEMORIES 256
+#define AM_NATIVE_IMAGES   256
+typedef struct {
+    u64 size; /* 0: the slot is free */
+} AmNativeMemory;
+typedef struct {
+    u64 size;
+} AmNativeImage;
 /* The shared page gsv 204 attached, which every syncpoint session of the application reads (am.c). One per
    application, as the console has one graphics system: its flat part (a save state holds it as it is) and the host
    bytes the service writes, which a save state never holds (g_host.am) */
@@ -280,6 +290,8 @@ typedef struct {
     AmSyncpt syncpts[AM_SYNCPT_SESSIONS];
     AmSyncptPage syncpt_page;
     AmGpuIds gpu_ids[AM_GPU_SESSIONS];
+    AmNativeMemory native_memories[AM_NATIVE_MEMORIES];
+    AmNativeImage native_images[AM_NATIVE_IMAGES];
     u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next, gpu_id_next;
 } HleAm;
 /* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host). And under lock, the

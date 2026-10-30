@@ -377,6 +377,92 @@ static void am_syncpt_start(void) {
         __atomic_store_n(&g_am_syncpt_poller, 0, __ATOMIC_RELEASE);
 }
 
+/* The Switch 2 native memory and images a title creates from the graphics system, then binds to pages: the console
+   answers an id and a size for one, which is what a game reads back and what a later command binds. A game creates
+   few of them, so the id it is given indexes these tables directly (0: the slot is free) */
+static PMutex g_am_native_lk = PMUTEX_INIT;
+
+/* The block-linear size and alignment of a surface of width x height, as the console lays a window's out: 4 bytes
+   per pixel, in the 128-row blocks its Gob class uses (Eden's Switch 2 work computes a window's requirements the
+   same way, with the same pitch and row rounding). The display's own size is what a title sizes its window from,
+   which is what vi answers for it */
+static void am_surface_layout(u32 width, u32 height, u64* size, u64* align) {
+    u64 pitch = ((u64)width * 4 + 63) & ~63ull, rows = ((u64)height + 127) & ~127ull;
+    *size = pitch * rows;
+    *align = 0x2000; /* the console's alignment of a block-linear surface */
+}
+/* 1501: the requirements of the surface a title presents, and 1502 those of the pool its other surfaces come from.
+   Both are the display's size, since that is the surface a title presents on it */
+static int nn_am_service_IGraphicsSystemSession_CalculateRequirements(SvcObj* self, u64* size, u64* alignment) {
+    (void)self;
+    am_surface_layout(1920, 1080, size, alignment);
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsSystemSession_CalculateImagePoolRequirements(SvcObj* self, u64* size,
+                                                                             u64* alignment) {
+    (void)self;
+    am_surface_layout(1920, 1080, size, alignment);
+    R_SUCCEED();
+}
+/* 115: the session is done with what it opened (Eden's Switch 2 work answers its 115 with a plain success) */
+static int nn_am_service_IGraphicsSystemSession_Finalize(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+/* 1101: an image over a native memory, from the preference its SDK builds. The layout the preference describes is
+   kept, since a later command asks for the image's size and its handle */
+static int nn_am_service_IGraphicsSystemSession_CreateNativeImage(SvcObj* self, u32* image) {
+    AmNativeImage* n;
+    u64 size, align;
+    u32 i;
+    (void)self;
+    am_surface_layout(1920, 1080, &size, &align); /* the image a title presents is the display's own surface */
+    pm_lock(&g_am_native_lk);
+    for (i = 0; i < AM_NATIVE_IMAGES && g_hle.am.native_images[i].size; ++i) {}
+    if (i == AM_NATIVE_IMAGES) {
+        pm_unlock(&g_am_native_lk);
+        return AM_OUT_OF_MEMORY;
+    }
+    n = &g_hle.am.native_images[i];
+    n->size = size;
+    pm_unlock(&g_am_native_lk);
+    *image = i + 1;
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsSystemSession_DestroyNativeImage(SvcObj* self) {
+    u32 i;
+    (void)self;
+    pm_lock(&g_am_native_lk);
+    for (i = 0; i < AM_NATIVE_IMAGES; ++i) g_hle.am.native_images[i].size = 0; /* the one image is gone */
+    pm_unlock(&g_am_native_lk);
+    R_SUCCEED();
+}
+/* 401: the native memory itself, of the size a title names. The console answers an id for it; the pages it describes
+   are bound to it later, as Eden's Switch 2 CreateNativeMemory does */
+static int nn_am_service_IGraphicsSystemSession_CreateNativeMemory(SvcObj* self, u32* memory) {
+    u64 size;
+    (void)self;
+    am_surface_layout(1920, 1080, &size, &size); /* the memory its images lie in: the display's own surface */
+    if (!size || size > 0x100000000ull) return AM_INVALID_OFFSET;
+    pm_lock(&g_am_native_lk);
+    for (memory[0] = 0; *memory < AM_NATIVE_MEMORIES && g_hle.am.native_memories[*memory].size; ++*memory) {}
+    if (*memory == AM_NATIVE_MEMORIES) {
+        pm_unlock(&g_am_native_lk);
+        return AM_OUT_OF_MEMORY;
+    }
+    g_hle.am.native_memories[*memory].size = size;
+    pm_unlock(&g_am_native_lk);
+    ++*memory;
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsSystemSession_DestroyNativeMemory(SvcObj* self) {
+    u32 i;
+    (void)self;
+    pm_lock(&g_am_native_lk);
+    for (i = 0; i < AM_NATIVE_MEMORIES; ++i) g_hle.am.native_memories[i].size = 0;
+    pm_unlock(&g_am_native_lk);
+    R_SUCCEED();
+}
 /* gsv 202: the syncpoint session nn::syncpt::sdk::InitializeEx sends TIPC commands on, a session of its own */
 static int nn_am_service_IGraphicsSystemSession_OpenSyncpointSession(SvcObj* self, u32* session) {
     SvcObj* o;
