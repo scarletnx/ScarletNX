@@ -27,6 +27,8 @@ LOG = """[   0.00] ScarletNX - Some Game
 [   0.00] build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)
 [   0.30] game: 0100aaaabbbb0000, version 1.2.3
 [   1.00] sm: GetServiceHandle(hid)
+[   1.20]   [undeclared] nn::sm::detail::IUserInterface cmd 12 -> ok
+[   1.30] vulkan: shader 1a2b3c4d (stage 0) not translated: no SPIR-V for it
 [   2.25]
 *** The game called svcBreak (reason 0, info 1300100df8, 4 bytes) ***
 [   2.25]    #0 163d18d8 <_ZN2nn4diag6detail10VAbortImplEv+d8>
@@ -644,12 +646,12 @@ def main():
     check(scan['failure']['function']['demangled'] == 'nn::hid::GetNpadJoyHoldType()', 'demangled in the binary')
 
     grep = text('grep').splitlines()
-    check(grep[0].endswith('has 9 lines'), grep[0])
-    check(any(line.startswith('6: *** The game called svcBreak') for line in grep), f'read_log by text:\n{grep}')
+    check(grep[0].endswith('has 11 lines'), grep[0])
+    check(any(line.startswith('8: *** The game called svcBreak') for line in grep), f'read_log by text:\n{grep}')
     # two matches (the marker and FATAL's line), a line of context each side, joined
-    check([line.split(':')[0] for line in grep[1:]] == ['5', '6', '7', '8', '9'], f'context each side: {grep}')
+    check([line.split(':')[0] for line in grep[1:]] == ['7', '8', '9', '10', '11'], f'context each side: {grep}')
     check([line.split(':')[0] for line in text('range').splitlines()[1:]] == ['2', '3'], 'read_log by range')
-    check([line.split(':')[0] for line in text('tail').splitlines()[1:]] == ['7', '8', '9'], 'read_log, the last lines')
+    check([line.split(':')[0] for line in text('tail').splitlines()[1:]] == ['9', '10', '11'], 'read_log, the last lines')
     check(failed('outside') and 'outside the folders' in text('outside'), 'read_log refuses a file outside')
     check(failed('scan_outside') and 'outside the folders' in text('scan_outside'), 'so does scan_log')
     check(failed('game_outside') and 'outside the folders' in text('game_outside'), 'and symbolize, for a game')
@@ -792,6 +794,13 @@ def main():
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
+    # every finding names the log line it came from, so read_log can jump straight to it
+    located = [entry for entry in scan_game['ipc'] + scan_game['missed'] if entry['line']]
+    check(located, f'the findings carry their lines: {scan_game}')
+    sm = [entry for entry in scan_game['ipc'] if entry.get('interface') == 'nn::sm::detail::IUserInterface']
+    check(sm and sm[0]['line'] == 5, f'the sm request named its line: {sm}')
+    at_line = text('at_line').splitlines()
+    check(at_line[1].startswith('5: [   1.20]   [undeclared]'), f'read at that line: {at_line}')
     dis = text('disassemble')
     if 'no A64 disassembler' not in dis:
         check('b\t0x80' in dis.replace(' ', '\t') or '8000080' in dis.splitlines()[0], f'the first branch:\n{dis}')
