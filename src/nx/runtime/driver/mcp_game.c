@@ -1988,9 +1988,12 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
         char* output = NULL;
         char* line = NULL;
         int rc, bad, timed_out = 0;
-        long timeout_s = timeout > 0 ? timeout : 2 * seconds + 60;
         RunSummary summary;
         cJSON* item;
+        /* the runtime ends the run itself at --seconds, which every game_run command carries; the timeout is the
+           host-side net for one that does not (a run stopped answering at all), and its default is 2*seconds+60 for
+           exactly that */
+        long timeout_s = timeout > 0 ? timeout : 2 * seconds + 60;
         rc = snx_run_timed(argv, g.folder, NULL, &output, (int)(timeout_s * 1000), &timed_out);
         if (snx_write_file(log, output ? output : "", output ? strlen(output) : 0)) {
             /* the run still happened; the answer says where its output should be */

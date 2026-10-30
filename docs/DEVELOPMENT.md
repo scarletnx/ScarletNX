@@ -173,7 +173,8 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   opened in the checkout (`build/scarletnx --mcp --data .`). Its tools: `scan_log` (the summary above), `read_log`
   (a log's lines holding a text, `|` between alternatives, with context, or a range, or its last lines, only under
   ScarletNX's own folders: the data folder with its state, cache and settings folders, the folders each of its games
-  keeps its own files in, and its `work/` folders), `find_game` (the games the data folder holds, the extractions of
+  keeps its own files in, its `work/` folders and the folder the launcher's Share Log was written to; both take the
+  log's path or the game itself), `find_game` (the games the data folder holds, the extractions of
   `work/` and the recompiled games of `recompiled/` and `games/`, with their title IDs and versions), `state_info` (a
   recompiled game's save states: slot, program, when, play time, the build
   and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py`
@@ -181,7 +182,10 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   updates, DLCs, mods and cheats, the `.ini`'s current selection, and whether its current build can run), `build_info`
   (this build, commit, ABI, Tracy and GDB), `game_recompile` (one game or update, with per-call mods; `dry_run` returns
   the command) and `game_run` (an unattended run with per-run update, DLCs, mods and cheats, a script, logs, a PPM last
-  frame and a host-side timeout). The game tools never write the `.ini`'s selections: a run passes the runtime
+  frame and a host-side timeout, or `gdb_stub` `-s`/`-S` for one left running for the GDB tools, stopped when the server
+  closes, its stub on a port of its own that gdb_attach finds from the run). A recompiled game's code is read from its
+  `_data` (the ExeFS or NRO it keeps) or from the dump its `.ini` names, as the runtime and `-r` read it. The game tools
+  never write the `.ini`'s selections: a run passes the runtime
   `--addons`, `--mods_off` and `--cheats_off`, and a recompile passes `--mods_off` to the recompiler. The last game
   loaded stays loaded for the next call. Its
   edenprobe tools turn a confirmed report into an edenprobe case ([EDENPROBE.md](EDENPROBE.md)). Its GDB tools
