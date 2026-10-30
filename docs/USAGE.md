@@ -452,6 +452,9 @@ and cheats are choices of the call.
   `runtime` is `current` (this build, with `--game=<program>`) or `game` (the copy in the game's folder); `headless` is
   on by default. `state_save`/`state_load` pass the runtime's timed state commands, and `settings` is an object of
   runtime setting names and values for this run only.
+- `gdb_stub` is `-s` (the runtime waits for the debugger before it starts) or `-S` (the game runs until a debugger
+  connects). With it the run is left going for the GDB tools above: the answer gives the game's process id and the stub's
+  port, and the game is stopped when this MCP server closes. Linux only, and one game at a time.
 - A run writes `runN.log`, the game log's snapshot `runN.game.log`, and, with `shot` on (the default), the last frame as
   `runN.ppm`. The answer gives each run's exit, crash (signal, game pc and lr), svcBreak reason, frames and average FPS,
   the output log's path and the screenshot's path and pixel hash. Screenshots are PPM: no Pillow is needed.

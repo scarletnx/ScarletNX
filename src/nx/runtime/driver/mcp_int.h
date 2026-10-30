@@ -49,6 +49,17 @@ char* mcp_game_info(const char* data, const char* game, Text* err);
 char* mcp_game_recompile(const char* self, const char* data, const char* game, const yyjson_val* args, Text* err);
 char* mcp_game_run(const char* self, const char* data, const char* cache, const char* game, const yyjson_val* args,
                    Text* err);
+/* what a game's code is read from (the ExeFS or NRO its _data keeps, else the dump its .ini names, read in place, as
+   scarletnx -r gives one) and its log: owned */
+char* mcp_game_program_source(const char* folder, const char* name);
+char* mcp_game_log_path(const char* folder, const char* name);
+char* mcp_game_threads_path(const char* folder, const char* name);
+char* mcp_game_log(const char* data, const char* game, Text* err);
+char* mcp_game_threads(const char* data, const char* game, Text* err);
+/* the games game_run left running for the GDB tools (mcp_game.c's), ended when the server closes */
+void mcp_runs_close(void);
+/* the stub's port this server left running for the game's folder, or 0 for none (mcp_game.c) */
+int mcp_stub_port(const char* folder);
 
 /* The GDB tools (mcp_gdb.c, UNIX only): one GDB connected to a game's GDB stub, each returning its answer, malloc'd,
    or NULL with why in err. A namer writes a guest address's name (the game's module, function and offset) into t;
