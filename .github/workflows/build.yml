@@ -893,8 +893,9 @@ jobs:
         with:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
-      # Explorer and the taskbar show the first icon of an executable's resources (runtime.rc)
-      - name: Check the executables' icon
+      # Explorer and the taskbar show the first icon of an executable's resources, and Windows reads its application
+      # manifest from them (runtime.rc)
+      - name: Check the executables' icon and manifest
         run: |
           set -euo pipefail
           for exe in stage/bin/scarletnx.exe; do
@@ -902,6 +903,11 @@ jobs:
             resources=$(llvm-readobj --coff-resources "$exe")
             if ! grep -q 'Type: GROUP_ICON' <<<"$resources"; then
               echo "$exe has no icon" >&2
+              exit 1
+            fi
+            # the manifest is kept there as text
+            if ! grep -aqF '>SegmentHeap</heapType>' "$exe"; then
+              echo "$exe has no manifest with heapType SegmentHeap (runtime.manifest)" >&2
               exit 1
             fi
           done

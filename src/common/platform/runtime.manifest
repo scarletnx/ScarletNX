@@ -3,12 +3,16 @@
      Copyright 2026 the ScarletNX contributors -->
 <!-- The runtime's application manifest on Windows (runtime.rc). activeCodePage UTF-8 makes the A functions, fopen
      and argv take and give UTF-8, the encoding the runtime uses for every path (Windows 10 1903 and later).
-     longPathAware lets paths go past MAX_PATH where the system allows it. -->
+     longPathAware lets paths go past MAX_PATH where the system allows it. heapType SegmentHeap makes the process
+     heap, which the C runtime's malloc draws from for the runtime and the LLVM DLL alike, a segment heap: the NT
+     heap the system gives by default holds the recompiler's LLVM threads on one lock (Windows 10 2004 and later;
+     an older one keeps the NT heap). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
     </windowsSettings>
   </application>
 </assembly>
