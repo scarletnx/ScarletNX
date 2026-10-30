@@ -320,6 +320,24 @@ def gdb_session(runtime, data, nro, tmp):
     check(not any('shell' in s or 'apply' in s or 'logging' in s for s in sent), 'nothing refused reached GDB')
 
 
+def wait_for_process(pid, gone=False, seconds=2.0):
+    """Wait for a process this test's server started to end (gone=True) or to still be there (gone=False), with a
+    dead pid counting as gone either way"""
+    import errno
+    limit = time.time() + seconds
+    while time.time() < limit:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except (ProcessLookupError, OverflowError, ValueError):
+            alive = False
+        if alive != gone:
+            return alive
+        time.sleep(0.05)
+    raise SystemExit(f'mcp_test: process {pid} was still running after {seconds} s' if gone else
+                     f'mcp_test: process {pid} ended early')
+
+
 def check(cond, what):
     if not cond:
         sys.exit(f'mcp_test: {what}')
@@ -574,6 +592,30 @@ def main():
             ),
             call('symbolize', game=str(nro), addresses=['8000080', 'zz']),
             call('disassemble', game=str(nro), start='8000000', end='8000094'),
+            call('game_run', 'run_stub_dry', game=rid, gdb_stub='-s', dry_run=True, out=str(data / 'runs_stub_dry')),
+            call('game_run', 'run_stub_bad', game=rid, gdb_stub='-g', dry_run=True),
+            call('game_run', 'run_stub_runs', game=rid, gdb_stub='-s', runs=2, dry_run=True),
+            call(
+                'game_run',
+                'run_stub',
+                game=tid,
+                runtime='game',
+                gdb_stub='-s',
+                seconds=1,
+                out=str(data / 'runs_stub'),
+            ),
+            *[
+                call(
+                    'game_run',
+                    'run_stub_slot%d' % i,
+                    game=qid,
+                    runtime='game',
+                    gdb_stub='-s',
+                    seconds=1,
+                    out=str(data / ('runs_slot%d' % i)),
+                )
+                for i in range(9)  # one more than the slots the server keeps
+            ],
             call('disassemble', 'no_range', game=str(nro)),
             call('symbolize', 'no_game', game='0100000000000001', addresses=['1']),
             call('edenprobe_scaffold', 'scaffold', checkout=str(checkout), **hold),
@@ -629,6 +671,8 @@ def main():
         run_real_log = data / 'runs_real' / 'run1.log'
         run_real_log_exists = run_real_log.is_file()
         run_update_log_exists = (data / 'runs_update' / 'run1.log').is_file()
+        # a stub run answers before its game ends: its output file is there while the server holds it open
+        stub_run_log_exists = (data / 'runs_stub' / 'run1.log').is_file()
         crlf_written = {rel: (crlf / rel).read_bytes().decode() for rel in CHECKOUT}
         untouched = all(
             (broken / rel).read_bytes() == text.encode() for rel, text in CHECKOUT.items() if 'serviceref.h' not in rel
@@ -832,6 +876,46 @@ def main():
             and 'timeout' in timeout['runs'][0]['summary'],
             f'a timed-out run: {timeout}',
         )
+        if os.name != 'nt':  # the GDB stub is UNIX only
+            stub_dry = json.loads(text('run_stub_dry'))
+            check(
+                stub_dry['status'] == 'dry_run' and '-s' in stub_dry['command'],
+                f'a stub run dry: {stub_dry["command"]}',
+            )
+            check(
+                failed('run_stub_bad') and 'gdb_stub' in text('run_stub_bad'),
+                f'a stub that is not -s or -S: {text("run_stub_bad")}',
+            )
+            check(
+                failed('run_stub_runs') and 'runs is 1' in text('run_stub_runs'),
+                f'a stub run of two games: {text("run_stub_runs")}',
+            )
+            stub = json.loads(text('run_stub'))
+            check(
+                stub['status'] == 'running' and stub['pid'] > 0 and 1024 < stub['gdb_port'] < 65536,
+                f'a run left going for the GDB tools: {stub}',
+            )
+            check(
+                f'--gdb_port={stub["gdb_port"]}' in stub['command'],
+                f"the stub's own port, of the run's own: {stub['command']}",
+            )
+            check(
+                stub_run_log_exists and stub['log'] == str(data / 'runs_stub' / 'run1.log'),
+                f'the stub run writes its output where it said: {stub["log"]}',
+            )
+            # the games game_run keeps are counted live, not ever kept: nine runs of one that ends at once all
+            # answer, because each game gives its slot back when it ends
+            kept = 0
+            for i in range(9):
+                one = json.loads(text('run_stub_slot%d' % i))
+                if one.get('status') == 'running':
+                    kept += 1
+                    wait_for_process(one['pid'], gone=True)
+            check(kept == 9, f"the slots of games that ended come back: {kept} of 9 runs left going")
+            # the server this run left holding the game has closed by now: it ends every game it kept running, so a
+            # stub run leaves no game behind on this machine
+            check(not wait_for_process(stub['pid'], gone=True),
+                  f"the server ended the game it left running: pid {stub['pid']} is still there")
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
