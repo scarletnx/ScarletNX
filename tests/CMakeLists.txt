@@ -1253,6 +1253,19 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
+# the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
+if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
+    if(APPLE)
+        set(snx_jemalloc_conf JE_MALLOC_CONF)
+        set(snx_jemalloc_nm "")
+    else()
+        set(snx_jemalloc_conf MALLOC_CONF)
+        set(snx_jemalloc_nm "${CMAKE_NM}")
+    endif()
+    add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx>"
+        "-DVERSION=${snx_jemalloc_version}" "-DCONF=${snx_jemalloc_conf}" "-DNM=${snx_jemalloc_nm}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
+endif()
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)

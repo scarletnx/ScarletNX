@@ -89,6 +89,11 @@ else()
                             "LINKER:--export-dynamic-symbol=__jit_debug_register_code")
     endif()
 endif()
+if(SNX_JEMALLOC)
+    # jemalloc's malloc for the whole process (cmake/jemalloc.cmake). Whole: on macOS nothing calls it by name, and
+    # elsewhere all of its allocator comes in together
+    target_link_libraries(scarletnx PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
+endif()
 if(IOS)
     # the app (dist/apple): the menu and then the game it plays, in the one process an iOS app has. main.c's main is
     # SDL's SDL_main there

@@ -328,10 +328,10 @@ The Switch runtime's shared font stand-ins download only when it is built ([SHAR
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
-FFmpeg and OpenSSL build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake or env)
-naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C headers
-and the cmake file that builds it, see [deps_cache.cmake](../cmake/deps_cache.cmake)) and publishes the ones it
-builds, so other trees and branches skip both. A change to any input is a new folder; old ones are only left behind.
+FFmpeg, OpenSSL and jemalloc build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake
+or env) naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C
+headers and the cmake file that builds it, see [deps_cache.cmake](../cmake/deps_cache.cmake)) and publishes the ones
+it builds, so other trees and branches skip them. A change to any input is a new folder; old ones are only left behind.
 
 ## Build variants
 
@@ -347,6 +347,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
+- `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux
+  and FreeBSD, OFF on macOS, where `ON` takes it too; refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's
+  LLVM threads spend less time in malloc with jemalloc.
 - `-DSNX_TRACY=ON`: build the runtime with the pinned Tracy profiler client (default OFF). For development builds
   only; not available on iOS. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
   game; the `tracy` preset sets both. See [profiling](DEVELOPMENT.md#profiling).
@@ -354,8 +357,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   tree's driver uses). `SNX_GAMES_DIR`, its name before, is still taken while it is empty, said as it configures. A
   tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
-- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg and OpenSSL builds there (default: the environment's
-  `SNX_DEPS_CACHE`, else none).
+- `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg, OpenSSL and jemalloc builds there (default: the
+  environment's `SNX_DEPS_CACHE`, else none).
 - `-DSNX_BUILD_NX=OFF`: omit the Switch runtime (default ON).
 - `-DSNX_BUILD_GNUABI=OFF`: omit the CPU-only Linux AArch64 runtime, see [GNUABI.md](GNUABI.md) (default ON).
 - `-DSNX_BUILD_3DS=OFF`: omit the 3DS layer, see [3DS.md](3DS.md) (default ON).
