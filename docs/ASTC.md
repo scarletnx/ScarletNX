@@ -170,18 +170,26 @@ smaller than a block are more than its texels'. `device.c` turns `textureCompres
 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many levels
 went up as BC7 and their megabytes against RGBA8's.
 
-The encoder writes mode 6 only: one line through RGBA per block, seven bits a channel at each end and a p-bit below
-them, a 4-bit weight a texel. The line starts from the block's bounding box, each channel turned to run with the
-channel the block spans most (the sign of their covariance), and pulled in by a sixteenth from each end; then a
-least squares fit to the weights the texels took, twice. Each candidate's four p-bit pairs are tried, each texel
-takes the best of the three weights around its projection, and a candidate is kept only when the block's squared
-error falls. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file
-on the CPU and get the GPU's bytes.
+The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
+block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
+block (every alpha 255) also takes the modes that store no alpha and so keep it 255: modes 1 and 3, two subsets of
+one of the format's 64 partitions, each with a line of its own (6-bit ends and 3-bit weights, or 7-bit and 2-bit),
+for an edge between two colours, and mode 2, three subsets, for three colours meeting. Any other block takes mode 7,
+two subsets with alpha. The partitions tried are the two of 64 two-subset ones, and the one of 64 three-subset ones,
+whose subsets spread least around their means, a pass over the block each.
+
+A subset's line starts from its bounding box, each channel turned to run with the channel the subset spans most (the
+sign of their covariance), pulled in by a sixteenth from each end and tried as it is too; then a least squares fit
+to the weights the texels took, twice. The ends' p-bits are tried in every combination the mode allows, but a subset
+whose every alpha is 255 (or 0) takes the one bit that keeps it exactly: a nearly opaque texel blends, and a nearly
+clear one passes an alpha test of more than nought. Each texel takes the best of the three weights around its
+projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file on
+the CPU and get the GPU's bytes.
 
 What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
-colours meet in a block, noise, and alpha) decoded from ASTC 4x4: gradients 43.1 dB, edges 23.5, noise 26.4,
-alpha 36.9. A block of one gradient comes back close, one of two or three colours does not: BC7's partitioned modes
-are what such blocks need, and mode 6 has none.
+colours meet in a block, noise, and alpha) decoded from ASTC: 35.0 dB over the picture at 4x4 (gradients 47.6,
+edges 40.5, noise 29.9, alpha 38.5), 36.7 at 6x6, 42.2 at 8x8 and 42.5 at 12x12. Mode 6 alone gave 27.6 at 4x4, its
+edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
 
 ## Textures bigger than one allocation
 

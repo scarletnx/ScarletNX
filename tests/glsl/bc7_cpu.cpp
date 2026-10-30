@@ -19,7 +19,13 @@ struct Encoder : Invocation {
 };
 } // namespace bc7_shader
 
-extern "C" uint32_t bc7_weight_cpu(uint32_t index) { return bc7_shader::Encoder().Weight(index); }
+extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
+    bc7_shader::Encoder e;
+    e.sh_ib = bits;
+    return e.Weight(index);
+}
+
+extern "C" uint32_t bc7_partition3_cpu(uint32_t partition) { return bc7_shader::Encoder().P3[partition]; }
 
 extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
     const uint32_t bx = (w + 3) / 4, by = (h + 3) / 4;

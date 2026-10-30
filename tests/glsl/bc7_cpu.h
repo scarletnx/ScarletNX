@@ -10,8 +10,10 @@
 extern "C" {
 #endif
 void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out);
-/* the encoder's weight for a 4-bit index, which its errors and fits are worked out with */
-uint32_t bc7_weight_cpu(uint32_t index);
+/* the encoder's three subset partition table, two bits a texel */
+uint32_t bc7_partition3_cpu(uint32_t partition);
+/* the encoder's weight for an index of bits bits (2, 3 or 4), which its errors and fits are worked out with */
+uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index);
 #ifdef __cplusplus
 }
 #endif
