@@ -12,7 +12,8 @@
 
 typedef struct {
     const char *base, *update, *name, *out, *keys, *title_keys;
-    int icon; /* --icon: the game's icon alone */
+    int icon;  /* --icon: the game's icon alone */
+    int exefs; /* --exefs: the ExeFS alone, the RomFS left out */
 } ExtractOptions;
 
 typedef struct {
@@ -33,6 +34,7 @@ static void extract_help(void) {
          "  --out DIR           Output folder (default: work/NAME of the data folder)\n"
          "  --keys FILE         prod.keys (default: the data folder's, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
+         "  --exefs             The ExeFS alone: the RomFS is not written, and the dump is read only as far as it\n"
          "  --icon              The game's icon alone, icon.jpg into --out DIR (what Games shows), nothing extracted\n"
          "  --help              Show this help");
     puts("The data folder: --data, else a portable copy's or the user's (scarletnx --help).");
@@ -76,6 +78,10 @@ static int parse_options(int argc, char** argv, ExtractOptions* options) {
         }
         if (!positional && !strcmp(argv[i], "--icon")) {
             options->icon = 1;
+            continue;
+        }
+        if (!positional && !strcmp(argv[i], "--exefs")) {
+            options->exefs = 1;
             continue;
         }
         if (positional || argv[i][0] != '-' || !argv[i][1]) {
@@ -166,11 +172,15 @@ static int prepare_paths(ExtractState* state, const ExtractOptions* options, con
 }
 
 /* "  extracted 1229 of 4096 MB (30%)", ending in a carriage return while hactool writes: a terminal and the launcher's
-   console write the next over it, the last one ends the row */
+   console write the next over it, the last one ends the row. A total of 0 (--exefs, where what will be written is
+   known only when it is) says what of it there is, with no part of a whole */
 static void progress_say(ExtractState* state, int last) {
     SnxU64 done = state->written > state->total ? state->total : state->written;
-    printf("  extracted %lu of %lu MB (%d%%)%s", (unsigned long)(done >> 20), (unsigned long)(state->total >> 20),
-           state->total ? (int)(done * 100 / state->total) : 100, last ? "\n" : "\r");
+    if (state->total)
+        printf("  extracted %lu of %lu MB (%d%%)%s", (unsigned long)(done >> 20), (unsigned long)(state->total >> 20),
+               (int)(done * 100 / state->total), last ? "\n" : "\r");
+    else
+        printf("  extracted %lu MB%s", (unsigned long)(state->written >> 20), last ? "\n" : "\r");
     fflush(stdout);
     state->said = 1;
 }
@@ -204,7 +214,7 @@ static void tree_count(const char* path, unsigned long* files, unsigned long* fo
     snx_free_strings(names, count);
 }
 /* what the extraction wrote: the ExeFS's modules by name, the RomFS's files, folders and size */
-static void say_extracted(ExtractState* state) {
+static void say_extracted(ExtractState* state, int exefs_only) {
     char** names = NULL;
     size_t count = 0, i;
     unsigned long files = 0, folders = 0;
@@ -226,7 +236,7 @@ static void say_extracted(ExtractState* state) {
         printf("  RomFS: %lu file%s in %lu folder%s, %s\n", files, files == 1 ? "" : "s", folders + 1,
                folders ? "s" : "", size);
     } else
-        puts("  RomFS: none");
+        puts(exefs_only ? "  RomFS: not extracted (--exefs)" : "  RomFS: none");
     fflush(stdout);
 }
 
@@ -352,8 +362,9 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     if (snx_nca_keys(&state->dump, program, "The game's Program NCA") ||
         (patch->found && snx_nca_keys(&state->dump, patch, "The update's Program NCA")))
         return 1;
-    /* the base's program NCA: its RomFS is most of it, and an update's RomFS is about as big */
-    state->total = program->size;
+    /* the base's program NCA: its RomFS is most of it, and an update's RomFS is about as big. With --exefs the
+       RomFS is not read at all, so what is written has no whole to be a part of */
+    state->total = options->exefs ? 0 : program->size;
     state->written = 0;
     state->said = 0;
     state->said_at = snx_seconds(); /* a quick one says nothing */
@@ -367,16 +378,15 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
         if (patch->found) {
             snx_size_text(patch->size, other, sizeof other);
             snx_title_text(patch->title_id, title);
-            printf(", with %s %s (%s) over it", patch->container == state->dump.base ? "the update bundled with it"
-                                                                                     : "the update",
-                   title, other);
+            printf(", with %s %s (%s) over it",
+                   patch->container == state->dump.base ? "the update bundled with it" : "the update", title, other);
         }
-        puts(state->dump.control.found ? "" : ", and no Control NCA");
+        puts(options->exefs ? ", its ExeFS alone" : state->dump.control.found ? "" : ", and no Control NCA");
     }
     failed = patch->found ? snx_hac_extract(state->dump.hac, patch->container, patch->entry, program->container,
-                                            program->entry, state->exefs, state->romfs)
+                                            program->entry, state->exefs, options->exefs ? NULL : state->romfs)
                           : snx_hac_extract(state->dump.hac, program->container, program->entry, -1, 0, state->exefs,
-                                            state->romfs);
+                                            options->exefs ? NULL : state->romfs);
     snx_hac_progress(NULL, NULL);
     if (state->said) progress_say(state, 1);
     if (failed) return snx_hac_error("the Program NCA cannot be extracted");
@@ -385,7 +395,7 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     failed = !snx_is_file(main_path);
     free(main_path);
     if (failed) return snx_hac_error("the exefs has no main: the update may not be this game's");
-    say_extracted(state);
+    say_extracted(state, options->exefs);
     control_nacp(state);
     control_icon(state);
     return 0;

@@ -142,6 +142,21 @@ playing, Play keeps it and plays the game, and Back leaves the list as it was.
 `-x` keeps extracting an update over its game into one folder (`-x Game.nsp --update Update.nsp`), and extracts a
 DLC's dump given alone as its RomFS image.
 
+`--exefs` extracts the ExeFS alone: the RomFS is not written and the dump is read only as far as its ExeFS, which is
+what `scarletnx --dump-modules`, `tools/nvn_census.py`, `tools/nvn_hash.py` and `tools/nvn_missing.py` read. A game's
+ExeFS is a few tens of megabytes next to the several gigabytes of its RomFS, so it takes a place like
+`/tmp/opencode/exefs/<title ID>` for a report over every game, with each update beside its base:
+
+```sh
+./build/scarletnx -x --exefs --out work/Game Game.xci
+./build/scarletnx -x --exefs --out work/GameUpdate --update Update.nsp -- Game.xci
+python3 tools/nvn_missing.py work/Game work/GameUpdate
+```
+
+The game runs from none of it: only its modules are there, and playing a game still needs its whole dump. The output
+folder must not hold an `exefs` already, as it does not for a full extraction. An update given alone still goes over
+its game's dump, so give both, and an update's `--out` needs a name of its own.
+
 ### Mods
 
 A game's mods go in the `mods` folder of its data folder, one folder each, named as you like:

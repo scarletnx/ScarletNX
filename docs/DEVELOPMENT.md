@@ -207,6 +207,9 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   `symbols.py` and `disasm.py` read the modules with the recompiler's loader, through
   `build/scarletnx --dump-modules PROGRAM DIR` (`SNX_SCARLETNX` names another binary), cached per game folder in
   `~/.cache/scarletnx/module-dumps`. The dump's format is described in `src/nx/loader/loader.h`.
+  The tools read an ExeFS, which `scarletnx -x --exefs --out DIR DUMP` writes without the dump's RomFS
+  ([USAGE.md](USAGE.md#updates-and-dlc)): tens of megabytes a game instead of gigabytes, which a report over every game
+  a drive holds fits in.
   `--log=2`: verbose; Windows `--profile=1`: `profile.txt` every 10 s.
 
 The game's `[Debug]` settings ([Settings](SETTINGS.md#debug)) are for investigating. Each is also given for one run as
