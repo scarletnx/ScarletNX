@@ -12,6 +12,9 @@ The game is its folder in the user's data folder's recompiled/ (where the driver
 another), named by its title ID or by the name -r was given, a path to that folder, or the program the recompile's
 "Built" line names. A game an older version left in games/, in its folder or loose, runs from there.
 
+The local build's runtime (build/scarletnx) plays it; when that build isn't present, the game's own runtime runs it,
+as before.
+
 Each run writes run<N>.log and run<N>.png (the last frame; .ppm without Pillow) into --out (default: a new folder in
 the system's temporary folder). The summary line has the exit, the crash site (game pc and the symbol, with --dump),
 and the frame count the runtime prints when --seconds ends the run, with the average FPS over the run.
@@ -28,6 +31,9 @@ import sys
 import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# the local build's runtime, which plays a recompiled game (scarletnx --game=...); fall back to the game's own runtime
+# (its recompiled program) when this build isn't present here
+RUNTIME = os.path.join(REPO, 'build', 'scarletnx' if sys.platform != 'win32' else 'scarletnx.exe')
 
 
 def data_folder():
@@ -128,7 +134,10 @@ def main():
     for i in range(1, a.runs + 1):
         log = os.path.join(out, 'run%d.log' % i)
         shot = os.path.join(out, 'run%d' % i)
-        cmd = [exe, '--seconds=%d' % a.seconds, '--shot=' + shot] + (['--script=' + a.script] if a.script else [])
+        # the local build's runtime plays the recompiled game (--game=...); the game's own runtime when it isn't built
+        # here. seconds/shot/script are runtime options in both, and the crash, svcBreak and frames all reach the log
+        cmd = ([RUNTIME, '--game=' + exe] if os.path.isfile(RUNTIME) else [exe])
+        cmd += ['--seconds=%d' % a.seconds, '--shot=' + shot] + (['--script=' + a.script] if a.script else [])
         with open(log, 'w') as f:
             try:
                 # the shader loading screen before the game (prepare_shaders=2) may take up to --seconds itself
