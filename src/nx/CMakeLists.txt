@@ -114,6 +114,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk)
 target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/texture/astc_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_spv HEADER nx/gpu/texture/bc7_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
@@ -244,7 +245,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
         gpu/vk/cmd.c gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
-        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c")
+        "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
+        "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")
+    target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash Threads::Threads
                                                       SDL3::SDL3 ${CMAKE_DL_LIBS})
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)

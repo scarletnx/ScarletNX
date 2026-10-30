@@ -1470,6 +1470,11 @@ add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp support/astc.c)
 snx_test_target(snx-test-astc-glsl 23)
 target_include_directories(snx-test-astc-glsl PRIVATE glsl)
 add_test(NAME astc_glsl COMMAND snx-test-astc-glsl)
+# the BC7 encoder's GLSL run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by the CPU reference: no GPU needed
+add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.c)
+snx_test_target(snx-test-bc7-glsl 23)
+target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
+add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)

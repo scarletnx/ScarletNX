@@ -693,6 +693,8 @@ int vk_tc_convert_vi(VkCommandBuffer cb, u32 fmt, u32 w, u32 rows, VkBuffer in, 
 typedef int (*VkAstcRows)(void* ctx, VkCommandBuffer* cb, u32 z, u32 nz, u32 y, u32 n, VkBuffer* buf, u64* off);
 int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 level, u32 layer, VkAstcRows rows,
                    void* ctx);
+/* the image levels uploaded as BC7 so far, their bytes, and the bytes they would have taken as RGBA8 */
+void vk_astc_stats(u64* levels, u64* bytes, u64* rgba8_bytes);
 
 /* vic.c: the VIC composition as a compute shader, recorded in the frame's command buffer, its output planes
    published (vk_own_publish): 1 when composed, 0 when the job exceeds the device (it is skipped). Takes vk_lock */

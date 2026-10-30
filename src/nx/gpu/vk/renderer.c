@@ -539,6 +539,12 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                     (unsigned long long)(upload_bytes >> 20), (unsigned long long)slow_frames,
                     (unsigned long long)(slowest_ns / 1000000));
                 slow_frames = slowest_ns = 0;
+                u64 bc7_levels, bc7_bytes, bc7_rgba8;
+                vk_astc_stats(&bc7_levels, &bc7_bytes, &bc7_rgba8);
+                if (bc7_levels)
+                    LOG("vulkan: %llu ASTC texture levels uploaded as BC7, %llu MB where RGBA8 takes %llu MB\n",
+                        (unsigned long long)bc7_levels, (unsigned long long)(bc7_bytes >> 20),
+                        (unsigned long long)(bc7_rgba8 >> 20));
                 u64 early_made, early_hits, early_left;
                 vk_pipeline_prewarm_stats(&early_made, &early_hits, &early_left);
                 if (early_made || early_left)

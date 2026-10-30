@@ -156,6 +156,33 @@ The pipeline, its layouts and the scratch buffer live as long as the device, lik
 pipelines. A failure to create them is fatal: there is no CPU fallback. Running out of staging is not: the level
 is left out, the texture keeps its old hash, and the next check uploads it again.
 
+## Encoded again as BC7
+
+Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
+take one (4x4) or less. With the `astc_bc` setting (on by default, a `startup` one), `format.c`'s `TA()` gives such
+a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and `vk_astc_upload` runs a
+second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in `bc7_encode.glsl`, encodes the
+decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of the same size, and the copy
+writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so its ASTC block rows are a
+multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes too, which for a slice
+smaller than a block are more than its texels'. `device.c` turns `textureCompressionBC` on for it whatever
+`native_bc` says, and `format.c` then samples BCn as it is only when `native_bc` asks too. A 3D texture keeps RGBA8
+where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many levels
+went up as BC7 and their megabytes against RGBA8's.
+
+The encoder writes mode 6 only: one line through RGBA per block, seven bits a channel at each end and a p-bit below
+them, a 4-bit weight a texel. The line starts from the block's bounding box, each channel turned to run with the
+channel the block spans most (the sign of their covariance), and pulled in by a sixteenth from each end; then a
+least squares fit to the weights the texels took, twice. Each candidate's four p-bit pairs are tried, each texel
+takes the best of the three weights around its projection, and a candidate is kept only when the block's squared
+error falls. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file
+on the CPU and get the GPU's bytes.
+
+What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
+colours meet in a block, noise, and alpha) decoded from ASTC 4x4: gradients 43.1 dB, edges 23.5, noise 26.4,
+alpha 36.9. A block of one gradient comes back close, one of two or three colours does not: BC7's partitioned modes
+are what such blocks need, and mode 6 has none.
+
 ## Textures bigger than one allocation
 
 Some drivers fail device memory allocations past 256 MiB even where `maxMemoryAllocationSize` is larger (NVIDIA's on
@@ -219,6 +246,13 @@ separate SPIRV-Tools is needed.
   Without the validation layer installed, the "zero validation errors" line only means that nothing reported an
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
+- `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
+  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, blocks of one colour and
+  blocks that lie on a line mode 6 holds come back exact, edenprobe's astcimage picture comes back no worse than
+  the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each alone.
+  `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
+  4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
+  encoder run on the CPU over the CPU decoder's texels, byte for byte.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
 

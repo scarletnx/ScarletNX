@@ -568,6 +568,16 @@ setting Native ASTC
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
     help in a quarter to a 36th of the memory. 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without
     help ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+setting ASTC BC
+    label ASTC as BC7
+    key astc_bc
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = on a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded
+    help again as BC7, in a quarter of RGBA8's memory, close to what the game's blocks decode to but not always the
+    help same. 0 = they stay RGBA8, as the blocks decode, to compare the two. Where the GPU samples ASTC it does nothing
 setting Native BC
     label Native BCn
     key native_bc

@@ -3,6 +3,7 @@
 /* Guest formats -> Vulkan formats: render targets (the 3D class's RT_FORMAT and ZETA_FORMAT values) and textures
    (the texture header's format word). raw marks formats whose guest bytes are exactly the Vulkan format's, so the
    render target can be copied to and from guest memory as is. */
+#include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 #include <string.h>
@@ -172,11 +173,14 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
 /* which block formats the device samples as they are: textureCompressionASTC_LDR, textureCompressionETC2 and
    textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (device.c). A texture in
    them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
-   are uploaded */
-enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4 };
+   are uploaded. ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (the astc_bc setting, which turns on
+   textureCompressionBC too, so BCn is sampled as it is only when native_bc says so as well) */
+enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8 };
 static u32 native_blocks(void) {
     return (g_vk.feat.textureCompressionASTC_LDR ? NATIVE_ASTC : 0) |
-           (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) | (g_vk.feat.textureCompressionBC ? NATIVE_BC : 0);
+           (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) |
+           (g_vk.feat.textureCompressionBC && g_settings.native_bc ? NATIVE_BC : 0) |
+           (g_vk.feat.textureCompressionBC && g_settings.astc_bc ? ASTC_AS_BC7 : 0);
 }
 static int is_native_block(VkFormat f) {
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||
@@ -191,14 +195,16 @@ static VkFormat astc_vk(int bw, int bh) {
         if (fp[i][0] == bw && fp[i][1] == bh) return (VkFormat)(VK_FORMAT_ASTC_4x4_UNORM_BLOCK + 2 * i);
     return VK_FORMAT_UNDEFINED;
 }
-/* ASTC: its blocks as they are, else decoded by compute into RGBA8. HDR blocks are the error color either way, as
-   the LDR profile decodes them */
+/* ASTC: its blocks as they are, else decoded by compute into RGBA8, which vk/astc.c then encodes as BC7 where that
+   is asked for and sampled (ASTC_AS_BC7). HDR blocks are the error color either way, as the LDR profile decodes
+   them */
 static VkFmt TA(int bw, int bh, int srgb, u32 native) {
     if (native & NATIVE_ASTC) {
         VkFmt r = {(VkFormat)(astc_vk(bw, bh) + (srgb ? 1 : 0)), 16, (u8)bw, (u8)bh, 0, 0, 0, 1};
         return r;
     }
     VkFmt r = {srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, (u8)bw, (u8)bh, 0, 0, 0, 0};
+    if (native & ASTC_AS_BC7) r.vk = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
     r.conv = VKC_ASTC;
     return r;
 }
