@@ -1466,8 +1466,8 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.5.0
-      EDENPROBE_SHA256: 666391a760358d4fb80376a8873b2cde7e5990c0c58242926f7c5b95ed3cbf75
+      EDENPROBE_VERSION: v0.7.0
+      EDENPROBE_SHA256: 56ff55b763a3f5a6ef7cddd8fe7f874954e6007c2c7fc86f0b2a6dadf16deb9d
       # every family that needs no person or network: headless, the audio family's sound is never played
       EDENPROBE_MODE: quick notime fatal cpu graphics fs video display kernel audio
     outputs:
