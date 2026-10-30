@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#define _POSIX_C_SOURCE 200809L
 /* The MCP server's game tools (mcp_int.h): what this machine has made, how to build one, and an unattended run with
    the update, DLCs, mods and cheats the caller picks for that run. The game's .ini is never rewritten: every choice
    is an argument, and the run passes the runtime the same choices the recompile was stamped with. Recompiling is its
@@ -22,9 +23,65 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+#include "nx/runtime/gdbstub.h"
 
 #define GAME_RUNS_MAX     20
 #define GAME_OUTPUT_LINES 240
+#define GAME_RUNS_KEPT    8 /* the most games game_run leaves running for the GDB tools */
+
+/* The games game_run leaves running for the GDB tools: one process each, in slots, 0 for a free one. A stub run
+   outlives its call (the GDB tools and the run's game are read while it runs), so this server ends them when it
+   closes: an agent's session is a game run's lifetime. The serial makes each run's folder its own, and the folder
+   and the stub's port are kept for gdb_attach, which otherwise has to be told a port another session's stub may have
+   taken */
+static struct {
+    long pids[GAME_RUNS_KEPT];
+    char* folders[GAME_RUNS_KEPT];
+    int ports[GAME_RUNS_KEPT];
+    unsigned long serials[GAME_RUNS_KEPT];
+    unsigned long serial;
+} g_runs;
+/* a run this server left running whose process is gone has its slot taken back: a stub run of a game is answered
+   about once, and its port is reused for the game's next one only when nothing is listening on it any more. A game
+   that ended is this server's child still, so waitpid waits for it without blocking: kill(-, 0) lets a game that
+   ended but is not waited for keep its slot, and gdb_attach would name the port of a game that is gone */
+static void runs_prune(void) {
+    size_t i;
+#ifndef _WIN32
+    for (i = 0; i < GAME_RUNS_KEPT; i++)
+        if (g_runs.pids[i] && waitpid((pid_t)g_runs.pids[i], NULL, WNOHANG) == (pid_t)g_runs.pids[i]) {
+            free(g_runs.folders[i]);
+            g_runs.folders[i] = NULL;
+            g_runs.pids[i] = 0;
+            g_runs.ports[i] = 0;
+            g_runs.serials[i] = 0;
+        }
+#endif
+}
+/* the stub's port of the game in folder, or 0 when this server left none running there: the newest of its runs, since
+   an agent asks about one game many times and a run's game ends on its own while the next one is brought up */
+int mcp_stub_port(const char* folder) {
+    int port = 0;
+    unsigned long serial = 0;
+    size_t i;
+    runs_prune();
+    for (i = 0; i < GAME_RUNS_KEPT; i++)
+        if (g_runs.pids[i] && g_runs.folders[i] && !strcmp(g_runs.folders[i], folder) &&
+            g_runs.serials[i] > serial) {
+            serial = g_runs.serials[i];
+            port = g_runs.ports[i];
+        }
+    return port;
+}
 
 #ifdef _WIN32
 #define GAME_PROGRAM_SUFFIX ".exe"
@@ -1381,7 +1438,6 @@ static char* run_newest_tracy(const char* folder) {
 }
 /* where a run's logs and shots go: the caller's folder under data or cache, or a new one in the cache */
 static char* run_out_dir(const char* data, const char* cache, const Game* g, const char* requested, Text* err) {
-    static unsigned long serial;
     char* out = NULL;
     if (requested && *requested) {
         char *root = snx_absolute(data), *croot = cache ? snx_absolute(cache) : NULL;
@@ -1401,7 +1457,7 @@ static char* run_out_dir(const char* data, const char* cache, const Game* g, con
     }
     do {
         free(out);
-        out = snx_format("%s/mcp-runs/%s-%ld-%lu", cache, g->name, (long)time(NULL), ++serial);
+        out = snx_format("%s/mcp-runs/%s-%ld-%lu", cache, g->name, (long)time(NULL), ++g_runs.serial);
     } while (out && snx_path_exists(out));
     return out;
 }
@@ -1472,6 +1528,63 @@ static const char** run_argv(const cJSON* command) {
     argv[count] = NULL;
     return argv;
 }
+/* ============================================================ the runs left going */
+/* 1 when the game was taken, 0 when there is no slot left for it. folder (NULL for none) is the game's, kept for
+   gdb_attach to find the stub's port */
+static int runs_keep(long pid, const char* folder, int port) {
+    size_t i;
+    runs_prune(); /* the games that ended give their slots back: eight live ones, not eight ever */
+    for (i = 0; i < GAME_RUNS_KEPT; i++)
+        if (!g_runs.pids[i]) {
+            g_runs.pids[i] = pid;
+            g_runs.folders[i] = folder ? snx_strdup(folder) : NULL;
+            g_runs.ports[i] = port;
+            g_runs.serials[i] = ++g_runs.serial;
+            return 1;
+        }
+    return 0;
+}
+void mcp_runs_close(void) {
+    size_t i;
+    for (i = 0; i < GAME_RUNS_KEPT; i++) {
+#ifndef _WIN32
+        if (g_runs.pids[i]) {
+            pid_t pid = (pid_t)g_runs.pids[i];
+            kill(pid, SIGTERM);
+            kill(pid, SIGKILL);
+            while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+            g_runs.pids[i] = 0;
+            g_runs.ports[i] = 0;
+            g_runs.serials[i] = 0;
+        }
+#endif
+        free(g_runs.folders[i]);
+        g_runs.folders[i] = NULL;
+    }
+}
+#ifndef _WIN32
+/* a port for a stub to listen on, one this machine's other stub runs are not on: the kernel's pick from the ephemeral
+   range, so a session that brings another game up for GDB cannot have its client take this one's stub (a stub takes
+   its port for the whole run, and one client). game_run's answer names the port, and gdb_attach uses it from there */
+static int stub_port(void) {
+    int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in address;
+    socklen_t size = sizeof address;
+    if (fd < 0) return SNX_GDB_PORT;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0; /* any free one */
+    if (bind(fd, (struct sockaddr*)&address, sizeof address) || getsockname(fd, (struct sockaddr*)&address, &size)) {
+        close(fd);
+        return SNX_GDB_PORT;
+    }
+    close(fd);
+    return (int)ntohs(address.sin_port);
+}
+#else
+static int stub_port(void) { return SNX_GDB_PORT; }
+#endif
 char* mcp_game_run(const char* self, const char* data, const char* cache, const char* game, const struct cJSON* args,
                    Text* err) {
     const cJSON* cj = (const cJSON*)args;
@@ -1489,6 +1602,7 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     const char* requested_out = game_arg_string(cj, "out");
     const char* state_save = game_arg_string(cj, "state_save");
     const char* state_load = game_arg_string(cj, "state_load");
+    const cJSON* stub_arg = cJSON_GetObjectItemCaseSensitive(cj, "gdb_stub");
     const cJSON* dlcs_choice = cJSON_GetObjectItemCaseSensitive(cj, "dlcs");
     const cJSON* mods_choice = cJSON_GetObjectItemCaseSensitive(cj, "mods");
     const cJSON* cheats_choice = cJSON_GetObjectItemCaseSensitive(cj, "cheats");
@@ -1501,6 +1615,8 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     int stop = game_arg_bool(cj, "stop_on_failure", 0);
     int tracy_capture = 0, tracy_client = 0;
     int failed = 0;
+    const char* stub = NULL;  /* the run's GDB stub flag, NULL for a run this call ends */
+    int port = SNX_GDB_PORT;  /* the stub's port: the run's own when one is picked */
     cJSON *root = NULL, *runs_json = NULL, *base_command = NULL, *first_command = NULL;
     char* result = NULL;
     memset(&g, 0, sizeof g);
@@ -1535,6 +1651,38 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
     }
     tracy_capture = tracy && !strcmp(tracy, "capture");
     tracy_client = tracy && !strcmp(tracy, "client");
+    if (cJSON_IsString(stub_arg)) {
+        const char* named = stub_arg->valuestring;
+        if (!strcmp(named, "-s") || !strcmp(named, "s"))
+            stub = "-s"; /* the runtime waits before it starts, until GDB connects */
+        else if (!strcmp(named, "-S") || !strcmp(named, "S"))
+            stub = "-S"; /* the stub is up, and the game runs until GDB connects */
+        else if (*named) {
+            mcp_put(err, "gdb_stub: -s (the runtime waits for the debugger) or -S (the game runs until it connects)");
+            return NULL;
+        }
+    } else if (cJSON_IsTrue(stub_arg))
+        stub = "-s";
+    else if (stub_arg && !cJSON_IsFalse(stub_arg) && !cJSON_IsNull(stub_arg)) {
+        mcp_put(err, "gdb_stub: -s (the runtime waits for the debugger) or -S (the game runs until it connects)");
+        return NULL;
+    }
+    if (stub) {
+#ifdef _WIN32
+        mcp_put(err, "the GDB stub is UNIX only");
+        return NULL;
+#else
+        if (runs > 1) {
+            mcp_put(err, "gdb_stub runs one game: runs is 1 (or left out)");
+            return NULL;
+        }
+        if (shot && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(cj, "shot"))) {
+            mcp_put(err, "a stub run outlives this call: it has no last frame here, so shot is left out");
+            return NULL;
+        }
+        shot = 0; /* the frame it would show comes after this call has answered */
+#endif
+    }
     if ((tracy_capture || tracy_client) && !game_capability_tracy()) {
         mcp_put(err, "this build has no Tracy: capture and client need a build configured with SNX_TRACY");
         return NULL;
@@ -1613,6 +1761,17 @@ char* mcp_game_run(const char* self, const char* data, const char* cache, const 
         free(arg);
     }
     if (headless) game_command_add(base_command, "-H");
+    if (stub) { /* the game waits for GDB, and this call answers before it runs */
+        game_command_add(base_command, stub);
+        /* a stub takes the port it binds for its whole run: one another stub already listens on is skipped, so two
+           games brought up for GDB on this machine do not take each other's clients (gdb_attach names the port) */
+        port = stub_port();
+        {
+            char* arg = snx_format("--gdb_port=%d", port);
+            game_command_add(base_command, arg);
+            free(arg);
+        }
+    }
     {
         char* arg = snx_format("--addons=%s", dlc_arg);
         game_command_add(base_command, arg);

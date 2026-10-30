@@ -428,11 +428,23 @@ matters is reproduced and read without paying the boot again:
 game_run({ "game": "01007EF00011E000", "gdb_stub": "-s", "script": "..." })
 # the answer names the stub's own port: a stub takes its port for the whole run, and one client on it
 gdb_attach({ "game": "01007EF00011E000" })   # that port, or the one the answer names
+gdb_command({ "command": "continue" })       # ... the game runs until the crash
+```
+
+Two games brought up for GDB on one machine each take a port of their own (the kernel's pick from the ephemeral
+range), so one session's client cannot take another's stub: `gdb_attach` without a `port` uses the port of the game's
+run this server left, and refuses one another session's stub holds. By hand, `gdb_port=N` in the run (or `-S`'s
+`--gdb_port=N`, 1234 without one) and `set tcp connect-timeout 120` are what `scarletnx -s` needs from a plain GDB:
+its two-second default gives up before gdbserver has stopped the runtime's threads.
+
 ### Games through the MCP server
 
 `scarletnx --mcp` also lists, builds and runs the games under its data folder. These tools stay under that data folder
-(and its state, config and cache folders), and none of them changes a game's `.ini` selections: the update, DLCs, mods
-and cheats are choices of the call.
+(and its state, config and cache folders, the folders each game's `<name>.folders` names, and the folder the launcher's
+Share Log was written to), and none of them changes a game's `.ini` selections: the update, DLCs, mods and cheats are
+choices of the call. `scan_log` and `read_log` take a log's path, or the game itself (a title ID, a folder, a program in
+it or the name it was made by), and `symbolize` and `disassemble` read a game's code from what its `_data` keeps or from
+the dump its `.ini` names, as the runtime reads it.
 
 - `game_info` names a game by its title ID, its folder under the data folder, a program in it, or the name `-r` gave it.
   It returns the folder, program, data folder, version, log and `.ini`, whether the current build is ready to run, the
