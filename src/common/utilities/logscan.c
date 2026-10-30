@@ -636,6 +636,22 @@ static int ctr_ipc_line(SnxLogScan* s, Span rest) {
     if (kind < 0 && find(after, " has a form the runtime does not take") >= 0) kind = SNX_IPC_BAD_REQUEST;
     if (kind < 0) return 0;
     ipc_add(s, kind, iface, cmd);
+||||||| parent of 0472698 ([logscan] Every finding names the log line it came from)
+    for (int k = 0; k < s->nipc; k++) {
+        const char* name = snx_logscan_text(s, s->ipc[k].iface);
+        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
+            !memcmp(name, iface.p, iface.n)) {
+            s->ipc[k].count++;
+            return 1;
+        }
+    }
+    if (s->nipc < SNX_LOGSCAN_IPC) {
+        s->ipc[s->nipc].kind = kind;
+        s->ipc[s->nipc].iface = add(s, iface);
+        s->ipc[s->nipc].command = cmd;
+        s->ipc[s->nipc].count = 1;
+        s->nipc++;
+    }
     return 1;
 }
 
@@ -667,6 +683,7 @@ static void warning(SnxLogScan* s, Span line) {
     if (s->nwarnings < SNX_LOGSCAN_WARNINGS) {
         s->warnings[s->nwarnings].message = at;
         s->warnings[s->nwarnings].count = 1;
+        s->warnings[s->nwarnings].line = s->seen;
         s->nwarnings++;
     } else
         s->used = mark;
@@ -702,6 +719,7 @@ static int gap(SnxLogScan* s, int kind, Span what) {
         s->gaps[s->ngaps].kind = kind;
         s->gaps[s->ngaps].what = at;
         s->gaps[s->ngaps].count = 1;
+        s->gaps[s->ngaps].line = s->seen;
         s->ngaps++;
         return 1;
     }
@@ -1549,6 +1567,8 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
         put_num(&b, s->ipc[i].command);
         put(&b, ", \"count\": ");
         put_num(&b, s->ipc[i].count);
+        put(&b, ", \"line\": ");
+        put_num(&b, s->ipc[i].line);
         put(&b, "}");
     }
     put(&b, "], \"missed\": [");
@@ -1560,6 +1580,8 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
         json_field(&b, s, "what", s->gaps[i].what, 0);
         put(&b, ", \"count\": ");
         put_num(&b, s->gaps[i].count);
+        put(&b, ", \"line\": ");
+        put_num(&b, s->gaps[i].line);
         put(&b, "}");
     }
     put(&b, "], \"mme\": ");
@@ -1595,6 +1617,8 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
         json_text(&b, s, s->warnings[i].message);
         put(&b, ", \"count\": ");
         put_num(&b, s->warnings[i].count);
+        put(&b, ", \"line\": ");
+        put_num(&b, s->warnings[i].line);
         put(&b, "}");
     }
     put(&b, "], \"game_output\": ");

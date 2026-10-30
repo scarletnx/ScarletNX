@@ -71,7 +71,8 @@ enum { SNX_PLACE_NONE, SNX_PLACE_GAME, SNX_PLACE_BLOCK, SNX_PLACE_RUNTIME, SNX_P
    GBA's ("ScarletNX - <title> (GBA)") */
 enum { SNX_CONSOLE_NONE, SNX_CONSOLE_SWITCH, SNX_CONSOLE_3DS, SNX_CONSOLE_VITA, SNX_CONSOLE_GBA };
 
-/* Every text is an offset into the scan's pool, 0 for none (the pool's first byte is an empty string) */
+/* Every text is an offset into the scan's pool, 0 for none (the pool's first byte is an empty string). line is the
+   log's line the first of them was read from, as read_log counts, so a finding can be looked at where it happened */
 typedef struct {
     unsigned name, offset; /* "<name+offset>": a function or a module, the offset in hex */
 } SnxLogSym;
@@ -82,13 +83,16 @@ typedef struct {
 typedef struct {
     int kind;
     unsigned iface, command, count;
+    unsigned long line;
 } SnxLogIpc;
 typedef struct {
     unsigned message, count;
+    unsigned long line;
 } SnxLogWarning;
 typedef struct {
     int kind;
     unsigned what, count; /* count: the lines, for a shader the shaders */
+    unsigned long line;
 } SnxLogGap;
 
 typedef struct SnxLogScan {
