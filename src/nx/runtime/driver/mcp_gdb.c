@@ -787,6 +787,12 @@ char* mcp_gdb_attach(long port, Text* err) {
         "-gdb-set print thread-events off", "-gdb-set auto-load off",
         /* the game runs on this machine: its libraries are read from here, not through the remote protocol */
         "-gdb-set sysroot /",
+        /* gdbserver attaches to the runtime only once a client has connected, and stopping the runtime's threads
+           takes longer than gdb's two-second defaults: a loaded machine makes the connect time out otherwise */
+        "-gdb-set remotetimeout 60", "-gdb-set tcp connect-timeout 120",
+        /* the runtime the stub starts forks the game: the guest's threads and memory are in the child, so GDB
+           follows the fork there, and the driver it was attached to is left behind */
+        "-gdb-set follow-fork-mode child",
         /* the runtime's own: plat_freeze's write faults on memory it moves, the crash report's faults, and a closed
            socket's SIGPIPE, which it handles */
         "-interpreter-exec console \"handle SIGSEGV SIGBUS SIGPIPE nostop noprint pass\""};

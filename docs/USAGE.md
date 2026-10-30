@@ -419,6 +419,15 @@ RelWithDebInfo build, not one built with `-g0`).
   touches it.
 - `gdb_detach` lets the game run on without the debugger.
 
+A game stopped by a crash does not have to be brought up again under the stub: `game_run` with `gdb_stub` starts it
+with the stub and answers at once, leaving it running. The game waits (`-s`, the default, before the runtime starts) or
+runs (`-S`) until GDB connects, and it is stopped when the MCP server closes. This is how a crash whose guest stack
+matters is reproduced and read without paying the boot again:
+
+```sh
+game_run({ "game": "01007EF00011E000", "gdb_stub": "-s", "script": "..." })
+# the answer names the stub's own port: a stub takes its port for the whole run, and one client on it
+gdb_attach({ "game": "01007EF00011E000" })   # that port, or the one the answer names
 ### Games through the MCP server
 
 `scarletnx --mcp` also lists, builds and runs the games under its data folder. These tools stay under that data folder
