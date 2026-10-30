@@ -250,8 +250,8 @@ static int dump_read(void* source, const char* name, unsigned char** data, size_
 }
 /* a dump's program, its ExeFS read in place with the mods' files names[i] from paths[i] over it (count of them), and
    its control.nacp out of its Control NCA: nothing is extracted. 0, else nonzero, said why */
-static int load_dump(const char* dump, const char* update, const SnxPaths* paths, int quiet, char* const* names,
-                     char* const* files, size_t count, SnxProgram* program, char* error, size_t error_size) {
+int snx_load_dump_program(const char* dump, const char* update, const SnxPaths* paths, int quiet, char* const* names,
+                          char* const* files, size_t count, SnxProgram* program, char* error, size_t error_size) {
     /* paths->keys and paths->title_keys, when given, are the files the keys are read from */
     SnxDump opened;
     SnxHacFs* fs = NULL;
@@ -625,9 +625,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     if (addon && snx_addon_kind(owner, addon) == SNX_ADDON_DLC)
         return snx_error("a DLC runs its game's code and has no program of its own: play its dump, which checks it "
                          "in the game's list of updates and DLCs");
-    if (dump ? load_dump(input, addon ? input : NULL, &key_paths, compile.quiet, NULL, NULL, 0, &program, error,
-                         sizeof(error))
-             : snx_load_program(input, &program, error, sizeof(error)))
+    if (dump ? snx_load_dump_program(input, addon ? input : NULL, &key_paths, compile.quiet, NULL, NULL, 0, &program,
+                                     error, sizeof(error))
+             : snx_load_program(input, &program, error, sizeof error))
         return dump ? 1 : snx_error("%s", error);
     if (addon && program.npdm.title_id != owner) {
         char of[17], other[17];
@@ -694,8 +694,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     }
     if (mod_count) {
         snx_free_program(&program);
-        if (dump ? load_dump(input, addon ? input : NULL, &key_paths, compile.quiet, mod_names, mod_files, mod_count,
-                             &program, error, sizeof error)
+        if (dump ? snx_load_dump_program(input, addon ? input : NULL, &key_paths, compile.quiet, mod_names, mod_files,
+                                         mod_count, &program, error, sizeof error)
                  : snx_load_program_mods(input, mod_names, mod_files, mod_count, &program, error, sizeof error)) {
             if (!dump) snx_error("%s", error);
             goto done;

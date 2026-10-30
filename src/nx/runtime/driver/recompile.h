@@ -3,6 +3,7 @@
 #ifndef SNX_RECOMPILE_H
 #define SNX_RECOMPILE_H
 #include "common/utilities/common.h"
+#include "nx/loader/loader.h"
 #include "nx/runtime/ini.h"
 /* the ABI stamped into the games this build recompiles */
 unsigned snx_game_abi(void);
@@ -19,6 +20,11 @@ int snx_deploy_runtime(const char* run, const char* exe);
 /* -r: recompiles the game the arguments name. Not snx_recompile, the recompiler library's, which the Linux runtime
    links into the same program (src/multicall) */
 int snx_recompile_game(int argc, char** argv, const SnxPaths* paths);
+/* a dump's program, its ExeFS read in place with the mods' files names[i] from paths[i] over it (count of them), and
+   its control.nacp out of its Control NCA: nothing is extracted (a game's code read the way the runtime reads it, for
+   a game whose dump it reads in place). 0, else nonzero, said why */
+int snx_load_dump_program(const char* dump, const char* update, const SnxPaths* paths, int quiet, char* const* names,
+                          char* const* files, size_t count, SnxProgram* program, char* error, size_t error_size);
 /* a setting of the recompile (settings.txt's recompile and llvm tables), which --KEY=VALUE sets; NULL for another key */
 const IniOpt* snx_recompile_setting(const char* key);
 #endif
