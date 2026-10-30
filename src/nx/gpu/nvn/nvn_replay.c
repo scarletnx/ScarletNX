@@ -31,14 +31,14 @@
    writes, an event's add of v to what is there) */
 enum { FX_FENCE, FX_WRITE, FX_ADD };
 
-enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT };
+enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT, JOB_DESTROY };
 
 u32 nvn_replay_queue(void) {
     u32 i;
     pm_lock(&g_nvn.replay.lock);
-    if (g_nvn.replay.n == NVN_QUEUES) fatal("nvn: more than %d queues", NVN_QUEUES);
+    for (i = 0; i < NVN_QUEUES && g_nvn.replay.q[i].syncpt; i++) {}
+    if (i == NVN_QUEUES) fatal("nvn: more than %d live queues", NVN_QUEUES);
     if (!g_nvn.replay.shown) g_nvn.replay.shown = syncpt_alloc();
-    i = g_nvn.replay.n++;
     nvn_draw_init(&g_nvn.replay.q[i].d, 0x80000000u | i); /* renderer.h: the NVN replay's queues from 0x80000000 */
     g_nvn.replay.q[i].syncpt = syncpt_alloc();
     pm_unlock(&g_nvn.replay.lock);
@@ -208,6 +208,10 @@ static void run(void* arg) {
             break;
         }
         case JOB_FENCE: stream_incr(q->syncpt); break;
+        case JOB_DESTROY:
+            nvn_draw_free(&q->d);
+            stream_incr(q->syncpt);
+            break;
         case JOB_PRESENT: {
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
@@ -275,6 +279,18 @@ void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     s->shown = shown;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
     gpu_call(run, job(queue, JOB_FENCE, 0), NULL, 0);
+    pm_unlock(&g_nvn.replay.lock);
+}
+void nvn_replay_queue_free(u32 queue) {
+    u32 id = nvn_replay_syncpt(queue), value;
+    pm_lock(&g_nvn.replay.lock);
+    value = syncpt_promise(id, 1);
+    gpu_call(run, job(queue, JOB_DESTROY, 0), NULL, 0);
+    pm_unlock(&g_nvn.replay.lock);
+    syncpt_wait(id, value, -1);
+    pm_lock(&g_nvn.replay.lock);
+    syncpt_free(id);
+    g_nvn.replay.q[queue - 1] = (NvnReplayQueue){0};
     pm_unlock(&g_nvn.replay.lock);
 }
 void nvn_replay_finish(u32 queue) {

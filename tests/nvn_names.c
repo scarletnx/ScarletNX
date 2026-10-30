@@ -187,6 +187,7 @@ u32 nvn_replay_syncpt(u32 queue) {
 }
 u32 nvn_replay_shown_syncpt(void) { return 0; }
 void nvn_replay_finish(u32 queue) { (void)queue; }
+void nvn_replay_queue_free(u32 queue) { (void)queue; }
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     (void)queue;
     (void)sync;

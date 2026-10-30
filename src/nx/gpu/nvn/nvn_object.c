@@ -48,6 +48,12 @@ static void st64(u64 a, u64 v) { memcpy(GP(a), &v, sizeof v); }
 #define SET64(a, field, v) st64(a, nvn_set_field(ld64(a), field, (u64)(v)))
 
 /* ============================================================ device */
+/* The optional external debugger has no connection in this runtime. Its enable notification has no device or
+   rendering side effects when no debugger is attached. */
+void nvn_SetExternalDebuggerEnabledNVX(CPU* c, int enabled) {
+    (void)c;
+    (void)enabled;
+}
 /* nvnDeviceGetInteger's answers, items 0 to 0x68. Every item the game's own driver answers with a constant comes from
    that driver (nvn_device_driver, before the game asks): its API version (a game refuses another), the GPU code
    versions its shaders are checked against, and the rest. This table holds the others, which the driver reads from
