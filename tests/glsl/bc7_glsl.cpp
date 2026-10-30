@@ -190,6 +190,28 @@ static void picture_psnr() {
     }
 }
 
+// a block whose every alpha is 255 comes back with every alpha 255, and one whose every alpha is 0 with every alpha 0,
+// whatever its colours: the p-bit a mode 6 end shares with its colours would otherwise make 254 or 1 of them where
+// that is nearer for the colours
+static void alpha_kept() {
+    std::vector<glsl::leuint> texels(128 * 128);
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 128; x++) {
+            const uint32_t rgb = picture(x, y) & 0xFFFFFFu;
+            texels[(size_t)y * 128 + x] = rgb | (x < 64 ? 0xFF000000u : 0u);
+        }
+    const auto blocks = encode(texels, 128, 128, 1);
+    const auto got = decode(blocks.data(), 128, 128);
+    for (size_t i = 0; i < texels.size(); i++)
+        if (got[i * 4 + 3] != byte_of(texels[i], 3)) {
+            std::fprintf(stderr, "FAIL texel %zu: alpha %u, every alpha of its block %u\n", i, got[i * 4 + 3],
+                         byte_of(texels[i], 3));
+            failures++;
+            return;
+        }
+    std::puts("PASS opaque blocks stay 255 and transparent ones 0");
+}
+
 // sizes that are not a multiple of 4 (the last blocks repeat the edge texels) and a strip of three slices in one
 // dispatch: each slice's blocks are the ones it gets encoded alone
 static void shapes() {
@@ -219,6 +241,7 @@ int main() {
     constant_blocks();
     exact_lines();
     picture_psnr();
+    alpha_kept();
     shapes();
     if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
     return failures ? 1 : 0;

@@ -23,6 +23,11 @@ uint best_q1;
 uint best_lo;
 uint best_hi;
 uint best_err;
+/* the p-bit pairs a block may take: 0 to 3, or only 3 (both ends' bit 1) for a block whose every alpha is 255, only
+   0 for one whose every alpha is 0, so that it keeps that alpha exactly: a nearly opaque texel blends, and a nearly
+   transparent one passes an alpha test of more than nought */
+uint pp_first;
+uint pp_last;
 
 uint Ch(uint word, uint c) {
     return (word >> (c * 8u)) & 0xFFu;
@@ -94,9 +99,9 @@ uint Quant(int v, uint p) {
     return (uint(e) << 1u) | p;
 }
 
-/* a candidate line, a0 to a3 one end and b0 to b3 the other (RGBA, 0 to 255): its four p-bit pairs, the best kept */
+/* a candidate line, a0 to a3 one end and b0 to b3 the other (RGBA, 0 to 255): its p-bit pairs, the best kept */
 void Try(int a0, int a1, int a2, int a3, int b0, int b1, int b2, int b3) {
-    for (uint pp = 0u; pp < 4u; pp++) {
+    for (uint pp = pp_first; pp <= pp_last; pp++) {
         const uint p0 = pp & 1u, p1 = pp >> 1u;
         const uint q0 = Quant(a0, p0) | (Quant(a1, p0) << 8u) | (Quant(a2, p0) << 16u) | (Quant(a3, p0) << 24u);
         const uint q1 = Quant(b0, p1) | (Quant(b1, p1) << 8u) | (Quant(b2, p1) << 16u) | (Quant(b3, p1) << 24u);
@@ -181,6 +186,8 @@ uvec4 Encode() {
     }
     if (hi3 - lo3 > span) wide = 3u;
     const int sw = wide == 0u ? s0 : wide == 1u ? s1 : wide == 2u ? s2 : s3;
+    pp_first = lo3 == 255 ? 3u : 0u;
+    pp_last = hi3 == 0 ? 0u : 3u;
     /* covariances with the widest channel, sixteen times each value against sixteen times the mean: under 2^28 */
     int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
     for (uint k = 0u; k < 16u; k++) {
