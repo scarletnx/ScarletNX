@@ -1172,12 +1172,35 @@ static char* gdb_tool(Mcp* m, const char* name, yyjson_val* args, Text* err) {
         const char* game = arg_string(args, "game");
         char* folder = game ? game_folder(m, game, err) : NULL;
         char* text = NULL;
+        long port;
         if (game && !folder) return NULL;
         if (folder && !game_get(m, folder, err)) { /* loaded now: names that won't come should say why at once */
             free(folder);
             return NULL;
         }
-        text = mcp_gdb_attach(arg_number(args, "port", 1234), err);
+        /* the stub this server left for that game takes its own port (game_run's answer names it); 1234 is the
+           default for one started by hand, and another session's stub may be on that one */
+        port = arg_number(args, "port", -1);
+        if (port < 0) {
+            port = folder ? mcp_stub_port(folder) : 0;
+            if (port <= 0) port = SNX_GDB_PORT;
+        }
+        text = mcp_gdb_attach(port, err);
+        if (text && folder) {
+            /* a stub takes one connection per run, and this server's run of that game holds its own port: the one
+               game_run's answer names. Another session's stub on 1234 would otherwise be read as this game's */
+            int own = mcp_stub_port(folder);
+            if (own && own != port) {
+                mcp_put(err, "that game's stub, the run this server left, is on port ");
+                mcp_put_num(err, (unsigned long)own);
+                mcp_put(err, "; the one at ");
+                mcp_put_num(err, (unsigned long)port);
+                mcp_put(err, " is another's (game_run's answer names the port)");
+                free(text);
+                mcp_gdb_detach(err);
+                return NULL;
+            }
+        }
         if (text) {
             free(m->gdb_game);
             m->gdb_game = folder;
