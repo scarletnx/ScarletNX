@@ -39,4 +39,15 @@ if(NM)
         endif()
     endforeach()
 endif()
+# With PRELOAD, a library that wraps pthread_cond_init and allocates inside it: the program still starts and ends.
+# jemalloc's background threads initialise a condition variable inside malloc's first call, which then enters itself
+# and waits on its own lock (the AppImage's cross-libc-dlopen.so did it, cmake/jemalloc_defs.cmake)
+if(PRELOAD)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env "LD_PRELOAD=${PRELOAD}" "${PROGRAM}" --help
+                    OUTPUT_QUIET ERROR_VARIABLE err RESULT_VARIABLE rc TIMEOUT 30)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "${PROGRAM} --help with ${PRELOAD} preloaded, a pthread_cond_init that allocates, ended "
+                            "with \"${rc}\" (a timeout of 30 s is malloc's first call waiting on itself): ${err}")
+    endif()
+endif()
 message(STATUS "${PROGRAM}: jemalloc ${VERSION} is its malloc")

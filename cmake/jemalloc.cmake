@@ -56,7 +56,10 @@ if(snx_jemalloc_launcher)
 endif()
 
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake)
-snx_deps_cached(jemalloc snx_jemalloc_cache "source: ${snx_jemalloc_sha256}" "configure: ${snx_jemalloc_args}")
+# The header step below changes what is built, so its file is part of the key
+file(SHA256 "${PROJECT_SOURCE_DIR}/cmake/jemalloc_defs.cmake" snx_jemalloc_defs_sha256)
+snx_deps_cached(jemalloc snx_jemalloc_cache "source: ${snx_jemalloc_sha256}" "configure: ${snx_jemalloc_args}"
+                "defs: ${snx_jemalloc_defs_sha256}")
 if(snx_jemalloc_cache_FOUND)
     set(snx_jemalloc_prefix "${snx_jemalloc_cache_DIR}")
 else()
@@ -71,6 +74,10 @@ else()
         BINARY_DIR "${PROJECT_BINARY_DIR}/jemalloc-build"
         INSTALL_DIR "${snx_jemalloc_prefix}"
         CONFIGURE_COMMAND "${snx_jemalloc_src}/configure" --prefix=${snx_jemalloc_prefix} ${snx_jemalloc_args}
+        # without background threads, which configure cannot leave out (cmake/jemalloc_defs.cmake)
+        COMMAND "${CMAKE_COMMAND}"
+                "-DDEFS=${PROJECT_BINARY_DIR}/jemalloc-build/include/jemalloc/internal/jemalloc_internal_defs.h"
+                -P "${PROJECT_SOURCE_DIR}/cmake/jemalloc_defs.cmake"
         # the install is part of the build step, as for OpenSSL: the library below is its byproduct. The _pic archive
         # is the one made of position-independent objects, which a PIE program links
         BUILD_COMMAND "${SNX_JEMALLOC_MAKE}" -j${snx_jemalloc_jobs} build_lib_static ${snx_jemalloc_make_cc}
@@ -81,6 +88,8 @@ else()
         LOG_BUILD ON
         LOG_INSTALL ON
         LOG_OUTPUT_ON_FAILURE ON)
+    # configure again when the header step changes, as when jemalloc's source does
+    ExternalProject_Add_StepDependencies(jemalloc_build configure "${PROJECT_SOURCE_DIR}/cmake/jemalloc_defs.cmake")
     snx_deps_publish(jemalloc_build jemalloc "${snx_jemalloc_prefix}" "${snx_jemalloc_cache_DIR}")
 endif()
 
