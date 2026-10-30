@@ -241,7 +241,36 @@ interface nn::am::service::ITransferStorageAccessor {
 # it, and takes the sessions it drives the graphics stack with (its own, the syncpoint's and the GPU's) from its
 # answers. A command nothing declares answers success with zeros, as the console's geometry and memory stack aren't
 # emulated (Eden's Switch 2 work answers them the same way until each one is needed), except 1402, which hands out the
-# NVIDIA driver's session a copy handle to it, as its Switch 2 OpenNvsrvSession does with nvdrv's own devices
+# NVIDIA driver's session a copy handle to it, as its Switch 2 OpenNvsrvSession does with nvdrv's own devices, and 202
+# and 204, which open the syncpoint session nn::syncpt::sdk::InitializeEx boots with
 interface nn::am::service::IGraphicsSystemSession {
+    [202] OpenSyncpointSession() -> handle<copy, session> session;
+    # Two transfer memories (read-write, then read-only), whose read-only one the server lays out: Eden's Switch 2
+    # AttachSyncptMemory describes the header its offsets name. The reply is the two events the client waits between
+    [204] AttachSyncpointMemory(u32 version, u32 count, handle<copy, transfer_memory> read_write,
+                                handle<copy, transfer_memory> read_only)
+        -> (handle<copy, event> request, handle<copy, event> notify);
     [1402] OpenNvsrvSession() -> handle<copy, session> session;
+    # A Switch 2 SDK's nn::gpu::sdk::BootWithRemoteMemory opens its GPU session under 497, which it then asks for an
+    # id range, an event per id and starts the id it waits on. Eden's Switch 2 work answers it the same way
+    [497] OpenGpuSession(u64 size) -> handle<copy, session> session;
+}
+
+# The Switch 2 GPU session, which gsv 497 hands back: the ids its SDK manages and the events it waits on. Nothing is
+# served yet: an answered command is a success with zeros, as the console's GPU stack isn't emulated
+interface nn::am::service::IGpuSession {
+}
+
+# The Switch 2 syncpoint server nn::syncpt::sdk::InitializeEx gets from gsv 202, over TIPC: it handshakes with a token
+# it must get back, takes a slot event per slot and arms one (a counter, which is the bitwise NOT of a syncpoint id)
+# for a value, and reads a counter back. Eden's Switch 2 work answers them as these do
+interface nn::am::service::ISyncpointSession {
+    # the SDK handshakes with a token it must get back: the echo is its own argument
+    [0] Handshake(u64 request) -> u64 reply;
+    [1] GetCount() -> u32 count;
+    [22] GetSlotEvent(u32 slot) -> handle<copy, event> event;
+    [103] QueryCounter(u32 counter) -> (u32 value_low, u32 value_high, u32 zero);
+    # slot, the counter to watch, the value it must reach, and a mode (0 compares 32-bit wrapping, 1 64-bit)
+    [201] RequestSlotEvent(u32 slot, u32 counter, u64 value, u32 mode);
+    [202] CancelSlotEvent(u32 slot);
 }

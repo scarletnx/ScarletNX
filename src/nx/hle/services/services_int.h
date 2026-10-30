@@ -174,6 +174,8 @@ typedef struct {
 #define AM_ACCESSORS 256 /* a storage's accessors: one each while the game reads or writes it, usually just opened */
 #define AM_VOLUMES   64  /* the audio controllers: one per proxy a game opens, which it does a few times */
 #define AM_LOCKS     64  /* the lock accessors: one for each button reader or writer a game asks for */
+#define AM_SYNCPT_SESSIONS 4 /* a Switch 2 program's syncpoint sessions: its applet's and its own */
+#define AM_SYNCPT_COUNT    32 /* the count its session answers: the SDK needs a u32 < 0x400 */
 /* the library applets: one runs at a time, and a game keeps few accessors after (a keyboard inline, one shown) */
 #define AM_APPLETS 32
 /* IStorage's data: its bytes in d, or a transfer memory's guest pages */
@@ -201,9 +203,28 @@ typedef struct {
     int locked;
     u32 event;
 } AmLock;
-/* ILibraryAppletAccessor's */
+/* The Switch 2 syncpoint session's (am.c): the slots its RequestSlotEvent armed. A slot's event is signaled once the
+   syncpoint it armed reaches the threshold, which am.c's poller watches, as Eden's Switch 2 work does */
+#define AM_SYNCPT_SLOTS 64
 typedef struct {
     u32 obj;
+    u32 ev[AM_SYNCPT_SLOTS]; /* each slot's event, made on first use */
+    u32 armed_id[AM_SYNCPT_SLOTS], armed_thresh[AM_SYNCPT_SLOTS];
+    u8 armed[AM_SYNCPT_SLOTS];
+} AmSyncpt;
+/* The shared page gsv 204 attached, which every syncpoint session of the application reads (am.c). One per
+   application, as the console has one graphics system: its flat part (a save state holds it as it is) and the host
+   bytes the service writes, which a save state never holds (g_host.am) */
+typedef struct {
+    int attached;
+    u32 count;
+    u32 request_ev, notify_ev;
+} AmSyncptPage;
+typedef struct {
+    u8 *rw, *ro; /* the two pages' host bytes, and the guest addresses they were attached for */
+} AmSyncptHost;
+/* ILibraryAppletAccessor's */
+typedef struct {    u32 obj;
     u32 applet_id, mode;
     u32 state_ev, out_ev, interactive_ev;
     SvcObj* in[AM_IN_DATA]; /* the storages the game pushed, in order (common arguments first) */
@@ -249,7 +270,9 @@ typedef struct {
     AmVolumes volumes[AM_VOLUMES];
     AmLock lock_objs[AM_LOCKS];
     LibApplet applets[AM_APPLETS];
-    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next;
+    AmSyncpt syncpts[AM_SYNCPT_SESSIONS];
+    AmSyncptPage syncpt_page;
+    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next;
 } HleAm;
 /* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host). And under lock, the
    software keyboard's box over the game (am.c), the host's too: the ticket of the box shown last (0 none), whether it
@@ -264,6 +287,8 @@ typedef struct {
     u32 kb_answered;
     int kb_cancelled;
     char kb_text[OVERLAY_KB_TEXT];
+    /* the Switch 2 syncpoint page's host bytes, which a save state never holds */
+    AmSyncptHost syncpt;
 } HostAm;
 
 /* ---- audio.c */

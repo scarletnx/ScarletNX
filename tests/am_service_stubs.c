@@ -90,3 +90,14 @@ void out_move_h(IpcCtx* c, u32 h) {
 }
 /* nvdrv's own interface, which the graphics system session's 1402 hands out (am.c): no NVIDIA devices in a test */
 SvcObj* nvdrv_session(void) { return NULL; }
+/* the host's threads and syncpoints, which the Switch 2 syncpoint session's poller waits on: neither exists in a
+   test, so the values it reads never move and no thread is started */
+int plat_thread(PThreadFn fn, void* arg, size_t stack) {
+    (void)fn, (void)arg, (void)stack;
+    return -1;
+}
+void plat_sleep_ns(i64 ns) { (void)ns; }
+u32 syncpt_read(u32 id) {
+    (void)id;
+    return 0;
+}

@@ -228,6 +228,254 @@ static int nn_am_service_IGraphicsSystemSession_OpenNvsrvSession(SvcObj* self, u
     *session = session_new(nvdrv_session());
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
+/* gsv 497: the GPU session a Switch 2 title's nn::gpu boots with, which it then asks for an id range and an event per
+   id on. Its commands answer with success and zeros for now, as the console's GPU stack isn't emulated here */
+static int nn_am_service_IGraphicsSystemSession_OpenGpuSession(SvcObj* self, u64 size, u32* session) {
+    (void)self, (void)size;
+    *session = session_new(nn_am_service_IGpuSession_new());
+    return *session ? 0 : AM_OUT_OF_HANDLES;
+}
+
+/* ============================================ the Switch 2 syncpoint session (am.swipc) */
+/* The shared page AttachSyncpointMemory (gsv 204) laid out: one per application, as the console has one graphics
+   system, which gsv 202's syncpoint sessions read. Its offsets are the ones Eden's Switch 2 work writes, and the
+   client requires ((count + 0x40) >> 6) - 1 < 0x40 */
+#define AM_SYNCPT_RO_VALUES  0x40   /* u64 values, read-only */
+#define AM_SYNCPT_RO_SUMMARY 0x1040 /* the summary word, read-only */
+#define AM_SYNCPT_RO_BITS    0x1100 /* the armed bits, read-only */
+#define AM_SYNCPT_RW_SUMMARY 0x0    /* the summary word, read-write */
+#define AM_SYNCPT_RW_BITS    0x100  /* the armed bits, read-write */
+#define AM_SYNCPT_RW_BITS_END 0x300 /* where the page's own data ends, past the armed bits it maps */
+#define AM_SYNCPT_POLL_NS    500000 /* the poller's period, as the reference's 500 us is */
+/* most syncpoints the read-only page's values hold, and the count a client asking for more is given */
+#define AM_SYNCPT_MAX ((0x1000 - AM_SYNCPT_RO_VALUES) / 8)
+
+static PMutex g_am_syncpt_lk = PMUTEX_INIT;
+static int g_am_syncpt_poller;
+
+/* the syncpoint a counter names: the SDK sends the bitwise NOT of the syncpoint id, as the reference reads it. An id
+   nothing allocated here reads 0 and never counts as reached */
+static u32 am_syncpt_id(u32 counter) { return ~counter < SYNCPT_IDS ? ~counter : 0; }
+/* a session's own data, or NULL when it has none */
+static AmSyncpt* am_syncpt(SvcObj* self) {
+    return self && self->data ? (AmSyncpt*)self->data : NULL;
+}
+/* A slot's event, made on first use (the session keeps a reference of its own, so a game closing its handle doesn't
+   free one a later syncpoint increment signals). 0 without memory, or for a slot past the table */
+static u32 am_syncpt_event(AmSyncpt* s, u32 slot) {
+    KEvent* e;
+    if (slot >= AM_SYNCPT_SLOTS) return 0;
+    if (!s->ev[slot]) {
+        if (!(e = kevent_new("nx2 syncpt slot"))) return 0;
+        kobj_ref(&e->o);
+        s->ev[slot] = kobj_id(&e->o);
+    }
+    return s->ev[slot];
+}
+/* Mirrors the syncpoint values into the read-only page and answers the armed slots their syncpoints reached, as
+   Eden's Switch 2 PollSyncpts does. A wait whose value the armed bits have moved is answered by making the
+   read-only bits match, and the client rereads the value and re-arms if it still has to wait; a slot armed for a
+   syncpoint that got to its threshold is signaled out of hand. The values are the host's syncpoints, which the GPU,
+   video and host1x threads increment */
+static void am_syncpt_poll(void) {
+    AmSyncpt* s;
+    u8* ro;
+    u32 i, words;
+    ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL;
+    if (ro) {
+        u64* values = (u64*)(ro + AM_SYNCPT_RO_VALUES);
+        u32 count = g_hle.am.syncpt_page.count;
+        for (i = 0; i < count && i < SYNCPT_IDS; ++i) values[i] = syncpt_read(i);
+        words = (count + 63) / 64;
+        for (i = 0; i < words && i < AM_SYNCPT_SLOTS / 64; ++i) {
+            u64 rw = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_BITS + 8 * i);
+            *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = rw;
+        }
+        *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_SUMMARY);
+    }
+    pm_lock(&g_am_syncpt_lk);
+    for (i = 0; i < AM_SYNCPT_SESSIONS; ++i) {
+        s = &g_hle.am.syncpts[i];
+        for (u32 slot = 0; slot < AM_SYNCPT_SLOTS; ++slot) {
+            u32 id, thresh;
+            if (!s->armed[slot]) continue;
+            id = am_syncpt_id(s->armed_id[slot]);
+            thresh = (u32)(s->armed_thresh[slot] ? s->armed_thresh[slot] : 1);
+            if (!id || (i32)(syncpt_read(id) - thresh) >= 0) {
+                s->armed[slot] = 0;
+                ev_signal(s->ev[slot]);
+            }
+        }
+    }
+    pm_unlock(&g_am_syncpt_lk);
+}
+/* the poller: one thread for the run, started by the first session that attaches its page */
+static void am_syncpt_run(void* arg) {
+    (void)arg;
+    for (;;) {
+        am_syncpt_poll();
+        plat_sleep_ns(AM_SYNCPT_POLL_NS);
+    }
+}
+static void am_syncpt_start(void) {
+    if (__atomic_exchange_n(&g_am_syncpt_poller, 1, __ATOMIC_ACQ_REL)) return;
+    if (plat_thread(am_syncpt_run, NULL, 0x4000)) /* no thread: the values are current, so a wait only wakes late */
+        __atomic_store_n(&g_am_syncpt_poller, 0, __ATOMIC_RELEASE);
+}
+
+/* gsv 202: the syncpoint session nn::syncpt::sdk::InitializeEx sends TIPC commands on, a session of its own */
+static int nn_am_service_IGraphicsSystemSession_OpenSyncpointSession(SvcObj* self, u32* session) {
+    SvcObj* o;
+    (void)self;
+    o = nn_am_service_ISyncpointSession_new_data(g_hle.am.syncpts, g_hle.am.syncpt_next, "nx2 syncpt sessions");
+    if (!o) return AM_OUT_OF_MEMORY;
+    *session = session_new(o);
+    return *session ? 0 : AM_OUT_OF_HANDLES;
+}
+/* gsv 204: the two transfer memories the client lays its waits over, whose read-only one the server answers with a
+   header naming where each field it reads lies, and the two events it waits between */
+static int nn_am_service_IGraphicsSystemSession_AttachSyncpointMemory(SvcObj* self, u32 version, u32 count,
+                                                                      u32 read_write, u32 read_only, u32* request,
+                                                                      u32* notify) {
+    KTmem *rwt, *rot;
+    u8 *rw, *ro;
+    u32 words;
+    (void)self;
+    rwt = (KTmem*)h_get_ref(read_write, KO_TMEM);
+    if (!rwt) return AM_INVALID_STORAGE;
+    rot = (KTmem*)h_get_ref(read_only, KO_TMEM);
+    if (!rot) {
+        kobj_unref(&rwt->o);
+        return AM_INVALID_STORAGE;
+    }
+    /* the read-only page holds the syncpoint values and the armed bits, so the console asks for 0x2000 of it. The
+       count it asks for may name more syncpoints than the values page holds: the console caps it there, and so does
+       this (Eden's Switch 2 work takes min(asked, (0x1000 - 0x40) / 8)) */
+    rw = GP(rwt->addr);
+    ro = GP(rot->addr);
+    if (rot->size < 0x2000 || rwt->size < AM_SYNCPT_RW_BITS_END || version > 1 || !count) {
+        kobj_unref(&rwt->o);
+        kobj_unref(&rot->o);
+        return AM_INVALID_OFFSET;
+    }
+    if (!g_hle.am.syncpt_page.request_ev) {
+        new_event(&g_hle.am.syncpt_page.request_ev, "nx2 syncpt request", 0);
+        if (!g_hle.am.syncpt_page.request_ev) { /* the handle table is full */
+            kobj_unref(&rwt->o);
+            kobj_unref(&rot->o);
+            return AM_OUT_OF_HANDLES;
+        }
+    }
+    if (!g_hle.am.syncpt_page.notify_ev) {
+        new_event(&g_hle.am.syncpt_page.notify_ev, "nx2 syncpt notify", 0);
+        if (!g_hle.am.syncpt_page.notify_ev) {
+            kobj_unref(&rwt->o);
+            kobj_unref(&rot->o);
+            return AM_OUT_OF_HANDLES;
+        }
+    }
+    /* the page's guest addresses are held, not the objects: the game unmaps them when it has no further use for the
+       syncpoint session, and the values it last wrote back are what stays there */
+    if (count > AM_SYNCPT_MAX) count = AM_SYNCPT_MAX;
+    pm_lock(&g_am_syncpt_lk);
+    g_hle.am.syncpt_page.attached = 0;
+    g_host.am.syncpt.rw = rw;
+    g_host.am.syncpt.ro = ro;
+    g_hle.am.syncpt_page.count = count;
+    g_hle.am.syncpt_page.attached = 1;
+    pm_unlock(&g_am_syncpt_lk);
+    kobj_unref(&rwt->o);
+    kobj_unref(&rot->o);
+    snx_st_le32(ro + 0x00, 1);     /* the version it got, as it asked for */
+    snx_st_le32(ro + 0x04, 0);     /* the base syncpoint id */
+    snx_st_le32(ro + 0x08, count); /* how many syncpoints the page holds */
+    snx_st_le32(ro + 0x0c, AM_SYNCPT_RO_VALUES);
+    snx_st_le32(ro + 0x10, AM_SYNCPT_RW_SUMMARY);
+    snx_st_le32(ro + 0x14, AM_SYNCPT_RO_SUMMARY);
+    snx_st_le32(ro + 0x18, AM_SYNCPT_RW_BITS);
+    snx_st_le32(ro + 0x1c, AM_SYNCPT_RO_BITS);
+    memset(ro + 0x20, 0, AM_SYNCPT_RO_VALUES - 0x20);
+    memset(ro + AM_SYNCPT_RO_VALUES, 0, AM_SYNCPT_RO_SUMMARY - AM_SYNCPT_RO_VALUES);
+    memset(rw, 0, AM_SYNCPT_RW_BITS_END);
+    words = (count + 63) / 64;
+    memset(ro + AM_SYNCPT_RO_SUMMARY, 0, 8);
+    memset(ro + AM_SYNCPT_RO_BITS, 0, 8 * words);
+    *request = ev_handle(g_hle.am.syncpt_page.request_ev);
+    *notify = ev_handle(g_hle.am.syncpt_page.notify_ev);
+    am_syncpt_start();
+    return 0;
+}
+
+/* the syncpoint session's TIPC commands. Its asks are a token it must get back, a slot's event, a counter's value,
+   and an armed wait; Eden's Switch 2 work answers them the same way */
+static int nn_am_service_ISyncpointSession_Handshake(SvcObj* self, u64 request, u64* reply) {
+    (void)self;
+    *reply = request; /* the newer SDKs abort unless the token is echoed back */
+    R_SUCCEED();
+}
+static int nn_am_service_ISyncpointSession_GetCount(SvcObj* self, u32* count) {
+    (void)self;
+    *count = AM_SYNCPT_COUNT;
+    R_SUCCEED();
+}
+static int nn_am_service_ISyncpointSession_GetSlotEvent(SvcObj* self, u32 slot, u32* event) {
+    AmSyncpt* s = am_syncpt(self);
+    u32 ev;
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_syncpt_event(s, slot);
+    if (!ev) return AM_OUT_OF_MEMORY;
+    *event = ev_handle(ev);
+    return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+static int nn_am_service_ISyncpointSession_QueryCounter(SvcObj* self, u32 counter, u32* value_low, u32* value_high,
+                                                        u32* zero) {
+    u32 id;
+    u64 v;
+    (void)self;
+    id = am_syncpt_id(counter);
+    v = id ? syncpt_read(id) : 0;
+    *value_low = (u32)v;
+    *value_high = (u32)(v >> 32);
+    *zero = 0;
+    R_SUCCEED();
+}
+static int nn_am_service_ISyncpointSession_RequestSlotEvent(SvcObj* self, u32 slot, u32 counter, u64 value,
+                                                           u32 mode) {
+    AmSyncpt* s = am_syncpt(self);
+    u32 id, ev;
+    (void)mode; /* both modes compare the value against the counter's; only its width differs */
+    if (!s) return AM_OUT_OF_MEMORY;
+    if (slot >= AM_SYNCPT_SLOTS) return AM_INVALID_OFFSET;
+    ev = am_syncpt_event(s, slot);
+    if (!ev) return AM_OUT_OF_MEMORY;
+    ev_clear(ev); /* a slot is reused by different objects: a new wait starts unsignaled */
+    id = am_syncpt_id(counter);
+    pm_lock(&g_am_syncpt_lk);
+    s->armed_id[slot] = counter;
+    s->armed_thresh[slot] = (u32)value;
+    s->armed[slot] = 1;
+    pm_unlock(&g_am_syncpt_lk);
+    if (!id) { /* an id nothing allocated: it never moves, so answer at once */
+        ev_signal(ev);
+        R_SUCCEED();
+    }
+    if ((i32)(syncpt_read(id) - (u32)value) >= 0) ev_signal(ev); /* it may have got there already */
+    am_syncpt_start();
+    R_SUCCEED();
+}
+static int nn_am_service_ISyncpointSession_CancelSlotEvent(SvcObj* self, u32 slot) {
+    AmSyncpt* s = am_syncpt(self);
+    u32 ev;
+    if (!s) return AM_OUT_OF_MEMORY;
+    if (slot >= AM_SYNCPT_SLOTS) return AM_INVALID_OFFSET;
+    pm_lock(&g_am_syncpt_lk);
+    s->armed[slot] = 0;
+    pm_unlock(&g_am_syncpt_lk);
+    ev = s->ev[slot];
+    if (ev) ev_clear(ev);
+    R_SUCCEED();
+}
+
 /* IAudioController's volumes, kept on each controller as Eden keeps them (AmVolumes, services_int.h) */
 static int nn_am_service_IApplicationProxy_GetAudioController(SvcObj* self, SvcObj** controller) {
     AmVolumes* v;
