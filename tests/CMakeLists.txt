@@ -450,6 +450,12 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec 11)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_llvm)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
+# a checked block links into the AOT module for Windows x86-64, which has no compiler runtime
+add_executable(snx-test-arm-checked-link arm_checked_link.c)
+snx_test_target(snx-test-arm-checked-link 11)
+target_link_libraries(snx-test-arm-checked-link PRIVATE snx_llvm)
+add_test(NAME arm_checked_link COMMAND snx-test-arm-checked-link)
+set_tests_properties(arm_checked_link PROPERTIES SKIP_RETURN_CODE 77)
 
 # Small architectural witnesses need neither game assets nor an emulator.
 add_executable(snx-test-a64-fp a64_fp_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
