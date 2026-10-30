@@ -511,6 +511,9 @@ def main():
             call('read_log', 'outside', path=str(outside / 'secret.log')),
             call('scan_log', 'scan_outside', path=str(outside / 'secret.log')),
             call('symbolize', 'game_outside', game=str(outside / 'secret.nro'), addresses=['8000000']),
+            call('symbolize', 'game_data', game=vid, addresses=['8000080']),
+            call('read_log', 'game_log', game=rid),
+            call('read_log', 'game_folder', path=str(rgame), pattern='ScarletNX'),
             call('find_game', title_id='0100aaaabbbb0000'),
             call('find_game', 'find_none', title_id='0100000000000001'),
             call('state_info', title_id='0100AAAABBBB0000'),
@@ -926,6 +929,11 @@ def main():
     check(sm and sm[0]['line'] == 5, f'the sm request named its line: {sm}')
     at_line = text('at_line').splitlines()
     check(at_line[1].startswith('5: [   1.20]   [undeclared]'), f'read at that line: {at_line}')
+    current_run = json.loads(text('run_current_dry'))
+    check(
+        '--mods_off=ModB' in current_run['command']
+        and json.loads(text('game_info'))['current']['mods_off'] == 'ModB',
+        f"game_info's current is what game_run passes for the same selection: {current_run['command']}",
     dis = text('disassemble')
     if 'no A64 disassembler' not in dis:
         check('b\t0x80' in dis.replace(' ', '\t') or '8000080' in dis.splitlines()[0], f'the first branch:\n{dis}')
