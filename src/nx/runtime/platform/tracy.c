@@ -248,10 +248,14 @@ static void tracy_start_client(void) {
    a machine busy with a recompile can miss it: the capture gives up then, and another one takes its place. */
 static int tracy_capture_wait(void) {
     int i, j;
+    /* the capture runs the whole run: the same --seconds the run ends on, so it stops when the run does and saves
+       cleanly, instead of running 3600 s and being left recording after the runtime exits. 0 (no run limit) keeps
+       the old default */
+    int seconds = g_settings.seconds > 0 ? g_settings.seconds : SNX_TRACY_RUN_SECONDS;
     for (i = 0; i < 3; i++) {
         int status = 0;
         int gave_up = 0;
-        if (!tracy_capture_start(SNX_TRACY_RUN_SECONDS, 1)) return 0;
+        if (!tracy_capture_start(seconds, 1)) return 0;
         for (j = 0; j < 200; j++) {
             if (TracyCIsConnected) return 1;
             if (SDL_WaitProcess(g_tracy_capture, false, &status)) {
