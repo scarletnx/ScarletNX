@@ -17,7 +17,7 @@ static int compare_ids(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 bool ctr_cia_load(CtrReader* r, CtrSource* s) {
-    if (r->size > CTR_OUTPUT_LIMIT) return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "CIA exceeds 1 GiB input limit");
+    if (r->size > SNX_CTR_MAX_CONTENT) return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "CIA exceeds 4 GiB input limit");
     s->header = malloc(0x2020);
     if (!s->header) return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "out of memory");
     if (!ctr_read(r, (CtrSpan){0, r->size}, 0, s->header, 0x2020)) return false;

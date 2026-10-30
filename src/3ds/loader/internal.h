@@ -11,7 +11,6 @@
 #include <stdio.h>
 #define CTR_METADATA_LIMIT (16u * 1024u * 1024u)
 #define CTR_CODE_LIMIT     (64u * 1024u * 1024u)
-#define CTR_OUTPUT_LIMIT   1073741824ull
 /* a cartridge image is read where it lies and nothing of it is written, so it may be as large as a card: the
    biggest the console takes is 8 GiB */
 #define CTR_CARD_LIMIT (8ull * 1024ull * 1024ull * 1024ull)

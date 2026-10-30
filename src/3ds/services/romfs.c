@@ -4,6 +4,7 @@
    romfs_dev.c. Independent serializer over NX's shared host FsTree, not NX
    IPC or Switch RomFS metadata; or, without an extraction, the CIA's own
    level 3 read where it lies in the mapped CIA. */
+#include "3ds/loader/ctr_loader.h"
 #include "3ds/services/romfs.h"
 #include "common/filesystem/tree.h"
 #include "common/utilities/bits.h"
@@ -13,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 #define NONE  UINT32_MAX
-#define LIMIT 1073741824ull
 typedef struct {
     FsNode* node;
     uint32_t parent, next, child, file, off;
@@ -91,7 +91,7 @@ static bool measure(FsNode* node, Measure* m, bool root) {
         ++m->files;
         m->file_bytes += 32 + ((bytes + 3) & ~3u);
         uint64_t aligned = snx_align_up(m->data, 16);
-        if (aligned > LIMIT || node->size > LIMIT - aligned) return false;
+        if (aligned > SNX_CTR_MAX_CONTENT || node->size > SNX_CTR_MAX_CONTENT - aligned) return false;
         m->data = aligned + node->size;
     }
     return true;
@@ -208,7 +208,7 @@ bool snx_ctr_romfs_open(FsTree* tree, SnxCtrRomfs** out) {
                                       + m.file_bytes, 16);
     uint64_t alloc =
         sizeof(SnxCtrRomfs) + (uint64_t)m.dirs * sizeof(Dir) + (uint64_t)m.files * sizeof(File) + meta_size;
-    if (meta_size + m.data > LIMIT || alloc > SIZE_MAX) goto fail;
+    if (meta_size + m.data > SNX_CTR_MAX_CONTENT || alloc > SIZE_MAX) goto fail;
     SnxCtrRomfs* r = calloc(1, (size_t)alloc);
     if (!r) goto fail;
     r->tree = tree;
@@ -250,7 +250,7 @@ bool snx_ctr_romfs_open_image(const unsigned char* image, uint64_t size, uint64_
         *out = r;
         return true;
     }
-    if (size < 0x28 || size > LIMIT) return false;
+    if (size < 0x28 || size > SNX_CTR_MAX_CONTENT) return false;
     SnxCtrRomfs* r = calloc(1, sizeof *r);
     if (!r) return false;
     r->image = image;

@@ -195,6 +195,26 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-file-position PRIVATE snx_ctr_loader)
     add_test(NAME 3ds_file_position COMMAND snx-test-3ds-file-position)
     set_tests_properties(3ds_file_position PROPERTIES SKIP_RETURN_CODE 77)
+    # the CIA input's 4 GiB check and the extraction budget, on sparse files: no gigabyte is read or written
+    add_executable(snx-test-3ds-loader-limit 3ds_loader_limit.c support/sparse_file.c)
+    snx_test_target(snx-test-3ds-loader-limit 11)
+    target_link_libraries(snx-test-3ds-loader-limit PRIVATE snx_ctr_loader)
+    add_test(NAME 3ds_loader_limit COMMAND snx-test-3ds-loader-limit)
+    set_tests_properties(3ds_loader_limit PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        # the level-3 view's bound, on a mapped sparse image of its size: 4 GiB + 1 byte is refused, 4 GiB is read
+        add_executable(snx-test-3ds-romfs-limit 3ds_romfs_limit.c support/sparse_file.c)
+        snx_test_target(snx-test-3ds-romfs-limit 11)
+        target_link_libraries(snx-test-3ds-romfs-limit PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_romfs_limit COMMAND snx-test-3ds-romfs-limit)
+        set_tests_properties(3ds_romfs_limit PROPERTIES SKIP_RETURN_CODE 77)
+        # a RomFS built from a host file whose data lies past 2 GiB, read through the on-demand path (fd < 0)
+        add_executable(snx-test-3ds-romfs-large 3ds_romfs_large.c support/sparse_file.c)
+        snx_test_target(snx-test-3ds-romfs-large 11)
+        target_link_libraries(snx-test-3ds-romfs-large PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_romfs_large COMMAND snx-test-3ds-romfs-large)
+        set_tests_properties(3ds_romfs_large PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    endif()
 
     # The GPU, presentation and DSP tests need neither Python nor POSIX, and Windows is a 3DS target too
     # the GPU's transfer engine against the CPU reference (gpu/transfer.c), on whatever Vulkan device there is

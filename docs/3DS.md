@@ -537,7 +537,8 @@ user's keys as above, without seed crypto), a cartridge image's game partition a
 update partition, and a bare NCCH — not a cartridge's manual or DLP partitions as
 content of their own, DLC, system titles or nonstandard NCCH media units/platforms. A
 cartridge image may be as large as a card (8 GiB), since it is read where it lies; a
-CIA's input and the total materialized output are each capped at 1 GiB; metadata tables at 16 MiB,
+CIA's input, the total materialized output and a RomFS view are each capped at 4 GiB
+(the runtime's policy, not a format limit); metadata tables at 16 MiB,
 code at 64 MiB, entries at 100000, and RomFS nesting at 64. Host filenames must
 be portable safe components (maximum 255 UTF-8 bytes); unsafe/reserved names
 are rejected rather than silently renamed. Host paths with control characters
