@@ -75,6 +75,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/gpu/texture/astc.comp` (the ASTC decoder shader, compiled into `astc_spv.h`) | Eden and yuzu (`astc_decoder.comp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `tests/support/astc.c` and `astc.h` (the CPU ASTC decoder the tests check the shader against) | Eden and yuzu (`textures/astc.cpp`), with the University of North Carolina at Chapel Hill's FasTC decoder in it | GPL-3.0-or-later, GPL-2.0-or-later, Apache 2.0 |
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
+| `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, libadrenotools' call; Freedreno Settings' presets) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/gui/i18n.c` (`snx_mo_lookup`, the reader of the menu's catalogs; notice in [`src/gui/MUSL-NOTICE.txt`](../src/gui/MUSL-NOTICE.txt)) | musl (`src/locale/__mo_lookup.c`) | MIT |
 | `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 
