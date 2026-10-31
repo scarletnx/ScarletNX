@@ -601,7 +601,9 @@ static void frontend_loop(void) {
             save_hints();
             if (g_renderer->save) g_renderer->save(0);
         }
-        if (tick % 900 == 0) write_threads(tick / VI_REFRESH_HZ);
+        /* Walking every guest stack is diagnostic work, not a normal frontend tick. Real stalls still dump below;
+           a verbose run explicitly opts into periodic snapshots. */
+        if (tick % 900 == 0 && g_settings.log_level >= 2) write_threads(tick / VI_REFRESH_HZ);
         now = plat_ns();
         shown = __atomic_load_n(&g_frames, __ATOMIC_RELAXED);
         /* the pace the game is shown at, in the log every five seconds: a phone has no overlay to read it from */

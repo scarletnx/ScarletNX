@@ -45,6 +45,7 @@ V ir_vec_read(SnxIr* ir, unsigned n, unsigned esz, unsigned first, unsigned lane
 }
 
 static void store_at(SnxIr* ir, unsigned d, size_t at, V value) {
+    ir_vectors_invalidate(ir);
     V store = LLVMBuildStore(B, ir_guest_order(ir, value), ir_cpu(ir, ir_off_v(d) + at));
     LLVMSetAlignment(store, alignment_of(at));
     ir_tag_cpu(ir, store);

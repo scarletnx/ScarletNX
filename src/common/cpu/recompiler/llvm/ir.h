@@ -82,6 +82,14 @@ typedef struct {
     uint32_t valid;
 } SnxIrRegisterCache;
 
+/* Low scalar lanes in guest numeric order. A write to any vector register, an unknown call or a new block drops
+   the snapshots. No architectural store is removed, and this does not cache guest memory. */
+typedef struct {
+    LLVMValueRef low[32][4];
+    LLVMBasicBlockRef block;
+    uint32_t valid[4];
+} SnxIrVectorCache;
+
 /* SSA flags are a per-block forwarding table, not a second CPU state.
    Every write still commits to the architectural structure immediately. When all four come from a compare (SUBS,
    ADDS of a constant, ANDS), origin keeps its operands: a condition on them is that compare (ir_flags_cond), which
@@ -98,6 +106,7 @@ typedef struct {
 /* Block-local LLVM SSA snapshots, never guest architectural state. */
 typedef struct {
     SnxIrRegisterCache registers;
+    SnxIrVectorCache vectors;
     SnxIrFlags flags;
 } SnxIrBlockState;
 
@@ -153,6 +162,7 @@ typedef struct SnxIr {
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);
+void ir_vectors_invalidate(SnxIr* ir);
 void ir_registers_invalidate(SnxIr* ir);
 void ir_flags_invalidate(SnxIr* ir);
 LLVMValueRef ir_flag_read(SnxIr* ir, unsigned index);

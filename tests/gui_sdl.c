@@ -1463,6 +1463,82 @@ static void view_box(App* app, const char* temporary) {
         free(deep);
         free(sub);
     }
+    { /* dumps/ off the Library: Remove from Library asks first, then Games no longer lists its dumps, its row says
+         not listed, greyed, app.ini keeps it and a start makes it no more; Add to Library puts it back, made again */
+        int row = folder_row_of(app, GUI_ROW_DUMPS, -1);
+        char* kept;
+        size_t size;
+        UiRowInfo info = {0};
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 3 && !strcmp(pick_label(app, 2), "Remove from Library"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, dumps) &&
+               strstr(app->ask_line, "no longer makes as it starts"));
+        key(app, SDLK_ESCAPE); /* Back: nothing changes */
+        assert(!app->confirm.shown && !app->dumps_off);
+        key(app, SDLK_DELETE); /* Del asks the same */
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->dumps_off && !games_lists(app, "beta dump.nsp"));
+        assert(!strcmp(app->app_form.folder[row], "not listed") &&
+               strstr(app->editor.note, "removed from the library"));
+        assert(form_row_off(app, &app->editor, row));
+        assert(form_row_info(app, &app->editor, (size_t)row, form_labels(&app->editor), 0, &info) &&
+               (info.attr & UI_ATTR_OFF));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = off\n"));
+        free(kept);
+        assert(!snx_remove_tree(dumps)); /* a start leaves it unmade */
+        dumps_make(app);
+        assert(!snx_is_dir(dumps));
+        app->editor.row = row; /* its box: Add to Library alone */
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->dumps_off && snx_is_dir(dumps) && strstr(app->editor.note, "is in the Dumps Library again"));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = on\n"));
+        free(kept);
+        leave_editor(app);
+    }
+    { /* the Recompiled Library's Main off it the same way: the fourth choice of its box, asked first; Games no longer
+         lists its games, its row says not listed, greyed, app.ini keeps it; Add to Library puts it back */
+        int row = folder_row_of(app, GUI_ROW_PLACE, GUI_PLACE_GAMES), i;
+        size_t before = 0, after = 0, size;
+        char* kept;
+        list_games(app);
+        for (i = 0; i < (int)app->games.count; ++i)
+            before += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 4 && !strcmp(pick_label(app, 3), "Remove from Library"));
+        for (i = 0; i < 3; ++i) key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, app->games_dir) &&
+               strstr(app->ask_line, "new games go to an Extra of it"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->recompiled_off && !strcmp(app->app_form.folder[row], "not listed"));
+        assert(strstr(app->editor.note, "new games go to an Extra") && form_row_off(app, &app->editor, row));
+        for (i = 0; i < (int)app->games.count; ++i)
+            after += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        assert(before && !after); /* none of its games listed */
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "recompiled_main = off\n"));
+        free(kept);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->recompiled_off && strstr(app->editor.note, "is in the Recompiled Library again"));
+        leave_editor(app);
+    }
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -4384,9 +4460,9 @@ int main(int argc, char** argv) {
         snprintf(id, sizeof id, "%s", app.theme.id);
         assert(strcmp(id, first_id));
         snprintf(expected, sizeof expected,
-                 APP_INI_HEAD
-                 "theme = %s\nui_scale = 1\nlanguage = auto\n"
-                 "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+                 APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
+                              "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4431,7 +4507,8 @@ int main(int argc, char** argv) {
             expected, sizeof expected,
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
-            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4499,12 +4576,12 @@ int main(int argc, char** argv) {
         assert(app.language == 1 && snx_tr_language() == 0 && !strcmp(app.app_form.language, "English"));
         key(&app, SDLK_RETURN); /* Enter goes round too */
         assert(app.language == 2 && snx_tr_language() == 1 && !strcmp(app.app_form.language, "Test\303\252s"));
-        snprintf(
-            expected, sizeof expected,
-            APP_INI_HEAD
-            "theme = %s\nui_scale = 2\n"
-            "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
-            app.theme.id);
+        snprintf(expected, sizeof expected,
+                 APP_INI_HEAD
+                 "theme = %s\nui_scale = 2\n"
+                 "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
+                 app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
         free(kept);
@@ -4994,6 +5071,26 @@ int main(int argc, char** argv) {
         snprintf(said, sizeof said, "Not used from %s: dumps_subfolders = some (it keeps off)", app.app_file);
         assert(app.dumps_shallow && strstr(app.message, said));
         app.dumps_shallow = false;
+        free(text);
+        /* dumps_main: on its default, off kept, another word said with the one in use */
+        assert(strstr(kept, "dumps_main = on\n") && !app.dumps_off);
+        text = snx_format("%sdumps_main = off\ndumps_main = gone\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: dumps_main = gone (it keeps off)", app.app_file);
+        assert(app.dumps_off && strstr(app.message, said));
+        app.dumps_off = false;
+        free(text);
+        /* recompiled_main: the same */
+        assert(strstr(kept, "recompiled_main = on\n") && !app.recompiled_off);
+        text = snx_format("%srecompiled_main = off\nrecompiled_main = 2\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: recompiled_main = 2 (it keeps off)", app.app_file);
+        assert(app.recompiled_off && strstr(app.message, said));
+        app.recompiled_off = false;
         free(text);
         text = snx_format(APP_INI_HEAD "theme = %s\nside_box = auto\n", app.theme.id);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
@@ -6347,6 +6444,34 @@ int main(int argc, char** argv) {
         argv_got = ran(&app, 0);
         assert(has_arg(argv_got, "-r", dump) && !has_arg(argv_got, "--outdir", NULL));
         free(argv_got);
+        /* the Main off the library: a new game goes to its one Extra at once, asked among two (the Extras alone), and
+           with none the run is refused, saying how to have one */
+        app.recompiled_off = true;
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && !launched(&app) &&
+               strstr(app.message, "Main is off and no Extra of it can take a game: Add to Library on its Main"));
+        while (app.confirm.shown) key(&app, SDLK_RETURN);
+        app.message[0] = 0;
+        folder_keep(&app, extra, GUI_LIBRARY_RECOMPILED, false);
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && launched(&app));
+        argv_got = ran(&app, 0);
+        assert(has_arg(argv_got, "-r", dump) && has_arg(argv_got, "--outdir", extra));
+        free(argv_got);
+        {
+            char *second = snx_path_join(temporary, "recompiled extra 2"), text[700];
+            assert(!snx_mkdirs(second));
+            folder_keep(&app, second, GUI_LIBRARY_RECOMPILED, false);
+            launch(&app, snx_strdup(dump), false);
+            assert(app.dests_shown && app.dests.count == 2 && !launched(&app));
+            assert(!strstr(choice_text(&app, GUI_CHOICES_DESTS, 0, text, sizeof text), "default"));
+            key(&app, SDLK_ESCAPE);
+            free(app.folders[--app.folder_count]);
+            assert(!snx_remove_tree(second));
+            free(second);
+        }
+        free(app.folders[--app.folder_count]);
+        app.recompiled_off = false;
         driver_will(NULL, 0, NULL);
         app.animations_off = still;
         free(got);
@@ -6937,7 +7062,7 @@ int main(int argc, char** argv) {
         GuiRecent kept;
         gui_recent_load(&kept, recent_file);
         assert(kept.count == 1 && kept.game[0].driver == GUI_3DS && !kept.game[0].prepared);
-        open_recent(&app, 0);
+        open_recent(&app, 0, false);
         compiled_by(&app, "scarletnx-3ds", cia, 3);
         /* a CIA in games/ is one of Games', which compiles it with the 3DS driver */
         go_tab(&app, GUI_TAB_GAMES);
@@ -7891,8 +8016,9 @@ int main(int argc, char** argv) {
                 app.aot_match = 1;
                 assert(strstr(screen_said(&app, true, said, sizeof said), "B: AOT pack."));
                 /* Games' every key at once, the most parts a foot puts together: each in F1's box, none left out */
-                assert(strstr(said, "R: recompile.") && strstr(said, "M: mods.") && strstr(said, "P: folders.") &&
-                       strstr(said, "V: view.") && strstr(said, "ESC: back.") && strstr(said, "Tab: screen."));
+                assert(strstr(said, "L: play.") && strstr(said, "R: recompile.") && strstr(said, "M: mods.") &&
+                       strstr(said, "P: folders.") && strstr(said, "V: view.") && strstr(said, "ESC: back.") &&
+                       strstr(said, "Tab: screen."));
 #ifndef SDL_PLATFORM_ANDROID
                 assert(strstr(said, "S: save states."));
 #endif
@@ -8344,6 +8470,126 @@ int main(int argc, char** argv) {
             }
             finish(&app, 0);
             leave_run(&app);
+            /* L, the foot's L clicked, a finger's Play tapped and a pad's right stick (its key, as pad_menu.c gives
+               it): the game played as the box's Play row plays it, from the update the box keeps (the older, which is
+               not the first listed) with its DLC, mods and cheats, the box not shown and nothing written (addons= keeps
+               a DLC not there, which a save would drop); Enter still opens the box. A recent row of the game's own
+               program plays the update kept too, where Enter plays that program. The foot says Play before Recompile
+               on a game, a pad's foot its right stick, and not on a heading or on the row that shows every recent
+               game, where L says why it plays nothing */
+            {
+                static const char* const how[3] = {"key", "L", "Play"};
+                char said[1024], *was, *now, *dump, *ran = snx_absolute(older);
+                size_t size = 0, h;
+                GuiRecent recent = app.recent;
+                bool all;
+                int k;
+                assert(ran && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001,0100ABCD12341002"));
+                was = (char*)snx_read_file(ini, &size);
+                assert(was);
+                go_tab(&app, GUI_TAB_GAMES);
+                focus_game(&app, "0100ABCD12340000");
+                assert(strstr(shown_keys(&app, said, sizeof said), "L: play.") && strstr(said, "R: recompile.") &&
+                       strstr(said, "L: play.") < strstr(said, "R: recompile."));
+                app.pad_driven = true;
+                assert(strstr(shown_keys(&app, said, sizeof said), "Right stick: play.") &&
+                       strstr(said, "Right stick: play.") < strstr(said, "Y: recompile."));
+                k = hint_pick("Right stick", 3, true);
+                assert(k >= 0 && hint_keys[k].key == SDLK_L);
+                app.pad_driven = false;
+                key(&app, SDLK_RETURN);
+                assert(app.addons_shown && !app.menu.running);
+                key(&app, SDLK_ESCAPE);
+                assert(!app.addons_shown && !app.menu.running);
+                for (k = 0; k < 4; k++) {
+                    go_tab(&app, GUI_TAB_GAMES);
+                    focus_game(&app, "0100ABCD12340000");
+                    if (k == 3) {
+                        SDL_Event e = {0};
+                        SDL_Keymod mod;
+                        bool repeats;
+                        static const int labels[4] = {SNX_PAD_LABEL_A, SNX_PAD_LABEL_B, SNX_PAD_LABEL_X,
+                                                      SNX_PAD_LABEL_Y};
+                        e.type = SDL_EVENT_KEY_DOWN;
+                        e.key.which = GUI_PAD_KEYBOARD;
+                        assert(gui_pad_key(GUI_PAD_RIGHT_STICK, labels, &e.key.key, &mod, &repeats));
+                        event(&app, &e);
+                    } else if (k)
+                        assert(hint_press(&app, how[k], 0));
+                    else
+                        key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && app.native && !app.recompile);
+                    assert(!strcmp(app.file, ran));
+                    finish(&app, 0);
+                    leave_run(&app);
+                }
+                go_tab(&app, GUI_TAB_GAMES);
+                {
+                    char* own = snx_absolute(base);
+                    assert(own && !gui_recent_add(&app.recent, own, GUI_SWITCH, true));
+                    recent_changed(&app);
+                    app.browser.page = 0;
+                    app.browser.selected = 0; /* the newest recent row: the game's own program */
+                    assert(strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                    key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && !strcmp(app.file, ran));
+                    finish(&app, 0);
+                    leave_run(&app);
+                    free(own);
+                }
+                now = (char*)snx_read_file(ini, &size);
+                assert(now && !strcmp(now, was));
+                free(now);
+                free(was);
+                { /* No update kept: the game's own program */
+                    char* own = snx_absolute(base);
+                    assert(own && !snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                    go_tab(&app, GUI_TAB_GAMES);
+                    focus_game(&app, "0100ABCD12340000");
+                    key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && !strcmp(app.file, own));
+                    finish(&app, 0);
+                    leave_run(&app);
+                    free(own);
+                }
+                go_tab(&app, GUI_TAB_GAMES);
+                dump = snx_path_join(app.games_dir, "play heading.cia"); /* a package beside games: their headings */
+                assert(dump && !snx_write_file(dump, "fixture", 7));
+                list_games(&app);
+                layout(&app);
+                for (h = 0; h < app.games.count && !gui_games_heading(&app.games, h); ++h) {}
+                assert(h < app.games.count);
+                app.browser.page = h / app.browser.page_size;
+                app.browser.selected = app.browser.head + h % app.browser.page_size;
+                assert(!strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !app.addons_shown && !strcmp(app.message, "No game in focus to play."));
+                assert(!remove(dump));
+                free(dump);
+                list_games(&app);
+                for (k = 0; k <= GUI_RECENT_SHOWN; k++) { /* more recent games than show: the row that shows them, */
+                    char* name = snx_format("%s/recent %d", app.games_dir, k);
+                    assert(name &&
+                           !gui_recent_add(&app.recent, name, k < GUI_RECENT_SHOWN ? GUI_SWITCH : GUI_LINUX, true));
+                    free(name);
+                }
+                all = app.recent_all;
+                app.recent_all = false;
+                recent_changed(&app);
+                assert(recent_shown(&app) == GUI_RECENT_SHOWN && app.browser.head == GUI_RECENT_SHOWN + 1);
+                app.browser.page = 0;
+                app.browser.selected = 0; /* and the newest a Linux program's, which plays as Enter plays it */
+                assert(strstr(shown_keys(&app, said, sizeof said), "L: play.") && !strstr(said, "R: recompile."));
+                app.browser.selected = GUI_RECENT_SHOWN;
+                assert(!strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                app.message[0] = 0;
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !strcmp(app.message, "No game in focus to play."));
+                app.recent = recent;
+                app.recent_all = all;
+                recent_changed(&app);
+                free(ran);
+            }
             /* R: No update picked, the game's own program recompiled, the DLC kept */
             go_tab(&app, GUI_TAB_GAMES);
             focus_game(&app, "0100ABCD12340000");
@@ -8364,6 +8610,25 @@ int main(int argc, char** argv) {
             checked = snx_ini_value(ini, "addons");
             assert(checked && !strcmp(checked, "0100ABCD12341001"));
             free(checked);
+            /* L on the recent row of the game's own program while it compiles: its compile shows, as Enter shows it,
+               though the update kept is another program of the folder being compiled */
+            {
+                char* own = snx_absolute(base);
+                GuiRecent recent = app.recent;
+                assert(own && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                go_tab(&app, GUI_TAB_GAMES);
+                assert(!gui_recent_add(&app.recent, own, GUI_SWITCH, true));
+                recent_changed(&app);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !app.addons_shown && app.menu.view == GUI_LOAD_RECOMPILE &&
+                       gui_queue_running(&app.queue) == 0);
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                app.recent = recent;
+                recent_changed(&app);
+                free(own);
+            }
             job_done(&app, 0);
             launcher(&app, false);
             { /* how a game's code was made, as the side panel says it: its -O and the share of the code made ahead of

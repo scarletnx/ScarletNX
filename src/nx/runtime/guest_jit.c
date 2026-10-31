@@ -132,10 +132,9 @@ static GuestFn variant_resolve(SnxU64 pc) {
     SnxU64 h1, h2;
     GuestFn result = NULL;
     size_t i;
-    if (!g_variants || !g_jit_images || !g_variant_leaders) {
-        __atomic_add_fetch(&g_jit_misses, 1, __ATOMIC_RELAXED);
-        return NULL;
-    }
+    /* Without a usable pack there is no lookup to count. A global atomic here serialized guest threads even when
+       every call went straight to an already compiled JIT function. Hits and misses count actual pack lookups. */
+    if (!g_variants || !g_jit_images || !g_variant_leaders) return NULL;
     images.modules = g_jit_images;
     images.module_count = g_mod->nmods;
     images.synthetic = g_jit_synthetic;

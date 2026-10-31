@@ -15,130 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---- hints: a set of addresses, and the order they were found in for the file ---- */
-
-/* One block: cap slots of the open-addressing set (0 is an empty slot, and never a hint), then the found order, which
-   holds at most cap / 2 since the set is kept at most half full. Under g_hints_lock */
-typedef struct {
-    u64* slot;
-    u64 cap, n;
-    int dirty; /* added to since the file was last written */
-} Hints;
-static Hints g_hints;
-static PMutex g_hints_lock = PMUTEX_INIT;
-static char g_hints_path[1400];
-
-static u64* hints_order(void) { return g_hints.slot + g_hints.cap; }
-static u64 hint_hash(u64 pc, u64 cap) {
-    unsigned bits = 0;
-    while (((u64)1 << bits) < cap) bits++;
-    return ((pc >> 2) * 0x9E3779B97F4A7C15ull) >> (64 - bits); /* Fibonacci hashing: cap is a power of two */
-}
-/* 1 when pc was put in, 0 when it was there already */
-static int set_put_nl(u64* slot, u64 cap, u64 pc) {
-    u64 i = hint_hash(pc, cap);
-    while (slot[i]) {
-        if (slot[i] == pc) return 0;
-        i = (i + 1) & (cap - 1);
-    }
-    slot[i] = pc;
-    return 1;
-}
-static int grow_nl(void) {
-    u64 cap = g_hints.cap ? g_hints.cap * 2 : 1024, i;
-    u64 *block, *order;
-    if (cap > SIZE_MAX / sizeof(u64) / 2) return -1;
-    block = (u64*)calloc((size_t)(cap + cap / 2), sizeof(u64));
-    if (!block) return -1;
-    order = block + cap;
-    for (i = 0; i < g_hints.n; i++) {
-        order[i] = hints_order()[i];
-        set_put_nl(block, cap, order[i]);
-    }
-    free(g_hints.slot);
-    g_hints.slot = block;
-    g_hints.cap = cap;
-    return 0;
-}
-/* 1 when pc is new */
-static int hint_add_nl(u64 pc) {
-    if (!pc) return 0;
-    if ((g_hints.n + 1) * 2 > g_hints.cap && grow_nl()) {
-        WARN_LIMIT(1, "hints: out of memory, the hints file misses some addresses\n");
-        return 0;
-    }
-    if (!set_put_nl(g_hints.slot, g_hints.cap, pc)) return 0;
-    hints_order()[g_hints.n++] = pc;
-    return 1;
-}
-
-void hints_init(void) { snprintf(g_hints_path, sizeof g_hints_path, "%s%s.hints", g_exedir, g_exename); }
-
-void load_hints(void) {
-    FILE* f = fopen(g_hints_path, "r");
-    char line[64];
-    if (!f) return;
-    pm_lock(&g_hints_lock);
-    while (fgets(line, sizeof line, f)) {
-        char* end;
-        unsigned long long pc = strtoull(line, &end, 16);
-        if (end != line) hint_add_nl((u64)pc);
-    }
-    pm_unlock(&g_hints_lock);
-    fclose(f);
-}
-
-/* the JIT's warm start (guest_jit.c) */
-u64* hints_copy(size_t* count) {
-    u64* copy;
-    pm_lock(&g_hints_lock);
-    copy = g_hints.n ? malloc(8 * (size_t)g_hints.n) : NULL;
-    *count = copy ? (size_t)g_hints.n : 0;
-    if (copy) memcpy(copy, hints_order(), 8 * (size_t)g_hints.n);
-    pm_unlock(&g_hints_lock);
-    return copy;
-}
-
-/* Under the lock for the whole write: the main loop and a thread stopping the game may save at once, and neither may
-   truncate the file under the other. Written beside it, then moved over it */
-void save_hints(void) {
-    char tmp[sizeof g_hints_path + 8];
-    FILE* f;
-    u64 i;
-    int failed;
-    if (!g_hints_path[0]) return;
-    pm_lock(&g_hints_lock);
-    if (!g_hints.dirty) {
-        pm_unlock(&g_hints_lock);
-        return;
-    }
-    snprintf(tmp, sizeof tmp, "%s.tmp", g_hints_path);
-    f = fopen(tmp, "w");
-    failed = !f;
-    for (i = 0; f && i < g_hints.n; i++)
-        if (fprintf(f, "%llx\n", (unsigned long long)hints_order()[i]) < 0) failed = 1;
-    if (f && fclose(f)) failed = 1;
-    if (!failed && plat_replace_file(tmp, g_hints_path)) failed = 1;
-    if (failed) {
-        remove(tmp);
-        WARN_LIMIT(1, "hints: could not write %s\n", g_hints_path);
-    } else
-        g_hints.dirty = 0;
-    pm_unlock(&g_hints_lock);
-}
-
 /* ---- RtAPI ---- */
 
-/* 1 when pc is a new hint */
-static int hint_add(u64 pc) {
-    int added;
-    pm_lock(&g_hints_lock);
-    added = hint_add_nl(pc);
-    if (added) g_hints.dirty = 1;
-    pm_unlock(&g_hints_lock);
-    return added;
-}
-static void rt_note_hint(u64 pc) { hint_add(pc); }
+static void rt_note_hint(u64 pc) { hints_add(pc); }
 
 /* the game cannot go on past either: what is needed to look into it, then the end */
 static void rt_undef(CPU* c, u64 pc, u32 w) {
@@ -200,7 +79,7 @@ static void rt_miss(CPU* c, u64 pc) {
             fatal("The game reached code at %llx that the recompiler missed, and %s", (unsigned long long)pc,
                   jit_failure());
     }
-    if (pc - g_code_lo < g_code_hi - g_code_lo) hint_add(pc);
+    if (pc - g_code_lo < g_code_hi - g_code_lo) hints_add(pc);
     f(c, pc);
 }
 /* IC IVAU: what was compiled from the line goes, AOT functions and JIT code alike (guest_jit.c), when the line is

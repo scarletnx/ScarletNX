@@ -10,9 +10,15 @@ void ir_registers_invalidate(SnxIr* ir) {
     ir->state.registers.block = NULL;
 }
 
+void ir_vectors_invalidate(SnxIr* ir) {
+    for (unsigned i = 0; i < 4; i++) ir->state.vectors.valid[i] = 0;
+    ir->state.vectors.block = NULL;
+}
+
 /* Unknown calls and aliases invalidate every cached architectural domain. */
 void ir_state_invalidate(SnxIr* ir) {
     ir_registers_invalidate(ir);
+    ir_vectors_invalidate(ir);
     ir_flags_invalidate(ir);
 }
 
@@ -224,6 +230,7 @@ void ir_cpu_store(SnxIr* ir, LLVMValueRef value, size_t offset) {
         if (offset == flag_offsets[i]) ir_flags_invalidate(ir);
     /* Flag and FP-state stores cannot change the disjoint GPR array. */
     if (offset >= offsetof(CPU, x) && offset < offsetof(CPU, x) + sizeof(((CPU*)0)->x)) ir_registers_invalidate(ir);
+    if (offset >= offsetof(CPU, v) && offset < offsetof(CPU, v) + sizeof(((CPU*)0)->v)) ir_vectors_invalidate(ir);
     ir_tag_cpu(ir, LLVMBuildStore(ir->b, value, ir_cpu(ir, offset)));
 }
 
@@ -254,7 +261,7 @@ void ir_setx(SnxIr* ir, unsigned n, LLVMValueRef value) {
     if (n != 31) ir_set_x(ir, n, value);
 }
 LLVMValueRef ir_vd(SnxIr* ir, unsigned n, unsigned lane) {
-    return ir_guest_order(ir, ir_cpu_load(ir, ir->t_i64, ir_off_v(n) + 8 * (size_t)lane));
+    return ir_ve(ir, n, 3, lane);
 }
 void ir_set_vd(SnxIr* ir, unsigned n, unsigned lane, LLVMValueRef value) {
     ir_cpu_store(ir, ir_guest_order(ir, ir_u64(ir, value)), ir_off_v(n) + 8 * (size_t)lane);
@@ -263,7 +270,20 @@ static LLVMTypeRef lane_type(SnxIr* ir, unsigned size) {
     return size == 0 ? ir->t_i8 : size == 1 ? ir->t_i16 : size == 2 ? ir->t_i32 : ir->t_i64;
 }
 LLVMValueRef ir_ve(SnxIr* ir, unsigned n, unsigned size, unsigned index) {
-    return ir_guest_order(ir, ir_cpu_load(ir, lane_type(ir, size), ir_off_v(n) + ((size_t)index << size)));
+    if (index || size >= 4)
+        return ir_guest_order(ir, ir_cpu_load(ir, lane_type(ir, size), ir_off_v(n) + ((size_t)index << size)));
+    SnxIrVectorCache* cache = &ir->state.vectors;
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(ir->b);
+    if (cache->block != block) {
+        ir_vectors_invalidate(ir);
+        cache->block = block;
+    }
+    uint32_t bit = (uint32_t)1 << n;
+    if (!(cache->valid[size] & bit)) {
+        cache->low[n][size] = ir_guest_order(ir, ir_cpu_load(ir, lane_type(ir, size), ir_off_v(n)));
+        cache->valid[size] |= bit;
+    }
+    return cache->low[n][size];
 }
 void ir_set_ve(SnxIr* ir, unsigned n, unsigned size, unsigned index, LLVMValueRef value) {
     ir_cpu_store(ir, ir_guest_order(ir, ir_cast(ir, value, lane_type(ir, size), 0)),

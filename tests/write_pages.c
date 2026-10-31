@@ -13,7 +13,41 @@ static void check(int ok, const char* what) {
     }
 }
 
+static void ranges(void) {
+    static WritePages table;
+    /* Include a leaf boundary and several group boundaries, then compare both clean and dirty subranges against a
+       page-by-page reference. The writer must not mark neighbors or skip the first or last partial page. */
+    const u64 base = 0x600000000ull - 8 * 4096;
+    u64 pages[144] = {0};
+    u64 random = 1;
+    for (u64 generation = 1; generation <= 256; generation++) {
+        random = random * 6364136223846793005ull + 1442695040888963407ull;
+        u64 first = (random >> 32) % 144;
+        u64 count = 1 + (random & 0xFFFF) % (144 - first);
+        write_pages_stamp(&table, base + first * 4096 + 4095, (count - 1) * 4096 + 1, generation);
+        for (u64 i = first; i < first + count; i++) pages[i] = generation;
+        for (u64 begin = 0; begin < 144; begin++) {
+            u64 end = begin + (generation % (144 - begin));
+            for (u64 age = 0; age < 3; age++) {
+                u64 since = generation - (generation < age ? generation : age);
+                int expected = 0;
+                for (u64 i = begin; i <= end; i++) expected |= pages[i] > since;
+                check(write_pages_since(&table, since, base + begin * 4096, (end - begin + 1) * 4096) == expected,
+                      "batched stamps match exact page generations across group and leaf boundaries");
+            }
+        }
+    }
+    check(!write_pages_since(&table, 0, base - 1, 1), "the byte before the tested ranges stays clean");
+    check(!write_pages_since(&table, 0, base + sizeof pages / sizeof pages[0] * 4096, 4096),
+          "the page after the tested ranges stays clean");
+    write_pages_stamp(&table, 0, 0, 257);
+    check(!write_pages_since(&table, 256, base, 144 * 4096), "an empty stamp changes no generation");
+    write_pages_stamp(&table, ~0ull - 3, 8, 258);
+    check(write_pages_since(&table, 257, base, 1), "a wrapped range conservatively stamps overflow");
+}
+
 int main(void) {
+    ranges();
     /* a table that lasts, as the runtime's: nothing frees the leaves it makes */
     static WritePages table;
     WritePages* t = &table;

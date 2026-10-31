@@ -247,6 +247,30 @@ static void test_drop(void) {
     res_free(r);
 }
 
+/* A wide unmap may contain no owner, or a small owner surrounded by ordinary pages. A byte drop sharing a host page
+   with retained ownership must leave that page trapped until its remaining contents land. */
+static void test_drop_sparse(void) {
+    u64 a = region(R0 + 0x1000000, 0x800000);
+    Res* r = res_new(0x1000, 0x60);
+    Res* other = res_new(0x1000, 0x70);
+    int lands = g_lands;
+    CHECK(own_begin(a + 0x310000, 0x1000, r, 0) == 0);
+    CHECK(own_begin(a + 0x710000, 0x1000, other, 0) == 0);
+    own_drop(a, 0x200000); /* ownership elsewhere must not affect this hole */
+    CHECK(refs(r) == 1 && refs(other) == 1 && g_lands == lands);
+    own_drop(a + 0x310000, 0x100);
+    CHECK(refs(r) == 1 && g_lands == lands);
+    CHECK(GP(a)[0x310100] == r->data[0x100] && refs(r) == 0 && g_lands == lands + 1);
+    CHECK(GP(a)[0x310005] == (u8)(0x11 + 5)); /* dropped bytes retain the CPU's copy */
+    CHECK(own_begin(a + 0x310000, 0x1000, r, 0) == 0);
+    lands = g_lands;
+    own_drop(a, 0x600000); /* open the middle owner's pages, retaining the far one */
+    CHECK(refs(r) == 0 && refs(other) == 1 && g_lands == lands);
+    CHECK(mem_unmap(a, 0x800000) == 0 && refs(other) == 0 && g_lands == lands);
+    res_free(r);
+    res_free(other);
+}
+
 /* staging reads the CPU's bytes around owned ones through the mirror and lands nothing: the owned parts come back for
    the caller to copy from their resources */
 static void test_stage(void) {
@@ -472,6 +496,7 @@ int main(int argc, char** argv) {
     test_freeze();
     test_syscall();
     test_drop();
+    test_drop_sparse();
     test_stage();
     test_view();
     test_busy("/proc/self/exe", 0, 0);

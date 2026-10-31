@@ -310,6 +310,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Recompile."
 msgstr ""
 
@@ -522,6 +528,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "L: play."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "R: recompile."
 msgstr ""
 
@@ -717,6 +729,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Right stick: play."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1231,7 +1249,9 @@ msgstr ""
 msgid "Delete"
 msgstr ""
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
+#, snx-key
 msgid "Play"
 msgstr ""
 
@@ -2133,7 +2153,7 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too while it says + subfolders. It stays on the list"
+msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too with + subfolders. Remove from Library takes it off, its files kept"
 msgstr ""
 
 #: src/gui/main.c
@@ -2143,6 +2163,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "(none)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is the dumps library's Main row, taken off it: its Add to Library puts it back"
 msgstr ""
 
 #: src/gui/main.c
@@ -2184,6 +2209,41 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s removed from the library. Its games stay in the folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s removed from the library. Its games stay in the folder; new games go to an Extra"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to an Extra of it."
 msgstr ""
 
 #: src/gui/main.c
@@ -2287,6 +2347,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Main"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not listed"
 msgstr ""
 
 #: src/gui/main.c
@@ -2943,6 +3007,10 @@ msgid "beside the program, made then"
 msgstr ""
 
 #: src/gui/main.c
+msgid " (not listed)"
+msgstr ""
+
+#: src/gui/main.c
 msgid " + subfolders"
 msgstr ""
 
@@ -3159,6 +3227,10 @@ msgid "Subfolders"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Add to Library"
+msgstr ""
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
@@ -3193,6 +3265,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "the selected driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
 #: src/gui/main.c
@@ -3325,6 +3401,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "R recompiles games: a Linux program runs as it is."
+msgstr ""
+
+#: src/gui/main.c
+msgid "No game in focus to play."
 msgstr ""
 
 #: src/gui/main.c
@@ -3558,6 +3638,12 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "Right stick"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "ESC"
 msgstr ""
 
@@ -3643,6 +3729,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Take out"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "L"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

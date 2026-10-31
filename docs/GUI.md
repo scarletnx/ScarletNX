@@ -46,7 +46,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - A gamepad drives the menu as the keys do (`src/gui/pad_menu.c`): the D-pad and the left stick are the arrows, the
   button labelled A (or Cross) is Enter, B (or Circle) ESC, X (or Square) Del and Y (or Triangle) R, wherever the pad
   has them (a Switch pad's A is east, its X north), LB and RB are Shift+Tab and Tab, LT and RT are PgUp and PgDn, L3
-  and R3 are M and B (Games' mods and AOT pack), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
+  and R3 are M and B (Games' mods and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
+  back), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
   the focused game's save states, as S does, and in that box it deletes one, as Del does. A held arrow or
   page repeats. A press on the pad hides the mouse's cursor and the foot names the pad's buttons, a PlayStation pad's
   by their shapes; a key or the mouse moving past a few pixels shows the keyboard's again, and so do a click and a
@@ -148,9 +149,13 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
     launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
     `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
-    **Extra** folders, whose dumps Games lists, and **Add a folder**;
+    **Extra** folders, whose dumps Games lists, and **Add a folder**. Main's box, or Del on it, has **Remove from
+    Library**, which asks first: Games no longer lists it and ScarletNX no longer makes it as it starts, its files kept;
+    its row then says `not listed`, greyed, and **Add to Library** puts it back;
   - **Recompiled Library**: its **Main**, `recompiled/`, where recompiled games go, then its **Extra** folders, whose games
-    ready to run Games lists too, and **Add a folder**;
+    ready to run Games lists too, and **Add a folder**. Main's box has **Remove from Library** too, asked first: its
+    games stay where they are, unlisted, and a new game of any load goes to an Extra, asked among several, a run
+    refused with none; **Add to Library** puts it back;
   - **Reset to Defaults**, last, which asks first.
 
   A row with nothing to do now is greyed, still there, and Enter on it says why: Clean Old Settings with nothing to
@@ -240,7 +245,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
   said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
   with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
-  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it) and `language` (`auto`, `en` or a
+  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
+  dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
+  default; `off`: recompiled/ not listed, new games going to an Extra) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
@@ -435,6 +442,11 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
+- **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
+  page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
+  the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or
+  writing them. The queue of compiles and the question of a game made already come as they do for Enter. On a heading,
+  or the row that shows every recent game, it says there is no game to play.
 - **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
   console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
   `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one

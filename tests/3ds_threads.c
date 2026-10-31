@@ -7,16 +7,12 @@
 #include <string.h>
 #include "3ds/aot/ctr_module.h"
 #include "common/utilities/common.h"
+#include "support/3ds_guest.h"
 static uint32_t event(SnxCtrProcess* p, uint32_t reset) {
     uint32_t* r = p->cpu.state.cpu.r;
     r[1] = reset;
     assert(snx_ctr_svc(p, 0x17) == SNX_CTR_SVC_RETURN && !r[0]);
     return r[1];
-}
-static void word(SnxCtrProcess* p, uint32_t va, uint32_t value) {
-    unsigned char b[4];
-    for (unsigned i = 0; i < 4; ++i) b[i] = (unsigned char)(value >> (8 * i));
-    assert(snx_ctr_write_ram(p->space, va, b, 4) == SNX_CTR_MEM_OK);
 }
 static void spin_ms(unsigned ms) {
     double start = snx_seconds();
@@ -138,12 +134,7 @@ static void cores(SnxCtrProcess* p) {
 }
 int main(void) {
     unsigned char code[0x3000] = {0};
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 4096,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 4096);
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
@@ -210,7 +201,7 @@ int main(void) {
         assert(!snx_ctr_handle_close(p, mutex));
         assert(snx_ctr_svc(p, 0x21) == SNX_CTR_SVC_RETURN && !r[0]);
         uint32_t arbiter = r[1];
-        word(p, 0x300300, 0);
+        ctr_put(p, 0x300300, 0);
         r[0] = arbiter;
         r[1] = 0x300300;
         r[2] = r[3] = 1;
@@ -237,8 +228,8 @@ int main(void) {
         assert(!r[0] && !snx_ctr_kernel_blocked(p) && !snx_ctr_handle_close(p, arbiter));
         uint32_t first = event(p, 0), second = event(p, 0);
         uint32_t first_id = snx_ctr_handle_object(p, first), second_id = snx_ctr_handle_object(p, second);
-        word(p, 0x300200, first);
-        word(p, 0x300204, second);
+        ctr_put(p, 0x300200, first);
+        ctr_put(p, 0x300204, second);
         p->objects[first_id].data.event.signaled = 1;
         r[0] = UINT32_MAX;
         r[1] = 0x300200;
@@ -252,7 +243,7 @@ int main(void) {
         assert(!p->objects[first_id].data.event.signaled && !p->objects[second_id].data.event.signaled);
         assert(snx_ctr_schedule(p) && p->current_thread == 2 && !r[0] && r[1] == UINT32_MAX);
         p->objects[first_id].data.event.signaled = 1;
-        word(p, 0x300204, UINT32_MAX);
+        ctr_put(p, 0x300204, UINT32_MAX);
         r[0] = 0;
         r[1] = 0x300200;
         r[2] = 2;
@@ -284,7 +275,7 @@ int main(void) {
         assert(snx_ctr_svc(p, 0x18) == SNX_CTR_SVC_RETURN && !r[0]);
         assert(snx_ctr_schedule(p) && p->current_thread == 2 && !r[0] && !snx_ctr_kernel_blocked(p));
         assert(!p->objects[second_id].data.event.signaled && p->objects[second_id].refs == 1);
-        word(p, 0x300204, second);
+        ctr_put(p, 0x300204, second);
         r[0] = 20000000;
         r[1] = 0x300200;
         r[2] = 2;
@@ -339,9 +330,7 @@ int main(void) {
         r[3] = SNX_CTR_STACK_TOP;
         r[4] = 0xfffffffe;
         assert(snx_ctr_svc(p, 8) == SNX_CTR_SVC_RETURN && r[0] == 0xc860180c && !r[1]);
-        unsigned objects = 0;
-        for (unsigned i = 1; i < CTR_OBJECTS; ++i) objects += !!p->objects[i].type;
-        assert(objects == 33); /* no leaked partially created thirty-third thread */
+        assert(ctr_object_count(p) == 33); /* no leaked partially created thirty-third thread */
         snx_ctr_process_free(p);
         p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);

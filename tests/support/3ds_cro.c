@@ -3,16 +3,6 @@
 #include "3ds_cro.h"
 #include "common/utilities/endian.h"
 
-uint32_t cro_word(SnxCtrProcess* p, uint32_t at) {
-    unsigned char bytes[4];
-    assert(snx_ctr_read_ram(p->space, at, bytes, sizeof bytes) == SNX_CTR_MEM_OK);
-    return snx_ld_le32(bytes);
-}
-void cro_put(SnxCtrProcess* p, uint32_t at, uint32_t value) {
-    unsigned char bytes[4];
-    snx_st_le32(bytes, value);
-    assert(snx_ctr_write_ram(p->space, at, bytes, sizeof bytes) == SNX_CTR_MEM_OK);
-}
 void cro_set(unsigned char* image, uint32_t at, uint32_t value) { snx_st_le32(image + at, value); }
 void cro_image(unsigned char* image, bool crs) {
     memset(image, 0, CRO_IMAGE_SIZE);
@@ -92,18 +82,18 @@ uint32_t cro_call(SnxCtrProcess* p, uint32_t session, unsigned command, const ui
     uint32_t cmd = cro_command_buffer(p);
     unsigned char zero[256] = {0};
     assert(snx_ctr_write_ram(p->space, cmd, zero, sizeof zero) == SNX_CTR_MEM_OK);
-    cro_put(p, cmd, IPC_HEADER(command, n, 2));
-    for (unsigned i = 0; i < n; ++i) cro_put(p, cmd + (i + 1) * 4, args[i]);
-    cro_put(p, cmd + (n + 1) * 4, handle == CRO_PID_DESCRIPTOR ? IPC_PROCESS_ID : 0);
-    cro_put(p, cmd + (n + 2) * 4, handle);
+    ctr_put(p, cmd, IPC_HEADER(command, n, 2));
+    for (unsigned i = 0; i < n; ++i) ctr_put(p, cmd + (i + 1) * 4, args[i]);
+    ctr_put(p, cmd + (n + 1) * 4, handle == CRO_PID_DESCRIPTOR ? IPC_PROCESS_ID : 0);
+    ctr_put(p, cmd + (n + 2) * 4, handle);
     p->cpu.state.cpu.r[0] = session;
     assert(snx_ctr_svc(p, SVC_SEND_SYNC_REQUEST) == SNX_CTR_SVC_RETURN);
     uint32_t transport = p->cpu.state.cpu.r[0];
     if (transport) return transport;
     /* the reply has two normal words for the commands that load a CRO, and one for the others */
-    assert(cro_word(p, cmd) == IPC_HEADER(command, command == 4 || command == 9 ? 2 : 1, 0));
-    if (fixed) *fixed = cro_word(p, cmd + 8);
-    return cro_word(p, cmd + 4);
+    assert(ctr_word(p, cmd) == IPC_HEADER(command, command == 4 || command == 9 ? 2 : 1, 0));
+    if (fixed) *fixed = ctr_word(p, cmd + 8);
+    return ctr_word(p, cmd + 4);
 }
 uint32_t cro_service(SnxCtrProcess* p) {
     const char name[] = "srv:";
@@ -114,20 +104,20 @@ uint32_t cro_service(SnxCtrProcess* p) {
     uint32_t cmd = cro_command_buffer(p);
     unsigned char zero[256] = {0};
     assert(snx_ctr_write_ram(p->space, cmd, zero, sizeof zero) == SNX_CTR_MEM_OK);
-    cro_put(p, cmd, IPC_HEADER(1, 0, 2)); /* RegisterClient, with a process id descriptor */
-    cro_put(p, cmd + 4, IPC_PROCESS_ID);
+    ctr_put(p, cmd, IPC_HEADER(1, 0, 2)); /* RegisterClient, with a process id descriptor */
+    ctr_put(p, cmd + 4, IPC_PROCESS_ID);
     p->cpu.state.cpu.r[0] = srv;
     assert(snx_ctr_svc(p, SVC_SEND_SYNC_REQUEST) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0] &&
-           !cro_word(p, cmd + 4));
-    cro_put(p, cmd, IPC_HEADER(5, 4, 0)); /* GetServiceHandle: the name "ldr:ro" in two words, its length and flags */
+           !ctr_word(p, cmd + 4));
+    ctr_put(p, cmd, IPC_HEADER(5, 4, 0)); /* GetServiceHandle: the name "ldr:ro" in two words, its length and flags */
     const char ldr_name[8] = "ldr:ro";
     assert(snx_ctr_write_ram(p->space, cmd + 4, ldr_name, sizeof ldr_name) == SNX_CTR_MEM_OK);
-    cro_put(p, cmd + 12, 6);
-    cro_put(p, cmd + 16, 1);
+    ctr_put(p, cmd + 12, 6);
+    ctr_put(p, cmd + 16, 1);
     p->cpu.state.cpu.r[0] = srv;
     assert(snx_ctr_svc(p, SVC_SEND_SYNC_REQUEST) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
-    assert(cro_word(p, cmd) == IPC_HEADER(5, 1, 2) && !cro_word(p, cmd + 4) && cro_word(p, cmd + 8) == IPC_MOVE_HANDLE);
-    uint32_t ldr = cro_word(p, cmd + 12);
+    assert(ctr_word(p, cmd) == IPC_HEADER(5, 1, 2) && !ctr_word(p, cmd + 4) && ctr_word(p, cmd + 8) == IPC_MOVE_HANDLE);
+    uint32_t ldr = ctr_word(p, cmd + 12);
     assert(!snx_ctr_handle_close(p, srv));
     return ldr;
 }

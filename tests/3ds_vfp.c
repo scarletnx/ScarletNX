@@ -7,6 +7,7 @@
 #include "3ds/runtime/internal.h"
 #include "common/cpu/arm/exec.h"
 #include "common/utilities/endian.h"
+#include "support/3ds_guest.h"
 #include <stdio.h>
 
 /* round to zero, flush to zero and default NaN, as a new thread starts */
@@ -40,12 +41,7 @@ static int compiled(SnxArmBlock block, const char* what) {
 static SnxCtrProcess* make_process(const uint32_t* words, size_t count, uint32_t fpscr) {
     unsigned char code[0x3000] = {0};
     for (size_t i = 0; i < count; ++i) snx_st_le32(code + i * 4, words[i]);
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 4096,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 4096);
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
     if (p) p->cpu.state.cpu.fpscr = fpscr;
     return p;

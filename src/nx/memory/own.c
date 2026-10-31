@@ -490,9 +490,20 @@ void own_drop(u64 addr, u64 size) {
     if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return;
     pm_lock(&g_own_lk);
     while (landing_nl(addr, addr + size)) pc_wait(&g_own_cv, &g_own_lk, -1);
+    u32 first = first_after_nl(addr);
+    if (first == g_nown || g_own[first].lo >= addr + size) {
+        pm_unlock(&g_own_lk);
+        return;
+    }
+    /* The caller holds the producer's lock, so a landing cannot leave an entry removed but its trap still armed.
+       Only pages of entries cut here can need opening. Continuing an unrelated unmap faults its whole range into
+       userfaultfd's mappings just before mem.c releases those pages again. */
+    u64 lo = g_own[first].lo > addr ? g_own[first].lo : addr, hi = g_own[first].hi;
+    for (u32 i = first + 1; i < g_nown && g_own[i].lo < addr + size; i++) hi = g_own[i].hi;
+    if (hi > addr + size) hi = addr + size;
     cut_nl(addr, addr + size, &rel);
     pm_unlock(&g_own_lk);
-    let_go(addr & ~(g_page - 1), (addr + size + g_page - 1) & ~(g_page - 1)); /* before the release, as land_pages */
+    let_go(lo & ~(g_page - 1), (hi + g_page - 1) & ~(g_page - 1)); /* before the release, as land_pages */
     res_release(&rel);
 }
 u64 own_landings(void) { return __atomic_load_n(&g_own_lands, __ATOMIC_RELAXED); }

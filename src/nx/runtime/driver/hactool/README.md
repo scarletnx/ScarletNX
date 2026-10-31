@@ -36,6 +36,9 @@ What ScarletNX changed, each change marked `ScarletNX` where it is not a file of
   headers, NSO headers and a save's header are put in the host's order once read (`nca_header_swap` and the `_swap` and
   `_from_le` helpers), and the RSA signatures and saved files see the bytes as stored. The XCI, NPDM, KIP, package and
   NAX0 headers stay as stored and their words are converted where they are read.
+- **A file's own buffer.** `nca_save_section_file` saves a file through a buffer of its size, up to hactool's 4 MB,
+  instead of 4 MB filled for every file: a RomFS is thousands of small ones, and where the heap hands a block that big
+  out of fresh memory each time, as Windows' does, each fill faulted in 1024 pages.
 - **Keys by name.** `extkeys_set_key` sets one prod.keys key, which `extkeys_initialize_settings` calls for each line
   of a file and the driver for each line it kept.
 - **Comments.** Five comments in `aes.c`, `nca.h` and `packages.c` say "the console" or "content archive" instead of the
