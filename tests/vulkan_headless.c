@@ -1301,6 +1301,33 @@ static int check_texture_writes(void) {
     }
     return 0;
 }
+/* A range's highest index is read again only after the guest's CPU changes it: where write tracking can't tell
+   (--write_tracking=0, the pages unified memory imports), the indices' hash says */
+static int check_index_top(void) {
+    const u64 at = HEAP_BASE + 0x5000000, gat = 0x450000000ull;
+    CHECK(mem_map(at, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gat, at, 0x10000);
+    u16* ix = (u16*)GP(at);
+    for (u32 i = 0; i < 2048; i++) ix[i] = (u16)(i * 7 % 1000);
+    ix[100] = 0xFFFF; /* the restart index: no vertex */
+    vk_lock();
+    if (g_vk.uma) {
+        VkBuffer b;
+        u64 off;
+        CHECK(vk_uma_get(at, 0x1000, 1, &b, &off)); /* imported, so write tracking leaves its pages out */
+    }
+    int hashed = vk_written_since(GP(at), 4096, 0) < 0;
+    for (int round = 0; round < 5; round++) {
+        if (round == 3) ix[700] = 1500;
+        vk_ww_new_epoch();
+        u64 scans = g_vk_index_scans;
+        CHECK(vk_index_top(gat, 2048, 2, 0xFFFF, 0) == (round < 3 ? 999u : 1500u));
+        if (hashed) CHECK(g_vk_index_scans == scans + (round == 0 || round == 3));
+    }
+    vk_unlock();
+    CHECK(mem_unmap(at, 0x10000) == 0);
+    return 0;
+}
 static int check_uma(void) {
     static u8 out[0x1000], data[16];
     VkBuffer b, b2, any;
@@ -1748,6 +1775,7 @@ int main(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
     CHECK(!check_texture_writes());
+    CHECK(!check_index_top());
     CHECK(!check_uma());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&

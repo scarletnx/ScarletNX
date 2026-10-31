@@ -591,6 +591,9 @@ void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
 void vk_rt_reload(u64 gva);
+/* the highest of n indices of isz bytes at GPU address a, ri and skip read as 0 (render.c): ~0 off guest memory */
+u64 vk_index_top(u64 a, u64 n, u32 isz, u32 ri, u32 skip);
+extern u64 g_vk_index_scans; /* the times it read the indices, not its memo */
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
 extern u32 g_vk_surf_epoch;
