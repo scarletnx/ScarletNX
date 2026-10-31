@@ -922,6 +922,105 @@ static void test_registration(void) {
     puts("PASS acc:su's registration: a new uid in the users at once, in users.ini from Complete");
 }
 
+/* Store (100) and StoreWithImage (101) of acc:su's profile editor (GetProfileEditor 205): ProfileBase in the raw data,
+   the UserData in an X buffer, the picture in an A one */
+static void store_request(Request* r, u8* raw, u32 cmd, const u64 uid[2], const char* nickname, u64 data_size,
+                          u64 image_size) {
+    request(r, cmd);
+    memset(raw, 0, 0x40);
+    acc_uid_put(raw, uid);
+    memcpy(raw + 0x18, nickname, strlen(nickname) < 32 ? strlen(nickname) : 32);
+    r->c.raw = raw;
+    r->c.raw_size = 0x40;
+    r->c.nx = 1;
+    r->c.x[0].addr = 0x100;
+    r->c.x[0].size = data_size;
+    if (image_size) {
+        r->c.na = 1;
+        r->c.a[0].addr = 0x200;
+        r->c.a[0].size = image_size;
+    }
+}
+/* the profile editor: a registered user's nickname, UserData and picture stored as the program gives them, into
+   users.ini at once (as rEden writes profiles.dat at a Store), and read back by the profile; a nickname the service
+   would not keep, another user's uid, a short UserData and a picture past 128 KiB refused, nothing written */
+static void test_profile_editor(void) {
+    static u8 memory[0x400];
+    static const u8 picture[] = {0xFF, 0xD8, 0xFF, 0xE0, 9, 8, 7, 0xFF, 0xD9};
+    char why[512], hex[33], *now, *path;
+    u8 raw[0x40];
+    SvcObj *su = new_acc_admin(), *editor, *profile = NULL;
+    Request r;
+    nn_account_Uid uid;
+    nn_account_profile_ProfileBase base;
+    u64 v[2];
+    u32 size;
+    int i;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("[user1]\nnickname=Aogo\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 200);
+    call(su, &r);
+    memcpy(uid.v, r.c.out, 16);
+    acc_uid_get(&uid, v);
+    snx_users_uid_text(v, hex);
+    request(&r, 205);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    CHECK(r.c.nout_objs == 1);
+    editor = r.c.out_objs[0];
+    for (i = 0; i < SNX_USERS_DATA; i++) memory[0x100 + i] = (u8)(0x80 + i);
+    memcpy(memory + 0x200, picture, sizeof picture);
+    store_request(&r, raw, 101, v, "Jo\xc3\xa3o", SNX_USERS_DATA, sizeof picture);
+    call(editor, &r);
+    now = got("users.ini");
+    CHECK(now && strstr(now, "[user2]\nuid=") && strstr(now, hex) &&
+          strstr(now, "nickname=Jo\xc3\xa3o\nuser_data=8081"));
+    free(now);
+    path = snx_format("%s/%s.jpg", DIR, hex);
+    {
+        size_t n = 0;
+        unsigned char* kept = snx_read_file(path, &n);
+        CHECK(kept && n == sizeof picture && !memcmp(kept, picture, n));
+        free(kept);
+    }
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == 0 && !memcmp(base.nickname, "Jo\xc3\xa3o", 5));
+    CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == sizeof picture);
+    svcobj_unref(profile);
+    /* Store alone: the nickname, the picture as it was */
+    store_request(&r, raw, 100, v, "Xuji", SNX_USERS_DATA, 0);
+    call(editor, &r);
+    CHECK(!strcmp(g_users[1].nickname, "Xuji") && g_users[1].picture_size == sizeof picture);
+    now = got("users.ini");
+    CHECK(now && strstr(now, "nickname=Xuji\nuser_data=8081"));
+    /* refused, nothing changed: no nickname, a space at its end, another user's uid, a short UserData, a big picture */
+    store_request(&r, raw, 100, v, "", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 100));
+    store_request(&r, raw, 100, v, "Xuji ", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 100));
+    store_request(&r, raw, 100, g_users[0].uid, "Xuji", SNX_USERS_DATA, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 20));
+    store_request(&r, raw, 100, v, "Xuji", 0x40, 0);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 32));
+    store_request(&r, raw, 101, v, "Xuji", SNX_USERS_DATA, 0x20001);
+    CHECK(editor->dispatch(editor, &r.c) == RC(124, 32));
+    {
+        char* again = got("users.ini");
+        CHECK(again && !strcmp(again, now));
+        free(again);
+    }
+    free(now);
+    svcobj_unref(editor);
+    svcobj_unref(su);
+    remove(path);
+    free(path);
+    gone("users.ini");
+    gone("users.ini.old");
+    puts("PASS the profile editor: nickname, UserData and picture stored as given, into users.ini at once");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
@@ -1111,6 +1210,7 @@ int main(void) {
     test_users();
     test_choose();
     test_registration();
+    test_profile_editor();
     test_user_data();
     test_system_service();
     test_administrator_service();

@@ -64,6 +64,10 @@ int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size);
 /* users 1 to number written to users.ini of dir where they are not yet (snx_users_begin's), each a [userN] after the
    others with its uid, nickname and user_data; without users.ini user 1's starts it. 0, else -1 with why */
 int snx_users_save(const char* dir, int number, char* why, size_t why_size);
+/* user number's picture, users/<uid>.jpg of dir, made data's size bytes (at most 128 KiB, the most a program takes; 0
+   is none), as the account service keeps what a program stores. 0, else -1 with why: nothing changed */
+int snx_users_set_picture(const char* dir, int number, const unsigned char* data, uint32_t size, char* why,
+                          size_t why_size);
 /* user number's UserData in users.ini of dir, user_data= its hex digits (empty for zeros), the file's other lines as
    they were; without users.ini user 1's starts it. 0, else -1 with why: nothing changed */
 int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX_USERS_DATA], char* why,

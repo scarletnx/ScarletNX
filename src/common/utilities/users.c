@@ -259,7 +259,7 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
         snprintf(why, why_size, "%s could not be read", path);
         goto done;
     }
-    /* [userN]'s key= line, else where one goes after its section line */
+    /* [userN]'s key= line, else where one goes: after the section's last line that is not empty */
     for (line = text; *line; line += len) {
         end = strchr(line, '\n');
         len = end ? (size_t)(end - line) + 1 : strlen(line);
@@ -269,7 +269,9 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
             if (section == number) after = (size_t)(line - text) + len;
             continue;
         }
-        if (section != number || cut_end) continue;
+        if (section != number) continue;
+        if (*p && *p != '\r' && *p != '\n') after = (size_t)(line - text) + len;
+        if (cut_end) continue;
         for (q = p; *q && *q != '=' && *q != '\n'; ++q) {}
         for (n = (size_t)(q - p); n && (p[n - 1] == ' ' || p[n - 1] == '\t'); --n) {}
         if (*q == '=' && n == key_len && !strncmp(p, key, key_len)) {
@@ -299,6 +301,57 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
 done:
     free(out);
     free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
+int snx_users_set_picture(const char* dir, int number, const unsigned char* data, uint32_t size, char* why,
+                          size_t why_size) {
+    char name[40], *path, *staged;
+    unsigned char* block;
+    size_t total = size;
+    int rc = -1, i;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        return -1;
+    }
+    if (size > USERS_PICTURE) {
+        snprintf(why, why_size, "a picture of %u bytes is past the %u a user's picture holds", (unsigned)size,
+                 (unsigned)USERS_PICTURE);
+        return -1;
+    }
+    snx_users_uid_text(g_users[number - 1].uid, name);
+    strcat(name, ".jpg");
+    path = snx_path_join(dir, name);
+    staged = snx_format("%s.new", path);
+    /* written beside it first: a full disk leaves the picture as it was */
+    if (snx_mkdirs(dir) || snx_write_file(staged, data, size)) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    /* the block of every picture made again, this user's the new one */
+    for (i = 0; i < g_user_count; i++)
+        if (i != number - 1) total += g_users[i].picture_size;
+    block = total ? (unsigned char*)snx_alloc(total) : NULL;
+    total = 0;
+    for (i = 0; i < g_user_count; i++) {
+        const unsigned char* from = i == number - 1 ? data : g_user_pictures + g_users[i].picture_at;
+        uint32_t n = i == number - 1 ? size : g_users[i].picture_size;
+        if (n) memcpy(block + total, from, n);
+        g_users[i].picture_at = (uint32_t)total;
+        g_users[i].picture_size = n;
+        total += n;
+    }
+    free(g_user_pictures);
+    g_user_pictures = block;
+    rc = 0;
+done:
     free(staged);
     free(path);
     return rc;

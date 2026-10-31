@@ -84,6 +84,7 @@ interface nn::account::IAccountServiceForAdministrator is acc:su {
     # rEden's (acc.cpp BeginUserRegistration), and in users.ini from Complete
     [200] BeginUserRegistration() -> nn::account::Uid uid;
     [201] CompleteUserRegistration(nn::account::Uid uid);
+    [205] GetProfileEditor(nn::account::Uid uid) -> object<nn::account::profile::IProfileEditor> editor;
     [250] GetBaasAccountAdministrator(nn::account::Uid uid) -> object<nn::account::baas::IAdministrator> administrator;
     [401] GetPinCodeLength() -> u32 length;
 }
@@ -98,6 +99,21 @@ interface nn::account::profile::IProfile {
     @stub [20] GetLargeImageSize() -> u32 size;
     @stub [21] LoadLargeImage(buffer<u8, 6> image) -> u32 size;
     @stub [30] GetImageId() -> bytes<0x10> id;
+}
+
+# a user's profile for acc:su to change (SwitchBrew IProfileEditor): IProfile's, then Store and StoreWithImage, which
+# write the nickname, the UserData and the picture as the program gives them
+interface nn::account::profile::IProfileEditor {
+    [0] Get(buffer<nn::account::profile::UserData, 0x1a> user_data) -> nn::account::profile::ProfileBase base;
+    [1] GetBase() -> nn::account::profile::ProfileBase base;
+    [10] GetImageSize() -> u32 size;
+    [11] LoadImage(buffer<u8, 6> image) -> u32 size;
+    @stub [20] GetLargeImageSize() -> u32 size;
+    @stub [21] LoadLargeImage(buffer<u8, 6> image) -> u32 size;
+    @stub [30] GetImageId() -> bytes<0x10> id;
+    [100] Store(nn::account::profile::ProfileBase base, buffer<nn::account::profile::UserData, 0x19> user_data);
+    [101] StoreWithImage(nn::account::profile::ProfileBase base,
+                         buffer<nn::account::profile::UserData, 0x19> user_data, buffer<u8, 5> image);
 }
 
 # the user's network service account: there, with the id token an account server issued it, none here
