@@ -386,14 +386,14 @@ void kernel_core_report(void) {
             if (j < 3) h[j] = t;
         }
         for (j = 0; j < 3 && h[j]; j++) {
-            if (!sdk_name(h[j], name, sizeof name)) snprintf(name, sizeof name, "%s", h[j]->name);
+            if (!kthread_name(h[j], name, sizeof name)) snprintf(name, sizeof name, "%s", h[j]->name);
             LOG("kernel:   core %d held by thread %llu '%s' prio %d for %llu%% of the run\n", k,
                 (unsigned long long)h[j]->id, name, h[j]->prio, (unsigned long long)(h[j]->core_held_ns * 100 / run));
         }
     }
     for (j = 0; j < TOP && top[j]; j++) {
         const KThread* t = top[j];
-        if (!sdk_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
+        if (!kthread_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
         LOG("kernel:   thread %llu '%s' prio %d core %d mask %llx waited %.2f s for its core in %u waits\n",
             (unsigned long long)t->id, name, t->prio, t->core, (unsigned long long)t->affinity,
             (double)t->core_wait_ns / 1e9, t->core_waits);
