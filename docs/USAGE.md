@@ -490,6 +490,7 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's Share Log, `scarletnx-logs-<date>.zip` or `scarletnx.log` (iOS: `logs/share/` of its Documents) | - | `~/.local/state/scarletnx/share/` | `state/share/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 | the console's users, `users.ini` and `<uid>.jpg` ([Users](#users)), and `online.ini`, an Eden room's password (`room`) | `users/` of the user's data folder | `~/.local/share/scarletnx/users/` | `users/` |
+| the users a program deleted, each in `user.<uid>.<UTC time>/` with its users.ini section, picture and saves ([Users](#users)) | `trash/` of the user's data folder | `~/.local/share/scarletnx/trash/` | `trash/` |
 
 The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
 folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--data`, `--outdir`
@@ -540,21 +541,30 @@ uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
 nickname=Xuji
 ```
 
-`uid`, `nickname` and `user_data` are the keys: `user_data` is the profile's UserData a program stored (its icon,
-colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice, or a line that is no key stops the
-game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
-picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG,
-256x256 as the console's, from its editor), at most 128 KiB, read when the game starts; without one, or with an empty
-file, it is Wimsy, and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by its uid, empty for `[user1]` (`--user_uid=<uid>` for one
-run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
-Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the data folder's
-`save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
+`uid`, `nickname` and `user_data` are the keys: `user_data` is the profile's UserData a program stored (its icon, colour
+and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice, or a line that is
+no key stops the game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule
+above checked) and picks the one the games play as; the file's other lines stay as they are. A user's picture is
+`users/<uid>.jpg`, the bytes the account service keeps (a JPEG, 256x256 as the console's, from its editor), at most 128
+KiB, read when the game starts; without one, or with an empty file, it is Wimsy, and a launcher that cannot draw it says
+so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by its uid, empty for `[user1]`
+(`--user_uid=<uid>` for one run): with one user, the game picks it on its own; with more, the game's user selector gets
+that user. Each user's Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the
+data folder's `save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
 `save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
-one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
-the launcher's foot.
+one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said
+in the launcher's foot.
+
+A program with the console's administrator account service (acc:su, as the system's user settings) changes users.ini as
+the console's does, and the log says each change: a user it registers is the next `[userN]`, `Player` until it stores
+the profile; a profile it stores writes the nickname (the rule above), the UserData and the picture; a user it deletes
+goes to the Trash, a folder `trash/user.<uid>.<UTC time>/` of the data folder with its users.ini section, its picture
+and its saves in `save/user.<uid>/` (with `save_layout=game`, the running game's), the users after it a place up, and
+the user playing is refused; a user it moves takes its new place, those between a place over, user 1 given its uid and
+nickname lines as it leaves `[user1]`. An empty `user_uid` plays as whoever is `[user1]` then.
 
 ## Setup
 
