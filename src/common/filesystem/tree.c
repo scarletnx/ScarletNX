@@ -877,7 +877,9 @@ static void make_readonly(FsNode* n) {
     for (FsNode* child = n->children; child; child = child->next) make_readonly(child);
 }
 
-FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory) {
+/* name, a child of the data directory, for the host folder directory: its entries indexed when scan (a folder there
+   before), else none (one made now), and readonly or not */
+static FsTreeResult graft(FsTree* tree, const char* name, const char* directory, int scan, int readonly) {
     if (!tree || !tree->root || !name || !directory || !valid_name(name, strlen(name))) return FS_TREE_INVALID;
     if (child_find(tree->root, name)) return FS_TREE_EXISTS;
     char absolute[FS_TREE_PATH_MAX];
@@ -891,14 +893,29 @@ FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory
         return FS_TREE_NOMEM;
     }
     n->attached = 1;
-    rc = scan_directory(tree, n, absolute, 1, NULL);
+    rc = scan ? scan_directory(tree, n, absolute, 1, NULL) : FS_TREE_OK;
     if (rc) {
         subtree_discard(n);
         return rc;
     }
-    make_readonly(n);
+    if (readonly) make_readonly(n);
     node_attach(tree->root, n);
     return FS_TREE_OK;
+}
+FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory) {
+    return graft(tree, name, directory, 1, 1);
+}
+FsTreeResult fs_tree_graft_writable(FsTree* tree, const char* name, const char* directory) {
+    return graft(tree, name, directory, 1, 0);
+}
+FsTreeResult fs_tree_graft_new(FsTree* tree, const char* name, const char* directory) {
+    if (!tree || !tree->root || !name || !directory || !valid_name(name, strlen(name))) return FS_TREE_INVALID;
+    if (child_find(tree->root, name)) return FS_TREE_EXISTS;
+    char absolute[FS_TREE_PATH_MAX];
+    if (plat_mkdir(directory)) return host_directory(directory, absolute) ? FS_TREE_IO : FS_TREE_EXISTS;
+    FsTreeResult rc = graft(tree, name, directory, 0, 0);
+    if (rc) host_unlink(directory, 1); /* nothing made stays */
+    return rc;
 }
 
 /* src's children (an overlay's scan, host its host folder) laid over dst's: see fs_tree_overlay. src is left empty */
