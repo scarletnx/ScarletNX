@@ -785,6 +785,10 @@ static void write_h(const char* dir) {
     header();
     outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"nx/runtime/ini.h\"\n#include <limits.h>\n\n");
     outs("/* an LLVM option's value while LLVM's own is kept */\n#define SETTINGS_UNSET INT_MIN\n\n");
+    for (i = 0, t = 0; i < nsettings; i++) t += settings[i].repeat ? settings[i].repeat : 1;
+    out("/* the keys of every table, a repeated setting's once for each repeat: what a settings file the runtime "
+        "writes holds at most */\n#define SETTINGS_KEYS %d\n",
+        t);
     for (i = 0; i < nlists; i++) {
         char* u = upper(lists[i].name);
         out("#define SETTINGS_%s_COUNT %d\n", u, lists[i].n);
