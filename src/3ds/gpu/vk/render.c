@@ -219,6 +219,7 @@ static void image_free(Image* m) {
     if (m->memory) vkFreeMemory(d, m->memory, NULL);
     *m = (Image){0};
 }
+static void end_rendering(void);
 /* an image in the GENERAL layout, which every use of it here takes: color (RGBA8) or the depth format, with layers 1
    or 6 (a cube), and storage views of each level for a texture */
 static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t levels, uint32_t layers,
@@ -275,6 +276,7 @@ static bool image_new(VkFormat format, uint32_t width, uint32_t height, uint32_t
     m->height = height;
     m->level_count = levels;
     m->layers = layers;
+    end_rendering(); /* the layout barrier below is not allowed inside a dynamic rendering instance */
     VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                               .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
                               .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1140,8 +1142,12 @@ static VkPipeline make_pipeline(const PipeKey* k) {
                                        .pDynamicState = &dynamic,
                                        .layout = g.layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(v->device, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline) != VK_SUCCESS)
+    VkResult made = vkCreateGraphicsPipelines(v->device, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline);
+    if (made != VK_SUCCESS) {
+        fprintf(stderr, "3ds gpu: vkCreateGraphicsPipelines failed with VkResult %d (depth %u, topology %u, blend %u)\n", (int)made,
+                (unsigned)k->depth, (unsigned)k->topology, (unsigned)k->blend_on);
         return VK_NULL_HANDLE;
+    }
     return pipeline;
 }
 static VkPipeline pipeline(const PipeKey* k) {
@@ -1338,11 +1344,10 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
 /* one draw: array (indexed or not) or the immediate vertices kept */
 /* What an array draw reads of memory, watched until its submission is done (a CPU write waits for it): the index
    buffer, and each loader's binding up to the highest vertex drawn (read from the indices) */
-static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t index_pa, bool indexed, bool wide,
-                       uint32_t count, uint32_t first) {
-    uint64_t last = (uint64_t)first + count - 1;
-    if (indexed) {
-        uint32_t bytes = count * (wide ? 2u : 1u), top = 0;
+/* the highest index a draw reads. Reading the indices lands what the GPU wrote to their pages, which submits the
+   recording: so it comes before the draw's commands are recorded */
+static uint32_t scan_indices(uint32_t index_pa, uint32_t count, bool wide) {
+    uint32_t bytes = count * (wide ? 2u : 1u), top = 0;
         unsigned char chunk[4096];
         for (uint32_t at = 0; at < bytes; at += sizeof chunk) {
             uint32_t n = bytes - at < sizeof chunk ? bytes - at : (uint32_t)sizeof chunk;
@@ -1355,8 +1360,14 @@ static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t
                 if (index > top) top = index;
             }
         }
+    return top;
+}
+static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t index_pa, bool indexed, bool wide,
+                       uint32_t count, uint32_t first, uint32_t top) {
+    uint64_t last = (uint64_t)first + count - 1;
+    if (indexed) {
         last = top;
-        gpu_uses(index_pa, bytes, false);
+        gpu_uses(index_pa, count * (wide ? 2u : 1u), false);
     }
     for (unsigned n = 0; n < 12; ++n)
         if (k->binding_mask >> n & 1) {
@@ -1458,6 +1469,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
                 buffers[n] = ram->buffer;
             }
     }
+    uint32_t top = indexed && !immediate ? scan_indices(index_pa, count, wide) : 0;
     SnxCtrPicaResult result = target_open(&key);
     if (result != SNX_CTR_PICA_OK) return result;
     VkDescriptorSet sets[2];
@@ -1503,7 +1515,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 2, sets, 0, NULL);
     for (uint32_t b = 0; b < 13; ++b)
         if (k.binding_mask >> b & 1) vkCmdBindVertexBuffers(cb, b, 1, &buffers[b], &offsets[b]);
-    if (!immediate) draw_reads(&k, binding_pa, index_pa, indexed, wide, count, r[VERTEX_OFFSET]);
+    if (!immediate) draw_reads(&k, binding_pa, index_pa, indexed, wide, count, r[VERTEX_OFFSET], top);
     if (indexed && !immediate) {
         VkDeviceSize at;
         const SnxCtrVkRam* ram = snx_ctr_vk_ram(index_pa, 1, &at);
