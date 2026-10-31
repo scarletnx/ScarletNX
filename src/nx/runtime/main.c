@@ -990,6 +990,14 @@ int snx_main(int argc, char** argv) {
         LOG("game: %016llx, version %s\n", (unsigned long long)g_hle.kernel.title_id, version);
     }
     svc_fs_init();
+    { /* save_layout=global's saves, in the data folder's save/: after the users (svc_core_init) and the title */
+        char *data = snx_menu_dir(g_exedir[0] ? g_exedir : ".", SNX_USER_DATA),
+             *saves = data ? snx_path_join(data, "save") : NULL;
+        if (!saves) fatal("Out of memory finding the saves folder");
+        fs_saves_init(saves);
+        free(saves);
+        free(data);
+    }
     svc_hid_init();
     svc_vi_init();
     svc_pl_init();

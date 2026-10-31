@@ -1872,6 +1872,12 @@ static u64 filesrom_init(u8* m, size_t cap, u32 count, void (*file_name)(u32, ch
 }
 /* save data folders, by SaveDataType */
 static const char* const g_save_kinds[] = {"system", "user", "bcat", "device", "temp", "cache", "sysbcat"};
+/* save_layout=global is in effect: its folder is known (fs_saves_init) and the program has a title ID of its own */
+static int save_layout_global(void) {
+    char title[17];
+    return g_host.fs.save_root[0] && strcmp(g_settings.save_layout, "game") &&
+           snx_title_text(g_hle.kernel.title_id, title);
+}
 /* An Account save is save/user.<uid>, the folder of its user (users.c). The fixed uid's (am.c's g_user_id, user 1's
    when users.ini gives it none), while it has none, is the one an older version left, played where it is and said once
    a run (docs/DEPRECATIONS.md): save/user, from before there were other users, else a nonempty save/system (earlier
@@ -1900,10 +1906,11 @@ static u32 save_user(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n
         *both = 1;
         R_THROW(FS_EXISTS);
     }
-    WARN_LIMIT(1,
-               "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The game "
-               "plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
-               g_datadir, old, g_datadir, p);
+    if (!save_layout_global()) /* save_layout=global says where it goes itself (save_folder) */
+        WARN_LIMIT(1,
+                   "fs: %s%s, the first user's saves, was left by an older version: this one keeps them in %s%s. The "
+                   "game plays them where they are until you move the folder there (docs/DEPRECATIONS.md)\n",
+                   g_datadir, old, g_datadir, p);
     snprintf(p, n, "%s", old);
     R_SUCCEED();
 }
@@ -1991,22 +1998,152 @@ static int nn_fssrv_sf_IFileSystemProxy_GetProgramIndexForAccessLog(SvcObj* self
     *program_count = 1;
     R_SUCCEED();
 }
-/* save/<kind>, by the attribute's SaveDataType, and an Account save its user's (save_user) */
-static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
-    char p[64];
+/* save_layout=global: each save in one folder of every game's, the data folder's save/ (g_host.fs.save_root), apart
+   from the games as the console keeps them: an Account save in user.<uid>/<title ID>/, Device's in device/<title ID>/,
+   BCAT's in bcat/<title ID>/, cache storage in cache/<title ID>/<index>/, the system's in system/<save ID>/ and
+   sysbcat/<save ID>/. Temporary storage stays the game's, which every start empties, and so do the saves of a program
+   with no title ID of its own (a homebrew's), which would share one. Each folder is a graft of the tree: name, of host;
+   the save is in it, or in its folder sub (an index, a save ID). 0 when the save has none */
+static int save_global(const nn_fs_SaveDataAttribute* attribute, char* name, size_t name_size, char* host,
+                       size_t host_size, char* sub, size_t sub_size) {
+    char title[17], uid_text[33];
+    u8 type = attribute->type;
+    u64 uid[2];
+    sub[0] = 0;
+    if (type == 4 || !g_host.fs.save_root[0] || !snx_title_text(g_hle.kernel.title_id, title)) return 0;
+    if (type == 1) {
+        uid[0] = snx_ld_le64(attribute->uid.v);
+        uid[1] = snx_ld_le64(attribute->uid.v + 8);
+        snx_users_uid_text(uid, uid_text);
+        snprintf(name, name_size, "global-user.%s", uid_text);
+        snprintf(host, host_size, "%s/user.%s/%s", g_host.fs.save_root, uid_text, title);
+    } else if (type == 2 || type == 3 || type == 5) {
+        const char* kind = g_save_kinds[type];
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s/%s", g_host.fs.save_root, kind, title);
+        if (type == 5) snprintf(sub, sub_size, "%u", (unsigned)attribute->index);
+    } else { /* System, SystemBcat and the types sf doesn't name, which go as System */
+        const char* kind = type == 6 ? "sysbcat" : "system";
+        snprintf(name, name_size, "global-%s", kind);
+        snprintf(host, host_size, "%s/%s", g_host.fs.save_root, kind);
+        snprintf(sub, sub_size, "%016llX", (unsigned long long)attribute->system_save_data_id);
+    }
+    return 1;
+}
+/* path in the tree is a folder with something in it: a save, not one a mount made and nothing wrote */
+static int save_there(const char* path) { /* tree.lock held */
+    FsNode* node;
+    return !fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && node->is_dir && node->children;
+}
+/* save_layout=global's folders of this title there now, grafted: a save is found then without enumerating anything
+   later. Called at startup, after the users are known */
+void fs_saves_init(const char* root) {
+    static const u8 types[] = {2, 3, 5, 0, 6};
+    nn_fs_SaveDataAttribute a;
+    char name[64], host[FS_TREE_PATH_MAX], sub[24];
+    int i;
+    snprintf(g_host.fs.save_root, sizeof g_host.fs.save_root, "%s", root ? root : "");
+    pm_lock(&g_hle.fs.tree.lock);
+    for (i = 0; i < g_user_count + (int)sizeof types; i++) {
+        memset(&a, 0, sizeof a);
+        if (i < g_user_count) {
+            a.type = 1;
+            snx_st_le64(a.uid.v, g_users[i].uid[0]);
+            snx_st_le64(a.uid.v + 8, g_users[i].uid[1]);
+        } else
+            a.type = types[i - g_user_count];
+        if (!save_global(&a, name, sizeof name, host, sizeof host, sub, sizeof sub) || !snx_is_dir(host)) continue;
+        FsTreeResult r = fs_tree_graft_writable(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK && r != FS_TREE_EXISTS) fatal("Could not index the saves in %s (error %d)", host, r);
+    }
+    pm_unlock(&g_hle.fs.tree.lock);
+}
+/* The folder of the attribute's save in the tree, into p, as save_layout says: global's (save_global), game's
+   save/<kind> of the game's data folder, an Account save its user's (save_user). The other layout's while only it
+   holds the save, played where it is and said once a run; both holding one is two saves of it, which stop says and
+   the game stops for, leaving both */
+static u32 save_folder(const nn_fs_SaveDataAttribute* attribute, char* p, size_t n, char* stop, size_t stop_size) {
+    char name[64], host[FS_TREE_PATH_MAX], sub[24], global[96], game[64];
     u8 type = attribute->type;
     const char* kind = type < sizeof g_save_kinds / sizeof g_save_kinds[0] ? g_save_kinds[type] : "system";
-    int both = 0;
+    int both = 0, mine = strcmp(g_settings.save_layout, "game"), in_global, in_game;
+    FsNode* node;
     u32 rc = 0;
-    snprintf(p, sizeof p, "save/%s", kind);
+    stop[0] = 0;
+    snprintf(game, sizeof game, "save/%s", kind);
+    if (type == 1) rc = save_user(attribute, game, sizeof game, &both);
+    if (both) {
+        snprintf(stop, stop_size,
+                 "Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the "
+                 "one you play and move the other out of %ssave/, then start the game again",
+                 g_datadir, g_datadir, game, g_datadir);
+        return rc;
+    }
+    if (R_FAILED(rc)) return rc;
+    if (!save_global(attribute, name, sizeof name, host, sizeof host, sub, sizeof sub)) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    snprintf(global, sizeof global, "%s%s%s", name, sub[0] ? "/" : "", sub);
+    in_global = save_there(global);
+    in_game = save_there(game);
+    if (in_global && in_game) {
+        snprintf(stop, stop_size,
+                 "Two saves of this game's %s save: %s%s, each game's own, and %s%s%s, the one of every game's "
+                 "(save_layout). Keep the one you play and move the other out, then start the game again",
+                 kind, g_datadir, game, host, sub[0] ? "/" : "", sub);
+        R_SUCCEED();
+    }
+    if (mine ? in_game : in_global) {
+        unsigned bit = type < 8 ? type : 0;
+        if (!(g_host.fs.save_told >> bit & 1)) {
+            g_host.fs.save_told |= 1u << bit;
+            if (mine)
+                WARN("fs: %s%s holds this game's %s save, which save_layout=global keeps in %s%s%s. The game plays it "
+                     "where it is until you move the folder there (Settings > App > Move Old Files, "
+                     "docs/DEPRECATIONS.md)\n",
+                     g_datadir, game, kind, host, sub[0] ? "/" : "", sub);
+            else
+                WARN("fs: %s%s%s holds this game's %s save, which save_layout=game keeps in %s%s. The game plays it "
+                     "where it is until you move the folder there\n",
+                     host, sub[0] ? "/" : "", sub, kind, g_datadir, game);
+        }
+        snprintf(p, n, "%s", mine ? game : global);
+        R_SUCCEED();
+    }
+    if (!mine) {
+        snprintf(p, n, "%s", game);
+        R_SUCCEED();
+    }
+    /* global's, made now when it is not there: the folder above it first, then the graft */
+    if (fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) {
+        char* parent = snx_strdup(host);
+        char* cut = strrchr(parent, '/');
+        if (cut) *cut = 0;
+        if (cut && snx_mkdirs(parent)) {
+            WARN("fs: could not make %s for this game's %s save\n", parent, kind);
+            free(parent);
+            R_THROW(RC(2, 1)); /* PathNotFound */
+        }
+        free(parent);
+        FsTreeResult r = fs_tree_graft_new(&g_hle.fs.tree, name, host);
+        if (r != FS_TREE_OK) {
+            WARN("fs: could not make %s for this game's %s save (error %d)\n", host, kind, r);
+            return tree_result(r);
+        }
+    }
+    snprintf(p, n, "%s", global);
+    R_SUCCEED();
+}
+/* the attribute's save, where save_folder says */
+static int open_save(const nn_fs_SaveDataAttribute* attribute, SvcObj** filesystem) {
+    char p[96], stop[FS_TREE_PATH_MAX * 2 + 512];
+    u32 rc;
     pm_lock(&g_hle.fs.tree.lock);
-    if (type == 1) rc = save_user(attribute, p, sizeof p, &both);
-    *filesystem = R_FAILED(rc) ? NULL : hostfs_new(p, &rc);
+    rc = save_folder(attribute, p, sizeof p, stop, sizeof stop);
+    *filesystem = R_FAILED(rc) || stop[0] ? NULL : hostfs_new(p, &rc);
     pm_unlock(&g_hle.fs.tree.lock);
-    if (both)
-        fatal("Two saves of the first user: %ssave/user, from before there were other users, and %s%s. Keep the one "
-              "you play and move the other out of %ssave/, then start the game again",
-              g_datadir, g_datadir, p, g_datadir);
+    if (stop[0]) fatal("%s", stop);
     return (int)rc;
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenSaveDataFileSystem(SvcObj* self, nn_fs_SaveDataSpaceId space_id,

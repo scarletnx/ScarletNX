@@ -12,6 +12,9 @@
 
 /* Indexes the game's data folder and maps RomFS and ExeFS for the run. Called once, before any guest file is loaded */
 void fs_init(const char* keys, const char* title_keys);
+/* save_layout=global's saves under root (the data folder's save/), this title's folders there now grafted: after the
+   users are known, before the game runs (fs.c's save_global) */
+void fs_saves_init(const char* root);
 extern u64 g_fs_bytes_read, g_fs_bytes_written; /* the game's file I/O, for the rate plot */
 /* Lookups by a path in the index. *size is 0 when the file isn't there */
 FILE* fs_open_read(const char* path, u64* size);
@@ -154,6 +157,8 @@ typedef struct {
 typedef struct {
     PMutex dlock;
     FsShare romfs;
+    char save_root[FS_TREE_PATH_MAX]; /* save_layout=global's folder, the data folder's save/ (fs_saves_init) */
+    unsigned save_told;               /* the save types whose folder of the other layout was said, a bit each */
 } HostFs;
 /* all zero: fs_init sets the tree up */
 extern const StateFnTable g_fs_state_fns; /* the functions a save state may hold of fs.c */

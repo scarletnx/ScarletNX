@@ -1899,6 +1899,142 @@ static void test_save_data(SvcObj* proxy) {
         "refused, IsSdCardAccessible and the access log's program index");
 }
 
+/* path on the host is a file */
+static int host_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+/* a file at path on the host, made with its folders */
+static void host_put(const char* path) {
+    char* folder = snx_strdup(path);
+    *strrchr(folder, '/') = 0;
+    CHECK(!snx_mkdirs(folder));
+    free(folder);
+    FILE* f = fopen(path, "wb");
+    CHECK(f && fwrite("save", 1, 4, f) == 4 && !fclose(f));
+}
+/* save_layout (fs.c's save_folder): global keeps a save in the data folder's save/, apart from the game, as the
+   console does (user.<uid>/<title ID>, device/<title ID>, bcat/<title ID>, cache/<title ID>/<index>); a save only the
+   other layout holds is played where it is, said once; both holding one stops the game, which keeps both. Temporary
+   storage and a program with no title ID of its own stay the game's. Each folder there at startup is grafted then,
+   and one made later is made with nothing enumerated */
+static void test_save_layout(SvcObj* proxy) {
+    char *root = snx_absolute("../../layout-saves"), path[2048];
+    jmp_buf jump;
+    Request r;
+    SvcObj* save;
+    FsNode* node;
+#define TITLE "0100000000010000"
+    snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/kept.bin", root);
+    host_put(path);
+    snprintf(path, sizeof path, "%s/bcat/" TITLE "/b.bin", root);
+    host_put(path);
+    save = open_save_data(proxy, 51, 2); /* the game's own BCAT save, which has a file now: two of it */
+    fs_command(save, 0, "/p.bin", 4, 0);
+    svcobj_unref(save);
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, "save/user", 1, 1, 0)); /* test_save_data's two first-user saves */
+    pm_unlock(&g_hle.fs.tree.lock);
+    g_user_count = 2;
+    memcpy(g_users[0].uid, g_user_id, sizeof g_users[0].uid);
+    memcpy(g_users[1].uid, test_other_user, sizeof g_users[1].uid);
+    strcpy(g_settings.save_layout, "global");
+    test_scans_allowed = 1;
+    fs_saves_init(root);
+    test_scans_allowed = 0;
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_lookup(&g_hle.fs.tree, NULL, "global-user.0123456789abcdeffedcba9876543210/kept.bin", &node));
+    CHECK(fs_tree_lookup(&g_hle.fs.tree, NULL, "global-device", &node) == FS_TREE_NOTFOUND);
+    pm_unlock(&g_hle.fs.tree.lock);
+    /* the first user's: in both, the game's own (test_save_data's) and the global one, so the game stops */
+    save_request(&r, 51, 1, g_user_id);
+    test_fatal_text[0] = 0;
+    test_fatal_jump = &jump;
+    if (!setjmp(jump)) {
+        dispatch(proxy, &r, 0);
+        CHECK(!"two saves of one user's did not stop the game");
+    }
+    test_fatal_jump = NULL;
+    CHECK(strstr(test_fatal_text, "Two saves of this game's user save") && strstr(test_fatal_text, FIRST_SAVE) &&
+          strstr(test_fatal_text, "layout-saves/user.0123456789abcdeffedcba9876543210/" TITLE));
+    /* with the game's own moved out, the global one */
+    pm_lock(&g_hle.fs.tree.lock);
+    CHECK(!fs_tree_remove(&g_hle.fs.tree, NULL, FIRST_SAVE, 1, 1, 0));
+    pm_unlock(&g_hle.fs.tree.lock);
+    save = open_user_save(proxy, g_user_id);
+    fs_command(save, 7, "/kept.bin", 0, 0);
+    fs_command(save, 0, "/new.bin", 4, 0);
+    svcobj_unref(save);
+    snprintf(path, sizeof path, "%s/user.0123456789abcdeffedcba9876543210/" TITLE "/new.bin", root);
+    CHECK(host_file(path) && !tree_has(FIRST_SAVE));
+    /* another user's, only in the game's own folder: played there, said once with where it goes */
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, test_other_user);
+    fs_command(save, 7, "/other-user.bin", 0, 0);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, OTHER_SAVE) && strstr(test_fs_text, "save_layout=global keeps in") &&
+          strstr(test_fs_text, "layout-saves/user.04040404040404040404040404040404/" TITLE));
+    snprintf(path, sizeof path, "%s/user.04040404040404040404040404040404", root);
+    CHECK(!snx_is_dir(path));
+    test_fs_text[0] = 0;
+    save = open_user_save(proxy, test_other_user);
+    svcobj_unref(save);
+    CHECK(!test_fs_text[0]);
+    /* the Device save, in neither (the game's own empty): made in the global folder, nothing enumerated */
+    save = open_save_data(proxy, 51, 3);
+    fs_command(save, 0, "/d.bin", 4, 0);
+    svcobj_unref(save);
+    snprintf(path, sizeof path, "%s/device/" TITLE "/d.bin", root);
+    CHECK(host_file(path) && !tree_has("save/device/d.bin"));
+    /* cache storage, by its index */
+    save_request(&r, 51, 5, NULL);
+    snx_st_le16(r.raw + 0x2a, 3); /* the attribute's index, at 0x22 in it */
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    fs_command(r.c.out_objs[0], 0, "/c.bin", 4, 0);
+    svcobj_unref(r.c.out_objs[0]);
+    snprintf(path, sizeof path, "%s/cache/" TITLE "/3/c.bin", root);
+    CHECK(host_file(path));
+    /* BCAT in both: the game stops, and keeps both */
+    save_request(&r, 51, 2, NULL);
+    test_fatal_text[0] = 0;
+    test_fatal_jump = &jump;
+    if (!setjmp(jump)) {
+        dispatch(proxy, &r, 0);
+        CHECK(!"two BCAT saves did not stop the game");
+    }
+    test_fatal_jump = NULL;
+    CHECK(strstr(test_fatal_text, "Two saves of this game's bcat save") && tree_has("save/bcat/p.bin"));
+    snprintf(path, sizeof path, "%s/bcat/" TITLE "/b.bin", root);
+    CHECK(host_file(path));
+    /* temporary storage is the game's */
+    save = open_save_data(proxy, 51, 4);
+    svcobj_unref(save);
+    CHECK(tree_has("save/temp"));
+    /* save_layout=game: the game's own, and a save only the global folder holds played there, said */
+    strcpy(g_settings.save_layout, "game");
+    test_fs_text[0] = 0;
+    save = open_save_data(proxy, 51, 3);
+    fs_command(save, 7, "/d.bin", 0, 0);
+    svcobj_unref(save);
+    CHECK(strstr(test_fs_text, "save_layout=game keeps in") && strstr(test_fs_text, "save/device"));
+    /* a program with no title ID of its own: every save its own folder's */
+    strcpy(g_settings.save_layout, "global");
+    g_hle.kernel.title_id = SNX_NPDM_DEFAULT_TITLE;
+    save = open_save_data(proxy, 51, 5);
+    fs_command(save, 0, "/homebrew.bin", 4, 0);
+    svcobj_unref(save);
+    CHECK(tree_has("save/cache/homebrew.bin"));
+    g_hle.kernel.title_id = 0x0100000000010000ull;
+    g_user_count = 0;
+    g_settings.save_layout[0] = 0;
+    g_host.fs.save_root[0] = 0;
+    free(root);
+#undef TITLE
+    puts("PASS save_layout: global's folders, game's, a save played where it is, two of one refused");
+}
+
 static void cleanup_service(void) {
     pm_lock(&g_hle.fs.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -2064,6 +2200,7 @@ int main(int argc, char** argv) {
     test_virtual_services(fs, proxy);
     test_extracted_romfs(proxy);
     test_save_data(proxy);
+    test_save_layout(proxy);
     test_state_temp(proxy);
     test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);

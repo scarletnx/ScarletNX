@@ -30,6 +30,24 @@ folder, is played where an older version left it: `save/user`, the one Account s
 nonempty `save/system` ([DEPRECATIONS](DEPRECATIONS.md)). With `save/user` and its folder both there the game stops
 and leaves both, for the player to keep one.
 
+`save_layout=global` (the default) keeps the saves apart from the game, in the data folder's `save/` (`users/`'s
+folder), as the console keeps them:
+
+| Save | Folder |
+| --- | --- |
+| Account | `save/user.<uid>/<title ID>/` |
+| Device | `save/device/<title ID>/` |
+| BCAT | `save/bcat/<title ID>/` |
+| Cache storage | `save/cache/<title ID>/<index>/` |
+| System, SystemBcat | `save/system/<save ID>/`, `save/sysbcat/<save ID>/` |
+
+Temporary storage stays the game's `save/temp`, and every save of a program with no title ID of its own (a homebrew's)
+stays in its own folder. `save_layout=game` keeps each in the game's `save/<type>` as above. Each of those folders is a
+graft of the index, writable: the ones there at startup are indexed then (`fs_saves_init`, after the users), and one
+made later is made empty, so nothing is enumerated after startup (`fs_tree_graft_new`). A save only the other layout
+holds is played where it is, the game's log and stderr saying once a run where it goes; both holding one stops the
+game, which leaves both.
+
 Init rejects scan/stat errors, symlinks/junctions, regular-file hardlinks, special files and invalid names.
 Tree limits: 4096-byte path buffers including NUL, 256 directory levels below the data root.
 IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
