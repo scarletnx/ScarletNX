@@ -21,6 +21,7 @@ enum {
     NVHOST_AS_GPU_UNMAP_BUFFER = 0x05,   /* UnmapBuffer */
     NVHOST_AS_GPU_MAP_BUFFER_EX = 0x06,  /* MapBufferEx */
     NVHOST_AS_GPU_GET_VA_REGIONS = 0x08, /* GetVARegions (Ioctl3 also writes the regions to its second output) */
+    NVHOST_AS_GPU_GET_SYNCPOINT_SHIM = 0x0B, /* Switch 2: the syncpoint shim's page (nvdrv.c) */
     NVHOST_AS_GPU_ALLOC_AS_EX = 0x09,    /* AllocAsEx */
     NVHOST_AS_GPU_REMAP = 0x14           /* Remap */
 };
@@ -55,7 +56,15 @@ enum { AS_GET_VA_REGIONS_BUF_SIZE = 8, AS_GET_VA_REGIONS_REGIONS = 16 };
 enum { AS_VA_REGION_OFFSET = 0, AS_VA_REGION_PAGE_SIZE = 8, AS_VA_REGION_PAGES = 16, AS_VA_REGION_BYTES = 24 };
 #define AS_VA_REGIONS 2 /* the small-page region, then the big-page one */
 /* IoctlAllocAsEx {u32 flags, s32 as_fd, u32 big_page_size, u32 reserved, u64 va_range_start, end, split} */
-enum { AS_ALLOC_AS_EX_BIG_PAGE_SIZE = 8 };
+enum {
+    AS_ALLOC_AS_EX_FLAGS = 0,
+    AS_ALLOC_AS_EX_BIG_PAGE_SIZE = 8,
+    AS_ALLOC_AS_EX_VA_RANGE_START = 16,
+    AS_ALLOC_AS_EX_VA_RANGE_END = 24,
+    AS_ALLOC_AS_EX_VA_RANGE_SPLIT = 32
+};
+/* IoctlNx2SyncpointShimInfo {u64 address, u32 stride, u32 count}: the Switch 2 syncpoint shim's last page */
+enum { AS_SHIM_INFO_ADDRESS = 0, AS_SHIM_INFO_STRIDE = 8, AS_SHIM_INFO_COUNT = 12 };
 /* IoctlRemapEntry {u16 flags, u16 kind, u32 handle, u32 handle_offset_big_pages, u32 as_offset_big_pages,
    u32 big_pages}, an array filling the argument */
 enum {

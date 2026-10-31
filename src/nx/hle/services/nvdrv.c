@@ -1175,9 +1175,26 @@ static void as_va_regions(u8* d, u8* extra, u32 nextra) {
 /* ALLOC_AS_EX: the big page size, 64 KiB or 128 KiB, 0 meaning Eden's default; another size leaves it as it was */
 static u32 as_alloc_as_ex(const u8* d) {
     u32 big = rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) ? rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) : AS_DEFAULT_BIG_PAGE_SIZE;
+    u64 first = rd64(d, AS_ALLOC_AS_EX_VA_RANGE_START), last = rd64(d, AS_ALLOC_AS_EX_VA_RANGE_END);
     if (big == 1u << AS_BIG_PAGE_BITS_64K) g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_64K;
     if (big == 1u << AS_BIG_PAGE_BITS_128K) g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_128K;
+    /* the range the caller asks for, which the Switch 2 syncpoint shim's address comes from */
+    if (last > first) {
+        g_hle.nvdrv.as_va_first = first;
+        g_hle.nvdrv.as_va_last = last;
+    }
     LOG("nvdrv: GPU address space with %u KB big pages\n", (1u << g_hle.nvdrv.big_page_bits) >> 10);
+    return NV_RESULT_SUCCESS;
+}
+/* The Switch 2 syncpoint shim: the read-only GPU page its NVN waits on syncpoints through, which the console places
+   on the last page of the address space's range. Its u32 at id * stride reads as that syncpoint's value, and NVN
+   asserts without one (characteristics flag 26 tells it to ask for it), as Eden's Switch 2 work answers it */
+static u32 as_syncpoint_shim_info(u8* d) {
+    u64 page = (g_hle.nvdrv.as_va_last ? g_hle.nvdrv.as_va_last : AS_DEFAULT_VA_RANGE) - GMMU_PAGE_SIZE;
+    wr64(d, AS_SHIM_INFO_ADDRESS, page);
+    wr32(d, AS_SHIM_INFO_STRIDE, 4);
+    wr32(d, AS_SHIM_INFO_COUNT, SYNCPT_IDS);
+    LOG("nvdrv: the Switch 2 syncpoint shim at %llx (%u syncpoints)\n", (unsigned long long)page, SYNCPT_IDS);
     return NV_RESULT_SUCCESS;
 }
 /* REMAP: entries of IoctlRemapEntry filling the argument, offsets and sizes in big pages. A bad entry is skipped and
@@ -1234,6 +1251,9 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVHOST_AS_GPU_UNMAP_BUFFER: return as_unmap_buffer(rd64(d, AS_UNMAP_BUFFER_OFFSET));
         case NVHOST_AS_GPU_MAP_BUFFER_EX: return as_map_buffer(d);
         case NVHOST_AS_GPU_GET_VA_REGIONS: as_va_regions(d, extra, nextra); return NV_RESULT_SUCCESS;
+        case NVHOST_AS_GPU_GET_SYNCPOINT_SHIM: /* Switch 2 (nvdrv_as_gpu.h) */
+            if (g_guest_features) return as_syncpoint_shim_info(d);
+            return NV_RESULT_SUCCESS;
         case NVHOST_AS_GPU_ALLOC_AS_EX: return as_alloc_as_ex(d);
         case NVHOST_AS_GPU_REMAP: return as_remap(d, n);
         default: WARN_LIMIT(16, "nvdrv: nvhost-as-gpu ioctl %08x not implemented\n", cmd); return NV_RESULT_SUCCESS;
@@ -1463,6 +1483,19 @@ static void ctrlgpu_zcull_info(u8* d) {
     PUT32(subregion_width_align_pixels); PUT32(subregion_height_align_pixels); PUT32(subregion_count);
 #undef PUT32
 }
+/* GET_ENGINE_INFO, as a Switch 2 NvRm uses it: {u32 buf_size, u32 reserved, u64 buf_addr} in the ioctl's own buffer,
+   and the engines in the out-of-line one, 16 bytes an engine {u32 id, u32 instance, s32 runlist, u32 reserved}. NvRm
+   asks the size first and then fills the list, and picks its channels' runlists from it: the graphics engine on
+   runlist 0 and an async copy engine on 1, as Eden's Switch 2 work reports them. The answer's first word is the bytes
+   the list needs, and the buffer it asks with is filled from there */
+static void ctrlgpu_engine_info(u8* d, u8* extra, u32 nextra) {
+    static const u8 items[2 * 16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* NVGPU_ENGINE_GR, runlist 0 */
+        2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0  /* NVGPU_ENGINE_ASYNC_COPY, runlist 1 */
+    };
+    wr32(d, 0, (u32)sizeof items);
+    if (nextra >= sizeof items) copy_extra(extra, nextra, items, sizeof items);
+}
 static_assert(sizeof(NvgpuGpuZcullGetInfoArgs) == 40, "the guest's IoctlNvgpuGpuZcullGetInfoArgs");
 static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     static const u8 sms[NVGPU_NUM_SMS * 2] = {0, 0, 0, 1}; /* {gpc, tpc} of each SM */
@@ -1496,6 +1529,9 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVGPU_GPU_GET_TPC_MASKS:
             wr32(d, CTRL_GPU_TPC_MASKS_MASK, NVGPU_TPC_MASK);
             if (nextra >= 4) copy_extra(extra, nextra, d + CTRL_GPU_TPC_MASKS_MASK, 4);
+            return NV_RESULT_SUCCESS;
+        case NVGPU_GPU_GET_ENGINE_INFO: /* the Switch 2 NvRm's runlist list (nvdrv_ctrl_gpu.h) */
+            if (g_guest_features) ctrlgpu_engine_info(d, extra, nextra);
             return NV_RESULT_SUCCESS;
         case NVGPU_GPU_NUM_VSMS:
             /* A Switch 2 NvRm asks this for its Ampere chip's shape and then checks it against the
@@ -1543,13 +1579,15 @@ static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, 
     /* the fence promises every increment: with increment_value the entries make fval of them themselves, and the job
        adds only the host's after them, as Ryujinx's SubmitGpfifo does. Adding fval there too ran the syncpoint ahead
        of every later fence, so NVN's waits returned at once and a game's main thread spun on the semaphores behind
-       them */
+       them. A Switch 2 title's driver is the exception: its command stream signals its completion with semaphore
+       releases and holds no syncpoint increment of its own, so the job owes the fval increments the promise names
+       (Eden's Switch 2 work appends them for such submits) */
     incs = host + ((flags & GPU_SUBMIT_INCREMENT_VALUE) ? fval : 0);
     sp = gpu_channel_syncpt(f);
     /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
     pm_lock(&g_host.nvdrv.submit_lk);
     promised = syncpt_promise(sp, incs);
-    gpu_submit(entries, num, sp, host, wait_id, fval, promised);
+    gpu_submit(entries, num, sp, g_guest_features ? incs : host, wait_id, fval, promised);
     pm_unlock(&g_host.nvdrv.submit_lk);
     wr32(d, GPU_SUBMIT_FENCE_ID, sp);
     wr32(d, GPU_SUBMIT_FENCE_VALUE, promised);

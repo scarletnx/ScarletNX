@@ -207,6 +207,7 @@ typedef struct {
     u32 ngruns, capgruns;
     GAlias alias;
     u32 big_page_bits; /* 64K (AS_BIG_PAGE_BITS_64K) until ALLOC_AS_EX asks otherwise */
+    u64 as_va_first, as_va_last; /* ALLOC_AS_EX's range, until one asks (va_init's own is the default) */
     VaRange* vafree;
     u32 nvafree, capvafree;
     int va_ready; /* the free ranges hold the whole region at first (va_init) */
