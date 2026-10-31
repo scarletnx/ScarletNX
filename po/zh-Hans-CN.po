@@ -3982,6 +3982,14 @@ msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 t
 msgstr "LLVM 在重新编译时对游戏代码的优化：0 不优化，3 最高，z 体积最小。已编译的游戏在重新编译前保持原代码。只有用游戏的 JIT 缓存构建 AOT 包时，它才需要与 JIT optimization 一致"
 
 #: src/nx/runtime/settings.txt
+msgid "LLVM batch"
+msgstr "LLVM 单元处理"
+
+#: src/nx/runtime/settings.txt
+msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
+msgstr "重新编译游戏时，每个代码单元的函数清理完后 LLVM 再运行的内容：full，优化级别的全部过程；ipo，只运行内联及其后的清理，重新编译约需 2/3 的时间，代码更大一些，视代码而定最多快或慢 1/3（以 64 位游戏为准）。-O0 时不适用。已编译的游戏在重新编译前保持其代码"
+
+#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr "AOT 线程数"
 

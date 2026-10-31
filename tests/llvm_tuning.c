@@ -118,6 +118,41 @@ static void tuning_text(void) {
     free(before);
 }
 
+/* llvm_batch: full runs the level's own pipeline, ipo SNX_IR_IPO_PASSES in its place, a pipeline LLVM runs; either
+   way each function's cleanup as it is emitted is SNX_IR_CLEAN_PASSES, and a pass turned off is cut out of both. The
+   tuning's text, which keys the unit cache, differs: an ipo unit is never a full one */
+static void batch(void) {
+    const IniOpt* option = ini_find(g_recompile_ini, "llvm_batch");
+    const IniOpt* instcombine = ini_find(g_llvm_ini, "llvm_pass_instcombine");
+    const SnxIrTuning* t;
+    char error[256], *full = NULL, clean[256];
+    CHECK(option != NULL && instcombine != NULL && !strcmp(g_settings.llvm_batch, "full"));
+    if (!option || !instcombine) return;
+    t = snx_llvm_tuning('2', error, sizeof error);
+    CHECK(t && !t->pipeline && t->clean && !strcmp(t->clean, SNX_IR_CLEAN_PASSES));
+    if (t && t->text) full = snx_strdup(t->text);
+    ini_read(option, "ipo");
+    t = snx_llvm_tuning('2', error, sizeof error);
+    CHECK(t && t->pipeline && !strcmp(t->pipeline, SNX_IR_IPO_PASSES) && runs(t->pipeline));
+    CHECK(t && t->clean && !strcmp(t->clean, SNX_IR_CLEAN_PASSES));
+    CHECK(t && t->text && full &&
+          !strncmp(t->text, "pipeline=" SNX_IR_IPO_PASSES "\n", 10 + strlen(SNX_IR_IPO_PASSES)) &&
+          strcmp(t->text, full));
+    ini_read(instcombine, "0");
+    t = snx_llvm_tuning('2', error, sizeof error);
+    CHECK(t && t->pipeline && !has_pass(t->pipeline, "instcombine") && runs(t->pipeline));
+    CHECK(t && t->clean && !has_pass(t->clean, "instcombine") && has_pass(t->clean, "sroa"));
+    if (t && t->clean) {
+        snprintf(clean, sizeof clean, "function(%s)", t->clean);
+        CHECK(runs(clean));
+    }
+    ini_read(instcombine, "1");
+    ini_read(option, "full");
+    t = snx_llvm_tuning('2', error, sizeof error);
+    CHECK(t && !t->pipeline && t->text && full && !strcmp(t->text, full));
+    free(full);
+}
+
 int main(void) {
     static const char levels[] = "0123sz";
     const IniOpt* instcombine = ini_find(g_llvm_ini, "llvm_pass_instcombine");
@@ -126,6 +161,7 @@ int main(void) {
     int i;
     size_levels();
     tuning_text();
+    batch();
     if (failures) return 1;
     if (!settings_llvm_pipeline('2')) {
         puts("SKIP no pipelines: no opt of this LLVM ran where it was built");

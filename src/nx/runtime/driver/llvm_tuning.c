@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* g_settings' LLVM Internals for the recompile (module_llvm.h's snx_llvm_tuning): opt's pipeline for the level with
-   the passes turned off cut out of it, and the options set on the pass builder and the target machine */
+/* g_settings' LLVM Internals for the recompile (module_llvm.h's snx_llvm_tuning): opt's pipeline for the level, or
+   llvm_batch=ipo's, and the cleanup each function runs as it is emitted, with the passes turned off cut out of them,
+   and the options set on the pass builder and the target machine */
 #include "nx/loader/module_llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "nx/runtime/settings_llvm.h"
@@ -65,6 +66,7 @@ static int cut_list(Cut* c) {
 static struct {
     SnxIrTuning tuning;
     char pipeline[1 << 16];
+    char clean[sizeof SNX_IR_CLEAN_PASSES];
     char text[1 << 17]; /* tuning.text: the pipeline that runs, then each LLVM Internals key and its value */
 } g_llvm_tuning;
 static void builder(LLVMPassBuilderOptionsRef options) { settings_llvm_builder(&g_settings, options); }
@@ -96,7 +98,9 @@ static int describe(char* error, size_t error_size) {
 const struct SnxIrTuning* snx_llvm_tuning(char opt, char* error, size_t error_size) {
     SnxIrTuning* tuning = &g_llvm_tuning.tuning;
     char* pipeline = g_llvm_tuning.pipeline;
-    const char* text = settings_llvm_pipeline(opt);
+    int ipo = !strcmp(g_settings.llvm_batch, "ipo"); /* recompile.c refused any other value but full */
+    const char* text = ipo ? SNX_IR_IPO_PASSES : settings_llvm_pipeline(opt);
+    Cut clean;
     tuning->pipeline = NULL;
     tuning->builder = builder;
     tuning->machine = machine;
@@ -128,7 +132,12 @@ const struct SnxIrTuning* snx_llvm_tuning(char opt, char* error, size_t error_si
         }
         pipeline[c.at] = 0;
         /* opt's own text when nothing was cut: default<O?> runs the same, and doesn't depend on the text */
-        if (strcmp(pipeline, text)) tuning->pipeline = pipeline;
+        if (ipo || strcmp(pipeline, text)) tuning->pipeline = pipeline;
     }
+    clean.p = SNX_IR_CLEAN_PASSES;
+    clean.out = g_llvm_tuning.clean;
+    clean.at = 0;
+    tuning->clean = cut_list(&clean) ? g_llvm_tuning.clean : NULL;
+    g_llvm_tuning.clean[clean.at] = 0;
     return describe(error, error_size) ? NULL : tuning;
 }

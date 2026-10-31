@@ -5314,6 +5314,14 @@ msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 t
 msgstr ""
 
 #: src/nx/runtime/settings.txt
+msgid "LLVM batch"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr ""
 

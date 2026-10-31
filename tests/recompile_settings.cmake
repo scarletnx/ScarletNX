@@ -15,10 +15,14 @@ foreach(case "--aot_threads=abc|aot_threads=abc is not a whole number from 0 to 
              "--unit_cache_gb=-1|unit_cache_gb=-1 is not a whole number from 0 to 100000"
              "--unit_cache_gb=2.5|unit_cache_gb=2.5 is not a whole number from 0 to 100000"
              "--aot_threads=4|holds no exefs/main" "--llvm_inliner_threshold=50|holds no exefs/main"
-             "--opt=z|holds no exefs/main" "--unit_cache_gb=0|holds no exefs/main")
+             "--opt=z|holds no exefs/main" "--unit_cache_gb=0|holds no exefs/main"
+             "--llvm_batch=fast|llvm_batch = fast: not full or ipo"
+             "--opt=0 --llvm_batch=ipo|llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0"
+             "--llvm_batch=ipo|holds no exefs/main" "--llvm_batch=full|holds no exefs/main")
     string(REPLACE "|" ";" case "${case}")
     list(GET case 0 option)
     list(GET case 1 expected)
+    separate_arguments(option UNIX_COMMAND "${option}") # a case of two options
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
                             "${RUNTIME}" -r missing.nro ${option}
                     WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out
