@@ -1506,6 +1506,39 @@ static void view_box(App* app, const char* temporary) {
         free(kept);
         leave_editor(app);
     }
+    { /* the Recompiled Library's Main off it the same way: the fourth choice of its box, asked first; Games no longer
+         lists its games, its row says not listed, greyed, app.ini keeps it; Add to Library puts it back */
+        int row = folder_row_of(app, GUI_ROW_PLACE, GUI_PLACE_GAMES), i;
+        size_t before = 0, after = 0, size;
+        char* kept;
+        list_games(app);
+        for (i = 0; i < (int)app->games.count; ++i)
+            before += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 4 && !strcmp(pick_label(app, 3), "Remove from Library"));
+        for (i = 0; i < 3; ++i) key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, app->games_dir) &&
+               strstr(app->ask_line, "new games go to an Extra of it"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->recompiled_off && !strcmp(app->app_form.folder[row], "not listed"));
+        assert(strstr(app->editor.note, "new games go to an Extra") && form_row_off(app, &app->editor, row));
+        for (i = 0; i < (int)app->games.count; ++i)
+            after += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        assert(before && !after); /* none of its games listed */
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "recompiled_main = off\n"));
+        free(kept);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->recompiled_off && strstr(app->editor.note, "is in the Recompiled Library again"));
+        leave_editor(app);
+    }
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -4429,7 +4462,7 @@ int main(int argc, char** argv) {
         snprintf(expected, sizeof expected,
                  APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
                               "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-                              "dumps_main = on\n" GAMES_DEFAULTS,
+                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4475,7 +4508,7 @@ int main(int argc, char** argv) {
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
             "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-            "dumps_main = on\n" GAMES_DEFAULTS,
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4547,7 +4580,7 @@ int main(int argc, char** argv) {
                  APP_INI_HEAD
                  "theme = %s\nui_scale = 2\n"
                  "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
-                 "dumps_main = on\n" GAMES_DEFAULTS,
+                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
                  app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -5048,6 +5081,16 @@ int main(int argc, char** argv) {
         snprintf(said, sizeof said, "Not used from %s: dumps_main = gone (it keeps off)", app.app_file);
         assert(app.dumps_off && strstr(app.message, said));
         app.dumps_off = false;
+        free(text);
+        /* recompiled_main: the same */
+        assert(strstr(kept, "recompiled_main = on\n") && !app.recompiled_off);
+        text = snx_format("%srecompiled_main = off\nrecompiled_main = 2\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: recompiled_main = 2 (it keeps off)", app.app_file);
+        assert(app.recompiled_off && strstr(app.message, said));
+        app.recompiled_off = false;
         free(text);
         text = snx_format(APP_INI_HEAD "theme = %s\nside_box = auto\n", app.theme.id);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
@@ -6401,6 +6444,34 @@ int main(int argc, char** argv) {
         argv_got = ran(&app, 0);
         assert(has_arg(argv_got, "-r", dump) && !has_arg(argv_got, "--outdir", NULL));
         free(argv_got);
+        /* the Main off the library: a new game goes to its one Extra at once, asked among two (the Extras alone), and
+           with none the run is refused, saying how to have one */
+        app.recompiled_off = true;
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && !launched(&app) &&
+               strstr(app.message, "Main is off and no Extra of it can take a game: Add to Library on its Main"));
+        while (app.confirm.shown) key(&app, SDLK_RETURN);
+        app.message[0] = 0;
+        folder_keep(&app, extra, GUI_LIBRARY_RECOMPILED, false);
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && launched(&app));
+        argv_got = ran(&app, 0);
+        assert(has_arg(argv_got, "-r", dump) && has_arg(argv_got, "--outdir", extra));
+        free(argv_got);
+        {
+            char *second = snx_path_join(temporary, "recompiled extra 2"), text[700];
+            assert(!snx_mkdirs(second));
+            folder_keep(&app, second, GUI_LIBRARY_RECOMPILED, false);
+            launch(&app, snx_strdup(dump), false);
+            assert(app.dests_shown && app.dests.count == 2 && !launched(&app));
+            assert(!strstr(choice_text(&app, GUI_CHOICES_DESTS, 0, text, sizeof text), "default"));
+            key(&app, SDLK_ESCAPE);
+            free(app.folders[--app.folder_count]);
+            assert(!snx_remove_tree(second));
+            free(second);
+        }
+        free(app.folders[--app.folder_count]);
+        app.recompiled_off = false;
         driver_will(NULL, 0, NULL);
         app.animations_off = still;
         free(got);

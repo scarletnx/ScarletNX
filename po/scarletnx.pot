@@ -2193,7 +2193,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s removed from the library. Its games stay in the folder; new games go to an Extra"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s is in the Dumps Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again, but could not be made"
 msgstr ""
 
 #: src/gui/main.c
@@ -2203,7 +2213,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is in the Recompiled Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to an Extra of it."
 msgstr ""
 
 #: src/gui/main.c
@@ -2310,6 +2330,10 @@ msgid "Main"
 msgstr ""
 
 #: src/gui/main.c
+msgid "not listed"
+msgstr ""
+
+#: src/gui/main.c
 msgid "outside the app"
 msgstr ""
 
@@ -2336,10 +2360,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Extra"
-msgstr ""
-
-#: src/gui/main.c
-msgid "not listed"
 msgstr ""
 
 #: src/gui/main.c
@@ -3225,6 +3245,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "the selected driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
 #: src/gui/main.c
