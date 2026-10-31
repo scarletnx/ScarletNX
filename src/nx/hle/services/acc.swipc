@@ -23,6 +23,8 @@ interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
     [51] TrySelectUserWithoutInteractionDeprecated(b8 is_network_service_account_required) -> nn::account::Uid uid;
     # 19.0.0+, which a game built for it sends instead of 51
     [52] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    # 5.0.0 to 5.1.0's, 131 since
+    [60] ListOpenContextStoredUsersOld(array<nn::account::Uid, 0xa> users);
     @stub [100] InitializeApplicationInfoV0(pid);
     [101] GetBaasAccountManagerForApplication(nn::account::Uid uid)
         -> object<nn::account::baas::IManagerForApplication> manager;

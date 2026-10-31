@@ -122,6 +122,9 @@ static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(S
     acc_list(users, snx_users_selected(), g_hle.acc.context_stored ? 1 : 0);
     R_SUCCEED();
 }
+static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsersOld(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(self, users);
+}
 static int nn_account_IAccountServiceForApplication_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
     (void)self;
     acc_list_all(users);

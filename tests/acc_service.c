@@ -295,8 +295,20 @@ static void test_open_context(void) {
     CHECK(nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(NULL, list) == 0);
     CHECK(same_uid(memory + 0x100, snx_users_selected()->uid));
     for (i = 16; i < 0xA0; i++) CHECK(memory[0x100 + i] == 0);
+    /* 5.0.0's command 60 lists the same */
+    {
+        SvcObj* acc = new_acc();
+        Request r;
+        memset(memory, 0xAA, sizeof memory);
+        request(&r, 60);
+        r.c.nc = 1;
+        r.c.c[0] = list;
+        call(acc, &r);
+        CHECK(same_uid(memory + 0x100, snx_users_selected()->uid) && memory[0x110] == 0 && memory[0x1A0] == 0xAA);
+        svcobj_unref(acc);
+    }
     g_hle.acc.context_stored = 0;
-    puts("PASS no stored open context until StoreOpenContext, then the open user");
+    puts("PASS no stored open context until StoreOpenContext, then the open user, at 131 and 5.0.0's 60");
 }
 
 /* the user's network service account id, made from its uid as Eden makes it (Common::UUID::Hash), from GetAccountId
