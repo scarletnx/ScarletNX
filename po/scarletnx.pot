@@ -2133,7 +2133,7 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too while it says + subfolders. It stays on the list"
+msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too with + subfolders. Remove from Library takes it off, its files kept"
 msgstr ""
 
 #: src/gui/main.c
@@ -2143,6 +2143,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "(none)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is the dumps library's Main row, taken off it: its Add to Library puts it back"
 msgstr ""
 
 #: src/gui/main.c
@@ -2184,6 +2189,21 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s removed from the library. Its games stay in the folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
 msgstr ""
 
 #: src/gui/main.c
@@ -2316,6 +2336,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Extra"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not listed"
 msgstr ""
 
 #: src/gui/main.c
@@ -2943,6 +2967,10 @@ msgid "beside the program, made then"
 msgstr ""
 
 #: src/gui/main.c
+msgid " (not listed)"
+msgstr ""
+
+#: src/gui/main.c
 msgid " + subfolders"
 msgstr ""
 
@@ -3156,6 +3184,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Subfolders"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add to Library"
 msgstr ""
 
 #: src/gui/main.c

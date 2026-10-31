@@ -1463,6 +1463,49 @@ static void view_box(App* app, const char* temporary) {
         free(deep);
         free(sub);
     }
+    { /* dumps/ off the Library: Remove from Library asks first, then Games no longer lists its dumps, its row says
+         not listed, greyed, app.ini keeps it and a start makes it no more; Add to Library puts it back, made again */
+        int row = folder_row_of(app, GUI_ROW_DUMPS, -1);
+        char* kept;
+        size_t size;
+        UiRowInfo info = {0};
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 3 && !strcmp(pick_label(app, 2), "Remove from Library"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, dumps) &&
+               strstr(app->ask_line, "no longer makes as it starts"));
+        key(app, SDLK_ESCAPE); /* Back: nothing changes */
+        assert(!app->confirm.shown && !app->dumps_off);
+        key(app, SDLK_DELETE); /* Del asks the same */
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->dumps_off && !games_lists(app, "beta dump.nsp"));
+        assert(!strcmp(app->app_form.folder[row], "not listed") &&
+               strstr(app->editor.note, "removed from the library"));
+        assert(form_row_off(app, &app->editor, row));
+        assert(form_row_info(app, &app->editor, (size_t)row, form_labels(&app->editor), 0, &info) &&
+               (info.attr & UI_ATTR_OFF));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = off\n"));
+        free(kept);
+        assert(!snx_remove_tree(dumps)); /* a start leaves it unmade */
+        dumps_make(app);
+        assert(!snx_is_dir(dumps));
+        app->editor.row = row; /* its box: Add to Library alone */
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->dumps_off && snx_is_dir(dumps) && strstr(app->editor.note, "is in the Dumps Library again"));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = on\n"));
+        free(kept);
+        leave_editor(app);
+    }
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -4384,9 +4427,9 @@ int main(int argc, char** argv) {
         snprintf(id, sizeof id, "%s", app.theme.id);
         assert(strcmp(id, first_id));
         snprintf(expected, sizeof expected,
-                 APP_INI_HEAD
-                 "theme = %s\nui_scale = 1\nlanguage = auto\n"
-                 "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+                 APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
+                              "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                              "dumps_main = on\n" GAMES_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4431,7 +4474,8 @@ int main(int argc, char** argv) {
             expected, sizeof expected,
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
-            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+            "dumps_main = on\n" GAMES_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4499,12 +4543,12 @@ int main(int argc, char** argv) {
         assert(app.language == 1 && snx_tr_language() == 0 && !strcmp(app.app_form.language, "English"));
         key(&app, SDLK_RETURN); /* Enter goes round too */
         assert(app.language == 2 && snx_tr_language() == 1 && !strcmp(app.app_form.language, "Test\303\252s"));
-        snprintf(
-            expected, sizeof expected,
-            APP_INI_HEAD
-            "theme = %s\nui_scale = 2\n"
-            "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
-            app.theme.id);
+        snprintf(expected, sizeof expected,
+                 APP_INI_HEAD
+                 "theme = %s\nui_scale = 2\n"
+                 "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                 "dumps_main = on\n" GAMES_DEFAULTS,
+                 app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
         free(kept);
@@ -4994,6 +5038,16 @@ int main(int argc, char** argv) {
         snprintf(said, sizeof said, "Not used from %s: dumps_subfolders = some (it keeps off)", app.app_file);
         assert(app.dumps_shallow && strstr(app.message, said));
         app.dumps_shallow = false;
+        free(text);
+        /* dumps_main: on its default, off kept, another word said with the one in use */
+        assert(strstr(kept, "dumps_main = on\n") && !app.dumps_off);
+        text = snx_format("%sdumps_main = off\ndumps_main = gone\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: dumps_main = gone (it keeps off)", app.app_file);
+        assert(app.dumps_off && strstr(app.message, said));
+        app.dumps_off = false;
         free(text);
         text = snx_format(APP_INI_HEAD "theme = %s\nside_box = auto\n", app.theme.id);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
