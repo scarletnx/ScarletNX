@@ -10,7 +10,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
-#include <cJSON.h>
+#include <yyjson.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,7 +107,8 @@ static const char no_gdb[] = "no GDB: gdb_attach connects one";
 /* what one command answered: its console output, unescaped, and its result record */
 typedef struct {
     Text console;
-    cJSON* result;
+    yyjson_mut_doc* doc; /* result's */
+    yyjson_mut_val* result;
     char cls[16]; /* done, running, connected, error or exit; empty until the record came */
 } Reply;
 
@@ -145,7 +146,7 @@ static void clear(Text* t) {
 
 static void reply_free(Reply* r) {
     free(r->console.p);
-    cJSON_Delete(r->result);
+    yyjson_mut_doc_free(r->doc);
     memset(r, 0, sizeof *r);
 }
 
@@ -194,7 +195,7 @@ static int next_line(Text* line, long long deadline) {
     }
 }
 
-/* ============================================================ GDB/MI's output syntax, into cJSON */
+/* ============================================================ GDB/MI's output syntax, into a yyjson document */
 /* *s at a c-string's opening quote: the string unescaped (a NUL dropped, as the text is a C string), *s past it */
 static char* mi_cstring(const char** s) {
     Text t = {0};
@@ -227,9 +228,9 @@ static char* mi_cstring(const char** s) {
     *s = p;
     return t.p;
 }
-static cJSON* mi_value(const char** s);
+static yyjson_mut_val* mi_value(yyjson_mut_doc* d, const char** s);
 /* name=value results up to close (0: the line's end) into object, *s at close */
-static void mi_results(const char** s, char close, cJSON* object) {
+static void mi_results(yyjson_mut_doc* d, const char** s, char close, yyjson_mut_val* object) {
     while (**s && **s != close) {
         const char* name = *s;
         char key[64];
@@ -243,23 +244,23 @@ static void mi_results(const char** s, char close, cJSON* object) {
         n = (size_t)(*s - name);
         snprintf(key, sizeof key, "%.*s", (int)(n < sizeof key - 1 ? n : sizeof key - 1), name);
         ++*s;
-        cJSON_AddItemToObject(object, key, mi_value(s));
+        yyjson_mut_obj_add(object, yyjson_mut_strcpy(d, key), mi_value(d, s));
     }
 }
 /* a value: a c-string, a tuple (an object) or a list (an array, of the values of a list of results) */
-static cJSON* mi_value(const char** s) {
-    cJSON* v;
+static yyjson_mut_val* mi_value(yyjson_mut_doc* d, const char** s) {
+    yyjson_mut_val* v;
     if (**s == '"') {
         char* text = mi_cstring(s);
-        v = cJSON_CreateString(text);
+        v = yyjson_mut_strcpy(d, text);
         free(text);
     } else if (**s == '{') {
-        v = cJSON_CreateObject();
+        v = yyjson_mut_obj(d);
         ++*s;
-        mi_results(s, '}', v);
+        mi_results(d, s, '}', v);
         if (**s == '}') ++*s;
     } else if (**s == '[') {
-        v = cJSON_CreateArray();
+        v = yyjson_mut_arr(d);
         ++*s;
         while (**s && **s != ']') {
             if (**s == ',') {
@@ -271,22 +272,21 @@ static cJSON* mi_value(const char** s) {
                 if (**s != '=') break;
                 ++*s;
             }
-            cJSON_AddItemToArray(v, mi_value(s));
+            yyjson_mut_arr_append(v, mi_value(d, s));
         }
         if (**s == ']') ++*s;
     } else {
-        v = cJSON_CreateNull();
+        v = yyjson_mut_null(d);
         if (**s) ++*s;
     }
     return v;
 }
-static const char* field(const cJSON* o, const char* name) {
-    const cJSON* v = cJSON_GetObjectItemCaseSensitive(o, name);
-    return cJSON_IsString(v) ? v->valuestring : NULL;
+static const char* field(yyjson_mut_val* o, const char* name) {
+    return yyjson_mut_get_str(yyjson_mut_obj_get(o, name));
 }
 
 /* "<func> (<file>:<line>)", or "<func or address> in <library>", of a frame tuple */
-static void put_frame(Text* t, const cJSON* frame) {
+static void put_frame(Text* t, yyjson_mut_val* frame) {
     const char *func = field(frame, "func"), *file = field(frame, "file"), *line = field(frame, "line"),
                *addr = field(frame, "addr"), *from = field(frame, "from");
     mcp_put(t, func ? func : addr ? addr : "?");
@@ -320,10 +320,11 @@ static void gone(const char* code, const char* signal_name) {
 }
 /* a *stopped record: the game stopped, and why */
 static void stopped(const char* s) {
-    cJSON* o = cJSON_CreateObject();
+    yyjson_mut_doc* d = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val* o = yyjson_mut_obj(d);
     const char *reason, *thread;
     if (*s == ',') s++;
-    mi_results(&s, 0, o);
+    mi_results(d, &s, 0, o);
     reason = field(o, "reason");
     thread = field(o, "thread-id");
     g_gdb.running = 0;
@@ -349,12 +350,12 @@ static void stopped(const char* s) {
             mcp_put(&g_gdb.stop, " in thread ");
             mcp_put(&g_gdb.stop, thread);
         }
-        if (cJSON_GetObjectItemCaseSensitive(o, "frame")) {
+        if (yyjson_mut_obj_get(o, "frame")) {
             mcp_put(&g_gdb.stop, " at ");
-            put_frame(&g_gdb.stop, cJSON_GetObjectItemCaseSensitive(o, "frame"));
+            put_frame(&g_gdb.stop, yyjson_mut_obj_get(o, "frame"));
         }
     }
-    cJSON_Delete(o);
+    yyjson_mut_doc_free(d);
 }
 
 /* One line of GDB's output: the stream records into r's console (into g_gdb.async, capped, when r is NULL: no
@@ -383,21 +384,23 @@ static void take(const char* line, Reply* r) {
         snprintf(r->cls, sizeof r->cls, "%.*s", (int)(n < sizeof r->cls - 1 ? n : sizeof r->cls - 1), s);
         s += n;
         if (*s == ',') s++;
-        cJSON_Delete(r->result);
-        r->result = cJSON_CreateObject();
-        mi_results(&s, 0, r->result);
+        yyjson_mut_doc_free(r->doc);
+        r->doc = yyjson_mut_doc_new(NULL);
+        r->result = yyjson_mut_obj(r->doc);
+        mi_results(r->doc, &s, 0, r->result);
         if (!strcmp(r->cls, "running")) g_gdb.running = 1;
     } else if (!strncmp(line, "*stopped", 8))
         stopped(line + 8);
     else if (!strncmp(line, "*running", 8))
         g_gdb.running = 1;
     else if (!strncmp(line, "=thread-group-exited", 20)) {
-        cJSON* o = cJSON_CreateObject();
+        yyjson_mut_doc* d = yyjson_mut_doc_new(NULL);
+        yyjson_mut_val* o = yyjson_mut_obj(d);
         const char* s = line + 20;
         if (*s == ',') s++;
-        mi_results(&s, 0, o);
+        mi_results(d, &s, 0, o);
         gone(field(o, "exit-code"), NULL);
-        cJSON_Delete(o);
+        yyjson_mut_doc_free(d);
     }
 }
 
@@ -611,7 +614,7 @@ static int eval(long thread, const char* expr, SnxU64* value, Text* err) {
 /* size bytes of the runtime's memory at address: DONE, or REFUSED (not all readable) or LOST, with why in err */
 static int read_memory(SnxU64 address, size_t size, unsigned char* out, Text* err) {
     char command[96];
-    const cJSON *blocks, *first;
+    yyjson_mut_val* first;
     const char *contents, *offset;
     Reply r;
     size_t i;
@@ -619,8 +622,7 @@ static int read_memory(SnxU64 address, size_t size, unsigned char* out, Text* er
     snprintf(command, sizeof command, "-data-read-memory-bytes 0x%llx %lu", (unsigned long long)address,
              (unsigned long)size);
     if ((rc = exec(command, now_ms() + COMMAND_MS, &r, err)) != DONE) return rc;
-    blocks = cJSON_GetObjectItemCaseSensitive(r.result, "memory");
-    first = cJSON_GetArrayItem(blocks, 0);
+    first = yyjson_mut_arr_get_first(yyjson_mut_obj_get(r.result, "memory"));
     contents = field(first, "contents");
     offset = field(first, "offset");
     if (contents && offset && !strtoull(offset, NULL, 0) && strlen(contents) >= 2 * size) {
@@ -876,7 +878,7 @@ char* mcp_gdb_attach(long port, Text* err) {
     /* the game's process, which interrupts signal: gdbserver's on this machine, the stub listening on the loopback */
     rc = exec("-list-thread-groups", now_ms() + COMMAND_MS, &r, err);
     if (rc == DONE) {
-        const char* id = field(cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(r.result, "groups"), 0), "pid");
+        const char* id = field(yyjson_mut_arr_get_first(yyjson_mut_obj_get(r.result, "groups")), "pid");
         g_gdb.game = id ? (pid_t)strtol(id, NULL, 10) : 0;
         reply_free(&r);
     }
@@ -898,7 +900,7 @@ char* mcp_gdb_attach(long port, Text* err) {
         mcp_put(&t, "\n");
         clear(err);
     } else {
-        const char* number = field(cJSON_GetObjectItemCaseSensitive(r.result, "bkpt"), "number");
+        const char* number = field(yyjson_mut_obj_get(r.result, "bkpt"), "number");
         mcp_put(&t, "Breakpoint ");
         mcp_put(&t, number ? number : "?");
         mcp_put(&t, " is on crash_report: a crash stops there, with the faulting frames below the signal handler's. "
@@ -1283,9 +1285,10 @@ static void put_where(Text* t, const unsigned char* k) {
 
 /* where a host thread is: its innermost frame with a source file and that frame's caller (the innermost is mostly a
    system call in a library without symbols), else the innermost. DONE, or LOST with why in err */
-static int put_host(Text* t, const char* id, const cJSON* top, Text* err) {
+static int put_host(Text* t, const char* id, yyjson_mut_val* top, Text* err) {
     char command[64];
-    const cJSON *stack, *f, *found = NULL;
+    yyjson_mut_val *f, *found = NULL;
+    size_t i, n;
     Reply r;
     int rc;
     snprintf(command, sizeof command, "-stack-list-frames --thread %s 0 7", id);
@@ -1295,8 +1298,7 @@ static int put_host(Text* t, const char* id, const cJSON* top, Text* err) {
         put_frame(t, top);
         return DONE;
     }
-    stack = cJSON_GetObjectItemCaseSensitive(r.result, "stack");
-    cJSON_ArrayForEach(f, stack) {
+    yyjson_mut_arr_foreach(yyjson_mut_obj_get(r.result, "stack"), i, n, f) {
         if (!field(f, "file")) continue;
         if (found) {
             mcp_put(t, " < ");
@@ -1316,7 +1318,8 @@ char* mcp_gdb_threads(McpNamer name, const void* ctx, Text* err) {
     Text t = {0};
     Reply r;
     Guest g, *gp = &g;
-    const cJSON *threads, *th;
+    yyjson_mut_val* th;
+    size_t i, n;
     int wide, guests = 0, hosts = 0, tls_failed = 0;
     if (need_stopped(err, 1)) return NULL;
     if ((wide = is_wide(err)) < 0) return NULL;
@@ -1326,9 +1329,8 @@ char* mcp_gdb_threads(McpNamer name, const void* ctx, Text* err) {
         gp = NULL;
     }
     if (exec("-thread-info", now_ms() + COMMAND_MS, &r, err)) return NULL;
-    threads = cJSON_GetObjectItemCaseSensitive(r.result, "threads");
     mcp_put_n(&t, "", 0);
-    cJSON_ArrayForEach(th, threads) {
+    yyjson_mut_arr_foreach(yyjson_mut_obj_get(r.result, "threads"), i, n, th) {
         const char *id = field(th, "id"), *target = field(th, "target-id"), *tname = field(th, "name");
         SnxU64 at = 0;
         int got;
@@ -1370,7 +1372,7 @@ char* mcp_gdb_threads(McpNamer name, const void* ctx, Text* err) {
             hosts++;
             mcp_put(&t, ": the runtime's, at ");
         }
-        if (put_host(&t, id, cJSON_GetObjectItemCaseSensitive(th, "frame"), err) == LOST) goto lost;
+        if (put_host(&t, id, yyjson_mut_obj_get(th, "frame"), err) == LOST) goto lost;
         mcp_put(&t, "\n");
     }
     reply_free(&r);

@@ -35,7 +35,7 @@
 #include "common/utilities/logscan.h"
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/disasm.h"
-#include <cJSON.h>
+#include <yyjson.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -357,7 +357,7 @@ static char* nacp_version(const char* game) {
 
 /* every extracted game, or only title_id's, as {path, title_id, version} into list */
 /* the save states of the recompiled game title_id, in the data folder's games/ or recompiled/ (state_header.h) */
-static void find_states(const Mcp* m, SnxU64 title_id, cJSON* list) {
+static void find_states(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     static const char* const libraries[] = {"games", "recompiled"};
     char id[17];
     int l, k;
@@ -375,7 +375,7 @@ static void find_states(const Mcp* m, SnxU64 title_id, cJSON* list) {
             for (i = 0; i < count; i++) {
                 char program[256], slot[16], stamp[64], why[256], *path = snx_path_join(dir, names[i]), *prog;
                 SnxStateHeader h;
-                cJSON* s;
+                yyjson_mut_val* s;
                 if (!snx_state_name(names[i], program, sizeof program, slot, sizeof slot) ||
                     snx_state_peek(path, &h, NULL, why, sizeof why)) {
                     free(path);
@@ -383,21 +383,20 @@ static void find_states(const Mcp* m, SnxU64 title_id, cJSON* list) {
                 }
                 prog = snx_path_join(folder, program);
                 snx_state_stamp(prog, stamp, sizeof stamp);
-                s = cJSON_CreateObject();
-                cJSON_AddStringToObject(s, "path", path);
-                cJSON_AddStringToObject(s, "program", program);
-                cJSON_AddStringToObject(s, "slot", slot);
-                cJSON_AddNumberToObject(s, "saved", (double)h.created);
-                cJSON_AddNumberToObject(s, "play_time_s", (double)h.guest_ns / 1e9);
-                cJSON_AddNumberToObject(s, "abi", h.abi);
-                cJSON_AddStringToObject(s, "runtime", h.runtime);
-                cJSON_AddStringToObject(s, "stamp", h.stamp);
-                cJSON_AddStringToObject(s, "game", h.game);
+                s = yyjson_mut_arr_add_obj(d, list);
+                yyjson_mut_obj_add_strcpy(d, s, "path", path);
+                yyjson_mut_obj_add_strcpy(d, s, "program", program);
+                yyjson_mut_obj_add_strcpy(d, s, "slot", slot);
+                yyjson_mut_obj_add_uint(d, s, "saved", (uint64_t)h.created);
+                yyjson_mut_obj_add_real(d, s, "play_time_s", (double)h.guest_ns / 1e9);
+                yyjson_mut_obj_add_int(d, s, "abi", h.abi);
+                yyjson_mut_obj_add_strcpy(d, s, "runtime", h.runtime);
+                yyjson_mut_obj_add_strcpy(d, s, "stamp", h.stamp);
+                yyjson_mut_obj_add_strcpy(d, s, "game", h.game);
                 if (snx_state_fits(&h, title_id, stamp, why, sizeof why))
-                    cJSON_AddStringToObject(s, "cannot_load", why);
+                    yyjson_mut_obj_add_strcpy(d, s, "cannot_load", why);
                 else
-                    cJSON_AddNullToObject(s, "cannot_load");
-                cJSON_AddItemToArray(list, s);
+                    yyjson_mut_obj_add_null(d, s, "cannot_load");
                 free(prog);
                 free(path);
             }
@@ -406,7 +405,7 @@ static void find_states(const Mcp* m, SnxU64 title_id, cJSON* list) {
         free(folder);
     }
 }
-static void find_games(const Mcp* m, SnxU64 title_id, cJSON* list) {
+static void find_games(const Mcp* m, SnxU64 title_id, yyjson_mut_doc* d, yyjson_mut_val* list) {
     int w;
     for (w = 0; w < 2; w++) {
         char** names = NULL;
@@ -419,7 +418,7 @@ static void find_games(const Mcp* m, SnxU64 title_id, cJSON* list) {
             SnxNpdm npdm;
             if (snx_is_dir(game) && !snx_load_npdm(game, &npdm, error, sizeof error) && npdm.title_id &&
                 (!title_id || npdm.title_id == title_id)) {
-                cJSON* g = cJSON_CreateObject();
+                yyjson_mut_val* g = yyjson_mut_arr_add_obj(d, list);
                 int k;
                 hex(id, npdm.title_id);
                 for (k = (int)strlen(id); k < 16; k++) { /* sixteen digits, upper case, as the logs' header */
@@ -428,14 +427,13 @@ static void find_games(const Mcp* m, SnxU64 title_id, cJSON* list) {
                 }
                 for (k = 0; id[k]; k++) id[k] = (char)toupper((unsigned char)id[k]);
                 version = nacp_version(game);
-                cJSON_AddStringToObject(g, "path", game);
-                cJSON_AddStringToObject(g, "title_id", id);
+                yyjson_mut_obj_add_strcpy(d, g, "path", game);
+                yyjson_mut_obj_add_strcpy(d, g, "title_id", id);
                 if (version)
-                    cJSON_AddStringToObject(g, "version", version);
+                    yyjson_mut_obj_add_strcpy(d, g, "version", version);
                 else
-                    cJSON_AddNullToObject(g, "version");
-                cJSON_AddBoolToObject(g, "is64", npdm.is64);
-                cJSON_AddItemToArray(list, g);
+                    yyjson_mut_obj_add_null(d, g, "version");
+                yyjson_mut_obj_add_bool(d, g, "is64", npdm.is64);
                 free(version);
             }
             free(game);
@@ -460,14 +458,17 @@ static char* game_found(const Mcp* m, const char* game, Text* err) {
     SnxU64 id;
     int w;
     if (strlen(game) == 16 && parse_hex(game, &id)) {
-        cJSON* list = cJSON_CreateArray();
+        yyjson_mut_doc* d = yyjson_mut_doc_new(NULL);
+        yyjson_mut_val* list = yyjson_mut_arr(d);
+        const char* first;
         char* out = NULL;
-        find_games(m, id, list);
-        if (cJSON_GetArraySize(list))
-            out = snx_strdup(cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, 0), "path")->valuestring);
+        find_games(m, id, d, list);
+        first = yyjson_mut_get_str(yyjson_mut_obj_get(yyjson_mut_arr_get_first(list), "path"));
+        if (first)
+            out = snx_strdup(first);
         else
             mcp_put(err, "no extracted game with that title ID in work/ (find_game lists them)");
-        cJSON_Delete(list);
+        yyjson_mut_doc_free(d);
         return out;
     }
     if (snx_is_dir(game) || snx_is_file(game)) return snx_strdup(game); /* a folder, or an NRO */
@@ -582,11 +583,12 @@ static void describe(Text* t, const Game* g, SnxU64 a) {
         mcp_put(t, "?");
 }
 
-static char* symbolize(Mcp* m, const char* game, const cJSON* addresses, Text* err) {
+static char* symbolize(Mcp* m, const char* game, yyjson_val* addresses, Text* err) {
     char* folder = game_folder(m, game, err);
     const Game* g;
     Text t = {0};
-    int i, n = cJSON_GetArraySize(addresses);
+    yyjson_val* a;
+    size_t i, n = yyjson_arr_size(addresses);
     if (!folder) return NULL;
     if (!n) {
         mcp_put(err, "addresses: hexadecimal game addresses, as the logs print them");
@@ -596,11 +598,10 @@ static char* symbolize(Mcp* m, const char* game, const cJSON* addresses, Text* e
     g = game_get(m, folder, err);
     free(folder);
     if (!g) return NULL;
-    for (i = 0; i < n; i++) {
-        const cJSON* a = cJSON_GetArrayItem(addresses, i);
+    yyjson_arr_foreach(addresses, i, n, a) {
         SnxU64 v;
-        if (!cJSON_IsString(a) || !parse_hex(a->valuestring, &v)) {
-            mcp_put(&t, cJSON_IsString(a) ? a->valuestring : "?");
+        if (!yyjson_is_str(a) || !parse_hex(yyjson_get_str(a), &v)) {
+            mcp_put(&t, yyjson_is_str(a) ? yyjson_get_str(a) : "?");
             mcp_put(&t, " is not a hexadecimal address\n");
             continue;
         }
@@ -723,35 +724,34 @@ static const char instructions[] =
     "Nothing of a game (code, files) goes into an issue, a pull request or an edenprobe case: a case asks the "
     "hardware a question the failure narrowed down to.";
 
-static cJSON* schema(const char* const* names, const char* const* types, int n, const char* const* required, int r) {
-    cJSON *s = cJSON_CreateObject(), *props = cJSON_CreateObject(), *req = cJSON_CreateArray();
+/* the names and texts below are static: d keeps pointers to them, not copies */
+static yyjson_mut_val* schema(yyjson_mut_doc* d, const char* const* names, const char* const* types, int n,
+                              const char* const* required, int r) {
+    yyjson_mut_val *s = yyjson_mut_obj(d), *props, *req;
     int i;
-    cJSON_AddStringToObject(s, "type", "object");
+    yyjson_mut_obj_add_str(d, s, "type", "object");
+    props = yyjson_mut_obj_add_obj(d, s, "properties");
     for (i = 0; i < n; i++) {
-        cJSON* p = cJSON_CreateObject();
+        yyjson_mut_val* p = yyjson_mut_obj_add_obj(d, props, names[i]);
         if (!strcmp(types[i], "string[]")) {
-            cJSON* items = cJSON_CreateObject();
-            cJSON_AddStringToObject(p, "type", "array");
-            cJSON_AddStringToObject(items, "type", "string");
-            cJSON_AddItemToObject(p, "items", items);
+            yyjson_mut_obj_add_str(d, p, "type", "array");
+            yyjson_mut_obj_add_str(d, yyjson_mut_obj_add_obj(d, p, "items"), "type", "string");
         } else
-            cJSON_AddStringToObject(p, "type", types[i]);
-        cJSON_AddItemToObject(props, names[i], p);
+            yyjson_mut_obj_add_str(d, p, "type", types[i]);
     }
-    cJSON_AddItemToObject(s, "properties", props);
-    for (i = 0; i < r; i++) cJSON_AddItemToArray(req, cJSON_CreateString(required[i]));
-    cJSON_AddItemToObject(s, "required", req);
-    cJSON_AddBoolToObject(s, "additionalProperties", 0);
+    req = yyjson_mut_obj_add_arr(d, s, "required");
+    for (i = 0; i < r; i++) yyjson_mut_arr_add_str(d, req, required[i]);
+    yyjson_mut_obj_add_bool(d, s, "additionalProperties", false);
     return s;
 }
-static void tool(cJSON* list, const char* name, const char* description, cJSON* input) {
-    cJSON* t = cJSON_CreateObject();
-    cJSON_AddStringToObject(t, "name", name);
-    cJSON_AddStringToObject(t, "description", description);
-    cJSON_AddItemToObject(t, "inputSchema", input);
-    cJSON_AddItemToArray(list, t);
+static void tool(yyjson_mut_doc* d, yyjson_mut_val* list, const char* name, const char* description,
+                 yyjson_mut_val* input) {
+    yyjson_mut_val* t = yyjson_mut_arr_add_obj(d, list);
+    yyjson_mut_obj_add_str(d, t, "name", name);
+    yyjson_mut_obj_add_str(d, t, "description", description);
+    yyjson_mut_obj_add_val(d, t, "inputSchema", input);
 }
-static cJSON* tools(void) {
+static yyjson_mut_val* tools(yyjson_mut_doc* d) {
     static const char* const path[] = {"path"};
     static const char* const s1[] = {"string"};
     static const char* const read_names[] = {"path", "pattern", "ignore_case", "context", "start", "count"};
@@ -862,36 +862,32 @@ static cJSON* tools(void) {
         "most 4096), as hex and text. The game must be stopped. A page the GPU holds can't be read: it is trapped "
         "until the game's CPU touches it.";
     static const char detach_says[] = "Detaches GDB, and the game runs on without it. Attaching again needs a new run.";
-    cJSON* list = cJSON_CreateArray();
-    tool(list, "scan_log", scan_says, schema(path, s1, 1, path, 1));
-    tool(list, "read_log", read_says, schema(read_names, read_types, 6, path, 1));
-    tool(list, "find_game", find_says, schema(find_names, s1, 1, NULL, 0));
-    tool(list, "state_info", states_says, schema(find_names, s1, 1, find_names, 1));
-    tool(list, "symbolize", sym_says, schema(sym_names, sym_types, 2, sym_names, 2));
-    tool(list, "disassemble", dis_says, schema(dis_names, dis_types, 4, game, 1));
-    tool(list, "edenprobe_scaffold", scaffold_says, schema(scaffold_names, scaffold_types, 7, scaffold_names, 7));
-    tool(list, "edenprobe_check", check_says, schema(check_names, s2, 2, check_names, 1));
-    tool(list, "edenprobe_run", run_says, schema(run_names, s3, 3, run_names, 3));
-    tool(list, "edenprobe_finding", finding_says, schema(finding_names, finding_types, 6, finding_names, 4));
-    tool(list, "gdb_attach", attach_says, schema(attach_names, attach_types, 2, NULL, 0));
-    tool(list, "gdb_command", command_says, schema(command_names, command_types, 2, command_names, 1));
-    tool(list, "gdb_threads", threads_says, schema(NULL, NULL, 0, NULL, 0));
-    tool(list, "gdb_guest", guest_says, schema(guest_names, guest_types, 2, NULL, 0));
-    tool(list, "gdb_memory", memory_says, schema(memory_names, memory_types, 2, memory_names, 1));
-    tool(list, "gdb_detach", detach_says, schema(NULL, NULL, 0, NULL, 0));
+    yyjson_mut_val* list = yyjson_mut_arr(d);
+    tool(d, list, "scan_log", scan_says, schema(d, path, s1, 1, path, 1));
+    tool(d, list, "read_log", read_says, schema(d, read_names, read_types, 6, path, 1));
+    tool(d, list, "find_game", find_says, schema(d, find_names, s1, 1, NULL, 0));
+    tool(d, list, "state_info", states_says, schema(d, find_names, s1, 1, find_names, 1));
+    tool(d, list, "symbolize", sym_says, schema(d, sym_names, sym_types, 2, sym_names, 2));
+    tool(d, list, "disassemble", dis_says, schema(d, dis_names, dis_types, 4, game, 1));
+    tool(d, list, "edenprobe_scaffold", scaffold_says, schema(d, scaffold_names, scaffold_types, 7, scaffold_names, 7));
+    tool(d, list, "edenprobe_check", check_says, schema(d, check_names, s2, 2, check_names, 1));
+    tool(d, list, "edenprobe_run", run_says, schema(d, run_names, s3, 3, run_names, 3));
+    tool(d, list, "edenprobe_finding", finding_says, schema(d, finding_names, finding_types, 6, finding_names, 4));
+    tool(d, list, "gdb_attach", attach_says, schema(d, attach_names, attach_types, 2, NULL, 0));
+    tool(d, list, "gdb_command", command_says, schema(d, command_names, command_types, 2, command_names, 1));
+    tool(d, list, "gdb_threads", threads_says, schema(d, NULL, NULL, 0, NULL, 0));
+    tool(d, list, "gdb_guest", guest_says, schema(d, guest_names, guest_types, 2, NULL, 0));
+    tool(d, list, "gdb_memory", memory_says, schema(d, memory_names, memory_types, 2, memory_names, 1));
+    tool(d, list, "gdb_detach", detach_says, schema(d, NULL, NULL, 0, NULL, 0));
     return list;
 }
 
-static const char* arg_string(const cJSON* args, const char* key) {
-    const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, key);
-    return cJSON_IsString(v) ? v->valuestring : NULL;
-}
+static const char* arg_string(yyjson_val* args, const char* key) { return yyjson_get_str(yyjson_obj_get(args, key)); }
 /* otherwise too for a number a long can't hold (converting it would be undefined), NaN included */
-static long arg_number(const cJSON* args, const char* key, long otherwise) {
-    const cJSON* v = cJSON_GetObjectItemCaseSensitive(args, key);
-    return cJSON_IsNumber(v) && v->valuedouble >= (double)LONG_MIN && v->valuedouble <= (double)LONG_MAX
-               ? (long)v->valuedouble
-               : otherwise;
+static long arg_number(yyjson_val* args, const char* key, long otherwise) {
+    yyjson_val* v = yyjson_obj_get(args, key);
+    double n = yyjson_get_num(v);
+    return yyjson_is_num(v) && n >= (double)LONG_MIN && n <= (double)LONG_MAX ? (long)n : otherwise;
 }
 
 /* a guest address named by gdb_attach's game (mcp_int.h's McpNamer) */
@@ -904,7 +900,7 @@ static McpNamer gdb_namer(Mcp* m, const void** ctx) {
     *ctx = g;
     return g ? name_guest : NULL;
 }
-static char* gdb_tool(Mcp* m, const char* name, const cJSON* args, Text* err) {
+static char* gdb_tool(Mcp* m, const char* name, yyjson_val* args, Text* err) {
     const void* ctx;
     McpNamer namer;
     if (!strcmp(name, "gdb_attach")) {
@@ -957,8 +953,8 @@ static char* gdb_tool(Mcp* m, const char* name, const cJSON* args, Text* err) {
 }
 
 /* the tool's answer as an MCP result: its text, or the error's with isError */
-static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
-    cJSON *result = cJSON_CreateObject(), *content = cJSON_CreateArray(), *item = cJSON_CreateObject();
+static yyjson_mut_val* call(Mcp* m, yyjson_mut_doc* d, const char* name, yyjson_val* args) {
+    yyjson_mut_val *result = yyjson_mut_obj(d), *item;
     Text err = {0};
     char* text = NULL;
     const char* path = arg_string(args, "path");
@@ -975,8 +971,7 @@ static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
         else if (!readable(m, path))
             mcp_put(&err, outside);
         else
-            text = read_log(path, arg_string(args, "pattern"),
-                            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(args, "ignore_case")),
+            text = read_log(path, arg_string(args, "pattern"), yyjson_is_true(yyjson_obj_get(args, "ignore_case")),
                             (int)arg_number(args, "context", 2), arg_number(args, "start", 0),
                             (int)arg_number(args, "count", 100), &err);
     } else if (!strcmp(name, "find_game")) {
@@ -985,10 +980,12 @@ static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
         if (id && !parse_hex(id, &tid))
             mcp_put(&err, "title_id: sixteen hexadecimal digits");
         else {
-            cJSON* list = cJSON_CreateArray();
-            find_games(m, tid, list);
-            text = cJSON_Print(list);
-            cJSON_Delete(list);
+            yyjson_mut_doc* listed = yyjson_mut_doc_new(NULL);
+            yyjson_mut_val* list = yyjson_mut_arr(listed);
+            yyjson_mut_doc_set_root(listed, list);
+            find_games(m, tid, listed, list);
+            text = yyjson_mut_write(listed, YYJSON_WRITE_PRETTY, NULL);
+            yyjson_mut_doc_free(listed);
         }
     } else if (!strcmp(name, "state_info")) {
         const char* id = arg_string(args, "title_id");
@@ -996,17 +993,19 @@ static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
         if (!id || !parse_hex(id, &tid) || !tid)
             mcp_put(&err, "title_id: sixteen hexadecimal digits");
         else {
-            cJSON* list = cJSON_CreateArray();
-            find_states(m, tid, list);
-            text = cJSON_Print(list);
-            cJSON_Delete(list);
+            yyjson_mut_doc* listed = yyjson_mut_doc_new(NULL);
+            yyjson_mut_val* list = yyjson_mut_arr(listed);
+            yyjson_mut_doc_set_root(listed, list);
+            find_states(m, tid, listed, list);
+            text = yyjson_mut_write(listed, YYJSON_WRITE_PRETTY, NULL);
+            yyjson_mut_doc_free(listed);
         }
     } else if (!strcmp(name, "symbolize") || !strcmp(name, "disassemble")) {
         const char* game = arg_string(args, "game");
         if (!game)
             mcp_put(&err, "game: a folder, a game of work/ or a title ID");
         else if (name[0] == 's')
-            text = symbolize(m, game, cJSON_GetObjectItemCaseSensitive(args, "addresses"), &err);
+            text = symbolize(m, game, yyjson_obj_get(args, "addresses"), &err);
         else
             text = disassemble(m, game, arg_string(args, "function"), arg_string(args, "start"),
                                arg_string(args, "end"), &err);
@@ -1046,66 +1045,69 @@ static cJSON* call(Mcp* m, const char* name, const cJSON* args) {
         mcp_put(&err, "no tool ");
         mcp_put(&err, name);
     }
-    cJSON_AddStringToObject(item, "type", "text");
-    cJSON_AddStringToObject(item, "text", text ? text : err.p ? err.p : "failed");
-    cJSON_AddItemToArray(content, item);
-    cJSON_AddItemToObject(result, "content", content);
-    if (!text) cJSON_AddBoolToObject(result, "isError", 1);
+    item = yyjson_mut_arr_add_obj(d, yyjson_mut_obj_add_arr(d, result, "content"));
+    yyjson_mut_obj_add_str(d, item, "type", "text");
+    yyjson_mut_obj_add_strcpy(d, item, "text", text ? text : err.p ? err.p : "failed");
+    if (!text) yyjson_mut_obj_add_bool(d, result, "isError", true);
     free(text);
     free(err.p);
     return result;
 }
 
+/* a reply document: jsonrpc and id (a copy of id, null without one) set, the rest the caller's */
+static yyjson_mut_doc* reply_new(yyjson_val* id, yyjson_mut_val** reply) {
+    yyjson_mut_doc* d = yyjson_mut_doc_new(NULL);
+    *reply = yyjson_mut_obj(d);
+    yyjson_mut_doc_set_root(d, *reply);
+    yyjson_mut_obj_add_str(d, *reply, "jsonrpc", "2.0");
+    yyjson_mut_obj_add_val(d, *reply, "id", id ? yyjson_val_mut_copy(d, id) : yyjson_mut_null(d));
+    return d;
+}
 /* the reply to one message, or NULL for a notification */
-static cJSON* handle(Mcp* m, const cJSON* message) {
-    const cJSON *id = cJSON_GetObjectItemCaseSensitive(message, "id"), *params;
+static yyjson_mut_doc* handle(Mcp* m, yyjson_val* message) {
+    yyjson_val *id = yyjson_obj_get(message, "id"), *params = yyjson_obj_get(message, "params");
     const char* method = arg_string(message, "method");
-    cJSON *reply, *result = NULL;
+    yyjson_mut_val *reply, *result = NULL;
+    yyjson_mut_doc* d;
     if (!id || !method) return NULL;
-    params = cJSON_GetObjectItemCaseSensitive(message, "params");
+    d = reply_new(id, &reply);
     if (!strcmp(method, "initialize")) {
-        const char* version = params ? arg_string(params, "protocolVersion") : NULL;
-        cJSON *caps = cJSON_CreateObject(), *info = cJSON_CreateObject();
-        result = cJSON_CreateObject();
-        cJSON_AddStringToObject(result, "protocolVersion", version ? version : "2025-06-18");
-        cJSON_AddItemToObject(caps, "tools", cJSON_CreateObject());
-        cJSON_AddItemToObject(result, "capabilities", caps);
-        cJSON_AddStringToObject(info, "name", "scarletnx");
-        cJSON_AddStringToObject(info, "version", "1");
-        cJSON_AddItemToObject(result, "serverInfo", info);
-        cJSON_AddStringToObject(result, "instructions", instructions);
+        const char* version = arg_string(params, "protocolVersion");
+        yyjson_mut_val* info;
+        result = yyjson_mut_obj(d);
+        yyjson_mut_obj_add_strcpy(d, result, "protocolVersion", version ? version : "2025-06-18");
+        yyjson_mut_obj_add_obj(d, yyjson_mut_obj_add_obj(d, result, "capabilities"), "tools");
+        info = yyjson_mut_obj_add_obj(d, result, "serverInfo");
+        yyjson_mut_obj_add_str(d, info, "name", "scarletnx");
+        yyjson_mut_obj_add_str(d, info, "version", "1");
+        yyjson_mut_obj_add_str(d, result, "instructions", instructions);
     } else if (!strcmp(method, "tools/list")) {
-        result = cJSON_CreateObject();
-        cJSON_AddItemToObject(result, "tools", tools());
+        result = yyjson_mut_obj(d);
+        yyjson_mut_obj_add_val(d, result, "tools", tools(d));
     } else if (!strcmp(method, "tools/call")) {
-        const char* name = params ? arg_string(params, "name") : NULL;
-        const cJSON* args = params ? cJSON_GetObjectItemCaseSensitive(params, "arguments") : NULL;
-        result = name ? call(m, name, args) : NULL;
+        const char* name = arg_string(params, "name");
+        result = name ? call(m, d, name, yyjson_obj_get(params, "arguments")) : NULL;
     } else if (!strcmp(method, "ping"))
-        result = cJSON_CreateObject();
-    reply = cJSON_CreateObject();
-    cJSON_AddStringToObject(reply, "jsonrpc", "2.0");
-    cJSON_AddItemToObject(reply, "id", cJSON_Duplicate(id, 1));
+        result = yyjson_mut_obj(d);
     if (result)
-        cJSON_AddItemToObject(reply, "result", result);
+        yyjson_mut_obj_add_val(d, reply, "result", result);
     else {
-        cJSON* error = cJSON_CreateObject();
-        cJSON_AddNumberToObject(error, "code", -32601);
-        cJSON_AddStringToObject(error, "message", "no such method, or a tools/call without a name");
-        cJSON_AddItemToObject(reply, "error", error);
+        yyjson_mut_val* error = yyjson_mut_obj_add_obj(d, reply, "error");
+        yyjson_mut_obj_add_int(d, error, "code", -32601);
+        yyjson_mut_obj_add_str(d, error, "message", "no such method, or a tools/call without a name");
     }
-    return reply;
+    return d;
 }
 
-static void send(cJSON* reply) {
-    char* text = cJSON_PrintUnformatted(reply);
+static void send(yyjson_mut_doc* reply) {
+    char* text = yyjson_mut_write(reply, 0, NULL);
     if (text) {
         fputs(text, stdout);
         fputc('\n', stdout);
         fflush(stdout);
         free(text);
     }
-    cJSON_Delete(reply);
+    yyjson_mut_doc_free(reply);
 }
 
 int snx_mcp(int argc, char** argv) {
@@ -1114,19 +1116,18 @@ int snx_mcp(int argc, char** argv) {
     if (mcp_open(&m, argc, argv)) return 1;
     while (mcp_read_line(&pending, &line)) {
         if (line.n && strspn(line.p, " \t\r\n") != line.n) {
-            cJSON* message = cJSON_Parse(line.p);
+            yyjson_doc* message = yyjson_read(line.p, strlen(line.p), 0);
             if (!message) {
-                cJSON *reply = cJSON_CreateObject(), *error = cJSON_CreateObject();
-                cJSON_AddStringToObject(reply, "jsonrpc", "2.0");
-                cJSON_AddNullToObject(reply, "id");
-                cJSON_AddNumberToObject(error, "code", -32700);
-                cJSON_AddStringToObject(error, "message", "not JSON");
-                cJSON_AddItemToObject(reply, "error", error);
-                send(reply);
+                yyjson_mut_val *reply, *error;
+                yyjson_mut_doc* d = reply_new(NULL, &reply);
+                error = yyjson_mut_obj_add_obj(d, reply, "error");
+                yyjson_mut_obj_add_int(d, error, "code", -32700);
+                yyjson_mut_obj_add_str(d, error, "message", "not JSON");
+                send(d);
             } else {
-                cJSON* reply = handle(&m, message);
+                yyjson_mut_doc* reply = handle(&m, yyjson_doc_get_root(message));
                 if (reply) send(reply);
-                cJSON_Delete(message);
+                yyjson_doc_free(message);
             }
         }
         line.n = 0;
