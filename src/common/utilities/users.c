@@ -422,6 +422,104 @@ done:
     free(path);
     return rc;
 }
+/* whether a line of from to to sets key */
+static int users_has_key(const char* from, const char* to, const char* key) {
+    const char *line, *p, *end;
+    size_t n = strlen(key);
+    for (line = from; line < to; line = end ? end + 1 : to) {
+        end = memchr(line, '\n', (size_t)(to - line));
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (!strncmp(p, key, n) && (p[n] == '=' || p[n] == ' ' || p[n] == '\t')) return 1;
+    }
+    return 0;
+}
+int snx_users_move(const char* dir, int number, int position, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *more,
+         hex[33];
+    const char *line, *end, *p, *q, *start[SNX_USERS_MAX + 1];
+    size_t size = 0, len;
+    int order[SNX_USERS_MAX], count = 0, rc = -1, i, j, selected = 0;
+    SnxUser moved[SNX_USERS_MAX];
+    if (number < 1 || number > g_user_count || position < 1 || position > g_user_count) {
+        snprintf(why, why_size, "user %d to place %d: there are %d user%s", number, position, g_user_count,
+                 g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    if (number == position) {
+        rc = 0;
+        goto done;
+    }
+    if (snx_users_save(dir, g_user_count, why, why_size)) goto done;
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    /* where each [userN] starts, and where the file ends */
+    for (line = text; *line; line += len) {
+        end = strchr(line, '\n');
+        len = end ? (size_t)(end - line) + 1 : strlen(line);
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (*p == '[' && (q = strchr(p, ']')) != NULL && q < line + len && count < SNX_USERS_MAX &&
+            users_section(p + 1, (size_t)(q - p - 1)) == count + 1)
+            start[count++] = line;
+    }
+    start[count] = text + strlen(text);
+    if (count != g_user_count) {
+        snprintf(why, why_size, "%s has %d users, where %d were read", path, count, g_user_count);
+        goto done;
+    }
+    for (i = 0, j = 0; i < count; i++) /* the new order, by the old indices */
+        if (i != number - 1) order[j++] = i;
+    memmove(order + position, order + position - 1, sizeof order[0] * (size_t)(count - position));
+    order[position - 1] = number - 1;
+    /* user 1 may go without a uid or a nickname line (it has the ones it always had): written when it leaves. A
+       header line ends in a newline: the one that could end the file is [user1]'s alone, and it doesn't move */
+    out = snx_format("%.*s", (int)(start[0] - text), text);
+    for (j = 0; out && j < count; j++) {
+        const char *from = start[order[j]], *to = start[order[j] + 1], *body = memchr(from, '\n', (size_t)(to - from));
+        const SnxUser* u = &g_users[order[j]];
+        int uid = 1, nickname = 1;
+        body = body ? body + 1 : to;
+        for (p = from; *p == ' ' || *p == '\t'; ++p) {}
+        q = strchr(p, ']');
+        if (j) {
+            uid = users_has_key(body, to, "uid");
+            nickname = users_has_key(body, to, "nickname");
+        }
+        snx_users_uid_text(u->uid, hex);
+        more = snx_format("%s%.*s[user%d]%.*s%s%s%s%s%s%s%.*s%s", out, (int)(p - from), from, j + 1,
+                          (int)(body - q - 1), q + 1, uid ? "" : "uid=", uid ? "" : hex, uid ? "" : "\n",
+                          nickname ? "" : "nickname=", nickname ? "" : u->nickname, nickname ? "" : "\n",
+                          (int)(to - body), body, to > body && to[-1] != '\n' ? "\n" : "");
+        free(out);
+        out = more;
+    }
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (!out || snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    for (j = 0; j < count; j++) {
+        moved[j] = g_users[order[j]];
+        if (order[j] == g_user_selected) selected = j;
+    }
+    memcpy(g_users, moved, sizeof g_users[0] * (size_t)count);
+    g_user_selected = selected;
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
 int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
     SnxUser* u;
     if (g_user_count >= SNX_USERS_MAX) {

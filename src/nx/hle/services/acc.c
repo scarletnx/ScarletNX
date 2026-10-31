@@ -629,6 +629,34 @@ done:
     free(data);
     return rc;
 }
+/* A user moved to place position, 0 the first (SwitchBrew acc:su 204), the users between a place over, the one playing
+   the same user. A place past the users or a uid no user has changes nothing and succeeds, as rEden's ProfileManager
+   SetUserPosition does, said in the log; users.ini that can't be written is a failure */
+static int nn_account_IAccountServiceForAdministrator_SetUserPosition(SvcObj* self, u64 position,
+                                                                      const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char why[512], hex[33];
+    u64 v[2];
+    int number;
+    (void)self;
+    if (!u) {
+        acc_uid_get(uid, v);
+        snx_users_uid_text(v, hex);
+        WARN("acc: no user moved: uid %s is no user's\n", hex);
+        R_SUCCEED();
+    }
+    if (position >= (u64)g_user_count) {
+        WARN("acc: no user moved: place %llu is past the %d users\n", (unsigned long long)position, g_user_count);
+        R_SUCCEED();
+    }
+    number = (int)(u - g_users) + 1;
+    if (!g_host.acc.users_dir[0] || snx_users_move(g_host.acc.users_dir, number, (int)position + 1, why, sizeof why)) {
+        WARN("acc: user %d is not moved to place %llu: %s\n", number, (unsigned long long)position,
+             g_host.acc.users_dir[0] ? why : "there is no users folder");
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
 /* a user's profile to change (SwitchBrew acc:su 205): a user's only, a registered one's too */
 static int acc_editor_dispatch(SvcObj* o, IpcCtx* c);
 static int nn_account_IAccountServiceForAdministrator_GetProfileEditor(SvcObj* self, const nn_account_Uid* uid,
