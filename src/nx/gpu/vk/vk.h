@@ -106,11 +106,14 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
+    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
 } VkState;
 extern VkState g_vk;
 
 /* device.c */
 int vk_init(void);
+/* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
+const char* vk_start_failure(void);
 /* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
    the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
    0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the
