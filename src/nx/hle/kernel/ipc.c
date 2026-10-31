@@ -414,8 +414,8 @@ static void drop_outputs(IpcCtx* c) {
 /* Writes the reply over the request: the HIPC header, the handles (on a plain session an object is a new session's
    move handle, ahead of the declared ones), then for CMIF the data words at the next 16-byte boundary (counted with 16
    bytes of padding, as sf counts them), a domain header in a domain message's reply, the CmifOutHeader, the data and
-   a domain message's object ids; for TIPC the result and the data right after the handles, under the request's type.
-   What doesn't fit the server's 0x100 bytes is cut, and logged */
+   a domain message's object ids; for TIPC the handles, the result and the data, under the request's type, with a word
+   count covering all of them. What doesn't fit the server's 0x100 bytes is cut, and logged */
 static void respond(IpcCtx* c) {
     u8* m = c->msg;
     int dom = c->is_domain == IPC_DOMAIN_MESSAGE, i, nmove = 0;
@@ -444,18 +444,29 @@ static void respond(IpcCtx* c) {
                    c->sess && c->sess->obj ? c->sess->obj->name : "?", c->cmd, size, limit);
         size = limit;
     }
-    words = c->tipc ? (4 + size) / 4 : (16 + hdrs + size + 4 * nids) / 4;
-    wr32(m, c->tipc ? c->type : 0);
+    if (c->tipc) {
+        /* A TIPC reply has a one-word result, where a CMIF one has two: the handles and then the result, with the
+           data directly after it. A second word after the result would put the data one word past where the client
+           reads it. The word count covers the result and the data alone (the handle section before them is what the
+           header's flag tells of), as Eden's Switch 2 work counts it */
+        wr32(m, c->type);
+        wr32(m + 4, (1 + size / 4) | (off > 8 ? 0x80000000u : 0u));
+        if (off > 8) {
+            wr32(m + 8, (u32)c->nout_copy << 1 | (u32)nmove << 5);
+            for (i = 0; i < c->nout_copy; i++) wr32(m + 12 + 4 * i, c->out_copy[i]);
+            for (i = 0; i < nmove; i++) wr32(m + 12 + 4 * (c->nout_copy + i), moves[i]);
+        }
+        wr32(m + start, c->rc);
+        memcpy(m + start + 4, c->out, size);
+        return;
+    }
+    words = (16 + hdrs + size + 4 * nids) / 4;
+    wr32(m, 0);
     wr32(m + 4, words | (off > 8 ? 0x80000000u : 0u));
     if (off > 8) {
         wr32(m + 8, (u32)c->nout_copy << 1 | (u32)nmove << 5);
         for (i = 0; i < c->nout_copy; i++) wr32(m + 12 + 4 * i, c->out_copy[i]);
         for (i = 0; i < nmove; i++) wr32(m + 12 + 4 * (c->nout_copy + i), moves[i]);
-    }
-    if (c->tipc) {
-        wr32(m + start, c->rc);
-        memcpy(m + start + 4, c->out, size);
-        return;
     }
     memset(m + off, 0, start - off);
     if (dom) {

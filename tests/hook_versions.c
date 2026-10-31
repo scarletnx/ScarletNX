@@ -122,6 +122,11 @@ int main(void) {
     assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-12_3") == 0);
     assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-256_0_0") == 0);
     assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-0_12_16-Release") == 0x000C10);
+    /* a Switch 2 SDK's label names the middleware's profile before its version */
+    assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-Generic_20_5_25-Release") == 0x140519);
+    assert(sdk_of("SDK MW+Vendor+VendorSDK_libz-20_5_25-Release") == 0);
+    assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-Generic_19_3_3-Release") == 0x130303);
+    assert(sdk_of("SDK MW+Vendor+VendorSdk_nnSdk-Generic_256_0_0-Release") == 0);
     assert(sdk_of("") == 0);
     {
         u8 buf[128];

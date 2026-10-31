@@ -36,6 +36,12 @@ static u32 label(const u8* p, const u8* end, const char* lib) {
     q += n + 1;
     if ((size_t)(end - q) < libn + 1 || memcmp(q, lib, libn) || q[libn] != '-') return 0;
     q += libn + 1;
+    /* A Switch 2 SDK's label names the middleware's profile between the library and its version
+       (nnSdk-Generic_20_5_25, where a Switch 1 one has nnSdk-20_5_25), so the version may not follow
+       the library's dash directly */
+    for (n = 0; q + n < end && letter(q[n]); n++) {
+    }
+    if (n && q + n < end && q[n] == '_') q += n + 1;
     for (i = 0; i < 3; i++) {
         size_t digits = part(q, end, &v[i]);
         if (!digits) return 0;
