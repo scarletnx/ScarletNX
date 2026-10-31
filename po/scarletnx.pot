@@ -283,6 +283,142 @@ msgstr ""
 msgid "Saved in %s"
 msgstr ""
 
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s is not a zip (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's entry %u does not read (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s is %s; a driver's files are at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a folder"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "not a file at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s unpacks to %llu bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no meta.json at its top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json is %llu bytes, over the %d a driver's takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no %s, the library its meta.json names"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s needs Android API %d; this device has API %d"
+msgstr ""
+
+#: src/gui/gpu_driver.c src/gui/main.c
+#, c-format
+msgid "Not added: %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Already added: %s (%s/%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s/%s holds %s %s already; remove it first"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a package whose meta.json does not read,"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: no memory for %s's paths"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be made (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be written (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not become %s (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Added %s (%s), in %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "no driverVersion"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Removed %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is no driver's folder name"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is not there"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s could not be deleted (%s)"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -1491,11 +1627,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not added: cannot make %s: %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Not added: %s"
 msgstr ""
 
 #: src/gui/main.c
