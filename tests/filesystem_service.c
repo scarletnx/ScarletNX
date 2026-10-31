@@ -2054,6 +2054,15 @@ static void test_save_layout(SvcObj* proxy) {
     svcobj_unref(save);
     CHECK(tree_has("save/cache/homebrew.bin"));
     g_hle.kernel.title_id = 0x0100000000010000ull;
+    /* fs_user_saves_take, DeleteUser's: the folders of a user's saves, out of the index and their host paths */
+    {
+        char paths[2][FS_TREE_PATH_MAX];
+        int n = fs_user_saves_take(g_user_id, paths, 2);
+        CHECK(n == 1 && strstr(paths[0], "layout-saves/user.0123456789abcdeffedcba9876543210") &&
+              !tree_has("global-user.0123456789abcdeffedcba9876543210"));
+        n = fs_user_saves_take(test_other_user, paths, 2);
+        CHECK(n == 1 && strstr(paths[0], OTHER_SAVE) && !tree_has(OTHER_SAVE) && snx_is_dir(paths[0]));
+    }
     g_user_count = 0;
     g_settings.save_layout[0] = 0;
     g_host.fs.save_root[0] = 0;

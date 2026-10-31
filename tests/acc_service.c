@@ -20,6 +20,15 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* fs.c's, which this test doesn't compile: the folders of saves test_saves names, as fs_user_saves_take gives them */
+static char test_saves[2][FS_TREE_PATH_MAX];
+static int test_saves_count;
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    int i;
+    (void)uid;
+    for (i = 0; i < test_saves_count && i < max; i++) memcpy(paths[i], test_saves[i], FS_TREE_PATH_MAX);
+    return i;
+}
 /* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
 const char* ini_deprecated_value(const char* key) {
     (void)key;
@@ -1021,6 +1030,95 @@ static void test_profile_editor(void) {
     puts("PASS the profile editor: nickname, UserData and picture stored as given, into users.ini at once");
 }
 
+/* DeleteUser (acc:su 203): the user into the Trash of the data folder, trash/user.<uid>.<when>/, its users.ini
+   section, picture and saves there, the users after it a place up with the one playing the same; the one playing is
+   refused, an unknown uid too; a move that fails puts back what moved, users.ini as it was, no Trash left. A profile
+   of the user deleted answers InvalidUserId, its picture the default */
+static void test_delete_user(void) {
+    static u8 memory[0x400];
+    char why[512], *path, *now, *trash = NULL, **names = NULL;
+    const char* users = DIR "/users";
+    SvcObj *su = new_acc_admin(), *profile = NULL;
+    Request r;
+    nn_account_Uid uid;
+    nn_account_profile_ProfileBase base;
+    size_t count = 0;
+    u32 size;
+    g_mem = memory;
+    CHECK(!snx_mkdirs(users) && !snx_mkdirs(DIR "/saves-of-2"));
+    path = snx_path_join(users, "users.ini");
+    CHECK(!snx_write_file(
+        path, "[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n[user3]\nuid=" UID3 "\nnickname=Afugo\n",
+        strlen("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n[user3]\nuid=" UID3
+               "\nnickname=Afugo\n")));
+    CHECK(!snx_write_file(DIR "/users/" UID2 ".jpg", jpeg, sizeof jpeg) &&
+          !snx_write_file(DIR "/users/" UID3 ".jpg", jpeg, sizeof jpeg));
+    CHECK(!snx_write_file(DIR "/saves-of-2/slot.bin", "save", 4));
+    CHECK(snx_users_load(users, 1, why, sizeof why) == 0 && g_user_count == 3);
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", users);
+    uid_of(UID2, &uid);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    /* user 2 deleted */
+    snprintf(test_saves[0], sizeof test_saves[0], "%s", DIR "/saves-of-2");
+    test_saves_count = 1;
+    request(&r, 203);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    CHECK(g_user_count == 2 && !strcmp(g_users[1].nickname, "Afugo") && snx_users_selected_number() == 1);
+    now = (char*)snx_read_file(path, &count);
+    CHECK(now && !strcmp(now, "[user1]\nnickname=Aogo\n[user2]\nuid=" UID3 "\nnickname=Afugo\n"));
+    free(now);
+    CHECK(!snx_is_file(DIR "/users/" UID2 ".jpg") && !snx_is_dir(DIR "/saves-of-2"));
+    CHECK(!snx_list_dir(DIR "/trash", &names, &count) && count == 1 && !strncmp(names[0], "user." UID2 ".", 38));
+    trash = snx_format("%s/trash/%s", DIR, names[0]);
+    snx_free_strings(names, count);
+    {
+        char *section = snx_format("%s/users.ini", trash), *kept;
+        size_t n;
+        kept = (char*)snx_read_file(section, &n);
+        CHECK(kept && !strcmp(kept, "[user2]\nuid=" UID2 "\nnickname=Xuji\n"));
+        free(kept);
+        free(section);
+        section = snx_format("%s/" UID2 ".jpg", trash);
+        CHECK(snx_is_file(section));
+        free(section);
+        section = snx_format("%s/save.1/slot.bin", trash);
+        CHECK(snx_is_file(section));
+        free(section);
+    }
+    /* its profile: gone, its picture the default */
+    CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == RC(124, 20));
+    CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == acc_picture());
+    svcobj_unref(profile);
+    /* the one playing, and a uid no user has: refused */
+    test_saves_count = 0;
+    request(&r, 203);
+    acc_uid_put(r.raw, g_users[0].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == 2);
+    request(&r, 203);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 20));
+    /* a move that fails: the picture back, users.ini as it was, no other Trash */
+    snprintf(test_saves[0], sizeof test_saves[0], "%s", DIR "/no-such-saves");
+    test_saves_count = 1;
+    request(&r, 203);
+    uid_of(UID3, &uid);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == 2 && snx_is_file(DIR "/users/" UID3 ".jpg"));
+    now = (char*)snx_read_file(path, &count);
+    CHECK(now && strstr(now, "uid=" UID3));
+    free(now);
+    CHECK(!snx_list_dir(DIR "/trash", &names, &count) && count == 1);
+    snx_free_strings(names, count);
+    test_saves_count = 0;
+    g_host.acc.users_dir[0] = 0;
+    svcobj_unref(su);
+    free(trash);
+    free(path);
+    CHECK(!snx_remove_tree(DIR "/trash") && !snx_remove_tree(users));
+    puts("PASS DeleteUser: into the Trash with its picture and saves, the users after it a place up");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
@@ -1211,6 +1309,7 @@ int main(void) {
     test_choose();
     test_registration();
     test_profile_editor();
+    test_delete_user();
     test_user_data();
     test_system_service();
     test_administrator_service();
