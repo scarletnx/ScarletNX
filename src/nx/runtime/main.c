@@ -12,6 +12,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/probe.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
@@ -158,6 +159,19 @@ static void name_game(const char* from) {
 #endif
 }
 
+/* Recommended Settings' test of this computer, a line each on stdout: the GPU's (vk/probe.h), then "probe: memory" with
+   the CPUs, their cores and the memory the system can still give, and "probe: done" */
+int snx_probe(void) {
+    SnxU64 bytes;
+    vk_probe(stdout);
+    printf("probe: memory\ncpus=%u\ncores=%u\n", snx_cpu_count(), snx_cpu_cores());
+    if (snx_memory_available(&bytes))
+        printf("ram_available_mb=%llu\n", (unsigned long long)(bytes >> 20));
+    else
+        puts("ram_error=this system tells no memory it can still give");
+    puts("probe: done");
+    return 0;
+}
 /* An AppImage runs the runtime from its mount: the copy named after the game is the AppImage file. APPIMAGE and APPDIR
    are inherited by the processes it starts, so they count only for a runtime inside that mount */
 static const char* program_path(const char* argv0) {

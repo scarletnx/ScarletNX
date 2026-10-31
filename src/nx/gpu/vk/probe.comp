@@ -1,0 +1,26 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* Recommended Settings' compile load for the driver (probe.c): each pipeline takes its own SEED, so no cache of the
+   driver's can hand back an earlier compile. Branches, a matrix, loads and math, unrolled to the size of a game's
+   shader, as a compute shader so no render pass is needed. It is never dispatched. */
+#extension GL_EXT_control_flow_attributes : require
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint SEED = 1u;
+layout(std430, binding = 0) buffer B { vec4 data[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    vec4 a = data[i & 1023u];
+    vec4 b = vec4(float(SEED), float(SEED >> 3), float(SEED >> 7), 1.0);
+    [[unroll]] for (int k = 0; k < 96; ++k) {
+        a = fract(a * 1.37 + b.yzwx * float(k ^ int(SEED & 7u)));
+        if (a.x > 0.5)
+            b = sin(b + a) * float(SEED & 15u);
+        else
+            b = cos(b * a) + data[(i + uint(k) * SEED) & 1023u];
+        b.xy = mat2(a.x, a.y, a.z, a.w) * b.zw;
+        if (((SEED >> uint(k & 7)) & 1u) != 0u) a = normalize(a + vec4(0.25)) * inversesqrt(abs(b.x) + 1.0);
+    }
+    data[i & 1023u] = a + b;
+}

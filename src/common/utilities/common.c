@@ -54,6 +54,7 @@
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <sys/sysctl.h> /* sysctlbyname */
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
 #endif
@@ -1445,6 +1446,62 @@ unsigned snx_cpu_count(void) {
     int mib[2] = {CTL_HW, HW_NCPU};
     if (sysctl(mib, 2, &ncpu, &len, NULL, 0) == -1) return 1;
     return ncpu;
+#endif
+}
+unsigned snx_cpu_cores(void) {
+#ifdef _WIN32
+    DWORD size = 0, at;
+    unsigned n = 0;
+    char* buf;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &size);
+    buf = size ? malloc(size) : NULL;
+    if (buf &&
+        GetLogicalProcessorInformationEx(RelationProcessorCore, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &size))
+        for (at = 0; at < size; at += ((PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(buf + at))->Size) n++;
+    free(buf);
+    return n ? n : snx_cpu_count();
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__)
+    const char* name = "hw.physicalcpu";
+#else
+    const char* name = "kern.smp.cores";
+#endif
+    int n = 0;
+    size_t len = sizeof n;
+    return sysctlbyname(name, &n, &len, NULL, 0) == 0 && n > 0 ? (unsigned)n : snx_cpu_count();
+#elif defined(__linux__)
+    /* each CPU's (package, core) pair in sysfs, counted once */
+    enum { MOST = 1024 };
+    unsigned long pairs[MOST];
+    unsigned n = 0, i, k;
+    DIR* d = opendir("/sys/devices/system/cpu");
+    struct dirent* e;
+    while (d && (e = readdir(d)) && n < MOST) {
+        char path[320];
+        unsigned long package = 0, core = 0, pair;
+        FILE* f;
+        int got = 0;
+        if (strncmp(e->d_name, "cpu", 3) || e->d_name[3] < '0' || e->d_name[3] > '9') continue;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/%s/topology/physical_package_id", e->d_name);
+        if ((f = fopen(path, "r"))) {
+            got += fscanf(f, "%lu", &package) == 1;
+            fclose(f);
+        }
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/%s/topology/core_id", e->d_name);
+        if ((f = fopen(path, "r"))) {
+            got += fscanf(f, "%lu", &core) == 1;
+            fclose(f);
+        }
+        if (got != 2) continue;
+        pair = package << 20 | core;
+        for (k = 0; k < n && pairs[k] != pair; k++) continue;
+        if (k == n) pairs[n++] = pair;
+    }
+    if (d) closedir(d);
+    i = snx_cpu_count();
+    return n && n <= i ? n : i;
+#else
+    return snx_cpu_count();
 #endif
 }
 /* Code arenas (code_loader.c) reserve their address space once and give each page access only when it is used: the

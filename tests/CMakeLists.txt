@@ -68,6 +68,12 @@ if(SNX_TEST_SANITIZERS)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
+# Recommended Settings' test of this computer, scarletnx --probe, on the Vulkan ICD there is (lavapipe in CI)
+if(SNX_TEST_VULKAN AND Python3_Interpreter_FOUND AND TARGET scarletnx)
+    add_test(NAME runtime_probe COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime_probe.py"
+                                        $<TARGET_FILE:scarletnx>)
+    set_tests_properties(runtime_probe PROPERTIES TIMEOUT 120)
+endif()
 # CLAUDE.md and .claude/ in ASD-STE100 (.claude/skills/ste100), and the checker's own test
 if(Python3_Interpreter_FOUND)
     add_test(NAME claude_ste100 COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/.claude/skills/ste100/check.py" --all)

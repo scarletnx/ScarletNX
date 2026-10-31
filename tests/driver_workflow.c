@@ -470,6 +470,12 @@ int snx_setting_known(const char* key) {
         if (!strcmp(key, known[i])) return 1;
     return 0;
 }
+/* the runtime's --probe (runtime/main.c): how many times the driver ran it */
+static int probes;
+int snx_probe(void) {
+    ++probes;
+    return 0;
+}
 #ifndef _WIN32
 /* 1 when the game's .ini records dump as its source (snx_game_source), its folder making no link to it */
 static int records_dump(const char* folder, const char* name, const char* dump) {
@@ -667,6 +673,12 @@ int main(int argc, char** argv) {
         free(expected_cwd);
         /* an update or a DLC runs as its own program, in its game's folder: A */
         return event(addon_mode() && strchr(strrchr(argv[0], '/') ? strrchr(argv[0], '/') : argv[0], '_') ? 'A' : 'G');
+    }
+    { /* --probe runs in the driver, which is all iOS's menu runs on its thread; alone */
+        char flag[] = "--probe", extra[] = "game.nsp";
+        char *probe[] = {argv[0], flag, NULL}, *more[] = {argv[0], flag, extra, NULL};
+        CHECK(snx_driver(2, probe) == 0 && probes == 1);
+        CHECK(snx_driver(3, more) == 1 && probes == 1);
     }
     exe = snx_executable(argv[0]);
     root = snx_temp_dir(NULL);

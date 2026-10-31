@@ -43,7 +43,8 @@ static void usage(void) {
         "  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
         "  --controls=0|1         The on-screen controls: hidden or shown\n"
         "  --KEY=VALUE            Any setting of the game's .ini, for this run\n"
-        "  --settings[=recompile] List the settings, tab-separated");
+        "  --settings[=recompile] List the settings, tab-separated\n"
+        "  --probe                Test this computer for Recommended Settings, a key=value line each");
     puts("  --update FILE          An update's or a DLC's dump, played or prepared with the game; once each\n"
          "  -x -h / -r -h          Extraction / recompilation options\n"
          "  --game=DIR             Play the recompiled game in DIR (recompiled/<title ID>)");
@@ -1143,6 +1144,13 @@ int snx_driver(int argc, char** argv) {
     }
     if (!strcmp(argv[1], "--scan-log")) {
         result = snx_logscan_main(argc - 1, argv + 1, snx_demangle);
+        goto done;
+    }
+    if (!strcmp(argv[1], "--probe")) { /* here, as iOS's menu runs the driver alone on a thread of its own */
+        if (argc > 2)
+            result = snx_error("--probe takes nothing after it: %s", argv[2]);
+        else
+            result = snx_probe ? snx_probe() : snx_error("--probe: this program has no runtime to test the GPU with");
         goto done;
     }
     rest = (char**)snx_alloc((size_t)(3 * argc + 1) * sizeof(*rest));

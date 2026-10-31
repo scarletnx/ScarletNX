@@ -212,6 +212,8 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* the processor's physical cores, each core's SMT threads counted once; snx_cpu_count where the system tells no more */
+unsigned snx_cpu_cores(void);
 /* seconds on a monotonic clock, for durations */
 double snx_seconds(void);
 /* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.

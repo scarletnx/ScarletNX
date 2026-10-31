@@ -198,7 +198,7 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       - name: Test headless Vulkan and NX runtime
-        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_vic_validation|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages)$' --output-on-failure
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_vic_validation|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|runtime_probe)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
