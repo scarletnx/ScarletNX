@@ -1399,12 +1399,17 @@ static int check_uma(void) {
     CHECK(!gmem_write(UMA_GA + 0x2000, data, sizeof data)); /* no draw reads it in place: no wait */
     uma_stats(&n, &waits);
     CHECK(waits == waits0 + 1);
-    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, while one
-       elsewhere stays */
+    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, destroyed
+       before its pages are trapped (amdgpu fails a submission naming an import of trapped pages), while one elsewhere
+       stays */
     CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 == b);
     uma_stats(&n0, &waits0);
     int elsewhere = vk_uma_imported(HEAP_BASE, 4096);
+    VkUmaStats h0, h1;
+    vk_uma_stats(&h0);
     vk_uma_owning(UMA_A + 0x4000, 0x100);
+    vk_uma_stats(&h1);
+    CHECK(h1.why_retired[VK_UMA_RETIRED_OWNED] > h0.why_retired[VK_UMA_RETIRED_OWNED] && h1.held == h0.held);
     uma_stats(&n, &waits);
     CHECK(waits == waits0 + 1 && n < n0 && !vk_uma_imported(UMA_A + 0x4000, 0x100));
     CHECK(vk_uma_imported(HEAP_BASE, 4096) == elsewhere);

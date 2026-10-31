@@ -985,6 +985,7 @@ typedef struct {
     u64 why_refused[VK_UMA_REFUSED_N], why_retired[VK_UMA_RETIRED_N];
     u64 published; /* bytes of the engines' results copied into guest memory in place */
     u64 bytes, waits, out_waits, barriers, pending;
+    u32 held; /* imports let go of, not destroyed yet */
 } VkUmaStats;
 void vk_uma_stats(VkUmaStats* st);
 

@@ -136,8 +136,8 @@ submit), and moved them into the alias pool, which let go of them again: amdgpu 
 for every texture the copy engine uploaded and every movie frame.
 
 Where a result's memory isn't imported, it becomes GPU-owned as without UMA, and that counts as such a write. The
-commands recorded with the imports over it are also submitted, and those imports are retired before its pages are
-trapped.
+commands recorded with the imports over it are also submitted, and those imports are destroyed before its pages are
+trapped: a driver keeps every import in every submission.
 
 These writes stay on the CPU, and that is deliberate. Making them GPU writes in stream order (`vkCmdUpdateBuffer`
 into the import) doesn't fit in a rendering pass. Transfer commands can't be recorded inside one. Inside dynamic

@@ -88,6 +88,7 @@ static struct {
     u64 made;                   /* imports made so far */
     u32 mem_type_bits_ok;       /* memoryTypeBits of the host-coherent types */
     u64 bytes, waits;
+    u32 held;     /* imports let go of and not destroyed yet (import_free), atomic */
     u64 gen;      /* moves when guest memory's pages change: the keys that failed before may import now */
     u64 recorded; /* the submit being recorded when an import was last read */
     UmaUse use[UMA_USE_N];
@@ -113,6 +114,7 @@ static void import_free(void* arg) {
     vkDestroyBuffer(g_vk.dev, m->buf, NULL);
     vkFreeMemory(g_vk.dev, m->mem, NULL);
     free(m);
+    __atomic_fetch_sub(&g_uma.held, 1, __ATOMIC_RELAXED);
 }
 /* how many imports hold each page of guest memory, by leaves of 4096 pages made at the first import in them: written
    under vk_lock, read by the write scans' thread too (vk_uma_page_imported) */
@@ -160,10 +162,11 @@ static void keys_rebuild(void) {
     for (u32 i = 0; i < g_uma.n; i++) key_insert(g_uma.imp[i].key, i);
 }
 /* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done, and
-   before any other if its pages changed (amdgpu fails a submission naming it). The caller rebuilds the keys */
+   before any other if its pages change or are trapped next (amdgpu fails a submission naming it). The caller rebuilds
+   the keys */
 static void retire_one(u32 i, int why) {
     g_uma.why_retired[why]++;
-    UmaImport* m = why == VK_UMA_RETIRED_CHANGED ? NULL : malloc(sizeof *m);
+    UmaImport* m = why == VK_UMA_RETIRED_CHANGED || why == VK_UMA_RETIRED_OWNED ? NULL : malloc(sizeof *m);
     if (!m) { /* or nowhere to keep it until then */
         m = &g_uma.imp[i];
         if (m->used == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
@@ -172,6 +175,7 @@ static void retire_one(u32 i, int why) {
         vkFreeMemory(g_vk.dev, m->mem, NULL);
     } else {
         *m = g_uma.imp[i];
+        __atomic_fetch_add(&g_uma.held, 1, __ATOMIC_RELAXED);
         vk_defer_call(import_free, m);
     }
     g_uma.bytes -= g_uma.imp[i].hi - g_uma.imp[i].lo;
@@ -595,12 +599,13 @@ void vk_uma_owning(u64 cpu, u64 len) {
     take_changes();
     front_write(cpu, len);
     /* its pages are trapped next, and a driver that takes an import's pages again at each submit can't take trapped
-       ones: the imports over them are let go, and the commands recorded with them submitted first */
+       ones: the imports over them are let go, and the commands recorded with them submitted first. Whole host pages,
+       as own_begin moves them */
+    u64 pg = plat_vm_page(), lo = cpu & ~(pg - 1), hi = (cpu + len + pg - 1) & ~(pg - 1);
     for (u32 i = 0; i < g_uma.n; i++)
-        if (g_uma.imp[i].lo < cpu + len && cpu < g_uma.imp[i].hi && g_uma.imp[i].used == vk_submit_number())
-            recorded = 1;
+        if (g_uma.imp[i].lo < hi && lo < g_uma.imp[i].hi && g_uma.imp[i].used == vk_submit_number()) recorded = 1;
     if (recorded) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    retire_range(cpu, len, VK_UMA_RETIRED_OWNED);
+    retire_range(lo, hi - lo, VK_UMA_RETIRED_OWNED);
 }
 void vk_uma_mapping_begin(void) {
     /* the same for pages the guest unmaps or moves: a driver taking an import's pages again at its next submit would
@@ -634,4 +639,5 @@ void vk_uma_stats(VkUmaStats* st) {
     memcpy(st->why_retired, g_uma.why_retired, sizeof st->why_retired);
     st->barriers = g_uma.barriers;
     st->pending = g_uma.nout;
+    st->held = __atomic_load_n(&g_uma.held, __ATOMIC_RELAXED);
 }
