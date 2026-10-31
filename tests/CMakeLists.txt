@@ -642,6 +642,14 @@ snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
 target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
 
+# the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
+add_executable(snx-test-fp-host fp_host_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-fp-host 11)
+snx_cpu_helpers_flags(snx-test-fp-host)
+if(NOT WIN32)
+    target_link_libraries(snx-test-fp-host PRIVATE m)
+endif()
+add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
 add_executable(snx-test-llvm-recpe llvm_recpe.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-recpe 11)
@@ -709,15 +717,6 @@ add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
 snx_test_target(snx-test-llvm-fp-helper-effects 11)
 target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
 add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
-
-# the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
-add_executable(snx-test-fp-host fp_host_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-fp-host 11)
-snx_cpu_helpers_flags(snx-test-fp-host)
-if(NOT WIN32)
-    target_link_libraries(snx-test-fp-host PRIVATE m)
-endif()
-add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -2193,12 +2192,12 @@ add_test(NAME depth_texel COMMAND snx-test-depth-texel)
 add_executable(snx-test-write-pages write_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-test-write-pages 23)
 add_test(NAME write_pages COMMAND snx-test-write-pages)
-add_executable(snx-bench-write-pages EXCLUDE_FROM_ALL bench_write_pages.c
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
-snx_test_target(snx-bench-write-pages 11)
 add_executable(snx-test-draw-state-mx draw_state_mx.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-state-mx 99)
 add_test(NAME draw_state_mx COMMAND snx-test-draw-state-mx)
+add_executable(snx-bench-write-pages EXCLUDE_FROM_ALL bench_write_pages.c
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+snx_test_target(snx-bench-write-pages 11)
 add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
 snx_test_target(snx-test-pending-pages 23)
 add_test(NAME pending_pages COMMAND snx-test-pending-pages)
