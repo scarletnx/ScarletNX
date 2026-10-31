@@ -210,6 +210,15 @@ static const char* value_of(const IniOpt* o) {
     return e ? e->value : o->def;
 }
 
+const char* ini_deprecated_value(const char* key) {
+    const char* v = override_of(key);
+    const Entry* e;
+    if (!ini_deprecated(key)) return NULL;
+    if (v) return v;
+    e = store_find(key);
+    return e ? e->value : NULL;
+}
+
 void ini_override(const char* k, const char* v) {
     size_t n = strlen(k);
     int i;

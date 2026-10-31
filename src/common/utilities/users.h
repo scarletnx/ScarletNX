@@ -29,6 +29,11 @@ extern int g_user_count;
 /* the users of users.ini in dir (one, user 1, without it), the one playing selected (1-based): 0, or -1 with why the
    file or selected is no list of users, and user 1 alone */
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size);
+/* the users of users.ini in dir, the one playing chosen as the settings say: by uid_text, user_uid's 32 hex digits;
+   without it by old_number, the deprecated user's number, which *old is set to then (0 otherwise); else [user1].
+   0, or -1 with why (a uid no user has, a number that is none) and user 1 alone */
+int snx_users_choose(const char* dir, const char* uid_text, const char* old_number, int* old, char* why,
+                     size_t why_size);
 /* the users/ folder of the data folder that folder is in (snx_menu_dir's), or NULL out of memory */
 char* snx_users_dir(const char* folder);
 const SnxUser* snx_users_find(const uint64_t uid[2]);                        /* NULL for no user */

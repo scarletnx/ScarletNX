@@ -1577,6 +1577,16 @@ msgstr "F2: 侧栏."
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr "user=%d 是旧的设置，而设置中没有可写入 %s 的 user_uid"
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+msgstr "user=%d 是旧的设置：由 user_uid=%s（%s）取代"
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr "未显示用户：%s"
 

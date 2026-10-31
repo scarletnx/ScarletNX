@@ -19,6 +19,11 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
+const char* ini_deprecated_value(const char* key) {
+    (void)key;
+    return NULL;
+}
 char g_exedir[1024];
 static unsigned test_checks, test_objects;
 
@@ -731,6 +736,31 @@ static void test_administrator(void) {
     puts("PASS the administrator's account: no license, no online account linked");
 }
 
+/* the one playing, as the settings say (snx_users_choose): by user_uid's uid, in either case; without one by the
+   deprecated user's number, which *old says; else user 1. A uid no user has, a uid that is none, and a number that is no
+   user's are refused, user 1 left alone */
+static void test_choose(void) {
+    char why[512];
+    int old = -1;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(!snx_users_choose(DIR, UID2, NULL, &old, why, sizeof why) && !old && snx_users_selected_number() == 2);
+    CHECK(!snx_users_choose(DIR, "0123456789ABCDEFFEDCBA9876543210", NULL, &old, why, sizeof why) &&
+          snx_users_selected_number() == 1);
+    CHECK(!snx_users_choose(DIR, UID2, "1", &old, why, sizeof why) && !old && snx_users_selected_number() == 2);
+    CHECK(snx_users_choose(DIR, UID3, NULL, &old, why, sizeof why) == -1 &&
+          strstr(why, "user_uid=" UID3 " is no user's") && strstr(why, "has 2 users") && g_user_count == 1);
+    CHECK(snx_users_choose(DIR, "5f3c", NULL, &old, why, sizeof why) == -1 &&
+          strstr(why, "user_uid=5f3c is not 32 hex digits"));
+    CHECK(!snx_users_choose(DIR, "", "2", &old, why, sizeof why) && old == 2 && snx_users_selected_number() == 2);
+    CHECK(snx_users_choose(DIR, NULL, "9", &old, why, sizeof why) == -1 &&
+          strstr(why, "user=9, which user_uid replaces, is not a number from 1 to 8") && !old);
+    CHECK(snx_users_choose(DIR, NULL, "2x", &old, why, sizeof why) == -1 && strstr(why, "user=2x"));
+    CHECK(snx_users_choose(DIR, NULL, "3", &old, why, sizeof why) == -1 && strstr(why, "user=3, and"));
+    CHECK(!snx_users_choose(DIR, NULL, NULL, &old, why, sizeof why) && !old && snx_users_selected_number() == 1);
+    gone("users.ini");
+    puts("PASS the one playing by user_uid's uid, the deprecated user's number without one, else user 1");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -958,6 +988,7 @@ int main(void) {
     test_initialize_application_info_v2();
     test_account_command_replies();
     test_users();
+    test_choose();
     test_system_service();
     test_administrator_service();
     test_system_manager();

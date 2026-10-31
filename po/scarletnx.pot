@@ -1574,6 +1574,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "user=%d is deprecated, and the Settings have no user_uid to write %s in"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "user=%d is deprecated: user_uid=%s (%s) replaces it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "No user shown: %s"
 msgstr ""
 

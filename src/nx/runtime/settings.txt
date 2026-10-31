@@ -582,13 +582,13 @@ setting Eden room
     help and a room's password is room_password in users/online.ini
 
 table g_user_ini
-setting User
-    key user
-    int 1 SNX_USERS_MAX
-    default 1
+setting User uid
+    key user_uid
+    text 33
+    default ""
     startup
-    help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
-    help without one). A number with no user stops the game
+    help The console's user the game plays as, by its uid: 32 hex digits, as users/users.ini of the data folder lists
+    help them; empty is its [user1] ("Player" without one). A uid no user has stops the game
 
 table g_debug_ini
 setting Log level

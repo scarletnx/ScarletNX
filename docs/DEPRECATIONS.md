@@ -38,6 +38,7 @@ renderer=opengl
 | `.ini` keys `modo_tv`, `idioma`, `resolucion`, `sombras`, `perfil` (the settings' first, Spanish names) | #185 | `docked`, `language`, `resolution`, `shadows`, `profile` | the same |
 | `.ini` key `gamepad_buttons` (A B X Y by position, by label or the map) | Swap A/B in place of the A B X Y presets | `gamepad_swap_ab`; `gamepad_map` always applies | the same |
 | `.ini` key `cpu_fallback` (the interpreter or the JIT for code the recompiler missed) | [recompiler] Replace the interpreter with the runtime JIT | nothing: the runtime JIT compiles that code | under `[Deprecated]`, named once a run |
+| `.ini` key `user` (the user's number in users.ini) and `--user=N` | [acc] the user plays by its uid: user_uid | `user_uid`, the uid of the user it named; `--user_uid=<uid>` | read while `user_uid` names none, the runtime's log and stderr saying once a run which uid replaces it; the launcher writes `user_uid` in its place once, said; under `[Deprecated]` |
 | `--keep-c` | Replace Python pipeline with a C90 driver | `--keep-ir` | still taken, said on stderr each time |
 | `--recomp` | [cli] the options' names | `--recompile` | still taken, said on stderr once a run |
 | `--repo DIR` | [cli] the options' names | `--data DIR` | still taken, said on stderr once a run |

@@ -3369,31 +3369,75 @@ static void screen_foot(App* app, const GuiPlace* p, const char* about, const ch
          rgb(app->message[0] ? (app->abnormal_exit ? t->failure : t->focus) : t->ink), keys);
 }
 /* ---- the user at the head's right: the one Settings' user names, its nickname and its picture in a box ---- */
-/* Settings' user: the pick, or its default, 1; read from settings.ini until the Settings are */
-static int settings_user(const App* app) {
-    const char* value = NULL;
-    char *text = NULL, *key, *at;
+/* settings.ini's key as the file has it, "" for none: the Settings' own read before they are, and a deprecated key no
+   row takes */
+static void settings_file_text(const App* app, const char* key, char* out, size_t out_size) {
+    char *text = NULL, *k, *at;
     size_t size;
-    int user = 1;
-    if (app->settings.keys)
-        value = gui_settings_value(&app->settings, "user");
-    else if (app->settings_file && snx_is_file(app->settings_file)) {
+    out[0] = 0;
+    if (app->settings_file && snx_is_file(app->settings_file)) {
         SnxIni ini;
         text = (char*)snx_read_file(app->settings_file, &size);
         if (text) snx_ini_start(&ini, text);
-        while (text && snx_ini_next(&ini, &key, &at))
-            if (!strcmp(key, "user")) value = at;
+        while (text && snx_ini_next(&ini, &k, &at))
+            if (!strcmp(k, key)) snprintf(out, out_size, "%s", at);
     }
-    if (value) user = SDL_atoi(value);
     free(text);
-    return user;
 }
-/* the users of users_dir, for the head: the one games play as, or none with why in the message */
+/* Settings' key: the pick, read from settings.ini until the Settings are; "" for none */
+static void settings_text(const App* app, const char* key, char* out, size_t out_size) {
+    const char* value;
+    if (!app->settings.keys) {
+        settings_file_text(app, key, out, out_size);
+        return;
+    }
+    value = gui_settings_value(&app->settings, key);
+    snprintf(out, out_size, "%s", value ? value : "");
+}
+/* Settings' user, by its uid (user_uid), as users.ini lists them: its number, 0 for a uid no user has; without one
+   the deprecated user's number, else 1 */
+static int settings_user(const App* app) {
+    char uid[64], text[33];
+    int i;
+    settings_text(app, "user_uid", uid, sizeof uid);
+    if (uid[0]) {
+        for (i = 0; i < g_user_count; i++) {
+            snx_users_uid_text(g_users[i].uid, text);
+            if (!SDL_strcasecmp(text, uid)) return i + 1;
+        }
+        return 0;
+    }
+    settings_file_text(app, "user", text, sizeof text);
+    return text[0] ? SDL_atoi(text) : 1;
+}
+/* settings.ini's deprecated user=N named the user playing: user_uid written in its place, once, and said */
+static GuiSettings* settings_of(App* app);
+static void users_migrate(App* app, int old) {
+    char uid[33];
+    GuiSettings* settings = settings_of(app);
+    snx_users_uid_text(snx_users_selected()->uid, uid);
+    if (!gui_settings_set(settings, "user_uid", uid)) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("user=%d is deprecated, and the Settings have no user_uid to write %s in"), old, uid);
+        return;
+    }
+    gui_settings_sync(settings);
+    if (app->settings_file && gui_settings_save(settings, app->settings_file)) {
+        snprintf(app->message, sizeof app->message, snx_tr("Not saved: %s could not be written"), app->settings_file);
+        say_failure(app, app->message);
+        return;
+    }
+    snprintf(app->message, sizeof app->message, snx_tr("user=%d is deprecated: user_uid=%s (%s) replaces it"), old, uid,
+             app->user_name);
+}
+/* the users of users_dir, for the head: the one games play as (Settings' user_uid, the deprecated user's number while
+   it names none, written as user_uid then), or none with why in the message */
 static void users_read(App* app) {
-    char why[512];
+    char why[512], uid[64], old[16];
     const SnxUser* u;
     const unsigned char* jpeg;
     uint32_t size;
+    int was;
     app->user = 0;
     free(app->user_jpeg);
     app->user_jpeg = NULL;
@@ -3401,7 +3445,10 @@ static void users_read(App* app) {
     SDL_DestroyTexture(app->user_picture);
     app->user_picture = NULL;
     if (!app->users_dir) return;
-    if (snx_users_load(app->users_dir, settings_user(app), why, sizeof why)) {
+    settings_text(app, "user_uid", uid, sizeof uid);
+    old[0] = 0;
+    if (!uid[0]) settings_file_text(app, "user", old, sizeof old);
+    if (snx_users_choose(app->users_dir, uid, old, &was, why, sizeof why)) {
         snprintf(app->message, sizeof app->message, snx_tr("No user shown: %s"), why);
         return;
     }
@@ -3413,6 +3460,7 @@ static void users_read(App* app) {
     }
     snprintf(app->user_name, sizeof app->user_name, "%s", u->nickname);
     app->user = snx_users_selected_number();
+    if (was) users_migrate(app, was);
 }
 /* jpeg (size bytes; NULL for Wimsy) side pixels square in the theme's shape, a texture of its own; a JPEG that does
    not draw is Wimsy, and *failed says so */
@@ -4024,13 +4072,12 @@ static void render_users(App* app) {
     if (l->shift) ui_clip(app, NULL);
     app->users_side = side;
 }
-/* user n (1-based) picked: Settings' user, kept in settings.ini at once, and the head shows them */
-static GuiSettings* settings_of(App* app);
+/* user n (1-based) picked: Settings' user_uid its uid, kept in settings.ini at once, and the head shows them */
 static void users_pick(App* app, int n) {
-    char value[8];
+    char value[33];
     GuiSettings* settings = settings_of(app);
-    snprintf(value, sizeof value, "%d", n);
-    if (!gui_settings_set(settings, "user", value))
+    snx_users_uid_text(g_users[n - 1].uid, value);
+    if (!gui_settings_set(settings, "user_uid", value))
         snprintf(app->message, sizeof app->message, "%s", snx_tr("No user picked: the Settings have no user"));
     else {
         gui_settings_sync(settings);
@@ -9563,12 +9610,12 @@ static void freedreno_action(App* app, int r, bool save) {
         app->editor.dirty = true;
     }
 }
-/* Current user a step either way, round the users, kept as Settings' user */
+/* Current user a step either way, round the users, kept as Settings' user_uid */
 static void plays_as_step(App* app, int step) {
-    char value[16];
-    int n = SDL_max(g_user_count, 1), user = (settings_user(app) - 1 + n + (step < 0 ? -1 : 1)) % n + 1;
-    snprintf(value, sizeof value, "%d", user);
-    gui_settings_set(&app->settings, "user", value);
+    char value[33];
+    int n = SDL_max(g_user_count, 1), user = (SDL_max(settings_user(app), 1) - 1 + n + (step < 0 ? -1 : 1)) % n + 1;
+    snx_users_uid_text(g_users[user - 1].uid, value);
+    gui_settings_set(&app->settings, "user_uid", value);
     app->editor.dirty = true;
 }
 /* a nickname typed: users.ini written with it, the head's too; one the rule refuses or that cannot be written said by

@@ -544,7 +544,7 @@ nickname=Xuji
 game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
 picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG,
 256x256 as the console's, from its editor), at most 128 KiB, read when the game starts; without one, or with an empty
-file, it is Wimsy, and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
+file, it is Wimsy, and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user_uid` names by its uid, empty for `[user1]` (`--user_uid=<uid>` for one
 run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
 Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the data folder's
 `save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
@@ -552,7 +552,7 @@ Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save
 there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
-one its Settings' `user` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
+one its Settings' `user_uid` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
 the launcher's foot.
 
 ## Setup

@@ -124,7 +124,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `user` | `1` | The console's user the game plays as, `1` to `8`, as [Users](USAGE.md#users) lists them. A number with no user stops the game |
+| `user_uid` | empty | The console's user the game plays as, by its uid: 32 hex digits, as [Users](USAGE.md#users) lists them; empty is its `[user1]` (`Player` without one). A uid no user has stops the game. `user`, the user's number before it, is read while `user_uid` names none ([DEPRECATIONS](DEPRECATIONS.md)) |
 
 ## Debug
 

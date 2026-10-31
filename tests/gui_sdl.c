@@ -3562,7 +3562,7 @@ int main(int argc, char** argv) {
               "On-screen controls\tcontrols\t0\tint\t0\t1\tThe on-screen controls\tShow controls\t0=Off|1=On\n"
               "On-screen controls/Buttons\tcontrols_a_shown\t\tint\t0\t1\tA control drawn\tA\t0=Hidden|1=Shown\n"
               "On-screen controls/Buttons\tcontrols_b_shown\t\tint\t0\t1\tA control drawn\tB\t0=Hidden|1=Shown\n"
-              "User\tuser\t1\tint\t1\t8\tThe console's user the game plays as\t\t\n",
+              "User\tuser_uid\t\ttext\t\t\tThe console's user the game plays as, by its uid\tUser uid\t\n",
               stdout);
         return 0;
     }
@@ -6601,7 +6601,7 @@ int main(int argc, char** argv) {
             settings_forget(&app);
             free(app.drivers);
             app.drivers = drivers;
-            assert(settings_of(&app) && setting_row(&app, "built_in") < 0 && setting_row(&app, "user") >= 0);
+            assert(settings_of(&app) && setting_row(&app, "built_in") < 0 && setting_row(&app, "user_uid") >= 0);
             app.groups = 0;
         }
         /* an older version's fullscreen=.ini and controls=.ini, which passed nothing: each the launcher's choice, said
@@ -11489,9 +11489,10 @@ int main(int argc, char** argv) {
                 shows(&app, "Current user User 1: Aogo", rgb(app.theme.page)); /* focused: on YoRHa's bar */
                 shows(&app, "Xuji", rgb(app.theme.ink));
                 key(&app, SDLK_RIGHT);
-                assert(setting_is(&app, "user", "2") && !strcmp(app.users_form.plays, "User 2: Xuji") && app.user == 2);
+                assert(setting_is(&app, "user_uid", "5f3c0d9e8a7b41c2963e0f1a2b3c4d5e") &&
+                       !strcmp(app.users_form.plays, "User 2: Xuji") && app.user == 2);
                 key(&app, SDLK_LEFT);
-                assert(setting_is(&app, "user", "1") && app.user == 1);
+                assert(setting_is(&app, "user_uid", "0123456789abcdeffedcba9876543210") && app.user == 1);
                 key(&app, SDLK_DOWN);
                 key(&app, SDLK_RETURN);
                 assert(app.editor.typing);
@@ -11649,7 +11650,7 @@ int main(int argc, char** argv) {
             {
                 size_t size;
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(kept && strstr(kept, "[User]\nuser=2\n"));
+                assert(kept && strstr(kept, "[User]\nuser_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e\n"));
                 free(kept);
             }
             /* ESC closes it, as does a click off it, the user kept; Up and Return pick Aogo again, kept as picked */
@@ -11718,15 +11719,56 @@ int main(int argc, char** argv) {
             {
                 size_t size;
                 char* kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(kept && strstr(kept, "[User]\nuser=1\n"));
+                assert(kept && strstr(kept, "[User]\nuser_uid=0123456789abcdeffedcba9876543210\n"));
                 free(kept);
-                /* back to no pick, as the runs below were written for: theirs has no --user */
-                gui_settings_reset(&app.settings, setting_row(&app, "user"));
+                /* back to no pick, as the runs below were written for: theirs has no --user_uid */
+                gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
                 gui_settings_sync(&app.settings);
                 assert(!gui_settings_save(&app.settings, app.settings_file));
                 kept = (char*)snx_read_file(app.settings_file, &size);
-                assert(!kept || !strstr(kept, "user="));
+                assert(!kept || !strstr(kept, "user_uid="));
                 free(kept);
+                /* settings.ini of an older version, user=2 (the deprecated number) and no user_uid: Xuji plays, and
+                   user_uid is written in its place once, said with both; read again, user_uid names them */
+                {
+                    FILE* f = fopen(app.settings_file, "ab");
+                    assert(f && fputs("\n[User]\nuser=2\n", f) >= 0 && !fclose(f));
+                    settings_forget(&app);
+                    app.message[0] = 0;
+                    users_read(&app);
+                    assert(app.user == 2 && !strcmp(app.user_name, "Xuji"));
+                    assert(
+                        !strcmp(app.message,
+                                "user=2 is deprecated: user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e (Xuji) replaces it"));
+                    kept = (char*)snx_read_file(app.settings_file, &size);
+                    assert(kept && strstr(kept, "user_uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e"));
+                    free(kept);
+                    app.message[0] = 0;
+                    users_read(&app);
+                    assert(app.user == 2 && !app.message[0]);
+                    gui_settings_reset(&app.settings, setting_row(&app, "user_uid"));
+                    gui_settings_sync(&app.settings);
+                    assert(!gui_settings_save(&app.settings, app.settings_file));
+                    kept = (char*)snx_read_file(app.settings_file, &size);
+                    if (kept) { /* the unread user=2 out too, as Clean Old Settings takes it */
+                        char *line = kept, *out = kept;
+                        while (*line) {
+                            char* end = strchr(line, '\n');
+                            size_t n = end ? (size_t)(end - line) + 1 : strlen(line);
+                            if (strncmp(line, "user=", 5)) {
+                                memmove(out, line, n);
+                                out += n;
+                            }
+                            line += n;
+                        }
+                        *out = 0;
+                        assert(!snx_write_file(app.settings_file, kept, strlen(kept)));
+                        free(kept);
+                    }
+                    settings_forget(&app);
+                    users_read(&app);
+                    assert(app.user == 1 && settings_of(&app));
+                }
             }
             /* the theme editor's preview is the menu in the theme, drawn on a copy of the app put back after it: the
                box of users opened from the editor's head is not on it, as the pictures the copy made for it would go
