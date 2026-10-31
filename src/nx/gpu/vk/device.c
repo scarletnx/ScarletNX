@@ -298,6 +298,7 @@ static int create_device(void) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
+    int has_host_import = 0, has_placed = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -339,8 +340,12 @@ static int create_device(void) {
                              snx_vk_extensions_has(&e, VK_EXT_PRESENT_TIMING_EXTENSION_NAME);
         has_calibrated_khr = snx_vk_extensions_has(&e, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
         has_google_timing = !g_opt_headless && snx_vk_extensions_has(&e, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+        has_host_import = snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        has_placed = snx_vk_extensions_has(&e, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME);
         snx_vk_extensions_free(&e);
     }
+    /* guest memory the GPU reads in place (uma.c) */
+    if (vk_uma_choose(has_host_import, has_placed)) ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
@@ -677,6 +682,7 @@ static int create_device(void) {
                                   .pVulkanFunctions = &vf,
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    vk_uma_init();
     LOG("vulkan: %s, Vulkan %u.%u.%u, driver %08x, graphics queue family %u, compute %u%s\n", g_vk.props.deviceName,
         VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion),
         VK_API_VERSION_PATCH(g_vk.props.apiVersion), g_vk.props.driverVersion, g_vk.gfx_family, g_vk.compute_family,

@@ -765,6 +765,16 @@ setting GPU profile
     startup
     words Off|On
     help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+setting Guest memory
+    key vk_memory
+    int 0 2
+    default 0
+    startup
+    words Auto|Copy|UMA
+    help How the GPU reads guest buffers (vertices, indices, read-only storage; docs/GPU_OWNERSHIP.md). 1 = copied into
+    help the renderer's buffers when they change. 2 = read where they are in guest memory (VK_EXT_external_memory_host),
+    help as the console's GPU reads them: for a GPU that shares system memory. On a discrete GPU it reads them across
+    help the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory, else 1
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1

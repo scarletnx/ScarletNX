@@ -88,6 +88,48 @@ static int check_buffer_texture_rows(void) {
     return 0;
 }
 
+/* Guest memory read in place (gpu/vk/uma.c, --vk_memory=2 where the device has VK_EXT_external_memory_host): a vertex
+   range is guest memory itself, so the GPU reads the bytes that are there when it runs, a CPU write after the binding
+   included. A range off the binding's alignment is copied. Guest pages given back and mapped again are other pages,
+   and the import of the old ones goes (mem.c's hook): the GPU reads the new ones */
+static int check_uma(void) {
+    const u64 gva = 0x7000000, cpu = HEAP_BASE + 0x780000, span = 0x10000;
+    VkBuffer b, b2, rb;
+    u64 off, off2;
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    gmmu_map(gva, cpu, span);
+    memset(GP(cpu), 0x11, (size_t)span);
+    vk_lock();
+    CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b, &off));
+    memset(GP(cpu) + 0x100, 0x5a, 256); /* after the binding, before the GPU runs */
+    u8* result = vk_readback_buffer(512, &rb);
+    CHECK(result);
+    VkBufferCopy c = {off, 0, 256};
+    rec_CmdCopyBuffer(vk_cmd(), b, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == 0x5a);
+    CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b2, &off2) && b2 == b && off2 == off); /* the same import */
+    CHECK(vk_buf_get_input(gva + 0x102, 8, 4, &b2, &off2) && b2 != b);                 /* off its alignment: copied */
+    vk_unlock();
+    /* the pages given back and mapped again: zero, then written */
+    CHECK(mem_unmap(cpu, span) == 0 && mem_map(cpu, span, MS_NORMAL, PERM_RW) == 0);
+    g_renderer->mem_may_have_changed();
+    memset(GP(cpu), 0x33, (size_t)span);
+    vk_lock();
+    CHECK(vk_buf_get_input(gva + 0x100, 256, 4, &b2, &off2));
+    c = (VkBufferCopy){off2, 256, 256};
+    rec_CmdCopyBuffer(vk_cmd(), b2, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 256; i < 512; i++) CHECK(result[i] == 0x33);
+    vk_unlock();
+    return 0;
+}
+
 /* Overflow blocks remain live through submission, then return with their slot. */
 static int check_staging_overflow(void)
 {
@@ -1391,8 +1433,10 @@ int main(int argc, char** argv) {
     char *root = snx_temp_dir(NULL), *shot, *ppm;
     CHECK(root);
     CHECK(!snx_startup_options(argc, argv));
-    for (int i = 1; i < argc; i++) /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
+    for (int i = 1; i < argc; i++) { /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
         if (!strcmp(argv[i], "--vk_validation=1")) g_settings.vulkan_validation_layer = 1;
+        if (!strcmp(argv[i], "--vk_memory=2")) g_settings.guest_memory = 2; /* guest memory read in place */
+    }
     snprintf(g_exedir, 1024, "%s/", root);
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
@@ -1448,6 +1492,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
+    CHECK(!check_uma());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
           vk_pipeline_worker_count(0, 4) == 2 && vk_pipeline_worker_count(0, 0) == 2 &&

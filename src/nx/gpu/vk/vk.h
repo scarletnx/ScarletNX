@@ -134,7 +134,11 @@ typedef struct {
     /* VK_GOOGLE_display_timing, enabled without present waits (Android): presents carry ids and times to be shown at,
        and the swapchain tells when each was */
     int has_display_timing;
+    /* the device's memory (uma.c): VK_MEM_*, and how guest buffers reach it, VK_MEM_PATH_* (the vk_memory setting) */
+    int mem_model, mem_path;
 } VkState;
+enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
+enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
 extern VkState g_vk;
 
 /* the swapchain's display clock (sc_clock): none; present ids and waits; their second versions, which a swapchain made
@@ -180,6 +184,15 @@ void vk_mem_untrack(VmaAllocation a);
 #else
 static inline void vk_mem_track(VmaAllocation a) { (void)a; }
 static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
+/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
+int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+void vk_uma_init(void);                            /* after it */
+int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+void vk_uma_frame(void);
+void vk_uma_forget_all(void);
+
 #endif
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,

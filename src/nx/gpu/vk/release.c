@@ -202,6 +202,16 @@ static void release_thread(void* p) {
     }
 }
 
+/* Guest memory read in place (uma.c, vk_memory): the GPU reads those bytes when it runs the commands, not when they are
+   recorded. The guest writes them again once it sees a release, so the releases the stream stops holding, [from, to),
+   wait for every command recorded up to now that read guest memory in place: the commands after them too, which
+   the console's GPU runs at once (the stream's hold above). Gates stay in order: what the queue holds before from
+   waits for less, and the submit that read in place last only grows. Under g_rlock */
+static void hold_inplace(u64 from, u64 to) {
+    u64 bound = vk_uma() ? vk_uma_bound() : 0;
+    for (u64 i = from; bound && i < to; i++)
+        if (g_rq[i % RQ_N].gate < bound) g_rq[i % RQ_N].gate = bound;
+}
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
     if (gate > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
@@ -227,6 +237,7 @@ static void release(Release* r) {
             r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
+        hold_inplace(g_rheld, g_rhead);
         g_rheld = g_rhead;
         u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
@@ -276,6 +287,7 @@ void vk_release_submit(void) {
     SNX_ZONE(z, "vk release submit");
     vk_lock();
     pm_lock(&g_rlock);
+    hold_inplace(g_rheld, g_rhead);
     g_rheld = g_rhead; /* the commands after the releases have read guest memory */
     u64 gate = g_rhead != g_rtail ? g_rq[(g_rhead - 1) % RQ_N].gate : 0; /* the gates only grow */
     if (g_rthread) pc_broadcast(&g_rcv);
@@ -437,6 +449,7 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
     Backing range = {0};
     if (len && !all) backing_of(&range, gva, len);
     pm_lock(&g_rlock);
+    hold_inplace(g_rheld, g_rhead);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
     if (all)
