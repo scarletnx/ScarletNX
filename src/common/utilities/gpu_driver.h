@@ -55,8 +55,9 @@ void snx_gpu_driver_host(SnxGpuDriverHost* host);
 /* 1 when host loads packages; what says so either way, with its values: "This device: Android API 36, arm64, Adreno
    GPU (/dev/kgsl-3d0): custom drivers load." or the reason they do not */
 int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size);
-/* 1 when maps, /proc/self/maps' text, has a library mapped from the folder dir or a folder in it: the package a run
-   asked for is the driver its Vulkan loader opened, not the system's in its place */
+/* 1 when maps, /proc/self/maps' text, has a library mapped from the folder dir or a folder in it, by dir's name or by
+   another the kernel gives it: the package a run asked for is the driver its Vulkan loader opened, not the system's in
+   its place */
 int snx_gpu_driver_mapped(const char* maps, const char* dir);
 
 /* Freedreno's variables (Mesa's freedreno and Turnip read them as the driver starts: docs.mesa3d.org/drivers/

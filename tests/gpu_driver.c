@@ -116,6 +116,30 @@ int main(void) {
             !snx_gpu_driver_mapped(ours, "/data/user/0/org.scarletnx/files/.local/share/scarletnx/gpu_drivers/Turn"));
         assert(snx_gpu_driver_mapped(unique, "/d/gpu_drivers/Blob") && !snx_gpu_driver_mapped("", "/d"));
     }
+#ifndef _WIN32
+    /* the folder by the kernel's name for it, not the run's (Android's /data/data for /data/user/0) */
+    {
+        char *root = snx_temp_dir(NULL), *real = snx_path_join(root, "real"), *alias = snx_path_join(root, "alias"),
+             *unique = snx_path_join(real, "Turnip/unique"), *lib = snx_path_join(unique, "libvulkan_freedreno.so"),
+             *other = snx_path_join(real, "Other"), *ours = snx_path_join(alias, "Turnip"), *maps;
+        assert(root && !snx_mkdirs(unique) && !snx_mkdirs(other) && !snx_write_file(lib, "", 0));
+        assert(!snx_symlink(real, alias));
+        maps = snx_format("7f0-7f1 r-xp 0 fe:3e 1 %s/libvulkan_freedreno.so\n7f1-7f2 r--p 0 fe:3e 2 %s (deleted)",
+                          other, lib);
+        assert(maps && snx_gpu_driver_mapped(maps, ours));
+        *strchr(maps, '\n') = 0; /* another folder's library alone */
+        assert(!snx_gpu_driver_mapped(maps, ours));
+        assert(!snx_remove_tree(root));
+        free(maps);
+        free(ours);
+        free(other);
+        free(lib);
+        free(unique);
+        free(alias);
+        free(real);
+        free(root);
+    }
+#endif
     /* Freedreno's variables: NAME=value, ';' between, spaces round them left out, a name twice its later value */
     assert(snx_freedreno_parse("TU_DEBUG=sysmem,nobin; FD_RD_DUMP = enable ;", vars, SNX_FREEDRENO_MAX, why,
                                sizeof why) == 2);
