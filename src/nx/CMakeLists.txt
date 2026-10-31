@@ -231,14 +231,16 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless_uma_stores COMMAND snx-test-vulkan -H --uma_indirect_copy=0)
     # and with write tracking off by its setting: every cache compares contents
     add_test(NAME vulkan_headless_no_ww COMMAND snx-test-vulkan -H --write_tracking=0)
+    # one at a time: they share shader_cache/ in this folder, and a run that finds another build's shaders file truncates
+    # it while another run reads it mapped (SIGBUS)
     set_tests_properties(vulkan_headless vulkan_headless_no_uma vulkan_headless_uma_stores vulkan_headless_no_ww
-                         PROPERTIES TIMEOUT 60
+                         PROPERTIES TIMEOUT 60 RESOURCE_LOCK snx_vulkan_shader_cache
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
     # descriptorType-00330). Without the layer this is VIC's own checks again.
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
-    set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
+    set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60 RESOURCE_LOCK snx_vulkan_shader_cache
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the ASTC upload against the CPU decoder, block linear moves on the GPU against bl_offset's layout and texture
