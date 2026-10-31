@@ -5,15 +5,14 @@
    and room without an endpoint fails before any socket. */
 #include "3ds/runtime/internal.h"
 #include "3ds/services/system.h"
-#include "common/utilities/endian.h"
 #include "snx_settings.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define COMMAND         (SNX_CTR_INITIAL_TLS + 0x80)
 #define BUFFER          0x300000u
 #define SHARED          0x301000u
 #define NET             0x300900u
@@ -25,9 +24,9 @@
 #define STATUS_IDLE     3
 #define STATUS_HOSTING  6
 /* the connection status reply: the state, the node id in its low half word and the node count in its low byte */
-#define STATUS_STATE    (COMMAND + 8)
-#define STATUS_NODE     (COMMAND + 16)
-#define STATUS_NODES    (COMMAND + 52)
+#define STATUS_STATE    (CTR_COMMAND + 8)
+#define STATUS_NODE     (CTR_COMMAND + 16)
+#define STATUS_NODES    (CTR_COMMAND + 52)
 /* the network description: its channel and its maximum of nodes */
 #define NET_CHANNEL     6
 #define NET_MAX_NODES   29
@@ -42,31 +41,9 @@ static void env(const char* key, const char* value) {
     assert(!failed);
 #endif
 }
-static uint32_t get(SnxCtrProcess* p, uint32_t va) {
-    uint8_t b[4];
-    assert(snx_ctr_read_ram(p->space, va, b, 4) == SNX_CTR_MEM_OK);
-    return snx_ld_le32(b);
-}
-static void put(SnxCtrProcess* p, uint32_t va, uint32_t v) {
-    uint8_t b[4];
-    snx_st_le32(b, v);
-    bool written = snx_ctr_write_ram(p->space, va, b, 4) == SNX_CTR_MEM_OK;
-    assert(written);
-}
-static unsigned count_objects(SnxCtrProcess* p) {
-    unsigned n = 0;
-    for (unsigned i = 1; i < CTR_OBJECTS; ++i) n += !!p->objects[i].type;
-    return n;
-}
-static void clear_command(SnxCtrProcess* p) {
-    uint8_t zero[256] = {0};
-    bool written = snx_ctr_write_ram(p->space, COMMAND, zero, sizeof zero) == SNX_CTR_MEM_OK;
-    assert(written);
-}
 /* The result of the transport, before the service replies */
 static uint32_t transport(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned count) {
-    clear_command(p);
-    for (unsigned i = 0; i < count; ++i) put(p, COMMAND + 4 * i, words[i]);
+    ctr_request(p, words, count);
     uint32_t result = 0xffffffffu;
     bool sent = snx_ctr_ipc_send(p, handle, &result) == SNX_CTR_SVC_RETURN;
     assert(sent);
@@ -76,18 +53,17 @@ static uint32_t transport(SnxCtrProcess* p, uint32_t handle, const uint32_t* wor
 static uint32_t call(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned count) {
     uint32_t transported = transport(p, handle, words, count);
     assert(!transported);
-    return get(p, COMMAND + 4);
+    return ctr_word(p, CTR_COMMAND + 4);
 }
 static void unsupported(SnxCtrProcess* p, uint32_t handle, uint32_t header) {
-    clear_command(p);
-    put(p, COMMAND, header);
+    ctr_request(p, &header, 1);
     uint32_t result = 0xffffffffu;
     bool sent = snx_ctr_ipc_send(p, handle, &result) == SNX_CTR_SVC_UNSUPPORTED;
     assert(sent);
     assert(!result);
 }
-static uint32_t own_node(SnxCtrProcess* p) { return get(p, STATUS_NODE) & 0xffff; }
-static uint32_t node_count(SnxCtrProcess* p) { return get(p, STATUS_NODES) & 0xff; }
+static uint32_t own_node(SnxCtrProcess* p) { return ctr_word(p, STATUS_NODE) & 0xffff; }
+static uint32_t node_count(SnxCtrProcess* p) { return ctr_word(p, STATUS_NODES) & 0xff; }
 /* The application's own shared block, made by SVC 0x1e from a private data page */
 static SnxCtrProcess* process(uint32_t* handle, uint32_t* shared) {
     uint8_t code[0x3000] = {0};
@@ -159,29 +135,29 @@ static uint32_t initialize_ok(SnxCtrProcess* p, uint32_t handle, uint32_t shared
     uint32_t reply = initialize(p, handle, shared);
     assert(!reply);
     assert(p->uds);
-    assert(get(p, COMMAND) == 0x1b0042);
-    uint32_t event = get(p, COMMAND + 12);
+    assert(ctr_word(p, CTR_COMMAND) == 0x1b0042);
+    uint32_t event = ctr_word(p, CTR_COMMAND + 12);
     uint32_t id = snx_ctr_handle_object(p, event);
     assert(event && id && p->objects[id].type == CTR_OBJ_EVENT);
-    assert(count_objects(p) == base + 1);
+    assert(ctr_object_count(p) == base + 1);
     return event;
 }
 static void shutdown_ok(SnxCtrProcess* p, uint32_t handle, uint32_t event, unsigned base) {
     uint32_t reply = shutdown_process(p, handle);
     assert(!reply);
     assert(!p->uds);
-    assert(get(p, COMMAND) == 0x30040);
+    assert(ctr_word(p, CTR_COMMAND) == 0x30040);
     uint32_t closed = snx_ctr_handle_close(p, event);
     assert(!closed);
-    assert(count_objects(p) == base);
+    assert(ctr_object_count(p) == base);
 }
 static void rejected(SnxCtrProcess* p, uint32_t handle, uint32_t shared, uint32_t expected, unsigned base) {
     uint32_t reply = initialize(p, handle, shared);
     assert(reply == expected);
     assert(!p->uds);
-    assert(get(p, COMMAND) == 0x1b0040);
-    assert(!get(p, COMMAND + 12));
-    assert(count_objects(p) == base);
+    assert(ctr_word(p, CTR_COMMAND) == 0x1b0040);
+    assert(!ctr_word(p, CTR_COMMAND + 12));
+    assert(ctr_object_count(p) == base);
 }
 /* A refused request leaves the block, its ownership and the service state as the kernel made them */
 static void assert_shared_untouched(SnxCtrProcess* p, uint32_t shared, uint32_t id, uint32_t refs, unsigned base) {
@@ -195,9 +171,9 @@ static void assert_shared_untouched(SnxCtrProcess* p, uint32_t shared, uint32_t 
     assert(!p->objects[id].data.shared.physical);
     assert(p->objects[id].refs == refs);
     assert(!p->uds);
-    assert(get(p, COMMAND) == 0x1b0040);
-    assert(!get(p, COMMAND + 12));
-    assert(count_objects(p) == base);
+    assert(ctr_word(p, CTR_COMMAND) == 0x1b0040);
+    assert(!ctr_word(p, CTR_COMMAND + 12));
+    assert(ctr_object_count(p) == base);
 }
 int main(void) {
     g_settings.airplane_mode = 0;
@@ -208,34 +184,34 @@ int main(void) {
     SnxCtrProcess* p = process(&handle, &shared);
     uint32_t shared_id = snx_ctr_handle_object(p, shared);
     assert(shared_id && p->objects[shared_id].type == CTR_OBJ_SHARED);
-    unsigned base = count_objects(p);
+    unsigned base = ctr_object_count(p);
     /* lan initializes with no peer: the status is idle with no node */
     uint32_t event = initialize_ok(p, handle, shared, base);
     uint32_t reply = status(p, handle);
     assert(!reply);
-    assert(get(p, COMMAND) == 0xb0340);
-    assert(get(p, STATUS_STATE) == STATUS_IDLE);
+    assert(ctr_word(p, CTR_COMMAND) == 0xb0340);
+    assert(ctr_word(p, STATUS_STATE) == STATUS_IDLE);
     assert(!own_node(p));
     assert(!node_count(p));
     reply = scan(p, handle, event);
     assert(!reply);
-    assert(get(p, COMMAND) == 0xf0042);
-    assert(get(p, COMMAND + 8) == SCAN_DESCRIPTOR);
-    assert(get(p, COMMAND + 12) == BUFFER);
-    assert(get(p, BUFFER) == SCAN_LIMIT);
-    assert(get(p, BUFFER + 4) == 12);
-    assert(get(p, BUFFER + 8) == 0);
+    assert(ctr_word(p, CTR_COMMAND) == 0xf0042);
+    assert(ctr_word(p, CTR_COMMAND + 8) == SCAN_DESCRIPTOR);
+    assert(ctr_word(p, CTR_COMMAND + 12) == BUFFER);
+    assert(ctr_word(p, BUFFER) == SCAN_LIMIT);
+    assert(ctr_word(p, BUFFER + 4) == 12);
+    assert(ctr_word(p, BUFFER + 8) == 0);
     /* A descriptor shorter than the list is refused without writing the buffer */
-    put(p, BUFFER, 0xfeedface);
-    put(p, BUFFER + 4, 0x12345678);
+    ctr_put(p, BUFFER, 0xfeedface);
+    ctr_put(p, BUFFER + 4, 0x12345678);
     uint32_t malformed[21];
     scan_words(malformed, event, 16 << 4 | 12, BUFFER, SCAN_LIMIT);
     reply = transport(p, handle, malformed, 21);
     assert(reply == UDS_BAD);
-    assert(get(p, BUFFER) == 0xfeedface && get(p, BUFFER + 4) == 0x12345678);
+    assert(ctr_word(p, BUFFER) == 0xfeedface && ctr_word(p, BUFFER + 4) == 0x12345678);
     reply = scan(p, handle, event);
     assert(p->uds && !reply);
-    assert(get(p, BUFFER + 8) == 0);
+    assert(ctr_word(p, BUFFER + 8) == 0);
     /* commands 0x22 and 0x23 are not implemented */
     unsupported(p, handle, 0x220000);
     unsupported(p, handle, 0x230000);
@@ -244,7 +220,7 @@ int main(void) {
     initialize_words(words, shared);
     reply = call(p, handle, words, 15);
     assert(reply == UDS_STATE);
-    assert(p->uds && get(p, COMMAND + 12) == 0);
+    assert(p->uds && ctr_word(p, CTR_COMMAND + 12) == 0);
     /* no network is discovered, so a join reports not found */
     uint8_t network[264] = {0};
     network[NET_CHANNEL] = 11;
@@ -260,19 +236,19 @@ int main(void) {
     uint32_t hosting[] = {0x1d0044, 10, 264 << 14 | 1 << 10 | 2, NET, 10 << 14 | 2, DATA};
     reply = call(p, handle, hosting, 6);
     assert(!reply);
-    assert(get(p, COMMAND) == 0x1d0040);
+    assert(ctr_word(p, CTR_COMMAND) == 0x1d0040);
     reply = status(p, handle);
     assert(!reply);
-    assert(get(p, STATUS_STATE) == STATUS_HOSTING);
+    assert(ctr_word(p, STATUS_STATE) == STATUS_HOSTING);
     assert(own_node(p) == 1);
     assert(node_count(p) == 1);
     uint32_t destroying[] = {0x80000};
     reply = call(p, handle, destroying, 1);
     assert(!reply);
-    assert(get(p, COMMAND) == 0x80040);
+    assert(ctr_word(p, CTR_COMMAND) == 0x80040);
     reply = status(p, handle);
     assert(!reply);
-    assert(get(p, STATUS_STATE) == STATUS_IDLE);
+    assert(ctr_word(p, STATUS_STATE) == STATUS_IDLE);
     shutdown_ok(p, handle, event, base);
     /* a command after shutdown reports the missing service state */
     uint32_t after[21];
@@ -305,17 +281,17 @@ int main(void) {
     missing[13] = 0x20; /* the caller's PID: no handle in the request */
     reply = call(p, handle, missing, 15);
     assert(reply == UDS_BAD);
-    assert(!p->uds && count_objects(p) == base);
+    assert(!p->uds && ctr_object_count(p) == base);
     uint32_t temporary;
     uint32_t created = snx_ctr_object_create(p, CTR_OBJ_EVENT, &temporary);
     assert(!created);
     initialize_words(words, temporary);
     reply = call(p, handle, words, 15);
     assert(reply == UDS_BAD);
-    assert(!p->uds && count_objects(p) == base + 1);
+    assert(!p->uds && ctr_object_count(p) == base + 1);
     uint32_t closed = snx_ctr_handle_close(p, temporary);
     assert(!closed);
-    assert(count_objects(p) == base);
+    assert(ctr_object_count(p) == base);
     uint32_t shared_refs = p->objects[shared_id].refs;
     initialize_words(words, shared);
     words[1] = 4095;

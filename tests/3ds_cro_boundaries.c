@@ -121,12 +121,7 @@ int main(int argc, char** argv) {
     bool exit_shim = !strcmp(scenario, "exit-shim");
     if (exit_shim) memcpy(name, "__aeabi_atexit", sizeof "__aeabi_atexit");
     unsigned char code[0x3000] = {0};
-    SnxCtrImage executable = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                              .stack_size = 0x4000,
-                              .main_priority = 0x30,
-                              .bss_size = 4096,
-                              .code = code,
-                              .code_size = sizeof code};
+    SnxCtrImage executable = ctr_image(code, sizeof code, 4096);
     SnxCtrProcess* p = snx_ctr_process_new(&executable, !strcmp(argv[3], "new") ? SNX_CTR_NEW : SNX_CTR_OLD);
     assert(p);
     cro_map_heap(p, 0x900000);
@@ -165,13 +160,13 @@ int main(int argc, char** argv) {
     assert(snx_ctr_read_ram(p->space, CRO_MODULE + cro_batch + RELOCATION_STATE, &state, 1) == SNX_CTR_MEM_OK);
     assert(state == 1); /* the batch is applied */
     /* LoadCRO_New applies the batch to .data before the data is transferred, and the older command after */
-    if (command == 9) assert(cro_word(p, data + 4) == CRS_SYMBOL + LAST_ADDEND);
+    if (command == 9) assert(ctr_word(p, data + 4) == CRS_SYMBOL + LAST_ADDEND);
     const uint32_t module[] = {CRO_MODULE};
     assert(!cro_call(p, session, 7, module, 1, CTR_PROCESS_HANDLE, NULL));
     /* unlinked, the word holds the module's unresolved symbol */
-    assert(cro_word(p, data + 4) == CRO_MODULE + IMG_CODE + CRO_UNRESOLVED + LAST_ADDEND);
+    assert(ctr_word(p, data + 4) == CRO_MODULE + IMG_CODE + CRO_UNRESOLVED + LAST_ADDEND);
     assert(!cro_call(p, session, 6, module, 1, CTR_PROCESS_HANDLE, NULL));
-    assert(cro_word(p, data + 4) == CRS_SYMBOL + LAST_ADDEND);
+    assert(ctr_word(p, data + 4) == CRS_SYMBOL + LAST_ADDEND);
     const uint32_t unload[] = {CRO_MODULE, 0, CRO_SOURCE};
     assert(!cro_call(p, session, 5, unload, 3, CTR_PROCESS_HANDLE, NULL));
     assert(snx_ctr_query(p->space, CRO_MODULE, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);

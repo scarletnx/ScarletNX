@@ -7,6 +7,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/services/dsp.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -199,34 +200,10 @@ static void adpcm_and_linear(SnxCtrMemory* m) {
 
 /* ---- the service, as libctru's ndspInit drives it ---- */
 
-#define CMD  (SNX_CTR_INITIAL_TLS + 0x80)
 #define DATA 0x300000u
-static void word(SnxCtrProcess* p, uint32_t address, uint32_t v) {
-    unsigned char b[4];
-    for (unsigned i = 0; i < 4; ++i) b[i] = (unsigned char)(v >> (i * 8));
-    assert(snx_ctr_write_ram(p->space, address, b, 4) == SNX_CTR_MEM_OK);
-}
-static uint32_t at(SnxCtrProcess* p, uint32_t address) {
-    unsigned char b[4];
-    assert(snx_ctr_read_ram(p->space, address, b, 4) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
-static uint32_t reply(SnxCtrProcess* p, unsigned n) { return at(p, CMD + 4 * n); }
-static void request(SnxCtrProcess* p, uint32_t h, const uint32_t* w, unsigned n) {
-    unsigned char zero[256] = {0};
-    assert(snx_ctr_write_ram(p->space, CMD, zero, 256) == SNX_CTR_MEM_OK);
-    for (unsigned i = 0; i < n; ++i) word(p, CMD + i * 4, w[i]);
-    p->cpu.state.cpu.r[0] = h;
-    assert(snx_ctr_svc(p, 0x32) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
-}
 static void service(void) {
     unsigned char code[0x3000] = {0};
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 0x3000,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 0x3000);
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
     assert(p);
     uint32_t dsp = 0, event = 0; /* MinGW's assert is not noreturn: Clang cannot see the failed path ends */
@@ -236,68 +213,72 @@ static void service(void) {
     p->objects[id].data.event.reset_type = 1; /* sticky, as ndsp makes it */
     /* UnloadComponent, then LoadComponent of a 0x300-byte component: loaded */
     const uint32_t unload[] = {0x00120000};
-    request(p, dsp, unload, 1);
-    assert(reply(p, 0) == 0x00120040 && !reply(p, 1));
+    ctr_call(p, dsp, unload, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00120040 && !ctr_command_word(p, 1));
     const uint32_t load[] = {0x001100c2, 0x300, 0xff, 0xff, 0x300 << 4 | 0xa, DATA};
-    request(p, dsp, load, 6);
-    assert(reply(p, 0) == 0x00110082 && !reply(p, 1) && reply(p, 2) == 1 && reply(p, 4) == DATA);
+    ctr_call(p, dsp, load, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00110082 && !ctr_command_word(p, 1) && ctr_command_word(p, 2) == 1 &&
+           ctr_command_word(p, 4) == DATA);
     /* the event comes in one copied or moved handle; any other descriptor is refused */
     const uint32_t pid_form[] = {0x00150082, 2, SNX_CTR_DSP_PIPE_AUDIO, 0x20, event};
-    for (unsigned i = 0; i < 5; ++i) word(p, CMD + i * 4, pid_form[i]);
+    for (unsigned i = 0; i < 5; ++i) ctr_put(p, CTR_COMMAND + i * 4, pid_form[i]);
     p->cpu.state.cpu.r[0] = dsp;
     assert(snx_ctr_svc(p, 0x32) == SNX_CTR_SVC_RETURN && p->cpu.state.cpu.r[0] == SNX_CTR_IPC_BAD_DESCRIPTOR);
     assert(!p->dsp.interrupt[2 + SNX_CTR_DSP_PIPE_AUDIO]);
     const uint32_t interrupts[] = {0x00150082, 2, SNX_CTR_DSP_PIPE_AUDIO, 0, event};
-    request(p, dsp, interrupts, 5);
-    assert(reply(p, 0) == 0x00150040 && !reply(p, 1) && p->dsp.interrupt[2 + SNX_CTR_DSP_PIPE_AUDIO] == id);
+    ctr_call(p, dsp, interrupts, 5, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00150040 && !ctr_command_word(p, 1) &&
+           p->dsp.interrupt[2 + SNX_CTR_DSP_PIPE_AUDIO] == id);
     const uint32_t semaphore[] = {0x00160000};
-    request(p, dsp, semaphore, 1);
-    assert(reply(p, 0) == 0x00160042 && !reply(p, 1) && !reply(p, 2));
-    assert(snx_ctr_handle_object(p, reply(p, 3)) == p->dsp.semaphore && p->dsp.semaphore);
+    ctr_call(p, dsp, semaphore, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00160042 && !ctr_command_word(p, 1) && !ctr_command_word(p, 2));
+    assert(snx_ctr_handle_object(p, ctr_command_word(p, 3)) == p->dsp.semaphore && p->dsp.semaphore);
     const uint32_t mask[] = {0x00170040, 0x2000};
-    request(p, dsp, mask, 2);
+    ctr_call(p, dsp, mask, 2, SNX_CTR_SVC_RETURN, 0);
     assert(p->dsp.semaphore_mask == 0x2000);
     /* Initialize on the audio pipe, with garbage from the stack in its last two bytes: the event is signaled */
-    word(p, DATA, 0xcdcd0000u);
+    ctr_put(p, DATA, 0xcdcd0000u);
     const uint32_t initialize[] = {0x000d0082, SNX_CTR_DSP_PIPE_AUDIO, 4, 4 << 14 | 0x402, DATA};
-    request(p, dsp, initialize, 5);
-    assert(!reply(p, 1) && p->objects[id].data.event.signaled);
+    ctr_call(p, dsp, initialize, 5, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 1) && p->objects[id].data.event.signaled);
     p->objects[id].data.event.signaled = 0;
     /* ReadPipeIfPossible lands in static buffer 0: the count, then the addresses */
-    word(p, SNX_CTR_INITIAL_TLS + 0x180, 0x40 << 14 | 2);
-    word(p, SNX_CTR_INITIAL_TLS + 0x184, DATA + 0x100);
+    ctr_put(p, SNX_CTR_INITIAL_TLS + 0x180, 0x40 << 14 | 2);
+    ctr_put(p, SNX_CTR_INITIAL_TLS + 0x184, DATA + 0x100);
     const uint32_t count[] = {0x001000c0, SNX_CTR_DSP_PIPE_AUDIO, 0, 2};
-    request(p, dsp, count, 4);
-    assert(reply(p, 0) == 0x00100082 && reply(p, 2) == 2 && reply(p, 3) == (2 << 14 | 2));
-    assert(reply(p, 4) == DATA + 0x100 && (at(p, DATA + 0x100) & 0xffff) == 15);
+    ctr_call(p, dsp, count, 4, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00100082 && ctr_command_word(p, 2) == 2 &&
+           ctr_command_word(p, 3) == (2 << 14 | 2));
+    assert(ctr_command_word(p, 4) == DATA + 0x100 && (ctr_word(p, DATA + 0x100) & 0xffff) == 15);
     const uint32_t addresses[] = {0x001000c0, SNX_CTR_DSP_PIPE_AUDIO, 0, 30};
-    request(p, dsp, addresses, 4);
-    assert(reply(p, 2) == 30 && (at(p, DATA + 0x100) & 0xffff) == 0xbfff);
+    ctr_call(p, dsp, addresses, 4, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 2) == 30 && (ctr_word(p, DATA + 0x100) & 0xffff) == 0xbfff);
     /* asking for more than is left reads nothing */
-    request(p, dsp, addresses, 4);
-    assert(!reply(p, 2));
+    ctr_call(p, dsp, addresses, 4, SNX_CTR_SVC_RETURN, 0);
+    assert(!ctr_command_word(p, 2));
     /* the frame counter's DSP address as the application maps it: region 0's last word */
     const uint32_t convert[] = {0x000c0040, 0xbfff};
-    request(p, dsp, convert, 2);
-    assert(reply(p, 0) == 0x000c0080 && reply(p, 2) == SNX_CTR_DSP_RAM + DSP_REGION0 + DSP_FRAME_COUNTER);
+    ctr_call(p, dsp, convert, 2, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x000c0080 &&
+           ctr_command_word(p, 2) == SNX_CTR_DSP_RAM + DSP_REGION0 + DSP_FRAME_COUNTER);
     const uint32_t recv[] = {0x00010040, 0};
-    request(p, dsp, recv, 2);
-    assert(reply(p, 0) == 0x00010080 && !reply(p, 2)); /* on */
+    ctr_call(p, dsp, recv, 2, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00010080 && !ctr_command_word(p, 2)); /* on */
     /* a frame due raises the audio pipe's interrupt */
     snx_ctr_dsp_frame(p, p->dsp.next_frame_ns);
     assert(p->objects[id].data.event.signaled);
     const uint32_t flush[] = {0x00130082, DATA, 0x100, 0, CTR_PROCESS_HANDLE};
-    request(p, dsp, flush, 5);
-    assert(reply(p, 0) == 0x00130040 && !reply(p, 1));
+    ctr_call(p, dsp, flush, 5, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 0) == 0x00130040 && !ctr_command_word(p, 1));
     /* Shutdown: RecvData reports the DSP stopped */
-    word(p, DATA, 1);
+    ctr_put(p, DATA, 1);
     const uint32_t shutdown[] = {0x000d0082, SNX_CTR_DSP_PIPE_AUDIO, 4, 4 << 14 | 0x402, DATA};
-    request(p, dsp, shutdown, 5);
-    request(p, dsp, recv, 2);
-    assert(reply(p, 2) == 1);
+    ctr_call(p, dsp, shutdown, 5, SNX_CTR_SVC_RETURN, 0);
+    ctr_call(p, dsp, recv, 2, SNX_CTR_SVC_RETURN, 0);
+    assert(ctr_command_word(p, 2) == 1);
     /* unregistering releases the event */
     const uint32_t unregister[] = {0x00150082, 2, SNX_CTR_DSP_PIPE_AUDIO, 0, 0};
-    request(p, dsp, unregister, 5);
+    ctr_call(p, dsp, unregister, 5, SNX_CTR_SVC_RETURN, 0);
     assert(!p->dsp.interrupt[2 + SNX_CTR_DSP_PIPE_AUDIO]);
     snx_ctr_process_free(p);
 }

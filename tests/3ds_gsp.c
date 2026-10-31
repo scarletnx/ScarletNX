@@ -10,37 +10,13 @@
 #include "3ds/gpu/present.h"
 #include "common/filesystem/host.h"
 #include "common/utilities/common.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define CMD   (SNX_CTR_INITIAL_TLS + 0x80)
 #define QUEUE 0x14000000u
-static void word(SnxCtrProcess* p, uint32_t address, uint32_t v) {
-    unsigned char b[4];
-    for (unsigned i = 0; i < 4; ++i) b[i] = (unsigned char)(v >> (i * 8));
-    assert(snx_ctr_write_ram(p->space, address, b, 4) == SNX_CTR_MEM_OK);
-}
-static uint32_t get(SnxCtrProcess* p, unsigned n) {
-    unsigned char b[4];
-    assert(snx_ctr_read_ram(p->space, CMD + 4 * n, b, 4) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
-static uint32_t at(SnxCtrProcess* p, uint32_t address) {
-    unsigned char b[4];
-    assert(snx_ctr_read_ram(p->space, address, b, 4) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
-static void request(SnxCtrProcess* p, uint32_t h, const uint32_t* w, unsigned n, SnxCtrSvcResult state,
-                    uint32_t transport) {
-    unsigned char zero[256] = {0};
-    assert(snx_ctr_write_ram(p->space, CMD, zero, 256) == SNX_CTR_MEM_OK);
-    for (unsigned i = 0; i < n; ++i) word(p, CMD + i * 4, w[i]);
-    p->cpu.state.cpu.r[0] = h;
-    assert(snx_ctr_svc(p, 0x32) == state);
-    assert(p->cpu.state.cpu.r[0] == (state == SNX_CTR_SVC_RETURN ? transport : h));
-}
 static uint64_t fnv(const unsigned char* bytes, size_t n) {
     uint64_t hash = 1469598103934665603ull;
     for (size_t i = 0; i < n; ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
@@ -97,12 +73,7 @@ int main(int argc, char** argv) {
             (void)remove(stale);
         }
     unsigned char code[0x3000] = {0};
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 0x3000,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 0x3000);
     for (unsigned model = 0; model < 2; ++model) {
         SnxCtrProcess* p = snx_ctr_process_new(&image, (SnxCtrModel)model);
         assert(p);
@@ -119,17 +90,18 @@ int main(int argc, char** argv) {
         /* libctru's gspInit takes the GPU right before it registers its relay queue, and keeps it */
         assert(p->gsp.rights_thread == UINT32_MAX);
         uint32_t acquire[] = {0x00160042, 0, 0, CTR_PROCESS_HANDLE};
-        request(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         uint32_t register_relay[] = {0x00130042, 1, 0, event};
-        request(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 0) == 0x00130082 && get(p, 1) == 0x2a07 && get(p, 2) == 0 && get(p, 3) == 0x10);
+        ctr_call(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 0) == 0x00130082 && ctr_command_word(p, 1) == 0x2a07 &&
+               ctr_command_word(p, 2) == 0 && ctr_command_word(p, 3) == 0x10);
         assert(p->gsp.rights_thread == snx_ctr_handle_object(p, gsp));
-        uint32_t shared = get(p, 4);
+        uint32_t shared = ctr_command_word(p, 4);
         assert(snx_ctr_handle_object(p, shared) && !snx_ctr_handle_object(p, shared ^ 1u));
         /* A second registration reports success, not another first-init. */
-        request(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, register_relay, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         /* MapMemoryBlock: the 0x1000 GX block at a free mappable address. */
         p->cpu.state.cpu.r[0] = shared;
         p->cpu.state.cpu.r[1] = QUEUE;
@@ -150,98 +122,98 @@ int main(int argc, char** argv) {
         q[2] = 0x1ff81000; /* the shared page: Shared, read-only */
         assert(snx_ctr_svc(p, 0x02) == SNX_CTR_SVC_RETURN && !q[0] && q[3] == 1 && q[4] == 6);
         /* GPU right + process handle check. */
-        request(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         acquire[3] = 0x1234;
-        request(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xd8e007f7);
+        ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8e007f7);
         acquire[3] = CTR_PROCESS_HANDLE;
         /* Register writes as libctru's GSPGPU_WriteHWRegs and WriteHWRegsWithMask send them, checked as Azahar
            checks them: the right, then an address below 0x420000, then at most 0x80 bytes (the static buffer's
            size, not the size word), then whole words */
         uint32_t hw[] = {0x00010082, 0x400468, 8, (8u << 14) | 2, 0x300200};
-        word(p, 0x300200, 0x01c501c1);
-        word(p, 0x300204, 0x000001c1);
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_put(p, 0x300200, 0x01c501c1);
+        ctr_put(p, 0x300204, 0x000001c1);
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         hw[2] = 0;
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         hw[1] = 0x420000;
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xe0e02a01);
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xe0e02a01);
         hw[1] = 0x40046a;
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xe0e02a01);
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xe0e02a01);
         hw[1] = 0x400468;
         hw[3] = (0x84u << 14) | 2;
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xe0e02bec);
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xe0e02bec);
         hw[3] = (6u << 14) | 2;
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xe0e02bf2);
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xe0e02bf2);
         hw[3] = (8u << 14) | 2;
         /* the mask is static buffer 1, and may be shorter than the data */
         uint32_t masked[] = {0x00020084, 0x400468, 8, (8u << 14) | 2, 0x300200, (4u << 14) | (1u << 10) | 2, 0x300200};
-        request(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         masked[5] = (8u << 14) | (2u << 10) | 2;
-        request(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
+        ctr_call(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
         masked[5] = (4u << 14) | (1u << 10) | 2;
         /* without the GPU right, writes and buffer swaps fail with GX's NoPermission */
         uint32_t release[] = {0x00170000};
-        request(p, gsp, release, 1, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
-        request(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xd8202a06);
-        request(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xd8202a06);
+        ctr_call(p, gsp, release, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        ctr_call(p, gsp, hw, 5, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, gsp, masked, 7, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
         uint32_t no_right_swap[] = {0x00050200, 0, 0, 0x300200, 0x300200, 960, 0, 0, 0};
-        request(p, gsp, no_right_swap, 9, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 1) == 0xd8202a06);
-        request(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, no_right_swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_command_word(p, 1) == 0xd8202a06);
+        ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         /* the process handle must come in a handle descriptor */
         acquire[2] = 0x20;
-        request(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
+        ctr_call(p, gsp, acquire, 4, SNX_CTR_SVC_RETURN, SNX_CTR_IPC_BAD_DESCRIPTOR);
         acquire[2] = 0;
         /* MemoryFill through the real shared GX queue. */
         uint32_t target = 0;
         assert(!snx_ctr_kernel_memory(p, 0x10003, 0, 0, 0x1000, 3, &target) && target);
-        word(p, QUEUE + 0x800, 0x100); /* one command queued */
-        word(p, QUEUE + 0x820, 2);     /* MemoryFill */
-        word(p, QUEUE + 0x824, target);
-        word(p, QUEUE + 0x828, 0x11223344);
-        word(p, QUEUE + 0x82c, target + 0x1000);
-        word(p, QUEUE + 0x830, 0);
-        word(p, QUEUE + 0x834, 0);
-        word(p, QUEUE + 0x838, 0);
-        word(p, QUEUE + 0x83c, 0x0201); /* control1: GX_FILL_TRIGGER | GX_FILL_32BIT_DEPTH, as libctru sets it */
-        word(p, QUEUE, 0);              /* relay queue of thread 0: empty */
+        ctr_put(p, QUEUE + 0x800, 0x100); /* one command queued */
+        ctr_put(p, QUEUE + 0x820, 2);     /* MemoryFill */
+        ctr_put(p, QUEUE + 0x824, target);
+        ctr_put(p, QUEUE + 0x828, 0x11223344);
+        ctr_put(p, QUEUE + 0x82c, target + 0x1000);
+        ctr_put(p, QUEUE + 0x830, 0);
+        ctr_put(p, QUEUE + 0x834, 0);
+        ctr_put(p, QUEUE + 0x838, 0);
+        ctr_put(p, QUEUE + 0x83c, 0x0201); /* control1: GX_FILL_TRIGGER | GX_FILL_32BIT_DEPTH, as libctru sets it */
+        ctr_put(p, QUEUE, 0);              /* relay queue of thread 0: empty */
         uint32_t trigger[] = {0x000c0000};
-        request(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         for (uint32_t at = target; at < target + 0x1000; at += 4) {
             unsigned char b[4];
             assert(snx_ctr_read_ram(p->space, at, b, 4) == SNX_CTR_MEM_OK);
             assert(b[0] == 0x44 && b[1] == 0x33 && b[2] == 0x22 && b[3] == 0x11);
         }
         /* one region filled: exactly one PSC0 in the relay queue, and the GX queue drained */
-        assert((at(p, QUEUE) & 0xffff) == 0x0100 && (at(p, QUEUE + 12) & 0xff) == 0);
-        assert((at(p, QUEUE + 0x800) & 0xff00) == 0);
+        assert((ctr_word(p, QUEUE) & 0xffff) == 0x0100 && (ctr_word(p, QUEUE + 12) & 0xff) == 0);
+        assert((ctr_word(p, QUEUE + 0x800) & 0xff00) == 0);
         /* an untriggered fill (control without bit 0) writes nothing and raises nothing */
-        word(p, QUEUE, 0);
-        word(p, QUEUE + 0x800, 0x100 | 1); /* index 1, one command */
-        word(p, QUEUE + 0x840, 2);
-        word(p, QUEUE + 0x844, target);
-        word(p, QUEUE + 0x848, 0x55555555);
-        word(p, QUEUE + 0x84c, target + 0x100);
-        word(p, QUEUE + 0x850, 0);
-        word(p, QUEUE + 0x854, 0);
-        word(p, QUEUE + 0x858, 0);
-        word(p, QUEUE + 0x85c, 0x0200);
-        request(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
-        assert(at(p, target) == 0x11223344 && (at(p, QUEUE) & 0xff00) == 0);
+        ctr_put(p, QUEUE, 0);
+        ctr_put(p, QUEUE + 0x800, 0x100 | 1); /* index 1, one command */
+        ctr_put(p, QUEUE + 0x840, 2);
+        ctr_put(p, QUEUE + 0x844, target);
+        ctr_put(p, QUEUE + 0x848, 0x55555555);
+        ctr_put(p, QUEUE + 0x84c, target + 0x100);
+        ctr_put(p, QUEUE + 0x850, 0);
+        ctr_put(p, QUEUE + 0x854, 0);
+        ctr_put(p, QUEUE + 0x858, 0);
+        ctr_put(p, QUEUE + 0x85c, 0x0200);
+        ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(ctr_word(p, target) == 0x11223344 && (ctr_word(p, QUEUE) & 0xff00) == 0);
         /* DisplayTransfer of an 8x8 tiled RGBA8 image from the linear heap into VRAM (0x1f000000, physical
            0x18000000) as linear RGB8. The GPU writes physical memory, the process need not map VRAM */
         {
@@ -257,16 +229,16 @@ int main(int argc, char** argv) {
                 }
             unsigned char zero[8 * 8 * 3] = {0};
             assert(snx_ctr_phys_write(p->memory, 0x18000000u, zero, sizeof zero) == SNX_CTR_MEM_OK);
-            word(p, QUEUE, 0);
-            word(p, QUEUE + 0x800, 0x100 | 2);
-            word(p, QUEUE + 0x860, 3);
-            word(p, QUEUE + 0x864, target + 0x200);
-            word(p, QUEUE + 0x868, 0x1f000000u);
-            word(p, QUEUE + 0x86c, 8 | (8u << 16));
-            word(p, QUEUE + 0x870, 8 | (8u << 16));
-            word(p, QUEUE + 0x874, (0u << 8) | (1u << 12)); /* RGBA8 in, RGB8 out, tiled to linear */
-            request(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_put(p, QUEUE, 0);
+            ctr_put(p, QUEUE + 0x800, 0x100 | 2);
+            ctr_put(p, QUEUE + 0x860, 3);
+            ctr_put(p, QUEUE + 0x864, target + 0x200);
+            ctr_put(p, QUEUE + 0x868, 0x1f000000u);
+            ctr_put(p, QUEUE + 0x86c, 8 | (8u << 16));
+            ctr_put(p, QUEUE + 0x870, 8 | (8u << 16));
+            ctr_put(p, QUEUE + 0x874, (0u << 8) | (1u << 12)); /* RGBA8 in, RGB8 out, tiled to linear */
+            ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             assert(snx_ctr_phys_read(p->memory, 0x18000000u, out, sizeof out) == SNX_CTR_MEM_OK);
             for (unsigned y = 0; y < 8; ++y)
                 for (unsigned x = 0; x < 8; ++x) {
@@ -274,7 +246,7 @@ int main(int argc, char** argv) {
                     assert(q[0] == 0x80 && q[1] == y && q[2] == x);
                 }
             /* PPF, once */
-            assert((at(p, QUEUE) & 0xffff) == 0x0100 && (at(p, QUEUE + 12) & 0xff) == 4);
+            assert((ctr_word(p, QUEUE) & 0xffff) == 0x0100 && (ctr_word(p, QUEUE + 12) & 0xff) == 4);
         }
         /* TextureCopy with an input gap, then an invalid fill and an unknown command: GSP stores the errors, sets
            the FAILED status and keeps going */
@@ -282,73 +254,74 @@ int main(int argc, char** argv) {
             unsigned char line[64];
             for (unsigned i = 0; i < 64; ++i) line[i] = (unsigned char)i;
             assert(snx_ctr_write_ram(p->space, target + 0x400, line, 64) == SNX_CTR_MEM_OK);
-            word(p, QUEUE, 0);
-            word(p, QUEUE + 0x800, 0x300 | 3); /* three commands from index 3 */
-            word(p, QUEUE + 0x880, 4);
-            word(p, QUEUE + 0x884, target + 0x400);
-            word(p, QUEUE + 0x888, target + 0x600);
-            word(p, QUEUE + 0x88c, 32);
-            word(p, QUEUE + 0x890, 1 | (1u << 16)); /* 16-byte lines, 16-byte gaps */
-            word(p, QUEUE + 0x894, 0);
-            word(p, QUEUE + 0x898, 8); /* the texture copy flag */
-            word(p, QUEUE + 0x8a0, 2); /* MemoryFill outside GPU-visible memory */
-            word(p, QUEUE + 0x8a4, 0x00100000);
-            word(p, QUEUE + 0x8a8, 0);
-            word(p, QUEUE + 0x8ac, 0x00100100);
-            word(p, QUEUE + 0x8c0, 7); /* no such command */
-            request(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_put(p, QUEUE, 0);
+            ctr_put(p, QUEUE + 0x800, 0x300 | 3); /* three commands from index 3 */
+            ctr_put(p, QUEUE + 0x880, 4);
+            ctr_put(p, QUEUE + 0x884, target + 0x400);
+            ctr_put(p, QUEUE + 0x888, target + 0x600);
+            ctr_put(p, QUEUE + 0x88c, 32);
+            ctr_put(p, QUEUE + 0x890, 1 | (1u << 16)); /* 16-byte lines, 16-byte gaps */
+            ctr_put(p, QUEUE + 0x894, 0);
+            ctr_put(p, QUEUE + 0x898, 8); /* the texture copy flag */
+            ctr_put(p, QUEUE + 0x8a0, 2); /* MemoryFill outside GPU-visible memory */
+            ctr_put(p, QUEUE + 0x8a4, 0x00100000);
+            ctr_put(p, QUEUE + 0x8a8, 0);
+            ctr_put(p, QUEUE + 0x8ac, 0x00100100);
+            ctr_put(p, QUEUE + 0x8c0, 7); /* no such command */
+            ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             unsigned char copied[32];
             assert(snx_ctr_read_ram(p->space, target + 0x600, copied, 32) == SNX_CTR_MEM_OK);
             for (unsigned i = 0; i < 32; ++i) assert(copied[i] == (i < 16 ? i : i + 16));
-            uint32_t header = at(p, QUEUE + 0x800);
+            uint32_t header = ctr_word(p, QUEUE + 0x800);
             assert((header & 0xff) == 6 && ((header >> 8) & 0xff) == 0 && ((header >> 16) & 0xff) == 0x80);
-            assert(at(p, QUEUE + 0x804) == 0xe0c02bf4u); /* the last error: the unknown command's */
-            assert((at(p, QUEUE) & 0xffff) == 0x0100 && (at(p, QUEUE + 12) & 0xff) == 4); /* only the copy's PPF */
-            word(p, QUEUE + 0x800, 0); /* status cleared for what follows */
+            assert(ctr_word(p, QUEUE + 0x804) == 0xe0c02bf4u); /* the last error: the unknown command's */
+            assert((ctr_word(p, QUEUE) & 0xffff) == 0x0100 &&
+                   (ctr_word(p, QUEUE + 12) & 0xff) == 4); /* only the copy's PPF */
+            ctr_put(p, QUEUE + 0x800, 0);                  /* status cleared for what follows */
         }
         /* SubmitCmdList: a list in the linear heap whose interrupt request matches irq_compare's low byte raises
            P3D, then a list outside GPU-visible memory raises it without running */
-        word(p, target + 0x800, 0x78);
-        word(p, target + 0x804, 0x000f0010u); /* irq_request, all bytes */
-        word(p, QUEUE, 0);
-        word(p, QUEUE + 0x800, 0x200);
-        word(p, QUEUE + 0x820, 1);
-        word(p, QUEUE + 0x824, target + 0x800);
-        word(p, QUEUE + 0x828, 8);
-        word(p, QUEUE + 0x840, 1);
-        word(p, QUEUE + 0x844, 0x00100000);
-        word(p, QUEUE + 0x848, 8);
-        request(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
-        assert((at(p, QUEUE + 0x800) & 0xffff) == 2);
-        assert((at(p, QUEUE) & 0xffff) == 0x0200 && (at(p, QUEUE + 12) & 0xffff) == 0x0505);
+        ctr_put(p, target + 0x800, 0x78);
+        ctr_put(p, target + 0x804, 0x000f0010u); /* irq_request, all bytes */
+        ctr_put(p, QUEUE, 0);
+        ctr_put(p, QUEUE + 0x800, 0x200);
+        ctr_put(p, QUEUE + 0x820, 1);
+        ctr_put(p, QUEUE + 0x824, target + 0x800);
+        ctr_put(p, QUEUE + 0x828, 8);
+        ctr_put(p, QUEUE + 0x840, 1);
+        ctr_put(p, QUEUE + 0x844, 0x00100000);
+        ctr_put(p, QUEUE + 0x848, 8);
+        ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
+        assert((ctr_word(p, QUEUE + 0x800) & 0xffff) == 2);
+        assert((ctr_word(p, QUEUE) & 0xffff) == 0x0200 && (ctr_word(p, QUEUE + 12) & 0xffff) == 0x0505);
         /* a draw needing a part not ported yet (a geometry shader) stops the run */
-        word(p, target + 0x800, 2);
-        word(p, target + 0x804, 0x000f0229u); /* use_gs */
-        word(p, target + 0x808, 1);
-        word(p, target + 0x80c, 0x000f022eu); /* trigger_draw */
-        word(p, QUEUE + 0x800, 0x100);
-        word(p, QUEUE + 0x820, 1);
-        word(p, QUEUE + 0x828, 16);
-        request(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
-        word(p, QUEUE + 0x800, 0);
+        ctr_put(p, target + 0x800, 2);
+        ctr_put(p, target + 0x804, 0x000f0229u); /* use_gs */
+        ctr_put(p, target + 0x808, 1);
+        ctr_put(p, target + 0x80c, 0x000f022eu); /* trigger_draw */
+        ctr_put(p, QUEUE + 0x800, 0x100);
+        ctr_put(p, QUEUE + 0x820, 1);
+        ctr_put(p, QUEUE + 0x828, 16);
+        ctr_call(p, gsp, trigger, 1, SNX_CTR_SVC_UNSUPPORTED, 0);
+        ctr_put(p, QUEUE + 0x800, 0);
         /* vblanks reach the relay queue's slots at 0xc (libctru's popInterrupt), are dropped with ignore_pdc set,
            and only counted as missed once 0x20 interrupts are pending */
-        word(p, QUEUE, 0);
+        ctr_put(p, QUEUE, 0);
         snx_ctr_gsp_vblank(p);
-        assert((at(p, QUEUE) & 0xffff) == 0x0200 && (at(p, QUEUE + 12) & 0xffff) == 0x0302);
-        word(p, QUEUE, 0x01000000);
+        assert((ctr_word(p, QUEUE) & 0xffff) == 0x0200 && (ctr_word(p, QUEUE + 12) & 0xffff) == 0x0302);
+        ctr_put(p, QUEUE, 0x01000000);
         snx_ctr_gsp_vblank(p);
-        assert((at(p, QUEUE) & 0xffff) == 0);
-        word(p, QUEUE, 0x2000);
-        word(p, QUEUE + 4, 0);
-        word(p, QUEUE + 8, 0);
+        assert((ctr_word(p, QUEUE) & 0xffff) == 0);
+        ctr_put(p, QUEUE, 0x2000);
+        ctr_put(p, QUEUE + 4, 0);
+        ctr_put(p, QUEUE + 8, 0);
         snx_ctr_gsp_vblank(p);
-        assert(at(p, QUEUE + 4) == 1 && at(p, QUEUE + 8) == 1 && (at(p, QUEUE) & 0xffff) == 0x2000);
-        word(p, QUEUE, 0);
-        word(p, QUEUE + 4, 0);
-        word(p, QUEUE + 8, 0);
+        assert(ctr_word(p, QUEUE + 4) == 1 && ctr_word(p, QUEUE + 8) == 1 && (ctr_word(p, QUEUE) & 0xffff) == 0x2000);
+        ctr_put(p, QUEUE, 0);
+        ctr_put(p, QUEUE + 4, 0);
+        ctr_put(p, QUEUE + 8, 0);
         /* SetBufferSwap: a real RGBA8 framebuffer with a distinctive pattern. */
         uint32_t fb = 0;
         assert(!snx_ctr_kernel_memory(p, 0x10003, 0, 0, 0x60000, 3, &fb) && fb);
@@ -365,8 +338,8 @@ int main(int argc, char** argv) {
             }
         assert(snx_ctr_write_ram(p->space, fb, pattern, 240u * 400 * 4) == SNX_CTR_MEM_OK);
         uint32_t swap[] = {0x00050200, 0, 0, fb, fb, 960, 0, 0, 0};
-        request(p, gsp, swap, 9, SNX_CTR_SVC_RETURN, 0);
-        assert(!get(p, 1));
+        ctr_call(p, gsp, swap, 9, SNX_CTR_SVC_RETURN, 0);
+        assert(!ctr_command_word(p, 1));
         snx_ctr_gsp_vblank(p);
         if (!model) {
             /* The saved frame is the real Vulkan readback, rotated like the
@@ -402,16 +375,16 @@ int main(int argc, char** argv) {
             }
             assert(snx_ctr_write_ram(p->space, fb, pattern, 240u * 400 * 4) == SNX_CTR_MEM_OK);
             uint32_t block = QUEUE + 0x200;
-            word(p, block + 0, 0x100); /* slot 0 selected, update pending */
-            word(p, block + 4, 0);     /* active_framebuf */
-            word(p, block + 8, fb);    /* framebuf0_vaddr */
-            word(p, block + 12, fb);
-            word(p, block + 16, 960);
-            word(p, block + 20, 0x100); /* format 0, linear */
-            word(p, block + 24, 0);
-            word(p, block + 28, 0);
+            ctr_put(p, block + 0, 0x100); /* slot 0 selected, update pending */
+            ctr_put(p, block + 4, 0);     /* active_framebuf */
+            ctr_put(p, block + 8, fb);    /* framebuf0_vaddr */
+            ctr_put(p, block + 12, fb);
+            ctr_put(p, block + 16, 960);
+            ctr_put(p, block + 20, 0x100); /* format 0, linear */
+            ctr_put(p, block + 24, 0);
+            ctr_put(p, block + 28, 0);
             snx_ctr_gsp_vblank(p);
-            assert(at(p, block + 0) == 0); /* applied */
+            assert(ctr_word(p, block + 0) == 0); /* applied */
             snprintf(path, sizeof path, "%s/frame-0-01.ppm", argv[1]);
             f = fopen(path, "rb");
             assert(f);
@@ -432,34 +405,34 @@ int main(int argc, char** argv) {
             fill_rgba8(p, fb, 0x10, 0x20, 0x30);
             fill_rgba8(p, fb2, 0x40, 0x50, 0x60);
             uint32_t pair2[] = {0x00050200, 0, 1, fb2, fb, 960, 0, 1, 0};
-            request(p, gsp, pair2, 9, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_call(p, gsp, pair2, 9, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             snx_ctr_gsp_vblank(p);
             frame_pixel(argv[1], 2, 200, 120, rgb);
             assert(rgb[0] == 0x40 && rgb[1] == 0x50 && rgb[2] == 0x60);
             uint32_t pair1[] = {0x00050200, 0, 0, fb, fb, 960, 0, 1, 0};
-            request(p, gsp, pair1, 9, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_call(p, gsp, pair1, 9, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             snx_ctr_gsp_vblank(p);
             frame_pixel(argv[1], 3, 200, 120, rgb);
             assert(rgb[0] == 0x40 && rgb[1] == 0x50 && rgb[2] == 0x60);
             /* shown_fb is one bit of the register: 2 shows pair 1 */
             uint32_t shown2[] = {0x00050200, 0, 0, fb, fb, 960, 0, 2, 0};
-            request(p, gsp, shown2, 9, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_call(p, gsp, shown2, 9, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             snx_ctr_gsp_vblank(p);
             frame_pixel(argv[1], 4, 200, 120, rgb);
             assert(rgb[0] == 0x10 && rgb[1] == 0x20 && rgb[2] == 0x30);
             /* RGB5A1 and RGBA4 framebuffers are accepted and presented, and an invalid screen is ignored with
                success */
             uint32_t rgba4_swap[] = {0x00050200, 0, 0, fb, fb, 480, 4, 0, 0};
-            request(p, gsp, rgba4_swap, 9, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_call(p, gsp, rgba4_swap, 9, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             snx_ctr_gsp_vblank(p);
             frame_pixel(argv[1], 5, 200, 120, rgb);
             uint32_t bad_screen[] = {0x00050200, 2, 0, fb, fb, 960, 0, 0, 0};
-            request(p, gsp, bad_screen, 9, SNX_CTR_SVC_RETURN, 0);
-            assert(!get(p, 1));
+            ctr_call(p, gsp, bad_screen, 9, SNX_CTR_SVC_RETURN, 0);
+            assert(!ctr_command_word(p, 1));
             /* Presenter contract: the framebuffer is read where the guest has it (here VRAM's start), decoded on the
                device, and the hash covers exactly the decoded pixels */
             const uint32_t vram = 0x18000000u;
