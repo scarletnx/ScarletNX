@@ -174,9 +174,14 @@ enum {
     GPU_PARK_SYNCPOINT,     /* the puller's syncpoint wait */
     GPU_PARK_FENCE          /* a submission's fence, waited for before its first entry */
 };
+/* Switch 2: the two-page GPU-accessible regions whose second page NVN2 releases a queue's progress value into, while
+   the title polls the first (gpu.c mirrors a release that lands in a second page there). Every queue has such a
+   region, so a small table of them is kept */
+#define GPU_SEM_REGIONS 32
 typedef struct {
     GpuChannel* chan[GPU_CHANNELS]; /* by syncpoint id */
     int nchan;
+    u64 sem_region[GPU_SEM_REGIONS]; /* the first address of each, 0 where the slot is free */
 } GpuState;
 extern GpuState g_gpu;
 
@@ -307,6 +312,9 @@ void gpu_signal_point(void);   /* the GPU is about to do something the game can 
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is
    the bytes as guest memory gets them, so its numbers are little-endian already */
 void gpu_release_write(u64 gva, const void* data, u32 len);
+/* a two-page GPU-accessible region whose second page NVN2 releases a queue's progress into, while the title polls the
+   first: its releases are mirrored there (gpu.c) */
+void gpu_semaphore_region_add(u64 first, u64 size);
 
 /* the engines' methods (engines.c, compute.c, fermi2d.c, dma.c): m is the method, last marks a batch's last word */
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last);

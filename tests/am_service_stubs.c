@@ -104,3 +104,10 @@ u32 syncpt_read(u32 id) {
 /* the armed waits of the Switch 2 syncpoint session, which nvdrv calls after every increment: no increments in a
    test, so the waiter is registered and never run */
 void syncpt_watch(void (*fn)(void)) { (void)fn; }
+/* the GPU address space and its semaphore regions, which the GPU session's jobs map into: a test has no GPU */
+void gmmu_map(u64 gva, u64 cpu, u64 size) {
+    (void)gva, (void)cpu, (void)size;
+}
+void gpu_semaphore_region_add(u64 first, u64 size) {
+    (void)first, (void)size;
+}

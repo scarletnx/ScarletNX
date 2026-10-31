@@ -268,6 +268,32 @@ void gpu_release_write(u64 gva, const void* data, u32 len) {
     gpu_signal_point();
     gmem_write(gva, data, len);
 }
+
+/* ------------------------------------------------------------ Switch 2 semaphore regions */
+/* NVN2 releases a queue's progress value into the second page of a two-page GPU-accessible region, and the title polls
+   the same offset in the first page: something on the console copies one into the other. Until that is known, a release
+   that lands in a second page is written to its first page as well (Eden's Switch 2 work does the same). Every queue
+   has such a region, so a small table of them is kept (gpu.h's GpuState) */
+void gpu_semaphore_region_add(u64 first, u64 size) {
+    u32 i;
+    if (size != 0x2000) return; /* only a two-page region has the second page a release lands in */
+    for (i = 0; i < GPU_SEM_REGIONS; i++)
+        if (g_gpu.sem_region[i] == first) return;
+    for (i = 0; i < GPU_SEM_REGIONS; i++)
+        if (!g_gpu.sem_region[i]) {
+            g_gpu.sem_region[i] = first;
+            return;
+        }
+}
+/* the first-page address that a release at gva mirrors to, 0 when it mirrors to none */
+static u64 sem_mirror(u64 gva) {
+    u32 i;
+    for (i = 0; i < GPU_SEM_REGIONS; i++) {
+        u64 s = g_gpu.sem_region[i];
+        if (s && gva >= s + 0x1000 && gva < s + 0x2000) return gva - 0x1000;
+    }
+    return 0;
+}
 void gpu_mem_changed(u64 cpu_addr, u64 len) {
     if (g_gpu_mem_changed) g_gpu_mem_changed(cpu_addr, len);
 }
@@ -537,19 +563,23 @@ static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
     switch (v & PULLER_SEMAPHORE_OP_MASK) {
         case PULLER_SEMAPHORE_OP_ACQUIRE_EQUAL: gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 0); break;
         case PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL: gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 1); break;
-        case PULLER_SEMAPHORE_OP_RELEASE:
+        case PULLER_SEMAPHORE_OP_RELEASE: {
+            u64 mirror = sem_mirror(a); /* where the title polls this release, when it lands in a second page */
             if (v & PULLER_SEMAPHORE_RELEASE_SIZE_4BYTE) {
                 u8 rel[4];
                 snx_st_le32(rel, payload);
                 gpu_release_write(a, rel, 4);
+                if (mirror) gpu_release_write(mirror, rel, 4);
             } else { /* 16 bytes: the payload, 0, and the timestamp */
                 u8 rel[16];
                 snx_st_le32(rel, payload);
                 snx_st_le32(rel + 4, 0);
                 snx_st_le64(rel + 8, gpu_ticks());
                 gpu_release_write(a, rel, 16);
+                if (mirror) gpu_release_write(mirror, rel, 16);
             }
             break;
+        }
         case PULLER_SEMAPHORE_OP_ACQUIRE_MASK:
         case PULLER_SEMAPHORE_OP_REDUCTION:
             /* ACQ_AND and REDUCTION aren't performed: the stream goes on as if they were */

@@ -212,15 +212,19 @@ typedef struct {
     u32 armed_id[AM_SYNCPT_SLOTS], armed_thresh[AM_SYNCPT_SLOTS];
     u8 armed[AM_SYNCPT_SLOTS];
 } AmSyncpt;
-/* The Switch 2 GPU session's (am.c): the ids its SDK manages, with an event each */
+/* The Switch 2 GPU session's (am.c): the ids its SDK manages, with an event each, and the GPU memory its SDK
+   registers with it, which its jobs name by the handle the answer gives */
 #define AM_GPU_SESSIONS 4
 #define AM_GPU_IDS     32
+#define AM_GPU_MEM     16u
 typedef struct {
     u32 obj;
     u32 ev[AM_GPU_IDS];
+    u32 mem_next;              /* the next GPU memory handle */
+    u64 mem_first[AM_GPU_MEM]; /* each registration's first address, by handle - 1 */
 } AmGpuIds;
-/* The Switch 2 display session's (am.c): the events its SDK asks for (a display's own, its vsync), each signaled as
-   soon as it is made, since nothing here waits on the display */
+/* The Switch 2 display session's (am.c): the events its SDK asks for: index 0 the session's own, the rest displays'
+   vsync, which the main loop's 60 Hz signals (am_vi2_vsync_tick) */
 #define AM_VI2_SESSIONS 4
 #define AM_VI2_EVENTS   8
 typedef struct {

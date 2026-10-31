@@ -17,6 +17,8 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/hid.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/gpu/gpu.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/unattended.h"
@@ -347,14 +349,64 @@ static int nn_am_service_IGpuSession_GetVaRange(SvcObj* self, u64* kind, u64* fi
     *size = GMMU_USER_LAST - GMMU_USER_FIRST;
     R_SUCCEED();
 }
+/* The sub-session's commands: the GPU-accessible memory a title's SDK registers, which its jobs then map into the
+   GPU's view of the process. The SDK keeps the answer's handle and names it in every later job, so each registration
+   takes the next one (Eden's Switch 2 work counts the same way) */
+static int nn_am_service_IGpuSession_RegisterMemory(SvcObj* self, u64 first, u64 last, u32* handle) {
+    AmGpuIds* s = am_gpu_ids(self);
+    u32 h;
+    if (!s) return AM_OUT_OF_MEMORY;
+    if (last < first) return AM_INVALID_OFFSET;
+    h = s->mem_next + 1;
+    s->mem_next = h;
+    if (h - 1 < AM_GPU_MEM) s->mem_first[h - 1] = first;
+    (void)handle;
+    *handle = h;
+    /* the title's NVN never maps its memory through nvhost-as-gpu: the GPU address it uses is the memory's own, so
+       every registered range is mapped there (Eden's Switch 2 work identity-maps them all the same way) */
+    gmmu_map(first, first, last - first + 1);
+    gpu_semaphore_region_add(first, last - first + 1);
+    R_SUCCEED();
+}
+/* 211: a job that maps a range of registered memory into the GPU's view of the process, which completes through the
+   event of the slot the request names. Switch 2 titles never map through nvhost-as-gpu: the memory they register is
+   used at the same address on both sides, so the job maps it where it says (Eden's Switch 2 work maps it the same
+   way). Nothing else runs here, so the slot's event is signaled at once */
+static int nn_am_service_IGpuSession_SubmitJob(SvcObj* self, u32 kind, u32 first_lo, u32 first_hi, u32 last_lo,
+                                               u32 last_hi, u32 memory, u32 offset_lo, u32 offset_hi, u32 unused0,
+                                               u32 unused1, u32 unused2, u32 unused3, u32 unused4, u32 unused5,
+                                               u32 unused6, u32 slot) {
+    AmGpuIds* s = am_gpu_ids(self);
+    u64 first = (u64)first_lo | ((u64)first_hi << 32);
+    u64 last = (u64)last_lo | ((u64)last_hi << 32);
+    u64 offset = (u64)offset_lo | ((u64)offset_hi << 32);
+    u32 ev;
+    (void)kind;
+    (void)unused0;
+    (void)unused1;
+    (void)unused2;
+    (void)unused3;
+    (void)unused4;
+    (void)unused5;
+    (void)unused6;
+    if (!s) return AM_OUT_OF_MEMORY;
+    if (slot >= AM_GPU_IDS) return AM_INVALID_OFFSET;
+    if (memory && memory - 1 < AM_GPU_MEM && last >= first && s->mem_first[memory - 1])
+        gmmu_map(first, s->mem_first[memory - 1] + offset, last - first + 1);
+    ev = am_gpu_event(s, slot);
+    if (!ev) return AM_OUT_OF_MEMORY;
+    ev_signal(ev);
+    R_SUCCEED();
+}
 
 /* ============================================ the Switch 2 display session (am.swipc) */
 /* gsv 305's session (Eden's INx2Vi2Session), which a Switch 2 SDK's nn::vi2::sdk asks what the display has before it
-   sizes its window, and presents its client buffer on. Nothing is shown here, so the counts are the console's and the
-   events are signaled at once */
+   sizes its window, and presents its client buffer on. Nothing is shown here, so the counts are the console's, and the
+   displays' frames follow the main loop's 60 Hz as the console's do */
 /* the events of this display session (services_int.h's AmVi2, one per vi2 session the application opens): one per
-   event the SDK asks for (a display's own, its vsync), each signaled as soon as it is made, since nothing here waits
-   on the display */
+   event the SDK asks for. Index 0 is the session's own event, which nothing waits on, so it is signaled at once. The
+   rest are displays' vsync, which the main loop's 60 Hz signals (am_vi2_vsync_tick, below): a title clears the one it
+   waited on before it waits again, so a signal only at the first frame leaves it waiting from the second one on */
 static u32 am_vi2_event(AmVi2* s, u32 index) {
     KEvent* e;
     if (index >= AM_VI2_EVENTS) return 0;

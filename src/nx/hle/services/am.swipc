@@ -353,6 +353,19 @@ interface nn::am::service::IGpuSession {
     # addresses in: the kind of range, then the range itself. It is the one NvRm answers AllocAsEx with, as Eden's
     # Switch 2 work reports it
     [203] GetVaRange() -> (u64 kind, u64 first, u64 size);
+    # The sub-session's commands (the session 22 hands out): the GPU-accessible memory a title's SDK registers,
+    # which its jobs then map into the GPU's view of the process. The registration answers the handle the SDK names
+    # in every later job, and the job completes through the event of the slot its request names, which is signaled
+    # here at once as Eden's Switch 2 work completes its jobs
+    [101] RegisterMemory(u64 first, u64 last) -> u32 handle;
+    # A job that maps a range of the registered memory into the GPU's view of the process, which completes through the
+    # event of the job slot its request names: the request is 16 words (a kind, the range to map, the registration's
+    # handle, an offset into it, six words of a timestamp, a flag and a client token nothing here reads, and the slot).
+    # The generator sorts a request's u64s behind its u32s and aligns them to 8, which would move them off these words,
+    # so each word comes in as a u32 and the handler assembles it
+    [211] SubmitJob(u32 kind, u32 first_lo, u32 first_hi, u32 last_lo, u32 last_hi, u32 memory, u32 offset_lo,
+                    u32 offset_hi, u32 unused0, u32 unused1, u32 unused2, u32 unused3, u32 unused4, u32 unused5,
+                    u32 unused6, u32 slot);
 }
 
 # The Switch 2 syncpoint server nn::syncpt::sdk::InitializeEx gets from gsv 202, over TIPC: it handshakes with a token
