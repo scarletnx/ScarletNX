@@ -435,10 +435,11 @@ _Static_assert(R3D_INDEX < G_ACTS, "the 3D register groups fit below G_ACTS");
     [MAXWELL3D_VERTEX_STREAMS + MAXWELL3D_VERTEX_STREAM_STRIDE * (i) +                    \
      MAXWELL3D_VERTEX_STREAM_FREQUENCY] = R3D_VFORMAT
 /* a color target's address, size, format, memory layout, layers and layer stride */
-#define M3D_RT(i)                                                                         \
-    [MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) ... MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + 3] = R3D_TARGETS, \
-    [MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + MAXWELL3D_RT_FORMAT] = R3D_RTFORMAT | R3D_TARGETS,             \
-    [MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + 5 ... MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + 7] = R3D_TARGETS
+#define M3D_RT(i)                                                                                  \
+    M3D_RANGE4(MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i), R3D_TARGETS),                             \
+    [MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + MAXWELL3D_RT_FORMAT] = R3D_RTFORMAT | R3D_TARGETS, \
+    M3D_RANGE2(MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + 5, R3D_TARGETS),                         \
+    [MAXWELL3D_RT + MAXWELL3D_RT_STRIDE * (i) + 7] = R3D_TARGETS
 /* n registers from b, all v, as designators: ISO C has no range designator (GNU's [b ... b + n - 1]) */
 #define M3D_RANGE2(b, v)   [(b)] = (v), [(b) + 1] = (v)
 #define M3D_RANGE4(b, v)   M3D_RANGE2(b, v), M3D_RANGE2((b) + 2, v)
@@ -486,38 +487,44 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
     M3D_STREAM(21), M3D_STREAM(22), M3D_STREAM(23), M3D_STREAM(24), M3D_STREAM(25), M3D_STREAM(26), M3D_STREAM(27),
     M3D_STREAM(28), M3D_STREAM(29), M3D_STREAM(30), M3D_STREAM(31),
     [MAXWELL3D_RT_CONTROL] = R3D_RTFORMAT | R3D_TARGETS, M3D_RT(0), M3D_RT(1), M3D_RT(2), M3D_RT(3), M3D_RT(4),
-    M3D_RT(5), M3D_RT(6), M3D_RT(7), [0x3F8 ... 0x3FC] = R3D_TARGETS, [0x48A ... 0x48C] = R3D_TARGETS,
+    M3D_RT(5), M3D_RT(6), M3D_RT(7), M3D_RANGE4(0x3F8, R3D_TARGETS), [0x3FC] = R3D_TARGETS, M3D_RANGE2(0x48A,
+    R3D_TARGETS), [0x48C] = R3D_TARGETS,
     [0x54E] = R3D_TARGETS, [0x574] = R3D_RTFORMAT | R3D_TARGETS, [0x54F] = R3D_PIPEMISC,
     [MAXWELL3D_COLOR_MASK_COMMON] = R3D_BLEND, [MAXWELL3D_BLEND_PER_TARGET_ENABLED] = R3D_BLEND,
-    [MAXWELL3D_BLEND + 1 ... MAXWELL3D_BLEND + 0x10] = R3D_BLEND, [MAXWELL3D_FRAMEBUFFER_SRGB] = R3D_TARGETS,
-    [MAXWELL3D_LOGIC_OP ... MAXWELL3D_LOGIC_OP + 1] = R3D_BLEND,
-    [MAXWELL3D_COLOR_MASK ... MAXWELL3D_COLOR_MASK + 7] = R3D_BLEND,
-    [MAXWELL3D_BLEND_PER_TARGET ... MAXWELL3D_BLEND_PER_TARGET + 0x3F] = R3D_BLEND,
+    M3D_RANGE16(MAXWELL3D_BLEND + 1, R3D_BLEND), [MAXWELL3D_FRAMEBUFFER_SRGB] = R3D_TARGETS,
+    M3D_RANGE2(MAXWELL3D_LOGIC_OP, R3D_BLEND),
+    M3D_RANGE8(MAXWELL3D_COLOR_MASK, R3D_BLEND),
+    M3D_RANGE64(MAXWELL3D_BLEND_PER_TARGET, R3D_BLEND),
     [MAXWELL3D_TESSELLATION] = R3D_PIPEMISC, [MAXWELL3D_POLYGON_MODE_FRONT] = R3D_PIPEMISC,
     [MAXWELL3D_PATCH_VERTICES] = R3D_PIPEMISC,
     M3D_RANGE8(MAXWELL3D_POST_VTG_SHADER_ATTRIB_SKIP_MASK, R3D_PIPEMISC),
     [MAXWELL3D_USER_CLIP_ENABLE] = R3D_PIPEMISC, [MAXWELL3D_PROVOKING_VERTEX] = R3D_PIPEMISC,
     [MAXWELL3D_CONSERVATIVE_RASTER] = R3D_PIPEMISC,
     [MAXWELL3D_VIEWPORT_CLIP_CONTROL] = R3D_PIPEMISC,
-    [MAXWELL3D_TRANSFORM_FEEDBACK_CONTROLS ... MAXWELL3D_TRANSFORM_FEEDBACK_CONTROLS + 0xF] = R3D_XFB | R3D_BIND,
-    [MAXWELL3D_STREAM_OUT_LAYOUT ... MAXWELL3D_STREAM_OUT_LAYOUT + 0x7F] = R3D_XFB,
+    M3D_RANGE16(MAXWELL3D_TRANSFORM_FEEDBACK_CONTROLS, R3D_XFB | R3D_BIND),
+    M3D_RANGE128(MAXWELL3D_STREAM_OUT_LAYOUT, R3D_XFB),
     /* mx_draw_dynamic's: rasterize enable, depth mode, bias enables, the back stencil's reference and masks, the
        surface clip, depth test and write, alpha test, its reference and function, blend constants, the front stencil,
        line widths, the base instance word, bias factor, smooth lines, two-sided stencil and the back's operations,
        bias units, point sprite origin, the OpenGL point center, bias clamp, cull and facing, half-integer
        pixel centers */
-    [0xDF] = R3D_DYNAMIC, [0x35F] = R3D_DYNAMIC, [0x370 ... 0x372] = R3D_DYNAMIC, [0x3D5 ... 0x3D7] = R3D_DYNAMIC,
-    [0x3FE] = R3D_DYNAMIC, [0x4B3] = R3D_DYNAMIC, [0x4BA ... 0x4BB] = R3D_DYNAMIC, [0x4C3 ... 0x4C5] = R3D_DYNAMIC,
-    [0x4C7 ... 0x4CA] = R3D_DYNAMIC, [0x4E0 ... 0x4E7] = R3D_DYNAMIC, [0x4EC ... 0x4ED] = R3D_DYNAMIC,
-    [0x50E] = R3D_DYNAMIC, [0x55B ... 0x55C] = R3D_DYNAMIC, [0x565 ... 0x569] = R3D_DYNAMIC, [0x56F] = R3D_DYNAMIC,
+    [0xDF] = R3D_DYNAMIC, [0x35F] = R3D_DYNAMIC, M3D_RANGE2(0x370, R3D_DYNAMIC), [0x372] = R3D_DYNAMIC,
+    M3D_RANGE2(0x3D5, R3D_DYNAMIC), [0x3D7] = R3D_DYNAMIC,
+    [0x3FE] = R3D_DYNAMIC, [0x4B3] = R3D_DYNAMIC, M3D_RANGE2(0x4BA, R3D_DYNAMIC), M3D_RANGE2(0x4C3, R3D_DYNAMIC),
+    [0x4C5] = R3D_DYNAMIC,
+    M3D_RANGE4(0x4C7, R3D_DYNAMIC), M3D_RANGE8(0x4E0, R3D_DYNAMIC), M3D_RANGE2(0x4EC, R3D_DYNAMIC),
+    [0x50E] = R3D_DYNAMIC, M3D_RANGE2(0x55B, R3D_DYNAMIC), M3D_RANGE4(0x565, R3D_DYNAMIC), [0x569] = R3D_DYNAMIC,
+    [0x56F] = R3D_DYNAMIC,
     [0x581] = R3D_DYNAMIC, [0x597] = R3D_DYNAMIC, [0x61F] = R3D_DYNAMIC,
-    [0x646 ... 0x648] = R3D_DYNAMIC, [0x649] = R3D_DYNAMIC,
-    [0x280 ... 0x33F] = R3D_VIEWPORTS, [0x380 ... 0x3BF] = R3D_VIEWPORTS, [0x64B] = R3D_VIEWPORTS,
-    [0x7C0 ... 0x7FF] = R3D_VBUF, [0x591 ... 0x592] = R3D_INDEX, [0x5F2 ... 0x5F6] = R3D_INDEX,
+    M3D_RANGE2(0x646, R3D_DYNAMIC), [0x648] = R3D_DYNAMIC, [0x649] = R3D_DYNAMIC,
+    M3D_RANGE128(0x280, R3D_VIEWPORTS), M3D_RANGE64(0x300, R3D_VIEWPORTS), M3D_RANGE64(0x380, R3D_VIEWPORTS),
+    [0x64B] = R3D_VIEWPORTS,
+    M3D_RANGE64(0x7C0, R3D_VBUF), M3D_RANGE2(0x591, R3D_INDEX), M3D_RANGE4(0x5F2, R3D_INDEX), [0x5F6] = R3D_INDEX,
     /* the bindings' registers: each capture buffer's enable, address and size (its start offset acts, above), the
        sampler index mode, the TSC and TIC pools and the texture bank */
-    [0xE0 ... 0xE3] = R3D_BIND, [0xE8 ... 0xEB] = R3D_BIND, [0xF0 ... 0xF3] = R3D_BIND, [0xF8 ... 0xFB] = R3D_BIND,
-    [0x48D] = R3D_BIND, [0x557 ... 0x559] = R3D_BIND, [0x55D ... 0x55F] = R3D_BIND, [0x982] = R3D_BIND};
+    M3D_RANGE4(0xE0, R3D_BIND), M3D_RANGE4(0xE8, R3D_BIND), M3D_RANGE4(0xF0, R3D_BIND), M3D_RANGE4(0xF8, R3D_BIND),
+    [0x48D] = R3D_BIND, M3D_RANGE2(0x557, R3D_BIND), [0x559] = R3D_BIND, M3D_RANGE2(0x55D, R3D_BIND),
+    [0x55F] = R3D_BIND, [0x982] = R3D_BIND};
 #undef M3D_STREAM
 #undef M3D_RT
 /* inline indices packed in one word, 32 / bits of them, the low ones first (InlineIndex4x8, InlineIndex2x16,

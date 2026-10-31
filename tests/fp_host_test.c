@@ -233,9 +233,9 @@ static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
                     break;
                 default: break;
             }
-            __builtin_memcpy(x + i * bytes, width == 32 ? (const void*)&(u32){(u32)a[i]} : (const void*)&a[i], bytes);
-            __builtin_memcpy(y + i * bytes, width == 32 ? (const void*)&(u32){(u32)b[i]} : (const void*)&b[i], bytes);
-            __builtin_memcpy(z + i * bytes, width == 32 ? (const void*)&(u32){(u32)d[i]} : (const void*)&d[i], bytes);
+            memcpy(x + i * bytes, width == 32 ? (const void*)&(u32){(u32)a[i]} : (const void*)&a[i], bytes);
+            memcpy(y + i * bytes, width == 32 ? (const void*)&(u32){(u32)b[i]} : (const void*)&b[i], bytes);
+            memcpy(z + i * bytes, width == 32 ? (const void*)&(u32){(u32)d[i]} : (const void*)&d[i], bytes);
             switch (kinds[k].helper) {
                 case 0: want[i] = snx_fp_binary(&soft, a[i], b[i], width, kinds[k].op); break;
                 case 1: want[i] = snx_fp_fma(&soft, a[i], b[i], d[i], width); break;
@@ -250,7 +250,7 @@ static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
         g_test.checks++;
         for (i = 0; i < count; ++i) {
             u64 got = 0;
-            __builtin_memcpy(&got, out + i * bytes, bytes); /* little-endian hosts */
+            memcpy(&got, out + i * bytes, bytes); /* little-endian hosts */
             if (got != want[i]) {
                 report("lanes", width, (int)k, a[i], b[i], d[i], fpcr, fpsr, got, want[i], host.fpsr, soft.fpsr);
                 bad = 1;
