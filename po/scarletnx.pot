@@ -3010,20 +3010,28 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%zu release"
+msgid "%s: %zu release"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%zu releases"
+msgid "%s: %zu releases"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Failed"
+msgid "No releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Fetch Again"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Loading..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Failed"
 msgstr ""
 
 #: src/gui/main.c
