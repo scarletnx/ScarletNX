@@ -3010,6 +3010,27 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s, %zu downloads. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest, Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Prerelease"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: %zu release"
 msgstr ""
 
@@ -3035,16 +3056,16 @@ msgid "Failed"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Latest"
+msgid "Less"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Prerelease"
+msgid "Only its latest and the recommended release"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s, %zu downloads. %s"
+msgid "More (%zu)"
 msgstr ""
 
 #: src/gui/main.c

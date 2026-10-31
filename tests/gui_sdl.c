@@ -2620,7 +2620,11 @@ static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse*
         body = "[{\"tag_name\": \"T30\", \"name\": \"Turnip T30\", \"prerelease\": false, \"body\": \"Notes\","
                " \"published_at\": \"2026-08-17T12:38:01Z\", \"assets\": [{\"name\": \"turnip.zip\", \"size\": 300,"
                " \"browser_download_url\": \"https://example.invalid/turnip.zip\"}, {\"name\": \"gone.zip\","
-               " \"size\": 300, \"browser_download_url\": \"https://example.invalid/gone.zip\"}]}]";
+               " \"size\": 300, \"browser_download_url\": \"https://example.invalid/gone.zip\"}]},"
+               " {\"tag_name\": \"T29\", \"name\": \"Turnip T29\", \"prerelease\": false, \"assets\": []},"
+               " {\"tag_name\": \"vturnip_mrpurple_T23\", \"name\": \"Turnip T23\", \"prerelease\": false,"
+               " \"assets\": []},"
+               " {\"tag_name\": \"T20\", \"name\": \"Turnip T20\", \"prerelease\": false, \"assets\": []}]";
     else if (strstr(url, "/repos/crueter/GameHub-8Elite-Drivers/releases"))
         body = "[{\"tag_name\": \"842.8\", \"name\": \"842.8\", \"prerelease\": false, \"body\": \"\","
                " \"published_at\": \"2025-10-27T00:00:00Z\", \"assets\": [{\"name\": \"adreno-driver-842.8.zip\","
@@ -2668,11 +2672,12 @@ static void download_driver(App* app, const char* temporary) {
     app->https_get = fake_get;
     open_drivers(app, NULL, NULL, 0);
     assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->packages_count);
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Adreno (TM) 740"); /* Eden recommends Mr. Purple T23 */
     app->editor.row = 1; /* Download Driver */
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_FETCH);
     pump_until(app, &app->fetching);
-    assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 1);
+    assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 4);
     assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
            strstr(app->fetch_error[2], "API rate limit exceeded"));
     assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
@@ -2682,7 +2687,7 @@ static void download_driver(App* app, const char* temporary) {
     for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
         int group;
         assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i]);
-        if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 0) row = (int)i;
+        if (app->fetch_release[i] == 0 && app->fetch_repo[i] == 0) row = (int)i;
         if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 1) blob = (int)i;
         if (app->fetch_repo[i] == 2) /* the failed one: a row that fetches again, its failure its help */
             assert(app->fetch_release[i] < 0 && !strcmp(app->fetch_label[i], "Fetch Again") &&
@@ -2693,8 +2698,21 @@ static void download_driver(App* app, const char* temporary) {
         int group;
         assert(grouped_entry_row(app, 0, &group) < 0 && !group); /* the first entry the first title */
     }
-    assert(row >= 0 && blob >= 0 && strstr(app->fetch_title[0], ": 1 release") &&
+    assert(row >= 0 && blob >= 0 && strstr(app->fetch_title[0], ": 4 releases") &&
            !strcmp(app->fetch_form.value[row], "Latest") && app->fetch_label[row][0] != ' ');
+    /* folded as Eden's fetcher: the latest, the recommended, More; More opens every release, Less folds them again */
+    assert(row == 0 && app->fetch_release[1] == 2 && !strcmp(app->fetch_form.value[1], "Recommended") &&
+           app->fetch_release[2] == GUI_FETCH_MORE && !strcmp(app->fetch_label[2], "More (2)") &&
+           app->fetch_repo[3] == 1);
+    app->editor.row = 2;
+    key(app, SDLK_RETURN);
+    assert(app->fetch_open[0] && app->editor.row == 2 && app->fetch_release[2] == 2 &&
+           !strcmp(app->fetch_form.value[2], "Recommended") && app->fetch_release[4] == GUI_FETCH_LESS &&
+           !strcmp(app->fetch_label[4], "Less"));
+    render(app);
+    app->editor.row = 4;
+    key(app, SDLK_RETURN);
+    assert(!app->fetch_open[0] && app->editor.row == 2 && app->fetch_release[2] == GUI_FETCH_MORE);
     /* the GPU maker's own, marked; its download failing, said */
     app->editor.row = blob;
     key(app, SDLK_RETURN);
