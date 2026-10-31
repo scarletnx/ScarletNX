@@ -244,7 +244,7 @@ typedef struct {
     char shown[GUI_FREEDRENO_ROWS][200];
 } GuiFreedrenoForm;
 /* Download Driver's values: a repository's state, a release's Latest or Prerelease */
-#define GUI_FETCH_ROWS   (GUI_DRIVER_REPOS * 31) /* a repository's row and 30 releases, as many as GitHub lists */
+#define GUI_FETCH_ROWS   (GUI_DRIVER_REPOS * 30) /* a repository's 30 releases, as many as GitHub lists */
 #define GUI_FETCH_ASSETS 16                      /* the downloads of a release its box lists */
 enum { GUI_FETCH_NONE, GUI_FETCH_LOADING, GUI_FETCH_LISTED, GUI_FETCH_FAILED };
 typedef struct {
@@ -578,6 +578,7 @@ typedef struct App {
     GuiFetchForm fetch_form;
     GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
     char fetch_label[GUI_FETCH_ROWS][180];
+    char fetch_title[GUI_DRIVER_REPOS][240]; /* each repository's box's head */
     char fetch_about[GUI_FETCH_ROWS][900];
     int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
     char asset_labels[GUI_FETCH_ASSETS][240];
@@ -8961,30 +8962,39 @@ static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFe
     SDL_DetachThread(t);
     return 1;
 }
-/* the page's rows: a repository each, its state, then its releases, newest or as GitHub orders them */
+/* the page's rows: each repository's releases, newest or as GitHub orders them, else one row saying its list loads,
+   failed (Select fetches it again) or has none; its title over them (fetch_entries) */
 static int fetch_fill(App* app) {
     int r = 0;
     memset(&app->fetch_form, 0, sizeof app->fetch_form);
     for (int i = 0; i < GUI_DRIVER_REPOS && r < GUI_FETCH_ROWS; ++i) {
         const GuiDriverReleases* list = &app->fetch_lists[i];
-        snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", gui_driver_repos[i].name);
-        if (app->fetch_state[i] == GUI_FETCH_LISTED)
-            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r],
-                     list->count == 1 ? snx_tr("%zu release") : snx_tr("%zu releases"), list->count);
+        int listed = app->fetch_state[i] == GUI_FETCH_LISTED, failed = app->fetch_state[i] == GUI_FETCH_FAILED;
+        if (listed)
+            snprintf(app->fetch_title[i], sizeof app->fetch_title[i],
+                     list->count == 1 ? snx_tr("%s: %zu release") : snx_tr("%s: %zu releases"),
+                     gui_driver_repos[i].name, list->count);
         else
-            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s",
-                     app->fetch_state[i] == GUI_FETCH_FAILED ? snx_tr("Failed") : snx_tr("Loading..."));
-        snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s",
-                 app->fetch_state[i] == GUI_FETCH_FAILED ? app->fetch_error[i] : gui_driver_repos[i].path);
-        app->fetch_keys[r] =
-            page_row(app->fetch_label[r], offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
-                     sizeof app->fetch_form.value[0], app->fetch_about[r]);
-        app->fetch_repo[r] = i;
-        app->fetch_release[r++] = -1;
-        for (size_t k = 0; app->fetch_state[i] == GUI_FETCH_LISTED && k < list->count && r < GUI_FETCH_ROWS; ++k, ++r) {
+            snprintf(app->fetch_title[i], sizeof app->fetch_title[i], "%s", gui_driver_repos[i].name);
+        if (!listed || !list->count) {
+            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s",
+                     listed   ? snx_tr("No releases")
+                     : failed ? snx_tr("Fetch Again")
+                              : snx_tr("Loading..."));
+            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s", failed ? snx_tr("Failed") : "");
+            snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s",
+                     failed ? app->fetch_error[i] : gui_driver_repos[i].path);
+            app->fetch_keys[r] = page_row(app->fetch_label[r],
+                                          offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
+                                          sizeof app->fetch_form.value[0], app->fetch_about[r]);
+            app->fetch_repo[r] = i;
+            app->fetch_release[r++] = -1;
+            continue;
+        }
+        for (size_t k = 0; k < list->count && r < GUI_FETCH_ROWS; ++k, ++r) {
             const GuiDriverRelease* rel = &list->releases[k];
             char* c;
-            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "  %s", rel->title);
+            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", rel->title);
             snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s",
                      rel->latest       ? snx_tr("Latest")
                      : rel->prerelease ? snx_tr("Prerelease")
@@ -9001,6 +9011,38 @@ static int fetch_fill(App* app) {
         }
     }
     return r;
+}
+/* Download Driver's screen, as Folders': each repository's title over its rows, a box each (grouped_frames). The
+   list's entries, row r's, and entry e's row (-1 a title, its repository in *group) */
+static int fetch_entries(const App* app) {
+    int rows = gui_editor_rows(&app->editor);
+    return rows ? rows + app->fetch_repo[rows - 1] + 1 : 0;
+}
+static int fetch_entry(const App* app, int r) { return r + app->fetch_repo[r] + 1; }
+static int fetch_entry_row(const App* app, int e, int* group) {
+    int r, rows = gui_editor_rows(&app->editor);
+    *group = -1;
+    for (r = 0; r < rows; ++r) {
+        *group = app->fetch_repo[r];
+        if (fetch_entry(app, r) == e) return r;
+        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_repo[r - 1] != app->fetch_repo[r])) return -1;
+    }
+    return -1;
+}
+/* a screen of groups, a box each, their titles among its rows' entries: Folders and Download Driver. The entries, row
+   r's, entry e's row (-1 a title or Folders' blank, its group in *group) and how many groups there are */
+static bool form_grouped(const App* app) { return app->form == GUI_FORM_FOLDERS || app->form == GUI_FORM_FETCH; }
+static int grouped_entries(const App* app) {
+    return app->form == GUI_FORM_FETCH ? fetch_entries(app) : folder_entries(app);
+}
+static int grouped_entry(const App* app, int r) {
+    return app->form == GUI_FORM_FETCH ? fetch_entry(app, r) : folder_entry(app, r);
+}
+static int grouped_entry_row(const App* app, int e, int* group) {
+    return app->form == GUI_FORM_FETCH ? fetch_entry_row(app, e, group) : folder_entry_row(app, e, group);
+}
+static int grouped_groups(const App* app) {
+    return app->form == GUI_FORM_FETCH ? GUI_DRIVER_REPOS : GUI_FOLDER_GROUPS + 1;
 }
 /* the page's note: the GPU and the driver Eden recommends for it, then what the last answer or press did */
 static void fetch_head(App* app, char* out, size_t size) {
@@ -10472,7 +10514,7 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     int theme = app->form == GUI_FORM_THEME, g;
     place_screen(app, &f->place, shown_keys(app, keys, sizeof keys),
                  GUI_SHOWS_TABS | GUI_SHOWS_SIDE | (theme ? GUI_SHOWS_WIDE : 0));
-    if (app->form == GUI_FORM_FOLDERS) { /* the whole screen, as a load's: its boxes the groups, none beside them */
+    if (form_grouped(app)) { /* the whole screen, as a load's: its boxes the groups, none beside them */
         int top = f->place.list.y,
             bottom = SDL_max(f->place.list.y + f->place.list.h,
                              SDL_max(f->place.side.y + f->place.side.h, f->place.status.y + f->place.status.h));
@@ -10483,8 +10525,8 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         f->place.side = f->place.list; /* no side box: the open group's rows the whole column, the groups out */
         f->place.list = gui_rect(f->place.list.x, f->place.list.y, 0, 0);
     }
-    app->form_beside = !theme && app->form != GUI_FORM_FOLDERS && f->place.list.w && f->place.list.h &&
-                       f->place.side.w && f->place.side.h;
+    app->form_beside =
+        !theme && !form_grouped(app) && f->place.list.w && f->place.list.h && f->place.side.w && f->place.side.h;
     { /* the note whole, a half step under the text's letters */
         int s = app->scale, w = inner(app, f->place.side).w, line, half = text_half(app);
         rows = note ? wrap_rows(app, note, w / cell_w(app), 0) : 1;
@@ -10493,7 +10535,7 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         f->info = gui_rect(f->place.side.x, f->place.side.y + f->place.side.h - rows * line - 4 * s, f->place.side.w,
                            rows * line + 2 * s);
     }
-    top = f->place.side.y + (app->form == GUI_FORM_FOLDERS ? 2 * app->scale : head_h(app) + 4 * app->scale);
+    top = f->place.side.y + (form_grouped(app) ? 2 * app->scale : head_h(app) + 4 * app->scale);
     ui_form_list_layout(f->place.list, app->scale, f->left);
     ui_form_side_layout(gui_rect(f->place.side.x + cell_w(app), top, f->place.side.w - 2 * cell_w(app),
                                  f->info.y - top - 2 * app->scale),
@@ -10520,9 +10562,9 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
                                              ui_form_side_row(f->right, app->scale, UI_FORM_SIDE_ROWS, 0).y;
         return;
     }
-    count = app->form == GUI_FORM_FOLDERS ? folder_entries(app) : gui_editor_rows(&app->editor);
+    count = form_grouped(app) ? grouped_entries(app) : gui_editor_rows(&app->editor);
     f->right_lists[UI_FORM_SIDE_ROWS].focus =
-        (size_t)(app->form == GUI_FORM_FOLDERS ? folder_entry(app, app->editor.row) : app->editor.row);
+        (size_t)(form_grouped(app) ? grouped_entry(app, app->editor.row) : app->editor.row);
     list_follow(app, GUI_LIST_FORM_SIDE, ui_form_side_follow, ui_form_side_row, f->right, UI_FORM_SIDE_ROWS,
                 (size_t)count, &f->right_lists[UI_FORM_SIDE_ROWS]);
 }
@@ -10689,23 +10731,24 @@ bool ui_form_side_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* 
     const GuiEditor* e;
     int r, group;
     if (app->form == GUI_FORM_THEME) return false;
-    if (app->form != GUI_FORM_FOLDERS) {
+    if (!form_grouped(app)) {
         e = form_rows(app, &peek);
         return form_row_info(app, e, row, form_labels(e), width, info);
     }
-    if (row >= (size_t)folder_entries(app)) return false;
-    if ((r = folder_entry_row(app, (int)row, &group)) < 0 &&
+    if (row >= (size_t)grouped_entries(app)) return false;
+    if ((r = grouped_entry_row(app, (int)row, &group)) < 0 && app->form == GUI_FORM_FOLDERS &&
         group > GUI_FOLDER_GROUPS) { /* the blank before Defaults */
         info->label = "";
         info->attr = UI_ATTR_LABEL;
         return true;
     }
     if (r < 0) { /* a group's title, over its rows */
-        info->label = snx_tr(group_titles[group]);
+        info->label = app->form == GUI_FORM_FETCH ? app->fetch_title[group] : snx_tr(group_titles[group]);
         info->attr = UI_ATTR_TITLE;
         return true;
     }
-    return form_row_info(app, &app->editor, (size_t)r, folder_labels(app), width, info);
+    return form_row_info(app, &app->editor, (size_t)r,
+                         app->form == GUI_FORM_FETCH ? form_labels(&app->editor) : folder_labels(app), width, info);
 }
 /* what the bar says of the focused row: the note of the last key, else the row's help */
 static const char* form_about(const App* app, SDL_Color* color) {
@@ -10749,10 +10792,10 @@ static void form_swatches(App* app, const GuiFormBoxes* f) {
     }
     if (l->shift) ui_clip(app, NULL);
 }
-/* Folders' groups, a box each as far as it shows: from its title down to its last row shown, half a cell wider
-   either side, Defaults' too, the right one at the rows' end beside a scroll bar; with the rows as they scroll, inside
-   the list; drawn under them */
-static void folder_frames(App* app, const GuiFormBoxes* f) {
+/* a grouped screen's groups (form_grouped), a box each as far as it shows: from its title down to its last row shown,
+   half a cell wider either side, Folders' Defaults too, the right one at the rows' end beside a scroll bar; with the rows
+   as they scroll, inside the list; drawn under them */
+static void grouped_frames(App* app, const GuiFormBoxes* f) {
     const UiList* l = &f->right_lists[UI_FORM_SIDE_ROWS];
     size_t i, shown = ui_form_side_shown(f->right, app->scale, UI_FORM_SIDE_ROWS), n = shown + (l->shift > 0);
     int g, group, cw = cell_w(app), bw = ui_bar_width(app, l->count, shown);
@@ -10760,10 +10803,10 @@ static void folder_frames(App* app, const GuiFormBoxes* f) {
     inside.x -= cw / 2;
     inside.w += cw;
     if (l->shift) ui_clip(app, &inside);
-    for (g = 0; g <= GUI_FOLDER_GROUPS; ++g) {
+    for (g = 0; g < grouped_groups(app); ++g) {
         GuiRect a = {0}, z = {0}, box;
-        for (i = 0; i < n && l->first + i < (size_t)folder_entries(app); ++i) {
-            folder_entry_row(app, (int)(l->first + i), &group);
+        for (i = 0; i < n && l->first + i < (size_t)grouped_entries(app); ++i) {
+            grouped_entry_row(app, (int)(l->first + i), &group);
             if (group != g) continue;
             z = row_drawn(app, ui_form_side_row, ui_form_side_shown, f->right, UI_FORM_SIDE_ROWS, l, i);
             if (!a.h) a = z;
@@ -10904,8 +10947,8 @@ static void draw_form(App* app) {
         wrap_in(app, gui_rect(p.x, y, p.w, f.place.side.y + f.place.side.h - y), p.x, y, line, 1, rgb(app->theme.soft));
     } else {
         int g = app->form == GUI_FORM_SETTINGS ? app->editor.row : app->group;
-        if (app->form == GUI_FORM_FOLDERS) /* its groups' titles are in its rows */
-            folder_frames(app, &f);
+        if (form_grouped(app)) /* its groups' titles are in its rows */
+            grouped_frames(app, &f);
         else
             pane(app, f.place.side,
                  app->form == GUI_FORM_GROUP && app->page >= 0 ? snx_tr(app->settings.keys[app->page].key)
@@ -11051,11 +11094,11 @@ void ui_form_list_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
     open_group(app, r);
 }
 /* FormSide's row under the pointer: where the keys move in its rows, the focus on it as it goes over it and a click on
-   the focused one selecting it; on the groups a click opens the focused group, on that row. Folders' groups' titles
-   take nothing */
+   the focused one selecting it; on the groups a click opens the focused group, on that row. A grouped screen's
+   titles take nothing */
 void ui_form_side_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
     int r = (int)row, group;
-    if (app->form == GUI_FORM_FOLDERS && (r = folder_entry_row(app, r, &group)) < 0) return;
+    if (form_grouped(app) && (r = grouped_entry_row(app, r, &group)) < 0) return;
     if (!(hit & UI_HIT_CLICK)) {
         if (app->form != GUI_FORM_SETTINGS) app->editor.row = r;
         return;

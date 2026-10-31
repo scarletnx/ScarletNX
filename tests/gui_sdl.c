@@ -2677,13 +2677,24 @@ static void download_driver(App* app, const char* temporary) {
            strstr(app->fetch_error[2], "API rate limit exceeded"));
     assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
     assert(strstr(app->editor.note, "GPU: ") && strstr(app->editor.note, "Recommended: "));
-    render(app); /* its rows drawn: a repository each, its releases under it */
+    render(app); /* as Folders: a box a repository, its title over its rows */
+    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + GUI_DRIVER_REPOS);
     for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
+        int group;
+        assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i]);
         if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 0) row = (int)i;
         if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 1) blob = (int)i;
+        if (app->fetch_repo[i] == 2) /* the failed one: a row that fetches again, its failure its help */
+            assert(app->fetch_release[i] < 0 && !strcmp(app->fetch_label[i], "Fetch Again") &&
+                   !strcmp(app->fetch_form.value[i], "Failed") && strstr(app->fetch_about[i], "HTTP 403"));
+        if (app->fetch_repo[i] == 4) assert(!strcmp(app->fetch_label[i], "No releases"));
     }
-    assert(row >= 0 && blob >= 0 && !strcmp(app->fetch_form.value[0], "1 release") &&
-           !strcmp(app->fetch_form.value[row], "Latest"));
+    {
+        int group;
+        assert(grouped_entry_row(app, 0, &group) < 0 && !group); /* the first entry the first title */
+    }
+    assert(row >= 0 && blob >= 0 && strstr(app->fetch_title[0], ": 1 release") &&
+           !strcmp(app->fetch_form.value[row], "Latest") && app->fetch_label[row][0] != ' ');
     /* the GPU maker's own, marked; its download failing, said */
     app->editor.row = blob;
     key(app, SDLK_RETURN);
