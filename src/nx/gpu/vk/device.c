@@ -572,6 +572,13 @@ static int create_device(void) {
                                   .pVulkanFunctions = &vf,
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    {
+        /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
+        VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
+        LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
+    }
     LOG("vulkan: %s, Vulkan %u.%u.%u, driver %08x, graphics queue family %u, compute %u%s\n", g_vk.props.deviceName,
         VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion),
         VK_API_VERSION_PATCH(g_vk.props.apiVersion), g_vk.props.driverVersion, g_vk.gfx_family, g_vk.compute_family,
@@ -776,6 +783,7 @@ int vk_init(void) {
     }
     vk_renderdoc_load(); /* its capture layer is enabled when the instance is created */
     if (!create_instance()) return 0;
+    backend_vk_check(); /* the instance opened the driver: the one asked for, or the run ends */
     if (!g_opt_headless && !backend_vk_surface(g_vk.instance, &g_vk.surface)) {
         WARN("vulkan: the window backend could not create a surface\n");
         return 0;

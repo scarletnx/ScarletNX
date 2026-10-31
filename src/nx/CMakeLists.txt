@@ -83,7 +83,7 @@ set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platfor
              runtime/platform/backend/gamepad.c runtime/platform/tracy.c
              runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c runtime/platform/touch.c
              runtime/platform/ui.c runtime/platform/vpad.c runtime/platform/fatal_screen.c
-             runtime/platform/prepare_screen.c
+             runtime/platform/prepare_screen.c runtime/platform/gpu_driver_load.c
              "${PROJECT_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
