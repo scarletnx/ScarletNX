@@ -326,6 +326,61 @@ static void test_account_id(void) {
     puts("PASS the network service account id, as Eden makes it from the uid");
 }
 
+/* LoadIdTokenCacheDeprecated (3) or LoadIdTokenCache (4) into a buffer of size at 0x100 */
+static void token_request(Request* r, u32 cmd, u64 size) {
+    request(r, cmd);
+    r->c.nb = 1;
+    r->c.b[0].addr = 0x100;
+    r->c.b[0].size = size;
+}
+/* the id token: with none, 3 writes nothing and answers 0, and 4 (19.0.0+) answers a run of 0x100 zeros, as much of it
+   as the buffer takes; a token is written as far as the buffer takes, zeros after it to the buffer's end, and its
+   length answered */
+static void test_id_token(void) {
+    static u8 memory[0x400];
+    static const char token[] = "eyJhbGciOiJSUzI1NiJ9";
+    char why[512];
+    SvcObj *acc = new_acc(), *manager;
+    Request r;
+    u32 cmd;
+    int i;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 0x200);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0 && memory[0x100] == 0xAA && memory[0x2FF] == 0xAA);
+    token_request(&r, 4, 0x200);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0x100);
+    for (i = 0; i < 0x100; i++) CHECK(memory[0x100 + i] == 0);
+    CHECK(memory[0x200] == 0xAA);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 4, 0x40);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0x40 && memory[0x13F] == 0 && memory[0x140] == 0xAA);
+    /* a token, which both commands answer alike */
+    memcpy(g_hle.acc.token, token, sizeof token);
+    for (cmd = 3; cmd <= 4; cmd++) {
+        memset(memory, 0xAA, sizeof memory);
+        token_request(&r, cmd, 0x40);
+        call(manager, &r);
+        CHECK(reply32(&r, 0) == sizeof token - 1 && !memcmp(memory + 0x100, token, sizeof token - 1));
+        for (i = (int)sizeof token - 1; i < 0x40; i++) CHECK(memory[0x100 + i] == 0);
+        CHECK(memory[0x140] == 0xAA);
+    }
+    /* longer than the buffer: as far as it takes */
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 8);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 8 && !memcmp(memory + 0x100, token, 8) && memory[0x108] == 0xAA);
+    memset(g_hle.acc.token, 0, sizeof g_hle.acc.token);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS the id token: none, as 3 and 4 answer it apart, and one as far as the buffer takes");
+}
+
 /* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
    pid in, nothing out, as on the console */
 static void test_initialize_application_info_v2(void) {
@@ -618,6 +673,7 @@ int main(void) {
     test_one_user();
     test_open_context();
     test_account_id();
+    test_id_token();
     g_mem = calloc(1, 0x30000); /* user 1 alone, with no picture of its own */
     CHECK(g_mem != NULL);
     test_picture();

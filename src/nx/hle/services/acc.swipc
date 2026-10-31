@@ -45,12 +45,14 @@ interface nn::account::profile::IProfile {
     [11] LoadImage(buffer<u8, 6> image) -> u32 size;
 }
 
-# the user's network service account: there, but its id token never arrives
+# the user's network service account: there, with the id token an account server issued it, none here
 interface nn::account::baas::IManagerForApplication {
     @stub [0] CheckAvailability();
     [1] GetAccountId() -> nn::account::NetworkServiceAccountId id;
     [2] EnsureIdTokenCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
-    @stub [3] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
+    # LoadIdTokenCache before 19.0.0, which took its name for 4
+    [3] LoadIdTokenCacheDeprecated(buffer<u8, 6> token) -> u32 size;
+    [4] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
     # the online account's cached user resource: NasUserBaseForApplication (0x68 bytes) and a second buffer, both
     # nought (none of its details is known here), and the account's id
     [130] GetNintendoAccountUserResourceCacheForApplication(buffer<nn::account::NasUserBaseForApplication, 0x1a> base,

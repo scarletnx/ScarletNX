@@ -16,6 +16,7 @@
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_NOT_CONNECTED   RC(110, 300) /* nifm's: there is no network to reach the account server */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
+#define ACC_EMPTY_TOKEN     0x100        /* the zeros LoadIdTokenCache (19.0.0+) answers with no token */
 
 /* a Uid's bytes are its two halves, little-endian as the game keeps them, and users.c's are host numbers */
 static void acc_uid_get(const nn_account_Uid* uid, u64 v[2]) {
@@ -233,6 +234,33 @@ static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResource
 static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
     (void)self;
     *context = nn_account_detail_IAsyncContext_new();
+    R_SUCCEED();
+}
+/* The cached token, as far as the buffer takes, and zeros to its end: the guest reads it back as a C string, which
+   would run into what the buffer held before. With none, 4 answers a run of zeros of that length and 3 writes nothing
+   and answers 0, as rEden keeps them apart (acc.h's IdTokenCacheBuffer: a game tells the two apart) */
+static void acc_load_token(IpcBuf buffer, int pad_when_empty, u32* size) {
+    const char* end = (const char*)memchr(g_hle.acc.token, 0, sizeof g_hle.acc.token);
+    size_t n = end ? (size_t)(end - g_hle.acc.token) : sizeof g_hle.acc.token, cap = (size_t)buffer.size;
+    if (!n) {
+        n = pad_when_empty ? (cap < ACC_EMPTY_TOKEN ? cap : ACC_EMPTY_TOKEN) : 0;
+        memset(GP(buffer.addr), 0, n);
+        *size = (u32)n;
+        return;
+    }
+    if (n > cap) n = cap;
+    memcpy(GP(buffer.addr), g_hle.acc.token, n);
+    memset(GP(buffer.addr + n), 0, cap - n);
+    *size = (u32)n;
+}
+static int nn_account_baas_IManagerForApplication_LoadIdTokenCacheDeprecated(SvcObj* self, IpcBuf token, u32* size) {
+    (void)self;
+    acc_load_token(token, 0, size);
+    R_SUCCEED();
+}
+static int nn_account_baas_IManagerForApplication_LoadIdTokenCache(SvcObj* self, IpcBuf token, u32* size) {
+    (void)self;
+    acc_load_token(token, 1, size);
     R_SUCCEED();
 }
 /* what a program does before ExecuteProgram: the open user kept for the next one (Eden's StoreOpenedUsers) */
