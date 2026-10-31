@@ -5217,6 +5217,51 @@ int main(int argc, char** argv) {
         free(moved);
         free(laid_data);
         free(laid);
+        /* save_layout=global, the Settings' default: each game's own saves, listed with where the data folder's save/
+           keeps them by user and title, and moved there; a System save, temporary storage and an empty folder stay */
+        {
+            static const char* const kept[] = {"user.0123456789abcdeffedcba9876543210/u.bin", "device/d.bin",
+                                               "cache/c.bin", "system/s.bin", "temp/t.bin"};
+            static const char* const now[] = {"user.0123456789abcdeffedcba9876543210/0100000000ABC000/u.bin",
+                                              "device/0100000000ABC000/d.bin", "cache/0100000000ABC000/0/c.bin"};
+            char *data_saves = snx_path_join(temporary, "saves data"), path[SNX_PATH_SIZE];
+            char *game = snx_format("%s/0100000000ABC000", app.games_dir), *was_data = app.data_dir;
+            int had_games = snx_is_dir(app.games_dir);
+            GuiCleaned done = {0};
+            size_t i;
+            for (i = 0; i < sizeof kept / sizeof *kept; ++i) {
+                char* dir;
+                assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/%s", game, kept[i]));
+                dir = snx_dirname(path);
+                assert(!snx_mkdirs(dir) && !snx_write_file(path, "save", 4));
+                free(dir);
+            }
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/bcat", game) &&
+                   !snx_mkdirs(path));
+            app.data_dir = data_saves;
+            left_behind(&app);
+            assert(app.lefts == 3 &&
+                   strstr(app.left, "0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210") &&
+                   strstr(app.left, "saves data/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000") &&
+                   strstr(app.left, "saves data/save/cache/0100000000ABC000/0") && !strstr(app.left, "/save/system") &&
+                   !strstr(app.left, "/save/temp") && !strstr(app.left, "/save/bcat"));
+            assert(move_old(&app, &done, true) == 3);
+            for (i = 0; i < sizeof now / sizeof *now; ++i) {
+                assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, now[i]));
+                assert(snx_is_file(path));
+            }
+            assert(!snx_path_format(path, sizeof path, "%s/0100000000ABC000_data/save/system/s.bin", game) &&
+                   snx_is_file(path));
+            gui_cleaned_free(&done);
+            left_behind(&app);
+            assert(app.lefts == 0);
+            assert(!snx_remove_tree(game) && !snx_remove_tree(data_saves));
+            if (!had_games) assert(!snx_remove_tree(app.games_dir));
+            app.data_dir = was_data;
+            left_behind(&app);
+            free(game);
+            free(data_saves);
+        }
 #ifdef SNX_XDG
         /* scarletnx --migrate, the same without the menu, in the XDG folders (Linux's): each entry a line and where it
            goes, nothing touched; =yes moves them; any other value refused, naming it */

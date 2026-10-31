@@ -1655,7 +1655,7 @@ msgstr ""
 msgid "Game"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/common/utilities/setup.c
 msgid "Saves"
 msgstr ""
 
@@ -5263,6 +5263,14 @@ msgstr ""
 
 #: src/common/utilities/setup.c
 msgid "1x to 4x: the number Auto gave that screen"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "each game's own, in its <id>_data/save/"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "the data folder's save/, by user and title: Move Old Files moves them"
 msgstr ""
 
 #: src/nx/runtime/settings.txt
