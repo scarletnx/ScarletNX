@@ -596,6 +596,43 @@ static void test_system_service(void) {
     puts("PASS acc:u1's own table: the users, ListQualifiedUsers at 140, no pin code");
 }
 
+/* acc:su, the administrator's: acc:u1's users and ListQualifiedUsers at 140, and a thumbnail for the application it
+   names, none refused before the user and the size */
+static void test_administrator_service(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* acc = new_acc_admin();
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 0);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 1);
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 140);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x20;
+    call(acc, &r);
+    CHECK(same_uid(memory + 0x100, g_user_id) && memory[0x110] == 0 && memory[0x120] == 0xAA);
+    request(&r, 110);
+    r.c.na = 1;
+    r.c.a[0].addr = 0x100;
+    r.c.a[0].size = 0x24000;
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 22)); /* no application, and no user either */
+    snx_st_le64(r.raw + 16, 0x0100000000010000ull);
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 20));
+    acc_uid_put(r.raw, g_user_id);
+    call(acc, &r);
+    r.c.a[0].size = 0x100;
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 32));
+    request(&r, 401);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 0);
+    svcobj_unref(acc);
+    puts("PASS acc:su's own table: the users, ListQualifiedUsers at 140, a thumbnail for an application");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -780,6 +817,7 @@ int main(void) {
     test_account_command_replies();
     test_users();
     test_system_service();
+    test_administrator_service();
     test_first_uid();
     test_start();
     test_rename();

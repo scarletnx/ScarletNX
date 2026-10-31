@@ -60,6 +60,25 @@ interface nn::account::IAccountServiceForSystemService is acc:u1 {
     [401] GetPinCodeLength() -> u32 length;
 }
 
+# acc:su, the administrator's (SwitchBrew acc:su): acc:u1's, the thumbnail for the application named, and from 200 the
+# users' registration
+interface nn::account::IAccountServiceForAdministrator is acc:su {
+    [0] GetUserCount() -> i32 count;
+    [1] GetUserExistence(nn::account::Uid uid) -> b8 exists;
+    [2] ListAllUsers(array<nn::account::Uid, 0xa> users);
+    [3] ListOpenUsers(array<nn::account::Uid, 0xa> users);
+    [4] GetLastOpenedUser() -> nn::account::Uid uid;
+    [5] GetProfile(nn::account::Uid uid) -> object<nn::account::profile::IProfile> profile;
+    @stub [6] GetProfileDigest(nn::account::Uid uid) -> nn::account::ProfileDigest digest;
+    [50] IsUserRegistrationRequestPermitted(pid) -> b8 permitted;
+    [51] TrySelectUserWithoutInteractionDeprecated(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [52] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [60] ListOpenContextStoredUsersOld(array<nn::account::Uid, 0xa> users);
+    [110] StoreSaveDataThumbnail(nn::account::Uid uid, nn::ApplicationId application_id, buffer<u8, 5> image);
+    [140] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    [401] GetPinCodeLength() -> u32 length;
+}
+
 interface nn::account::profile::IProfile {
     [0] Get(buffer<nn::account::profile::UserData, 0x1a> user_data) -> nn::account::profile::ProfileBase base;
     [1] GetBase() -> nn::account::profile::ProfileBase base;

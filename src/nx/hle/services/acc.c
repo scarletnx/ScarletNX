@@ -12,6 +12,7 @@
 #include "hle/services/acc.swipc.inc"
 
 #define ACC_INVALID_USER_ID RC(124, 20)
+#define ACC_INVALID_APPLICATION RC(124, 22)
 #define ACC_INVALID_LENGTH  RC(124, 32)
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
@@ -342,5 +343,57 @@ static int nn_account_IAccountServiceForSystemService_GetPinCodeLength(SvcObj* s
     R_SUCCEED();
 }
 
+/* ============================================================ IAccountServiceForAdministrator: acc:u1's and more */
+static int nn_account_IAccountServiceForAdministrator_GetUserCount(SvcObj* self, i32* count) {
+    return nn_account_IAccountServiceForApplication_GetUserCount(self, count);
+}
+static int nn_account_IAccountServiceForAdministrator_GetUserExistence(SvcObj* self, const nn_account_Uid* uid,
+                                                                       u8* exists) {
+    return nn_account_IAccountServiceForApplication_GetUserExistence(self, uid, exists);
+}
+static int nn_account_IAccountServiceForAdministrator_ListAllUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListAllUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_ListOpenUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_GetLastOpenedUser(SvcObj* self, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_GetLastOpenedUser(self, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_GetProfile(SvcObj* self, const nn_account_Uid* uid,
+                                                                 SvcObj** profile) {
+    return nn_account_IAccountServiceForApplication_GetProfile(self, uid, profile);
+}
+static int nn_account_IAccountServiceForAdministrator_IsUserRegistrationRequestPermitted(SvcObj* self, u64 pid,
+                                                                                         u8* permitted) {
+    return nn_account_IAccountServiceForApplication_IsUserRegistrationRequestPermitted(self, pid, permitted);
+}
+static int nn_account_IAccountServiceForAdministrator_TrySelectUserWithoutInteractionDeprecated(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteractionDeprecated(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_TrySelectUserWithoutInteraction(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteraction(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_ListOpenContextStoredUsersOld(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenContextStoredUsersOld(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListQualifiedUsers(self, users);
+}
+/* the system names the application the thumbnail is of: none is no application's */
+static int nn_account_IAccountServiceForAdministrator_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
+                                                                             u64 application_id, IpcBuf image) {
+    R_UNLESS(application_id, ACC_INVALID_APPLICATION);
+    return nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(self, uid, image);
+}
+static int nn_account_IAccountServiceForAdministrator_GetPinCodeLength(SvcObj* self, u32* length) {
+    return nn_account_IAccountServiceForSystemService_GetPinCodeLength(self, length);
+}
+
 SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(); }
 SvcObj* new_acc_system(void) { return nn_account_IAccountServiceForSystemService_new(); }
+SvcObj* new_acc_admin(void) { return nn_account_IAccountServiceForAdministrator_new(); }
