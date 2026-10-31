@@ -5237,6 +5237,14 @@ int main(int argc, char** argv) {
                                                "cache/c.bin", "system/s.bin", "temp/t.bin"};
             static const char* const now[] = {"user.0123456789abcdeffedcba9876543210/0100000000ABC000/u.bin",
                                               "device/0100000000ABC000/d.bin", "cache/0100000000ABC000/0/c.bin"};
+            /* the three listed, then three not; app.left says them in the system's separators */
+            static const char* const said[] = {"0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210",
+                                               "saves data/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000",
+                                               "saves data/save/cache/0100000000ABC000/0",
+                                               "/save/system",
+                                               "/save/temp",
+                                               "/save/bcat"};
+            char want[sizeof said / sizeof *said][SNX_PATH_SIZE];
             char *data_saves = snx_path_join(temporary, "saves data"), path[SNX_PATH_SIZE];
             char *game = snx_format("%s/0100000000ABC000", app.games_dir), *was_data = app.data_dir;
             int had_games = snx_is_dir(app.games_dir);
@@ -5253,11 +5261,11 @@ int main(int argc, char** argv) {
                    !snx_mkdirs(path));
             app.data_dir = data_saves;
             left_behind(&app);
-            assert(app.lefts == 3 &&
-                   strstr(app.left, "0100000000ABC000_data/save/user.0123456789abcdeffedcba9876543210") &&
-                   strstr(app.left, "saves data/save/user.0123456789abcdeffedcba9876543210/0100000000ABC000") &&
-                   strstr(app.left, "saves data/save/cache/0100000000ABC000/0") && !strstr(app.left, "/save/system") &&
-                   !strstr(app.left, "/save/temp") && !strstr(app.left, "/save/bcat"));
+            for (i = 0; i < sizeof said / sizeof *said; ++i)
+                assert(!snx_path_format(want[i], sizeof want[i], "%s", said[i]));
+            assert(app.lefts == 3 && strstr(app.left, want[0]) && strstr(app.left, want[1]) &&
+                   strstr(app.left, want[2]) && !strstr(app.left, want[3]) && !strstr(app.left, want[4]) &&
+                   !strstr(app.left, want[5]));
             assert(move_old(&app, &done, true) == 3);
             for (i = 0; i < sizeof now / sizeof *now; ++i) {
                 assert(!snx_path_format(path, sizeof path, "%s/save/%s", data_saves, now[i]));
