@@ -4140,3 +4140,15 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#: src/gui/main.c src/common/utilities/setup.c
+msgid "Saves"
+msgstr "存档"
+
+#: src/common/utilities/setup.c
+msgid "each game's own, in its <id>_data/save/"
+msgstr "每个游戏自己的，在其 <id>_data/save/ 中"
+
+#: src/common/utilities/setup.c
+msgid "the data folder's save/, by user and title: Move Old Files moves them"
+msgstr "数据文件夹中的 save/，按用户和游戏分开：移动旧文件会移动它们"

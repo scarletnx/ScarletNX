@@ -12421,6 +12421,56 @@ static bool has_files(const char* folder) {
     snx_free_strings(names, count);
     return any;
 }
+/* Settings' save_layout is global (its default): the saves in the data folder's save/, fs.c's save_global. Read from
+   settings.ini until the Settings are, as settings_user */
+static bool saves_global(const App* app) {
+    const char* value = NULL;
+    char *text = NULL, *key, *at;
+    size_t size;
+    bool global;
+    if (app->settings.keys)
+        value = gui_settings_value(&app->settings, "save_layout");
+    else if (app->settings_file && snx_is_file(app->settings_file)) {
+        SnxIni ini;
+        text = (char*)snx_read_file(app->settings_file, &size);
+        if (text) snx_ini_start(&ini, text);
+        while (text && snx_ini_next(&ini, &key, &at))
+            if (!strcmp(key, "save_layout")) value = at;
+    }
+    global = !value || strcmp(value, "game");
+    free(text);
+    return global;
+}
+/* save_layout=global: the saves the games of folder keep in their own folders, <id>/<id>_data/save/<kind>, each now in
+   the data folder's save/ as fs.c's save_global has them: an Account save in user.<uid>/<id>, Device's and BCAT's in
+   device/<id> and bcat/<id>, cache storage in cache/<id>/0 (a game's own folder held its indices as one). A System
+   save stays, its folder there named by a save ID the game's own did not keep, which the game's run says; a game with
+   no title ID of its own keeps its saves */
+static void left_saves(App* app, const char* folder) {
+    char **names = NULL, **kinds = NULL;
+    size_t count = 0, kinds_count = 0, i, k;
+    if (!folder || !app->data_dir || snx_list_dir(folder, &names, &count)) return;
+    for (i = 0; i < count; ++i) {
+        char save[SNX_PATH_SIZE], old[SNX_PATH_SIZE], now[SNX_PATH_SIZE];
+        SnxU64 id;
+        if (!snx_title_parse(names[i], &id) ||
+            snx_path_format(save, sizeof save, "%s/%s/%s_data/save", folder, names[i], names[i]) ||
+            snx_list_dir(save, &kinds, &kinds_count))
+            continue;
+        for (k = 0; k < kinds_count; ++k) {
+            const char* kind = kinds[k];
+            bool user = !strncmp(kind, "user.", 5) && strlen(kind) == 37, cache = !strcmp(kind, "cache");
+            if ((user || cache || !strcmp(kind, "device") || !strcmp(kind, "bcat")) &&
+                !snx_path_format(old, sizeof old, "%s/%s", save, kind) &&
+                !snx_path_format(now, sizeof now, "%s/save/%s/%s%s", app->data_dir, kind, names[i], cache ? "/0" : ""))
+                left_line(app, old, now, has_files(old));
+        }
+        snx_free_strings(kinds, kinds_count);
+        kinds = NULL;
+        kinds_count = 0;
+    }
+    snx_free_strings(names, count);
+}
 /* the data folder's games/, where an older version made its games, while it is not the folder games go to: its games
    are still listed until the player moves them to recompiled/. NULL when there is none */
 static char* games_old(const App* app) {
@@ -12527,6 +12577,10 @@ static void left_behind(App* app) {
 #endif
     left_games(app, app->games_dir);
     for (i = 0; i < app->folder_count; ++i) left_games(app, app->folders[i]);
+    if (saves_global(app)) {
+        left_saves(app, app->games_dir);
+        for (i = 0; i < app->folder_count; ++i) left_saves(app, app->folders[i]);
+    }
     /* the data folder's games/, recompiled/ now */
     old = games_old(app);
     if (old && app->games_dir) left_line(app, old, app->games_dir, has_files(old));

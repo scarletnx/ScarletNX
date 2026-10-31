@@ -3078,3 +3078,15 @@ msgstr "text_size = no app.ini"
 #: src/common/utilities/setup.c
 msgid "ui_scale =, shown as UI scale"
 msgstr "ui_scale =, mostrada como Escala da interface"
+
+#: src/gui/main.c src/common/utilities/setup.c
+msgid "Saves"
+msgstr "Saves"
+
+#: src/common/utilities/setup.c
+msgid "each game's own, in its <id>_data/save/"
+msgstr "os de cada jogo, no <id>_data/save/ dele"
+
+#: src/common/utilities/setup.c
+msgid "the data folder's save/, by user and title: Move Old Files moves them"
+msgstr "o save/ da pasta de dados, por usuário e título: Move Old Files os move"
