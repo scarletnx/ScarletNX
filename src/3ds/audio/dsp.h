@@ -6,7 +6,7 @@
    into the final frame and writes the statuses back into the other region. Ported from Azahar
    audio_core/hle/{hle,source,mixers,filter,effects}.cpp and audio_core/{codec,interpolate}.cpp (GPL-2.0-or-later,
    Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e. The AAC decoder
-   on the binary pipe is not ported: a request on it stops (snx_ctr_dsp_pipe_write). */
+   on the binary pipe (aac.c) is Azahar's audio_core/hle/aac_decoder.cpp on FFmpeg. */
 #ifndef SNX_CTR_DSP_H
 #define SNX_CTR_DSP_H
 #include "3ds/memory/ctr_memory.h"

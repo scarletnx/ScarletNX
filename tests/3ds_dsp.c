@@ -27,6 +27,68 @@ static void put(SnxCtrMemory* m, uint32_t pa, const void* data, size_t size) {
 static void get(SnxCtrMemory* m, uint32_t pa, void* out, size_t size) {
     assert(snx_ctr_phys_read(m, pa, out, size) == SNX_CTR_MEM_OK);
 }
+/* a binary pipe message: the codec and command, the result the service gives a request (1), then the decode request's
+   source, size and the two channels' destinations */
+static void aac_message(uint8_t message[32], unsigned command, uint32_t source, uint32_t size, uint32_t ch0,
+                        uint32_t ch1) {
+    const uint32_t words[8] = {1u | command << 16, 1, source, size, ch0, ch1, 0, 0};
+    for (unsigned i = 0; i < 8; ++i)
+        for (unsigned j = 0; j < 4; ++j) message[i * 4 + j] = (uint8_t)(words[i] >> (j * 8));
+}
+static uint32_t le32(const uint8_t* p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+/* The AAC decoder as an application drives it: two frames of silent mono 48 kHz AAC (an ADTS header of 7 bytes and a
+   raw block of an SCE with no bands, 4 bytes) decode to 2048 zero samples in channel 0 */
+static void aac_pipe(SnxCtrMemory* m, SnxCtrDsp* dsp) {
+    const uint32_t source = FCRAM + 0x200000u, ch0 = FCRAM + 0x201000u, ch1 = FCRAM + 0x203000u;
+    const uint8_t frame[11] = {0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0x00, 0x00, 0x07};
+    uint8_t stream[22], message[32], answer[32], pcm[4096], filled[4096];
+    memcpy(stream, frame, 11);
+    memcpy(stream + 11, frame, 11);
+    memset(filled, 0x55, sizeof filled);
+    put(m, source, stream, sizeof stream);
+    put(m, ch0, filled, sizeof filled);
+    put(m, ch1, filled, sizeof filled);
+    raised[SNX_CTR_DSP_PIPE_BINARY] = 0;
+    /* Init opens the decoder and echoes the message, with the result Success (0) */
+    aac_message(message, 0, 0, 0, 0, 0);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32) && raised[SNX_CTR_DSP_PIPE_BINARY] == 1);
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32);
+    assert(le32(answer) == 1 && !le32(answer + 4));
+    /* Decode: the response says 48000 Hz (enum 0), one channel, the request's size and a channel's 2048 samples. The
+       channel 0 buffer got them, the channel 1 buffer none */
+    aac_message(message, 1, source, sizeof stream, ch0, ch1);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32) && raised[SNX_CTR_DSP_PIPE_BINARY] == 2);
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32);
+    assert(le32(answer) == (1u | 1u << 16) && !le32(answer + 4));
+    assert(!le32(answer + 8) && le32(answer + 12) == 1 && le32(answer + 16) == sizeof stream);
+    assert(le32(answer + 28) == 2048);
+    get(m, ch0, pcm, sizeof pcm);
+    for (unsigned i = 0; i < sizeof pcm; ++i) assert(!pcm[i]);
+    get(m, ch1, pcm, sizeof pcm);
+    assert(!memcmp(pcm, filled, sizeof pcm));
+    /* a source below FCRAM, and bytes that are no ADTS stream: the fallback answer (48 kHz stereo, 1024 samples) and
+       nothing written */
+    aac_message(message, 1, 0x1000u, sizeof stream, ch0, ch1);
+    put(m, ch0, filled, sizeof filled);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32));
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32);
+    assert(!le32(answer + 8) && le32(answer + 12) == 2 && le32(answer + 16) == sizeof stream && le32(answer + 28) == 1024);
+    memset(stream, 0x11, sizeof stream);
+    put(m, source, stream, sizeof stream);
+    aac_message(message, 1, source, sizeof stream, ch0, ch1);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32));
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32);
+    assert(le32(answer + 12) == 2 && le32(answer + 28) == 1024);
+    get(m, ch0, pcm, sizeof pcm);
+    assert(!memcmp(pcm, filled, sizeof pcm));
+    /* an unknown command answers with the result Error (1), the others Success */
+    aac_message(message, 9, 0, 0, 0, 0);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32));
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32 && le32(answer + 4) == 1);
+    aac_message(message, 2, 0, 0, 0, 0);
+    assert(!snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32));
+    assert(snx_ctr_dsp_pipe_read(dsp, SNX_CTR_DSP_PIPE_BINARY, answer, 64) == 32 && !le32(answer + 4));
+}
 static void counters(SnxCtrMemory* m, uint16_t r0, uint16_t r1) {
     put(m, R0 + DSP_FRAME_COUNTER, &r0, 2);
     put(m, R1 + DSP_FRAME_COUNTER, &r1, 2);
@@ -74,9 +136,11 @@ static void pipes_and_regions(SnxCtrMemory* m) {
                                  0x8710, 0x8410, 0xa912, 0xaa12, 0xaad2, 0xac52, 0xac5c};
     for (unsigned i = 0; i < 15; ++i) assert((pipe[i * 2] | pipe[i * 2 + 1] << 8) == expect[i]);
     assert(!snx_ctr_dsp_pipe_readable(dsp, SNX_CTR_DSP_PIPE_AUDIO));
-    /* the AAC decoder is not ported: the binary pipe stops, naming it */
+    /* the binary pipe takes only the AAC decoder's message: another size or codec stops, naming it */
     uint8_t message[32] = {0};
     assert(strstr(snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 32), "AAC"));
+    assert(strstr(snx_ctr_dsp_pipe_write(dsp, SNX_CTR_DSP_PIPE_BINARY, message, 16), "32-byte"));
+    aac_pipe(m, dsp);
     /* the region with the higher frame counter is read, the other written, unless the counter wrapped */
     int16_t frame[SNX_CTR_DSP_SAMPLES][2];
     const uint16_t pairs[4][2] = {{5, 4}, {4, 5}, {0xffff, 0}, {0, 0xffff}};

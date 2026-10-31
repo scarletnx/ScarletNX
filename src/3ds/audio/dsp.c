@@ -4,7 +4,9 @@
    Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e. The shared
    memory lives in DSP RAM, which the DSP reads and writes as a bus master (snx_ctr_phys_read/write), never through
    a host pointer. */
+#include "3ds/audio/aac.h"
 #include "3ds/audio/internal.h"
+#include "common/utilities/endian.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,6 +25,7 @@ struct SnxCtrDsp {
     DspSource sources[DSP_SOURCES];
     DspMixers mixers;
     uint8_t* backup; /* DSP RAM across sleep, DSP_RAM_SIZE */
+    SnxCtrAac* aac;   /* the binary pipe's AAC decoder, made at its first message */
 };
 
 static bool pipe_append(Pipe* pipe, const void* data, size_t size) {
@@ -69,6 +72,7 @@ void snx_ctr_dsp_free(SnxCtrDsp* dsp) {
     for (unsigned i = 0; i < DSP_SOURCES; ++i) dsp_source_free(&dsp->sources[i]);
     dsp_mixers_free(&dsp->mixers);
     for (unsigned i = 0; i < SNX_CTR_DSP_PIPES; ++i) free(dsp->pipes[i].data);
+    snx_ctr_aac_free(dsp->aac);
     free(dsp->backup);
     free(dsp);
 }
@@ -141,7 +145,20 @@ const char* snx_ctr_dsp_pipe_write(SnxCtrDsp* dsp, unsigned pipe, const uint8_t*
         }
         return NULL;
     }
-    if (pipe == SNX_CTR_DSP_PIPE_BINARY) return "the DSP's AAC decoder (the binary pipe) is not ported yet";
+    if (pipe == SNX_CTR_DSP_PIPE_BINARY) {
+        /* Azahar takes only the decoder's message here (it asserts on any other size or codec). The answer replaces
+           what the pipe held, and its interrupt is raised before the write returns */
+        if (size != SNX_CTR_AAC_MESSAGE) return "the DSP's binary pipe takes the 32-byte message of its AAC decoder";
+        if (snx_ld_le16(data) != 1) return "the DSP's binary pipe takes only AAC decoding (codec 1), not the AAC encoder";
+        if (!dsp->aac && !(dsp->aac = snx_ctr_aac_new(dsp->memory))) return "the DSP's AAC decoder has no memory";
+        uint8_t response[SNX_CTR_AAC_MESSAGE];
+        snx_ctr_aac_request(dsp->aac, data, response);
+        dsp->pipes[SNX_CTR_DSP_PIPE_BINARY].size = 0;
+        if (!pipe_append(&dsp->pipes[SNX_CTR_DSP_PIPE_BINARY], response, sizeof response))
+            return "the DSP's AAC decoder has no memory";
+        dsp->interrupt(dsp->context, SNX_CTR_DSP_PIPE_BINARY);
+        return NULL;
+    }
     return "only the DSP's audio and binary pipes are implemented";
 }
 size_t snx_ctr_dsp_pipe_readable(const SnxCtrDsp* dsp, unsigned pipe) {
