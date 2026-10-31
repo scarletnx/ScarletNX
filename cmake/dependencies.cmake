@@ -175,9 +175,9 @@ if(SNX_JEMALLOC)
 endif()
 
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
-    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.365
-                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.365.tar.gz
-                  URL_HASH SHA256=ed832b3292cce324ebba6522fd2d3004bf1b797fa49bfbcad0b302ff23d56abc
+    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
+                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
+                  URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
                   EXCLUDE_FROM_ALL YES)
     # volk.c is compiled into the vk components, VMA is a header
     CPMAddPackage(NAME volk VERSION 1.4.363
