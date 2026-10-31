@@ -177,8 +177,8 @@ shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
-- Input is the pad alone: the touch screen is not read, and the sensors are at
-  rest (`hid:USER`, below).
+- Input is the pad and the touch screen (the mouse's left button or a finger on
+  the window's bottom screen). The sensors are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Geometry shaders, procedural textures, shadows and the DSP's AAC pipe still stop
@@ -376,8 +376,10 @@ Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or 
 gamepad's buttons by position (`gamepad_swap_ab`) with its left stick, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. The touch entries say no touch, and the
-sensors give a console lying still. ZL, ZR and the C-stick are the New 3DS's
+800 Y), each held for `press_len` ms. A press of the mouse's left button (or a
+finger) on the window's bottom screen is a touch at that pixel, and a drag moves
+it, held inside the screen (the `touch` setting: `0` off, `1` fingers, `2` fingers
+and the mouse, the default). The sensors give a console lying still. ZL, ZR and the C-stick are the New 3DS's
 `ir:rst`, which the runtime does not have yet.
 
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue

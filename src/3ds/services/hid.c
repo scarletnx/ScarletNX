@@ -4,8 +4,8 @@
    hid:USER and hid:SPVR: the shared memory the game reads its input from and the events that say a sample is there,
    as a Switch game's hid writes its shared memory (nx/hle/services/hid.c). The samples, their layout and their pace
    are ported from Azahar's service/hid/hid.cpp and hid.h (GPL-2.0-or-later), checked against 3dbrew's HID Shared
-   Memory. The input is the player's (input/input.c). The touch screen is not read yet: its samples say no touch. The
-   sensors are at rest, the console lying flat. */
+   Memory. The input is the player's (input/input.c), the touch screen the left mouse button on the window's bottom
+   screen. The sensors are at rest, the console lying flat. */
 #include "3ds/services/hid.h"
 #include "3ds/input/input.h"
 #include "3ds/runtime/internal.h"
@@ -92,7 +92,7 @@ static uint32_t circle_directions(int32_t x, int32_t y) {
     return bits;
 }
 /* Azahar's UpdatePadCallback: the pad's entry, with what was pressed and released since the one before it, and a
-   touch entry that says no touch, then both pad events */
+   touch entry, then both pad events */
 static void update_pad(SnxCtrProcess* p) {
     SnxCtrInput input;
     snx_ctr_input_read(&input);
@@ -115,7 +115,11 @@ static void update_pad(SnxCtrProcess* p) {
     advance(p, HID_PAD, index);
     h->pad_index = (index + 1) & 7;
     index = h->touch_index;
-    put32(p, HID_TOUCH + 0x20 + index * 8 + 4, 0); /* valid: no touch, x and y kept from the last one */
+    if (input.touched) {
+        put16(p, HID_TOUCH + 0x20 + index * 8, input.touch[0]);
+        put16(p, HID_TOUCH + 0x20 + index * 8 + 2, input.touch[1]);
+    }
+    put32(p, HID_TOUCH + 0x20 + index * 8 + 4, input.touched); /* valid; without a touch the slot's x and y stay as they were */
     advance(p, HID_TOUCH, index);
     h->touch_index = (index + 1) & 7;
     signal_event(p, 1);

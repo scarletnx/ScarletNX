@@ -32,7 +32,24 @@ static uint32_t shared(SnxCtrProcess* p, uint32_t offset, unsigned size) {
     assert(snx_ctr_phys_read(p->memory, pa + offset, b, size) == SNX_CTR_MEM_OK);
     return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
 }
+/* Where a point of the window's image is on the bottom screen (400x240 above 320x240, scaled as one 400x480 block) */
+static void touch_locate(void) {
+    unsigned x, y;
+    SnxCtrWindowLayout l = {800, 960, 400, 240, 320, 240}; /* twice the size: the bottom screen starts at (80, 480) */
+    assert(snx_ctr_touch_locate(&l, 80, 480, &x, &y) && x == 0 && y == 0);
+    assert(snx_ctr_touch_locate(&l, 280, 580, &x, &y) && x == 100 && y == 50);
+    assert(snx_ctr_touch_locate(&l, 718.9, 958.9, &x, &y) && x == 319 && y == 239);
+    assert(!snx_ctr_touch_locate(&l, 79, 600, &x, &y) && x == 0 && y == 60); /* left of it: held to its edge */
+    assert(!snx_ctr_touch_locate(&l, 400, 100, &x, &y) && x == 160 && y == 0); /* on the top screen */
+    assert(!snx_ctr_touch_locate(&l, 799, 959, &x, &y) && x == 319 && y == 239);
+    l.image_w = 1000; /* a wider window centres the pair: 100 pixels of black each side */
+    assert(snx_ctr_touch_locate(&l, 180, 480, &x, &y) && x == 0 && y == 0);
+    assert(snx_ctr_touch_locate(&l, 100, 480, &x, &y) == false && x == 0);
+    l.image_w = 0; /* no window yet */
+    assert(!snx_ctr_touch_locate(&l, 100, 600, &x, &y) && !x && !y);
+}
 int main(void) {
+    touch_locate();
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
                          .stack_size = 0x4000,
@@ -68,6 +85,17 @@ int main(void) {
     /* the next one: held, so nothing new or released */
     snx_ctr_hid_update(p, p->hid.next_pad_ns);
     assert(shared(p, 0x10, 4) == 1 && shared(p, 0x38, 4) == 9 && !shared(p, 0x3c, 4) && !shared(p, 0x40, 4));
+    /* a touch of the bottom screen: its pixel and valid in the next touch entry, the index moved on; letting go says
+       not valid in the one after */
+    assert(shared(p, 0xa8 + 0x10, 4) == 1);
+    snx_ctr_input_touch(true, 100, 50);
+    snx_ctr_hid_update(p, p->hid.next_pad_ns);
+    assert(shared(p, 0xa8 + 0x10, 4) == 2);
+    assert(shared(p, 0xa8 + 0x20 + 2 * 8, 2) == 100 && shared(p, 0xa8 + 0x20 + 2 * 8 + 2, 2) == 50);
+    assert(shared(p, 0xa8 + 0x20 + 2 * 8 + 4, 4) == 1);
+    snx_ctr_input_touch(false, 0, 0);
+    snx_ctr_hid_update(p, p->hid.next_pad_ns);
+    assert(shared(p, 0xa8 + 0x10, 4) == 3 && !shared(p, 0xa8 + 0x20 + 3 * 8 + 4, 4));
     /* the sensors sample between their enable and their disable */
     assert(!p->hid.next_accelerometer_ns && !p->hid.next_gyroscope_ns);
     assert(send(p, session, 0x00110000) == 0x00110040 && p->hid.next_accelerometer_ns);
@@ -89,6 +117,6 @@ int main(void) {
     assert(send(p, session, 0x000a0000) == 0x000a0047 && snx_ctr_handle_object(p, word(p, 3)) == p->hid_objects[0]);
     snx_ctr_process_free(p);
     snx_ctr_input_free();
-    puts("CTR hid:USER commands, pad samples from scripted input and sensor samples passed");
+    puts("CTR hid:USER commands, pad and touch samples from scripted input and sensor samples passed");
     return 0;
 }

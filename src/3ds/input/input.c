@@ -6,6 +6,7 @@
    B, its left stick the circle pad past gamepad_deadzone. The script (ctr_script) is unattended.c's for a Switch game:
    ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/script.h"
 #include "snx_settings.h"
@@ -16,6 +17,10 @@
 #include <string.h>
 
 #define INPUT_PADS 4
+
+/* The touch screen: bit 31 pressed, the pixel's y in bits 16 to 30 and x in bits 0 to 15, in one word so that a read
+   gets both of them (the window's pump writes it and hid's update reads it, on other threads) */
+static uint32_t g_touch;
 
 static struct {
     SDL_Gamepad* pads[INPUT_PADS];
@@ -48,6 +53,23 @@ void snx_ctr_input_event(const union SDL_Event* event) {
                 g_input.pads[i] = NULL;
             }
 }
+bool snx_ctr_touch_locate(const SnxCtrWindowLayout* l, double x, double y, unsigned* px, unsigned* py) {
+    *px = *py = 0;
+    unsigned layout_w = snx_max_u32(l->top_w, l->bottom_w), layout_h = l->top_h + l->bottom_h;
+    if (!l->image_w || !l->image_h || !layout_w || !l->bottom_w || !l->bottom_h) return false;
+    double scale = fmin((double)l->image_w / layout_w, (double)l->image_h / layout_h);
+    /* the bottom screen's corner, where show_screens blits it: under the top screen, centred across the pair */
+    double left = (l->image_w - layout_w * scale) / 2 + (layout_w - l->bottom_w) * scale / 2;
+    double top = (l->image_h - layout_h * scale) / 2 + l->top_h * scale;
+    double u = (x - left) / scale, v = (y - top) / scale;
+    *px = (unsigned)snx_clamp_double(floor(u), 0, l->bottom_w - 1);
+    *py = (unsigned)snx_clamp_double(floor(v), 0, l->bottom_h - 1);
+    return u >= 0 && v >= 0 && u < l->bottom_w && v < l->bottom_h;
+}
+void snx_ctr_input_touch(bool down, unsigned x, unsigned y) {
+    uint32_t state = down ? 1u << 31 | (y & 0x7fffu) << 16 | (x & 0xffffu) : 0;
+    __atomic_store_n(&g_touch, state, __ATOMIC_RELAXED);
+}
 /* a stick's axis, -1 to 1 */
 static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
     float v = SDL_GetGamepadAxis(pad, which) / 32767.0f;
@@ -78,6 +100,12 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SNX_CTR_PAD_RIGHT}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, SNX_CTR_PAD_DOWN},
     };
     *input = (SnxCtrInput){0};
+    uint32_t touch = __atomic_load_n(&g_touch, __ATOMIC_RELAXED);
+    if (touch >> 31) {
+        input->touched = true;
+        input->touch[0] = (uint16_t)(touch & 0xffffu);
+        input->touch[1] = (uint16_t)(touch >> 16 & 0x7fffu);
+    }
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {
@@ -117,4 +145,5 @@ void snx_ctr_input_free(void) {
     if (g_input.gamepads) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     free(g_input.script);
     memset(&g_input, 0, sizeof g_input);
+    snx_ctr_input_touch(false, 0, 0);
 }

@@ -21,6 +21,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,7 @@ static struct {
     uint64_t presents; /* past the first dumps, two presents (one a screen) of every 120 are kept as the latest */
     unsigned bottom_alone; /* bottom screen frames since the window last showed, the top screen showing none */
     int up, windowed, closed;
+    int touching; /* the left mouse button went down on the bottom screen and is still down */
 } g_present;
 
 static void swap_destroy(void) { snx_vk_swapchain_free(snx_ctr_vk()->device, &g_present.swap); }
@@ -197,11 +199,53 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
     else if (closed)
         (void)snx_replace(staged, path);
 }
+/* The window's picture as show_screens draws it. A screen not made yet has the console's size */
+static SnxCtrWindowLayout window_layout(void) {
+    const Frame* top = &g_present.frames[0];
+    const Frame* bottom = &g_present.frames[1];
+    return (SnxCtrWindowLayout){.image_w = g_present.swap.extent.width,
+                                .image_h = g_present.swap.extent.height,
+                                .top_w = top->width ? top->width : 400,
+                                .top_h = top->height ? top->height : SNX_CTR_TOUCH_HEIGHT,
+                                .bottom_w = bottom->width ? bottom->width : SNX_CTR_TOUCH_WIDTH,
+                                .bottom_h = bottom->height ? bottom->height : SNX_CTR_TOUCH_HEIGHT};
+}
+/* The left mouse button as the stylus: a press on the bottom screen touches it, the drag moves the touch (held inside
+   the screen, as the stylus can't leave it) and the release lets go. A finger is the same (SDL sends it as the mouse
+   SDL_TOUCH_MOUSEID). The touch_screen setting is a Switch game's: 0 nothing, 1 the fingers, 2 the fingers and the
+   mouse */
+static void touch_event(const SDL_Event* event) {
+    SDL_Window* window = snx_ctr_vk()->host.window;
+    bool pointer = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                   event->type == SDL_EVENT_MOUSE_MOTION;
+    if (pointer) {
+        SDL_MouseID source = event->type == SDL_EVENT_MOUSE_MOTION ? event->motion.which : event->button.which;
+        if (g_settings.touch_screen != 2 && !(g_settings.touch_screen == 1 && source == SDL_TOUCH_MOUSEID)) return;
+    }
+    bool press = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT;
+    bool release = (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT) ||
+                   event->type == SDL_EVENT_WINDOW_FOCUS_LOST;
+    bool drag = event->type == SDL_EVENT_MOUSE_MOTION && g_present.touching;
+    if (release) {
+        g_present.touching = 0;
+        snx_ctr_input_touch(false, 0, 0);
+    } else if ((press || drag) && window) {
+        /* the event's point is in the window's units, the swapchain image in pixels */
+        float density = SDL_GetWindowPixelDensity(window);
+        float x = press ? event->button.x : event->motion.x, y = press ? event->button.y : event->motion.y;
+        SnxCtrWindowLayout layout = window_layout();
+        unsigned px, py;
+        bool inside = snx_ctr_touch_locate(&layout, x * density, y * density, &px, &py);
+        if (press) g_present.touching = inside;
+        if (g_present.touching) snx_ctr_input_touch(true, px, py);
+    }
+}
 static void pump(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
+        touch_event(&event);
     }
 }
 /* SDL turns SIGINT and SIGTERM into a quit event too, so this is also how Ctrl+C ends a run, with or without a window
