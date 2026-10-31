@@ -51,8 +51,13 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
     }
 }
 static void stamp_alias(void* ctx, u64 gva, u64 n) { write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx); }
+/* the renderer's watch on GPU-side writes (gpu_set_write_watch): any thread, under g_wlk */
+static void (*g_wwatch)(u64 cpu, u64 n);
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n)) { __atomic_store_n(&g_wwatch, fn, __ATOMIC_RELEASE); }
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
+    void (*watch)(u64, u64) = __atomic_load_n(&g_wwatch, __ATOMIC_ACQUIRE);
+    if (watch) watch(cpu, n);
     gmmu_aliases(cpu, n, stamp_alias, &gen);
     if (wcheck_on()) write_pages_stamp(&g_wcpu, cpu, n, gen);
 }

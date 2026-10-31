@@ -2163,7 +2163,10 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     use(i, buf, off);
     return 1;
 }
-static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align) {
+/* inplace: IN_NO, the range is copied; IN_TRY, read in place in guest memory where it can be (uma.c), else copied;
+   IN_ONLY, in place or 0 (a window is copied instead) */
+enum { IN_NO, IN_TRY, IN_ONLY };
+static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
     u32 i = 0;
     Vb* e = NULL;
@@ -2187,6 +2190,10 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->gfx_adds = vk_buf_adds();
         }
     }
+    /* no GPU result is pending over it: guest memory holds its bytes, which the GPU reads where they are on a device
+       that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
+    if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
+    if (inplace == IN_ONLY) return 0;
     /* valid: the data is where draws can read it this frame */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
@@ -2316,13 +2323,15 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     return 1;
 }
 
-int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) { return buf_get(gva, len, buf, off, 0, vk_stage_align()); }
+int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
+}
 /* Vertex and index buffers bind at any offset that keeps their elements aligned, not only at the uniform and storage
    bindings' alignment: a draw reading an earlier draw's storage result at another offset reads its buffer in place
    instead of composing it over guest memory. In one game 216,000 vertex buffer bindings in 600 frames were composed
    that way, each a copy of its range into staging and a GPU copy of the result over it */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 0, align);
+    return buf_get(gva, len, buf, off, 0, align, IN_TRY);
 }
 
 /* Windows: guest ranges that storage buffers with no size of their own (a bare address in a program's constant buffer,
@@ -2357,7 +2366,7 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         if (gmmu_run(start, gva + len - start, &cpu) < gva + len - start) start = gva;
         run = gmmu_run(start, WIN_SIZE, &cpu) & ~3ull;
         if (run < gva + len - start) /* not one run: the range alone */
-            return buf_get(gva, len, buf, off, 0, vk_stage_align());
+            return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
         /* a window above, which ranges from its start on fall in: this one needs to hold no more than the ranges
            starting before it, so the two overlap by a range's length at most (ranges come in any order) */
         for (int i = 0; i < WIN_N; i++)
@@ -2373,20 +2382,25 @@ static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_win[slot] = (Win){start, start + run, 0, g_vb_map_gen};
     }
     g_win[slot].used = g_vk_present;
-    if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align())) return 0;
+    if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align(), IN_NO))
+        return 0;
     /* a binding's offset must be a multiple of the device's alignment: a range that would land off it is copied
        alone */
-    if ((at + (gva - g_win[slot].start)) % (align ? align : 1)) return buf_get(gva, len, buf, off, 0, vk_stage_align());
+    if ((at + (gva - g_win[slot].start)) % (align ? align : 1))
+        return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
     *off = at + (gva - g_win[slot].start);
     return 1;
 }
 int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    return win_get(gva, len, g_vk.props.limits.minStorageBufferOffsetAlignment, buf, off);
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1; /* no window needed in place */
+    return win_get(gva, len, align, buf, off);
 }
 /* A vertex or index range whose extent isn't known (an indirect draw's: the GPU reads the count), in a window as a
    bare storage buffer's: a binding reads on to the window's end, and draws over the same memory share its copy.
    align: the elements' */
 int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1;
     return win_get(gva, len, align, buf, off);
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot
@@ -2405,7 +2419,7 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
 }
 /* Constant buffers cannot accept the delayed checks used for stable vertex data: a changed word affects this draw. */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 1, vk_stage_align());
+    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
 }
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
@@ -2425,6 +2439,7 @@ void vk_buf_stats(u32* count, u64* bytes) {
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
 void vk_buf_frame(void) {
+    vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
@@ -2475,6 +2490,7 @@ void vk_buf_frame(void) {
 /* a save state's load: every buffer kept of guest memory goes, and their host addresses with it */
 void vk_buf_forget_all(void) {
     u32 i;
+    vk_uma_forget_all();
     for (i = 0; i < g_nvb; i++)
         if (g_vb[i].len) {
             drop_own(i);

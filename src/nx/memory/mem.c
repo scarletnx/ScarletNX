@@ -190,6 +190,14 @@ static void code_invalidate(u64 addr, u64 size) {
     if (g_code_invalidate) g_code_invalidate(addr, size);
 }
 
+/* the renderer's: host pages under guest memory [a, a + size) are other pages now, or none (its imports of guest memory,
+   gpu/vk/uma.c, hold the old ones). Called under g_mem_lk */
+static void (*g_pages_replaced)(u64, u64);
+void mem_set_pages_replaced(void (*fn)(u64, u64)) { __atomic_store_n(&g_pages_replaced, fn, __ATOMIC_RELEASE); }
+static void pages_replaced_nl(u64 a, u64 size) {
+    void (*fn)(u64, u64) = __atomic_load_n(&g_pages_replaced, __ATOMIC_ACQUIRE);
+    if (fn) fn(a, size);
+}
 static u64 blk_end(const MemBlock* b) { return b->addr + b->size; }
 /* b follows a: they join when alike, the pool's pages continuing from a's when they are the pool's */
 static int blk_same(const MemBlock* a, const MemBlock* b) {
@@ -305,6 +313,7 @@ static void decommit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
     int i, n = 0;
     runs_stale_nl();
+    pages_replaced_nl(a, size);
     own_drop(a, size);
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
         plat_vm_decommit(GP(a), size);
@@ -461,6 +470,7 @@ static void unmap_nl(u64 a, u64 size) {
     u64 end = a + size;
     u32 i;
     runs_stale_nl(); /* before the pages go, not with the state after them */
+    pages_replaced_nl(a, size);
     own_drop(a, size); /* what the GPU held there goes with the mapping */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
@@ -481,6 +491,7 @@ static void unmap_nl(u64 a, u64 size) {
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
     runs_stale_nl();
+    pages_replaced_nl(a, size);
     if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
         fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
 }
@@ -512,6 +523,7 @@ static int promote_nl(u64 a, u64 size) {
         pool_free_nl(off, size);
         return MEM_NOMEM;
     }
+    pages_replaced_nl(a, size); /* the pool's pages over the reservation's */
     if (plat_alias_map(GP(a), off, size)) {
         unpool_nl(a, size, &off);
         pool_free_nl(off, size);
@@ -1466,6 +1478,7 @@ int mem_restore_check(const MemBlock* blk, u32 n) {
 int mem_restore_blocks(const MemBlock* blk, u32 n) {
     u32 i;
     if (restore_check_nl(blk, n)) return -1;
+    pages_replaced_nl(0, ~0ull);
     for (i = 0; i < n; i++) {
         const MemBlock* b = &blk[i];
         if (b->state == MS_FREE || b->state == MS_CODE) continue;

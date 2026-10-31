@@ -33,6 +33,8 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 u64 vk_submit_number(void);
+int vk_uma(void);
+u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 #define VK_PRED_EQUAL 0x80000000u
@@ -259,6 +261,11 @@ void vk_query_pred_drop(u32 slot) {
 }
 u64 vk_last_submit(void) { return next_graphics; }
 u64 vk_submit_number(void) { return next_graphics + 1; }
+/* uma.c: guest memory read in place, last by submit uma_bound */
+static int uma_on;
+static u64 uma_bound;
+int vk_uma(void) { return uma_on; }
+u64 vk_uma_bound(void) { return uma_bound; }
 
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.
@@ -365,6 +372,21 @@ int main(void) {
     assert(memory[1] == 0 && payload_writes == 3 && g_rhead == g_rtail + 1);
     vk_release_submit();
     assert(memory[1] == 17 && payload_writes == 4 && g_rhead == g_rtail);
+    /* with guest memory read in place, the same release waits at the stream's stop for the commands recorded up to
+       then that read in place, after it too: the GPU reads those bytes when it runs them, and the guest writes them
+       again once it sees the release. The stop submits them, and the release goes once they are done */
+    uma_on = 1;
+    value = 19;
+    vk_release_write(0x10000, &value, 1);
+    uma_bound = vk_submit_number(); /* a draw after the release reads in place */
+    unsigned uma_submits = submits;
+    vk_release_submit();
+    assert(memory[1] == 17 && g_rhead == g_rtail + 1 && g_rq[g_rtail % RQ_N].gate == uma_bound);
+    assert(submits == uma_submits + 1 && vk_last_submit() == uma_bound);
+    vk_release_drain();
+    assert(memory[1] == 19 && g_rhead == g_rtail && waited_graphics >= uma_bound);
+    uma_on = 0;
+    uma_bound = 0;
     pending = 1;
     vk_release_incr(5);
     vk_release_retire(5);
