@@ -1372,8 +1372,8 @@ static int check_uma(void) {
     CHECK(!gmem_write(UMA_GA + 0x2000, data, sizeof data)); /* no draw reads it in place: no wait */
     uma_stats(&n, &waits);
     CHECK(waits == waits0 + 1);
-    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, the DMA
-       checks' among them (imports are blocks of 2 MiB and more), while one elsewhere stays */
+    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, while one
+       elsewhere stays */
     CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 == b);
     uma_stats(&n0, &waits0);
     int elsewhere = vk_uma_imported(HEAP_BASE, 4096);
@@ -1620,21 +1620,35 @@ static int check_uma(void) {
         CHECK(mem_unmap(big, 0x1000000) == 0);
         vk_lock();
     }
-    /* two ranges of one import block with free pages between them: an import each, both found again at every use.
-       The first one's key hid the second's import, which was made anew at each lookup */
+    /* two ranges of one import block (the first 64 KiB of one) with free pages between them: an import each, both
+       found again at every use. The first one's key hid the second's import, which was made anew at each lookup */
     {
         VkUmaStats a, z;
         const u64 two = (HEAP_BASE + 0x3000000 + 0x1FFFFF) & ~0x1FFFFFull, gtwo = 0x430000000ull;
-        CHECK(mem_map(two, 0x10000, MS_NORMAL, PERM_RW) == 0);
-        CHECK(mem_map(two + 0x40000, 0x10000, MS_NORMAL, PERM_RW) == 0);
-        gmmu_map(gtwo, two, 0x10000);
-        gmmu_map(gtwo + 0x40000, two + 0x40000, 0x10000);
+        CHECK(mem_map(two, 0x4000, MS_NORMAL, PERM_RW) == 0);
+        CHECK(mem_map(two + 0x8000, 0x4000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gtwo, two, 0x4000);
+        gmmu_map(gtwo + 0x8000, two + 0x8000, 0x4000);
         vk_uma_stats(&a);
-        for (int i = 0; i < 8; i++) CHECK(vk_buf_get(gtwo + (u64)(i & 1) * 0x40000, 0x100, &b2, &off2));
+        for (int i = 0; i < 8; i++) CHECK(vk_buf_get(gtwo + (u64)(i & 1) * 0x8000, 0x100, &b2, &off2));
         vk_uma_stats(&z);
         CHECK(z.made == a.made + 2);
         vk_unlock();
-        CHECK(mem_unmap(two, 0x10000) == 0 && mem_unmap(two + 0x40000, 0x10000) == 0);
+        CHECK(mem_unmap(two, 0x4000) == 0 && mem_unmap(two + 0x8000, 0x4000) == 0);
+        vk_lock();
+    }
+    /* a range of a few bytes takes a small import: amdgpu walks every imported page again at every submit */
+    {
+        VkUmaStats a, z;
+        const u64 small = HEAP_BASE + 0x4000000, gsmall = 0x440000000ull;
+        CHECK(mem_map(small, 0x400000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gsmall, small, 0x400000);
+        vk_uma_stats(&a);
+        CHECK(vk_buf_get(gsmall + 0x1000, 0x100, &b2, &off2));
+        vk_uma_stats(&z);
+        CHECK(z.made == a.made + 1 && z.bytes - a.bytes <= 0x40000); /* two blocks of 128 KiB at most */
+        vk_unlock();
+        CHECK(mem_unmap(small, 0x400000) == 0);
         vk_lock();
     }
     /* imports no draw used for long go, so a driver that takes an import's pages at each submit isn't handed them */

@@ -34,7 +34,7 @@ The copies, landings, hashes and write tracking were only there because the GPU 
 `vk/uma.c` imports guest memory as buffers, on demand.
 
 - Imports are stable: once made, one stays until no draw has used it for 120 presents or its pages change. A range up
-  to S long (S from 2 MiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it starts
+  to S long (S from 128 KiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it starts
   in, which holds it whatever its start, or a bigger one already made that holds it. A longer range is copied. So a
   range bound from many starts (a 64 MiB storage window, a vertex stream) finds the same few imports, and a page is in
   two at most for each size used. The span is narrowed to the guest memory around the range whose host pages are the
@@ -77,6 +77,10 @@ first version imported 64 MiB chunks (16384 pages each) around whatever a draw t
 ran far slower than with `uma=0`. Anything that changes the protection of imported pages invalidates them. Write
 tracking does that by design: each scan re-protects the pages written since the last one. That is why scans leave
 imported pages out. Transparent huge pages being collapsed still can.
+
+On an RX 6700 XT (Linux 6.18, Mesa 26.1) a submission takes 6.4 us per MiB imported, and under a microsecond per
+import. Most ranges a draw binds are a few KiB, hence blocks from 128 KiB: with 2 MiB ones, 87% of the pages imported
+in one game were never bound.
 
 The fix this design points to is the other direction: guest memory allocated as Vulkan memory and mapped into the
 reservation (`VK_EXT_map_memory_placed`, which RADV has), so the GPU uses ordinary buffers. Those mappings can't take

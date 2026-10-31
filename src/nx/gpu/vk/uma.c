@@ -6,7 +6,7 @@
    writes.
 
    Imports are stable: once made, one stays until no draw has used it for UMA_IDLE presents or its pages change. A
-   range up to S long (S from 2 MiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it
+   range up to S long (S from 128 KiB to 64 MiB, doubling) takes the import of the two S-aligned blocks from the one it
    starts in, which holds it whatever its start, so a range bound from many starts (a 64 MiB storage window, a vertex
    stream) finds the same few. A page is in two imports at most for each size used. Imports are few and small because
    a driver may walk an import's pages at every submit that names it, and at its making: amdgpu takes a userptr
@@ -46,8 +46,11 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 
-#define UMA_BLOCK   (2ull << 20) /* the blocks of the smallest imports: a range of up to this takes two of them */
-#define UMA_LEVELS  6            /* sizes of block, 2 MiB to 64 MiB: a longer range is copied */
+/* the blocks of the smallest imports: a range of up to this takes two of them. Most ranges are a few KiB, and amdgpu
+   walks every imported page at every submit, 6.4 us per MiB: with 2 MiB blocks, 87% of the pages imported were never
+   bound */
+#define UMA_BLOCK   (128ull << 10)
+#define UMA_LEVELS  10           /* sizes of block, 128 KiB to 64 MiB: a longer range is copied */
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
 #define UMA_HASH    4096         /* the imports by key, open addressed: at most a quarter full */
 #define UMA_FAIL_N  256          /* ranges that couldn't be imported, not tried again until memory changes */
@@ -304,8 +307,10 @@ static int import_span(u64 key, u64 lo, u64 hi) {
     g_uma.made++;
     return 1;
 }
-/* the key of the import of level's block size (UMA_BLOCK << level) whose two blocks start at the one cpu is in */
-static u64 import_key(u64 cpu, u32 level) { return (cpu / (UMA_BLOCK << level)) << 3 | level; }
+/* the key of the import of level's block size (UMA_BLOCK << level) whose two blocks start at the one cpu is in: the
+   level in its low 4 bits */
+typedef char uma_levels_in_key[UMA_LEVELS <= 16 ? 1 : -1];
+static u64 import_key(u64 cpu, u32 level) { return (cpu / (UMA_BLOCK << level)) << 4 | level; }
 /* the import of key, made: its two blocks narrowed to the reservation's own committed pages around the range
    [cpu, cpu + len) they hold. Its index, or g_uma.n when there can't be one */
 /* room for an import of size bytes within UMA_BYTES_MAX, made by letting go of the ones used longest ago (none used in
@@ -325,7 +330,7 @@ static int import_room(u64 size) {
     return ok;
 }
 static u32 import_new(u64 key, u64 cpu, u64 len) {
-    u64 al = g_vk.uma_align, size = UMA_BLOCK << (key & 7), lo = (key >> 3) * size, hi = lo + 2 * size;
+    u64 al = g_vk.uma_align, size = UMA_BLOCK << (key & 15), lo = (key >> 4) * size, hi = lo + 2 * size;
     u64* f = g_uma.fail[((cpu >> 12) ^ (len << 7)) % UMA_FAIL_N];
     int why;
     if (f[0] == cpu && f[1] == len && f[2] == g_uma.gen) {
