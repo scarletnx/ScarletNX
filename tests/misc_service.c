@@ -17,6 +17,11 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* fs.c's, which this test doesn't compile: no folder of saves */
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    (void)uid, (void)paths, (void)max;
+    return 0;
+}
 /* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
 const char* ini_deprecated_value(const char* key) {
     (void)key;

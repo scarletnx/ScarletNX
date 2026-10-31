@@ -908,6 +908,14 @@ FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory
 FsTreeResult fs_tree_graft_writable(FsTree* tree, const char* name, const char* directory) {
     return graft(tree, name, directory, 1, 0);
 }
+FsTreeResult fs_tree_forget(FsTree* tree, const char* path) {
+    FsNode* n;
+    FsTreeResult rc = fs_tree_lookup(tree, NULL, path, &n);
+    if (rc) return rc;
+    if (n == tree->root || (n->parent == tree->root && !strcmp(n->name, "root"))) return FS_TREE_NOTDELETABLE;
+    subtree_discard(n);
+    return FS_TREE_OK;
+}
 FsTreeResult fs_tree_graft_new(FsTree* tree, const char* name, const char* directory) {
     if (!tree || !tree->root || !name || !directory || !valid_name(name, strlen(name))) return FS_TREE_INVALID;
     if (child_find(tree->root, name)) return FS_TREE_EXISTS;

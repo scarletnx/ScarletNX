@@ -2082,6 +2082,27 @@ void fs_saves_init(const char* root) {
     }
     pm_unlock(&g_hle.fs.tree.lock);
 }
+int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
+    char text[33], name[64], game[64];
+    FsNode* node;
+    int n = 0;
+    snx_users_uid_text(uid, text);
+    snprintf(name, sizeof name, "global-user.%s", text);
+    snprintf(game, sizeof game, "save/user.%s", text);
+    pm_lock(&g_hle.fs.tree.lock);
+    if (g_host.fs.save_root[0] && n < max) {
+        snprintf(paths[n], FS_TREE_PATH_MAX, "%s/user.%s", g_host.fs.save_root, text);
+        if (snx_is_dir(paths[n])) {
+            if (!fs_tree_lookup(&g_hle.fs.tree, NULL, name, &node)) fs_tree_forget(&g_hle.fs.tree, name);
+            n++;
+        }
+    }
+    if (n < max && !fs_tree_lookup(&g_hle.fs.tree, NULL, game, &node) && node->is_dir &&
+        !fs_tree_path(&g_hle.fs.tree, node, paths[n], FS_TREE_PATH_MAX) && !fs_tree_forget(&g_hle.fs.tree, game))
+        n++;
+    pm_unlock(&g_hle.fs.tree.lock);
+    return n;
+}
 /* The folder of the attribute's save in the tree, into p, as save_layout says: global's (save_global), game's
    save/<kind> of the game's data folder, an Account save its user's (save_user). The other layout's while only it
    holds the save, played where it is and said once a run; both holding one is two saves of it, which stop says and

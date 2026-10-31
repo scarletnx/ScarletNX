@@ -356,6 +356,72 @@ done:
     free(path);
     return rc;
 }
+/* the users from index i out, those after it a place up, the one playing the same user */
+static void users_drop(int i) {
+    memmove(&g_users[i], &g_users[i + 1], sizeof g_users[0] * (size_t)(g_user_count - i - 1));
+    memset(&g_users[--g_user_count], 0, sizeof g_users[0]);
+    if (g_user_selected > i) g_user_selected--;
+}
+int snx_users_remove(const char* dir, int number, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *at;
+    const char *line, *end, *p, *q;
+    size_t size = 0, len;
+    int section = 0, rc = -1, k;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    if (g_users[number - 1].unsaved) {
+        users_drop(number - 1);
+        rc = 0;
+        goto done;
+    }
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    /* the file again, [userN]'s lines left out and the sections after it numbered a place down */
+    out = (char*)snx_alloc(size + 1);
+    at = out;
+    for (line = text; *line; line += len) {
+        end = strchr(line, '\n');
+        len = end ? (size_t)(end - line) + 1 : strlen(line);
+        for (p = line; *p == ' ' || *p == '\t'; ++p) {}
+        if (*p == '[' && (q = strchr(p, ']')) != NULL && q < line + len) {
+            section = users_section(p + 1, (size_t)(q - p - 1));
+            if (section > number) {
+                k = snprintf(at, size + 1 - (size_t)(at - out), "%.*s[user%d]%.*s", (int)(p - line), line, section - 1,
+                             (int)(line + len - q - 1), q + 1);
+                at += k;
+                continue;
+            }
+        }
+        if (section == number) continue;
+        memcpy(at, line, len);
+        at += len;
+    }
+    *at = 0;
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    users_drop(number - 1);
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
 int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
     SnxUser* u;
     if (g_user_count >= SNX_USERS_MAX) {

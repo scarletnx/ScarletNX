@@ -58,6 +58,9 @@ FsTreeResult fs_tree_graft(FsTree* tree, const char* name, const char* directory
 /* fs_tree_graft, writable: the folder's entries are the guest's to change, as the data directory's own (a save kept
    in a folder of all the games') */
 FsTreeResult fs_tree_graft_writable(FsTree* tree, const char* name, const char* directory);
+/* Any time: path and everything under it out of the index, the host's files left as they are, for the caller to move:
+   a handle still open on one of them reads and writes nothing more. A save of a user deleted, taken to the Trash */
+FsTreeResult fs_tree_forget(FsTree* tree, const char* path);
 /* Any time: directory made on the host (its parent there, it not) and grafted as name, empty and writable. Nothing is
    enumerated: a folder that is already there is FS_TREE_EXISTS, as only a scan at startup could index it */
 FsTreeResult fs_tree_graft_new(FsTree* tree, const char* name, const char* directory);

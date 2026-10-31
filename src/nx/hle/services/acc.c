@@ -8,7 +8,9 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
+#include "nx/hle/filesystem/fs.h"
 #include <openssl/rand.h>
+#include <time.h>
 
 #include "hle/services/acc.swipc.inc"
 
@@ -160,10 +162,10 @@ static int nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(SvcOb
 }
 
 static const SnxUser* acc_profile_user(SvcObj* self) {
-    return snx_users_find(((const AccUser*)self->data)->uid); /* GetProfile made it for a user, and users don't go while the game runs */
+    return snx_users_find(((const AccUser*)self->data)->uid); /* NULL for one acc:su deleted since */
 }
 static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base) {
-    const SnxUser* u = acc_profile_user(self);
+    const SnxUser* u = acc_profile_user(self); /* there: Get and GetBase see to it */
     memset(base, 0, sizeof *base);
     acc_uid_put(base->uid.v, ((const AccUser*)self->data)->uid);
     base->last_edit_timestamp = ACC_LAST_EDIT;
@@ -172,12 +174,14 @@ static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base)
 /* the user data (icon, colours, Mii) a program stored, users.ini's user_data: zeros, the default icon, without one */
 static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
     const SnxUser* u = acc_profile_user(self);
+    R_UNLESS(u, ACC_INVALID_USER_ID); /* deleted since (acc:su 203): rEden answers its profile manager's failure */
     memcpy(GP(user_data.addr), u->user_data,
            (size_t)(user_data.size < sizeof u->user_data ? user_data.size : sizeof u->user_data));
     acc_profile_base(self, base);
     R_SUCCEED();
 }
 static int nn_account_profile_IProfile_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    R_UNLESS(acc_profile_user(self), ACC_INVALID_USER_ID);
     acc_profile_base(self, base);
     R_SUCCEED();
 }
@@ -214,11 +218,13 @@ static u32 acc_picture(void) {
 /* GetImageSize tells the size LoadImage writes, so a game reserves what it gets: the user's own picture
    (users/<uid>.jpg), else Wimsy */
 static int nn_account_profile_IProfile_GetImageSize(SvcObj* self, u32* size) {
-    if (!snx_users_picture(acc_profile_user(self), size)) *size = acc_picture();
+    const SnxUser* u = acc_profile_user(self);
+    if (!u || !snx_users_picture(u, size)) *size = acc_picture(); /* a user deleted since: the default, as rEden */
     R_SUCCEED();
 }
 static int nn_account_profile_IProfile_LoadImage(SvcObj* self, IpcBuf image, u32* size) {
-    const unsigned char* jpeg = snx_users_picture(acc_profile_user(self), size);
+    const SnxUser* u = acc_profile_user(self);
+    const unsigned char* jpeg = u ? snx_users_picture(u, size) : NULL;
     if (!jpeg) {
         *size = acc_picture();
         jpeg = g_hle.acc.pic.d;
@@ -522,6 +528,107 @@ static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(S
     R_SUCCEED();
 }
 
+/* path moved to to; done[] keeps it to be put back */
+static int acc_trash_move(const char* path, const char* to, char (*done)[2][FS_TREE_PATH_MAX], int* moved) {
+    if (snx_replace(path, to)) return -1;
+    snprintf(done[*moved][0], FS_TREE_PATH_MAX, "%s", path);
+    snprintf(done[*moved][1], FS_TREE_PATH_MAX, "%s", to);
+    ++*moved;
+    return 0;
+}
+/* A user deleted (SwitchBrew acc:su 203), as rEden's Core::Profiles::DeleteUser does it: into the Trash, trash/ of the
+   data folder, a folder of its own (user.<uid>.<UTC time>, a number after it rather than over one there): its
+   users.ini section, its picture and the folders of its saves this run reaches (fs_user_saves_take), each said where
+   it went; then the users after it a place up. The user playing is refused, as rEden refuses it in its frontends; a
+   move that fails puts back what moved and deletes nothing */
+static int nn_account_IAccountServiceForAdministrator_DeleteUser(SvcObj* self, const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char hex[33], when[32], why[512], picture[FS_TREE_PATH_MAX], saves[2][FS_TREE_PATH_MAX],
+        done[3][2][FS_TREE_PATH_MAX];
+    char *data, *trash = NULL, *section = NULL, *place;
+    time_t now = time(NULL);
+    const struct tm* utc = gmtime(&now);
+    int number, moved = 0, n, i, rc = ACC_UPDATE_FAILED;
+    (void)self;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    number = (int)(u - g_users) + 1;
+    if (u == snx_users_selected()) {
+        WARN("acc: user %d is not deleted: it is the one playing\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: user %d is not deleted: there is no users folder\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    snx_users_uid_text(u->uid, hex);
+    data = snx_dirname(g_host.acc.users_dir);
+    if (!utc || !strftime(when, sizeof when, "%Y%m%d-%H%M%S", utc)) snprintf(when, sizeof when, "%lld", (long long)now);
+    for (i = 1; i < 100 && !trash; i++) {
+        place = i == 1 ? snx_format("%s/trash/user.%s.%s", data, hex, when)
+                       : snx_format("%s/trash/user.%s.%s-%d", data, hex, when, i);
+        if (place && !snx_path_exists(place))
+            trash = place;
+        else
+            free(place);
+    }
+    if (!trash || snx_mkdirs(trash)) {
+        WARN("acc: user %d is not deleted: no folder in %s/trash could be made\n", number, data);
+        goto done;
+    }
+    section = snx_format("[user%d]\nuid=%s\nnickname=%s\n", number, hex, u->nickname);
+    place = snx_path_join(trash, "users.ini");
+    n = !section || !place || snx_write_file(place, section, strlen(section));
+    free(place);
+    if (n) {
+        WARN("acc: user %d is not deleted: %s/users.ini could not be written\n", number, trash);
+        goto done;
+    }
+    snprintf(picture, sizeof picture, "%s/%s.jpg", g_host.acc.users_dir, hex);
+    if (snx_is_file(picture)) {
+        place = snx_format("%s/%s.jpg", trash, hex);
+        n = !place || acc_trash_move(picture, place, done, &moved);
+        free(place);
+        if (n) {
+            WARN("acc: user %d is not deleted: %s could not be moved to %s\n", number, picture, trash);
+            goto back;
+        }
+    }
+    n = fs_user_saves_take(u->uid, saves, 2);
+    for (i = 0; i < n; i++) {
+        place = snx_format("%s/save.%d", trash, i + 1);
+        if (!place || acc_trash_move(saves[i], place, done, &moved)) {
+            WARN("acc: user %d is not deleted: %s could not be moved to %s; the game sees those saves again at its "
+                 "next start\n",
+                 number, saves[i], place ? place : trash);
+            free(place);
+            goto back;
+        }
+        free(place);
+    }
+    if (snx_users_remove(g_host.acc.users_dir, number, why, sizeof why)) {
+        WARN("acc: user %d is not deleted: %s\n", number, why);
+        goto back;
+    }
+    for (i = 0; i < moved; i++) LOG("acc: %s is in the Trash now, %s\n", done[i][0], done[i][1]);
+    LOG("acc: user %d is deleted, into %s\n", number, trash);
+    rc = 0;
+    goto done;
+back:
+    for (i = moved - 1; i >= 0; i--)
+        if (snx_replace(done[i][1], done[i][0]))
+            WARN("acc: %s could not be put back from %s\n", done[i][0], done[i][1]);
+done:
+    if (rc && trash) { /* the Trash's folder made for it, with what went in it first */
+        place = snx_path_join(trash, "users.ini");
+        if (place) remove(place);
+        free(place);
+        snx_remove_empty_dir(trash);
+    }
+    free(section);
+    free(trash);
+    free(data);
+    return rc;
+}
 /* a user's profile to change (SwitchBrew acc:su 205): a user's only, a registered one's too */
 static int acc_editor_dispatch(SvcObj* o, IpcCtx* c);
 static int nn_account_IAccountServiceForAdministrator_GetProfileEditor(SvcObj* self, const nn_account_Uid* uid,
