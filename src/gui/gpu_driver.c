@@ -8,6 +8,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "gui/i18n.h"
+#include <libdeflate.h>
 #include <miniz.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,50 @@ const GuiFreedrenoPreset gui_freedreno_presets[] = {
 /* a zip entry's name that is a file at the package's top: no folder, nothing hidden, no way out of it */
 static int top_file(const char* name) {
     return name[0] && name[0] != '.' && !strchr(name, '/') && !strchr(name, '\\') && !strchr(name, ':');
+}
+
+/* the zip's member i, which st describes: miniz hands its bytes as the zip holds them, libdeflate inflates a deflated
+   one, and its CRC-32 is checked. NULL with why */
+static unsigned char* member(mz_zip_archive* z, mz_uint i, const mz_zip_archive_file_stat* st, size_t* n, char* why,
+                             size_t why_size) {
+    size_t packed = 0, size = (size_t)st->m_uncomp_size;
+    unsigned char *raw, *out;
+    int ok;
+    if (st->m_method != 0 && st->m_method != MZ_DEFLATED) {
+        snprintf(why, why_size, "method %u, neither stored (0) nor deflated (8)", (unsigned)st->m_method);
+        return NULL;
+    }
+    raw = (unsigned char*)mz_zip_reader_extract_to_heap(z, i, &packed, MZ_ZIP_FLAG_COMPRESSED_DATA);
+    out = raw ? (unsigned char*)malloc(size ? size : 1) : NULL;
+    if (!out) {
+        snprintf(why, why_size, "%s", raw ? "out of memory" : mz_zip_get_error_string(mz_zip_get_last_error(z)));
+        mz_free(raw);
+        return NULL;
+    }
+    if (st->m_method == 0) {
+        ok = packed == size;
+        if (ok)
+            memcpy(out, raw, size);
+        else
+            snprintf(why, why_size, "stored as %zu bytes where the zip says %zu", packed, size);
+    } else {
+        struct libdeflate_decompressor* d = libdeflate_alloc_decompressor();
+        ok = d && libdeflate_deflate_decompress(d, raw, packed, out, size, NULL) == LIBDEFLATE_SUCCESS;
+        if (!ok) snprintf(why, why_size, "its deflate is not %zu bytes of data", size);
+        libdeflate_free_decompressor(d);
+    }
+    mz_free(raw);
+    if (ok && (mz_uint32)libdeflate_crc32(0, out, size) != st->m_crc32) {
+        snprintf(why, why_size, "its CRC-32 is %08x where the zip says %08x", (unsigned)libdeflate_crc32(0, out, size),
+                 (unsigned)st->m_crc32);
+        ok = 0;
+    }
+    if (!ok) {
+        free(out);
+        return NULL;
+    }
+    *n = size;
+    return out;
 }
 
 int gui_gpu_driver_add(const void* zip, size_t size, const char* file, const char* dir, int api, char* id,
@@ -81,10 +126,9 @@ int gui_gpu_driver_add(const void* zip, size_t size, const char* file, const cha
                  (unsigned long long)st.m_uncomp_size, SNX_GPU_DRIVER_META_MAX);
         goto done;
     }
-    meta_text = (char*)mz_zip_reader_extract_to_heap(&z, meta_at, &meta_size, 0);
+    meta_text = (char*)member(&z, meta_at, &st, &meta_size, why, sizeof why);
     if (!meta_text) {
-        snprintf(said, said_size, snx_tr("Not added: %s's meta.json does not unpack (%s)"), leaf,
-                 mz_zip_get_error_string(mz_zip_get_last_error(&z)));
+        snprintf(said, said_size, snx_tr("Not added: %s's meta.json does not unpack (%s)"), leaf, why);
         goto done;
     }
     if (!snx_gpu_driver_meta(meta_text, meta_size, &meta, why, sizeof why)) {
@@ -138,24 +182,23 @@ int gui_gpu_driver_add(const void* zip, size_t size, const char* file, const cha
     }
     for (i = 0; i < count; ++i) {
         size_t n = 0;
-        void* data;
+        unsigned char* data;
         char* to;
         int failed;
         mz_zip_reader_file_stat(&z, i, &st);
-        data = mz_zip_reader_extract_to_heap(&z, i, &n, 0);
+        data = member(&z, i, &st, &n, why, sizeof why);
         if (!data) {
-            snprintf(said, said_size, snx_tr("Not added: %s's %s does not unpack (%s)"), leaf, st.m_filename,
-                     mz_zip_get_error_string(mz_zip_get_last_error(&z)));
+            snprintf(said, said_size, snx_tr("Not added: %s's %s does not unpack (%s)"), leaf, st.m_filename, why);
             goto unstage;
         }
-        if (i == library_at && !snx_gpu_driver_elf((const unsigned char*)data, n, why, sizeof why)) {
+        if (i == library_at && !snx_gpu_driver_elf(data, n, why, sizeof why)) {
             snprintf(said, said_size, snx_tr("Not added: %s's %s %s"), leaf, st.m_filename, why);
-            mz_free(data);
+            free(data);
             goto unstage;
         }
         to = snx_path_join(staging, st.m_filename);
         failed = !to || snx_write_file(to, data, n);
-        mz_free(data);
+        free(data);
         if (failed) {
             snprintf(said, said_size, snx_tr("Not added: %s could not be written (%s)"), to ? to : st.m_filename,
                      snx_os_error(why, sizeof why));
@@ -178,7 +221,7 @@ unstage:
 done:
     if (result == GUI_DRIVER_REFUSED) id[0] = 0;
     mz_zip_reader_end(&z);
-    mz_free(meta_text);
+    free(meta_text);
     free(there);
     free(path);
     free(folder);

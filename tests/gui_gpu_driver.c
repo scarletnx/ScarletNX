@@ -35,6 +35,24 @@ static int add(const char* const* entries, const char* file, const char* dir, in
     return r;
 }
 static int has(const char* text, const char* part) { return strstr(text, part) != NULL; }
+/* the file at path is size bytes of data */
+static int holds(const char* path, const void* data, size_t size) {
+    size_t n = 0;
+    unsigned char* text = snx_read_file(path, &n);
+    int same = text && n == size && !memcmp(text, data, size);
+    free(text);
+    return same;
+}
+/* name's CRC-32 in the zip's central directory, one bit of it changed */
+static void bad_crc(unsigned char* zip, size_t size, const char* name) {
+    size_t i, n = strlen(name);
+    for (i = 0; i + 46 + n <= size; ++i)
+        if (!memcmp(zip + i, "PK\1\2", 4) && zip[i + 28] == n && !zip[i + 29] && !memcmp(zip + i + 46, name, n)) {
+            zip[i + 16] ^= 1;
+            return;
+        }
+    assert(!"no such entry");
+}
 static int left_over(const char* dir) {
     char** names = NULL;
     size_t n = 0, i;
@@ -52,8 +70,10 @@ int main(void) {
     int i;
     assert(root);
     dir = snx_path_join(root, SNX_GPU_DRIVERS_DIR);
-    /* a package as released: meta.json, its library (an arm64 ELF header, NULs in it) and another library */
+    /* a package as released: meta.json, its library (an arm64 ELF header, NULs in it) deflated and another library
+       stored */
     {
+        static const char extra[] = "a library the zip stores as it is";
         mz_zip_archive z = {0};
         void* zip = NULL;
         size_t size = 0;
@@ -63,7 +83,7 @@ int main(void) {
         assert(mz_zip_writer_init_heap(&z, 0, 0));
         assert(mz_zip_writer_add_mem(&z, "meta.json", META, strlen(META), MZ_BEST_SPEED));
         assert(mz_zip_writer_add_mem(&z, "libvulkan_freedreno.so", lib, sizeof lib, MZ_BEST_SPEED));
-        assert(mz_zip_writer_add_mem(&z, "libextra.so", "x", 1, MZ_BEST_SPEED));
+        assert(mz_zip_writer_add_mem(&z, "libextra.so", extra, sizeof extra - 1, MZ_NO_COMPRESSION));
         assert(mz_zip_writer_finalize_heap_archive(&z, &zip, &size));
         mz_zip_writer_end(&z);
         /* added: its folder named after the zip, its files in it, nothing left beside it */
@@ -72,10 +92,10 @@ int main(void) {
         assert(!strcmp(id, "Turnip_v32") &&
                !strcmp(said, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32"));
         path = snx_format("%s/Turnip_v32/libvulkan_freedreno.so", dir);
-        assert(snx_is_file(path));
+        assert(holds(path, lib, sizeof lib));
         free(path);
         path = snx_format("%s/Turnip_v32/libextra.so", dir);
-        assert(snx_is_file(path));
+        assert(holds(path, extra, sizeof extra - 1));
         free(path);
         assert(!left_over(dir));
         /* the same package again: there already, said so */
@@ -86,6 +106,13 @@ int main(void) {
         assert(gui_gpu_driver_add(zip, size, "Copy.adpkg.zip", dir, 0, id, sizeof id, said, sizeof said) ==
                    GUI_DRIVER_ADDED &&
                !strcmp(id, "Copy"));
+        /* a member whose bytes don't give the CRC-32 the zip says: refused with both, nothing written */
+        bad_crc(zip, size, "libvulkan_freedreno.so");
+        assert(gui_gpu_driver_add(zip, size, "Bad_crc.zip", dir, 36, id, sizeof id, said, sizeof said) ==
+               GUI_DRIVER_REFUSED);
+        assert(has(said, "Not added: Bad_crc.zip's libvulkan_freedreno.so does not unpack (its CRC-32 is ") &&
+               has(said, " where the zip says "));
+        assert(!left_over(dir));
         mz_free(zip);
         /* its library for another machine: refused, saying which */
         lib[18] = 62;
