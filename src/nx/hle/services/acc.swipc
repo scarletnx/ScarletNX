@@ -80,6 +80,7 @@ interface nn::account::IAccountServiceForAdministrator is acc:su {
         -> object<nn::account::baas::IManagerForSystemService> manager;
     [110] StoreSaveDataThumbnail(nn::account::Uid uid, nn::ApplicationId application_id, buffer<u8, 5> image);
     [140] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    [250] GetBaasAccountAdministrator(nn::account::Uid uid) -> object<nn::account::baas::IAdministrator> administrator;
     [401] GetPinCodeLength() -> u32 length;
 }
 
@@ -123,6 +124,15 @@ interface nn::account::baas::IManagerForSystemService {
     [141] RefreshNetworkServiceLicenseCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
     # 15.0.0+: the license, 0 for none, and when it ends (undocumented, as rEden reads it)
     [143] GetNetworkServiceLicenseCacheEx() -> (u32 license, i64 expiration);
+}
+
+# the user's network service account for the administrator (SwitchBrew IAdministrator): its license as the system's
+# manager has it, and no online account linked, nor its page (acc.c's acc_administrator_other)
+@fallback(acc_administrator_other)
+interface nn::account::baas::IAdministrator {
+    [141] RefreshNetworkServiceLicenseCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
+    [143] GetNetworkServiceLicenseCacheEx() -> (u32 license, i64 expiration);
+    [250] IsLinkedWithNintendoAccount() -> b8 linked;
 }
 
 # an operation on the account server: done at once, and succeeded, with nothing from a server (EnsureIdTokenCacheAsync's

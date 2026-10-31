@@ -310,6 +310,25 @@ static int acc_system_manager_other(SvcObj* self, IpcCtx* c) {
     return stub_ok(self, c);
 }
 
+/* ============================================================ IAdministrator: the system manager's license */
+static int nn_account_baas_IAdministrator_RefreshNetworkServiceLicenseCacheAsync(SvcObj* self, SvcObj** context) {
+    return nn_account_baas_IManagerForSystemService_RefreshNetworkServiceLicenseCacheAsync(self, context);
+}
+static int nn_account_baas_IAdministrator_GetNetworkServiceLicenseCacheEx(SvcObj* self, u32* license, i64* expiration) {
+    return nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCacheEx(self, license, expiration);
+}
+/* no online account behind the user: the pages that need one say so */
+static int nn_account_baas_IAdministrator_IsLinkedWithNintendoAccount(SvcObj* self, u8* linked) {
+    (void)self;
+    *linked = 0;
+    R_SUCCEED();
+}
+/* the online account's page (290, GetRequestForNintendoAccountUserResourceView): not available right now, as rEden */
+static int acc_administrator_other(SvcObj* self, IpcCtx* c) {
+    if (c->cmd == 290) R_THROW(ACC_UNDER_MAINTENANCE);
+    return stub_ok(self, c);
+}
+
 /* ============================================================ IAsyncContext: done at once, succeeded */
 static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -434,6 +453,17 @@ static int nn_account_IAccountServiceForAdministrator_GetBaasAccountManagerForSy
                                                                                             const nn_account_Uid* uid,
                                                                                             SvcObj** manager) {
     return nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSystemService(self, uid, manager);
+}
+/* the user's network service account, for the administrator: a user's only */
+static int nn_account_IAccountServiceForAdministrator_GetBaasAccountAdministrator(SvcObj* self,
+                                                                                  const nn_account_Uid* uid,
+                                                                                  SvcObj** administrator) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *administrator = acc_for_user(
+        nn_account_baas_IAdministrator_new_data(g_hle.acc.users, g_hle.acc.user_next, "acc profiles and managers"),
+        uid);
+    R_SUCCEED();
 }
 /* the system names the application the thumbnail is of: none is no application's */
 static int nn_account_IAccountServiceForAdministrator_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
