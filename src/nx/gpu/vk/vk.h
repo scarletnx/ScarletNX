@@ -932,6 +932,7 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 void vk_uma_before_write(u64 gva, u64 len); /* the front end writes GPU range [gva, gva + len) next (vk_lock held) */
 void vk_uma_owning(u64 cpu, u64 len);       /* [cpu, cpu + len) becomes GPU-owned next (vk_own_publish, vk_lock) */
 void vk_uma_mapping_begin(void);            /* guest memory's host pages change next (the mapping bracket) */
+void vk_uma_mapping_end(void);              /* they changed: before anything else is submitted */
 /* GPU range [gva, gva + len) as a storage buffer the draw or dispatch being set up writes in place: 1 with buf and off,
    as vk_uma_read. Its writes are pending from vk_uma_writes_commit (once it is recorded) until its submit is done */
 int vk_uma_write(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);

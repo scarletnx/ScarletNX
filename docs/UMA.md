@@ -57,10 +57,13 @@ The copies, landings, hashes and write tracking were only there because the GPU 
   block its worker in the fault while the landing waits for that draw.
 - NVIDIA pins an import's pages, so it keeps the old ones when guest memory is unmapped or moved. mem.c calls the
   backing hook (`mem_set_backing_hook`) for every range whose host pages are replaced or given back. That covers
-  decommitting, unmapping, and moving into the pool or out of it. The import is retired and destroyed once the
-  submits that used it are done (`vk_defer_call`), and the range is imported again from the new pages.
-- Before the guest's mapping changes, the commands recorded with any import are submitted (`vk_uma_mapping_begin`),
-  so a driver that takes the pages again at the submit takes the old ones.
+  decommitting, unmapping, and moving into the pool or out of it. Before the mapping change ends
+  (`vk_uma_mapping_end`), the import is retired and destroyed once the submits that used it are done, and the range
+  is imported again from the new pages. A driver keeps every import in every submission: amdgpu fails a whole
+  submission (EFAULT) on an import whose pages were unmapped.
+- Before the guest's mapping changes, the commands recorded with any import are submitted, and the submissions are
+  in the driver, not only handed to the recording thread (`vk_uma_mapping_begin`), so a driver that takes the pages
+  again at the submit takes the old ones.
 - A span that can't be imported (unmapped pages, the driver refusing) isn't tried again until memory changes.
 
 ## What imports cost a driver

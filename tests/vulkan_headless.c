@@ -1665,7 +1665,8 @@ static int check_uma(void) {
         CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again when used */
         CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
     }
-    /* memory the guest unmaps: its import goes at the next lookup, and memory mapped there again is imported anew */
+    /* memory the guest unmaps: its import goes with the unmap, before anything else is submitted (amdgpu fails a
+       submission naming an import whose pages are unmapped), and memory mapped there again is imported anew */
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(UMA_GR, UMA_R, 0x10000);
     memset(GP(UMA_R), 0x11, 0x10000);
@@ -1674,9 +1675,9 @@ static int check_uma(void) {
     vk_unlock();
     CHECK(mem_unmap(UMA_R, 0x10000) == 0);
     vk_lock();
-    CHECK(vk_uma_get(UMA_A, 0x100, 1, &any, &any_off)); /* takes the change */
     uma_stats(&n, &waits);
     CHECK(n == n0 - 1);
+    CHECK(vk_uma_get(UMA_A, 0x100, 1, &any, &any_off));
     { /* the import it gives is UMA_A's own, as a lookup with nothing changed finds it, not a slot the change emptied */
         VkBuffer again;
         u64 again_off;

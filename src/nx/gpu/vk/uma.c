@@ -16,8 +16,8 @@
    alias pool's pages are never imported: GPU-owned memory lives there, trapped (docs/GPU_OWNERSHIP.md), and a driver
    that takes the pages again at each submit (RADV and ANV take imports through MMU notifiers) would fault on a trapped
    page from the kernel, where userfaultfd answers EFAULT. A driver that pins the pages (NVIDIA) holds on to the old
-   ones when guest memory is unmapped or moved, so an import whose pages change is retired (mem.c's hook), destroyed
-   once the submits that read it are done, and the range imported again.
+   ones when guest memory is unmapped or moved, so an import whose pages change is retired (mem.c's hook) and
+   destroyed before the mapping change ends, once the submits that read it are done, and the range imported again.
 
    What waits: the guest's fences already order its CPU's writes after the GPU's reads (vk.h), but the runtime writes
    guest memory too while it records (inline to memory, constant buffer updates, ranges becoming GPU-owned), and the
@@ -161,14 +161,17 @@ static void keys_rebuild(void) {
     memset(g_uma.slot, 0, sizeof g_uma.slot);
     for (u32 i = 0; i < g_uma.n; i++) key_insert(g_uma.imp[i].key, i);
 }
-/* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done. The
+/* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done. One whose
+   pages changed is destroyed at once, after those submits: a driver keeps every import in every submission, and
+   amdgpu, which takes their pages again in each, fails the whole submission (EFAULT) on pages unmapped since. The
    caller rebuilds the keys */
 static void retire_one(u32 i, int why) {
     g_uma.why_retired[why]++;
-    UmaImport* m = malloc(sizeof *m);
-    if (!m) { /* nowhere to keep it until then: the GPU finishes with it now */
-        vk_finish();
+    UmaImport* m = why == VK_UMA_RETIRED_CHANGED ? NULL : malloc(sizeof *m);
+    if (!m) { /* or nowhere to keep it until then */
         m = &g_uma.imp[i];
+        if (m->used == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        vk_wait_submit(m->used);
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         vkFreeMemory(g_vk.dev, m->mem, NULL);
     } else {
@@ -607,8 +610,14 @@ void vk_uma_owning(u64 cpu, u64 len) {
 }
 void vk_uma_mapping_begin(void) {
     /* the same for pages the guest unmaps or moves: a driver taking an import's pages again at its next submit would
-       take the new ones, or none */
-    if (g_vk.uma && g_uma.n && g_uma.recorded == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+       take the new ones, or none. Made in the driver before they change, not only handed to the recording thread:
+       amdgpu takes them in the submission's ioctl */
+    if (!g_vk.uma || !g_uma.n) return;
+    if (g_uma.recorded == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    vk_rec_sync();
+}
+void vk_uma_mapping_end(void) {
+    if (g_vk.uma) take_changes(); /* the imports over pages that changed go before anything else is submitted */
 }
 
 void vk_uma_frame(void) {
