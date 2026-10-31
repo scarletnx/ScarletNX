@@ -494,39 +494,49 @@ static int lend_ready(CPU* c, const CPU* base, u64 sp) {
    nvn_direct's records took there, and its memory is reused when the game reuses its own. The pool's own shadow,
    offset for offset, stays for the buffers and textures in it */
 #define CMD_SCALE 4
-/* the scaled pool for the live pool, made at its first use (0 when there is none) */
+/* the scaled pool for the live pool (under g_nvn.verify.cmd.lock): 0 when there is none */
+static u64 cmd_pool_find(u64 live) {
+    for (u32 i = 0; i < g_nvn.verify.cmd.n; i++)
+        if (g_nvn.verify.cmd.p[i].live == live) return g_nvn.verify.cmd.p[i].pool;
+    return 0;
+}
+/* the scaled pool for the live pool, made at its first use (0 when there is none). The lock is not held while the
+   driver makes it: its nvnMemoryPoolInitialize calls nvdrv, and the thread leaves its core for that SVC and waits for
+   the core again after it. Held there, the lock stopped every thread that waited for it on the core it needed, and the
+   game hung with the thread that held it waiting for its core. Two threads that make the same pool at once keep the
+   first one put in the table, and the other goes */
 static u64 cmd_pool(CPU* c, const CPU* base, u64 sp, u64 live) {
     const NvnPool* lp = NVN_OBJ(const NvnPool, live);
-    u64 pool = 0, b;
-    u32 i;
     pm_lock(&g_nvn.verify.cmd.lock);
-    for (i = 0; i < g_nvn.verify.cmd.n && g_nvn.verify.cmd.p[i].live != live; i++) {
-    }
-    if (i < g_nvn.verify.cmd.n)
-        pool = g_nvn.verify.cmd.p[i].pool;
-    else if (g_nvn.verify.cmd.n < VF_CMD_POOLS && lp->size && g_nvn.verify.device) {
-        VfCmdPool* p = &g_nvn.verify.cmd.p[g_nvn.verify.cmd.n];
-        p->live = live;
-        p->size = lp->size;
-        p->storage = shadow_map(lp->size * CMD_SCALE);
-        p->pool = obj_alloc(sizeof(NVNmemoryPool));
-        b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
-        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDefaults"), b, 0, 0, 0);
-        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDevice"), b, g_nvn.verify.device, 0, 0);
-        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetFlags"), b,
-                 NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
-        drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetStorage"), b, p->storage, lp->size * CMD_SCALE, 0);
-        if (drv_call(c, base, sp, LIT("nvnMemoryPoolInitialize"), p->pool, b, 0, 0) & 0xFF) {
-            pool = p->pool;
-            g_nvn.verify.cmd.n++;
-        } else {
-            WARN("nvn verify: the shadow's pool for the command memory of pool %llx didn't initialize\n",
-                 (unsigned long long)live);
-            mem_unmap(p->storage, (lp->size * CMD_SCALE + 0xFFFF) & ~0xFFFFull);
-        }
-        obj_free(b, sizeof(NVNmemoryPoolBuilder));
-    }
+    u64 pool = cmd_pool_find(live);
+    int room = g_nvn.verify.cmd.n < VF_CMD_POOLS;
     pm_unlock(&g_nvn.verify.cmd.lock);
+    if (pool || !room || !lp->size || !g_nvn.verify.device) return pool;
+    VfCmdPool p = {.live = live, .size = lp->size, .storage = shadow_map(lp->size * CMD_SCALE)};
+    p.pool = obj_alloc(sizeof(NVNmemoryPool));
+    u64 b = obj_alloc(sizeof(NVNmemoryPoolBuilder));
+    drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDefaults"), b, 0, 0, 0);
+    drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetDevice"), b, g_nvn.verify.device, 0, 0);
+    drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetFlags"), b,
+             NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED, 0, 0);
+    drv_call(c, base, sp, LIT("nvnMemoryPoolBuilderSetStorage"), b, p.storage, lp->size * CMD_SCALE, 0);
+    int made = (int)(drv_call(c, base, sp, LIT("nvnMemoryPoolInitialize"), p.pool, b, 0, 0) & 0xFF);
+    obj_free(b, sizeof(NVNmemoryPoolBuilder));
+    if (made) {
+        pm_lock(&g_nvn.verify.cmd.lock);
+        pool = cmd_pool_find(live);
+        if (!pool && g_nvn.verify.cmd.n < VF_CMD_POOLS) {
+            g_nvn.verify.cmd.p[g_nvn.verify.cmd.n++] = p;
+            pool = p.pool;
+        }
+        pm_unlock(&g_nvn.verify.cmd.lock);
+        if (pool == p.pool) return pool;
+        drv_call(c, base, sp, LIT("nvnMemoryPoolFinalize"), p.pool, 0, 0, 0); /* another thread's went in first */
+    } else
+        WARN("nvn verify: the shadow's pool for the command memory of pool %llx didn't initialize\n",
+             (unsigned long long)live);
+    obj_free(p.pool, sizeof(NVNmemoryPool));
+    mem_unmap(p.storage, (lp->size * CMD_SCALE + 0xFFFF) & ~0xFFFFull);
     return pool;
 }
 /* the game finalizes the live pool: so is its scaled one */
