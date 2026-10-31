@@ -68,6 +68,7 @@ SvcObj* new_time_user(void); /* time:u, an application's: no write */
 
 /* ---- acc.c */
 SvcObj* new_acc(void);
+SvcObj* new_acc_system(void); /* acc:u1 */
 
 /* ---- ldr.c: ldr:ro and ro:1 */
 SvcObj* new_ldr(void);
