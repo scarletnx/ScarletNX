@@ -522,6 +522,76 @@ static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(S
     R_SUCCEED();
 }
 
+/* a user's profile to change (SwitchBrew acc:su 205): a user's only, a registered one's too */
+static int acc_editor_dispatch(SvcObj* o, IpcCtx* c);
+static int nn_account_IAccountServiceForAdministrator_GetProfileEditor(SvcObj* self, const nn_account_Uid* uid,
+                                                                       SvcObj** editor) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *editor = acc_with(acc_for_user(nn_account_profile_IProfileEditor_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                               "acc profiles and managers"),
+                                    uid),
+                       acc_editor_dispatch);
+    R_SUCCEED();
+}
+/* ============================================================ IProfileEditor: IProfile's, and the profile stored */
+static int nn_account_profile_IProfileEditor_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
+    return nn_account_profile_IProfile_Get(self, user_data, base);
+}
+static int nn_account_profile_IProfileEditor_GetBase(SvcObj* self, nn_account_profile_ProfileBase* base) {
+    return nn_account_profile_IProfile_GetBase(self, base);
+}
+static int nn_account_profile_IProfileEditor_GetImageSize(SvcObj* self, u32* size) {
+    return nn_account_profile_IProfile_GetImageSize(self, size);
+}
+static int nn_account_profile_IProfileEditor_LoadImage(SvcObj* self, IpcBuf image, u32* size) {
+    return nn_account_profile_IProfile_LoadImage(self, image, size);
+}
+/* The profile a program stores, written as it gives it: the nickname of the base's 32 bytes (strncpy's, as SwitchBrew's
+   ProfileBase says), which the service's rule takes (users.c), the UserData's 0x80 bytes, and with an image, the
+   picture. A user only registered goes into users.ini with it, as rEden's ProfileManager writes profiles.dat at a
+   Store. A base of another user's uid is refused, where rEden takes the uid too: the user would lose its saves and
+   picture, which go by uid. The timestamp is not kept: users.ini has no key for it */
+static int acc_store(SvcObj* self, const nn_account_profile_ProfileBase* base, IpcBuf user_data, const IpcBuf* image) {
+    const AccUser* who = (const AccUser*)self->data;
+    const SnxUser* u = snx_users_find(who->uid);
+    char nickname[SNX_USERS_NICKNAME + 1], why[512];
+    unsigned char data[SNX_USERS_DATA];
+    u64 uid[2];
+    int number;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    R_UNLESS(user_data.size >= SNX_USERS_DATA, ACC_INVALID_LENGTH);
+    R_UNLESS(!image || image->size <= SNX_ACC_PICTURE_MAX, ACC_INVALID_LENGTH);
+    acc_uid_get(&base->uid, uid);
+    R_UNLESS(uid[0] == who->uid[0] && uid[1] == who->uid[1], ACC_INVALID_USER_ID);
+    memcpy(nickname, base->nickname, SNX_USERS_NICKNAME);
+    nickname[SNX_USERS_NICKNAME] = 0;
+    memcpy(data, GP(user_data.addr), sizeof data);
+    number = (int)(u - g_users) + 1;
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: the profile of user %d is not stored: there is no users folder\n", number);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if ((strcmp(nickname, u->nickname) && snx_users_rename(g_host.acc.users_dir, number, nickname, why, sizeof why)) ||
+        (memcmp(data, u->user_data, sizeof data) &&
+         snx_users_set_data(g_host.acc.users_dir, number, data, why, sizeof why)) ||
+        (image && snx_users_set_picture(g_host.acc.users_dir, number, GP(image->addr), (uint32_t)image->size, why,
+                                        sizeof why)) ||
+        snx_users_save(g_host.acc.users_dir, number, why, sizeof why)) {
+        WARN("acc: the profile of user %d is not stored: %s\n", number, why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
+static int nn_account_profile_IProfileEditor_Store(SvcObj* self, const nn_account_profile_ProfileBase* base,
+                                                   IpcBuf user_data) {
+    return acc_store(self, base, user_data, NULL);
+}
+static int nn_account_profile_IProfileEditor_StoreWithImage(SvcObj* self, const nn_account_profile_ProfileBase* base,
+                                                            IpcBuf user_data, IpcBuf image) {
+    return acc_store(self, base, user_data, &image);
+}
+
 /* every command of an object that reads or changes the users, under g_host.acc.users_lk: acc:su changes them while the
    game's threads read them */
 static int acc_locked(SvcObj* o, IpcCtx* c, int (*dispatch)(SvcObj*, IpcCtx*)) {
@@ -541,6 +611,9 @@ static int acc_su_dispatch(SvcObj* o, IpcCtx* c) {
     return acc_locked(o, c, nn_account_IAccountServiceForAdministrator_dispatch);
 }
 static int acc_profile_dispatch(SvcObj* o, IpcCtx* c) { return acc_locked(o, c, nn_account_profile_IProfile_dispatch); }
+static int acc_editor_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_profile_IProfileEditor_dispatch);
+}
 static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*)) {
     o->dispatch = dispatch;
     return o;
