@@ -154,12 +154,74 @@ int main(void) {
         request(p, utility, 6);
         send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(get(p, 0) == 0x4b0082);
-        request(p, ready, 2);
-        send(p, apt, SNX_CTR_SVC_UNSUPPORTED, 0);
-        assert(p->apt_phase == 4);
+        request(p, ready, 2); /* waiting again, after startup: nothing to record */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(p->apt_phase == 4 && !get(p, 1));
         request(p, receive, 3);
         send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(get(p, 1) == 0xc8a0cfef && p->apt_phase == 4);
+        uint32_t info[] = {0x60040, 0x400};
+        request(p, info, 2); /* an applet nobody preloaded: success, nothing set */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x60040 && !get(p, 1));
+        uint32_t preload[] = {0x160040, 0x400};
+        request(p, preload, 2);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x160040 && !get(p, 1));
+        uint32_t registered[] = {0x90040, 0x600};
+        request(p, registered, 2); /* not yet asked for */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x90080 && !get(p, 1) && !get(p, 2));
+        uint32_t prepare[] = {0x180040, 0x500};
+        request(p, prepare, 2); /* preparing one makes it registered too */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x180040 && !get(p, 1));
+        registered[1] = 0x500;
+        request(p, registered, 2);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x90080 && get(p, 2) == 1);
+        request(p, info, 2); /* once preloaded it is registered and loaded */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x601c0 && !get(p, 1) && get(p, 5) == 1 && get(p, 6) == 1);
+        /* a library applet's handshake: a Request answers with a capture block, StartLibraryApplet with its exit */
+        put(p, 0x300720, 0x2000);
+        uint32_t send_parameter[] = {0xc0104, 0x300, 0x500, 2, 0x20, 0, 0, 0x400002, 0x300720};
+        request(p, send_parameter, 9);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0xc0040 && !get(p, 1));
+        static_output(p, 256, 0x300800);
+        request(p, glance, 3);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0xe0104 && get(p, 2) == 0x500 && get(p, 3) == 3 && !get(p, 4) && get(p, 6));
+        static_output(p, 256, 0x300800);
+        request(p, receive, 3);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0xd0104 && get(p, 3) == 3 && get(p, 6));
+        request(p, receive, 3); /* taken */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 1) == 0xc8a0cfef);
+        preload[1] = 0x402;
+        request(p, preload, 2);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        uint32_t start[] = {0x1e0084, 0x402, 0x104, 0, 0, 0x100402, 0x300900};
+        request(p, start, 7);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x1e0040 && !get(p, 1));
+        static_output(p, 256, 0x300800);
+        request(p, receive, 3);
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0xd0104 && get(p, 2) == 0x402 && get(p, 3) == 10 && get(p, 4) == 0x84 && !get(p, 6));
+        assert(get(p, 8) == 0x300800 && get(p, 7) == ((256u << 14) | 2));
+        unsigned char exit_result[0x84];
+        assert(snx_ctr_read_ram(p->space, 0x300800, exit_result, sizeof exit_result) == SNX_CTR_MEM_OK);
+        assert(!exit_result[0] && !exit_result[4] && exit_result[8] == 0xff && exit_result[11] == 0xff); /* a Mii, no guest */
+        assert(exit_result[0x0c] == 3 && exit_result[0x0c + 0x2e] == 0x40); /* the standard Mii, version 3 */
+        uint16_t crc = 0; /* CRC-16/XMODEM of the Mii and the two bytes after it, stored big-endian */
+        for (unsigned i = 0x0c; i < 0x6a; ++i) {
+            crc ^= (uint16_t)(exit_result[i] << 8);
+            for (unsigned bit = 0; bit < 8; ++bit) crc = (uint16_t)(crc & 0x8000 ? crc << 1 ^ 0x1021 : crc << 1);
+        }
+        assert(exit_result[0x6a] == crc >> 8 && exit_result[0x6b] == (crc & 0xff));
         uint32_t query[] = {0x1020000};
         request(p, query, 1);
         send(p, apt, SNX_CTR_SVC_RETURN, 0);

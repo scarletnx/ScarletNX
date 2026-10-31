@@ -236,6 +236,11 @@ struct SnxCtrProcess {
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
+    uint32_t apt_preloaded[4]; /* the library applets the game preloaded (PreloadLibraryApplet), 0 for a free slot */
+    struct { /* the one parameter an applet has sent the game, the next ReceiveParameter and GlanceParameter answer; 0 for none */
+        uint32_t signal, sender, size, object;
+        unsigned char data[0x100];
+    } apt_message;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
     uint32_t ir_objects[2]; /* ir:rst's shared memory, then its update event */
