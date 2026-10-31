@@ -17,6 +17,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +55,7 @@ void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void
         if (gmmu_translate((p << 12) + 0x800) && a < b) fn(ctx, (p << 12) + (a - c), b - a);
     }
 }
+u64 gmmu_generation(void) { return 0; }
 void mem_query(u64 addr, MemBlock* out) {
     memset(out, 0, sizeof *out);
     out->size = sizeof guest;
@@ -193,6 +195,9 @@ void pc_init(PCond* c) {
     pthread_cond_init(&c->c, &a);
 }
 void pc_broadcast(PCond* c) { pthread_cond_broadcast(&c->c); }
+void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
+void plat_yield(void) { sched_yield(); }
+u32 plat_tid(void) { return 0; }
 int pc_wait(PCond* c, PMutex* m, i64 ns) {
     if (ns < 0) return pthread_cond_wait(&c->c, &m->l), 0;
 #ifdef __APPLE__
@@ -302,6 +307,9 @@ static void expect(int ok, const char* what) {
 
 int main(void) {
     struct timespec ms20 = {0, 20000000};
+    /* one GPU thread: the SYNC prefetch cases below rewrite an entry from a hook as an earlier method runs, which the
+       split GPU thread's front has read by then (gpu.c fetch_late) */
+    g_gpu_split = 0;
     gpu_init();
 
     /* the record of GPU-side writes (maxwell3d.c): a write through one GPU address dirties every GPU page showing the

@@ -397,7 +397,20 @@ static u64 g_wseq;
    guest memory still at it, so its next write looked written back already and never landed */
 static u32 g_surf_gen;
 u32 vk_surf_gen(void) { return ++g_surf_gen; }
+/* What a texture takes from the drawn targets over it (gpu/vk/texture.c tex_take_drawn) changes with the targets in its
+   range and their pixels, so a texture that had nothing to take is passed over while this hasn't moved. It moves when a
+   target enters the list of drawn targets, leaves it or is parked or unparked, and when one that vk_rt_drawn_in
+   returned since its last write is written or drawn again. Every target in a passed over texture's range was returned
+   to it, and a target's freshness only comes back with a draw, so nothing a texture would take goes unnoticed */
+static u32 g_take_gen = 1;
+u32 vk_rt_take_gen(void) { return g_take_gen; }
+static void take_changed(Surf* s) {
+    if (!s->take_seen) return;
+    s->take_seen = 0;
+    g_take_gen++;
+}
 void vk_surf_wrote(Surf* s) {
+    take_changed(s);
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }
@@ -656,27 +669,66 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
         s->gw = 0;
     }
 }
+/* Every render target in the lists (from surf_create to surf_free), with its span as of now, so the targets over a
+   range are a pass over three arrays: walking the lists for it read every target's Surf, a thousand and more in one
+   game, at each release that published a target (rt_pending_over). A parked target's start has the top bit */
+static Surf** g_rt_all;
+static u64 *g_rt_lo, *g_rt_hi;
+static u32 g_nrt_all, g_caprt_all;
+static void rt_all_span(const Surf* s) {
+    u32 i = s->rt_all - 1;
+    g_rt_lo[i] = s->gva;
+    g_rt_hi[i] = (s->gva & ~(1ull << 63)) + rt_bytes(s);
+}
+static void rt_all_add(Surf* s) {
+    if (g_nrt_all == g_caprt_all) {
+        u32 cap = g_caprt_all ? g_caprt_all * 2 : 256;
+        Surf** a = realloc(g_rt_all, (size_t)cap * sizeof *a);
+        if (a) g_rt_all = a;
+        u64* lo = a ? realloc(g_rt_lo, (size_t)cap * sizeof *lo) : NULL;
+        if (lo) g_rt_lo = lo;
+        u64* hi = lo ? realloc(g_rt_hi, (size_t)cap * sizeof *hi) : NULL;
+        if (hi) g_rt_hi = hi;
+        if (!hi) fatal("Out of memory indexing the render targets");
+        g_caprt_all = cap;
+    }
+    g_rt_all[g_nrt_all] = s;
+    s->rt_all = ++g_nrt_all;
+    rt_all_span(s);
+}
+static void rt_all_del(Surf* s) {
+    if (!s->rt_all) return;
+    u32 i = s->rt_all - 1, last = --g_nrt_all;
+    if (i != last) {
+        g_rt_all[i] = g_rt_all[last];
+        g_rt_lo[i] = g_rt_lo[last];
+        g_rt_hi[i] = g_rt_hi[last];
+        g_rt_all[i]->rt_all = i + 1;
+    }
+    s->rt_all = 0;
+}
 /* The targets over [gva, gva + size) holding pixels guest memory hasn't got, oldest image first: memory freed and
    given to a new target still has the old target's pixels pending, and where two cover the same bytes the newer one's
    go on top. In local while it holds nlocal, else in a list the caller frees */
 static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out) {
     Surf** list = local;
     u32 n = 0, cap = nlocal;
-    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
-        for (Surf* s = g_lru[lru].head; s; s = s->lru_next) {
-            if ((s->gva >> 63) || s->gva >= gva + size || s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;
-            if (n == cap) {
-                Surf** grown = (Surf**)malloc((size_t)cap * 2 * sizeof *grown);
-                if (!grown) fatal("Out of memory listing the render targets over %llx", (unsigned long long)gva);
-                memcpy(grown, list, (size_t)n * sizeof *grown);
-                if (list != local) free(list);
-                list = grown;
-                cap *= 2;
-            }
-            u32 i = n++;
-            for (; i && list[i - 1]->wseq > s->wseq; i--) list[i] = list[i - 1];
-            list[i] = s;
+    for (u32 k = 0; k < g_nrt_all; k++) {
+        Surf* s;
+        if ((g_rt_lo[k] >> 63) || g_rt_lo[k] >= gva + size || g_rt_hi[k] <= gva || !flush_bytes(s = g_rt_all[k]))
+            continue;
+        if (n == cap) {
+            Surf** grown = (Surf**)malloc((size_t)cap * 2 * sizeof *grown);
+            if (!grown) fatal("Out of memory listing the render targets over %llx", (unsigned long long)gva);
+            memcpy(grown, list, (size_t)n * sizeof *grown);
+            if (list != local) free(list);
+            list = grown;
+            cap *= 2;
         }
+        u32 i = n++;
+        for (; i && list[i - 1]->wseq > s->wseq; i--) list[i] = list[i - 1];
+        list[i] = s;
+    }
     *out = list;
     return n;
 }
@@ -974,11 +1026,15 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             rt_pages(s, -1);
             rtx_del(gva);
             s->gva = gva | 1ull << 63;
+            if (s->rt_all) rt_all_span(s);
+            g_take_gen++;
             g_parked++;
             g_vk_surf_epoch++;
         }
     if (parked) {
         parked->gva = gva;
+        if (parked->rt_all) rt_all_span(parked);
+        g_take_gen++;
         rtx_add(parked);
         g_parked--;
         g_vk_surf_epoch++;
@@ -995,6 +1051,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
     s->bd = bd;
     s->volume = volume;
     s->rt_size = rt_bytes(s);
+    rt_all_add(s);
     rt_pages(s, 1);
     s->gw = gpu_mem_generation();
     /* the CPU may have written the memory already (a cleared or decoded frame): start from it. A depth target never
@@ -1188,6 +1245,7 @@ static int rt_superseded(const Surf* s) {
     return 0;
 }
 void vk_rt_drawn(Surf* s) {
+    take_changed(s);
     linear_note(s);
     s->draw_wseq = s->wseq;
     if (s->rt_size > g_drawn_max) g_drawn_max = s->rt_size;
@@ -1215,6 +1273,7 @@ void vk_rt_drawn(Surf* s) {
         g_capdrawn = cap;
     }
     s->drawn_from = s->gva;
+    g_take_gen++;
     int at = drawn_lower(s->drawn_from);
     memmove(&g_drawn[at + 1], &g_drawn[at], (size_t)(g_ndrawn - at) * sizeof *g_drawn);
     g_drawn[at] = s;
@@ -1240,6 +1299,7 @@ int vk_rt_drawn_fresh(Surf* s) {
     }
     return written == 0;
 }
+int vk_rt_pages_hit(u64 gva, u64 size) { return pend_hit_va(&g_rt_pages, gva, size); }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;
     if (hi <= lo || !pend_hit_va(&g_drawn_pages, lo, hi - lo)) return 0;
@@ -1252,6 +1312,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
         if (s->gva == s->drawn_from) {
             if (n < max) out[n] = s;
             n++;
+            s->take_seen = 1;
         }
     }
     return n;
@@ -1266,9 +1327,11 @@ static void surf_free(Surf* s) {
         lru_unlink(s);
     }
     if (s->is_rt) rt_pages(s, -1);
+    rt_all_del(s);
     if (s->gva >> 63) g_parked--;
     linear_drop(s);
     if (s->in_drawn) {
+        g_take_gen++;
         int i = drawn_lower(s->drawn_from);
         while (i < g_ndrawn && g_drawn[i] != s) i++;
         if (i < g_ndrawn) {

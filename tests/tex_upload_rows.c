@@ -241,6 +241,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     (void)lo, (void)hi, (void)out, (void)max;
     return 0;
 }
+u32 vk_rt_take_gen(void) { return 1; }
 Surf* vk_rt_find(u64 gva) {
     (void)gva;
     return NULL;

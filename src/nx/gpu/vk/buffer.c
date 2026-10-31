@@ -374,41 +374,47 @@ static int pages_meet(const GfxOut* a, const GfxOut* b) {
    the shared pages at other addresses: they meet through the GMMU, whose mappings stay put while results are pending
    (a mapping change lands them first) */
 /* The runs of the landing result's bytes its draw changed, its 8-byte words that differ from its original ones,
-   merged: found once per landing (out_changed_runs). Rebasing every later composed result compared all of the landed
-   result's bytes again for each of them. One game landed 20,000 results in 10 s that changed 4 MB of their 590, and
-   the rebases read 42 GB, most of the release thread, under vk_lock, which the GPU thread waits for */
+   merged: found once per landing (out_changed_runs), for its landing (vk_write_changed_runs) and for the rebases of
+   the later composed results over it. Rebasing every later composed result compared all of the landed result's bytes
+   again for each of them. One game landed 20,000 results in 10 s that changed 4 MB of their 590, and the rebases read
+   42 GB, most of the release thread, under vk_lock, which the GPU thread waits for */
 typedef struct {
     u32 from, to;
 } ChgRun;
 static ChgRun g_chg_first[64]; /* where the runs start, so even a failed allocation has room for one */
 static ChgRun* g_chg = g_chg_first;
 static u32 g_nchg, g_capchg = 64;
-/* e's changed runs into g_chg: 0 when none, or with no memory for them (every byte is a candidate then, one run) */
+/* e's changed runs into g_chg: 0 when none, or with no memory for them (every byte is a candidate then, one run). A
+   KiB the vectorized compare finds the same is passed over, as most of a result is the bytes it read: the landing
+   compared each result whole and then found its runs a word at a time, a twentieth of the GPU thread in one game */
 static u32 out_changed_runs(const GfxOut* e) {
-    u32 k = 0;
+    const u8 *res = e->ptr, *org = e->org;
+    u32 size = e->size;
     g_nchg = 0;
-    while (k < e->size) {
-        u32 w = e->size - k < 8 ? e->size - k : 8;
-        if (memcmp(e->ptr + k, e->org + k, w)) {
-            if (g_nchg && g_chg[g_nchg - 1].to == k)
+    for (u32 i = 0; i < size; i += 1024) {
+        u32 blk = size - i < 1024 ? size - i : 1024;
+        if (!memcmp(res + i, org + i, blk)) continue;
+        for (u32 k = i; k < i + blk; k += 8) {
+            u32 w = i + blk - k < 8 ? i + blk - k : 8;
+            if (!memcmp(res + k, org + k, w)) continue;
+            if (g_nchg && g_chg[g_nchg - 1].to == k) {
                 g_chg[g_nchg - 1].to = k + w;
-            else {
-                if (g_nchg == g_capchg) {
-                    u32 cap = g_capchg * 2;
-                    ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b)
-                                                     : realloc(g_chg, (size_t)cap * sizeof *b);
-                    if (!b) {
-                        g_chg[0] = (ChgRun){0, e->size};
-                        return g_nchg = 1;
-                    }
-                    if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);
-                    g_chg = b;
-                    g_capchg = cap;
-                }
-                g_chg[g_nchg++] = (ChgRun){k, k + w};
+                continue;
             }
+            if (g_nchg == g_capchg) {
+                u32 cap = g_capchg * 2;
+                ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b)
+                                                 : realloc(g_chg, (size_t)cap * sizeof *b);
+                if (!b) {
+                    g_chg[0] = (ChgRun){0, size};
+                    return g_nchg = 1;
+                }
+                if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);
+                g_chg = b;
+                g_capchg = cap;
+            }
+            g_chg[g_nchg++] = (ChgRun){k, k + w};
         }
-        k += w;
     }
     return g_nchg;
 }
@@ -458,10 +464,11 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
     Rebase r = {e, o};
     out_spans(e, o->addr, o->size, o->vmap, rebase_span, &r);
 }
-/* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up */
+/* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up,
+   with e's changed runs in g_chg */
 static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
     GfxOut* lists[3] = {rest, g_out, g_prep};
-    if (!out_changed_runs(e)) return; /* it changed nothing: memory has what every later one took as original */
+    if (!g_nchg) return;
     for (int l = 0; l < 3; l++)
         for (GfxOut* o = lists[l]; o; o = o->next)
             if (o->composed && pages_meet(e, o)) out_rebase(e, o);
@@ -503,7 +510,8 @@ void vk_buf_frame_done(u64 frame) {
             memcpy(o->org, o->initial, o->size);
             o->initial = NULL;
         }
-        vk_write_changed(o->addr, o->ptr, o->org, o->size);
+        out_changed_runs(o); /* for the landing and the rebases after it */
+        vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, (const u32*)g_chg, g_nchg);
         out_pages(o, -1);
         out_rebase_later(o, done);
         if (copy_stats_on()) {

@@ -144,7 +144,7 @@ static void gmmu_change_begin(u64 gva, u64 size) {
     if (g_gpu_mapping_begin) g_gpu_mapping_begin(gva, size, 0);
 }
 static void gmmu_change_end(u64 gva, u64 size) {
-    gpu_mem_written(gva, size);
+    gpu_mem_written_map(gva, size);
     if (g_gpu_mapping_end) g_gpu_mapping_end();
 }
 /* the counts of the entries before page first stop short of it, before it changes */
@@ -228,6 +228,8 @@ static void grun_cut(u64 g0, u64 g1, int own, u64 c0) {
     memmove(&r[w], &r[k], (n - k) * sizeof *r);
     g_hle.nvdrv.ngruns = n - (k - w);
 }
+static u64 g_gmmu_generation;
+u64 gmmu_generation(void) { return __atomic_load_n(&g_gmmu_generation, __ATOMIC_ACQUIRE); }
 /* the table's pages first to last (gmmu_map's and gmmu_unmap's numbers) changed: mapped to guest memory from cpu on,
    or cleared (with own, only those still mapped where a mapping of cpu put them) */
 static void grun_change(u64 first, u64 last, int map, int own, u64 cpu) {
@@ -253,6 +255,7 @@ static void grun_change(u64 first, u64 last, int map, int own, u64 cpu) {
         cpu += n << GMMU_PAGE_BITS;
     }
     g_hle.nvdrv.alias.stale = 1;
+    __atomic_add_fetch(&g_gmmu_generation, 1, __ATOMIC_RELEASE);
     pm_unlock(&g_host.nvdrv.alias_lock);
 }
 /* where a run starts (bit 0 set) or ends in guest memory, by page, ends first at a page */

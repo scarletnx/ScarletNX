@@ -24,6 +24,57 @@
    translating the range, warning when only that way finds a write */
 static PMutex g_wlk = PMUTEX_INIT;
 static WritePages g_wgpu, g_wcpu;
+/* the GPU pages work on the GPU ever wrote (not a mapping change's stamps): the split GPU thread's front reads a
+   pushbuffer entry there only once the back has run what came before it (gpu.c fetch_late), as such an entry holds
+   what the GPU made (an indirect draw's or dispatch's arguments) */
+static WritePages g_wwork;
+/* A write of 16 bytes or fewer (a semaphore's or a report's release) counts by its 16-byte granules, not its page:
+   one game keeps such semaphores in the pages of its command buffers, which the CPU writes */
+static WritePages g_wsmall; /* the pages that hold one */
+static u64* g_gran;         /* their granules (address >> 4) + 1, open addressed */
+static u32 g_ngran, g_capgran;
+static void gran_add(u64 g) {
+    if (g_ngran * 2 >= g_capgran) {
+        u32 cap = g_capgran ? g_capgran * 2 : 1024;
+        u64* t = calloc(cap, sizeof *t);
+        if (!t) return;
+        for (u32 i = 0; i < g_capgran; i++)
+            if (g_gran[i])
+                for (u32 k = (u32)(g_gran[i] * 0x9E3779B97F4A7C15ull >> 32) & (cap - 1);; k = (k + 1) & (cap - 1))
+                    if (!t[k]) {
+                        t[k] = g_gran[i];
+                        break;
+                    }
+        free(g_gran);
+        g_gran = t;
+        g_capgran = cap;
+    }
+    for (u32 k = (u32)((g + 1) * 0x9E3779B97F4A7C15ull >> 32) & (g_capgran - 1);; k = (k + 1) & (g_capgran - 1)) {
+        if (g_gran[k] == g + 1) return;
+        if (!g_gran[k]) {
+            g_gran[k] = g + 1;
+            g_ngran++;
+            return;
+        }
+    }
+}
+static int gran_has(u64 g) {
+    if (!g_capgran) return 0;
+    for (u32 k = (u32)((g + 1) * 0x9E3779B97F4A7C15ull >> 32) & (g_capgran - 1);; k = (k + 1) & (g_capgran - 1)) {
+        if (g_gran[k] == g + 1) return 1;
+        if (!g_gran[k]) return 0;
+    }
+}
+int gpu_mem_work_written(u64 gva, u64 size) {
+    int hit = 0;
+    if (!size) return 0;
+    if (write_pages_since(&g_wwork, 0, gva, size)) return 1;
+    if (!write_pages_since(&g_wsmall, 0, gva, size)) return 0;
+    pm_lock(&g_wlk);
+    for (u64 g = gva >> 4, e = (gva + size - 1) >> 4; g <= e && !hit; g++) hit = gran_has(g);
+    pm_unlock(&g_wlk);
+    return hit;
+}
 static u64 g_wgen;
 static int g_wcheck = -1; /* SNX_ALIAS_CHECK, -1 until read */
 static int wcheck_on(void) {
@@ -49,7 +100,24 @@ static void guest_runs(u64 gva, u64 size, int (*fn)(u64 cpu, u64 n, void* ctx), 
         left -= n;
     }
 }
-static void stamp_alias(void* ctx, u64 gva, u64 n) { write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx); }
+/* The GPU pages showing the guest memory behind the last GPU page written alone, while the mappings stay
+   (gmmu_generation): writes within one page are most of them (constant buffer data, a few hundred bytes at a time
+   through a ring), and finding the aliases each time (gmmu_aliases, under its lock) was most of their recording */
+#define WLAST_ALIASES 8
+static struct {
+    u64 gpage, mapgen;
+    u32 n;
+    int valid, recording;
+    u64 alias[WLAST_ALIASES]; /* the aliases' GPU addresses less the written page's offset */
+} g_wlast;
+static void stamp_alias(void* ctx, u64 gva, u64 n) {
+    write_pages_stamp(&g_wgpu, gva, n, *(const u64*)ctx);
+    if (g_wlast.recording) {
+        if (g_wlast.n < WLAST_ALIASES)
+            g_wlast.alias[g_wlast.n] = gva & ~(u64)0xFFF;
+        g_wlast.n++;
+    }
+}
 /* guest memory written: the GPU pages showing it */
 static void stamp_cpu(u64 cpu, u64 n, u64 gen) {
     gmmu_aliases(cpu, n, stamp_alias, &gen);
@@ -59,13 +127,34 @@ static int stamp_run(u64 cpu, u64 n, void* ctx) {
     stamp_cpu(cpu, n, *(const u64*)ctx);
     return 0;
 }
-void gpu_mem_written(u64 gva, u64 size) {
+static void mem_written(u64 gva, u64 size, int work);
+void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, 1); }
+void gpu_mem_written_map(u64 gva, u64 size) { mem_written(gva, size, 0); }
+static void mem_written(u64 gva, u64 size, int work) {
     u64 gen;
     if (!size) return;
+    int one = (gva >> 12) == ((gva + size - 1) >> 12) && !wcheck_on();
+    u64 mapgen = one ? gmmu_generation() : 0;
     pm_lock(&g_wlk);
     gen = g_wgen + 1;
     write_pages_stamp(&g_wgpu, gva, size, gen);
-    guest_runs(gva, size, stamp_run, &gen);
+    if (work && size <= 16) {
+        write_pages_stamp(&g_wsmall, gva, size, 1);
+        for (u64 g = gva >> 4, e = (gva + size - 1) >> 4; g <= e; g++) gran_add(g);
+    } else if (work)
+        write_pages_stamp(&g_wwork, gva, size, 1);
+    if (one && g_wlast.valid && g_wlast.gpage == gva >> 12 && g_wlast.mapgen == mapgen) {
+        for (u32 i = 0; i < g_wlast.n; i++) write_pages_stamp(&g_wgpu, g_wlast.alias[i] | (gva & 0xFFF), size, gen);
+    } else if (one) {
+        g_wlast.recording = 1;
+        g_wlast.n = 0;
+        guest_runs(gva, size, stamp_run, &gen);
+        g_wlast.recording = 0;
+        g_wlast.valid = g_wlast.n <= WLAST_ALIASES;
+        g_wlast.gpage = gva >> 12;
+        g_wlast.mapgen = mapgen;
+    } else
+        guest_runs(gva, size, stamp_run, &gen);
     __atomic_store_n(&g_wgen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_wlk);
 }

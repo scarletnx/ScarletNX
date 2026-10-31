@@ -43,6 +43,7 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
 }
 /* nvdrv.c's index of mappings by guest address, for the translation above */
 void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) { fn(ctx, cpu, size); }
+u64 gmmu_generation(void) { return 0; }
 u32 gpu_color_bpp(u32 format) { return (void)format, 4; }
 u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log2, u32 bd_log2) {
     (void)x_bytes, (void)y, (void)z, (void)width_bytes, (void)height, (void)bh_log2, (void)bd_log2;
@@ -54,6 +55,11 @@ u64 guest_ns(void) { return 0; }
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
     (void)ch, (void)kind, (void)addr, (void)val, (void)geq;
 }
+int g_gpu_split;
+void gpu_split_reg(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
+void gpu_split_3d(GpuChannel* ch, u32 m, u32 v, int last) { (void)ch, (void)m, (void)v, (void)last; }
+void gpu_split_cb(GpuChannel* ch) { (void)ch; }
+void gpu_split_release(u64 gva, u32 len) { (void)gva, (void)len; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 void i2m_launch(GpuChannel* ch, u32* regs, int base) { (void)ch, (void)regs, (void)base; }

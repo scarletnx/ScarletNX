@@ -235,7 +235,19 @@ void gpu_release_write(u64 gva, const void* data, u32 len) {
 void gpu_mem_changed(u64 cpu_addr, u64 len) {
     if (g_gpu_mem_changed) g_gpu_mem_changed(cpu_addr, len);
 }
+/* the split GPU thread (below): whether it is on (-1 until the first channel), the back's copy of each channel, and
+   whether this thread is the back */
+int g_gpu_split = -1;
+static GpuChannel* g_back[GPU_CHANNELS];
+static _Thread_local int t_back, t_front; /* the back, and the GPU thread (the front) */
+static void sp_hdr(u32 kind, u32 chan);
+static void sp_init(void);
+enum { SP_PAD, SP_METHOD, SP_3D, SP_REG, SP_CB, SP_STOP, SP_JOB_END, SP_RUN, SP_SYNCWAIT, SP_CHANGED, SP_DMA, SP_INLINE };
 static void may_have_changed(void) {
+    if (g_gpu_split > 0 && t_front) { /* the back's caches, in stream order. A submission's tells them at once */
+        sp_hdr(SP_CHANGED, 0);
+        return;
+    }
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
 }
 /* a syncpoint increment of the stream, after the work before it */
@@ -430,6 +442,12 @@ static GpuChannel* channel_get(u32 id) {
     if (!ch) fatal("gpu: out of memory for GPU channel %u\n", id);
     ch->id = id;
     channel_reset(ch);
+    if (g_gpu_split < 0) sp_init();
+    if (g_gpu_split > 0) { /* the back's copy, the same from the start */
+        g_back[id] = (GpuChannel*)malloc(sizeof *ch);
+        if (!g_back[id]) fatal("gpu: out of memory for the back's GPU channel %u\n", id);
+        memcpy(g_back[id], ch, sizeof *ch);
+    }
     g_gpu.chan[id] = ch;
     g_gpu.nchan++;
     return ch;
@@ -544,9 +562,248 @@ static void puller_method(GpuChannel* ch, u32 sub, u32 m, u32 v) {
         default: break;
     }
 }
+/* ------------------------------------------------------------ the split GPU thread */
+/* The GPU thread decodes the streams, runs the macros and keeps its own copy of each channel's
+   registers (the front). What the renderer and guest memory see goes to a second thread (the back) through a ring,
+   in stream order: the 3D registers whose values change, the methods that act, the other engines' and the puller's
+   methods, constant buffer data a batch at a time, and where streams stop and end. The back runs them through the
+   engines' code on its own copy of each channel (g_back). Waits stay the front's: it parks on values the back's work
+   releases, as the stream did. What reads memory the stream may have written (late pushbuffer words, compute inline
+   data) and the queue's calls wait for the back to catch up first */
+typedef struct {
+    u16 kind, chan;
+    u32 size; /* with the header, a multiple of 8 */
+} SpHdr;
+typedef struct {
+    SpHdr h;
+    u32 sub, m, v, last;
+} SpMethod;
+typedef struct {
+    SpHdr h;
+    u32 n, pad; /* n method and value pairs follow */
+} SpReg;
+typedef struct {
+    SpHdr h;
+    u64 addr;
+    u32 n, cb_offset; /* n words follow, as guest memory holds them, and 0x8E3 after them */
+} SpCb;
+typedef struct {
+    SpHdr h;
+    u64 id;
+    u32 incs, expect; /* a job's end; for SP_DMA incs is whether its launches count from 0, for SP_RUN the flag */
+} SpJob;
+#define SP_RING (32u << 20)
+#define SP_PUBLISH (32u << 10)
+static u8* g_sp_ring;
+static u64 g_sp_head;                      /* the front's: bytes written */
+static u64 g_sp_pub, g_sp_tail, g_sp_done; /* published to the back, read by it (its room again), and run */
+static SpReg* g_sp_open;                   /* the register packet still taking pairs, unpublished */
+static PMutex g_sp_lk = PMUTEX_INIT;
+static PCond g_sp_cv, g_sp_done_cv;
+static int g_sp_sleep, g_sp_waiting;
+static u64 g_sp_drains, g_sp_packets, g_sp_regs, g_sp_late, g_sp_inline, g_sp_calls, g_sp_log_ns, g_sp_log_head;
+static u64 g_sp_late_drains;
+/* The releases and reports sent since the back last caught up, which the back will write: a report can be what an
+   indirect draw takes as its arguments, through an entry fetched late. Their pages in a 1024-bit filter, so a fetch
+   over none of them looks no further */
+typedef struct {
+    u64 lo, hi;
+} SpRange;
+static SpRange* g_sp_rel;
+static u32 g_sp_nrel, g_sp_caprel;
+static u64 g_sp_relpages[16];
+static int g_sp_relall; /* no memory to list one: every fetch meets them */
+static u32 sp_page_bit(u64 page) { return (u32)(page * 0x9E3779B97F4A7C15ull >> 54); }
+void gpu_split_release(u64 gva, u32 len) {
+    if (g_sp_nrel == g_sp_caprel) {
+        u32 cap = g_sp_caprel ? g_sp_caprel * 2 : 256;
+        SpRange* r = (SpRange*)realloc(g_sp_rel, (size_t)cap * sizeof *r);
+        if (!r) {
+            g_sp_relall = 1;
+            return;
+        }
+        g_sp_rel = r;
+        g_sp_caprel = cap;
+    }
+    g_sp_rel[g_sp_nrel].lo = gva;
+    g_sp_rel[g_sp_nrel++].hi = gva + len;
+    for (u64 p = gva >> 12; p <= (gva + len - 1) >> 12; p++) {
+        u32 b = sp_page_bit(p);
+        g_sp_relpages[b >> 6] |= 1ull << (b & 63);
+    }
+}
+static int sp_released_over(u64 lo, u64 hi) {
+    int maybe = g_sp_relall;
+    for (u64 p = lo >> 12; p <= (hi - 1) >> 12 && !maybe; p++) {
+        u32 b = sp_page_bit(p);
+        maybe = (int)(g_sp_relpages[b >> 6] >> (b & 63) & 1);
+    }
+    if (!maybe || g_sp_relall) return maybe;
+    for (u32 i = 0; i < g_sp_nrel; i++)
+        if (lo < g_sp_rel[i].hi && g_sp_rel[i].lo < hi) return 1;
+    return 0;
+}
+static void sp_publish(void) {
+    g_sp_open = NULL;
+    __atomic_store_n(&g_sp_pub, g_sp_head, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&g_sp_sleep, __ATOMIC_SEQ_CST)) {
+        pm_lock(&g_sp_lk);
+        pc_signal(&g_sp_cv);
+        pm_unlock(&g_sp_lk);
+    }
+}
+/* room for size more bytes: the back reads what was published meanwhile */
+static void sp_room(u64 size) {
+    while (g_sp_head + size - __atomic_load_n(&g_sp_tail, __ATOMIC_ACQUIRE) > SP_RING) {
+        sp_publish();
+        plat_yield();
+    }
+}
+static void* sp_alloc(u32 kind, u32 chan, u32 size) {
+    SpHdr* h;
+    u64 at;
+    size = (size + 7) & ~7u;
+    if (g_sp_head - __atomic_load_n(&g_sp_pub, __ATOMIC_RELAXED) >= SP_PUBLISH) sp_publish();
+    g_sp_open = NULL;
+    at = g_sp_head & (SP_RING - 1);
+    if (at + size > SP_RING) { /* the packets don't wrap: the end is skipped */
+        u32 pad = (u32)(SP_RING - at);
+        sp_room(pad);
+        h = (SpHdr*)(void*)(g_sp_ring + at);
+        h->kind = SP_PAD;
+        h->chan = 0;
+        h->size = pad;
+        g_sp_head += pad;
+        at = 0;
+    }
+    sp_room(size);
+    h = (SpHdr*)(void*)(g_sp_ring + at);
+    h->kind = (u16)kind;
+    h->chan = (u16)chan;
+    h->size = size;
+    g_sp_head += size;
+    g_sp_packets++;
+    return h;
+}
+static void sp_hdr(u32 kind, u32 chan) { sp_alloc(kind, chan, sizeof(SpHdr)); }
+static void sp_job(u32 kind, u32 chan, u64 id, u32 incs, u32 expect) {
+    SpJob* p = (SpJob*)sp_alloc(kind, chan, sizeof *p);
+    p->id = id;
+    p->incs = incs;
+    p->expect = expect;
+}
+static void sp_method(const GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
+    SpMethod* p = (SpMethod*)sp_alloc(SP_METHOD, ch->id, sizeof *p);
+    p->sub = sub;
+    p->m = m;
+    p->v = v;
+    p->last = (u32)last;
+}
+void gpu_split_3d(GpuChannel* ch, u32 m, u32 v, int last) {
+    SpMethod* p = (SpMethod*)sp_alloc(SP_3D, ch->id, sizeof *p);
+    p->sub = 0;
+    p->m = m;
+    p->v = v;
+    p->last = (u32)last;
+}
+/* a register's new value: one more pair of the open packet when it is this channel's and has room behind it */
+void gpu_split_reg(GpuChannel* ch, u32 m, u32 v) {
+    SpReg* p = g_sp_open;
+    u32* w;
+    g_sp_regs++;
+    if (p && p->h.chan == ch->id && p->n < 4096 && (g_sp_head & (SP_RING - 1)) + 8 <= SP_RING &&
+        g_sp_head + 8 - __atomic_load_n(&g_sp_tail, __ATOMIC_ACQUIRE) <= SP_RING) {
+        w = (u32*)(void*)(g_sp_ring + (g_sp_head & (SP_RING - 1)));
+        g_sp_head += 8;
+        p->h.size += 8;
+        p->n++;
+    } else {
+        p = (SpReg*)sp_alloc(SP_REG, ch->id, sizeof *p + 8);
+        p->n = 1;
+        w = (u32*)(void*)(p + 1);
+        g_sp_open = p;
+    }
+    w[0] = m;
+    w[1] = v;
+}
+void gpu_split_cb(GpuChannel* ch) {
+    u32 n = ch->cb_n;
+    SpCb* p;
+    if (!n) return;
+    p = (SpCb*)sp_alloc(SP_CB, ch->id, (u32)sizeof *p + n * 4);
+    p->addr = ch->cb_addr;
+    p->n = n;
+    p->cb_offset = ch->r3d[0x8E3];
+    memcpy(p + 1, ch->cb_words, (size_t)n * 4);
+    snx_le32_array((u32*)(void*)(p + 1), n);
+    ch->cb_n = 0;
+}
+/* the back has run everything sent */
+static void sp_drain(void) {
+    u64 want;
+    sp_publish();
+    want = g_sp_head;
+    g_sp_nrel = 0;
+    g_sp_relall = 0;
+    memset(g_sp_relpages, 0, sizeof g_sp_relpages);
+    if (__atomic_load_n(&g_sp_done, __ATOMIC_ACQUIRE) == want) return;
+    g_sp_drains++;
+    pm_lock(&g_sp_lk);
+    __atomic_store_n(&g_sp_waiting, 1, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&g_sp_done, __ATOMIC_SEQ_CST) != want) pc_wait(&g_sp_done_cv, &g_sp_lk, 1000000);
+    __atomic_store_n(&g_sp_waiting, 0, __ATOMIC_RELAXED);
+    pm_unlock(&g_sp_lk);
+}
+/* a method on the front: the 3D engine's (engines.c), the puller's (its registers and waits here, the rest the
+   back's), compute's report semaphore waits, and the rest as it came */
+static void front_method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
+    int eng = m < PULLER_NON_PULLER_METHODS ? ENG_NONE : engine_of(ch->sub_class[sub]);
+    if (eng == ENG_3D) {
+        maxwell3d_front(ch, m, v, last);
+        return;
+    }
+    if (ch->cb_n) gpu_split_cb(ch);
+    if (m < PULLER_NON_PULLER_METHODS) {
+        ch->puller[m] = v;
+        if (m == PULLER_BIND_OBJECT) ch->sub_class[sub] = v & CLASS_ID_MASK;
+        sp_method(ch, sub, m, v, last);
+        if (m == PULLER_SEMAPHORE_OPERATION) {
+            u64 a = ((u64)(ch->puller[PULLER_SEMAPHORE_ADDRESS_HIGH] & PULLER_SEMAPHORE_ADDRESS_HIGH_MASK) << 32) |
+                    ch->puller[PULLER_SEMAPHORE_ADDRESS_LOW];
+            u32 payload = ch->puller[PULLER_SEMAPHORE_SEQUENCE_PAYLOAD];
+            if ((v & PULLER_SEMAPHORE_OP_MASK) == PULLER_SEMAPHORE_OP_ACQUIRE_EQUAL)
+                gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 0);
+            else if ((v & PULLER_SEMAPHORE_OP_MASK) == PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL)
+                gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 1);
+            else if ((v & PULLER_SEMAPHORE_OP_MASK) == PULLER_SEMAPHORE_OP_RELEASE)
+                gpu_split_release(a, v & PULLER_SEMAPHORE_RELEASE_SIZE_4BYTE ? 4 : 16);
+        } else if (m == PULLER_SYNCPOINT_OPERATION && !puller_syncpoint_increment(v)) {
+            gpu_park(ch, GPU_PARK_SYNCPOINT, puller_syncpoint_id(v), ch->puller[PULLER_SYNCPOINT_PAYLOAD], 1);
+            if (ch->park) sp_hdr(SP_SYNCWAIT, ch->id);
+        }
+        return;
+    }
+    if (eng == ENG_COMPUTE) {
+        u32 cm = m & (KEPLER_COMPUTE_METHODS - 1);
+        ch->rcomp[cm] = v;
+        if (cm == KEPLER_COMPUTE_REPORT_SEMAPHORE_QUERY) {
+            if (query_acquire(ch, ch->rcomp, KEPLER_COMPUTE_REPORT_SEMAPHORE, v)) return;
+            gpu_split_release(gpu_packed_va(ch->rcomp[KEPLER_COMPUTE_REPORT_SEMAPHORE],
+                                            ch->rcomp[KEPLER_COMPUTE_REPORT_SEMAPHORE + 1]),
+                              report_semaphore_short_query(v) ? 4 : MAXWELL3D_REPORT_BYTES);
+        }
+    }
+    sp_method(ch, sub, m, v, last);
+}
+
 /* Eden's Puller::CallMethod: the puller's own methods, or the engine bound to the subchannel */
 static void method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
-    int eng = m < PULLER_NON_PULLER_METHODS ? ENG_NONE : engine_of(ch->sub_class[sub]);
+    int eng;
+    if (g_gpu_split > 0 && !t_back) {
+        front_method_call(ch, sub, m, v, last);
+        return;
+    }
+    eng = m < PULLER_NON_PULLER_METHODS ? ENG_NONE : engine_of(ch->sub_class[sub]);
     if (eng != ENG_3D) { /* the 3D engine's batched constants and merged draw come before what follows */
         r3d_const_flush(ch);
         r3d_pending_flush();
@@ -583,6 +840,7 @@ static int park_met(const GpuChannel* ch) {
     }
 }
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
+    if (t_back) return; /* the front waits */
     if ((kind == GPU_PARK_SYNCPOINT || kind == GPU_PARK_FENCE) && addr >= SYNCPT_IDS) {
         WARN_LIMIT(8, "gpu: a wait for syncpoint %llu, past the %u there are, doesn't wait\n", (unsigned long long)addr,
                    SYNCPT_IDS);
@@ -694,6 +952,11 @@ static u32* job_words(GpuItem* j, u32 e) {
    A non-increasing batch is read once, rather than landing each word. */
 static u32 fetch_compute_inline(GpuItem* j, GpuChannel* ch, u32 e, u32* words) {
     u32 n = ch->pb.mode == PB_MODE_NON_INCREASING ? ch->pb.method_count : 1;
+    if (g_gpu_split > 0) {
+        if (ch->cb_n) gpu_split_cb(ch);
+        g_sp_inline++;
+        sp_drain();
+    }
     u32 left = entry_words(job_ent(j)[e]) - j->word;
     if (n > left) n = left;
     gmem_read(entry_addr(job_ent(j)[e]) + (u64)j->word * 4, words + j->word, (u64)n * 4);
@@ -707,6 +970,29 @@ static int fetch_late(GpuItem* j, u32 e) {
     u64 total = entry_words(job_ent(j)[e]);
     SNX_ZONE_V(z, "gpu fetch late", e);
     while (end < j->n && !gpfifo_sync(job_ent(j)[end])) total += entry_words(job_ent(j)[end++]);
+    /* The back needn't catch up for what the CPU wrote: what it writes after the stream's releases it can't have seen
+       yet either, as releases are held until the stream stops (release.c). What the GPU makes is another matter (an
+       indirect draw's or dispatch's arguments): an entry over memory GPU work ever wrote (gpu_mem_work_written), or
+       over a release or report sent since the back last caught up, is read once the back has run what came before
+       it, through the renderer's hooks. Work that writes such memory for the first time without a release isn't
+       seen here (a compute shader's arguments the first time they are made). An entry the CPU rewrites at once when
+       an earlier method runs (tests/gpu_park.c's SYNC prefetch case, by a hook) is read before that method runs */
+    int raw = 0;
+    if (g_gpu_split > 0) {
+        GpuChannel* ch = g_gpu.chan[j->chan];
+        int gpu_made = 0;
+        for (k = e; k < end && !gpu_made; k++) {
+            u64 a = entry_addr(job_ent(j)[k]), n = (u64)entry_words(job_ent(j)[k]) * 4;
+            gpu_made = n && (gpu_mem_work_written(a, n) || ((g_sp_nrel || g_sp_relall) && sp_released_over(a, a + n)));
+        }
+        g_sp_late++;
+        if (gpu_made) {
+            if (ch && ch->cb_n) gpu_split_cb(ch);
+            g_sp_late_drains++;
+            sp_drain();
+        } else
+            raw = 1;
+    }
     if (total > j->late_cap) {
         u32* b;
         if (total > SIZE_MAX / 4 || !(b = (u32*)realloc(j->late, (size_t)total * 4))) {
@@ -720,7 +1006,12 @@ static int fetch_late(GpuItem* j, u32 e) {
     for (k = e; k < end; k++) {
         u32 n = entry_words(job_ent(j)[k]);
         job_off(j)[k] = (u32)total;
-        gmem_read(entry_addr(job_ent(j)[k]), j->late + total, (u64)n * 4);
+        /* the front reads the words as the CPU wrote them: through the renderer's hooks it waited for the renderer's
+           lock, which the back holds while it draws */
+        if (raw)
+            gmem_read_raw(entry_addr(job_ent(j)[k]), j->late + total, (u64)n * 4);
+        else
+            gmem_read(entry_addr(job_ent(j)[k]), j->late + total, (u64)n * 4);
         snx_le32_array(j->late + total, n); /* the stream's words, read as numbers from here on */
         total += n;
     }
@@ -730,32 +1021,208 @@ static int fetch_late(GpuItem* j, u32 e) {
 }
 /* what the stream leaves for the renderer when it stops, at its end or at a wait */
 static void stream_stop(GpuChannel* ch) {
+    if (g_gpu_split > 0 && !t_back) {
+        if (ch->cb_n) gpu_split_cb(ch);
+        sp_hdr(SP_STOP, ch->id);
+        sp_publish();
+        return;
+    }
     SNX_ZONE(z, "gpu stream stop");
     r3d_const_flush(ch);
     r3d_pending_flush();
     if (g_renderer->stream_end) g_renderer->stream_end();
 }
-static void job_end(const GpuItem* j, GpuChannel* ch) {
+static void job_end_vals(u32 chan, u64 id, u32 incs, u32 expect, GpuChannel* ch) {
     u32 i, v;
-    SNX_ZONE_V(z, "gpu job end", j->chan);
+    SNX_ZONE_V(z, "gpu job end", chan);
     r3d_const_flush(ch);
     r3d_pending_flush();
     /* without a renderer that queues the increments, the work's results land before the game can see its fence. A
        renderer's queue lands them itself before each increment (release.c), so landing every pending result here
        was a full GPU wait at the end of each submission, about 2 ms a frame in one game */
     if (!g_renderer->stream_incr) gpu_signal_point();
-    dma_snap_finish(j->chan, j->id);
-    for (i = 0; i < j->incs; i++) stream_incr(j->chan);
+    dma_snap_finish(chan, id);
+    for (i = 0; i < incs; i++) stream_incr(chan);
     if (g_renderer->stream_end) g_renderer->stream_end();
-    v = g_renderer->release_value ? g_renderer->release_value(j->chan) : syncpt_read(j->chan);
-    if ((i32)(v - j->expect) < 0)
+    v = g_renderer->release_value ? g_renderer->release_value(chan) : syncpt_read(chan);
+    if ((i32)(v - expect) < 0)
         WARN_LIMIT(8, "gpu: channel %u ended a submission at syncpoint value %u, short of the %u it promised\n",
-                   j->chan, v, j->expect);
+                   chan, v, expect);
 }
+static void job_end(const GpuItem* j, GpuChannel* ch) {
+    if (g_gpu_split > 0) {
+        if (ch->cb_n) gpu_split_cb(ch);
+        sp_job(SP_JOB_END, j->chan, j->id, j->incs, j->expect);
+        sp_publish();
+        return;
+    }
+    job_end_vals(j->chan, j->id, j->incs, j->expect, ch);
+}
+/* the back: a packet, on its copy of the channel */
+static void sp_run(const SpHdr* h) {
+    GpuChannel* ch = h->kind == SP_PAD ? NULL : g_back[h->chan];
+    switch (h->kind) {
+        case SP_METHOD: {
+            const SpMethod* p = (const SpMethod*)h;
+            method_call(ch, p->sub, p->m, p->v, (int)p->last);
+            break;
+        }
+        case SP_3D: {
+            const SpMethod* p = (const SpMethod*)h;
+            maxwell3d_method(ch, p->m, p->v, (int)p->last);
+            break;
+        }
+        case SP_REG: {
+            const SpReg* p = (const SpReg*)h;
+            const u32* w = (const u32*)(p + 1);
+            maxwell3d_regs(ch, w, p->n);
+            break;
+        }
+        case SP_CB: {
+            const SpCb* p = (const SpCb*)h;
+            r3d_pending_flush(); /* the held draw read the constants before them */
+            ch->r3d[0x8E3] = p->cb_offset;
+            gmem_write(p->addr, p + 1, (u64)p->n * 4);
+            break;
+        }
+        case SP_STOP: stream_stop(ch); break;
+        case SP_JOB_END: {
+            const SpJob* p = (const SpJob*)h;
+            job_end_vals(h->chan, p->id, p->incs, p->expect, ch);
+            break;
+        }
+        case SP_RUN:
+            if (g_renderer->stream_run) g_renderer->stream_run((int)((const SpJob*)h)->incs);
+            break;
+        case SP_SYNCWAIT:
+            if (g_renderer->before_syncwait) g_renderer->before_syncwait();
+            break;
+        case SP_CHANGED: may_have_changed(); break;
+        case SP_DMA: {
+            const SpJob* p = (const SpJob*)h;
+            ch->dma_job_id = p->id;
+            if (p->incs) ch->dma_launch_index = 0;
+            break;
+        }
+        case SP_INLINE: { /* compute's inline data as guest memory holds it now, in stream order (fetch_compute_inline) */
+            static u32* buf;
+            static u32 cap;
+            const SpMethod* p = (const SpMethod*)h;
+            u64 a = ((const u64*)(p + 1))[0];
+            u32 n = p->v;
+            if (n > cap) {
+                u32* b = (u32*)realloc(buf, (size_t)n * 4);
+                if (!b) break;
+                buf = b;
+                cap = n;
+            }
+            gmem_read(a, buf, (u64)n * 4);
+            snx_le32_array(buf, n);
+            for (u32 i = 0; i < n; i++) method_call(ch, p->sub, p->m, buf[i], i + 1 == n && p->last);
+            break;
+        }
+        default: break;
+    }
+}
+static void sp_back(void* arg) {
+    u64 tail = 0, told = 0;
+    (void)arg;
+    t_back = 1;
+    t_gpu = 1;
+    SNX_THREAD_NAME("GPU back");
+    LOG("gpu: the GPU back thread is %u\n", plat_tid());
+    for (;;) {
+        u64 pub = __atomic_load_n(&g_sp_pub, __ATOMIC_ACQUIRE);
+        if (tail == pub) {
+            __atomic_store_n(&g_sp_tail, tail, __ATOMIC_RELEASE);
+            __atomic_store_n(&g_sp_done, tail, __ATOMIC_SEQ_CST);
+            if (__atomic_load_n(&g_sp_waiting, __ATOMIC_SEQ_CST)) {
+                pm_lock(&g_sp_lk);
+                pc_broadcast(&g_sp_done_cv);
+                pm_unlock(&g_sp_lk);
+            }
+            for (int i = 0; i < 256 && (pub = __atomic_load_n(&g_sp_pub, __ATOMIC_ACQUIRE)) == tail; i++) {
+#if defined(__x86_64__)
+                __builtin_ia32_pause();
+#endif
+            }
+            if (pub == tail) {
+                pm_lock(&g_sp_lk);
+                __atomic_store_n(&g_sp_sleep, 1, __ATOMIC_SEQ_CST);
+                while (__atomic_load_n(&g_sp_pub, __ATOMIC_SEQ_CST) == tail) pc_wait(&g_sp_cv, &g_sp_lk, -1);
+                __atomic_store_n(&g_sp_sleep, 0, __ATOMIC_RELAXED);
+                pm_unlock(&g_sp_lk);
+            }
+            continue;
+        }
+        while (tail != pub) {
+            const SpHdr* h = (const SpHdr*)(const void*)(g_sp_ring + (tail & (SP_RING - 1)));
+            u32 size = h->size;
+            sp_run(h);
+            tail += size;
+            if (tail - told >= (256u << 10)) { /* room for the front again */
+                __atomic_store_n(&g_sp_tail, tail, __ATOMIC_RELEASE);
+                told = tail;
+            }
+        }
+    }
+}
+/* the split's ring and back thread, at the first channel: without them, one GPU thread does it all */
+static void sp_init(void) {
+    g_gpu_split = 1;
+    g_sp_ring = (u8*)malloc(SP_RING);
+    pc_init(&g_sp_cv);
+    pc_init(&g_sp_done_cv);
+    if (!g_sp_ring || plat_thread(sp_back, NULL, GPU_THREAD_STACK)) {
+        WARN("gpu: no ring or back thread for the split GPU thread: one GPU thread\n");
+        free(g_sp_ring);
+        g_gpu_split = 0;
+        return;
+    }
+    LOG("gpu: the streams are decoded on the GPU thread and drawn on the GPU back thread\n");
+}
+/* the front's statistics, every 5 s */
+static void sp_log(void) {
+    u64 now = plat_ns();
+    if (now - g_sp_log_ns < 5000000000ull) return;
+    if (g_sp_log_ns)
+        LOG("gpu split: %llu packets (%llu register values), %llu KiB sent, %llu drains (%llu for calls, %llu for late "
+            "fetches of what the GPU may have made), %llu compute inline reads on the back, %llu late fetches in %.1f s\n",
+            (unsigned long long)g_sp_packets, (unsigned long long)g_sp_regs,
+            (unsigned long long)((g_sp_head - g_sp_log_head) >> 10), (unsigned long long)g_sp_drains,
+            (unsigned long long)g_sp_calls, (unsigned long long)g_sp_late_drains, (unsigned long long)g_sp_inline,
+            (unsigned long long)g_sp_late, (double)(now - g_sp_log_ns) / 1e9);
+    g_sp_packets = g_sp_regs = g_sp_drains = g_sp_late = g_sp_inline = g_sp_calls = g_sp_late_drains = 0;
+    g_sp_log_head = g_sp_head;
+    g_sp_log_ns = now;
+}
+
+/* the front's fetch_compute_inline: the back reads the words when it gets to them, and the front passes over them.
+   The word after them, as fetch_compute_inline returns */
+static u32 sp_inline(GpuItem* j, GpuChannel* ch, u32 e) {
+    u32 n = ch->pb.mode == PB_MODE_NON_INCREASING ? ch->pb.method_count : 1;
+    u32 left = entry_words(job_ent(j)[e]) - j->word;
+    SpMethod* p;
+    if (n > left) n = left;
+    if (ch->cb_n) gpu_split_cb(ch);
+    p = (SpMethod*)sp_alloc(SP_INLINE, ch->id, sizeof *p + 8);
+    p->sub = ch->pb.subchannel;
+    p->m = ch->pb.method;
+    p->v = n;
+    p->last = 1;
+    ((u64*)(void*)(p + 1))[0] = entry_addr(job_ent(j)[e]) + (u64)j->word * 4;
+    g_sp_inline++;
+    return j->word + n;
+}
+
 /* runs a job on the GPU thread, the queue unlocked: 1 when it ran to its end, 0 when it waits */
 static int run_job(GpuItem* j) {
     GpuChannel* ch = g_gpu.chan[j->chan];
     ch->dma_job_id = j->id;
+    if (g_gpu_split > 0) {
+        sp_job(SP_DMA, j->chan, j->id, !j->started, 0);
+        sp_log();
+    }
     if (!j->started) {
         j->started = 1;
         ch->dma_launch_index = 0;
@@ -763,7 +1230,10 @@ static int run_job(GpuItem* j) {
             gpu_park(ch, GPU_PARK_FENCE, j->wait_id, j->wait_val, 1);
             if (ch->park) {
                 __atomic_store_n(&g_run_at, GPU_AT_SYNCWAIT, __ATOMIC_RELAXED);
-                if (g_renderer->before_syncwait) g_renderer->before_syncwait(); /* as at SYNCPOINTB */
+                if (g_gpu_split > 0)
+                    sp_hdr(SP_SYNCWAIT, j->chan);
+                else if (g_renderer->before_syncwait)
+                    g_renderer->before_syncwait(); /* as at SYNCPOINTB */
                 __atomic_store_n(&g_run_at, GPU_AT_BETWEEN, __ATOMIC_RELAXED);
             }
             if (ch->park) {
@@ -782,7 +1252,7 @@ static int run_job(GpuItem* j) {
     while (j->entry < j->n) {
         u32 e = j->entry, len = entry_words(job_ent(j)[e]);
         u32* w;
-        u32 inline_end = 0;
+        u32 inline_end = 0, skip_end = 0; /* skip_end: words the back reads itself (sp_inline) */
         if (e >= j->pf && (e < j->late_first || e >= j->late_end)) {
             __atomic_store_n(&g_run_at, GPU_AT_FETCH, __ATOMIC_RELAXED);
             int got = fetch_late(j, e);
@@ -795,8 +1265,9 @@ static int run_job(GpuItem* j) {
             int last;
             if (j->word >= inline_end && ch->pb.method_count && ch->pb.method == KEPLER_COMPUTE_DATA_UPLOAD &&
                 engine_of(ch->sub_class[ch->pb.subchannel]) == ENG_COMPUTE)
-                inline_end = fetch_compute_inline(j, ch, e, w);
+                inline_end = g_gpu_split > 0 ? (skip_end = sp_inline(j, ch, e)) : fetch_compute_inline(j, ch, e, w);
             if (pb_decode(&ch->pb, w[j->word++], &sub, &m, &v, &last)) {
+                if (j->word <= skip_end) continue;
                 __atomic_store_n(&g_run_sub, sub, __ATOMIC_RELAXED);
                 __atomic_store_n(&g_run_method, m, __ATOMIC_RELAXED);
                 __atomic_store_n(&g_run_class, ch->sub_class[sub], __ATOMIC_RELAXED);
@@ -856,6 +1327,10 @@ static int run_pass(i64* wake) {
             if (g_qtail == it) g_qtail = prev;
             pm_unlock(&g_qlk);
             SNX_ZONE(z_call, "gpu call");
+            if (g_gpu_split > 0) { /* the call runs here, with the back caught up */
+                g_sp_calls++;
+                sp_drain();
+            }
             it->fn(it->arg);
             SNX_ZONE_END(z_call);
             item_free(it);
@@ -884,9 +1359,15 @@ static int run_pass(i64* wake) {
             SNX_ZONE_C(z, "gpu job", 0x4a7fb5);
             SNX_ZONE_VALUE(z, it->chan);
             SNX_ZONE_TEXT(z, "channel %u", it->chan);
-            if (g_renderer->stream_run) g_renderer->stream_run(1);
+            if (g_gpu_split > 0)
+                sp_job(SP_RUN, it->chan, 0, 1, 0);
+            else if (g_renderer->stream_run)
+                g_renderer->stream_run(1);
             done = run_job(it);
-            if (g_renderer->stream_run) g_renderer->stream_run(0);
+            if (g_gpu_split > 0)
+                sp_job(SP_RUN, it->chan, 0, 0, 0);
+            else if (g_renderer->stream_run)
+                g_renderer->stream_run(0);
             SNX_ZONE_END(z);
         }
 
@@ -926,6 +1407,12 @@ void gpu_report_stall(void) {
         WARN("gpu: nothing was submitted yet\n");
         return;
     }
+    if (g_gpu_split > 0)
+        WARN("gpu split: written %llu, published %llu, read %llu, run %llu; back asleep %d, front waiting %d\n",
+             (unsigned long long)g_sp_head, (unsigned long long)__atomic_load_n(&g_sp_pub, __ATOMIC_RELAXED),
+             (unsigned long long)__atomic_load_n(&g_sp_tail, __ATOMIC_RELAXED),
+             (unsigned long long)__atomic_load_n(&g_sp_done, __ATOMIC_RELAXED),
+             __atomic_load_n(&g_sp_sleep, __ATOMIC_RELAXED), __atomic_load_n(&g_sp_waiting, __ATOMIC_RELAXED));
     if (run)
         WARN("gpu: the GPU thread runs a job of channel %u, for %llu ms\n", run - 1,
              (unsigned long long)((now - __atomic_load_n(&g_run_since, __ATOMIC_RELAXED)) / 1000000u));
@@ -969,7 +1456,9 @@ void gpu_report_stall(void) {
 static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
+    t_front = 1;
     SNX_THREAD_NAME("GPU");
+    if (g_gpu_split > 0) LOG("gpu: the GPU thread (front) is %u\n", plat_tid());
     pm_lock(&g_qlk);
     for (;;) {
         u64 gen = g_qgen;
@@ -978,6 +1467,7 @@ static void gpu_thread(void* arg) {
         /* A whole pass ran nothing: sleep until a new item, a kick, or the next look at a wait. A plot, not a zone:
            this wait can last the rest of the run. */
         SNX_PLOT("gpu idle", 1);
+        if (g_gpu_split > 0) sp_publish();
         if (gen == g_qgen) pc_wait(&g_qcv, &g_qlk, wake);
         SNX_PLOT("gpu idle", 0);
     }

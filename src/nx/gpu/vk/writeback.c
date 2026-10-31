@@ -67,3 +67,36 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
     vk_result_end();
 }
+void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, const u32* runs, u32 n) {
+    if (!size || !n) return; /* nothing written */
+    if (in_guest(res, size) || in_guest(org, size)) fatal("vulkan: a storage result compared in guest memory");
+    vk_result_begin();
+    vk_rt_before_write(addr, size);
+    u8* dst = gmem_ptr(addr, size);
+    u8* tmp = NULL;
+    const u8* cur = dst;
+    int changed = 0;
+    if (!cur) {
+        tmp = malloc(size);
+        if (!tmp) fatal("Out of memory landing a shader storage buffer");
+        gmem_read(addr, tmp, size);
+        cur = tmp;
+    }
+    for (u32 r = 0; r < n; r++)
+        for (u32 i = runs[2 * r], end = runs[2 * r + 1]; i < end;) {
+            if (res[i] == org[i] || cur[i] != org[i]) {
+                i++;
+                continue;
+            }
+            u32 start = i;
+            while (i < end && res[i] != org[i] && cur[i] == org[i]) i++;
+            if (dst)
+                memcpy(dst + start, res + start, i - start);
+            else
+                gmem_write(addr + start, res + start, i - start);
+            changed = 1;
+        }
+    free(tmp);
+    if (changed) gpu_mem_written_shader(addr, size);
+    vk_result_end();
+}

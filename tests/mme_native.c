@@ -30,6 +30,8 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     sent_v[nsent] = v;
     nsent++;
 }
+int g_gpu_split;
+void maxwell3d_front(GpuChannel* ch, u32 m, u32 v, int last) { maxwell3d_method(ch, m, v, last); }
 static char logged[4096];
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;

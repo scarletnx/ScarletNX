@@ -324,6 +324,8 @@ void gpu_mem_written_cpu(u64 cpu, u64 size);
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
+void gpu_mem_written_map(u64 gva, u64 size);         /* gpu_mem_written for a mapping change, not GPU work */
+int gpu_mem_work_written(u64 gva, u64 size);         /* work on the GPU ever wrote a page of [gva, gva + size) */
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);
@@ -342,6 +344,16 @@ void gpu_release_retire(u32 channel); /* complete pending syncpoint releases bef
    the stream stops after it (a macro after the method too, mme_resume), and the GPU thread goes on with other
    channels until it's met */
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
+/* the split GPU thread (gpu.c): set once the first channel is made, 0 for one GPU thread. The front's 3D engine
+   (engines.c) keeps the registers and runs the macros, and hands the back what it acts on through these */
+extern int g_gpu_split;
+void maxwell3d_front(GpuChannel* ch, u32 m, u32 v, int last);
+int query_acquire(GpuChannel* ch, u32* r, int base, u32 v); /* a report semaphore acquire parks: 1, else 0 */
+void gpu_split_reg(GpuChannel* ch, u32 m, u32 v);           /* a plain 3D register's new value */
+void gpu_split_3d(GpuChannel* ch, u32 m, u32 v, int last);  /* a 3D method that acts */
+void gpu_split_cb(GpuChannel* ch);                          /* the constant buffer data ch holds */
+void gpu_split_release(u64 gva, u32 len); /* a release or report the front sent will write [gva, gva + len) */
+void maxwell3d_regs(GpuChannel* ch, const u32* mv, u32 n);  /* the back: n register and value pairs */
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
 void gpu_kick(void);
