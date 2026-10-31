@@ -7,10 +7,18 @@
 # (driver.cpp with linkernsbypass), which a run opens only once it picked such a driver, so linkernsbypass's constructor
 # (it makes the linker's pages writable to reach its namespaces) never runs with the system's driver; and the hooks it
 # loads by name from that folder, libhook_impl.so and libmain_hook.so. Their CMakeLists would build the file
-# redirection and GPU mapping hooks too, which ScarletNX does not use. This file is included into the top-level scope:
+# redirection and GPU mapping hooks too, which ScarletNX does not use. The hook loads a package whose soname the
+# process has already (Qualcomm's own drivers on Android 16) from a renamed copy (cmake/adrenotools-unique-soname.patch),
+# so it builds from a patched copy of the release in the build tree. This file is included into the top-level scope:
 # its variables carry the snx_adrenotools_ prefix.
-set(snx_adrenotools_src "${libadrenotools_SOURCE_DIR}")
+set(snx_adrenotools_src "${PROJECT_BINARY_DIR}/_deps/libadrenotools-patched")
 set(snx_linkerns_src "${linkernsbypass_SOURCE_DIR}")
+include("${PROJECT_SOURCE_DIR}/cmake/patched_copy.cmake")
+snx_patched_copy(SOURCE "${libadrenotools_SOURCE_DIR}" DEST "${snx_adrenotools_src}"
+                 PATCHES "${PROJECT_SOURCE_DIR}/cmake/adrenotools-unique-soname.patch"
+                 FILES src/hook/hook_impl.cpp 4599d573849138e6302790f94aed1c70bb22baf69e206ce54a2d09bad0840932)
+set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${PROJECT_SOURCE_DIR}/cmake/adrenotools-unique-soname.patch")
 
 add_library(snx_linkernsbypass STATIC "${snx_linkerns_src}/android_linker_ns.cpp"
             "${snx_linkerns_src}/elf_soname_patcher.cpp")

@@ -1,0 +1,401 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright 2026 the ScarletNX contributors
+# libadrenotools' hook loads a custom driver uniquely when its soname is taken. The driver's namespace is a clone of the
+# vendor one, so when a library with the driver's soname is in the process already (vulkan.adreno.so: Android 16 loads
+# the system's driver as the app starts), bionic hands that one back by soname and the package is never opened, which
+# Qualcomm's own packages hit. On that collision the hook copies the package into <customDriverDir>/unique/ with each
+# library renamed by flipping the case of the last letter before ".so" (vulkan.adreno.so is vulkan.adrenO.so) and
+# DT_SONAME, DT_NEEDED and the verneed names rewritten in place, at the same length, and loads it from there. Without
+# a collision the hook runs as released. The same change rEden carries (its .patch/libadrenotools/0002).
+#
+# cmake/adrenotools.cmake applies it to a copy of the release and checks the result. To change it, edit a copy of the
+# release's src/hook/hook_impl.cpp and regenerate this diff, then the hash in cmake/adrenotools.cmake.
+
+--- a/src/hook/hook_impl.cpp
++++ b/src/hook/hook_impl.cpp
+@@ -1,10 +1,17 @@
+ #include <initializer_list>
+ #include <string>
++#include <utility>
++#include <vector>
++#include <cerrno>
+ #include <cstdio>
+ #include <cstring>
++#include <dirent.h>
+ #include <dlfcn.h>
+ #include <fcntl.h>
++#include <link.h>
++#include <unistd.h>
+ #include <sys/ioctl.h>
++#include <sys/stat.h>
+ #include <android_linker_ns.h>
+ #include <android/dlext.h>
+ #include <android/log.h>
+@@ -14,6 +21,7 @@
+ 
+ #define TAG "hook_impl"
+ #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, TAG, fmt, ##__VA_ARGS__)
++#define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, TAG, fmt, ##__VA_ARGS__)
+ 
+ const HookImplParams *hook_params; //!< Bunch of info needed to load/patch the driver
+ int (*gsl_memory_alloc_pure_sym)(uint32_t, uint32_t, void *);
+@@ -35,6 +43,293 @@
+     gsl_memory_free_pure_sym = reinterpret_cast<gsl_memory_free_pure_t>(free);
+ }
+ 
++namespace {
++/**
++ * @brief A custom driver package staged under unique sonames
++ * @note Needed when a library with the driver's soname (vulkan.adreno.so) is already loaded in the process, usually
++ *       the system driver: bionic dedups by soname in the cloned namespace and would hand back the system copy
++ */
++struct UniquePackage {
++    std::string dir; //!< The staging dir, with a trailing slash
++    std::vector<std::pair<std::string, std::string>> names; //!< Original basename -> staged basename
++
++    const char *Map(const char *name) const {
++        for (const auto &entry : names)
++            if (entry.first == name)
++                return entry.second.c_str();
++        return name;
++    }
++};
++
++/**
++ * @brief The rename rule: flip the case of the last ASCII letter before ".so"
++ * @example vulkan.adreno.so -> vulkan.adrenO.so, libgsl.so -> libgsL.so, mapper@4.0.so -> mappeR@4.0.so
++ * @note The length never changes, so the name can be rewritten in place inside .dynstr
++ */
++bool UniqueName(const std::string &name, std::string &out) {
++    if (name.size() <= 3 || name.compare(name.size() - 3, 3, ".so") != 0)
++        return false;
++
++    out = name;
++    for (size_t i{name.size() - 3}; i-- > 0;) {
++        char c{out[i]};
++        if (c >= 'a' && c <= 'z') {
++            out[i] = static_cast<char>(c - 'a' + 'A');
++            return true;
++        } else if (c >= 'A' && c <= 'Z') {
++            out[i] = static_cast<char>(c - 'A' + 'a');
++            return true;
++        }
++    }
++    return false;
++}
++
++bool VaddrToOffset(const std::vector<uint8_t> &buf, const ElfW(Phdr) *phdrs, size_t phnum, ElfW(Addr) vaddr, size_t &out) {
++    for (size_t i{}; i < phnum; i++) {
++        const auto &ph{phdrs[i]};
++        if (ph.p_type == PT_LOAD && vaddr >= ph.p_vaddr && vaddr - ph.p_vaddr < ph.p_filesz) {
++            out = ph.p_offset + (vaddr - ph.p_vaddr);
++            return out < buf.size();
++        }
++    }
++    return false;
++}
++
++/**
++ * @brief Rewrites DT_SONAME, DT_NEEDED and verneed file names that name a package file to their staged names
++ * @note Same-length in-place edits of .dynstr, every other byte of the ELF is untouched
++ */
++bool RewriteDynamicNames(std::vector<uint8_t> &buf, const UniquePackage &package, const char *path) {
++    if (buf.size() < sizeof(ElfW(Ehdr)) || memcmp(buf.data(), ELFMAG, SELFMAG) != 0) {
++        LOGE("hook_android_dlopen_ext: staging: %s is not an ELF file", path);
++        return false;
++    }
++
++    auto ehdr{reinterpret_cast<const ElfW(Ehdr) *>(buf.data())};
++    if (ehdr->e_ident[EI_CLASS] != (sizeof(void *) == 8 ? ELFCLASS64 : ELFCLASS32) ||
++        ehdr->e_phentsize != sizeof(ElfW(Phdr)) || ehdr->e_phoff > buf.size() ||
++        (buf.size() - ehdr->e_phoff) / sizeof(ElfW(Phdr)) < ehdr->e_phnum) {
++        LOGE("hook_android_dlopen_ext: staging: %s has an unexpected ELF header", path);
++        return false;
++    }
++
++    auto phdrs{reinterpret_cast<const ElfW(Phdr) *>(buf.data() + ehdr->e_phoff)};
++    const ElfW(Dyn) *dyn{};
++    size_t dynCount{};
++    for (size_t i{}; i < ehdr->e_phnum; i++) {
++        if (phdrs[i].p_type == PT_DYNAMIC && phdrs[i].p_offset <= buf.size() && buf.size() - phdrs[i].p_offset >= phdrs[i].p_filesz) {
++            dyn = reinterpret_cast<const ElfW(Dyn) *>(buf.data() + phdrs[i].p_offset);
++            dynCount = phdrs[i].p_filesz / sizeof(ElfW(Dyn));
++        }
++    }
++
++    ElfW(Addr) strtabAddr{}, verneedAddr{};
++    size_t strsz{}, verneedNum{};
++    for (size_t i{}; dyn && i < dynCount && dyn[i].d_tag != DT_NULL; i++) {
++        switch (dyn[i].d_tag) {
++            case DT_STRTAB: strtabAddr = dyn[i].d_un.d_ptr; break;
++            case DT_STRSZ: strsz = dyn[i].d_un.d_val; break;
++            case DT_VERNEED: verneedAddr = dyn[i].d_un.d_ptr; break;
++            case DT_VERNEEDNUM: verneedNum = dyn[i].d_un.d_val; break;
++            default: break;
++        }
++    }
++
++    size_t strtab{};
++    if (!dyn || !strsz || !VaddrToOffset(buf, phdrs, ehdr->e_phnum, strtabAddr, strtab) || buf.size() - strtab < strsz) {
++        LOGE("hook_android_dlopen_ext: staging: %s has no usable dynamic string table", path);
++        return false;
++    }
++
++    auto rename{[&](size_t nameOffset) {
++        if (nameOffset >= strsz)
++            return false;
++        auto name{reinterpret_cast<char *>(buf.data() + strtab + nameOffset)};
++        size_t maxLength{strsz - nameOffset};
++        if (!memchr(name, '\0', maxLength))
++            return false;
++        for (const auto &entry : package.names) {
++            // Offsets can be shared (verneed usually points at the DT_NEEDED string), a second visit is a no-op
++            if (entry.first == name) {
++                memcpy(name, entry.second.data(), entry.second.size());
++                break;
++            }
++        }
++        return true;
++    }};
++
++    for (size_t i{}; i < dynCount && dyn[i].d_tag != DT_NULL; i++) {
++        if ((dyn[i].d_tag == DT_NEEDED || dyn[i].d_tag == DT_SONAME) && !rename(dyn[i].d_un.d_val)) {
++            LOGE("hook_android_dlopen_ext: staging: %s has a bad dynamic string offset", path);
++            return false;
++        }
++    }
++
++    // bionic matches verneed vn_file against the soname of each DT_NEEDED child, so these must follow the rename
++    size_t verneed{};
++    if (verneedNum && VaddrToOffset(buf, phdrs, ehdr->e_phnum, verneedAddr, verneed)) {
++        for (size_t i{}; i < verneedNum; i++) {
++            if (buf.size() - verneed < sizeof(ElfW(Verneed))) {
++                LOGE("hook_android_dlopen_ext: staging: %s has a truncated verneed table", path);
++                return false;
++            }
++            auto entry{reinterpret_cast<const ElfW(Verneed) *>(buf.data() + verneed)};
++            if (!rename(entry->vn_file)) {
++                LOGE("hook_android_dlopen_ext: staging: %s has a bad verneed file offset", path);
++                return false;
++            }
++            if (!entry->vn_next)
++                break;
++            verneed += entry->vn_next;
++            if (verneed >= buf.size())
++                return false;
++        }
++    }
++
++    return true;
++}
++
++bool ReadFile(const std::string &path, std::vector<uint8_t> &out) {
++    int fd{open(path.c_str(), O_RDONLY | O_CLOEXEC)};
++    if (fd < 0)
++        return false;
++
++    struct stat st{};
++    if (fstat(fd, &st) != 0) {
++        close(fd);
++        return false;
++    }
++
++    out.resize(static_cast<size_t>(st.st_size));
++    size_t done{};
++    while (done < out.size()) {
++        ssize_t n{read(fd, out.data() + done, out.size() - done)};
++        if (n < 0 && errno == EINTR)
++            continue;
++        if (n <= 0) {
++            int saved{errno};
++            close(fd);
++            errno = n == 0 ? EIO : saved;
++            return false;
++        }
++        done += static_cast<size_t>(n);
++    }
++    close(fd);
++    return true;
++}
++
++/**
++ * @brief Writes a staged copy through a temporary name so a failure never leaves a partial library behind
++ * @note The copy takes the source mtime so the next start can skip it when the source is unchanged
++ */
++bool WriteFileAtomically(const std::string &path, const std::string &tmpPath, const std::vector<uint8_t> &data, const struct stat &source) {
++    int fd{open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600)};
++    if (fd < 0)
++        return false;
++
++    size_t done{};
++    while (done < data.size()) {
++        ssize_t n{write(fd, data.data() + done, data.size() - done)};
++        if (n < 0 && errno == EINTR)
++            continue;
++        if (n <= 0) {
++            int saved{errno};
++            close(fd);
++            unlink(tmpPath.c_str());
++            errno = n == 0 ? EIO : saved;
++            return false;
++        }
++        done += static_cast<size_t>(n);
++    }
++
++    const struct timespec times[2]{source.st_atim, source.st_mtim};
++    if (futimens(fd, times) != 0 || fsync(fd) != 0 || close(fd) != 0) {
++        int saved{errno};
++        unlink(tmpPath.c_str());
++        errno = saved;
++        return false;
++    }
++
++    if (rename(tmpPath.c_str(), path.c_str()) != 0) {
++        int saved{errno};
++        unlink(tmpPath.c_str());
++        errno = saved;
++        return false;
++    }
++    return true;
++}
++
++/**
++ * @brief Copies every *.so of the custom driver dir into <dir>/unique/ under its staged name with patched sonames
++ */
++bool StageUniquePackage(std::string driverDir, UniquePackage &package) {
++    if (driverDir.empty())
++        return false;
++    if (driverDir.back() != '/')
++        driverDir += '/';
++    package.dir = driverDir + "unique/";
++
++    DIR *dir{opendir(driverDir.c_str())};
++    if (!dir) {
++        LOGE("hook_android_dlopen_ext: staging: cannot open %s: %s", driverDir.c_str(), strerror(errno));
++        return false;
++    }
++
++    while (auto entry{readdir(dir)}) {
++        std::string name{entry->d_name}, staged;
++        struct stat st{};
++        if (name[0] == '.' || !UniqueName(name, staged) || stat((driverDir + name).c_str(), &st) != 0 || !S_ISREG(st.st_mode))
++            continue;
++        package.names.emplace_back(std::move(name), std::move(staged));
++    }
++    closedir(dir);
++
++    // Two package files that differ only in the case of that letter would stage onto each other
++    for (const auto &a : package.names) {
++        for (const auto &b : package.names) {
++            if (a.second == b.first) {
++                LOGE("hook_android_dlopen_ext: staging: %s and %s collide after renaming", a.first.c_str(), b.first.c_str());
++                return false;
++            }
++        }
++    }
++
++    if (mkdir(package.dir.c_str(), 0700) != 0 && errno != EEXIST) {
++        LOGE("hook_android_dlopen_ext: staging: cannot create %s: %s", package.dir.c_str(), strerror(errno));
++        return false;
++    }
++
++    for (const auto &[name, staged] : package.names) {
++        std::string source{driverDir + name}, target{package.dir + staged};
++        struct stat sourceStat{}, targetStat{};
++        if (stat(source.c_str(), &sourceStat) != 0) {
++            LOGE("hook_android_dlopen_ext: staging: cannot stat %s: %s", source.c_str(), strerror(errno));
++            return false;
++        }
++
++        if (stat(target.c_str(), &targetStat) == 0 && targetStat.st_size == sourceStat.st_size &&
++            targetStat.st_mtim.tv_sec == sourceStat.st_mtim.tv_sec && targetStat.st_mtim.tv_nsec == sourceStat.st_mtim.tv_nsec)
++            continue;
++
++        std::vector<uint8_t> data;
++        if (!ReadFile(source, data)) {
++            LOGE("hook_android_dlopen_ext: staging: cannot read %s: %s", source.c_str(), strerror(errno));
++            return false;
++        }
++
++        if (!RewriteDynamicNames(data, package, source.c_str()))
++            return false;
++
++        if (!WriteFileAtomically(target, package.dir + "." + staged + ".tmp", data, sourceStat)) {
++            LOGE("hook_android_dlopen_ext: staging: cannot write %s: %s", target.c_str(), strerror(errno));
++            return false;
++        }
++    }
++
++    return true;
++}
++} // namespace
++
+ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char *filename, int flags, const android_dlextinfo *extinfo) {
+     auto fallback{[&]() {
+         LOGI("hook_android_dlopen_ext: falling back!");
+@@ -52,8 +347,34 @@
+         return fallback();
+     }
+ 
++    // A namespace cloned from the vendor one shares its loaded libraries, so when a library with the custom driver's
++    // soname is already loaded (the system driver, usually loaded early for skiavk or EGL) bionic returns that one by
++    // soname and never opens the file in customDriverDir. In that case load a copy of the package with unique sonames
++    UniquePackage uniquePackage;
++    bool useUniquePackage{};
++    if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_CUSTOM) {
++        android_dlextinfo probeExtinfo{};
++        probeExtinfo.flags = ANDROID_DLEXT_USE_NAMESPACE;
++        probeExtinfo.library_namespace = extinfo->library_namespace;
++        if (auto loaded{android_dlopen_ext(hook_params->customDriverName.c_str(), RTLD_NOW | RTLD_NOLOAD, &probeExtinfo)}) {
++            dlclose(loaded);
++            LOGI("hook_android_dlopen_ext: %s is already loaded in the process, staging the package uniquely in %sunique/",
++                 hook_params->customDriverName.c_str(), hook_params->customDriverDir.c_str());
++            if (!StageUniquePackage(hook_params->customDriverDir, uniquePackage)) {
++                LOGI("hook_android_dlopen_ext: hook failed: failed to stage the custom driver!");
++                return fallback();
++            }
++            useUniquePackage = true;
++        } else {
++            dlerror(); // Expected for a driver that is not loaded yet, keep it out of later error reports
++        }
++    }
++
++    // The original dir stays second in the path so libraries the driver opens by their original name still resolve
++    std::string driverLibraryPath{useUniquePackage ? uniquePackage.dir + ":" + hook_params->customDriverDir : hook_params->customDriverDir};
++
+     // customDriverDir will be empty if ADRENOTOOLS_DRIVER_CUSTOM isn't set therefore it's fine to have either way
+-    auto driverNs{android_create_namespace(filename, hook_params->customDriverDir.c_str(),
++    auto driverNs{android_create_namespace(filename, driverLibraryPath.c_str(),
+                                            hook_params->hookLibDir.c_str(), ANDROID_NAMESPACE_TYPE_SHARED,
+                                            nullptr, extinfo->library_namespace)};
+     if (!driverNs) {
+@@ -96,11 +417,11 @@
+             return fallback();
+         }
+ 
+-        auto libgslHandle{android_dlopen_ext("vkbgsl.so", RTLD_NOW, &newExtinfo)};
++        auto libgslHandle{android_dlopen_ext(uniquePackage.Map("vkbgsl.so"), RTLD_NOW, &newExtinfo)};
+         if (!libgslHandle) {
+-            libgslHandle = android_dlopen_ext("notgsl.so", RTLD_NOW, &newExtinfo);
++            libgslHandle = android_dlopen_ext(uniquePackage.Map("notgsl.so"), RTLD_NOW, &newExtinfo);
+             if (!libgslHandle)
+-                libgslHandle = android_dlopen_ext("libgsl.so", RTLD_NOW, &newExtinfo);
++                libgslHandle = android_dlopen_ext(uniquePackage.Map("libgsl.so"), RTLD_NOW, &newExtinfo);
+         }
+ 
+         if (libgslHandle) {
+@@ -123,10 +444,11 @@
+     }
+ 
+     // TODO: If there is already an instance of a Vulkan driver loaded hooks won't be applied, this will only be the case for skiavk generally
+-    // To fix this we would need to search /proc/self/maps for the file to a loaded instance of the library in order to read it to patch the soname and load it uniquely
++    // A custom driver is covered by the unique staging above; the default driver still is not
+     if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_CUSTOM) {
+-        LOGI("hook_android_dlopen_ext: loading custom driver: %s%s", hook_params->customDriverDir.c_str(), hook_params->customDriverName.c_str());
+-        void *handle{android_dlopen_ext(hook_params->customDriverName.c_str(), flags, &newExtinfo)};
++        const char *driverName{uniquePackage.Map(hook_params->customDriverName.c_str())};
++        LOGI("hook_android_dlopen_ext: loading custom driver: %s%s", useUniquePackage ? uniquePackage.dir.c_str() : hook_params->customDriverDir.c_str(), driverName);
++        void *handle{android_dlopen_ext(driverName, flags, &newExtinfo)};
+         if (!handle) {
+             LOGI("hook_android_dlopen_ext: hook failed: failed to load custom driver: %s!", dlerror());
+             return fallback();
