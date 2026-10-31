@@ -203,7 +203,7 @@ static void test_protection_tracking(void) {
             u64 had = g_seen;
             g_seen = 0;
             plat_ww_scan(g_base + 32 * 4096, 32 * 4096, on_seen);
-            reported += (u64)__builtin_popcountll(g_seen); /* each a page the scan protected, written again */
+            reported += snx_popcount64(g_seen); /* each a page the scan protected, written again */
             g_seen |= had;
             scans++;
         }

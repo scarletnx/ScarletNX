@@ -506,8 +506,8 @@ static u64 g_wp_budget;     /* atomic: pages the tracking and the traps may hold
 static u64 g_wp_held;       /* atomic: pages they hold now (WP_PROT or WP_TRAP) */
 static u32 g_wp_opened;     /* atomic: moves whenever pages become writable (a fault's, a mapping change's) */
 /* the address a fault on a writable page was let go again at, and g_wp_opened then */
-static __thread void* t_wp_retried;
-static __thread u32 t_wp_retried_at;
+static _Thread_local void* t_wp_retried;
+static _Thread_local u32 t_wp_retried_at;
 /* a range frozen while it is copied (plat_freeze, below) */
 static u8 *g_frz_lo, *g_frz_hi;
 static int g_frozen; /* a futex word: 1 while frozen */
@@ -521,9 +521,9 @@ static u8* g_ww_open_lo[WW_OPEN_N];
 static u8* g_ww_open_hi[WW_OPEN_N];
 static int g_ww_open_n; /* atomic: slots claimed, to skip the search */
 
-/* the TLS the fault handler uses, touched before the thread can fault: on Darwin a thread's first access to a __thread
+/* the TLS the fault handler uses, touched before the thread can fault: on Darwin a thread's first access to a _Thread_local
    variable may allocate, which a signal handler mustn't */
-static __thread void* t_frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
+static _Thread_local void* t_frz_retried; /* the address a thawed write was let go again at once (frozen_wait) */
 static void wp_thread_start(void) {
     __atomic_store_n(&t_wp_retried, NULL, __ATOMIC_RELAXED);
     __atomic_store_n(&t_wp_retried_at, 0, __ATOMIC_RELAXED);

@@ -450,7 +450,7 @@ static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) {
    back the memory it lent there). A game can still call a recording right after it adds the memory its handle is in
    again (one game records a recording, gives its command memory to another command buffer, and calls it from there:
    the driver kept all of it in control memory), so a free piece is taken again only after COOL presents */
-static u32 log2_of(u64 pow2) { return 63u - (u32)__builtin_clzll(pow2); }
+static u32 log2_of(u64 pow2) { return 63u - snx_clz64(pow2); }
 
 /* the areas and the pool, on the first shadow command buffer's device. Another thread waits for the one that makes
    them */
@@ -1593,7 +1593,7 @@ static void differ(const At* at, const char* what, u32 i, u64 a, u64 b, int fl) 
         } else
             WARN("nvn verify: queue %u submission %u draw %u: %s[%u] nvn_direct %llx, driver %llx\n", at->queue,
                  at->serial, at->draw, what, i, (unsigned long long)a, (unsigned long long)b);
-    } else if (d->n >= 1024 && !(d->n & (d->n - 1)) && __builtin_ctzll(d->n) % 2 == 0)
+    } else if (d->n >= 1024 && !(d->n & (d->n - 1)) && snx_ctz64(d->n) % 2 == 0)
         LOG("nvn verify: %s differed in %llu draws\n", what, (unsigned long long)d->n);
 }
 #define CMP(what, i, x, y)                                                                                             \
@@ -1829,8 +1829,8 @@ void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
     if (compare(&at, ds, dc, &v->pend[0].ds, &v->pend[0].dc)) v->matched++;
     memmove(v->pend, v->pend + 1, (v->npend - 1) * sizeof *v->pend);
     v->npend--;
-    if (v->compared == 1 || (v->compared >= 1024 && !(v->compared & (v->compared - 1)) &&
-                             __builtin_ctzll(v->compared) % 2 == 0))
+    if (v->compared == 1 ||
+        (v->compared >= 1024 && !(v->compared & (v->compared - 1)) && snx_ctz64(v->compared) % 2 == 0))
         LOG("nvn verify: queue %u: %llu draws compared, %llu the same; %llu only nvn_direct's, %llu only the "
             "driver's; %llu shadow calls skipped for unknown objects, %llu for unknown states, %llu lossy states\n",
             at.queue, (unsigned long long)v->compared, (unsigned long long)v->matched, (unsigned long long)v->live_only,
