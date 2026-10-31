@@ -266,9 +266,9 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                   DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.4.0
-                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
-                  URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
+    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
+                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
+                  URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
                   DOWNLOAD_ONLY YES)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     CPMAddPackage(NAME renderdoc_app VERSION 1.46
