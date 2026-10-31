@@ -1119,6 +1119,64 @@ static void test_delete_user(void) {
     puts("PASS DeleteUser: into the Trash with its picture and saves, the users after it a place up");
 }
 
+/* SetUserPosition (acc:su 204): position (0 the first) and the uid; the users in their new order in users.ini and in
+   the users, user 1's uid and nickname written as it leaves [user1], the one playing the same user; a place past them
+   or a uid no user's changes nothing and succeeds, as rEden's */
+static void test_user_position(void) {
+    static u8 memory[0x100];
+    char why[512], text[33], *now, *again;
+    SvcObj* su = new_acc_admin();
+    Request r;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("; mine\n  [user1]\n\n[user2]\nuid=" UID2 "\nnickname=Xuji\n\n[user3]\nuid=" UID3 "\nnickname=Afugo");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 3);
+    /* user 1 to the end */
+    request(&r, 204);
+    snx_st_le64(r.raw, 2);
+    acc_uid_put(r.raw + 8, g_users[0].uid);
+    call(su, &r);
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, "; mine\n[user1]\nuid=" UID2 "\nnickname=Xuji\n\n[user2]\nuid=" UID3
+                              "\nnickname=Afugo\n  [user3]\nuid=" UID1 "\nnickname=Player\n\n"));
+    free(now);
+    snx_users_uid_text(g_users[2].uid, text);
+    CHECK(!strcmp(text, UID1) && !strcmp(g_users[0].nickname, "Xuji") && snx_users_selected_number() == 3);
+    CHECK(snx_users_load(DIR, 3, why, sizeof why) == 0 && !strcmp(g_users[2].nickname, "Player"));
+    snx_users_uid_text(g_users[2].uid, text);
+    CHECK(!strcmp(text, UID1));
+    /* and back to the front: the lines it was given stay */
+    request(&r, 204);
+    acc_uid_put(r.raw + 8, g_users[2].uid);
+    call(su, &r);
+    CHECK(!strcmp(g_users[0].nickname, "Player") && !strcmp(g_users[2].nickname, "Afugo") &&
+          snx_users_selected_number() == 1);
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, "; mine\n  [user1]\nuid=" UID1 "\nnickname=Player\n\n[user2]\nuid=" UID2
+                              "\nnickname=Xuji\n\n[user3]\nuid=" UID3 "\nnickname=Afugo\n"));
+    /* a place past the users, or no user's uid: nothing, and success */
+    request(&r, 204);
+    snx_st_le64(r.raw, 3);
+    acc_uid_put(r.raw + 8, g_users[1].uid);
+    call(su, &r);
+    request(&r, 204);
+    uid_of("00000000000000090000000000000009", (nn_account_Uid*)(r.raw + 8));
+    call(su, &r);
+    again = got("users.ini");
+    CHECK(again && !strcmp(again, now) && !strcmp(g_users[1].nickname, "Xuji"));
+    free(again);
+    free(now);
+    /* users.ini that can't be written: refused, the users as they were */
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR "/no-such-folder");
+    request(&r, 204);
+    acc_uid_put(r.raw + 8, g_users[2].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && !strcmp(g_users[2].nickname, "Afugo"));
+    g_host.acc.users_dir[0] = 0;
+    svcobj_unref(su);
+    gone("users.ini");
+    puts("PASS SetUserPosition: the users in their new order, user 1's uid and nickname written as it leaves");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
@@ -1310,6 +1368,7 @@ int main(void) {
     test_registration();
     test_profile_editor();
     test_delete_user();
+    test_user_position();
     test_user_data();
     test_system_service();
     test_administrator_service();

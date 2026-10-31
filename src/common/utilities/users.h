@@ -68,6 +68,11 @@ int snx_users_save(const char* dir, int number, char* why, size_t why_size);
    sections renumbered, the file's other lines as they were); one only registered, of the users alone. The one
    playing stays the same user. 0, else -1 with why: nothing changed */
 int snx_users_remove(const char* dir, int number, char* why, size_t why_size);
+/* user number moved to place position (1-based) in users.ini of dir and in the users, those between a place over: the
+   sections in their new order and numbered so, the one leaving [user1] given the uid and nickname lines it may go
+   without, the file's other lines as they were; users only registered written first. The one playing stays the same
+   user. 0, else -1 with why: nothing changed */
+int snx_users_move(const char* dir, int number, int position, char* why, size_t why_size);
 /* user number's picture, users/<uid>.jpg of dir, made data's size bytes (at most 128 KiB, the most a program takes; 0
    is none), as the account service keeps what a program stores. 0, else -1 with why: nothing changed */
 int snx_users_set_picture(const char* dir, int number, const unsigned char* data, uint32_t size, char* why,

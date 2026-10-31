@@ -86,6 +86,8 @@ interface nn::account::IAccountServiceForAdministrator is acc:su {
     [201] CompleteUserRegistration(nn::account::Uid uid);
     # to the Trash, with its picture and saves, as rEden's Core::Profiles::DeleteUser; the user playing stays
     [203] DeleteUser(nn::account::Uid uid);
+    # to another place, the users between a place over, as rEden's ProfileManager::SetUserPosition
+    [204] SetUserPosition(u64 position, nn::account::Uid uid);
     [205] GetProfileEditor(nn::account::Uid uid) -> object<nn::account::profile::IProfileEditor> editor;
     [250] GetBaasAccountAdministrator(nn::account::Uid uid) -> object<nn::account::baas::IAdministrator> administrator;
     [401] GetPinCodeLength() -> u32 length;
