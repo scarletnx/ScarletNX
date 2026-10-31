@@ -17,7 +17,7 @@
    that takes the pages again at each submit (RADV and ANV take imports through MMU notifiers) would fault on a trapped
    page from the kernel, where userfaultfd answers EFAULT. A driver that pins the pages (NVIDIA) holds on to the old
    ones when guest memory is unmapped or moved, so an import whose pages change is retired (mem.c's hook) and
-   destroyed before the mapping change ends, once the submits that read it are done, and the range imported again.
+   destroyed before the mapping change ends, and the range imported again.
 
    What waits: the guest's fences already order its CPU's writes after the GPU's reads (vk.h), but the runtime writes
    guest memory too while it records (inline to memory, constant buffer updates, ranges becoming GPU-owned), and the
@@ -46,9 +46,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pending_pages.h"
 
-/* the blocks of the smallest imports: a range of up to this takes two of them. Most ranges are a few KiB, and amdgpu
-   walks every imported page at every submit, 6.4 us per MiB: with 2 MiB blocks, 87% of the pages imported were never
-   bound */
+/* the blocks of the smallest imports: a range of up to this takes two of them */
 #define UMA_BLOCK   (128ull << 10)
 #define UMA_LEVELS  10           /* sizes of block, 128 KiB to 64 MiB: a longer range is copied */
 #define UMA_IDLE    120          /* presents an import may go unused before it is let go */
@@ -161,10 +159,8 @@ static void keys_rebuild(void) {
     memset(g_uma.slot, 0, sizeof g_uma.slot);
     for (u32 i = 0; i < g_uma.n; i++) key_insert(g_uma.imp[i].key, i);
 }
-/* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done. One whose
-   pages changed is destroyed at once, after those submits: a driver keeps every import in every submission, and
-   amdgpu, which takes their pages again in each, fails the whole submission (EFAULT) on pages unmapped since. The
-   caller rebuilds the keys */
+/* import i goes, for a reason (VK_UMA_RETIRED_*): destroyed once the submits that may have read it are done, and
+   before any other if its pages changed (amdgpu fails a submission naming it). The caller rebuilds the keys */
 static void retire_one(u32 i, int why) {
     g_uma.why_retired[why]++;
     UmaImport* m = why == VK_UMA_RETIRED_CHANGED ? NULL : malloc(sizeof *m);
@@ -275,8 +271,7 @@ static int import_span(u64 key, u64 lo, u64 hi) {
     VkMemoryRequirements req;
     UmaImport m = {.lo = lo, .hi = hi, .key = key};
     u32 bits;
-    /* the pages faulted in first: on amdgpu an import of pages not faulted in yet took 1 to 10 s, in whole seconds,
-       and the GPU thread waited for it */
+    /* faulted in first: amdgpu took seconds to import pages that were not */
     if (plat_vm_populate(GP(lo), hi - lo))
         LOG_LIMIT(1,
                   "vulkan: unified memory: %llu KiB at %llx not faulted in before their import (%s): such an import "
@@ -310,8 +305,7 @@ static int import_span(u64 key, u64 lo, u64 hi) {
     g_uma.made++;
     return 1;
 }
-/* the key of the import of level's block size (UMA_BLOCK << level) whose two blocks start at the one cpu is in: the
-   level in its low 4 bits */
+/* the key of the import of level's block size (UMA_BLOCK << level) whose two blocks start at the one cpu is in */
 typedef char uma_levels_in_key[UMA_LEVELS <= 16 ? 1 : -1];
 static u64 import_key(u64 cpu, u32 level) { return (cpu / (UMA_BLOCK << level)) << 4 | level; }
 /* the import of key, made: its two blocks narrowed to the reservation's own committed pages around the range
@@ -610,14 +604,13 @@ void vk_uma_owning(u64 cpu, u64 len) {
 }
 void vk_uma_mapping_begin(void) {
     /* the same for pages the guest unmaps or moves: a driver taking an import's pages again at its next submit would
-       take the new ones, or none. Made in the driver before they change, not only handed to the recording thread:
-       amdgpu takes them in the submission's ioctl */
+       take the new ones, or none */
     if (!g_vk.uma || !g_uma.n) return;
     if (g_uma.recorded == vk_submit_number()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    vk_rec_sync();
+    vk_rec_sync(); /* in the driver, not only queued */
 }
 void vk_uma_mapping_end(void) {
-    if (g_vk.uma) take_changes(); /* the imports over pages that changed go before anything else is submitted */
+    if (g_vk.uma) take_changes(); /* before anything else is submitted */
 }
 
 void vk_uma_frame(void) {

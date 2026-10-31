@@ -1620,8 +1620,7 @@ static int check_uma(void) {
         CHECK(mem_unmap(big, 0x1000000) == 0);
         vk_lock();
     }
-    /* two ranges of one import block (the first 64 KiB of one) with free pages between them: an import each, both
-       found again at every use. The first one's key hid the second's import, which was made anew at each lookup */
+    /* two ranges of one block with free pages between them: an import each, both found again at every use */
     {
         VkUmaStats a, z;
         const u64 two = (HEAP_BASE + 0x3000000 + 0x1FFFFF) & ~0x1FFFFFull, gtwo = 0x430000000ull;
@@ -1637,7 +1636,7 @@ static int check_uma(void) {
         CHECK(mem_unmap(two, 0x4000) == 0 && mem_unmap(two + 0x8000, 0x4000) == 0);
         vk_lock();
     }
-    /* a range of a few bytes takes a small import: amdgpu walks every imported page again at every submit */
+    /* a range of a few bytes takes a small import */
     {
         VkUmaStats a, z;
         const u64 small = HEAP_BASE + 0x4000000, gsmall = 0x440000000ull;
@@ -1665,8 +1664,7 @@ static int check_uma(void) {
         CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again when used */
         CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
     }
-    /* memory the guest unmaps: its import goes with the unmap, before anything else is submitted (amdgpu fails a
-       submission naming an import whose pages are unmapped), and memory mapped there again is imported anew */
+    /* memory the guest unmaps: its import goes with the unmap, and memory mapped there again is imported anew */
     CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(UMA_GR, UMA_R, 0x10000);
     memset(GP(UMA_R), 0x11, 0x10000);

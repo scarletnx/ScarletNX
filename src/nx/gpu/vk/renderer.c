@@ -73,7 +73,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();
-        vk_uma_mapping_begin(); /* last: what the landings recorded with imports is submitted too */
+        vk_uma_mapping_begin(); /* after the landings: their commands too */
     } else {
         vk_buf_mem_need_map(gva, size);
         vk_gfx_image_mem_need(gva, size);

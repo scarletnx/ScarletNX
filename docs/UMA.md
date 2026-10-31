@@ -57,13 +57,10 @@ The copies, landings, hashes and write tracking were only there because the GPU 
   block its worker in the fault while the landing waits for that draw.
 - NVIDIA pins an import's pages, so it keeps the old ones when guest memory is unmapped or moved. mem.c calls the
   backing hook (`mem_set_backing_hook`) for every range whose host pages are replaced or given back. That covers
-  decommitting, unmapping, and moving into the pool or out of it. Before the mapping change ends
-  (`vk_uma_mapping_end`), the import is retired and destroyed once the submits that used it are done, and the range
-  is imported again from the new pages. A driver keeps every import in every submission: amdgpu fails a whole
-  submission (EFAULT) on an import whose pages were unmapped.
-- Before the guest's mapping changes, the commands recorded with any import are submitted, and the submissions are
-  in the driver, not only handed to the recording thread (`vk_uma_mapping_begin`), so a driver that takes the pages
-  again at the submit takes the old ones.
+  decommitting, unmapping, and moving into the pool or out of it. The import is destroyed before the change ends
+  (`vk_uma_mapping_end`), as amdgpu fails any submission naming it, and the range is imported again from the new pages.
+- Before the guest's mapping changes, the commands recorded with any import reach the driver
+  (`vk_uma_mapping_begin`), so a driver that takes the pages again at the submit takes the old ones.
 - A span that can't be imported (unmapped pages, the driver refusing) isn't tried again until memory changes.
 
 ## What imports cost a driver
@@ -81,9 +78,7 @@ ran far slower than with `uma=0`. Anything that changes the protection of import
 tracking does that by design: each scan re-protects the pages written since the last one. That is why scans leave
 imported pages out. Transparent huge pages being collapsed still can.
 
-On an RX 6700 XT (Linux 6.18, Mesa 26.1) a submission takes 6.4 us per MiB imported, and under a microsecond per
-import. Most ranges a draw binds are a few KiB, hence blocks from 128 KiB: with 2 MiB ones, 87% of the pages imported
-in one game were never bound.
+On an RX 6700 XT a submission takes 6.4 us per MiB imported, hence the smallest blocks of 128 KiB.
 
 The fix this design points to is the other direction: guest memory allocated as Vulkan memory and mapped into the
 reservation (`VK_EXT_map_memory_placed`, which RADV has), so the GPU uses ordinary buffers. Those mappings can't take
