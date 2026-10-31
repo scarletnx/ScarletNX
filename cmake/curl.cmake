@@ -19,9 +19,13 @@ set(snx_curl_args
     -DCMAKE_INSTALL_PREFIX=${snx_curl_prefix}
     -DCMAKE_INSTALL_LIBDIR=lib
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-    -DCMAKE_AR=${CMAKE_AR}
-    -DCMAKE_RANLIB=${CMAKE_RANLIB})
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
+# by path: under the policies of curl's minimum CMake (3.18) a tool named alone, as the cross presets name llvm-ar, is a
+# file in its build folder, and every check built as a static library fails (struct timeval's among them)
+foreach(snx_curl_tool AR RANLIB)
+    find_program(snx_curl_${snx_curl_tool} "${CMAKE_${snx_curl_tool}}" NO_CACHE REQUIRED)
+    list(APPEND snx_curl_args "-DCMAKE_${snx_curl_tool}=${snx_curl_${snx_curl_tool}}")
+endforeach()
 if(CMAKE_C_COMPILER_LAUNCHER)
     list(JOIN CMAKE_C_COMPILER_LAUNCHER "|" snx_curl_launcher)
     list(APPEND snx_curl_args "-DCMAKE_C_COMPILER_LAUNCHER=${snx_curl_launcher}")
