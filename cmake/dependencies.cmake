@@ -56,16 +56,15 @@ if(SNX_BUILD_NX)
     snx_quiet(snx_lz4)
 endif()
 
-# cJSON (MIT) for hactool's NPDM and KIP descriptions and the driver's MCP server (src/nx/runtime/driver/mcp*.c)
-if(SNX_BUILD_NX)
-    CPMAddPackage(NAME cjson VERSION 1.7.19
-                  URL https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz
-                  URL_HASH SHA256=7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562
-                  DOWNLOAD_ONLY YES)
-    add_library(snx_cjson STATIC "${cjson_SOURCE_DIR}/cJSON.c")
-    target_include_directories(snx_cjson PUBLIC "${cjson_SOURCE_DIR}")
-    snx_quiet(snx_cjson)
-endif()
+# cJSON (MIT) for hactool's NPDM and KIP descriptions, the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in
+# every build, the GPU driver packages' meta.json (src/common/utilities/gpu_driver.c)
+CPMAddPackage(NAME cjson VERSION 1.7.19
+              URL https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz
+              URL_HASH SHA256=7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562
+              DOWNLOAD_ONLY YES)
+add_library(snx_cjson STATIC "${cjson_SOURCE_DIR}/cJSON.c")
+target_include_directories(snx_cjson PUBLIC "${cjson_SOURCE_DIR}")
+snx_quiet(snx_cjson)
 
 # xxHash (BSD-2-Clause) for the renderer's content hashes (src/nx/gpu/vk/cmd.c's vk_hash): XXH3, about three times
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
