@@ -157,10 +157,38 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
     return device_score(pd, p, &gf, &cf, &gq);
 }
 
+/* g_vk.start_failure for no device found: each device with its Vulkan version, which a driver under 1.3 holds back
+   (a GPU driver package may have a newer one: gpu_driver) */
+static void start_failure_devices(void) {
+    VkPhysicalDevice devices[8];
+    u32 n = 8;
+    size_t at = 0;
+    if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
+    for (u32 i = 0; i < n && at < sizeof g_vk.start_failure; ++i) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(devices[i], &p);
+        WARN("vulkan: %s has Vulkan %u.%u.%u, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
+        at += (size_t)snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at, "%s%s has Vulkan %u.%u.%u",
+                               i ? "; " : "", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+                               VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+    }
+#ifdef __ANDROID__
+    const char* hint = n ? ". A GPU driver package may have it (Settings > App > GPU Drivers)" : "";
+#else
+    const char* hint = "";
+#endif
+    if (at < sizeof g_vk.start_failure)
+        snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at,
+                 "%sScarletNX needs Vulkan 1.3 with a %s queue%s",
+                 n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+}
+
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
         WARN("vulkan: no Vulkan 1.3 device with a suitable %s queue\n", g_opt_headless ? "graphics" : "presentation");
+        start_failure_devices();
         return 0;
     }
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
@@ -773,6 +801,8 @@ static int start_failed(void) {
     g_vk.surface = VK_NULL_HANDLE;
     return 0;
 }
+
+const char* vk_start_failure(void) { return g_vk.start_failure; }
 
 int vk_init(void) {
     pm_init(&g_vklock);

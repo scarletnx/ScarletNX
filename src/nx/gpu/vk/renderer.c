@@ -844,6 +844,7 @@ static void vkr_reset(void) {
 const Renderer vk_renderer = {
     .name = "Vulkan",
     .start = vkr_start,
+    .start_failure = vk_start_failure,
     .mem_may_have_changed = vkr_mem_may_have_changed,
     .stream_run = vk_ww_stream,
     .clear = vkr_clear,

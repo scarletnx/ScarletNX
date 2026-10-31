@@ -335,11 +335,17 @@ static void buzzer_open(void) {
 #endif
 }
 
+/* the renderer's start failed: what it says of why, with its values, else the log has it */
+static void renderer_failed(const char* what) {
+    const char* why = g_renderer->start_failure ? g_renderer->start_failure() : "";
+    if (why && why[0]) fatal("%s: %s.", what, why);
+    fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
+}
 void video_init(const char* title, const char* addons) {
     if (g_opt_headless) {
         /* No SDL video subsystem: this also works without DISPLAY, WAYLAND_DISPLAY or a seat. */
         unattended_start();
-        if (!g_renderer->start()) fatal("Headless Vulkan could not start (see the log). Vulkan 1.3 is required.");
+        if (!g_renderer->start()) renderer_failed("Headless Vulkan could not start");
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
         return;
     }
@@ -392,8 +398,7 @@ void video_init(const char* title, const char* addons) {
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
     wsize_set(w, h);
     wsafe_set();
-    if (!g_renderer->start())
-        fatal("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.");
+    if (!g_renderer->start()) renderer_failed("Vulkan could not start");
     LOG("renderer: Vulkan\n");
     /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
     if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
