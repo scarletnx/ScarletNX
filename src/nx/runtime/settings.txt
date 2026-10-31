@@ -569,6 +569,15 @@ setting User
     startup
     help The console's user the game plays as: 1 to 8, as users/users.ini of the data folder lists them (1, "Player",
     help without one). A number with no user stops the game
+setting Save layout
+    key save_layout
+    text 8
+    default global
+    startup
+    words global=Global|game=Per game
+    help Where the saves are: global = one folder of every game's, save/ of the data folder, as the console keeps
+    help them (an Account save in user.<uid>/<title ID>/); game = each game's own, save/ in its <id>_data/. A save the
+    help other one holds is played where it is, said once a run, until Settings > App > Move Old Files moves it
 
 table g_debug_ini
 setting Log level

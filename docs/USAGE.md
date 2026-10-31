@@ -537,7 +537,10 @@ game and says why. The launcher's Settings > User renames a user (Enter types it
 picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, a JPEG of at most 128 KiB (256x256 as the console's), read
 when the game starts; without one it is Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
 run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
-Account saves are `save/user.<uid>` in the game's `<id>_data/`; those an older version left in `save/user`, of the uid
+Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the data folder's
+`save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
+`save_layout=game` they are `save/user.<uid>` in the game's `<id>_data/`. A save in the other layout's folder is played
+there until Settings > App > Move Old Files moves it. Those an older version left in a game's `save/user`, of the uid
 `0123456789abcdeffedcba9876543210`, are played there until you move them ([DEPRECATIONS](DEPRECATIONS.md)). The game's
 menu (Home, F2) shows the user playing in a box at its head's right, their nickname and picture, and the launcher the
 one its Settings' `user` names, where a click picks another ([GUI](GUI.md)); a users.ini that lists no users is said in
