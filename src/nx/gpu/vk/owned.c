@@ -218,6 +218,7 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     OwnRange o;
     u8* d;
     if (!size) return;
+    vk_rt_before_write_cpu(cpu, size);
     vk_uma_owning(cpu, size); /* draws that read the bytes in place are done first, and imports let go of them */
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     /* Unified memory: the result is copied into guest memory on the GPU, in stream order, and nothing is owned or
