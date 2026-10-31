@@ -3871,6 +3871,59 @@ msgstr ""
 msgid "next"
 msgstr ""
 
+#: src/gui/recommend.c
+#, c-format
+msgid "Not tested: %s"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "This GPU samples ASTC itself: ASTC as BC7 does nothing here (Off)"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "This GPU samples neither BCn nor ASTC: ASTC as BC7 cannot work here (Off)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "This GPU samples BCn but not ASTC, and its budget is %ld MB: from %d MB up, ASTC textures stay exact (Off)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "This GPU samples BCn but not ASTC, and its budget is %ld MB, under %d MB: ASTC textures as BC7 take a quarter of the memory, close to exact (On)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "Auto makes %d threads, as many as the cores: %.0f pipelines a second (Auto)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "Auto makes %d threads: %.0f pipelines a second, and no fewer threads make %d%% of the best, %.0f with %d (Auto)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "%d threads make %.0f pipelines a second, %.0f%% of the best (%.0f with %d), and leave the game's own threads more room than Auto's %d"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "%d threads make %.0f pipelines a second, where Auto's %d make %.0f, %.0f%% of that: Auto stops at 12"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "%ld MB of RAM available, under %ld MB: the game sees only what the device can still give it (On)"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid "%ld MB of RAM available: Memory fit is for less than %ld MB (Off)"
+msgstr ""
+
 #: src/gui/settings.c
 msgid "Its own page, as in the game's menu"
 msgstr ""

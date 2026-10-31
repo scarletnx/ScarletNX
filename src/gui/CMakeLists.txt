@@ -49,7 +49,7 @@ target_link_libraries(snx_gui_ui PRIVATE SDL3::SDL3) # its platform macros and k
 set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
-            queue.c latin.c wide.c log.c logzip.c ${gui_process}
+            queue.c latin.c wide.c log.c logzip.c recommend.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz)
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
@@ -208,6 +208,9 @@ if(BUILD_TESTING)
     # once, in order
     add_test(NAME gui_glyphs_kept COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-glyphs.py" --check)
     add_test(NAME gui_glyphs_script COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/glyphs_test.py")
+    add_executable(snx-test-gui-recommend "${PROJECT_SOURCE_DIR}/tests/gui_recommend.c")
+    target_link_libraries(snx-test-gui-recommend PRIVATE snx_gui_support)
+    add_test(NAME gui_recommend COMMAND snx-test-gui-recommend)
     add_executable(snx-test-gui-log "${PROJECT_SOURCE_DIR}/tests/gui_log.c")
     target_link_libraries(snx-test-gui-log PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_log COMMAND snx-test-gui-log)
