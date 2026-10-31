@@ -144,6 +144,24 @@ if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR snx_vita_runtime) # the 
     include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
 endif()
 
+# libcurl (curl's MIT-like license) for the launcher's downloads (src/common/network/https.c), built after OpenSSL
+# (cmake/curl.cmake), and the roots it trusts: Mozilla's, curl's dated extract of them (cmake/cacert.cmake)
+if(TARGET OpenSSL::SSL)
+    set(snx_curl_sha256 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5)
+    CPMAddPackage(NAME curl VERSION 8.23.0
+                  URL https://curl.se/download/curl-8.23.0.tar.xz
+                  URL_HASH SHA256=${snx_curl_sha256}
+                  DOWNLOAD_ONLY YES)
+    include("${PROJECT_SOURCE_DIR}/cmake/curl.cmake")
+    set(snx_cacert_date 2026-10-20)
+    CPMAddPackage(NAME cacert VERSION 2026.10.20
+                  URL https://curl.se/ca/cacert-${snx_cacert_date}.pem
+                  URL_HASH SHA256=796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
+                  DOWNLOAD_ONLY YES
+                  DOWNLOAD_NO_EXTRACT YES)
+    include("${PROJECT_SOURCE_DIR}/cmake/cacert.cmake")
+endif()
+
 # jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's LLVM threads
 # spend less time in malloc and free than with the C library's. On by default where the program's malloc is every
 # library's, Linux and FreeBSD (whose libc's is an older jemalloc); macOS takes it through jemalloc's zone, not by
