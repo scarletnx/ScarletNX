@@ -177,8 +177,8 @@ shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
-- Input is the pad alone: the touch screen is not read, and the sensors are at
-  rest (`hid:USER`, below).
+- Input is the pad and the mouse's left button on the touch screen. The sensors
+  are at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Geometry shaders, procedural textures, shadows and the DSP's AAC pipe still stop
@@ -190,9 +190,12 @@ The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 Text is bounded at **16 MiB**, using conservative static CFG discovery for larger
 images. This is not complete indirect-target coverage or a general 3DS runtime.
 Scalar VFPv2 now supports F32/F64 arithmetic/conversions and bounded atomic RAM
-transfers; short vectors, enabled exceptions and legacy extended-save forms
-remain unsupported. Stage 2b4 adds serialized ARM11 checked exclusives and
-a bounded kernel-bootstrap subset. Stage 2 still needs broader discovery/ISA
+transfers. Short-vector arithmetic, moves, absolute value, negate and square root run
+in the 3DS CPU backend, and short-vector compares and conversions are scalar.
+Enabled exceptions, a short-vector first source in the first bank and legacy
+extended-save forms remain unsupported.
+Stage 2b4 adds serialized ARM11 checked exclusives and a bounded kernel-bootstrap
+subset. Stage 2 still needs broader discovery/ISA
 validation and cache/resume. Initial stage 3a adds a SwIPC-derived CTR generator,
 checked transport and bounded service sessions. Initial 3b adds the minimal
 APT/thread/event/mutex/PTM/HID startup personality and ARM11 UADD8/SEL.
@@ -376,9 +379,9 @@ Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad, or 
 gamepad's buttons by position (`gamepad_swap_ab`) with its left stick, and the
 scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A,
 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down, 100 R, 200 L, 400 X,
-800 Y), each held for `press_len` ms. The touch entries say no touch, and the
-sensors give a console lying still. ZL, ZR and the C-stick are the New 3DS's
-`ir:rst`, which the runtime does not have yet.
+800 Y), each held for `press_len` ms. The touch entries follow the pointer's press
+on the bottom screen, and the sensors give a console lying still. ZL, ZR and the
+C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
 
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
@@ -537,11 +540,37 @@ user's keys as above, without seed crypto), a cartridge image's game partition a
 update partition, and a bare NCCH — not a cartridge's manual or DLP partitions as
 content of their own, DLC, system titles or nonstandard NCCH media units/platforms. A
 cartridge image may be as large as a card (8 GiB), since it is read where it lies; a
-CIA's input and the total materialized output are each capped at 1 GiB; metadata tables at 16 MiB,
+CIA's input, the total materialized output and a RomFS view are each capped at 4 GiB
+(the runtime's policy, not a format limit); metadata tables at 16 MiB,
 code at 64 MiB, entries at 100000, and RomFS nesting at 64. Host filenames must
 be portable safe components (maximum 255 UTF-8 bytes); unsafe/reserved names
 are rejected rather than silently renamed. Host paths with control characters
 are refused to prevent log/banner injection. Larger/unsupported inputs fail closed.
+
+**The CRO loader** implements ldr:ro's `Initialize` (0x1), `LoadCRO` (0x4), `LoadCRO_New` (0x9),
+`UnloadCRO` (0x5), `Link` (0x6), `Unlink` (0x7) and `Shutdown` (0x8), ported from Azahar's
+`ldr_ro.cpp` and `cro_helper.cpp` at `a4b335e`.
+
+- A load aliases the caller's private buffer into the process image, rebases and links the module,
+  registers it, applies its fix level and returns the retained size. The tail is released.
+- Retained images are read-only and code pages are executable. The source and live data buffers
+  stay held until unload. A failed operation rolls back its guest writes.
+- `LoadCRO_New` applies imports to the image's `.data` before transferring it. The older command
+  keeps its original order.
+- Unload unrebases the retained image. It leaves the discarded tables and `FIXD` of a nonzero fix
+  level as they are and does not reconstruct the original file byte for byte.
+- Load, unload, link and unlink drop the blocks the run-time compiler made. Its native code is
+  released between dispatcher blocks, never inside the IPC or SVC that dropped it.
+- Names are compared within the guest string tables, with no fixed host length. Relocation batches
+  and export searches use the validated table extents, with no separate entry limit.
+- A relocation that rewrites a word of the static text takes the AOT tables out of use only for
+  the blocks that can contain that word. A table block has at most 32 instructions, so the runtime
+  marks the 128-byte window of the word and the window before it, and the dispatcher compiles
+  blocks that start in a marked window at run time. The rest of the static text keeps running from
+  the AOT tables. Marks are never cleared, even when an unload restores the word. This needs the
+  run-time compiler.
+- CRR commands (0x2 and 0x3) acknowledge requests without authenticating CRO hashes. Relocation
+  kinds other than 0, 2, 3 and 38 are unsupported.
 
 **Hashes are integrity checks, not signature authentication.** RSA/ECDSA
 signatures, certificate trust, ticket rights and ExHeader access-descriptor
@@ -715,10 +744,11 @@ would bypass process permissions, aliases and device callbacks.
 
 Remaining requirements beyond the initial native bootstrap pipeline:
 
-1. The initial ARM11 integer profile is implemented. Complete VFPv2 (including
-   short-vector FPSCR behavior), missing ARMv6K instructions and alignment-mode
-   validation. Current ordinary unaligned transfers model unaligned support
-   enabled/alignment checking disabled, not every ARM11 CP15 configuration.
+1. The initial ARM11 integer profile is implemented. Complete VFPv2 (including a
+   short-vector first source in the first bank and enabled exceptions), missing
+   ARMv6K instructions and alignment-mode validation. Current ordinary unaligned
+   transfers model unaligned support enabled/alignment checking disabled, not every
+   ARM11 CP15 configuration.
 2. The separate checked-memory ABI and CTR adapter implement integer and
    bounded scalar ARM11 VFP transfers. ARM11 checked exclusives now have serialized bus-owned reservations,
    including alias/ABA invalidation. Concurrent scheduling and broader monitor
@@ -939,8 +969,10 @@ The selected profile supplies the console username, limited to the 3DS's ten cha
 
 The backend implements discovery, host/join, node status, channel bindings, packet send/pull
 and disconnect. It uses a private protocol inside the room's datagram transport. It does
-not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. LAN mode is
-not implemented by this backend and does not silently join a public room.
+not connect to physical consoles, Citra/Azahar rooms or Switch LDN sessions. With LAN mode
+(the default), Initialize succeeds, scans find no network and hosting works with no peer.
+The 3DS backend has no LAN transport, and ldn_mitm's protocol is for the Switch only. Nothing
+leaves the machine and no room is joined.
 
 No game image or synchronization window is patched. NSMB2 internet co-op still has
 input-delay and synchronization limits. The development runs with title-specific

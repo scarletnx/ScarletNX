@@ -4,6 +4,10 @@
    exercise its helper queue even on hosts where raw or unprivileged ping sockets are available. */
 #include "common/network/net_icmp.c"
 #include <stdio.h>
+#ifndef _WIN32
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -94,6 +98,43 @@ int main(void) {
     free(saved);
 #endif
     snx_socket_unref(s);
+#ifndef _WIN32
+    /* The ping socket backend over a socketpair in place of the host's: macOS hands a datagram ICMP socket every echo
+       reply of the system's, another program's too (a seq this socket never sent, its id and source theirs). It is
+       dropped, peeked or not; this socket's own reply comes next, a raw socket's with the guest's id back */
+    for (int type = SNX_SOCK_RAW; type; type = type == SNX_SOCK_RAW ? SNX_SOCK_DGRAM : 0) {
+        int pair[2];
+        uint8_t other[10] = {0, 0, 0, 0, 0x04, 0xa4, 0, 0, 'x', 'y'},
+                ours[11] = {0, 0, 0, 0, 0xbe, 0xef, 0, 1, 'o', 'd', 'd'};
+        size_t head = type == SNX_SOCK_RAW ? 20 : 0;
+        CHECK(!socketpair(AF_UNIX, SOCK_DGRAM, 0, pair));
+        snx_net_set_host_nonblocking(pair[0]); /* as the backend makes its ping socket */
+        Icmp* p = calloc(1, sizeof *p);
+        CHECK(p);
+        snx_lock_init(&p->lock);
+        p->refs = 1;
+        p->backend = BACKEND_PING_SOCKET;
+        p->seq_ring[0] = 1; /* the guest's echo, seq 1 with its id 0x1234, as icmp_send keeps it */
+        p->id_ring[0] = 0x1234;
+        p->ring_next = 1;
+        SnxSocket* ping = snx_net_socket_new(&g_icmp_ops, pair[0], SNX_AF_INET, type, SNX_IPPROTO_ICMP);
+        CHECK(ping);
+        ping->impl = p;
+        snx_socket_set_nonblocking(ping, 1);
+        for (int peeked = 1; peeked >= 0; peeked--) {
+            CHECK(send(pair[1], other, sizeof other, 0) == sizeof other &&
+                  send(pair[1], ours, sizeof ours, 0) == sizeof ours);
+            CHECK(snx_socket_recv(ping, buf, sizeof buf, peeked ? SNX_MSG_PEEK : 0, NULL, NULL) ==
+                  (int64_t)(head + 11));
+            CHECK(snx_ld_be16(buf + head + 6) == 1 && !memcmp(buf + head + 8, "odd", 3));
+            CHECK(snx_ld_be16(buf + head + 4) == (type == SNX_SOCK_RAW ? 0x1234 : 0xbeef));
+            if (peeked) CHECK(snx_socket_recv(ping, buf, sizeof buf, 0, NULL, NULL) == (int64_t)(head + 11));
+            CHECK(snx_socket_recv(ping, buf, sizeof buf, 0, NULL, NULL) == -SNX_EAGAIN);
+        }
+        snx_socket_unref(ping);
+        close(pair[1]);
+    }
+#endif
     puts("network_icmp: ok (synthetic queue and helper-failure tests, not a live ping)");
     return 0;
 }

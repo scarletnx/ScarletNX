@@ -156,6 +156,41 @@ The pipeline, its layouts and the scratch buffer live as long as the device, lik
 pipelines. A failure to create them is fatal: there is no CPU fallback. Running out of staging is not: the level
 is left out, the texture keeps its old hash, and the next check uploads it again.
 
+## Encoded again as BC7
+
+Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
+take one (4x4) or less. With the `astc_bc` setting (a `startup` one, off by default: BC7 is close but not exact),
+`format.c`'s `TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
+`vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
+`bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of
+the same size, and the copy writes those blocks into the image. A BC7 strip starts on a row of whole 4x4 blocks, so
+its ASTC block rows are a multiple of 4 / gcd(block height, 4), and whole slices are counted by the blocks' bytes
+too, which for a slice smaller than a block are more than its texels'. `device.c` turns `textureCompressionBC` on for
+it whatever `native_bc` says, and `format.c` then samples BCn as it is only when `native_bc` asks too. A 3D texture
+keeps RGBA8 where the device has no 3D BC7 images, as native block formats do. Every 600 frames the log says how many
+levels went up as BC7 and their megabytes against RGBA8's.
+
+The encoder tries each block in the modes that suit it and writes the one with the least squared error. Every
+block takes mode 6, one line through RGBA with 4-bit weights, which holds a block of one gradient closely. An opaque
+block (every alpha 255) also takes the modes that store no alpha and so keep it 255: modes 1 and 3, two subsets of
+one of the format's 64 partitions, each with a line of its own (6-bit ends and 3-bit weights, or 7-bit and 2-bit),
+for an edge between two colours, and mode 2, three subsets, for three colours meeting. Any other block takes mode 7,
+two subsets with alpha. The partitions tried are the two of 64 two-subset ones, and the one of 64 three-subset ones,
+whose subsets spread least around their means, a pass over the block each.
+
+A subset's line starts from its bounding box, each channel turned to run with the channel the subset spans most (the
+sign of their covariance), pulled in by a sixteenth from each end and tried as it is too; then a least squares fit
+to the weights the texels took, twice. The ends' p-bits are tried in every combination the mode allows, but a subset
+whose every alpha is 255 (or 0) takes the one bit that keeps it exactly: a nearly opaque texel blends, and a nearly
+clear one passes an alpha test of more than nought. Each texel takes the best of the three weights around its
+projection. All of it is integer arithmetic in the part of GLSL that is also C++, so the tests run the same file on
+the CPU and get the GPU's bytes.
+
+What it costs, as PSNR against what it encodes, on edenprobe's astcimage picture (gradients, hard edges where three
+colours meet in a block, noise, and alpha) decoded from ASTC: 35.0 dB over the picture at 4x4 (gradients 47.6,
+edges 40.5, noise 29.9, alpha 38.5), 36.7 at 6x6, 42.2 at 8x8 and 42.5 at 12x12. Mode 6 alone gave 27.6 at 4x4, its
+edges 23.5. Noise is what BC7 holds worst: a block of independent texels is a line or two of them at best.
+
 ## Textures bigger than one allocation
 
 Some drivers fail device memory allocations past 256 MiB even where `maxMemoryAllocationSize` is larger (NVIDIA's on
@@ -219,6 +254,13 @@ separate SPIRV-Tools is needed.
   Without the validation layer installed, the "zero validation errors" line only means that nothing reported an
   error. `build/src/nx/snx-test-astc-vulkan --large` decodes a 2D texture of 11584x11584 (4x4 blocks) and a 3D one of
   512^3 (8x8 blocks), 512 MiB each, past the 256 MiB cap, and compares every byte.
+- `bc7_glsl` (ctest, no GPU) runs `bc7_encode.glsl` on the CPU (`tests/glsl/bc7_cpu.cpp`) and decodes its blocks
+  with the CPU reference, `tests/support/bcn.c`: the encoder's 16 weights are the format's, blocks of one colour and
+  blocks that lie on a line mode 6 holds come back exact, edenprobe's astcimage picture comes back no worse than
+  the PSNR each region is held to, and a 13x7 image of three slices encodes slice by slice as each alone.
+  `astc_vulkan` and `astc_vulkan_pieces` also upload random blocks into BC7 images, footprints whose strips step
+  4, 2 and 1 block rows, with mips, layers, slices and many strips, and compare the GPU's blocks with the same
+  encoder run on the CPU over the CPU decoder's texels, byte for byte.
 - `tex_upload_rows` checks what `texture.c` hands `vk_astc_upload`: an ASTC level's block rows, strip by strip,
   against the block-linear layout walked byte by byte, and the bands other formats take past the cap.
 

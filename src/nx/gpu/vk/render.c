@@ -958,9 +958,11 @@ VkImageViewType vk_tex_view_type(const ShTex* st) {
                            : VK_IMAGE_VIEW_TYPE_2D;
 }
 
-VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, const u32* tsc, int num) {
-    int stencil = t && t->f.stencil && vk_tic_reads_stencil(tic);
-    if (!t || (stencil ? 1 : t->f.is_int ? (t->f.sint ? 2 : 1) : 0) != num) return VK_NULL_HANDLE;
+/* The TIC selects an sRGB-capable format; the TSC controls whether sampling unpacks it to linear. */
+static int tex_srgb(const u32* tic, const u32* tsc) { return ((tic[4] >> 22) & 1) && ((tsc[0] >> 13) & 1); }
+
+/* the component mapping of t's view for the header tic */
+static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
     static const VkComponentSwizzle sw[8] = {
         VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R,   VK_COMPONENT_SWIZZLE_G,
         VK_COMPONENT_SWIZZLE_B,    VK_COMPONENT_SWIZZLE_A,    VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE};
@@ -976,17 +978,30 @@ VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, cons
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
     }
-    VkComponentMapping map = t->fkey & (1u << 30)
-                                 ? (VkComponentMapping){VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO,
-                                                        VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE}
-                                 : (VkComponentMapping){m[0], m[1], m[2], m[3]};
-    /* The TIC selects an sRGB-capable format; the TSC controls whether sampling unpacks it to linear. */
-    return vk_tex_view(t, want, ((tic[4] >> 22) & 1) && ((tsc[0] >> 13) & 1), &map, stencil);
+    return t->fkey & (1u << 30) ? (VkComponentMapping){VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO,
+                                                       VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE}
+                                : (VkComponentMapping){m[0], m[1], m[2], m[3]};
+}
+
+VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, const u32* tsc, int num) {
+    int stencil = t && t->f.stencil && vk_tic_reads_stencil(tic);
+    if (!t || (stencil ? 1 : t->f.is_int ? (t->f.sint ? 2 : 1) : 0) != num) return VK_NULL_HANDLE;
+    VkComponentMapping map = tex_map(t, tic);
+    return vk_tex_view(t, want, tex_srgb(tic, tsc), &map, stencil);
+}
+
+/* each component of map is its own: what a min/max sampler reads where the device takes no other swizzle */
+static int tex_map_identity(VkComponentMapping map) {
+    return (map.r == VK_COMPONENT_SWIZZLE_IDENTITY || map.r == VK_COMPONENT_SWIZZLE_R) &&
+           (map.g == VK_COMPONENT_SWIZZLE_IDENTITY || map.g == VK_COMPONENT_SWIZZLE_G) &&
+           (map.b == VK_COMPONENT_SWIZZLE_IDENTITY || map.b == VK_COMPONENT_SWIZZLE_B) &&
+           (map.a == VK_COMPONENT_SWIZZLE_IDENTITY || map.a == VK_COMPONENT_SWIZZLE_A);
 }
 
 /* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
    mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
-VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num, const Surf* tex, VkImageViewType want) {
+VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, int num, const Surf* tex,
+                              VkImageViewType want) {
     u32 tc[8];
     memcpy(tc, tsc, sizeof tc);
     /* the compare mode is what the shader declares */
@@ -998,6 +1013,47 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num, const Su
     if (num) {
         u32 mip = (tc[1] >> 6) & 3;
         tc[1] = (tc[1] & ~0xF3u) | 0x11u | (mip == 3 ? 2u : mip) << 6;
+    }
+    /* a min/max reduction (tc[1] bits 10-11) stays where it can change what the filter reads and Vulkan takes it: a
+       linear filter (magnification, minification or mip) of a view whose format has the min/max filter on this device,
+       without a compare, which Vulkan's samplers only average. Where the device takes no swizzle with it
+       (filterMinmaxImageComponentMapping), the view's mapping must be the identity too: Vulkan needs r to be, and the
+       other components are poison, which a shader that reads them (a depth view's g, b and a) would get. Elsewhere the
+       sampler averages: the null texture's texels are all alike, and nearest filters read one */
+    u32 reduction = (tc[1] >> 10) & 3;
+    if (reduction == 1 || reduction == 2) {
+        int linear = (tc[1] & 3) == 2 || ((tc[1] >> 4) & 3) == 2 || ((tc[1] >> 6) & 3) == 3;
+        const char* which = reduction == 1 ? "least" : "greatest";
+        if (!tex || num || !linear)
+            tc[1] &= ~(3u << 10);
+        else if ((tc[0] >> 9) & 1) {
+            LOG_LIMIT(1,
+                      "vulkan: a depth compare sampler asks for the %s of its texels, which Vulkan's compare samplers "
+                      "don't take: they average them\n",
+                      which);
+            tc[1] &= ~(3u << 10);
+        } else if (!g_vk.feat12.samplerFilterMinmax) {
+            LOG_LIMIT(1,
+                      "vulkan: the device has no min/max filter: a sampler asking for the %s of its texels "
+                      "averages them\n",
+                      which);
+            tc[1] &= ~(3u << 10);
+        } else {
+            VkFormat f = vk_tex_view_format(tex, tex_srgb(tic, tsc));
+            if (!vk_format_minmax_filter(f)) {
+                LOG_LIMIT(1,
+                          "vulkan: VkFormat %d has no min/max filter on this device: a sampler asking for the %s of "
+                          "its texels averages them\n",
+                          (int)f, which);
+                tc[1] &= ~(3u << 10);
+            } else if (!g_vk.has_minmax_swizzle && !tex_map_identity(tex_map(tex, tic))) {
+                LOG_LIMIT(1,
+                          "vulkan: the device's min/max filter takes no swizzle: a sampler asking for the %s of the "
+                          "texels of a swizzled view averages them\n",
+                          which);
+                tc[1] &= ~(3u << 10);
+            }
+        }
     }
     /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
     int raise = g_vk_anisotropy > 1 && tex && tex->levels > 1 &&
@@ -1357,11 +1413,11 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
     u32 used = 0;
     int need_null = 0;
     VkDescriptorImageInfo null_info, null_depth = {0};
-    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, &plain, num, NULL, want);
+    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, num, NULL, want);
     if (!null_sampler) return 0;
     null_info = (VkDescriptorImageInfo){null_sampler, none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     if (kind->shadow) {
-        VkSampler null_compare = vk_tex_bind_sampler(null_tsc, kind, 0, NULL, want);
+        VkSampler null_compare = vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, want);
         if (!null_compare) return 0;
         null_depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     }
@@ -1410,13 +1466,14 @@ static int tex_tables_set(GpuChannel* ch, int stage, const VkSh* s, const int* f
                                   handle);
                 }
                 VkImageView color_view = depth ? none : view;
-                VkSampler smp = vk_tex_bind_sampler(x.tsc, &plain, num, color_view != none ? x.t : NULL, want);
+                VkSampler smp = vk_tex_bind_sampler(x.tsc, x.tic, &plain, num, color_view != none ? x.t : NULL, want);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
                     smp, color_view, color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
                     VkImageView depth_view = depth && view != none ? view : farthest;
-                    VkSampler compare = vk_tex_bind_sampler(x.tsc, kind, 0, depth_view != farthest ? x.t : NULL, want);
+                    VkSampler compare =
+                        vk_tex_bind_sampler(x.tsc, x.tic, kind, 0, depth_view != farthest ? x.t : NULL, want);
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
@@ -1688,7 +1745,7 @@ static VkDescriptorSet stage_set_(GpuChannel* ch, int stage, VkSh* s, Surf** rt,
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (!view) return VK_NULL_HANDLE;
-        VkSampler smp = vk_tex_bind_sampler(x->tsc, st, num, sampled, want);
+        VkSampler smp = vk_tex_bind_sampler(x->tsc, x->tic, st, num, sampled, want);
         if (!smp) return VK_NULL_HANDLE;
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
@@ -2535,7 +2592,10 @@ retry:
                     break;
                 }
         }
-    if (!n && !zt && !xfb_on) { /* nothing drawn to and nothing captured */
+    /* nothing drawn to, captured or stored. A program's stores to memory or images still run in a pass without
+       attachments: a per-pixel pass may set every target's format to 0 and keep only what it stores */
+    int stores = vs->si.gbuf_wmask || vs->si.nimg || (fs && (fs->si.gbuf_wmask || fs->si.nimg));
+    if (!n && !zt && !xfb_on && !stores) {
         g_vk_skipped++;
         return;
     }

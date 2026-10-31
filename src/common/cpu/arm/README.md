@@ -8,7 +8,8 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 
 - `arm.h`: separate, versioned `SnxArmCPU` state and exit reasons, the backend's `SnxArmRt`, plus the Thumb decode model.
 - `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults for no backend.
-- `a32.c`: validated A32 decoder. No LLVM dependency.
+- `a32.c`: validated A32 decoder. No LLVM dependency. With `thumb_decode.c`, `vector_decode.c` and `profile.c` it
+  forms the `snx_arm_decode` target. `snx_arm_llvm` links it, and the 3DS CPU backend links it alone.
 - `thumb_decode.c`: validated Thumb16/Thumb32 decoder to an explicit operand model.
 - `llvm.h`, `llvm.c`, `llvm_vector.inc`, `llvm_thumb.inc`: `snx_arm_llvm_block(module, name, words, count, pc, &consumed)` and `snx_thumb_llvm_block(module, name, halfwords, count, pc, &consumed)` emit `void name(SnxArmCPU*)` into a **host-target** LLVM module.
 - `tests/arm_emit.c`, `tests/thumb_emit.c`: object generators demonstrating module creation, verification, optimization and native object emission.
@@ -70,10 +71,15 @@ NEON, VFPv3/v4 and D16..D31. It recognizes the ARM11 CP15 barrier forms.
 Scalar VFPv2 F32/F64 arithmetic, non-fused multiply/accumulate, compares,
 conversions, register/status transfers and up-to-128-byte memory transfers are
 implemented. Arithmetic uses the shared raw-bit integer FP primitives, not host
-floating point or ARMv8 fused replacements. LEN/STRIDE and exception enables must
-be zero for arithmetic. FPSCR writes outside NZCV, rounding mode, DN/FZ and
-cumulative exceptions stop before mutation; short vectors, traps, legacy
-FLDMX/FSTMX format words and larger transfers remain explicitly unsupported.
+floating point or ARMv8 fused replacements. Compares and conversions are scalar
+under any LEN/STRIDE. A non-zero LEN/STRIDE stops the other data-processing words
+as `SNX_ARM_BACKEND_UNSUPPORTED`, and an enabled exception stops every one of them.
+The 3DS runtime's backend (`src/3ds/cpu/cpu.c`) then runs the short-vector FMLA,
+FMLS, FNMLA, FNMLS, FMUL, FNMUL, FADD, FSUB, FDIV, FCPY, FABS, FNEG and FSQRT, and
+leaves enabled exceptions and a first source in the first bank unsupported. FPSCR
+writes outside NZCV, rounding mode, DN/FZ, LEN/STRIDE and cumulative exceptions stop
+before mutation. Traps, legacy FLDMX/FSTMX format words and larger transfers remain
+explicitly unsupported.
 Checked VFP memory operations are aligned to four bytes and staged as one
 RAM-only transaction before register/base writeback. This is not complete VFPv2
 or a complete ARM11 ISA model; A57 checked vector operations remain unsupported.

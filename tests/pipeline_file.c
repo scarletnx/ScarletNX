@@ -16,6 +16,13 @@
 #include <string.h>
 #include "nx/gpu/vk/pipeline_file.c"
 
+Settings g_settings;
+int plat_cpus(int* ids, int max) {
+    int n = max < 8 ? max : 8;
+    for (int i = 0; i < n; i++) ids[i] = i;
+    return n;
+}
+
 #define PATH "pipeline_file_test.vkshaders"
 /* the test's file and the temporary one a rewrite makes, for a failing check to leave neither */
 static void cleanup(void) {
@@ -439,6 +446,58 @@ static void check_pipe(int i, int n, u64 vs, u64 tcs, u64 tes, u64 gs, u64 fs) {
           got.mods[i][4] == fs);
 }
 
+/* Large warm caches take the parallel validation path. A bad source at any range boundary still cuts the file at
+   that record, before any shader or pipeline after it is handed back. Mapping failure takes the same checked path. */
+static void large_checks(void) {
+    PFile pf;
+    u32 loaded[2];
+    remove(PATH);
+    guest_bytes = 0;
+    open_file(&pf, "parallel", 0x10, 0, loaded);
+    size_t header = (size_t)pf.size, chunk = 1u << 20;
+    u8* payload = calloc(1, chunk);
+    CHECK(payload);
+    const void* pieces[] = {payload};
+    size_t sizes[] = {chunk};
+    u64 check;
+    for (unsigned i = 0; i < 9; i++) CHECK(!pf_append(&pf, PF_SOURCE, pieces, sizes, 1, &check));
+    free(payload);
+    add_shader(&pf, 0, 0x101);
+    add_shader(&pf, 1, 0x102);
+    add_pipe(&pf, 0, 0x101, 0, 0, 0, 0x102);
+    close_file(&pf);
+    size_t n = (size_t)file_size();
+    u8* original = malloc(n);
+    FILE* f = fopen(PATH, "rb");
+    CHECK(original && f && fread(original, 1, n, f) == n);
+    fclose(f);
+    g_settings.prepare_shaders = 2;
+    for (int fallback = 0; fallback < 2; fallback++) {
+        fail_map = fallback;
+        open_file(&pf, "parallel", 0x20, 0, loaded);
+        CHECK(loaded[0] == 2 && loaded[1] == 1 && pf.size == n);
+        check_shader(0, 0);
+        check_shader(1, 1);
+        check_pipe(0, 0, 0x20, 0, 0, 0, 0x21);
+        close_file(&pf);
+    }
+    fail_map = 0;
+    for (unsigned record = 0; record < 9; record += 4) {
+        size_t at = header + record * (PF_REC + chunk), byte = at + PF_REC + chunk / 2;
+        original[byte] ^= 1;
+        f = fopen(PATH, "wb");
+        CHECK(f && fwrite(original, 1, n, f) == n);
+        fclose(f);
+        original[byte] ^= 1;
+        open_file(&pf, "parallel", 0x30, 0, loaded);
+        CHECK(!loaded[0] && !loaded[1] && pf.size == at && file_size() == (long)at);
+        close_file(&pf);
+    }
+    free(original);
+    g_settings.prepare_shaders = 0;
+    remove(PATH);
+}
+
 int main(void) {
     PFile pf;
     u32 loaded[2];
@@ -457,6 +516,17 @@ int main(void) {
     add_pipe(&pf, 2, 0x2222, 0, 0, 0, 0);
     CHECK(pf.nsh == 2);
     close_file(&pf);
+
+    /* A mapping can be unavailable while ordinary reads and appends still work. */
+    fail_map = 1;
+    open_file(&pf, "key one", 0xB0, 0, loaded);
+    CHECK(loaded[0] == 2 && loaded[1] == 2 && pf.f);
+    check_shader(0, 0);
+    check_shader(1, 1);
+    check_pipe(0, 0, 0xB0, 0, 0, 0, 0xB1);
+    check_pipe(1, 2, 0xB1, 0, 0, 0, 0);
+    close_file(&pf);
+    fail_map = 0;
 
     /* the next run: everything back in order, the pipelines' shaders as the modules made of them now */
     open_file(&pf, "key one", 0xB0, 0, loaded);
@@ -563,6 +633,7 @@ int main(void) {
     mapped();
     shiprefs();
     rebuilds();
+    large_checks();
     printf("pipeline_file: %u checks passed\n", checks);
     return 0;
 }

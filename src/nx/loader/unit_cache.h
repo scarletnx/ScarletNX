@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The code units' cache (module_llvm.c's units): each unit's object kept under a key, the SHA-256 of the unit's LLVM
-   IR and of everything else its object is made with, in a folder every game shares. A unit whose key is there, whole,
-   is not compiled again; the module descriptor and the link always are. C11 and the LLVM-C headers, as module_llvm.c:
-   not for the C99 driver */
+/* The code units' cache (module_llvm.c's units, and module_arm.c's of a 32-bit game): each unit's object kept under a
+   key, the SHA-256 of the unit's LLVM IR and of everything else its object is made with, in a folder every game
+   shares. A unit whose key is there, whole, is not compiled again; the module descriptor and the link always are. C11
+   and the LLVM-C headers, as module_llvm.c: not for the C99 driver */
 #ifndef SNX_NX_UNIT_CACHE_H
 #define SNX_NX_UNIT_CACHE_H
 
 #include "common/cpu/recompiler/llvm/ir.h"
+#include <stdio.h>
 
 /* What every unit's key holds besides the unit's own target machine and IR (and SNX_IR_OBJECT_VERSION) */
 typedef struct {
@@ -67,5 +68,9 @@ unsigned char* snx_unit_cache_read(const SnxUnitCache* cache, const char* key, s
    last write or reuse) removed first, then by name; 0 for no limit. Each file it cannot remove is said on stderr. 0, or
    -1 with why in error when the folder cannot be listed */
 int snx_unit_cache_trim(const char* folder, SnxU64 limit, SnxUnitTrim* trim, char* error, size_t error_size);
+/* A module build's last word on its units, on out (stdout): how many of count the cache in folder gave (reused, bytes
+   of them), unless quiet, then the folder held to limit bytes (0: none), what that removed said */
+void snx_unit_cache_report(FILE* out, const char* folder, SnxU64 limit, size_t reused, size_t count, SnxU64 bytes,
+                           int quiet);
 
 #endif

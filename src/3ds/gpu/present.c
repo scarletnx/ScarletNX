@@ -197,10 +197,71 @@ static void write_ppm(unsigned screen, unsigned width, unsigned height, const un
     else if (closed)
         (void)snx_replace(staged, path);
 }
+/* The blit rectangle of a screen in swapchain pixels: the pair scaled to fit and centred, each screen centred across
+   the layout. False before a layout and a swapchain exist. */
+static bool screen_rect(unsigned screen, VkOffset2D rect[2]) {
+    const Frame* frames = g_present.frames;
+    uint32_t layout_w = snx_max_u32(frames[0].width, frames[1].width);
+    uint32_t layout_h = frames[0].height + frames[1].height;
+    VkExtent2D e = g_present.swap.extent;
+    if (!layout_w || !layout_h || !e.width || !e.height) return false;
+    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
+                                                                            : (double)e.height / layout_h;
+    const Frame* f = &frames[screen];
+    double x = (e.width - layout_w * scale) / 2 + (layout_w - f->width) * scale / 2;
+    double y = (e.height - layout_h * scale) / 2 + (screen ? frames[0].height * scale : 0);
+    rect[0] = (VkOffset2D){(int32_t)x, (int32_t)y};
+    rect[1] = (VkOffset2D){(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale)};
+    return true;
+}
+/* The touch screen's pixel under a pointer at x and y, in the window's points as SDL reports them. The blit's own scale
+   maps them, so a swapchain whose pixels differ from the window's points still lands on what is shown. As the Switch
+   runtime's finger handling does, a press off the screen starts nothing and a drag off it keeps to its edge. */
+static void pointer_touch(SDL_Window* window, float x, float y, bool press) {
+    const Frame* bottom = &g_present.frames[1];
+    VkExtent2D e = g_present.swap.extent;
+    int width = 0, height = 0;
+    VkOffset2D rect[2];
+    if (!SDL_GetWindowSize(window, &width, &height) || width <= 0 || height <= 0 || !screen_rect(1, rect)) return;
+    /* the division below is by the rect's size, so a rect with no pixels has nothing to map */
+    if (rect[1].x <= rect[0].x || rect[1].y <= rect[0].y) return;
+    double px = (double)x * e.width / width;
+    double py = (double)y * e.height / height;
+    if (press && (px < rect[0].x || px >= rect[1].x || py < rect[0].y || py >= rect[1].y)) return;
+    px = snx_clamp_double(px, rect[0].x, rect[1].x);
+    py = snx_clamp_double(py, rect[0].y, rect[1].y);
+    uint32_t tx = (uint32_t)((px - rect[0].x) * bottom->width / (rect[1].x - rect[0].x));
+    uint32_t ty = (uint32_t)((py - rect[0].y) * bottom->height / (rect[1].y - rect[0].y));
+    snx_ctr_input_touch(true, snx_min_u32(tx, bottom->width - 1), snx_min_u32(ty, bottom->height - 1));
+}
+static void pointer_event(SDL_Window* window, const SDL_Event* event) {
+    SDL_WindowID id = SDL_GetWindowID(window);
+    switch (event->type) {
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (event->button.windowID == id && event->button.button == SDL_BUTTON_LEFT)
+                pointer_touch(window, event->button.x, event->button.y, true);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_UP: /* a release off the screen still ends the press */
+            if (event->button.windowID == id && event->button.button == SDL_BUTTON_LEFT)
+                snx_ctr_input_touch(false, 0, 0);
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (event->motion.windowID == id && snx_ctr_input_touched())
+                pointer_touch(window, event->motion.x, event->motion.y, false);
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            /* a focus loss ends the press: this window may not get the release */
+            if (event->window.windowID == id) snx_ctr_input_touch(false, 0, 0);
+            break;
+    }
+}
 static void pump(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    SDL_Window* window = v ? v->host.window : NULL;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
+        if (window) pointer_event(window, &event);
         snx_ctr_input_event(&event); /* the gamepads connected and gone */
     }
 }
@@ -226,35 +287,25 @@ static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, 
 /* The window's picture: the top screen above the bottom one, which is centred under it (400 and 320 pixels wide, 240
    high), the pair scaled as one to fit the swapchain's image and centred in it, the rest black */
 static void show_screens(VkCommandBuffer cb, VkImage target) {
-    const Frame* top = &g_present.frames[0];
-    const Frame* bottom = &g_present.frames[1];
-    unsigned layout_w = top->width > bottom->width ? top->width : bottom->width, layout_h = top->height + bottom->height;
-    VkExtent2D e = g_present.swap.extent;
-    double scale = (double)e.width / layout_w < (double)e.height / layout_h ? (double)e.width / layout_w
-                                                                             : (double)e.height / layout_h;
-    double x0 = (e.width - layout_w * scale) / 2, y0 = (e.height - layout_h * scale) / 2;
     image_barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    double y = y0;
+    /* the blits below overwrite the clear's pixels: their writes must wait for it */
+    image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     for (unsigned i = 0; i < 2; ++i) {
         Frame* f = &g_present.frames[i];
-        if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED) { /* a screen not drawn yet stays black */
-            y += f->height * scale;
-            continue;
-        }
+        VkOffset2D rect[2];
+        /* a screen not drawn yet stays black */
+        if (!f->image || f->layout == VK_IMAGE_LAYOUT_UNDEFINED || !screen_rect(i, rect)) continue;
         image_barrier(cb, f->image, f->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         f->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        double x = x0 + (layout_w - f->width) * scale / 2;
         VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                             .srcOffsets = {{0, 0, 0}, {(int32_t)f->width, (int32_t)f->height, 1}},
                             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                            .dstOffsets = {{(int32_t)x, (int32_t)y, 0},
-                                           {(int32_t)(x + f->width * scale), (int32_t)(y + f->height * scale), 1}}};
+                            .dstOffsets = {{rect[0].x, rect[0].y, 0}, {rect[1].x, rect[1].y, 1}}};
         vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &blit, VK_FILTER_NEAREST);
-        y += f->height * scale;
     }
     image_barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
@@ -278,7 +329,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     snx_ctr_vk_sync(pa, pitch * (height - 1) + width * bytes, false); /* the draws over it stored first, on the GPU */
     VkCommandBuffer cb = snx_ctr_vk_commands();
     unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose semaphores it takes */
-    snx_ctr_vk_barrier(cb); /* after what the GPU wrote to the framebuffer */
+    snx_ctr_vk_compute_barrier(cb);    /* after what the GPU wrote to the framebuffer */
     image_barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the shader writes all of it */
     f->layout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorSet set = snx_ctr_vk_set(g_present.decode.set);

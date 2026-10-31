@@ -44,11 +44,12 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`. No
   persistent host copy. One there in the data directory is served instead: a game that draws Miis (Mario Kart 8
   Deluxe) needs the console's Mii models, system data `0100000000000802`, whose RomFS goes there from your own
-  firmware. Without it, `0100000000000802` is a placeholder with no Mii parts: its six resource files
+  firmware. Without it, `0100000000000802` is a stand-in whose parts draw nothing: its six resource files
   (`NXTexture{Low,Mid}{Linear,SRGB}.dat`, `Shape{High,Mid}.dat`), each a magic (`NFTR` or `NFSR`, as Eden's stand-in
-  has them) and version 1, then nought. The SDK's loader reads a file whole and indexes its part tables from its start
-  without checking the header, and skips a part whose size is 0, so the files are as long as the tables (0x2428 bytes
-  of textures, 0x14dd4 of shapes).
+  has them), version 1 and each part kind's largest size and alignment, then a part table whose every texture names
+  one blank 8 by 8 image and every shape one degenerate triangle. The SDK's loader reads a file whole and indexes its
+  part tables from its start without checking the header; a game that composes a Mii's face registers the composed
+  textures, and crashes on a null one when the parts are absent.
 - `0100000000000823` (NgWord2) is the exception: when absent, it is synthesized with firmware 11.0.1's 52-file
   profanity-filter set (the `ac_*` pattern files and `version.dat` 0x1A), from Eden's stand-in archive, in place of an
   empty image. A game that calls `CheckProfanityWords` (Yo-kai Watch) reads the pattern files, and stops on the empty

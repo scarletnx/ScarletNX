@@ -1,0 +1,28 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* BC7 encoding as a compute shader, an invocation per 4x4 block: vk/astc.c runs it on the RGBA8 texels astc.comp
+   decoded, for a GPU that samples BC7 but not ASTC, and copies the blocks into a BC7 image. A dispatch encodes a
+   strip as astc.comp decodes it: height rows of texels of one slice, or (z > 1) whole slices one after another, in
+   the input and the output. The encoder itself is bc7_encode.glsl, which the tests also run on the CPU
+   (tests/glsl/glsl.hpp); this file only declares what it reads and writes. */
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint width;    /* texels in a row of the input */
+    uint height;   /* rows of texels in each slice of this strip */
+    uint blocks_x; /* blocks in a row of the output */
+    uint blocks_y; /* block rows in each slice of this strip */
+};
+
+layout(binding = 0, std430) readonly restrict buffer InputTexels {
+    uint rgba[];
+};
+
+layout(binding = 1, std430) writeonly restrict buffer OutputBlocks {
+    uvec4 bc7_blocks[];
+};
+
+#include "bc7_encode.glsl"

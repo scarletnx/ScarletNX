@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "3ds/aot/ctr_discover.h"
 #include "3ds/aot/ctr_module.h"
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/memory/host.h"
 #include "snx_settings.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 unsigned snx_ctr_module_memory(void) { return ctr_host_flat() ? SNX_CTR_MODULE_FLAT_MODE : SNX_CTR_MODULE_CHECKED_MODE; }
@@ -32,6 +34,31 @@ static bool scheduled(SnxCtrProcess* process, SnxCtrRunResult* stop) {
     *stop = s == SNX_CTR_SCHED_IDLE ? SNX_CTR_RUN_BUDGET : SNX_CTR_RUN_BLOCKED;
     return s == SNX_CTR_SCHED_RUN;
 }
+/* A block of the static tables takes at most SNX_CTR_AOT_BLOCK_WORDS ARM instructions (fewer bytes in Thumb). One
+   that starts in the window of a rewritten word or in the window before it can hold that word. */
+#define WINDOW_SHIFT 7
+#define WINDOW_BYTES (1u << WINDOW_SHIFT)
+typedef char window_is_the_arm_block_span[SNX_CTR_AOT_BLOCK_WORDS * 4u == WINDOW_BYTES ? 1 : -1];
+static bool window_marked(const SnxCtrProcess* process, uint32_t offset) {
+    uint32_t window = offset >> WINDOW_SHIFT;
+    return process->aot_stale && ((process->aot_stale[window / 32] >> (window % 32)) & 1);
+}
+bool snx_ctr_aot_mark_stale(SnxCtrProcess* process, uint32_t address, uint32_t size) {
+    uint64_t text = process->segment[0].address, end = text + process->segment[0].bytes;
+    uint64_t from = address > text ? address : text, to = (uint64_t)address + size;
+    if (to > end) to = end;
+    if (from >= to) return true;
+    if (!process->aot_stale) {
+        size_t windows = ((size_t)process->segment[0].bytes + WINDOW_BYTES - 1) >> WINDOW_SHIFT;
+        process->aot_stale = calloc((windows + 31) / 32, sizeof *process->aot_stale);
+        if (!process->aot_stale) return false;
+    }
+    uint64_t first = from - text, last = to - 1 - text;
+    uint64_t earliest = first < WINDOW_BYTES ? 0 : first - (WINDOW_BYTES - 1);
+    for (uint64_t window = earliest >> WINDOW_SHIFT; window <= last >> WINDOW_SHIFT; ++window)
+        process->aot_stale[window / 32] |= 1u << (window % 32);
+    return true;
+}
 SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, uint64_t limit, uint64_t* executed) {
     if (!executed) return SNX_CTR_RUN_FAULT;
     *executed = 0;
@@ -41,6 +68,7 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
     if (!scheduled(process, &stop)) return stop;
     uint32_t since_poll = 0;
     while (*executed < limit) {
+        if (process->reclaim) process->reclaim(process->compiler);
         /* Every block returns here, so a loop that makes no SVC still reaches the scheduler: due vblanks, audio frames,
            timers and timeouts are delivered, and a thread they wake with a better priority takes the core, as the
            interrupt would preempt it on the console */
@@ -63,7 +91,8 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
             return SNX_CTR_RUN_FAULT;
         }
         SnxArmBlock block = NULL;
-        if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes) {
+        if (pc >= m->text_address && (uint64_t)pc + width <= (uint64_t)m->text_address + m->text_bytes &&
+            !window_marked(process, pc - m->text_address)) {
             uint32_t index = (pc - m->text_address) / width;
             block = thumb ? m->thumb_blocks[index] : m->arm_blocks[index];
         }

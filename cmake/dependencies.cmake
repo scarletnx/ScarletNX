@@ -134,6 +134,36 @@ if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_GNUABI OR snx_vita_runtime) # the 
     include("${PROJECT_SOURCE_DIR}/cmake/openssl.cmake")
 endif()
 
+# jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's LLVM threads
+# spend less time in malloc and free than with the C library's. On by default where the program's malloc is every
+# library's, Linux and FreeBSD (whose libc's is an older jemalloc); macOS takes it through jemalloc's zone, not by
+# default yet. The sanitizers bring their own malloc
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$" AND NOT SNX_TEST_SANITIZERS)
+    set(snx_jemalloc_default ON)
+else()
+    set(snx_jemalloc_default OFF)
+endif()
+option(SNX_JEMALLOC "Link jemalloc into scarletnx as its malloc (default ON on Linux and FreeBSD)"
+       ${snx_jemalloc_default})
+if(SNX_JEMALLOC)
+    if(SNX_TEST_SANITIZERS)
+        message(FATAL_ERROR "SNX_JEMALLOC=ON with SNX_TEST_SANITIZERS=ON: the sanitizers replace malloc themselves. "
+                            "Configure with -DSNX_JEMALLOC=OFF.")
+    endif()
+    if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Darwin)$")
+        message(FATAL_ERROR "SNX_JEMALLOC=ON on ${CMAKE_SYSTEM_NAME}: jemalloc takes the program's malloc on Linux, "
+                            "FreeBSD and macOS only. On Windows the LLVM DLL keeps the C runtime's, and an Android or "
+                            "iOS app the system's. Configure with -DSNX_JEMALLOC=OFF.")
+    endif()
+    set(snx_jemalloc_version 5.4.0) # also what tests/jemalloc.cmake finds in the program
+    set(snx_jemalloc_sha256 200776fac271093e7c2f21edd6d62657ecd2be578d9328633f2a86bfa6ef4f1d)
+    CPMAddPackage(NAME jemalloc VERSION ${snx_jemalloc_version}
+                  URL https://github.com/jemalloc/jemalloc/releases/download/${snx_jemalloc_version}/jemalloc-${snx_jemalloc_version}.tar.bz2
+                  URL_HASH SHA256=${snx_jemalloc_sha256}
+                  DOWNLOAD_ONLY YES)
+    include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
+endif()
+
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
     CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.365
                   URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.365.tar.gz

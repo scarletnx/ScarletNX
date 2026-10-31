@@ -38,12 +38,15 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
    snx_codegen_analyze finds functions. Every root is searched, and its callees until the functions hold budget
    instructions. known(user, address) says code exists already at an address, or will without this batch (the AOT
    module, an earlier compile, a pc another batch compiles): a function stops there and isn't searched from there,
-   unless it is a root. A root inside another root's function is a leader of it. 0 when at least one root has code
-   (snx_codegen_entry), -1 when none has (unaligned, outside the modules). The codegen is snx_codegen_free'd either
-   way */
+   unless it is a root. region_limit bounds one explored branch graph (0: the original limit), so an external branch
+   or fallthrough resumes through dispatch. With overflow_limit, a graph larger than region_limit is explored again
+   with that smaller limit instead, keeping short functions together. A root inside another root's region is a leader
+   of it. 0 when at least one root has code (snx_codegen_entry), -1 when none has (unaligned, outside the modules).
+   The codegen is snx_codegen_free'd either way */
 typedef int (*SnxCodegenKnown)(void* user, SnxU64 address);
 int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* roots,
-                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget, SnxU64 features);
+                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget, SnxU64 features,
+                         size_t region_limit, size_t overflow_limit);
 int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
                              size_t hint_count, size_t limit, int (*skip)(void* context, SnxU64 address),
                              void* context, SnxU64 features);

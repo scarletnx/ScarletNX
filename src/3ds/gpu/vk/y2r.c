@@ -105,7 +105,7 @@ SnxCtrXferResult snx_ctr_vk_y2r(const SnxCtrY2rConfig* c, const SnxCtrY2rBuffer 
     push[19] = c->alpha;
     for (unsigned i = 0; i < 4; ++i)
         push[20 + i] = (uint16_t)c->coefficients[i * 2] | (uint32_t)(uint16_t)c->coefficients[i * 2 + 1] << 16;
-    snx_ctr_vk_barrier(cb); /* after what the GPU wrote to the inputs */
+    snx_ctr_vk_compute_barrier(cb); /* after what the GPU wrote to the inputs */
     VkDescriptorSet set = snx_ctr_vk_set(g_y2r.convert.set);
     VkDescriptorBufferInfo infos[5];
     VkWriteDescriptorSet writes[5];

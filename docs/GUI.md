@@ -67,10 +67,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   pink. Activation is tracked separately from hover/focus, so the activated item
   stays pink while another item is hovered in yellow. Mouse controls also work
   on Games' rows.
-- A finger taps an item anywhere on its row, as a click does on its label, and a drag up or down on the menu or the
-  Settings moves the focus a row each time it passes one, whether or not the rows all fit; on Games' list the rows
-  follow the finger, and let go fast they glide on, slowing to a stop (the grid's swipes go a screen of its lines);
-  a tap on a finished run returns to the menu, and one on a
+- A finger taps an item anywhere on its row, as a click does on its label. A drag up or down on any list whose rows
+  do not all show, Games' grid too, moves its rows with the finger, the focus where it was, and let go fast they glide
+  on, slowing to a stop; on the Settings, the side panel a list, the drag that passes onto it opens the group in
+  focus there, its rows taking the focus, and back onto the groups they take it back, the panel showing the group in
+  focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
 - **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
@@ -588,12 +589,12 @@ the Settings' two, the theme editor's, the choices of a question, of UI scale's 
 setup's pages, the setup's Appearance rows, the box of users, that of a game's updates, DLCs and mods, and the OK of
 a box of files. Their rows are 2 pixels apart times the text's size (on Android and iOS 48 pixels high: a phone held wide gets
 2x by default, so 96, about 37 dp at a density of 2.6, Android's 48 dp touch target at 3x; the desktop's are 17), the focused one kept in the middle (on a
-group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad, the wheel or a drag
-move it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
+group's screen, the group open in the groups' list; Games' grid by its lines) as the keys, a pad or the wheel move
+it, and a list still when the mouse, a pen or a tap moves it, the cursor inside each row, which a click takes
 whole as a tap does. Every list whose rows do not all show, Games' grid too, has a scroll bar a letter wide at its
 right, the rows beside it: its thumb as tall as the share of the rows shown and where they are, which a click takes
-there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb put them,
-the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's
+there and drags, and a finger too from two letters of the bar's right edge; the rows stay where the thumb or a finger
+put them, the focus where it was, until a key, a pad or the wheel moves the focus. Under a box over the screen, only the box's
 bars take a press. That is the **Side panel**'s *Auto*, the
 default (`side_box = auto` in `app.ini`, Settings > App); *On* shows it on every screen, under the list where both do
 not fit, and *Off* never, the list taking the whole width without the Status box, a group's rows its column. F2 shows

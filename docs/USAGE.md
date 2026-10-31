@@ -296,11 +296,12 @@ Remaining examples: POSIX.
   `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
   `--chunk N` (`--unit_instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
-  iOS, where a smaller unit takes less memory at once. Each unit's object is kept in `units/` of the cache folder
-  ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the unit's LLVM IR, the LLVM, the
-  CPU and its features, the optimization level and the LLVM Internals: a unit found there is not compiled again (a
-  recompile after an `SNX_ABI` change that leaves the unit's IR alone, or of a game whose code changed in a few units),
-  and the last line says how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
+  iOS, where a smaller unit takes less memory at once. Each unit's object, a 32-bit game's blocks too, is kept in
+  `units/` of the cache folder ([Folders](#folders)), which every game's recompile shares, under the SHA-256 of the
+  unit's LLVM IR, the LLVM, the CPU and its features, the optimization level and the LLVM Internals: a unit found
+  there is not compiled again (a recompile after an `SNX_ABI` change that leaves the unit's IR alone, of a game whose
+  code changed in a few units, or one cut short, which goes on from the units it had compiled), and the last line says
+  how many were (`unit cache: 241 of 259 units reused (310.2 MB) from ...`). The module
   descriptor and the link are made each time. A kept object that is not whole is compiled again, and said. The cache
   always leaves a tenth of its disk free: when a new unit would take that, the units reused longest ago are removed
   for it, and a unit there is still no room for is not cached (said once, with the disk's free bytes, and how many

@@ -126,6 +126,7 @@ static void run(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
 
 /* a fresh table, with only the module's function, and a service over it */
 static const char* cache_path; /* start's config.cache_path */
+static size_t region_limit, discovery_budget; /* the bounded-region witnesses below */
 
 static SnxJitService* start(size_t batch, unsigned threads) {
     SnxJitConfig config;
@@ -152,6 +153,8 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     config.aot_functions = aot_functions;
     config.aot_count = 1;
     config.batch = batch;
+    config.region_instructions = region_limit;
+    config.budget = discovery_budget;
     config.threads = threads;
     config.report = report;
     config.cache_path = cache_path;
@@ -662,7 +665,70 @@ static void test_image_map(void) {
     snx_jit_service_free(service);
 }
 
-int main(void) {
+/* A loop crosses several bounded regions, calls a function outside the discovered work, then branches back to an
+   interior entry. Every continuation must preserve registers, flags, LR and return through dispatch correctly. */
+static void test_region_limit(int benchmark) {
+    const u64 begin = 0x4000, helper = 0x18000;
+    static const u32 called[] = {0x91001400u, 0xD65F03C0u}; /* add x0,x0,#5; ret */
+    put(helper, called, sizeof called / sizeof called[0]);
+    static const size_t limits[] = {32, 64, 256, 0, SIZE_MAX};
+    discovery_budget = 1;
+    size_t count = sizeof limits / sizeof limits[0] - !benchmark;
+    for (size_t i = 0; i < count; i++) {
+        region_limit = limits[i];
+        unsigned adds = benchmark || region_limit ? 512 : 8192;
+        u32* words = calloc(adds + 7, sizeof *words);
+        CHECK(words != NULL);
+        if (!words) continue;
+        words[0] = 0xAA1E03F4u; /* mov x20,x30 */
+        words[1] = 0xD2800061u; /* mov x1,#3 */
+        for (unsigned j = 2; j < adds + 2; j++) words[j] = 0x91000400u; /* add x0,x0,#1 */
+        words[adds + 2] = 0x94000000u | (u32)((helper - (begin + (adds + 2) * 4)) / 4);
+        words[adds + 3] = 0xF1000421u; /* subs x1,x1,#1 */
+        words[adds + 4] = 0x54000001u | ((u32)(-(i32)(adds + 2)) & 0x7ffffu) << 5;
+        words[adds + 5] = 0xAA1403FEu; /* mov x30,x20 */
+        words[adds + 6] = 0xD65F03C0u;
+        put(begin, words, adds + 7);
+        free(words);
+        service = start(1, 2);
+        CHECK(service != NULL);
+        if (!service) continue;
+        CHECK(snx_jit_wait(service, begin) != NULL);
+        SnxJitStats first;
+        snx_jit_stats(service, &first);
+        CHECK(first.instructions && (benchmark || first.instructions <=
+              (region_limit ? region_limit : SNX_JIT_OVERFLOW_INSTRUCTIONS)));
+        CPU c;
+        cpu_init(&c, 0x8000);
+        run(&c, begin);
+        CHECK(c.x[0] == 3 * (adds + 5) && c.x[1] == 0 && c.x[20] == RETURN && c.x[30] == RETURN);
+        CHECK(c.pc == RETURN && c.z == 1 && c.n == 0 && c.cf == 1 && c.vf == 0);
+        snx_jit_drain(service);
+        SnxJitStats stats;
+        snx_jit_stats(service, &stats);
+        CHECK(!stats.failures && (benchmark || stats.batches > 1));
+        if (benchmark) {
+            double start_time = snx_seconds();
+            for (unsigned repetition = 0; repetition < 100000; repetition++) {
+                cpu_init(&c, 0x8000);
+                run(&c, begin);
+            }
+            double elapsed = snx_seconds() - start_time;
+            SnxJitStats after;
+            snx_jit_stats(service, &after);
+            CHECK(after.batches == stats.batches && !after.failures);
+            CHECK(c.x[0] == 3 * (adds + 5) && c.pc == RETURN);
+            printf("region warm execution: limit=%zu, %.3f ns/run, %lu compiled batches\n",
+                   region_limit, elapsed * 1e9 / 100000, after.batches);
+        }
+        snx_jit_service_free(service);
+    }
+    region_limit = discovery_budget = 0;
+}
+
+int main(int argc, char** argv) {
+    int benchmark = argc == 2 && !strcmp(argv[1], "--region-bench");
+    if (argc > 1 && !benchmark) return 2;
     /* 0x1000: x0 = x0 * 3 + 1, then the AOT function at 0x2000, then 0x3000, which the same batch may find */
     static const u32 f1[] = {0xD2800061, 0x9B017C00, 0x91000400, 0xA9BF7BFD,
                              0x940003FC, 0x940007FB, 0xA8C17BFD, 0xD65F03C0};
@@ -701,6 +767,11 @@ int main(void) {
     rt.miss = miss;
     rt.poll = poll;
     rt.undef = undef;
+    if (benchmark) {
+        test_region_limit(1);
+        free(memory);
+        return failures != 0;
+    }
     service = start(0, 0);
     if (!service) return 1;
 
@@ -853,6 +924,7 @@ int main(void) {
     test_invalidate_middle();
     test_invalidate_in_flight();
     test_image_map();
+    test_region_limit(0);
     free(memory);
     if (failures) return 1;
     printf("jit service: passed\n");

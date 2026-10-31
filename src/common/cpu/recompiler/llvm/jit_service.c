@@ -1055,8 +1055,17 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     /* memory changing after the code is read makes this batch's code stale: the publish skips it */
     SnxU64 epoch = s->epoch;
     unlock(&s->lock);
-    int rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, s->config.budget,
-                                           s->config.features)
+    size_t region_limit = s->config.region_instructions, overflow_limit = 0;
+    if (!region_limit) {
+        region_limit = SNX_JIT_REGION_INSTRUCTIONS;
+        overflow_limit = SNX_JIT_OVERFLOW_INSTRUCTIONS;
+    }
+    if (region_limit == SIZE_MAX) region_limit = 0;
+    size_t budget = s->config.budget;
+    size_t live = s->config.live_budget ? s->config.live_budget : SNX_JIT_LIVE_BUDGET;
+    if (queue == LIVE && budget > live) budget = live;
+    int rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, budget,
+                                           s->config.features, region_limit, overflow_limit)
                     : -1;
     if (!images) codegen = (SnxCodegen){0};
     int discovered = !rc;

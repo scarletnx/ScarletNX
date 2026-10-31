@@ -179,10 +179,13 @@ static int create_device(void) {
                      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
             ? subgroup.supportedStages
             : 0;
+    g_shader_quad = (g_vk_subgroup_stages & VK_SHADER_STAGE_FRAGMENT_BIT) &&
+                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* MoltenVK fails every pipeline that lists VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE (Metal's dynamic stride) */
     g_vk.has_dynamic_stride = p12.driverID != VK_DRIVER_ID_MOLTENVK;
     g_vk_preserve_infnan64 = p12.shaderSignedZeroInfNanPreserveFloat64 != 0;
+    g_vk.has_minmax_swizzle = p12.filterMinmaxImageComponentMapping != 0;
     /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too.
        Qualcomm's driver claims the mode but miscompiles with it: a fragment shader of one game's waterfalls, all of
        its FMUL, FADD and FFMA FTZ as NVIDIA's compiler made them, drew the background's colour on an Adreno 740
@@ -228,14 +231,21 @@ static int create_device(void) {
     WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
     /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
-       decoded on the GPU as they are uploaded */
-    if (g_settings.native_bc) WANT(textureCompressionBC);
+       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
+       astc_bc asks for it */
+    if (g_settings.native_bc || g_settings.astc_bc) WANT(textureCompressionBC);
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)
         WARN("vulkan: the GPU can't sample BCn textures: they are decoded on the GPU as they are loaded\n");
+    const int astc_bc7 = g_settings.astc_bc && want->textureCompressionBC && !want->textureCompressionASTC_LDR;
     if (g_settings.native_astc && !want->textureCompressionASTC_LDR)
-        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded to RGBA8\n");
+        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded to %s\n",
+             astc_bc7 ? "RGBA8 and encoded again as BC7 (astc_bc=1)" : "RGBA8");
+    if (g_settings.astc_bc && !want->textureCompressionASTC_LDR && !want->textureCompressionBC)
+        WARN("vulkan: astc_bc=1, but the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8\n");
+    if (astc_bc7 && !g_settings.native_astc)
+        LOG("vulkan: ASTC textures are decoded and encoded again as BC7 (astc_bc=1), a quarter of RGBA8's memory\n");
     if (g_settings.native_etc2 && !want->textureCompressionETC2)
         WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
     WANT(vertexPipelineStoresAndAtomics);
@@ -407,6 +417,7 @@ static int create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .pNext = &f11,
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
+                                            .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,

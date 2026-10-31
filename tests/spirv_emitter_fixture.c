@@ -170,3 +170,39 @@ uint32_t* snx_test_spirv_graphics(int fragment, size_t* words) {
     spv_emit_destroy(&e);
     return code;
 }
+
+uint32_t* snx_test_spirv_sample(size_t* words) {
+    SpvEmitter e;
+    spv_emit_init(&e, 64);
+    spv_emit_shader_capability(&e);
+    uint32_t function = spv_emit_id(&e);
+    uint32_t label = spv_emit_id(&e);
+    uint32_t void_type = spv_emit_type_void(&e);
+    uint32_t u32_type = spv_emit_type_u32(&e);
+    uint32_t f32_type = spv_emit_type_f32(&e);
+    uint32_t vec2_type = spv_emit_type_vec2(&e, f32_type);
+    uint32_t vec4_type = spv_emit_type_vec4(&e, f32_type);
+    uint32_t function_type = spv_emit_type_function_void(&e, void_type);
+    uint32_t array_type = spv_emit_type_runtime_array(&e, u32_type, 4);
+    uint32_t struct_type = spv_emit_type_struct_one(&e, array_type);
+    uint32_t sampled_type, interfaces[2];
+    interfaces[0] = spv_emit_storage_buffer(&e, struct_type, 0, 0);
+    interfaces[1] = spv_emit_sampler2d(&e, f32_type, 0, 1, 0, &sampled_type);
+    uint32_t pointer_type = spv_emit_type_storage_pointer(&e, u32_type);
+    spv_emit_compute_entry_str(&e, function, "main", interfaces, 2);
+    spv_emit_local_size(&e, function, 1, 1, 1);
+    uint32_t half = spv_emit_constant_f32(&e, f32_type, 0.5f);
+    uint32_t zero = spv_emit_constant_f32(&e, f32_type, 0.0f);
+    uint32_t at = spv_emit_constant_vec2(&e, vec2_type, half, half);
+    uint32_t member = spv_emit_constant_u32(&e, u32_type, 0);
+    spv_emit_function_void(&e, void_type, function, function_type);
+    spv_emit_label(&e, label);
+    uint32_t texel = spv_emit_sample2d_lod(&e, vec4_type, sampled_type, interfaces[1], at, 0, zero);
+    uint32_t red = spv_emit_bitcast(&e, u32_type, spv_emit_vec4_extract(&e, f32_type, texel, 0));
+    spv_emit_store_u32(&e, spv_emit_storage_access_u32(&e, pointer_type, interfaces[0], member, member), red);
+    spv_emit_return(&e);
+    spv_emit_function_end(&e);
+    uint32_t* code = spv_emit_finish(&e, words);
+    spv_emit_destroy(&e);
+    return code;
+}

@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+/* The most content the runtime takes, in bytes: a CIA input, the extracted output and a RomFS view. A policy, not a
+   format limit, since only the level-3 tables' entry offsets are 32-bit. A z3ds decompression and a decrypted CIA copy
+   are not counted. */
+#define SNX_CTR_MAX_CONTENT 0x100000000ull
 typedef enum {
     SNX_CTR_EXTRACT_OK,
     SNX_CTR_EXTRACT_IO,

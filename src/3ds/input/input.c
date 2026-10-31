@@ -23,6 +23,8 @@ static struct {
     size_t presses;
     double start; /* snx_seconds() at snx_ctr_input_init */
     bool gamepads;
+    bool touch;
+    uint32_t touch_x, touch_y;
 } g_input;
 
 void snx_ctr_input_init(void) {
@@ -48,6 +50,15 @@ void snx_ctr_input_event(const union SDL_Event* event) {
                 g_input.pads[i] = NULL;
             }
 }
+/* A release keeps the last position: the HID sample keeps it too, with its validity clear */
+void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y) {
+    g_input.touch = pressed;
+    if (pressed) {
+        g_input.touch_x = x;
+        g_input.touch_y = y;
+    }
+}
+bool snx_ctr_input_touched(void) { return g_input.touch; }
 /* a stick's axis, -1 to 1 */
 static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
     float v = SDL_GetGamepadAxis(pad, which) / 32767.0f;
@@ -78,6 +89,9 @@ void snx_ctr_input_read(SnxCtrInput* input) {
         {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, SNX_CTR_PAD_RIGHT}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, SNX_CTR_PAD_DOWN},
     };
     *input = (SnxCtrInput){0};
+    input->touch = g_input.touch;
+    input->touch_x = g_input.touch_x;
+    input->touch_y = g_input.touch_y;
     /* the window's keys, which SDL keeps for a window with the focus: none without a window */
     const bool* held = SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (held) {

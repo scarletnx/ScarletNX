@@ -43,7 +43,7 @@ enum { CTRL_EVENT_WAIT_VALUE = 12 };
    IocCtrlEventUnregisterBatchParams {u64 mask, a bit per slot} */
 enum { CTRL_EVENT_SLOT = 0, CTRL_EVENT_KILL_MASK = 0 };
 /* IocGetConfigParams {char domain_str[0x41], param_str[0x41], config_str[0x101]} */
-enum { CTRL_GET_CONFIG_CONFIG_STR = 0x82, CTRL_GET_CONFIG_CONFIG_STR_BYTES = 0x101 };
+enum { CTRL_GET_CONFIG_DOMAIN_STR = 0, CTRL_GET_CONFIG_PARAM_STR = 0x41, CTRL_GET_CONFIG_NAME_BYTES = 0x41 };
 
 /* a ctrl fd's event slot a value names, of its NV_CTRL_EVENT_SLOTS (nvdrv.h) */
 static inline u32 nv_ctrl_event_slot(u32 v) { return v & (NV_CTRL_EVENT_SLOTS - 1); }

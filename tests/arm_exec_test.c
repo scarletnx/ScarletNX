@@ -41,8 +41,15 @@ int main(void) {
     }
     Svc svc = {0};
     int exit = snx_arm_exec_run(exec, &cpu, &range, 1, syscall, &svc);
-    snx_arm_exec_free(exec);
     int failures = 0;
+    /* a checked block loads without the compiler runtime's stack probe, which the JIT loader does not define */
+    static const uint32_t checked_code[] = {0xE1A00000, 0xEAFFFFFE}; /* mov r0, r0; b . */
+    size_t consumed = 0;
+    if (!snx_arm_exec_compile(exec, checked_code, 2, 0x1000, 0, SNX_ARM_PROFILE_ARM11, 1, &consumed)) {
+        fprintf(stderr, "FAIL: a checked block does not compile and load\n");
+        failures++;
+    }
+    snx_arm_exec_free(exec);
     if (!svc.seen) {
         fprintf(stderr, "FAIL: syscall not reached (exit %d)\n", exit);
         failures++;

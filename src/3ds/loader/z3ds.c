@@ -47,7 +47,7 @@ SnxCtrExtractResult snx_ctr_unzstd(const char* input, const char* output, char* 
         ctr_fail(&r, SNX_CTR_EXTRACT_FORMAT, "invalid z3ds header or sizes");
         goto done;
     }
-    if (fseeko(in, (off_t)(header_size + metadata_size), SEEK_SET)) {
+    if (snx_seek(in, header_size + metadata_size)) {
         ctr_fail(&r, SNX_CTR_EXTRACT_IO, "cannot read the z3ds stream");
         goto done;
     }

@@ -122,7 +122,9 @@ foreach(line
         "#include \"gui/icons.h\"\n"
         "    {UI_BUTTON, UI_COLOR_NONE, UI_ICONS_ROWS, 0, GUI_ICON_GAMEPAD_2},\n"
         "    {UI_BUTTON, UI_COLOR_NONE, -1, 5, GUI_ICON_LOG_OUT},\n"
-        "ui_draw_row(app, ui_beside_bar(ui_row(r[UI_ICONS_ROWS], i, 17, 2, 0, 0, s), bw), ui_tr(ui_icons_texts + ui_icons_items[item].text), ui_icons_items[item].icon, NULL,\n"
+        # a static list's rows too drawn up by its shift, scrolled between two rows, inside its area
+        "    n += lists[UI_ICONS_ROWS].shift > 0;\n    if (lists[UI_ICONS_ROWS].shift) ui_clip(app, &r[UI_ICONS_ROWS]);\n"
+        "ui_draw_row(app, ui_shifted(ui_beside_bar(ui_row(r[UI_ICONS_ROWS], i, 17, 2, 0, 0, s), bw), lists[UI_ICONS_ROWS].shift), ui_tr(ui_icons_texts + ui_icons_items[item].text), ui_icons_items[item].icon, NULL,\n"
         "    ui_draw_row(app, r[UI_ICONS_EXIT], ui_tr(ui_icons_texts + 5), ui_icons_items[UI_ICONS_EXIT].icon, NULL, ui_icons_items[UI_ICONS_EXIT].color, 0, false);\n"
         # the list's rows; its row bounds in px, times the scale
         "static const int16_t ui_main_load_list_rows[] = {\n    UI_MAIN_LOAD_LIST_LOAD_SWITCH_NSP_XCI_NRO,\n"
@@ -171,7 +173,10 @@ foreach(line
         "#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)\n#define UI_TILES_GRID__TILE_WIDTH 60\n#else\n#define UI_TILES_GRID__TILE_WIDTH 40\n#endif\n"
         "        case UI_TILES_GRID: ui_flow_start(flow, r[UI_TILES_GRID], UI_TILES_GRID__TILE_WIDTH, 30, 2, 8, 17, scale); return;\n"
         "        case UI_TILES_GRID: return ui_tiles_shown(r[UI_TILES_GRID], UI_TILES_GRID__TILE_WIDTH, 30, 2, 8, scale);\n"
-        "            if (!ui_tiles_grid_get_row_info(app, row, flow.tile_w, &info)) break;\n            if (!ui_flow_next(&flow, (info.attr & UI_ATTR_LABEL) != 0, &box)) break;\n")
+        "            if (!ui_tiles_grid_get_row_info(app, row, flow.tile_w, &info)) break;\n            if (!ui_flow_next(&flow, (info.attr & UI_ATTR_LABEL) != 0, &box)) break;\n"
+        # shifted, its lines drawn up and hit where they are drawn, inside its area
+        "        flow.area.y -= lists[UI_TILES_GRID].shift;\n        flow.area.h += lists[UI_TILES_GRID].shift;\n        if (lists[UI_TILES_GRID].shift) ui_clip(app, &r[UI_TILES_GRID]);\n"
+        "        for (i = 0; ui_in(r[UI_TILES_GRID], x, y); i++) {\n")
     string(FIND "${c}" "${line}" at)
     if(at LESS 0)
         message(FATAL_ERROR "ui.c lacks \"${line}\":\n${c}")

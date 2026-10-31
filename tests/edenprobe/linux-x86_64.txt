@@ -1,5 +1,5 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/EDENPROBE.md)
-# build: v0.5.0
+# build: v0.7.1
 # mode: audio cpu display fatal fs graphics kernel notime quick video
 astc: 4-bit weights 0 to 15 unquantize by bit replication
 astc: a 12x12 block infills a 6x6 weight grid
@@ -19,6 +19,17 @@ astc: odd 5-bit weights unquantize by bit replication
 astc: the fetching shader loads
 astc: weights coded with quints decode and unquantize
 astc: weights coded with trits decode and unquantize
+astcimage: a 2048x2048 texture of 4x4 blocks decodes all over, every 16th texel
+astcimage: a 2048x2048 texture of 8x8 blocks decodes all over, every 16th texel
+astcimage: a picture in 12x12 blocks decodes as the specification says, every texel
+astcimage: a picture in 4x4 blocks decodes as the specification says, every texel
+astcimage: a picture in 4x4 sRGB blocks decodes as the specification says, every texel
+astcimage: a picture in 6x6 blocks decodes as the specification says, every texel
+astcimage: a picture in 8x8 blocks decodes as the specification says, every texel
+astcimage: a picture in 8x8 sRGB blocks decodes as the specification says, every texel
+astcimage: graphics device opens with room for the textures
+astcimage: the 2048x2048 texture of 4x4 blocks fetched 256 times over, each texel once
+astcimage: the fetching shader loads
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
 audio: a 15 kHz voice at 1.25 times the output rate keeps the level default quality's table gives
@@ -505,6 +516,15 @@ reference: every {size} in a picture url becomes the size asked for
 reference: fcvtzs and fcvtzu's lanes the cpu suite uses
 reference: four quadrants take their own green, and each lag the green that far back
 reference: frintx and frinta's roundings the cpu suite uses
+reference: game: a frame's image has the texture, the fill and the cells where they belong
+reference: game: a quarter's hash is FNV-1a over its pixels, row by row
+reference: game: each frame's fill leaves the nearest quad, which is not the last drawn
+reference: game: frame times sum up to a mean, a 99th percentile, the longest and the hitches
+reference: game: the audio thread stops once its tone settled, or 5000 ms after the frames
+reference: game: the file thread reads the whole file in 1024 frames, each chunk's hash the pattern's
+reference: game: the timed cases carry each measure past the warm-up, in order
+reference: game: the timing notes say the warm-up, each measure and the hitches by number
+reference: game: the world steps and bounces as worked out by hand
 reference: md5: RFC 1321's "" whole and in pieces
 reference: md5: RFC 1321's "123456789012345678901234..." whole and in pieces
 reference: md5: RFC 1321's "ABCDEFGHIJKLMNOPQRSTUVWX..." whole and in pieces
@@ -624,6 +644,7 @@ reference: sqshlu's lanes and saturation the cpu suite uses
 reference: the 11-bit value 2047 is 255 either way
 reference: the 16-bit texel 0x7f80 is 127 either way to eight bits
 reference: the 16-bit texel 0x8000 is 128 either way to eight bits
+reference: the 16-bit texel 0x8101 is 128 from FP16 and 129 the other two ways
 reference: the 16-bit upper lanes hold answers a lost half cannot give
 reference: the ETC2 builders make the blocks the etc2 suite samples
 reference: the account nobody knows is one no line names
@@ -680,6 +701,16 @@ reference: the reference decodes the infill8 block as ARM's decoder does
 reference: the reference decodes the part2 block as ARM's decoder does
 reference: the reference decodes the part3 block as ARM's decoder does
 reference: the reference decodes the part4 block as ARM's decoder does
+reference: the reference decodes the picture's 12x12 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 12x12 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 4x4 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 4x4 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 4x4srgb blocks as ARM's decoder does
+reference: the reference decodes the picture's 6x6 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 6x6 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 8x8 blocks to FP16 as ARM's decoder does
+reference: the reference decodes the picture's 8x8 blocks to eight bits as ARM's decoder does
+reference: the reference decodes the picture's 8x8srgb blocks as ARM's decoder does
 reference: the reference decodes the q16 block as ARM's decoder does
 reference: the reference decodes the q32even block as ARM's decoder does
 reference: the reference decodes the q32odd block as ARM's decoder does
@@ -821,6 +852,7 @@ support: a launch goes on with a run only for the same build, the same words and
 support: a line that is not a whole journal record is not read as one
 support: a line too big for its buffer comes back whole or not at all
 support: a line written to the card is whole in the file before the next starts
+support: a list longer than the overview says there is more, whole, where there is
 support: a long group scrolls to keep the selected case on screen
 support: a name with no room for its number gives characters up instead
 support: a name with nothing usable in it still names a file
@@ -853,6 +885,44 @@ support: a time with no room on its line is left off, never cut
 support: a timed line is the untimed line with its time last
 support: all four colours of a verdict are named under the pictures
 support: and not the other way round either
+support: baseline: a case line reads back as written, quotes and all
+support: baseline: a case reported twice in a run is held by its last time
+support: baseline: a case that runs at two speeds gets one and a half its spread
+support: baseline: a case with more than 64 samples is held to its newest, and said
+support: baseline: a file cut short gets its line end before the next sample
+support: baseline: a line cut short is no case, and hides no slower run
+support: baseline: a line cut short or not this program's is no line of a sample
+support: baseline: a made-up timed suite's case that draws
+support: baseline: a made-up timed suite's case that draws nothing
+support: baseline: a made-up timed suite's case that draws twice
+support: baseline: a missing file is made, and each run adds the next sample
+support: baseline: a mode line too long for a note says where it was cut
+support: baseline: a move under the floor is none, whatever its percentage
+support: baseline: a name a file cannot carry is refused and said
+support: baseline: a name cut by the file's limit is dropped
+support: baseline: a name with a tab, quotes, a line end or past the cut is found
+support: baseline: a name's word cut just before its sign is dropped, not unknown
+support: baseline: a run that timed no case adds no sample, and says so
+support: baseline: a run that went on after the program ended is compared, not added
+support: baseline: a run with both words is held to the samples before it, then added
+support: baseline: a run with notime compares and adds nothing, and says both
+support: baseline: a run within its samples moves nothing
+support: baseline: a sample short of the cases it opened with is left out, and said
+support: baseline: a slower case, a faster one and one with no samples are told apart
+support: baseline: a timed suite's verdict pass alone is kept, at its lines' times
+support: baseline: every case compared gets its line, a same one too
+support: baseline: of two middle samples the reference is the lower
+support: baseline: samples of more than one build say how many and the first two
+support: baseline: samples that agree get the threshold, around their median
+support: baseline: the line that opens a sample reads back its number, build and cases
+support: baseline: the names stay out of the key, and the start screen keeps them
+support: baseline: the report's line for a case held to its samples
+support: baseline: the report's line that sums a comparison up
+support: baseline: the run checks take their file away again
+support: baseline: the slow speed is no move, past it is
+support: baseline: the two names among the words, and the mode line
+support: baseline: this check takes its file away again
+support: baseline: two names a file cannot tell apart are one case, and said
 support: cases the screens could not hold are counted and the overview says so
 support: every button means one thing, and everything at once still quits
 support: every case the run has reported is on record for the screens, or none is
@@ -920,12 +990,14 @@ support: the touch screen draws each target where its case aims and writes over 
 support: the two panels show two pictures and not one twice
 support: the view cycles only on a case that kept pictures
 support: the walk from the overview to a case and back lands where it should
+support: the widest mode goes into the journal whole and a launch goes on in it
 support: the word fatal, and nothing else, asks for the cases that may crash
 support: the word hang asks for the cases that hang, and only beside retry for both
 support: the word listen asks for the listening sequence and the audio family
 support: the word noprogress turns the running screen off and nothing else
 support: the word notime turns the timing passes off and says so
 support: the word stress, and nothing else, asks for the stress cases
+support: the words game and frames=<n> run the scene and set its frames, and a bad number says the one it keeps
 support: the words retry and nojournal ask for what they say and nothing else
 support: the words the start screen saves and the journal keeps read back the same
 support: there is a corner of the memory card to write in and read back

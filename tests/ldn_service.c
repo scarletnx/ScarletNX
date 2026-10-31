@@ -345,6 +345,49 @@ static void in_a_room(SvcObj* creator, SvcObj* bsd) {
     fake_room_stop(room);
 }
 
+/* a listener on 127.0.0.n's ldn port, as another console on this host holds it: 0, or the bind's -SNX_E*. Bound as
+   the service binds, or ldn_lan's sessions, left in TIME_WAIT, would keep from this a port the service still gets */
+static int take_port(SnxSocket** out, int n) {
+    SnxSockAddr a;
+    int r = snx_socket_open(out, SNX_AF_INET, SNX_SOCK_STREAM, 0);
+    if (r) {
+        *out = NULL;
+        return r;
+    }
+#ifndef _WIN32
+    {
+        int one = 1;
+        snx_socket_setsockopt(*out, SNX_SOL_SOCKET, SNX_SO_REUSEADDR, &one, sizeof one);
+    }
+#endif
+    memset(&a, 0, sizeof a);
+    a.family = SNX_AF_INET;
+    a.port = (u16)(((SNX_LDN_PORT & 0xFF) << 8) | (SNX_LDN_PORT >> 8)); /* network order */
+    a.addr[0] = 127;
+    a.addr[3] = (u8)n;
+    r = snx_socket_bind(*out, &a);
+    if (!r) r = snx_socket_listen(*out, 1);
+    if (r) {
+        snx_socket_unref(*out);
+        *out = NULL;
+    }
+    return r;
+}
+/* the ldn port of every loopback address this host has, held here (on a host with 127.0.0.1 alone, as macOS, the
+   rest are refused to the service as to this). A port another process holds is asked again for up to two seconds,
+   since it may let it go between this and the service: 1 when every one is held here or nowhere to be had */
+static int take_ports(SnxSocket* taken[254]) {
+    int i, tries, busy = 1;
+    for (i = 0; i < 254; i++) taken[i] = NULL;
+    for (tries = 0; busy && tries < 200; tries++) {
+        busy = 0;
+        for (i = 0; i < 254; i++)
+            if (!taken[i] && take_port(&taken[i], i + 1) == -SNX_EADDRINUSE) busy = 1;
+        if (busy) sleep_ms(10);
+    }
+    return !busy;
+}
+
 
 int main(void) {
     hle_init();
@@ -393,23 +436,69 @@ int main(void) {
     ev_b = handle_event(r.c.out_copy[0]);
 
     /* ldn=off is a console with local wireless disabled, airplane_mode one in airplane mode, and ldn=room one out of
-       its room: none initializes, each with its result */
+       its room: none initializes, each with its result, and GetState says Error after it */
     g_opt_ldn = SNX_OPT_LDN_OFF;
     request(&r, 400);
     r.c.has_pid = 1;
-    CHECK(call(a, &r) == LDN_RC(22) && get_state(a) == 0);
+    CHECK(call(a, &r) == LDN_RC(22) && get_state(a) == 6);
     g_opt_ldn = SNX_OPT_LDN_LAN;
     g_settings.airplane_mode = 1;
     request(&r, 400);
     r.c.has_pid = 1;
-    CHECK(call(a, &r) == LDN_RC(23) && get_state(a) == 0);
+    CHECK(call(a, &r) == LDN_RC(23) && get_state(a) == 6);
     g_settings.airplane_mode = 0;
     g_opt_ldn = SNX_OPT_LDN_ROOM;
     request(&r, 400);
     r.c.has_pid = 1;
-    CHECK(call(a, &r) == LDN_RC(33) && get_state(a) == 0);
+    CHECK(call(a, &r) == LDN_RC(33) && get_state(a) == 6);
     g_opt_ldn = SNX_OPT_LDN_LAN;
     CHECK(!ev_a->signaled);
+
+    /* no address of its own: Initialize refused, and GetState says Error until an Initialize is taken, Finalize or
+       not, as Eden and Ryujinx answer a console with no wireless to give; each refusal above on a service of its own */
+    {
+        static const struct {
+            int ldn, airplane;
+            u32 rc;
+        } refusals[3] = {
+            {SNX_OPT_LDN_OFF, 0, LDN_RC(22)}, {SNX_OPT_LDN_LAN, 1, LDN_RC(23)}, {SNX_OPT_LDN_ROOM, 0, LDN_RC(33)}};
+        SnxSocket* taken[254];
+        SvcObj* c;
+        int i;
+        for (i = 0; i < 3; i++) {
+            g_opt_ldn = refusals[i].ldn;
+            g_settings.airplane_mode = refusals[i].airplane;
+            request(&r, 0);
+            CHECK(call(creator, &r) == 0 && r.c.nout_objs == 1);
+            c = r.c.out_objs[0];
+            request(&r, 400);
+            r.c.has_pid = 1;
+            CHECK(call(c, &r) == refusals[i].rc && get_state(c) == 6);
+            svcobj_unref(c);
+        }
+        g_opt_ldn = SNX_OPT_LDN_LAN;
+        g_settings.airplane_mode = 0;
+        g_settings.network = 0;
+        request(&r, 0);
+        CHECK(call(creator, &r) == 0 && r.c.nout_objs == 1);
+        c = r.c.out_objs[0];
+        CHECK(get_state(c) == 0);
+        if (!take_ports(taken)) {
+            printf("ldn_service: skipped the refused Initialize: another process kept an ldn port two seconds\n");
+        } else {
+            request(&r, 400);
+            r.c.has_pid = 1;
+            CHECK(call(c, &r) == LDN_RC(33) && get_state(c) == 6);
+            CHECK(simple(c, 200) == LDN_RC(32) && network_info(c, &info) == LDN_RC(32));
+            CHECK(simple(c, 401) == 0 && get_state(c) == 6);
+        }
+        for (i = 0; i < 254; i++) snx_socket_unref(taken[i]);
+        request(&r, 400);
+        r.c.has_pid = 1;
+        CHECK(call(c, &r) == 0 && get_state(c) == 1);
+        CHECK(simple(c, 401) == 0 && get_state(c) == 0);
+        svcobj_unref(c);
+    }
 
     /* Initialize: each console gets a loopback address of its own, offline */
     g_settings.network = 0;

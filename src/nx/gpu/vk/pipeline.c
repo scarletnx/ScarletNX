@@ -707,7 +707,7 @@ static struct {
     int loaded;      /* the reading thread is done with the main file (lock) */
     int merged;      /* what it made is in g_shh and g_pipeh (vk_lock) */
     VkSh *sh, *sh_tail; /* its shaders, in the file's order, linked by next until merged */
-    Pipe* pipes;        /* its pipelines, linked by next until merged */
+    Pipe* pipes[PIPEH]; /* its pipelines by key hash, linked by next until merged */
     u32 nsh, npipe;
     /* The shader programs the game ships (pf_ship_pass), translated before a draw asks for them, in a file of their
        own (ship, <game>.vkshipped) that is read as they are used: a game ships thousands, and a session uses a few of
@@ -1430,7 +1430,8 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
         return;
     }
     p->h = vk_hash(&p->k, sizeof p->k);
-    for (Pipe* q = g_pf.pipes; q; q = q->next) /* the file has it twice */
+    u32 bucket = (u32)(p->h ^ (p->h >> 32)) & (PIPEH - 1);
+    for (Pipe* q = g_pf.pipes[bucket]; q; q = q->next) /* the file has it twice */
         if (q->h == p->h && !memcmp(&q->k, &p->k, sizeof p->k)) {
             free(p);
             return;
@@ -1447,8 +1448,8 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
     }
     pipe_queue(p, 2);
     pm_unlock(&g_pj_lock);
-    p->next = g_pf.pipes; /* the workers don't use next */
-    g_pf.pipes = p;
+    p->next = g_pf.pipes[bucket]; /* the workers don't use next */
+    g_pf.pipes[bucket] = p;
     g_pf.npipe++;
 }
 
@@ -1507,9 +1508,9 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                      (unsigned)sizeof(PfSource), (unsigned)sizeof(PfPipe), (unsigned)sizeof(ShXfb));
     *guest = g > 0 && (size_t)g < n ? (size_t)g : 0;
     if (*guest)
-        snprintf(out + *guest, n - *guest, " %s%s driver=%u api=%u uuid=%s ftz=%d sizes=%u,%u vertex_bounds=%d", snx_build_info(), exe,
-                 d->driverVersion, d->apiVersion, uuid, g_vk_ftz, (unsigned)sizeof(ShaderInfo),
-                 (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
+        snprintf(out + *guest, n - *guest, " %s%s driver=%u api=%u uuid=%s ftz=%d quad=%d sizes=%u,%u vertex_bounds=%d",
+                 snx_build_info(), exe, d->driverVersion, d->apiVersion, uuid, g_vk_ftz, g_shader_quad,
+                 (unsigned)sizeof(ShaderInfo), (unsigned)sizeof(PfShader), g_vk.has_vertex_robustness2);
 }
 
 /* ---- the shaders of the programs the game ships (gpu/shipped_pass.c finds them), translated before a draw asks */
@@ -1921,12 +1922,12 @@ static void pf_merge(void) {
         g_shh[s->hash & 1023] = s;
     }
     g_pf.sh_tail = NULL;
-    while ((p = g_pf.pipes) != NULL) {
-        u32 b = (u32)(p->h ^ (p->h >> 32)) & (PIPEH - 1);
-        g_pf.pipes = p->next;
-        p->next = g_pipeh[b];
-        g_pipeh[b] = p;
-    }
+    for (u32 b = 0; b < PIPEH; b++)
+        while ((p = g_pf.pipes[b]) != NULL) {
+            g_pf.pipes[b] = p->next;
+            p->next = g_pipeh[b];
+            g_pipeh[b] = p;
+        }
 }
 void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left) {
     *made = __atomic_load_n(&g_pf.made, __ATOMIC_RELAXED);

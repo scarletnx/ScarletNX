@@ -473,26 +473,14 @@ static const char* base_name(const char* path) {
 
 /* the unit cache's line, then the folder held to its limit */
 static void report_units(const Queue* q, const SnxLlvmBuild* build, int quiet) {
-    SnxUnitTrim trim;
     SnxU64 bytes = 0;
     size_t i, reused = 0;
-    char error[512];
     for (i = 0; i < q->count; ++i)
         if (q->units[i].reused) {
             ++reused;
             bytes += q->units[i].size;
         }
-    if (!quiet)
-        printf("unit cache: %zu of %zu units reused (%.1f MB) from %s\n", reused, q->count, (double)bytes / 1000000.0,
-               build->unit_cache);
-    if (!build->unit_cache_limit) return;
-    if (snx_unit_cache_trim(build->unit_cache, build->unit_cache_limit, &trim, error, sizeof error))
-        snx_error("unit cache: %s: not cut to its %.1f MB limit", error, (double)build->unit_cache_limit / 1000000.0);
-    else if (trim.removed && !quiet)
-        printf("unit cache: %zu files held %.1f MB, over the limit of %.1f MB: the %zu oldest removed (%.1f MB), %.1f "
-               "MB left\n",
-               trim.files, (double)trim.held / 1000000.0, (double)build->unit_cache_limit / 1000000.0, trim.removed,
-               (double)trim.removed_bytes / 1000000.0, (double)(trim.held - trim.removed_bytes) / 1000000.0);
+    snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q->count, bytes, quiet);
 }
 
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {

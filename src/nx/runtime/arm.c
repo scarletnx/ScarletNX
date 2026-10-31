@@ -15,6 +15,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/cpu/arm/exec.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -38,6 +39,7 @@ static int g_nextra, g_capextra;
 const SnxModule* arm_module(const SnxArmModule* m) {
     if (!m || m->abi != SNX_ARM_MODULE_ABI) return NULL;
     g_arm_mod = m;
+    *m->poll_offset = (i64)(offsetof(KThread, cpu) + offsetof(CPU, poll)) - (i64)offsetof(KThread, arm);
     g_view.abi = SNX_ABI;
     g_view.nmods = m->nmods;
     g_view.mods = m->mods;

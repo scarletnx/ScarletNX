@@ -52,7 +52,8 @@ enum {
     NV_RESULT_BAD_PARAMETER = 0x4,
     NV_RESULT_TIMEOUT = 0x5,
     NV_RESULT_INSUFFICIENT_MEMORY = 0x6,
-    NV_RESULT_INVALID_STATE = 0x8,          /* an fd that isn't open (Eden's nvdrv.cpp answers it for a bad fd) */
-    NV_RESULT_FILE_OPERATION_FAILED = 0x30003 /* Open with every fd taken */
+    NV_RESULT_INVALID_STATE = 0x8,             /* an fd that isn't open (Eden's nvdrv.cpp answers it for a bad fd) */
+    NV_RESULT_FILE_OPERATION_FAILED = 0x30003, /* Open with every fd taken */
+    NV_RESULT_CONFIG_VAR_NOT_FOUND = 0x30006   /* GET_CONFIG: a production console has none of the settings */
 };
 #endif

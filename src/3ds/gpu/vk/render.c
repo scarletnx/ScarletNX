@@ -15,6 +15,7 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -610,7 +611,7 @@ static bool target_move(Target* t, bool store, bool color, bool depth) {
     VkDeviceSize pixels = (VkDeviceSize)k->width * k->height;
     SnxCtrVkWindow w[3];
     uint32_t inside;
-    if (store && &g.targets[g.open] == t) end_rendering();
+    if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
         uint32_t push[6] = {inside, k->width, k->height, k->color_format, k->flip, store};
@@ -893,6 +894,8 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f)
         if (!snx_ctr_vk_window(pa[f], bytes, &windows[f], &inside[f])) return SNX_CTR_PICA_OK; /* outside RAM */
     Texture* t = texture_slot(width, height, levels, cube ? 6 : 1);
+    /* the image's layout transition and the decode below cannot be recorded inside a target's pass */
+    end_rendering();
     if (!texture_image(t, width, height, levels, cube ? 6 : 1)) return SNX_CTR_PICA_UNSUPPORTED;
     memcpy(t->pa, pa, sizeof pa);
     t->format = format;
@@ -902,7 +905,6 @@ static SnxCtrPicaResult texture(const SnxCtrPica* p, unsigned unit, unsigned typ
     t->bytes = bytes;
     t->cube = cube;
     t->used = serial;
-    end_rendering();
     VkCommandBuffer cb = snx_ctr_vk_commands();
     snx_ctr_vk_barrier(cb);
     for (unsigned f = 0; f < (cube ? 6u : 1u); ++f) {
@@ -1335,35 +1337,38 @@ static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* f
     return SNX_CTR_PICA_OK;
 }
 
-/* one draw: array (indexed or not) or the immediate vertices kept */
-/* What an array draw reads of memory, watched until its submission is done (a CPU write waits for it): the index
-   buffer, and each loader's binding up to the highest vertex drawn (read from the indices) */
-static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t index_pa, bool indexed, bool wide,
-                       uint32_t count, uint32_t first) {
-    uint64_t last = (uint64_t)first + count - 1;
-    if (indexed) {
-        uint32_t bytes = count * (wide ? 2u : 1u), top = 0;
-        unsigned char chunk[4096];
-        for (uint32_t at = 0; at < bytes; at += sizeof chunk) {
-            uint32_t n = bytes - at < sizeof chunk ? bytes - at : (uint32_t)sizeof chunk;
-            if (snx_ctr_phys_read(snx_ctr_vk()->memory, index_pa + at, chunk, n) != SNX_CTR_MEM_OK) {
-                top = 0xffff; /* unreadable: every index there may be */
-                break;
-            }
-            for (uint32_t i = 0; i < n; i += wide ? 2u : 1u) {
-                uint32_t index = wide ? (uint32_t)chunk[i] | (uint32_t)chunk[i + 1] << 8 : chunk[i];
-                if (index > top) top = index;
-            }
+/* Reading indices can wait for a recording that wrote their memory, so scan them before preparing the draw: a scan
+   inside it would submit the recording half-recorded. Returns the highest index drawn, or 0xffff when they cannot
+   be read. */
+static uint32_t draw_index_max(uint32_t index_pa, bool wide, uint32_t bytes) {
+    uint32_t top = 0;
+    unsigned char chunk[4096];
+    for (uint32_t at = 0; at < bytes; at += sizeof chunk) {
+        uint32_t n = bytes - at < sizeof chunk ? bytes - at : (uint32_t)sizeof chunk;
+        if (snx_ctr_phys_read(snx_ctr_vk()->memory, index_pa + at, chunk, n) != SNX_CTR_MEM_OK) {
+            top = 0xffff; /* unreadable: every index there may be */
+            break;
         }
-        last = top;
-        gpu_uses(index_pa, bytes, false);
+        for (uint32_t i = 0; i < n; i += wide ? 2u : 1u) {
+            uint32_t index = wide ? snx_ld_le16(chunk + i) : chunk[i];
+            if (index > top) top = index;
+        }
     }
+    return top;
+}
+/* What an array draw reads of memory, watched until its submission is done (a CPU write waits for it): the index
+   buffer, and each loader's binding up to the highest vertex drawn (scanned before the draw is recorded) */
+static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t index_pa, uint32_t index_bytes,
+                       uint32_t count, uint32_t first, uint32_t index_max) {
+    uint64_t last = index_bytes ? index_max : (uint64_t)first + count - 1;
+    if (index_bytes) gpu_uses(index_pa, index_bytes, false);
     for (unsigned n = 0; n < 12; ++n)
         if (k->binding_mask >> n & 1) {
             uint64_t size = (uint64_t)k->stride[n] * (last + 1);
             gpu_uses(binding_pa[n], size < 64 ? 64 : size, false);
         }
 }
+/* one draw: array (indexed or not) or the immediate vertices kept */
 static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     const uint32_t* r = p->regs;
     if (r[SNX_PICA_USE_GS] & 3) return stop(p, "geometry shaders are not ported yet");
@@ -1437,7 +1442,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     if (!pipe) return stop(p, "the device refuses a draw's pipeline");
     /* the vertices: an index buffer, the loaders' bindings, or the immediate vertices */
     uint32_t count = immediate ? (uint32_t)g.immediate_count : r[NUM_VERTICES];
-    uint32_t index_pa = 0;
+    uint32_t index_pa = 0, index_bytes = 0, index_max = 0;
     bool wide = r[INDEX_ARRAY] >> 31;
     VkBuffer buffers[13];
     VkDeviceSize offsets[13];
@@ -1450,7 +1455,12 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
         if (!snx_ctr_vk_ram(index_pa, 1, &at)) return SNX_CTR_PICA_OK;
         if (indexed && ((!wide && !snx_ctr_vk()->index8) || (wide && index_pa % 2)))
             return stop(p, wide ? "16-bit indices at an odd address" : "8-bit indices without VK_EXT_index_type_uint8");
-        if (indexed && !snx_ctr_vk_ram(index_pa, count * (wide ? 2 : 1), &at)) return SNX_CTR_PICA_OK;
+        if (indexed) {
+            uint64_t bytes = (uint64_t)count * (wide ? 2u : 1u);
+            if (bytes > UINT32_MAX || !snx_ctr_vk_ram(index_pa, (uint32_t)bytes, &at)) return SNX_CTR_PICA_OK;
+            index_bytes = (uint32_t)bytes;
+            index_max = draw_index_max(index_pa, wide, index_bytes);
+        }
         for (unsigned n = 0; n < 12; ++n)
             if (k.binding_mask >> n & 1) {
                 const SnxCtrVkRam* ram = snx_ctr_vk_ram(binding_pa[n], 1, &offsets[n]);
@@ -1503,7 +1513,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 2, sets, 0, NULL);
     for (uint32_t b = 0; b < 13; ++b)
         if (k.binding_mask >> b & 1) vkCmdBindVertexBuffers(cb, b, 1, &buffers[b], &offsets[b]);
-    if (!immediate) draw_reads(&k, binding_pa, index_pa, indexed, wide, count, r[VERTEX_OFFSET]);
+    if (!immediate) draw_reads(&k, binding_pa, index_pa, index_bytes, count, r[VERTEX_OFFSET], index_max);
     if (indexed && !immediate) {
         VkDeviceSize at;
         const SnxCtrVkRam* ram = snx_ctr_vk_ram(index_pa, 1, &at);

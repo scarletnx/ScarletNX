@@ -17,6 +17,7 @@
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/recompiler/llvm/ir_fp.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/aarch64/helpers/fp_rsqrt_table.h"
 
 typedef LLVMValueRef V;
 #define B ir->b
@@ -444,9 +445,72 @@ static V minmax(SnxIr* ir, unsigned width, unsigned minimum, unsigned numeric, V
     return map(ir, &o, n, m, NULL, width);
 }
 
+/* The normal path supplies a bounded index for each lane. AVX2 has a native 32-bit gather.
+   Other hosts retain the exact helper path until their lowering is validated. */
+static V rsqrt_table(SnxIr* ir, V index) {
+    LLVMTypeRef table_type = LLVMArrayType(ir->t_i32, 384);
+    V table = LLVMGetNamedGlobal(ir->mod, "snx.frsqrte.table");
+    if (!table) {
+        V entries[384];
+        for (unsigned i = 0; i < 384; i++) entries[i] = ir_i32(ir, fp_rsqrt_estimates[i] + 256u);
+        table = LLVMAddGlobal(ir->mod, table_type, "snx.frsqrte.table");
+        LLVMSetInitializer(table, LLVMConstArray(ir->t_i32, entries, 384));
+        LLVMSetGlobalConstant(table, 1);
+        LLVMSetLinkage(table, LLVMPrivateLinkage);
+        LLVMSetUnnamedAddress(table, LLVMGlobalUnnamedAddr);
+        LLVMSetAlignment(table, 4);
+    }
+    V offsets[] = {ir_i32(ir, 0), index};
+    V pointers = LLVMBuildInBoundsGEP2(B, table_type, table, offsets, 2, "");
+    unsigned lanes = ir_vec_count(index);
+    LLVMTypeRef type = LLVMTypeOf(index), mask_type = LLVMVectorType(LLVMInt1TypeInContext(ir->ctx), lanes);
+    LLVMTypeRef overloads[] = {type, LLVMTypeOf(pointers)};
+    unsigned id = LLVMLookupIntrinsicID("llvm.masked.gather", sizeof "llvm.masked.gather" - 1);
+    V function = LLVMGetIntrinsicDeclaration(ir->mod, id, overloads, 2);
+    LLVMTypeRef signature = LLVMGlobalGetValueType(function);
+    V args[4] = {pointers};
+    unsigned n = 1;
+    /* LLVM 22 removed the alignment operand. Ask the installed LLVM for its signature. */
+    if (LLVMCountParamTypes(signature) == 4) args[n++] = ir_i32(ir, 4);
+    args[n++] = ir_vec_k(ir, mask_type, 1);
+    args[n++] = LLVMGetUndef(type);
+    return LLVMBuildCall2(B, signature, function, args, n, "");
+}
+
+/* Positive normal f32 estimates use only their raw exponent and the top fraction bits. No rounding or exception
+   occurs, so FPCR does not affect this path and sticky FPSR is unchanged. */
+static V rsqrt_normal(SnxIr* ir, V a) {
+    V exponent = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, 23), ""), ir_vec_like(ir, a, 255), "");
+    V fraction = LLVMBuildAnd(B, a, ir_vec_like(ir, a, 0x7fffff), "");
+    V odd = LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, exponent, ir_vec_like(ir, a, 1), ""),
+                        ir_vec_like(ir, a, 0), "");
+    V low = LLVMBuildOr(B, LLVMBuildLShr(B, fraction, ir_vec_like(ir, a, 16), ""), ir_vec_like(ir, a, 128), "");
+    V high = LLVMBuildOr(B, LLVMBuildLShr(B, fraction, ir_vec_like(ir, a, 15), ""), ir_vec_like(ir, a, 256), "");
+    V index = LLVMBuildSub(B, LLVMBuildSelect(B, odd, low, high, ""), ir_vec_like(ir, a, 128), "");
+    V estimate = LLVMBuildAnd(B, rsqrt_table(ir, index), ir_vec_like(ir, a, 255), "");
+    V result_exp = LLVMBuildLShr(B, LLVMBuildSub(B, ir_vec_like(ir, a, 380), exponent, ""),
+                                ir_vec_like(ir, a, 1), "");
+    return LLVMBuildOr(B, LLVMBuildShl(B, result_exp, ir_vec_like(ir, a, 23), ""),
+                       LLVMBuildShl(B, estimate, ir_vec_like(ir, a, 15), ""), "");
+}
+
 static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
     LaneOp o = op_simple(H_UNARY, width);
     o.op = op;
+    if (op == SNX_FP_RSQRTE && width == 32 && ir_vec_count(a) > 1 && ir->features->x86 && ir->features->avx2) {
+        V offset = LLVMBuildSub(B, a, ir_vec_like(ir, a, 0x00800000), "");
+        V ok = ir_vec_all(ir, LLVMBuildICmp(B, LLVMIntULT, offset, ir_vec_like(ir, a, 0x7f000000), ""));
+        LLVMBasicBlockRef on = ir_block(ir, "vfp_fast"), off = ir_block(ir, "vfp_slow");
+        Split s;
+        s.join = ir_block(ir, "vfp_join");
+        ir_likely(ir, LLVMBuildCondBr(B, ok, on, off));
+        LLVMPositionBuilderAtEnd(B, on);
+        s.fast = rsqrt_normal(ir, a);
+        s.fast_end = LLVMGetInsertBlock(B);
+        LLVMBuildBr(B, s.join);
+        LLVMPositionBuilderAtEnd(B, off);
+        return split_end(ir, &s, map(ir, &o, a, NULL, NULL, width));
+    }
     if (op == SNX_FP_SQRT && width != 16 && host_native(ir)) {
         Fast f;
         Split s;

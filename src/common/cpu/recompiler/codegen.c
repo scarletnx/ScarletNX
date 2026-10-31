@@ -254,11 +254,13 @@ static int sorted_has(const Addresses* sorted, SnxU64 address) {
 
 /* The function at start: what its branches reach. BL targets, and the addresses its code takes (taken_address) outside
    the function, go to work; those it takes inside it, the base of a jump table for one, to inner, as leaders */
-static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, Addresses* work, Addresses* inner) {
+static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, Addresses* work, Addresses* inner,
+                          size_t limit) {
     Addresses result = {0}, todo = {0}, taken = {0};
     AddressSet seen = {0};
     push(&todo, start);
-    while (todo.count && seen.count <= 200000) {
+    if (!limit) limit = 200001;
+    while (todo.count && seen.count < limit) {
         SnxU64 address = todo.values[--todo.count];
         for (;;) {
             SnxU32 word;
@@ -287,7 +289,7 @@ static Addresses explore(SnxCodegen* codegen, SnxU64 start, const Known* known, 
                 if (target && !(target & 3) && snx_codegen_module(codegen, target)) push(&taken, target);
             }
             address += 4;
-            if (seen.count > 200000) break;
+            if (seen.count >= limit) break;
         }
     }
     if (result.count) qsort(result.values, result.count, sizeof(*result.values), snx_compare_u64);
@@ -435,7 +437,7 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
             set_add(&extra, a);
             continue;
         }
-        Addresses found = explore(codegen, a, &stop, &work, &inner);
+        Addresses found = explore(codegen, a, &stop, &work, &inner, 0);
         if (found.count) {
             explored_add(codegen, explored, &found);
             add_function(codegen, a, 0, &found);
@@ -490,7 +492,7 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
                 set_add(&extra, a);
                 continue;
             }
-            Addresses found = explore(codegen, a, &stop, NULL, NULL);
+            Addresses found = explore(codegen, a, &stop, NULL, NULL, 0);
             if (found.count) {
                 explored_add(codegen, explored, &found);
                 add_function(codegen, a, 0, &found);
@@ -521,7 +523,8 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
 }
 
 int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* roots,
-                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget, SnxU64 features) {
+                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget, SnxU64 features,
+                         size_t region_limit, size_t overflow_limit) {
     *codegen = (SnxCodegen){0};
     codegen->features = features;
     codegen->modules = (SnxCodeImage*)snx_alloc((module_count ? module_count : 1) * sizeof(*modules));
@@ -551,7 +554,17 @@ int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_
             if (total >= budget) break;
             if (is_known(&stop, a) || !snx_codegen_module(codegen, a)) continue;
         }
-        Addresses found = explore(codegen, a, &stop, &work, &inner);
+        size_t pending = work.count, interiors = inner.count;
+        Addresses found = explore(codegen, a, &stop, &work, &inner,
+                                   region_limit + (overflow_limit && region_limit < SIZE_MAX));
+        if (overflow_limit && found.count > region_limit) {
+            /* Exploration only appends to these lists. Discard the oversized graph's speculative work before
+               finding its first bounded region; its external branches retain the normal dispatch semantics. */
+            free(found.values);
+            work.count = pending;
+            inner.count = interiors;
+            found = explore(codegen, a, &stop, &work, &inner, overflow_limit);
+        }
         if (found.count) {
             total += found.count;
             for (size_t i = 0; i < found.count; ++i) set_add(&inside, found.values[i]);
@@ -612,7 +625,7 @@ int snx_codegen_analyze_from(SnxCodegen* codegen, const SnxCodeImage* modules, s
         if ((a & 3) || !set_add(&seen, a) || set_has(&known, a) || !snx_codegen_module(codegen, a)) continue;
         if (next >= hint_count && skip && skip(context, a)) continue;
         Addresses calls = {0};
-        Addresses found = explore(codegen, a, &stop, &calls, NULL);
+        Addresses found = explore(codegen, a, &stop, &calls, NULL, 0);
         if (found.count) {
             total += found.count;
             set_add(&known, a);

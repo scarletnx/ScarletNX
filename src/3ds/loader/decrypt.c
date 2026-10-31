@@ -245,7 +245,7 @@ static bool copy_span(CtrReader* r, FILE* out, uint64_t at, uint64_t size, unsig
 }
 static bool pad64(CtrReader* r, FILE* out) {
     static const unsigned char zero[64];
-    long at = ftell(out);
+    int64_t at = snx_tell(out);
     size_t n = at < 0 ? 0 : (size_t)(snx_align_up((uint64_t)at, 64) - (uint64_t)at);
     return (at >= 0 && fwrite(zero, 1, n, out) == n) ||
            ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot write the decrypted game");
@@ -539,7 +539,7 @@ static bool decrypt(CtrReader* r, const char* keys_path, const char* output, boo
         if (r->result == SNX_CTR_EXTRACT_OK) ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "CIA content sizes do not add up");
         goto done;
     }
-    if (fseek(out, (long)tmd_at, SEEK_SET) || fwrite(tmd, 1, (size_t)tmd_size, out) != tmd_size || fclose(out)) {
+    if (snx_seek(out, tmd_at) || fwrite(tmd, 1, (size_t)tmd_size, out) != tmd_size || fclose(out)) {
         out = NULL;
         ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot write the decrypted game");
         goto done;

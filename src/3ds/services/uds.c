@@ -203,6 +203,8 @@ static void address(SnxSockAddr* a, const uint8_t ip[4]) {
     memcpy(a->addr, ip, 4);
 }
 static int send_message(struct SnxCtrUds* u, unsigned type, const uint8_t* ip, const void* data, size_t size) {
+    /* lan hosts a network without a relay socket: no datagram leaves it. */
+    if (!u->socket) return 0;
     uint8_t wire[2048] = {'S', 'N', 'U', 'D', 1, 0, 0, 0};
     if (size > sizeof wire - 16) return 0;
     wire[5] = (uint8_t)type;
@@ -593,9 +595,10 @@ static size_t beacon(const Network* net, const Node* nodes, uint8_t out[1200]) {
 }
 static void initialize(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, (c->in[0] >> 16) == 0x1b ? 12 : 11, 2)) return;
-    /* This backend implements room transport only. LAN must not silently join
-       an internet relay. */
-    if (g_settings.airplane_mode || strcmp(g_settings.local_wireless, "room")) {
+    /* lan initializes without a relay socket. Off, airplane mode and unknown values refuse. */
+    const char* wireless = g_settings.local_wireless;
+    int room_wireless = !strcmp(wireless, "room"), lan_wireless = !strcmp(wireless, "lan");
+    if (g_settings.airplane_mode || (!room_wireless && !lan_wireless)) {
         reply(c, 1, 0, UDS_NETWORK);
         return;
     }
@@ -622,7 +625,7 @@ static void initialize(SnxCtrIpc* c) {
         reply(c, 1, 0, UDS_NETWORK);
         return;
     }
-    if (!event_new(c->process, &u->event) || !room_open(c->process)) {
+    if (!event_new(c->process, &u->event) || (room_wireless && !room_open(c->process))) {
         snx_ctr_uds_close(c->process);
         reply(c, 1, 0, UDS_NETWORK);
         return;

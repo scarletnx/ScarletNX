@@ -43,7 +43,7 @@ if(SNX_TEST_SANITIZERS)
         snx_xxhash snx_vk_common
         snx-logscan
         # the recompiler and its backends
-        snx_llvm snx_arm_llvm scarletnx-recompiler scarletnx-recompiler-shared
+        snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
@@ -151,12 +151,49 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-kernel 11)
     target_link_libraries(snx-test-3ds-kernel PRIVATE snx_ctr_process)
     add_test(NAME 3ds_kernel COMMAND snx-test-3ds-kernel)
+    add_executable(snx-test-3ds-vfp 3ds_vfp.c)
+    snx_test_target(snx-test-3ds-vfp 11)
+    target_link_libraries(snx-test-3ds-vfp PRIVATE snx_ctr_process snx_llvm)
+    add_test(NAME 3ds_vfp COMMAND snx-test-3ds-vfp)
     foreach(test services threads)
         add_executable(snx-test-3ds-${test} 3ds_${test}.c)
         snx_test_target(snx-test-3ds-${test} 11)
         target_link_libraries(snx-test-3ds-${test} PRIVATE snx_ctr_process)
         add_test(NAME 3ds_${test} COMMAND snx-test-3ds-${test})
     endforeach()
+    add_executable(snx-test-3ds-cro 3ds_cro.c support/3ds_cro.c)
+    snx_test_target(snx-test-3ds-cro 11)
+    target_link_libraries(snx-test-3ds-cro PRIVATE snx_ctr_process)
+    foreach(case fix handle shutdown overlap bss bounds target batch rollback data reuse crs-internal bss-source
+            data-source lifetime link late-failure metadata fix0 fix1 fix2 fix3 no-code relative-data private-data
+            pid-descriptor segment-overlap file-size name static-bound static-no-jit indexed anonymous copied-process
+            old-command crs-empty-segment crs-repeat-segment crs-unmapped-segment crs-unmapped-relocation same-buffer
+            same-buffer-zero-data code-range)
+        add_test(NAME 3ds_cro_${case} COMMAND snx-test-3ds-cro ${case})
+        add_test(NAME 3ds_cro_new_${case} COMMAND snx-test-3ds-cro ${case} new)
+    endforeach()
+    add_executable(snx-test-3ds-cro-boundaries 3ds_cro_boundaries.c support/3ds_cro.c)
+    snx_test_target(snx-test-3ds-cro-boundaries 11)
+    target_link_libraries(snx-test-3ds-cro-boundaries PRIVATE snx_ctr_process)
+    foreach(case name-62 name-63 name-64 name-254 name-255 name-256 module-256 missing-null-256 exit-shim batch-100000
+            batch-100001 exports-100000 exports-100001)
+        foreach(command 4 9)
+            foreach(model old new)
+                add_test(NAME 3ds_cro_boundary_${case}_${command}_${model}
+                    COMMAND snx-test-3ds-cro-boundaries ${case} ${command} ${model})
+            endforeach()
+        endforeach()
+    endforeach()
+    if(TARGET snx_llvm)
+        add_executable(snx-test-3ds-cro-jit 3ds_cro_jit.c support/3ds_cro.c)
+        snx_test_target(snx-test-3ds-cro-jit 11)
+        target_link_libraries(snx-test-3ds-cro-jit PRIVATE snx_ctr_program)
+        foreach(case arm thumb static static-window cycles cycles-thumb svc-unload)
+            add_test(NAME 3ds_cro_jit_${case} COMMAND snx-test-3ds-cro-jit ${case})
+            add_test(NAME 3ds_cro_jit_new_${case} COMMAND snx-test-3ds-cro-jit ${case} new)
+            set_tests_properties(3ds_cro_jit_${case} 3ds_cro_jit_new_${case} PROPERTIES SKIP_RETURN_CODE 77)
+        endforeach()
+    endif()
     add_executable(snx-test-3ds-ipc 3ds_ipc.c)
     snx_test_target(snx-test-3ds-ipc 11)
     target_link_libraries(snx-test-3ds-ipc PRIVATE snx_ctr_process)
@@ -165,6 +202,12 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-hid 11)
     target_link_libraries(snx-test-3ds-hid PRIVATE snx_ctr_process)
     add_test(NAME 3ds_hid COMMAND snx-test-3ds-hid)
+    # the pointer's touch on the window's bottom screen, from the presenter to hid:USER's samples
+    add_executable(snx-test-3ds-mouse-touch 3ds_mouse_touch.c)
+    snx_test_target(snx-test-3ds-mouse-touch 11)
+    target_link_libraries(snx-test-3ds-mouse-touch PRIVATE snx_ctr_process)
+    add_test(NAME 3ds_mouse_touch COMMAND snx-test-3ds-mouse-touch)
+    set_tests_properties(3ds_mouse_touch PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(snx-test-ctr-swipc ctr_swipc.c)
     if(NOT WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
         snx_test_target(snx-test-ctr-swipc 99)
@@ -189,6 +232,32 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-blz 11)
     target_link_libraries(snx-test-3ds-blz PRIVATE snx_ctr_loader)
     add_test(NAME 3ds_blz COMMAND snx-test-3ds-blz)
+    # snx_seek and snx_tell on a sparse file, at an offset past 2 GiB
+    add_executable(snx-test-3ds-file-position 3ds_file_position.c support/sparse_file.c)
+    snx_test_target(snx-test-3ds-file-position 11)
+    target_link_libraries(snx-test-3ds-file-position PRIVATE snx_ctr_loader)
+    add_test(NAME 3ds_file_position COMMAND snx-test-3ds-file-position)
+    set_tests_properties(3ds_file_position PROPERTIES SKIP_RETURN_CODE 77)
+    # the CIA input's 4 GiB check and the extraction budget, on sparse files: no gigabyte is read or written
+    add_executable(snx-test-3ds-loader-limit 3ds_loader_limit.c support/sparse_file.c)
+    snx_test_target(snx-test-3ds-loader-limit 11)
+    target_link_libraries(snx-test-3ds-loader-limit PRIVATE snx_ctr_loader)
+    add_test(NAME 3ds_loader_limit COMMAND snx-test-3ds-loader-limit)
+    set_tests_properties(3ds_loader_limit PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        # the level-3 view's bound, on a mapped sparse image of its size: 4 GiB + 1 byte is refused, 4 GiB is read
+        add_executable(snx-test-3ds-romfs-limit 3ds_romfs_limit.c support/sparse_file.c)
+        snx_test_target(snx-test-3ds-romfs-limit 11)
+        target_link_libraries(snx-test-3ds-romfs-limit PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_romfs_limit COMMAND snx-test-3ds-romfs-limit)
+        set_tests_properties(3ds_romfs_limit PROPERTIES SKIP_RETURN_CODE 77)
+        # a RomFS built from a host file whose data lies past 2 GiB, read through the on-demand path (fd < 0)
+        add_executable(snx-test-3ds-romfs-large 3ds_romfs_large.c support/sparse_file.c)
+        snx_test_target(snx-test-3ds-romfs-large 11)
+        target_link_libraries(snx-test-3ds-romfs-large PRIVATE snx_ctr_process)
+        add_test(NAME 3ds_romfs_large COMMAND snx-test-3ds-romfs-large)
+        set_tests_properties(3ds_romfs_large PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    endif()
 
     # The GPU, presentation and DSP tests need neither Python nor POSIX, and Windows is a 3DS target too
     # the GPU's transfer engine against the CPU reference (gpu/transfer.c), on whatever Vulkan device there is
@@ -209,6 +278,20 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     set_tests_properties(3ds_vk_draw PROPERTIES SKIP_RETURN_CODE 77)
+    if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the draw test's modes that record only the commands under test, run under Khronos validation: any error it
+        # reports fails the test, such as a missing barrier (a synchronization hazard), a dispatch, barrier or image
+        # transition inside a draw's open rendering, or a command recorded into a buffer that a submission ended
+        set(snx_vk_validation_tests 3ds_vk_draw_present_validation 3ds_vk_draw_after_draw_validation
+            3ds_vk_draw_texture_after_draw_validation 3ds_vk_draw_index_copy_validation)
+        set(snx_vk_validation_modes --present --after-draw --texture-after-draw --draw-after-index-copy)
+        foreach(snx_test snx_mode IN ZIP_LISTS snx_vk_validation_tests snx_vk_validation_modes)
+            add_test(NAME ${snx_test}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                    $<TARGET_FILE:snx-test-3ds-vk-draw> ${snx_mode})
+            set_tests_properties(${snx_test} PROPERTIES SKIP_RETURN_CODE 77)
+        endforeach()
+    endif()
     add_executable(snx-test-3ds-gsp 3ds_gsp.c)
     snx_test_target(snx-test-3ds-gsp 11)
     target_link_libraries(snx-test-3ds-gsp PRIVATE snx_ctr_process)
@@ -270,6 +353,17 @@ if(TARGET snx_ctr_board)
             add_test(NAME 3ds_extract COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_extract.py"
                 "${SNX_CTR_PROGRAM}" ${snx_ctr_extract_test_args})
             set_tests_properties(3ds_extract PROPERTIES TIMEOUT 120)
+        endif()
+    endif()
+    # the static compile's worker threads each build their chunks for the host's memory model, on Windows too
+    if(Python3_Interpreter_FOUND AND NOT APPLE)
+        add_test(NAME 3ds_aot_workers COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot_workers.py"
+            "${SNX_CTR_PROGRAM}")
+        # 15 to 35 s here, over a minute on a CI runner
+        if(CMAKE_CROSSCOMPILING_EMULATOR)
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 1800)
+        else()
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 300)
         endif()
     endif()
     # The pinned SuperTux gate runs on Windows too, the other Python tests not yet
@@ -388,6 +482,11 @@ add_executable(snx-test-host-memory host_memory.c)
 snx_test_target(snx-test-host-memory 99)
 target_link_libraries(snx-test-host-memory PRIVATE scarletnx-common)
 add_test(NAME host_memory COMMAND snx-test-host-memory)
+# the threads that make its first call together, as the 3DS compile's workers do, all read the host's page
+add_executable(snx-test-host-page-threads host_page_threads.c)
+snx_test_target(snx-test-host-page-threads 11)
+target_link_libraries(snx-test-host-page-threads PRIVATE scarletnx-common Threads::Threads)
+add_test(NAME host_page_threads COMMAND snx-test-host-page-threads)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
 add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 11)
@@ -405,6 +504,10 @@ if(SNX_BUILD_3DS)
     add_test(NAME 3ds_uds_delayed_relay COMMAND snx-test-3ds-uds --delay)
     set_tests_properties(3ds_uds_delayed_relay PROPERTIES TIMEOUT 60)
     set_tests_properties(3ds_uds_relay PROPERTIES TIMEOUT 60)
+    add_executable(snx-test-3ds-uds-offline 3ds_uds_offline.c)
+    snx_test_target(snx-test-3ds-uds-offline 11)
+    target_link_libraries(snx-test-3ds-uds-offline PRIVATE snx_ctr_process scarletnx-ldn snx_enet)
+    add_test(NAME 3ds_uds_offline COMMAND snx-test-3ds-uds-offline)
 endif()
 if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
     # The shared room transport also serves 3DS UDS; keep its socket regression
@@ -450,6 +553,12 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec 11)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_llvm)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
+# a checked block links into the AOT module for Windows x86-64, which has no compiler runtime
+add_executable(snx-test-arm-checked-link arm_checked_link.c)
+snx_test_target(snx-test-arm-checked-link 11)
+target_link_libraries(snx-test-arm-checked-link PRIVATE snx_llvm)
+add_test(NAME arm_checked_link COMMAND snx-test-arm-checked-link)
+set_tests_properties(arm_checked_link PROPERTIES SKIP_RETURN_CODE 77)
 
 # Small architectural witnesses need neither game assets nor an emulator.
 add_executable(snx-test-a64-fp a64_fp_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -473,6 +582,14 @@ add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
 snx_test_target(snx-test-llvm-fp-fast 11)
 target_link_libraries(snx-test-llvm-fp-fast PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_fp_fast COMMAND snx-test-llvm-fp-fast)
+
+# Exact vector reciprocal-square-root estimates, through real O0/O2 AOT and JIT steps.
+add_executable(snx-test-llvm-rsqrte llvm_rsqrte.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-rsqrte 11)
+snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
+target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -1221,12 +1338,19 @@ snx_test_target(snx-test-aot-variants 11)
 target_link_libraries(snx-test-aot-variants PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME aot_variants COMMAND snx-test-aot-variants)
 set_tests_properties(aot_variants PROPERTIES TIMEOUT 120)
-# the code units' cache (nx/loader/unit_cache.c) under the LLVM module build: reuse, keys, broken objects, the limit
+# the code units' cache (nx/loader/unit_cache.c) under the LLVM module builds, a 32-bit game's too: reuse, keys, broken
+# objects, the limit
 add_executable(snx-test-unit-cache unit_cache.c)
 snx_test_target(snx-test-unit-cache 11)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME unit_cache COMMAND snx-test-unit-cache)
 set_tests_properties(unit_cache PROPERTIES TIMEOUT 120)
+# a 32-bit game's blocks going on to the next by themselves (nx/loader/module_arm.c): loops, interworking, the poll
+add_executable(snx-test-arm-module-chain arm_module_chain.c)
+snx_test_target(snx-test-arm-module-chain 11)
+target_link_libraries(snx-test-arm-module-chain PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
+set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
 # the runtime looking a pc up in the AOT variant table instead of compiling it
 add_executable(snx-test-runtime-variants runtime_variants.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/guest_jit.c")
 snx_test_target(snx-test-runtime-variants 11)
@@ -1246,6 +1370,24 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
+# the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
+if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
+    if(APPLE)
+        set(snx_jemalloc_conf JE_MALLOC_CONF)
+        set(snx_jemalloc_nm "")
+        set(snx_jemalloc_preload "")
+    else()
+        set(snx_jemalloc_conf MALLOC_CONF)
+        set(snx_jemalloc_nm "${CMAKE_NM}")
+        # a preloaded pthread_cond_init that allocates, as the AppImage's cross-libc-dlopen.so
+        add_library(snx-test-jemalloc-preload MODULE jemalloc_preload.c)
+        target_link_libraries(snx-test-jemalloc-preload PRIVATE ${CMAKE_DL_LIBS})
+        set(snx_jemalloc_preload "$<TARGET_FILE:snx-test-jemalloc-preload>")
+    endif()
+    add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx>"
+        "-DVERSION=${snx_jemalloc_version}" "-DCONF=${snx_jemalloc_conf}" "-DNM=${snx_jemalloc_nm}"
+        "-DPRELOAD=${snx_jemalloc_preload}" -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
+endif()
 # the module contract's layout as recorded when SNX_ABI last rose (docs/ARCHITECTURE.md, Module ABI)
 add_executable(snx-test-module-contract module_contract.c)
 snx_test_target(snx-test-module-contract 99)
@@ -1271,6 +1413,10 @@ snx_test_target(snx-test-jit-service 11)
 target_link_libraries(snx-test-jit-service PRIVATE snx_llvm Threads::Threads)
 add_test(NAME jit_service COMMAND snx-test-jit-service)
 set_tests_properties(jit_service PROPERTIES TIMEOUT 120)
+# Offline replay of captured executable images. It compiles code but never executes guest instructions.
+add_executable(snx-bench-jit-latency jit_latency.c)
+snx_test_target(snx-bench-jit-latency 11)
+target_link_libraries(snx-bench-jit-latency PRIVATE snx_llvm Threads::Threads)
 # longjmp across the loader's code, which on Windows unwinds through its registered function table
 add_executable(snx-test-code-loader-unwind code_loader_unwind.c)
 snx_test_target(snx-test-code-loader-unwind 11)
@@ -1445,6 +1591,11 @@ add_executable(snx-test-astc-glsl glsl/astc_glsl.cpp support/astc.c)
 snx_test_target(snx-test-astc-glsl 23)
 target_include_directories(snx-test-astc-glsl PRIVATE glsl)
 add_test(NAME astc_glsl COMMAND snx-test-astc-glsl)
+# the BC7 encoder's GLSL run on the CPU (tests/glsl/glsl.hpp), its blocks decoded by the CPU reference: no GPU needed
+add_executable(snx-test-bc7-glsl glsl/bc7_glsl.cpp glsl/bc7_cpu.cpp support/bcn.c)
+snx_test_target(snx-test-bc7-glsl 23)
+target_include_directories(snx-test-bc7-glsl PRIVATE glsl)
+add_test(NAME bc7_glsl COMMAND snx-test-bc7-glsl)
 # the VIC shader's GLSL, both builds, run on the CPU against vic.c's composition of random jobs: no GPU needed
 add_executable(snx-test-vic-glsl glsl/vic_jobs.c glsl/vic_glsl.cpp support/vic_ref.c)
 snx_test_target(snx-test-vic-glsl 23)

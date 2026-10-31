@@ -157,6 +157,24 @@ static int nn_pctl_detail_ipc_IParentalControlService_GetUnlinkedEvent(SvcObj* s
     (void)self;
     return new_event(event, "pctl unlinked", 0);
 }
+/* the play timer's display as nobody configured it: NotConfigured in its first byte. Zeros read as TimesUp, and a
+   game that believes it stops the person playing */
+#define SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED 7
+static int pctl_play_timer(nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    memset(info->v, 0, sizeof info->v);
+    info->v[0] = SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED;
+    return 0;
+}
+static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerRemainingTimeDisplayInfo(
+    SvcObj* self, nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    (void)self;
+    return pctl_play_timer(info);
+}
+static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, u8 unknown,
+                                                                  nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    (void)self, (void)unknown;
+    return pctl_play_timer(info);
+}
 
 /* ============================================================ friend */
 #define FRIEND_NO_NOTIFICATIONS RC(124, 15) /* account's NoNotifications, which friends answers too */

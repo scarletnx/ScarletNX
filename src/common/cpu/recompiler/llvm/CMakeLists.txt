@@ -5,7 +5,7 @@
 set(snx_cpu "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" arm-backend)
 file(GLOB snx_rtlib_sources CONFIGURE_DEPENDS "${snx_cpu}/*.h" "${snx_cpu}/*.c"
-    "${snx_cpu}/helpers/*.c" "${PROJECT_SOURCE_DIR}/src/common/runtime/interface.h")
+    "${snx_cpu}/helpers/*.c" "${snx_cpu}/helpers/*.h" "${PROJECT_SOURCE_DIR}/src/common/runtime/interface.h")
 if(CMAKE_CROSSCOMPILING)
     # it runs during the build: a cross build makes it for the machine doing that, with that machine's compiler
     find_program(SNX_HOST_CC NAMES clang cc REQUIRED)

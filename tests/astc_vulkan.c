@@ -18,6 +18,7 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "support/etc2.h"
 #include "support/bcn.h"
+#include "bc7_cpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -97,6 +98,7 @@ void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     sz[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, sets};
     sz[2] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets};
     sz[3] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, sets};
+    sz[4] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, sets};
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -151,8 +153,11 @@ static void init(void) {
                                   .pQueuePriorities = &priority};
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .synchronization2 = VK_TRUE};
+    /* cmd.c's frame fences are timeline semaphores */
+    VkPhysicalDeviceVulkan12Features f12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13, .timelineSemaphore = VK_TRUE};
     VkDeviceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                             .pNext = &f13,
+                             .pNext = &f12,
                              .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi,
                              .pEnabledFeatures = &g_vk.feat};
@@ -372,6 +377,80 @@ static void both_modes(u32 bw, u32 bh) {
     printf("PASS both decode modes %ux%u: %zu of %zu color bytes differ\n", bw, bh, differ, n / 4 * 3);
     free(unorm);
     free(srgb);
+}
+
+/* uploads random blocks into a BC7 image, as texture.c does where the GPU samples BCn but not ASTC (astc_bc), and
+   compares each level's blocks with the CPU decoder's texels encoded by the same encoder run on the CPU
+   (tests/glsl/bc7_cpu.cpp): the strips that start on whole 4x4 blocks, the second dispatch and the copy of the
+   blocks, byte for byte */
+static void run_bc7(u32 bw, u32 bh, int srgb, u32 w, u32 h, u32 depth, u32 layers, u32 levels) {
+    const VkFormat format = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+    VkImageFormatProperties props;
+    if (!g_vk.feat.textureCompressionBC ||
+        vkGetPhysicalDeviceImageFormatProperties(
+            g_vk.phys, format, depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &props) != VK_SUCCESS) {
+        printf("SKIP ASTC as BC7 %ux%u image=%ux%ux%u: the device has no such BC7 image\n", bw, bh, w, h, depth);
+        return;
+    }
+    Surf t = {
+        .w = w, .h = h, .layers = layers, .levels = levels, .depth3d = depth, .f = {.vk = format, .bw = bw, .bh = bh}};
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .imageType = depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                            .format = format,
+                            .extent = {w, h, depth},
+                            .mipLevels = levels,
+                            .arrayLayers = layers,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+    if (!vk_image_create(&ii, &t.img, &t.mem)) fatal("cannot create a %ux%ux%u BC7 image\n", w, h, depth);
+    barrier(t.img, VK_PIPELINE_STAGE_2_NONE, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_COPY_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    u8** blocks = calloc((size_t)layers * levels, sizeof *blocks);
+    for (u32 layer = 0; layer < layers; layer++)
+        for (u32 l = 0; l < levels; l++) {
+            u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, ld = depth >> l ? depth >> l : 1;
+            u8* b = blocks[layer * levels + l] = blocks_new(lw, lh, ld, bw, bh);
+            Level lv = {b, (lw + bw - 1) / bw, (lh + bh - 1) / bh, NULL, 2, ld > 1};
+            if (!vk_astc_upload(vk_cmd(), &t, lw, lh, ld, l, layer, level_rows, &lv)) fatal("BC7 upload failed\n");
+        }
+    barrier(t.img, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    for (u32 layer = 0; layer < layers; layer++)
+        for (u32 l = 0; l < levels; l++) {
+            u32 lw = w >> l ? w >> l : 1, lh = h >> l ? h >> l : 1, ld = depth >> l ? depth >> l : 1;
+            u32 nx = (lw + bw - 1) / bw, ny = (lh + bh - 1) / bh;
+            u64 size = (u64)((lw + 3) / 4) * ((lh + 3) / 4) * 16 * ld;
+            VkBuffer readback;
+            u8* actual = vk_readback_buffer(size, &readback);
+            if (!actual) fatal("no readback buffer of %llu bytes\n", (unsigned long long)size);
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                                      .imageExtent = {lw, lh, ld}};
+            rec_CmdCopyImageToBuffer(vk_cmd(), t.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            u8* texels = malloc((size_t)lw * lh * ld * 4);
+            u8* expected = malloc(size);
+            for (u32 z = 0; z < ld; z++)
+                astc_decode_image(blocks[layer * levels + l] + (size_t)z * nx * ny * 16, lw, lh, bw, bh,
+                                  texels + (size_t)z * lw * lh * 4, srgb);
+            bc7_encode_cpu(texels, lw, lh, ld, expected);
+            for (u64 i = 0; i < size; i++)
+                if (actual[i] != expected[i])
+                    fatal("ASTC as BC7 %ux%u srgb=%d %ux%ux%u level %u layer %u: byte %llu (block %llu) expected %u "
+                          "got %u\n",
+                          bw, bh, srgb, lw, lh, ld, l, layer, (unsigned long long)i, (unsigned long long)(i / 16),
+                          expected[i], actual[i]);
+            free(texels);
+            free(expected);
+            free(blocks[layer * levels + l]);
+        }
+    free(blocks);
+    vk_image_destroy(t.img, t.mem);
+    printf("PASS ASTC as BC7 %ux%u srgb=%d image=%ux%ux%u layers=%u mips=%u\n", bw, bh, srgb, w, h, depth, layers,
+           levels);
+    fflush(stdout);
 }
 
 /* block linear bytes deswizzled and swizzled on the GPU (vk/blocklinear.c), compared with ref_bl: a surface of
@@ -773,6 +852,17 @@ int main(int argc, char** argv) {
             run(bw, bh, srgb, 17, 13, 5, 1, 5, 0, NULL, NULL);
         }
     for (u32 i = 0; i < sizeof footprints / sizeof footprints[0]; i++) both_modes(footprints[i][0], footprints[i][1]);
+    /* ASTC re-encoded as BC7: footprints whose strips step 4, 2 and 1 block rows at a time to start on whole 4x4
+       blocks (heights 5, 6 and 8 or 12), sizes not a multiple of either, mips, layers, slices, and an image of
+       many strips (more under ctest's --vk_max_allocation_mb=4) */
+    run_bc7(4, 4, 0, 97, 61, 1, 1, 1);
+    run_bc7(5, 5, 1, 97, 61, 1, 1, 1);
+    run_bc7(6, 6, 0, 17, 13, 1, 6, 5);
+    run_bc7(8, 5, 1, 17, 13, 1, 6, 5);
+    run_bc7(10, 6, 0, 131, 77, 1, 1, 3);
+    run_bc7(12, 12, 1, 97, 61, 1, 1, 1);
+    run_bc7(6, 6, 0, 61, 37, 9, 1, 1);
+    run_bc7(5, 5, 0, 2051, 1101, 1, 1, 1);
     /* Multiple scratch chunks, staging-ring retirement, and frame reuse. */
     run(4, 4, 0, 2051, 1055, 1, 1, 1, 1, NULL, NULL);
     run(12, 12, 1, 2051, 1055, 1, 1, 1, 0, NULL, NULL);

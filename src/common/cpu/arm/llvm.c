@@ -11,6 +11,7 @@
 #include "common/cpu/arm/simd.h"
 #include <limits.h>
 #include <llvm-c/Target.h>
+#include <string.h>
 
 /* All guest arithmetic is i32 without nsw/nuw. In particular address arithmetic
    wraps BEFORE extending to a host pointer. Never use inbounds GEP for guests. */
@@ -1130,6 +1131,14 @@ static void block_begin(ArmIR* a, LLVMModuleRef module, const char* name, uint32
     a->ptr = LLVMPointerTypeInContext(a->ctx, 0);
     LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(a->ctx), &a->ptr, 1, 0);
     a->fn = LLVMAddFunction(module, name, ft);
+    /* a checked block's allocas sit outside the entry block, where Windows x86-64 calls the compiler runtime's stack
+       probe, which neither the JIT loader nor the AOT linker provides. Each is at most 128 bytes (a VFP transfer),
+       far under a page. Only a triple that names Windows gets the attribute, as ir_codegen.c gives its guest
+       functions, because ArmIR has no target flag */
+    const char* triple = LLVMGetTarget(module);
+    if (strstr(triple, "windows") || strstr(triple, "mingw"))
+        LLVMAddAttributeAtIndex(a->fn, LLVMAttributeFunctionIndex,
+                                LLVMCreateStringAttribute(a->ctx, "no-stack-arg-probe", 18, "", 0));
     a->cpu = LLVMGetParam(a->fn, 0);
     LLVMPositionBuilderAtEnd(a->b, block(a, "entry"));
     PUT(a, exit, c32(a, SNX_ARM_OK));

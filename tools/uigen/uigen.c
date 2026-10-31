@@ -1711,6 +1711,8 @@ static void write_scene(int scene) {
             outs(", ");
             out_row(it, i, "n ? n - 1 : 0");
             out("), &lists[%s], sizeof %s_rows / sizeof *%s_rows, n);\n", it->upper, it->symbol, it->symbol);
+            out("    n += lists[%s].shift > 0;\n    if (lists[%s].shift) ui_clip(app, &r[%s]);\n", it->upper, it->upper,
+                it->upper);
             out("    for (i = 0; i < n && lists[%s].first + i < sizeof %s_rows / sizeof *%s_rows; i++) {\n", it->upper,
                 it->symbol, it->symbol);
             out("        size_t row = lists[%s].first + i;\n        int item = %s_rows[row];\n", it->upper, it->symbol);
@@ -1721,17 +1723,22 @@ static void write_scene(int scene) {
             outs("        if (i == 0 && row > 0 && !bw) attr |= UI_ATTR_MORE_UP; /* else the bar says it */\n");
             out("        if (i + 1 == n && row + 1 < sizeof %s_rows / sizeof *%s_rows && !bw) attr |= UI_ATTR_MORE_DOWN;\n",
                 it->symbol, it->symbol);
-            out("        ui_draw_row(app, ui_beside_bar(");
+            out("        ui_draw_row(app, ui_shifted(ui_beside_bar(");
             out_row(it, i, "i");
-            out(", bw), ui_tr(%s_texts + %s_items[item].text), %s_items[item].icon, NULL,\n                    "
-                "%s_items[item].color ? %s_items[item].color : %s_items[%s].color, attr, row == lists[%s].focus);\n"
-                "    }\n",
-                s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, it->upper, it->upper);
+            out(", bw), lists[%s].shift), ui_tr(%s_texts + %s_items[item].text), %s_items[item].icon, NULL,\n"
+                "                    %s_items[item].color ? %s_items[item].color : %s_items[%s].color, attr, row == "
+                "lists[%s].focus);\n    }\n    if (lists[%s].shift) ui_clip(app, NULL);\n",
+                it->upper, s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, s->symbol, it->upper, it->upper,
+                it->upper);
         } else if (is_tiles(it)) {
             /* from its first row, while the rows fit: a label on a line of its own, drawn as a row, the others tiles;
                the row after each asked first, its label maybe a buffer the row's call writes, and whether it fits */
             out("    {\n        UiFlow flow;\n        %s_flow(r, scale, %s, &flow);\n", s->symbol, it->upper);
             out("        ui_flow_sized(&flow, &lists[%s], scale);\n", it->upper);
+            /* shifted, its lines go up by shift and one more may show under them, inside the list's area */
+            out("        flow.area.y -= lists[%s].shift;\n        flow.area.h += lists[%s].shift;\n"
+                "        if (lists[%s].shift) ui_clip(app, &r[%s]);\n",
+                it->upper, it->upper, it->upper, it->upper);
             out("        for (i = 0;; i++) {\n            size_t row = lists[%s].first + i;\n"
                 "            GuiRect box, after_box;\n            UiRowInfo next;\n            UiFlow after;\n"
                 "            bool more;\n",
@@ -1751,8 +1758,8 @@ static void write_scene(int scene) {
                 "\"(null)\", info.icon, info.image, %s_items[%s].color,\n                            info.attr, row == "
                 "lists[%s].focus);\n            else\n                ui_draw_tile(app, box, info.label ? info.label : "
                 "\"(null)\", info.image, %s_items[%s].color,\n                             info.attr, row == "
-                "lists[%s].focus);\n        }\n    }\n",
-                s->symbol, it->upper, it->upper, s->symbol, it->upper, it->upper);
+                "lists[%s].focus);\n        }\n        if (lists[%s].shift) ui_clip(app, NULL);\n    }\n",
+                s->symbol, it->upper, it->upper, s->symbol, it->upper, it->upper, it->upper);
         } else if (it->type == T_LIST) {
             /* shifted, the rows go up and one more shows under them, inside the list's area */
             out("    n = %s_shown(r, scale, %s);\n    bw = ui_bar(app, ui_rows_span(", s->symbol, it->upper);
@@ -1806,13 +1813,14 @@ static void write_scene(int scene) {
         if (is_tiles(it)) { /* placed as drawn, from its first row while they fit */
             out("    {\n        UiFlow flow;\n        GuiRect box;\n        %s_flow(r, scale, %s, &flow);\n"
                 "        ui_flow_sized(&flow, &lists[%s], scale);\n"
-                "        for (i = 0;; i++) {\n            *row = lists[%s].first + i;\n"
+                "        flow.area.y -= lists[%s].shift;\n        flow.area.h += lists[%s].shift;\n"
+                "        for (i = 0; ui_in(r[%s], x, y); i++) {\n            *row = lists[%s].first + i;\n"
                 "            info.label = NULL;\n            info.icon = 0;\n            info.image = NULL;\n"
                 "            info.attr = 0;\n            if (!%s_get_row_info(app, *row, flow.tile_w, &info)) break;\n"
                 "            if (!ui_flow_next(&flow, (info.attr & UI_ATTR_LABEL) != 0, &box)) break;\n"
                 "            if (ui_in(box, x, y)) {\n                *item = %s;\n"
                 "                return UI_HIT_HOVER | event;\n            }\n        }\n    }\n",
-                s->symbol, it->upper, it->upper, it->upper, it->symbol, it->upper);
+                s->symbol, it->upper, it->upper, it->upper, it->upper, it->upper, it->upper, it->symbol, it->upper);
         } else if (it->type == T_LIST) {
             out("    n = %s_shown(r, scale, %s);\n", s->symbol, it->upper);
             if (it->children)
@@ -1911,6 +1919,8 @@ static void write_c(const char* path) {
          "static GuiRect ui_row(GuiRect r, size_t i, int height, int gap, int min, int max, int s) {\n"
          "    int w = r.w;\n    if (max && w > max) w = max;\n    if (min && w < min) w = min;\n"
          "    return gui_rect(r.x, r.y + (int)i * (height + gap) * s, w, height * s);\n}\n");
+    outs("/* a list's row drawn up by shift pixels: scrolled between two rows */\n"
+         "static GuiRect ui_shifted(GuiRect box, int shift) {\n    box.y -= shift;\n    return box;\n}\n");
     outs("/* a list's row beside its scroll bar, which takes bw pixels at the rows' right (0: none) */\n"
          "static GuiRect ui_beside_bar(GuiRect box, int bw) {\n    box.w -= bw;\n    return box;\n}\n"
          "/* the rows from first to last, all a list's rows' width: where its scroll bar goes */\n"

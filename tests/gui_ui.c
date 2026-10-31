@@ -281,6 +281,17 @@ static void test_draw(void) {
            !g_clip.w);
     lists[UI_MAIN_GAMES].shift = 0;
     lists[UI_MAIN_GAMES].first = 1;
+    /* a static list scrolled between two rows too: its rows up by shift, one more under them, inside its area */
+    lists[UI_MAIN_LOAD_LIST].first = 0;
+    lists[UI_MAIN_LOAD_LIST].shift = 7;
+    g_clips = 0;
+    g_gui_ui.ndrawn = 0;
+    ui_main_draw(&app, r, 1, lists);
+    assert(g_clips == 1 && !g_clip.w && !strcmp(d[1].text, "Load Switch") && !strcmp(d[4].text, "Decor"));
+    is(d[1].r, 14, 51 - 7, 200 - 5, 17);
+    is(d[4].r, 14, 51 + 3 * 19 - 7, 200 - 5, 17);
+    lists[UI_MAIN_LOAD_LIST].shift = 0;
+    lists[UI_MAIN_LOAD_LIST].first = 1;
     /* the code's attributes: Load Switch with no keys; a scene's button */
     app.keys_missing = true;
     lists[UI_MAIN_LOAD_LIST].first = 0;
@@ -357,6 +368,11 @@ static void test_hit(void) {
     assert(ui_main_hit(&app, r, 1, lists, 20, 154 + 19 + 3, UI_HIT_RELEASE, &item, &row) ==
            (UI_HIT_HOVER | UI_HIT_RELEASE));
     assert(item == UI_MAIN_GAMES && row == 2);
+    /* a static list shifted up by 10: its row under a point the one drawn there */
+    lists[UI_MAIN_LOAD_LIST].shift = 10;
+    assert(ui_main_hit(&app, r, 1, lists, 20, 70 - 10 + 3, 0, &item, &row) && row == 1 &&
+           item == UI_MAIN_LOAD_LIST_LOAD_3DS_GAME);
+    lists[UI_MAIN_LOAD_LIST].shift = 0;
     /* shifted up by 10: the row under a point is the one drawn there, and a point over the list's area is none of it */
     lists[UI_MAIN_GAMES].shift = 10;
     assert(ui_main_hit(&app, r, 1, lists, 20, 154 + 19 + 3 - 10, 0, &item, &row) && item == UI_MAIN_GAMES && row == 2);
@@ -606,6 +622,20 @@ static void test_tiles(void) {
     assert(!ui_grid_hit(&app, r, 1, lists, 140, 20, 0, &item, &row) && item == -1);
     lists[UI_GRID_TILES].first = 6;
     assert(ui_grid_hit(&app, r, 1, lists, 50, 40, 0, &item, &row) == UI_HIT_HOVER && row == 10);
+    /* shifted 20 pixels into its first line: every line drawn up by 20, kept inside the area, one more line under them;
+       hit where drawn, and nothing over the area */
+    lists[UI_GRID_TILES].first = 0;
+    lists[UI_GRID_TILES].shift = 20;
+    g_clips = 0;
+    g_gui_ui.ndrawn = 0;
+    ui_grid_draw(&app, r, 1, lists);
+    assert(g_clips == 1 && !g_clip.w && !strcmp(d[2].text, "T2") && g_gui_ui.ndrawn == 9);
+    is(d[0].r, 4, 4 - 20, 142, 10);
+    is(d[2].r, 48, 18 - 20, 40, 30);
+    assert(ui_grid_hit(&app, r, 1, lists, 50, 5, 0, &item, &row) == UI_HIT_HOVER && row == 2);
+    item = 0;
+    assert(!ui_grid_hit(&app, r, 1, lists, 50, 3, 0, &item, &row) && item == -1);
+    lists[UI_GRID_TILES].shift = 0;
     /* the code's own tiles (UiList's tile_w and tile_h): placed, drawn, hit and followed at them, as many a line as
        then fit; 0 ui.txt's again */
     lists[UI_GRID_TILES].first = 0;

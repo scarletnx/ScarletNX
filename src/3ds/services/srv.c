@@ -51,6 +51,7 @@ static uint32_t snx_ctr_srv_GetServiceHandle(SnxCtrIpc* c, const uint8_t* name, 
         return result ? result : snx_ctr_session_create(p, SNX_CTR_SERVICE_DSP, session);
     }
     if (length == 6 && !memcmp(name, "am:app", 6)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_AM, session);
+    if (length == 6 && !memcmp(name, "ldr:ro", 6)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_LDR_RO, session);
     if (length == 5 && !memcmp(name, "y2r:u", 5)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_Y2R, session);
     uint32_t system = snx_ctr_system_open(p, name, length, session);
     if (system != SNX_CTR_SYSTEM_UNKNOWN) return system;

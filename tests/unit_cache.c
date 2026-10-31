@@ -109,6 +109,46 @@ static void program(unsigned add) {
         for (j = 0; j < 4; ++j) memory[TEXT_OFF + 4 * i + j] = (unsigned char)(code[i] >> (8 * j));
 }
 
+/* A32 at 0x200000, as a 32-bit game's: f0: push {lr}; bl f1; pop {pc}. f1: r0 += add; bx lr */
+static void arm_program(unsigned add) {
+    const SnxU32 code[] = {0xE52DE004u, 0xEB000000u, 0xE49DF004u, 0xE2800000u | add, 0xE12FFF1Eu};
+    unsigned char* memory = g_unit_cache.memory;
+    size_t i, j;
+    memset(memory, 0, sizeof g_unit_cache.memory);
+    for (i = 0; i < sizeof code / sizeof *code; ++i)
+        for (j = 0; j < 4; ++j) memory[TEXT_OFF + 4 * i + j] = (unsigned char)(code[i] >> (8 * j));
+}
+/* the AArch32 module build (module_arm.c) of arm_program's code, each block a unit, through the cache in folder */
+static int build_arm(const char* folder, const char* output) {
+    SnxModuleImage image = {0};
+    SnxProgram loaded = {0};
+    SnxCodegenOptions options = {0};
+    SnxLlvmBuild llvm = {0};
+    image.name = "test";
+    image.base = 0x200000;
+    image.size = sizeof g_unit_cache.memory;
+    image.image = g_unit_cache.memory;
+    image.image_size = sizeof g_unit_cache.memory;
+    image.text_off = TEXT_OFF;
+    image.text_size = TEXT_SIZE;
+    loaded.modules = &image;
+    loaded.module_count = 1;
+    loaded.npdm.title_id = 0x0100000000000000ull;
+    loaded.npdm.stack = 0x100000;
+    strcpy(loaded.npdm.name, "test");
+    options.title = "test";
+    options.abi = SNX_ABI;
+    options.quiet = 1;
+    options.chunk_instrs = 1;
+    llvm.output = output;
+    llvm.opt = '2';
+    llvm.jobs = 1;
+    llvm.quiet = 1;
+    llvm.unit_cache = folder;
+    llvm.unit_cache_disk = g_unit_cache.disk;
+    return snx_build_module_arm(&loaded, &options, &llvm);
+}
+
 static int build(const char* folder, const char* output, SnxU64 limit) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
@@ -593,6 +633,42 @@ int main(void) {
         CHECK(!strcmp(line, "  compiled block 3/9: code_002, 0x10-0x20, 1 function, 4 instructions (1.3 s)"));
         snx_unit_line(line, sizeof line, 3, 9, "code_002", label, 1, 1.3, (SnxU64)512 << 20);
         CHECK(!strcmp(line, "  compiled block 3/9: code_002, 0x10-0x20, 1 function, 4 instructions (cached)"));
+    }
+    /* a 32-bit game's units kept too: built again, the same module from the same objects, none compiled again; a block
+       changed, its unit compiled and kept beside the old one */
+    {
+        const char* arm = "snx-test-unit-cache.arm";
+        snx_remove_tree(arm);
+        arm_program(1);
+        CHECK(!build_arm(arm, out[4]) && objects(arm, NULL) >= 2);
+        {
+            size_t cold = objects(arm, NULL);
+            CHECK(!build_arm(arm, out[5]) && objects(arm, NULL) == cold && same_file(out[4], out[5]));
+            arm_program(5);
+            CHECK(!build_arm(arm, out[5]) && objects(arm, NULL) == cold + 1 && !same_file(out[4], out[5]));
+        }
+        snx_remove_tree(arm);
+        snx_remove_tree(out[4]);
+        snx_remove_tree(out[5]);
+    }
+    /* a build's last word on its units, from the 32-bit build as from the 64-bit one; nothing when quiet. A file in
+       binary, whose newline Windows leaves alone */
+    {
+        const char* said_to = "snx-test-unit-cache.report";
+        FILE* out = fopen(said_to, "w+b");
+        char text[256] = {0};
+        CHECK(out != NULL);
+        if (out) {
+            size_t got;
+            snx_unit_cache_report(out, "units here", 0, 3, 5, 2500000, 0);
+            snx_unit_cache_report(out, "units here", 0, 1, 1, 0, 1);
+            rewind(out);
+            got = fread(text, 1, sizeof text - 1, out);
+            text[got] = 0;
+            fclose(out);
+        }
+        CHECK(!strcmp(text, "unit cache: 3 of 5 units reused (2.5 MB) from units here\n"));
+        snx_remove_tree(said_to);
     }
     /* an abort asked of a build: it stops before its next unit, saying how many it compiled, and keeps none */
     program(1);

@@ -398,6 +398,19 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !kev(CTRL_EV(ctrl)[10].ev)->signaled);
 }
 
+/* GET_CONFIG (IocGetConfigParams, 0x183 bytes) finds no setting, as on a production console: an SDK that found one
+   would take its debug switch as on */
+#define GET_CONFIG 0xC183001Bu
+static void test_ctrl_get_config(u32 ctrl) {
+    static const char* const names[] = {"NVWSI_FILL", "NVWSI_DUMP"};
+    for (u32 i = 0; i < 2; i++) {
+        memset(GP(IN0), 0, 0x183);
+        strcpy((char*)GP(IN0), "nv");
+        strcpy((char*)GP(IN0 + 0x41), names[i]);
+        CHECK(nv_ioctl1(ctrl, GET_CONFIG, 0x183) == 0x30006);
+    }
+}
+
 /* an async wait on ctrl fd fd's slot for syncpoint id to reach th, with a timeout in ms */
 static u32 event_wait(u32 fd, u32 id, u32 th, u32 to, u32 slot) {
     put(0, id);
@@ -966,6 +979,7 @@ int main(void) {
     test_ioctl2(gpu);
     test_ioctl3(ctrlgpu);
     test_ctrl_syncpoints(ctrl);
+    test_ctrl_get_config(ctrl);
     test_ctrl_event_fds(ctrl);
     test_quiet_increments(ctrl);
 

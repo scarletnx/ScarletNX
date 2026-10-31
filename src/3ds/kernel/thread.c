@@ -136,6 +136,7 @@ uint32_t snx_ctr_thread_create(SnxCtrProcess* p, const uint32_t* r, uint32_t* ou
     t->context.tpidruro = address;
     /* default NaN, flush-to-zero and round toward zero, as Azahar's svcCreateThread sets every new thread's FPSCR */
     t->context.fpscr = 0x03c00000u;
+    t->context.rt = p->cpu.state.cpu.rt;
     t->priority = r[0];
     t->core = processor < 0 ? 0 : (uint32_t)processor; /* -2 the process's ideal processor (0), -1 any: core 0 */
     snx_ctr_thread_ready(p, id);

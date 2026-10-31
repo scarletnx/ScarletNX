@@ -9,6 +9,7 @@
    An indirect branch's targets are known only when the game runs, unless something above names them */
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_abi.h"
+#include "nx/loader/unit_cache.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "snx_settings.h"
@@ -24,6 +25,10 @@
 
 /* the most code one block may run through: the block compiler's limit, in instructions (A32) or halfwords (Thumb) */
 #define BLOCK_LIMIT 65536
+/* the most blocks one block goes on to: a32_next and thumb_next queue its branch's target and what follows it */
+#define SUCCESSORS  2
+/* the module's i64 the runtime writes (SnxArmModule.poll_offset), which chained blocks read */
+#define POLL_OFFSET "snx_arm_poll_offset"
 
 typedef struct {
     SnxU32 key; /* the address, with bit 0 set for Thumb */
@@ -38,6 +43,7 @@ typedef struct {
     size_t set_capacity, set_count;
     SnxU32* work;
     size_t work_count, work_capacity;
+    int collect; /* queue only lists the keys in work, for one block's successors (block_next) */
 } Discovery;
 
 /* the code from address to the end of its module's text, and how many bytes of it */
@@ -88,6 +94,10 @@ static void queue(Discovery* d, SnxU32 address, int thumb) {
     SnxU32 key = address | (thumb ? 1u : 0u);
     if (address & (thumb ? 1u : 3u)) return;
     if (!code_at(d->program, address, &bytes) || bytes < (thumb ? 2u : 4u)) return;
+    if (d->collect) {
+        if (d->work_count < SUCCESSORS) d->work[d->work_count++] = key;
+        return;
+    }
     if (!set_insert(d, key)) return;
     if (d->work_count == d->work_capacity) {
         d->work_capacity = d->work_capacity ? d->work_capacity * 2 : 1024;
@@ -312,6 +322,22 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, char* error,
     return 0;
 }
 
+/* the keys of what follows the block at key, covering units of code, as discover queues them, into next */
+static size_t block_next(const SnxProgram* p, SnxU32 key, size_t units, size_t count, SnxU32* next) {
+    Discovery s = {0};
+    size_t bytes;
+    SnxU32 address = key & ~1u;
+    const unsigned char* code = code_at(p, address, &bytes);
+    s.program = p;
+    s.collect = 1;
+    s.work = next;
+    if (key & 1)
+        thumb_next(&s, address, code, units, count);
+    else
+        a32_next(&s, address + (SnxU32)(units - 1) * 4, read32(code + (units - 1) * 4));
+    return s.work_count;
+}
+
 static int compare_block(const void* a, const void* b) {
     SnxU32 x = ((const Block*)a)->key, y = ((const Block*)b)->key;
     return x < y ? -1 : x > y;
@@ -323,12 +349,15 @@ typedef struct {
     size_t first, last;
     unsigned char* object;
     size_t size;
+    int reused; /* the object came from the unit cache */
 } Unit;
 
 typedef struct {
     const SnxProgram* program;
-    const Block* blocks;
+    const Block* blocks; /* sorted by key */
+    size_t nblocks;
     const SnxLlvmBuild* build;
+    SnxUnitCache* cache; /* the units' objects kept between recompiles (NULL: none), an interrupted one's too */
     Unit* units;
     size_t count, next, done;
     int failed;
@@ -364,28 +393,137 @@ static int save_ir(SnxIr* ir, const char* dir, const char* name) {
     return rc;
 }
 
+/* Block chaining: a block that ends where a block of the module starts goes on to it by a tail call, instead of
+   returning to the runtime's loop (arm_thread_run), which looks the next block up after every one. Each of the
+   block's returns becomes: return when it set an exit; else, for each successor discover found (block_next), when
+   r15 and CPSR.T are its address and state, a musttail call of it; else return. A successor at or before the
+   block's start (every loop has one) first reads the thread's poll, as the loop does after each block: when a thread
+   of higher priority waits for the core, the block returns and the loop yields it */
+static int chain_has(const Queue* q, SnxU32 key) {
+    size_t lo = 0, hi = q->nblocks;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (q->blocks[mid].key == key) return 1;
+        if (q->blocks[mid].key < key)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return 0;
+}
+static void chain_block(SnxIr* ir, LLVMValueRef fn, SnxU32 key, const SnxU32* next, size_t count) {
+    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+    LLVMValueRef *rets, cpu = LLVMGetParam(fn, 0), poll_offset = LLVMGetNamedGlobal(ir->mod, POLL_OFFSET);
+    size_t nrets = 0, i, k;
+    rets = (LLVMValueRef*)snx_alloc(LLVMCountBasicBlocks(fn) * sizeof(*rets));
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef t = LLVMGetBasicBlockTerminator(bb);
+        if (t && LLVMGetInstructionOpcode(t) == LLVMRet) rets[nrets++] = t;
+    }
+    if (!poll_offset) {
+        poll_offset = LLVMAddGlobal(ir->mod, ir->t_i64, POLL_OFFSET);
+        LLVMSetVisibility(poll_offset, LLVMHiddenVisibility); /* the module's own: reached PC-relative */
+    }
+    /* one tail for all of them: a block's returns are its exits too (a fault, an SVC), which the tail's first check
+       takes back out */
+    LLVMBasicBlockRef tail = LLVMAppendBasicBlockInContext(ir->ctx, fn, "chain"),
+                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
+                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
+    LLVMValueRef c, pc, t;
+    for (i = 0; i < nrets; ++i) {
+        LLVMPositionBuilderBefore(ir->b, rets[i]);
+        LLVMBuildBr(ir->b, tail);
+        LLVMInstructionEraseFromParent(rets[i]);
+    }
+    LLVMPositionBuilderAtEnd(ir->b, out);
+    LLVMBuildRetVoid(ir->b);
+    LLVMPositionBuilderAtEnd(ir->b, tail);
+    c = LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, exit))}, 1, "");
+    c = LLVMBuildICmp(ir->b, LLVMIntEQ, LLVMBuildLoad2(ir->b, ir->t_i32, c, ""), ir_i32(ir, SNX_ARM_OK), "");
+    LLVMBuildCondBr(ir->b, c, go, out);
+    LLVMPositionBuilderAtEnd(ir->b, go);
+    pc = LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, r) + 15 * 4)}, 1, "");
+    pc = LLVMBuildLoad2(ir->b, ir->t_i32, pc, "");
+    t = LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offsetof(SnxArmCPU, cpsr))}, 1, "");
+    t = LLVMBuildAnd(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, t, ""), ir_i32(ir, SNX_ARM_T), "");
+    for (k = 0; k < count; ++k) {
+        LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
+                          miss = LLVMAppendBasicBlockInContext(ir->ctx, fn, "other");
+        LLVMValueRef target, site;
+        char name[16];
+        c = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, pc, ir_i32(ir, next[k] & ~1u), ""),
+                         LLVMBuildICmp(ir->b, LLVMIntEQ, t, ir_i32(ir, next[k] & 1 ? SNX_ARM_T : 0), ""), "");
+        LLVMBuildCondBr(ir->b, c, call, miss);
+        LLVMPositionBuilderAtEnd(ir->b, call);
+        if ((next[k] & ~1u) <= (key & ~1u)) {
+            LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
+            LLVMValueRef off = LLVMBuildLoad2(ir->b, ir->t_i64, poll_offset, "");
+            LLVMValueRef poll = LLVMBuildLoad2(ir->b, ir->t_i32, LLVMBuildGEP2(ir->b, ir->t_i8, cpu, &off, 1, ""), "");
+            LLVMSetOrdering(poll, LLVMAtomicOrderingMonotonic); /* the loop's relaxed load */
+            LLVMSetAlignment(poll, 4);
+            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, poll, ir_i32(ir, 0), ""), run, out);
+            LLVMPositionBuilderAtEnd(ir->b, run);
+        }
+        block_name(name, next[k]);
+        target = LLVMGetNamedFunction(ir->mod, name);
+        if (!target) target = LLVMAddFunction(ir->mod, name, block_type);
+        site = LLVMBuildCall2(ir->b, block_type, target, &cpu, 1, "");
+        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+        LLVMBuildRetVoid(ir->b);
+        LLVMPositionBuilderAtEnd(ir->b, miss);
+    }
+    LLVMBuildBr(ir->b, out);
+    free(rets);
+}
+
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     char name[32], block[16];
-    size_t i, units, count;
+    size_t i, units;
     SnxIr* ir;
     int rc;
     sprintf(name, "code_%03lu", (unsigned long)index);
     ir = snx_ir_new(name, q->build->opt, error, error_size);
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
+    /* every block of the unit first: the block compiler refuses a name the module has, and chain_block declares the
+       successors it calls */
+    LLVMValueRef* fns = (LLVMValueRef*)snx_alloc((u->last - u->first) * sizeof(*fns));
+    size_t* counts = (size_t*)snx_alloc((u->last - u->first) * sizeof(*counts));
     for (i = u->first; i < u->last; ++i) {
         block_name(block, q->blocks[i].key);
-        if (!compile_block(ir->mod, q->program, q->blocks[i].key, block, &units, &count) ||
-            units != q->blocks[i].units) {
+        fns[i - u->first] = compile_block(ir->mod, q->program, q->blocks[i].key, block, &units, &counts[i - u->first]);
+        if (!fns[i - u->first] || units != q->blocks[i].units) {
             snprintf(error, error_size, "the AArch32 block %s compiled differently the second time", block);
-            snx_ir_free(ir);
-            return -1;
+            break;
         }
+    }
+    for (rc = i < u->last ? -1 : 0, i = u->first; !rc && i < u->last; ++i) {
+        SnxU32 next[SUCCESSORS];
+        size_t n = block_next(q->program, q->blocks[i].key, q->blocks[i].units, counts[i - u->first], next), k;
+        for (k = 0; k < n && chain_has(q, next[k]); ++k) {}
+        if (k < n) {
+            char to[16];
+            block_name(block, q->blocks[i].key);
+            block_name(to, next[k]);
+            snprintf(error, error_size, "the AArch32 block %s goes on to %s, a block discovery did not find", block,
+                     to);
+            rc = -1;
+        } else
+            chain_block(ir, fns[i - u->first], q->blocks[i].key, next, n);
+    }
+    free(fns);
+    free(counts);
+    if (rc) {
+        snx_ir_free(ir);
+        return -1;
     }
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
-    if (!rc) rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
+    if (!rc && q->cache)
+        rc = snx_unit_cache_object(q->cache, ir, &u->object, &u->size, &u->reused, NULL, error, error_size);
+    else if (!rc)
+        rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
     snx_ir_free(ir);
     return rc;
 }
@@ -420,7 +558,7 @@ static void worker(Queue* q) {
         }
         if (label) {
             sprintf(name, "code_%03lu", (unsigned long)i);
-            snx_report_unit(q->done, q->count + 1, name, label, 0, seconds); /* + the descriptor */
+            snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
         }
         unlock(q);
         free(label);
@@ -489,13 +627,14 @@ static LLVMValueRef constant(SnxIr* ir, LLVMTypeRef type, const char* name, LLVM
 
 static int emit_descriptor(SnxIr* ir, const Block* blocks, size_t count, const SnxCodegenOptions* options,
                            const SnxProgram* p, char* error, size_t error_size) {
-    static const size_t offsets[12] = {
-        offsetof(SnxArmModule, abi),       offsetof(SnxArmModule, nmods),      offsetof(SnxArmModule, mods),
-        offsetof(SnxArmModule, nentries),  offsetof(SnxArmModule, entry_addr), offsetof(SnxArmModule, entry_fn),
-        offsetof(SnxArmModule, title),     offsetof(SnxArmModule, title_id),   offsetof(SnxArmModule, main_stack),
-        offsetof(SnxArmModule, main_prio), offsetof(SnxArmModule, main_core),  offsetof(SnxArmModule, aspace)};
-    LLVMTypeRef fields[12], type, info, block_type;
-    LLVMValueRef *values, f[12], mod, fn;
+    static const size_t offsets[13] = {
+        offsetof(SnxArmModule, abi),        offsetof(SnxArmModule, nmods),      offsetof(SnxArmModule, mods),
+        offsetof(SnxArmModule, nentries),   offsetof(SnxArmModule, entry_addr), offsetof(SnxArmModule, entry_fn),
+        offsetof(SnxArmModule, title),      offsetof(SnxArmModule, title_id),   offsetof(SnxArmModule, main_stack),
+        offsetof(SnxArmModule, main_prio),  offsetof(SnxArmModule, main_core),  offsetof(SnxArmModule, aspace),
+        offsetof(SnxArmModule, poll_offset)};
+    LLVMTypeRef fields[13], type, info, block_type;
+    LLVMValueRef *values, f[13], mod, fn, poll_offset;
     LLVMTargetDataRef layout;
     size_t n = count ? count : 1, i;
     char name[16];
@@ -506,10 +645,11 @@ static int emit_descriptor(SnxIr* ir, const Block* blocks, size_t count, const S
     fields[2] = fields[4] = fields[5] = fields[6] = ir->t_ptr;
     fields[7] = ir->t_i64;
     for (i = 8; i < 12; ++i) fields[i] = ir->t_i32;
-    type = LLVMStructTypeInContext(ir->ctx, fields, 12, 0);
+    fields[12] = ir->t_ptr;
+    type = LLVMStructTypeInContext(ir->ctx, fields, 13, 0);
     layout = LLVMGetModuleDataLayout(ir->mod);
     ok = LLVMABISizeOfType(layout, type) == sizeof(SnxArmModule);
-    for (i = 0; i < 12; ++i) ok = ok && LLVMOffsetOfElement(layout, type, (unsigned)i) == offsets[i];
+    for (i = 0; i < 13; ++i) ok = ok && LLVMOffsetOfElement(layout, type, (unsigned)i) == offsets[i];
     if (!ok) {
         snprintf(error, error_size, "SnxArmModule layout differs between the recompiler and the LLVM target");
         return -1;
@@ -539,7 +679,12 @@ static int emit_descriptor(SnxIr* ir, const Block* blocks, size_t count, const S
     f[9] = ir_i32(ir, p->npdm.prio);
     f[10] = ir_i32(ir, p->npdm.core);
     f[11] = ir_i32(ir, p->npdm.aspace);
-    mod = constant(ir, type, "MOD", LLVMConstStructInContext(ir->ctx, f, 12, 0));
+    /* the blocks' poll offset (chain_block), which arm_module writes */
+    poll_offset = LLVMAddGlobal(ir->mod, ir->t_i64, POLL_OFFSET);
+    LLVMSetVisibility(poll_offset, LLVMHiddenVisibility);
+    LLVMSetInitializer(poll_offset, ir_i64(ir, 0));
+    f[12] = poll_offset;
+    mod = constant(ir, type, "MOD", LLVMConstStructInContext(ir->ctx, f, 13, 0));
     /* SNX_EXPORT const SnxArmModule* snx_module_arm(void) */
     fn = LLVMAddFunction(ir->mod, "snx_module_arm", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
     if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
@@ -593,7 +738,23 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     }
     q.program = loaded;
     q.blocks = d.blocks;
+    q.nblocks = d.count;
     q.build = build;
+    /* the unit cache, as module_llvm.c's: a unit compiled before is taken from it, a recompile cut short's too */
+    if (build->unit_cache) {
+        char llvm[128];
+        SnxUnitIdentity identity;
+        snx_unit_cache_llvm(llvm, sizeof llvm);
+        identity.llvm = llvm;
+        identity.opt = build->opt;
+        identity.tuning = build->tuning ? build->tuning->text : NULL;
+        q.cache = snx_unit_cache_open(build->unit_cache, &identity, error, sizeof error);
+        if (!q.cache) {
+            snx_error("unit cache: %s", error);
+            goto done;
+        }
+        if (build->unit_cache_disk) snx_unit_cache_disk(q.cache, build->unit_cache_disk);
+    }
     if (!options->quiet)
         printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
     if (q.count) run(&q, build->jobs);
@@ -643,6 +804,17 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     }
     if (!options->quiet)
         printf("LLVM module: %.1f MB, %lu AArch32 blocks\n", (double)linked.size / 1000000.0, (unsigned long)d.count);
+    if (q.cache) {
+        SnxU64 bytes = 0;
+        size_t reused = 0;
+        for (i = 0; i < q.count; ++i)
+            if (q.units[i].reused) {
+                ++reused;
+                bytes += q.units[i].size;
+            }
+        snx_unit_cache_report(stdout, build->unit_cache, build->unit_cache_limit, reused, q.count, bytes,
+                              options->quiet);
+    }
     rc = 0;
 done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
@@ -656,5 +828,6 @@ done:
     free(d.set);
     free(d.work);
     snx_ir_free(ir);
+    snx_unit_cache_close(q.cache);
     return rc;
 }

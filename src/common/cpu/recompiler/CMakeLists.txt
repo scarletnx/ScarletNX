@@ -11,7 +11,7 @@ option(SNX_RECOMPILER_SHARED "Also build the recompiler as a shared library (lib
 # artifacts are made from, keeps to the emulator unless asked
 option(SNX_RECOMPILER_INSTALL "Install the recompiler library, its headers and its CMake package" ${SNX_TOOLS_ONLY})
 include(GNUInstallDirs)
-set(snx_recompiler_parts scarletnx-common snx_llvm snx_arm_llvm snx_arm_rt)
+set(snx_recompiler_parts scarletnx-common snx_llvm snx_arm_llvm snx_arm_decode snx_arm_rt)
 set(snx_recompiler_external ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
 set(snx_recompiler_defines _CRT_SECURE_NO_WARNINGS)
 if(WIN32)

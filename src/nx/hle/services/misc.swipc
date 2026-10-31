@@ -30,6 +30,8 @@ interface nn::lm::ILogger {
 }
 
 # ================================================================ pctl
+type nn::pctl::PlayTimerRemainingTimeDisplayInfo = bytes<0x18, 8>;
+
 interface nn::pctl::detail::ipc::IParentalControlServiceFactory is pctl, pctl:a, pctl:s, pctl:r {
     [0] CreateService(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
     [1] CreateServiceWithoutInitialize(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
@@ -48,6 +50,8 @@ interface nn::pctl::detail::ipc::IParentalControlService {
     [1432] GetSynchronizationEvent() -> handle<copy, event> event;
     @stub [1453] IsPlayTimerEnabled() -> b8 enabled;
     [1457] GetPlayTimerEventToRequestSuspension() -> handle<copy, event> event;
+    [1459] GetPlayTimerRemainingTimeDisplayInfo() -> nn::pctl::PlayTimerRemainingTimeDisplayInfo info;
+    [1460] Unknown1460(u8 unknown) -> nn::pctl::PlayTimerRemainingTimeDisplayInfo info;
     [1473] GetUnlinkedEvent() -> handle<copy, event> event;
 }
 

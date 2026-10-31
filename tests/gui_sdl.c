@@ -150,6 +150,20 @@ static void swipe_px(App* app, int x, int y, int to_x, int to_y) {
     e.tfinger.y = wy / (float)h;
     event(app, &e);
 }
+/* a finger's event (down, motion, up) at render pixel x, y; finger 7, as swipe_px's */
+static void finger_px(App* app, SDL_EventType type, int x, int y) {
+    SDL_Event e = {0};
+    float wx, wy;
+    int w, h;
+    layout(app);
+    SDL_GetWindowSize(app->window, &w, &h);
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (float)x + 0.5f, (float)y + 0.5f, &wx, &wy));
+    e.type = type;
+    e.tfinger.fingerID = 7;
+    e.tfinger.x = wx / (float)w;
+    e.tfinger.y = wy / (float)h;
+    event(app, &e);
+}
 /* a key with a modifier held, and text as a keyboard types it */
 static void key_with(App* app, SDL_Keycode code, SDL_Keymod mod) {
     SDL_Event e = {0};
@@ -1756,7 +1770,7 @@ static void grid_view(App* app, const char* temporary) {
         text_px_is(app, box.x + box.w - 2 * cell_w(app), ui_text_y(app, box), "\x1e\x1f", soft, page);
     }
     /* big letters: the lines that show fewer than there are; the focus on the last game, the lines from a line's
-       first so it shows, the first lines scrolled out */
+       first so it shows, the first lines scrolled out, the last line at the bottom (the first cut where it is) */
     app->menu.text_size = 4;
     layout(app);
     app->browser.selected = app->browser.head + app->games.count - 1;
@@ -1765,6 +1779,8 @@ static void grid_view(App* app, const char* temporary) {
         size_t first = g.grid_lists[UI_GAMES_GRID_TILES].first, focus = g.grid_lists[UI_GAMES_GRID_TILES].focus;
         bool placed = false;
         ui_games_grid_flow(g.grid_rects, app->scale, UI_GAMES_GRID_TILES, &f);
+        f.area.y -= g.grid_lists[UI_GAMES_GRID_TILES].shift; /* as drawn */
+        f.area.h += g.grid_lists[UI_GAMES_GRID_TILES].shift;
         assert(focus == rows - 1 && first > 0);
         for (r = first; r <= focus && ui_flow_next(&f, games_row_label(app, r), &at); ++r) placed = r == focus;
         assert(placed); /* the focus fits */
@@ -1801,6 +1817,29 @@ static void grid_view(App* app, const char* temporary) {
         key(app, SDLK_LEFT);
         games_boxes(app, &g);
         assert(g.grid_lists[UI_GAMES_GRID_TILES].focus == focus - 1 && g.grid_lists[UI_GAMES_GRID_TILES].first > 0);
+    }
+    /* a finger's drag down on the tiles moves them with it, the first line cut where it is, the focus where it was;
+       the lift turns no page and taps nothing */
+    render(app);
+    games_boxes(app, &g);
+    {
+        GuiRect area = g.grid_rects[UI_GAMES_GRID_TILES];
+        size_t focus = g.grid_lists[UI_GAMES_GRID_TILES].focus;
+        float from = app->list_y[GUI_LIST_GRID], to = SDL_max(0.0f, from - (float)(area.h / 4));
+        int top, height, bottom;
+        assert(from > 0);
+        finger_px(app, SDL_EVENT_FINGER_DOWN, area.x + 10, area.y + area.h / 2);
+        finger_px(app, SDL_EVENT_FINGER_MOTION, area.x + 10, area.y + area.h / 2 + area.h / 4);
+        assert(app->list_held == GUI_LIST_GRID + 1 && app->list_y[GUI_LIST_GRID] == to);
+        app->clock = 5000;
+        finger_px(app, SDL_EVENT_FINGER_UP, area.x + 10, area.y + area.h / 2 + area.h / 4);
+        app->list_v[GUI_LIST_GRID] = 0;
+        render(app);
+        games_boxes(app, &g);
+        grid_extent(app, &g, g.grid_lists[UI_GAMES_GRID_TILES].first, &top, &height, &bottom);
+        assert(!app->list_held && !app->menu.running && g.grid_lists[UI_GAMES_GRID_TILES].focus == focus &&
+               (float)(top + g.grid_lists[UI_GAMES_GRID_TILES].shift) == to);
+        app->clock = 0;
     }
     /* the pointer on a tile of a line that shows moves no line, where a key puts the focus's line in the middle: at a
        size five lines show at, the focus on a game by the keys, the last tile shown hovered, then Left and Right back
@@ -2414,31 +2453,28 @@ static void pickers_asked(App* app, const char* temporary, const char* self) {
     focus_game(app, "picker game");
     key(app, SDLK_M);
     assert(app->addons_shown && addons_row(app, 0) == ROW_ADD_MOD && !app->addons_focus);
-    /* over Games, whose own swipes turn its pages, a finger's drag and the wheel move the box's focus, a row at a
-       time, stopping at its last row and its first where the keys go round: the rows a phone has no room for come
-       into view. The finger's lift neither turns Games' page nor taps a row */
+    /* over Games, a finger's drag on the box's rows, which all show, scrolls none of them nor moves the focus; its
+       lift neither scrolls Games nor taps a row. The wheel moves the box's focus, a row at a time, stopping at its
+       last row and its first where the keys go round */
     {
         SDL_Event e = {0};
+        GuiAddonsBoxes d;
+        GuiRect first;
         int count = addons_rows(app);
         size_t page = app->browser.page, selected = app->browser.selected;
-        float row = drag_row(app);
-        assert(count >= 3);
-        e.tfinger.fingerID = 7;
-        e.tfinger.x = 0.5f;
-        e.tfinger.y = 0.1f;
-        e.type = SDL_EVENT_FINGER_DOWN;
-        event(app, &e);
-        e.type = SDL_EVENT_FINGER_MOTION;
-        e.tfinger.y = 0.1f + 1.5f * row;
-        event(app, &e);
-        assert(app->addons_shown && app->addons_focus == 1);
-        e.tfinger.y = 0.1f + ((float)count + 1.5f) * row;
-        event(app, &e);
-        assert(app->addons_focus == count - 1);
-        e.type = SDL_EVENT_FINGER_UP;
-        event(app, &e);
-        assert(app->addons_shown && app->addons_focus == count - 1 && !app->finger && !app->confirm.shown);
-        assert(app->browser.page == page && app->browser.selected == selected && !app->message[0]);
+        float games_y;
+        render(app);
+        games_y = app->games_y; /* gliding to the focus until a frame moves it on */
+        addons_boxes(app, &d);
+        first = ui_addons_row(d.rects, app->scale, UI_ADDONS_ROWS, 0);
+        assert(count >= 3 && ui_addons_shown(d.rects, app->scale, UI_ADDONS_ROWS) >= (size_t)count);
+        finger_px(app, SDL_EVENT_FINGER_DOWN, first.x + 20, first.y + 2);
+        finger_px(app, SDL_EVENT_FINGER_MOTION, first.x + 20, first.y + 2 + 3 * first.h);
+        assert(app->addons_shown && app->addons_focus == 0 && app->list_held == GUI_LIST_ADDONS + 1);
+        finger_px(app, SDL_EVENT_FINGER_UP, first.x + 20, first.y + 2 + 3 * first.h);
+        assert(app->addons_shown && !app->addons_focus && !app->finger && !app->confirm.shown && !app->list_held);
+        assert(app->browser.page == page && app->browser.selected == selected && !app->message[0] &&
+               app->games_y == games_y && !app->list_y[GUI_LIST_ADDONS]);
         e = (SDL_Event){0};
         e.type = SDL_EVENT_MOUSE_WHEEL;
         e.wheel.integer_y = count + 2;
@@ -5021,6 +5057,34 @@ int main(int argc, char** argv) {
             assert(!ui_form_side_rows_get_row_info(&app, 9 + GUI_FOLDER_GROUPS + 3, 100, &info));
             assert(ui_form_side_rows_get_row_info(&app, 0, 100, &info) && info.attr == UI_ATTR_TITLE &&
                    !strcmp(info.label, "App Folders"));
+        }
+        { /* a row as drawn: up by its list's shift, and beside the scroll bar while its rows do not all show */
+            UiList l = f.right_lists[UI_FORM_SIDE_ROWS];
+            GuiRect row = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 1), drawn;
+            l.count = ui_form_side_shown(f.right, app.scale, UI_FORM_SIDE_ROWS) + 1;
+            l.shift = 3;
+            drawn = row_drawn(&app, ui_form_side_row, ui_form_side_shown, f.right, UI_FORM_SIDE_ROWS, &l, 1);
+            assert(drawn.x == row.x && drawn.y == row.y - 3 && drawn.w == row.w - bar_room(&app) && drawn.h == row.h);
+            l.count = 1;
+            drawn = row_drawn(&app, ui_form_side_row, ui_form_side_shown, f.right, UI_FORM_SIDE_ROWS, &l, 1);
+            assert(drawn.w == row.w);
+        }
+        { /* the letters at their biggest, the rows taller than the screen: a scroll bar at their right, each group's
+             box ending at the rows' end beside it */
+            int text_size = app.menu.text_size;
+            const GuiBar* bar;
+            GuiRect a;
+            app.menu.text_size = GUI_TEXT_MAX;
+            render(&app);
+            form_boxes(&app, &f);
+            bar = bar_of(&app, GUI_LIST_FORM_SIDE);
+            a = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 1); /* Data, under App Folders */
+            assert(bar && bar->track.w && !f.right_lists[UI_FORM_SIDE_ROWS].first);
+            assert(same_colour(pixel(&app, (float)(a.x + a.w - bar_room(&app) - 1), (float)(a.y + a.h)),
+                               rgb(app.theme.dim)));
+            app.menu.text_size = text_size;
+            render(&app);
+            form_boxes(&app, &f);
         }
         render(&app);
         { /* each group's title: in the page's colour on a band of ink in a theme of filled boxes, else in ink */
@@ -8820,87 +8884,175 @@ int main(int argc, char** argv) {
         }
         app.menu.selected = GUI_SWITCH;
         render(&app);
-        /* a drag down moves the focus down row by row while the finger goes, not all at once when it lifts */
+        menu_boxes(&app, &m);
+        /* a drag up moves the rows with the finger, the focus where it was, the first one cut where it is; let go
+           fast they glide on, slowing, and stop. The pointer on a row that shows takes the focus and moves nothing;
+           a key's focus brings the list to it again */
         {
-            SDL_Event e = {0};
-            float row = drag_row(&app); /* a row of the menu's */
-            e.tfinger.fingerID = 7;
-            e.tfinger.x = 0.5f;
-            e.tfinger.y = 0.2f;
-            e.type = SDL_EVENT_FINGER_DOWN;
-            event(&app, &e);
-            e.type = SDL_EVENT_FINGER_MOTION;
-            e.tfinger.y = 0.2f + 1.5f * row;
-            event(&app, &e);
-            assert(app.menu.selected == GUI_LINUX);
-            e.tfinger.y = 0.2f + 3.2f * row;
-            event(&app, &e);
-            assert(app.menu.selected == GUI_VITA);
-            e.type = SDL_EVENT_FINGER_UP;
-            event(&app, &e);
-            assert(app.menu.selected == GUI_VITA && !app.finger);
-            app.menu.selected = GUI_SWITCH;
+            GuiRect r0 = ui_menu_row(m.rects, app.scale, UI_MENU_ENTRIES, 0),
+                    r1 = ui_menu_row(m.rects, app.scale, UI_MENU_ENTRIES, 1);
+            int step = r1.y - r0.y, x = r0.x + 20, y = r0.y + 3 * step + 2;
+            float glided;
+            assert(!m.lists[UI_MENU_ENTRIES].first && !app.list_held);
+            /* sideways, farther across than up, a drag scrolls nothing */
+            finger_px(&app, SDL_EVENT_FINGER_DOWN, x, y);
+            finger_px(&app, SDL_EVENT_FINGER_MOTION, x + 3 * step, y - step);
+            assert(!app.list_held && !app.list_y[GUI_LIST_MENU]);
+            finger_px(&app, SDL_EVENT_FINGER_CANCELED, x + 3 * step, y - step);
+            app.clock = 1000;
+            finger_px(&app, SDL_EVENT_FINGER_DOWN, x, y);
+            app.clock = 1016;
+            finger_px(&app, SDL_EVENT_FINGER_MOTION, x, y - step - step / 2);
+            assert(app.list_held == GUI_LIST_MENU + 1 && app.list_y[GUI_LIST_MENU] == (float)(step + step / 2));
             render(&app);
+            menu_boxes(&app, &m);
+            assert(m.lists[UI_MENU_ENTRIES].first == 1 && m.lists[UI_MENU_ENTRIES].shift == step / 2 &&
+                   app.menu.selected == GUI_SWITCH);
+            finger_px(&app, SDL_EVENT_FINGER_UP, x, y - step - step / 2); /* at once: flung, no tap */
+            assert(!app.list_held && !app.finger && app.list_v[GUI_LIST_MENU] > 0 && !app.menu.running &&
+                   app.menu.view == GUI_LOAD_NONE);
+            { /* a finger down on the gliding rows stops them, and its lift taps nothing */
+                float speed = app.list_v[GUI_LIST_MENU];
+                finger_px(&app, SDL_EVENT_FINGER_DOWN, x, y);
+                assert(!app.list_v[GUI_LIST_MENU]);
+                finger_px(&app, SDL_EVENT_FINGER_CANCELED, x, y);
+                assert(!app.finger && !app.menu.running && app.menu.view == GUI_LOAD_NONE);
+                app.list_v[GUI_LIST_MENU] = speed;
+            }
+            app.clock = 1100;
+            render(&app);
+            glided = app.list_y[GUI_LIST_MENU];
+            assert(glided > (float)(step + step / 2));
+            for (int i = 0; i < 100 && app.list_v[GUI_LIST_MENU] != 0; ++i) {
+                app.clock += 50;
+                render(&app);
+            }
+            assert(app.list_v[GUI_LIST_MENU] == 0 && app.list_y[GUI_LIST_MENU] >= glided &&
+                   app.list_y[GUI_LIST_MENU] <= app.list_max[GUI_LIST_MENU] && app.menu.selected == GUI_SWITCH);
+            /* the list glided to its last rows or near: its top row that shows whole hovered, nothing moves */
+            app.list_y[GUI_LIST_MENU] = (float)(step + step / 2);
+            render(&app);
+            menu_boxes(&app, &m);
+            {
+                GuiRect b = ui_menu_row(m.rects, app.scale, UI_MENU_ENTRIES, 1);
+                b.y -= m.lists[UI_MENU_ENTRIES].shift;
+                mouse_px(&app, b.x + b.w / 2, b.y + b.h / 2, false);
+                render(&app);
+                menu_boxes(&app, &m);
+                assert(app.menu.selected == GUI_SWITCH + 2 && m.lists[UI_MENU_ENTRIES].first == 1 &&
+                       m.lists[UI_MENU_ENTRIES].shift == step / 2);
+            }
+            app.clock = 0;
+            app.menu.selected = GUI_SWITCH;
+            app.pointed = false;
+            render(&app);
+            menu_boxes(&app, &m);
+            assert(!m.lists[UI_MENU_ENTRIES].first && !m.lists[UI_MENU_ENTRIES].shift);
         }
         app.side_box = GUI_SIDE_AUTO;
         assert(SDL_SetWindowSize(app.window, 1280, 1024)); /* back to the window the checks below were made for */
         SDL_SyncWindow(app.window);
         render(&app);
-        /* its rows all fitting, the focus follows a drag too, a row of the menu's, not of text, each time */
+        /* its rows all fitting, a drag scrolls nothing, moves no focus and taps nothing */
         {
-            SDL_Event e = {0};
             GuiMenuBoxes all;
+            GuiRect r0;
             int text_size = app.menu.text_size;
-            float row;
-            app.menu.text_size = 2; /* a row past the 5% of the window a drag starts at */
+            app.menu.text_size = 2;
+            app.menu.selected = GUI_SWITCH;
             render(&app);
             menu_boxes(&app, &all);
             assert(ui_menu_shown(all.rects, app.scale, UI_MENU_ENTRIES) >= GUI_ITEM_COUNT);
-            row = drag_row(&app);
-            assert(row > 1.0f / (float)app.rows);
-            e.tfinger.fingerID = 7;
-            e.tfinger.x = 0.5f;
-            e.tfinger.y = 0.2f;
-            e.type = SDL_EVENT_FINGER_DOWN;
-            event(&app, &e);
-            e.type = SDL_EVENT_FINGER_MOTION;
-            e.tfinger.y = 0.2f + 2.9f * row; /* 2 of the menu's rows, which 3 of text would make 3 */
-            event(&app, &e);
-            assert(app.menu.selected == GUI_3DS);
-            e.type = SDL_EVENT_FINGER_UP;
-            event(&app, &e);
-            assert(app.menu.selected == GUI_3DS && !app.finger);
-            /* on the Settings a row of the list the keys move in: the groups', then an open group's */
+            r0 = ui_menu_row(all.rects, app.scale, UI_MENU_ENTRIES, 0);
+            swipe_px(&app, r0.x + 20, r0.y + 2 * r0.h, r0.x + 20, r0.y + 5 * r0.h);
+            menu_boxes(&app, &all);
+            assert(app.menu.selected == GUI_SWITCH && !all.lists[UI_MENU_ENTRIES].first && !app.finger &&
+                   !app.menu.running && app.menu.view == GUI_LOAD_NONE);
+            /* on the Settings, the side panel a list: a finger's drag onto it opens the group in focus, its rows
+               taking the focus and the drag; back onto the groups, they take them back, the group still in focus,
+               which the panel shows again. The lift taps nothing */
             open_settings(&app);
-            for (int open = 0; open < 2; ++open) {
+            for (app.editor.row = 1; app.editor.row < app.groups && app.group_rows[app.editor.row] < 4;
+                 ++app.editor.row) {}
+            assert(app.editor.row < app.groups);
+            {
                 GuiFormBoxes f;
-                GuiRect first, second;
-                int width, height;
+                GuiRect side, groups;
+                int group = app.editor.row;
                 render(&app);
                 form_boxes(&app, &f);
-                area(&app, &width, &height);
-                first = form_row_box(&app, &f, open, 0);
-                second = form_row_box(&app, &f, open, 1);
-                row = drag_row(&app);
-                assert(row == (float)(second.y - first.y) / (float)height && row > 1.0f / (float)app.rows);
-                assert(app.editor.row == 0 && gui_editor_rows(&app.editor) > 3);
-                e.type = SDL_EVENT_FINGER_DOWN;
-                e.tfinger.y = 0.2f;
-                event(&app, &e);
-                e.type = SDL_EVENT_FINGER_MOTION;
-                e.tfinger.y = 0.2f + 2.9f * row; /* 2 of its rows, which 3 of text would make 3 */
-                event(&app, &e);
-                assert(app.editor.row == 2);
-                e.type = SDL_EVENT_FINGER_UP;
-                event(&app, &e);
-                assert(app.editor.row == 2 && !app.finger);
-                if (!open) {
-                    for (app.editor.row = 1; app.editor.row < app.groups && app.group_rows[app.editor.row] < 4;
-                         ++app.editor.row) {}
-                    assert(app.editor.row < app.groups);
-                    key(&app, SDLK_RETURN); /* a group of 4 rows or more */
-                    assert(app.form == GUI_FORM_GROUP);
+                side = form_row_box(&app, &f, true, 0);
+                groups = form_row_box(&app, &f, false, group);
+                assert(side.h && groups.h && app.form == GUI_FORM_SETTINGS);
+                finger_px(&app, SDL_EVENT_FINGER_DOWN, side.x + 20, side.y + 2);
+                finger_px(&app, SDL_EVENT_FINGER_MOTION, side.x + 20, side.y + 2 + 2 * side.h);
+                assert(app.form == GUI_FORM_GROUP && app.group == group && app.list_held == GUI_LIST_FORM_SIDE + 1);
+                render(&app);
+                finger_px(&app, SDL_EVENT_FINGER_MOTION, groups.x + 20, side.y + 2 + 2 * side.h);
+                assert(app.form == GUI_FORM_SETTINGS && app.editor.row == group &&
+                       app.list_held == GUI_LIST_FORM_LIST + 1);
+                finger_px(&app, SDL_EVENT_FINGER_UP, groups.x + 20, side.y + 2 + 2 * side.h);
+                assert(app.form == GUI_FORM_SETTINGS && app.editor.row == group && !app.finger && !app.list_held);
+                { /* big letters in a short window (3x, 16 rows), the biggest group's rows past the side panel's
+                     height: its scroll bar there, which a press opens the group from, as a finger's drag does */
+                    int was = app.menu.text_size, biggest = 0;
+                    const GuiBar* bar;
+                    SDL_Event up = {0};
+                    for (int g = 1; g < app.groups; ++g)
+                        if (app.group_rows[g] > app.group_rows[biggest]) biggest = g;
+                    app.editor.row = biggest;
+                    app.menu.text_size = GUI_TEXT_MAX - 1;
+                    assert(SDL_SetWindowSize(app.window, 1280, 768));
+                    SDL_SyncWindow(app.window);
+                    render(&app);
+                    bar = bar_of(&app, GUI_LIST_FORM_SIDE);
+                    assert(app.form == GUI_FORM_SETTINGS && bar && bar->track.w);
+                    mouse_px(&app, bar->track.x + 1, bar->track.y + 1, true);
+                    assert(app.form != GUI_FORM_SETTINGS && app.group == biggest && app.bar_hold);
+                    up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    up.button.button = SDL_BUTTON_LEFT;
+                    event(&app, &up);
+                    key(&app, SDLK_ESCAPE);
+                    assert(app.form == GUI_FORM_SETTINGS && app.editor.row == biggest);
+                    app.editor.row = group;
+                    app.menu.text_size = was;
+                    assert(SDL_SetWindowSize(app.window, 1280, 1024));
+                    SDL_SyncWindow(app.window);
+                    render(&app);
                 }
+                { /* the groups and the side panel beside them one screen: going between them no new screen's fade
+                     (which blinked as a finger crossed); with the side box off the group's rows take the screen,
+                     which fades in */
+                    int was = app.side_box;
+                    app.clock = 5000;
+                    app.switch_ms = 0;
+                    key(&app, SDLK_RETURN);
+                    render(&app);
+                    assert(app.form == GUI_FORM_GROUP && app.form_beside && !app.switch_ms);
+                    key(&app, SDLK_ESCAPE);
+                    render(&app);
+                    assert(app.form == GUI_FORM_SETTINGS && !app.switch_ms);
+                    key(&app, SDLK_DOWN); /* another group's rows, the same screen */
+                    render(&app);
+                    key(&app, SDLK_RETURN);
+                    render(&app);
+                    assert(app.form != GUI_FORM_SETTINGS && app.group == group + 1 && !app.switch_ms);
+                    key(&app, SDLK_ESCAPE);
+                    key(&app, SDLK_UP);
+                    render(&app);
+                    assert(app.form == GUI_FORM_SETTINGS && app.editor.row == group && !app.switch_ms);
+                    app.side_box = GUI_SIDE_OFF;
+                    render(&app);
+                    key(&app, SDLK_RETURN);
+                    render(&app);
+                    assert(app.form == GUI_FORM_GROUP && !app.form_beside && app.switch_ms == 5000);
+                    key(&app, SDLK_ESCAPE);
+                    app.side_box = was;
+                    app.clock = 0;
+                    render(&app);
+                }
+                key(&app, SDLK_RETURN); /* the group, of 4 rows or more */
+                assert(app.form == GUI_FORM_GROUP);
             }
             /* a group open, wide enough for the side box (3x): the groups beside its rows, the open one in the
                focus's look. Below 45 columns its rows take the whole column (ui.txt's Screen); a list too long for
@@ -9087,6 +9239,42 @@ int main(int argc, char** argv) {
             app.editor.row = 0;
             render(&app);
             form_boxes(&app, &f);
+            { /* the keys scrolled between two rows (a finger's): a colour row's swatch up with its row, in a colour
+                 nothing else on the screen has */
+                const UiList* l;
+                const GuiThemeKey* key_of = NULL;
+                GuiRgb *colour, was, unique = {0x12, 0x9a, 0x56};
+                GuiRect row, b;
+                int k, cw = cell_w(&app), half = cell_h(&app) / 2, x, shown;
+                char line[700];
+                shown = (int)ui_form_list_shown(f.left, app.scale, UI_FORM_LIST_ROWS);
+                for (k = 0;
+                     k < shown && (!(key_of = gui_editor_key_of(&app.editor, k)) || key_of->type != GUI_KEY_COLOUR);
+                     ++k) {}
+                assert(k < shown && key_of);
+                colour =
+                    (GuiRgb*)((char*)(app.editor.object ? app.editor.object : (char*)&app.editor.theme) + key_of->at);
+                was = *colour;
+                *colour = unique;
+                app.list_y[GUI_LIST_FORM_LIST] = (float)half;
+                app.bar_focus[GUI_LIST_FORM_LIST] = SIZE_MAX;
+                render(&app);
+                form_boxes(&app, &f);
+                l = &f.left_lists[UI_FORM_LIST_ROWS];
+                assert(!l->first && l->shift == half);
+                row = row_drawn(&app, ui_form_list_row, ui_form_list_shown, f.left, UI_FORM_LIST_ROWS, l, (size_t)k);
+                b = ui_row_box(&app, row);
+                form_line(&app, &app.editor, k, form_labels(&app.editor), form_room(&app, row.w), line, sizeof line);
+                x = b.x + cw / 2 + gui_text_cols(line) * cw + cw;
+                assert(x + 2 * cw <= b.x + b.w - cw);
+                assert(same_colour(pixel(&app, (float)(x + cw), (float)(ui_text_y(&app, b) + 3 * app.scale)),
+                                   rgb(unique)));
+                *colour = was;
+                app.list_y[GUI_LIST_FORM_LIST] = 0;
+                app.bar_focus[GUI_LIST_FORM_LIST] = 0;
+                render(&app);
+                form_boxes(&app, &f);
+            }
             preview = inner(&app, f.place.side);
             preview.y += head_h(&app) + 2 * app.scale; /* under the pane's head */
             /* page = #102030, picked: Enter opens the picker over the keys, Left/Right and the pages step a channel,
@@ -10697,6 +10885,20 @@ int main(int argc, char** argv) {
                        !same_colour(
                            pixel(&app, (float)(xuji.x + xuji.w - 2 * s - side / 2), (float)(xuji.y + 2 * s + side / 2)),
                            rgb(app.theme.dim)));
+                { /* the rows scrolled between two rows, as a finger leaves a box with more users than it shows: each
+                     picture up with its row (list_max as such a box's, which this frame's drawing puts back) */
+                    int up = 6 * s;
+                    app.list_max[GUI_LIST_USERS] = 100.0f;
+                    app.list_y[GUI_LIST_USERS] = (float)up;
+                    app.bar_focus[GUI_LIST_USERS] = SIZE_MAX;
+                    render(&app);
+                    assert(!same_colour(
+                        pixel(&app, (float)(xuji.x + xuji.w - 2 * s - side / 2), (float)(xuji.y + 2 * s - up + 1)),
+                        rgb(app.theme.dim)));
+                    app.list_y[GUI_LIST_USERS] = 0;
+                    app.bar_focus[GUI_LIST_USERS] = 0;
+                    render(&app);
+                }
                 point(&app, xuji, false);
                 assert(app.users_shown && app.users_focus == 1 && app.user == 1);
                 render(&app);
@@ -10927,8 +11129,7 @@ int main(int argc, char** argv) {
     app.menu.quit = false;
     app.closing_ms = 0;
     /* fingers: a tap takes an entry anywhere across its row, the cursor's margin too, as a click does (the cursor is
-       drawn inside the row); a drag is no tap, nor a second finger; a swipe across turns the games' pages; back is
-       ESC */
+       drawn inside the row); a drag is no tap, nor a second finger; back is ESC */
     {
         GuiMenuBoxes m;
         GuiRect b;

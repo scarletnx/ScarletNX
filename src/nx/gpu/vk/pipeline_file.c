@@ -12,6 +12,9 @@
 #if !defined(_WIN32)
 #include <unistd.h> /* getpid */
 #endif
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <sys/mman.h> /* posix_madvise */
+#endif
 
 #define PF_MAGIC   "SNXVKSH\n"
 #define PF_VERSION 2 /* 2: PF_SOURCE records, and a key whose guest part comes first */
@@ -47,6 +50,62 @@ static u64 pf_get64(const u8* p) {
     memcpy(&v, p, 8);
     return v;
 }
+
+#if defined(__linux__)
+/* Independent records can be checked together. Ranges end at record boundaries and callbacks still run in file
+   order, stopping at the earliest bad record. No Vulkan object or translator state is touched by these workers. */
+typedef struct {
+    const u8* bytes;
+    size_t at[65], bad[64];
+    u32 count, next;
+} PfChecks;
+static void* pf_check_worker(void* arg) {
+    PfChecks* c = arg;
+    for (;;) {
+        u32 job = __atomic_fetch_add(&c->next, 1, __ATOMIC_RELAXED);
+        if (job >= c->count) break;
+        size_t at = c->at[job], end = c->at[job + 1];
+        while (at < end) {
+            u32 type = pf_get32(c->bytes + at), len = pf_get32(c->bytes + at + 4);
+            u64 h = pf_end(pf_mix(pf_start(type, len), c->bytes + at + PF_REC, len));
+            if (h != pf_get64(c->bytes + at + 8)) break;
+            at += PF_REC + len;
+        }
+        c->bad[job] = at;
+    }
+    return NULL;
+}
+/* A large warm file only: the small files and other platforms keep the serial checks. The caller includes the
+   original file size when reporting a damaged tail, even though only the checked prefix goes to pf_read. */
+static size_t pf_check_parallel(const u8* bytes, size_t start, size_t size, int* checked) {
+    int ids[8], n;
+    *checked = 0;
+    if (size - start < (8u << 20) || (n = plat_cpus(ids, 8)) < 2) return size;
+    if (n > 8) n = 8;
+    /* At most two workers during background preparation, leaving the guest and pipeline workers CPU time. */
+    if (g_settings.prepare_shaders != 2 && n > 2) n = 2;
+    PfChecks c = {.bytes = bytes, .at = {start}};
+    size_t target = (size - start) / ((size_t)n * 8), at = start;
+    while (size - at >= PF_REC) {
+        u32 len = pf_get32(bytes + at + 4);
+        if (len % 8 || len > size - at - PF_REC) break;
+        at += PF_REC + len;
+        if (c.count < 63 && at - c.at[c.count] >= target) c.at[++c.count] = at;
+    }
+    if (at != c.at[c.count]) c.at[++c.count] = at;
+    if (!c.count) return start;
+    pthread_t threads[7];
+    unsigned made = 0;
+    for (int i = 1; i < n; i++)
+        if (!pthread_create(&threads[made], NULL, pf_check_worker, &c)) made++;
+    pf_check_worker(&c);
+    for (unsigned i = 0; i < made; i++) pthread_join(threads[i], NULL);
+    for (u32 i = 0; i < c.count; i++)
+        if (c.bad[i] < c.at[i + 1] && c.bad[i] < at) at = c.bad[i];
+    *checked = 1;
+    return at;
+}
+#endif
 
 /* the module's slot in the map: its own, or the free one where it would go */
 static PfMod* pf_slot(PfMod* map, u32 cap, u64 module) {
@@ -222,7 +281,7 @@ void pf_scan(PFile* pf, u64 what, u64 id) {
 }
 
 /* the records in buf[at, size) in order, to load: how far they go while they check out */
-static size_t pf_read(PFile* pf, const u8* buf, size_t at, size_t size, const PfLoad* load, u32 loaded[2]) {
+static size_t pf_read(PFile* pf, const u8* buf, size_t at, size_t size, const PfLoad* load, u32 loaded[2], int checked) {
     /* by shader record number (from 1, a PF_SHADER or a PF_SHIPREF): its check and module, for the pipeline records
        after it */
     struct {
@@ -234,8 +293,8 @@ static size_t pf_read(PFile* pf, const u8* buf, size_t at, size_t size, const Pf
         const u8* p = buf + at + PF_REC;
         u64 h;
         if (len % 8 || len > size - at - PF_REC) break;
-        h = pf_end(pf_mix(pf_start(type, len), p, len));
-        if (h != pf_get64(buf + at + 8)) break;
+        h = pf_get64(buf + at + 8);
+        if (!checked && h != pf_end(pf_mix(pf_start(type, len), p, len))) break;
         if (type == PF_SHADER || (type == PF_SHIPREF && len == 16)) {
             PfShader s;
             u64 made;
@@ -374,7 +433,9 @@ static size_t pf_same_guest(const u8* buf, size_t size, const char* key, size_t 
 
 void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad* load, u32 loaded[2]) {
     size_t hsize = 0, size = 0, used = 0, old_head = 0;
-    u8 *head = pf_header(key, &hsize), *buf = NULL;
+    u8 *head = pf_header(key, &hsize), *owned = NULL;
+    const u8* buf = NULL;
+    PFileMap view = {0};
     FILE* f;
     long length = -1;
     char why[256] = "";
@@ -385,21 +446,37 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         pm_unlock(&pf->lock);
         return;
     }
-    f = fopen(path, "rb");
-    if (f && !fseek(f, 0, SEEK_END)) length = ftell(f);
-    /* a file of another key, or of more than a full one and a record, is of no use */
-    if (f && length >= (long)hsize && (unsigned long)length <= 2ul * PF_MAX && !fseek(f, 0, SEEK_SET)) {
-        size = (size_t)length;
-        buf = (u8*)malloc(size);
-        SNX_ZONE_V(z, "shader cache read", size);
-        if (buf && fread(buf, 1, size, f) != size) {
-            free(buf);
-            buf = NULL;
+    if (!plat_file_map(&view, path) && view.data) {
+        /* Sequential validation reads the page cache directly. Keep no second file-sized allocation on a warm run. */
+        if (view.size >= hsize && view.size <= 2ull * PF_MAX) {
+            size = (size_t)view.size;
+            length = (long)size;
+            buf = view.data;
+#if defined(__linux__) && !defined(__ANDROID__)
+            if (!view.heap && !view.borrowed && size >= (1u << 20))
+                (void)posix_madvise((void*)view.data, size, POSIX_MADV_SEQUENTIAL);
+#endif
+        } else
+            length = view.size ? 1 : 0;
+    } else {
+        /* Mapping can fail even when ordinary reads work. Keep the buffered path on every platform. */
+        f = fopen(path, "rb");
+        if (f && !fseek(f, 0, SEEK_END)) length = ftell(f);
+        if (f && length >= (long)hsize && (unsigned long)length <= 2ul * PF_MAX && !fseek(f, 0, SEEK_SET)) {
+            size = (size_t)length;
+            owned = (u8*)malloc(size);
+            SNX_ZONE_V(z, "shader cache read", size);
+            if (owned && fread(owned, 1, size, f) == size) buf = owned;
         }
+        if (f) fclose(f);
     }
-    if (f) fclose(f);
     if (buf && !memcmp(buf, head, hsize)) {
-        used = pf_read(pf, buf, hsize, size, load, loaded);
+        int checked = 0;
+        size_t end = size;
+#if defined(__linux__)
+        end = pf_check_parallel(buf, hsize, size, &checked);
+#endif
+        used = pf_read(pf, buf, hsize, end, load, loaded, checked);
         if (used < size)
             LOG("vulkan: %s: the records past %lu of its %lu bytes were cut short or changed, and are dropped\n", path,
                 (unsigned long)used, (unsigned long)size);
@@ -409,6 +486,24 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
             path);
     else if (length > 0)
         LOG("vulkan: %s is of another build, GPU or driver, or unreadable: started over\n", path);
+    if (view.data) {
+        /* A repair or rebuild must retain its bytes before truncating the file. The warm path needs none afterwards.
+           Unmap before opening for writes, also for Windows, whose read-only mapping excludes write handles. */
+        size_t keep = old_head ? size : used < size ? used : 0;
+        if (keep) {
+            owned = malloc(keep);
+            if (!owned) {
+                WARN("vulkan: cannot keep %s for a cache rebuild: left unchanged\n", path);
+                plat_file_unmap(&view);
+                free(head);
+                pm_unlock(&pf->lock);
+                return;
+            }
+            memcpy(owned, buf, keep);
+        }
+        buf = owned;
+        plat_file_unmap(&view);
+    }
     if (used && used == size) {
         pf->f = fopen(path, "ab");
         if (!pf->f) snx_os_error(why, sizeof why);
@@ -437,7 +532,7 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         pf_rebuild(buf, old_head, size, load, loaded);
         load->rebuild = 0;
     }
-    free(buf);
+    free(owned);
 }
 
 unsigned pf_pid(void) {

@@ -24,12 +24,17 @@ static int fail(char* error, size_t size, const char* what, const char* why) {
 }
 
 int llvm_steps_begin(LlvmSteps* s, int jit, int portable, char* error, size_t error_size) {
+    return llvm_steps_begin_opt(s, jit, portable, '2', error, error_size);
+}
+
+int llvm_steps_begin_opt(LlvmSteps* s, int jit, int portable, char opt, char* error, size_t error_size) {
     static SnxIrFeatures plain; /* the architecture alone */
     memset(s, 0, sizeof(*s));
     s->jit = jit;
+    s->opt = opt;
     s->portable = portable;
     if (snx_ir_init(error, error_size)) return -1;
-    s->ir = jit ? snx_ir_new_jit("steps", '2', error, error_size) : snx_ir_new("steps", '2', error, error_size);
+    s->ir = jit ? snx_ir_new_jit("steps", opt, error, error_size) : snx_ir_new("steps", opt, error, error_size);
     if (!s->ir) return -1;
     if (portable) {
         memset(&plain, 0, sizeof(plain));
@@ -124,7 +129,7 @@ int llvm_steps_load(LlvmSteps* s, char* error, size_t error_size) {
     LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, getter, "entry"));
     LLVMBuildRet(ir->b, table);
     if (ir->fallbacks) return fail(error, error_size, "a word has no emitter", NULL);
-    if (snx_ir_object(ir, '2', &object, &object_size, error, error_size)) return -1;
+    if (snx_ir_object(ir, s->opt, &object, &object_size, error, error_size)) return -1;
     snx_ir_free(ir);
     s->ir = NULL;
     inputs[0].data = snx_rtlib_object;
@@ -157,7 +162,20 @@ int llvm_steps_load(LlvmSteps* s, char* error, size_t error_size) {
 #else
         path = snx_path_join(s->dir, "steps.so");
 #endif
-        if (snx_link(inputs, 2, exports, 1, "steps", &linked, error, error_size)) {
+        /* The embedded object belongs to the JIT loader: on Apple it is ELF with Darwin's calling convention.
+           A native module instead needs the helper bitcode compiled to its own object format, as AOT does. */
+        unsigned char* rtlib;
+        size_t rtlib_size;
+        if (snx_ir_rtlib_object(s->opt, &rtlib, &rtlib_size, error, error_size)) {
+            free(object);
+            free(path);
+            return -1;
+        }
+        inputs[0].data = rtlib;
+        inputs[0].size = rtlib_size;
+        int rc = snx_link(inputs, 2, exports, 1, "steps", &linked, error, error_size);
+        free(rtlib);
+        if (rc) {
             free(object);
             free(path);
             return -1;

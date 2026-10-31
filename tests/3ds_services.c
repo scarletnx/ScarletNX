@@ -2,9 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "common/utilities/endian.h"
 #include "common/utilities/users.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #define CMD (SNX_CTR_INITIAL_TLS + 0x80)
 static void put(SnxCtrProcess* p, uint32_t va, uint32_t value) {
@@ -43,6 +45,169 @@ static unsigned count_objects(SnxCtrProcess* p) {
     unsigned n = 0;
     for (unsigned i = 1; i < CTR_OBJECTS; ++i) n += !!p->objects[i].type;
     return n;
+}
+#define FONT_LINEAR_END (CTR_LINEAR + 0x08000000u) /* the old linear heap ends here */
+#define FONT_ALIAS      0x1d000000u
+enum {
+    BLOCK_STATUS = 0,
+    BLOCK_REGION = 4,
+    BLOCK_SIZE = 8,
+    BLOCK_FONT = 0x80,
+    CFNT_FILE_SIZE = 0xc,
+    CFNT_HEADER_SIZE = 6,
+    CFNT_SECTIONS = 0x10,
+    SECTION_SIZE = 4,
+    SECTION_PAYLOAD = 8,
+    FINF_TGLP = 0x10,
+    FINF_CWDH = 0x14,
+    FINF_CMAP = 0x18,
+    CMAP_NEXT = 0x10,
+    CWDH_NEXT = 0x0c,
+    TGLP_SHEET_SIZE = 0x0c,
+    TGLP_SHEET_COUNT = 0x10,
+    TGLP_SHEETS = 0x1c,
+    TGLP_HEADER = 0x20,
+    STATUS_LOADED = 2,
+    REGION_JPN = 1,
+    GET_SHARED_FONT_REQUEST = 0x440000,
+    GET_SHARED_FONT_REPLY = 0x440082,
+    CHAIN_MAX = 8
+};
+static void get_shared_font(SnxCtrProcess* p, uint32_t apt) {
+    uint32_t command[] = {GET_SHARED_FONT_REQUEST};
+    request(p, command, 1);
+    send(p, apt, SNX_CTR_SVC_RETURN, 0);
+}
+static void map_block(SnxCtrProcess* p, uint32_t handle, uint32_t address, unsigned permissions) {
+    uint32_t* r = p->cpu.state.cpu.r;
+    r[0] = handle;
+    r[1] = address;
+    r[2] = permissions;
+    r[3] = 0;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && !r[0]);
+}
+static void unmap_block(SnxCtrProcess* p, uint32_t handle, uint32_t address) {
+    uint32_t* r = p->cpu.state.cpu.r;
+    r[0] = handle;
+    r[1] = address;
+    assert(snx_ctr_svc(p, 0x20) == SNX_CTR_SVC_RETURN && !r[0]);
+}
+/* A service block with pages maps at address 0 at the linear heap address of those pages, as Azahar's SharedMemory::Map
+   maps each block a service makes. The mapping is then removed. */
+static void check_linear_block(SnxCtrProcess* p, uint32_t handle, unsigned permissions) {
+    uint32_t physical = p->objects[snx_ctr_handle_object(p, handle)].data.shared.physical;
+    uint32_t linear = CTR_LINEAR + (physical - CTR_PHYS_BASE), mapped_pa = 0;
+    unsigned mapped_permissions = 0;
+    map_block(p, handle, 0, permissions);
+    assert(snx_ctr_query(p->space, linear, &mapped_pa, &mapped_permissions) == SNX_CTR_MEM_OK &&
+           mapped_pa == physical && mapped_permissions == permissions);
+    unmap_block(p, handle, linear);
+}
+/* Each link of a CMAP or CWDH chain is 0 or names another section of the chain, and one link ends it */
+static void check_chain(const unsigned char* cfnt, const uint32_t* sections, uint32_t count, uint32_t link_at,
+                        uint32_t base) {
+    uint32_t ends = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t link = snx_ld_le32(cfnt + sections[i] + link_at);
+        bool known = !link;
+        ends += !link;
+        for (uint32_t j = 0; j < count; ++j) known = known || link == base + sections[j] + SECTION_PAYLOAD;
+        assert(known);
+    }
+    assert(ends == 1);
+}
+/* GetSharedFont (0x44) serves the stand-in's block and a handle to it. The block lies at the linear heap address of
+   its pages, which come after the application pool, and the SDK maps it by passing address 0. A first call that cannot
+   make the block reserves nothing. A later call serves another handle to the same block, which APT keeps. */
+static void check_shared_font(SnxCtrProcess* p, uint32_t srv, uint32_t apt) {
+    uint32_t held[CTR_HANDLES], held_count = 0;
+    while (!snx_ctr_handle_add(p, snx_ctr_handle_object(p, srv), &held[held_count])) ++held_count;
+    uint32_t shared_before = p->physical_shared;
+    unsigned objects_before = count_objects(p);
+    get_shared_font(p, apt);
+    assert(get(p, 1) == 0xffffffffu && p->physical_shared == shared_before && count_objects(p) == objects_before);
+    for (uint32_t i = 0; i < held_count; ++i) assert(!snx_ctr_handle_close(p, held[i]));
+    get_shared_font(p, apt);
+    assert(get(p, 0) == GET_SHARED_FONT_REPLY && !get(p, 1) && !get(p, 3));
+    uint32_t font_address = get(p, 2), font_handle = get(p, 4);
+    uint32_t font_id = snx_ctr_handle_object(p, font_handle);
+    assert(font_address && font_id && p->objects[font_id].type == CTR_OBJ_SHARED);
+    uint32_t font_physical = p->objects[font_id].data.shared.physical,
+             font_total = p->objects[font_id].data.shared.size;
+    assert(font_address == CTR_LINEAR + (font_physical - CTR_PHYS_BASE));
+    assert(font_physical >= p->physical_end && font_address + font_total <= FONT_LINEAR_END);
+    assert(p->objects[font_id].data.shared.permissions == SNX_CTR_READ);
+    assert(p->objects[font_id].refs == 2); /* the served handle and APT's own */
+    map_block(p, font_handle, 0, SNX_CTR_READ);
+    assert(p->objects[font_id].refs == 3); /* the mapping takes its own */
+    uint32_t font_pa = 0;
+    unsigned font_permissions = 0;
+    assert(snx_ctr_query(p->space, font_address, &font_pa, &font_permissions) == SNX_CTR_MEM_OK &&
+           font_pa == font_physical && font_permissions == SNX_CTR_READ);
+    unsigned char* font = malloc(font_total);
+    assert(font && snx_ctr_read_ram(p->space, font_address, font, font_total) == SNX_CTR_MEM_OK);
+    /* the header, then a CFNU whose sections fill the decompressed size exactly */
+    const unsigned char* cfnt = font + BLOCK_FONT;
+    uint32_t font_size = snx_ld_le32(font + BLOCK_SIZE), sections = snx_ld_le32(cfnt + CFNT_SECTIONS);
+    assert(snx_ld_le32(font + BLOCK_STATUS) == STATUS_LOADED && snx_ld_le32(font + BLOCK_REGION) == REGION_JPN &&
+           !memcmp(cfnt, "CFNU", 4));
+    assert(font_size && BLOCK_FONT + font_size <= font_total && snx_ld_le32(cfnt + CFNT_FILE_SIZE) == font_size);
+    uint32_t cmaps[CHAIN_MAX], cwdhs[CHAIN_MAX], cmap_count = 0, cwdh_count = 0, finf = 0, tglp = 0;
+    uint32_t cursor = snx_ld_le16(cfnt + CFNT_HEADER_SIZE);
+    for (uint32_t i = 0; i < sections; ++i) {
+        assert(font_size - cursor >= SECTION_PAYLOAD);
+        const unsigned char* section = cfnt + cursor;
+        uint32_t bytes = snx_ld_le32(section + SECTION_SIZE);
+        assert(bytes >= SECTION_PAYLOAD && bytes <= font_size - cursor);
+        if (!memcmp(section, "FINF", 4)) {
+            finf = cursor;
+        } else if (!memcmp(section, "TGLP", 4) && !tglp) {
+            tglp = cursor;
+        } else if (!memcmp(section, "CMAP", 4)) {
+            assert(cmap_count < CHAIN_MAX);
+            cmaps[cmap_count++] = cursor;
+        } else if (!memcmp(section, "CWDH", 4)) {
+            assert(cwdh_count < CHAIN_MAX);
+            cwdhs[cwdh_count++] = cursor;
+        }
+        cursor += bytes;
+    }
+    assert(cursor == font_size && finf && tglp && cmap_count && cwdh_count);
+    /* every pointer names its section's payload at the address the block is mapped at, and the chains end */
+    uint32_t base = font_address + BLOCK_FONT;
+    assert(snx_ld_le32(cfnt + finf + FINF_TGLP) == base + tglp + SECTION_PAYLOAD);
+    assert(snx_ld_le32(cfnt + finf + FINF_CWDH) == base + cwdhs[0] + SECTION_PAYLOAD);
+    assert(snx_ld_le32(cfnt + finf + FINF_CMAP) == base + cmaps[0] + SECTION_PAYLOAD);
+    check_chain(cfnt, cmaps, cmap_count, CMAP_NEXT, base);
+    check_chain(cfnt, cwdhs, cwdh_count, CWDH_NEXT, base);
+    uint32_t sheets_address = snx_ld_le32(cfnt + tglp + TGLP_SHEETS);
+    assert(sheets_address >= base + tglp + TGLP_HEADER);
+    uint64_t sheets_end = (uint64_t)(sheets_address - base) +
+                          (uint64_t)snx_ld_le32(cfnt + tglp + TGLP_SHEET_SIZE) *
+                              snx_ld_le16(cfnt + tglp + TGLP_SHEET_COUNT);
+    assert(sheets_end <= font_size);
+    free(font);
+    get_shared_font(p, apt);
+    assert(get(p, 0) == GET_SHARED_FONT_REPLY && !get(p, 1) && get(p, 2) == font_address && !get(p, 3));
+    uint32_t font_handle2 = get(p, 4);
+    assert(font_handle2 && font_handle2 != font_handle && snx_ctr_handle_object(p, font_handle2) == font_id);
+    assert(p->objects[font_id].refs == 4);
+    map_block(p, font_handle2, FONT_ALIAS, SNX_CTR_READ);
+    assert(p->objects[font_id].refs == 5);
+    unsigned char alias[4];
+    assert(snx_ctr_read_ram(p->space, FONT_ALIAS + BLOCK_FONT, alias, sizeof alias) == SNX_CTR_MEM_OK &&
+           !memcmp(alias, "CFNU", 4));
+    assert(snx_ctr_query(p->space, FONT_ALIAS, &font_pa, NULL) == SNX_CTR_MEM_OK && font_pa == font_physical);
+    unmap_block(p, font_handle, font_address);
+    assert(snx_ctr_query(p->space, font_address, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);
+    unmap_block(p, font_handle2, FONT_ALIAS);
+    assert(snx_ctr_query(p->space, FONT_ALIAS, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);
+    assert(p->objects[font_id].refs == 3);
+    assert(!snx_ctr_handle_close(p, font_handle) && !snx_ctr_handle_close(p, font_handle2));
+    assert(p->objects[font_id].refs == 1); /* APT keeps the block */
+    get_shared_font(p, apt);
+    assert(get(p, 2) == font_address && snx_ctr_handle_object(p, get(p, 4)) == font_id);
+    assert(!snx_ctr_handle_close(p, get(p, 4)) && p->objects[font_id].refs == 1);
 }
 int main(void) {
     unsigned char code[0x3000] = {0};
@@ -158,6 +323,7 @@ int main(void) {
         request(p, query, 1);
         send(p, apt, SNX_CTR_SVC_RETURN, 0);
         assert(get(p, 2) == model);
+        check_shared_font(p, srv, apt);
         uint32_t ptm = endpoint(p, srv, "ptm:sysm");
         query[0] = 0x40a0000;
         request(p, query, 1);
@@ -252,6 +418,7 @@ int main(void) {
         assert(snx_ctr_query(p->space, 0x10000000, &physical, &permissions) == SNX_CTR_MEM_OK &&
                physical >= p->physical_end && permissions == 1); /* past the application's pool */
         assert(snx_ctr_write_ram(p->space, 0x10000000, fill, 1) == SNX_CTR_MEM_PERMISSION);
+        check_linear_block(p, shared, SNX_CTR_READ);
         for (unsigned i = 0; i < 6; ++i) {
             assert(!snx_ctr_handle_close(p, get(p, 3 + i)));
             /* the device retains its resources; the shared page mapped above is also kept by its mapping */
@@ -275,6 +442,16 @@ int main(void) {
         request(p, archive, 6);
         send(p, fs, SNX_CTR_SVC_RETURN, 0);
         assert(get(p, 0) == 0x80c0040 && get(p, 1) == 0xc8804464); /* no configured RomFS backing */
+        uint32_t gsp = endpoint(p, srv, "gsp::Gpu"), gsp_event = 0;
+        assert(!snx_ctr_object_create(p, CTR_OBJ_EVENT, &gsp_event));
+        uint32_t relay[] = {0x00130042, 1, 0, gsp_event};
+        request(p, relay, 4);
+        send(p, gsp, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x00130082 && get(p, 3) == 0x10);
+        uint32_t gsp_block = get(p, 4);
+        check_linear_block(p, gsp_block, SNX_CTR_READ | SNX_CTR_WRITE);
+        assert(!snx_ctr_handle_close(p, gsp_block) && !snx_ctr_handle_close(p, gsp_event) &&
+               !snx_ctr_handle_close(p, gsp));
         snx_ctr_process_free(p);
     }
     puts("APT startup, real lock/events, grouped handles, checked buffers, PTM/cfg/HID and absent-SD behavior passed");

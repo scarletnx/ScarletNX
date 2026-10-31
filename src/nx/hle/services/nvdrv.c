@@ -1239,9 +1239,14 @@ static u32 ioctl_ctrl(u32 fd, u32 cmd, u8* d, u32 n) {
             wr32(d, CTRL_SYNCPT_VALUE, g_hle.nvdrv.syncpt_max[id]);
             pm_unlock(&g_host.nvdrv.sync_lk);
             return NV_RESULT_SUCCESS;
-        case NVHOST_CTRL_GET_CONFIG: /* no setting has a value */
-            memset(d + CTRL_GET_CONFIG_CONFIG_STR, 0, CTRL_GET_CONFIG_CONFIG_STR_BYTES);
-            return NV_RESULT_SUCCESS;
+        /* the SDK's debug switches (NvOsGetConfigU32, NvOsGetConfigString), none of which a production console has: the
+           SDK takes one found as set, and an empty NVWSI_FILL had the window clear each buffer it hands out, on the CPU */
+        case NVHOST_CTRL_GET_CONFIG:
+            if (n >= CTRL_GET_CONFIG_PARAM_STR + CTRL_GET_CONFIG_NAME_BYTES)
+                LOGV("nvdrv: GET_CONFIG %.*s!%.*s: not found, as on a production console\n", CTRL_GET_CONFIG_NAME_BYTES,
+                     (const char*)d + CTRL_GET_CONFIG_DOMAIN_STR, CTRL_GET_CONFIG_NAME_BYTES,
+                     (const char*)d + CTRL_GET_CONFIG_PARAM_STR);
+            return NV_RESULT_CONFIG_VAR_NOT_FOUND;
         case NVHOST_CTRL_EVENT_CLEAR_WAIT: /* cancels without signaling */
             nvev_lock();
             nvev_disarm(fd, nv_ctrl_event_slot(id));

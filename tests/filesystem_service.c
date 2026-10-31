@@ -833,13 +833,16 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
         svcobj_unref(ngword);
     }
 
-    /* MiiModel (0100000000000802), with none in system/archives: a placeholder with no parts, the six resource files
-       each a magic (NFTR for the textures, NFSR for the shapes) and version 1, then nought as long as the SDK's
-       loader reads its tables: 0x2428 bytes of a texture file, 0x14dd4 of a shape file */
+    /* MiiModel (0100000000000802), with none in system/archives: a stand-in of the six resource files, each a magic
+       (NFTR for the textures, NFSR for the shapes), version 1 and each part kind's largest size and alignment; every
+       texture entry names one blank 8 by 8 image and every shape entry one degenerate triangle, each a stored zlib
+       block past the tables: a game that composes a Mii's face gets textures to compose, none null */
     {
-        static const char* const names[6] = {"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat",
-                                             "NXTextureMidLinear.dat", "NXTextureMidSRGB.dat",
-                                             "ShapeHigh.dat",          "ShapeMid.dat"};
+        static const char* const names[6] = {"NXTextureLowLinear.dat", "NXTextureLowSRGB.dat", "NXTextureMidLinear.dat",
+                                             "NXTextureMidSRGB.dat",   "ShapeMid.dat",         "ShapeHigh.dat"};
+        static const u8 formats[11] = {4, 8, 8, 10, 10, 10, 1, 8, 8, 9, 1};
+        static const u16 counts[11] = {132, 62, 24, 2, 12, 12, 20, 2, 37, 6, 18};
+        static u8 file[0x15000];
         Request a;
         unsigned i;
         request(&a, 202);
@@ -848,9 +851,9 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
         CHECK(a.c.nout_objs == 1);
         SvcObj* model = a.c.out_objs[0];
         u64 model_size = get_size(model);
-        CHECK(model_size > 4 * 0x2428 + 2 * 0x14dd4 && model_size <= 0x34000);
+        CHECK(model_size > 4 * 0x263b + 2 * 0x14e0b && model_size <= 0x34000);
         test_storage_contracts(model, model_size);
-        /* the RomFS header and tables, then each file in pieces the test's guest memory holds */
+        /* the RomFS header and tables, then each file read whole in pieces the test's guest memory holds */
         u8 tables[0x400];
         request(&a, 0);
         argument64(&a, 0, 0);
@@ -863,22 +866,43 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
         snx_le64_array(header, 10);
         CHECK(header[0] == 0x50 && header[9] <= sizeof tables && header[9] < model_size);
         for (i = 0; i < 6; i++) {
-            u32 entry = romfs_find(tables, header, 0, 0, names[i]);
+            u32 entry = romfs_find(tables, header, 0, 0, names[i]), kinds = i < 4 ? 11 : 12, k, n, e;
             u64 offset, size, done;
             CHECK(entry != UINT32_MAX);
             offset = snx_ld_le64(tables + header[7] + entry + 8);
             size = snx_ld_le64(tables + header[7] + entry + 16);
-            CHECK(size == (i < 4 ? 0x2428u : 0x14dd4u) && header[9] + offset + size <= model_size);
+            CHECK(size == (i < 4 ? 0x263bu : 0x14e0bu) && header[9] + offset + size <= model_size);
             for (done = 0; done < size; done += 0x8000) {
-                u64 n = size - done < 0x8000 ? size - done : 0x8000, j;
-                const u8* piece = GP(0x5000);
+                u64 len = size - done < 0x8000 ? size - done : 0x8000;
                 request(&a, 0);
                 argument64(&a, 0, header[9] + offset + done);
-                argument64(&a, 8, n);
-                output_buffer(&a, n);
+                argument64(&a, 8, len);
+                output_buffer(&a, len);
                 dispatch(model, &a, 0);
-                if (!done) CHECK(!memcmp(piece, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8));
-                for (j = done ? 0 : 8; j < n; j++) CHECK(piece[j] == 0);
+                memcpy(file + done, GP(0x5000), (size_t)len);
+            }
+            CHECK(!memcmp(file, i < 4 ? "NFTR\1\0\0\0" : "NFSR\1\0\0\0", 8));
+            for (k = 0; k < kinds; k++) /* each kind's largest part and its alignment: the model's pool, never 0 */
+                CHECK(snx_ld_le32(file + 0xc + 4 * k) == 0x1000 && snx_ld_le32(file + 0xc + 4 * (kinds + k)) == 0x1000);
+            if (i < 4) { /* 327 texture entries, each the 8 by 8 image at 0x2430 in its kind's format */
+                for (k = 0, e = 0; k < 11; k++)
+                    for (n = 0; n < counts[k]; n++, e++) {
+                        const u8* t = file + 0x64 + 0x1c * e;
+                        CHECK(snx_ld_le32(t) == 0x2430 && snx_ld_le32(t + 4) == 0x200 && snx_ld_le32(t + 8) == 0x20b &&
+                              snx_ld_le32(t + 0x10) == 0x200 && snx_ld_le16(t + 0x14) == 8 &&
+                              snx_ld_le16(t + 0x16) == 8 && t[0x18] == 1 && t[0x19] == formats[k]);
+                    }
+                CHECK(e == 327 && !memcmp(file + 0x2430, "\x78\x01\x01\x00\x02\xff\xfd", 7) &&
+                      !memcmp(file + 0x2430 + 7 + 0x200, "\x02\x00\x00\x01", 4));
+                for (n = 0; n < 0x200; n++) CHECK(file[0x2430 + 7 + n] == 0);
+            } else { /* 857 shape entries, each the one triangle at 0x14de0 */
+                for (e = 0; e < 857; e++) {
+                    const u8* t = file + 0x6c + 0x58 * e;
+                    CHECK(snx_ld_le32(t) == 0x14de0 && snx_ld_le32(t + 4) == 0x20 && snx_ld_le32(t + 8) == 0x2b &&
+                          snx_ld_le32(t + 36) == 8 && snx_ld_le32(t + 56) == 0x10 && snx_ld_le32(t + 60) == 6);
+                }
+                CHECK(!memcmp(file + 0x14de0, "\x78\x01\x01\x20\x00\xdf\xff", 7) &&
+                      !memcmp(file + 0x14de0 + 7 + 0x20, "\x00\x20\x00\x01", 4));
             }
         }
         svcobj_unref(model);

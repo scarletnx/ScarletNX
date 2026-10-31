@@ -8,9 +8,11 @@
    Independent serialized implementation; no reference runtime dependency. */
 #include "3ds/kernel/ctr_kernel.h"
 #include "3ds/runtime/internal.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <stdlib.h>
 #include "3ds/services/gsp.h"
+#include "3ds/services/ldr.h"
 #include <string.h>
 #include <stdio.h>
 #include "common/utilities/common.h"
@@ -33,8 +35,13 @@
 #define OUT_OF_RANGE        0xd8e007fdu
 #define TIMED_OUT           CTR_TIMED_OUT
 #define DONT_CARE           0x10000000u /* MemoryPermission::DontCare */
+#define LOADER_BASE         0x00100000u /* the range ldr:ro may map a CRO in */
+#define LOADER_END          0x04000000u
 #define WRONG_PERMISSION    0xd900182eu /* ResultWrongPermission */
 
+uint32_t snx_ctr_linear_address(uint32_t physical) {
+    return physical < CTR_PHYS_BASE ? 0 : CTR_LINEAR + (physical - CTR_PHYS_BASE);
+}
 uint32_t snx_ctr_handle_object(SnxCtrProcess* p, uint32_t handle) {
     if (handle == CTR_PROCESS_HANDLE) return 1;
     if (handle == CTR_THREAD_HANDLE) return p->current_thread;
@@ -227,23 +234,22 @@ static uint32_t current_value(SnxCtrProcess* p, uint32_t name, uint64_t* value) 
     *value = name == 1 ? memory_used(p) : name < 10 && types[name] ? live_objects(p, types[name]) : 0;
     return OK;
 }
-static bool overlaps(uint32_t a, uint32_t a_size, uint32_t b, uint32_t b_size) {
-    return (uint64_t)a < (uint64_t)b + b_size && (uint64_t)b < (uint64_t)a + a_size;
-}
 /* A range that is not plain private memory, which ControlMemory may not free and which cannot be a MAP source or a
    memory block's owner range: part of a MAP pair, a mapped memory block (whose pages another range may own), or the
    owner's range of a memory block */
 static bool held(SnxCtrProcess* p, uint32_t va, uint32_t size) {
+    if (snx_ctr_ldr_held(p, va, size)) return true;
     for (unsigned i = 0; i < sizeof p->aliases / sizeof *p->aliases; ++i)
-        if (p->aliases[i].size && (overlaps(va, size, p->aliases[i].target, p->aliases[i].size) ||
-                                   overlaps(va, size, p->aliases[i].source, p->aliases[i].size)))
+        if (p->aliases[i].size && (snx_ranges_overlap(va, size, p->aliases[i].target, p->aliases[i].size) ||
+                                   snx_ranges_overlap(va, size, p->aliases[i].source, p->aliases[i].size)))
             return true;
     for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
-        if (p->shared_maps[i].object && overlaps(va, size, p->shared_maps[i].va, p->shared_maps[i].size)) return true;
+        if (p->shared_maps[i].object && snx_ranges_overlap(va, size, p->shared_maps[i].va, p->shared_maps[i].size))
+            return true;
     for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
         const CtrObject* o = &p->objects[i];
         if (o->type == CTR_OBJ_SHARED && o->data.shared.address &&
-            overlaps(va, size, o->data.shared.address, o->data.shared.size))
+            snx_ranges_overlap(va, size, o->data.shared.address, o->data.shared.size))
             return true;
     }
     return false;
@@ -293,6 +299,30 @@ static bool mirror(SnxCtrProcess* p, uint32_t va, uint32_t source, uint32_t size
     }
     for (uint32_t off = 0; off < size; off += 4096) (void)snx_ctr_unmap(p->space, va + off, 4096);
     return false;
+}
+bool snx_ctr_kernel_private(SnxCtrProcess* p, uint32_t address, uint32_t size) {
+    if (!size) return true;
+    uint64_t end = (uint64_t)address + size;
+    const SnxCtrSegment* data = &p->segment[2];
+    uint64_t data_end = (uint64_t)data->address + data->pages * 0x1000ull + snx_align_up(p->bss_size, 4096);
+    bool heap = address >= CTR_HEAP && end <= CTR_HEAP_END;
+    if ((!heap && !(address >= data->address && end <= data_end)) || held(p, address, size) ||
+        snx_ctr_check_ram(p->space, address, size, SNX_CTR_READ | SNX_CTR_WRITE) != SNX_CTR_MEM_OK)
+        return false;
+    if (heap)
+        for (uint64_t at = snx_align_down(address, 4096); at < end; at += 4096) {
+            uint32_t pa;
+            if (snx_ctr_query(p->space, (uint32_t)at, &pa, NULL) != SNX_CTR_MEM_OK || pa < CTR_PHYS_BASE ||
+                pa >= p->physical_end || p->physical_owner[(pa - CTR_PHYS_BASE) / 4096] != CTR_HEAP_PAGE)
+                return false;
+        }
+    return true;
+}
+bool snx_ctr_kernel_loader_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size) {
+    if (!size || ((target | source | size) & 4095) || target < LOADER_BASE || (uint64_t)target + size > LOADER_END ||
+        !available(p, target, size) || !snx_ctr_kernel_private(p, source, size))
+        return false;
+    return mirror(p, target, source, size, SNX_CTR_READ | SNX_CTR_WRITE);
 }
 /* ControlMemory MAP and UNMAP (Azahar Process::Map and Unmap, non-privileged): target mirrors heap pages at source
    with the given permissions; the source stays mapped, and neither can be freed until the UNMAP of the same pair.
@@ -382,7 +412,7 @@ uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint3
         return result;
     }
     /* FREE leaves what is not plain private memory alone; PROTECT reprotects any of it, as Azahar's ReprotectRange */
-    if (op == 1 && held(p, va, size)) return INVALID_STATE;
+    if ((op == 1 && held(p, va, size)) || (op == 6 && snx_ctr_ldr_held(p, va, size))) return INVALID_STATE;
     uint32_t base = linear ? CTR_LINEAR : CTR_HEAP;
     uint32_t end = linear ? CTR_LINEAR + p->app_limit : CTR_HEAP_END;
     if (op != 3) {
@@ -921,7 +951,11 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
                 r[0] = map_own_block(p, id, r[1], r[2], r[3]);
             else {
                 CtrObject* o = &p->objects[id];
-                if ((r[1] & 4095) || r[1] < 0x10000000 || (uint64_t)r[1] + o->data.shared.size > 0x1f800000)
+                /* address 0 maps a block with pages at the old linear heap address of those pages, as Azahar's
+                   SharedMemory::Map does for every block a service makes (the font, GSP and HID); a block without
+                   pages has no such address */
+                uint32_t at = r[1] ? r[1] : snx_ctr_linear_address(o->data.shared.physical);
+                if ((at & 4095) || at < 0x10000000 || (uint64_t)at + o->data.shared.size > 0x1f800000)
                     r[0] = INVALID_ADDRESS;
                 else if (r[2] != o->data.shared.permissions || (r[3] != 0 && r[3] != 0x10000000))
                     return SNX_CTR_SVC_UNSUPPORTED;
@@ -931,8 +965,8 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
                     /* each mapping has its own record and reference, as map_own_block's do: a block mapped twice
                        is unmapped address by address */
                     SnxCtrMemResult mapped =
-                        snx_ctr_map(p->space, r[1], o->data.shared.physical, o->data.shared.size, r[2]);
-                    r[0] = mapped == SNX_CTR_MEM_OK      ? record_map(p, id, r[1], o->data.shared.size)
+                        snx_ctr_map(p->space, at, o->data.shared.physical, o->data.shared.size, r[2]);
+                    r[0] = mapped == SNX_CTR_MEM_OK      ? record_map(p, id, at, o->data.shared.size)
                            : mapped == SNX_CTR_MEM_NOMEM ? OUT_OF_MEMORY
                                                          : INVALID_STATE;
                 }

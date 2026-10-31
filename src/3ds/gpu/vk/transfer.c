@@ -64,7 +64,7 @@ SnxCtrXferResult snx_ctr_vk_fill(uint32_t pa, uint32_t size, uint32_t value, uin
     uint32_t push[4] = {inside, size, value, width};
     snx_ctr_vk_sync(pa, size, true); /* what the GPU kept of it stored or let go of, then written */
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    snx_ctr_vk_barrier(cb);
+    snx_ctr_vk_compute_barrier(cb);
     bind(cb, &g_transfer.fill, &w, 1, push, sizeof push);
     vkCmdDispatch(cb, (size + 63) / 64, 1, 1);
     return SNX_CTR_XFER_OK;
@@ -99,7 +99,7 @@ SnxCtrXferResult snx_ctr_vk_display_transfer(const SnxCtrDisplayTransfer* t, uin
     snx_ctr_vk_sync(input, (uint32_t)in_bytes, false); /* the draws over its input stored first */
     snx_ctr_vk_sync(output, (uint32_t)out_bytes, true);
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    snx_ctr_vk_barrier(cb);
+    snx_ctr_vk_compute_barrier(cb);
     bind(cb, &g_transfer.display, w, 2, push, sizeof push);
     vkCmdDispatch(cb, (push[3] + 7) / 8, (push[4] + 7) / 8, 1);
     return SNX_CTR_XFER_OK;
@@ -124,7 +124,7 @@ SnxCtrXferResult snx_ctr_vk_texture_copy(const SnxCtrTextureCopy* t, uint32_t in
     snx_ctr_vk_sync(input, (uint32_t)in_bytes, false);
     snx_ctr_vk_sync(output, (uint32_t)out_bytes, true);
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    snx_ctr_vk_barrier(cb);
+    snx_ctr_vk_compute_barrier(cb);
     bind(cb, &g_transfer.copy, w, 2, push, sizeof push);
     vkCmdDispatch(cb, (push[2] + 63) / 64, 1, 1);
     return SNX_CTR_XFER_OK;

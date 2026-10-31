@@ -893,8 +893,9 @@ jobs:
         with:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
-      # Explorer and the taskbar show the first icon of an executable's resources (runtime.rc)
-      - name: Check the executables' icon
+      # Explorer and the taskbar show the first icon of an executable's resources, and Windows reads its application
+      # manifest from them (runtime.rc)
+      - name: Check the executables' icon and manifest
         run: |
           set -euo pipefail
           for exe in stage/bin/scarletnx.exe; do
@@ -902,6 +903,11 @@ jobs:
             resources=$(llvm-readobj --coff-resources "$exe")
             if ! grep -q 'Type: GROUP_ICON' <<<"$resources"; then
               echo "$exe has no icon" >&2
+              exit 1
+            fi
+            # the manifest is kept there as text
+            if ! grep -aqF '>SegmentHeap</heapType>' "$exe"; then
+              echo "$exe has no manifest with heapType SegmentHeap (runtime.manifest)" >&2
               exit 1
             fi
           done
@@ -1460,8 +1466,8 @@ jobs:
     timeout-minutes: 30
     container: archlinux:latest
     env:
-      EDENPROBE_VERSION: v0.5.0
-      EDENPROBE_SHA256: 666391a760358d4fb80376a8873b2cde7e5990c0c58242926f7c5b95ed3cbf75
+      EDENPROBE_VERSION: v0.7.1
+      EDENPROBE_SHA256: 006b5c962166834403ea0ca0d48bb6680eac231444b4390d312d05225393f5a2
       # every family that needs no person or network: headless, the audio family's sound is never played
       EDENPROBE_MODE: quick notime fatal cpu graphics fs video display kernel audio
     outputs:

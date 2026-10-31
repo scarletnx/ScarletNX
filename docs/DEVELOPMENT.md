@@ -17,13 +17,12 @@ games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 cmake --build build
 ./build/scarletnx -r "$work/Game" Game --jobs 8
 ctest --test-dir build --output-on-failure
-scripts/format.sh --check
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
 clang -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
 ```
 
 Runtime relink deploys to the data folder's `recompiled/` by default (`SNX_RECOMPILED_DIR`). Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
-Avoid builds during timing runs. Formatting: clang-format 23 + `uv`/pinned Ruff; omit `--check` to write.
+Avoid builds during timing runs. Formatting isn't checked: `git clang-format` (clang-format 23) on the changed lines.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
 CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics, the Linux AppImages
@@ -38,7 +37,7 @@ commits). A fork's pull request is published once someone of the team labels it 
 push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
 [scarletnx/discord-bots](https://github.com/scarletnx/discord-bots), which asks GitHub what changed every 30 s: no job
 of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
-`DISCORD_WEBHOOK_RELEASES` (a version's message). Formatting is checked locally (`scripts/format.sh --check`).
+`DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
 

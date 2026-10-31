@@ -126,6 +126,14 @@ def tree(folder):
     return {p.relative_to(folder).as_posix(): p.read_bytes() for p in sorted(folder.rglob('*')) if p.is_file()}
 
 
+def same_content(a, b):
+    for name in ('exheader.bin', 'exefs/.code', 'exefs/icon'):
+        assert a[name] == b[name], name
+    assert {k: v for k, v in a.items() if k.startswith('romfs/')} == {
+        k: v for k, v in b.items() if k.startswith('romfs/')
+    }
+
+
 def main():
     driver = os.path.abspath(sys.argv[1])  # not resolved: scarletnx-3ds may be a link to scarletnx, named so
     with tempfile.TemporaryDirectory(prefix='snx-ctr-decrypt-') as temp:
@@ -148,12 +156,16 @@ def main():
         keys = root / 'aes_keys.txt'
         keys_file(keys)
         decrypted = run('encrypted', encrypted, keys, 0, 'Decrypted')
-        a, b = tree(plain), tree(decrypted)
-        for name in ('exheader.bin', 'exefs/.code', 'exefs/icon'):
-            assert a[name] == b[name], name
-        assert {k: v for k, v in a.items() if k.startswith('romfs/')} == {
-            k: v for k, v in b.items() if k.startswith('romfs/')
-        }
+        same_content(tree(plain), tree(decrypted))
+        # A content region ending 16 bytes into a 64-byte block: the decryption pads before the metadata, and the
+        # extraction still matches the plain one.
+        odd_application = ncch()
+        odd_plain = run('plain-odd', cia(application=odd_application, manual_size=528), None, 0, 'Extracted')
+        odd_encrypted = encrypt_cia(
+            cia(application=encrypt_ncch(odd_application), manual_size=528, patch_chunks=present_encrypted)
+        )
+        odd_decrypted = run('encrypted-odd', odd_encrypted, keys, 0, 'Decrypted')
+        same_content(tree(odd_plain), tree(odd_decrypted))
         decrypted_cia = (root / 'encrypted.decrypted.cia').read_bytes()
         assert len(decrypted_cia) == len(encrypted)
         # The decrypted copy is taken as it is the next time, not decrypted again

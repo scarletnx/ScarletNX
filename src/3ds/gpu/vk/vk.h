@@ -90,4 +90,6 @@ bool snx_ctr_vk_compute(const uint32_t* words, size_t count, unsigned buffers, u
 void snx_ctr_vk_compute_free(SnxCtrVkCompute* compute);
 /* a buffer write the next commands may read or write, or one the host reads after snx_ctr_vk_finish */
 void snx_ctr_vk_barrier(VkCommandBuffer cb);
+/* the barrier before a compute dispatch: the rendering pass a draw may have left open ends first */
+void snx_ctr_vk_compute_barrier(VkCommandBuffer cb);
 #endif

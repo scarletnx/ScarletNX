@@ -202,6 +202,29 @@ static void memory_blocks(SnxCtrProcess* p) {
     assert(snx_ctr_query(p->space, 0x0d000000, NULL, NULL) != SNX_CTR_MEM_OK);
     close_handle(p, block, 0);
     assert(!control(p, 1, 0x08000000, 0, 0x2000, 0)); /* free again once the block is gone */
+    /* address 0 maps a block with pages where they lie in the old linear heap, and a block with none has no address */
+    uint32_t pages = snx_ctr_shared_pages(p, 0x1000);
+    assert(pages && !snx_ctr_object_create(p, CTR_OBJ_SHARED, &block));
+    uint32_t pages_id = snx_ctr_handle_object(p, block);
+    p->objects[pages_id].data.shared.size = 0x1000;
+    p->objects[pages_id].data.shared.permissions = SNX_CTR_READ;
+    r[0] = block;
+    r[1] = 0;
+    r[2] = SNX_CTR_READ;
+    r[3] = 0;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && r[0] == address);
+    p->objects[pages_id].data.shared.physical = pages;
+    r[0] = block;
+    r[1] = 0;
+    r[2] = SNX_CTR_READ;
+    r[3] = 0;
+    uint32_t linear = CTR_LINEAR + (pages - CTR_PHYS_BASE), mapped_pa = 0;
+    assert(snx_ctr_svc(p, 0x1f) == SNX_CTR_SVC_RETURN && !r[0]);
+    assert(snx_ctr_query(p->space, linear, &mapped_pa, NULL) == SNX_CTR_MEM_OK && mapped_pa == pages);
+    r[0] = block;
+    r[1] = linear;
+    assert(snx_ctr_svc(p, 0x20) == SNX_CTR_SVC_RETURN && !r[0]);
+    close_handle(p, block, 0);
     /* an application may not ask the kernel for a new block (address 0): 0xD92007EA (3dbrew) */
     r[0] = dont_care;
     r[1] = 0;
