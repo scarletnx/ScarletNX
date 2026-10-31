@@ -3,9 +3,8 @@
 # hactool (ISC, src/nx/runtime/driver/hactool) as the library scarletnx --extract calls in its own process: SciresM's hactool
 # at 1d64a83 with ScarletNX's changes (decrypted containers, the build's OpenSSL for its AES, SHA and RSA, the storages
 # ported from LibHac for sparse and compressed sections and bucket trees of any size, NCAs read in place inside an XCI
-# or NSP). The mbedtls 2.x copy hactool bundles, its lz4.c (LZ4 1.8) and its main.c are left out: nso.c and storage.c
-# include its lz4.h, found first beside them, which declares LZ4_decompress_safe, the only LZ4 function hactool calls,
-# as every LZ4 since 1.7 does, and snx_lz4 defines it
+# or NSP). The mbedtls 2.x copy hactool bundles, its LZ4 and its main.c are left out: nso.c and storage.c take
+# snx_lz4's lz4.h for LZ4_decompress_safe, the only LZ4 function hactool calls
 set(hactool_src "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/hactool")
 set(hactool_sources save sha aes extkeys rsa npdm bktr kip packages pki pfs0 hfs0 nca0_romfs romfs utils nax0 nso nca
                     xci filepath ConvertUTF storage snx_hac)
