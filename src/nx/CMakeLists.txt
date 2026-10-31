@@ -111,7 +111,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/display.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
+                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
@@ -245,6 +245,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
     # descriptorType-00330). Without the layer this is VIC's own checks again.
+    # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c), and its own
+    add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
+    set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
