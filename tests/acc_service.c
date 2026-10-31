@@ -562,6 +562,40 @@ static void test_users(void) {
     puts("PASS three users: the list, the open user, the selection, nicknames and pictures");
 }
 
+/* acc:u1, the system's: acc:u0's users at 0 to 60, ListQualifiedUsers at 140 (acc:u0's InitializeApplicationInfo
+   there), and no pin code */
+static void test_system_service(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* acc = new_acc_system();
+    Request r;
+    nn_account_Uid uid;
+    g_mem = memory;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    request(&r, 0);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 2);
+    request(&r, 4);
+    call(acc, &r);
+    uid_of(UID2, &uid);
+    CHECK(r.c.out_size == 16 && !memcmp(r.c.out, uid.v, 16));
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 140);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x30;
+    call(acc, &r);
+    CHECK(same_uid(memory + 0x100, g_user_id) && !memcmp(memory + 0x110, uid.v, 16) && memory[0x120] == 0);
+    CHECK(memory[0x130] == 0xAA);
+    request(&r, 401);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 0);
+    svcobj_unref(acc);
+    gone("users.ini");
+    puts("PASS acc:u1's own table: the users, ListQualifiedUsers at 140, no pin code");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -745,6 +779,7 @@ int main(void) {
     test_initialize_application_info_v2();
     test_account_command_replies();
     test_users();
+    test_system_service();
     test_first_uid();
     test_start();
     test_rename();
