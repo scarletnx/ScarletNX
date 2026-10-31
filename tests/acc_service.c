@@ -113,7 +113,20 @@ static u32 reply32(Request* r, u32 off) {
     CHECK(off + 4 <= r->c.out_size);
     return snx_ld_le32(r->c.out + off); /* the dispatcher writes the reply as the guest reads it */
 }
+static u64 reply64(Request* r, u32 off) {
+    CHECK(off + 8 <= r->c.out_size);
+    return snx_ld_le64(r->c.out + off);
+}
 static void call(SvcObj* o, Request* r) { CHECK(o->dispatch(o, &r->c) == 0); }
+/* acc:u0's GetBaasAccountManagerForApplication (101) for the user */
+static SvcObj* manager_for(SvcObj* acc, const u64 uid[2]) {
+    Request r;
+    request(&r, 101);
+    acc_uid_put(r.raw, uid);
+    call(acc, &r);
+    CHECK(r.c.nout_objs == 1);
+    return r.c.out_objs[0];
+}
 
 /* the frame of a JPEG: its first start of frame (C0 to C2) before the scan, and the components it has */
 static int jpeg_frame(const u8* d, u32 size, u32* width, u32* height, u32* components) {
@@ -284,6 +297,33 @@ static void test_open_context(void) {
     for (i = 16; i < 0xA0; i++) CHECK(memory[0x100 + i] == 0);
     g_hle.acc.context_stored = 0;
     puts("PASS no stored open context until StoreOpenContext, then the open user");
+}
+
+/* the user's network service account id, made from its uid as Eden makes it (Common::UUID::Hash), from GetAccountId
+   (1) and GetNintendoAccountUserResourceCacheForApplication (130) */
+static void test_account_id(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc(), *manager;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    request(&r, 1);
+    call(manager, &r);
+    CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+    request(&r, 130);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x68;
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x200;
+    r.c.b[0].size = 0x40;
+    call(manager, &r);
+    CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS the network service account id, as Eden makes it from the uid");
 }
 
 /* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
@@ -577,6 +617,7 @@ int main(void) {
     CHECK(!snx_mkdirs(DIR));
     test_one_user();
     test_open_context();
+    test_account_id();
     g_mem = calloc(1, 0x30000); /* user 1 alone, with no picture of its own */
     CHECK(g_mem != NULL);
     test_picture();
