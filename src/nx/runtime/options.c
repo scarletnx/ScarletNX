@@ -417,6 +417,32 @@ int options_debug(int flags, char* out, size_t n) {
     if (g_opt_gdb && at < n) snprintf(out + at, n - at, "%sgdbstub", count++ ? ", " : "");
     return count;
 }
+int options_settings(char* out, size_t n) {
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    char part[1024];
+    size_t at = 0, t;
+    int count = 0;
+    if (n) out[0] = 0;
+    for (t = 0; t < sizeof tables / sizeof *tables; t++) {
+        int c = ini_changed(tables[t], INI_CHANGED_DEFAULT, part, sizeof part);
+        if (c && at < n) at += (size_t)snprintf(out + at, n - at, "%s%s", count ? ", " : "", part);
+        count += c;
+    }
+    return count;
+}
+/* the Display, Graphics and Performance settings as the log last said them */
+static char g_said[2048];
+/* after a reload, the Display, Graphics and Performance settings again when they changed */
+static void settings_reloaded(void) {
+    char now[sizeof g_said];
+    int n = options_settings(now, sizeof now);
+    if (!strcmp(now, g_said)) return;
+    if (n)
+        LOG("settings: after the reload, %s\n", now);
+    else
+        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+    memcpy(g_said, now, sizeof g_said);
+}
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */
 static void debug_shown(int reloaded) {
     char list[HUD_DEBUG_MAX];
@@ -445,6 +471,7 @@ void ini_open(const char* path) {
              g_path, why);
         apply_all();
         debug_shown(0);
+        options_settings(g_said, sizeof g_said);
         g_started = 1;
         return;
     }
@@ -457,6 +484,7 @@ void ini_open(const char* path) {
     say_deprecated();
     apply_all();
     debug_shown(0);
+    options_settings(g_said, sizeof g_said);
     if (!write_file()) pending_written(taken, n);
     g_started = 1;
 }
@@ -492,6 +520,7 @@ void ini_poll(int final) {
         apply_all();
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
+        settings_reloaded();
         if (!write_file()) pending_written(taken, n);
     } else if (h != g_hash)
         g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */

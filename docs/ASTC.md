@@ -159,7 +159,9 @@ is left out, the texture keeps its old hash, and the next check uploads it again
 ## Encoded again as BC7
 
 Most desktop GPUs sample BCn but not ASTC, and a decoded ASTC texture is four bytes a texel where the game's blocks
-take one (4x4) or less. With the `astc_bc` setting (a `startup` one, off by default: BC7 is close but not exact),
+take one (4x4) or less. With the `astc_bc` setting (Graphics, a `startup` one: `0` Auto, the default, does it where the device's images' heap
+has less than 8192 MB of budget, `1` always, `2` never, as BC7 is close but not exact; `device.c` decides and the log
+says why),
 `format.c`'s `TA()` gives such a texture a `VK_FORMAT_BC7_UNORM_BLOCK` or `_SRGB_BLOCK` image in place of RGBA8, and
 `vk_astc_upload` runs a second dispatch after the decode: `src/nx/gpu/texture/bc7.comp`, with its body in
 `bc7_encode.glsl`, encodes the decoded texels into BC7 blocks, an invocation a block, into a second scratch buffer of

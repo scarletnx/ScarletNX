@@ -195,6 +195,17 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting ASTC BC
+    label ASTC as BC7
+    key astc_bc
+    int 0 2
+    default 0
+    startup
+    words Auto|On|Off
+    help On a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded again
+    help as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. 0 = Auto:
+    help where the GPU has less than 8192 MB of budget for its images. 1 = On. 2 = Off: decoded to RGBA8, exactly as
+    help the game's blocks decode. Where the GPU samples ASTC it does nothing
 
 table g_performance_ini
 setting FPS limit
@@ -213,13 +224,13 @@ setting Memory (GB)
     help the console's amount needs 6
 setting Memory fit
     key memory_fit
-    int 0 1
+    int 0 2
     default 0
-    default-if SNX_IOS 1
     startup
-    words Off|On
-    help On = the game sees no more of Memory (GB) than the device can still give it, measured as it starts, less what
-    help the rest of ScarletNX takes: a device with less than the console's is not run out of memory. Off = all of it
+    words Auto|On|Off
+    help 0 = Auto and 1 = On: the game sees no more of Memory (GB) than the device can still give it, measured as it
+    help starts, less what the rest of ScarletNX takes, so a device with less than the console's is not run out of
+    help memory; one that can give it all shows the game all of it. 2 = Off: all of it, whatever the device can give
 setting Heap limit (MB)
     key heap_max_mb
     text 32
@@ -585,16 +596,6 @@ setting Native ASTC
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
     help in a quarter to a 36th of the memory. 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without
     help ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
-setting ASTC BC
-    label ASTC as BC7
-    key astc_bc
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 setting Native BC
     label Native BCn
     key native_bc

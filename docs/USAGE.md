@@ -590,7 +590,8 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
 `thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
-type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
+type, range and help, tab-separated. The game log's header lists the Display, Graphics and Performance settings off
+their default: `settings: astc_bc=2 (default 0)`. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
 
 | Key | Default | Effect |
@@ -609,9 +610,10 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `shadows` | `1` | `0` skips shadow maps |
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
+| `astc_bc` | `0` | On a GPU that samples BCn but not ASTC, the game's ASTC textures are encoded again as BC7 once decoded: a quarter of RGBA8's memory, close to the blocks but not always the same ([ASTC](ASTC.md)). `0` Auto where the GPU's images' heap has less than 8192 MB of budget, `1` always, `2` never. The log says what Auto took and why |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
-| `memory_fit` | `0` (iOS `1`) | `1` tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory. The log says what it measured. `0` tells it all of it |
+| `memory_fit` | `0` | `0` Auto and `1` On tell the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory; one that can give it all changes nothing. The log says what it measured. `2` Off tells it all of it |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
 | `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
 | `map_limit_files` | `0` (iOS `2048`) | The most of those files mapped. `0` is no limit. Each mapped file holds a descriptor, of which a device may give the whole app a few thousand |

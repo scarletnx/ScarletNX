@@ -228,26 +228,30 @@ static void test_fit(void) {
     CHECK(mem_fit_budget(3000 * MIB, 300 * MIB) == 2600 * MIB);  /* the rest, at least 700 MiB */
     CHECK(mem_fit_budget(8000 * MIB, 1000 * MIB) == 7744 * MIB); /* the runtime's 1000, the graphics' 256 */
     CHECK(mem_fit_budget(100 * MIB, 100 * MIB) == 1024 * MIB);   /* a GiB however little is left */
-    mem_fit(1, 2000 * MIB, 300 * MIB);
+    mem_fit(SNX_MEMORY_FIT_ON, 1, 2000 * MIB, 300 * MIB);
     CHECK(g_hle.svcmem.fit == 1600 * MIB && mem_total() == 1600 * MIB && info(6) == 1600 * MIB);
+    mem_fit(SNX_MEMORY_FIT_OFF, 1, 2000 * MIB, 300 * MIB); /* Off: the console's, whatever the system can give */
+    CHECK(!g_hle.svcmem.fit && mem_total() == 3285 * MIB);
+    mem_fit(SNX_MEMORY_FIT_AUTO, 1, 2000 * MIB, 300 * MIB); /* Auto, the default: as On */
+    CHECK(g_hle.svcmem.fit == 1600 * MIB && mem_total() == 1600 * MIB);
     CHECK(svc_set_heap_size(1546 * MIB) == R_LIMIT); /* 56 MiB used: 1544 is the most */
     CHECK(svc_set_heap_size(1544 * MIB) == 0 && svc_set_heap_size(0) == 0);
-    mem_fit(1, 8000 * MIB, 1000 * MIB); /* more than the console's: the console's */
+    mem_fit(SNX_MEMORY_FIT_AUTO, 1, 8000 * MIB, 1000 * MIB); /* more than the console's: the console's */
     CHECK(mem_total() == 3285 * MIB);
     g_settings.memory_gb = 8;
     CHECK(mem_total() == 6964 * MIB);
     g_settings.memory_gb = 0;
-    mem_fit(0, 0, 0);
+    mem_fit(SNX_MEMORY_FIT_AUTO, 0, 0, 0);
     CHECK(!g_hle.svcmem.fit && mem_total() == 3285 * MIB);
     { /* a 32-bit process is told the smaller of the budget and its heap region */
         MemLayout saved = g_layout;
         mem_layout32(2);
         base_process();
-        mem_fit(1, 3000 * MIB, 300 * MIB);
+        mem_fit(SNX_MEMORY_FIT_ON, 1, 3000 * MIB, 300 * MIB);
         CHECK(mem_total() == 2600 * MIB && info(6) == 2ull << 30);
-        mem_fit(1, 2000 * MIB, 300 * MIB);
+        mem_fit(SNX_MEMORY_FIT_ON, 1, 2000 * MIB, 300 * MIB);
         CHECK(info(6) == 1600 * MIB && info(21) == 1600 * MIB);
-        mem_fit(0, 0, 0);
+        mem_fit(SNX_MEMORY_FIT_ON, 0, 0, 0);
         g_layout = saved;
     }
 }

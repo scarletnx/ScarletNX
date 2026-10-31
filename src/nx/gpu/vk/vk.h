@@ -80,6 +80,7 @@ typedef struct {
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
     /* optional features that were enabled */
     VkPhysicalDeviceFeatures feat;
+    int astc_bc7;         /* decoded ASTC textures are encoded again as BC7 (the astc_bc setting, device.c) */
     int has_divisor;      /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int has_dynamic_stride; /* a binding's stride is dynamic state, which MoltenVK refuses: a pipeline holds it then */
     int has_vertex_robustness2; /* exact zero/default components for out-of-range mesh fetches */

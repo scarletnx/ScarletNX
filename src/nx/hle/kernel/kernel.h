@@ -124,9 +124,13 @@ typedef struct KTmem {
 } KTmem;
 
 void kernel_init(void);
+/* memory_fit's values, as settings.txt words them: Auto fits as On does, which tells the game less than Memory (GB)'s
+   only where the system cannot give it that much */
+enum { SNX_MEMORY_FIT_AUTO, SNX_MEMORY_FIT_ON, SNX_MEMORY_FIT_OFF };
 /* memory_fit's measure, as the game starts: what the system can still give the process (available) and what the process
-   holds (footprint), when measured says the system told both. The game is told no more than mem_fit_budget's */
-void mem_fit(int measured, u64 available, u64 footprint);
+   holds (footprint), when measured says the system told both. Unless setting is Off, the game is told no more than
+   mem_fit_budget's */
+void mem_fit(int setting, int measured, u64 available, u64 footprint);
 u64 mem_fit_budget(u64 available, u64 footprint);
 u32 h_new(KObj* o); /* a new handle to o, which takes a reference */
 /* an object as a number, which a save state can hold: its type and its slot in its type's pool, 0 for none. kobj_at
