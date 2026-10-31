@@ -705,6 +705,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Tap: downloads, or fetch again. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: apply, type, remove or save. Back."
 msgstr ""
 
@@ -712,6 +718,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: use, add or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: downloads, or fetch again."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -935,6 +947,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Up/Down: row. Enter: downloads, or fetch again. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back."
 msgstr ""
 
@@ -1118,6 +1136,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: row. A: use, add or remove. X: remove. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: downloads, or fetch again. B: back."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1978,6 +2002,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"
 msgstr ""
 
 #: src/gui/main.c
@@ -2878,6 +2906,14 @@ msgid "no author"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Download Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Add Driver"
 msgstr ""
 
@@ -2955,6 +2991,100 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d, %.200s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Download Driver: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%zu release"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%zu releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Failed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Loading..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Prerelease"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %zu downloads. %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU: %s. Recommended: %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no download"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s (proprietary, no license)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s downloads already: one at a time"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s..."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s of %s (%d%%)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not downloaded: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -3741,10 +3871,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "The run ended with status %d."
-msgstr ""
-
-#: src/gui/main.c
-msgid "Failed"
 msgstr ""
 
 #: src/gui/main.c
