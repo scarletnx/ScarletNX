@@ -256,6 +256,36 @@ static void test_one_user(void) {
     puts("PASS user 1 alone without users.ini");
 }
 
+/* ListOpenContextStoredUsers holds what StoreOpenContext kept for the next program: nothing for a game the system
+   started, which a game with several programs reads as "show the title", not "resume the program before" */
+static void test_open_context(void) {
+    static u8 memory[0x400];
+    char why[512];
+    IpcBuf list;
+    nn_account_Uid uid;
+    SvcObj* manager = NULL;
+    int i;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    memset(memory, 0xAA, sizeof memory);
+    list.addr = 0x100;
+    list.size = 0xA0;
+    CHECK(nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(NULL, list) == 0);
+    for (i = 0; i < 0xA0; i++) CHECK(memory[0x100 + i] == 0);
+    CHECK(memory[0x1A0] == 0xAA);
+    /* a program about to ExecuteProgram keeps its open user */
+    acc_uid_put(uid.v, snx_users_selected()->uid);
+    CHECK(nn_account_IAccountServiceForApplication_GetBaasAccountManagerForApplication(NULL, &uid, &manager) == 0);
+    CHECK(nn_account_baas_IManagerForApplication_StoreOpenContext(manager) == 0);
+    svcobj_unref(manager);
+    memset(memory, 0xAA, sizeof memory);
+    CHECK(nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(NULL, list) == 0);
+    CHECK(same_uid(memory + 0x100, snx_users_selected()->uid));
+    for (i = 16; i < 0xA0; i++) CHECK(memory[0x100 + i] == 0);
+    g_hle.acc.context_stored = 0;
+    puts("PASS no stored open context until StoreOpenContext, then the open user");
+}
+
 /* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
    pid in, nothing out, as on the console */
 static void test_initialize_application_info_v2(void) {
@@ -546,6 +576,7 @@ int main(void) {
     snx_remove_tree(DIR);
     CHECK(!snx_mkdirs(DIR));
     test_one_user();
+    test_open_context();
     g_mem = calloc(1, 0x30000); /* user 1 alone, with no picture of its own */
     CHECK(g_mem != NULL);
     test_picture();

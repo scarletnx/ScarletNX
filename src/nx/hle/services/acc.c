@@ -115,9 +115,11 @@ static int nn_account_IAccountServiceForApplication_LoadOpenContext(SvcObj* self
                                                                     SvcObj** manager) {
     return nn_account_IAccountServiceForApplication_GetBaasAccountManagerForApplication(self, uid, manager);
 }
+/* none until StoreOpenContext: a program that finds a user here was started by another of its application's, and
+   resumes that session instead of showing its title (Eden's GetStoredOpenedUsers) */
 static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(SvcObj* self, IpcBuf users) {
     (void)self;
-    acc_list_open(users);
+    acc_list(users, snx_users_selected(), g_hle.acc.context_stored ? 1 : 0);
     R_SUCCEED();
 }
 static int nn_account_IAccountServiceForApplication_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
@@ -230,6 +232,12 @@ static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResource
 static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
     (void)self;
     *context = nn_account_detail_IAsyncContext_new();
+    R_SUCCEED();
+}
+/* what a program does before ExecuteProgram: the open user kept for the next one (Eden's StoreOpenedUsers) */
+static int nn_account_baas_IManagerForApplication_StoreOpenContext(SvcObj* self) {
+    (void)self;
+    g_hle.acc.context_stored = 1;
     R_SUCCEED();
 }
 
