@@ -25,8 +25,9 @@ typedef struct {
     int dbl;   /* doubles (else singles) */
     int fma;   /* needs the host's FMA for its fast path */
     int round; /* needs the host's rounding instructions (SSE4.1 on x86) */
-    int modeless; /* the result doesn't depend on FPCR.RMode (an encoding's own rounding, an estimate), so round
-                     towards plus infinity takes the fast path too */
+    int any_mode; /* takes the fast path in round towards plus infinity too: the result doesn't depend on
+                     FPCR.RMode (an encoding's own rounding, an estimate), or the host rounds in FPCR's mode
+                     (FRINTX and FRINTI, through ir_fp_round_value) */
 } Insn;
 static const Insn g_insns[] = {
     {"FADD S", 0x1E222820u, 0, 0, 0, 0},     {"FMUL S", 0x1E220820u, 0, 0, 0, 0},
@@ -39,9 +40,9 @@ static const Insn g_insns[] = {
     {"FDIV 2D", 0x6E62FC20u, 1, 0, 0, 0},    {"FSQRT 2D", 0x6EE1F820u, 1, 0, 0, 0},
     {"FABD S", 0x7EA2D420u, 0, 0, 0, 0},     {"FABD 4S", 0x6EA2D420u, 0, 0, 0, 0},
     {"FABD 2D", 0x6EE2D420u, 1, 0, 0, 0},    {"FRINTM S", 0x1E254020u, 0, 0, 1, 1},
-    {"FRINTM D", 0x1E654020u, 1, 0, 1, 1},   {"FRINTX S", 0x1E274020u, 0, 0, 1, 0},
-    {"FRINTM 4S", 0x4E219820u, 0, 0, 1, 1},  {"FRINTI 4S", 0x6EA19820u, 0, 0, 1, 0},
-    {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 0},  {"FRINTA S", 0x1E264020u, 0, 0, 1, 1},
+    {"FRINTM D", 0x1E654020u, 1, 0, 1, 1},   {"FRINTX S", 0x1E274020u, 0, 0, 1, 1},
+    {"FRINTM 4S", 0x4E219820u, 0, 0, 1, 1},  {"FRINTI 4S", 0x6EA19820u, 0, 0, 1, 1},
+    {"FRINTX 2D", 0x6E619820u, 1, 0, 1, 1},  {"FRINTA S", 0x1E264020u, 0, 0, 1, 1},
     {"FRINTA D", 0x1E664020u, 1, 0, 1, 1},   {"FRINTA 4S", 0x6E218820u, 0, 0, 1, 1},
     {"FRINTA 2D", 0x6E618820u, 1, 0, 1, 1},  {"FCVTAS W S", 0x1E240020u, 0, 0, 1, 1},
     {"FCVTAU 4S", 0x6E21C820u, 0, 0, 1, 1},  {"FRECPE S", 0x5EA1D820u, 0, 0, 0, 1},
@@ -159,7 +160,7 @@ int main(void) {
     for (k = 0; k < NCASES; ++k)
         for (i = 0; i < NINSNS; ++i) {
             unsigned n;
-            int fast = g_cases[k].fast || g_insns[i].modeless;
+            int fast = g_cases[k].fast || g_insns[i].any_mode;
             if (!probes[k][i]) continue;
             first[0] = 0;
             n = calls(probes[k][i], first, sizeof(first));
