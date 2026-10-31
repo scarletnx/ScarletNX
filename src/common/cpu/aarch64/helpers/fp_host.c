@@ -33,22 +33,22 @@
 static float fp_host_f(u64 bits) {
     u32 v = (u32)bits;
     float f;
-    __builtin_memcpy(&f, &v, 4);
+    memcpy(&f, &v, 4);
     return f;
 }
 static u64 fp_host_fbits(float f) {
     u32 v;
-    __builtin_memcpy(&v, &f, 4);
+    memcpy(&v, &f, 4);
     return v;
 }
 static double fp_host_d(u64 bits) {
     double d;
-    __builtin_memcpy(&d, &bits, 8);
+    memcpy(&d, &bits, 8);
     return d;
 }
 static u64 fp_host_dbits(double d) {
     u64 v;
-    __builtin_memcpy(&v, &d, 8);
+    memcpy(&v, &d, 8);
     return v;
 }
 
@@ -641,27 +641,27 @@ static u64 fp_host_each(CPU* c, unsigned helper, int width, int op, int numeric,
 static u64 fp_host_get(const char* v, unsigned at, int width) {
     if (width == 16) {
         u16 h;
-        __builtin_memcpy(&h, v + at, 2);
+        memcpy(&h, v + at, 2);
         return h;
     }
     if (width == 32) {
         u32 s;
-        __builtin_memcpy(&s, v + at, 4);
+        memcpy(&s, v + at, 4);
         return s;
     }
     u64 d;
-    __builtin_memcpy(&d, v + at, 8);
+    memcpy(&d, v + at, 8);
     return d;
 }
 static void fp_host_put(char* v, unsigned at, int width, u64 x) {
     if (width == 16) {
         u16 h = (u16)x;
-        __builtin_memcpy(v + at, &h, 2);
+        memcpy(v + at, &h, 2);
     } else if (width == 32) {
         u32 s = (u32)x;
-        __builtin_memcpy(v + at, &s, 4);
+        memcpy(v + at, &s, 4);
     } else
-        __builtin_memcpy(v + at, &x, 8);
+        memcpy(v + at, &x, 8);
 }
 
 #ifdef FP_HOST_ON
@@ -673,13 +673,13 @@ static int fp_host_vector4(CPU* c, char* out, const char* x, const char* y, cons
     FpHostU4 a = {0, 0, 0, 0}, b = a, d = a, flags = a, r;
     FpHostM4 slow = {0, 0, 0, 0}, used = (FpHostM4){0, 1, 2, 3} < (int32_t)lanes;
     if (lanes == 4) { /* copies of a constant size, which need no call */
-        __builtin_memcpy(&a, x, 16);
-        __builtin_memcpy(&b, y, 16);
-        __builtin_memcpy(&d, z, 16);
+        memcpy(&a, x, 16);
+        memcpy(&b, y, 16);
+        memcpy(&d, z, 16);
     } else {
-        __builtin_memcpy(&a, x, 8);
-        __builtin_memcpy(&b, y, 8);
-        __builtin_memcpy(&d, z, 8);
+        memcpy(&a, x, 8);
+        memcpy(&b, y, 8);
+        memcpy(&d, z, 8);
     }
     if (helper == 0 && (op == SNX_FP_RECPS || op == SNX_FP_RSQRTS))
         r = fp_host_step4(c, a, b, op, &flags);
@@ -696,9 +696,9 @@ static int fp_host_vector4(CPU* c, char* out, const char* x, const char* y, cons
         for (unsigned i = 0; i < lanes; ++i)
             if (slow[i]) r[i] = (u32)fp_host_each(c, helper, 32, op, numeric, a[i], b[i], d[i]);
     if (lanes == 4)
-        __builtin_memcpy(out, &r, 16);
+        memcpy(out, &r, 16);
     else
-        __builtin_memcpy(out, &r, 8);
+        memcpy(out, &r, 8);
     return 1;
 }
 #endif

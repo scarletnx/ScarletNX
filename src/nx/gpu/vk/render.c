@@ -1223,7 +1223,7 @@ static u32 cb_range(const DsState* ds, int stage, const VkSh* s, int i) {
    it does for its vertex streams (vk_buf_prefetch) */
 static void cb_prefetch(const DsState* ds, int stage, const VkSh* s, int step) {
     for (u32 m = s->si.cbuf_mask & 0x3FFFF; m; m &= m - 1) {
-        int i = __builtin_ctz(m);
+        int i = snx_ctz32(m);
         u64 a = ds->bind.cb_addr[stage][i];
         if (a && !ds_cb_inline(ds, stage, (u32)i).bytes) vk_buf_prefetch(a, cb_range(ds, stage, s, i), step);
     }
@@ -2156,13 +2156,13 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawShaders* s) {
         ((f->bgra ^ k->bgra) & in) || ((f->stream_on ^ k->stream_on) & st) || ((f->instanced ^ k->instanced) & st))
         return 0;
     for (u32 m = in; m; m &= m - 1) {
-        u32 i = (u32)__builtin_ctz(m);
+        u32 i = snx_ctz32(m);
         if (f->stream[i] != k->stream[i] || f->size[i] != k->size[i] || f->type[i] != k->type[i] ||
             f->offset[i] != k->offset[i])
             return 0;
     }
     for (u32 m = st; m; m &= m - 1) {
-        u32 i = (u32)__builtin_ctz(m);
+        u32 i = snx_ctz32(m);
         if (f->stride[i] != k->stride[i] || f->divisor[i] != k->divisor[i]) return 0;
     }
     return 1;
@@ -2254,7 +2254,7 @@ static u64 stream_len(const DsVertexBuffers* b, u32 s) { return b->size[s]; }
 static u32 attributes_empty(const DsVertexBuffers* b, const DsVertexFormat* vf, u32 inputs) {
     u32 e = 0;
     while (inputs) {
-        u32 i = (u32)__builtin_ctz(inputs);
+        u32 i = snx_ctz32(inputs);
         inputs &= inputs - 1;
         if (stream_len(b, vf->stream[i]) <= vf->offset[i]) e |= 1u << i;
     }
@@ -3198,7 +3198,7 @@ retry:
         memcpy(g_draw.gen, ds->gen, sizeof g_draw.gen);
         g_draw.vfmt = ds->vfmt;
         g_draw.vstreams = 0;
-        for (u32 m = vs->si.in_mask; m; m &= m - 1) g_draw.vstreams |= 1u << ds->vfmt.stream[__builtin_ctz(m)];
+        for (u32 m = vs->si.in_mask; m; m &= m - 1) g_draw.vstreams |= 1u << ds->vfmt.stream[snx_ctz32(m)];
     }
     /* the color slots the draw writes */
     u32 writes = 0;

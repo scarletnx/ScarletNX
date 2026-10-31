@@ -4,6 +4,7 @@
    version of the module that exports each, each match's dispatch slot given the adapter of the entry for that
    version */
 #include "nx/hle/hook/hook.h"
+#include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/module_abi.h"
@@ -80,7 +81,7 @@ static int verify_claim(void) {
 }
 
 /* a count of verify mode's worth logging: the first, and each power of 4 from 1024 */
-static int verify_milestone(u64 n) { return n == 1 || (n >= 1024 && !(n & (n - 1)) && __builtin_ctzll(n) % 2 == 0); }
+static int verify_milestone(u64 n) { return n == 1 || (n >= 1024 && !(n & (n - 1)) && snx_ctz64(n) % 2 == 0); }
 
 /* verify mode's check of a pure hook (verify.h), in the function's slot in place of the hook's adapter: each call
    runs the function's own code on copies of its buffers, then the handler, and the log names the calls whose
