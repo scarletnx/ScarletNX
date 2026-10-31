@@ -181,7 +181,7 @@ blocks presented frames until it was ended. It is **not playable** yet:
   the window's bottom screen). The sensors are a gamepad's accelerometer and
   gyroscope when one has them, else at rest (`hid:USER`, below).
 - The music gap after each rendered frame (rendering and presenting run inside the guest's GSP call) is addressed by pacing the DSP from the output device's queue once it has audio (`kernel/thread.c`, about 60 ms kept queued, up to eight frames at once). That is untested with a real game or device: only the unchanged tests ran.
-- Geometry shaders run in the software pipeline (the CPU reference, point and fixed-primitive modes tested) but not on the GPU, where a draw with one still stops the run explicitly. Procedural textures and shadows stop it too.
+- Geometry shaders run in the software pipeline (the CPU reference, all three modes tested) but not on the GPU, where a draw with one still stops the run explicitly. Procedural textures and shadows stop it too.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -445,7 +445,7 @@ ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lightin
 `gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
 compared with. It samples the nearest texel only, as Azahar's does, so texture
 filtering has no reference. Shadow textures and rendering are not
-drawn yet: a draw that needs one stops the run and names it. The geometry pipeline (`draw.c`, from Azahar's `geometry_pipeline.cpp`) feeds a geometry shader in point, variable-primitive and fixed-primitive modes; the tests cover point and fixed ones. The ExHeader's address-mapping capabilities
+drawn yet: a draw that needs one stops the run and names it. The geometry pipeline (`draw.c`, from Azahar's `geometry_pipeline.cpp`) feeds a geometry shader in point, variable-primitive and fixed-primitive modes; the tests cover all three. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats

@@ -483,6 +483,38 @@ static void geometry(SnxCtrMemory* m) {
     for (unsigned i = 0; i < W * H; ++i)
         wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 64 && fb[i * 4 + 2] == 153 && fb[i * 4 + 3] == 255);
     check(!wrong, "a fixed-primitive geometry shader reads the vertex from its uniforms");
+    /* variable-primitive mode: the first vertex of a draw is the count of the vertices after it (vertex_offset 1 makes
+       it 1), the vertex that follows (index 2) fills c1 to c3 and the shader adds the corners held in c10 to c12 */
+    const uint32_t variable_program[] = {
+        op1(0x13, 0x10, 0x21, 0, 0), /* mov r0, c1 */
+        SETEMIT(0, 0, 0), op1(0x00, 0, 0x2a, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT,
+        SETEMIT(1, 0, 0), op1(0x00, 0, 0x2b, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT,
+        SETEMIT(2, 1, 0), op1(0x00, 0, 0x2c, 0x10, 0), op1(0x13, 1, 0x22, 0, 0), op1(0x13, 2, 0x23, 0, 0), EMIT, END};
+    float three[30] = {0};
+    memcpy(three + 20, vertex, sizeof vertex);
+    memcpy(p->gs.f[10], p->gs.f[0], 16);
+    memcpy(p->gs.f[11], p->gs.f[1], 16);
+    memcpy(p->gs.f[12], p->gs.f[2], 16);
+    memset(fb, 0xee, sizeof fb);
+    check(snx_ctr_phys_write(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK &&
+              snx_ctr_phys_write(m, VERTICES, three, sizeof three) == SNX_CTR_MEM_OK,
+          "the variable-primitive draw's buffers are written");
+    l.n = 0;
+    put(&l, SNX_PICA_USE_GS, 2 | 1u << 31);
+    put(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+    cmd(&l, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, 15, false, variable_program, 16);
+    put(&l, 0x252, 1);     /* variable primitive */
+    put(&l, 0x254, 0);     /* the first vertex of a batch brings every output */
+    put(&l, 0x22a, 1);     /* vertex offset */
+    put(&l, 0x228, 2);
+    put(&l, SNX_PICA_TRIGGER_DRAW, 1);
+    check(run(p, m, FCRAM, &l, &host) == SNX_CTR_PICA_OK, "a draw through a variable-primitive geometry shader runs");
+    check(snx_ctr_phys_read(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK, "the framebuffer is read back");
+    wrong = 0;
+    for (unsigned i = 0; i < W * H; ++i)
+        wrong += !(fb[i * 4] == 255 && fb[i * 4 + 1] == 64 && fb[i * 4 + 2] == 153 && fb[i * 4 + 3] == 255);
+    check(!wrong, "a variable-primitive geometry shader takes its count from the first vertex");
+    check(p->gs.f[0][0] == 1, "the count is in c0");
     /* an unknown mode, or a layout the pipeline does not take, stops the draw with a reason */
     l.n = 0;
     put(&l, 0x252, 3);
