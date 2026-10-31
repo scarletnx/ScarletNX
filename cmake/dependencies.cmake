@@ -70,9 +70,9 @@ snx_quiet(snx_yyjson)
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
 # run time) and xxhash.c on every other architecture, by the compiler's own macros
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME xxhash VERSION 0.8.3
-                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz
-                  URL_HASH SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
+    CPMAddPackage(NAME xxhash VERSION 0.8.4
+                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
+                  URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
                   DOWNLOAD_ONLY YES)
     add_library(snx_xxhash STATIC "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/xxh3.c")
     target_include_directories(snx_xxhash PUBLIC "${xxhash_SOURCE_DIR}")

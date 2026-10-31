@@ -78,7 +78,7 @@ static u64 g_sub_ns;       /* when the last submission was made */
 static VkSemaphoreSubmitInfo g_after[2]; /* vk_submit_after's wait and signal, for the next submission (semaphore 0: none) */
 u32 g_vk_epoch, g_vk_present;
 
-/* XXH3 (Yann Collet's xxHash 0.8.3, BSD-2-Clause, cmake/dependencies.cmake): the quality XXH64 gave the hash it
+/* XXH3 (Yann Collet's xxHash 0.8.4, BSD-2-Clause, cmake/dependencies.cmake): the quality XXH64 gave the hash it
    replaced (a change in a word's high bits shows, and two don't cancel), at about three times its speed. On x86-64
    xxHash's dispatcher runs the AVX-512, AVX2 or SSE2 loop the CPU has (60 GB/s on a Zen 4 core, against XXH64's 19),
    from a build for any x86-64. Buffers' checks hashed hundreds of megabytes a frame in one game */
