@@ -352,9 +352,10 @@ interface nn::am::service::ISyncpointSession {
     # the SDK handshakes with a token it must get back: the echo is its own argument
     [0] Handshake(u64 request) -> u64 reply;
     [1] GetCount() -> u32 count;
-    # a slot's event, the same one 22 hands out: Mario Kart World's and Pokopia's SDK asks for it under 21, where
-    # Eden's Switch 2 titles ask under 22
-    [21] GetSlotEvent21(u32 slot) -> handle<copy, event> event;
+    # 21: this SDK asks under 21 for nothing but a result: it reads its reply's result at the first data word, where
+    # a handle section would put its descriptor, so answering with the slot event of 22 aborted its boot. Eden's
+    # Switch 2 titles ask for the slot event under 22, which hands it out
+    [21] GetSlotEvent21(u32 slot);
     [22] GetSlotEvent(u32 slot) -> handle<copy, event> event;
     [103] QueryCounter(u32 counter) -> (u32 value_low, u32 value_high, u32 zero);
     # slot, the counter to watch, the value it must reach, and a mode (0 compares 32-bit wrapping, 1 64-bit)

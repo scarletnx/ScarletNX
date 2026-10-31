@@ -687,8 +687,10 @@ static int nn_am_service_ISyncpointSession_GetSlotEvent(SvcObj* self, u32 slot, 
     return *event ? 0 : AM_OUT_OF_HANDLES;
 }
 /* 21: the same slot's event, which this SDK asks for by that number instead of 22 (am.swipc) */
-static int nn_am_service_ISyncpointSession_GetSlotEvent21(SvcObj* self, u32 slot, u32* event) {
-    return nn_am_service_ISyncpointSession_GetSlotEvent(self, slot, event);
+static int nn_am_service_ISyncpointSession_GetSlotEvent21(SvcObj* self, u32 slot) {
+    (void)self;
+    (void)slot; /* this SDK asks under 21 for nothing but the result (am.swipc) */
+    R_SUCCEED();
 }
 static int nn_am_service_ISyncpointSession_QueryCounter(SvcObj* self, u32 counter, u32* value_low, u32* value_high,
                                                         u32* zero) {
