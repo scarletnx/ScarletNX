@@ -172,12 +172,11 @@ int main(void) {
        for nothing there */
     {
         char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "config/" REC_FILE), *text, why[256] = "";
-        RecFile f, back;
+        RecFile f = {0}, back;
         size_t size;
         assert(dir && path);
         assert(!rec_file_read(&back, path, why, sizeof why) && !back.applied[0][0] && !back.date[0]);
         feed(&p, RUN);
-        memset(&f, 0, sizeof f);
         snprintf(f.applied[REC_ASTC_BC], sizeof f.applied[0], "1");
         snprintf(f.proposed[REC_ASTC_BC], sizeof f.proposed[0], "1");
         snprintf(f.proposed[REC_PIPELINE_THREADS], sizeof f.proposed[0], "0");
