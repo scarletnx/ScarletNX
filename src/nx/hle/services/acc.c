@@ -3,8 +3,8 @@
    Ported from Eden (src/core/hle/service/acc/acc.cpp, errors.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
-/* acc: the console's users (users.c), the one the game plays as open since it started, with no network service
-   account */
+/* acc: the console's users (users.c), the one the game plays as open since it started, each with a network service
+   account no server stands behind: an id made from the uid, and no id token */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
@@ -12,10 +12,12 @@
 #include "hle/services/acc.swipc.inc"
 
 #define ACC_INVALID_USER_ID RC(124, 20)
+#define ACC_INVALID_APPLICATION RC(124, 22)
 #define ACC_INVALID_LENGTH  RC(124, 32)
+#define ACC_UNDER_MAINTENANCE   RC(124, 5249) /* the online account service is not there: "not available right now" */
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
-#define ACC_NOT_CONNECTED   RC(110, 300) /* nifm's: there is no network to reach the account server */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
+#define ACC_EMPTY_TOKEN     0x100        /* the zeros LoadIdTokenCache (19.0.0+) answers with no token */
 
 /* a Uid's bytes are its two halves, little-endian as the game keeps them, and users.c's are host numbers */
 static void acc_uid_get(const nn_account_Uid* uid, u64 v[2]) {
@@ -122,6 +124,9 @@ static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(S
     acc_list(users, snx_users_selected(), g_hle.acc.context_stored ? 1 : 0);
     R_SUCCEED();
 }
+static int nn_account_IAccountServiceForApplication_ListOpenContextStoredUsersOld(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(self, users);
+}
 static int nn_account_IAccountServiceForApplication_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
     (void)self;
     acc_list_all(users);
@@ -213,10 +218,11 @@ static int nn_account_profile_IProfile_LoadImage(SvcObj* self, IpcBuf image, u32
 }
 
 /* ============================================================ IManagerForApplication */
-/* the id the account would have, made from the user's */
+/* the id the account would have, made from the user's as Eden makes it (Common::UUID::Hash): the uid's first half
+   xor its second turned left by one bit */
 static int nn_account_baas_IManagerForApplication_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
     const AccUser* u = (const AccUser*)self->data;
-    *id = u->uid[0] ^ u->uid[1];
+    *id = u->uid[0] ^ (u->uid[1] << 1 | u->uid[1] >> 63);
     R_SUCCEED();
 }
 static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResourceCacheForApplication(SvcObj* self,
@@ -229,9 +235,38 @@ static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResource
        the same one here, as there is no account behind either */
     return nn_account_baas_IManagerForApplication_GetAccountId(self, id);
 }
+/* where an account server would issue the title's token (g_hle.acc.token): there is none to ask, so the token stays
+   none and the context succeeds, as rEden's with online off */
 static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
     (void)self;
     *context = nn_account_detail_IAsyncContext_new();
+    R_SUCCEED();
+}
+/* The cached token, as far as the buffer takes, and zeros to its end: the guest reads it back as a C string, which
+   would run into what the buffer held before. With none, 4 answers a run of zeros of that length and 3 writes nothing
+   and answers 0, as rEden keeps them apart (acc.h's IdTokenCacheBuffer: a game tells the two apart) */
+static void acc_load_token(IpcBuf buffer, int pad_when_empty, u32* size) {
+    const char* end = (const char*)memchr(g_hle.acc.token, 0, sizeof g_hle.acc.token);
+    size_t n = end ? (size_t)(end - g_hle.acc.token) : sizeof g_hle.acc.token, cap = (size_t)buffer.size;
+    if (!n) {
+        n = pad_when_empty ? (cap < ACC_EMPTY_TOKEN ? cap : ACC_EMPTY_TOKEN) : 0;
+        memset(GP(buffer.addr), 0, n);
+        *size = (u32)n;
+        return;
+    }
+    if (n > cap) n = cap;
+    memcpy(GP(buffer.addr), g_hle.acc.token, n);
+    memset(GP(buffer.addr + n), 0, cap - n);
+    *size = (u32)n;
+}
+static int nn_account_baas_IManagerForApplication_LoadIdTokenCacheDeprecated(SvcObj* self, IpcBuf token, u32* size) {
+    (void)self;
+    acc_load_token(token, 0, size);
+    R_SUCCEED();
+}
+static int nn_account_baas_IManagerForApplication_LoadIdTokenCache(SvcObj* self, IpcBuf token, u32* size) {
+    (void)self;
+    acc_load_token(token, 1, size);
     R_SUCCEED();
 }
 /* what a program does before ExecuteProgram: the open user kept for the next one (Eden's StoreOpenedUsers) */
@@ -241,7 +276,60 @@ static int nn_account_baas_IManagerForApplication_StoreOpenContext(SvcObj* self)
     R_SUCCEED();
 }
 
-/* ============================================================ IAsyncContext: done at once, failed */
+/* ============================================================ IManagerForSystemService: the application's */
+static int nn_account_baas_IManagerForSystemService_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
+    return nn_account_baas_IManagerForApplication_GetAccountId(self, id);
+}
+static int nn_account_baas_IManagerForSystemService_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
+    return nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(self, context);
+}
+static int nn_account_baas_IManagerForSystemService_LoadIdTokenCacheDeprecated(SvcObj* self, IpcBuf token, u32* size) {
+    return nn_account_baas_IManagerForApplication_LoadIdTokenCacheDeprecated(self, token, size);
+}
+static int nn_account_baas_IManagerForSystemService_LoadIdTokenCache(SvcObj* self, IpcBuf token, u32* size) {
+    return nn_account_baas_IManagerForApplication_LoadIdTokenCache(self, token, size);
+}
+static int nn_account_baas_IManagerForSystemService_RefreshNetworkServiceLicenseCacheAsync(SvcObj* self,
+                                                                                           SvcObj** context) {
+    (void)self;
+    *context = nn_account_detail_IAsyncContext_new();
+    R_SUCCEED();
+}
+/* no account server, so no license (rEden's with online off) */
+static int nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCacheEx(SvcObj* self, u32* license,
+                                                                                    i64* expiration) {
+    (void)self;
+    *license = 0;
+    *expiration = 0;
+    R_SUCCEED();
+}
+/* the online account's user resource (130) and verification URL (133) caches, which the system's account pages read:
+   the online account service is not there, which they show as not available right now (rEden's answer) */
+static int acc_system_manager_other(SvcObj* self, IpcCtx* c) {
+    if (c->cmd == 130 || c->cmd == 133) R_THROW(ACC_UNDER_MAINTENANCE);
+    return stub_ok(self, c);
+}
+
+/* ============================================================ IAdministrator: the system manager's license */
+static int nn_account_baas_IAdministrator_RefreshNetworkServiceLicenseCacheAsync(SvcObj* self, SvcObj** context) {
+    return nn_account_baas_IManagerForSystemService_RefreshNetworkServiceLicenseCacheAsync(self, context);
+}
+static int nn_account_baas_IAdministrator_GetNetworkServiceLicenseCacheEx(SvcObj* self, u32* license, i64* expiration) {
+    return nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCacheEx(self, license, expiration);
+}
+/* no online account behind the user: the pages that need one say so */
+static int nn_account_baas_IAdministrator_IsLinkedWithNintendoAccount(SvcObj* self, u8* linked) {
+    (void)self;
+    *linked = 0;
+    R_SUCCEED();
+}
+/* the online account's page (290, GetRequestForNintendoAccountUserResourceView): not available right now, as rEden */
+static int acc_administrator_other(SvcObj* self, IpcCtx* c) {
+    if (c->cmd == 290) R_THROW(ACC_UNDER_MAINTENANCE);
+    return stub_ok(self, c);
+}
+
+/* ============================================================ IAsyncContext: done at once, succeeded */
 static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
     (void)self;
     return new_event(event, "acc async context", 1);
@@ -253,7 +341,140 @@ static int nn_account_detail_IAsyncContext_HasDone(SvcObj* self, u8* done) {
 }
 static int nn_account_detail_IAsyncContext_GetResult(SvcObj* self) {
     (void)self;
-    R_THROW(ACC_NOT_CONNECTED);
+    R_SUCCEED();
+}
+
+/* ============================================================ IAccountServiceForSystemService: acc:u0's users */
+static int nn_account_IAccountServiceForSystemService_GetUserCount(SvcObj* self, i32* count) {
+    return nn_account_IAccountServiceForApplication_GetUserCount(self, count);
+}
+static int nn_account_IAccountServiceForSystemService_GetUserExistence(SvcObj* self, const nn_account_Uid* uid,
+                                                                       u8* exists) {
+    return nn_account_IAccountServiceForApplication_GetUserExistence(self, uid, exists);
+}
+static int nn_account_IAccountServiceForSystemService_ListAllUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListAllUsers(self, users);
+}
+static int nn_account_IAccountServiceForSystemService_ListOpenUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenUsers(self, users);
+}
+static int nn_account_IAccountServiceForSystemService_GetLastOpenedUser(SvcObj* self, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_GetLastOpenedUser(self, uid);
+}
+static int nn_account_IAccountServiceForSystemService_GetProfile(SvcObj* self, const nn_account_Uid* uid,
+                                                                 SvcObj** profile) {
+    return nn_account_IAccountServiceForApplication_GetProfile(self, uid, profile);
+}
+static int nn_account_IAccountServiceForSystemService_IsUserRegistrationRequestPermitted(SvcObj* self, u64 pid,
+                                                                                         u8* permitted) {
+    return nn_account_IAccountServiceForApplication_IsUserRegistrationRequestPermitted(self, pid, permitted);
+}
+static int nn_account_IAccountServiceForSystemService_TrySelectUserWithoutInteractionDeprecated(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteractionDeprecated(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForSystemService_TrySelectUserWithoutInteraction(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteraction(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForSystemService_ListOpenContextStoredUsersOld(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenContextStoredUsersOld(self, users);
+}
+static int nn_account_IAccountServiceForSystemService_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
+                                                                             IpcBuf image) {
+    return nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(self, uid, image);
+}
+/* the user's network service account, for the system: a user's only, as acc:u0's for the application */
+static int nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSystemService(SvcObj* self,
+                                                                                            const nn_account_Uid* uid,
+                                                                                            SvcObj** manager) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *manager = acc_for_user(nn_account_baas_IManagerForSystemService_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                              "acc profiles and managers"),
+                            uid);
+    R_SUCCEED();
+}
+/* 140 here, 141 in acc:u0 */
+static int nn_account_IAccountServiceForSystemService_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListQualifiedUsers(self, users);
+}
+/* no pin code: the console's users here have none */
+static int nn_account_IAccountServiceForSystemService_GetPinCodeLength(SvcObj* self, u32* length) {
+    (void)self;
+    *length = 0;
+    R_SUCCEED();
+}
+
+/* ============================================================ IAccountServiceForAdministrator: acc:u1's and more */
+static int nn_account_IAccountServiceForAdministrator_GetUserCount(SvcObj* self, i32* count) {
+    return nn_account_IAccountServiceForApplication_GetUserCount(self, count);
+}
+static int nn_account_IAccountServiceForAdministrator_GetUserExistence(SvcObj* self, const nn_account_Uid* uid,
+                                                                       u8* exists) {
+    return nn_account_IAccountServiceForApplication_GetUserExistence(self, uid, exists);
+}
+static int nn_account_IAccountServiceForAdministrator_ListAllUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListAllUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_ListOpenUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_GetLastOpenedUser(SvcObj* self, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_GetLastOpenedUser(self, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_GetProfile(SvcObj* self, const nn_account_Uid* uid,
+                                                                 SvcObj** profile) {
+    return nn_account_IAccountServiceForApplication_GetProfile(self, uid, profile);
+}
+static int nn_account_IAccountServiceForAdministrator_IsUserRegistrationRequestPermitted(SvcObj* self, u64 pid,
+                                                                                         u8* permitted) {
+    return nn_account_IAccountServiceForApplication_IsUserRegistrationRequestPermitted(self, pid, permitted);
+}
+static int nn_account_IAccountServiceForAdministrator_TrySelectUserWithoutInteractionDeprecated(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteractionDeprecated(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_TrySelectUserWithoutInteraction(
+    SvcObj* self, u8 is_network_service_account_required, nn_account_Uid* uid) {
+    return nn_account_IAccountServiceForApplication_TrySelectUserWithoutInteraction(
+        self, is_network_service_account_required, uid);
+}
+static int nn_account_IAccountServiceForAdministrator_ListOpenContextStoredUsersOld(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListOpenContextStoredUsersOld(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
+    return nn_account_IAccountServiceForApplication_ListQualifiedUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_GetBaasAccountManagerForSystemService(SvcObj* self,
+                                                                                            const nn_account_Uid* uid,
+                                                                                            SvcObj** manager) {
+    return nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSystemService(self, uid, manager);
+}
+/* the user's network service account, for the administrator: a user's only */
+static int nn_account_IAccountServiceForAdministrator_GetBaasAccountAdministrator(SvcObj* self,
+                                                                                  const nn_account_Uid* uid,
+                                                                                  SvcObj** administrator) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *administrator = acc_for_user(
+        nn_account_baas_IAdministrator_new_data(g_hle.acc.users, g_hle.acc.user_next, "acc profiles and managers"),
+        uid);
+    R_SUCCEED();
+}
+/* the system names the application the thumbnail is of: none is no application's */
+static int nn_account_IAccountServiceForAdministrator_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
+                                                                             u64 application_id, IpcBuf image) {
+    R_UNLESS(application_id, ACC_INVALID_APPLICATION);
+    return nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(self, uid, image);
+}
+static int nn_account_IAccountServiceForAdministrator_GetPinCodeLength(SvcObj* self, u32* length) {
+    return nn_account_IAccountServiceForSystemService_GetPinCodeLength(self, length);
 }
 
 SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(); }
+SvcObj* new_acc_system(void) { return nn_account_IAccountServiceForSystemService_new(); }
+SvcObj* new_acc_admin(void) { return nn_account_IAccountServiceForAdministrator_new(); }

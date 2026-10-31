@@ -11,7 +11,7 @@ type nn::account::profile::ProfileBase = struct {
     bytes<0x20> nickname;
 };
 
-interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
+interface nn::account::IAccountServiceForApplication is acc:u0 {
     [0] GetUserCount() -> i32 count;
     [1] GetUserExistence(nn::account::Uid uid) -> b8 exists;
     [2] ListAllUsers(array<nn::account::Uid, 0xa> users);
@@ -23,6 +23,8 @@ interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
     [51] TrySelectUserWithoutInteractionDeprecated(b8 is_network_service_account_required) -> nn::account::Uid uid;
     # 19.0.0+, which a game built for it sends instead of 51
     [52] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    # 5.0.0 to 5.1.0's, 131 since
+    [60] ListOpenContextStoredUsersOld(array<nn::account::Uid, 0xa> users);
     @stub [100] InitializeApplicationInfoV0(pid);
     [101] GetBaasAccountManagerForApplication(nn::account::Uid uid)
         -> object<nn::account::baas::IManagerForApplication> manager;
@@ -38,19 +40,70 @@ interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
     @stub [160] InitializeApplicationInfoV2(pid);
 }
 
+# acc:u1, the system's (SwitchBrew acc:u1): the users as acc:u0 has them, with the system's commands from 100
+interface nn::account::IAccountServiceForSystemService is acc:u1 {
+    [0] GetUserCount() -> i32 count;
+    [1] GetUserExistence(nn::account::Uid uid) -> b8 exists;
+    [2] ListAllUsers(array<nn::account::Uid, 0xa> users);
+    [3] ListOpenUsers(array<nn::account::Uid, 0xa> users);
+    [4] GetLastOpenedUser() -> nn::account::Uid uid;
+    [5] GetProfile(nn::account::Uid uid) -> object<nn::account::profile::IProfile> profile;
+    @stub [6] GetProfileDigest(nn::account::Uid uid) -> nn::account::ProfileDigest digest;
+    [50] IsUserRegistrationRequestPermitted(pid) -> b8 permitted;
+    [51] TrySelectUserWithoutInteractionDeprecated(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [52] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [60] ListOpenContextStoredUsersOld(array<nn::account::Uid, 0xa> users);
+    [102] GetBaasAccountManagerForSystemService(nn::account::Uid uid)
+        -> object<nn::account::baas::IManagerForSystemService> manager;
+    # the application's, as rEden's acc:u1 takes it
+    [110] StoreSaveDataThumbnail(nn::account::Uid uid, buffer<u8, 5> image);
+    [140] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    # 18.0.0+: no user here has a pin code
+    [401] GetPinCodeLength() -> u32 length;
+}
+
+# acc:su, the administrator's (SwitchBrew acc:su): acc:u1's, the thumbnail for the application named, and from 200 the
+# users' registration
+interface nn::account::IAccountServiceForAdministrator is acc:su {
+    [0] GetUserCount() -> i32 count;
+    [1] GetUserExistence(nn::account::Uid uid) -> b8 exists;
+    [2] ListAllUsers(array<nn::account::Uid, 0xa> users);
+    [3] ListOpenUsers(array<nn::account::Uid, 0xa> users);
+    [4] GetLastOpenedUser() -> nn::account::Uid uid;
+    [5] GetProfile(nn::account::Uid uid) -> object<nn::account::profile::IProfile> profile;
+    @stub [6] GetProfileDigest(nn::account::Uid uid) -> nn::account::ProfileDigest digest;
+    [50] IsUserRegistrationRequestPermitted(pid) -> b8 permitted;
+    [51] TrySelectUserWithoutInteractionDeprecated(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [52] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    [60] ListOpenContextStoredUsersOld(array<nn::account::Uid, 0xa> users);
+    [102] GetBaasAccountManagerForSystemService(nn::account::Uid uid)
+        -> object<nn::account::baas::IManagerForSystemService> manager;
+    [110] StoreSaveDataThumbnail(nn::account::Uid uid, nn::ApplicationId application_id, buffer<u8, 5> image);
+    [140] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    [250] GetBaasAccountAdministrator(nn::account::Uid uid) -> object<nn::account::baas::IAdministrator> administrator;
+    [401] GetPinCodeLength() -> u32 length;
+}
+
 interface nn::account::profile::IProfile {
     [0] Get(buffer<nn::account::profile::UserData, 0x1a> user_data) -> nn::account::profile::ProfileBase base;
     [1] GetBase() -> nn::account::profile::ProfileBase base;
     [10] GetImageSize() -> u32 size;
     [11] LoadImage(buffer<u8, 6> image) -> u32 size;
+    # 18.0.0+: the large picture and the picture's id, which no user here has, answered as rEden does (its Unknown20, 21
+    # and 30)
+    @stub [20] GetLargeImageSize() -> u32 size;
+    @stub [21] LoadLargeImage(buffer<u8, 6> image) -> u32 size;
+    @stub [30] GetImageId() -> bytes<0x10> id;
 }
 
-# the user's network service account: there, but its id token never arrives
+# the user's network service account: there, with the id token an account server issued it, none here
 interface nn::account::baas::IManagerForApplication {
     @stub [0] CheckAvailability();
     [1] GetAccountId() -> nn::account::NetworkServiceAccountId id;
     [2] EnsureIdTokenCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
-    @stub [3] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
+    # LoadIdTokenCache before 19.0.0, which took its name for 4
+    [3] LoadIdTokenCacheDeprecated(buffer<u8, 6> token) -> u32 size;
+    [4] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
     # the online account's cached user resource: NasUserBaseForApplication (0x68 bytes) and a second buffer, both
     # nought (none of its details is known here), and the account's id
     [130] GetNintendoAccountUserResourceCacheForApplication(buffer<nn::account::NasUserBaseForApplication, 0x1a> base,
@@ -58,7 +111,32 @@ interface nn::account::baas::IManagerForApplication {
     [160] StoreOpenContext();
 }
 
-# an operation that needs the network: done at once, and failed the way nifm fails here, since there is no network
+# the user's network service account for the system (SwitchBrew IManagerForSystemService): the application's, and
+# the caches of the online account the system's pages read, none here (acc.c's acc_system_manager_other)
+@fallback(acc_system_manager_other)
+interface nn::account::baas::IManagerForSystemService {
+    @stub [0] CheckAvailability();
+    [1] GetAccountId() -> nn::account::NetworkServiceAccountId id;
+    [2] EnsureIdTokenCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
+    [3] LoadIdTokenCacheDeprecated(buffer<u8, 6> token) -> u32 size;
+    [4] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
+    # done at once: there is no license to refresh
+    [141] RefreshNetworkServiceLicenseCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
+    # 15.0.0+: the license, 0 for none, and when it ends (undocumented, as rEden reads it)
+    [143] GetNetworkServiceLicenseCacheEx() -> (u32 license, i64 expiration);
+}
+
+# the user's network service account for the administrator (SwitchBrew IAdministrator): its license as the system's
+# manager has it, and no online account linked, nor its page (acc.c's acc_administrator_other)
+@fallback(acc_administrator_other)
+interface nn::account::baas::IAdministrator {
+    [141] RefreshNetworkServiceLicenseCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
+    [143] GetNetworkServiceLicenseCacheEx() -> (u32 license, i64 expiration);
+    [250] IsLinkedWithNintendoAccount() -> b8 linked;
+}
+
+# an operation on the account server: done at once, and succeeded, with nothing from a server (EnsureIdTokenCacheAsync's
+# token stays none)
 interface nn::account::detail::IAsyncContext {
     [0] GetSystemEvent() -> handle<copy, event> event;
     @stub [1] Cancel();

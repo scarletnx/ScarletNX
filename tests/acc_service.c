@@ -113,7 +113,20 @@ static u32 reply32(Request* r, u32 off) {
     CHECK(off + 4 <= r->c.out_size);
     return snx_ld_le32(r->c.out + off); /* the dispatcher writes the reply as the guest reads it */
 }
+static u64 reply64(Request* r, u32 off) {
+    CHECK(off + 8 <= r->c.out_size);
+    return snx_ld_le64(r->c.out + off);
+}
 static void call(SvcObj* o, Request* r) { CHECK(o->dispatch(o, &r->c) == 0); }
+/* acc:u0's GetBaasAccountManagerForApplication (101) for the user */
+static SvcObj* manager_for(SvcObj* acc, const u64 uid[2]) {
+    Request r;
+    request(&r, 101);
+    acc_uid_put(r.raw, uid);
+    call(acc, &r);
+    CHECK(r.c.nout_objs == 1);
+    return r.c.out_objs[0];
+}
 
 /* the frame of a JPEG: its first start of frame (C0 to C2) before the scan, and the components it has */
 static int jpeg_frame(const u8* d, u32 size, u32* width, u32* height, u32* components) {
@@ -178,6 +191,21 @@ static void test_picture(void) {
     r.c.b[0].size = 16;
     call(profile, &r);
     CHECK(reply32(&r, 0) == size && picture[0] == 0xff && picture[15] != 0xee && picture[16] == 0xee);
+
+    /* 18.0.0's large picture (20, 21) and the picture's id (30): none, the buffer as it was */
+    request(&r, 20);
+    call(profile, &r);
+    CHECK(reply32(&r, 0) == 0);
+    memset(g_mem + 0x1000, 0xee, 16);
+    request(&r, 21);
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x1000;
+    r.c.b[0].size = 16;
+    call(profile, &r);
+    CHECK(reply32(&r, 0) == 0 && picture[0] == 0xee && picture[15] == 0xee);
+    request(&r, 30);
+    call(profile, &r);
+    CHECK(r.c.out_size == 0x10 && reply64(&r, 0) == 0 && reply64(&r, 8) == 0);
 
     svcobj_unref(profile);
     svcobj_unref(acc);
@@ -282,8 +310,138 @@ static void test_open_context(void) {
     CHECK(nn_account_IAccountServiceForApplication_ListOpenContextStoredUsers(NULL, list) == 0);
     CHECK(same_uid(memory + 0x100, snx_users_selected()->uid));
     for (i = 16; i < 0xA0; i++) CHECK(memory[0x100 + i] == 0);
+    /* 5.0.0's command 60 lists the same */
+    {
+        SvcObj* acc = new_acc();
+        Request r;
+        memset(memory, 0xAA, sizeof memory);
+        request(&r, 60);
+        r.c.nc = 1;
+        r.c.c[0] = list;
+        call(acc, &r);
+        CHECK(same_uid(memory + 0x100, snx_users_selected()->uid) && memory[0x110] == 0 && memory[0x1A0] == 0xAA);
+        svcobj_unref(acc);
+    }
     g_hle.acc.context_stored = 0;
-    puts("PASS no stored open context until StoreOpenContext, then the open user");
+    puts("PASS no stored open context until StoreOpenContext, then the open user, at 131 and 5.0.0's 60");
+}
+
+/* the user's network service account id, made from its uid as Eden makes it (Common::UUID::Hash), from GetAccountId
+   (1) and GetNintendoAccountUserResourceCacheForApplication (130) */
+static void test_account_id(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc(), *manager;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    request(&r, 1);
+    call(manager, &r);
+    CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+    request(&r, 130);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x68;
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x200;
+    r.c.b[0].size = 0x40;
+    call(manager, &r);
+    CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS the network service account id, as Eden makes it from the uid");
+}
+
+/* LoadIdTokenCacheDeprecated (3) or LoadIdTokenCache (4) into a buffer of size at 0x100 */
+static void token_request(Request* r, u32 cmd, u64 size) {
+    request(r, cmd);
+    r->c.nb = 1;
+    r->c.b[0].addr = 0x100;
+    r->c.b[0].size = size;
+}
+/* the id token: with none, 3 writes nothing and answers 0, and 4 (19.0.0+) answers a run of 0x100 zeros, as much of it
+   as the buffer takes; a token is written as far as the buffer takes, zeros after it to the buffer's end, and its
+   length answered */
+static void test_id_token(void) {
+    static u8 memory[0x400];
+    static const char token[] = "eyJhbGciOiJSUzI1NiJ9";
+    char why[512];
+    SvcObj *acc = new_acc(), *manager;
+    Request r;
+    u32 cmd;
+    int i;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 0x200);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0 && memory[0x100] == 0xAA && memory[0x2FF] == 0xAA);
+    token_request(&r, 4, 0x200);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0x100);
+    for (i = 0; i < 0x100; i++) CHECK(memory[0x100 + i] == 0);
+    CHECK(memory[0x200] == 0xAA);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 4, 0x40);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0x40 && memory[0x13F] == 0 && memory[0x140] == 0xAA);
+    /* a token, which both commands answer alike */
+    memcpy(g_hle.acc.token, token, sizeof token);
+    for (cmd = 3; cmd <= 4; cmd++) {
+        memset(memory, 0xAA, sizeof memory);
+        token_request(&r, cmd, 0x40);
+        call(manager, &r);
+        CHECK(reply32(&r, 0) == sizeof token - 1 && !memcmp(memory + 0x100, token, sizeof token - 1));
+        for (i = (int)sizeof token - 1; i < 0x40; i++) CHECK(memory[0x100 + i] == 0);
+        CHECK(memory[0x140] == 0xAA);
+    }
+    /* longer than the buffer: as far as it takes */
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 8);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 8 && !memcmp(memory + 0x100, token, 8) && memory[0x108] == 0xAA);
+    memset(g_hle.acc.token, 0, sizeof g_hle.acc.token);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS the id token: none, as 3 and 4 answer it apart, and one as far as the buffer takes");
+}
+
+/* EnsureIdTokenCacheAsync (2): its context is done at once, its event signaled, and it succeeded, with no token to
+   load after it; Cancel then changes nothing */
+static void test_ensure_id_token(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc(), *manager, *context;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    request(&r, 2);
+    call(manager, &r);
+    CHECK(r.c.nout_objs == 1);
+    context = r.c.out_objs[0];
+    request(&r, 0);
+    call(context, &r);
+    CHECK(r.c.nout_copy == 1);
+    request(&r, 2);
+    call(context, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 1);
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    request(&r, 1);
+    call(context, &r);
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 0x40);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0 && memory[0x100] == 0xAA);
+    svcobj_unref(context);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS EnsureIdTokenCacheAsync done at once and succeeded, with no token");
 }
 
 /* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
@@ -402,6 +560,161 @@ static void test_users(void) {
     CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == ACC_INVALID_USER_ID);
     gone(UID2 ".jpg");
     puts("PASS three users: the list, the open user, the selection, nicknames and pictures");
+}
+
+/* acc:u1, the system's: acc:u0's users at 0 to 60, ListQualifiedUsers at 140 (acc:u0's InitializeApplicationInfo
+   there), and no pin code */
+static void test_system_service(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* acc = new_acc_system();
+    Request r;
+    nn_account_Uid uid;
+    g_mem = memory;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    request(&r, 0);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 2);
+    request(&r, 4);
+    call(acc, &r);
+    uid_of(UID2, &uid);
+    CHECK(r.c.out_size == 16 && !memcmp(r.c.out, uid.v, 16));
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 140);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x30;
+    call(acc, &r);
+    CHECK(same_uid(memory + 0x100, g_user_id) && !memcmp(memory + 0x110, uid.v, 16) && memory[0x120] == 0);
+    CHECK(memory[0x130] == 0xAA);
+    request(&r, 401);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 0);
+    svcobj_unref(acc);
+    gone("users.ini");
+    puts("PASS acc:u1's own table: the users, ListQualifiedUsers at 140, no pin code");
+}
+
+/* acc:su, the administrator's: acc:u1's users and ListQualifiedUsers at 140, and a thumbnail for the application it
+   names, none refused before the user and the size */
+static void test_administrator_service(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* acc = new_acc_admin();
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 0);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 1);
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 140);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x20;
+    call(acc, &r);
+    CHECK(same_uid(memory + 0x100, g_user_id) && memory[0x110] == 0 && memory[0x120] == 0xAA);
+    request(&r, 110);
+    r.c.na = 1;
+    r.c.a[0].addr = 0x100;
+    r.c.a[0].size = 0x24000;
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 22)); /* no application, and no user either */
+    snx_st_le64(r.raw + 16, 0x0100000000010000ull);
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 20));
+    acc_uid_put(r.raw, g_user_id);
+    call(acc, &r);
+    r.c.a[0].size = 0x100;
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 32));
+    request(&r, 401);
+    call(acc, &r);
+    CHECK(reply32(&r, 0) == 0);
+    svcobj_unref(acc);
+    puts("PASS acc:su's own table: the users, ListQualifiedUsers at 140, a thumbnail for an application");
+}
+
+/* GetBaasAccountManagerForSystemService (102) of acc:u1 and acc:su: the application's manager (the id, no token), the
+   online account's caches the system reads, none (124-5249), and no license, refreshed at once */
+static void test_system_manager(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* services[2];
+    Request r;
+    int i;
+    g_mem = memory;
+    services[0] = new_acc_system();
+    services[1] = new_acc_admin();
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    for (i = 0; i < 2; i++) {
+        SvcObj *manager, *context;
+        request(&r, 102);
+        acc_uid_put(r.raw, g_user_id);
+        call(services[i], &r);
+        CHECK(r.c.nout_objs == 1);
+        manager = r.c.out_objs[0];
+        request(&r, 102);
+        CHECK(services[i]->dispatch(services[i], &r.c) == RC(124, 20) && !r.c.out_objs[0]); /* the zero uid */
+        request(&r, 1);
+        call(manager, &r);
+        CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+        memset(memory, 0xAA, sizeof memory);
+        token_request(&r, 4, 0x200);
+        call(manager, &r);
+        CHECK(reply32(&r, 0) == 0x100 && memory[0x1FF] == 0 && memory[0x200] == 0xAA);
+        request(&r, 130);
+        CHECK(manager->dispatch(manager, &r.c) == RC(124, 5249));
+        request(&r, 133);
+        CHECK(manager->dispatch(manager, &r.c) == RC(124, 5249));
+        request(&r, 143);
+        call(manager, &r);
+        CHECK(r.c.out_size == 0x10 && reply32(&r, 0) == 0 && reply64(&r, 8) == 0);
+        request(&r, 141);
+        call(manager, &r);
+        CHECK(r.c.nout_objs == 1);
+        context = r.c.out_objs[0];
+        request(&r, 3);
+        CHECK(context->dispatch(context, &r.c) == 0);
+        svcobj_unref(context);
+        svcobj_unref(manager);
+        svcobj_unref(services[i]);
+    }
+    puts("PASS the system's manager of the network service account, as the application's, with no license");
+}
+
+/* GetBaasAccountAdministrator (250) of acc:su: no license, refreshed at once, no online account linked, and its page
+   not available (124-5249) */
+static void test_administrator(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc_admin(), *administrator, *context;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 250);
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 20) && !r.c.out_objs[0]);
+    request(&r, 250);
+    acc_uid_put(r.raw, g_user_id);
+    call(acc, &r);
+    CHECK(r.c.nout_objs == 1);
+    administrator = r.c.out_objs[0];
+    request(&r, 250);
+    call(administrator, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 0);
+    request(&r, 290);
+    CHECK(administrator->dispatch(administrator, &r.c) == RC(124, 5249));
+    request(&r, 143);
+    call(administrator, &r);
+    CHECK(r.c.out_size == 0x10 && reply32(&r, 0) == 0 && reply64(&r, 8) == 0);
+    request(&r, 141);
+    call(administrator, &r);
+    CHECK(r.c.nout_objs == 1);
+    context = r.c.out_objs[0];
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    svcobj_unref(context);
+    svcobj_unref(administrator);
+    svcobj_unref(acc);
+    puts("PASS the administrator's account: no license, no online account linked");
 }
 
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
@@ -577,6 +890,9 @@ int main(void) {
     CHECK(!snx_mkdirs(DIR));
     test_one_user();
     test_open_context();
+    test_account_id();
+    test_id_token();
+    test_ensure_id_token();
     g_mem = calloc(1, 0x30000); /* user 1 alone, with no picture of its own */
     CHECK(g_mem != NULL);
     test_picture();
@@ -584,6 +900,10 @@ int main(void) {
     test_initialize_application_info_v2();
     test_account_command_replies();
     test_users();
+    test_system_service();
+    test_administrator_service();
+    test_system_manager();
+    test_administrator();
     test_first_uid();
     test_start();
     test_rename();
