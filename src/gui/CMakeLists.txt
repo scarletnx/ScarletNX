@@ -121,6 +121,11 @@ target_compile_options(scarletnx-gui PRIVATE -Wall -Wextra -Werror=missing-proto
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")
 target_link_libraries(scarletnx-gui PUBLIC snx_gui_support PRIVATE snx_gui_ui scarletnx-common SDL3::SDL3
                       snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages snx_demangle)
+# GPU Drivers' System driver row asks the system's Vulkan loader for its driver, where the build has Vulkan's headers
+if(TARGET Vulkan::Headers)
+    target_link_libraries(scarletnx-gui PRIVATE Vulkan::Headers)
+    target_compile_definitions(scarletnx-gui PRIVATE SNX_GUI_VULKAN VK_NO_PROTOTYPES)
+endif()
 if(WIN32 AND NOT SNX_BUILD_NX)
     enable_language(RC)
     target_sources(scarletnx-gui PRIVATE ../common/platform/runtime.rc)

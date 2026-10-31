@@ -14,16 +14,19 @@
 #include <string.h>
 
 const GuiFreedrenoPreset gui_freedreno_presets[] = {
-    {"Debug - CPU Memory", "Use CPU memory (slower but more stable)", "TU_DEBUG=sysmem"},
-    {"Debug - No UBWC", "Disable UBWC compression for debugging", "TU_DEBUG=noubwc"},
-    {"Debug - No Binning", "Disable binning optimization", "TU_DEBUG=nobin"},
-    {"Capture - Renderpass", "Capture command stream data for debugging", "FD_RD_DUMP=enable"},
-    {"Capture - First 100 Frames", "Capture command stream for first 100 frames only",
+    {SNX_TR_NOOP("Debug - CPU Memory"), SNX_TR_NOOP("Use CPU memory (slower but more stable)"), "TU_DEBUG=sysmem"},
+    {SNX_TR_NOOP("Debug - No UBWC"), SNX_TR_NOOP("Disable UBWC compression for debugging"), "TU_DEBUG=noubwc"},
+    {SNX_TR_NOOP("Debug - No Binning"), SNX_TR_NOOP("Disable binning optimization"), "TU_DEBUG=nobin"},
+    {SNX_TR_NOOP("Capture - Renderpass"), SNX_TR_NOOP("Capture command stream data for debugging"),
+     "FD_RD_DUMP=enable"},
+    {SNX_TR_NOOP("Capture - First 100 Frames"), SNX_TR_NOOP("Capture command stream for first 100 frames only"),
      "FD_RD_DUMP=enable;FD_RD_DUMP_FRAMES=0-100"},
-    {"Shader Debug", "Enable IR3 shader compiler debugging", "IR3_SHADER_DEBUG=nouboopt,spillall"},
-    {"GPU Hang Trace", "Trace GPU progress for debugging hangs", "TU_BREADCRUMBS=1"},
-    {"Dev - UBWC Flag Hint", "Enable TP UBWC flag hint for development", "FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1"},
-    {"Performance - Default", "Clear all debug options for performance", ""},
+    {SNX_TR_NOOP("Shader Debug"), SNX_TR_NOOP("Enable IR3 shader compiler debugging"),
+     "IR3_SHADER_DEBUG=nouboopt,spillall"},
+    {SNX_TR_NOOP("GPU Hang Trace"), SNX_TR_NOOP("Trace GPU progress for debugging hangs"), "TU_BREADCRUMBS=1"},
+    {SNX_TR_NOOP("Dev - UBWC Flag Hint"), SNX_TR_NOOP("Enable TP UBWC flag hint for development"),
+     "FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1"},
+    {SNX_TR_NOOP("Performance - Default"), SNX_TR_NOOP("Clear all debug options for performance"), ""},
     {NULL, NULL, NULL}};
 
 /* a zip entry's name that is a file at the package's top: no folder, nothing hidden, no way out of it */

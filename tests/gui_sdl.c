@@ -2029,8 +2029,9 @@ static void add_mod(App* app, const char* temporary) {
          *file = snx_path_join(root, "x");
     char *to = snx_path_join(mods, "Better Fonts"), *to_first = snx_path_join(mods, "A first"), want[2048];
     const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
-    static const int tail[] = {ROW_ADD_MOD, ROW_MODS_FOLDER, ROW_ADD_CHEATS, ROW_CHEATS_FOLDER, ROW_OPEN_FOLDER,
-                               ROW_STATES,  ROW_CLEAN_CACHE, ROW_SAVE,       ROW_PLAY};
+    static const int tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
+                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
+                               ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
     size_t index = 0;
     int i, nx, ny;
     while (index < app->games.count &&
@@ -2504,6 +2505,156 @@ static void message_waited(App* app) {
 /* the system's pickers the box's Add rows open, as SDL runs zenity (one of the test's own on PATH, which says what it
    was asked and answers a folder or a file): Add Mod the folder picker, Add Cheats the file picker for a .txt, each
    answer from SDL's thread added to the box. Off, the menu's own pickers go back to none */
+/* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
+static char* driver_zip(const char* temporary, const char* name) {
+    mz_zip_archive z;
+    void* zip = NULL;
+    size_t size = 0;
+    unsigned char lib[64] = {0};
+    const char* meta = "{\"name\": \"Turnip test\", \"vendor\": \"Mesa\", \"driverVersion\": \"Vulkan 1.4.335\", "
+                       "\"minApi\": 28, \"libraryName\": \"libvulkan_freedreno.so\"}";
+    char* path = snx_path_join(temporary, name);
+    memcpy(lib, "\177ELF\2\1\1", 7);
+    lib[18] = 183;
+    memset(&z, 0, sizeof z);
+    assert(mz_zip_writer_init_heap(&z, 0, 0));
+    assert(mz_zip_writer_add_mem(&z, "meta.json", meta, strlen(meta), MZ_BEST_SPEED));
+    assert(mz_zip_writer_add_mem(&z, "libvulkan_freedreno.so", lib, sizeof lib, MZ_BEST_SPEED));
+    assert(mz_zip_writer_finalize_heap_archive(&z, &zip, &size));
+    mz_zip_writer_end(&z);
+    assert(!snx_write_file(path, zip, size));
+    mz_free(zip);
+    return path;
+}
+/* Settings > App > GPU Drivers away from Android: its rows, this device said, a package added from its zip but not
+   picked (packages do not load here), its box's Use refused saying why, Remove asked first; then Freedreno Settings:
+   a preset applied, a variable Freedreno does not read refused, and Save keeping them in app.ini */
+static void gpu_drivers(App* app, const char* temporary) {
+    char *dir = snx_path_join(temporary, "gpu_drivers"), *zip = driver_zip(temporary, "Turnip_v32.zip"), *kept;
+    char *bad = snx_path_join(temporary, "not a package.zip"), *package;
+    size_t size;
+    int x, y;
+    free(app->drivers_dir);
+    app->drivers_dir = dir;
+    app->gpu_driver[0] = app->freedreno[0] = 0;
+    drivers_load(app);
+    app->editor.row = GUI_APP_DRIVERS;
+    render(app);
+    key(app, SDLK_RETURN);
+    /* System driver, picked, and Add Driver; this device's line, which says packages do not load here */
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 2 && !app->editor.row);
+    assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: ") &&
+           strstr(app->editor.note, "custom drivers load on Android 9 (API 28) or newer"));
+    render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon */
+    /* a file that is no zip: refused, said by its name; a package's: added, not picked here */
+    assert(!snx_write_file(bad, "not a zip", 9));
+    driver_picked(app, bad, NULL, false);
+    assert(strstr(app->editor.note, "Not added: not a package.zip is not a zip (") && !app->packages_count);
+    driver_picked(app, zip, NULL, false);
+    assert(app->packages_count == 1 && !strcmp(app->packages[0].id, "Turnip_v32") && !app->gpu_driver[0]);
+    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. This device: "));
+    assert(gui_editor_rows(&app->editor) == 3 && !strcmp(app->drivers_form.value[1], "( )"));
+    package = snx_path_join(dir, "Turnip_v32/libvulkan_freedreno.so");
+    assert(snx_is_file(package));
+    /* its box: Use refused here, saying this device; Remove asked first, then the folder gone */
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_DRIVER && app->picks.count == 2);
+    render(app);
+    assert(find_text(app, "Use", yellow, 1, &x, &y));
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->gpu_driver[0] && strstr(app->editor.note, "Not picked: This device: "));
+    key(app, SDLK_DELETE);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DRIVER &&
+           !strcmp(app->ask_line, "Remove the driver Turnip test? Games set to it will not start until another is "
+                                  "picked."));
+    key(app, SDLK_RIGHT); /* Remove, past Cancel */
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+    assert(!snx_path_exists(package) && !app->packages_count &&
+           !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
+    free(package);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_DRIVERS &&
+           !strcmp(app->app_form.drivers, "System driver"));
+    /* Freedreno Settings: Eden's presets first, Debug - CPU Memory applied; LD_PRELOAD refused; Save kept */
+    app->editor.row = GUI_APP_FREEDRENO;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 4 + 1);
+    render(app);
+    key(app, SDLK_RETURN); /* the first preset */
+    assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "TU_DEBUG") &&
+           !strcmp(app->fd_vars[0].value, "sysmem") &&
+           !strcmp(app->editor.note, "Preset 'Debug - CPU Memory' applied") && app->editor.dirty);
+    snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "LD_PRELOAD");
+    snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "/x.so");
+    freedreno_action(app, 9 + app->fd_count + 2, false); /* Add Variable */
+    assert(app->fd_count == 1 && strstr(app->editor.note, "\"LD_PRELOAD\" is not one of Freedreno's variables"));
+    snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "FD_RD_DUMP");
+    snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "enable");
+    freedreno_action(app, 9 + app->fd_count + 2, false);
+    assert(app->fd_count == 2 && !strcmp(app->editor.note, "Variable FD_RD_DUMP added") && !app->fd_form.name[0]);
+    app->editor.row = gui_editor_rows(&app->editor) - 1; /* Save */
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->freedreno, "TU_DEBUG=sysmem;FD_RD_DUMP=enable") &&
+           !strcmp(app->editor.note, "Freedreno configuration saved") && !app->editor.dirty);
+    kept = (char*)snx_read_file(app->app_file, &size);
+    assert(kept && strstr(kept, "freedreno_env = TU_DEBUG=sysmem;FD_RD_DUMP=enable\n") && !strstr(kept, "gpu_driver"));
+    free(kept);
+    app->editor.row = 9; /* TU_DEBUG's row: Del takes it out */
+    key(app, SDLK_DELETE);
+    assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "FD_RD_DUMP"));
+    app->editor.row = 9 + app->fd_count + 3; /* Clear All, then Save */
+    key(app, SDLK_RETURN);
+    assert(!app->fd_count && !strcmp(app->editor.note, "All Freedreno variables cleared"));
+    app->editor.row = gui_editor_rows(&app->editor) - 1;
+    key(app, SDLK_RETURN);
+    assert(!app->freedreno[0]);
+    kept = (char*)snx_read_file(app->app_file, &size);
+    assert(kept && !strstr(kept, "freedreno_env"));
+    free(kept);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_FREEDRENO &&
+           !strcmp(app->app_form.freedreno, "None"));
+    free(zip);
+    free(bad);
+}
+/* a game's box's GPU Driver: Global and the launcher's first, then the game's own pick kept in its .ini (System
+   driver, gpu_driver= with nothing), Global again taking the key out; its Freedreno Settings start with none of its
+   own; and each run's option, the game's own when it has one */
+static void game_gpu_driver(App* app) {
+    char *game = snx_strdup(app->addons_game), *ini = game_ini_of(game), *option;
+    int row;
+    for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_GPU_DRIVER; ++row) {}
+    assert(row < addons_rows(app) && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
+           gui_editor_rows(&app->editor) == 3 && !strcmp(app->drivers_form.value[0], "(*)"));
+    assert(strstr(app->editor.note, ": its own GPU driver. This device: "));
+    app->editor.row = 1; /* System driver, its own */
+    key(app, SDLK_RETURN);
+    assert(snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[1], "(*)") &&
+           strstr(app->editor.note, ": GPU driver System driver"));
+    option = gui_run_option("gpu_driver", ini, "Turnip_v32");
+    assert(!option); /* its own pick: the run reads it */
+    app->editor.row = 0;
+    key(app, SDLK_RETURN);
+    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)"));
+    option = gui_run_option("gpu_driver", ini, "Turnip_v32");
+    assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
+    free(option);
+    key(app, SDLK_ESCAPE); /* back to its box */
+    assert(!app->editing && app->addons_shown && !strcmp(app->addons_game, game));
+    for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_FREEDRENO; ++row) {}
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && strstr(app->editor.note, ": none of its own"));
+    key(app, SDLK_ESCAPE);
+    assert(app->addons_shown);
+    free(ini);
+    free(game);
+}
 static void pickers_asked(App* app, const char* temporary, const char* self) {
     char *root = snx_path_join(temporary, "pickers"), *bin = snx_path_join(root, "bin");
     char *zenity = snx_path_join(bin, "zenity"), *asked = snx_path_join(root, "asked.txt");
@@ -4088,7 +4239,9 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
-    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 11);
+    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
+    gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
+    app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];
         snprintf(first, sizeof first, "%s", app.theme.name);
@@ -8100,6 +8253,7 @@ int main(int argc, char** argv) {
                 add_cheats(&app, temporary);
                 key(&app, SDLK_M);
                 assert(app.addons_shown && !app.mods_count && !app.cheats_count);
+                game_gpu_driver(&app);
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running && app.menu.view == GUI_LOAD_GAMES);
                 { /* and on its row of the recent games: the same box, named as the run named it */
@@ -8347,14 +8501,16 @@ int main(int argc, char** argv) {
                 8);
             key(&app, SDLK_RETURN);
             /* rows: Update 1.2.0, Update 1.0.0, No update, DLC 1, A mod, B mod, 60 FPS, Infinite HP, Speed x2|x4, Add
-               Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, Save, Play */
+               Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, GPU Driver,
+               Freedreno Settings, Save, Play */
             assert(app.addons_shown && !app.menu.running && app.addons.count == 3 && app.mods_count == 2 &&
-                   app.cheats_count == 3 && addons_rows(&app) == 18);
+                   app.cheats_count == 3 && addons_rows(&app) == 20);
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
-                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_SAVE &&
-                   addons_row(&app, 17) == ROW_PLAY);
+                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_GPU_DRIVER &&
+                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SAVE &&
+                   addons_row(&app, 19) == ROW_PLAY);
             build_ids(&app, dirs);
             assert(!app.addons_checked[0] && !app.addons_checked[1] && app.addons_checked[2]);
             assert(app.mods_on[0] && !app.mods_on[1] && !strcmp(app.mods[0], "A mod"));
@@ -8443,8 +8599,9 @@ int main(int argc, char** argv) {
             assert(!app.cheats_on[0] && app.cheats_on[1] && app.addons_focus == 8 &&
                    !strcmp(app.message,
                            "\"Speed x2|x4\" always runs: a | in its name, which cheats_off= puts between two"));
-            for (i = 0; i < 8; i++) key(&app, SDLK_DOWN); /* past Open Folder, Save States and Clean Cache */
-            assert(app.addons_focus == 16);
+            /* past Open Folder, Save States, Clean Cache, GPU Driver and Freedreno Settings */
+            for (i = 0; i < 10; i++) key(&app, SDLK_DOWN);
+            assert(app.addons_focus == 18);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && strstr(app.message, "kept"));
             checked = snx_ini_value(ini, "addons");
@@ -8598,8 +8755,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_DOWN);
             key(&app, SDLK_DOWN);
             key(&app, SDLK_RETURN);
-            for (i = 0; i < 15; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
-            assert(app.addons_focus == 17);
+            for (i = 0; i < 17; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
+            assert(app.addons_focus == 19);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && !app.recompile && gui_queue_running(&app.queue) == 0);
             {

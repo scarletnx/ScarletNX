@@ -284,6 +284,78 @@ msgid "Saved in %s"
 msgstr ""
 
 #: src/gui/gpu_driver.c
+msgid "Debug - CPU Memory"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Use CPU memory (slower but more stable)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No UBWC"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable UBWC compression for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No Binning"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable binning optimization"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - Renderpass"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream data for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - First 100 Frames"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream for first 100 frames only"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Shader Debug"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable IR3 shader compiler debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "GPU Hang Trace"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Trace GPU progress for debugging hangs"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Dev - UBWC Flag Hint"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable TP UBWC flag hint for development"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Performance - Default"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Clear all debug options for performance"
+msgstr ""
+
+#: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s is not a zip (%s)"
 msgstr ""
@@ -395,7 +467,7 @@ msgstr ""
 msgid "Added %s (%s), in %s/%s"
 msgstr ""
 
-#: src/gui/gpu_driver.c
+#: src/gui/gpu_driver.c src/gui/main.c
 msgid "no driverVersion"
 msgstr ""
 
@@ -608,6 +680,30 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Tap: use, add or remove. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: use, add or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: select."
 msgstr ""
 
@@ -814,6 +910,18 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: queue."
 msgstr ""
 
@@ -985,6 +1093,18 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: user, current user. A: rename. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: use, add or remove. X: remove. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1540,6 +1660,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "GPU Driver: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Global (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Mod %s"
 msgstr ""
 
@@ -1578,6 +1708,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Save States"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno Settings"
 msgstr ""
 
 #: src/gui/main.c
@@ -1727,6 +1861,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is a dump: its recompiled game keeps its own GPU driver and Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s is a dump: its recompiled game keeps the save states"
 msgstr ""
 
@@ -1816,6 +1955,14 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FOLDERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
 msgstr ""
 
 #: src/gui/main.c
@@ -2200,6 +2347,18 @@ msgid "The data and the extractions, and the libraries Games lists: recompiled g
 msgstr ""
 
 #: src/gui/main.c
+msgid "GPU Drivers"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Clean Old Settings"
 msgstr ""
 
@@ -2250,6 +2409,15 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Defaults"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "None"
 msgstr ""
 
 #: src/gui/main.c
@@ -2634,6 +2802,247 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgstr ""
+
+#: src/gui/main.c
+msgid "System driver"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No Vulkan loader: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Vulkan did not start: VkResult %d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan lists no GPU"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, Vulkan %u.%u.%u, driver %08x"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher reads no Vulkan driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The system's own: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s, by %s, package %s, Android API %d or newer, in %s/%s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no vendor"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no author"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own GPU driver. %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " %zu more packages are not listed."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU driver for every game: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept: %s could not be written"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the GPU driver for every game (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: GPU driver %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove the driver %s? Games set to it will not start until another is picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "; the GPU driver for every game is the System driver now"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Driver package"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Add Driver: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No file was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s is %lld bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "every variable cleared"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s=%s. A press removes it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Name (e.g., TU_DEBUG)"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Capitals, digits and _, starting TU_, FD_ or IR3_"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Value"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Its value, without ;"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Variable"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The name and value typed above, set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear All"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every variable taken out"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "freedreno_env does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of its own, the launcher's go"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/freedreno.html). Save keeps them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not saved: the variables take over %d bytes"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno configuration saved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Preset '%s' applied"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s removed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable name cannot be empty"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s's value \"%s\" has a ;, which ends it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: the variables take %d bytes at most"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s added"
+msgstr ""
+
+#: src/gui/main.c
+msgid "All Freedreno variables cleared"
 msgstr ""
 
 #: src/gui/main.c
@@ -3376,6 +3785,10 @@ msgid "Add to Library"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Use"
+msgstr ""
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
@@ -3970,10 +4383,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Refresh"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No file was picked."
 msgstr ""
 
 #: src/gui/main.c
