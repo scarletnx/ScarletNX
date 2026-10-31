@@ -1498,6 +1498,11 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
             if (nextra >= 4) copy_extra(extra, nextra, d + CTRL_GPU_TPC_MASKS_MASK, 4);
             return NV_RESULT_SUCCESS;
         case NVGPU_GPU_NUM_VSMS:
+            /* A Switch 2 NvRm asks this for its Ampere chip's shape and then checks it against the
+               characteristics' GPC and TPC counts, which the GM20B's shape of two SMs does not match.
+               Eden's Switch 2 work leaves the ask unimplemented and its NvRm takes that without
+               stopping, which a wrong answer does not */
+            if (g_guest_features) return NV_RESULT_NOT_IMPLEMENTED;
             wr32(d, CTRL_GPU_NUM_VSMS, NVGPU_NUM_SMS);
             wr32(d, CTRL_GPU_NUM_VSMS_RESERVED, 0);
             copy_extra(extra, nextra, sms, sizeof sms);

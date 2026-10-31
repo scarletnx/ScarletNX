@@ -607,6 +607,16 @@ static u32 svc_SetMemoryPermission(u64 address, u64 size, u32 perm) { return svc
 static u32 svc_SetMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
     return svc_set_mem_attr(address, size, mask, attr);
 }
+/* SetGpuMemoryAttribute: a Switch 2 title's marking of memory as GPU-visible, which its GPU-accessible memory and
+   native image paths call as SetMemoryAttribute is (the same address, size, mask and attribute). Emulated guest
+   memory is always GPU-visible, so the marking is accepted as Eden's Switch 2 work accepts it */
+static u32 svc_SetGpuMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
+    (void)address;
+    (void)size;
+    (void)mask;
+    (void)attr;
+    R_SUCCEED();
+}
 static u32 svc_MapMemory(u64 dst_address, u64 src_address, u64 size) {
     return svc_map_memory(dst_address, src_address, size);
 }

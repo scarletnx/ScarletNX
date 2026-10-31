@@ -172,5 +172,6 @@ type SecureMonitorArguments 32 64 -
 0x7D stub Result CreateResourceLimit(Handle* out_handle);
 0x7E stub Result SetResourceLimitLimitValue(Handle resource_limit_handle, LimitableResource which, int64_t limit_value);
 0x7F stub void CallSecureMonitor(SecureMonitorArguments args);
+0x80 Result SetGpuMemoryAttribute(Address address, Size size, uint32_t mask, uint32_t attr);
 0x90 stub Result MapInsecureMemory(Address address, Size size);
 0x91 stub Result UnmapInsecureMemory(Address address, Size size);
