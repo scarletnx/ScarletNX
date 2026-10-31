@@ -663,6 +663,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_ir_slp_vectorizer(g_settings.slp_vectorizer);
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
+        snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
         llvm.tuning = snx_llvm_tuning(llvm.opt, error, sizeof error);
         if (!llvm.tuning) {
             snx_error("%s", error);

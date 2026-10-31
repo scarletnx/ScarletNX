@@ -27,6 +27,8 @@ static struct {
     int domain_off; /* snx_ir_init's, of X86DomainReassignment */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
+    int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
+    SnxU64 dump_pc;
 } g_ir;
 static const SnxIrFeatures generic_features;
 
@@ -52,6 +54,12 @@ int snx_ir_slp(void) { return !g_ir.slp_off; }
 void snx_ir_fpsr_flags(int exact) { g_ir.fpsr_loose = !exact; }
 int snx_ir_fpsr_exact(void) { return !g_ir.fpsr_loose; }
 void snx_ir_volatile_memory(int on) { g_ir.volatile_memory = on != 0; }
+void snx_ir_diagnostics(int stats, const char* dump_pc) {
+    char* end = NULL;
+    g_ir.stats = stats != 0;
+    g_ir.dump_pc = dump_pc && *dump_pc ? strtoull(dump_pc, &end, 16) : 0;
+    g_ir.dump = end && end != dump_pc && !*end;
+}
 int snx_ir_volatile(void) { return g_ir.volatile_memory; }
 int snx_ir_init(char* error, size_t error_size) {
     /* the asm parser for the runtime library's inline assembly (rtlib.c's divq, cpu.h's compiler barrier) */
@@ -165,14 +173,9 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     SnxIr* ir = (SnxIr*)calloc(1, sizeof(*ir));
     if (!ir) return NULL;
     ir->promote = opt != '0';
-    const char* stats = getenv("SNX_IR_STATS");
-    ir->stats.enabled = stats && *stats && strcmp(stats, "0");
-    const char* dump = getenv("SNX_IR_DUMP_PC");
-    if (dump && *dump) {
-        char* end;
-        ir->dump_pc = strtoull(dump, &end, 16);
-        ir->dump_function = !*end;
-    }
+    ir->stats.enabled = g_ir.stats;
+    ir->dump_pc = g_ir.dump_pc;
+    ir->dump_function = g_ir.dump;
     char* triple = target_triple ? LLVMCreateMessage(target_triple) : host_triple(jit);
     if (LLVMGetTargetFromTriple(triple, &target, &message)) {
         snprintf(error, error_size, "LLVM target %s: %s", triple, message ? message : "unavailable");

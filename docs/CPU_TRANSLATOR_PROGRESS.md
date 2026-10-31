@@ -178,17 +178,17 @@ the timing instead of assuming the IR gather guarantees one hardware gather on e
 
 ## Compiler diagnostics
 
-`SNX_IR_STATS=1` enables per-unit static counts in a non-quiet AOT recompile log. These count IR before LLVM's
+The setting `ir_stats` (`--ir_stats=1` on `-r`, or the game's settings for the JIT) enables per-unit static counts in a non-quiet AOT recompile log. These count IR before LLVM's
 optimization pipeline, not dynamic execution. Synchronization stores include returns, with the call-site subset
 reported separately. Reloads count copies after calls, excluding entry loads. O0 skips promotion, so zero promoted
 copies does not mean zero CPU structure accesses. Diagnostic output does not change generated code or its ABI.
 
-`SNX_IR_DUMP_PC=hex-address` prints the selected function's leaders, flag origins, promoted slots and IR before and
+The setting `ir_dump_pc` (a hex address) prints the selected function's leaders, flag origins, promoted slots and IR before and
 after promotion to stderr. The address must be the start of a discovered function. Dumps can contain game code and
 stay local. The whole-module test checks that the CLI prints counts. The helper-effects test independently checks
 four FP calls, three stores totaling 32 bytes, zero stores at calls and zero reloads in its small fixture.
 
 ```sh
-SNX_IR_STATS=1 build/scarletnx -r /local/game/input
-SNX_IR_DUMP_PC=100000 build/scarletnx -r /local/game/input
+build/scarletnx -r /local/game/input --ir_stats=1
+build/scarletnx -r /local/game/input --ir_dump_pc=100000
 ```

@@ -65,12 +65,12 @@ enum {
    x86 fields are only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated
    on them is gated on the architecture */
 typedef struct {
-    int x86;                                          /* x86-64 target: x86 intrinsics are available at all */
-    int sse42, crc32, pclmul, aes, sha_ni, gfni, fma, f16c; /* x86 extensions */
-    int avx2, avx512bw, avx512vl, avx512bitalg;
-    int aarch64;           /* AArch64 target: AArch64 intrinsics are available at all */
-    int arm_aes, arm_sha2; /* AArch64 crypto extensions (PMULL comes with AES) */
-    int arm_crc;           /* AArch64 CRC32 extension */
+    unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
+    unsigned sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1; /* x86 extensions */
+    unsigned avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
+    unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
+    unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
+    unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
 } SnxIrFeatures;
 extern SnxIrFeatures snx_ir_host;
 
@@ -123,7 +123,7 @@ typedef struct SnxIrTuning {
 
 /* Compile-time IR statistics. Counts describe emitted IR before LLVM's machine optimizations, not dynamic work. */
 typedef struct {
-    int enabled;
+    unsigned enabled : 1; /* the setting ir_stats (snx_ir_diagnostics) */
     SnxU64 functions, promoted_functions, call_sites, fp_calls, vector_calls, guest_calls, indirect_calls;
     SnxU64 sync_stores, sync_reloads, call_stores, store_bytes, reload_bytes;
     SnxU64 lookups, polls, stale_checks, return_checks;
@@ -140,7 +140,7 @@ typedef struct SnxIr {
     const SnxIrFeatures* features;
     SnxIrStats stats;
     SnxU64 dump_pc, dump_instruction_pc;
-    int dump_function, dump_active; /* opt-in host diagnostics, never part of generated code */
+    unsigned dump_function : 1, dump_active : 1; /* the setting ir_dump_pc's host diagnostics, never generated code */
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
@@ -197,6 +197,9 @@ int snx_ir_slp(void);
    any module is made; the caches' keys carry it */
 void snx_ir_fpsr_flags(int exact);
 int snx_ir_fpsr_exact(void);
+/* the settings ir_stats (each code unit's static IR counts in a recompile's log) and ir_dump_pc (hex: the function
+   there printed, its IR before and after the promotion), for the SnxIr made after */
+void snx_ir_diagnostics(int stats, const char* dump_pc);
 /* Whether the guest's loads and stores are volatile (the setting volatile_memory, off by default): on, LLVM keeps
    each where the guest has it (ir_state.c's ir_rd). Once per process, before any module is made; the caches' keys
    carry it */

@@ -432,6 +432,7 @@ int main(int argc, char** argv) {
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = b ? "--unit_instructions=1000000" : "--unit_instructions=1";
+        if (stats) args[k++] = "--ir_stats=1"; /* the setting, as -r takes a recompile setting */
         args[k] = NULL;
         check(!snx_run(args, root, NULL, &text), "a build sized by unit_instructions");
         if (text && !strstr(text, b ? "LLVM: 1 code unit and" : "code units and")) fprintf(stderr, "%s\n", text);

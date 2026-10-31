@@ -646,6 +646,24 @@ setting Volatile load/stores
     help loads of one address, or a store and a load, between the game's barriers, as the console's memory model
     help allows, which makes its code faster. 1 is for finding whether a bug is one of those. It applies to the
     help next recompile, and to the JIT's next run
+setting IR stats
+    key ir_stats
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    recompile
+    help 1 = a recompile's log (one not run with -q) counts each code unit's IR as the recompiler emits it: functions
+    help and the ones whose registers were promoted, calls by kind, register stores and reloads around calls, lookups,
+    help polls and code checks. They count the IR before LLVM's passes, not the work the code does when it runs
+setting IR dump PC
+    key ir_dump_pc
+    text 32
+    default ""
+    startup
+    recompile
+    help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
+    help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
 setting GDB JIT symbols
     key gdb_jit
     int 0 1
