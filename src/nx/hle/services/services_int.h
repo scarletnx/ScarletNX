@@ -219,6 +219,14 @@ typedef struct {
     u32 obj;
     u32 ev[AM_GPU_IDS];
 } AmGpuIds;
+/* The Switch 2 display session's (am.c): the events its SDK asks for (a display's own, its vsync), each signaled as
+   soon as it is made, since nothing here waits on the display */
+#define AM_VI2_SESSIONS 4
+#define AM_VI2_EVENTS   8
+typedef struct {
+    u32 obj;
+    u32 ev[AM_VI2_EVENTS];
+} AmVi2;
 /* The Switch 2 native memory and images the graphics system hands out (am.c): the console answers an id and a size
    for one, which a later command binds to pages. A game creates few, so the id indexes these tables directly */
 #define AM_NATIVE_MEMORIES 256
@@ -290,9 +298,10 @@ typedef struct {
     AmSyncpt syncpts[AM_SYNCPT_SESSIONS];
     AmSyncptPage syncpt_page;
     AmGpuIds gpu_ids[AM_GPU_SESSIONS];
+    AmVi2 vi2s[AM_VI2_SESSIONS];
     AmNativeMemory native_memories[AM_NATIVE_MEMORIES];
     AmNativeImage native_images[AM_NATIVE_IMAGES];
-    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next, gpu_id_next;
+    u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next, syncpt_next, gpu_id_next, vi2_next;
 } HleAm;
 /* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host). And under lock, the
    software keyboard's box over the game (am.c), the host's too: the ticket of the box shown last (0 none), whether it

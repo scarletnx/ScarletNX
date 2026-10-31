@@ -77,6 +77,12 @@ void syncpt_add_quiet(u32 id, u32 n);
 /* the event slots this thread's syncpt_add_quiet increments reached, signaled: with no renderer's lock held. Nothing
    when there were none since the last call */
 void syncpt_events(void);
+/* A waiter of syncpoint values that isn't a nvhost-ctrl event slot: the Switch 2 syncpoint session's armed slots
+   (am.c), which the console's graphics stack waits on. Called after every increment, from syncpt_add's thread, so a
+   wait is answered as the counter moves rather than by a poller of its own. NULL until am sets it, and one waiter at
+   a time (the one program) */
+void syncpt_watch(void (*fn)(void));
+void syncpt_watch_check(void);
 /* A channel promises the next n increments it will make, in order. Returns the value they reach: the fence the ioctl
    hands back, and what nvhost-ctrl reads as the maximum */
 u32 syncpt_promise(u32 id, u32 n);

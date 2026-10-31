@@ -238,6 +238,16 @@ static int nn_am_service_IGraphicsSystemSession_OpenGpuSession(SvcObj* self, u64
     *session = session_new(o);
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
+/* gsv 305: the display session a Switch 2 title's nn::vi2::sdk boots with (IVi2Session, below), which it then asks
+   what the display has before it sizes its window, and presents its client buffer on */
+static int nn_am_service_IGraphicsSystemSession_OpenViSession(SvcObj* self, u32* session) {
+    SvcObj* o;
+    (void)self;
+    o = nn_am_service_IVi2Session_new_data(g_hle.am.vi2s, g_hle.am.vi2_next, "nx2 vi2 sessions");
+    if (!o) return AM_OUT_OF_MEMORY;
+    *session = session_new(o);
+    return *session ? 0 : AM_OUT_OF_HANDLES;
+}
 
 /* The Switch 2 GPU session's ids: an id is signaled once it starts, which here is at once, since the GPU work its
    SDK waits for isn't emulated (Eden's Switch 2 work signals it on Start as well). Its data is services_int.h's
@@ -290,6 +300,80 @@ static int nn_am_service_IGpuSession_OpenSubSession(SvcObj* self, u32* session) 
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
 
+/* ============================================ the Switch 2 display session (am.swipc) */
+/* gsv 305's session (Eden's INx2Vi2Session), which a Switch 2 SDK's nn::vi2::sdk asks what the display has before it
+   sizes its window, and presents its client buffer on. Nothing is shown here, so the counts are the console's and the
+   events are signaled at once */
+/* the events of this display session (services_int.h's AmVi2, one per vi2 session the application opens): one per
+   event the SDK asks for (a display's own, its vsync), each signaled as soon as it is made, since nothing here waits
+   on the display */
+static u32 am_vi2_event(AmVi2* s, u32 index) {
+    KEvent* e;
+    if (index >= AM_VI2_EVENTS) return 0;
+    if (!s->ev[index]) {
+        if (!(e = kevent_new("nx2 vi2 event"))) return 0;
+        kobj_ref(&e->o);
+        s->ev[index] = kobj_id(&e->o);
+        ev_signal(s->ev[index]); /* nothing waits on the display: the SDK's wait is answered at once */
+    }
+    return s->ev[index];
+}
+static AmVi2* am_vi2(SvcObj* self) { return self && self->data ? (AmVi2*)self->data : NULL; }
+static int nn_am_service_IVi2Session_Unknown1(SvcObj* self, u32* one) {
+    (void)self;
+    *one = 1;
+    R_SUCCEED();
+}
+static int nn_am_service_IVi2Session_GetDisplayCount(SvcObj* self, u32* count) {
+    (void)self;
+    *count = 1; /* the one display a title presents on */
+    R_SUCCEED();
+}
+static int nn_am_service_IVi2Session_GetTimestampRecorderCount(SvcObj* self, u32* count) {
+    (void)self;
+    *count = AM_VI2_EVENTS - 1; /* must stay under 8: nn::vi::detail::LayerHistory's layers */
+    R_SUCCEED();
+}
+static int nn_am_service_IVi2Session_GetEvent(SvcObj* self, u32* event) {
+    AmVi2* s = am_vi2(self);
+    u32 ev;
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_vi2_event(s, 0);
+    if (!ev) return AM_OUT_OF_MEMORY;
+    *event = ev_handle(ev);
+    return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+/* 31 and 32: the vsync events, which the console signals on every frame. One event per display's index, so a title
+   waiting on two fires of it gets one after the other (Eden's Switch 2 work signals them from its vblank timer) */
+static int nn_am_service_IVi2Session_GetVsyncEvent(SvcObj* self, u32 kind, u32* event) {
+    AmVi2* s = am_vi2(self);
+    u32 ev;
+    (void)kind;
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_vi2_event(s, 1 + (kind & 3));
+    if (!ev) return AM_OUT_OF_MEMORY;
+    *event = ev_handle(ev);
+    return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+static int nn_am_service_IVi2Session_GetDisplayVsyncEvent(SvcObj* self, u32 vsync, u32 display, u32* event) {
+    AmVi2* s = am_vi2(self);
+    u32 ev;
+    (void)vsync; /* the event it duplicates is this session's own: the same one is handed back */
+    if (!s) return AM_OUT_OF_MEMORY;
+    ev = am_vi2_event(s, 5 + (display & 3));
+    if (!ev) return AM_OUT_OF_MEMORY;
+    *event = ev_handle(ev);
+    return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+static int nn_am_service_IVi2Session_Unknown104(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+static int nn_am_service_IVi2Session_Unknown105(SvcObj* self) {
+    (void)self;
+    R_SUCCEED();
+}
+
 /* ============================================ the Switch 2 syncpoint session (am.swipc) */
 /* The shared page AttachSyncpointMemory (gsv 204) laid out: one per application, as the console has one graphics
    system, which gsv 202's syncpoint sessions read. Its offsets are the ones Eden's Switch 2 work writes, and the
@@ -326,32 +410,21 @@ static u32 am_syncpt_event(AmSyncpt* s, u32 slot) {
     }
     return s->ev[slot];
 }
-/* Mirrors the syncpoint values into the read-only page and answers the armed slots their syncpoints reached, as
-   Eden's Switch 2 PollSyncpts does. A wait whose value the armed bits have moved is answered by making the
-   read-only bits match, and the client rereads the value and re-arms if it still has to wait; a slot armed for a
-   syncpoint that got to its threshold is signaled out of hand. The values are the host's syncpoints, which the GPU,
-   video and host1x threads increment */
-static void am_syncpt_poll(void) {
+/* Answers the armed slots their syncpoints reached, as the reference's guest action does: the console's graphics
+   stack waits on a slot's event, so a wait is answered as the counter moves rather than by a poller of its own.
+   nvdrv's syncpt_watch calls this after every increment, from the incrementing thread (a GPU, video or IPC one),
+   which is where the console answers it too. The armed bits are answered here as well, since the client reads them
+   as its wait's done */
+static void am_syncpt_armed(void) {
     AmSyncpt* s;
-    u8* ro;
-    u32 i, words;
-    ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL;
-    if (ro) {
-        u64* values = (u64*)(ro + AM_SYNCPT_RO_VALUES);
-        u32 count = g_hle.am.syncpt_page.count;
-        for (i = 0; i < count && i < SYNCPT_IDS; ++i) values[i] = syncpt_read(i);
-        words = (count + 63) / 64;
-        for (i = 0; i < words && i < AM_SYNCPT_SLOTS / 64; ++i) {
-            u64 rw = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_BITS + 8 * i);
-            *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = rw;
-        }
-        *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_SUMMARY);
-    }
+    u8 *ro, *rw;
+    u32 i, slot, id, thresh;
+    if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return;
+    rw = g_host.am.syncpt.rw;
     pm_lock(&g_am_syncpt_lk);
     for (i = 0; i < AM_SYNCPT_SESSIONS; ++i) {
         s = &g_hle.am.syncpts[i];
-        for (u32 slot = 0; slot < AM_SYNCPT_SLOTS; ++slot) {
-            u32 id, thresh;
+        for (slot = 0; slot < AM_SYNCPT_SLOTS; ++slot) {
             if (!s->armed[slot]) continue;
             id = am_syncpt_id(s->armed_id[slot]);
             thresh = (u32)(s->armed_thresh[slot] ? s->armed_thresh[slot] : 1);
@@ -361,9 +434,30 @@ static void am_syncpt_poll(void) {
             }
         }
     }
+    /* the client re-reads the value and re-arms if its threshold still isn't reached, so the bits it moved are
+       acknowledged here rather than by the page mirror */
+    for (i = 0; i < AM_SYNCPT_SLOTS / 64; ++i)
+        *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = *(u64*)(rw + AM_SYNCPT_RW_BITS + 8 * i);
+    *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(rw + AM_SYNCPT_RW_SUMMARY);
     pm_unlock(&g_am_syncpt_lk);
 }
-/* the poller: one thread for the run, started by the first session that attaches its page */
+/* Mirrors the syncpoint values into the read-only page, which is what the client polls: its armed waits are answered
+   by am_syncpt_armed as the counters move. The values are the host's own, which the GPU, video and host1x threads
+   increment, and the reference keeps a pasted loop for the same reason (its 500 us timing event) */
+static void am_syncpt_poll(void) {
+    u8* ro;
+    u64* values;
+    u32 i, count, words;
+    if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return;
+    values = (u64*)(ro + AM_SYNCPT_RO_VALUES);
+    count = g_hle.am.syncpt_page.count;
+    for (i = 0; i < count && i < SYNCPT_IDS; ++i) values[i] = syncpt_read(i);
+    words = (count + 63) / 64;
+    for (i = 0; i < words && i < AM_SYNCPT_SLOTS / 64; ++i)
+        *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_BITS + 8 * i);
+    *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_SUMMARY);
+}
+/* the page's mirror: one thread for the run, started when the page is attached */
 static void am_syncpt_run(void* arg) {
     (void)arg;
     for (;;) {
@@ -372,9 +466,11 @@ static void am_syncpt_run(void* arg) {
     }
 }
 static void am_syncpt_start(void) {
-    if (__atomic_exchange_n(&g_am_syncpt_poller, 1, __ATOMIC_ACQ_REL)) return;
-    if (plat_thread(am_syncpt_run, NULL, 0x4000)) /* no thread: the values are current, so a wait only wakes late */
-        __atomic_store_n(&g_am_syncpt_poller, 0, __ATOMIC_RELEASE);
+    if (!__atomic_exchange_n(&g_am_syncpt_poller, 1, __ATOMIC_ACQ_REL)) {
+        if (plat_thread(am_syncpt_run, NULL, 0x4000)) /* no thread: the page is only exact at a reply */
+            __atomic_store_n(&g_am_syncpt_poller, 0, __ATOMIC_RELEASE);
+    }
+    syncpt_watch(am_syncpt_armed); /* a wait is answered where the counter moves */
 }
 
 /* The Switch 2 native memory and images a title creates from the graphics system, then binds to pages: the console
@@ -646,6 +742,20 @@ static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self,
     *functions = nn_am_service_IApplicationFunctions_new();
     R_SUCCEED();
 }
+/* 40, 50, 70, 80 and 90: the controllers a Switch 2 SDK opens from IApplicationProxy, which a Switch 1 one does not.
+   Each is an interface of commands none of which this runtime answers yet, so a call on one succeeds (am.swipc's
+   INx2Controller) as Eden's Switch 2 work has its stub interface do */
+#define AM_NX2_CONTROLLER(n)                                                                     \
+    static int nn_am_service_IApplicationProxy_GetNx2Interface##n(SvcObj* self, SvcObj** c) {    \
+        (void)self;                                                                              \
+        *c = nn_am_service_INx2Controller_new();                                                 \
+        R_SUCCEED();                                                                             \
+    }
+AM_NX2_CONTROLLER(40)
+AM_NX2_CONTROLLER(50)
+AM_NX2_CONTROLLER(70)
+AM_NX2_CONTROLLER(80)
+AM_NX2_CONTROLLER(90)
 /* 60: the graphics scale a Switch 2 SDK's nn::oe reads at startup, which scales what it renders by. The console's own
    display is never scaled, so the answer is the unscaled one (Eden's Switch 2 work answers 10 as well) */
 static int nn_am_service_IApplicationProxy_GetGraphicsScaleController(SvcObj* self, SvcObj** controller) {

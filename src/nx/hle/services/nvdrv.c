@@ -614,6 +614,7 @@ static int syncpt_bump(u32 id, u32 n) {
 void syncpt_add(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
     nv_events_check();
+    syncpt_watch_check(); /* am.c's Switch 2 syncpoint slots waiting for this value */
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_add_quiet(u32 id, u32 n) {
@@ -625,6 +626,24 @@ void syncpt_events(void) {
     if (!t_hle.nvdrv.events_due) return;
     t_hle.nvdrv.events_due = 0;
     nv_events_check();
+    syncpt_watch_check();
+}
+/* the one waiter of syncpoint values that isn't a nvhost-ctrl event slot (am.c's Switch 2 syncpoint session), and the
+   lock its arm and its check take: signaling an event takes the kernel's lock, which the incrementing thread may not
+   hold, so the check runs where syncpt_add_events' does, as its own */
+static void (*g_syncpt_watch)(void);
+static PMutex g_syncpt_watch_lk = PMUTEX_INIT;
+void syncpt_watch(void (*fn)(void)) {
+    pm_lock(&g_syncpt_watch_lk);
+    g_syncpt_watch = fn;
+    pm_unlock(&g_syncpt_watch_lk);
+}
+void syncpt_watch_check(void) {
+    void (*fn)(void);
+    pm_lock(&g_syncpt_watch_lk);
+    fn = g_syncpt_watch;
+    pm_unlock(&g_syncpt_watch_lk);
+    if (fn) fn();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
 /* raises the promised maximum by n, from at least the current value: what a fence handed back now will reach */
@@ -1391,6 +1410,38 @@ static void gpu_characteristics(u8* c) {
 }
 static_assert(sizeof(NvgpuGpuCharacteristics) == NVGPU_CHARACTERISTICS_BYTES, "the guest's IoctlGpuCharacteristics");
 static_assert(offsetof(NvgpuGpuCharacteristics, chipname) == 0x90, "the guest's IoctlGpuCharacteristics");
+/* The characteristics of the Switch 2's Ampere chip, which its NvRm checks and its NVN path needs: Eden's Switch 2
+   work reports them for a caller that asks for a block of 0xD0 bytes, where a Switch 1 caller asks for 0xA0. The
+   console's Ampere GPU is what NVN2's class tables hold, and the interface versions at 0x70..0x80 are where its NvRm
+   reads the ones a Switch 2 driver has (>= 6 for the TSG's) */
+#define NX2_CHARACTERISTICS_BYTES 0xD0u
+static void gpu_characteristics_nx2(u8* c) {
+    const NvgpuGpuCharacteristics* g = &gm20b_characteristics;
+#define PUT32(f) wr32(c, (u32)offsetof(NvgpuGpuCharacteristics, f), g->f)
+#define PUT64(f) wr64(c, (u32)offsetof(NvgpuGpuCharacteristics, f), g->f)
+    gpu_characteristics(c);
+    wr32(c, offsetof(NvgpuGpuCharacteristics, arch), 0x170);   /* Ampere */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, impl), 0xE);     /* chip 0x17E, the Switch 2's */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, num_tpc_per_gpc), 6);
+    wr32(c, offsetof(NvgpuGpuCharacteristics, sm_arch_sm_version), 0x808); /* NVN2's SM */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, sm_arch_spa_version), 0x808);
+    wr32(c, offsetof(NvgpuGpuCharacteristics, threed_class), 0xC797);   /* AMPERE_B */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, compute_class), 0xC7C0);  /* AMPERE_COMPUTE_B */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, gpfifo_class), 0xC56F);   /* AMPERE_CHANNEL_GPFIFO_A */
+    wr32(c, offsetof(NvgpuGpuCharacteristics, dma_copy_class), 0xC7B5); /* AMPERE_DMA_COPY_B */
+    wr64(c, offsetof(NvgpuGpuCharacteristics, chipname), 0x6631306167ull); /* "ga10f" */
+    wr64(c, offsetof(NvgpuGpuCharacteristics, flags), 0x55 | 0x100 | (1ull << 22) | (1ull << 26) | (1ull << 34));
+    /* the interface versions at 0x70..0x80 (the Switch 1 layout's max_fbps_count..max_tex_per_tpc), and the u32 at
+       0xb4 sizing a TSG's subcontexts: NVN2's second queue has command memory only with 64 of them */
+    for (u32 off = 0x70; off <= 0x80; off += 2) {
+        c[off] = 0x40;
+        c[off + 1] = 0;
+    }
+    wr32(c, 0xB4, 64);
+#undef PUT32
+#undef PUT64
+    (void)g;
+}
 /* ZCULL_GET_INFO's answer, Eden's ZCullGetInfo values: the GM20B's ZCULL alignment and region geometry */
 static const NvgpuGpuZcullGetInfoArgs gm20b_zcull_info = {
     .width_align_pixels = 0x20,
@@ -1424,11 +1475,22 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVGPU_GPU_ZBC_SET_TABLE:
         case NVGPU_GPU_ZBC_QUERY_TABLE: return NV_RESULT_SUCCESS;
         case NVGPU_GPU_GET_CHARACTERISTICS: { /* the buffer address is left as it came */
-            u8 c[NVGPU_CHARACTERISTICS_BYTES];
-            gpu_characteristics(c);
-            wr64(d, CTRL_GPU_CHARACTERISTICS_BUF_SIZE, sizeof c);
-            memcpy(d + CTRL_GPU_CHARACTERISTICS_GC, c, sizeof c);
-            copy_extra(extra, nextra, c, sizeof c);
+            u8 c[NX2_CHARACTERISTICS_BYTES];
+            u32 len = NVGPU_CHARACTERISTICS_BYTES;
+            /* A Switch 2 caller asks for a block of 0xD0 bytes (its out-of-line buffer's size, as the console's own
+               NvRm passes it) and its NvRm checks the chip in it: the Ampere ones are what its NVN path accepts */
+            int nx2 = rd64(d, CTRL_GPU_CHARACTERISTICS_BUF_SIZE) >= NX2_CHARACTERISTICS_BYTES || nextra >= NX2_CHARACTERISTICS_BYTES;
+            memset(c, 0, sizeof c);
+            if (nx2) {
+                gpu_characteristics_nx2(c);
+                len = NX2_CHARACTERISTICS_BYTES;
+            } else {
+                gpu_characteristics(c);
+            }
+            wr64(d, CTRL_GPU_CHARACTERISTICS_BUF_SIZE, len);
+            memcpy(d + CTRL_GPU_CHARACTERISTICS_GC, c, len);
+            copy_extra(extra, nextra, c, len);
+            if (nx2) LOG("nvdrv: ctrl-gpu characteristics: the Switch 2's Ampere chip\n");
             return NV_RESULT_SUCCESS;
         }
         case NVGPU_GPU_GET_TPC_MASKS:

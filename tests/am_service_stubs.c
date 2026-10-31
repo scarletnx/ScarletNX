@@ -101,3 +101,6 @@ u32 syncpt_read(u32 id) {
     (void)id;
     return 0;
 }
+/* the armed waits of the Switch 2 syncpoint session, which nvdrv calls after every increment: no increments in a
+   test, so the waiter is registered and never run */
+void syncpt_watch(void (*fn)(void)) { (void)fn; }

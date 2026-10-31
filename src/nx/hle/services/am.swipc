@@ -38,6 +38,14 @@ interface nn::am::service::IApplicationProxy {
     [10] GetProcessWindingController() -> object<nn::am::service::IProcessWindingController> controller;
     [11] GetLibraryAppletCreator() -> object<nn::am::service::ILibraryAppletCreator> creator;
     [20] GetApplicationFunctions() -> object<nn::am::service::IApplicationFunctions> functions;
+    # A Switch 2 SDK's nn::am::InitializeApplicationInterfaces also opens controllers under 40, 50, 70, 80 and 90,
+    # which a Switch 1 SDK does not. Each is an interface of commands, answered with success while its commands
+    # are not needed (Eden's Switch 2 ReturnNx2StubInterface hands these back as one stub interface)
+    [40] GetNx2Interface40() -> object<nn::am::service::INx2Controller> controller;
+    [50] GetNx2Interface50() -> object<nn::am::service::INx2Controller> controller;
+    [70] GetNx2Interface70() -> object<nn::am::service::INx2Controller> controller;
+    [80] GetNx2Interface80() -> object<nn::am::service::INx2Controller> controller;
+    [90] GetNx2Interface90() -> object<nn::am::service::INx2Controller> controller;
     # A Switch 2 SDK's nn::oe::GetCurrentGraphicsScale reads this controller's scale (Eden's Switch 2
     # IGraphicsScaleController): the console has no upscaling here, so it answers the unscaled value
     [60] GetGraphicsScaleController() -> object<nn::am::service::IGraphicsScaleController> controller;
@@ -143,6 +151,12 @@ interface nn::am::service::IAudioController {
 }
 
 interface nn::am::service::IDisplayController {
+}
+# The controllers a Switch 2 SDK opens from IApplicationProxy (40, 50, 70, 80, 90), whose commands it does not need
+# to run a title: an answer with success and zeros, as the console's own answering is not modelled (Eden's Switch 2
+# work hands these back as one stub interface named for its owner and command)
+@fallback(quiet_ok)
+interface nn::am::service::INx2Controller {
 }
 # The Switch 2 graphics scale a title renders at, which IApplicationProxy 60 hands back: the console's own display is
 # never scaled here, so the answer is the unscaled one
@@ -278,6 +292,37 @@ interface nn::am::service::IGraphicsSystemSession {
     # A Switch 2 SDK's nn::gpu::sdk::BootWithRemoteMemory opens its GPU session under 497, which it then asks for an
     # id range, an event per id and starts the id it waits on. Eden's Switch 2 work answers it the same way
     [497] OpenGpuSession(u64 size) -> handle<copy, session> session;
+    # The Switch 2 display session nn::vi2::sdk opens, which it then asks how many displays and timestamp
+    # recorders there are, an event per display and the vsync one, and presents its client buffer on. Eden's Switch 2
+    # work hands this one out under 305
+    [305] OpenViSession() -> handle<copy, session> session;
+}
+
+# The Switch 2 display session gsv 305 hands back (Eden's INx2Vi2Session): the SDK reads the reply shapes from it
+# before it computes what its window and its image pool need. Nothing is shown here, so the events are made and
+# signaled, and a present reports every slot free
+#
+# Mario Kart World's SDK sends more of these than Eden's titles do, and its requests (raw words, from one run) name
+# what each command takes. They are answered by the @fallback until their replies are known:
+#   21   (nothing)                                  : sent first, from nn::vi2::sdk::Initialize
+#   51   (u32, 7 here)                              : an index the SDK takes from cmd 5's count
+#   101  ("default", u32 1)                         : the display's name and a kind
+#   111  ("default", "default", u64 0xcb20728)       : two names and an object the SDK holds
+#   201  (u64 0xcb20728, u32 2, u32 3)              : that object with two selectors
+#   212  (u64 0xcb20728)                            : that object alone
+#   251  (u64 0xcb20728, "default")                 : that object with a name
+#   261  ("default", u32 0)                         : a name and a selector
+interface nn::am::service::IVi2Session {
+    [1] Unknown1() -> u32 one;
+    [3] GetDisplayCount() -> u32 count;
+    [5] GetTimestampRecorderCount() -> u32 count;
+    [11] GetEvent() -> handle<copy, event> event;
+    [31] GetVsyncEvent(u32 kind) -> handle<copy, event> event;
+    # a session holds the vsync event of the display it names, which a title duplicates into its own wait: the request
+    # carries the event it duplicates and the display's id (Eden's Switch 2 handshake with its own SDK's 32)
+    [32] GetDisplayVsyncEvent(handle<copy, event> vsync, u32 display) -> handle<copy, event> event;
+    [104] Unknown104();
+    [105] Unknown105();
 }
 
 # The Switch 2 GPU session, which gsv 497 hands back: the ids its SDK manages, an event per id, and starting an id.

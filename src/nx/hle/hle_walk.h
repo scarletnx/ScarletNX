@@ -32,6 +32,7 @@
     X(AmLock, (h).am.lock_objs[0])                                                                                     \
     X(AmSyncpt, (h).am.syncpts[0])                                                                                     \
     X(AmGpuIds, (h).am.gpu_ids[0])                                                                                     \
+    X(AmVi2, (h).am.vi2s[0])                                                                                           \
     X(AmNativeMemory, (h).am.native_memories[0])                                                                                     \
     X(AmNativeImage, (h).am.native_images[0])                                                                                     \
     X(LibApplet, (h).am.applets[0])                                                                                    \
