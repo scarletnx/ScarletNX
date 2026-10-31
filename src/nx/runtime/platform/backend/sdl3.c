@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/fatal_screen.h"
+#include "nx/runtime/platform/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
@@ -402,8 +403,13 @@ void video_init(const char* title, const char* addons) {
 #endif
 }
 
-void* backend_vk_loader(void) { return (void*)SDL_Vulkan_GetVkGetInstanceProcAddr(); }
+void* backend_vk_loader(void) {
+    void* own = gpu_driver_open();
+    return own ? own : (void*)SDL_Vulkan_GetVkGetInstanceProcAddr();
+}
 void* backend_vk_driver(void) {
+    void* own = gpu_driver_open();
+    if (own) return own;
 #ifdef __APPLE__
     /* The library the program's folders carry (snx_vulkan_driver), for a run with no window: SDL's own search of the
        bundle needs its video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run,
@@ -429,7 +435,16 @@ const char* const* backend_vk_extensions(u32* n) {
     *n = c;
     return e;
 }
+void backend_vk_check(void) { gpu_driver_check(); }
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
+#ifdef SDL_PLATFORM_ANDROID
+    /* a package's instance: SDL would ask the system's loader for its surface */
+    if (gpu_driver_custom())
+        return gpu_driver_surface(
+            instance,
+            SDL_GetPointerProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL),
+            surface);
+#endif
     if (SDL_Vulkan_CreateSurface(g_win, instance, NULL, surface)) return 1;
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
