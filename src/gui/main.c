@@ -13685,6 +13685,7 @@ static int share_folder_empty(App* app, const char* share) {
    else as scarletnx.log alone; then that folder opened in the system's file manager, to share from there */
 static void share_log(App* app, bool zip) {
     char *game, *run, *recompiled, *said, *fatal, *played, *summary, *text, *saved = NULL, *share, *logs;
+    char *rec_path = recommended_path(app), *rec; /* what Recommended Settings tested and applied: the picks' why */
     char console[4096], errors[4096];
     bool written = false, ready;
     left_behind(app);
@@ -13697,13 +13698,15 @@ static void share_log(App* app, bool zip) {
     fatal = log_tail(errors[0] ? errors : NULL, 64 << 10);
     played = log_tail(game, 4 << 20);
     summary = game ? log_summary(game) : snx_strdup("");
+    rec = log_tail(rec_path && snx_is_file(rec_path) ? rec_path : NULL, 16 << 10);
     text = snx_format(
         "%s\nMessage: %s\n%s%s%s%s\n%s== the last run: %s ==\n%s\n\n== the last recompile of the queue: %s "
-        "==\n%s\n\n== the launcher's log: %s ==\n%s\n\n== fatal errors: %s ==\n%s\n\n== %s ==\n%s\n",
+        "==\n%s\n\n== the launcher's log: %s ==\n%s\n\n== fatal errors: %s ==\n%s\n\n== %s: %s ==\n%s\n\n== %s ==\n%s\n",
         snx_build_info(), app->message, app->left ? app->left : "", app->left_clear ? SAY_LEFT_CLEAR "\n" : "",
         app->cleaned.count ? "Clean Old Settings:\n" : "", app->cleaned.text ? app->cleaned.text : "", summary,
         app->run_log ? app->run_log : "", run, app->job_log ? app->job_log : "", recompiled,
-        console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, game ? game : "no game log", played);
+        console[0] ? console : "none", said, errors[0] ? errors : "none", fatal, REC_FILE,
+        rec_path && snx_is_file(rec_path) ? rec_path : "none", rec, game ? game : "no game log", played);
     logs = logs_folder(app);
     share = logs ? snx_path_join(logs, "share") : NULL;
     if (!share) snprintf(app->message, sizeof(app->message), snx_tr("The logs could not be saved: %s"), logs_none());
@@ -13759,6 +13762,8 @@ static void share_log(App* app, bool zip) {
     free(logs);
     free(text);
     free(summary);
+    free(rec);
+    free(rec_path);
     free(played);
     free(fatal);
     free(said);

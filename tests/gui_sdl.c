@@ -3166,6 +3166,23 @@ static void recommended_box(App* app, const char* temporary) {
     free(text);
     gui_settings_shown(&app->settings, setting_row(app, "astc_bc"), shown, sizeof shown);
     assert(!strcmp(shown, "On [recommended]"));
+    { /* Share Log carries it, under its name and path */
+        char *state = app->state_dir, *log,
+             *want = snx_format("== %s: %s ==\n; what Recommended Settings", REC_FILE, rec);
+        app->state_dir = snx_path_join(temporary, "recommended logs");
+        app->menu.selected = GUI_LOG;
+        share_pick(app, 1);
+        log = snx_path_join(app->state_dir, "share/scarletnx.log");
+        text = (char*)snx_read_file(log, &size);
+        assert(text && strstr(text, want) && strstr(text, "[recommended]\nastc_bc = 1\n"));
+        free(text);
+        free(log);
+        free(want);
+        assert(!snx_remove_tree(app->state_dir));
+        free(app->state_dir);
+        app->state_dir = state;
+        app->message[0] = 0;
+    }
     /* again: nothing moved, Back alone and in focus, saying so; the row as it is now */
     recommended_run(app);
     picks_question(app, question, sizeof question, &tab);
