@@ -244,7 +244,9 @@ typedef struct {
     char shown[GUI_FREEDRENO_ROWS][200];
 } GuiFreedrenoForm;
 /* Download Driver's values: a repository's state, a release's Latest or Prerelease */
-#define GUI_FETCH_ROWS   (GUI_DRIVER_REPOS * 30) /* a repository's 30 releases, as many as GitHub lists */
+#define GUI_FETCH_ROWS (GUI_DRIVER_REPOS * 31) /* a repository's 30 releases, as many as GitHub lists, and Less */
+/* a Download Driver row that is no release (fetch_release): its repository's state, More, Less */
+enum { GUI_FETCH_STATE = -1, GUI_FETCH_MORE = -2, GUI_FETCH_LESS = -3 };
 #define GUI_FETCH_ASSETS 16                      /* the downloads of a release its box lists */
 enum { GUI_FETCH_NONE, GUI_FETCH_LOADING, GUI_FETCH_LISTED, GUI_FETCH_FAILED };
 typedef struct {
@@ -579,6 +581,7 @@ typedef struct App {
     GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
     char fetch_label[GUI_FETCH_ROWS][180];
     char fetch_title[GUI_DRIVER_REPOS][240]; /* each repository's box's head */
+    bool fetch_open[GUI_DRIVER_REPOS];       /* its box every release, not its latest and recommended alone */
     char fetch_about[GUI_FETCH_ROWS][900];
     int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
     char asset_labels[GUI_FETCH_ASSETS][240];
@@ -8962,14 +8965,45 @@ static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFe
     SDL_DetachThread(t);
     return 1;
 }
-/* the page's rows: each repository's releases, newest or as GitHub orders them, else one row saying its list loads,
-   failed (Select fetches it again) or has none; its title over them (fetch_entries) */
+/* row r of the page, a label, a value and the help the bar shows, of repository repo and release (or GUI_FETCH_*) */
+static void fetch_row(App* app, int r, const char* label, const char* value, const char* about, int repo, int release) {
+    char* c;
+    snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", label);
+    snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s", value);
+    snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s", about);
+    for (c = app->fetch_about[r]; *c; ++c)
+        if (*c == '\r' || *c == '\n' || *c == '\t') *c = ' ';
+    app->fetch_keys[r] =
+        page_row(app->fetch_label[r], offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
+                 sizeof app->fetch_form.value[0], app->fetch_about[r]);
+    app->fetch_repo[r] = repo;
+    app->fetch_release[r] = release;
+}
+/* a release's row: its title, Latest, Recommended (Eden's pick for this GPU) or Prerelease, its date and notes */
+static void fetch_release_row(App* app, int r, int repo, int k, int recommended) {
+    const GuiDriverRelease* rel = &app->fetch_lists[repo].releases[k];
+    char about[900];
+    snprintf(about, sizeof about, snx_tr("%s, %zu downloads. %s"), rel->published[0] ? rel->published : rel->tag,
+             rel->count, rel->body);
+    fetch_row(app, r, rel->title,
+              rel->latest && k == recommended ? snx_tr("Latest, Recommended")
+              : k == recommended              ? snx_tr("Recommended")
+              : rel->latest                   ? snx_tr("Latest")
+              : rel->prerelease               ? snx_tr("Prerelease")
+                                              : "",
+              about, repo, k);
+}
+/* the page's rows, as Eden's fetcher folds each repository: its latest and the release Eden recommends for this GPU,
+   then More, which opens every release (Less closing them again); else one row saying its list loads, failed (Select
+   fetches it again) or has none. Its title over them (fetch_entries) */
 static int fetch_fill(App* app) {
-    int r = 0;
+    int r = 0, model = gui_adreno_model(app->vk_gpu);
     memset(&app->fetch_form, 0, sizeof app->fetch_form);
-    for (int i = 0; i < GUI_DRIVER_REPOS && r < GUI_FETCH_ROWS; ++i) {
+    for (int i = 0; i < GUI_DRIVER_REPOS && r + 3 <= GUI_FETCH_ROWS; ++i) {
         const GuiDriverReleases* list = &app->fetch_lists[i];
         int listed = app->fetch_state[i] == GUI_FETCH_LISTED, failed = app->fetch_state[i] == GUI_FETCH_FAILED;
+        int recommended = listed ? gui_driver_recommended_release(model, i, list) : -1, latest = -1, shown = 0;
+        char more[64];
         if (listed)
             snprintf(app->fetch_title[i], sizeof app->fetch_title[i],
                      list->count == 1 ? snx_tr("%s: %zu release") : snx_tr("%s: %zu releases"),
@@ -8977,37 +9011,33 @@ static int fetch_fill(App* app) {
         else
             snprintf(app->fetch_title[i], sizeof app->fetch_title[i], "%s", gui_driver_repos[i].name);
         if (!listed || !list->count) {
-            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s",
-                     listed   ? snx_tr("No releases")
-                     : failed ? snx_tr("Fetch Again")
-                              : snx_tr("Loading..."));
-            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s", failed ? snx_tr("Failed") : "");
-            snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s",
-                     failed ? app->fetch_error[i] : gui_driver_repos[i].path);
-            app->fetch_keys[r] = page_row(app->fetch_label[r],
-                                          offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
-                                          sizeof app->fetch_form.value[0], app->fetch_about[r]);
-            app->fetch_repo[r] = i;
-            app->fetch_release[r++] = -1;
+            fetch_row(app, r++,
+                      listed   ? snx_tr("No releases")
+                      : failed ? snx_tr("Fetch Again")
+                               : snx_tr("Loading..."),
+                      failed ? snx_tr("Failed") : "", failed ? app->fetch_error[i] : gui_driver_repos[i].path, i,
+                      GUI_FETCH_STATE);
             continue;
         }
-        for (size_t k = 0; k < list->count && r < GUI_FETCH_ROWS; ++k, ++r) {
-            const GuiDriverRelease* rel = &list->releases[k];
-            char* c;
-            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", rel->title);
-            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s",
-                     rel->latest       ? snx_tr("Latest")
-                     : rel->prerelease ? snx_tr("Prerelease")
-                                       : "");
-            snprintf(app->fetch_about[r], sizeof app->fetch_about[r], snx_tr("%s, %zu downloads. %s"),
-                     rel->published[0] ? rel->published : rel->tag, rel->count, rel->body);
-            for (c = app->fetch_about[r]; *c; ++c)
-                if (*c == '\r' || *c == '\n' || *c == '\t') *c = ' ';
-            app->fetch_keys[r] = page_row(app->fetch_label[r],
-                                          offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
-                                          sizeof app->fetch_form.value[0], app->fetch_about[r]);
-            app->fetch_repo[r] = i;
-            app->fetch_release[r] = (int)k;
+        if (app->fetch_open[i]) {
+            for (int k = 0; k < (int)list->count && r < GUI_FETCH_ROWS - 1; ++k)
+                fetch_release_row(app, r++, i, k, recommended);
+            fetch_row(app, r++, snx_tr("Less"), "", snx_tr("Only its latest and the recommended release"), i,
+                      GUI_FETCH_LESS);
+            continue;
+        }
+        for (int k = 0; k < (int)list->count && latest < 0; ++k)
+            if (list->releases[k].latest) latest = k;
+        if (latest < 0) latest = 0; /* every release a prerelease: the first */
+        fetch_release_row(app, r++, i, latest, recommended);
+        ++shown;
+        if (recommended >= 0 && recommended != latest) {
+            fetch_release_row(app, r++, i, recommended, recommended);
+            ++shown;
+        }
+        if ((int)list->count > shown) {
+            snprintf(more, sizeof more, snx_tr("More (%zu)"), list->count - (size_t)shown);
+            fetch_row(app, r++, more, "", gui_driver_repos[i].path, i, GUI_FETCH_MORE);
         }
     }
     return r;
@@ -9128,12 +9158,21 @@ static void fetch_download(App* app, int i) {
     snprintf(app->editor.note, sizeof app->editor.note, "%s", app->download_said);
     app->downloading = fetch_start(app, download_run, "driver download", job);
 }
-/* Select on a row: a repository that failed fetched again, a release's box of its downloads */
+/* Select on a row: a release's box of its downloads, More opening its repository's releases and Less closing them (the
+   focus on its More), a repository that failed fetched again */
 static void fetch_select(App* app, int row) {
+    int repo, kind;
     if (row < 0 || row >= gui_editor_rows(&app->editor)) return;
-    if (app->fetch_release[row] >= 0)
+    repo = app->fetch_repo[row];
+    kind = app->fetch_release[row];
+    if (kind >= 0)
         fetch_assets(app, row);
-    else if (app->fetch_state[app->fetch_repo[row]] == GUI_FETCH_FAILED && !app->fetching)
+    else if (kind == GUI_FETCH_MORE || kind == GUI_FETCH_LESS) {
+        app->fetch_open[repo] = kind == GUI_FETCH_MORE;
+        fetch_show(app, row, app->downloading ? app->download_said : "");
+        for (row = 0; kind == GUI_FETCH_LESS && row < gui_editor_rows(&app->editor); ++row)
+            if (app->fetch_repo[row] == repo && app->fetch_release[row] == GUI_FETCH_MORE) app->editor.row = row;
+    } else if (app->fetch_state[repo] == GUI_FETCH_FAILED && !app->fetching)
         open_fetch(app);
 }
 /* an answer of the threads: a repository's releases listed, a download's progress, its zip added (driver_take) */

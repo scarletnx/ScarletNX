@@ -53,4 +53,7 @@ int gui_driver_proprietary(const char* repo_path, const char* asset_name);
 int gui_adreno_model(const char* gpu_name);
 /* the driver Eden recommends for that model, as its page says it ("GameHub Adreno 8xx"), "Unsupported" for none */
 const char* gui_driver_recommended(int model);
+/* that driver among repository repo's releases (gui_driver_repos' index), listed in list: its index there, -1 when the
+   recommendation is another repository's, none, or a release list does not have */
+int gui_driver_recommended_release(int model, int repo, const GuiDriverReleases* list);
 #endif

@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* gui/gpu_driver_fetch.c: a repository's releases from GitHub's list of them, its latest marked as GitHub marks it,
    titled by name or by tag and ordered as Eden orders them; the assets each has, those with no link to download left
-   out, a GPU maker's own marked; GitHub's own error said; and Eden's recommendation by Adreno model */
+   out, a GPU maker's own marked; GitHub's own error said; and Eden's recommendation by Adreno model, found among a
+   repository's releases */
 #include "gui/gpu_driver_fetch.h"
 #include <assert.h>
 #include <stdio.h>
@@ -69,6 +70,31 @@ int main(void) {
            !strcmp(gui_driver_recommended(740), "Mr. Purple T23") &&
            !strcmp(gui_driver_recommended(32), "KIMCHI Latest") && !strcmp(gui_driver_recommended(0), "Unsupported") &&
            !strcmp(gui_driver_recommended(950), "Unsupported"));
+    /* the recommendation among a repository's releases: by a part of its tag, else its latest; another repository's,
+       none, or a release the list lacks gives -1 */
+    {
+        static const char purple_json[] =
+            "[{\"tag_name\": \"vturnip_mrpurple_T30\", \"name\": \"T30\", \"prerelease\": false, \"assets\": []},"
+            " {\"tag_name\": \"vturnip_mrpurple_T23-toasted.adpkg\", \"name\": \"T23\", \"prerelease\": false,"
+            "  \"assets\": []},"
+            " {\"tag_name\": \"vturnip_mrpurple-T19-toasted.adpkg\", \"name\": \"T19\", \"prerelease\": false,"
+            "  \"assets\": []}]";
+        static const char kimchi_json[] =
+            "[{\"tag_name\": \"v26.0.0-rc05\", \"name\": \"26 r5\", \"prerelease\": false, \"assets\": []},"
+            " {\"tag_name\": \"v25.2.0-rc.05\", \"name\": \"05152025\", \"prerelease\": false, \"assets\": []}]";
+        assert(gui_driver_releases_parse(purple_json, strlen(purple_json), purple, &r, why, sizeof why));
+        assert(gui_driver_recommended_release(740, 0, &r) == 1 && gui_driver_recommended_release(650, 0, &r) == 2);
+        assert(gui_driver_recommended_release(610, 0, &r) == -1); /* EOL-24.3.4, not listed */
+        assert(gui_driver_recommended_release(830, 0, &r) == -1 && gui_driver_recommended_release(950, 0, &r) == -1);
+        gui_driver_releases_free(&r);
+        assert(gui_driver_releases_parse(kimchi_json, strlen(kimchi_json), kimchi, &r, why, sizeof why));
+        assert(gui_driver_recommended_release(705, 2, &r) >= 0 &&
+               !strcmp(r.releases[gui_driver_recommended_release(705, 2, &r)].tag, "v25.2.0-rc.05"));
+        assert(gui_driver_recommended_release(32, 2, &r) >= 0 &&
+               r.releases[gui_driver_recommended_release(32, 2, &r)].latest);
+        assert(gui_driver_recommended_release(705, 0, &r) == -1); /* named for another repository */
+        gui_driver_releases_free(&r);
+    }
     puts("gui_gpu_driver_fetch: ok");
     return 0;
 }

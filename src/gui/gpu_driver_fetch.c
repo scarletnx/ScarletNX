@@ -127,14 +127,32 @@ int gui_adreno_model(const char* gpu_name) {
     for (; snx_is_digit((unsigned char)*p) && model < 100000; ++p) model = model * 10 + (*p - '0');
     return *p && *p != ' ' ? 0 : model;
 }
+/* Eden's picks by model (DriverFetcherFragment.kt), each as the repository its release is in and a part of that
+   release's tag, NULL for the repository's latest */
+static const struct {
+    int lo, hi;
+    const char *driver, *repo, *tag;
+} g_recommended[] = {{10, 99, "KIMCHI Latest", "K11MCH1/AdrenoToolsDrivers", NULL},
+                     {600, 639, "Mr. Purple EOL-24.3.4", "MrPurple666/purple-turnip", "EOL-24.3.4"},
+                     {640, 699, "Mr. Purple T19", "MrPurple666/purple-turnip", "T19"},
+                     {700, 710, "KIMCHI 25.2.0_r5", "K11MCH1/AdrenoToolsDrivers", "v25.2.0-rc.05"},
+                     {711, 799, "Mr. Purple T23", "MrPurple666/purple-turnip", "T23"},
+                     {800, 899, "GameHub Adreno 8xx", "crueter/GameHub-8Elite-Drivers", NULL}};
 const char* gui_driver_recommended(int model) {
-    static const struct {
-        int lo, hi;
-        const char* driver;
-    } map[] = {{10, 99, "KIMCHI Latest"},      {600, 639, "Mr. Purple EOL-24.3.4"}, {640, 699, "Mr. Purple T19"},
-               {700, 710, "KIMCHI 25.2.0_r5"}, {711, 799, "Mr. Purple T23"},        {800, 899, "GameHub Adreno 8xx"}};
     size_t i;
-    for (i = 0; i < sizeof map / sizeof map[0]; ++i)
-        if (model >= map[i].lo && model <= map[i].hi) return map[i].driver;
+    for (i = 0; i < sizeof g_recommended / sizeof g_recommended[0]; ++i)
+        if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) return g_recommended[i].driver;
     return SNX_TR_NOOP("Unsupported");
+}
+int gui_driver_recommended_release(int model, int repo, const GuiDriverReleases* list) {
+    size_t i, k;
+    for (i = 0; i < sizeof g_recommended / sizeof g_recommended[0]; ++i)
+        if (model >= g_recommended[i].lo && model <= g_recommended[i].hi) break;
+    if (i == sizeof g_recommended / sizeof g_recommended[0] || repo < 0 || repo >= GUI_DRIVER_REPOS ||
+        strcmp(gui_driver_repos[repo].path, g_recommended[i].repo))
+        return -1;
+    for (k = 0; k < list->count; ++k)
+        if (g_recommended[i].tag ? has_nocase(list->releases[k].tag, g_recommended[i].tag) : list->releases[k].latest)
+            return (int)k;
+    return -1;
 }
