@@ -11272,7 +11272,7 @@ static void setup_users_read(App* app) {
 }
 /* the nickname of the new first user typed, its uid the fixed one while games have saves of it, else random */
 static void setup_type(App* app) {
-    app->setup_saves = snx_setup_first_uid(app->games_dir, app->setup_uid);
+    app->setup_saves = snx_setup_first_uid(app->games_dir, app->data_dir, app->setup_uid);
     if (app->setup_saves < 0) {
         app->setup_failed = true;
         snprintf(app->message, sizeof app->message, "%s",
@@ -11326,7 +11326,7 @@ static void setup_enter(App* app) {
             break;
         case SNX_SETUP_USER:
             setup_users_read(app);
-            app->setup_saves = snx_setup_first_saves(app->games_dir);
+            app->setup_saves = snx_setup_first_saves(app->games_dir, app->data_dir);
             app->setup_choice.count = 2; /* Keep, Overwrite */
             if (!app->setup_written) setup_type(app);
             break;
