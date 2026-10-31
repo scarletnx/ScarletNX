@@ -55,7 +55,7 @@ interface nn::account::baas::IManagerForApplication {
     # nought (none of its details is known here), and the account's id
     [130] GetNintendoAccountUserResourceCacheForApplication(buffer<nn::account::NasUserBaseForApplication, 0x1a> base,
                                                             buffer<u8, 6> extra) -> u64 id;
-    @stub [160] StoreOpenContext();
+    [160] StoreOpenContext();
 }
 
 # an operation that needs the network: done at once, and failed the way nifm fails here, since there is no network

@@ -136,6 +136,8 @@ typedef struct {
     } pic;
     AccUser users[ACC_USERS];
     u32 user_next;
+    /* StoreOpenContext ran: the open user is kept for the program ExecuteProgram starts next */
+    int context_stored;
 } HleAcc;
 /* acc's host side: the picture's lock (hle.h's g_host) */
 typedef struct {
