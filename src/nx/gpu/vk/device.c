@@ -765,6 +765,15 @@ int vk_swapchain_create(int srgb) {
     return 1;
 }
 
+/* a start that failed once the window had its surface: the surface goes. On Android it holds the window, which takes
+   one producer at a time, and the error's own screen (backend/sdl3.c's fatal_screen) could not draw in it: the system's
+   plain box said the error instead */
+static int start_failed(void) {
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    return 0;
+}
+
 int vk_init(void) {
     pm_init(&g_vklock);
     if (g_opt_headless) {
@@ -788,6 +797,6 @@ int vk_init(void) {
         WARN("vulkan: the window backend could not create a surface\n");
         return 0;
     }
-    if (!create_device()) return 0;
-    return g_opt_headless ? 1 : vk_swapchain_create(0);
+    if (!create_device()) return start_failed();
+    return g_opt_headless || vk_swapchain_create(0) ? 1 : start_failed();
 }
