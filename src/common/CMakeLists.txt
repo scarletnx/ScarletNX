@@ -61,6 +61,14 @@ target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-filesystem PUBLIC Threads::Threads)
 
+# The launcher's HTTPS client (network/https.h) through libcurl, trusting Mozilla's roots compiled in: where the build
+# has OpenSSL, which libcurl's TLS is (cmake/dependencies.cmake)
+if(TARGET CURL::libcurl)
+    add_library(snx_https STATIC network/https.c)
+    target_compile_options(snx_https PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+    target_link_libraries(snx_https PRIVATE CURL::libcurl snx_cacert)
+endif()
+
 # The emulated network stack (network/net.h), shared by nx's bsd and sfdnsres and the GNU ABI's socket syscalls. A
 # library of its own so the C99 tools don't link Winsock
 add_library(scarletnx-net STATIC network/net.c network/net_icmp.c network/net_event.c network/net_dns.c

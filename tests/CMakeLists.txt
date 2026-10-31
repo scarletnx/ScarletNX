@@ -849,6 +849,17 @@ snx_test_target(snx-test-room-service 23)
 target_link_libraries(snx-test-room-service PRIVATE scarletnx-ldn scarletnx-common)
 add_test(NAME room_service COMMAND snx-test-room-service)
 
+# the launcher's HTTPS client (common/network/https.c) against HTTP and TLS servers in the test
+if(TARGET snx_https)
+    add_executable(snx-test-https https.c)
+    snx_test_target(snx-test-https 11)
+    target_link_libraries(snx-test-https PRIVATE snx_https OpenSSL::SSL) # the test's certificates and servers
+    if(WIN32)
+        target_link_libraries(snx-test-https PRIVATE ws2_32)
+    endif()
+    add_test(NAME https COMMAND snx-test-https WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(https PROPERTIES TIMEOUT 60)
+endif()
 # ssl (ssl.c) against a TLS server in the test, on the game's bsd sockets (bsd.c, built beside). OpenSSL comes with
 # the NX, 3DS and hactool builds (cmake/dependencies.cmake), not with a GNU ABI-only one
 if(TARGET OpenSSL::SSL)
