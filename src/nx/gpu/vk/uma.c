@@ -32,6 +32,7 @@
    The submit's end makes them visible to the host (vk_uma_host_barrier) before the release that tells the guest. */
 #include <stdlib.h>
 #include <string.h>
+#include "common/utilities/bits.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/write_pages.h"
 #include "nx/gpu/renderer.h"
@@ -274,7 +275,7 @@ static int import_span(u64 key, u64 lo, u64 hi) {
         vkDestroyBuffer(g_vk.dev, m.buf, NULL);
         return 0;
     }
-    ai.memoryTypeIndex = (u32)__builtin_ctz(bits);
+    ai.memoryTypeIndex = snx_ctz32(bits);
     if (vkAllocateMemory(g_vk.dev, &ai, NULL, &m.mem) != VK_SUCCESS) {
         vkDestroyBuffer(g_vk.dev, m.buf, NULL);
         return 0;
