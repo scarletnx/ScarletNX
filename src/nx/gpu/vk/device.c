@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/texture/astc_bc.h"
 #include "nx/gpu/vk/vk.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
@@ -157,6 +158,43 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
     return device_score(pd, p, &gf, &cf, &gq);
 }
 
+/* astc_bc's choice (texture/astc_bc.h) into g_vk.astc_bc7, on the features enabled and the budget of the heap images
+   take, the biggest device local one as memory.c's heap_find picks it: the driver's (VK_EXT_memory_budget), else
+   VMA's own guess, 80% of the heap. Said in the log with the numbers that decided it */
+static void astc_bc_decide(int has_budget) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 mem = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                             .pNext = has_budget ? &budget : NULL};
+    const VkMemoryHeap* heaps = mem.memoryProperties.memoryHeaps;
+    int bc = g_vk.feat.textureCompressionBC, astc = g_vk.feat.textureCompressionASTC_LDR;
+    u32 h, heap = 0;
+    unsigned long long mb;
+    vkGetPhysicalDeviceMemoryProperties2(g_vk.phys, &mem);
+    for (h = 0; h < mem.memoryProperties.memoryHeapCount; h++)
+        if ((heaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            (!(heaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) || heaps[h].size > heaps[heap].size))
+            heap = h;
+    mb = (unsigned long long)((has_budget ? budget.heapBudget[heap] : heaps[heap].size / 10 * 8) >> 20);
+    g_vk.astc_bc7 = snx_astc_bc7(g_settings.astc_bc, bc, astc, mb);
+    if (g_settings.native_astc && !astc)
+        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded to %s\n",
+             g_vk.astc_bc7 ? "RGBA8 and encoded again as BC7" : "RGBA8");
+    if (astc) return; /* sampled as they are */
+    if (!bc && g_settings.astc_bc != SNX_ASTC_BC_OFF)
+        LOG("vulkan: astc_bc=%d, and the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8\n",
+            g_settings.astc_bc);
+    else if (g_settings.astc_bc == SNX_ASTC_BC_AUTO && g_vk.astc_bc7)
+        LOG("vulkan: astc_bc=0 (Auto): ASTC textures are decoded and encoded again as BC7, a quarter of RGBA8's "
+            "memory: the GPU samples BCn but not ASTC, and its images' heap has %llu MB of budget%s, under %d MB\n",
+            mb, has_budget ? "" : " (80% of its size: the driver tells none)", SNX_ASTC_BC_AUTO_MB);
+    else if (g_settings.astc_bc == SNX_ASTC_BC_AUTO)
+        LOG("vulkan: astc_bc=0 (Auto): ASTC textures are decoded to RGBA8, exactly: the GPU's images' heap has %llu MB "
+            "of budget%s, %d MB or more\n",
+            mb, has_budget ? "" : " (80% of its size: the driver tells none)", SNX_ASTC_BC_AUTO_MB);
+    else if (g_vk.astc_bc7)
+        LOG("vulkan: astc_bc=1: ASTC textures are decoded and encoded again as BC7, a quarter of RGBA8's memory\n");
+}
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
@@ -231,21 +269,12 @@ static int create_device(void) {
     WANT(occlusionQueryPrecise); /* samples-passed counts (query.c) are exact */
     WANT(sampleRateShading);
     /* BCn, ASTC and ETC2 sampled as they are (format.c) where the settings ask for it and the device has them, else
-       decoded on the GPU as they are uploaded; ASTC decoded so is encoded again as BC7 where the GPU samples BCn and
-       astc_bc asks for it */
-    if (g_settings.native_bc || g_settings.astc_bc) WANT(textureCompressionBC);
+       decoded on the GPU as they are uploaded; ASTC decoded so may be encoded again as BC7 (astc_bc, below) */
+    if (g_settings.native_bc || g_settings.astc_bc != SNX_ASTC_BC_OFF) WANT(textureCompressionBC);
     if (g_settings.native_astc) WANT(textureCompressionASTC_LDR);
     if (g_settings.native_etc2) WANT(textureCompressionETC2);
     if (g_settings.native_bc && !want->textureCompressionBC)
         WARN("vulkan: the GPU can't sample BCn textures: they are decoded on the GPU as they are loaded\n");
-    const int astc_bc7 = g_settings.astc_bc && want->textureCompressionBC && !want->textureCompressionASTC_LDR;
-    if (g_settings.native_astc && !want->textureCompressionASTC_LDR)
-        WARN("vulkan: native ASTC textures were asked for, but the GPU can't sample ASTC: they are decoded to %s\n",
-             astc_bc7 ? "RGBA8 and encoded again as BC7 (astc_bc=1)" : "RGBA8");
-    if (g_settings.astc_bc && !want->textureCompressionASTC_LDR && !want->textureCompressionBC)
-        WARN("vulkan: astc_bc=1, but the GPU samples neither ASTC nor BCn: ASTC textures are decoded to RGBA8\n");
-    if (astc_bc7 && !g_settings.native_astc)
-        LOG("vulkan: ASTC textures are decoded and encoded again as BC7 (astc_bc=1), a quarter of RGBA8's memory\n");
     if (g_settings.native_etc2 && !want->textureCompressionETC2)
         WARN("vulkan: native ETC2 textures were asked for, but the GPU can't sample ETC2: they are decoded\n");
     WANT(vertexPipelineStoresAndAtomics);
@@ -313,6 +342,7 @@ static int create_device(void) {
         snx_vk_extensions_free(&e);
     }
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    astc_bc_decide(has_budget);
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {

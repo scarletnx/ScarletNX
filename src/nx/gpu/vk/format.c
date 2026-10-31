@@ -173,14 +173,13 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
 /* which block formats the device samples as they are: textureCompressionASTC_LDR, textureCompressionETC2 and
    textureCompressionBC, which the native_astc, native_etc2 and native_bc settings turn on (device.c). A texture in
    them takes the game's own bytes (a 12x12 ASTC one a 36th of RGBA8's); the others are decoded on the GPU as they
-   are uploaded. ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (the astc_bc setting, which turns on
-   textureCompressionBC too, so BCn is sampled as it is only when native_bc says so as well) */
+   are uploaded. ASTC_AS_BC7: a decoded ASTC texture encoded again as BC7 (g_vk.astc_bc7, as the astc_bc setting
+   decides, which turns on textureCompressionBC too, so BCn is sampled as it is only when native_bc says so as well) */
 enum { NATIVE_ASTC = 1, NATIVE_ETC2 = 2, NATIVE_BC = 4, ASTC_AS_BC7 = 8 };
 static u32 native_blocks(void) {
     return (g_vk.feat.textureCompressionASTC_LDR ? NATIVE_ASTC : 0) |
            (g_vk.feat.textureCompressionETC2 ? NATIVE_ETC2 : 0) |
-           (g_vk.feat.textureCompressionBC && g_settings.native_bc ? NATIVE_BC : 0) |
-           (g_vk.feat.textureCompressionBC && g_settings.astc_bc ? ASTC_AS_BC7 : 0);
+           (g_vk.feat.textureCompressionBC && g_settings.native_bc ? NATIVE_BC : 0) | (g_vk.astc_bc7 ? ASTC_AS_BC7 : 0);
 }
 static int is_native_block(VkFormat f) {
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||

@@ -403,6 +403,10 @@ add_executable(snx-test-cheat-list cheat_list.c)
 snx_test_target(snx-test-cheat-list 99)
 target_link_libraries(snx-test-cheat-list PRIVATE scarletnx-common)
 add_test(NAME cheat_list COMMAND snx-test-cheat-list)
+# astc_bc's choice: Auto under 8192 MB of budget on a GPU with BCn and no ASTC, On, Off
+add_executable(snx-test-astc-bc-auto astc_bc_auto.c)
+snx_test_target(snx-test-astc-bc-auto 99)
+add_test(NAME astc_bc_auto COMMAND snx-test-astc-bc-auto)
 # a mod's IPS, IPS32 and IPSwitch patches: their formats, which module takes one, the played mods' in their order
 add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)

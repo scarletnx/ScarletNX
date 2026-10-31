@@ -198,13 +198,14 @@ setting Vulkan Video decode
 setting ASTC BC
     label ASTC as BC7
     key astc_bc
-    int 0 1
+    int 0 2
     default 0
     startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
+    words Auto|On|Off
+    help On a GPU that samples BCn but not ASTC (most desktop ones), ASTC textures are decoded and then encoded again
+    help as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. 0 = Auto:
+    help where the GPU has less than 8192 MB of budget for its images. 1 = On. 2 = Off: decoded to RGBA8, exactly as
+    help the game's blocks decode. Where the GPU samples ASTC it does nothing
 
 table g_performance_ini
 setting FPS limit
