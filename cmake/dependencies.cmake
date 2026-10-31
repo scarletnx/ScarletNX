@@ -226,6 +226,21 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR snx_vita_runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/ffmpeg.cmake")
 endif()
 
+# libadrenotools and liblinkernsbypass (BSD-2-Clause) for the GPU drivers a player adds on Android arm64, the only ABI
+# they build for (cmake/adrenotools.cmake). linkernsbypass is libadrenotools' submodule at that commit, which GitHub's
+# archives leave out
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
+    CPMAddPackage(NAME libadrenotools VERSION 2024.09.10
+                  URL https://github.com/bylaws/libadrenotools/archive/8fae8ce254dfc1344527e05301e43f37dea2df80.tar.gz
+                  URL_HASH SHA256=ceffce971676d4cfdf348a082df06fc92a1dca6d95bea892a480d63f200961cb
+                  DOWNLOAD_ONLY YES)
+    CPMAddPackage(NAME linkernsbypass VERSION 2024.09.10
+                  URL https://github.com/bylaws/liblinkernsbypass/archive/aa3975893d83ef1bc84c321ec60c65fbf1287887.tar.gz
+                  URL_HASH SHA256=da1128c8aa771c4d24766b53a47822d0717baa5c536ca8491220402942b80638
+                  DOWNLOAD_ONLY YES)
+    include("${PROJECT_SOURCE_DIR}/cmake/adrenotools.cmake")
+endif()
+
 # Extraction-only and tools-only builds do not contain the NX runtime or its graphics/media dependencies.
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the shared fonts' stand-ins (cmake/shared_fonts.cmake): Noto Sans subsets for the five text fonts, one per
