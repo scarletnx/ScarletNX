@@ -23,6 +23,7 @@ typedef struct {
     uint64_t uid[2]; /* nn::account::Uid's two halves */
     char nickname[SNX_USERS_NICKNAME + 1];
     unsigned char user_data[SNX_USERS_DATA]; /* users.ini's user_data, as a program stored it; zeros without one */
+    int unsaved;                             /* registered (snx_users_begin), not yet in users.ini (snx_users_save) */
     uint32_t picture_at, picture_size; /* users/<uid>.jpg, in users.c's one block of pictures */
 } SnxUser;
 extern SnxUser g_users[SNX_USERS_MAX]; /* user 1 first, g_user_count of them */
@@ -56,6 +57,13 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
 /* user number's (1-based, of those loaded) nickname in users.ini of dir made nickname (the rule's), the file's other
    lines as they were; without users.ini user 1's starts it (snx_users_start). 0, else -1 with why: nothing changed */
 int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size);
+/* a user registered after the ones loaded, as the account service's BeginUserRegistration makes one: uid (not zero,
+   no user's yet), the nickname a users.ini without users gives its first ("Player") until one is stored, in g_users
+   alone until snx_users_save. 0, else -1 with why: SNX_USERS_MAX users already, or that uid */
+int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size);
+/* users 1 to number written to users.ini of dir where they are not yet (snx_users_begin's), each a [userN] after the
+   others with its uid, nickname and user_data; without users.ini user 1's starts it. 0, else -1 with why */
+int snx_users_save(const char* dir, int number, char* why, size_t why_size);
 /* user number's UserData in users.ini of dir, user_data= its hex digits (empty for zeros), the file's other lines as
    they were; without users.ini user 1's starts it. 0, else -1 with why: nothing changed */
 int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX_USERS_DATA], char* why,

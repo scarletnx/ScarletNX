@@ -8,12 +8,17 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
+#include <openssl/rand.h>
 
 #include "hle/services/acc.swipc.inc"
+
+static int acc_profile_dispatch(SvcObj* o, IpcCtx* c);
+static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*));
 
 #define ACC_INVALID_USER_ID RC(124, 20)
 #define ACC_INVALID_APPLICATION RC(124, 22)
 #define ACC_INVALID_LENGTH  RC(124, 32)
+#define ACC_UPDATE_FAILED       RC(124, 100) /* rEden's ResultAccountUpdateFailed: the users could not be written */
 #define ACC_UNDER_MAINTENANCE   RC(124, 5249) /* the online account service is not there: "not available right now" */
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
@@ -80,7 +85,10 @@ static int nn_account_IAccountServiceForApplication_GetProfile(SvcObj* self, con
                                                                SvcObj** profile) {
     (void)self;
     R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
-    *profile = acc_for_user(nn_account_profile_IProfile_new_data(g_hle.acc.users, g_hle.acc.user_next, "acc profiles and managers"), uid);
+    *profile = acc_with(acc_for_user(nn_account_profile_IProfile_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                          "acc profiles and managers"),
+                                     uid),
+                        acc_profile_dispatch);
     R_SUCCEED();
 }
 /* both games and applets may register a user, as Eden's ProfileManager::CanSystemRegisterUser answers */
@@ -477,6 +485,66 @@ static int nn_account_IAccountServiceForAdministrator_GetPinCodeLength(SvcObj* s
     return nn_account_IAccountServiceForSystemService_GetPinCodeLength(self, length);
 }
 
-SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(); }
-SvcObj* new_acc_system(void) { return nn_account_IAccountServiceForSystemService_new(); }
-SvcObj* new_acc_admin(void) { return nn_account_IAccountServiceForAdministrator_new(); }
+/* a user registered (SwitchBrew acc:su 200): a uid of random bits, an RFC 4122 version 4 UUID's as the launcher's
+   setup makes them (setup.c's snx_setup_uid), in the users from now and written by Complete */
+static int nn_account_IAccountServiceForAdministrator_BeginUserRegistration(SvcObj* self, nn_account_Uid* uid) {
+    unsigned char bytes[16];
+    char why[256];
+    u64 v[2];
+    (void)self;
+    do {
+        if (RAND_bytes(bytes, sizeof bytes) != 1) fatal("The host's random number generator failed");
+        v[0] = (snx_ld_be64(bytes) & ~(u64)0xF000) | 0x4000;
+        v[1] = (snx_ld_be64(bytes + 8) & ~((u64)3 << 62)) | ((u64)2 << 62);
+    } while (snx_users_find(v));
+    if (snx_users_begin(v, why, sizeof why)) {
+        WARN("acc: no user registered: %s\n", why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    acc_uid_put(uid->v, v);
+    R_SUCCEED();
+}
+/* the user registered, written to users.ini (and those registered before it); one there already changes nothing */
+static int nn_account_IAccountServiceForAdministrator_CompleteUserRegistration(SvcObj* self,
+                                                                               const nn_account_Uid* uid) {
+    const SnxUser* u = acc_user(uid);
+    char why[512];
+    (void)self;
+    R_UNLESS(u, ACC_INVALID_USER_ID);
+    if (!g_host.acc.users_dir[0]) {
+        WARN("acc: the user registered is not written: there is no users folder\n");
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    if (snx_users_save(g_host.acc.users_dir, (int)(u - g_users) + 1, why, sizeof why)) {
+        WARN("acc: the user registered is not written: %s\n", why);
+        R_THROW(ACC_UPDATE_FAILED);
+    }
+    R_SUCCEED();
+}
+
+/* every command of an object that reads or changes the users, under g_host.acc.users_lk: acc:su changes them while the
+   game's threads read them */
+static int acc_locked(SvcObj* o, IpcCtx* c, int (*dispatch)(SvcObj*, IpcCtx*)) {
+    int rc;
+    pm_lock(&g_host.acc.users_lk);
+    rc = dispatch(o, c);
+    pm_unlock(&g_host.acc.users_lk);
+    return rc;
+}
+static int acc_u0_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForApplication_dispatch);
+}
+static int acc_u1_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForSystemService_dispatch);
+}
+static int acc_su_dispatch(SvcObj* o, IpcCtx* c) {
+    return acc_locked(o, c, nn_account_IAccountServiceForAdministrator_dispatch);
+}
+static int acc_profile_dispatch(SvcObj* o, IpcCtx* c) { return acc_locked(o, c, nn_account_profile_IProfile_dispatch); }
+static SvcObj* acc_with(SvcObj* o, int (*dispatch)(SvcObj*, IpcCtx*)) {
+    o->dispatch = dispatch;
+    return o;
+}
+SvcObj* new_acc(void) { return acc_with(nn_account_IAccountServiceForApplication_new(), acc_u0_dispatch); }
+SvcObj* new_acc_system(void) { return acc_with(nn_account_IAccountServiceForSystemService_new(), acc_u1_dispatch); }
+SvcObj* new_acc_admin(void) { return acc_with(nn_account_IAccountServiceForAdministrator_new(), acc_su_dispatch); }

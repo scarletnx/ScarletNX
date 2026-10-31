@@ -848,6 +848,80 @@ static void test_user_data(void) {
     puts("PASS a profile's UserData as users.ini's user_data: read, given to the game, written back");
 }
 
+/* acc:su's registration (BeginUserRegistration 200, CompleteUserRegistration 201): a new uid, a version 4 UUID's, in
+   the users at once as the first user's nickname ("Player", rEden's own name for it), users.ini as it was until
+   Complete writes it after the others; a ninth refused, an unknown uid, and no users folder to write in */
+static void test_registration(void) {
+    static u8 memory[0x400];
+    char why[512], hex[33], *before, *now, *want;
+    SvcObj* su = new_acc_admin();
+    Request r;
+    nn_account_Uid uid;
+    u64 v[2];
+    int i;
+    g_mem = memory;
+    snprintf(g_host.acc.users_dir, sizeof g_host.acc.users_dir, "%s", DIR);
+    put_ini("; mine\n[user1]\nnickname=Aogo\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 1);
+    before = got("users.ini");
+    request(&r, 200);
+    call(su, &r);
+    CHECK(r.c.out_size == 16);
+    memcpy(uid.v, r.c.out, 16);
+    acc_uid_get(&uid, v);
+    CHECK((v[0] || v[1]) && (v[0] >> 12 & 0xF) == 4 && (v[1] >> 62) == 2 && g_user_count == 2);
+    CHECK(!strcmp(g_users[1].nickname, "Player") && g_users[1].unsaved);
+    now = got("users.ini");
+    CHECK(now && before && !strcmp(now, before));
+    free(now);
+    /* listed at once */
+    memset(memory, 0xAA, sizeof memory);
+    request(&r, 2);
+    r.c.nc = 1;
+    r.c.c[0].addr = 0x100;
+    r.c.c[0].size = 0x20;
+    call(su, &r);
+    CHECK(!memcmp(memory + 0x110, uid.v, 16));
+    /* Complete: written after the others, the file's lines as they were */
+    request(&r, 201);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r);
+    snx_users_uid_text(v, hex);
+    want = snx_format("%s[user2]\nuid=%s\nnickname=Player\n", before, hex);
+    now = got("users.ini");
+    CHECK(now && want && !strcmp(now, want) && !g_users[1].unsaved);
+    free(now);
+    request(&r, 201);
+    memcpy(r.raw, uid.v, 16);
+    call(su, &r); /* again: nothing to write */
+    now = got("users.ini");
+    CHECK(now && !strcmp(now, want));
+    free(now);
+    free(want);
+    free(before);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 2 && same_uid(uid.v, g_users[1].uid));
+    /* up to eight; a ninth is refused, said */
+    for (i = 3; i <= SNX_USERS_MAX; i++) {
+        request(&r, 200);
+        call(su, &r);
+    }
+    request(&r, 200);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_user_count == SNX_USERS_MAX);
+    request(&r, 201);
+    uid_of("00000000000000090000000000000009", &uid);
+    memcpy(r.raw, uid.v, 16);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 20));
+    /* no users folder: nothing written */
+    g_host.acc.users_dir[0] = 0;
+    request(&r, 201);
+    acc_uid_put(r.raw, g_users[2].uid);
+    CHECK(su->dispatch(su, &r.c) == RC(124, 100) && g_users[2].unsaved);
+    svcobj_unref(su);
+    gone("users.ini");
+    gone("users.ini.old");
+    puts("PASS acc:su's registration: a new uid in the users at once, in users.ini from Complete");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
@@ -1036,6 +1110,7 @@ int main(void) {
     test_account_command_replies();
     test_users();
     test_choose();
+    test_registration();
     test_user_data();
     test_system_service();
     test_administrator_service();
