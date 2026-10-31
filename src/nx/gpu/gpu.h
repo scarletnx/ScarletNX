@@ -390,8 +390,8 @@ int gpu_hold(int timeout_ms);
 void gpu_release(void);
 extern volatile u64 g_gpu_submits;
 /* the blocking wait the GPU thread is in, for the stall report: what it waits for (a string that lives on) and a number
-   that names it, before the wait, and NULL after. Ignored on other threads */
-void gpu_wait_note(const char* what, u64 value);
+   that names it, before the wait, and NULL after. Ignored on other threads: 1 on the GPU thread */
+int gpu_wait_note(const char* what, u64 value);
 /* the stall watchdog's report of what the GPU thread and each channel with queued jobs are doing. Any thread */
 void gpu_report_stall(void);
 /* guest memory [cpu_addr, cpu_addr + len) changed without a write the host's write tracking sees: decommitted pages,
