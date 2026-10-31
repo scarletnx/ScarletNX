@@ -7,8 +7,9 @@
 /* The loads and stores as LLVM IR, keyed on the generated decoder's ops and arguments: the general and FP/SIMD
    register forms of every addressing mode, the pairs, literals, exclusives, load-acquire and store-release, the
    AdvSIMD structure loads and stores, the LSE and RCpc atomics, and the memory-tagging loads and stores as
-   FEAT_MTE has them (instructions only: no allocation tags are stored, so a tag reads as 0). Guest memory is reached through ir.c's accessors
-   (c->mem plus the guest address, volatile and unaligned; seq_cst host atomics for the ordered and atomic accesses),
+   FEAT_MTE has them (instructions only: no allocation tags are stored, so a tag reads as 0). Guest memory uses ir_state.c's accessors
+   (c->mem plus the guest address, unaligned and volatile only with volatile_memory enabled;
+   seq_cst host atomics for the ordered and atomic accesses),
    so a page the GPU owns (memory/own.c) traps on the host access as it does for every other one. The exclusives keep
    cpu.h's value-based monitor through its ldx/stx/ldxp/stxp helpers. */
 #include "common/cpu/recompiler/llvm/ir_ldst.h"

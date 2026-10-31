@@ -36,8 +36,9 @@ a cryptographic comparison of every instruction.
 
 Unlike Atmosphère's on-device registration service, ScarletNX retains support for
 byte-packed synthetic fixtures rather than requiring page-aligned section sizes.
-It does not implement NRR authorization, compressed NRO decompression, dynamic NRO
-registration or a new homebrew-loader startup ABI in this change. Existing ASET
+The standalone NRO workflow does not implement NRR authorization, compressed NRO decompression or a new
+homebrew-loader startup ABI. Dynamic loading through the emulated `ldr:ro` service is described in
+[LDR_RO.md](LDR_RO.md); it is separate from this workflow. Existing ASET
 parsing is unchanged. Restaging an NRO without embedded RomFS removes the generated
 `romfs.bin` from the previous image, without touching saves.
 
@@ -51,7 +52,7 @@ parsing is unchanged. Restaging an NRO without embedded RomFS removes the genera
   staging paths, BSS clearing, asset exclusion, permissions, short files, overflowing
   sizes and descriptor mismatches. Exact-sized allocations allow ASan to detect reads
   beyond a truncated file.
-- `native_recompiler`: synthetic NRO to generated C to native module execution,
+- `native_recompiler`: synthetic NRO through LLVM IR to native module execution,
   plus removal of stale embedded RomFS when an asset-free NRO is staged.
 
 These tests do not establish compatibility with a particular homebrew application or game.

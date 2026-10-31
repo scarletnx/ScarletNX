@@ -268,9 +268,46 @@ static V shl_register(SnxIr* ir, V a, V b, int sign) {
     return sel(ir, cmp(ir, LLVMIntSLT, s, ir_vec_like(ir, s, 0)), down, left);
 }
 
-/* the shifts by register that round or saturate: helpers/vector.c's snx_vec_shl on lanes of Vn and Vm into Vd */
+/* Whole-vector rounding and saturating shifts. All counts are clamped before evaluation, even in discarded lanes.
+   A right shift rounds by adding its last discarded bit after shifting, without overflowing the lane. */
 enum { SHL_UNS = 1, SHL_ROUND = 2, SHL_SAT = 4 };
 static void shl_helper(SnxIr* ir, const SnxA64Args* a, unsigned lanes, unsigned flags) {
+    if (ir->features->x86 && ir->features->avx2) {
+        V n = ir_vec_read(ir, (unsigned)a->rn, (unsigned)a->esz, 0, lanes);
+        V m = ir_vec_read(ir, (unsigned)a->rm, (unsigned)a->esz, 0, lanes);
+        unsigned bits = bits_of(n);
+        V zero = ir_vec_like(ir, n, 0), one = ir_vec_like(ir, n, 1), top = ir_vec_like(ir, n, bits - 1);
+        V shift = LLVMBuildSExt(B, LLVMBuildTrunc(B, m, with_bits(ir, m, 8), ""), LLVMTypeOf(n), "");
+        V negative = cmp(ir, LLVMIntSLT, shift, zero);
+        V left_count = call2(ir, "llvm.umin", shift, top);
+        V left = LLVMBuildShl(B, n, left_count, "");
+        V too_far = cmp(ir, LLVMIntUGT, shift, top);
+        if (flags & SHL_SAT) {
+            V restored = flags & SHL_UNS ? LLVMBuildLShr(B, left, left_count, "") : LLVMBuildAShr(B, left, left_count, "");
+            V overflow = LLVMBuildOr(B, cmp(ir, LLVMIntNE, restored, n),
+                                    LLVMBuildAnd(B, too_far, cmp(ir, LLVMIntNE, n, zero), ""), "");
+            V limit = flags & SHL_UNS ? ir_vec_like(ir, n, ones(bits)) :
+                sel(ir, cmp(ir, LLVMIntSLT, n, zero), ir_vec_like(ir, n, 1ull << (bits - 1)),
+                    ir_vec_like(ir, n, (1ull << (bits - 1)) - 1));
+            left = sel(ir, too_far, zero, left);
+            left = sel(ir, overflow, limit, left);
+            ir_vec_qc(ir, LLVMBuildAnd(B, LLVMBuildNot(B, negative, ""), overflow, ""));
+        } else
+            left = sel(ir, too_far, zero, left);
+        V right = LLVMBuildNeg(B, shift, "");
+        V count = flags & SHL_ROUND ? LLVMBuildSub(B, right, one, "") : right;
+        count = call2(ir, "llvm.umin", count, top);
+        V down = flags & SHL_UNS ? LLVMBuildLShr(B, n, count, "") : LLVMBuildAShr(B, n, count, "");
+        if (flags & SHL_ROUND) {
+            V half = flags & SHL_UNS ? LLVMBuildLShr(B, down, one, "") : LLVMBuildAShr(B, down, one, "");
+            down = LLVMBuildAdd(B, half, LLVMBuildAnd(B, down, one, ""), "");
+            V last = ir_vec_like(ir, n, flags & SHL_UNS ? bits : bits - 1);
+            down = sel(ir, cmp(ir, LLVMIntUGT, right, last), zero, down);
+        } else if (flags & SHL_UNS)
+            down = sel(ir, cmp(ir, LLVMIntUGT, right, top), zero, down);
+        ir_vec_write(ir, (unsigned)a->rd, sel(ir, negative, down, left));
+        return;
+    }
     V operands[4];
     operands[0] = ir_i32(ir, (SnxU32)a->rd);
     operands[1] = ir_i32(ir, (SnxU32)a->rn);

@@ -12,7 +12,11 @@ LLVMValueRef ir_i32(SnxIr* ir, SnxU32 v) { return LLVMConstInt(ir->t_i32, v, 0);
 LLVMValueRef ir_i64(SnxIr* ir, SnxU64 v) { return LLVMConstInt(ir->t_i64, v, 0); }
 
 LLVMValueRef ir_cast(SnxIr* ir, LLVMValueRef v, LLVMTypeRef to, int is_signed) {
-    unsigned from = LLVMGetIntTypeWidth(LLVMTypeOf(v)), width = LLVMGetIntTypeWidth(to);
+    LLVMTypeRef source = LLVMTypeOf(v);
+    if (source == to) return v;
+    LLVMTypeRef source_lane = LLVMGetTypeKind(source) == LLVMVectorTypeKind ? LLVMGetElementType(source) : source;
+    LLVMTypeRef target_lane = LLVMGetTypeKind(to) == LLVMVectorTypeKind ? LLVMGetElementType(to) : to;
+    unsigned from = LLVMGetIntTypeWidth(source_lane), width = LLVMGetIntTypeWidth(target_lane);
     if (from == width) return v;
     if (from > width) return LLVMBuildTrunc(ir->b, v, to, "");
     return is_signed ? LLVMBuildSExt(ir->b, v, to, "") : LLVMBuildZExt(ir->b, v, to, "");
@@ -152,6 +156,28 @@ void ir_argmem(SnxIr* ir, LLVMValueRef function) { memory_effects(ir, function, 
 void ir_noregs(SnxIr* ir, LLVMValueRef function) {
     LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex,
                             LLVMCreateStringAttribute(ir->ctx, "snx-noregs", 10, "", 0));
+}
+
+void ir_stats_function(SnxIr* ir, LLVMValueRef fn) {
+    if (!ir->stats.enabled) return;
+    ++ir->stats.functions;
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+            if (!LLVMIsACallInst(inst)) continue;
+            LLVMValueRef callee = LLVMGetCalledValue(inst);
+            if (LLVMIsAFunction(callee) && LLVMGetIntrinsicID(callee)) continue;
+            ++ir->stats.call_sites;
+            if (!LLVMIsAFunction(callee)) {
+                ++ir->stats.indirect_calls;
+                continue;
+            }
+            size_t length;
+            const char* name = LLVMGetValueName2(callee, &length);
+            if (length >= 7 && !memcmp(name, "snx_fp_", 7)) ++ir->stats.fp_calls;
+            else if (length >= 8 && !memcmp(name, "snx_vec_", 8)) ++ir->stats.vector_calls;
+            else if ((length >= 2 && !memcmp(name, "F_", 2)) ||
+                     (length >= 8 && !memcmp(name, "snx_aot_", 8))) ++ir->stats.guest_calls;
+        }
 }
 
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name) { return LLVMAppendBasicBlockInContext(ir->ctx, ir->fn, name); }

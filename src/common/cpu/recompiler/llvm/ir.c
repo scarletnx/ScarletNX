@@ -90,6 +90,7 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.sha_ni = has_feature(f, "sha");
         snx_ir_host.gfni = has_feature(f, "gfni");
         snx_ir_host.fma = has_feature(f, "fma");
+        snx_ir_host.f16c = has_feature(f, "f16c");
         snx_ir_host.avx2 = has_feature(f, "avx2");
         snx_ir_host.avx512bw = has_feature(f, "avx512bw");
         snx_ir_host.avx512vl = has_feature(f, "avx512vl");
@@ -164,6 +165,14 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     SnxIr* ir = (SnxIr*)calloc(1, sizeof(*ir));
     if (!ir) return NULL;
     ir->promote = opt != '0';
+    const char* stats = getenv("SNX_IR_STATS");
+    ir->stats.enabled = stats && *stats && strcmp(stats, "0");
+    const char* dump = getenv("SNX_IR_DUMP_PC");
+    if (dump && *dump) {
+        char* end;
+        ir->dump_pc = strtoull(dump, &end, 16);
+        ir->dump_function = !*end;
+    }
     char* triple = target_triple ? LLVMCreateMessage(target_triple) : host_triple(jit);
     if (LLVMGetTargetFromTriple(triple, &target, &message)) {
         snprintf(error, error_size, "LLVM target %s: %s", triple, message ? message : "unavailable");

@@ -38,6 +38,8 @@ size_t llvm_steps_add_function(LlvmSteps* s, SnxCodegen* codegen, const SnxFunct
 /* compiles and loads the steps added, s->steps then holding them. In JIT mode the loader is also checked to resolve
    symbols of this executable, as the runtime's are resolved for JIT code. 0, or -1 with the reason in error */
 int llvm_steps_load(LlvmSteps* s, char* error, size_t error_size);
+/* Saves the actual pre/post optimization IR and object. The caller must end these steps afterward. */
+int llvm_steps_dump(LlvmSteps* s, const char* prefix, char* error, size_t error_size);
 void llvm_steps_end(LlvmSteps* s);
 
 #endif

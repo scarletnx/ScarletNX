@@ -1,0 +1,224 @@
+{
+  "item": "I11",
+  "scope": "Run from the repository root on a quiet host. Compare guarded native emitters with exact helper controls using the same target machine and helper library. Fixed ordinary-input kernel throughput, not game FPS. All timings are serial.",
+  "candidates": [
+    {
+      "name": "reference",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "-j",
+        "4",
+        "--target",
+        "snx-test-llvm-half"
+      ],
+      "check": [
+        "build/tests/snx-test-llvm-half"
+      ],
+      "bench": {
+        "form-0-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "0",
+          "0",
+          "--reference"
+        ],
+        "form-1-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "1",
+          "0",
+          "--reference"
+        ],
+        "form-2-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "2",
+          "0",
+          "--reference"
+        ],
+        "form-3-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "3",
+          "0",
+          "--reference"
+        ],
+        "form-4-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "4",
+          "0",
+          "--reference"
+        ],
+        "form-5-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "5",
+          "0",
+          "--reference"
+        ],
+        "form-6-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "6",
+          "0",
+          "--reference"
+        ],
+        "form-0-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "0",
+          "2",
+          "--reference"
+        ],
+        "form-1-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "1",
+          "2",
+          "--reference"
+        ],
+        "form-2-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "2",
+          "2",
+          "--reference"
+        ],
+        "form-3-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "3",
+          "2",
+          "--reference"
+        ],
+        "form-4-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "4",
+          "2",
+          "--reference"
+        ],
+        "form-5-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "5",
+          "2",
+          "--reference"
+        ],
+        "form-6-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "6",
+          "2",
+          "--reference"
+        ]
+      }
+    },
+    {
+      "name": "f16c",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "-j",
+        "4",
+        "--target",
+        "snx-test-llvm-half"
+      ],
+      "check": [
+        "build/tests/snx-test-llvm-half"
+      ],
+      "bench": {
+        "form-0-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "0",
+          "0"
+        ],
+        "form-1-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "1",
+          "0"
+        ],
+        "form-2-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "2",
+          "0"
+        ],
+        "form-3-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "3",
+          "0"
+        ],
+        "form-4-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "4",
+          "0"
+        ],
+        "form-5-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "5",
+          "0"
+        ],
+        "form-6-o0": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "6",
+          "0"
+        ],
+        "form-0-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "0",
+          "2"
+        ],
+        "form-1-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "1",
+          "2"
+        ],
+        "form-2-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "2",
+          "2"
+        ],
+        "form-3-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "3",
+          "2"
+        ],
+        "form-4-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "4",
+          "2"
+        ],
+        "form-5-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "5",
+          "2"
+        ],
+        "form-6-o2": [
+          "build/tests/snx-test-llvm-half",
+          "--bench",
+          "6",
+          "2"
+        ]
+      }
+    }
+  ],
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "copyright": "2026 the ScarletNX contributors"
+}

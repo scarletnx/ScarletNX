@@ -16,6 +16,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -496,6 +497,8 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         local[slot] = NULL;
         if (!s.used[slot]) continue;
         local[slot] = LLVMBuildAlloca(b, slot_type(ir, slot), "");
+        if (ir->dump_active)
+            fprintf(stderr, "IR promote slot %u cpu-offset %zu bytes %u\n", slot, slot_offset(slot), slot_size(slot));
         LLVMSetAlignment(local[slot], slot_size(slot) > 8 ? 16 : slot_size(slot));
     }
     for (unsigned slot = 0; slot < SLOTS; ++slot)
@@ -516,15 +519,29 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
             LLVMSetAlignment(a->inst, a->delta & -a->delta);
     }
     /* the dirty registers into the CPU structure before each site, the live ones back after a call */
+    if (ir->stats.enabled) ++ir->stats.promoted_functions;
     for (i = 0; i < nsites; ++i) {
         LLVMValueRef site = sites[i].inst;
         LLVMPositionBuilderBefore(b, site);
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (local[slot] && set_has(&sites[i].dirty, slot)) copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+            if (local[slot] && set_has(&sites[i].dirty, slot)) {
+                copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+                if (ir->stats.enabled) {
+                    ++ir->stats.sync_stores;
+                    ir->stats.store_bytes += slot_size(slot);
+                    if (LLVMIsACallInst(site)) ++ir->stats.call_stores;
+                }
+            }
         if (!returns(site)) continue;
         LLVMPositionBuilderBefore(b, LLVMGetNextInstruction(site));
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (local[slot] && set_has(&sites[i].reload, slot)) copy(ir, b, slot, cpu_pointer(ir, b, slot), local[slot], 0);
+            if (local[slot] && set_has(&sites[i].reload, slot)) {
+                copy(ir, b, slot, cpu_pointer(ir, b, slot), local[slot], 0);
+                if (ir->stats.enabled) {
+                    ++ir->stats.sync_reloads;
+                    ir->stats.reload_bytes += slot_size(slot);
+                }
+            }
     }
     LLVMDisposeBuilder(b);
 done:

@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT's cache file, read by the AOT build. The profile run writes it
-   (jit_service.c); the build links its objects into the game module and turns its
-   function metadata into the module's variant table. The runtime never reads it. */
+/* The runtime JIT's cache file. Later runtime sessions load compatible units from it (jit_service.c). The AOT
+   build can also link its objects into the game module and put its metadata in the module's variant table. */
 #ifndef SNX_JIT_CACHE_H
 #define SNX_JIT_CACHE_H
 #include "common/cpu/recompiler/variants.h"

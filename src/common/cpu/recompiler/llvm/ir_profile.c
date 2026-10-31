@@ -65,8 +65,8 @@ static BranchProfile* read_profile(void) {
     }
     fclose(file);
     qsort(profile->sites, count, sizeof(BranchCount), by_site);
-    /* A repeated identity is ambiguous. Discard duplicates, don't silently
-       choose whichever entry happens to sort last. */
+    /* Keep one representative per identity. qsort does not preserve the input order of equal identities,
+       so this does not promise which repeated entry supplies its counts. */
     size_t out = 0;
     for (size_t i = 0; i < count; ++i) {
         if ((i && by_site(&profile->sites[i], &profile->sites[i - 1]) == 0)) continue;

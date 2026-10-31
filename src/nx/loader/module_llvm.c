@@ -26,6 +26,7 @@ typedef struct {
     unsigned char* object;
     size_t size;
     int reused; /* the object came from the unit cache */
+    SnxIrStats stats;
     /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
        until then). Empty for one in memory */
     char key[65];
@@ -114,6 +115,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
     for (i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
     if (!rc && q->cache)
@@ -164,6 +166,20 @@ static void worker(Queue* q) {
             /* every unit: a line every few seconds or minutes, whichever the machine manages */
             sprintf(name, "code_%03lu", (unsigned long)i);
             snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
+            const SnxIrStats* s = &q->units[i].stats;
+            if (s->enabled)
+                printf("  IR stats %s: %llu functions (%llu promoted), %llu calls (%llu FP, %llu vector, "
+                       "%llu guest, %llu indirect), %llu sync stores (%llu at calls, %llu bytes), "
+                       "%llu reloads (%llu bytes), %llu lookups, %llu polls, %llu stale checks, "
+                       "%llu return checks\n", name, (unsigned long long)s->functions,
+                       (unsigned long long)s->promoted_functions, (unsigned long long)s->call_sites,
+                       (unsigned long long)s->fp_calls, (unsigned long long)s->vector_calls,
+                       (unsigned long long)s->guest_calls, (unsigned long long)s->indirect_calls,
+                       (unsigned long long)s->sync_stores, (unsigned long long)s->call_stores,
+                       (unsigned long long)s->store_bytes, (unsigned long long)s->sync_reloads,
+                       (unsigned long long)s->reload_bytes, (unsigned long long)s->lookups,
+                       (unsigned long long)s->polls, (unsigned long long)s->stale_checks,
+                       (unsigned long long)s->return_checks);
         }
         unlock(q);
         free(label);

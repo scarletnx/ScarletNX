@@ -23,7 +23,8 @@ typedef LLVMValueRef V;
 /* ---- types, registers and FP state ---- */
 
 static LLVMTypeRef float_type(SnxIr* ir, unsigned bits) {
-    return bits == 32 ? LLVMFloatTypeInContext(ir->ctx) : LLVMDoubleTypeInContext(ir->ctx);
+    return bits == 16 ? LLVMHalfTypeInContext(ir->ctx) :
+           bits == 32 ? LLVMFloatTypeInContext(ir->ctx) : LLVMDoubleTypeInContext(ir->ctx);
 }
 static V kint(SnxIr* ir, unsigned bits, SnxU64 v) { return LLVMConstInt(ir_int_type(ir, bits), v, 0); }
 static V kfloat(SnxIr* ir, unsigned bits, double v) { return LLVMConstReal(float_type(ir, bits), v); }
@@ -168,8 +169,8 @@ static V call_from_int(SnxIr* ir, V v, unsigned integer, unsigned width, unsigne
    and DAZ, FPCR.FZ on an AArch64 host), which the runtime never sets. Halves always take the helpers. */
 
 
-static SnxU64 inf_bits(unsigned width) { return width == 32 ? 0x7F800000u : 0x7FF0000000000000ull; }
-static SnxU64 min_normal(unsigned width) { return width == 32 ? 0x00800000u : 0x0010000000000000ull; }
+static SnxU64 inf_bits(unsigned width) { return width == 16 ? 0x7C00u : width == 32 ? 0x7F800000u : 0x7FF0000000000000ull; }
+static SnxU64 min_normal(unsigned width) { return width == 16 ? 0x0400u : width == 32 ? 0x00800000u : 0x0010000000000000ull; }
 /* doubles whose FMA residuals (products of two ulps at least 2^-1074 apart from the operand's) stay representable */
 #define RESIDUAL_FLOOR 0x03F0000000000000ull /* 2^-960 */
 
@@ -208,13 +209,37 @@ static V widen(SnxIr* ir, V f) { return LLVMBuildFPExt(B, f, LLVMDoubleTypeInCon
 /* A value from the host where ok holds, from the helpers otherwise: begin branches (positioning at the slow block
    for the caller's helper call), end joins them. The fast block sets IXC when inexact (NULL: never) */
 typedef struct {
-    LLVMBasicBlockRef fast_end, join;
+    LLVMBasicBlockRef fast_end, clear_end, join;
     V fast;
 } Split;
-static void split_begin(SnxIr* ir, V ok, V fast, V inexact, Split* s) {
+typedef struct { V a, b, add, result; unsigned width; } FmaResidual;
+static void split_begin_fma(SnxIr* ir, V ok, V fast, V inexact, const FmaResidual* residual, Split* s) {
     LLVMBasicBlockRef on = ir_block(ir, "fp_fast"), off = ir_block(ir, "fp_slow");
     s->join = ir_block(ir, "fp_join");
+    s->clear_end = NULL;
     s->fast = fast;
+    if (residual) {
+        LLVMBasicBlockRef check = ir_block(ir, "fp_fma_check"), clear = ir_block(ir, "fp_ixc");
+        LLVMBasicBlockRef checked = ir_block(ir, "fp_residual_valid");
+        ir_likely(ir, LLVMBuildCondBr(B, both(ir, ok, ixc_set(ir)), on, check));
+        LLVMPositionBuilderAtEnd(B, on);
+        s->fast_end = on;
+        LLVMBuildBr(B, s->join);
+        LLVMPositionBuilderAtEnd(B, check);
+        LLVMBuildCondBr(B, ok, clear, off);
+        LLVMPositionBuilderAtEnd(B, clear);
+        V valid;
+        inexact = ir_fp_fma_error(ir, as_float(ir, residual->a, residual->width), as_float(ir, residual->b, residual->width),
+                                 as_float(ir, residual->add, residual->width), as_float(ir, residual->result, residual->width),
+                                 residual->width, &valid);
+        LLVMBuildCondBr(B, valid, checked, off);
+        LLVMPositionBuilderAtEnd(B, checked);
+        ir_fp_raise_ixc(ir, inexact);
+        s->clear_end = checked;
+        LLVMBuildBr(B, s->join);
+        LLVMPositionBuilderAtEnd(B, off);
+        return;
+    }
     ir_likely(ir, LLVMBuildCondBr(B, ok, on, off));
     LLVMPositionBuilderAtEnd(B, on);
     /* only while IXC is clear: it is sticky, and LLVM sinks the inexactness test into that block */
@@ -222,8 +247,7 @@ static void split_begin(SnxIr* ir, V ok, V fast, V inexact, Split* s) {
         LLVMBasicBlockRef clear = ir_block(ir, "fp_ixc"), done = ir_block(ir, "fp_ixc_done");
         ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildNot(B, ixc_set(ir), ""), clear, done));
         LLVMPositionBuilderAtEnd(B, clear);
-        V flags = fpsr(ir), bit = LLVMBuildShl(B, LLVMBuildZExt(B, inexact, ir->t_i32, ""), ir_i32(ir, 4), "");
-        ir_cpu_store(ir, LLVMBuildOr(B, flags, bit, ""), offsetof(CPU, fpsr));
+        ir_fp_raise_ixc(ir, inexact);
         LLVMBuildBr(B, done);
         LLVMPositionBuilderAtEnd(B, done);
     }
@@ -231,10 +255,13 @@ static void split_begin(SnxIr* ir, V ok, V fast, V inexact, Split* s) {
     LLVMBuildBr(B, s->join);
     LLVMPositionBuilderAtEnd(B, off);
 }
+static void split_begin(SnxIr* ir, V ok, V fast, V inexact, Split* s) {
+    split_begin_fma(ir, ok, fast, inexact, NULL, s);
+}
 static V split_end(SnxIr* ir, Split* s, V slow) {
     LLVMBasicBlockRef slow_end = LLVMGetInsertBlock(B);
-    V values[2];
-    LLVMBasicBlockRef blocks[2];
+    V values[3];
+    LLVMBasicBlockRef blocks[3];
     LLVMBuildBr(B, s->join);
     LLVMPositionBuilderAtEnd(B, s->join);
     V phi = LLVMBuildPhi(B, LLVMTypeOf(slow), "");
@@ -242,7 +269,9 @@ static V split_end(SnxIr* ir, Split* s, V slow) {
     values[1] = slow;
     blocks[0] = s->fast_end;
     blocks[1] = slow_end;
-    LLVMAddIncoming(phi, values, blocks, 2);
+    values[2] = s->fast;
+    blocks[2] = s->clear_end;
+    LLVMAddIncoming(phi, values, blocks, s->clear_end ? 3 : 2);
     return phi;
 }
 
@@ -310,13 +339,20 @@ static V fast_sqrt(SnxIr* ir, unsigned width, V a, V* ok, V* inexact) {
     return rb;
 }
 
-/* add + n * m rounded once, on hosts with FMA, once IXC is set (no cheap exact residual) */
-static V fast_fma(SnxIr* ir, unsigned width, V add, V n, V m, V* ok) {
-    V r = as_bits(ir, fma3(ir, as_float(ir, n, width), as_float(ir, m, width), as_float(ir, add, width)), width);
+/* add + n * m rounded once, with an exact residual checked only while IXC is clear. */
+static V fast_fma(SnxIr* ir, unsigned width, V add, V n, V m, V* ok, FmaResidual* residual) {
+    V a = as_float(ir, n, width), b = as_float(ir, m, width), d = as_float(ir, add, width);
+    V value = fma3(ir, a, b, d), r = as_bits(ir, value, width);
     V zero_product = either(ir, is_zero(ir, width, n), is_zero(ir, width, m));
     V result = either(ir, roomy(ir, width, r), both(ir, is_zero(ir, width, r), zero_product));
     V operands = both(ir, unflushed(ir, width, add), both(ir, unflushed(ir, width, n), unflushed(ir, width, m)));
-    *ok = both(ir, both(ir, fpcr_clear(ir, FPCR_RMODE), ixc_set(ir)), both(ir, operands, result));
+    V control = fpcr_clear(ir, FPCR_RMODE);
+    /* The repeated search did not establish a scalar O0 sticky-path win. Keep its original branch and code shape. */
+    if (!ir->promote) control = both(ir, control, ixc_set(ir));
+    *ok = both(ir, control, both(ir, operands, result));
+    /* The raw operands already live across the helper branch. Recreate their FP views only in the cold residual
+       block so O0 does not spill an additional set of live FP temporaries on the sticky path. */
+    *residual = (FmaResidual){n, m, add, r, width};
     return r;
 }
 
@@ -378,10 +414,11 @@ static void fp_fma(SnxIr* ir, const SnxA64Args* a, int negate_add, int negate_n)
     if (negate_add) add = LLVMBuildXor(B, add, kint(ir, width, sign_mask(width)), "");
     if (negate_n) n = LLVMBuildXor(B, n, kint(ir, width, sign_mask(width)), "");
     if (width != 16 && host_fma(ir)) {
-        V ok, fast = fast_fma(ir, width, add, n, m, &ok);
+        FmaResidual residual;
+        V ok, fast = fast_fma(ir, width, add, n, m, &ok, &residual);
         relax(ir, width, fast, &ok, NULL);
         Split s;
-        split_begin(ir, ok, fast, NULL, &s);
+        split_begin_fma(ir, ok, fast, NULL, ir->promote && snx_ir_fpsr_exact() ? &residual : NULL, &s);
         r = split_end(ir, &s, call_fma(ir, add, n, m, width));
     } else
         r = call_fma(ir, add, n, m, width);
@@ -415,7 +452,18 @@ static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
 static void fp_round(SnxIr* ir, const SnxA64Args* a, int rm, unsigned exact) {
     unsigned width = width_of(a->esz);
     V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm);
-    set_fp_reg(ir, (unsigned)a->rd, call_round(ir, fp_reg(ir, (unsigned)a->rn, width), width, mode, exact));
+    V n = fp_reg(ir, (unsigned)a->rn, width), result;
+    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
+        V value = as_float(ir, n, width);
+        V rounded = ir_fp_round_value(ir, value, rm < 0 ? 5 : (unsigned)rm);
+        V ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
+        Split s;
+        split_begin(ir, ok, as_bits(ir, rounded, width),
+                    exact && snx_ir_fpsr_exact() ? float_ne(ir, value, rounded) : NULL, &s);
+        result = split_end(ir, &s, call_round(ir, n, width, mode, exact));
+    } else
+        result = call_round(ir, n, width, mode, exact);
+    set_fp_reg(ir, (unsigned)a->rd, result);
 }
 
 /* FRINT32Z, FRINT32X, FRINT64Z, FRINT64X (rm < 0: FPCR's) */
@@ -430,7 +478,22 @@ static void fp_round_int(SnxIr* ir, const SnxA64Args* a, int rm, unsigned intsiz
    above the smallest normal, or the double was a zero */
 static void fp_convert(SnxIr* ir, const SnxA64Args* a, unsigned from, unsigned to) {
     V n = fp_reg(ir, (unsigned)a->rn, from), r;
-    if (from == 32 && to == 64) {
+    if (from == 16 && (to == 32 || to == 64) && ir->features->x86 && ir->features->f16c) {
+        /* Half inputs to conversions are not flushed by FZ16. AHP and NaNs retain the exact helper. */
+        V ok = both(ir, fpcr_clear(ir, 1u << 26), LLVMBuildNot(B, is_nan(ir, 16, n), ""));
+        V value = LLVMBuildFPExt(B, as_float(ir, n, 16), float_type(ir, to), "");
+        Split s;
+        split_begin(ir, ok, as_bits(ir, value, to), NULL, &s);
+        r = split_end(ir, &s, call_convert(ir, n, from, to, fpcr_rmode(ir)));
+    } else if (from == 32 && to == 16 && ir->features->x86 && ir->features->f16c) {
+        V value = as_float(ir, n, 32), narrow = LLVMBuildFPTrunc(B, value, float_type(ir, 16), "");
+        V bits = as_bits(ir, narrow, 16);
+        V ok = both(ir, fpcr_clear(ir, FPCR_RMODE | (1u << 26)),
+                    both(ir, unflushed(ir, 32, n), either(ir, roomy(ir, 16, bits), is_zero(ir, 32, n))));
+        Split s;
+        split_begin(ir, ok, bits, float_ne(ir, value, LLVMBuildFPExt(B, narrow, float_type(ir, 32), "")), &s);
+        r = split_end(ir, &s, call_convert(ir, n, from, to, fpcr_rmode(ir)));
+    } else if (from == 32 && to == 64) {
         V ok = both(ir, LLVMBuildNot(B, is_nan(ir, 32, n), ""), unflushed(ir, 32, n)), fast;
         Split s;
         fast = as_bits(ir, widen(ir, as_float(ir, n, 32)), 64);

@@ -1,0 +1,235 @@
+{
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "copyright": "2026 the ScarletNX contributors",
+  "schema": 1,
+  "reviewed_base": "34c0be36",
+  "items": {
+    "A1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "A5": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L1": {
+      "status": "retired",
+      "evidence": []
+    },
+    "L2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "L4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J1": {
+      "status": "deferred",
+      "evidence": []
+    },
+    "J2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "J4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I3": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I5": {
+      "status": "research",
+      "evidence": []
+    },
+    "I6": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I7": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_fp_helper_effects.c"
+      ],
+      "note": "Audited raw-bit lane helpers are classified at first declaration. The fixture keeps X4 live across four calls with zero reloads and checks static synchronization counts. O0 does not use register promotion."
+    },
+    "I15": {
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_vfp_residual.c",
+        "tests/llvm_recpe.c",
+        "tests/llvm_estimates.c",
+        "tests/llvm_unsigned_estimates.c",
+        "tests/llvm_round.c",
+        "tests/llvm_half.c",
+        "tests/llvm_fma_residual.c",
+        "tests/llvm_perf/recpe_candidates.json"
+      ],
+      "note": "Guarded FABD, rounding, half conversions, FMA residuals and exact whole-vector estimates are implemented on the measured x86 paths. Exceptional estimate flags reduce across lanes once. Remaining mixed-lane helper replacements and other native host lowerings remain open. Kernel gains do not establish game FPS gains."
+    },
+    "I8": {
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_recpe.c",
+        "tests/llvm_recpx.c",
+        "tests/llvm_rsqrte.c",
+        "tests/llvm_estimates.c",
+        "tests/llvm_unsigned_estimates.c",
+        "tests/llvm_perf/recpe_candidates.json"
+      ],
+      "note": "Exact scalar/vector float32/64 FRECPE/FRSQRTE and unsigned URECPE/URSQRTE on x86 AVX2, including exceptional lanes. Scalar 32/64 FRECPX uses integer exponent operations. Half estimates and other host lowerings retain exact helpers."
+    },
+    "I9": {
+      "status": "implemented",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_vec.c",
+        "tests/llvm_simd_shift.c"
+      ],
+      "note": "Rounding/saturating register shifts use bounded whole-vector IR on x86 AVX2, with one QC reduction. All 256 signed-byte counts, lane sizes, aliases, O0/O2 and loaders are checked against exact helpers. Other hosts keep exact fallback. Native hardware execution was checked only on x86-64."
+    },
+    "I10": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I11": {
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir_fp.h",
+        "src/common/cpu/recompiler/llvm/ir_fpu.c",
+        "src/common/cpu/recompiler/llvm/ir_vec_fp.c",
+        "tests/llvm_round.c",
+        "tests/llvm_half.c",
+        "tests/llvm_fma_residual.c"
+      ],
+      "note": "Guarded scalar/dynamic rounding, F16C conversions and exact FMA residuals pass directed and QEMU checks on x86-64. Scalar O0 FMA retains its byte-identical original sequence because the candidate did not pass the regression gate. Vector O0/O2 and scalar O2 residuals passed. Other native host execution proofs remain open."
+    },
+    "I12": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I13": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "I14": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "M3": {
+      "status": "research",
+      "evidence": []
+    },
+    "S1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "R1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "R2": {
+      "status": "research",
+      "evidence": []
+    },
+    "D1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T1": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T2": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T3": {
+      "status": "in_progress",
+      "evidence": [
+        "src/common/cpu/recompiler/llvm/ir.h",
+        "src/common/cpu/recompiler/llvm/ir_promote.c",
+        "src/common/cpu/recompiler/llvm/ir_emit.c",
+        "src/common/cpu/recompiler/llvm/ir_codegen.c",
+        "src/common/cpu/recompiler/llvm/ir_state.c",
+        "src/nx/loader/module_llvm.c",
+        "tests/llvm_fp_helper_effects.c",
+        "tests/llvm_module.c"
+      ],
+      "note": "Opt-in static per-unit counts and a single-function dump work through the AOT CLI. A four-call fixture checks counts by hand. The whole-module CLI smoke test checks output presence. Full whole-module hand counts and other host execution remain to verify."
+    },
+    "T4": {
+      "status": "unverified",
+      "evidence": []
+    },
+    "T5": {
+      "status": "in_progress",
+      "evidence": [
+        "tests/llvm_block_fuzz.c",
+        "tests/CMakeLists.txt"
+      ],
+      "note": "Seeded bounded programs test flag joins, loops, guest calls, memory, SIMD/FP and aligned exclusive retry loops against QEMU through O0/O2 AOT/JIT, portable, hook and volatile configurations. Planted flag and exclusive-update defects are detected. Instruction/control-flow grammar remains bounded, with native execution verified only on x86-64. A larger four-seed sweep passed 10,240 whole-program comparisons in 20 configurations."
+    },
+    "T6": {
+      "status": "implemented",
+      "evidence": [
+        "docs/ARCHITECTURE.md",
+        "docs/DIVERGENCES.md",
+        "docs/ROADMAP.md",
+        "docs/RISCV-LOONGARCH.md",
+        "docs/NRO.md",
+        "docs/LDR_RO.md",
+        "docs/AOT_PACKS.md",
+        "src/common/cpu/recompiler/llvm/rtlib.c",
+        "src/common/cpu/recompiler/llvm/jit_cache.h",
+        "src/common/cpu/recompiler/llvm/ir_profile.c",
+        "src/common/cpu/recompiler/llvm/ir_ldst.c"
+      ],
+      "note": "The listed documentation claims were checked against current source. No runtime semantics changed by these documentation corrections."
+    }
+  }
+}

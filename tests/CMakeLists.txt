@@ -68,6 +68,9 @@ if(SNX_TEST_SANITIZERS)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME cpu_plan_tools COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_plan_tools.py")
+endif()
 # the GNU extensions with an ISO C counterpart stay out of our own sources (#68)
 if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
@@ -603,6 +606,74 @@ snx_test_target(snx-test-llvm-rsqrte 11)
 snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
 target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
+
+add_executable(snx-test-llvm-recpe llvm_recpe.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-recpe 11)
+snx_cpu_helpers_flags(snx-test-llvm-recpe)
+target_link_libraries(snx-test-llvm-recpe PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_recpe COMMAND snx-test-llvm-recpe)
+
+add_executable(snx-test-llvm-recpx llvm_recpx.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-recpx 11)
+snx_cpu_helpers_flags(snx-test-llvm-recpx)
+target_link_libraries(snx-test-llvm-recpx PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_recpx COMMAND snx-test-llvm-recpx)
+
+add_executable(snx-test-llvm-simd-shift llvm_simd_shift.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-simd-shift 11)
+snx_cpu_helpers_flags(snx-test-llvm-simd-shift)
+target_link_libraries(snx-test-llvm-simd-shift PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_simd_shift COMMAND snx-test-llvm-simd-shift)
+
+add_executable(snx-test-llvm-round llvm_round.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-round 11)
+snx_cpu_helpers_flags(snx-test-llvm-round)
+target_link_libraries(snx-test-llvm-round PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_round COMMAND snx-test-llvm-round)
+
+add_executable(snx-test-llvm-estimates llvm_estimates.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-estimates 11)
+snx_cpu_helpers_flags(snx-test-llvm-estimates)
+target_link_libraries(snx-test-llvm-estimates PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_estimates COMMAND snx-test-llvm-estimates)
+
+add_executable(snx-test-llvm-unsigned-estimates llvm_unsigned_estimates.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-unsigned-estimates 11)
+snx_cpu_helpers_flags(snx-test-llvm-unsigned-estimates)
+target_link_libraries(snx-test-llvm-unsigned-estimates PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_unsigned_estimates COMMAND snx-test-llvm-unsigned-estimates)
+
+add_executable(snx-test-llvm-half llvm_half.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-half 11)
+snx_cpu_helpers_flags(snx-test-llvm-half)
+target_link_libraries(snx-test-llvm-half PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_half COMMAND snx-test-llvm-half)
+
+add_executable(snx-test-llvm-fma-residual llvm_fma_residual.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-fma-residual 11)
+snx_cpu_helpers_flags(snx-test-llvm-fma-residual)
+target_link_libraries(snx-test-llvm-fma-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_fma_residual COMMAND snx-test-llvm-fma-residual)
+
+add_executable(snx-test-llvm-vfp-residual llvm_vfp_residual.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-residual 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-residual)
+target_link_libraries(snx-test-llvm-vfp-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_residual COMMAND snx-test-llvm-vfp-residual)
+
+add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
+snx_test_target(snx-test-llvm-fp-helper-effects 11)
+target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
+add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -1339,6 +1410,34 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential --skip "${SNX_QEMU_REF_MISSING}")
     endif()
     set_tests_properties(llvm_qemu_differential PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c qemu_ref/qemu_ref.c)
+    snx_test_target(snx-test-llvm-block-fuzz 11)
+    target_link_libraries(snx-test-llvm-block-fuzz PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    if(SNX_QEMU_REF)
+        add_dependencies(snx-test-llvm-block-fuzz snx_qemu_ref_runner)
+        foreach(mode default o0 jit portable jit_o0 mutant exclusive_mutant)
+            set(args)
+            if(mode STREQUAL o0)
+                list(APPEND args --opt=0)
+            elseif(mode STREQUAL jit)
+                list(APPEND args --jit --hook)
+            elseif(mode STREQUAL portable)
+                list(APPEND args --portable --volatile)
+            elseif(mode STREQUAL jit_o0)
+                list(APPEND args --jit --opt=0 --hook --volatile)
+            elseif(mode STREQUAL mutant)
+                list(APPEND args --self-test)
+            elseif(mode STREQUAL exclusive_mutant)
+                list(APPEND args --self-test-exclusive)
+            endif()
+            add_test(NAME llvm_block_fuzz_${mode} COMMAND snx-test-llvm-block-fuzz "${SNX_QEMU_AARCH64}"
+                "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/block_fuzz_${mode}" ${args})
+            set_tests_properties(llvm_block_fuzz_${mode} PROPERTIES TIMEOUT 180)
+        endforeach()
+    else()
+        add_test(NAME llvm_block_fuzz COMMAND snx-test-llvm-block-fuzz --skip "${SNX_QEMU_REF_MISSING}")
+        set_tests_properties(llvm_block_fuzz PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
 # the variant table's hash, which must match jit_service.c's cache hash
 add_executable(snx-test-variants variants.c)
@@ -1538,6 +1637,8 @@ add_executable(snx-test-llvm-module llvm_module.c llvm_steps.c)
 snx_test_target(snx-test-llvm-module 11)
 target_link_libraries(snx-test-llvm-module PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
+add_test(NAME llvm_module_stats COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" --stats)
+set_tests_properties(llvm_module_stats PROPERTIES ENVIRONMENT "SNX_IR_STATS=1")
 # the recompiler as a library (snx_recompiler.h): A64 on every backend built, A32, from code in memory
 add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library 11)

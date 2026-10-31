@@ -66,7 +66,7 @@ enum {
    on them is gated on the architecture */
 typedef struct {
     int x86;                                          /* x86-64 target: x86 intrinsics are available at all */
-    int sse42, crc32, pclmul, aes, sha_ni, gfni, fma; /* x86 extensions */
+    int sse42, crc32, pclmul, aes, sha_ni, gfni, fma, f16c; /* x86 extensions */
     int avx2, avx512bw, avx512vl, avx512bitalg;
     int aarch64;           /* AArch64 target: AArch64 intrinsics are available at all */
     int arm_aes, arm_sha2; /* AArch64 crypto extensions (PMULL comes with AES) */
@@ -121,6 +121,14 @@ typedef struct SnxIrTuning {
     const char* text;
 } SnxIrTuning;
 
+/* Compile-time IR statistics. Counts describe emitted IR before LLVM's machine optimizations, not dynamic work. */
+typedef struct {
+    int enabled;
+    SnxU64 functions, promoted_functions, call_sites, fp_calls, vector_calls, guest_calls, indirect_calls;
+    SnxU64 sync_stores, sync_reloads, call_stores, store_bytes, reload_bytes;
+    SnxU64 lookups, polls, stale_checks, return_checks;
+} SnxIrStats;
+
 typedef struct SnxIr {
     LLVMContextRef ctx;
     LLVMModuleRef mod;
@@ -130,6 +138,9 @@ typedef struct SnxIr {
     int promote; /* ir_promote_registers at this level (O1 and above): at O0 SROA and mem2reg leave its slots on
                     the stack */
     const SnxIrFeatures* features;
+    SnxIrStats stats;
+    SnxU64 dump_pc, dump_instruction_pc;
+    int dump_function, dump_active; /* opt-in host diagnostics, never part of generated code */
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
@@ -235,6 +246,8 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* Accumulates one emitted function's call counts when stats.enabled is set. */
+void ir_stats_function(SnxIr* ir, LLVMValueRef fn);
 /* Starts a function body: entry block, c and M */
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function);
 
