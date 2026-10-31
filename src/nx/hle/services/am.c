@@ -515,12 +515,14 @@ static u32 am_syncpt_event(AmSyncpt* s, u32 slot) {
    nvdrv's syncpt_watch calls this after every increment, from the incrementing thread (a GPU, video or IPC one),
    which is where the console answers it too. The armed bits are answered here as well, since the client reads them
    as its wait's done */
+static void am_syncpt_poll(void);
+static int am_syncpt_mirror(void);
 static void am_syncpt_armed(void) {
     AmSyncpt* s;
-    u8 *ro, *rw;
+    u8* ro;
     u32 i, slot, id, thresh;
+    int acked;
     if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return;
-    rw = g_host.am.syncpt.rw;
     pm_lock(&g_am_syncpt_lk);
     for (i = 0; i < AM_SYNCPT_SESSIONS; ++i) {
         s = &g_hle.am.syncpts[i];
@@ -534,30 +536,48 @@ static void am_syncpt_armed(void) {
             }
         }
     }
-    /* the client re-reads the value and re-arms if its threshold still isn't reached, so the bits it moved are
-       acknowledged here rather than by the page mirror */
-    for (i = 0; i < AM_SYNCPT_SLOTS / 64; ++i)
-        *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = *(u64*)(rw + AM_SYNCPT_RW_BITS + 8 * i);
-    *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(rw + AM_SYNCPT_RW_SUMMARY);
+    /* the values the client polls are mirrored before its armed bits are answered, so a wait it takes back sees the
+       counter that ended it */
+    acked = am_syncpt_mirror();
     pm_unlock(&g_am_syncpt_lk);
+    if (acked) ev_signal(g_hle.am.syncpt_page.notify_ev);
 }
-/* Mirrors the syncpoint values into the read-only page, which is what the client polls: its armed waits are answered
-   by am_syncpt_armed as the counters move. The values are the host's own, which the GPU, video and host1x threads
-   increment, and the reference keeps a pasted loop for the same reason (its 500 us timing event) */
-static void am_syncpt_poll(void) {
+/* Mirrors the syncpoint values and the client's summary and armed bits into the read-only page, which is what it
+   polls: its waits are answered by signaling the notify event when the bits it moved reach the page, as Eden's
+   Switch 2 work's poller does. The values are the host's own, which the GPU, video and host1x threads increment, and
+   the reference keeps a pasted loop for the same reason (its 500 us timing event). 1 when the bits changed */
+static int am_syncpt_mirror(void) {
     u8* ro;
+    u8* rw;
     u64* values;
     u32 i, count, words;
-    if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return;
+    int acked = 0;
+    if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return 0;
+    rw = g_host.am.syncpt.rw;
     values = (u64*)(ro + AM_SYNCPT_RO_VALUES);
     count = g_hle.am.syncpt_page.count;
     for (i = 0; i < count && i < SYNCPT_IDS; ++i) values[i] = syncpt_read(i);
     words = (count + 63) / 64;
-    for (i = 0; i < words && i < AM_SYNCPT_SLOTS / 64; ++i)
-        *(u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_BITS + 8 * i);
-    *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(g_host.am.syncpt.rw + AM_SYNCPT_RW_SUMMARY);
+    for (i = 0; i < words && i < AM_SYNCPT_SLOTS / 64; ++i) {
+        u64 rw_bits = *(u64*)(rw + AM_SYNCPT_RW_BITS + 8 * i);
+        u64* ro_bits = (u64*)(ro + AM_SYNCPT_RO_BITS + 8 * i);
+        if (*ro_bits != rw_bits) {
+            *ro_bits = rw_bits;
+            acked = 1;
+        }
+    }
+    *(u64*)(ro + AM_SYNCPT_RO_SUMMARY) = *(u64*)(rw + AM_SYNCPT_RW_SUMMARY);
+    return acked;
 }
 /* the page's mirror: one thread for the run, started when the page is attached */
+static void am_syncpt_poll(void) {
+    int acked;
+    if (!g_hle.am.syncpt_page.attached) return;
+    pm_lock(&g_am_syncpt_lk);
+    acked = am_syncpt_mirror();
+    pm_unlock(&g_am_syncpt_lk);
+    if (acked) ev_signal(g_hle.am.syncpt_page.notify_ev);
+}
 static void am_syncpt_run(void* arg) {
     (void)arg;
     for (;;) {
@@ -742,7 +762,7 @@ static int nn_am_service_IGraphicsSystemSession_AttachSyncpointMemory(SvcObj* se
     words = (count + 63) / 64;
     memset(ro + AM_SYNCPT_RO_SUMMARY, 0, 8);
     memset(ro + AM_SYNCPT_RO_BITS, 0, 8 * words);
-    *request = ev_handle(g_hle.am.syncpt_page.request_ev);
+    *request = ev_wr_handle(g_hle.am.syncpt_page.request_ev);
     *notify = ev_handle(g_hle.am.syncpt_page.notify_ev);
     am_syncpt_start();
     return 0;

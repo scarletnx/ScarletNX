@@ -2,6 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* the services sm hands out, registered under their names, and the events the service files give the game */
 #include "nx/hle/services/services_int.h"
+#include "nx/hle/hle.h"
+#include "nx/hle/kernel/kernel_int.h"
+#include "nx/hle/pool.h"
 #include "nx/hle/services/network/network.h"
 #include "hle/services/sm.swipc.h"
 #include "hle/services/am.swipc.h"
@@ -21,6 +24,26 @@
 u32 ev_handle(u32 ev) {
     KEvent* e = kev(ev);
     return e ? h_new(&e->o) : 0; /* no handle: the game's wait on 0 is refused as an invalid handle */
+}
+
+/* A writable handle to ev for a reply, the end svcCreateEvent's first handle is: the game signals it, which reaches the
+   same event, and waits on ev's readable handle. A shared memory the game arms and the service answers with needs both
+   ends, as svcSignalEvent takes only a writable one and svcWaitSynchronization only a readable one */
+u32 ev_wr_handle(u32 ev) {
+    KEvent* e = kev(ev);
+    KWEvent* w;
+    u32 h;
+    if (!e) return 0;
+    pm_lock(&g_host.kernel.pool_lk);
+    w = (KWEvent*)POOL_TAKE(g_hle.svc.wevents, g_hle.svc.wevent_next, "writable events");
+    pm_unlock(&g_host.kernel.pool_lk);
+    w->o.type = KO_WEVENT;
+    kobj_set_name(&w->o, "writable event");
+    w->r = ev;
+    kobj_ref(&e->o); /* the writable end's, as svcCreateEvent's holds one */
+    h = h_new(&w->o);
+    if (!h) kobj_destroy(&w->o);
+    return h;
 }
 
 int new_event(u32* event, const char* name, int signaled) {
