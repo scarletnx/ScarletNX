@@ -1154,6 +1154,15 @@ extern u64 g_vk_cs_wait_value; /* the value graphics work waits for before readi
 extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_wait_ns; /* statistics */
 #if defined(SNX_TRACY)
 extern u64 g_vk_cs_cpu_reads; /* dispatches kept on the compute queue because the CPU reads what they write */
+/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
+int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+void vk_uma_init(void);                            /* after it */
+int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+void vk_uma_frame(void);
+void vk_uma_forget_all(void);
+
 #endif
 /* the dispatches skipped so far; why (size bytes) gets their reasons with each one's count, " (12 not translated, 3
    a texture not bound)", or "" when none was */
@@ -1230,6 +1239,16 @@ extern u64 g_vk_passes, g_vk_clear_cmds, g_vk_clear_loads, g_vk_dontcare_loads;
 #define VK_GPU_CTX_COMPUTE  2
 void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt);
 void vk_gpuprof_pass_end(VkCommandBuffer cb);
+/* why cmd.c submitted the frame's commands: a present, a vk_finish, the 1 ms of recording a submission holds at most
+   (vk_frame_check), a readback of GPU-owned memory, the end of a frame's slot, or anything else */
+enum { VK_SUB_OTHER, VK_SUB_PRESENT, VK_SUB_FINISH, VK_SUB_PERIODIC, VK_SUB_READBACK, VK_SUB_FRAME, VK_SUB_N };
+/* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
+   (a release's gate, a result's landing: vk_wait_submit) */
+enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
+extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
+void vk_gpuprof_cb_begin(VkCommandBuffer cb);
+void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
+void vk_gpuprof_waited(u64 value, int kind);
 void vk_gpuprof_frame_done(u32 slot);
 /* the device's timestamps next to the client's clock (VK_EXT_calibrated_timestamps with a host time domain) */
 int vk_gpuprof_calibrated(void);
@@ -1237,5 +1256,14 @@ int vk_gpuprof_calibrated(void);
 int vk_gpuprof_clock(i64* cpu, i64* gpu);
 extern u64 g_rec_xfers, g_rec_barriers; /* record.c: copies and blits, and barriers, put in the frame's ring */
 extern u64 g_rec_xfer_kind[3], g_rec_buf_bytes; /* buffer, buffer-image, image copies; buffer copies' bytes */
+
+/* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
+int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
+void vk_uma_init(void);                            /* after it */
+int vk_uma(void);                                  /* guest ranges are read in place where they can be */
+int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
+void vk_uma_frame(void);
+void vk_uma_forget_all(void);
 
 #endif

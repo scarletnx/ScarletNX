@@ -248,15 +248,25 @@ static void ring_reset(Ring* r, const VmaBudget* budget) {
     r->used = 0;
 }
 
-static void timeline_wait(u64 value) {
+u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* the GPU thread's alone, which writes them */
+/* kind: VK_WAIT_*, for the statistics */
+static void timeline_wait(u64 value, int kind) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
+    u64 t0 = plat_ns(), done = 0;
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
-    gpu_wait_note("a graphics submission", value);
+    /* a wait for work already done is no stall */
+    if (VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)) && done >= value) return;
+    int mine = gpu_wait_note("a graphics submission", value);
+    if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
+    if (mine) {
+        g_vk_wait_ns[kind] += plat_ns() - t0;
+        g_vk_waits[kind]++;
+    }
 }
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
 static void land_through(u64 value) {
@@ -271,7 +281,7 @@ static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
     SNX_ZONE(z, "vk frame recycle");
     if (done) {
-        timeline_wait(done);
+        timeline_wait(done, VK_WAIT_RECYCLE);
         land_through(done);
         f->last = 0;
         f->hold = 0;
@@ -320,6 +330,7 @@ VkCommandBuffer vk_cmd(void) {
             f->ncb++;
         }
         vk_rec_begin(f->cbs[f->icb]);
+        vk_gpuprof_cb_begin(f->cbs[f->icb]);
         f->recording = 1;
         g_cb_begun++;
     }
@@ -501,8 +512,9 @@ int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
                      0, RING_DEVICE, buf, off, NULL);
 }
 
-/* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most) */
-static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land) {
+/* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
+   why (VK_SUB_*: the statistics) */
+static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
     vk_render_end();
     Frame* f = &g_fr[g_cur];
@@ -531,6 +543,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
     vk_rec_submit(cb, w, nw, s, xs ? 2u : 1u);
@@ -548,18 +561,22 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     SNX_ZONE_END(z_submit);
 }
 
-void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
+static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal, int why) {
     VkSemaphoreSubmitInfo w = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
                                .stageMask = wait_stage};
     VkSemaphoreSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
                                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    submit(wait ? &w : NULL, signal ? &s : NULL, 1);
+    submit(wait ? &w : NULL, signal ? &s : NULL, 1, why);
+}
+/* a submission that signals a binary semaphore is the present's (renderer.c) */
+void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
+    submit_why(wait, wait_stage, signal, signal ? VK_SUB_PRESENT : VK_SUB_OTHER);
 }
 /* Ownership readback runs while its ranges are marked landing. Flush only an
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0);
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
@@ -573,8 +590,8 @@ u64 g_vk_finishes, g_vk_finish_ns;
 void vk_finish(void) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
-    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    timeline_wait(g_gval);
+    submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
+    timeline_wait(g_gval, VK_WAIT_FINISH);
     land_through(g_gval);
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
@@ -582,7 +599,7 @@ void vk_finish(void) {
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
 void vk_frame_next(void) {
-    if (g_fr[g_cur].recording) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FRAME);
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
@@ -603,7 +620,7 @@ void vk_frame_check(void) {
     if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024)
         vk_frame_next();
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
-        submit(NULL, NULL, 1);
+        submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
@@ -614,7 +631,7 @@ void vk_submit_progress(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
 }
-void vk_wait_submit(u64 value) { timeline_wait(value); }
+void vk_wait_submit(u64 value) { timeline_wait(value, VK_WAIT_SUBMIT); }
 void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }
 void vk_frame_hold(u64 frame_id) {

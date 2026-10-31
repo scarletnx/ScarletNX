@@ -81,15 +81,26 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
 }
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
+void vk_gpuprof_cb_begin(VkCommandBuffer cb) { (void)cb; }
+void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
+    (void)cb;
+    (void)why;
+    (void)value;
+}
+void vk_gpuprof_waited(u64 value, int kind) {
+    (void)value;
+    (void)kind;
+}
 /* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
 void vk_display_made(u64 id, VkResult r) {
     (void)id;
     (void)r;
 }
 /* cmd.c's waits note themselves for gpu.c's stall report, which isn't here */
-void gpu_wait_note(const char* what, u64 value) {
+int gpu_wait_note(const char* what, u64 value) {
     (void)what;
     (void)value;
+    return 0;
 }
 /* plat_posix.c's crash handler, which the test never installs */
 void log_crash_mode(void) {}
