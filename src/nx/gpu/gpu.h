@@ -349,6 +349,8 @@ void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in 
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */
 void gpu_mem_written_cpu(u64 cpu, u64 size);
+/* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
