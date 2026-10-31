@@ -681,6 +681,42 @@ static void test_system_manager(void) {
     puts("PASS the system's manager of the network service account, as the application's, with no license");
 }
 
+/* GetBaasAccountAdministrator (250) of acc:su: no license, refreshed at once, no online account linked, and its page
+   not available (124-5249) */
+static void test_administrator(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc_admin(), *administrator, *context;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    request(&r, 250);
+    CHECK(acc->dispatch(acc, &r.c) == RC(124, 20) && !r.c.out_objs[0]);
+    request(&r, 250);
+    acc_uid_put(r.raw, g_user_id);
+    call(acc, &r);
+    CHECK(r.c.nout_objs == 1);
+    administrator = r.c.out_objs[0];
+    request(&r, 250);
+    call(administrator, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 0);
+    request(&r, 290);
+    CHECK(administrator->dispatch(administrator, &r.c) == RC(124, 5249));
+    request(&r, 143);
+    call(administrator, &r);
+    CHECK(r.c.out_size == 0x10 && reply32(&r, 0) == 0 && reply64(&r, 8) == 0);
+    request(&r, 141);
+    call(administrator, &r);
+    CHECK(r.c.nout_objs == 1);
+    context = r.c.out_objs[0];
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    svcobj_unref(context);
+    svcobj_unref(administrator);
+    svcobj_unref(acc);
+    puts("PASS the administrator's account: no license, no online account linked");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -867,6 +903,7 @@ int main(void) {
     test_system_service();
     test_administrator_service();
     test_system_manager();
+    test_administrator();
     test_first_uid();
     test_start();
     test_rename();
