@@ -1620,6 +1620,23 @@ static int check_uma(void) {
         CHECK(mem_unmap(big, 0x1000000) == 0);
         vk_lock();
     }
+    /* two ranges of one import block with free pages between them: an import each, both found again at every use.
+       The first one's key hid the second's import, which was made anew at each lookup */
+    {
+        VkUmaStats a, z;
+        const u64 two = (HEAP_BASE + 0x3000000 + 0x1FFFFF) & ~0x1FFFFFull, gtwo = 0x430000000ull;
+        CHECK(mem_map(two, 0x10000, MS_NORMAL, PERM_RW) == 0);
+        CHECK(mem_map(two + 0x40000, 0x10000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gtwo, two, 0x10000);
+        gmmu_map(gtwo + 0x40000, two + 0x40000, 0x10000);
+        vk_uma_stats(&a);
+        for (int i = 0; i < 8; i++) CHECK(vk_buf_get(gtwo + (u64)(i & 1) * 0x40000, 0x100, &b2, &off2));
+        vk_uma_stats(&z);
+        CHECK(z.made == a.made + 2);
+        vk_unlock();
+        CHECK(mem_unmap(two, 0x10000) == 0 && mem_unmap(two + 0x40000, 0x10000) == 0);
+        vk_lock();
+    }
     /* imports no draw used for long go, so a driver that takes an import's pages at each submit isn't handed them */
     {
         VkUmaStats st0, st1;

@@ -144,10 +144,13 @@ static void key_insert(u64 key, u32 i) {
     while (g_uma.slot[h]) h = (h + 1) & (UMA_HASH - 1);
     g_uma.slot[h] = i + 1;
 }
-/* the import of key, or g_uma.n */
-static u32 key_find(u64 key) {
-    for (u32 h = key_home(key); g_uma.slot[h]; h = (h + 1) & (UMA_HASH - 1))
-        if (g_uma.imp[g_uma.slot[h] - 1].key == key) return g_uma.slot[h] - 1;
+/* the import of key that holds [cpu, cpu + len), or g_uma.n. A key can have several: import_new narrows a block to
+   the private pages around the range, so ranges of one block apart from each other get an import each */
+static u32 key_find(u64 key, u64 cpu, u64 len) {
+    for (u32 h = key_home(key); g_uma.slot[h]; h = (h + 1) & (UMA_HASH - 1)) {
+        const UmaImport* m = &g_uma.imp[g_uma.slot[h] - 1];
+        if (m->key == key && cpu >= m->lo && cpu + len <= m->hi) return g_uma.slot[h] - 1;
+    }
     return g_uma.n;
 }
 static void keys_rebuild(void) {
@@ -356,10 +359,7 @@ int vk_uma_get(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
             return 0;
         }
         /* the range's own size's import, or a bigger one already made that holds it */
-        for (u32 l = level; l < UMA_LEVELS && k == g_uma.n; l++) {
-            k = key_find(import_key(cpu, l));
-            if (k < g_uma.n && (cpu < g_uma.imp[k].lo || cpu + len > g_uma.imp[k].hi)) k = g_uma.n;
-        }
+        for (u32 l = level; l < UMA_LEVELS && k == g_uma.n; l++) k = key_find(import_key(cpu, l), cpu, len);
         if (k == g_uma.n) k = import_new(import_key(cpu, level), cpu, len);
         if (k == g_uma.n) return 0;
         g_uma.last = k;
