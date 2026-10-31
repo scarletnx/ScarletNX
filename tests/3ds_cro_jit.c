@@ -152,19 +152,19 @@ int main(int argc, char** argv) {
     }
     if (self_unload) {
         uint32_t cmd = cro_command_buffer(p);
-        cro_put(p, cmd, IPC_HEADER(5, 3, 2)); /* UnloadCRO, with the process handle */
-        cro_put(p, cmd + 4, CRO_MODULE);
-        cro_put(p, cmd + 8, 0);
-        cro_put(p, cmd + 12, CRO_SOURCE);
-        cro_put(p, cmd + 16, 0);
-        cro_put(p, cmd + 20, CTR_PROCESS_HANDLE);
+        ctr_put(p, cmd, IPC_HEADER(5, 3, 2)); /* UnloadCRO, with the process handle */
+        ctr_put(p, cmd + 4, CRO_MODULE);
+        ctr_put(p, cmd + 8, 0);
+        ctr_put(p, cmd + 12, CRO_SOURCE);
+        ctr_put(p, cmd + 16, 0);
+        ctr_put(p, cmd + 20, CTR_PROCESS_HANDLE);
         SnxArmCPU* cpu = &p->cpu.state.cpu;
         cpu->r[0] = session;
         cpu->r[15] = CRO_MODULE + IMG_CODE + 0x10;
         cpu->exit = SNX_ARM_OK;
         uint64_t executed = 0;
         assert(snx_ctr_dispatch(&module, p, 1, &executed) == SNX_CTR_RUN_BUDGET);
-        assert(executed == 1 && !cpu->r[0] && !cro_word(p, cmd + 4));
+        assert(executed == 1 && !cpu->r[0] && !ctr_word(p, cmd + 4));
         assert(snx_ctr_query(p->space, CRO_MODULE, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);
         assert(p->reclaim); /* the block that made the SVC is still running its native code */
         run(&module, p, TEXT_ADDRESS, false, 1);

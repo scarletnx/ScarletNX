@@ -11,7 +11,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/services/hid.h"
-#include "common/utilities/endian.h"
+#include "support/3ds_guest.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
@@ -22,7 +22,6 @@
 #define WINDOW_H          720
 #define SMALL_W           400
 #define SMALL_H           480
-#define COMMAND           (SNX_CTR_INITIAL_TLS + 0x80)
 /* the touch section of hid:USER's shared memory: its entry index, and the entries of 8 bytes (x, y, valid) */
 enum {
     TOUCH_SECTION = 0xa8,
@@ -32,27 +31,6 @@ enum {
     TOUCH_VALID = 4
 };
 
-static uint32_t command_word(SnxCtrProcess* p, uint32_t index) {
-    unsigned char b[4];
-    assert(snx_ctr_read_ram(p->space, COMMAND + index * 4, b, 4) == SNX_CTR_MEM_OK);
-    return snx_ld_le32(b);
-}
-static uint32_t command_send(SnxCtrProcess* p, uint32_t session, uint32_t header) {
-    unsigned char bytes[4];
-    snx_st_le32(bytes, header);
-    assert(snx_ctr_write_ram(p->space, COMMAND, bytes, 4) == SNX_CTR_MEM_OK);
-    p->cpu.state.cpu.r[0] = session;
-    assert(snx_ctr_svc(p, 0x32) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
-    assert(!command_word(p, 1));
-    return command_word(p, 0);
-}
-/* a 2-byte or 4-byte field of hid:USER's shared memory at offset, little endian, as the game reads it */
-static uint32_t hid_shared(SnxCtrProcess* p, uint32_t offset, uint32_t size) {
-    unsigned char b[4] = {0};
-    uint32_t pa = p->objects[p->hid_objects[0]].data.shared.physical;
-    assert(snx_ctr_phys_read(p->memory, pa + offset, b, size) == SNX_CTR_MEM_OK);
-    return size == 2 ? snx_ld_le16(b) : snx_ld_le32(b);
-}
 /* a mouse event of a window, pushed and pumped as the presenter's loop pumps them */
 static void event_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
     SDL_Event e = {0};
@@ -73,10 +51,10 @@ static void event_mouse(Uint32 type, SDL_WindowID id, float x, float y) {
 /* runs the HID clock to the next pad sample, then reads that sample's touch entry: x, y, and whether it is valid */
 static bool next_touch_sample(SnxCtrProcess* p, uint16_t* x, uint16_t* y) {
     snx_ctr_hid_update(p, p->hid.next_pad_ns);
-    uint32_t at = TOUCH_ENTRIES + hid_shared(p, TOUCH_INDEX, 4) * TOUCH_ENTRY_SIZE;
-    *x = hid_shared(p, at, 2);
-    *y = hid_shared(p, at + 2, 2);
-    return hid_shared(p, at + TOUCH_VALID, 4) == 1;
+    uint32_t at = TOUCH_ENTRIES + ctr_hid_shared(p, TOUCH_INDEX, 4) * TOUCH_ENTRY_SIZE;
+    *x = ctr_hid_shared(p, at, 2);
+    *y = ctr_hid_shared(p, at + 2, 2);
+    return ctr_hid_shared(p, at + TOUCH_VALID, 4) == 1;
 }
 /* the next sample is a press at x and y; a mismatch prints the sample before the assert fails */
 static void touching(SnxCtrProcess* p, uint16_t x, uint16_t y) {
@@ -94,18 +72,13 @@ static void no_touch(SnxCtrProcess* p) {
 }
 int main(void) {
     unsigned char code[0x3000] = {0};
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 0x1000,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     snx_ctr_input_init();
     SnxCtrProcess* p = snx_ctr_process_new(&image, SNX_CTR_OLD);
     assert(p);
     uint32_t session = 0;
     assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_HID, &session));
-    assert(command_send(p, session, 0x000a0000) == 0x000a0047); /* the shared memory and the five events */
+    assert(ctr_send_header(p, session, 0x000a0000) == 0x000a0047); /* the shared memory and the five events */
     int status = 77;
     char why[256];
     if (!snx_ctr_vk_init(p->memory, why, sizeof why)) {

@@ -7,39 +7,13 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/hid.h"
 #include "snx_settings.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#define COMMAND (SNX_CTR_INITIAL_TLS + 0x80)
-static uint32_t word(SnxCtrProcess* p, unsigned index) {
-    unsigned char b[4];
-    assert(snx_ctr_read_ram(p->space, COMMAND + index * 4, b, 4) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
-/* the reply's header to a command of no arguments sent on the session */
-static uint32_t send(SnxCtrProcess* p, uint32_t session, uint32_t header) {
-    unsigned char bytes[4] = {(unsigned char)header, (unsigned char)(header >> 8), (unsigned char)(header >> 16),
-                              (unsigned char)(header >> 24)};
-    assert(snx_ctr_write_ram(p->space, COMMAND, bytes, 4) == SNX_CTR_MEM_OK);
-    p->cpu.state.cpu.r[0] = session;
-    assert(snx_ctr_svc(p, 0x32) == SNX_CTR_SVC_RETURN && !p->cpu.state.cpu.r[0]);
-    assert(!word(p, 1));
-    return word(p, 0);
-}
-static uint32_t shared(SnxCtrProcess* p, uint32_t offset, unsigned size) {
-    unsigned char b[4] = {0};
-    uint32_t pa = p->objects[p->hid_objects[0]].data.shared.physical;
-    assert(snx_ctr_phys_read(p->memory, pa + offset, b, size) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
 int main(void) {
     unsigned char code[0x3000] = {0};
-    SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
-                         .stack_size = 0x4000,
-                         .main_priority = 0x30,
-                         .bss_size = 0x1000,
-                         .code = code,
-                         .code_size = sizeof code};
+    SnxCtrImage image = ctr_image(code, sizeof code, 0x1000);
     /* A and Start from the start, then nothing: each held for the press length */
     strcpy(g_settings.ctr_script, "0:9,100000:1");
     g_settings.press_length = 60000;
@@ -50,43 +24,47 @@ int main(void) {
     assert(!snx_ctr_session_create(p, SNX_CTR_SERVICE_HID, &session));
     assert(snx_ctr_hid_deadline(p) == UINT64_MAX); /* nothing samples before the game asks for the handles */
     /* the shared memory and the five events, as Azahar's GetIPCHandles answers */
-    assert(send(p, session, 0x000a0000) == 0x000a0047 && word(p, 2) == 0x14000000);
+    assert(ctr_send_header(p, session, 0x000a0000) == 0x000a0047 && ctr_command_word(p, 2) == 0x14000000);
     for (unsigned i = 0; i < 6; ++i) {
-        uint32_t id = snx_ctr_handle_object(p, word(p, 3 + i));
+        uint32_t id = snx_ctr_handle_object(p, ctr_command_word(p, 3 + i));
         assert(id && id == p->hid_objects[i] && p->objects[id].type == (i ? CTR_OBJ_EVENT : CTR_OBJ_SHARED));
     }
     uint64_t due = snx_ctr_hid_deadline(p);
     assert(due == p->hid.next_pad_ns && due != UINT64_MAX);
     /* the first sample: entry 0 has A and Start, both new, the index says so, and both pad events are signalled */
     snx_ctr_hid_update(p, due);
-    assert(shared(p, 0x10, 4) == 0 && shared(p, 0x1c, 4) == (SNX_CTR_PAD_A | SNX_CTR_PAD_START));
-    assert(shared(p, 0x28, 4) == 9 && shared(p, 0x2c, 4) == 9 && !shared(p, 0x30, 4) && !shared(p, 0x34, 4));
-    assert(shared(p, 0x00, 4) | shared(p, 0x04, 4)); /* the index wrapped to 0: the tick it did */
+    assert(ctr_hid_shared(p, 0x10, 4) == 0 && ctr_hid_shared(p, 0x1c, 4) == (SNX_CTR_PAD_A | SNX_CTR_PAD_START));
+    assert(ctr_hid_shared(p, 0x28, 4) == 9 && ctr_hid_shared(p, 0x2c, 4) == 9 && !ctr_hid_shared(p, 0x30, 4) &&
+           !ctr_hid_shared(p, 0x34, 4));
+    assert(ctr_hid_shared(p, 0x00, 4) | ctr_hid_shared(p, 0x04, 4)); /* the index wrapped to 0: the tick it did */
     assert(p->objects[p->hid_objects[1]].data.event.signaled && p->objects[p->hid_objects[2]].data.event.signaled);
-    assert(!p->objects[p->hid_objects[3]].data.event.signaled && !shared(p, 0xa8 + 0x20 + 4, 4)); /* no touch */
+    assert(!p->objects[p->hid_objects[3]].data.event.signaled && !ctr_hid_shared(p, 0xa8 + 0x20 + 4, 4)); /* no touch */
     assert(p->hid.next_pad_ns > due);
     /* the next one: held, so nothing new or released */
     snx_ctr_hid_update(p, p->hid.next_pad_ns);
-    assert(shared(p, 0x10, 4) == 1 && shared(p, 0x38, 4) == 9 && !shared(p, 0x3c, 4) && !shared(p, 0x40, 4));
+    assert(ctr_hid_shared(p, 0x10, 4) == 1 && ctr_hid_shared(p, 0x38, 4) == 9 && !ctr_hid_shared(p, 0x3c, 4) &&
+           !ctr_hid_shared(p, 0x40, 4));
     /* the sensors sample between their enable and their disable */
     assert(!p->hid.next_accelerometer_ns && !p->hid.next_gyroscope_ns);
-    assert(send(p, session, 0x00110000) == 0x00110040 && p->hid.next_accelerometer_ns);
-    assert(send(p, session, 0x00130000) == 0x00130040 && p->hid.next_gyroscope_ns);
+    assert(ctr_send_header(p, session, 0x00110000) == 0x00110040 && p->hid.next_accelerometer_ns);
+    assert(ctr_send_header(p, session, 0x00130000) == 0x00130040 && p->hid.next_gyroscope_ns);
     snx_ctr_hid_update(p, p->hid.next_accelerometer_ns > p->hid.next_gyroscope_ns ? p->hid.next_accelerometer_ns
                                                                                    : p->hid.next_gyroscope_ns);
-    assert(shared(p, 0x118, 4) == 0 && (int16_t)shared(p, 0x128 + 2, 2) == -512 && !shared(p, 0x128, 2));
-    assert((int16_t)shared(p, 0x120 + 4, 2) == -1024); /* the raw entry Azahar derives: z from -y */
-    assert(shared(p, 0x168, 4) == 0 && p->objects[p->hid_objects[4]].data.event.signaled);
-    assert(send(p, session, 0x00120000) == 0x00120040 && !p->hid.next_accelerometer_ns);
-    assert(send(p, session, 0x00140000) == 0x00140040 && !p->hid.next_gyroscope_ns);
+    assert(ctr_hid_shared(p, 0x118, 4) == 0 && (int16_t)ctr_hid_shared(p, 0x128 + 2, 2) == -512 &&
+           !ctr_hid_shared(p, 0x128, 2));
+    assert((int16_t)ctr_hid_shared(p, 0x120 + 4, 2) == -1024); /* the raw entry Azahar derives: z from -y */
+    assert(ctr_hid_shared(p, 0x168, 4) == 0 && p->objects[p->hid_objects[4]].data.event.signaled);
+    assert(ctr_send_header(p, session, 0x00120000) == 0x00120040 && !p->hid.next_accelerometer_ns);
+    assert(ctr_send_header(p, session, 0x00140000) == 0x00140040 && !p->hid.next_gyroscope_ns);
     /* the gyroscope's constants and the volume slider */
-    assert(send(p, session, 0x00150000) == 0x00150080 && word(p, 2) == 0x41660000);
-    assert(send(p, session, 0x00160000) == 0x00160180);
+    assert(ctr_send_header(p, session, 0x00150000) == 0x00150080 && ctr_command_word(p, 2) == 0x41660000);
+    assert(ctr_send_header(p, session, 0x00160000) == 0x00160180);
     const uint32_t calibration[5] = {0x1a2c0000u, 0x0000e5d4u, 0xe5d41a2cu, 0x1a2c0000u, 0x0000e5d4u};
-    for (unsigned i = 0; i < 5; ++i) assert(word(p, 2 + i) == calibration[i]);
-    assert(send(p, session, 0x00170000) == 0x00170080 && word(p, 2) == 0x3f);
+    for (unsigned i = 0; i < 5; ++i) assert(ctr_command_word(p, 2 + i) == calibration[i]);
+    assert(ctr_send_header(p, session, 0x00170000) == 0x00170080 && ctr_command_word(p, 2) == 0x3f);
     /* a second GetIPCHandles hands out the same objects */
-    assert(send(p, session, 0x000a0000) == 0x000a0047 && snx_ctr_handle_object(p, word(p, 3)) == p->hid_objects[0]);
+    assert(ctr_send_header(p, session, 0x000a0000) == 0x000a0047 &&
+           snx_ctr_handle_object(p, ctr_command_word(p, 3)) == p->hid_objects[0]);
     snx_ctr_process_free(p);
     snx_ctr_input_free();
     puts("CTR hid:USER commands, pad samples from scripted input and sensor samples passed");

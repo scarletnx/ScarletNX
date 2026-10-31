@@ -4,6 +4,7 @@
 #define SNX_TEST_CRO_H
 #include "3ds/runtime/internal.h"
 #include "3ds/ipc/ctr_ipc.h"
+#include "3ds_guest.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,7 +37,6 @@
 /* the SVC numbers that the tests call */
 #define SVC_DUPLICATE_HANDLE              0x27u
 #define SVC_CONNECT_TO_PORT               0x2du
-#define SVC_SEND_SYNC_REQUEST             0x32u
 /* an IPC command header: the command, the normal words after it, and the translate words after those */
 #define IPC_HEADER(id, normal, translate) ((uint32_t)(id) << 16 | (uint32_t)(normal) << 6 | (uint32_t)(translate))
 /* the translate descriptors: the process id, and the move of one handle */
@@ -149,8 +149,6 @@ enum {
 #define CRS_SEGMENT(index) (0x100000u + 0x100000u * (index))
 #define CRS_SYMBOL         (CRS_SEGMENT(0) + CRO_ENTRY)
 
-uint32_t cro_word(SnxCtrProcess* p, uint32_t at);
-void cro_put(SnxCtrProcess* p, uint32_t at, uint32_t value);
 /* store a little-endian word at a byte offset of an image */
 void cro_set(unsigned char* image, uint32_t at, uint32_t value);
 /* A CRO0 image of CRO_IMAGE_SIZE bytes with four segments and either one named CRS export or one .data import */

@@ -265,8 +265,8 @@ static void check_load_failed(SnxCtrProcess* p, const uint32_t* load, const unsi
     if (load[LOAD_ADDRESS] == CRO_MODULE)
         assert(snx_ctr_query(p->space, CRO_MODULE, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);
     assert(p->physical_shared == shared);
-    assert(cro_word(p, CRO_DATA) == DATA_MARK && cro_word(p, CRO_BSS) == BSS_MARK);
-    assert(cro_word(p, CRS_SEGMENT(1) + 0x40) == old_rodata);
+    assert(ctr_word(p, CRO_DATA) == DATA_MARK && ctr_word(p, CRO_BSS) == BSS_MARK);
+    assert(ctr_word(p, CRS_SEGMENT(1) + 0x40) == old_rodata);
     unsigned char output[256];
     assert(snx_ctr_read_ram(p->space, CRO_DATA, output, sizeof output) == SNX_CTR_MEM_OK);
     assert(!memcmp(data_before, output, sizeof output));
@@ -281,15 +281,15 @@ static void check_same_buffer(SnxCtrProcess* p, uint32_t session, int scenario, 
     bool zero_data = scenario == SCN_SAME_BUFFER_ZERO_DATA;
     uint8_t byte = 0;
     assert(p->ldr_count == 1 && p->ldr_modules[0].address == CRO_MODULE && p->ldr_modules[0].buffer == CRO_SOURCE);
-    assert(cro_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == (zero_data ? CRO_MODULE + IMG_DATA : CRO_DATA));
+    assert(ctr_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == (zero_data ? CRO_MODULE + IMG_DATA : CRO_DATA));
     assert(snx_ctr_read_ram(p->space, CRO_SOURCE + CRO_NEXT, &byte, 1) == SNX_CTR_MEM_OK);
     assert(snx_ctr_write_ram(p->space, CRO_SOURCE + CRO_NEXT, &byte, 1) == SNX_CTR_MEM_PERMISSION);
     const uint32_t unload[] = {CRO_MODULE, 0, CRO_SOURCE};
     assert(!cro_call(p, session, 5, unload, 3, CTR_PROCESS_HANDLE, NULL));
     assert(!p->ldr_count && snx_ctr_query(p->space, CRO_MODULE, NULL, NULL) == SNX_CTR_MEM_UNMAPPED);
     /* the .data entry and DATA_OFFSET are the file offset again */
-    assert(cro_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == IMG_DATA);
-    assert(cro_word(p, CRO_SOURCE + CRO_DATA_OFFSET) == IMG_DATA);
+    assert(ctr_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == IMG_DATA);
+    assert(ctr_word(p, CRO_SOURCE + CRO_DATA_OFFSET) == IMG_DATA);
     unsigned char before[CRO_IMAGE_SIZE];
     assert(snx_ctr_read_ram(p->space, CRO_SOURCE, before, sizeof before) == SNX_CTR_MEM_OK);
     /* Writing back the value just read keeps the buffer byte-identical while proving that the unloaded mapping
@@ -302,7 +302,7 @@ static void check_same_buffer(SnxCtrProcess* p, uint32_t session, int scenario, 
     uint32_t fixed = 0;
     assert(!cro_call(p, session, 9, load, LOAD_WORDS, CTR_PROCESS_HANDLE, &fixed));
     assert(p->ldr_count == 1 && fixed == IMG_DATA);
-    assert(cro_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == (zero_data ? CRO_MODULE + IMG_DATA : CRO_DATA));
+    assert(ctr_word(p, CRO_SOURCE + IMG_SEGMENT(2) + SEGMENT_BASE) == (zero_data ? CRO_MODULE + IMG_DATA : CRO_DATA));
     assert(snx_ctr_read_ram(p->space, CRO_SOURCE + CRO_NEXT, &byte, 1) == SNX_CTR_MEM_OK);
     assert(snx_ctr_write_ram(p->space, CRO_SOURCE + CRO_NEXT, &byte, 1) == SNX_CTR_MEM_PERMISSION);
 }
@@ -381,9 +381,9 @@ int main(int argc, char** argv) {
     const uint32_t crs_shutdown[] = {crs_source};
     if (extra_crs_segment(scenario)) {
         uint32_t extra_base = scenario == SCN_CRS_UNMAPPED_SEGMENT ? CRS_UNMAPPED_EXTRA : CRS_MAPPED_EXTRA;
-        assert(cro_word(p, CRO_CRS + IMG_SEGMENT(4) + SEGMENT_BASE) == extra_base);
+        assert(ctr_word(p, CRO_CRS + IMG_SEGMENT(4) + SEGMENT_BASE) == extra_base);
         assert(!cro_call(p, session, 8, crs_shutdown, 1, CTR_PROCESS_HANDLE, NULL));
-        assert(cro_word(p, crs_source + IMG_SEGMENT(4) + SEGMENT_BASE) == extra_base);
+        assert(ctr_word(p, crs_source + IMG_SEGMENT(4) + SEGMENT_BASE) == extra_base);
         goto done;
     }
     if (scenario == SCN_COPIED_PROCESS) goto done;
@@ -396,7 +396,7 @@ int main(int argc, char** argv) {
         goto done;
     }
     if (scenario == SCN_CRS_INTERNAL) {
-        assert(cro_word(p, CRS_SEGMENT(1) + 0x40) == CRS_EXPORT_ADDRESS);
+        assert(ctr_word(p, CRS_SEGMENT(1) + 0x40) == CRS_EXPORT_ADDRESS);
         goto done;
     }
     if (scenario == SCN_SHUTDOWN) {
@@ -408,13 +408,13 @@ int main(int argc, char** argv) {
     uint32_t load[LOAD_WORDS] = CRO_LOAD_DEFAULT;
     make_module(cro, load, scenario);
     assert(snx_ctr_write_ram(p->space, CRO_SOURCE, cro, sizeof cro) == SNX_CTR_MEM_OK);
-    cro_put(p, CRO_DATA, DATA_MARK);
-    cro_put(p, CRO_BSS, BSS_MARK);
+    ctr_put(p, CRO_DATA, DATA_MARK);
+    ctr_put(p, CRO_BSS, BSS_MARK);
     unsigned char data_before[256];
     unsigned char bss_before[256];
     assert(snx_ctr_read_ram(p->space, CRO_DATA, data_before, sizeof data_before) == SNX_CTR_MEM_OK);
     assert(snx_ctr_read_ram(p->space, CRO_BSS, bss_before, sizeof bss_before) == SNX_CTR_MEM_OK);
-    uint32_t old_rodata = cro_word(p, CRS_SEGMENT(1) + 0x40);
+    uint32_t old_rodata = ctr_word(p, CRS_SEGMENT(1) + 0x40);
     uint32_t shared = p->physical_shared;
     uint32_t fixed = 0;
     unsigned command = scenario == SCN_OLD_COMMAND ? 4 : 9;
@@ -434,13 +434,13 @@ int main(int argc, char** argv) {
     }
     if (scenario == SCN_OLD_COMMAND) {
         /* The original command imports into external DATA before transfer, which overwrites it. */
-        assert(cro_word(p, CRO_DATA) == 0 && cro_word(p, CRO_SOURCE + IMG_DATA) == 0);
+        assert(ctr_word(p, CRO_DATA) == 0 && ctr_word(p, CRO_SOURCE + IMG_DATA) == 0);
     }
-    if (imports_by_module(scenario)) assert(cro_word(p, CRO_DATA) == CRS_EXPORT_ADDRESS);
+    if (imports_by_module(scenario)) assert(ctr_word(p, CRO_DATA) == CRS_EXPORT_ADDRESS);
     if (scenario == SCN_DATA || scenario == SCN_RELATIVE_DATA) {
         uint32_t expected = scenario == SCN_RELATIVE_DATA ? CRS_EXPORT_ADDRESS - CRO_DATA : CRS_EXPORT_ADDRESS;
-        assert(cro_word(p, CRO_DATA) == expected);
-        assert(cro_word(p, CRO_SOURCE + IMG_DATA) == cro_word(p, CRO_DATA));
+        assert(ctr_word(p, CRO_DATA) == expected);
+        assert(ctr_word(p, CRO_SOURCE + IMG_DATA) == ctr_word(p, CRO_DATA));
     }
     if (scenario == SCN_LIFETIME) {
         uint32_t output;
@@ -456,9 +456,9 @@ int main(int argc, char** argv) {
     }
     if (scenario == SCN_LINK) {
         assert(!cro_call(p, session, 7, module, 1, CTR_PROCESS_HANDLE, NULL));
-        assert(cro_word(p, CRO_DATA) == CRO_MODULE + IMG_CODE + CRO_UNRESOLVED);
+        assert(ctr_word(p, CRO_DATA) == CRO_MODULE + IMG_CODE + CRO_UNRESOLVED);
         assert(!cro_call(p, session, 6, module, 1, CTR_PROCESS_HANDLE, NULL));
-        assert(cro_word(p, CRO_DATA) == CRS_EXPORT_ADDRESS);
+        assert(ctr_word(p, CRO_DATA) == CRS_EXPORT_ADDRESS);
     }
     if (scenario == SCN_REUSE) {
         assert(!cro_call(p, session, 5, unload, 3, CTR_PROCESS_HANDLE, NULL));
