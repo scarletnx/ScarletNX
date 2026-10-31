@@ -206,11 +206,14 @@ static void release(Release* r) {
        Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
-    if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) && !r->cgate)
+    if (!r->samples && !vk_buf_pending_any() && !vk_uma_pending_any() && !vk_uma_reads_in_flight() &&
+        !vk_gfx_image_in_flight(0) && !r->cgate)
         r->gate = 0;
     else
-        r->gate =
-            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
+        r->gate = r->samples || vk_buf_pending_unsubmitted() || vk_uma_pending_unsubmitted() ||
+                          vk_uma_reads_unsubmitted() || vk_gfx_image_in_flight(1)
+                      ? recording
+                      : vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
         g_rheld = g_rhead;
@@ -351,6 +354,13 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
    Storage results still pending there may be newer than the releases (a release lands storage images and puts the
    compute batch aside before it is queued), so they are waited for instead. The queue is looked at first: almost no
    read meets a release, and those go on at once */
+int vk_release_pending(u64 gva, u64 len) {
+    int hit;
+    vk_lock();
+    hit = len && pend_hit(&g_rpages, gva, len);
+    vk_unlock();
+    return hit;
+}
 int vk_release_read(u64 gva, void* dst, u64 len) {
     int r = 0;
     if (!len || vk_result_landing()) return len ? -1 : 0;
@@ -367,7 +377,9 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
     }
     pm_unlock(&g_rlock);
-    if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
+    if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len) ||
+                  vk_uma_pending(gva, len)))
+        r = -1;
     if (r > 0) {
         pm_lock(&g_rlock);
         gmem_read_raw(gva, dst, len);

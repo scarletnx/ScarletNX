@@ -226,3 +226,8 @@ int pend_hit_va(const PendPages* t, u64 gva, u64 size) {
     return size && first < TABLE_PAGES && leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
 }
 int pend_empty(const PendPages* t) { return !t->total; }
+int pend_hit_pages(const PendPages* t, u64 first, u64 last) {
+    if (!t->total) return 0;
+    if (t->overflow) return 1;
+    return first < TABLE_PAGES && leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
+}

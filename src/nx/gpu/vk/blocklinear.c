@@ -69,7 +69,7 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = cap,
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | vk_bda_usage(),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_bl_scratch, &g_bl_mem, NULL))) {
@@ -169,6 +169,6 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_pipe);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bl_layout, 0, 1, &set, 0, NULL);
     rec_CmdPushConstants(cb, g_bl_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
-    rec_CmdDispatch(cb, gx, gy, m->slices);
+    vk_gate_dispatch(cb, gx, gy, m->slices);
     return 1;
 }

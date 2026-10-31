@@ -310,7 +310,7 @@ static int create_device(void) {
     u32 next = 0;
     int has_shader_clock = 0, has_feedback_dynamic = 0, has_cond = 0, has_provoking = 0, video_exts = 0;
     int has_portability = 0, has_reconvergence = 0;
-    int has_calibrated = 0;
+    int has_calibrated = 0, has_host_memory = 0, has_cmi_khr = 0, has_cmi_nv = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
         SnxVkExtensions e;
@@ -332,6 +332,11 @@ static int create_device(void) {
         has_budget = snx_vk_extensions_has(&e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         /* the GPU's clock next to the client's, for the profiler's GPU track (gpuprof.c's calibration) */
         has_calibrated = snx_vk_extensions_has(&e, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+        /* guest memory imported as buffers the GPU reads in place (uma.c) */
+        has_host_memory = snx_vk_extensions_has(&e, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+        /* copies whose commands the GPU writes: the texture check turns a rebuild's copies off (texcheck.c) */
+        has_cmi_khr = snx_vk_extensions_has(&e, VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
+        has_cmi_nv = snx_vk_extensions_has(&e, VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
         /* a portability driver's subset must be enabled when it has one (MoltenVK) */
         has_portability = snx_vk_extensions_has(&e, "VK_KHR_portability_subset");
         if (has_portability) ext[next++] = "VK_KHR_portability_subset";
@@ -341,6 +346,20 @@ static int create_device(void) {
         snx_vk_extensions_free(&e);
     }
     if (has_budget) ext[next++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    /* unified memory only where the GPU's memory is the CPU's (docs/UMA_MEMORY.md): a discrete GPU reads imported
+       guest memory across PCIe at every use, where its own copies are in its own memory */
+    int shared = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
+                 g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    g_vk.uma = g_settings.uma && has_host_memory && (shared || g_settings.uma == 2);
+    g_vk.uma_shared = g_vk.uma && shared;
+    if (g_vk.uma)
+        ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    else if (g_settings.uma && !has_host_memory)
+        WARN("vulkan: unified memory was asked for, but the GPU can't import host memory (no "
+             "VK_EXT_external_memory_host): guest buffers are copied for it and watched for writes\n");
+    else if (g_settings.uma)
+        LOG("vulkan: a discrete GPU, with memory of its own: guest buffers are copied for it and watched for writes "
+            "(uma=2 imports guest memory anyway)\n");
     /* the extension only with a host time domain among the calibrateable ones: CLOCK_MONOTONIC_RAW is the clock
        the Tracy client keeps its own time in, so the two domains' pair maps the GPU's timestamps onto it */
     if (has_calibrated) {
@@ -394,6 +413,10 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     /* with the subset enabled, each of its features is off until the device asks for it: a view's swizzle, for one */
     PortabilityFeatures qport = {.sType = PORTABILITY_FEATURES_STYPE};
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR qcmik = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR};
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesNV qcmin = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_NV};
     int robustness = has_pipeline_robustness && has_robustness2;
     void* const query[] = {&f2,
                            &q11,
@@ -408,12 +431,28 @@ static int create_device(void) {
                            has_provoking ? &qprov : NULL,
                            has_portability ? &qport : NULL,
                            has_reconvergence ? &qreconv : NULL,
+                           has_cmi_khr ? &qcmik : NULL,
+                           has_cmi_nv ? &qcmin : NULL,
                            robustness ? &qpipeline : NULL,
                            robustness ? &qrobust : NULL,
                            has_shader_clock ? &qclock : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     g_vk.has_vertex_robustness2 = qpipeline.pipelineRobustness && qrobust.robustBufferAccess2;
+    /* unified memory's texture check turns the copies of a rebuild off with copies the GPU writes the commands of
+       (VK_KHR_copy_memory_indirect, else VK_NV_copy_memory_indirect), on the graphics queue, from device addresses;
+       without them it stores what the copies would (texcheck.c) */
+    if (g_vk.uma_shared && g_settings.uma_indirect_copies && q12.bufferDeviceAddress && (has_cmi_khr || has_cmi_nv)) {
+        VkPhysicalDeviceCopyMemoryIndirectPropertiesKHR cmp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 cp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cmp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &cp2);
+        if (cmp.supportedQueues & VK_QUEUE_GRAPHICS_BIT)
+            g_vk.copy_indirect = has_cmi_khr && qcmik.indirectMemoryToImageCopy ? 1
+                                 : has_cmi_nv && qcmin.indirectCopy            ? 2
+                                                                               : 0;
+    }
+    g_vk.has_bda = g_vk.copy_indirect != 0;
     g_vk.has_cond_render = has_cond && qcond.conditionalRendering;
     g_vk.has_provoking_last = has_provoking && qprov.provokingVertexLast;
     /* the dynamic state and the barriers within a pass only serve feedback loops */
@@ -451,7 +490,8 @@ static int create_device(void) {
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
                                             .shaderSampledImageArrayNonUniformIndexing =
-                                                q12.shaderSampledImageArrayNonUniformIndexing};
+                                                q12.shaderSampledImageArrayNonUniformIndexing,
+                                            .bufferDeviceAddress = g_vk.has_bda ? VK_TRUE : VK_FALSE};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     g_shader_float16 = q12.shaderFloat16 != 0;
@@ -560,6 +600,21 @@ static int create_device(void) {
         ext[next++] = VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME;
         ext[next++] = VK_EXT_ROBUSTNESS_2_EXTENSION_NAME;
     }
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesKHR fcmik = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_KHR,
+        .pNext = chain,
+        .indirectMemoryToImageCopy = VK_TRUE};
+    VkPhysicalDeviceCopyMemoryIndirectFeaturesNV fcmin = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COPY_MEMORY_INDIRECT_FEATURES_NV,
+        .pNext = chain,
+        .indirectCopy = VK_TRUE};
+    if (g_vk.copy_indirect == 1) {
+        chain = &fcmik;
+        ext[next++] = VK_KHR_COPY_MEMORY_INDIRECT_EXTENSION_NAME;
+    } else if (g_vk.copy_indirect == 2) {
+        chain = &fcmin;
+        ext[next++] = VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME;
+    }
     u32 nq = g_vk.compute_family == g_vk.gfx_family ? 1 : 2;
     if (g_vk.video_family != ~0u)
         qci[nq++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -598,7 +653,8 @@ static int create_device(void) {
                                   .preferredLargeHeapBlockSize = g_vk.alloc_cap < (256ull << 20) ? g_vk.alloc_cap : 0,
                                   .vulkanApiVersion = VK_API_VERSION_1_3,
                                   .pVulkanFunctions = &vf,
-                                  .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+                                  .flags = (has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0) |
+                                           (g_vk.has_bda ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0)};
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
@@ -607,6 +663,7 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
         LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
     }
+    vk_uma_init();
     LOG("vulkan: %s, Vulkan %u.%u.%u, driver %08x, graphics queue family %u, compute %u%s\n", g_vk.props.deviceName,
         VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion),
         VK_API_VERSION_PATCH(g_vk.props.apiVersion), g_vk.props.driverVersion, g_vk.gfx_family, g_vk.compute_family,

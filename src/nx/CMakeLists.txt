@@ -102,7 +102,7 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
-                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
+                 gpu/vk/buffer.c gpu/vk/uma.c gpu/vk/texcheck.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
                  gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
                  gpu/vk/ftz_probe.c
                  "${volk_SOURCE_DIR}/volk.c")
@@ -117,6 +117,10 @@ snx_glsl_spirv(snx_vk SOURCE gpu/texture/astc.comp NAME astc_spv HEADER nx/gpu/t
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/bc7.comp NAME bc7_spv HEADER nx/gpu/texture/bc7_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/blocklinear.comp NAME blocklinear_spv HEADER nx/gpu/texture/blocklinear_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/texture/texconv.comp NAME texconv_spv HEADER nx/gpu/texture/texconv_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texcheck.comp NAME texcheck_spv HEADER nx/gpu/texture/texcheck_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texstore.comp NAME texstore_spv HEADER nx/gpu/texture/texcheck_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/texture/texstore.comp NAME texstore3d_spv HEADER nx/gpu/texture/texcheck_spv.h
+               DEFINES VOLUME)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_spv HEADER nx/gpu/video/vic_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx/gpu/video/vic_spv.h
                DEFINES VIC_UNALIGNED)
@@ -219,13 +223,24 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     endif()
     target_link_libraries(snx-test-vulkan PRIVATE SDL3::SDL3)
     add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
-    set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
+    # the same without unified memory: guest buffers and texture levels copied into staging, as on a GPU without
+    # VK_EXT_external_memory_host
+    add_test(NAME vulkan_headless_no_uma COMMAND snx-test-vulkan -H --uma=0)
+    # and with unified memory's texture rebuilds stored by dispatches, as on a GPU without VK_KHR_copy_memory_indirect
+    # or VK_NV_copy_memory_indirect
+    add_test(NAME vulkan_headless_uma_stores COMMAND snx-test-vulkan -H --uma_indirect_copy=0)
+    # and with write tracking off by its setting: every cache compares contents
+    add_test(NAME vulkan_headless_no_ww COMMAND snx-test-vulkan -H --write_tracking=0)
+    # one at a time: they share shader_cache/ in this folder, and a run that finds another build's shaders file truncates
+    # it while another run reads it mapped (SIGBUS)
+    set_tests_properties(vulkan_headless vulkan_headless_no_uma vulkan_headless_uma_stores vulkan_headless_no_ww
+                         PROPERTIES TIMEOUT 60 RESOURCE_LOCK snx_vulkan_shader_cache
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
     # descriptorType-00330). Without the layer this is VIC's own checks again.
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
-    set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
+    set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60 RESOURCE_LOCK snx_vulkan_shader_cache
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     # the ASTC upload against the CPU decoder, block linear moves on the GPU against bl_offset's layout and texture

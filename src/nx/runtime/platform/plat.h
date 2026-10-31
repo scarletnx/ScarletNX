@@ -78,11 +78,15 @@ u8* plat_vm_reserve(u64 size); /* aligned to plat_vm_page, inaccessible until co
 int plat_address_space(u64* mapped, u64* largest_free);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
+int plat_vm_populate(u8* p, u64 size);     /* faulted in, writable, as a write leaves it: 0, or -1 with errno */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
    -1 when the host can't tell (the caller then compares contents). Linux uses userfaultfd's asynchronous write
    protection with PAGEMAP_SCAN, Windows the write watch of the reservation; SNX_NO_WW in the environment turns both
    off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
+/* write tracking off for good (the write_tracking setting): plat_ww_scan answers -1 from now on, and no page is
+   watched again */
+void plat_ww_off(void);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and

@@ -2357,9 +2357,10 @@ static int draw_key(const GpuChannel* ch, const DrawShaders* sh, const VkSh* fs,
 /* A range's highest index is kept until its memory is written (by the GPU or, through the write tracking, the CPU):
    scanning the indices of every draw was a tenth of one game's GPU thread, most of them meshes' that never change.
    The baselines are taken before the bytes are read, as buf_get takes them. One game reads about 1,900 index ranges a
-   frame: 256 entries answered 55% of them, and scanning the rest again was a twentieth of a draw's setup */
+   frame: 256 entries answered 55% of them, and scanning the rest again was a twentieth of a draw's setup. Where write
+   tracking can't tell (the pages unified memory imports), the indices' hash does */
 static struct {
-    u64 a, n, gw;
+    u64 a, n, gw, h;
     u32 ws, isz, ri, skip, top;
 } g_top_memo[4096];
 static u32 top_memo_slot(u64 a) { return (u32)((a * 0x9E3779B97F4A7C15ull) >> 52); }
@@ -2396,6 +2397,61 @@ static int copy_restrided(u64 gva, u64 len, u32 gstride, u32 stride, VkBuffer* b
     *size = nv * stride;
     return 1;
 }
+/* the highest of the n indices of isz bytes at GPU address a, ri and skip read as 0, kept in the memo above: ~0 when
+   they aren't in guest memory */
+u64 g_vk_index_scans;
+u64 vk_index_top(u64 a, u64 n, u32 isz, u32 ri, u32 skip) {
+    u64 top;
+    typeof(g_top_memo[0])* memo = g_top_memo;
+    u32 slot = top_memo_slot(a), ws = vk_ww_now();
+    u64 gw = gpu_mem_generation();
+    const u8* p = gmem_ptr(a, n * isz);
+    if (!p) return ~0ull;
+    int same = memo[slot].a == a && memo[slot].n == n && memo[slot].isz == isz && memo[slot].ri == ri &&
+               memo[slot].skip == skip && !gpu_mem_dirty_since(memo[slot].gw, a, n * isz);
+    int w = same ? vk_written_since(p, n * isz, memo[slot].ws) : -1;
+    u64 h = w ? vk_hash(p, n * isz) : 0; /* before the scan, as the baselines */
+    if (same && (w == 0 || (w < 0 && h == memo[slot].h)))
+        top = memo[slot].top;
+    else {
+        g_vk_index_scans++;
+        /* a loop for each size, in signed arithmetic where the indices fit it, which SSE2 makes vector maxima of */
+        if (isz == 4) {
+            u32 m = 0;
+            for (u64 j = 0; j < n; j++) {
+                u32 v = snx_ld_le32(p + j * 4);
+                v = v == ri || v == skip ? 0 : v;
+                m = v > m ? v : m;
+            }
+            top = m;
+        } else {
+            i32 m = 0, sri = (i32)ri, sskip = (i32)skip;
+            if (isz == 1)
+                for (u64 j = 0; j < n; j++) {
+                    i32 v = p[j];
+                    v = v == sri || v == sskip ? 0 : v;
+                    m = v > m ? v : m;
+                }
+            else
+                for (u64 j = 0; j < n; j++) {
+                    i32 v = snx_ld_le16(p + j * 2);
+                    v = v == sri || v == sskip ? 0 : v;
+                    m = v > m ? v : m;
+                }
+            top = (u32)m;
+        }
+        memo[slot].a = a;
+        memo[slot].n = n;
+        memo[slot].gw = gw;
+        memo[slot].h = h;
+        memo[slot].ws = ws;
+        memo[slot].isz = isz;
+        memo[slot].ri = ri;
+        memo[slot].skip = skip;
+        memo[slot].top = (u32)top;
+    }
+    return top;
+}
 /* The last vertex a draw reads, for its streams' ranges, or ~0 when that isn't known: indices outside contiguous guest
    memory, or under results the GPU hasn't landed. A stream's limit is often the end of a ring the game streams
    vertices through, so its range from the draw's start to the limit was megabytes for a few hundred vertices: one
@@ -2420,50 +2476,8 @@ static u64 draw_last_vertex(GpuChannel* ch, int indexed, u32 first, u32 count, u
         /* the restart index, and all ones where Vulkan restarts instead, mark no vertex */
         u32 ones = isz == 1 ? 0xFFu : isz == 2 ? 0xFFFFu : 0xFFFFFFFFu, ri = r[0x591] ? r[0x592] & ones : ones;
         u32 skip = r[0x591] ? ones : 0;
-        typeof(g_top_memo[0])* memo = g_top_memo;
-        u32 slot = top_memo_slot(a), ws = vk_ww_now();
-        u64 gw = gpu_mem_generation();
-        const u8* p = gmem_ptr(a, n * isz);
-        if (!p) return ~0ull;
-        if (memo[slot].a == a && memo[slot].n == n && memo[slot].isz == isz && memo[slot].ri == ri &&
-            memo[slot].skip == skip && !gpu_mem_dirty_since(memo[slot].gw, a, n * isz) &&
-            vk_written_since(p, n * isz, memo[slot].ws) == 0)
-            top = memo[slot].top;
-        else {
-            /* a loop for each size, in signed arithmetic where the indices fit it, which SSE2 makes vector maxima of */
-            if (isz == 4) {
-                u32 m = 0;
-                for (u64 j = 0; j < n; j++) {
-                    u32 v = snx_ld_le32(p + j * 4);
-                    v = v == ri || v == skip ? 0 : v;
-                    m = v > m ? v : m;
-                }
-                top = m;
-            } else {
-                i32 m = 0, sri = (i32)ri, sskip = (i32)skip;
-                if (isz == 1)
-                    for (u64 j = 0; j < n; j++) {
-                        i32 v = p[j];
-                        v = v == sri || v == sskip ? 0 : v;
-                        m = v > m ? v : m;
-                    }
-                else
-                    for (u64 j = 0; j < n; j++) {
-                        i32 v = snx_ld_le16(p + j * 2);
-                        v = v == sri || v == sskip ? 0 : v;
-                        m = v > m ? v : m;
-                    }
-                top = (u32)m;
-            }
-            memo[slot].a = a;
-            memo[slot].n = n;
-            memo[slot].gw = gw;
-            memo[slot].ws = ws;
-            memo[slot].isz = isz;
-            memo[slot].ri = ri;
-            memo[slot].skip = skip;
-            memo[slot].top = (u32)top;
-        }
+        top = vk_index_top(a, n, isz, ri, skip);
+        if (top == ~0ull) return top;
     }
     i64 last = (i64)top + (i32)base_vertex;
     return last < 0 ? 0 : (u64)last;

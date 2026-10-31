@@ -38,6 +38,7 @@ static void vkr_before_write(u64 gva, u64 size) {
     vk_lock();
     if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
+    if (size) vk_uma_before_write(gva, size);
     if (size)
         vk_gfx_image_mem_need(gva, size);
     else
@@ -58,6 +59,7 @@ static int vkr_mem_pending(u64 gva, u64 size) {
 }
 static void vkr_gfx_mem_need(u64 gva, u64 size) {
     vk_buf_mem_need(gva, size);
+    vk_uma_mem_need(gva, size);
     vk_gfx_image_mem_need(gva, size);
 }
 /* the GPU range a mapping change is changing, from its begin to its end (size 0 for a change of guest memory) */
@@ -71,6 +73,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
         vk_buf_land_map();
         vk_gfx_image_land();
         vk_compute_land();
+        vk_uma_mapping_begin(); /* after the landings: their commands too */
     } else {
         vk_buf_mem_need_map(gva, size);
         vk_gfx_image_mem_need(gva, size);
@@ -82,6 +85,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int full) {
 /* the pages changed count what is pending at the guest pages they show now. A change of guest memory (full) leaves
    the GMMU as it was: pending pages are compared by address, and freed memory is landed first */
 static void vkr_mapping_end(void) {
+    vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
@@ -99,6 +103,7 @@ static int vkr_start(void) {
     vk_cmd_init();
     vk_pipeline_init();
     vk_own_init(); /* GPU engines' results stay on the GPU where guest memory can be trapped (memory/own.c) */
+    vk_ww_init();  /* write tracking, as the settings ask: after unified memory knows what it imports */
     g_gpu_before_write = vkr_before_write;
     g_gpu_mapping_begin = vkr_mapping_begin;
     g_gpu_mapping_end = vkr_mapping_end;

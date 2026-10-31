@@ -1,0 +1,50 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A buffer-to-image copy as a dispatch (vk/texcheck.c), so that the texture check can turn it off: the copies of a
+   rebuild that the texture's check found unchanged mustn't run, and a copy can't be made indirect. It does what
+   vkCmdCopyBufferToImage does with one region: rows of units (texels, or blocks of a compressed format) row_units
+   apart, rows_per_slice rows to a slice or layer, stored into a view of the image's level whose unsigned format has
+   the unit's size, so the bits land as they are. The -DVOLUME build stores into a 3D image. */
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Params {
+    uint src_byte;       /* the region's first byte in the bound source: a multiple of 4 when units are 4 or more */
+    uint row_units;      /* units from a row to the next */
+    uint rows_per_slice; /* rows from a slice (or layer) to the next */
+    uint bpp;            /* bytes a unit: 1, 2, 4, 8 or 16 */
+    ivec4 off;           /* the first unit in the image: x, y, and the slice (3D) or the layer in the view */
+    uvec4 ext;           /* units across, rows, slices or layers */
+} p;
+
+layout(binding = 0, std430) readonly restrict buffer Source {
+    uint w[];
+} src;
+#ifdef VOLUME
+layout(binding = 1) uniform writeonly restrict uimage3D img;
+#else
+layout(binding = 1) uniform writeonly restrict uimage2DArray img;
+#endif
+
+uint byte_at(uint b) { return (src.w[b >> 2] >> ((b & 3u) * 8u)) & 0xFFu; }
+
+void main() {
+    uvec3 c = gl_GlobalInvocationID;
+    if (c.x >= p.ext.x || c.y >= p.ext.y || c.z >= p.ext.z) return;
+    uint b = p.src_byte + ((c.z * p.rows_per_slice + c.y) * p.row_units + c.x) * p.bpp;
+    uvec4 v = uvec4(0u);
+    if (p.bpp >= 4u) {
+        uint i = b >> 2;
+        v.x = src.w[i];
+        if (p.bpp >= 8u) v.y = src.w[i + 1u];
+        if (p.bpp == 16u) {
+            v.z = src.w[i + 2u];
+            v.w = src.w[i + 3u];
+        }
+    } else if (p.bpp == 2u)
+        v.x = byte_at(b) | (byte_at(b + 1u) << 8);
+    else
+        v.x = byte_at(b);
+    imageStore(img, p.off.xyz + ivec3(c), v);
+}

@@ -51,5 +51,8 @@ void pend_add_va(PendPages* t, u64 gva, u64 size, int delta);
 int pend_hit_va(const PendPages* t, u64 gva, u64 size);
 /* nonzero when no result covers any page: once every result is removed, each with the mappings it was added with */
 int pend_empty(const PendPages* t);
+/* nonzero when a result covers a guest page first to last (addresses >> 12): asked by guest address, as
+   pend_add_pages counts them */
+int pend_hit_pages(const PendPages* t, u64 first, u64 last);
 
 #endif

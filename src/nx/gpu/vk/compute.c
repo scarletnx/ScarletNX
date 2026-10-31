@@ -999,6 +999,10 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
        reads the result on the GPU instead of the compute queue waiting for it to land (one game: three a frame) */
     for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
+    /* with unified memory every dispatch is: its storage buffers are read and written in place (uma.c), in order with
+       the draws on one queue, with nothing to land, and none submits at once (below): a submit walks every import */
+    int submit = gfx && !g_vk.uma;
+    gfx = gfx || g_vk.uma;
     /* A graphics-queue dispatch binds like a draw: staged inputs, results pending in staging (buffer.c's GfxOut),
        landed when the guest needs them or once their submit is done. Landing each one at once took a vk_finish per
        dispatch, about 9 a frame in one game. Its storage images are published over their guest bytes, GPU-owned
@@ -1476,7 +1480,7 @@ rebind:
             if (!vk_surf_publish(images[i])) vk_surf_flush(images[i], NULL);
         }
         g_vk_dispatches++;
-        vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+        if (submit) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
         return;
     }
     /* results visible to the host */

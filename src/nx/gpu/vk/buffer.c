@@ -157,6 +157,8 @@ static void own_unlink(u32 i) {
 }
 /* Optional copy telemetry. Counters are updated under vk_lock. */
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
+static u64 g_in_place; /* bytes bound where they are in guest memory (uma.c), not copied */
+static VkTexCheckStats g_ts_last; /* the texture checks' counts at the last stats line */
 static u64 g_wb_outputs, g_wb_bytes, g_wb_waits, g_wb_wait_ns, g_wb_reuses;
 static u64 g_alias_draws, g_alias_pages;
 enum { WB_DRAW, WB_READ, WB_WRITE, WB_SIGNAL, WB_SYNCWAIT, WB_MAP, WB_REASON_N };
@@ -336,6 +338,7 @@ static u64* range_map(u64 gva, u64 len, u64 local[16]) {
 static _Thread_local int g_out_landing;
 
 void vk_buf_writable_abort(void) {
+    vk_uma_writes_abort();
     while (g_prep) {
         GfxOut* o = g_prep;
         g_prep = o->next;
@@ -344,6 +347,7 @@ void vk_buf_writable_abort(void) {
     g_prep_tail = NULL;
 }
 void vk_buf_writable_commit(void) {
+    vk_uma_writes_commit();
     if (!g_prep) return;
     for (GfxOut* o = g_prep; o; o = o->next) out_pages(o, 1);
     if (g_out_tail)
@@ -514,10 +518,12 @@ void vk_buf_frame_done(u64 frame) {
     }
     g_out_landing--;
     g_gfx_any = g_out != NULL;
+    vk_uma_frame_done(frame);
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
    compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
+    vk_uma_host_barrier(cb, frame);
     GfxOut* first = g_out;
     while (first && first->frame != frame) first = first->next;
     if (!first) return;
@@ -1158,9 +1164,26 @@ static int ww_claim(u64 l) {
 }
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
+/* the pages of [a, e) (guest addresses) scanned, past the runs an import holds unless the
+   imported_page_write_tracking setting asks for them: a scan re-protects the pages written since, and re-protecting
+   an imported page makes amdgpu's MMU notifier wait for the GPU and take the import's pages again at the next submit
+   (uma.c). What no scan watches, write tracking doesn't answer for (vk_written_since) */
+static int ww_untracked(void) { return g_vk.uma && !g_settings.imported_page_write_tracking; }
+static int ww_scan_free(u64 a, u64 e) {
+    int r = 0;
+    if (!ww_untracked()) return plat_ww_scan(g_mem + a, e - a, ww_note);
+    for (u64 pg = a >> 12, end = e >> 12; pg < end && r == 0;) {
+        u64 run = pg;
+        while (run < end && !vk_uma_page_imported(run)) run++;
+        if (run > pg) r = plat_ww_scan(g_mem + (pg << 12), (run - pg) << 12, ww_note);
+        while (run < end && vk_uma_page_imported(run)) run++;
+        pg = run;
+    }
+    return r;
+}
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
     t_wstage = st;
-    int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
+    int r = ww_scan_free(lo << WW_LEAF_SHIFT, (hi + 1) << WW_LEAF_SHIFT);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
     for (int i = 0; i < st->n; i++)
@@ -1334,16 +1357,33 @@ static void ww_used_epoch(u32 seen) {
     __atomic_store_n(&g_ww_used_from, oldest ? oldest : seen, __ATOMIC_RELAXED);
 }
 
-int vk_written_since(const u8* host, u64 len, u32 since) {
-    if (!g_ww || !host || !len) return -1;
-    if (g_ww < 0) {
-        g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
-        LOG("vulkan: %s\n",
-            g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
-        if (!g_ww) return -1;
-        pc_init(&g_wscan_cv);
-        if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
+void vk_ww_init(void) {
+    if (g_ww >= 0) return;
+    if (!g_settings.global_write_tracking) { /* off by the setting: nothing is watched from now on */
+        plat_ww_off();
+        g_ww = 0;
+        LOG("vulkan: write tracking off (write_tracking=0): caches check contents\n");
+        return;
     }
+    g_ww = plat_ww_scan(g_mem, 4096, ww_mark) == 0;
+    if (!g_ww) {
+        WARN("vulkan: write tracking was asked for, but this host can't tell which pages were written: caches check "
+             "contents\n");
+        return;
+    }
+    LOG("vulkan: write tracking on (caches skip unchanged memory)%s\n",
+        ww_untracked() ? ", but for the pages unified memory imports" : "");
+    pc_init(&g_wscan_cv);
+    if (!plat_thread(ww_scanner, NULL, (size_t)1 << 20)) __atomic_store_n(&g_wscan_on, 1, __ATOMIC_RELEASE);
+}
+int vk_ww_on(void) {
+    if (g_ww < 0) vk_ww_init();
+    return g_ww > 0;
+}
+int vk_written_since(const u8* host, u64 len, u32 since) {
+    if (g_ww < 0) vk_ww_init();
+    if (!g_ww || !host || !len) return -1;
+    if (ww_untracked() && vk_uma_imported((u64)(host - g_mem), len)) return -1; /* no scan watches it: compare */
     if (__atomic_load_n(&g_wscan_failed, __ATOMIC_ACQUIRE)) {
         g_ww = 0;
         LOG("vulkan: write tracking failed, caches check contents\n");
@@ -1446,6 +1486,18 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align()) : 0;
     if (src == 1) return 1;
     if (src == 2) return gfx_composed(gva, len, buf, off);
+    if (gva && vk_uma_pending(gva, len)) { /* shaders write it in place: copied after them, on the GPU */
+        VkBuffer sb;
+        u64 so;
+        vk_render_end();
+        u8* q = vk_stage_upload(len, vk_stage_align(), &sb, &so);
+        if (!q) return 0;
+        vk_guest_read(gva, len, q, sb, so);
+        *buf = sb;
+        *off = so;
+        copy_note(gva, len);
+        return 1;
+    }
     u8* p = vk_stage(len ? len : 16, vk_stage_align(), buf, off);
     if (!p) return 0;
     if (!gva)
@@ -1492,9 +1544,11 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             *off = p->off;
             return 1;
         }
+    /* with unified memory the shader writes guest memory where it is: nothing to land */
+    if (vk_uma_write(gva, len, vk_stage_align(), buf, off)) return 1;
     int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align());
     if (pending == 1) return 1;
-    if (!pending) gmem_need(gva, len);
+    if (!pending) vk_uma_mem_need(gva, len); /* the original bytes are read on the CPU: in-place writes there first */
     int owned = !pending && range_owned(gva, len);
     if (owned) (void)written_since_gva(gva, len, 0); /* establish the CPU-write baseline before the GPU copy */
     o = gfx_out_new((u32)(((gva & 0xFFF) + len + 0xFFF) >> 12), len);
@@ -1759,6 +1813,10 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
             free(p);
             return 0;
         }
+        /* the atlas is filled from guest memory on the CPU: in-place writes over its pages first */
+        for (int s = 0; s < 2 && g_uma_any; s++)
+            for (int i = 0; i < draw->n[s]; i++)
+                if (draw->b[s][i].addr) vk_uma_mem_need(draw->b[s][i].addr, draw->b[s][i].size);
         composed = atlas_fill(p, unique, ptr, atlas, atlas_off);
         copy_note(1, atlas_size);
     }
@@ -2051,6 +2109,14 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     use(i, buf, off);
     return 1;
 }
+/* With unified memory a range is read where it is in guest memory (uma.c), not copied, hashed or watched for writes.
+   What the runtime wrote while recording (an inline upload, a constant buffer update), which earlier draws must not
+   see, is copied as before */
+static int buf_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (!vk_uma_read(gva, len, align, buf, off)) return 0;
+    if (copy_stats_on()) g_in_place += len;
+    return 1;
+}
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align) {
     int pending;
     u32 i = 0;
@@ -2075,6 +2141,11 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->gfx_adds = vk_buf_adds();
         }
     }
+    /* A copy kept from before stays: the checks below find what changed while the range was read in place (the
+       CPU's writes by epoch, the GPU's by the generation in-place writes stamp once done). Dropping it made a range
+       that is read in place only some of the time (a release queued on its page, a result pending beside it) hashed,
+       copied and given a buffer of its own again every frame */
+    if (g_vk.uma && buf_in_place(gva, len, align, buf, off)) return 1;
     /* valid: the data is where draws can read it this frame */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
@@ -2145,7 +2216,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : gpu_mem_dirty_since(e->gw, gva, len) ? ST_DIRTY
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
-    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, buf, off);
+    /* GPU-owned bytes, or bytes shaders write in place: copied on the GPU (vk_guest_read) */
+    if (range_owned(gva, len) || vk_uma_pending(gva, len)) return buf_get_owned(i, e, gva, len, strict, buf, off);
     u32 wnow = vk_ww_now();
     const u8* src = guest_bytes(gva, len);
     if (!src) return 0;
@@ -2237,6 +2309,9 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, at, cpu = 0;
     int slot = -1;
     if (!len || gva + len < gva) return 0;
+    /* in place there is nothing to copy, and so nothing for a window to share: the range alone. Its 64 MiB windows
+       took 128 MiB imports each, thirty-two of them, which amdgpu counts as GPU memory */
+    if (g_vk.uma && buf_in_place(gva, len, vk_stage_align(), buf, off)) return 1;
     for (int i = 0; i < WIN_N && slot < 0; i++)
         if (win_live(&g_win[i]) && g_win[i].start <= gva && gva + len <= g_win[i].end) slot = i;
     if (slot < 0) {
@@ -2304,6 +2379,7 @@ void vk_buf_stats(u32* count, u64* bytes) {
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
 void vk_buf_frame(void) {
+    vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
@@ -2326,6 +2402,42 @@ void vk_buf_frame(void) {
             "slots\n",
             (unsigned long long)g_alias_draws, (unsigned long long)g_alias_pages, g_vblive,
             (unsigned long long)g_vb_lookups, (unsigned long long)g_vb_probes);
+        if (g_vk.uma) {
+            VkUmaStats st;
+            vk_uma_stats(&st);
+        VkTexCheckStats ts;
+        vk_texcheck_stats(&ts);
+            LOG("vulkan: unified memory: bound in place=%llu, imports=%u of %llu MiB (%llu made in all), engines' "
+                "results written in place=%llu MiB, waits for in-place reads=%llu writes=%llu, barriers=%llu, writes "
+                "pending=%llu\n",
+                (unsigned long long)g_in_place, st.imports, (unsigned long long)(st.bytes >> 20),
+                (unsigned long long)st.made, (unsigned long long)(st.published >> 20), (unsigned long long)st.waits,
+                (unsigned long long)st.out_waits, (unsigned long long)st.barriers, (unsigned long long)st.pending);
+            LOG("vulkan: unified memory's texture checks over 600 presents: %llu of %llu MiB, %llu copies and %llu "
+                "stores gated, %llu ran ungated\n",
+                (unsigned long long)(ts.checks - g_ts_last.checks),
+                (unsigned long long)((ts.bytes - g_ts_last.bytes) >> 20),
+                (unsigned long long)(ts.copies - g_ts_last.copies), (unsigned long long)(ts.stores - g_ts_last.stores),
+                (unsigned long long)(ts.overflow - g_ts_last.overflow));
+            g_ts_last = ts;
+            LOG("vulkan: unified memory's ranges not imported: long=%llu full=%llu cap=%llu shared=%llu align=%llu "
+                "room=%llu driver=%llu before=%llu offset=%llu; imports let go: idle=%llu changed=%llu owned=%llu "
+                "room=%llu\n",
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_LONG],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_FULL],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_CAP],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_SHARED],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_ALIGN],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_ROOM],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_DRIVER],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_BEFORE],
+                (unsigned long long)st.why_refused[VK_UMA_REFUSED_OFFSET],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_IDLE],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_CHANGED],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_OWNED],
+                (unsigned long long)st.why_retired[VK_UMA_RETIRED_ROOM]);
+            g_in_place = 0;
+        }
         g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound = 0;
         g_wb_outputs = g_wb_bytes = g_wb_waits = g_wb_wait_ns = g_wb_reuses = 0;

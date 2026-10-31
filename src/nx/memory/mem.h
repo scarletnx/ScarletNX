@@ -117,6 +117,14 @@ int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);
    or permission change, an alias written back. The runtime sets it (runtime/guest_jit.c's jit_code_invalidate); NULL
    until then */
 void mem_set_code_invalidate(void (*fn)(u64 addr, u64 size));
+/* fn(addr, size) when the host pages under guest memory [addr, addr + size) are replaced or given back (unmapped,
+   decommitted, moved into the alias pool or out of it), before the change, under mem.c's lock: it may only take a
+   leaf lock */
+void mem_set_backing_hook(void (*fn)(u64 addr, u64 size));
+/* [*lo, *hi), which holds [a, a + size), narrowed to the span around it of guest memory whose host pages are the
+   reservation's own and committed (mapped, not the alias pool's, not I/O): 0, or -1 when [a, a + size) isn't all such
+   memory */
+int mem_private_span(u64 a, u64 size, u64* lo, u64* hi);
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align);
 u64 kmem_alloc(u64 size, u32 state, u32 perm); /* in the kernel region */
 

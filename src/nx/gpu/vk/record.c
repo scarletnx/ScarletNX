@@ -380,6 +380,7 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
 }
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
 REC3(CmdDispatch, u32, u32, u32)
+REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
 REC0(CmdEndRendering)
 REC1(CmdSetCullMode, VkCullModeFlags)
 REC1(CmdSetFrontFace, VkFrontFace)
@@ -728,6 +729,35 @@ static XferArgs* rec_xfer(RecFn fn, VkCommandBuffer cb, u64 h1, VkImageLayout l1
     x->n = n;
     memcpy((u8*)x + REC_AL(sizeof *x), regions, size);
     return x;
+}
+/* n copies into an image whose commands are at device address h1, e bytes apart (texcheck.c), through the extension
+   the device has (g_vk.copy_indirect: 1 KHR, 2 NV); the regions are the copies' subresources */
+static void copy_to_image_indirect(VkCommandBuffer cb, VkDeviceAddress at, u32 n, u32 stride, VkImage img,
+                                   VkImageLayout l, const VkImageSubresourceLayers* sub) {
+    if (g_vk.copy_indirect == 2) {
+        vkCmdCopyMemoryToImageIndirectNV(cb, at, n, stride, img, l, sub);
+        return;
+    }
+    VkCopyMemoryToImageIndirectInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_COPY_MEMORY_TO_IMAGE_INDIRECT_INFO_KHR,
+                                             .copyCount = n,
+                                             .copyAddressRange = {at, (VkDeviceSize)n * stride, stride},
+                                             .dstImage = img,
+                                             .dstImageLayout = l,
+                                             .pImageSubresources = sub};
+    vkCmdCopyMemoryToImageIndirectKHR(cb, &ci);
+}
+static void indirect_to_image_run(const void* p) {
+    const XferArgs* x = p;
+    copy_to_image_indirect(x->cb, x->h1, x->n, x->e, (VkImage)x->h2, x->l2, XFER_REGIONS(x));
+}
+void rec_CmdCopyMemoryToImageIndirect(VkCommandBuffer cb, VkDeviceAddress at, u32 n, u32 stride, VkImage img,
+                                      VkImageLayout l, const VkImageSubresourceLayers* sub) {
+    if (!rec_on(cb)) {
+        copy_to_image_indirect(cb, at, n, stride, img, l, sub);
+        return;
+    }
+    rec_xfer(indirect_to_image_run, cb, at, 0, (u64)img, l, n, sub, n * sizeof *sub)->e = stride;
+    rec_commit();
 }
 void rec_CmdCopyBuffer(VkCommandBuffer cb, VkBuffer src, VkBuffer dst, u32 n, const VkBufferCopy* r) {
     if (!rec_on(cb)) {

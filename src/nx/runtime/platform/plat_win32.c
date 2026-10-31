@@ -204,9 +204,12 @@ u8* plat_vm_reserve(u64 size) {
     return (u8*)p;
 }
 
+static int g_ww_off; /* atomic: plat_ww_off */
+void plat_ww_off(void) { __atomic_store_n(&g_ww_off, 1, __ATOMIC_RELEASE); }
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     void* pages[1024]; /* on the stack: two threads may scan at once */
     u64 start, end, calls, i;
+    if (__atomic_load_n(&g_ww_off, __ATOMIC_ACQUIRE)) return -1;
     if (!g_ww_base || !size) return g_ww_base ? 0 : -1;
     start = (u64)(uintptr_t)p & ~(u64)4095;
     end = ((u64)(uintptr_t)p + size + 4095) & ~(u64)4095;
@@ -232,6 +235,12 @@ int plat_vm_commit(u8* p, u64 size) {
     return -1;
 }
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+int plat_vm_populate(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+    errno = ENOSYS;
+    return -1;
+}
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */

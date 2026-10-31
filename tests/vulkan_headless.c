@@ -33,6 +33,12 @@
         }                                                                                                              \
     } while (0)
 
+/* the GPU's results over guest memory [cpu, cpu + len) done before the test's CPU reads them, as the guest's fence
+   would have them: with unified memory they are written there in place (vk_uma_publish) once their submit is done;
+   without it they are GPU-owned, and the read lands them by itself */
+static void guest_done(u64 cpu, u64 len) {
+    if (g_vk.uma) vk_uma_mem_need_cpu(cpu, len);
+}
 /* A buffer copied into staging as it is hashed gets the hash vk_hash gives it, which the cache compares with hashes
    taken without a copy, and the bytes: every size around the hash's 32-byte steps, from every alignment */
 static int check_hash_copy(void) {
@@ -762,7 +768,14 @@ static int check_vic(void) {
         sl->iy = (VicPlane){y, W * H, W, H, 0, 0};
         sl->ic = (VicPlane){uv, W * H / 2, W, H / 2, 0, 0};
         CHECK(g_renderer->vic_compose(&job));
-        CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0); /* on the GPU until read */
+        /* on the GPU until read: GPU-owned; with unified memory written in place, owned by nothing, and done before the
+           compose returns (host1x increments the job's syncpoint then, and no trap would land it) */
+        if (g_vk.uma)
+            CHECK(!vk_uma_pending_cpu(VIC_BASE + 0x2000, (u64)pitch * H) &&
+                  !own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0));
+        else
+            CHECK(!own_traps() || own_lookup(VIC_BASE + 0x2000, (u64)pitch * H, NULL, 0) > 0);
+        guest_done(VIC_BASE + 0x2000, (u64)pitch * H);
         for (u32 j = 0; j < H; ++j)
             for (u32 i = 0; i < W; ++i) {
                 const u8* o = out + j * pitch + i * bpp;
@@ -794,7 +807,7 @@ static int check_vic(void) {
             }
     }
     /* each picture was read here: landed once, by the trap, where the host has traps */
-    CHECK(!own_traps() || own_landings() >= lands + sizeof cases / sizeof cases[0]);
+    CHECK(!own_traps() || g_vk.uma || own_landings() >= lands + sizeof cases / sizeof cases[0]);
     CHECK(g_vk_validation_messages == validation);
     return 0;
 }
@@ -838,6 +851,7 @@ static int check_vic_chain(const char* shot) {
         CHECK(g_renderer->screenshot(shot) == expected);
         CHECK(own_landings() == lands);
     }
+    guest_done(VIC_BASE + 0x2000, (u64)W * 4 * H);
     for (u32 j = 0; j < H; ++j)
         for (u32 i = 0; i < W; ++i) {
             const u8* o = out + (j * W + i) * 4;
@@ -846,7 +860,7 @@ static int check_vic_chain(const char* shot) {
             else
                 CHECK(o[0] == y[j * W + i] && o[3] == 255); /* the first job's: the samples as they are */
         }
-    CHECK(!own_traps() || own_landings() == lands + 1);
+    CHECK(own_landings() == lands + (own_traps() && !g_vk.uma)); /* with unified memory nothing lands: it's there */
     return 0;
 }
 /* NVDEC's picture laid out on the GPU (vk/nvdec.c), then composed by VIC from there, with no CPU access between: the
@@ -895,6 +909,7 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
             CHECK(g_renderer->vic_compose(&job));
     }
     /* the GPU's bytes, read now (landing them), against the references' */
+    guest_done(NV_GPU, 0x20000 + out_size);
     CHECK(!memcmp(GP(NV_GPU), GP(NV_REF), ext_y));
     CHECK(!memcmp(GP(NV_GPU + 0x10000), GP(NV_REF + 0x10000), ext_c));
     CHECK(!memcmp(GP(NV_GPU + 0x20000), GP(NV_REF + 0x20000), out_size));
@@ -920,6 +935,7 @@ static int check_nvdec_vic(void) {
 #define DMA_SPAN 0x100000u
 static int dma_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
+    guest_done(DMA_A, DMA_SPAN); /* the last case's, before the CPU writes over them */
     for (int k = 0; k < 2; k++) { /* the same bytes in both */
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 29 + (i >> 9) * 7 + 3);
@@ -928,6 +944,7 @@ static int dma_case(GpuDmaOp o) {
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->dma_copy(&g));
     dma_copy_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
     return 0;
 }
@@ -1012,6 +1029,7 @@ static int blit_case(GpuDmaSide src, GpuDmaSide dst, u32 bpp, u32 x0, u32 y0, u3
     GpuBlit g, c;
     for (u32 i = 0; i < w; i++) scol[i] = (u32)((u64)i * sw / w); /* nearest, the source scaled onto the window */
     for (u32 i = 0; i < h; i++) srow[i] = (u32)((u64)(h - 1 - i) * sh / h); /* flipped */
+    guest_done(DMA_A, DMA_SPAN); /* the last case's, before the CPU writes over them */
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 13 + (i >> 8) * 5 + 1);
@@ -1022,6 +1040,7 @@ static int blit_case(GpuDmaSide src, GpuDmaSide dst, u32 bpp, u32 x0, u32 y0, u3
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
     CHECK(g_renderer->blit_mem(&g));
     blit_mem_ref(&c);
+    guest_done(DMA_A, DMA_SPAN);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
     return 0;
 }
@@ -1109,21 +1128,26 @@ static int check_rt_overlap(void) {
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_blue(GP(DMA_A + 0x40000), 160 * 128 * 4)); /* reading it lands it */
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* the newer one written back alone: the older one first, under it, and not again after */
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
     g_renderer->rt_flush(DMA_GA);
     vk_rt_before_write(DMA_GA, 0x14000);
+    guest_done(DMA_A, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface */
     rt_clear(ch, DMA_GA, 160, 256, 4, 1);
+    guest_done(DMA_A, 0x28000);
     memset(GP(DMA_A), 0x11, 0x28000);
     readbacks = g_vk_rt_readbacks;
     CHECK(g_renderer->dma_copy(&o));
     CHECK(g_vk_rt_readbacks == readbacks + 1);
+    guest_done(DMA_A + 0x40000, 160 * 128 * 4);
     CHECK(all_bytes(GP(DMA_A + 0x40000), 160 * 128 * 4, 0x11));
     /* A render target and a newer buffer can use different GPU aliases of the
        same memory. A later partial read of the image must not restore its old
@@ -1140,6 +1164,7 @@ static int check_rt_overlap(void) {
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_A, 0x10000 + 512);
     CHECK(all_bytes(GP(DMA_A + 0x10000), 512, 0x6d));
     CHECK(all_blue(GP(DMA_A), 512));
     /* Replacing a GPU mapping must resolve the old target against its old
@@ -1147,10 +1172,13 @@ static int check_rt_overlap(void) {
     rt_clear(ch, alias, 160, 256, 4, 1);
     memset(GP(DMA_B), 0x37, 0x28000);
     gmmu_map(alias, DMA_B, DMA_SPAN);
+    guest_done(DMA_A, 0x28000);
     CHECK(all_blue(GP(DMA_A), 0x28000));
     o.src = pitch_side(alias + 0x1000, 512);
     o.dst = pitch_side(DMA_GA + 0x40000, 512);
     CHECK(g_renderer->dma_copy(&o));
+    guest_done(DMA_B, 0x28000);
+    guest_done(DMA_A + 0x40000, 512);
     CHECK(all_bytes(GP(DMA_B), 0x28000, 0x37));
     CHECK(all_bytes(GP(DMA_A + 0x40000), 512, 0x37));
     /* Dirty metadata queries must leave GPU-owned pixels on the GPU. */
@@ -1164,7 +1192,7 @@ static int check_rt_overlap(void) {
     vk_rt_drawn_full(target);
     (void)vk_rt_drawn_fresh(target);
     CHECK(own_landings() == landings);
-    if (own_traps()) CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0);
+    if (own_traps() && !g_vk.uma) CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0); /* UMA publishes in place */
     vk_unlock();
     memset(GP(tracked_cpu + 16), 0x39, 16);
     g_renderer->mem_may_have_changed();
@@ -1183,6 +1211,520 @@ static int check_rt_overlap(void) {
 #include "vulkan_mesh_inputs.inc"
 #include "vulkan_targetless_stores.inc"
 
+/* Unified memory (uma.c): a guest buffer is bound where it is in guest memory, so what the guest's CPU writes before
+   the submit is what the GPU reads, with no new bind. A write of the runtime's over a range a recorded draw reads in
+   place waits for that draw and takes the range out of place for good, a range becoming GPU-owned too, and the
+   imports over pages the guest unmaps go */
+/* past every other check's, whose pages the runtime may have written: those are never read in place again (uma.c's
+   front) */
+#define UMA_A  (HEAP_BASE + 0x800000)
+#define UMA_GA 0x400000000ull
+#define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped by the check */
+#define UMA_GR 0x410000000ull
+static int uma_read(VkBuffer src, u64 off, u64 n, u8* out) {
+    VkBuffer rb;
+    u8* p = vk_readback_buffer(n, &rb);
+    CHECK(p);
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    VkBufferCopy c = {off, 0, n};
+    rec_CmdCopyBuffer(cb, src, rb, 1, &c);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &di);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, p, n);
+    return 0;
+}
+static void uma_stats(u32* imports, u64* waits) {
+    VkUmaStats st;
+    vk_uma_stats(&st);
+    *imports = st.imports;
+    *waits = st.waits;
+}
+/* a 16x16 four-byte texture's texels, read back from its image */
+static int tex_read(Surf* tex, u8* out) {
+    VkBuffer rb;
+    u8* texels = vk_readback_buffer(1024, &rb);
+    CHECK(texels);
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, tex, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy ic = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {16, 16, 1}};
+    rec_CmdCopyImageToBuffer(cb, tex->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &ic);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    rec_CmdPipelineBarrier2(cb, &di);
+    vk_finish();
+    vk_readback_ready();
+    memcpy(out, texels, 1024);
+    return 0;
+}
+/* the texels of a block linear 16x16 four-byte texture, GOBs one high, as its image holds them */
+static int tex_matches(const u8* img, const u8* guest) {
+    for (u32 y = 0; y < 16; y++)
+        for (u32 x = 0; x < 64; x++)
+            if (img[y * 64 + x] != guest[bl_offset(x, y, 0, 64, 16, 0, 0)]) return 0;
+    return 1;
+}
+/* A texture checked by the CPU's write tracking: unchanged over guest submissions it isn't loaded again, and the
+   guest's CPU changing a byte loads it at the next check, the first write marked since its last one included (a
+   baseline of the clock before the check plus one missed it) */
+static int check_texture_writes(void) {
+    u8* p = GP(UMA_A);
+    const u64 ga = UMA_GA + 0xF000;
+    if (g_vk.uma) return 0; /* the GPU checks it there (check_uma) */
+    gmmu_map(UMA_GA, UMA_A, 0x10000);
+    for (u32 i = 0; i < 1024; i++) p[0xF000 + i] = (u8)(i * 3 + 1);
+    u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                  (u32)ga, 3u << 21 | (u32)(ga >> 32), 0, 15 | 1u << 23, 15, 0, 0};
+    u64 up0, up, b;
+    Surf* t = vk_tex_from_tic_raw(tic);
+    CHECK(t);
+    for (int round = 0; round < 5; round++) {
+        if (round == 4) p[0xF000 + 700] ^= 1;
+        vk_ww_new_epoch();
+        vk_tex_stats(&up0, &b);
+        CHECK(vk_tex_from_tic_raw(tic) == t);
+        vk_tex_stats(&up, &b);
+        CHECK(up == up0 + (round == 4));
+    }
+    return 0;
+}
+/* A range's highest index is read again only after the guest's CPU changes it: where write tracking can't tell
+   (--write_tracking=0, the pages unified memory imports), the indices' hash says */
+static int check_index_top(void) {
+    const u64 at = HEAP_BASE + 0x5000000, gat = 0x450000000ull;
+    CHECK(mem_map(at, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gat, at, 0x10000);
+    u16* ix = (u16*)GP(at);
+    for (u32 i = 0; i < 2048; i++) ix[i] = (u16)(i * 7 % 1000);
+    ix[100] = 0xFFFF; /* the restart index: no vertex */
+    vk_lock();
+    if (g_vk.uma) {
+        VkBuffer b;
+        u64 off;
+        CHECK(vk_uma_get(at, 0x1000, 1, &b, &off)); /* imported, so write tracking leaves its pages out */
+    }
+    int hashed = vk_written_since(GP(at), 4096, 0) < 0;
+    for (int round = 0; round < 5; round++) {
+        if (round == 3) ix[700] = 1500;
+        vk_ww_new_epoch();
+        u64 scans = g_vk_index_scans;
+        CHECK(vk_index_top(gat, 2048, 2, 0xFFFF, 0) == (round < 3 ? 999u : 1500u));
+        if (hashed) CHECK(g_vk_index_scans == scans + (round == 0 || round == 3));
+    }
+    vk_unlock();
+    CHECK(mem_unmap(at, 0x10000) == 0);
+    return 0;
+}
+static int check_uma(void) {
+    static u8 out[0x1000], data[16];
+    VkBuffer b, b2, any;
+    u64 off, off2, any_off, waits, waits0;
+    u32 n, n0;
+    if (!g_vk.uma) {
+        puts("vulkan_headless: no unified memory on this device, its check skipped");
+        return 0;
+    }
+    /* write tracking answers for guest memory with unified memory on, but for imported pages, which no scan watches
+       (imported_page_write_tracking off): a scan would re-protect them */
+    {
+        VkBuffer ib;
+        u64 io;
+        CHECK(vk_uma_get(UMA_A, 4096, 1, &ib, &io) && vk_uma_imported(UMA_A, 4096));
+        const u64 fresh = HEAP_BASE + 0x10000000; /* mapped here alone: no import reaches it */
+        vk_unlock();
+        CHECK(mem_map(fresh, 0x10000, MS_NORMAL, PERM_RW) == 0);
+        vk_lock();
+        CHECK(!vk_uma_imported(fresh, 4096));
+        CHECK(vk_written_since(GP(UMA_A), 4096, 0) < 0);
+        /* a host that can't tell which pages were written has none, whatever the setting asks */
+        CHECK((vk_written_since(GP(fresh), 4096, 0) >= 0) == vk_ww_on());
+        if (g_settings.global_write_tracking && !vk_ww_on())
+            puts("vulkan_headless: write tracking was asked for, but this host has none: imports not told apart");
+        vk_unlock();
+        CHECK(mem_unmap(fresh, 0x10000) == 0);
+        vk_lock();
+    }
+    /* the engines' results went into guest memory in place (the DMA, 2D, VIC and NVDEC checks before), and copies
+       into the same memory again make no import again and let none go: a trap let go of them, and amdgpu maps each
+       import it is handed */
+    {
+        VkUmaStats a, z;
+        GpuDmaOp o;
+        vk_uma_stats(&a);
+        CHECK(a.published > 0);
+        memset(&o, 0, sizeof o);
+        o.width = o.line_in = o.line_out = 4096;
+        o.lines = 1;
+        o.src = pitch_side(DMA_GA + 0x1000, 0);
+        o.dst = pitch_side(DMA_GA + 0x8000, 0);
+        for (int i = 0; i < 4; i++) CHECK(g_renderer->dma_copy(&o));
+        vk_uma_stats(&z);
+        CHECK(z.published >= a.published + 4 * 4096 && z.made <= a.made + 1 && z.imports >= a.imports);
+        guest_done(DMA_A + 0x8000, 4096);
+        CHECK(!memcmp(GP(DMA_A + 0x8000), GP(DMA_A + 0x1000), 4096));
+    }
+    vk_lock();
+    gmmu_map(UMA_GA, UMA_A, 0x10000);
+    u8* p = GP(UMA_A);
+    for (u32 i = 0; i < 0x10000; i++) p[i] = (u8)(i * 13 + 5);
+    CHECK(vk_buf_get(UMA_GA + 0x100, 0x1000, &b, &off));
+    for (u32 i = 0; i < 0x1000; i++) p[0x100 + i] ^= 0xA5; /* after the bind, before the submit */
+    CHECK(!uma_read(b, off, 0x1000, out));
+    CHECK(!memcmp(out, p + 0x100, 0x1000));
+    /* the same import for a range beside it, at its own offset */
+    CHECK(vk_buf_get(UMA_GA + 0x200, 0x100, &b2, &off2) && b2 == b && off2 == off + 0x100);
+    /* a draw recorded reading 0x2000 in place, then an inline upload there: it waits for the draw, once */
+    uma_stats(&n0, &waits0);
+    CHECK(vk_buf_get(UMA_GA + 0x2000, 0x100, &b2, &off2) && b2 == b);
+    for (u32 i = 0; i < sizeof data; i++) data[i] = (u8)(0xC0 + i);
+    CHECK(!gmem_write(UMA_GA + 0x2000, data, sizeof data));
+    uma_stats(&n, &waits);
+    CHECK(waits == waits0 + 1);
+    CHECK(vk_buf_get(UMA_GA + 0x2000, 0x100, &b2, &off2) && b2 != b); /* copied from now on */
+    CHECK(!uma_read(b2, off2, 0x100, out));
+    CHECK(!memcmp(out, p + 0x2000, 0x100) && !memcmp(out, data, sizeof data));
+    CHECK(!gmem_write(UMA_GA + 0x2000, data, sizeof data)); /* no draw reads it in place: no wait */
+    uma_stats(&n, &waits);
+    CHECK(waits == waits0 + 1);
+    /* a range becoming GPU-owned: the draw reading it in place is done first, and the imports over it go, destroyed
+       before its pages are trapped (amdgpu fails a submission naming an import of trapped pages), while one elsewhere
+       stays */
+    CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 == b);
+    uma_stats(&n0, &waits0);
+    int elsewhere = vk_uma_imported(HEAP_BASE, 4096);
+    VkUmaStats h0, h1;
+    vk_uma_stats(&h0);
+    vk_uma_owning(UMA_A + 0x4000, 0x100);
+    vk_uma_stats(&h1);
+    CHECK(h1.why_retired[VK_UMA_RETIRED_OWNED] > h0.why_retired[VK_UMA_RETIRED_OWNED] && h1.held == h0.held);
+    uma_stats(&n, &waits);
+    CHECK(waits == waits0 + 1 && n < n0 && !vk_uma_imported(UMA_A + 0x4000, 0x100));
+    CHECK(vk_uma_imported(HEAP_BASE, 4096) == elsewhere);
+    CHECK(vk_buf_get(UMA_GA + 0x4000, 0x100, &b2, &off2) && b2 != b); /* the runtime's now: copied */
+    CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again */
+    CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
+    /* a block linear texture deswizzled from where it is: the upload reads it in place (a write over it waits for the
+       upload), and the image holds the guest's texels */
+    static u8 old[1024];
+    const u64 tga = UMA_GA + 0x8000;
+    for (u32 i = 0; i < sizeof old; i++) old[i] = p[0x8000 + i] = (u8)(i * 7 + 1);
+    u32 tic[8] = {0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                  (u32)tga, 3u << 21 | (u32)(tga >> 32), 0, 15 | 1u << 23, 15, 0, 0}; /* 16x16 A8B8G8R8, GOBs high */
+    CHECK(vk_tic_format(tic[0], 0).bpp == 4);
+    Surf* tex = vk_tex_from_tic_raw(tic);
+    CHECK(tex && tex->img);
+    uma_stats(&n0, &waits0);
+    CHECK(!gmem_write(tga, data, sizeof data));
+    uma_stats(&n, &waits);
+    CHECK(waits == waits0 + 1);
+    VkBuffer rb;
+    u8* texels = vk_readback_buffer(sizeof old, &rb);
+    CHECK(texels);
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, tex, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy ic = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {16, 16, 1}};
+    rec_CmdCopyImageToBuffer(cb, tex->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &ic);
+    vk_finish();
+    vk_readback_ready();
+    for (u32 y = 0; y < 16; y++)
+        for (u32 x = 0; x < 64; x++) CHECK(texels[y * 64 + x] == old[bl_offset(x, y, 0, 64, 16, 0, 0)]);
+    /* a storage buffer written in place (a copy standing in for the shader): the next in-place read comes after a
+       barrier and sees it, the CPU's reads wait for it, a copy on the GPU takes it without waiting, and a write of the
+       runtime's over it lands after it */
+    VkUmaStats us0, us;
+    const u32 fill = 0xDEADBEEFu;
+    u32 word = 0;
+    for (u32 k = 0; k < 4; k++) {
+        const u64 wa = UMA_GA + 0xA000 + k * 0x1000;
+        CHECK(vk_buf_copy_writable(wa, 0x100, &b2, &off2) && b2 == b); /* the import itself */
+        VkBuffer pb;
+        u64 po;
+        u8* pat = vk_stage(0x100, 16, &pb, &po);
+        CHECK(pat);
+        for (u32 i = 0; i < 0x100; i += 4) memcpy(pat + i, &(u32){fill + k}, 4);
+        vk_render_end();
+        rec_CmdCopyBuffer(vk_cmd(), pb, b2, 1, &(VkBufferCopy){po, off2, 0x100});
+        vk_buf_writable_commit();
+        CHECK(vk_uma_pending(wa, 0x100) && g_uma_any);
+        vk_uma_stats(&us0);
+        if (k == 0) { /* read in place after it */
+            CHECK(vk_buf_get(wa, 0x100, &b2, &off2) && b2 == b);
+            vk_uma_stats(&us);
+            CHECK(us.barriers == us0.barriers + 1 && us.out_waits == us0.out_waits);
+            CHECK(!uma_read(b2, off2, 0x100, out));
+        } else if (k == 1) { /* read by the CPU */
+            CHECK(!gmem_read(wa, out, 0x100));
+            vk_uma_stats(&us);
+            CHECK(us.out_waits == us0.out_waits + 1);
+        } else if (k == 2) { /* copied on the GPU */
+            CHECK(vk_buf_copy(wa, 0x100, &b2, &off2) && b2 != b);
+            vk_uma_stats(&us);
+            CHECK(us.out_waits == us0.out_waits);
+            CHECK(!uma_read(b2, off2, 0x100, out));
+        } else { /* written by the runtime: after the GPU's bytes */
+            CHECK(!gmem_write(wa, data, sizeof data));
+            vk_uma_stats(&us);
+            CHECK(us.out_waits == us0.out_waits + 1);
+            CHECK(!memcmp(p + 0xA000 + k * 0x1000, data, sizeof data));
+            memcpy(&word, p + 0xA000 + k * 0x1000 + sizeof data, 4);
+            CHECK(word == fill + k);
+            continue;
+        }
+        for (u32 i = 0; i < 0x100; i += 4) {
+            memcpy(&word, out + i, 4);
+            CHECK(word == fill + k);
+        }
+        memcpy(&word, p + 0xA000 + k * 0x1000, 4);
+        CHECK(word == fill + k); /* in guest memory, nothing landed */
+        CHECK(!g_uma_any);
+    }
+    /* a texture the GPU checks: unchanged, the check leaves its image alone (cleared here, it stays cleared); changed
+       by the guest's CPU, the GPU rebuilds it, a byte changed as well as all of them */
+    {
+        static u8 img[1024];
+        const u64 tg = UMA_GA + 0xE000;
+        u8* tm = p + 0xE000;
+        VkTexCheckStats ts0, ts;
+        u32 tic2[8];
+        memcpy(tic2, tic, sizeof tic2);
+        tic2[1] = (u32)tg;
+        for (u32 i = 0; i < 1024; i++) tm[i] = (u8)(i * 5 + 3);
+        vk_texcheck_stats(&ts0);
+        Surf* t2 = vk_tex_from_tic_raw(tic2);
+        CHECK(t2 && t2->gpu_check);
+        vk_texcheck_stats(&ts);
+        CHECK(ts.checks == ts0.checks + 1 && (g_vk.copy_indirect ? ts.copies > ts0.copies : ts.stores > ts0.stores));
+        CHECK(!tex_read(t2, img) && tex_matches(img, tm));
+        for (int round = 0; round < 3; round++) {
+            vk_render_end();
+            VkCommandBuffer cb = vk_cmd();
+            vk_surf_use(cb, t2, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                        VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VkClearColorValue zero = {{0}};
+            VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            rec_CmdClearColorImage(cb, t2->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &all);
+            if (round == 1) tm[517] ^= 0x40; /* one byte */
+            if (round == 2)
+                for (u32 i = 0; i < 1024; i++) tm[i] = (u8)(i * 11 + 1);
+            vk_ww_new_epoch(); /* a guest submission: its CPU's writes are the stream's to see */
+            vk_texcheck_stats(&ts0);
+            CHECK(vk_tex_from_tic_raw(tic2) == t2);
+            vk_texcheck_stats(&ts);
+            CHECK(ts.checks == ts0.checks + 1);
+            CHECK(!tex_read(t2, img));
+            if (round == 0) {
+                for (u32 i = 0; i < 1024; i++) CHECK(img[i] == 0); /* not rebuilt */
+            } else
+                CHECK(tex_matches(img, tm));
+        }
+        /* an array of 128 layers: its rebuild's dispatches and copies, five a layer, are all the check's to turn off
+           (an estimate of eight a subresource capped at 512 ran the rest of a big one at every check, which on a
+           Steam Deck decoded its ASTC arrays again each frame) */
+        {
+            const u64 ag = UMA_GA + 0x10000, acpu = UMA_A + 0x10000;
+            u32 tica[8];
+            memcpy(tica, tic2, sizeof tica);
+            tica[1] = (u32)ag;
+            tica[3] = 4u << 28;            /* five levels */
+            tica[4] = 15 | 7u << 23;       /* a 2D array */
+            tica[5] = 15 | (127u << 16); /* of 128 layers */
+            tica[7] = 4u << 4;             /* all five seen */
+            gmmu_map(ag, acpu, 0x80000);
+            vk_texcheck_stats(&ts0);
+            Surf* ta = vk_tex_from_tic_raw(tica);
+            CHECK(ta && ta->gpu_check && ta->layers == 128 && ta->levels == 5 && ta->size <= 0x80000);
+            vk_ww_new_epoch();
+            CHECK(vk_tex_from_tic_raw(tica) == ta);
+            vk_texcheck_stats(&ts);
+            CHECK(ts.checks == ts0.checks + 2 && ts.overflow == ts0.overflow);
+        }
+        /* a texture longer than any import (80 MiB) is still the GPU's to check, a segment at a time: unchanged its
+           cleared image stays cleared, and a byte changed in its last layer, three segments in, rebuilds it */
+        {
+            const u64 bg = 0x500000000ull, bcpu = HEAP_BASE + 0x8000000, bsize = 0x5000000;
+            static u8 corner[16 * 16 * 4];
+            u32 ticb[8];
+            CHECK(mem_map(bcpu, bsize, MS_NORMAL, PERM_RW) == 0);
+            gmmu_map(bg, bcpu, bsize);
+            u8* bm = GP(bcpu);
+            for (u64 i = 0; i < bsize; i += 4096) bm[i] = (u8)(i >> 12);
+            memcpy(ticb, tic2, sizeof ticb);
+            ticb[1] = (u32)bg;
+            ticb[2] = 3u << 21 | (u32)(bg >> 32);
+            ticb[3] = 4u << 3;                 /* blocks 16 GOBs high */
+            ticb[4] = 1023 | 7u << 23;         /* 1024 wide, a 2D array */
+            ticb[5] = 1023 | (19u << 16);      /* 1024 high, 20 layers */
+            Surf* tb = vk_tex_from_tic_raw(ticb);
+            CHECK(tb && tb->gpu_check && tb->size > (64ull << 20) && tb->size <= bsize);
+            const u64 last = 19 * tb->layer_size;
+            for (int round = 0; round < 2; round++) {
+                vk_render_end();
+                VkCommandBuffer cb = vk_cmd();
+                vk_surf_use(cb, tb, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                VkClearColorValue zero = {{0}};
+                VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 20};
+                rec_CmdClearColorImage(cb, tb->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &all);
+                if (round == 1) bm[last + 5] ^= 0x5A; /* texel (1, 0) of the last layer */
+                vk_ww_new_epoch();
+                vk_texcheck_stats(&ts0);
+                CHECK(vk_tex_from_tic_raw(ticb) == tb && tb->gpu_check);
+                vk_texcheck_stats(&ts);
+                CHECK(ts.checks == ts0.checks + 1);
+                VkBuffer rb;
+                u8* px = vk_readback_buffer(sizeof corner, &rb);
+                CHECK(px);
+                vk_render_end();
+                cb = vk_cmd();
+                vk_surf_use(cb, tb, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                            VK_ACCESS_2_TRANSFER_READ_BIT);
+                VkBufferImageCopy ic = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 19, 1},
+                                        .imageExtent = {16, 16, 1}};
+                rec_CmdCopyImageToBuffer(cb, tb->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb, 1, &ic);
+                VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                       .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                       .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                       .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                       .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+                VkDependencyInfo di = {
+                    .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+                rec_CmdPipelineBarrier2(cb, &di);
+                vk_finish();
+                vk_readback_ready();
+                memcpy(corner, px, sizeof corner);
+                if (round == 0) {
+                    for (u32 i = 0; i < sizeof corner; i++) CHECK(corner[i] == 0); /* not rebuilt */
+                } else
+                    for (u32 y = 0; y < 16; y++)
+                        for (u32 x = 0; x < 64; x++)
+                            CHECK(corner[y * 64 + x] == bm[last + bl_offset(x, y, 0, 4096, 1024, 4, 0)]);
+            }
+            vk_unlock();
+            CHECK(mem_unmap(bcpu, bsize) == 0);
+            vk_lock();
+        }
+        /* memory the runtime wrote while recording isn't read in place: the CPU checks the texture from then on, as
+           without unified memory, loading it again only when it changes, not at every check */
+        CHECK(!gmem_write(tg, data, sizeof data));
+        u64 up0, up, upb;
+        vk_tex_stats(&up0, &upb);
+        for (int round = 0; round < 5; round++) {
+            if (round == 4) tm[700] ^= 1;
+            vk_ww_new_epoch();
+            CHECK(vk_tex_from_tic_raw(tic2) == t2);
+            vk_tex_stats(&up, &upb);
+            CHECK(round == 0 ? up <= up0 + 1 : round < 4 ? up == up0 : up == up0 + 1);
+            up0 = up;
+        }
+        CHECK(!tex_read(t2, img) && tex_matches(img, tm));
+    }
+    /* a long range bound from many starts (a storage window, a vertex stream) finds the same imports: not one more
+       copy of the same pages for each start, and none made again */
+    {
+        VkUmaStats a, z;
+        const u64 big = HEAP_BASE + 0x2000000, gbig = 0x420000000ull;
+        CHECK(mem_map(big, 0x1000000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gbig, big, 0x1000000);
+        vk_uma_stats(&a);
+        for (int pass = 0; pass < 2; pass++)
+            for (u32 i = 0; i < 64; i++) {
+                CHECK(vk_buf_get(gbig + (u64)i * 0x11000, 0x800000, &b2, &off2));
+                vk_uma_stats(&z);
+                CHECK(z.bytes <= a.bytes + 2 * 0x1000000); /* two imports of the mapping at most */
+                CHECK(z.made - a.made <= 2);              /* made once, none made again (a driver maps each) */
+            }
+        vk_unlock();
+        CHECK(mem_unmap(big, 0x1000000) == 0);
+        vk_lock();
+    }
+    /* two ranges of one block with free pages between them: an import each, both found again at every use */
+    {
+        VkUmaStats a, z;
+        const u64 two = (HEAP_BASE + 0x3000000 + 0x1FFFFF) & ~0x1FFFFFull, gtwo = 0x430000000ull;
+        CHECK(mem_map(two, 0x4000, MS_NORMAL, PERM_RW) == 0);
+        CHECK(mem_map(two + 0x8000, 0x4000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gtwo, two, 0x4000);
+        gmmu_map(gtwo + 0x8000, two + 0x8000, 0x4000);
+        vk_uma_stats(&a);
+        for (int i = 0; i < 8; i++) CHECK(vk_buf_get(gtwo + (u64)(i & 1) * 0x8000, 0x100, &b2, &off2));
+        vk_uma_stats(&z);
+        CHECK(z.made == a.made + 2);
+        vk_unlock();
+        CHECK(mem_unmap(two, 0x4000) == 0 && mem_unmap(two + 0x8000, 0x4000) == 0);
+        vk_lock();
+    }
+    /* a range of a few bytes takes a small import */
+    {
+        VkUmaStats a, z;
+        const u64 small = HEAP_BASE + 0x4000000, gsmall = 0x440000000ull;
+        CHECK(mem_map(small, 0x400000, MS_NORMAL, PERM_RW) == 0);
+        gmmu_map(gsmall, small, 0x400000);
+        vk_uma_stats(&a);
+        CHECK(vk_buf_get(gsmall + 0x1000, 0x100, &b2, &off2));
+        vk_uma_stats(&z);
+        CHECK(z.made == a.made + 1 && z.bytes - a.bytes <= 0x40000); /* two blocks of 128 KiB at most */
+        vk_unlock();
+        CHECK(mem_unmap(small, 0x400000) == 0);
+        vk_lock();
+    }
+    /* imports no draw used for long go, so a driver that takes an import's pages at each submit isn't handed them */
+    {
+        VkUmaStats st0, st1;
+        u32 present = g_vk_present;
+        vk_uma_stats(&st0);
+        CHECK(st0.imports > 0);
+        g_vk_present = (present + 200) & ~3u; /* the hook looks every fourth present */
+        vk_uma_frame();
+        vk_uma_stats(&st1);
+        CHECK(st1.imports == 0);
+        g_vk_present = present;
+        CHECK(vk_buf_get(UMA_GA + 0x6000, 0x100, &b, &off)); /* imported again when used */
+        CHECK(!uma_read(b, off, 0x100, out) && !memcmp(out, p + 0x6000, 0x100));
+    }
+    /* memory the guest unmaps: its import goes with the unmap, and memory mapped there again is imported anew */
+    CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GR, UMA_R, 0x10000);
+    memset(GP(UMA_R), 0x11, 0x10000);
+    CHECK(vk_buf_get(UMA_GR + 0x800, 0x800, &b2, &off2) && b2 != b);
+    uma_stats(&n0, &waits0);
+    vk_unlock();
+    CHECK(mem_unmap(UMA_R, 0x10000) == 0);
+    vk_lock();
+    uma_stats(&n, &waits);
+    CHECK(n == n0 - 1);
+    CHECK(vk_uma_get(UMA_A, 0x100, 1, &any, &any_off));
+    { /* the import it gives is UMA_A's own, as a lookup with nothing changed finds it, not a slot the change emptied */
+        VkBuffer again;
+        u64 again_off;
+        CHECK(any && vk_uma_get(UMA_A, 0x100, 1, &again, &again_off) && again == any && again_off == any_off);
+    }
+    vk_unlock();
+    CHECK(mem_map(UMA_R, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    vk_lock();
+    memset(GP(UMA_R), 0x22, 0x10000);
+    CHECK(vk_buf_get(UMA_GR + 0x800, 0x800, &b2, &off2));
+    CHECK(!uma_read(b2, off2, 0x800, out));
+    for (u32 i = 0; i < 0x800; i++) CHECK(out[i] == 0x22);
+    vk_unlock();
+    CHECK(mem_unmap(UMA_R, 0x10000) == 0);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
@@ -1190,13 +1732,17 @@ int main(int argc, char** argv) {
     char *root = snx_temp_dir(NULL), *shot, *ppm;
     CHECK(root);
     CHECK(!snx_startup_options(argc, argv));
-    for (int i = 1; i < argc; i++) /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
+    for (int i = 1; i < argc; i++) { /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
         if (!strcmp(argv[i], "--vk_validation=1")) g_settings.vulkan_validation_layer = 1;
+        if (!strcmp(argv[i], "--uma=0")) g_settings.uma = 0; /* guest buffers copied, as without the extension */
+        if (!strcmp(argv[i], "--uma_indirect_copy=0")) g_settings.uma_indirect_copies = 0; /* the stores */
+        if (!strcmp(argv[i], "--write_tracking=0")) g_settings.global_write_tracking = 0; /* caches hash */
+    }
     snprintf(g_exedir, 1024, "%s/", root);
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
     mem_init(); /* the real reservation and alias pool: the renderer traps what the GPU owns where the host can */
-    CHECK(mem_map(HEAP_BASE, 0x800000, MS_NORMAL, PERM_RW) == 0);
+    CHECK(mem_map(HEAP_BASE, 0x900000, MS_NORMAL, PERM_RW) == 0); /* check_uma's 0x90000 at the top (UMA_A) */
     nv_init(); /* color targets may import guest memory through the GPU page table */
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
@@ -1233,6 +1779,9 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
+    CHECK(!check_texture_writes());
+    CHECK(!check_index_top());
+    CHECK(!check_uma());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
           vk_pipeline_worker_count(0, 4) == 2 && vk_pipeline_worker_count(0, 0) == 2 &&
@@ -1302,7 +1851,7 @@ int main(int argc, char** argv) {
     puts(
         "PASS headless Vulkan: viewport orientation, 7 VIC compositions, a VIC picture kept on the GPU and "
         "presented from there, NVDEC pictures laid out on the GPU and composed by VIC as the CPU references do, DMA copies and 2D blits on the GPU as theirs, "
-        "render targets over one another newest on top, "
+        "render targets over one another newest on top, guest buffers read in place (unified memory), "
         "8 cropped/transformed readbacks and PPMs, no WSI");
     return 0;
 }

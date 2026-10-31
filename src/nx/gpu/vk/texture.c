@@ -75,6 +75,8 @@ static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
 static int stage_bl(const VkBlMove* m, u64 gva, u64 lsz, VkBuffer* buf, u64* off) {
     u64 lo, hi;
     vk_bl_range(m, &lo, &hi);
+    /* with unified memory the move reads the guest's bytes where they are, when it reads none past the level */
+    if (hi <= lsz && vk_uma_read(gva + lo, hi - lo, vk_stage_align(), buf, off)) return 1;
     u8* p = vk_stage(hi - lo, vk_stage_align(), buf, off);
     if (!p) return 0;
     u64 n = lo >= lsz ? 0 : hi <= lsz ? hi - lo : lsz - lo;
@@ -178,7 +180,7 @@ static int up_flush(Upload* u) {
     }
     for (u32 i = 0, j; i < u->nreg; i = j) {
         for (j = i + 1; j < u->nreg && u->src[j] == u->src[i];) j++;
-        rec_CmdCopyBufferToImage(u->cb, u->src[i], u->t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, j - i, u->reg + i);
+        vk_gate_copy(u->cb, u->t, u->src[i], j - i, u->reg + i);
     }
     u->open = 0;
     u->moves = u->nconv = u->nreg = 0;
@@ -330,9 +332,13 @@ static int level_upload_pitch(Upload* u, const UpLevel* lv, u64 gva, u64 lsz, u6
             u32 rows = th - y < n ? th - y : n, slices = ld - z < nz ? ld - z : nz;
             VkBuffer staged;
             u64 at, first = ((u64)z * th + y) * gp, size = (u64)rows * slices * pitch;
-            u8* p = vk_stage(size, vk_stage_align(), &staged, &at);
-            if (!p) return 0;
-            if (as_is) { /* the rows, slices after another, are one range of guest memory */
+            /* the rows as they are, read where they are with unified memory */
+            int in_place = as_is && first + size <= lsz && vk_uma_read(gva + first, size, vk_stage_align(), &staged, &at);
+            u8* p = in_place ? NULL : vk_stage(size, vk_stage_align(), &staged, &at);
+            if (!in_place && !p) return 0;
+            if (in_place)
+                ;
+            else if (as_is) { /* the rows, slices after another, are one range of guest memory */
                 u64 have = first >= lsz ? 0 : first + size <= lsz ? size : lsz - first;
                 vk_guest_read(gva + first, have, p, staged, at);
                 memset(p + have, 0, size - have);
@@ -373,16 +379,22 @@ static int tex_upload_(Surf* t) {
     const VkFmt* f = &t->f;
     SNX_ZONE_T(z_up, "texture upload", "%ux%u", t->w, t->h);
     SNX_ZONE_VALUE(z_up, t->size);
-    g_tex_uploads++;
-    g_tex_upload_bytes += t->size;
+    if (!vk_gate_open()) { /* a rebuild the GPU's check turns on and off is counted there (vk_texcheck_stats) */
+        g_tex_uploads++;
+        g_tex_upload_bytes += t->size;
+    }
     t->upload_valid = 0;
     t->wgen = vk_surf_gen();      /* even a new texture at a reused address invalidates an old target's copy */
     t->took_drawn = 0;            /* memory's own texels again, until tex_take_drawn copies targets in */
     vk_surf_relist(t);
     vk_render_end();              /* copies and clears happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    /* a rebuild the GPU's check turns on and off (texcheck.c) copies or stores in GENERAL, which both take */
+    if (vk_gate_open())
+        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
+    else
+        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
     u64 band = g_vk.alloc_cap < TEX_BAND ? g_vk.alloc_cap : TEX_BAND;
@@ -449,7 +461,27 @@ static int tex_rehash(Surf* t) {
     return 1;
 }
 
+/* a texture the GPU checked handed to the CPU's checks: write tracking from now, and its hash, which the GPU didn't
+   keep, so it is loaded once if memory differs from what was hashed when it was last loaded */
+static void tex_cpu_check(Surf* t, u64 gva) {
+    t->gpu_check = 0;
+    t->stable = 0;
+    vk_written_since(gmem_host(gva, t->size), t->size, 0); /* starts tracking it */
+    t->wseen = vk_ww_now();
+    t->hash = ~mem_hash(gva, t->size); /* not what it holds: the rehash loads it */
+    tex_rehash(t);
+}
+/* Unified memory: the GPU checks the texture against guest memory in order with the draws, and rebuilds what changed
+   (texcheck.c), with no CPU hash and no write tracking. 0 when it can't now (the CPU's check then) */
+static int tex_gpu_refresh(Surf* t, int force) {
+    if (!vk_texcheck_begin(t, force)) return 0;
+    tex_upload(t);
+    vk_texcheck_end();
+    return 1;
+}
+
 void vk_tex_note_writeback(Surf* t) {
+    if (t->gpu_check) return; /* its next check compares the bytes written back */
     t->hash = mem_hash(t->gva, t->size);
     t->gw = gpu_mem_generation();
     t->wseen = vk_ww_now();
@@ -514,6 +546,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     if (type != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h) ii.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VkViewFormats vf;
     vk_view_formats(&ii, &vf);
+    t->gpu_check = !f.depth && vk_texcheck_prepare(&ii, &vf);
     /* room is made for it under the budget: the caller holds only surfaces it used this present, which stay */
     if (!vk_cache_image_create(&ii, &t->img, &t->mem, &t->bytes)) {
         free(t);
@@ -651,6 +684,21 @@ static void tex_settle(Surf* t, u64 gva, int changed, int count) {
    upload failed. gva is its address */
 static Surf* tex_check(Surf* t, u64 gva) {
     vk_surf_touch(t);
+    /* once a frame, and again after each submission or stream wait that can make the CPU's new writes the stream's to
+       see (vk_ww_epoch) or a write of the GPU front end there: the GPU's check, which rebuilds it where it changed */
+    if (t->gpu_check && (t->checked != g_vk_present || t->ww_epoch != vk_ww_epoch() || !t->upload_valid ||
+                         gpu_mem_dirty_since(t->gw, gva, t->size))) {
+        t->checked = g_vk_present;
+        t->ww_epoch = vk_ww_epoch();
+        t->gw = gpu_mem_generation();
+        if (tex_gpu_refresh(t, !t->upload_valid)) return t->upload_valid ? t : NULL;
+        /* It can't be (memory the runtime wrote while recording, GPU-owned or not imported, results pending over
+           it): the CPU checks it from now on, as without unified memory. Loading it again at every check instead was
+           a staging copy and a rebuild of each such texture every frame and every submission */
+        tex_cpu_check(t, gva);
+        return t->upload_valid ? t : NULL;
+    }
+    if (t->gpu_check) return t->upload_valid ? t : NULL;
     /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
        texture is only returned whole */
     if (!t->upload_valid) {
@@ -672,7 +720,6 @@ static Surf* tex_check(Surf* t, u64 gva) {
     /* the CPU's writes, once a frame and again after each submission or stream wait that can make new ones the
        stream's to see (vk_ww_epoch): write tracking proves the memory unchanged without hashing its texels */
     if (t->checked != g_vk_present || t->ww_epoch != vk_ww_epoch()) {
-        u32 wnow = vk_ww_now();
         int wr = vk_written_since(gmem_host(gva, t->size), t->size, t->wseen);
         int epoch = t->ww_epoch != vk_ww_epoch();
         t->ww_epoch = vk_ww_epoch();
@@ -684,7 +731,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
                check plus one is what the next scans taken in are marked with, and the texture took their writes as
                seen (one game's glyph cache missed the glyphs its CPU drew after a check that marked nothing) */
             if (wr) {
-                t->wseen = wnow;
+                t->wseen = vk_ww_now();
                 tex_rehash(t);
             }
             return t->upload_valid ? t : NULL;
@@ -859,6 +906,11 @@ texture_from_memory:
     u64 sz = 0;
     for (u32 l = 0; l < levels; l++) sz += bl ? bl_level_size(w, h, d3, &f, bh, bd, l, NULL, NULL) : stride;
     t->size = stride * (layers - 1) + sz;
+    t->gw = gpu_mem_generation();
+    t->checked = g_vk_present;
+    t->ww_epoch = vk_ww_epoch();
+    if (t->gpu_check && tex_gpu_refresh(t, 1)) return t->upload_valid ? t : NULL;
+    t->gpu_check = 0; /* the CPU's checks, below */
     t->wseen = vk_ww_now();
     vk_written_since(gmem_host(gva, t->size), t->size, 0); /* starts tracking it */
     t->wseen = vk_ww_now();

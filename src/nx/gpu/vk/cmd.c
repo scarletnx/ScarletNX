@@ -413,6 +413,7 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocati
 		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
 		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | vk_bda_usage() |
 		(g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, output, buf, off, mem);
 }
@@ -643,6 +644,21 @@ u64 vk_deferred_bytes(void) { return g_dead_bytes; }
 void vk_defer_buffer_view(VkBufferView v) {
     vk_cmd();
     dead_push(&g_fr[g_cur], (Dead){.view = v});
+}
+static const VkGate* g_gate;
+void vk_gate_set(const VkGate* g) { g_gate = g; }
+int vk_gate_open(void) { return g_gate != NULL; }
+void vk_gate_dispatch(VkCommandBuffer cb, u32 x, u32 y, u32 z) {
+    if (g_gate)
+        g_gate->dispatch(g_gate->ctx, cb, x, y, z);
+    else
+        rec_CmdDispatch(cb, x, y, z);
+}
+void vk_gate_copy(VkCommandBuffer cb, Surf* t, VkBuffer src, u32 n, const VkBufferImageCopy* r) {
+    if (g_gate)
+        g_gate->copy(g_gate->ctx, cb, t, src, n, r);
+    else
+        rec_CmdCopyBufferToImage(cb, src, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, n, r);
 }
 void vk_defer_call(void (*fn)(void*), void* arg) {
     vk_cmd();

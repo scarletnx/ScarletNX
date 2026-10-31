@@ -90,7 +90,8 @@ static void astc_init(void) {
     if (g_astc_cap > g_vk.alloc_cap) g_astc_cap = g_vk.alloc_cap;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = g_astc_cap,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                      vk_bda_usage(),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_astc_scratch, &g_astc_mem, NULL)))
@@ -126,7 +127,8 @@ static void bc7_init(void) {
         fatal("vulkan: cannot create the BC7 encoder's pipeline");
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = g_astc_cap,
-                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             .usage =
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | vk_bda_usage(),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_bc7_scratch, &g_bc7_mem, NULL)))
@@ -236,7 +238,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
         return 0;
     }
     VkPipeline pipe = astc_pipeline(bw, bh);
-    if (bc7) g_bc7_levels++;
+    if (bc7 && !vk_gate_open()) g_bc7_levels++; /* as its bytes below */
     for (u32 z = 0; z < depth; z += slices) {
         u32 nz = depth - z < slices ? depth - z : slices;
         for (u32 y = 0; y < ny; y += nrows) {
@@ -261,7 +263,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
             AstcParams p = {
                 w, height, nx, n, t->f.vk == VK_FORMAT_R8G8B8A8_SRGB || t->f.vk == VK_FORMAT_BC7_SRGB_BLOCK, shift};
             rec_CmdPushConstants(cb, g_astc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
-            rec_CmdDispatch(cb, (nx + tw - 1) / tw, (n + th - 1) / th, nz);
+            vk_gate_dispatch(cb, (nx + tw - 1) / tw, (n + th - 1) / th, nz);
             VkBuffer from = g_astc_scratch;
             u32 row_texels = 0, image_rows = 0;
             if (bc7) {
@@ -279,13 +281,15 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                 rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_bc7_layout, 0, 1, &set7, 0, NULL);
                 Bc7Params q = {w, height, cx, cy};
                 rec_CmdPushConstants(cb, g_bc7_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof q, &q);
-                rec_CmdDispatch(cb, (cx + 63) / 64, cy, nz);
+                vk_gate_dispatch(cb, (cx + 63) / 64, cy, nz);
                 scratch_barrier(cb, g_bc7_scratch, USE_WRITE, 0, USE_COPY);
                 from = g_bc7_scratch;
                 row_texels = cx * 4;
                 image_rows = cy * 4;
-                g_bc7_bytes += (u64)cx * cy * nz * 16;
-                g_bc7_rgba8_bytes += texels;
+                if (!vk_gate_open()) { /* a gated rebuild is counted in vk_texcheck_stats */
+                    g_bc7_bytes += (u64)cx * cy * nz * 16;
+                    g_bc7_rgba8_bytes += texels;
+                }
             } else {
                 scratch_barrier(cb, g_astc_scratch, USE_WRITE, 0, USE_COPY);
             }
@@ -294,7 +298,7 @@ int vk_astc_upload(VkCommandBuffer cb, Surf* t, u32 w, u32 h, u32 depth, u32 lev
                                       .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
                                       .imageOffset = {0, (i32)(y * bh), (i32)z},
                                       .imageExtent = {w, height, nz}};
-            rec_CmdCopyBufferToImage(cb, from, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            vk_gate_copy(cb, t, from, 1, &copy);
         }
     }
     return 1;

@@ -633,6 +633,58 @@ setting Native ETC2
     help 1 = ETC2 and EAC textures are sampled as the game's blocks where the GPU samples ETC2 (most phone and tablet
     help GPUs), in a quarter to an eighth of the memory. 0 = they are decoded on the GPU, as they are on GPUs without
     help ETC2 (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
+setting UMA
+    label Unified memory (UMA)
+    key uma
+    int 0 2
+    default 1
+    startup
+    words Off|Shared memory|Any GPU
+    help 1 = on a GPU that shares the CPU's memory (an integrated one), the GPU reads and writes guest memory where it
+    help is (VK_EXT_external_memory_host), as the console's GPU does: vertex, index and storage buffers are read in
+    help place and shaders write storage buffers in place, with no copy and nothing to land, and the GPU checks
+    help textures against guest memory itself. A discrete GPU keeps its own copies, since it would read guest memory
+    help across PCIe at every use. 2 = on a discrete GPU too, to compare. 0 = copies on every GPU. With it on, write
+    help tracking is off: caches that used it compare contents. On a GPU without the extension, 1 and 2 are a warning
+    help at start
+setting Global write tracking
+    key write_tracking
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = caches built from guest memory (textures, buffers, shaders) learn which pages the CPU wrote from the host
+    help (userfaultfd and PAGEMAP_SCAN on Linux, the write watch on Windows), and a warning at start says when the host
+    help can't tell. 0 = write tracking is off for the run, and the caches compare contents. Imported page write
+    help tracking says what happens to the pages unified memory imports
+setting Imported page write tracking
+    key uma_page_write_tracking
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help With unified memory on: 1 = the pages imported for the GPU are write-tracked as the rest of guest memory is.
+    help 0 = they aren't: no scan re-protects them, as amdgpu answers a re-protected imported page by waiting for the
+    help GPU and taking the import's pages again at its next submit, and the caches over them compare contents. The
+    help rest of guest memory is write-tracked either way. With unified memory off it does nothing
+setting UMA texture checks
+    key uma_texture_check
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = with unified memory on a GPU that shares the CPU's memory, the GPU checks textures against guest memory
+    help and rebuilds what changed itself, reading each texture at its first use in a frame and in each submission.
+    help 0 = the CPU checks them, with write tracking, as without unified memory, to compare the two
+setting UMA indirect copies
+    key uma_indirect_copy
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = with unified memory, a texture the GPU's check finds unchanged skips its rebuild's copies through copies
+    help whose commands the GPU writes (VK_KHR_copy_memory_indirect or VK_NV_copy_memory_indirect), where the GPU has
+    help them. 0 = dispatches store what the copies would, as on GPUs without them, to compare the two
 setting SLP vectorizer
     key slp_vectorizer
     int 0 1
