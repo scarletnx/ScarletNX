@@ -3,6 +3,7 @@
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_variants.h"
 #include "common/cpu/recompiler/codegen.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/codegen_view.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
@@ -211,11 +212,11 @@ static void run(Queue* q, unsigned jobs) {
     threads = snx_alloc(jobs * sizeof(*threads));
     for (i = 1; i < jobs; ++i) {
 #ifdef _WIN32
-        HANDLE h = CreateThread(NULL, 0, thread_main, q, 0, NULL);
+        HANDLE h = snx_compile_thread(thread_main, q);
         if (!h) break;
         threads[created++] = h;
 #else
-        if (pthread_create(&threads[created], NULL, thread_main, q)) break;
+        if (snx_compile_thread(&threads[created], thread_main, q)) break;
         ++created;
 #endif
     }

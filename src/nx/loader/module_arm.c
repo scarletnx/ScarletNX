@@ -8,6 +8,7 @@
    instruction leads to: a direct branch's target, and the next instruction after a call or a conditional transfer.
    An indirect branch's targets are known only when the game runs, unless something above names them */
 #include "nx/loader/module_ir.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/arm/llvm.h"
@@ -590,11 +591,11 @@ static void run(Queue* q, unsigned jobs) {
     threads = snx_alloc(jobs * sizeof(*threads));
     for (i = 1; i < jobs; ++i) {
 #ifdef _WIN32
-        HANDLE h = CreateThread(NULL, 0, thread_main, q, 0, NULL);
+        HANDLE h = snx_compile_thread(thread_main, q);
         if (!h) break;
         threads[created++] = h;
 #else
-        if (pthread_create(&threads[created], NULL, thread_main, q)) break;
+        if (snx_compile_thread(&threads[created], thread_main, q)) break;
         ++created;
 #endif
     }
