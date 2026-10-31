@@ -26,7 +26,8 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `memory_fit`, `heap_max_mb`,
 `thread_stack_mb`, `map_limit_mb`, `map_limit_files`, `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `jit_threads`, and the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
-type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
+type, range and help, tab-separated. The game log's header lists the Display, Graphics and Performance settings off
+their default: `settings: astc_bc=2 (default 0)`. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
 
 ## Game
@@ -65,6 +66,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
+| `astc_bc` | `0` | On a GPU that samples BCn but not ASTC, the game's ASTC textures are encoded again as BC7 once decoded: a quarter of RGBA8's memory, close to the blocks but not always the same ([ASTC](ASTC.md)). `0` Auto where the GPU's images' heap has less than 8192 MB of budget, `1` always, `2` never. The log says what Auto took and why |
 
 ## Performance
 
@@ -136,7 +138,6 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
 | `vk_validation` | `0` | `1` turns on the Vulkan validation layer (`VK_LAYER_KHRONOS_validation`, from the Vulkan SDK or the distribution's validation layers package), which logs each misuse of Vulkan it finds. It slows the game down a lot. Without the layer installed the run only warns |
 | `native_astc` | `1` | `1` samples ASTC textures as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs), in a quarter to a 36th of the memory. `0` decodes them to RGBA8 on the GPU, as on GPUs without ASTC (most desktop ones), to compare the two. On such a GPU `1` is a warning at start ([ASTC](ASTC.md)) |
-| `astc_bc` | `0` | `1`, on a GPU that samples BCn but not ASTC (most desktop ones), decodes ASTC textures and encodes them again as BC7, in a quarter of RGBA8's memory, close to what the blocks decode to but not always the same. `0` decodes them to RGBA8 exactly. Where the GPU samples ASTC it does nothing |
 | `native_bc` | `1` | `1` samples BC1 to BC7 textures as the game's blocks where the GPU samples BCn (desktop GPUs and some phone ones). `0` decodes them on the GPU, as on GPUs without BCn (most phone ones), to compare the two on a desktop GPU |
 | `native_etc2` | `1` | `1` samples ETC2 and EAC textures as the game's blocks where the GPU samples ETC2 (most phone and tablet GPUs), in a quarter to an eighth of the memory. `0` decodes them on the GPU, as on GPUs without ETC2 (most desktop ones), to compare the two. On such a GPU `1` is a warning at start |
 | `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |
