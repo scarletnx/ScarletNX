@@ -273,6 +273,9 @@ install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/OpenSS
 # lib/LICENSE is the library's BSD-2-Clause. The top-level LICENSE covers the rest of LZ4 (GPL-2.0-or-later), none
 # of which is built here
 install(FILES "${lz4_SOURCE_DIR}/lib/LICENSE" DESTINATION ${licenses}/lz4)
+if(TARGET snx_libdeflate)
+    install(FILES "${libdeflate_SOURCE_DIR}/COPYING" DESTINATION ${licenses}/libdeflate RENAME LICENSE)
+endif()
 if(TARGET snx_enet)
     install(FILES "${enet_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/enet)
     install(FILES "${zstd_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zstd)

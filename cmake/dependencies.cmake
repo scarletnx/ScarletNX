@@ -343,11 +343,29 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     endif()
 endif()
 
-# miniz (MIT), the project's zip and deflate: the launcher's Share Log, the logs in one zip (src/gui/logzip.c), and the
-# Vita driver's VPKs and compressed eboot segments (src/vita/loader/inflate.c). Its one-file release, miniz.c, built
-# alone, without its stdio functions (the zip is made in memory and written as every file is, for Windows' UTF-8
-# paths) and without zlib's names, which another library's zlib could share
+# libdeflate (MIT), every deflate the project writes or reads: the launcher's Share Log (src/gui/logzip.c), the Vita
+# driver's VPK members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library
+# without gzip, from its own sources; it picks the CPU's SIMD loops at run time
 if(SNX_BUILD_GUI OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
+    CPMAddPackage(NAME libdeflate VERSION 1.26
+                  URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+                  URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_libdeflate STATIC
+        "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
+        "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
+        "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
+        "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
+        "${libdeflate_SOURCE_DIR}/lib/crc32.c")
+    target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
+    snx_quiet(snx_libdeflate)
+endif()
+
+# miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
+# libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory
+# and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could
+# share
+if(SNX_BUILD_GUI)
     CPMAddPackage(NAME miniz VERSION 3.1.2
                   URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
                   URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
