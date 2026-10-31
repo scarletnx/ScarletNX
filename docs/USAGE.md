@@ -540,7 +540,8 @@ uid=5f3c0d9e8a7b41c2963e0f1a2b3c4d5e
 nickname=Xuji
 ```
 
-`uid` and `nickname` are the keys; any other key, a section out of order or twice, or a line that is no key stops the
+`uid`, `nickname` and `user_data` are the keys: `user_data` is the profile's UserData a program stored (its icon,
+colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice, or a line that is no key stops the
 game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
 picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG,
 256x256 as the console's, from its editor), at most 128 KiB, read when the game starts; without one, or with an empty

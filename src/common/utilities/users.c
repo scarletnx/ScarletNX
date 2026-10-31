@@ -36,6 +36,19 @@ static int users_uid_parse(const char* text, uint64_t uid[2]) {
     return text[32] ? -1 : 0;
 }
 
+/* user_data's 2 * SNX_USERS_DATA hex digits into data, an empty one zeros: 0, else -1 */
+static int users_data_parse(const char* text, unsigned char data[SNX_USERS_DATA]) {
+    memset(data, 0, SNX_USERS_DATA);
+    if (!text[0]) return 0;
+    if (strlen(text) != 2 * SNX_USERS_DATA) return -1;
+    for (int i = 0; i < 2 * SNX_USERS_DATA; i++) {
+        char c = text[i];
+        int d = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) >= 'a' && (c | 0x20) <= 'f' ? (c | 0x20) - 'a' + 10 : -1;
+        if (d < 0) return -1;
+        data[i / 2] = (unsigned char)(data[i / 2] << 4 | d);
+    }
+    return 0;
+}
 const SnxUser* snx_users_find(const uint64_t uid[2]) {
     for (int i = 0; i < g_user_count; i++)
         if (g_users[i].uid[0] == uid[0] && g_users[i].uid[1] == uid[1]) return &g_users[i];
@@ -222,22 +235,22 @@ done:
     free(path);
     return rc;
 }
-int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size) {
+/* [user<number>]'s key=value in users.ini of dir, the file's other lines as they were; without users.ini user 1's
+   starts it (snx_users_start). 0, else -1 with why: nothing changed */
+static int users_set_key(const char* dir, int number, const char* key, const char* value, char* why, size_t why_size) {
     char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL;
     const char *line, *end, *p, *q;
-    size_t size = 0, len, n, cut = 0, cut_end = 0, after = 0;
+    size_t size = 0, len, n, cut = 0, cut_end = 0, after = 0, key_len = strlen(key);
     int section = 0, rc = -1;
-    if (!snx_users_nickname_valid(nickname)) {
-        snprintf(why, why_size, "the nickname ");
-        nickname_refused(why, why_size, nickname);
-        goto done;
-    }
     if (number < 1 || number > g_user_count) {
         snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
         goto done;
     }
     if (!snx_is_file(path)) {
-        if (number == 1) rc = snx_users_start(dir, g_users[0].uid, nickname, why, why_size);
+        if (number == 1 && !snx_users_start(dir, g_users[0].uid, g_users[0].nickname, why, why_size))
+            rc = strcmp(key, "nickname") || strcmp(value, g_users[0].nickname)
+                     ? users_set_key(dir, number, key, value, why, why_size)
+                     : 0;
         if (number != 1) snprintf(why, why_size, "%s is not there: only user 1 is", path);
         goto done;
     }
@@ -246,7 +259,7 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         snprintf(why, why_size, "%s could not be read", path);
         goto done;
     }
-    /* [userN]'s nickname= line, else where one goes after its section line */
+    /* [userN]'s key= line, else where one goes after its section line */
     for (line = text; *line; line += len) {
         end = strchr(line, '\n');
         len = end ? (size_t)(end - line) + 1 : strlen(line);
@@ -259,7 +272,7 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         if (section != number || cut_end) continue;
         for (q = p; *q && *q != '=' && *q != '\n'; ++q) {}
         for (n = (size_t)(q - p); n && (p[n - 1] == ' ' || p[n - 1] == '\t'); --n) {}
-        if (*q == '=' && n == 8 && !strncmp(p, "nickname", 8)) {
+        if (*q == '=' && n == key_len && !strncmp(p, key, key_len)) {
             cut = (size_t)(line - text);
             cut_end = cut + len;
         }
@@ -269,7 +282,7 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         goto done;
     }
     if (!cut_end) cut = cut_end = after;
-    out = snx_format("%.*s%snickname=%s\n%s", (int)cut, text, cut && text[cut - 1] != '\n' ? "\n" : "", nickname,
+    out = snx_format("%.*s%s%s=%s\n%s", (int)cut, text, cut && text[cut - 1] != '\n' ? "\n" : "", key, value,
                      text + cut_end);
     /* written beside it first: a full disk leaves users.ini as it was */
     if (!out || snx_write_file(staged, out, strlen(out))) {
@@ -282,7 +295,6 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
         remove(staged);
         goto done;
     }
-    snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
     rc = 0;
 done:
     free(out);
@@ -290,6 +302,28 @@ done:
     free(staged);
     free(path);
     return rc;
+}
+int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size) {
+    if (!snx_users_nickname_valid(nickname)) {
+        snprintf(why, why_size, "the nickname ");
+        nickname_refused(why, why_size, nickname);
+        return -1;
+    }
+    if (users_set_key(dir, number, "nickname", nickname, why, why_size)) return -1;
+    snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
+    return 0;
+}
+int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX_USERS_DATA], char* why,
+                       size_t why_size) {
+    char hex[2 * SNX_USERS_DATA + 1];
+    int any = 0;
+    for (int i = 0; i < SNX_USERS_DATA; i++) {
+        snprintf(hex + 2 * i, 3, "%02x", data[i]);
+        any |= data[i];
+    }
+    if (users_set_key(dir, number, "user_data", any ? hex : "", why, why_size)) return -1;
+    memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);
+    return 0;
 }
 /* user 1 alone, as without users.ini: what a users.ini that is refused leaves */
 static void users_reset(void) {
@@ -342,8 +376,14 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
                     goto done;
                 }
                 memcpy(u->nickname, value, strlen(value) + 1);
+            } else if (!strcmp(key, "user_data")) {
+                if (users_data_parse(value, u->user_data)) {
+                    snprintf(why, why_size, "%s: [user%d] user_data=%.40s is not %d hex digits, nor empty", path, n,
+                             value, 2 * SNX_USERS_DATA);
+                    goto done;
+                }
             } else {
-                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname", path, n, key);
+                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname, user_data", path, n, key);
                 goto done;
             }
         }

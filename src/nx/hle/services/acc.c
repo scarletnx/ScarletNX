@@ -161,9 +161,11 @@ static void acc_profile_base(SvcObj* self, nn_account_profile_ProfileBase* base)
     base->last_edit_timestamp = ACC_LAST_EDIT;
     memcpy(base->nickname, u->nickname, strlen(u->nickname)); /* 32 bytes at most: the field's, with no NUL then */
 }
-/* the user data (icon, colors) is all zeros: the default icon */
+/* the user data (icon, colours, Mii) a program stored, users.ini's user_data: zeros, the default icon, without one */
 static int nn_account_profile_IProfile_Get(SvcObj* self, IpcBuf user_data, nn_account_profile_ProfileBase* base) {
-    memset(GP(user_data.addr), 0, (size_t)user_data.size);
+    const SnxUser* u = acc_profile_user(self);
+    memcpy(GP(user_data.addr), u->user_data,
+           (size_t)(user_data.size < sizeof u->user_data ? user_data.size : sizeof u->user_data));
     acc_profile_base(self, base);
     R_SUCCEED();
 }

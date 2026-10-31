@@ -7,6 +7,7 @@
 #include "nx/hle/services/services_int.h"
 #include "common/utilities/common.h"
 #include <plutovg.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -801,6 +802,52 @@ static char* got(const char* name) {
     free(path);
     return text;
 }
+/* a profile's UserData (icon, colour, Mii), users.ini's user_data: 256 hex digits read and given to the game by Get,
+   empty or none zeros, anything else refused; written back as a program stores it, the file's other lines kept */
+static void test_user_data(void) {
+    static u8 memory[0x200];
+    char why[512], hex[257], *now;
+    unsigned char data[SNX_USERS_DATA], zeros[SNX_USERS_DATA] = {0};
+    nn_account_profile_ProfileBase base;
+    nn_account_Uid uid;
+    SvcObj* profile = NULL;
+    IpcBuf buffer;
+    int i;
+    g_mem = memory;
+    for (i = 0; i < SNX_USERS_DATA; i++) data[i] = (unsigned char)(i * 7 + 1);
+    for (i = 0; i < SNX_USERS_DATA; i++) snprintf(hex + 2 * i, 3, "%02X", data[i]);
+    {
+        char* text =
+            snx_format("[user1]\nnickname=Aogo\nuser_data=\n[user2]\nuid=" UID2 "\nnickname=Xuji\nuser_data=%s\n", hex);
+        put_ini(text);
+        free(text);
+    }
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !memcmp(g_users[0].user_data, zeros, sizeof zeros) &&
+          !memcmp(g_users[1].user_data, data, sizeof data));
+    uid_of(UID2, &uid);
+    CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+    memset(memory, 0xAA, sizeof memory);
+    buffer.addr = 0x10;
+    buffer.size = SNX_USERS_DATA;
+    CHECK(nn_account_profile_IProfile_Get(profile, buffer, &base) == 0 && !memcmp(memory + 0x10, data, sizeof data) &&
+          memory[0x10 + SNX_USERS_DATA] == 0xAA);
+    svcobj_unref(profile);
+    /* stored: user 1's now, in hex, and user 2's zeros as an empty key */
+    CHECK(snx_users_set_data(DIR, 1, data, why, sizeof why) == 0 &&
+          snx_users_set_data(DIR, 2, zeros, why, sizeof why) == 0);
+    now = got("users.ini");
+    for (i = 0; hex[i]; i++) hex[i] = (char)tolower((unsigned char)hex[i]);
+    CHECK(now && strstr(now, "[user1]\nnickname=Aogo\nuser_data=") && strstr(now, hex) &&
+          strstr(now, "nickname=Xuji\nuser_data=\n"));
+    free(now);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !memcmp(g_users[0].user_data, data, sizeof data) &&
+          !memcmp(g_users[1].user_data, zeros, sizeof zeros));
+    CHECK(snx_users_set_data(DIR, 3, data, why, sizeof why) == -1 && strstr(why, "there is no user 3: 2 users"));
+    gone("users.ini");
+    refused("[user1]\nuser_data=0123\n", 1, "user_data=0123 is not 256 hex digits, nor empty");
+    puts("PASS a profile's UserData as users.ini's user_data: read, given to the game, written back");
+}
+
 /* users.ini started over with one user: the one before kept as users.ini.old, nothing written for what is refused */
 static void test_start(void) {
     static const uint64_t three[2] = {3, 10}, two[2] = {2, 2}, zero[2] = {0, 0};
@@ -989,6 +1036,7 @@ int main(void) {
     test_account_command_replies();
     test_users();
     test_choose();
+    test_user_data();
     test_system_service();
     test_administrator_service();
     test_system_manager();
