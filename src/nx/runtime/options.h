@@ -30,6 +30,10 @@ void ini_open(const char* path);
    ", ": how many. ini_open and a reload show the list at the top of the picture (hud.h), a reload that changes it in the
    log too */
 int options_debug(int flags, char* out, size_t n);
+/* the Display, Graphics and Performance settings not at their default, each "key=value (default D)" between ", ", the
+   ones --recommended names followed by " [recommended]" unless marked is 0: how many. The log's header says them, and
+   a reload that changes them says them again, without the marks, which only the launcher gives */
+int options_settings(int marked, char* out, size_t n);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start

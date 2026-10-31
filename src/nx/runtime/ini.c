@@ -92,7 +92,20 @@ void ini_format(const IniOpt* o, char* out, size_t n) {
         snprintf(out, n, "%s", (const char*)o->var);
 }
 
+/* whether key is one of list's, a comma between */
+static int listed(const char* list, const char* key) {
+    size_t n = strlen(key);
+    while (list && *list) {
+        size_t len = strcspn(list, ",");
+        if (len == n && !strncmp(list, key, n)) return 1;
+        list += len + (list[len] == ',');
+    }
+    return 0;
+}
 int ini_changed(const IniOpt* table, int flags, char* out, size_t n) {
+    return ini_changed_marked(table, flags, NULL, out, n);
+}
+int ini_changed_marked(const IniOpt* table, int flags, const char* marked, char* out, size_t n) {
     size_t at = 0;
     int count = 0;
     if (n) out[0] = 0;
@@ -122,6 +135,7 @@ int ini_changed(const IniOpt* table, int flags, char* out, size_t n) {
             else
                 at += (size_t)snprintf(out + at, n - at, "%s%s=%s", count ? ", " : "", table->key, shown);
         }
+        if (at < n && listed(marked, table->key)) at += (size_t)snprintf(out + at, n - at, " [recommended]");
         if (at < n && (flags & INI_CHANGED_DEFAULT))
             at += (size_t)snprintf(out + at, n - at, table->type == INI_TEXT ? " (default \"%s\")" : " (default %s)",
                                    table->def);

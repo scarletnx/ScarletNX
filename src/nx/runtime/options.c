@@ -111,7 +111,9 @@ static const IniOpt* find_row(const char* key, int* own) {
     return NULL;
 }
 
-int snx_setting_known(const char* key) { return find_row(key, NULL) || unattended_known(key); }
+int snx_setting_known(const char* key) {
+    return find_row(key, NULL) || unattended_known(key) || ini_find(g_marks_ini, key);
+}
 
 /* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
 
@@ -275,6 +277,8 @@ static void apply(const char* key, const char* value) {
         ini_read(o, value);
     else if (o || unattended_known(key))
         backend_ini(key, value);
+    else if ((o = ini_find(g_marks_ini, key)))
+        ini_read(o, value);
 }
 /* every setting: the command line's value, else the file's, else its default; then the keys of no section the
    unattended options take */
@@ -417,6 +421,63 @@ int options_debug(int flags, char* out, size_t n) {
     if (g_opt_gdb && at < n) snprintf(out + at, n - at, "%sgdbstub", count++ ? ", " : "");
     return count;
 }
+int options_settings(int marked, char* out, size_t n) {
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    char part[1024];
+    size_t at = 0, t;
+    int count = 0;
+    if (n) out[0] = 0;
+    for (t = 0; t < sizeof tables / sizeof *tables; t++) {
+        int c = ini_changed_marked(tables[t], INI_CHANGED_DEFAULT, marked ? g_settings.recommended : NULL, part,
+                                   sizeof part);
+        if (c && at < n) at += (size_t)snprintf(out + at, n - at, "%s%s", count ? ", " : "", part);
+        count += c;
+    }
+    return count;
+}
+/* the keys --recommended names that are no Display, Graphics or Performance setting, said once with the ones the log
+   marks */
+static void recommended_check(void) {
+    const IniOpt* const tables[] = {g_display_ini, g_graphics_ini, g_performance_ini};
+    const char* list = g_settings.recommended;
+    char kept[sizeof g_settings.recommended], bad[sizeof g_settings.recommended], key[64];
+    size_t at = 0, wrong = 0, t;
+    kept[0] = bad[0] = 0;
+    while (*list) {
+        size_t len = strcspn(list, ",");
+        int found = 0;
+        if (len < sizeof key) {
+            memcpy(key, list, len);
+            key[len] = 0;
+            for (t = 0; t < sizeof tables / sizeof *tables && !found; t++) found = ini_find(tables[t], key) != NULL;
+        }
+        if (found && at < sizeof kept)
+            at += (size_t)snprintf(kept + at, sizeof kept - at, "%s%s", at ? ", " : "", key);
+        else if (!found && wrong < sizeof bad)
+            wrong += (size_t)snprintf(bad + wrong, sizeof bad - wrong, "%s%.*s", wrong ? ", " : "", (int)len, list);
+        list += len + (list[len] == ',');
+    }
+    if (wrong)
+        WARN("settings: --recommended=%s names %s, no Display, Graphics or Performance setting: the log marks %s\n",
+             g_settings.recommended, bad, at ? kept : "none");
+}
+/* the Display, Graphics and Performance settings as the log last said them, without marks */
+static char g_said[2048];
+static void settings_said(void) {
+    options_settings(0, g_said, sizeof g_said);
+    recommended_check();
+}
+/* after a reload, the Display, Graphics and Performance settings again when they changed */
+static void settings_reloaded(void) {
+    char now[sizeof g_said];
+    int n = options_settings(0, now, sizeof now);
+    if (!strcmp(now, g_said)) return;
+    if (n)
+        LOG("settings: after the reload, %s\n", now);
+    else
+        LOG("settings: after the reload, every Display, Graphics and Performance setting is at its default\n");
+    memcpy(g_said, now, sizeof g_said);
+}
 /* the Debug settings in effect at the top of the picture; after a reload that changes them, in the log too */
 static void debug_shown(int reloaded) {
     char list[HUD_DEBUG_MAX];
@@ -445,6 +506,7 @@ void ini_open(const char* path) {
              g_path, why);
         apply_all();
         debug_shown(0);
+        settings_said();
         g_started = 1;
         return;
     }
@@ -457,6 +519,7 @@ void ini_open(const char* path) {
     say_deprecated();
     apply_all();
     debug_shown(0);
+    settings_said();
     if (!write_file()) pending_written(taken, n);
     g_started = 1;
 }
@@ -492,6 +555,7 @@ void ini_poll(int final) {
         apply_all();
         LOG("settings: %s reloaded\n", g_path);
         debug_shown(1);
+        settings_reloaded();
         if (!write_file()) pending_written(taken, n);
     } else if (h != g_hash)
         g_seen = h; /* changed: maybe still being saved, read at the next poll if it stays so */

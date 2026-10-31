@@ -64,6 +64,9 @@ void ini_format(const IniOpt* o, char* out, size_t n);
 #define INI_CHANGED_DEFAULT 1
 #define INI_CHANGED_NO_TEXT 2
 int ini_changed(const IniOpt* table, int flags, char* out, size_t n);
+/* ini_changed, each setting whose key marked lists (a comma between; NULL for none) followed by " [recommended]",
+   after its value and before its default */
+int ini_changed_marked(const IniOpt* table, int flags, const char* marked, char* out, size_t n);
 /* an INI_INT's value v as the menus read it: its word, or the number */
 void ini_word(const IniOpt* o, int v, char* out, size_t n);
 /* v a step down (dir -1) or up (1): words go round, numbers stop at lo and hi */

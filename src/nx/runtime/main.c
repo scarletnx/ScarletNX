@@ -911,6 +911,10 @@ int snx_main(int argc, char** argv) {
         LOG("system: %s\n", sys);
     }
     {
+        char list[2048];
+        if (options_settings(1, list, sizeof list)) LOG("settings: %s\n", list);
+    }
+    {
         char list[HUD_DEBUG_MAX];
         if (options_debug(INI_CHANGED_DEFAULT, list, sizeof list))
             LOG("debug: %s; shown at the top of the picture while the game runs\n", list);

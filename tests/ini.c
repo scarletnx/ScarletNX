@@ -190,6 +190,13 @@ int main(void) {
         assert(ini_changed(changed, INI_CHANGED_DEFAULT | INI_CHANGED_NO_TEXT, list, sizeof list) == 3);
         assert(!strcmp(list, "level=2 (default 1), speed=1.5 (default 1), folder (default \"\")"));
         assert(ini_changed(changed, 0, list, 12) == 3 && !strcmp(list, "level=2, sp")); /* cut, every one counted */
+        /* the keys marked lists say [recommended] after their value, before their default; a key that only begins as
+           one listed is not marked */
+        assert(ini_changed_marked(changed, INI_CHANGED_DEFAULT, "speed,lev", list, sizeof list) == 3);
+        assert(!strcmp(list, "level=2 (default 1), speed=1.5 [recommended] (default 1), folder=/home/someone/corpus "
+                             "(default \"\")"));
+        assert(ini_changed_marked(changed, 0, NULL, list, sizeof list) == 3 &&
+               !strcmp(list, "level=2, speed=1.5, folder=/home/someone/corpus"));
         level = 1;
         speed = 1.0f;
         folder[0] = 0;
