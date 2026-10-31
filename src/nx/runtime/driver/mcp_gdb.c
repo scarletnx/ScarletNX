@@ -10,7 +10,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/driver/hactool/cJSON.h"
+#include <cJSON.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>

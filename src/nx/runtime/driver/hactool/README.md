@@ -1,9 +1,10 @@
 # hactool, as scarletnx --extract runs it
 
 [hactool](https://github.com/SciresM/hactool) by SciresM, from commit `1d64a83450e025622f3468c28fc4164dad2c5ef6`
-(1.4.0), under its ISC license ([LICENSE](LICENSE)). cJSON (MIT) and ConvertUTF (Unicode license) come with it, their
-notices at the top of their files. `storage.c` and `storage.h` port LibHac's storages (MIT, Copyright (c) 2018 Alex
-Barney, as Ryubing maintains it), their notice at the top of `storage.c`. ScarletNX's changes are GPL-3.0-or-later.
+(1.4.0), under its ISC license ([LICENSE](LICENSE)). ConvertUTF (Unicode license) comes with it, its notice at the top
+of its files; its cJSON is the build's (`cmake/dependencies.cmake`). `storage.c` and `storage.h` port LibHac's storages
+(MIT, Copyright (c) 2018 Alex Barney, as Ryubing maintains it), their notice at the top of `storage.c`. ScarletNX's
+changes are GPL-3.0-or-later.
 
 It is a library inside the driver (`cmake/hactool.cmake`), not a program: `main.c`, the bundled mbedtls and its
 `lz4.c` are left out. The driver calls it through `snx_hac.h` (`snx_hac.c`), and `snx_io.h`, included ahead of every

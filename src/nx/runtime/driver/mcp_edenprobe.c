@@ -12,7 +12,7 @@
    that run something run it through snx_run: no shell, the output kept off the protocol's stdout */
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/driver/hactool/cJSON.h"
+#include <cJSON.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
