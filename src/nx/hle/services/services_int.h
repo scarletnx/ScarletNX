@@ -138,6 +138,9 @@ typedef struct {
     u32 user_next;
     /* StoreOpenContext ran: the open user is kept for the program ExecuteProgram starts next */
     int context_stored;
+    /* the id token an account server issued for the title at EnsureIdTokenCacheAsync, which LoadIdTokenCache
+       answers: none here, where there is no account server */
+    char token[4096];
 } HleAcc;
 /* acc's host side: the picture's lock (hle.h's g_host) */
 typedef struct {
