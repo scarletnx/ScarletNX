@@ -631,6 +631,8 @@ typedef struct App {
     bool telling;            /* the notification shows a run, the menu's or a recompile of the queue */
     const char* told_result; /* how the last of them ended, English (snx_tr's), for the one left once none runs */
     bool playing; /* a game started here plays in the game activity, the menu behind it until it shows again */
+    bool played;  /* that activity ended: how the game's run did is read once the menu shows (game_end) */
+    SDL_Time played_at; /* when it started: a game log older than that is another run's */
 #endif
 } App;
 
@@ -11105,11 +11107,38 @@ static int play(App* app, const char* game) {
     int ok;
     argv[0] = option;
     argv[1 + gui_settings_options(s, 0, argv + 1)] = NULL;
+    SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
     free(argv);
     free(option);
     return ok;
+}
+static char* newest_log(const App* app);
+/* the game activity has ended: a failure its log shows (a crash, an error) stays on the run's screen, as a game that
+   fails on a computer does, with Share Log blinking. The game's own error screen shows no crash */
+static void game_end(App* app) {
+    char *log = newest_log(app), what[1024], lines[4096];
+    SDL_PathInfo info;
+    int end = -1;
+    if (!log)
+        snprintf(what, sizeof what, "%s", snx_tr("the game wrote no log"));
+    else if (!SDL_GetPathInfo(log, &info) || info.modify_time < app->played_at)
+        snprintf(what, sizeof what, snx_tr("the game wrote no log since it started; the newest is %s"), log);
+    else
+        end = gui_log_game_end(log, what, sizeof what, lines, sizeof lines);
+    if (end == SNX_LOG_NONE) {
+        free(log);
+        return;
+    }
+    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
+    if (end > 0) gui_console_feed(&app->console, lines, strlen(lines));
+    snprintf(app->message, sizeof app->message, snx_tr("The game stopped: %s"), what);
+    gui_log("%s", app->message);
+    app->finished = app->abnormal_exit = app->log_due = true;
+    app->menu.view = GUI_LOAD_NONE;
+    layout(app);
+    free(log);
 }
 /* the game a run of the driver made ready: the one it ran, when it was a game already, else in its folder of games/,
    where the driver names it, as it cannot open it; whether it opened */
@@ -11676,6 +11705,10 @@ static void pump(App* app) {
     if (app->play_later && !app->hidden) {
         app->play_later = false;
         if (ready(app)) leave_run(app);
+    }
+    if (app->played && !app->hidden) {
+        app->played = false;
+        game_end(app);
     }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
@@ -14592,7 +14625,10 @@ static void touch(App* app, float x, float y) {
 static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     App* app = (App*)data;
     if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) app->hidden = true;
-    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) app->hidden = app->playing = false; /* the game, if any, behind */
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { /* the game, if any, behind */
+        app->played = app->playing;
+        app->hidden = app->playing = false;
+    }
     return true;
 }
 #endif
