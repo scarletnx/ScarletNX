@@ -15,6 +15,8 @@ typedef struct {
     int auto_threads, threads[REC_THREADS], n_threads;
     double rates[REC_THREADS]; /* new pipelines a second, each number of threads' */
     int cpus, cores;
+    char ended[192]; /* why the probe stopped before its last step, in the launcher's words: "" while it runs, or once
+                        it said done */
 } RecProbe;
 /* p cleared: nothing said yet */
 void rec_probe_start(RecProbe* p);
@@ -24,6 +26,9 @@ void rec_probe_line(RecProbe* p, const char* line);
 int rec_gpu_tested(const RecProbe* p);
 int rec_pipelines_tested(const RecProbe* p);
 int rec_memory_tested(const RecProbe* p);
+/* how far the probe went, for the screen that waits on it: each step, GPU and its memory, Pipelines and RAM, waiting,
+   running or done with what it found (or stopped, with p's ended), between "; " */
+void rec_progress(const RecProbe* p, char* out, size_t size);
 
 /* the settings the rules give, in the order Recommended Settings shows them */
 enum { REC_ASTC_BC, REC_PIPELINE_THREADS, REC_MEMORY_FIT, REC_COUNT };
@@ -48,6 +53,14 @@ typedef struct {
     char proposed[REC_COUNT][16]; /* [proposed], "" for a key not there */
     char date[24];                /* [tested]'s date, "" before a test */
 } RecFile;
+/* how a row stands against the game's settings, effective the value they have (the pick, else the default) and
+   proposed the value the last test gave it ([proposed], "" for none): not tested; that value already; a value the
+   player kept, the test giving what it gave last time; proposed, its box checked to start with */
+enum { REC_ROW_UNTESTED, REC_ROW_SAME, REC_ROW_KEPT, REC_ROW_PROPOSED };
+int rec_row_state(const RecRow* row, const char* effective, const char* proposed);
+extern const char* const rec_keys[REC_COUNT]; /* each row's key, in the rows' order */
+/* the step the probe is in, as the screen names it ("Pipelines"); "the start" before its first */
+const char* rec_step_name(const RecProbe* p);
 /* the index of key among the rows (REC_ASTC_BC...), -1 for another */
 int rec_key(const char* key);
 /* path into f: 0, an empty f where there is no file; nonzero, f empty and why the system's words, for one there that

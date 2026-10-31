@@ -40,6 +40,7 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_GBA: menu->view = GUI_LOAD_DROP; break;
                 case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
+                case GUI_RECOMMENDED: return GUI_MENU_RECOMMENDED;
                 case GUI_LOG: return GUI_MENU_LOG;
                 case GUI_FOLDERS: return GUI_MENU_FOLDERS;
                 case GUI_EXIT: menu->quit = true; break;
@@ -147,6 +148,9 @@ void gui_usage_text(char* out, size_t size, bool available, uint64_t memory_byte
 const char* gui_setting_description(const GuiMenu* menu) {
     switch (menu->selected) {
         case GUI_SETTINGS: return snx_tr("The game's .ini settings, the launcher's for the next runs, and its theme");
+        case GUI_RECOMMENDED:
+            return snx_tr("Tests this computer in a few seconds, then proposes the settings that suit it; nothing "
+                          "changes until Apply");
         case GUI_LOG:
             return snx_tr(
                 "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder");

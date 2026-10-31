@@ -585,6 +585,19 @@ int main(int argc, char** argv) {
                !strcmp(on_screen(&s, "pipeline_threads"), "6 [recommended]"));
         assert(gui_settings_set(&s, "memory_fit", "1") &&
                !strcmp(on_screen(&s, "memory_fit"), "On")); /* never applied */
+        /* a value as its row words it, and the value a run has: the pick, else the default */
+        {
+            char word[32];
+            gui_settings_word(&s, "astc_bc", "1", word, sizeof word);
+            assert(!strcmp(word, "On"));
+            gui_settings_word(&s, "astc_bc", "0", word, sizeof word);
+            assert(!strcmp(word, "Off"));
+            gui_settings_word(&s, "pipeline_threads", "6", word, sizeof word);
+            assert(!strcmp(word, "6"));
+            assert(!strcmp(gui_settings_effective(&s, "pipeline_threads"), "6")); /* typed 6.0, kept whole */
+            gui_settings_reset(&s, -1);
+            assert(!strcmp(gui_settings_effective(&s, "pipeline_threads"), "0") && !gui_settings_effective(&s, "nope"));
+        }
         gui_settings_free(&s);
         assert(!s.recommended[REC_ASTC_BC][0]);
     }

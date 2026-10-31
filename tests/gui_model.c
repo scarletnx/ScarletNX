@@ -66,6 +66,10 @@ int main(void) {
     assert(gui_menu_key(&menu, GUI_DOWN) == GUI_MENU_STAY && menu.selected == GUI_SETTINGS);
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_STAY);
     menu.running = false;
+    /* Recommended Settings, after Settings: its box tests this computer, nothing changed before Apply */
+    gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_RECOMMENDED && strstr(gui_setting_description(&menu), "nothing changes until Apply"));
+    assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_RECOMMENDED && menu.view == GUI_LOAD_NONE && !menu.quit);
     gui_menu_key(&menu, GUI_DOWN);
     assert(gui_menu_key(&menu, GUI_SELECT) == GUI_MENU_LOG && menu.selected == GUI_LOG && !menu.quit);
     /* Folders, on every system, before Exit: Settings > App > Folders */

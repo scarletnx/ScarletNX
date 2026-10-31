@@ -3163,6 +3163,10 @@ msgstr ""
 msgid "Subfolders"
 msgstr ""
 
+#: src/gui/main.c src/gui/ui.txt
+msgid "Recommended Settings"
+msgstr ""
+
 #: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
@@ -3180,6 +3184,134 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s has no folder to open"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Run Tests waits for the recompile of %s to end: the test measures this computer's threads, which it takes"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The test cancelled before is still ending: Run Tests again in a moment"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the test gave no answer in %d s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the test ended with status %d at %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "it said nothing more"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not tested: this build's settings have no %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not tested"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no change"
+msgstr ""
+
+#: src/gui/main.c
+msgid "your pick"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Run Tests"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Apply"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "? (%s cannot be read: %s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Tests of a few seconds: the GPU's texture formats and memory, the threads making pipelines, the RAM. Nothing changes until Apply. Last test: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, your pick; the test says %s, as on %s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Apply puts the checked rows into Settings, for every game; Cancel leaves Settings as it is"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Nothing moved since the test of %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every setting tested already suits this computer"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Nothing could be tested: each row says why"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no folder for the settings"
+msgstr ""
+
+#: src/gui/main.c src/gui/settings.c
+msgid "[recommended]"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not applied: %s could not be written, so Settings still has %s, and %s was not written"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Applied: %s, but %s could not be written (%s): Settings marks none of them [recommended]"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Nothing applied, and %s could not be written (%s): the next test proposes the same rows"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Applied: %s. The next game run takes them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Applied: %s. The next game run takes it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Nothing applied: Settings still has %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cancelled at %s: Settings still has %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s could not be written (%s): its last test is still %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -3813,6 +3945,10 @@ msgid "The game's .ini settings, the launcher's for the next runs, and its theme
 msgstr ""
 
 #: src/gui/model.c
+msgid "Tests this computer in a few seconds, then proposes the settings that suit it; nothing changes until Apply"
+msgstr ""
+
+#: src/gui/model.c
 msgid "Saves the logs as one zip or as scarletnx.log in a folder it opens to share from, or opens their folder"
 msgstr ""
 
@@ -3874,6 +4010,53 @@ msgstr ""
 
 #: src/gui/queue.c
 msgid "next"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "GPU and its memory"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "Pipelines"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "RAM"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "the start"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "done"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid ", %s, %ld MB budget"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid ", %d threads %.0f a second"
+msgstr ""
+
+#: src/gui/recommend.c
+#, c-format
+msgid ", %ld MB available"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "stopped"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "running"
+msgstr ""
+
+#: src/gui/recommend.c
+msgid "waiting"
 msgstr ""
 
 #: src/gui/recommend.c
@@ -3939,10 +4122,6 @@ msgstr ""
 
 #: src/gui/settings.c
 msgid "Mixed"
-msgstr ""
-
-#: src/gui/settings.c
-msgid "[recommended]"
 msgstr ""
 
 #: src/gui/steps.c

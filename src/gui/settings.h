@@ -85,6 +85,10 @@ int gui_settings_is_recommended(const GuiSettings* settings, int row);
 /* argv's --recommended=key,key for the settings picked at the value Recommended Settings gave them, which the runtime's
    log marks: its count, 1 or 0 */
 size_t gui_settings_marks(GuiSettings* settings, const char** argv);
+/* value of key's row as the row shows it: its word ("On" for 1), the default's word for its default, else value */
+void gui_settings_word(const GuiSettings* settings, const char* key, const char* value, char* out, size_t size);
+/* the value key has for a run: its pick, else the runtime's default; NULL for no such row */
+const char* gui_settings_effective(const GuiSettings* settings, const char* key);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
 /* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,

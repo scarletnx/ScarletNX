@@ -129,6 +129,45 @@ int main(void) {
     feed(&p, "nonsense\nfuture_key=1\n=x\n");
     assert(!p.step[0] && p.ram_mb == -1 && p.bc == -1);
 
+    /* a step that stopped (the probe crashed or was stopped): its rows say why, in the launcher's words */
+    feed(&p, "probe: gpu\n");
+    snprintf(p.ended, sizeof p.ended, "the test ended with status 139");
+    rec_rules(&p, 0, rows);
+    assert(strstr(rows[REC_ASTC_BC].why, "Not tested: the test ended with status 139"));
+    assert(strstr(rows[REC_MEMORY_FIT].why, "Not tested: the test ended with status 139"));
+
+    /* the screen that waits: each step waiting, running or done with what it found */
+    feed(&p, "");
+    rec_progress(&p, text, sizeof text);
+    assert(!strcmp(text, "GPU and its memory: waiting; Pipelines: waiting; RAM: waiting"));
+    feed(&p, "probe: gpu\ngpu=AMD Radeon RX 6700 XT (RADV NAVI22)\ngpu_budget_mb=11490\nprobe: pipelines\n");
+    rec_progress(&p, text, sizeof text);
+    assert(!strcmp(text, "GPU and its memory: done, AMD Radeon RX 6700 XT (RADV NAVI22), 11490 MB budget; Pipelines: "
+                         "running; RAM: waiting"));
+    snprintf(p.ended, sizeof p.ended, "Cancelled");
+    rec_progress(&p, text, sizeof text);
+    assert(strstr(text, "; Pipelines: stopped, Cancelled; RAM: waiting"));
+    feed(&p, RUN);
+    rec_progress(&p, text, sizeof text);
+    assert(strstr(text,
+                  "Pipelines: done, 6 threads 206 a second, 10 threads 227 a second; RAM: done, 21267 MB available"));
+    feed(&p, "probe: gpu\ngpu_error=no Vulkan device answered (vkCreateInstance: VK_ERROR_INCOMPATIBLE_DRIVER)\n"
+             "probe: memory\nram_error=this system tells no memory it can still give\nprobe: done\n");
+    rec_progress(&p, text, sizeof text);
+    assert(strstr(text, "GPU and its memory: done, no Vulkan device answered (vkCreateInstance"));
+    assert(strstr(text, "RAM: done, this system tells no memory it can still give"));
+
+    /* a row against the settings: tested or not, the value they have (6.0 is 6), the one the player kept since the last
+       test, a new one */
+    {
+        RecRow row = {"pipeline_threads", 1, "6", ""}, untested = {"astc_bc", 0, "", ""};
+        assert(rec_row_state(&untested, "0", "") == REC_ROW_UNTESTED);
+        assert(rec_row_state(&row, "6.0", "") == REC_ROW_SAME);
+        assert(rec_row_state(&row, "0", "6") == REC_ROW_KEPT);
+        assert(rec_row_state(&row, "0", "") == REC_ROW_PROPOSED);
+        assert(rec_row_state(&row, "0", "10") == REC_ROW_PROPOSED);
+    }
+
     /* recommended.ini: written and read back; a missing file is an empty one, and a key under another section counts
        for nothing there */
     {

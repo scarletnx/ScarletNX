@@ -346,6 +346,25 @@ static int same_value(const char* a, const char* b) {
     if (a_end != a && !*a_end && b_end != b && !*b_end) return x == y;
     return !strcmp(a, b);
 }
+void gui_settings_word(const GuiSettings* s, const char* key, const char* value, char* out, size_t size) {
+    int i = find(s, key), w;
+    const GuiSetting* v = i < s->count ? &s->values[i] : NULL;
+    if (v && s->keys[i].type == GUI_KEY_WORD && v->values)
+        for (w = 1; s->keys[i].words[w]; ++w)
+            if (v->values[w] && same_value(v->values[w], value)) {
+                snprintf(out, size, "%s", s->keys[i].words[w]);
+                return;
+            }
+    if (v && v->def && v->fallback && v->fallback[0] && same_value(value, v->def))
+        snprintf(out, size, "%s", v->fallback);
+    else
+        snprintf(out, size, "%s", value);
+}
+const char* gui_settings_effective(const GuiSettings* s, const char* key) {
+    int i = find(s, key);
+    const char* value = i < s->count ? picked(s, i) : NULL;
+    return value ? value : i < s->count ? s->values[i].def : NULL;
+}
 void gui_settings_recommended(GuiSettings* s, const RecFile* f) {
     memcpy(s->recommended, f->applied, sizeof s->recommended);
 }

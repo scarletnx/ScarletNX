@@ -110,8 +110,9 @@ typedef enum {
     GUI_CHOICES_TYPED,
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
-/* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER } GuiPicksOf;
+/* whose few choices the picks box shows (picks_open): Share Log's, a Folders row's, Recommended Settings' (its screen
+   in App's rec) */
+typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_RECOMMENDED } GuiPicksOf;
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
     GUI_LIST_USERS = GUI_CHOICES_PICKS + 1,
@@ -214,6 +215,28 @@ typedef struct {
     int failed_count, failed_room;
     GuiIconAsk ask; /* iOS: the one icons_pump asks now (process set) */
 } GuiDumpIcons;
+/* Recommended Settings' box (recommend.h), opened by the menu's row or the setup's page: the screen it shows, before
+   the test, while it runs, the settings it proposes; the probe's run and what it said, line by line; the rows the
+   rules gave, how each stands against the settings and whether its box is checked; recommended.ini as it was read
+   when the box opened */
+enum { GUI_REC_INTRO, GUI_REC_TESTING, GUI_REC_PROPOSAL };
+#define GUI_REC_WAIT 60000 /* the milliseconds the probe has, then it is stopped */
+typedef struct {
+    int screen;
+    GuiProcess* process;
+    bool live, late; /* the probe started and not reaped yet (a cancelled one too), and stopped past GUI_REC_WAIT */
+    Uint64 since;
+    char line[512]; /* the probe's line being read, until its end */
+    size_t line_size;
+    char said[192]; /* its last line that is none of its own key=value lines: an error, a crash's */
+    RecProbe probe;
+    RecRow rows[REC_COUNT];
+    int state[REC_COUNT]; /* REC_ROW_* */
+    bool on[REC_COUNT];   /* a proposed row's box, checked to start with */
+    RecFile file;
+    char file_why[160]; /* why recommended.ini could not be read, "" when it was (or is not there) */
+    bool setup;         /* opened from the setup's page */
+} GuiRecommended;
 /* the App screen's values, as its rows show them, and Folders' (what each row's folder is, past its path) */
 typedef struct {
     char theme[64], text[64], language[64], animations[16], side[16], background[16], places[48], moves[32];
@@ -310,7 +333,7 @@ typedef struct App {
     bool has_output, finished, aborting, abnormal_exit;
     bool log_due; /* the last run ended abnormally, not by ESC, and its log is not saved since: Share Log blinks */
     char row_text[700]; /* the text of the row a list of ui.txt asked for last, until it is drawn (get_row_info) */
-    char pick_text[96]; /* a picks box's choice with its mark, "(*) Subfolders" (pick_label) */
+    char pick_text[160]; /* a picks box's choice with its mark, "(*) Subfolders", "[x] ASTC as BC7" (pick_label) */
     GuiConfirm confirm; /* the question before a run is aborted, when ask_abort says to ask it */
     int choices_of;     /* whose choices ui.txt's scene Choices draws or hits now (GuiChoicesOf) */
     bool ask_abort;     /* ESC asks first: on a phone it is Back, an edge swipe easily made by mistake */
@@ -582,6 +605,7 @@ typedef struct App {
     GuiPicksOf picks_of;
     GuiChoice picks;
     int pick_row;                      /* the Folders row the box is of */
+    GuiRecommended rec;
     bool (*open_url)(const char* url); /* SDL_OpenURL, which a test takes the place of (show_folder) */
     char* dest_file; /* the run asked about, as room_file, and its load */
     int dest_item;
@@ -640,6 +664,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_ROM &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
+                                          GUI_ENTRY(GUI_RECOMMENDED) == UI_MENU_ENTRIES_RECOMMENDED_SETTINGS &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
                                           GUI_ENTRY(GUI_FOLDERS) == UI_MENU_ENTRIES_FOLDERS &&
                                           GUI_ENTRY(GUI_EXIT) == UI_MENU_ENTRIES_EXIT &&
@@ -3419,7 +3444,7 @@ static void icons_pump(App* app) {
         }
         return;
     }
-    if (app->menu.running || gui_queue_running(&app->queue) >= 0) return;
+    if (app->menu.running || gui_queue_running(&app->queue) >= 0 || app->rec.live) return; /* the one driver thread */
     SDL_LockMutex(d->lock);
     if (!d->count) {
         SDL_UnlockMutex(d->lock);
@@ -6766,12 +6791,14 @@ static void settings_forget(App* app) {
     app->view_count = 0;
 }
 char* (*snx_menu_settings)(void) = NULL;
-/* the Settings' rows: the runtime's list after the launcher's own, read the first time from the runtime the menu is
-   built into, else from the program that runs Switch inputs */
+/* recommended.ini's path, beside settings.ini; owned, NULL without a folder for the settings */
+static char* recommended_path(const App* app) {
+    return app->config_dir ? snx_path_join(app->config_dir, REC_FILE) : NULL;
+}
 /* recommended.ini's [recommended] into the Settings' rows, which they mark and a run is told; one there that cannot be
    read is said, and no row is marked */
 static void recommended_load(App* app) {
-    char why[160], *path = app->config_dir ? snx_path_join(app->config_dir, REC_FILE) : NULL;
+    char why[160], *path = recommended_path(app);
     RecFile f;
     if (path && rec_file_read(&f, path, why, sizeof why))
         snprintf(app->message, sizeof app->message,
@@ -6781,6 +6808,8 @@ static void recommended_load(App* app) {
         gui_settings_recommended(&app->settings, &f);
     free(path);
 }
+/* the Settings' rows: the runtime's list after the launcher's own, read the first time from the runtime the menu is
+   built into, else from the program that runs Switch inputs */
 static GuiSettings* settings_of(App* app) {
     char* driver = NULL;
     char* list;
@@ -11495,12 +11524,14 @@ static void games_back(App* app, const char* path);
 #ifdef SDL_PLATFORM_ANDROID
 static void tell(App* app);
 #endif
+static void recommended_pump(App* app);
 static void pump(App* app) {
     keys_left(app);
     text_left(app);
     setup_keyboard(app);
     warn_tick(app);
     job_pump(app);
+    recommended_pump(app);
 #ifdef SDL_PLATFORM_IOS
     icons_pump(app);
 #endif
@@ -11731,6 +11762,9 @@ static const char* const open_picks[] = {SNX_TR_NOOP("Open Folder"), NULL};
 static const char* const dumps_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_SUBFOLDERS, NULL};
 static const char* const dumps_extra_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_SUBFOLDERS,
                                                 SNX_TR_NOOP("Remove from Library"), NULL};
+static const char* recommended_label(App* app, int i);
+static void recommended_question(App* app, char* out, size_t size);
+static void recommended_take(App* app, int i);
 static const char* const* picks_list(const App* app) {
     int at, group, kind;
     if (app->picks_of == GUI_PICKS_SHARE) return share_picks;
@@ -11740,8 +11774,10 @@ static const char* const* picks_list(const App* app) {
     return kind == GUI_ROW_PLACE ? place_picks : kind == GUI_ROW_FOLDER ? extra_picks : open_picks;
 }
 static const char* pick_label(App* app, int i) {
-    const char* const* picks = picks_list(app);
+    const char* const* picks;
     int n = 0, at, group;
+    if (app->picks_of == GUI_PICKS_RECOMMENDED) return recommended_label(app, i);
+    picks = picks_list(app);
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
@@ -11763,10 +11799,16 @@ static void picks_open_row(App* app, int row) {
     app->pick_row = row;
     picks_open(app, GUI_PICKS_FOLDER);
 }
-/* the box's question into out and its tab: how the logs go, or the Folders row's name and its folder from home */
+/* the box's question into out and its tab: how the logs go, the Folders row's name and its folder from home, or
+   Recommended Settings' screen */
 static void picks_question(App* app, char* out, size_t size, const char** tab) {
     char home[512];
     const char* path;
+    if (app->picks_of == GUI_PICKS_RECOMMENDED) {
+        *tab = snx_tr("Recommended Settings");
+        recommended_question(app, out, size);
+        return;
+    }
     *tab = app->picks_of == GUI_PICKS_SHARE ? snx_tr("Share Log") : snx_tr("Folders");
     if (app->picks_of == GUI_PICKS_SHARE) {
         snprintf(out, size, "%s", snx_tr("How to share the logs?"));
@@ -11821,7 +11863,12 @@ static void subfolders_switch(App* app, int kind, int at) {
 /* choice i taken, or none (-1: Back): the logs as one zip, as the one log of before, or their folder opened; a Folders
    row's folder opened, another picked, its default asked for or its Extra taken off */
 static void pick_take(App* app, int i) {
-    int at, group, kind = folder_row(app, app->pick_row, &at, &group);
+    int at, group, kind;
+    if (app->picks_of == GUI_PICKS_RECOMMENDED) {
+        recommended_take(app, i);
+        return;
+    }
+    kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
     if (i < 0) return;
     if (app->picks_of == GUI_PICKS_SHARE) {
@@ -11869,6 +11916,367 @@ static void picks_pointer(App* app, float x, float y, bool click) {
     bool on;
     picks_place(app, &c, question, sizeof question, &tab);
     if (!choices_pointer(app, &c, x, y, click, &on) && click && !on) pick_take(app, -1);
+}
+/* ---- Recommended Settings (recommend.h): a box of choices over the menu or the setup's page, a screen at a time:
+   what the test does, the test running, the settings it proposes. Only Apply writes settings.ini; recommended.ini is
+   written by Apply, and by Back when the test tested a row and proposed none (its values kept as [proposed], for the
+   next test) ---- */
+static void clock_text(SnxU64 when, const char* format, char* out, size_t size);
+/* a rule's setting as Settings shows it now ("Off [default]"), ? where this build's settings have none */
+static void recommended_shown(App* app, int i, char* out, size_t size) {
+    int row = setting_row(app, rec_keys[i]);
+    if (row < 0)
+        snprintf(out, size, "?");
+    else
+        gui_settings_shown(&app->settings, row, out, size);
+}
+/* its name as Settings shows it, its key where this build's settings have none */
+static const char* recommended_name(const App* app, int i) {
+    int row = setting_row(app, rec_keys[i]);
+    return row < 0 ? rec_keys[i] : snx_tr(app->settings.keys[row].key);
+}
+/* the rows of which (NULL: all) as Settings has them, "ASTC as BC7 Off [default]" between ", " */
+static void recommended_list(App* app, const bool* which, char* out, size_t size) {
+    char shown[96];
+    size_t at = 0;
+    int i;
+    out[0] = 0;
+    for (i = 0; i < REC_COUNT && at < size; ++i)
+        if (!which || which[i]) {
+            recommended_shown(app, i, shown, sizeof shown);
+            at += (size_t)snprintf(out + at, size - at, "%s%s %s", at ? ", " : "", recommended_name(app, i), shown);
+        }
+}
+static bool recommended_proposes(const App* app) {
+    int i;
+    for (i = 0; i < REC_COUNT; ++i)
+        if (app->rec.state[i] == REC_ROW_PROPOSED) return true;
+    return false;
+}
+static void recommended_close(App* app) { app->picks_shown = false; }
+/* the box opened before the test, with recommended.ini read for its last test's date */
+static void recommended_open(App* app, bool setup) {
+    GuiRecommended* r = &app->rec;
+    char* path = recommended_path(app);
+    settings_of(app); /* the rows the screens name */
+    r->setup = setup;
+    r->file_why[0] = 0;
+    memset(&r->file, 0, sizeof r->file);
+    if (path && rec_file_read(&r->file, path, r->file_why, sizeof r->file_why) && !r->file_why[0])
+        snprintf(r->file_why, sizeof r->file_why, "?");
+    free(path);
+    r->screen = GUI_REC_INTRO;
+    picks_open(app, GUI_PICKS_RECOMMENDED);
+}
+/* the probe started (the Switch driver's --probe), the box showing how far it goes; or why not, the box closed. Not
+   while a recompile runs: the test measures this computer's threads, which the recompile takes */
+static void recommended_start(App* app) {
+    GuiRecommended* r = &app->rec;
+    char *driver = find_driver(app, GUI_SWITCH), why[256];
+    const char* argv[] = {driver, "--probe", NULL};
+    int job = gui_queue_running(&app->queue);
+    if (job >= 0)
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("Run Tests waits for the recompile of %s to end: the test measures this computer's threads, "
+                        "which it takes"),
+                 gui_queue_name(&app->queue, job));
+    else if (r->live)
+        snprintf(app->message, sizeof app->message, "%s",
+                 snx_tr("The test cancelled before is still ending: Run Tests again in a moment"));
+    else if (!driver)
+        snprintf(app->message, sizeof app->message, snx_tr("Cannot find %s beside ScarletNX or on PATH."),
+                 driver_name(GUI_SWITCH));
+    else if (!r->process && !(r->process = gui_process_create()))
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("Cannot start the run: out of memory"));
+    else {
+#ifdef SDL_PLATFORM_IOS
+        icons_wait(app); /* the one driver thread, a dump's icon's first */
+#endif
+        if (gui_process_start(r->process, argv, why, sizeof why)) {
+            rec_probe_start(&r->probe);
+            r->line_size = 0;
+            r->said[0] = 0;
+            r->late = false;
+            r->live = true;
+            r->since = SDL_GetTicks();
+            r->screen = GUI_REC_TESTING;
+            picks_open(app, GUI_PICKS_RECOMMENDED);
+            gui_log("recommended: %s --probe", driver);
+            free(driver);
+            return;
+        }
+        snprintf(app->message, sizeof app->message, "%s", why);
+    }
+    say_failure(app, app->message);
+    free(driver);
+    recommended_close(app);
+}
+/* a line the probe printed, into what it said and the launcher's log; one of none of its keys kept, for why it ended */
+static void recommended_line(App* app, char* line) {
+    GuiRecommended* r = &app->rec;
+    size_t n = strlen(line);
+    if (n && line[n - 1] == '\r') line[--n] = 0;
+    if (!n) return;
+    gui_log("recommended: %s", line);
+    rec_probe_line(&r->probe, line);
+    if (strncmp(line, "probe: ", 7) && !strchr(line, '=')) snprintf(r->said, sizeof r->said, "%s", line);
+}
+static void recommended_propose(App* app);
+/* the probe running: what it printed, a line at a time; past GUI_REC_WAIT it is stopped, and once it ended the rules
+   give the proposal. A cancelled one is only reaped */
+static void recommended_pump(App* app) {
+    GuiRecommended* r = &app->rec;
+    char buffer[4096];
+    int n, i, reads, status;
+    if (!r->live) return;
+    for (reads = 0; reads < 16 && (n = gui_process_read(r->process, buffer, sizeof buffer)) > 0; ++reads)
+        for (i = 0; i < n; ++i) {
+            bool end = buffer[i] == '\n';
+            if (!end) r->line[r->line_size++] = buffer[i];
+            if (end || r->line_size == sizeof r->line - 1) { /* one longer than line is read as two */
+                r->line[r->line_size] = 0;
+                r->line_size = 0;
+                if (r->screen == GUI_REC_TESTING) recommended_line(app, r->line);
+            }
+        }
+    if (r->screen == GUI_REC_TESTING && !r->late && SDL_GetTicks() - r->since > GUI_REC_WAIT) {
+        r->late = true;
+        gui_process_terminate(r->process);
+    }
+    if (!gui_process_finished(r->process, &status)) return;
+    r->live = false;
+    if (r->screen != GUI_REC_TESTING) return;
+    if (r->line_size) { /* its last line, with no end */
+        r->line[r->line_size] = 0;
+        r->line_size = 0;
+        recommended_line(app, r->line);
+    }
+    if (r->late)
+        snprintf(r->probe.ended, sizeof r->probe.ended, snx_tr("the test gave no answer in %d s"), GUI_REC_WAIT / 1000);
+    else if (strcmp(r->probe.step, "done"))
+        snprintf(r->probe.ended, sizeof r->probe.ended, snx_tr("the test ended with status %d at %s: %s"), status,
+                 rec_step_name(&r->probe), r->said[0] ? r->said : snx_tr("it said nothing more"));
+    if (r->probe.ended[0]) gui_log("recommended: %s", r->probe.ended);
+    recommended_propose(app);
+}
+/* the rules on what the probe said, each row against the settings: the proposed ones checked, the focus on the first
+   of them, else on Back */
+static void recommended_propose(App* app) {
+    GuiRecommended* r = &app->rec;
+    GuiSettings* s = settings_of(app);
+    const char* memory = gui_settings_effective(s, "memory_gb");
+    int i, focus = -1;
+    rec_rules(&r->probe, memory ? atoi(memory) : 0, r->rows);
+    for (i = 0; i < REC_COUNT; ++i) {
+        const char* now = gui_settings_effective(s, rec_keys[i]);
+        if (!now) { /* a runtime's list without it */
+            r->rows[i].tested = 0;
+            snprintf(r->rows[i].why, sizeof r->rows[i].why, snx_tr("Not tested: this build's settings have no %s"),
+                     rec_keys[i]);
+        }
+        r->state[i] = rec_row_state(&r->rows[i], now ? now : "", r->file.proposed[i]);
+        r->on[i] = r->state[i] == REC_ROW_PROPOSED;
+        if (r->on[i] && focus < 0) focus = i;
+        gui_log("recommended: %s=%s, Settings has %s: %s", rec_keys[i], r->rows[i].tested ? r->rows[i].value : "?",
+                now ? now : "?", r->rows[i].why);
+    }
+    r->screen = GUI_REC_PROPOSAL;
+    picks_open(app, GUI_PICKS_RECOMMENDED);
+    app->picks.focus = focus >= 0 ? focus : REC_COUNT;
+}
+/* each screen's choices: Run Tests or Back; Cancel; the rows, then Apply and Cancel, or Back when none is proposed */
+static const char* const rec_notes[] = {SNX_TR_NOOP("not tested"), SNX_TR_NOOP("no change"),
+                                        SNX_TR_NOOP("your pick")}; /* a greyed row's, by REC_ROW_* */
+static const char* recommended_label(App* app, int i) {
+    GuiRecommended* r = &app->rec;
+    char shown[96], word[64];
+    if (i < 0) return NULL;
+    if (r->screen == GUI_REC_INTRO) return i == 0 ? snx_tr("Run Tests") : i == 1 ? snx_tr("Back") : NULL;
+    if (r->screen == GUI_REC_TESTING) return i == 0 ? snx_tr("Cancel") : NULL;
+    if (i >= REC_COUNT) {
+        i -= REC_COUNT;
+        if (recommended_proposes(app)) return i == 0 ? snx_tr("Apply") : i == 1 ? snx_tr("Cancel") : NULL;
+        return i == 0 ? snx_tr("Back") : NULL;
+    }
+    recommended_shown(app, i, shown, sizeof shown);
+    if (r->state[i] == REC_ROW_PROPOSED) {
+        gui_settings_word(&app->settings, rec_keys[i], r->rows[i].value, word, sizeof word);
+        snprintf(app->pick_text, sizeof app->pick_text, "%s %s: %s -> %s", r->on[i] ? "[x]" : "[ ]",
+                 recommended_name(app, i), shown, word);
+    } else
+        snprintf(app->pick_text, sizeof app->pick_text, "    %s: %s, %s", recommended_name(app, i), shown,
+                 snx_tr(rec_notes[r->state[i]]));
+    return app->pick_text;
+}
+/* the screen's question: what the test does and when it last ran; how far it is; the row in focus's numbers, or what
+   Apply does, or that nothing moved */
+static void recommended_question(App* app, char* out, size_t size) {
+    GuiRecommended* r = &app->rec;
+    int i = app->picks.focus, kept = 0, tested = 0, k;
+    char last[224], shown[96], word[64];
+    for (k = 0; k < REC_COUNT; ++k) {
+        kept += r->state[k] == REC_ROW_KEPT;
+        tested += r->rows[k].tested;
+    }
+    if (r->screen == GUI_REC_INTRO) {
+        if (r->file_why[0])
+            snprintf(last, sizeof last, snx_tr("? (%s cannot be read: %s)"), REC_FILE, r->file_why);
+        else
+            snprintf(last, sizeof last, "%s", r->file.date[0] ? r->file.date : snx_tr("none"));
+        snprintf(out, size,
+                 snx_tr("Tests of a few seconds: the GPU's texture formats and memory, the threads making pipelines, "
+                        "the RAM. Nothing changes until Apply. Last test: %s"),
+                 last);
+    } else if (r->screen == GUI_REC_TESTING)
+        rec_progress(&r->probe, out, size);
+    else if (i >= 0 && i < REC_COUNT && r->state[i] == REC_ROW_KEPT) {
+        recommended_shown(app, i, shown, sizeof shown);
+        gui_settings_word(&app->settings, rec_keys[i], r->rows[i].value, word, sizeof word);
+        snprintf(out, size, snx_tr("%s, your pick; the test says %s, as on %s. %s"), shown, word, r->file.date,
+                 r->rows[i].why);
+    } else if (i >= 0 && i < REC_COUNT)
+        snprintf(out, size, "%s", r->rows[i].why);
+    else if (recommended_proposes(app))
+        snprintf(out, size, "%s",
+                 snx_tr("Apply puts the checked rows into Settings, for every game; Cancel leaves Settings as it is"));
+    else if (kept)
+        snprintf(out, size, snx_tr("Nothing moved since the test of %s"), r->file.date);
+    else if (tested)
+        snprintf(out, size, "%s", snx_tr("Every setting tested already suits this computer"));
+    else
+        snprintf(out, size, "%s", snx_tr("Nothing could be tested: each row says why"));
+}
+/* recommended.ini as the test leaves it into f, and written: the checked rows' values under [recommended] (the
+   others' kept), every tested row's under [proposed] (an untested one's last), now as its date. 0, else nonzero with
+   why */
+static int recommended_write(App* app, RecFile* f, char* why, size_t size) {
+    GuiRecommended* r = &app->rec;
+    char* path = recommended_path(app);
+    int i, failed = 1;
+    *f = r->file;
+    for (i = 0; i < REC_COUNT; ++i) {
+        if (r->on[i]) snprintf(f->applied[i], sizeof f->applied[i], "%s", r->rows[i].value);
+        if (r->rows[i].tested) snprintf(f->proposed[i], sizeof f->proposed[i], "%s", r->rows[i].value);
+    }
+    clock_text((SnxU64)time(NULL), "%Y-%m-%d %H:%M", f->date, sizeof f->date);
+    if (!path)
+        snprintf(why, size, "%s", snx_tr("no folder for the settings"));
+    else
+        failed = rec_file_write(f, &r->probe, snx_build_info(), path, why, size);
+    free(path);
+    return failed;
+}
+/* Apply: the checked rows into Settings and settings.ini, then recommended.ini. Settings put back as they were when
+   settings.ini cannot be written; nothing checked keeps the test alone */
+static void recommended_apply(App* app) {
+    GuiRecommended* r = &app->rec;
+    GuiSettings* s = settings_of(app);
+    char before[REC_COUNT][GUI_SETTING_TEXT], list[512], still[512], why[192];
+    bool picked[REC_COUNT] = {false}, left[REC_COUNT];
+    size_t at = 0;
+    int i, applied = 0;
+    RecFile f;
+    list[0] = 0;
+    for (i = 0; i < REC_COUNT; ++i) {
+        const char* value = gui_settings_value(s, rec_keys[i]);
+        left[i] = r->state[i] == REC_ROW_PROPOSED && !r->on[i];
+        if (!r->on[i]) continue;
+        picked[i] = value != NULL;
+        snprintf(before[i], sizeof before[i], "%s", value ? value : "");
+        gui_settings_set(s, rec_keys[i], r->rows[i].value);
+        if (at < sizeof list)
+            at += (size_t)snprintf(list + at, sizeof list - at, "%s%s=%s %s", at ? ", " : "", rec_keys[i],
+                                   r->rows[i].value, snx_tr("[recommended]"));
+        ++applied;
+    }
+    gui_settings_sync(s);
+    if (applied && app->settings_file && gui_settings_save(s, app->settings_file)) {
+        for (i = 0; i < REC_COUNT; ++i)
+            if (r->on[i] && picked[i])
+                gui_settings_set(s, rec_keys[i], before[i]);
+            else if (r->on[i])
+                gui_settings_reset(s, setting_row(app, rec_keys[i]));
+        gui_settings_sync(s);
+        recommended_list(app, r->on, still, sizeof still);
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("Not applied: %s could not be written, so Settings still has %s, and %s was not written"),
+                 app->settings_file, still, REC_FILE);
+        say_failure(app, app->message);
+        recommended_close(app);
+        return;
+    }
+    if (recommended_write(app, &f, why, sizeof why)) {
+        if (applied)
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("Applied: %s, but %s could not be written (%s): Settings marks none of them "
+                            "[recommended]"),
+                     list, REC_FILE, why);
+        else
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("Nothing applied, and %s could not be written (%s): the next test proposes the same "
+                            "rows"),
+                     REC_FILE, why);
+        say_failure(app, app->message);
+    } else {
+        r->file = f;
+        gui_settings_recommended(s, &f);
+        recommended_list(app, left, still, sizeof still);
+        if (applied > 1)
+            snprintf(app->message, sizeof app->message, snx_tr("Applied: %s. The next game run takes them"), list);
+        else if (applied)
+            snprintf(app->message, sizeof app->message, snx_tr("Applied: %s. The next game run takes it"), list);
+        else
+            snprintf(app->message, sizeof app->message, snx_tr("Nothing applied: Settings still has %s"), still);
+        gui_log("recommended: %s", app->message);
+    }
+    recommended_close(app);
+}
+/* choice i taken (-1: Back, or off the box): the test run or the box closed; the test cancelled; a proposed row's box
+   checked or not (a greyed row's says why, as its focus does), Apply, or Cancel and Back */
+static void recommended_take(App* app, int i) {
+    GuiRecommended* r = &app->rec;
+    char still[512], why[192];
+    bool proposed[REC_COUNT];
+    RecFile f;
+    int k, tested = 0;
+    if (r->screen == GUI_REC_INTRO) {
+        if (i == 0)
+            recommended_start(app);
+        else
+            recommended_close(app);
+        return;
+    }
+    if (r->screen == GUI_REC_TESTING) { /* Cancel: the probe stopped, reaped as pump goes */
+        gui_process_terminate(r->process);
+        recommended_list(app, NULL, still, sizeof still);
+        snprintf(app->message, sizeof app->message, snx_tr("Cancelled at %s: Settings still has %s"),
+                 rec_step_name(&r->probe), still);
+        gui_log("recommended: %s", app->message);
+        r->screen = GUI_REC_INTRO;
+        recommended_close(app);
+        return;
+    }
+    if (i >= 0 && i < REC_COUNT) {
+        if (r->state[i] == REC_ROW_PROPOSED) r->on[i] = !r->on[i];
+        return;
+    }
+    if (i == REC_COUNT && recommended_proposes(app)) {
+        recommended_apply(app);
+        return;
+    }
+    for (k = 0; k < REC_COUNT; ++k) tested += r->rows[k].tested;
+    if (recommended_proposes(app)) { /* Cancel: nothing written, the same rows proposed next time */
+        for (k = 0; k < REC_COUNT; ++k) proposed[k] = r->state[k] == REC_ROW_PROPOSED;
+        recommended_list(app, proposed, still, sizeof still);
+        snprintf(app->message, sizeof app->message, snx_tr("Nothing applied: Settings still has %s"), still);
+        gui_log("recommended: %s", app->message);
+    } else if (tested && recommended_write(app, &f, why, sizeof why)) { /* Back: the test kept, one that tested */
+        snprintf(app->message, sizeof app->message, snx_tr("%s could not be written (%s): its last test is still %s"),
+                 REC_FILE, why, r->file.date[0] ? r->file.date : snx_tr("none"));
+        say_failure(app, app->message);
+    } else if (tested)
+        r->file = f;
+    recommended_close(app);
 }
 static void job_add(App* app, const char* const* argv, const char* file, bool native, bool prepared, GuiJobKind kind);
 /* file, a dump whose game is made: asked whether that game plays or the dump recompiles (GUI_ASK_MADE), file kept */
@@ -13167,17 +13575,19 @@ static char* zip_game_label(const App* app, const char* folder) {
         if ((unsigned char)*c < 0x20 || strchr("/\\:*?\"<>|", *c)) *c = '_';
     return label;
 }
-/* when path was last written, as a run's log is named: 2026-10-28_14-05-33 */
-static void log_stamp(SnxU64 when, char* out, size_t size) {
+/* when, in this computer's time, as format (strftime's) writes it; "" where the system tells no local time */
+static void clock_text(SnxU64 when, const char* format, char* out, size_t size) {
     time_t t = (time_t)when;
     struct tm tm;
     out[0] = 0;
 #ifdef _WIN32
-    if (!localtime_s(&tm, &t)) strftime(out, size, "%Y-%m-%d_%H-%M-%S", &tm);
+    if (!localtime_s(&tm, &t)) strftime(out, size, format, &tm);
 #else
-    if (localtime_r(&t, &tm)) strftime(out, size, "%Y-%m-%d_%H-%M-%S", &tm);
+    if (localtime_r(&t, &tm)) strftime(out, size, format, &tm);
 #endif
 }
+/* when path was last written, as a run's log is named: 2026-10-28_14-05-33 */
+static void log_stamp(SnxU64 when, char* out, size_t size) { clock_text(when, "%Y-%m-%d_%H-%M-%S", out, size); }
 /* the games' logs written in the last GUI_LOG_DAYS days, under games/<zip_game_label>/: each game's of this run by when
    it was last written, as it is named once the next run moves it into logs/, and its runs before in logs/; an older
    version's games/<game>.log under its name */
@@ -13711,6 +14121,7 @@ static void menu_key(App* app, GuiKey key) {
     }
     switch (gui_menu_key(&app->menu, key)) {
         case GUI_MENU_SETTINGS: open_settings(app); break;
+        case GUI_MENU_RECOMMENDED: recommended_open(app, false); break;
         case GUI_MENU_LOG: picks_open(app, GUI_PICKS_SHARE); break;
         case GUI_MENU_STAY:
             if (app->menu.quit && jobs_live(app)) { /* Exit: the queue's recompiles go with the menu, asked first */
@@ -13814,6 +14225,10 @@ bool ui_choices_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* in
     (void)width; /* a choice too long for its row slides, as the menu's rows do */
     info->label = row < 64 ? choice_text(app, app->choices_of, (int)row, app->row_text, sizeof app->row_text) : NULL;
     if (app->choices_of == GUI_CHOICES_SIZES && !row && size_why(app, NULL, 0)) info->attr |= UI_ATTR_OFF; /* OK */
+    /* Recommended Settings' rows that change nothing: their values said, greyed */
+    if (app->choices_of == GUI_CHOICES_PICKS && app->picks_of == GUI_PICKS_RECOMMENDED &&
+        app->rec.screen == GUI_REC_PROPOSAL && row < REC_COUNT && app->rec.state[row] != REC_ROW_PROPOSED)
+        info->attr |= UI_ATTR_OFF;
     return info->label != NULL;
 }
 /* a choice under the pointer takes the focus, and a click takes it: the question's pressed, UI scale's size or the
@@ -13931,6 +14346,7 @@ void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entr
 void ui_menu_entries_load_gba_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
+void ui_menu_entries_recommended_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_RECOMMENDED, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }
 void ui_menu_entries_folders_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_FOLDERS, hit); }
 void ui_menu_entries_exit_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_EXIT, hit); }
@@ -15143,6 +15559,7 @@ static void forget(App* app) {
     if (app->run_out) fclose(app->run_out);
     free(app->run_log);
     gui_process_destroy(app->job_process); /* the queue's recompile ends with the menu */
+    gui_process_destroy(app->rec.process);
     gui_queue_free(&app->queue);
     if (app->job_out) fclose(app->job_out);
     free(app->job_log);

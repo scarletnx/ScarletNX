@@ -30,6 +30,9 @@
 		[button]"Settings" {
 			icon = settings
 		}
+		[button]"Recommended Settings" {
+			icon = activity
+		}
 		[button]"Share Log" {
 			icon = share-2
 		}
