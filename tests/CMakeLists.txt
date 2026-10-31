@@ -502,6 +502,10 @@ add_executable(snx-test-host-page-threads host_page_threads.c)
 snx_test_target(snx-test-host-page-threads 11)
 target_link_libraries(snx-test-host-page-threads PRIVATE scarletnx-common Threads::Threads)
 add_test(NAME host_page_threads COMMAND snx-test-host-page-threads)
+# a compile thread's stack (compile_thread.h) takes the recursion LLVM's passes make over a game's biggest function
+add_executable(snx-test-compile-thread compile_thread.c)
+snx_test_target(snx-test-compile-thread 99)
+add_test(NAME compile_thread COMMAND snx-test-compile-thread)
 # RtAPI.cas128: the host's 16-byte compare-and-swap and the locked one, a pair stored whole or not at all
 add_executable(snx-test-cas128 cas128.c)
 snx_test_target(snx-test-cas128 11)

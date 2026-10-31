@@ -10,6 +10,7 @@
 #include "common/cpu/arm/successors.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <llvm-c/Core.h>
@@ -273,9 +274,9 @@ static bool compile_chunks(Work* w) {
 #endif
     for (unsigned i = 1; threads && i < jobs; ++i) {
 #ifdef _WIN32
-        if (!(threads[created] = CreateThread(NULL, 0, worker_main, w, 0, NULL))) break;
+        if (!(threads[created] = snx_compile_thread(worker_main, w))) break;
 #else
-        if (pthread_create(&threads[created], NULL, worker_main, w)) break;
+        if (snx_compile_thread(&threads[created], worker_main, w)) break;
 #endif
         ++created;
     }
