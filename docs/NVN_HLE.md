@@ -237,7 +237,8 @@ driver's had no pair. No draw compared the same yet. The differences, each in mo
 - `vfmt.*` of attributes and streams the program doesn't read: the driver leaves its earlier formats and enables all
   16 streams. DsState doesn't say which attributes the program reads, so the compare can't leave them out yet.
 - `bind.cb_addr` and `bind.cb_size` of constant buffers the driver binds for itself (64 KiB at slot 3 of a stage),
-  and sizes the driver rounds up (one game: nvn_direct 0xA0, the driver 0x100). Not traced: the driver's rule.
+  and sizes the driver rounds up (one game: nvn_direct 0xA0, the driver 0x100). The driver's `BindUniformBuffer`
+  writes the size rounded up to 256 bytes, and a size of 0 unbinds the slot. nvn_direct now binds the same.
 - A draw on one side only shifts the pairs after it in its submission, so the targets, blending and draw arguments
   of different draws are compared: the pairing has to match draws by their arguments before those count.
 

@@ -299,6 +299,7 @@ static void test_command_buffer(void) {
     check(nvn_ProgramInitialize(NULL, PROGRAM, DEVICE), "a program");
     nvn_ProgramSetSampleShading(NULL, PROGRAM, 1);
     nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
+    nvn_CommandBufferBindUniformBuffer(NULL, CMDBUF, NVN_SHADER_STAGE_VERTEX, 6, 0x555000, 0x100);
     nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
     check(nvn_ProgramSetShaders(NULL, PROGRAM, 0, 0), "SetShaders of no stages");
     nvn_CommandBufferBindProgram(NULL, CMDBUF, PROGRAM, NVN_SHADER_STAGE_FRAGMENT_BIT);
@@ -308,6 +309,10 @@ static void test_command_buffer(void) {
     gw64(ranges + 16, 0x222000);
     gw64(ranges + 24, 0x200);
     nvn_CommandBufferBindUniformBuffersDeferred(NULL, CMDBUF, NVN_SHADER_STAGE_VERTEX, 1, 2, ranges);
+    /* the driver's sizes (its BindUniformBuffer, NVN 55.15): CB_SIZE rounded up to 256 bytes, and a size of 0
+       unbinds the slot */
+    nvn_CommandBufferBindUniformBuffer(NULL, CMDBUF, NVN_SHADER_STAGE_VERTEX, 0, 0x333000, 0xA0);
+    nvn_CommandBufferBindUniformBuffer(NULL, CMDBUF, NVN_SHADER_STAGE_VERTEX, 6, 0x555000, 0);
     gw64(images, 0x33);
     nvn_CommandBufferBindImagesDeferred(NULL, CMDBUF, NVN_SHADER_STAGE_FRAGMENT, 2, 1, images);
     nvn_CommandBufferDrawArrays(NULL, CMDBUF, NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);
@@ -342,6 +347,10 @@ static void test_command_buffer(void) {
     check(g_ds.bind.cb_addr[0][4] == 0x111000 && g_ds.bind.cb_addr[0][5] == 0x444000 &&
               g_ds.bind.cb_size[0][5] == 0x200,
           "deferred uniform buffers: the ranges as the GPU reads them");
+    check(g_ds.bind.cb_addr[0][3] == 0x333000 && g_ds.bind.cb_size[0][3] == 0x100,
+          "a uniform buffer of 0xA0 bytes binds 0x100, as the driver's CB_SIZE");
+    check(g_ds.bind.cb_addr[0][3 + 6] == 0,
+          "a uniform buffer of size 0 unbinds its slot");
     check(snx_ld_le64(g_ds.inl.bank2[4] + 0x120 + 16) == 0x55, "deferred images: the handles as the GPU reads them");
     check(g_test_tex_draws == 1, "one texture draw, the empty one skipped");
     check(g_tex.handle == (7u | 5u << 20) && g_tex.x0 == 10.0f && g_tex.y0 == 20.0f && g_tex.w == 100.0f &&
