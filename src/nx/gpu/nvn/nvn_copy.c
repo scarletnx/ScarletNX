@@ -438,6 +438,10 @@ static void texel_read(void* arg) {
         g_renderer->stream_incr(r->syncpt);
     else
         syncpt_incr(r->syncpt);
+    /* The renderer holds a stream's releases until the stream stops (release.c), and this call runs between jobs,
+       where no job's end lets them go. Held, the increment waited for the next job, which the waiting thread was
+       often the one to submit: the game stopped with the releases queued and the GPU idle */
+    if (g_renderer->stream_end) g_renderer->stream_end();
 }
 void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     TexelRead r;
