@@ -47,8 +47,11 @@ if(SNX_TARGET_FLAGS)
     string(APPEND snx_curl_c_flags " ${snx_curl_target_flags}")
 endif()
 list(APPEND snx_curl_args "-DCMAKE_C_FLAGS=${snx_curl_c_flags}")
-# OpenSSL by its files, not a search: the NDK's toolchain looks for libraries inside its sysroot only
+# OpenSSL by its files, not a search: the NDK's toolchain looks for libraries inside its sysroot only. FindOpenSSL would
+# also ask pkg-config, which knows the system's OpenSSL and its dependencies (zlib on some distributions), not the
+# build's
 list(APPEND snx_curl_args
+     -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON
      -DCURL_USE_OPENSSL=ON
      -DOPENSSL_USE_STATIC_LIBS=ON
      -DOPENSSL_INCLUDE_DIR=${snx_openssl_prefix}/include
