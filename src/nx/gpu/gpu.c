@@ -976,13 +976,14 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
-void gpu_wait_note(const char* what, u64 value) {
-    if (!t_gpu) return;
+int gpu_wait_note(const char* what, u64 value) {
+    if (!t_gpu) return 0;
     if (what) {
         __atomic_store_n(&g_wait_value, value, __ATOMIC_RELAXED);
         __atomic_store_n(&g_wait_since, plat_ns(), __ATOMIC_RELAXED);
     }
     __atomic_store_n(&g_wait_what, what, __ATOMIC_RELEASE);
+    return 1;
 }
 /* read unlocked from the watchdog's thread: each value on its own, which is enough to say where the GPU thread is */
 void gpu_report_stall(void) {
