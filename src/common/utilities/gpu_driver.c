@@ -267,7 +267,7 @@ int snx_freedreno_parse(const char* text, SnxFreedrenoVar* vars, int max, char* 
     while (*s) {
         const char *end = strchr(s, ';'), *eq;
         size_t len = end ? (size_t)(end - s) : strlen(s), name_len;
-        SnxFreedrenoVar v;
+        SnxFreedrenoVar v = {0};
         while (len && *s == ' ') {
             ++s;
             --len;
@@ -279,7 +279,6 @@ int snx_freedreno_parse(const char* text, SnxFreedrenoVar* vars, int max, char* 
         eq = memchr(s, '=', len);
         name_len = eq ? (size_t)(eq - s) : len;
         while (name_len && s[name_len - 1] == ' ') --name_len;
-        memset(&v, 0, sizeof v);
         if (name_len >= sizeof v.name) {
             snprintf(why, size, "\"%.*s\" is %zu bytes, over the %zu a variable's name takes", (int)name_len, s,
                      name_len, sizeof v.name - 1);

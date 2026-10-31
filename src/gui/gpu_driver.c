@@ -36,7 +36,7 @@ static int top_file(const char* name) {
 
 int gui_gpu_driver_add(const void* zip, size_t size, const char* file, const char* dir, int api, char* id,
                        size_t id_size, char* said, size_t said_size) {
-    mz_zip_archive z;
+    mz_zip_archive z = {0};
     mz_uint i, count, meta_at = (mz_uint)-1, library_at = (mz_uint)-1;
     mz_zip_archive_file_stat st;
     SnxGpuDriverMeta meta, there_meta;
@@ -45,7 +45,6 @@ int gui_gpu_driver_add(const void* zip, size_t size, const char* file, const cha
     size_t meta_size = 0, there_size = 0;
     unsigned long long total = 0;
     int result = GUI_DRIVER_REFUSED;
-    memset(&z, 0, sizeof z);
     id[0] = 0;
     if (!mz_zip_reader_init_mem(&z, zip, size, 0)) {
         snprintf(said, said_size, snx_tr("Not added: %s is not a zip (%s)"), leaf,

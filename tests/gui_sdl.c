@@ -2507,7 +2507,7 @@ static void message_waited(App* app) {
    answer from SDL's thread added to the box. Off, the menu's own pickers go back to none */
 /* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
 static char* driver_zip(const char* temporary, const char* name) {
-    mz_zip_archive z;
+    mz_zip_archive z = {0};
     void* zip = NULL;
     size_t size = 0;
     unsigned char lib[64] = {0};
@@ -2516,7 +2516,6 @@ static char* driver_zip(const char* temporary, const char* name) {
     char* path = snx_path_join(temporary, name);
     memcpy(lib, "\177ELF\2\1\1", 7);
     lib[18] = 183;
-    memset(&z, 0, sizeof z);
     assert(mz_zip_writer_init_heap(&z, 0, 0));
     assert(mz_zip_writer_add_mem(&z, "meta.json", meta, strlen(meta), MZ_BEST_SPEED));
     assert(mz_zip_writer_add_mem(&z, "libvulkan_freedreno.so", lib, sizeof lib, MZ_BEST_SPEED));

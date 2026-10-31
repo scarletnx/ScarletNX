@@ -18,9 +18,8 @@
 
 /* a zip of the named entries, in memory: name, then its text, NULL after the last; size in *size */
 static void* zip_of(size_t* size, const char* const* entries) {
-    mz_zip_archive z;
+    mz_zip_archive z = {0};
     void* data = NULL;
-    memset(&z, 0, sizeof z);
     assert(mz_zip_writer_init_heap(&z, 0, 0));
     for (; entries[0]; entries += 2)
         assert(mz_zip_writer_add_mem(&z, entries[0], entries[1], strlen(entries[1]), MZ_BEST_SPEED));
@@ -55,12 +54,10 @@ int main(void) {
     dir = snx_path_join(root, SNX_GPU_DRIVERS_DIR);
     /* a package as released: meta.json, its library (an arm64 ELF header, NULs in it) and another library */
     {
-        mz_zip_archive z;
+        mz_zip_archive z = {0};
         void* zip = NULL;
         size_t size = 0;
-        unsigned char lib[64];
-        memset(&z, 0, sizeof z);
-        memset(lib, 0, sizeof lib);
+        unsigned char lib[64] = {0};
         memcpy(lib, "\177ELF\2\1\1", 7);
         lib[18] = 183;
         assert(mz_zip_writer_init_heap(&z, 0, 0));
