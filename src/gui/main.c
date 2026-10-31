@@ -11131,6 +11131,7 @@ static void game_end(App* app) {
         free(log);
         return;
     }
+    gui_steps_reset(&app->steps); /* the steps that made it ready ended well: under the failure they read as its end */
     gui_console_init(&app->console, app->cols - 2, app->rows - 8);
     if (end > 0) gui_console_feed(&app->console, lines, strlen(lines));
     snprintf(app->message, sizeof app->message, snx_tr("The game stopped: %s"), what);
