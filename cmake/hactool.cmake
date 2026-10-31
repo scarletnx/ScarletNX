@@ -8,7 +8,7 @@
 # as every LZ4 since 1.7 does, and snx_lz4 defines it
 set(hactool_src "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/hactool")
 set(hactool_sources save sha aes extkeys rsa npdm bktr kip packages pki pfs0 hfs0 nca0_romfs romfs utils nax0 nso nca
-                    xci filepath ConvertUTF cJSON storage snx_hac)
+                    xci filepath ConvertUTF storage snx_hac)
 list(TRANSFORM hactool_sources PREPEND "${hactool_src}/")
 list(TRANSFORM hactool_sources APPEND .c)
 add_library(hactool_lib STATIC ${hactool_sources})
@@ -17,7 +17,7 @@ add_library(hactool_lib STATIC ${hactool_sources})
 # the tree as paths from src/ ("nx/runtime/driver/hactool/nca.h")
 set(hactool_definitions _BSD_SOURCE _POSIX_SOURCE _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE __USE_MINGW_ANSI_STDIO=1
                         _FILE_OFFSET_BITS=64)
-target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4)
+target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4 snx_cjson)
 target_compile_definitions(hactool_lib PRIVATE ${hactool_definitions})
 add_library(hactool_internals INTERFACE)
 target_compile_definitions(hactool_internals INTERFACE ${hactool_definitions})

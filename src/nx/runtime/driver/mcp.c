@@ -35,7 +35,7 @@
 #include "common/utilities/logscan.h"
 #include "nx/loader/loader.h"
 #include "nx/runtime/driver/disasm.h"
-#include "nx/runtime/driver/hactool/cJSON.h"
+#include <cJSON.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdlib.h>

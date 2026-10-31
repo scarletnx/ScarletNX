@@ -10,7 +10,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | FFmpeg | LGPL-2.1-or-later |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
-| hactool / cJSON / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / MIT / Unicode license |
+| hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
+| cJSON (hactool's descriptions and the MCP server's JSON) | MIT |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
 | OpenSSL | Apache 2.0 |
 | jemalloc (the `scarletnx` program's malloc, with `SNX_JEMALLOC`) | BSD-2-Clause |
