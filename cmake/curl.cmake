@@ -47,6 +47,14 @@ if(SNX_TARGET_FLAGS)
     string(APPEND snx_curl_c_flags " ${snx_curl_target_flags}")
 endif()
 list(APPEND snx_curl_args "-DCMAKE_C_FLAGS=${snx_curl_c_flags}")
+# its configure links test programs: the build's link flags (ELFv2's -mabi), and a cross build's linker (LLD), as the
+# build machine's ld knows only its own architecture
+set(snx_curl_ld_flags "${CMAKE_EXE_LINKER_FLAGS}")
+if(SNX_TARGET_LDFLAGS)
+    list(JOIN SNX_TARGET_LDFLAGS " " snx_curl_target_ldflags)
+    string(APPEND snx_curl_ld_flags " ${snx_curl_target_ldflags}")
+endif()
+list(APPEND snx_curl_args "-DCMAKE_EXE_LINKER_FLAGS=${snx_curl_ld_flags}")
 # OpenSSL by its files, not a search: the NDK's toolchain looks for libraries inside its sysroot only. FindOpenSSL would
 # also ask pkg-config, which knows the system's OpenSSL and its dependencies (zlib on some distributions), not the
 # build's
