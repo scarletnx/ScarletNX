@@ -316,6 +316,37 @@ static int nn_am_service_IGpuSession_OpenSubSession(SvcObj* self, u32* session) 
     svcobj_unref(self);
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
+/* 33: a count this SDK's NVN path asks of the GPU session before it uses it (Eden's Switch 2 work answers 1) */
+static int nn_am_service_IGpuSession_GetCount33(SvcObj* self, u32* count) {
+    (void)self;
+    *count = 1;
+    R_SUCCEED();
+}
+/* 201 and 202: the GPU address spaces a Switch 2 title's SDK asks of the GPU session for, where a Switch 1 SDK reads
+   the alias and heap regions of GetInfo: the range its NVN reserves in, and the server's own, which is empty here.
+   Both name the region Eden's Switch 2 work names for the same asks */
+static int nn_am_service_IGpuSession_GetUserPartition(SvcObj* self, u64* first, u64* last) {
+    (void)self;
+    *first = GMMU_USER_FIRST;
+    *last = GMMU_USER_LAST;
+    R_SUCCEED();
+}
+static int nn_am_service_IGpuSession_GetGsvPartition(SvcObj* self, u64* first, u64* last) {
+    (void)self;
+    *first = 0; /* the server's own partition is empty here, as Eden's Switch 2 work has it */
+    *last = 0;
+    R_SUCCEED();
+}
+/* 203: the GPU VA range of the in-process memory manager that serves AllocSpace, which the title's NVN reserves fixed
+   addresses in, and the kind of range it is. It is the range NvRm answers AllocAsEx with (the 8 GiB a title's NVN
+   reserves in, from 0x8000000 up to 512 GiB), as Eden's Switch 2 work reports it */
+static int nn_am_service_IGpuSession_GetVaRange(SvcObj* self, u64* kind, u64* first, u64* size) {
+    (void)self;
+    *kind = 1;
+    *first = GMMU_USER_FIRST;
+    *size = GMMU_USER_LAST - GMMU_USER_FIRST;
+    R_SUCCEED();
+}
 
 /* ============================================ the Switch 2 display session (am.swipc) */
 /* gsv 305's session (Eden's INx2Vi2Session), which a Switch 2 SDK's nn::vi2::sdk asks what the display has before it

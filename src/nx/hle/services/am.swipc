@@ -343,6 +343,16 @@ interface nn::am::service::IGpuSession {
     [21] StartId(u32 id);
     # another session on the same object, which sub-session commands (memory, jobs) speak on
     [22] OpenSubSession() -> handle<copy, session> session;
+    # a count this SDK's NVN path asks before it uses the session (Eden's Switch 2 work answers 1)
+    [33] GetCount33() -> u32 count;
+    # The GPU address spaces a Switch 2 title's SDK asks of the GPU session for, where a Switch 1 SDK reads GetInfo's
+    # alias and heap regions: the range its NVN reserves in, and the server's own, which is empty here
+    [201] GetUserPartition() -> (u64 first, u64 last);
+    [202] GetGsvPartition() -> (u64 first, u64 last);
+    # The GPU VA range of the in-process memory manager that serves AllocSpace, which the title's NVN reserves fixed
+    # addresses in: the kind of range, then the range itself. It is the one NvRm answers AllocAsEx with, as Eden's
+    # Switch 2 work reports it
+    [203] GetVaRange() -> (u64 kind, u64 first, u64 size);
 }
 
 # The Switch 2 syncpoint server nn::syncpt::sdk::InitializeEx gets from gsv 202, over TIPC: it handshakes with a token
