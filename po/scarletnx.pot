@@ -3055,6 +3055,20 @@ msgid "Nothing to keep: no file of the menu's"
 msgstr ""
 
 #: src/gui/main.c
+msgid "the game wrote no log"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the game wrote no log since it started; the newest is %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The game stopped: %s"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Not written without %s"
 msgstr ""

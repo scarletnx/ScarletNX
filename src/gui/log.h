@@ -24,4 +24,8 @@ void gui_log_path(const char* file, char* out, size_t size);
 void gui_log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 /* a fatal error: in the log and in scarletnx-error.log */
 void gui_log_fatal(const char* text);
+/* how a game's run ended, from its log at path (common/utilities/logscan.h): the outcome, SNX_LOG_NONE when it logged
+   no failure, with what saying it in a line (the error's message, else the kind and its signal) and lines holding the
+   log's last ones, a newline after each; -1 when the log can't be read, what saying why */
+int gui_log_game_end(const char* path, char* what, size_t size, char* lines, size_t lines_size);
 #endif
