@@ -37,7 +37,7 @@ int main(void) {
     snx_ir_begin(ir, fn);
     ir_set_x(ir, 4, ir_i64(ir, 0xc0ffee));
     SnxA64Insn insn;
-    u32 word = 0x4EA1D820u; /* FRECPE V0.4S,V1.4S: four exact lane-helper calls. */
+    u32 word = 0x4EA1D820u; /* FRECPE V0.4S,V1.4S: without AVX2, one call of the lane helper for the vector */
     snx_a64_decode_word(word, 0, &insn);
     snx_ir_vec(ir, &insn, word, 0x1000);
     ir_set_x(ir, 5, ir_x(ir, 4));
@@ -45,15 +45,15 @@ int main(void) {
     ir_promote_registers(ir, fn);
     ir_stats_function(ir, fn);
     unsigned loads = cpu_loads(fn, ir_off_x(4));
-    int marked = noregs(LLVMGetNamedFunction(ir->mod, "snx_fp_unary"));
+    int marked = noregs(LLVMGetNamedFunction(ir->mod, "snx_fp_host_lanes"));
     LLVMValueRef other = LLVMAddFunction(ir->mod, "writes_vectors", LLVMFunctionType(ir->t_void, params, 2, 0));
     snx_ir_begin(ir, other);
     LLVMValueRef operands[] = {ir_i32(ir, 0), ir_i32(ir, 1), ir_i32(ir, 2), ir_i32(ir, 0)};
     ir_vec_call(ir, "snx_vec_shl", ir->t_void, operands, 4);
     LLVMBuildRetVoid(ir->b);
     int unsafe = noregs(LLVMGetNamedFunction(ir->mod, "snx_vec_shl"));
-    int counts = ir->stats.functions == 1 && ir->stats.promoted_functions == 1 && ir->stats.fp_calls == 4 &&
-                 ir->stats.call_sites == 4 && ir->stats.sync_stores == 3 && ir->stats.call_stores == 0 &&
+    int counts = ir->stats.functions == 1 && ir->stats.promoted_functions == 1 && ir->stats.fp_calls == 1 &&
+                 ir->stats.call_sites == 1 && ir->stats.sync_stores == 3 && ir->stats.call_stores == 0 &&
                  ir->stats.store_bytes == 32 && ir->stats.sync_reloads == 0;
     ir_stats_function(ir, other);
     LLVMValueRef calls = LLVMAddFunction(ir->mod, "calls", LLVMFunctionType(ir->t_void, params, 2, 0));
@@ -66,10 +66,10 @@ int main(void) {
     LLVMBuildCall2(ir->b, guest_type, pointer, args, 2, "");
     LLVMBuildRetVoid(ir->b);
     ir_stats_function(ir, calls);
-    counts = counts && ir->stats.functions == 3 && ir->stats.call_sites == 8 && ir->stats.fp_calls == 4 &&
+    counts = counts && ir->stats.functions == 3 && ir->stats.call_sites == 5 && ir->stats.fp_calls == 1 &&
              ir->stats.vector_calls == 1 && ir->stats.guest_calls == 2 && ir->stats.indirect_calls == 1;
     int invalid = LLVMVerifyModule(ir->mod, LLVMReturnStatusAction, &message);
-    printf("FP-only helper marked %d, X4 reloads across four lane calls %u, vector-writing helper marked %d\n",
+    printf("FP-only helper marked %d, X4 reloads across the lane helper call %u, vector-writing helper marked %d\n",
            marked, loads, unsafe);
     if (invalid && message) fprintf(stderr, "%s\n", message);
     if (message) LLVMDisposeMessage(message);

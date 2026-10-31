@@ -452,22 +452,24 @@ static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
     set_fp_reg(ir, (unsigned)a->rd, r);
 }
 
-/* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's, taken in round to nearest); exact: FRINTX's
-   IXC. The host's rounding (host_rint) gives the modes exactly for all but a NaN or a flushed denormal, and raises
-   nothing; FRINTX's IXC is a value rounding changed */
+/* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's mode, ir_fp_round_value); exact: FRINTX's IXC.
+   The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for all but a
+   NaN or a flushed denormal, and raises nothing; FRINTX's IXC is a value rounding changed */
 static void fp_round(SnxIr* ir, const SnxA64Args* a, int rm, unsigned exact) {
     unsigned width = width_of(a->esz);
-    V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm), n = fp_reg(ir, (unsigned)a->rn, width), r;
+    V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm);
+    V n = fp_reg(ir, (unsigned)a->rn, width), result;
     if (width != 16 && host_round(ir)) {
-        V fn = as_float(ir, n, width), f = host_rint(ir, fn, rm < 0 ? 0 : (unsigned)rm), ok;
+        V value = as_float(ir, n, width);
+        V rounded = rm < 0 ? ir_fp_round_value(ir, value, 5) : host_rint(ir, value, (unsigned)rm);
+        V ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
         Split s;
-        ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
-        if (rm < 0) ok = both(ir, ok, fpcr_clear(ir, FPCR_RMODE));
-        split_begin(ir, ok, as_bits(ir, f, width), exact ? float_ne(ir, f, fn) : NULL, &s);
-        r = split_end(ir, &s, call_round(ir, n, width, mode, exact));
+        split_begin(ir, ok, as_bits(ir, rounded, width),
+                    exact && snx_ir_fpsr_exact() ? float_ne(ir, value, rounded) : NULL, &s);
+        result = split_end(ir, &s, call_round(ir, n, width, mode, exact));
     } else
-        r = call_round(ir, n, width, mode, exact);
-    set_fp_reg(ir, (unsigned)a->rd, r);
+        result = call_round(ir, n, width, mode, exact);
+    set_fp_reg(ir, (unsigned)a->rd, result);
 }
 
 /* FRINT32Z, FRINT32X, FRINT64Z, FRINT64X (rm < 0: FPCR's) */

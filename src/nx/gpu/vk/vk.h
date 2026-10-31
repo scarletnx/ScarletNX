@@ -118,7 +118,6 @@ typedef struct {
     /* VK_EXT_provoking_vertex's provokingVertexLast: flat inputs take a primitive's last vertex, as the 3D engine's
        PROVOKING_VERTEX (0x5A1) can ask */
     int has_provoking_last;
-    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
     /* VK_EXT_conservative_rasterization: conservative rasterization (CONSERVATIVE_RASTER, 0x452), dilated by at most
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
@@ -137,6 +136,7 @@ typedef struct {
     int has_display_timing;
     /* the device's memory (uma.c): VK_MEM_*, and how guest buffers reach it, VK_MEM_PATH_* (the vk_memory setting) */
     int mem_model, mem_path;
+    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
