@@ -86,7 +86,7 @@ static void signal_event(SnxCtrProcess* p, uint32_t event) {
 }
 /* The circle pad's direction bits, as Azahar's GetStickDirectionState gives them: none near the center, else right
    or left within 60 degrees of the horizontal and up or down within 60 of the vertical, two on a diagonal */
-static uint32_t circle_directions(int32_t x, int32_t y) {
+uint32_t snx_ctr_stick_directions(int32_t x, int32_t y) {
     if (x * x + y * y <= HID_CIRCLE_DEAD * HID_CIRCLE_DEAD) return 0;
     const float tan30 = 0.577350269f, tan60 = 1.732050808f;
     float t = x ? fabsf((float)y / (float)x) : 0;
@@ -107,7 +107,7 @@ static void update_pad(SnxCtrProcess* p) {
     int32_t mean_y = (y + h->circle_history[0][1] + h->circle_history[1][1]) / 3;
     h->circle_history[1][0] = h->circle_history[0][0], h->circle_history[1][1] = h->circle_history[0][1];
     h->circle_history[0][0] = x, h->circle_history[0][1] = y;
-    uint32_t state = (input.buttons & SNX_CTR_PAD_BUTTONS) | circle_directions(mean_x, mean_y);
+    uint32_t state = (input.buttons & SNX_CTR_PAD_BUTTONS) | snx_ctr_stick_directions(mean_x, mean_y);
     uint32_t index = h->pad_index, entry = HID_PAD + 0x28 + index * 0x10;
     uint32_t old = get32(p, HID_PAD + 0x28 + ((index + 7) & 7) * 0x10), changed = state ^ old;
     put32(p, entry, state);

@@ -11,6 +11,7 @@
 #include "3ds/services/apt.h"
 #include "services/ptm.swipc.h"
 #include "services/hid.swipc.h"
+#include "services/ir.swipc.h"
 #include "3ds/services/gsp.h"
 #include "3ds/services/dsp.h"
 #include "3ds/services/cfg.h"
@@ -65,7 +66,7 @@ uint32_t snx_ctr_session_create(SnxCtrProcess* p, uint32_t service, uint32_t* ou
     if (service != SNX_CTR_SERVICE_SRV && service != SNX_CTR_SERVICE_FS && service != SNX_CTR_SERVICE_APT &&
         service != SNX_CTR_SERVICE_PTM && service != SNX_CTR_SERVICE_HID && service != SNX_CTR_SERVICE_GSP &&
         service != SNX_CTR_SERVICE_DSP && service != SNX_CTR_SERVICE_CFG && service != SNX_CTR_SERVICE_SYSTEM &&
-        service != SNX_CTR_SERVICE_AM && service != SNX_CTR_SERVICE_Y2R)
+        service != SNX_CTR_SERVICE_AM && service != SNX_CTR_SERVICE_Y2R && service != SNX_CTR_SERVICE_IR)
         return 0xe0e01bf4u;
     unsigned count = 0;
     for (unsigned i = 1; i < CTR_OBJECTS; ++i)
@@ -139,7 +140,7 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
     return WIRE_OK;
 }
 /* the --ipc-stubs name of each SNX_CTR_SERVICE_*: a file session is fs's */
-static const char* const families[] = {"", "srv", "fs", "apt", "ptm", "hid", "fs", "gsp", "cfg", "dsp", "system", "am", "y2r"};
+static const char* const families[] = {"", "srv", "fs", "apt", "ptm", "hid", "fs", "gsp", "cfg", "dsp", "system", "am", "y2r", "ir"};
 _Static_assert(sizeof families / sizeof *families == SNX_CTR_SERVICE_COUNT, "a family name per service");
 int snx_ctr_ipc_stub_mask(const char* list, uint32_t* mask) {
     uint32_t names = 0;
@@ -226,6 +227,7 @@ SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* re
         case SNX_CTR_SERVICE_SYSTEM: snx_ctr_system_dispatch(&c); break;
         case SNX_CTR_SERVICE_AM: snx_ctr_am_dispatch(&c); break;
         case SNX_CTR_SERVICE_Y2R: snx_ctr_y2r_dispatch(&c); break;
+        case SNX_CTR_SERVICE_IR: snx_ctr_ir_dispatch(&c); break;
         default: return SNX_CTR_SVC_UNSUPPORTED;
     }
     if (c.state == SNX_CTR_IPC_UNKNOWN) {

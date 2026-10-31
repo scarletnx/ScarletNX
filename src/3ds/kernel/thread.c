@@ -9,6 +9,7 @@
 #include "3ds/services/y2r.h"
 #include "3ds/services/file.h"
 #include "3ds/services/hid.h"
+#include "3ds/services/ir.h"
 #include "3ds/services/uds.h"
 #include "common/utilities/common.h"
 #include <string.h>
@@ -395,6 +396,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (p->dsp.core && now >= p->dsp.next_frame_ns) snx_ctr_dsp_frame(p, now);
         if (p->y2r.done_ns && now >= p->y2r.done_ns) snx_ctr_y2r_done(p);
         if (now >= snx_ctr_hid_deadline(p)) snx_ctr_hid_update(p, now);
+        if (now >= snx_ctr_ir_deadline(p)) snx_ctr_ir_update(p, now);
         if (now >= p->time_update_ns) snx_ctr_shared_page_time(p);
         for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
             CtrObject* o = &p->objects[i];
@@ -464,6 +466,7 @@ SnxCtrSchedule snx_ctr_schedule(SnxCtrProcess* p) {
         if (p->dsp.core && p->dsp.next_frame_ns < deadline) deadline = p->dsp.next_frame_ns;
         if (p->y2r.done_ns && p->y2r.done_ns < deadline) deadline = p->y2r.done_ns;
         if (snx_ctr_hid_deadline(p) < deadline) deadline = snx_ctr_hid_deadline(p);
+        if (snx_ctr_ir_deadline(p) < deadline) deadline = snx_ctr_ir_deadline(p);
         /* nothing to wake for (a thread sleeping forever included) */
         if (deadline >= UINT64_MAX - 1) return SNX_CTR_SCHED_BLOCKED;
         slept_for_device = deadline < earliest;

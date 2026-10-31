@@ -22,13 +22,19 @@ enum {
     SNX_CTR_PAD_L = 1u << 9,
     SNX_CTR_PAD_X = 1u << 10,
     SNX_CTR_PAD_Y = 1u << 11,
-    SNX_CTR_PAD_BUTTONS = 0xfffu
+    SNX_CTR_PAD_BUTTONS = 0xfffu,
+    /* the New 3DS's ZL and ZR, in ir:rst's pad state (bits 14 and 15, as Azahar's PadState has them), which hid:USER's
+       pad does not carry */
+    SNX_CTR_PAD_ZL = 1u << 14,
+    SNX_CTR_PAD_ZR = 1u << 15,
+    SNX_CTR_PAD_NEW = SNX_CTR_PAD_ZL | SNX_CTR_PAD_ZR
 };
 #define SNX_CTR_TOUCH_WIDTH  320u /* the bottom screen's pixels, which the touch screen reports in */
 #define SNX_CTR_TOUCH_HEIGHT 240u
 typedef struct {
     uint32_t buttons; /* SNX_CTR_PAD_* held */
     float circle[2];  /* the circle pad, -1 to 1 on each axis, x to the right and y up */
+    float cstick[2];  /* the New 3DS's C-stick, the same */
     bool touched;     /* the touch screen is pressed, at the bottom screen's pixel touch: x from the left, y from the top */
     uint16_t touch[2];
     bool motion;     /* a gamepad with an accelerometer and a gyroscope is connected: accel and gyro are its */

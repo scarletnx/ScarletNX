@@ -3,7 +3,8 @@
 /* The player's input for the 3DS game. The keys are a Switch game's (the SDL backend's keyboard_buttons): X or Space
    A, Z B, C X, V Y, Q L, E R, Enter Start, Backspace Select, the arrows the D-pad and WASD the circle pad. A gamepad's
    buttons go by where they are, as on the console (east A, south B, north X, west Y), gamepad_swap_ab swapping A and
-   B, its left stick the circle pad past gamepad_deadzone. The script (ctr_script) is unattended.c's for a Switch game:
+   B, its left stick the circle pad past gamepad_deadzone. The New 3DS's ZL and ZR are 1 and 3 or a pad's triggers, and
+   its C-stick IJKL or a pad's right stick. The script (ctr_script) is unattended.c's for a Switch game:
    ms:hex presses, each held for press_len ms */
 #include "3ds/input/input.h"
 #include "common/utilities/bits.h"
@@ -17,6 +18,8 @@
 #include <string.h>
 
 #define INPUT_PADS 4
+/* a trigger's axis (0 to 32767) past which ZL or ZR is held: half way */
+#define TRIGGER_PRESSED 16384
 
 /* The touch screen: bit 31 pressed, the pixel's y in bits 16 to 30 and x in bits 0 to 15, in one word so that a read
    gets both of them (the window's pump writes it and hid's update reads it, on other threads) */
@@ -32,7 +35,8 @@ static struct {
 
 void snx_ctr_input_init(void) {
     g_input.start = snx_seconds();
-    g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script, SNX_CTR_PAD_BUTTONS, &g_input.script);
+    g_input.presses = snx_script_parse("scarletnx-3ds", g_settings.ctr_script,
+                                      SNX_CTR_PAD_BUTTONS | SNX_CTR_PAD_NEW, &g_input.script);
     /* SDL sends an added event for each gamepad already connected */
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_input.gamepads) fprintf(stderr, "scarletnx-3ds: no gamepads: %s\n", SDL_GetError());
@@ -86,6 +90,17 @@ void snx_ctr_input_motion(const float sdl_accel[3], const float sdl_gyro[3], Snx
     input->gyro[1] = sdl_gyro[1] * degrees;
     input->gyro[2] = -sdl_gyro[2] * degrees;
 }
+/* A stick's position (x to the right and y up) as held: past the dead zone, scaled so that its edge is the stick at rest
+   and the full circle its rim. It replaces held when it is the longer, so that of several pads (and the keys) the
+   furthest wins */
+static void stick(float x, float y, float dead, float held[2]) {
+    float length = sqrtf(x * x + y * y);
+    if (length > dead && length > sqrtf(held[0] * held[0] + held[1] * held[1])) {
+        float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
+        held[0] = x * scale;
+        held[1] = y * scale;
+    }
+}
 /* a stick's axis, -1 to 1 */
 static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
     float v = SDL_GetGamepadAxis(pad, which) / 32767.0f;
@@ -129,6 +144,10 @@ void snx_ctr_input_read(SnxCtrInput* input) {
             if (held[keys[i].key]) input->buttons |= keys[i].bit;
         input->circle[0] = (float)(held[SDL_SCANCODE_D] - held[SDL_SCANCODE_A]);
         input->circle[1] = (float)(held[SDL_SCANCODE_W] - held[SDL_SCANCODE_S]);
+        input->cstick[0] = (float)(held[SDL_SCANCODE_L] - held[SDL_SCANCODE_J]);
+        input->cstick[1] = (float)(held[SDL_SCANCODE_I] - held[SDL_SCANCODE_K]);
+        if (held[SDL_SCANCODE_1]) input->buttons |= SNX_CTR_PAD_ZL;
+        if (held[SDL_SCANCODE_3]) input->buttons |= SNX_CTR_PAD_ZR;
     }
     float dead = (float)g_settings.stick_dead_zone / 100.0f;
     for (unsigned p = 0; p < INPUT_PADS; ++p) {
@@ -141,14 +160,11 @@ void snx_ctr_input_read(SnxCtrInput* input) {
                     bit ^= SNX_CTR_PAD_A | SNX_CTR_PAD_B;
                 input->buttons |= bit;
             }
-        float x = axis(pad, SDL_GAMEPAD_AXIS_LEFTX), y = -axis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-        float length = sqrtf(x * x + y * y);
-        if (length > dead && length > sqrtf(input->circle[0] * input->circle[0] + input->circle[1] * input->circle[1])) {
-            /* past the dead zone, scaled so its edge is the stick at rest and the full circle its rim */
-            float scale = (fminf(length, 1) - dead) / (1 - dead) / length;
-            input->circle[0] = x * scale;
-            input->circle[1] = y * scale;
-        }
+        stick(axis(pad, SDL_GAMEPAD_AXIS_LEFTX), -axis(pad, SDL_GAMEPAD_AXIS_LEFTY), dead, input->circle);
+        stick(axis(pad, SDL_GAMEPAD_AXIS_RIGHTX), -axis(pad, SDL_GAMEPAD_AXIS_RIGHTY), dead, input->cstick);
+        /* the triggers are the New 3DS's ZL and ZR, as far as they are held */
+        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_PRESSED) input->buttons |= SNX_CTR_PAD_ZL;
+        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_PRESSED) input->buttons |= SNX_CTR_PAD_ZR;
         /* the first pad with a motion sensor is the console's */
         float accel[3], gyro[3];
         if (!input->motion && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, accel, 3) &&

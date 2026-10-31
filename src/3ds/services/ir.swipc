@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# ir:rst, the New 3DS's ZL, ZR and C-stick (Azahar's ir_rst.cpp). WriteToTwoFields (0x9) has no handler there either
+interface snx::ctr::ir is ir:rst {
+    [0x1] GetHandles() -> (handle<move> memory, handle<move> event);
+    [0x2] Initialize(u32 update_period, u32 raw_c_stick);
+    [0x3] Shutdown();
+}

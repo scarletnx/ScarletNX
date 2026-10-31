@@ -166,6 +166,12 @@ typedef struct {
     uint32_t accelerometer_users, gyroscope_users;
     int32_t circle_history[2][2];
 } SnxCtrHid;
+/* ir:rst's sampling (services/ir.c): the next sample's deadline, host monotonic ns (0: not running), the period
+   Initialize gave in ms and the index the next sample is written at */
+typedef struct {
+    uint64_t next_ns;
+    uint32_t period_ms, index;
+} SnxCtrIr;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
     FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
@@ -192,6 +198,8 @@ struct SnxCtrProcess {
     uint32_t apt_phase, apt_notification, apt_parameter;
     uint32_t hid_objects[6]; /* the shared memory, then the events: pad 1, pad 2, accelerometer, gyroscope, debug pad */
     SnxCtrHid hid;
+    uint32_t ir_objects[2]; /* ir:rst's shared memory, then its update event */
+    SnxCtrIr ir;
     uint32_t shell_closed; /* virtual console starts with its shell open */
     double clock_origin;   /* host monotonic origin for the base ARM11 tick domain */
     CtrSelfArchive self_archives[CTR_SELF_ARCHIVES];

@@ -383,7 +383,13 @@ it, held inside the screen (the `touch` setting: `0` off, `1` fingers, `2` finge
 and the mouse, the default). The first gamepad with an accelerometer and a gyroscope
 gives the sensors, in the axes and units of Azahar's motion device (512 raw a g,
 14.375 raw a degree a second). Without one they give a console held still. ZL, ZR
-and the C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
+and the C-stick are the New 3DS's `ir:rst` (`services/ir.c`, ported from Azahar's
+`ir_rst.cpp`): its shared memory gets a sample every `update_period` ms between
+Initialize and Shutdown, with the update event signalled. ZL and ZR are `1` and `3`
+or a gamepad's triggers (or bits `4000` and `8000` of a script's presses), and the
+C-stick is `IJKL` or a gamepad's right stick. The raw C-stick form (`raw_c_stick`)
+and `WriteToTwoFields` are not modelled, as in Azahar. Any model gets the service,
+as Azahar's does.
 
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
