@@ -35,6 +35,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "common/gpu/vk/vk_common.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
@@ -63,6 +64,7 @@ typedef struct {
     u64 lo, hi; /* hi 0: none */
     u32 at;     /* g_vk_present when it failed */
 } Fail;
+static VkResult g_import_result;      /* the last import's, for the log */
 static Fail g_fail[FAIL_N];           /* under g_imp_lk */
 static PMutex g_imp_lk = PMUTEX_INIT; /* a leaf, under vk_lock or mem.c's lock: the dead flags and the table */
 static int g_any_dead;                /* under g_imp_lk */
@@ -216,9 +218,10 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 t0 = plat_ns();
     *m = (Imp){.cpu = cpu, .size = size, .used = g_vk_present};
-    if (!VK_OK(vkGetMemoryHostPointerPropertiesEXT(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                                   host, &hp)))
-        return 0;
+    /* a refusal is expected (pages the driver can't pin) and said once for the span (fail), not as a failed call */
+    g_import_result = vkGetMemoryHostPointerPropertiesEXT(
+        g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &hp);
+    if (g_import_result != VK_SUCCESS) return 0;
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &m->buf))) {
         m->buf = VK_NULL_HANDLE;
         return 0;
@@ -238,7 +241,8 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
                                .pNext = &imp,
                                .allocationSize = size,
                                .memoryTypeIndex = type};
-    if (type == ~0u || req.size > size || !VK_OK(vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem))) {
+    if (type == ~0u || req.size > size ||
+        (g_import_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem)) != VK_SUCCESS) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         m->buf = VK_NULL_HANDLE;
         m->mem = VK_NULL_HANDLE;
@@ -269,8 +273,8 @@ static int failed(u64 lo, u64 hi) {
 static void fail(u64 lo, u64 hi) {
     u32 old = 0;
     g_failed++;
-    LOG_LIMIT(8, "vulkan: guest memory %llx+%llx could not be imported: its ranges are copied for a while\n",
-              (unsigned long long)lo, (unsigned long long)(hi - lo));
+    LOG_LIMIT(8, "vulkan: guest memory %llx+%llx could not be imported (%s): its ranges are copied for a while\n",
+              (unsigned long long)lo, (unsigned long long)(hi - lo), snx_vk_result_str(g_import_result));
     pm_lock(&g_imp_lk);
     for (u32 i = 1; i < FAIL_N && g_fail[old].hi; i++)
         if (!g_fail[i].hi || (i32)(g_fail[i].at - g_fail[old].at) < 0) old = i;
