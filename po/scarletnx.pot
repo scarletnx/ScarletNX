@@ -1993,6 +1993,11 @@ msgid "Queue"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "%s cannot be read (%s): no row shows [recommended] until a test is applied again"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Theme"
 msgstr ""
 
@@ -3934,6 +3939,10 @@ msgstr ""
 
 #: src/gui/settings.c
 msgid "Mixed"
+msgstr ""
+
+#: src/gui/settings.c
+msgid "[recommended]"
 msgstr ""
 
 #: src/gui/steps.c

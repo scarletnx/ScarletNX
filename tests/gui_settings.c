@@ -560,6 +560,34 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
+    /* Recommended Settings' mark: a row picked at the value Apply gave it says [recommended], another value does not,
+       and the mark comes back with the value; a run is told the keys so marked */
+    {
+        static const char rec_list[] =
+            "Graphics\tastc_bc\t0\tint\t0\t1\tASTC as BC7\tASTC as BC7\t0=Off|1=On\n"
+            "Performance\tpipeline_threads\t0\tint\t0\t64\tThreads making pipelines\tPipeline threads\t\n"
+            "Performance\tmemory_fit\t0\tint\t0\t1\tWhat the device can still give\tMemory fit\t0=Off|1=On\n";
+        RecFile f = {0};
+        const char* argv[2] = {NULL, NULL};
+        assert(!gui_settings_read(&s, rec_list));
+        snprintf(f.applied[REC_ASTC_BC], sizeof f.applied[0], "1");
+        snprintf(f.applied[REC_PIPELINE_THREADS], sizeof f.applied[0], "6");
+        gui_settings_recommended(&s, &f);
+        assert(gui_settings_marks(&s, argv) == 0); /* nothing picked: nothing marked */
+        assert(!strcmp(on_screen(&s, "astc_bc"), "Off [default]"));
+        assert(gui_settings_set(&s, "astc_bc", "1") && gui_settings_set(&s, "pipeline_threads", "6"));
+        assert(!strcmp(on_screen(&s, "astc_bc"), "On [recommended]"));
+        assert(!strcmp(on_screen(&s, "pipeline_threads"), "6 [recommended]"));
+        assert(gui_settings_marks(&s, argv) == 1 && !strcmp(argv[0], "--recommended=astc_bc,pipeline_threads"));
+        assert(gui_settings_set(&s, "pipeline_threads", "8") && !strcmp(on_screen(&s, "pipeline_threads"), "8"));
+        assert(gui_settings_marks(&s, argv) == 1 && !strcmp(argv[0], "--recommended=astc_bc"));
+        assert(gui_settings_set(&s, "pipeline_threads", "6.0") &&
+               !strcmp(on_screen(&s, "pipeline_threads"), "6 [recommended]"));
+        assert(gui_settings_set(&s, "memory_fit", "1") &&
+               !strcmp(on_screen(&s, "memory_fit"), "On")); /* never applied */
+        gui_settings_free(&s);
+        assert(!s.recommended[REC_ASTC_BC][0]);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }

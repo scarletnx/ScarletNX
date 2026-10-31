@@ -11,6 +11,8 @@
      game */
 #include "gui/recommend.h"
 #include "gui/i18n.h"
+#include "common/utilities/common.h"
+#include "common/utilities/ini_lines.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,8 +201,15 @@ static void rec_memory_fit(const RecProbe* p, int memory_gb, RecRow* r) {
     }
 }
 
+static const char* const rec_keys[REC_COUNT] = {"astc_bc", "pipeline_threads", "memory_fit"};
+int rec_key(const char* key) {
+    int i;
+    for (i = 0; i < REC_COUNT; i++)
+        if (!strcmp(key, rec_keys[i])) return i;
+    return -1;
+}
 void rec_rules(const RecProbe* p, int memory_gb, RecRow rows[REC_COUNT]) {
-    static const char* const keys[REC_COUNT] = {"astc_bc", "pipeline_threads", "memory_fit"};
+    const char* const* keys = rec_keys;
     int i;
     for (i = 0; i < REC_COUNT; i++) {
         memset(&rows[i], 0, sizeof rows[i]);
@@ -209,4 +218,74 @@ void rec_rules(const RecProbe* p, int memory_gb, RecRow rows[REC_COUNT]) {
     rec_astc_bc(p, &rows[REC_ASTC_BC]);
     rec_pipeline_threads(p, &rows[REC_PIPELINE_THREADS]);
     rec_memory_fit(p, memory_gb, &rows[REC_MEMORY_FIT]);
+}
+
+int rec_file_read(RecFile* f, const char* path, char* why, size_t size) {
+    size_t n;
+    char *text, *key, *value;
+    SnxIni ini;
+    memset(f, 0, sizeof *f);
+    text = (char*)snx_read_file(path, &n);
+    if (!text) {
+        if (!snx_is_file(path)) return 0;
+        snx_os_error(why, size);
+        return 1;
+    }
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value)) {
+        int k = rec_key(key);
+        if (!strcmp(ini.section, "tested") && !strcmp(key, "date")) rec_text(f->date, sizeof f->date, value);
+        if (k < 0) continue;
+        if (!strcmp(ini.section, "recommended"))
+            rec_text(f->applied[k], sizeof f->applied[k], value);
+        else if (!strcmp(ini.section, "proposed"))
+            rec_text(f->proposed[k], sizeof f->proposed[k], value);
+    }
+    free(text);
+    return 0;
+}
+
+int rec_file_write(const RecFile* f, const RecProbe* p, const char* build, const char* path, char* why, size_t size) {
+    char text[4096], *folder, *staged;
+    size_t at;
+    int i, failed;
+    at = (size_t)snprintf(
+        text, sizeof text,
+        "; what Recommended Settings tested, proposed and applied: Settings shows [recommended] beside "
+        "a row while its pick is the\n; value under [recommended]. Only the launcher writes this "
+        "file\n[recommended]\n");
+    for (i = 0; i < REC_COUNT && at < sizeof text; i++)
+        if (f->applied[i][0])
+            at += (size_t)snprintf(text + at, sizeof text - at, "%s = %s\n", rec_keys[i], f->applied[i]);
+    if (at < sizeof text)
+        at +=
+            (size_t)snprintf(text + at, sizeof text - at, "[proposed]\n; every row of the last test, applied or not\n");
+    for (i = 0; i < REC_COUNT && at < sizeof text; i++)
+        if (f->proposed[i][0])
+            at += (size_t)snprintf(text + at, sizeof text - at, "%s = %s\n", rec_keys[i], f->proposed[i]);
+    if (at < sizeof text)
+        at += (size_t)snprintf(text + at, sizeof text - at,
+                               "[tested]\ndate = %s\nbuild = %s\ngpu = %s\ngpu_driver = %s\nformats = BCn %d, ASTC %d\n"
+                               "budget_mb = %ld\ncpus = %d\ncores = %d\nram_available_mb = %ld\npipelines_auto = %d\n"
+                               "pipelines = ",
+                               f->date, build, p->gpu[0] ? p->gpu : p->gpu_error, p->gpu_driver, p->bc, p->astc,
+                               p->budget_mb, p->cpus, p->cores, p->ram_mb, p->auto_threads);
+    for (i = 0; i < p->n_threads && at < sizeof text; i++)
+        at += (size_t)snprintf(text + at, sizeof text - at, "%s%d:%.0f", i ? ", " : "", p->threads[i], p->rates[i]);
+    if (at < sizeof text) at += (size_t)snprintf(text + at, sizeof text - at, "\n");
+    if (at >= sizeof text) {
+        snprintf(why, size, "its text is longer than %u bytes", (unsigned)sizeof text);
+        return 1;
+    }
+    folder = snx_dirname(path);
+    staged = snx_format("%s.new", path);
+    /* staged beside it, then put in place: a crash mid-write leaves the old file */
+    failed = !folder || !staged || snx_mkdirs(folder) || snx_write_file(staged, text, at) || snx_replace(staged, path);
+    if (failed) {
+        snx_os_error(why, size);
+        if (staged) remove(staged);
+    }
+    free(staged);
+    free(folder);
+    return failed;
 }

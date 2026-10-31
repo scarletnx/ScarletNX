@@ -11,6 +11,7 @@
 #ifndef SNX_GUI_SETTINGS_H
 #define SNX_GUI_SETTINGS_H
 #include <stddef.h>
+#include "gui/recommend.h"
 #include "gui/theme.h"
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
@@ -35,6 +36,8 @@ typedef struct {
     GuiSetting* values; /* their values, which the keys' offsets are in */
     int count;          /* in one block with the list the keys' names and help point into */
     int own;            /* the launcher's own rows and the recompiler's, first (their page's rows among them) */
+    char recommended[REC_COUNT][16]; /* recommended.ini's [recommended]: the value Apply gave each key, "" for none */
+    char marks[REC_COUNT * 24 + 16]; /* a run's --recommended=key,key */
 } GuiSettings;
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
@@ -65,14 +68,23 @@ int gui_settings_changed(const GuiSettings* settings);
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */
 void gui_settings_sync(GuiSettings* settings);
-/* row's value as the Settings show it: a pick as it is, a row not picked its default and [default] ("Off
-   [default]", "[default]" for an empty one), an All's [default] while none of its rows is picked */
+/* row's value as the Settings show it: a pick as it is, followed by [recommended] while it is the value Recommended
+   Settings gave it; a row not picked its default and [default] ("Off [default]", "[default]" for an empty one), an
+   All's [default] while none of its rows is picked */
 void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t size);
 /* the Debug section's settings not at their default for a run of the game whose .ini is at ini (NULL: none read): a
    row's pick, else the file's value, else its default; then gdbstub when the launcher's row is on. With picks 0 the
    file's alone, the picks and gdbstub left out. key=value between ", ", a text's by its key alone, as the game says
    them over its picture (the runtime's options_debug): how many. out cut where it ends, NUL-terminated */
 int gui_settings_debug(const GuiSettings* settings, const char* ini, int picks, char* out, size_t size);
+/* recommended.ini's [recommended] into the rows: Settings marks a row [recommended] while its pick is the value Apply
+   gave it, and a run is told which (gui_settings_marks) */
+void gui_settings_recommended(GuiSettings* settings, const RecFile* file);
+/* 1 for row picked at the value Recommended Settings' Apply gave it, else 0 */
+int gui_settings_is_recommended(const GuiSettings* settings, int row);
+/* argv's --recommended=key,key for the settings picked at the value Recommended Settings gave them, which the runtime's
+   log marks: its count, 1 or 0 */
+size_t gui_settings_marks(GuiSettings* settings, const char** argv);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
 /* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub,

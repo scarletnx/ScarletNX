@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_GUI_RECOMMEND_H
 #define SNX_GUI_RECOMMEND_H
+#include <stddef.h>
 /* Recommended Settings: what scarletnx --probe says of this computer, a line at a time, and the settings its rules
    give, each with the numbers that decided it */
 #define REC_THREADS 3 /* the numbers of threads the probe tries at most */
@@ -37,4 +38,22 @@ void rec_rules(const RecProbe* p, int memory_gb, RecRow rows[REC_COUNT]);
 /* the budget under which ASTC as BC7 is proposed, and the memory_fit pool for memory_gb, in MB */
 #define REC_ASTC_BC_BUDGET_MB 8192
 long rec_memory_fit_under_mb(int memory_gb);
+
+/* recommended.ini, beside settings.ini: [recommended] the values Apply gave, which Settings marks [recommended] while a
+   row's pick is that value; [proposed] each row's value the last test gave, applied or not; [tested] when and what it
+   saw. Only the launcher writes it */
+#define REC_FILE "recommended.ini"
+typedef struct {
+    char applied[REC_COUNT][16];  /* [recommended], "" for a key not there */
+    char proposed[REC_COUNT][16]; /* [proposed], "" for a key not there */
+    char date[24];                /* [tested]'s date, "" before a test */
+} RecFile;
+/* the index of key among the rows (REC_ASTC_BC...), -1 for another */
+int rec_key(const char* key);
+/* path into f: 0, an empty f where there is no file; nonzero, f empty and why the system's words, for one there that
+   cannot be read */
+int rec_file_read(RecFile* f, const char* path, char* why, size_t size);
+/* f, and what p saw on build, into path, staged beside it and put in place: 0, else nonzero with the system's words in
+   why */
+int rec_file_write(const RecFile* f, const RecProbe* p, const char* build, const char* path, char* why, size_t size);
 #endif

@@ -6768,6 +6768,19 @@ static void settings_forget(App* app) {
 char* (*snx_menu_settings)(void) = NULL;
 /* the Settings' rows: the runtime's list after the launcher's own, read the first time from the runtime the menu is
    built into, else from the program that runs Switch inputs */
+/* recommended.ini's [recommended] into the Settings' rows, which they mark and a run is told; one there that cannot be
+   read is said, and no row is marked */
+static void recommended_load(App* app) {
+    char why[160], *path = app->config_dir ? snx_path_join(app->config_dir, REC_FILE) : NULL;
+    RecFile f;
+    if (path && rec_file_read(&f, path, why, sizeof why))
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s cannot be read (%s): no row shows [recommended] until a test is applied again"), REC_FILE,
+                 why);
+    else if (path)
+        gui_settings_recommended(&app->settings, &f);
+    free(path);
+}
 static GuiSettings* settings_of(App* app) {
     char* driver = NULL;
     char* list;
@@ -6797,6 +6810,7 @@ static GuiSettings* settings_of(App* app) {
 #endif
     gui_settings_mark(&app->settings);
     gui_settings_load(&app->settings, app->settings_file);
+    recommended_load(app);
     return &app->settings;
 }
 /* ---- the theme editor's preview: the menu or a run in the theme being edited ---- */
@@ -12007,7 +12021,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 17) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 18) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
     size_t n = 1;
     argv[0] = direct ? absolute : driver;
@@ -12028,6 +12042,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    /* which of them Recommended Settings gave, for the log's settings line */
+    if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_marks(s, argv + n);
     /* Play from a save state: the runtime loads it before the game's first frame */
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */

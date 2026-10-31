@@ -3,8 +3,10 @@
 /* Recommended Settings' rules (gui/recommend.c): scarletnx --probe's lines read, and each rule on both sides of its
    number, with the numbers it says */
 #include "gui/recommend.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void feed(RecProbe* p, const char* text) {
@@ -126,6 +128,41 @@ int main(void) {
     /* a line of no key, or a key it doesn't know, changes nothing */
     feed(&p, "nonsense\nfuture_key=1\n=x\n");
     assert(!p.step[0] && p.ram_mb == -1 && p.bc == -1);
+
+    /* recommended.ini: written and read back; a missing file is an empty one, and a key under another section counts
+       for nothing there */
+    {
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "config/" REC_FILE), *text, why[256] = "";
+        RecFile f, back;
+        size_t size;
+        assert(dir && path);
+        assert(!rec_file_read(&back, path, why, sizeof why) && !back.applied[0][0] && !back.date[0]);
+        feed(&p, RUN);
+        memset(&f, 0, sizeof f);
+        snprintf(f.applied[REC_ASTC_BC], sizeof f.applied[0], "1");
+        snprintf(f.proposed[REC_ASTC_BC], sizeof f.proposed[0], "1");
+        snprintf(f.proposed[REC_PIPELINE_THREADS], sizeof f.proposed[0], "0");
+        snprintf(f.proposed[REC_MEMORY_FIT], sizeof f.proposed[0], "0");
+        snprintf(f.date, sizeof f.date, "2026-10-31 01:23");
+        assert(!rec_file_write(&f, &p, "ScarletNX main 80e4046", path, why, sizeof why));
+        text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "[recommended]\nastc_bc = 1\n[proposed]"));
+        assert(strstr(text, "pipeline_threads = 0\nmemory_fit = 0\n[tested]\ndate = 2026-10-31 01:23\n"));
+        assert(strstr(text, "gpu = AMD Radeon RX 6700 XT (RADV NAVI22)\n") &&
+               strstr(text, "formats = BCn 1, ASTC 0\n"));
+        assert(strstr(text, "budget_mb = 11490\n") && strstr(text, "pipelines = 6:206, 10:227\n"));
+        free(text);
+        assert(!rec_file_read(&back, path, why, sizeof why));
+        assert(!strcmp(back.applied[REC_ASTC_BC], "1") && !back.applied[REC_PIPELINE_THREADS][0]);
+        assert(!strcmp(back.proposed[REC_PIPELINE_THREADS], "0") && !strcmp(back.date, "2026-10-31 01:23"));
+        assert(!snx_write_file(path, "[proposed]\nmemory_fit = 1\n[elsewhere]\nastc_bc = 1\n", 46));
+        assert(!rec_file_read(&back, path, why, sizeof why));
+        assert(!strcmp(back.proposed[REC_MEMORY_FIT], "1") && !back.applied[REC_ASTC_BC][0]);
+        assert(rec_key("pipeline_threads") == REC_PIPELINE_THREADS && rec_key("anisotropy") < 0);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
 
     puts("gui_recommend passed");
     return 0;

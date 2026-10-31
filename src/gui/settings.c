@@ -320,9 +320,13 @@ void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
     const GuiSetting* v = &s->values[row];
     if (v->kind == GUI_SETTING_ALL)
         snprintf(out, size, "%s", strcmp(v->text, ".ini") ? v->text : snx_tr("[default]"));
-    else if (!v->fallback || picked(s, row))
+    else if (!v->fallback || picked(s, row)) {
+        size_t at;
         gui_theme_get(s->values, &s->keys[row], out, size);
-    else
+        at = strlen(out);
+        if (gui_settings_is_recommended(s, row) && at < size)
+            snprintf(out + at, size - at, " %s", snx_tr("[recommended]"));
+    } else
         snprintf(out, size, "%s%s%s", v->fallback, v->fallback[0] ? " " : "", snx_tr("[default]"));
 }
 const char* gui_settings_value(const GuiSettings* s, const char* key) {
@@ -341,6 +345,25 @@ static int same_value(const char* a, const char* b) {
     double x = strtod(a, &a_end), y = strtod(b, &b_end);
     if (a_end != a && !*a_end && b_end != b && !*b_end) return x == y;
     return !strcmp(a, b);
+}
+void gui_settings_recommended(GuiSettings* s, const RecFile* f) {
+    memcpy(s->recommended, f->applied, sizeof s->recommended);
+}
+int gui_settings_is_recommended(const GuiSettings* s, int row) {
+    const char* value = row >= 0 && row < s->count ? picked(s, row) : NULL;
+    int k = value ? rec_key(s->values[row].key) : -1;
+    return k >= 0 && s->recommended[k][0] && same_value(value, s->recommended[k]);
+}
+size_t gui_settings_marks(GuiSettings* s, const char** argv) {
+    size_t at = 0;
+    int i;
+    for (i = s->own; i < s->count; ++i)
+        if (gui_settings_is_recommended(s, i) && at < sizeof s->marks)
+            at += (size_t)snprintf(s->marks + at, sizeof s->marks - at, "%s%s",
+                                   at ? "," : "--recommended=", s->values[i].key);
+    if (!at || at >= sizeof s->marks) return 0;
+    argv[0] = s->marks;
+    return 1;
 }
 /* row i in the Debug section, or a page of it */
 static int debug_row(const GuiSettings* s, int i) {
