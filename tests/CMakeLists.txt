@@ -276,10 +276,11 @@ if(TARGET snx_ctr_board)
     if(Python3_Interpreter_FOUND AND NOT APPLE)
         add_test(NAME 3ds_aot_workers COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot_workers.py"
             "${SNX_CTR_PROGRAM}")
+        # 15 to 35 s here, over a minute on a CI runner
         if(CMAKE_CROSSCOMPILING_EMULATOR)
             set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 1800)
         else()
-            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 60)
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 300)
         endif()
     endif()
     # The pinned SuperTux gate runs on Windows too, the other Python tests not yet
