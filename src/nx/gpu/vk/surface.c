@@ -1753,11 +1753,13 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
    resolve every Vulkan device has for depth (SAMPLE_ZERO: AVERAGE isn't one for depth), made by a dynamic rendering
    pass with no draws over the rectangle into an image of the source's pixels, which a blit then copies into the
    destination, a depth target of the source's format. sx, sy, sdx and sdy are in the source's pixels. 0 when the
-   destination isn't one (another format: then nothing takes the resolve) */
+   destination's 2D format has other bytes a pixel than the source's depth format: then nothing takes the resolve */
 static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                          double sdy) {
     u32 fmt = st->fkey & 0xFFFF, tile = (d->linear ? 0x1000u : 0) | (d->bh << 4);
-    if (d->format != fmt || !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
+    /* the 2D engine's color format of the depth format's bytes, as blit_depth takes it */
+    if (vk_rt_format(d->format).bpp != vk_zt_format(fmt).bpp ||
+        !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
         return 0;
     vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
     Surf* dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
