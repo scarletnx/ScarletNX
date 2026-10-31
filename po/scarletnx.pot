@@ -491,6 +491,25 @@ msgstr ""
 msgid "Not removed: %s could not be deleted (%s)"
 msgstr ""
 
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "GitHub says of %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "%s's releases are not GitHub's list of them (%zu bytes)"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "no memory for %s's %zu releases and %zu assets"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+msgid "Unsupported"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys

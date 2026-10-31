@@ -49,9 +49,10 @@ target_link_libraries(snx_gui_ui PRIVATE SDL3::SDL3) # its platform macros and k
 set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
-            queue.c latin.c wide.c log.c logzip.c gpu_driver.c ${gui_process}
+            queue.c latin.c wide.c log.c logzip.c gpu_driver.c gpu_driver_fetch.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
+target_link_libraries(snx_gui_support PRIVATE snx_yyjson) # Download Driver's GitHub lists (gpu_driver_fetch.c)
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
 set_target_properties(snx_gui_support PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_support PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -167,6 +168,10 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-gpu-driver "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver.c")
     target_link_libraries(snx-test-gui-gpu-driver PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_gpu_driver COMMAND snx-test-gui-gpu-driver)
+    # Download Driver's lists: GitHub's releases of Eden's repositories, the marks, the recommendation by model
+    add_executable(snx-test-gui-gpu-driver-fetch "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver_fetch.c")
+    target_link_libraries(snx-test-gui-gpu-driver-fetch PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_gpu_driver_fetch COMMAND snx-test-gui-gpu-driver-fetch)
     add_executable(snx-test-gui-recent "${PROJECT_SOURCE_DIR}/tests/gui_recent.c")
     target_link_libraries(snx-test-gui-recent PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_recent COMMAND snx-test-gui-recent)
