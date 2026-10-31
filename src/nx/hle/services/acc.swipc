@@ -60,7 +60,8 @@ interface nn::account::baas::IManagerForApplication {
     [160] StoreOpenContext();
 }
 
-# an operation that needs the network: done at once, and failed the way nifm fails here, since there is no network
+# an operation on the account server: done at once, and succeeded, with nothing from a server (EnsureIdTokenCacheAsync's
+# token stays none)
 interface nn::account::detail::IAsyncContext {
     [0] GetSystemEvent() -> handle<copy, event> event;
     @stub [1] Cancel();
