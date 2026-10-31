@@ -411,6 +411,12 @@ add_executable(snx-test-cheat-list cheat_list.c)
 snx_test_target(snx-test-cheat-list 99)
 target_link_libraries(snx-test-cheat-list PRIVATE scarletnx-common)
 add_test(NAME cheat_list COMMAND snx-test-cheat-list)
+# a GPU driver package's meta.json, folder name and library, the devices that load one, a run's check that it did, and
+# Freedreno's variables (common/utilities/gpu_driver.c)
+add_executable(snx-test-gpu-driver gpu_driver.c)
+snx_test_target(snx-test-gpu-driver 99)
+target_link_libraries(snx-test-gpu-driver PRIVATE scarletnx-common)
+add_test(NAME gpu_driver COMMAND snx-test-gpu-driver)
 # a mod's IPS, IPS32 and IPSwitch patches: their formats, which module takes one, the played mods' in their order
 add_executable(snx-test-patches patches.c)
 snx_test_target(snx-test-patches 99)
