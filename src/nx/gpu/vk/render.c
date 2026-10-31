@@ -3396,6 +3396,9 @@ retry:
               : dc->indirect                    ? 0
                                                 : base_instance - ds->dyn.depth_word;
     memcpy(&pc[0], &pc0, sizeof(u32));
+    /* an indirect draw's draw parameters that the vertex program takes from its record (DrawCall.params) */
+    u32 params = dc->indirect ? dc->params : 0;
+    memcpy(&pc[2], &params, sizeof(u32));
     pc[4] = ds->dyn.alpha_test ? 1.0f : 0.0f;
     pc[5] = (float)ds->dyn.alpha_func;
     memcpy(&pc[6], &ds->dyn.alpha_ref, 4);
