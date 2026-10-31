@@ -542,8 +542,9 @@ nickname=Xuji
 
 `uid` and `nickname` are the keys; any other key, a section out of order or twice, or a line that is no key stops the
 game and says why. The launcher's Settings > User renames a user (Enter types its nickname, the rule above checked) and
-picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, a JPEG of at most 128 KiB (256x256 as the console's), read
-when the game starts; without one it is Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
+picks the one the games play as; the file's other lines stay as they are. A user's picture is `users/<uid>.jpg`, the bytes the account service keeps (a JPEG,
+256x256 as the console's, from its editor), at most 128 KiB, read when the game starts; without one, or with an empty
+file, it is Wimsy, and a launcher that cannot draw it says so and shows Wimsy. The game plays as the user its `.ini`'s `user` names (`--user=N` for one
 run): with one user, the game picks it on its own; with more, the game's user selector gets that user. Each user's
 Account saves are in the data folder's `save/user.<uid>/<title ID>/`, every save of a game in the data folder's
 `save/` as the console keeps them (`save_layout=global`, the default, [FILESYSTEM](FILESYSTEM.md)); with
