@@ -46,7 +46,7 @@ RULES = [
     ('a range designator', r'\[[^\]\n]*\.\.\.[^\]\n]*\]\s*=', set()),
     ('a case range', r'\bcase\b[^:\n]*\.\.\.', set()),
 ]
-LEFT_OUT = ('src/nx/runtime/driver/hactool/lz4.h', 'tests/gnuabi/', 'tests/qemu_ref/', 'tests/gnu_extensions.py')
+LEFT_OUT = ('tests/gnuabi/', 'tests/qemu_ref/', 'tests/gnu_extensions.py')
 SOURCES = ('*.c', '*.h', '*.inc', '*.cpp', '*.hpp')
 
 

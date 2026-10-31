@@ -29,7 +29,7 @@
 #include "nx/runtime/driver/hactool/xci.h"
 #include "nx/runtime/driver/hactool/sha.h"
 #include "nx/runtime/driver/hactool/storage.h"
-#include "nx/runtime/driver/hactool/lz4.h"
+#include <lz4.h>
 #include "nx/runtime/driver/hactool/snx_hac.h"
 #if defined(_WIN32) && defined(__clang__)
 #pragma clang diagnostic pop

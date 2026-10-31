@@ -6,11 +6,11 @@ of its files; its cJSON is the build's (`cmake/dependencies.cmake`). `storage.c`
 (MIT, Copyright (c) 2018 Alex Barney, as Ryubing maintains it), their notice at the top of `storage.c`. ScarletNX's
 changes are GPL-3.0-or-later.
 
-It is a library inside the driver (`cmake/hactool.cmake`), not a program: `main.c`, the bundled mbedtls and its
-`lz4.c` are left out. The driver calls it through `snx_hac.h` (`snx_hac.c`), and `snx_io.h`, included ahead of every
-file, keeps what it prints from the console (it can hold keys), turns its `exit` into one the driver cleans up after,
-and counts what it writes for the progress row. The files keep hactool's own style (`.clang-format` here formats
-nothing).
+It is a library inside the driver (`cmake/hactool.cmake`), not a program: `main.c`, the bundled mbedtls and its LZ4 are
+left out; its LZ4 calls go to the build's (`snx_lz4`). The driver calls it through `snx_hac.h` (`snx_hac.c`), and
+`snx_io.h`, included ahead of every file, keeps what it prints from the console (it can hold keys), turns its `exit`
+into one the driver cleans up after, and counts what it writes for the progress row. The files keep hactool's own style
+(`.clang-format` here formats nothing).
 
 What ScarletNX changed, each change marked `ScarletNX` where it is not a file of its own:
 
