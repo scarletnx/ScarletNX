@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The console's users, which the runtime's acc lists, am selects and fs keeps the saves of, and the launcher shows at
    the right of its head: users/users.ini of a data folder, up to eight, each a [userN] section in the console's order,
-   and their pictures beside it as users/<uid>.jpg. User 1 has the uid users.ini gives it; with none (no users.ini, or
+   and their pictures beside it as users/<uid>.jpg (the bytes the account service keeps, 128 KiB at most). User 1 has the uid users.ini gives it; with none (no users.ini, or
    a [user1] without one) the uid ScarletNX always gave it (SNX_USERS_FIRST_UID0 and 1), so the saves made before there
    were others stay its own. Without users.ini it is the only user, "Player". A nickname is what the console's account
    service keeps (SwitchBrew's ProfileBase): 1 to 32 bytes of UTF-8, with no control character, and no space at

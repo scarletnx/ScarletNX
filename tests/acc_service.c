@@ -902,16 +902,33 @@ static void test_refused(void) {
     refused("[user1]\nnickname Aogo\n", 1, "neither");
     refused("; nothing\n", 1, "no [user1]");
     refused("[user1\n", 1, "no ]");
-    /* a picture that is no JPEG, or too big */
+    /* a picture is the bytes the service keeps, as a program stored them: one that is no JPEG goes to the game as it
+       is, an empty file is none (Wimsy), and past 128 KiB, more than a program takes, it is refused with its size */
     put_ini("[user1]\n");
     put(UID1 ".jpg", "GIF89a", 6);
-    CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "not a JPEG"));
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 6);
+    {
+        nn_account_Uid uid;
+        u32 size = 0;
+        SvcObj* profile = NULL;
+        IpcBuf image;
+        static u8 memory[0x100];
+        g_mem = memory;
+        image.addr = 0x10;
+        image.size = 0x40;
+        acc_uid_put(uid.v, g_users[0].uid);
+        CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+        CHECK(nn_account_profile_IProfile_GetImageSize(profile, &size) == 0 && size == 6);
+        CHECK(nn_account_profile_IProfile_LoadImage(profile, image, &size) == 0 && size == 6 &&
+              !memcmp(memory + 0x10, "GIF89a", 6));
+        svcobj_unref(profile);
+    }
+    put(UID1 ".jpg", "", 0);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 0);
     {
         unsigned char* big = (unsigned char*)calloc(1, 0x20001);
-        big[0] = 0xFF, big[1] = 0xD8, big[0x1FFFF] = 0xFF, big[0x20000] = 0xD9;
         put(UID1 ".jpg", big, 0x20001);
-        CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "not a JPEG"));
-        big[0x1FFFF - 1] = 0xFF, big[0x1FFFF] = 0xD9;
+        CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1 && strstr(why, "is 131073 bytes, past the 131072"));
         put(UID1 ".jpg", big, 0x20000);
         CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_users[0].picture_size == 0x20000);
         free(big);

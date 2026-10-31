@@ -133,7 +133,8 @@ static const char* users_lines(const char* text, int* count) {
     return *count ? NULL : "no [user1]";
 }
 
-/* users/<uid>.jpg of each user, read into one block: a JPEG (FF D8 to FF D9) of at most 128 KiB, or none */
+/* users/<uid>.jpg of each user, read into one block: the bytes the account service keeps, as a program stored them
+   (a JPEG from the console's editor), at most 128 KiB, the most a program takes; an empty file or none is no picture */
 static int users_read_pictures(const char* dir, char* why, size_t why_size) {
     unsigned char* data[SNX_USERS_MAX];
     size_t size[SNX_USERS_MAX], total = 0;
@@ -149,9 +150,9 @@ static int users_read_pictures(const char* dir, char* why, size_t why_size) {
         if (snx_is_file(path) && !data[i]) {
             snprintf(why, why_size, "%s could not be read", path);
             rc = -1;
-        } else if (data[i] && (size[i] < 4 || size[i] > USERS_PICTURE || data[i][0] != 0xFF || data[i][1] != 0xD8 ||
-                               data[i][size[i] - 2] != 0xFF || data[i][size[i] - 1] != 0xD9)) {
-            snprintf(why, why_size, "%s is not a JPEG of at most %u bytes", path, (unsigned)USERS_PICTURE);
+        } else if (data[i] && size[i] > USERS_PICTURE) {
+            snprintf(why, why_size, "%s is %zu bytes, past the %u a user's picture holds", path, size[i],
+                     (unsigned)USERS_PICTURE);
             rc = -1;
         }
         if (!data[i]) size[i] = 0;
