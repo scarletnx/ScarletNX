@@ -110,7 +110,8 @@ void network_room_init(void) {
     r = room_password(dir, password, sizeof password, why, sizeof why);
     free(dir);
     if (r) fatal("The Eden room's password: %s", why);
-    r = snx_room_join(&room, host, port, user->nickname, password, g_exename, g_hle.kernel.title_id, "", &refused);
+    r = snx_room_join(&room, host, port, snx_users_room_nickname(user), password, g_exename, g_hle.kernel.title_id, "",
+                      &refused);
     if (r) /* the user by number: the nickname can name the player, and players attach the log to public reports */
         fatal("The Eden room at %s:%u, as user %d: %s (errno %d)", host, port, snx_users_selected_number(),
               snx_room_why_text(refused), -r);

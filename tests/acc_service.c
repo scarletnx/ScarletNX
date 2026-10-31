@@ -216,6 +216,9 @@ static void test_picture(void) {
 #define UID2   "00000000000000020000000000000002"
 #define UID3   "0000000000000003000000000000000a"
 #define NICK20 "Ab9 x.y_z-0123456789" /* the longest a room takes, with every kind of character */
+#define NICK32   "Jo\xc3\xa3o \xf0\x9f\x8e\xae 0123456789abcdefghijk" /* 32 bytes: the most there is, of UTF-8 */
+#define NICK33   NICK32 "l"
+#define NOT_NICK "bytes of UTF-8 with no control character nor a space at either end"
 static const unsigned char jpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 0xFF, 0xD9};
 
 static void put(const char* name, const void* data, size_t size) {
@@ -774,8 +777,9 @@ static void test_start(void) {
     char why[512], text[33], *before, *now, *old;
     gone("users.ini");
     gone("users.ini.old");
-    CHECK(snx_users_start(DIR, three, "Ada", why, sizeof why) == -1 &&
-          strstr(why, "the nickname has 3 bytes: Eden's rooms take 4 to 20") && !strstr(why, "Ada"));
+    CHECK(snx_users_start(DIR, three, NICK33, why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 33 bytes: the account service keeps 1 to 32 " NOT_NICK) &&
+          !strstr(why, "Jo\xc3\xa3o"));
     CHECK(snx_users_start(DIR, zero, "Aogo", why, sizeof why) == -1 && strstr(why, "zero"));
     CHECK(!got("users.ini") && !got("users.ini.old") && !got("users.ini.new"));
     /* none before: the new one alone, read as user 1 of that uid */
@@ -822,8 +826,8 @@ static void test_rename(void) {
     free(now);
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !strcmp(g_users[0].nickname, "Aogo.55") &&
           !strcmp(g_users[1].nickname, "Xuji Two"));
-    CHECK(snx_users_rename(DIR, 2, "Ada/Bob", why, sizeof why) == -1 &&
-          strstr(why, "the nickname has 0x2f at byte 4: Eden's rooms take 4 to 20") && !strstr(why, "Ada"));
+    CHECK(snx_users_rename(DIR, 2, " Ada", why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 0x20 at byte 1: the account service keeps 1 to 32") && !strstr(why, "Ada"));
     CHECK(snx_users_rename(DIR, 3, "Afugo", why, sizeof why) == -1 && strstr(why, "there is no user 3: 2 users"));
     now = got("users.ini");
     CHECK(now && strstr(now, "nickname=Xuji Two\n")); /* as it was */
@@ -860,14 +864,37 @@ static void test_refused(void) {
             "[user3] has the uid of [user2]");
     refused("[user1]\n[user2]\nuid=00000000000000000000000000000000\nnickname=Xuji\n", 1, "nor zero");
     refused("[user1]\n[user2]\nuid=0123\nnickname=Xuji\n", 1, "not 32 hex digits");
-    /* a nickname a room wouldn't take: too long, too short, empty, a letter outside ASCII, a sign, a tab; said by its
+    /* a nickname the service would not keep: too long, empty, a control character (C0, DEL, C1), a space at either end,
+       which users.ini would lose, and bytes that are no UTF-8 (one cut short, an overlong form, a surrogate); said by its
        length or its first byte the rule refuses */
-    refused_nickname(NICK20 "x", "[user1] nickname= has 21 bytes: Eden's rooms take 4 to 20 letters, digits, spaces");
-    refused_nickname("Ada", "[user1] nickname= has 3 bytes: Eden's rooms take 4 to 20 letters");
-    refused_nickname("", "[user1] nickname= has 0 bytes: Eden's rooms take 4 to 20 letters");
-    refused_nickname("Jo\xc3\xa3o", "[user1] nickname= has 0xc3 at byte 3: Eden's rooms take 4 to 20 letters");
-    refused_nickname("Ada/Bob", "[user1] nickname= has 0x2f at byte 4");
-    refused_nickname("Ada\tBob", "[user1] nickname= has 0x09 at byte 4");
+    refused_nickname(NICK33, "[user1] nickname= has 33 bytes: the account service keeps 1 to 32 " NOT_NICK);
+    refused_nickname("", "[user1] nickname= has 0 bytes: the account service keeps 1 to 32 ");
+    refused_nickname("Ada\tBob", "[user1] nickname= has 0x09 at byte 4: ");
+    refused_nickname("Ada\x7f", "[user1] nickname= has 0x7f at byte 4: ");
+    refused_nickname("Ada\xc2\x85", "[user1] nickname= has 0xc2 at byte 4: ");
+    refused_nickname("Jo\xc3", "[user1] nickname= has 0xc3 at byte 3: ");
+    refused_nickname("A\xc0\xaf"
+                     "B",
+                     "[user1] nickname= has 0xc0 at byte 2: ");
+    refused_nickname("A\xed\xa0\x80"
+                     "B",
+                     "[user1] nickname= has 0xed at byte 2: ");
+    refused_nickname("A\xf4\x90\x80\x80", "[user1] nickname= has 0xf4 at byte 2: ");
+    CHECK(!snx_users_nickname_valid(" Ada") && !snx_users_nickname_valid("Ada ") && snx_users_nickname_valid("A d"));
+    /* and what it keeps: 32 bytes of UTF-8 (an accent, an emoji), one letter, and signs a room would refuse */
+    put_ini("[user1]\nnickname=" NICK32 "\n[user2]\nuid=" UID2 "\nnickname=A\n[user3]\nuid=" UID3
+            "\nnickname=Ada/Bob\n");
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && g_user_count == 3 && !strcmp(g_users[0].nickname, NICK32) &&
+          !strcmp(g_users[1].nickname, "A") && !strcmp(g_users[2].nickname, "Ada/Bob"));
+    {
+        nn_account_profile_ProfileBase base;
+        nn_account_Uid uid;
+        SvcObj* profile = NULL;
+        acc_uid_put(uid.v, g_users[0].uid);
+        CHECK(nn_account_IAccountServiceForApplication_GetProfile(NULL, &uid, &profile) == 0);
+        CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == 0 && !memcmp(base.nickname, NICK32, 32));
+        svcobj_unref(profile);
+    }
     refused("[user1]\npassword=hunter2\n", 1, "is not a setting: uid, nickname");
     refused("[user1]\n[user2]\nuid=" UID2 "\nnickname=Xuji\n", 3, "user=3");
     refused("nickname=Aogo\n[user1]\n", 1, "before [user1]");

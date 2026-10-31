@@ -48,29 +48,57 @@ const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size) {
     return user->picture_size ? g_user_pictures + user->picture_at : NULL;
 }
 
-static int nickname_char(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' ||
-           c == '_' || c == '-';
+/* the first byte of nickname the rule refuses, or its length when it refuses none: a space at either end, a control
+   character (C0, DEL, C1), or bytes that are no UTF-8 (cut short, an overlong form, a surrogate, past U+10FFFF) */
+static size_t nickname_refused_at(const char* nickname) {
+    const unsigned char* p = (const unsigned char*)nickname;
+    size_t n = strlen(nickname), i = 0;
+    if (n && p[0] == ' ') return 0;
+    while (i < n) {
+        unsigned c = p[i], code, follow, k;
+        if (c < 0x80) {
+            if (c < 0x20 || c == 0x7F) return i;
+            i++;
+            continue;
+        }
+        if (c >= 0xC2 && c <= 0xDF)
+            follow = 1, code = c & 0x1F;
+        else if (c >= 0xE0 && c <= 0xEF)
+            follow = 2, code = c & 0x0F;
+        else if (c >= 0xF0 && c <= 0xF4)
+            follow = 3, code = c & 0x07;
+        else
+            return i;
+        if (n - i <= follow) return i;
+        for (k = 1; k <= follow; k++) {
+            if ((p[i + k] & 0xC0) != 0x80) return i;
+            code = code << 6 | (p[i + k] & 0x3F);
+        }
+        if ((follow == 2 && code < 0x800) || (follow == 3 && (code < 0x10000 || code > 0x10FFFF)) ||
+            (code >= 0xD800 && code <= 0xDFFF) || (code >= 0x80 && code <= 0x9F))
+            return i;
+        i += follow + 1;
+    }
+    return n && p[n - 1] == ' ' ? n - 1 : n;
 }
 int snx_users_nickname_valid(const char* nickname) {
     size_t n = strlen(nickname);
-    if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX) return 0;
-    for (size_t i = 0; i < n; i++)
-        if (!nickname_char(nickname[i])) return 0;
-    return 1;
+    return n >= SNX_USERS_NICKNAME_MIN && n <= SNX_USERS_NICKNAME_MAX && nickname_refused_at(nickname) == n;
 }
+const char* snx_users_room_nickname(const SnxUser* user) { return user->nickname; }
 /* appended to why: what is wrong with nickname, its length or its first byte the rule refuses, never the nickname
    itself: a game's stop carries why to the log, which players attach to public reports */
 static void nickname_refused(char* why, size_t why_size, const char* nickname) {
-    size_t at = strlen(why), n = strlen(nickname), i = 0;
+    size_t at = strlen(why), n = strlen(nickname), i;
     if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX)
         snprintf(why + at, why_size - at, "has %zu bytes: ", n);
     else {
-        while (nickname_char(nickname[i])) i++;
+        i = nickname_refused_at(nickname);
         snprintf(why + at, why_size - at, "has 0x%02x at byte %zu: ", (unsigned)(unsigned char)nickname[i], i + 1);
     }
     at = strlen(why);
-    snprintf(why + at, why_size - at, "Eden's rooms take %d to %d letters, digits, spaces, '.', '_' or '-'",
+    snprintf(why + at, why_size - at,
+             "the account service keeps %d to %d bytes of UTF-8 with no control character nor a space at either end",
              SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
 }
 

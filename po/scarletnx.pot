@@ -2822,7 +2822,7 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr ""
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -2848,7 +2848,7 @@ msgid "User %d"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -3370,7 +3370,7 @@ msgid "Ctrl+S saves too"
 msgstr ""
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -3629,7 +3629,7 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c

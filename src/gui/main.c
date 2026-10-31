@@ -8626,7 +8626,7 @@ static void group_view(App* app, int g) {
     gui_editor_form(&app->editor, app->view_keys, app->view_count, app->settings.values, NULL);
     app->editor.flat = true;
 }
-#define SAY_SETUP_NICKNAME SNX_TR_NOOP("nickname 4 to 20 of A-Z a-z 0-9 space . _ -")
+#define SAY_SETUP_NICKNAME SNX_TR_NOOP("nickname of 1 to 32 bytes, no control character, no space at either end")
 /* the User group: its one setting, who the games play as, shown with every user of users.ini to rename */
 static bool users_group(const App* app, int g) {
     return g > 0 && g < app->groups && !strcmp(app->group_keys[g].key, "User");
@@ -8655,8 +8655,13 @@ static int users_fill(App* app) {
             sizeof app->users_form.nick[0],
             NULL,
             0,
-            SNX_TR_NOOP("Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"), 0,
-            0, 0, 0, NULL};
+            SNX_TR_NOOP(
+                "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"),
+            0,
+            0,
+            0,
+            0,
+            NULL};
     }
     return i + 1;
 }
@@ -11040,7 +11045,7 @@ static void draw_picker(App* app);
    cursor in a field, what the row takes, and what the editor says of what was typed; OK and Cancel under them ---- */
 #define GUI_TYPED_FIELD 24 /* the field's columns at the least */
 static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Cancel")};
-#define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -")
+#define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
     if (app->form == GUI_FORM_USERS && app->editor.row > 0)
@@ -11909,7 +11914,7 @@ static const char* setup_tip(const App* app) {
         case SNX_SETUP_INSTALL: return snx_tr("Tip: a portable copy is a folder you can copy");
         case SNX_SETUP_FOLDERS: return snx_tr("Tip: Settings > App > Folders changes them");
         case SNX_SETUP_KEYS: return snx_tr("Tip: Menu > Install Keys changes them");
-        default: return snx_tr("Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -");
+        default: return snx_tr("Tip: nickname of 1 to 32 bytes, no control character, no space at either end");
     }
 }
 static const char* setup_keys_said(const App* app) {

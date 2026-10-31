@@ -19,7 +19,7 @@
 enum {
     SNX_ROOM_PORT = 24872,         /* the room's default port */
     SNX_ROOM_VERSION = 1,          /* network_version: a room of another version refuses the join */
-    SNX_ROOM_NICKNAME_MAX = 20,    /* the room's rule (room.cpp's IsValidNickname), users.ini's too */
+    SNX_ROOM_NICKNAME_MAX = 20,    /* the room's rule (room.cpp's IsValidNickname) */
     SNX_ROOM_DATAGRAM_MAX = 65507, /* what an IPv4 UDP datagram holds */
     SNX_ROOM_JOIN_MS = 5000        /* to connect, then again for the room's answer: Eden's ConnectionTimeoutMs */
 };
