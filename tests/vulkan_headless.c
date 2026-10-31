@@ -1192,7 +1192,7 @@ static int check_rt_overlap(void) {
     vk_rt_drawn_full(target);
     (void)vk_rt_drawn_fresh(target);
     CHECK(own_landings() == landings);
-    if (own_traps()) CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0);
+    if (own_traps() && !g_vk.uma) CHECK(own_lookup(tracked_cpu, 0x4000, NULL, 0) > 0); /* UMA publishes in place */
     vk_unlock();
     memset(GP(tracked_cpu + 16), 0x39, 16);
     g_renderer->mem_may_have_changed();
