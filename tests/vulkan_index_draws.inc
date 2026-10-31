@@ -218,6 +218,45 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
     return 0;
 }
 
+/* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
+   base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
+   add the base instance to their instance ID to find their instance's data. nvn_direct's bank 0 holds 0 there for an
+   indirect draw, so one game drew every instance of its street props from the first records of its instance data,
+   out of sight. Here a vertex program replaces the green component of the green quad's color with c[0][0x644], with
+   bank 0 all zeros, and the record's base instance is 1.0f's bits: the quad is green only when the read takes the
+   record's base instance */
+static int draw_params_case(GpuChannel* channel, u64 target, u64 indices, u64 address) {
+    const u64 program = address + 0x2000, cb0 = address + 0x4000, args = address + 0x16100;
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff00ull, /* ALD R0..3, a[0x90]: the green quad's 0, 1, 0, 1 */
+                          0x4c98078019170001ull, /* MOV R1, c[0x0][0x644] */
+                          0xeff1ff800807ff00ull, /* color varying */
+                          0xe30000000007000full};
+    IndexPixels px;
+    u8 zeros[0x1000] = {0};
+    CHECK(!gmem_write(cb0, zeros, sizeof zeros));
+    CHECK(index_program(program, vertex, 6, 0));
+    const u32 list0[6] = {0, 1, 3, 1, 2, 3};
+    CHECK(!index_buffer(channel, indices, list0, 6, 2, ~0u));
+    const u32 record[5] = {6, 1, 0, 4, 0x3f800000}; /* count, instances, first index, base vertex, base instance */
+    CHECK(!put_words(args, record, 5));
+    u32* r = channel->r3d;
+    r[0x811] = 0x2000; /* VertexB's offset */
+    channel->ds.bind.cb_addr[0][0] = cb0;
+    channel->ds.bind.cb_size[0][0] = 0x1000;
+    DrawCall call = {.topology = 4, .indexed = 1, .count = 1, .instances = 1, .indirect = args, .draw_count = 1,
+                     .stride = 20, .params = SH_PUSH_GPU_BASE_VERTEX | SH_PUSH_GPU_BASE_INSTANCE};
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) fprintf(stderr, "indirect draw parameters: %u green, %u blue, %u red\n", px.green, px.blue, px.red);
+    r[0x811] = 0;
+    channel->ds.bind.cb_addr[0][0] = 0;
+    channel->ds.bind.cb_size[0][0] = 0;
+    CHECK(ok);
+    puts("indirect draws: a vertex program's read of the base instance in bank 0 takes the record's");
+    return 0;
+}
+
 /* The highest index a draw reads (render.c's draw_last_vertex) bounds its streams' ranges, and is kept for an index
    range until the range's memory changes. In a stream of 512 vertices, 0 to 3 a red quad and 508 to 511 a green one,
    indices of the red quad bound the range to its first 4 KiB. The same indices rewritten to the green quad's must
@@ -327,6 +366,7 @@ static int check_index_draws(void) {
     CHECK(!index_cases(channel, target, indices));
     g_vk.has_index8 = had8;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
+    if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
            "(8-bit indices %s)\n",

@@ -246,6 +246,9 @@ typedef struct {
        draw, which ignores the rest */
     u64 indirect, indirect_count;
     u32 draw_count, stride;
+    /* an indirect draw's record values that the vertex program reads where NVN's driver writes them in constant buffer
+       0 (shader.h SH_CB0_): bit 0 the base vertex, bit 1 the base instance (SH_PUSH_GPU_). 0 for none */
+    u32 params;
 } DrawCall;
 
 /* DsState's groups, in its order */
