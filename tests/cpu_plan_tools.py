@@ -3,7 +3,7 @@
 """Candidate selection must not rank invalid measurements or lose the plan's scope."""
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import tempfile
 import unittest
 import subprocess
@@ -86,6 +86,12 @@ class WorkflowTests(unittest.TestCase):
         row = {'body': 'Use `ir.c`, `tests/check.c`, and `do_not_run()`.', 'evidence': ['src/extra.h']}
         matches = plan.source_matches(row, [Path(p) for p in ('src/a/ir.c', 'tests/check.c', 'tests/other.c', 'src/extra.h')])
         self.assertEqual(matches, ['src/a/ir.c', 'src/extra.h', 'tests/check.c'])
+
+    def test_source_matches_normalize_windows_separators(self):
+        row = {'body': 'Use `ir.c` and `tests/check.c`.', 'evidence': ['src/extra.h']}
+        catalog = [PureWindowsPath(p) for p in
+                   (r'src\a\ir.c', r'tests\check.c', r'tests\other.c', r'src\extra.h', r'src\a\not_ir.c')]
+        self.assertEqual(plan.source_matches(row, catalog), ['src/a/ir.c', 'src/extra.h', 'tests/check.c'])
 
     def test_matrix_preserves_argv_and_expands_all_combinations(self):
         manifest = plan.expand_matrix(self.matrix(), 'I8')

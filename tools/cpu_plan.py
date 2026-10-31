@@ -111,8 +111,10 @@ def source_matches(row, catalog):
         if re.fullmatch(r'[\w./-]+\.(?:c|h|py|md|txt|cmake)', token):
             names.add(token)
     evidence = set(row.get('evidence', []))
-    return sorted(str(path) for path in catalog if str(path) in evidence or
-                  any(str(path) == name or str(path).endswith('/' + name) for name in names))
+    # Documentation and status entries use repository paths, including on Windows.
+    paths = (path.as_posix() for path in catalog)
+    return sorted(path for path in paths if path in evidence or
+                  any(path == name or path.endswith('/' + name) for name in names))
 
 
 def write_packets(items, out, root, selected=None):
