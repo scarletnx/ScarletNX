@@ -98,18 +98,22 @@ static void test_guest_memory(const char* dir) {
     printf("populate\n");
     {
         u8* p = g_base + (1 << 20);
-        u8 in[16];
-        CHECK(!plat_vm_commit(p, 16 * 4096) && !mincore(p, 16 * 4096, in), "commit failed");
-        CHECK(!(in[0] & 1) && !(in[15] & 1), "committed pages resident before a write");
-        if (plat_vm_populate(p, 16 * 4096)) {
+        CHECK(!plat_vm_commit(p, 16 * 4096), "commit failed");
+#ifdef MADV_POPULATE_WRITE /* Linux, whose mincore takes unsigned chars (other hosts' take char) */
+        unsigned char in[16];
+        CHECK(!mincore(p, 16 * 4096, in) && !(in[0] & 1) && !(in[15] & 1), "committed pages resident before a write");
+        if (plat_vm_populate(p, 16 * 4096)) { /* a kernel before 5.14 */
             printf("populate unavailable here (%s): only checking that it says so\n", strerror(errno));
-            CHECK(errno == ENOSYS || errno == EINVAL, "populate failed with another error");
+            CHECK(errno == EINVAL, "populate failed with another error");
         } else {
             int all = 1;
             CHECK(!mincore(p, 16 * 4096, in), "mincore failed");
             for (int i = 0; i < 16; i++) all &= in[i] & 1;
             CHECK(all && p[5 * 4096] == 0, "populated pages not resident, or not zero");
         }
+#else
+        CHECK(plat_vm_populate(p, 16 * 4096) == -1 && errno == ENOSYS, "populate did not say this host can't");
+#endif
     }
 }
 
