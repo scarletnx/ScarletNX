@@ -31,7 +31,14 @@ typedef struct {
     float circle[2];  /* the circle pad, -1 to 1 on each axis, x to the right and y up */
     bool touched;     /* the touch screen is pressed, at the bottom screen's pixel touch: x from the left, y from the top */
     uint16_t touch[2];
+    bool motion;     /* a gamepad with an accelerometer and a gyroscope is connected: accel and gyro are its */
+    float accel[3];  /* in g, in the axes of Azahar's motion device (a console held upright has y at -1) */
+    float gyro[3];   /* in degrees a second, in the same axes */
 } SnxCtrInput;
+/* The motion of a gamepad as SDL gives it (acceleration in m/s2 and rotation in rad/s, +x right, +y up, +z toward
+   the player) in the axes of Azahar's motion device (its SDL input: x and z of the acceleration as they are, y
+   negated, and x and z of the rotation negated), as the input's accel and gyro */
+void snx_ctr_input_motion(const float sdl_accel[3], const float sdl_gyro[3], SnxCtrInput* input);
 /* The window's picture as the presenter draws it (gpu/present.c): an image of image_w by image_h pixels with the top
    screen above the bottom one, both centred, the pair scaled as one to fit. The screens' sizes are the frames' */
 typedef struct {

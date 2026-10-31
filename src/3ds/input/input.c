@@ -44,6 +44,12 @@ void snx_ctr_input_event(const union SDL_Event* event) {
         for (unsigned i = 0; i < INPUT_PADS; ++i)
             if (!g_input.pads[i]) {
                 g_input.pads[i] = SDL_OpenGamepad(event->gdevice.which);
+                /* the motion sensors, for a pad that has both: they report nothing until enabled */
+                SDL_Gamepad* pad = g_input.pads[i];
+                if (pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) && SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO)) {
+                    (void)SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+                    (void)SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+                }
                 break;
             }
     } else if (event->type == SDL_EVENT_GAMEPAD_REMOVED)
@@ -69,6 +75,16 @@ bool snx_ctr_touch_locate(const SnxCtrWindowLayout* l, double x, double y, unsig
 void snx_ctr_input_touch(bool down, unsigned x, unsigned y) {
     uint32_t state = down ? 1u << 31 | (y & 0x7fffu) << 16 | (x & 0xffffu) : 0;
     __atomic_store_n(&g_touch, state, __ATOMIC_RELAXED);
+}
+void snx_ctr_input_motion(const float sdl_accel[3], const float sdl_gyro[3], SnxCtrInput* input) {
+    const float degrees = 180.0f / 3.14159265358979f;
+    input->motion = true;
+    input->accel[0] = sdl_accel[0] / SDL_STANDARD_GRAVITY;
+    input->accel[1] = -sdl_accel[1] / SDL_STANDARD_GRAVITY;
+    input->accel[2] = sdl_accel[2] / SDL_STANDARD_GRAVITY;
+    input->gyro[0] = -sdl_gyro[0] * degrees;
+    input->gyro[1] = sdl_gyro[1] * degrees;
+    input->gyro[2] = -sdl_gyro[2] * degrees;
 }
 /* a stick's axis, -1 to 1 */
 static float axis(SDL_Gamepad* pad, SDL_GamepadAxis which) {
@@ -133,6 +149,11 @@ void snx_ctr_input_read(SnxCtrInput* input) {
             input->circle[0] = x * scale;
             input->circle[1] = y * scale;
         }
+        /* the first pad with a motion sensor is the console's */
+        float accel[3], gyro[3];
+        if (!input->motion && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, accel, 3) &&
+            SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, gyro, 3))
+            snx_ctr_input_motion(accel, gyro, input);
     }
     if (g_input.presses) {
         double ms = (snx_seconds() - g_input.start) * 1000.0;

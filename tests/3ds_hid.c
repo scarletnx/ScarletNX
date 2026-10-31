@@ -8,6 +8,7 @@
 #include "3ds/services/hid.h"
 #include "snx_settings.h"
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #define COMMAND (SNX_CTR_INITIAL_TLS + 0x80)
@@ -48,8 +49,23 @@ static void touch_locate(void) {
     l.image_w = 0; /* no window yet */
     assert(!snx_ctr_touch_locate(&l, 100, 600, &x, &y) && !x && !y);
 }
+/* A gamepad's motion in Azahar's axes: a pad held upright reads +y of gravity, which is the console's rest value (y at
+   -1 g, -512 raw), and the rates come out in degrees a second with x and z negated */
+static void motion_axes(void) {
+    SnxCtrInput input = {0};
+    const float upright[3] = {0, 9.80665f, 0}, still[3] = {0};
+    snx_ctr_input_motion(upright, still, &input);
+    assert(input.motion && input.accel[0] == 0 && input.accel[1] == -1.0f && input.accel[2] == 0);
+    assert(input.gyro[0] == 0 && input.gyro[1] == 0 && input.gyro[2] == 0);
+    const float tilted[3] = {9.80665f, 0, -4.903325f}, turning[3] = {1.0f, 2.0f, 3.0f};
+    snx_ctr_input_motion(tilted, turning, &input);
+    assert(input.accel[0] == 1.0f && input.accel[1] == 0 && input.accel[2] == -0.5f);
+    assert(fabsf(input.gyro[0] + 57.29578f) < 1e-3f && fabsf(input.gyro[1] - 114.59156f) < 1e-3f &&
+           fabsf(input.gyro[2] + 171.88734f) < 1e-3f);
+}
 int main(void) {
     touch_locate();
+    motion_axes();
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
                          .stack_size = 0x4000,

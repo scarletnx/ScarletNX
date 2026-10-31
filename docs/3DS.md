@@ -178,7 +178,8 @@ title music through a port of Azahar's HLE DSP. A run of about 2 billion native
 blocks presented frames until it was ended. It is **not playable** yet:
 
 - Input is the pad and the touch screen (the mouse's left button or a finger on
-  the window's bottom screen). The sensors are at rest (`hid:USER`, below).
+  the window's bottom screen). The sensors are a gamepad's accelerometer and
+  gyroscope when one has them, else at rest (`hid:USER`, below).
 - The music has a gap after every rendered frame, because rendering and presenting
   run inside the guest's GSP call.
 - Geometry shaders, procedural textures, shadows and the DSP's AAC pipe still stop
@@ -379,8 +380,10 @@ scripted presses of `--script=ms:hex,...` (`ctr_script`), in the pad's bits (1 A
 800 Y), each held for `press_len` ms. A press of the mouse's left button (or a
 finger) on the window's bottom screen is a touch at that pixel, and a drag moves
 it, held inside the screen (the `touch` setting: `0` off, `1` fingers, `2` fingers
-and the mouse, the default). The sensors give a console lying still. ZL, ZR and the C-stick are the New 3DS's
-`ir:rst`, which the runtime does not have yet.
+and the mouse, the default). The first gamepad with an accelerometer and a gyroscope
+gives the sensors, in the axes and units of Azahar's motion device (512 raw a g,
+14.375 raw a degree a second). Without one they give a console held still. ZL, ZR
+and the C-stick are the New 3DS's `ir:rst`, which the runtime does not have yet.
 
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000

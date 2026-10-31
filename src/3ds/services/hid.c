@@ -5,10 +5,11 @@
    as a Switch game's hid writes its shared memory (nx/hle/services/hid.c). The samples, their layout and their pace
    are ported from Azahar's service/hid/hid.cpp and hid.h (GPL-2.0-or-later), checked against 3dbrew's HID Shared
    Memory. The input is the player's (input/input.c), the touch screen the left mouse button on the window's bottom
-   screen. The sensors are at rest, the console lying flat. */
+   screen. The sensors are the first gamepad's accelerometer and gyroscope, else at rest, the console held upright. */
 #include "3ds/services/hid.h"
 #include "3ds/input/input.h"
 #include "3ds/runtime/internal.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "services/hid.swipc.inc"
@@ -21,6 +22,9 @@
 #define HID_ACCELEROMETER_NS UINT64_C(9615382)
 #define HID_GYROSCOPE_NS     UINT64_C(9900987)
 #define HID_TICK_HZ          268111856.0
+/* raw units a g and a degree a second (Azahar's accelerometer_coef and gyroscope_coef, from the console's hw test) */
+#define HID_ACCELEROMETER_COEFFICIENT 512.0f
+#define HID_GYROSCOPE_COEFFICIENT     14.375f
 /* the shared memory's sections (3dbrew's HID Shared Memory): each starts with the tick of its last index wrap and
    the one before it, then the index last written */
 #define HID_PAD           0x000u /* current_state 0x1c, entries[8] of 0x10 bytes from 0x28 */
@@ -125,25 +129,42 @@ static void update_pad(SnxCtrProcess* p) {
     signal_event(p, 1);
     signal_event(p, 2);
 }
-/* Azahar's UpdateAccelerometerCallback with the console at rest, gravity along -y: 512 a g, and the raw entry
-   Azahar makes from it */
+/* a sensor's reading times its coefficient as the s16 the entry holds: truncated, and held to the range (Azahar's cast
+   leaves a reading past it undefined) */
+static int16_t raw_sensor(float reading, float coefficient) {
+    return (int16_t)snx_clamp_float(truncf(reading * coefficient), -32768.0f, 32767.0f);
+}
+/* Azahar's UpdateAccelerometerCallback: 512 a g, and the raw entry Azahar makes from it. A gamepad's accelerometer
+   gives the reading, else the console is at rest with gravity along -y */
 static void update_accelerometer(SnxCtrProcess* p) {
-    static const int16_t at_rest[3] = {0, -512, 0};
+    SnxCtrInput input;
+    snx_ctr_input_read(&input);
+    int16_t entry[3] = {0, -512, 0};
+    if (input.motion)
+        for (unsigned i = 0; i < 3; ++i) entry[i] = raw_sensor(input.accel[i], HID_ACCELEROMETER_COEFFICIENT);
     uint32_t index = p->hid.accelerometer_index;
-    for (unsigned i = 0; i < 3; ++i) put16(p, HID_ACCELEROMETER + 0x20 + index * 6 + i * 2, (uint16_t)at_rest[i]);
-    put16(p, HID_ACCELEROMETER + 0x18, (uint16_t)(int16_t)(-2 * at_rest[0]));
-    put16(p, HID_ACCELEROMETER + 0x1a, (uint16_t)(int16_t)(-2 * at_rest[2]));
-    put16(p, HID_ACCELEROMETER + 0x1c, (uint16_t)(int16_t)(2 * at_rest[1]));
+    for (unsigned i = 0; i < 3; ++i) put16(p, HID_ACCELEROMETER + 0x20 + index * 6 + i * 2, (uint16_t)entry[i]);
+    put16(p, HID_ACCELEROMETER + 0x18, (uint16_t)(int16_t)(-2 * entry[0]));
+    put16(p, HID_ACCELEROMETER + 0x1a, (uint16_t)(int16_t)(-2 * entry[2]));
+    put16(p, HID_ACCELEROMETER + 0x1c, (uint16_t)(int16_t)(2 * entry[1]));
     advance(p, HID_ACCELEROMETER, index);
     p->hid.accelerometer_index = (index + 1) & 7;
     signal_event(p, 3);
 }
-/* Azahar's UpdateGyroscopeCallback with the console still: every rate 0 */
+/* Azahar's UpdateGyroscopeCallback: 14.375 a degree a second, and the raw entry (x, z and -y) it makes from it. A
+   gamepad's gyroscope gives the rates, else the console is still: every rate 0. Azahar stretches the rates by the last
+   frame's time scale, which is 1 here (guest time is host time) */
 static void update_gyroscope(SnxCtrProcess* p) {
-    static const unsigned char still[6] = {0};
+    SnxCtrInput input;
+    snx_ctr_input_read(&input);
+    int16_t entry[3] = {0};
+    if (input.motion)
+        for (unsigned i = 0; i < 3; ++i) entry[i] = raw_sensor(input.gyro[i], HID_GYROSCOPE_COEFFICIENT);
     uint32_t index = p->hid.gyroscope_index;
-    put(p, HID_GYROSCOPE + 0x20 + index * 6, still, 6);
-    put(p, HID_GYROSCOPE + 0x18, still, 6);
+    for (unsigned i = 0; i < 3; ++i) put16(p, HID_GYROSCOPE + 0x20 + index * 6 + i * 2, (uint16_t)entry[i]);
+    put16(p, HID_GYROSCOPE + 0x18, (uint16_t)entry[0]);
+    put16(p, HID_GYROSCOPE + 0x1a, (uint16_t)entry[2]);
+    put16(p, HID_GYROSCOPE + 0x1c, (uint16_t)(int16_t)-entry[1]);
     advance(p, HID_GYROSCOPE, index);
     p->hid.gyroscope_index = (index + 1) & 31;
     signal_event(p, 4);
