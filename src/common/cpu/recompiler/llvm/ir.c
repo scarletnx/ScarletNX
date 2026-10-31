@@ -430,13 +430,13 @@ static void size_attributes(LLVMModuleRef module, char opt) {
 }
 
 /* Each function as it is emitted: the unit's pipeline then starts from about half the instructions, and the unit never
-   holds them all at once. A pipeline LLVM Internals cut runs alone, as the passes it leaves out stay out */
+   holds them all at once. The passes LLVM Internals turn off are cut out of it (llvm_tuning.c) */
 void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
-    if (ir->tuning && ir->tuning->pipeline) return;
+    const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
+    if (!passes) return;
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
-    LLVMErrorRef failure =
-        LLVMRunPassesOnFunction(fn, "sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg", ir->tm, options);
+    LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
     LLVMDisposePassBuilderOptions(options);
     if (failure) {
         char* message = LLVMGetErrorMessage(failure);

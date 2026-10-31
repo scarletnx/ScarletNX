@@ -110,11 +110,19 @@ typedef struct {
     SnxIrFlags flags;
 } SnxIrBlockState;
 
+/* what ir_clean_function runs over each function as it is emitted, and what llvm_batch=ipo runs over a unit after it
+   in place of default<O?>: the inliner, and a cleanup of what it inlined */
+#define SNX_IR_CLEAN_PASSES "sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg"
+#define SNX_IR_IPO_PASSES                                                                                              \
+    "cgscc(inline),globaldce,function(instcombine<no-verify-fixpoint>,simplifycfg),function(sink,simplifycfg)"
+
 /* the AOT recompile's LLVM settings (nx/runtime/settings_llvm.h): the pipeline run in place of default<O?>, NULL for
-   that one, and what is set on the pass builder's options and on the target machine, NULL for nothing. Without one
-   (the runtime JIT's, the recompiler library's) LLVM keeps its own */
+   that one, the passes each function runs as it is emitted, NULL for none, and what is set on the pass builder's
+   options and on the target machine, NULL for nothing. Without one (the runtime JIT's, the recompiler library's)
+   LLVM keeps its own, and each function runs SNX_IR_CLEAN_PASSES */
 typedef struct SnxIrTuning {
     const char* pipeline;
+    const char* clean;
     void (*builder)(LLVMPassBuilderOptionsRef options);
     void (*machine)(LLVMTargetMachineRef machine);
     /* every value the three above are made from, as text: what the unit cache keys objects with (unit_cache.c) */

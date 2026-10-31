@@ -2848,6 +2848,14 @@ msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 t
 msgstr "A otimização do LLVM no código do jogo ao recompilar: 0 nenhuma, 3 a máxima, z o menor código. Um jogo já feito mantém o código até ser recompilado"
 
 #: src/nx/runtime/settings.txt
+msgid "LLVM batch"
+msgstr "Lote do LLVM"
+
+#: src/nx/runtime/settings.txt
+msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
+msgstr "O que o LLVM roda sobre cada unidade de código depois que suas funções são limpas, quando o jogo é recompilado: full, os passes do nível de otimização; ipo, só o inlining e uma limpeza depois dele, que recompila em cerca de dois terços do tempo com um código um pouco maior, até um terço mais rápido ou mais lento que o do full conforme o código (o de um jogo de 64 bits). Não em -O0. Um jogo já feito mantém seu código até ser recompilado"
+
+#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr "Threads AOT"
 

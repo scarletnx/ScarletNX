@@ -39,8 +39,8 @@ static void usage(void) {
     puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)");
-    puts("  --KEY=VALUE            A recompile setting: opt, aot_threads, unit_cache_gb, llvm_pass_<pass>=0\n"
-         "                         (scarletnx --settings=recompile lists them)");
+    puts("  --KEY=VALUE            A recompile setting: opt, llvm_batch, aot_threads, unit_cache_gb,\n"
+         "                         llvm_pass_<pass>=0 (scarletnx --settings=recompile lists them)");
     printf("  --chunk N              Instructions per code unit, whole functions batched (default: %d), the setting\n"
            "                         unit_instructions\n",
            g_settings.unit_size);
@@ -491,6 +491,10 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot_threads= as the launcher passes them */
     if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
         return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
+    if (strcmp(g_settings.llvm_batch, "full") && strcmp(g_settings.llvm_batch, "ipo"))
+        return snx_error("llvm_batch = %s: not full or ipo", g_settings.llvm_batch);
+    if (!strcmp(g_settings.llvm_batch, "ipo") && g_settings.optimization_level[0] == '0')
+        return snx_error("llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0 runs none");
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
     compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
@@ -669,6 +673,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             snx_error("%s", error);
             goto done;
         }
+        if (!compile.quiet) printf("LLVM: -O%c, llvm_batch=%s\n", llvm.opt, g_settings.llvm_batch);
         llvm.jobs = compile.jobs;
         llvm.quiet = compile.quiet;
         llvm.keep_ir = kept;
