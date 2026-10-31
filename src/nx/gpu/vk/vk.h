@@ -136,6 +136,7 @@ typedef struct {
     int has_display_timing;
     /* the device's memory (uma.c): VK_MEM_*, and how guest buffers reach it, VK_MEM_PATH_* (the vk_memory setting) */
     int mem_model, mem_path;
+    char start_failure[600]; /* why vk_init found no device it runs on, with each device's Vulkan version */
 } VkState;
 enum { VK_MEM_SMALL_BAR, VK_MEM_REBAR, VK_MEM_UMA };
 enum { VK_MEM_PATH_COPY, VK_MEM_PATH_UMA };
@@ -147,6 +148,8 @@ typedef enum { VK_CLOCK_NONE, VK_CLOCK_WAIT, VK_CLOCK_WAIT2, VK_CLOCK_GOOGLE } V
 
 /* device.c */
 int vk_init(void);
+/* why vk_init found no device it runs on, with each device's Vulkan version; "" when it did not say */
+const char* vk_start_failure(void);
 /* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
    the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
    0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the

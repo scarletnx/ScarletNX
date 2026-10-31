@@ -49,9 +49,9 @@ target_link_libraries(snx_gui_ui PRIVATE SDL3::SDL3) # its platform macros and k
 set_target_properties(snx_gui_ui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_ui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
-            queue.c latin.c wide.c log.c logzip.c ${gui_process}
+            queue.c latin.c wide.c log.c logzip.c gpu_driver.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c")
-target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz)
+target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
 target_include_directories(snx_gui_support PRIVATE "${PROJECT_BINARY_DIR}/generated")
 set_target_properties(snx_gui_support PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_gui_support PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -121,6 +121,11 @@ target_compile_options(scarletnx-gui PRIVATE -Wall -Wextra -Werror=missing-proto
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")
 target_link_libraries(scarletnx-gui PUBLIC snx_gui_support PRIVATE snx_gui_ui scarletnx-common SDL3::SDL3
                       snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages snx_demangle)
+# GPU Drivers' System driver row asks the system's Vulkan loader for its driver, where the build has Vulkan's headers
+if(TARGET Vulkan::Headers)
+    target_link_libraries(scarletnx-gui PRIVATE Vulkan::Headers)
+    target_compile_definitions(scarletnx-gui PRIVATE SNX_GUI_VULKAN VK_NO_PROTOTYPES)
+endif()
 if(WIN32 AND NOT SNX_BUILD_NX)
     enable_language(RC)
     target_sources(scarletnx-gui PRIVATE ../common/platform/runtime.rc)
@@ -158,6 +163,10 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-cia-browser "${PROJECT_SOURCE_DIR}/tests/gui_cia_browser.c")
     target_link_libraries(snx-test-gui-cia-browser PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_cia_browser COMMAND snx-test-gui-cia-browser)
+    # a GPU driver package's zip added, refused, listed and removed, and the driver a game's run is passed
+    add_executable(snx-test-gui-gpu-driver "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver.c")
+    target_link_libraries(snx-test-gui-gpu-driver PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_gpu_driver COMMAND snx-test-gui-gpu-driver)
     add_executable(snx-test-gui-recent "${PROJECT_SOURCE_DIR}/tests/gui_recent.c")
     target_link_libraries(snx-test-gui-recent PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_recent COMMAND snx-test-gui-recent)

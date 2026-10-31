@@ -1,0 +1,626 @@
+{
+  "item": "I15",
+  "scope": "Run from the repository root on a quiet host. Compare guarded native emitters with exact helper controls using the same target machine and helper library. Fixed ordinary-input kernel throughput, not game FPS. All timings are serial.",
+  "candidates": [
+    {
+      "name": "reference",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "-j",
+        "4",
+        "--target",
+        "snx-test-llvm-simd-shift",
+        "snx-test-llvm-round"
+      ],
+      "check": [
+        "ctest",
+        "--test-dir",
+        "build",
+        "-R",
+        "^(llvm_round|llvm_simd_shift)$",
+        "--output-on-failure"
+      ],
+      "bench": {
+        "shift-8-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "0",
+          "0",
+          "--reference"
+        ],
+        "shift-16-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "1",
+          "0",
+          "--reference"
+        ],
+        "shift-32-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "2",
+          "0",
+          "--reference"
+        ],
+        "shift-64-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "3",
+          "0",
+          "--reference"
+        ],
+        "round-0-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "0",
+          "0",
+          "--reference"
+        ],
+        "round-1-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "1",
+          "0",
+          "--reference"
+        ],
+        "round-2-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "2",
+          "0",
+          "--reference"
+        ],
+        "round-3-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "3",
+          "0",
+          "--reference"
+        ],
+        "round-5-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "5",
+          "0",
+          "--reference"
+        ],
+        "round-6-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "6",
+          "0",
+          "--reference"
+        ],
+        "round-7-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "7",
+          "0",
+          "--reference"
+        ],
+        "round-8-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "8",
+          "0",
+          "--reference"
+        ],
+        "round-9-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "9",
+          "0",
+          "--reference"
+        ],
+        "round-10-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "10",
+          "0",
+          "--reference"
+        ],
+        "round-12-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "12",
+          "0",
+          "--reference"
+        ],
+        "round-13-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "13",
+          "0",
+          "--reference"
+        ],
+        "round-19-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "19",
+          "0",
+          "--reference"
+        ],
+        "round-20-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "20",
+          "0",
+          "--reference"
+        ],
+        "round-26-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "26",
+          "0",
+          "--reference"
+        ],
+        "round-27-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "27",
+          "0",
+          "--reference"
+        ],
+        "round-33-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "33",
+          "0",
+          "--reference"
+        ],
+        "round-34-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "34",
+          "0",
+          "--reference"
+        ],
+        "shift-8-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "0",
+          "2",
+          "--reference"
+        ],
+        "shift-16-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "1",
+          "2",
+          "--reference"
+        ],
+        "shift-32-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "2",
+          "2",
+          "--reference"
+        ],
+        "shift-64-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "3",
+          "2",
+          "--reference"
+        ],
+        "round-0-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "0",
+          "2",
+          "--reference"
+        ],
+        "round-1-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "1",
+          "2",
+          "--reference"
+        ],
+        "round-2-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "2",
+          "2",
+          "--reference"
+        ],
+        "round-3-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "3",
+          "2",
+          "--reference"
+        ],
+        "round-5-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "5",
+          "2",
+          "--reference"
+        ],
+        "round-6-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "6",
+          "2",
+          "--reference"
+        ],
+        "round-7-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "7",
+          "2",
+          "--reference"
+        ],
+        "round-8-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "8",
+          "2",
+          "--reference"
+        ],
+        "round-9-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "9",
+          "2",
+          "--reference"
+        ],
+        "round-10-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "10",
+          "2",
+          "--reference"
+        ],
+        "round-12-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "12",
+          "2",
+          "--reference"
+        ],
+        "round-13-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "13",
+          "2",
+          "--reference"
+        ],
+        "round-19-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "19",
+          "2",
+          "--reference"
+        ],
+        "round-20-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "20",
+          "2",
+          "--reference"
+        ],
+        "round-26-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "26",
+          "2",
+          "--reference"
+        ],
+        "round-27-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "27",
+          "2",
+          "--reference"
+        ],
+        "round-33-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "33",
+          "2",
+          "--reference"
+        ],
+        "round-34-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "34",
+          "2",
+          "--reference"
+        ]
+      }
+    },
+    {
+      "name": "vector",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "-j",
+        "4",
+        "--target",
+        "snx-test-llvm-simd-shift",
+        "snx-test-llvm-round"
+      ],
+      "check": [
+        "ctest",
+        "--test-dir",
+        "build",
+        "-R",
+        "^(llvm_round|llvm_simd_shift)$",
+        "--output-on-failure"
+      ],
+      "bench": {
+        "shift-8-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "0",
+          "0"
+        ],
+        "shift-16-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "1",
+          "0"
+        ],
+        "shift-32-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "2",
+          "0"
+        ],
+        "shift-64-o0": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "3",
+          "0"
+        ],
+        "round-0-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "0",
+          "0"
+        ],
+        "round-1-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "1",
+          "0"
+        ],
+        "round-2-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "2",
+          "0"
+        ],
+        "round-3-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "3",
+          "0"
+        ],
+        "round-5-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "5",
+          "0"
+        ],
+        "round-6-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "6",
+          "0"
+        ],
+        "round-7-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "7",
+          "0"
+        ],
+        "round-8-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "8",
+          "0"
+        ],
+        "round-9-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "9",
+          "0"
+        ],
+        "round-10-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "10",
+          "0"
+        ],
+        "round-12-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "12",
+          "0"
+        ],
+        "round-13-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "13",
+          "0"
+        ],
+        "round-19-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "19",
+          "0"
+        ],
+        "round-20-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "20",
+          "0"
+        ],
+        "round-26-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "26",
+          "0"
+        ],
+        "round-27-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "27",
+          "0"
+        ],
+        "round-33-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "33",
+          "0"
+        ],
+        "round-34-o0": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "34",
+          "0"
+        ],
+        "shift-8-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "0",
+          "2"
+        ],
+        "shift-16-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "1",
+          "2"
+        ],
+        "shift-32-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "2",
+          "2"
+        ],
+        "shift-64-o2": [
+          "build/tests/snx-test-llvm-simd-shift",
+          "--bench",
+          "3",
+          "2"
+        ],
+        "round-0-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "0",
+          "2"
+        ],
+        "round-1-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "1",
+          "2"
+        ],
+        "round-2-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "2",
+          "2"
+        ],
+        "round-3-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "3",
+          "2"
+        ],
+        "round-5-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "5",
+          "2"
+        ],
+        "round-6-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "6",
+          "2"
+        ],
+        "round-7-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "7",
+          "2"
+        ],
+        "round-8-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "8",
+          "2"
+        ],
+        "round-9-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "9",
+          "2"
+        ],
+        "round-10-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "10",
+          "2"
+        ],
+        "round-12-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "12",
+          "2"
+        ],
+        "round-13-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "13",
+          "2"
+        ],
+        "round-19-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "19",
+          "2"
+        ],
+        "round-20-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "20",
+          "2"
+        ],
+        "round-26-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "26",
+          "2"
+        ],
+        "round-27-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "27",
+          "2"
+        ],
+        "round-33-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "33",
+          "2"
+        ],
+        "round-34-o2": [
+          "build/tests/snx-test-llvm-round",
+          "--bench",
+          "34",
+          "2"
+        ]
+      }
+    }
+  ],
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "copyright": "2026 the ScarletNX contributors"
+}

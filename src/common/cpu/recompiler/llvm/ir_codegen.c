@@ -41,6 +41,7 @@ LLVMValueRef snx_ir_guest_function(SnxIr* ir, SnxU64 address) {
 
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     ir_state_invalidate(ir);
+    ir->dump_active = 0;
     ir->fn = function;
     LLVMPositionBuilderAtEnd(B, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
     ir->c = LLVMGetParam(function, 0);
@@ -63,6 +64,7 @@ static void must_tail(SnxIr* ir, LLVMValueRef site) {
 
 /* CALLDYN(t): snx_lookup(c,t)(c,t) */
 static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
+    if (ir->stats.enabled) ++ir->stats.lookups;
     LLVMValueRef args[2];
     args[0] = ir->c;
     args[1] = target;
@@ -127,6 +129,7 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
    store only when a waiter of higher priority flags its core, or never without emulated cores
    (tests/recompiler_library.c) */
 static void poll(SnxIr* ir, const SnxU64* resume) {
+    if (ir->stats.enabled) ++ir->stats.polls;
     LLVMBasicBlockRef yes = ir_block(ir, "poll"), no = ir_block(ir, "run");
     LLVMValueRef flag = LLVMBuildLoad2(B, ir->t_i32, ir_cpu(ir, ir_off_poll()), ""), args[1];
     LLVMTypeRef param = ir->t_ptr;
@@ -173,12 +176,14 @@ static LLVMValueRef stale_flag(SnxIr* ir) {
    MountRom hook loads the plugins that patch its caller). The callers return as for any other pc, and the thread's
    loop runs pc+4 through dispatch, compiled from the code there now, as the console's CPU fetches it */
 static void check_return(SnxIr* ir, SnxU64 next) {
+    if (ir->stats.enabled) ++ir->stats.return_checks;
     LLVMBasicBlockRef leave = ir_block(ir, "leave"), stay = ir_block(ir, "stay");
     ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, ir_pc(ir), ir_i64(ir, next), ""), leave, stay));
     LLVMPositionBuilderAtEnd(B, leave);
     ret(ir);
     LLVMPositionBuilderAtEnd(B, stay);
     if (ir->stale) {
+        if (ir->stats.enabled) ++ir->stats.stale_checks;
         LLVMBasicBlockRef gone = ir_block(ir, "stale_return"), live = ir_block(ir, "live_return");
         ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), gone, live));
         LLVMPositionBuilderAtEnd(B, gone);
@@ -256,6 +261,7 @@ void snx_ir_stale_checks(SnxIr* ir) {
    this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch, where
    a lookup of e compiles the code there now */
 static void stale_check(SnxIr* ir, LLVMValueRef e) {
+    if (ir->stats.enabled) ++ir->stats.stale_checks;
     LLVMBasicBlockRef stale = ir_block(ir, "stale"), live = ir_block(ir, "live");
     ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), stale, live));
     LLVMPositionBuilderAtEnd(B, stale);
@@ -296,6 +302,13 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     LLVMBasicBlockRef* labels = (LLVMBasicBlockRef*)calloc(function->count ? function->count : 1, sizeof(*labels));
     ir->guest_features = snx_a64_features(codegen->features);
     snx_ir_begin(ir, fn);
+    ir->dump_active = ir->dump_function && function->start == ir->dump_pc;
+    if (ir->dump_active) {
+        fprintf(stderr, "IR function %llx leaders:", (unsigned long long)function->start);
+        for (size_t i = 0; i < function->count; ++i)
+            if (function->leaders[i]) fprintf(stderr, " %llx", (unsigned long long)snx_function_address(function, i));
+        fputc('\n', stderr);
+    }
     LLVMValueRef e = LLVMGetParam(fn, 1);
     if (ir->stale) {
         ir->stale_index = (size_t)(function - codegen->functions);
@@ -330,6 +343,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         open_block(ir);
         word = 0;
         (void)snx_codegen_word(codegen, address, &word);
+        if (ir->dump_active) ir->dump_instruction_pc = address;
         flow = decode(word, codegen->features, &insn);
         if (flow == SNX_A64_FLOW_UNDEF) {
             ir_set_pc(ir, ir_i64(ir, address));
@@ -418,7 +432,19 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     }
     /* At O0 LLVM runs no SROA or mem2reg, so the locals promotion makes stay stack slots and its site copies remain:
        call-heavy code regresses and the JIT's batch arena grows. O1 and above only (ir_promote.c) */
+    if (ir->dump_active) {
+        char* text = LLVMPrintValueToString(fn);
+        fprintf(stderr, "IR before promotion:\n%s\n", text);
+        LLVMDisposeMessage(text);
+    }
     if (ir->promote) ir_promote_registers(ir, fn);
+    if (ir->dump_active) {
+        char* text = LLVMPrintValueToString(fn);
+        fprintf(stderr, "IR after promotion:\n%s\n", text);
+        LLVMDisposeMessage(text);
+    }
+    ir_stats_function(ir, fn);
+    ir->dump_active = 0;
     free(labels);
 }
 

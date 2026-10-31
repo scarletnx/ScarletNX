@@ -49,6 +49,16 @@ recompiles on the phone, then the game opens.
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
   settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
   its window is made anew when it comes back.
+- **GPU drivers**: on arm64 with an Adreno GPU, from Android 9, a game can run with a Vulkan driver package the
+  player added (Turnip's releases, as Eden takes them) in place of the system's, picked for every game or for one in
+  Settings > App > GPU Drivers ([GUI](GUI.md)). libadrenotools loads it: `libadrenotools.so`, opened only by a game
+  that picked a package, and the hooks it loads by name, `libhook_impl.so` and `libmain_hook.so`, are in the app's
+  libraries folder. The packages are unpacked into the app's own storage (`gpu_drivers/` of the user's data folder),
+  as the linker loads libraries from there alone. A game's log says the package it asked for and, after the Vulkan
+  instance, `vulkan: GPU driver <name> runs: its libraries are mapped`; one the system's driver took the place of (the
+  hook falls back to it on its own) stops the game, saying so. On Android 16 the system's `vulkan.adreno.so` is in the
+  process as the app starts, so a package of that soname, Qualcomm's own, loads from a renamed copy
+  (`cmake/adrenotools-unique-soname.patch`).
 - **Share Log**, in the menu, asks how; its Share Zip saves the message on the screen, the last run's output (`last-run.log`, which the
   menu keeps on every system), the menu's own log and fatal errors (`scarletnx-console-<date>.log`, `scarletnx-error.log`,
   [GUI](GUI.md)) and the newest game log as `summary.txt` of `scarletnx-logs-<date>.zip` in the data folder's

@@ -89,6 +89,25 @@ setting Game cheats off
     help The game's cheats left out, of the Atmosphere-format cheats/<build id>.txt in its data folder: their names
     help as their [name] lines give them, a | between two (a name with a | in it cannot be left out). Every other cheat
     help there runs, once per frame shown. The launcher's list of updates, DLCs, mods and cheats writes it
+setting GPU driver
+    key gpu_driver
+    text 128
+    once
+    startup
+    in-game
+    help The Vulkan driver the game runs with: empty = the system's, else a driver package the launcher's GPU Drivers
+    help added, by its folder's name in gpu_drivers/ of the user's data folder. Packages load on Android 9 or newer,
+    help arm64, with an Adreno GPU. One that does not load stops the game, saying why. Left out, the launcher passes
+    help the one its GPU Drivers picked for every game
+setting Freedreno variables
+    key freedreno_env
+    text 512
+    once
+    startup
+    in-game
+    help Mesa's Freedreno and Turnip variables, set as the game starts: NAME=value, a ; between two (TU_DEBUG=sysmem).
+    help Names start TU_, FD_ or IR3_ (docs.mesa3d.org/drivers/freedreno.html). The launcher's Freedreno Settings
+    help write it; left out, the launcher passes its own for every game
 setting Save state slots
     key state_slots
     int 1 32
@@ -665,6 +684,24 @@ setting Volatile load/stores
     help loads of one address, or a store and a load, between the game's barriers, as the console's memory model
     help allows, which makes its code faster. 1 is for finding whether a bug is one of those. It applies to the
     help next recompile, and to the JIT's next run
+setting IR stats
+    key ir_stats
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    recompile
+    help 1 = a recompile's log (one not run with -q) counts each code unit's IR as the recompiler emits it: functions
+    help and the ones whose registers were promoted, calls by kind, register stores and reloads around calls, lookups,
+    help polls and code checks. They count the IR before LLVM's passes, not the work the code does when it runs
+setting IR dump PC
+    key ir_dump_pc
+    text 32
+    default ""
+    startup
+    recompile
+    help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
+    help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
 setting GDB JIT symbols
     key gdb_jit
     int 0 1

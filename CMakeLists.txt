@@ -273,6 +273,9 @@ install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/OpenSS
 # lib/LICENSE is the library's BSD-2-Clause. The top-level LICENSE covers the rest of LZ4 (GPL-2.0-or-later), none
 # of which is built here
 install(FILES "${lz4_SOURCE_DIR}/lib/LICENSE" DESTINATION ${licenses}/lz4)
+if(TARGET snx_libdeflate)
+    install(FILES "${libdeflate_SOURCE_DIR}/COPYING" DESTINATION ${licenses}/libdeflate RENAME LICENSE)
+endif()
 if(TARGET snx_enet)
     install(FILES "${enet_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/enet)
     install(FILES "${zstd_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/zstd)
@@ -285,12 +288,9 @@ if(TARGET Tracy::TracyClient)
 endif()
 if(TARGET hactool_lib)
     install(FILES "${hactool_src}/LICENSE" DESTINATION ${licenses}/hactool)
-    # cJSON's license is the comment at the top of its header
-    file(READ "${hactool_src}/cJSON.h" cjson)
-    string(FIND "${cjson}" "*/" cjson_end)
-    string(SUBSTRING "${cjson}" 0 ${cjson_end} cjson)
-    file(WRITE "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" "${cjson}*/\n")
-    install(FILES "${PROJECT_BINARY_DIR}/cJSON-LICENSE.txt" DESTINATION ${licenses}/hactool/cJSON RENAME LICENSE.txt)
+endif()
+if(TARGET snx_yyjson)
+    install(FILES "${yyjson_SOURCE_DIR}/LICENSE" DESTINATION ${licenses}/yyjson)
 endif()
 if(APPLE) # the app's own files, its signature and CPack's package of it
     include(cmake/apple_package.cmake)

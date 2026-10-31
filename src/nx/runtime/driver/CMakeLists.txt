@@ -18,7 +18,7 @@ target_compile_definitions(snx_driver PRIVATE
 target_compile_options(snx_driver PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 # snx_build_info (the top CMakeLists, after CTest): the commit the games' stamps carry
 target_link_libraries(snx_driver PUBLIC scarletnx-common snx_setup snx_nx_module snx_lz4 OpenSSL::Crypto
-                                        Threads::Threads snx_build_info hactool_lib snx_demangle snx_settings)
+                                        Threads::Threads snx_build_info hactool_lib snx_yyjson snx_demangle snx_settings)
 if(WIN32)
     target_link_libraries(snx_driver PUBLIC advapi32)
 endif()

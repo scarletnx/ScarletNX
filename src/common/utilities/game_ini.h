@@ -14,6 +14,11 @@ char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as
    it is when it has the value already. value has no line break. 0, or nonzero with a line saying why */
 int snx_ini_record(const char* path, const char* key, const char* value);
+/* 1 when the .ini at path has a key= line, an empty value's too: a game's own choice, which "nothing" can be */
+int snx_ini_has(const char* path, const char* key);
+/* every key= line of the .ini at path taken out, the file left as it is when it has none. 0, or nonzero with a line
+   saying why */
+int snx_ini_drop(const char* path, const char* key);
 /* the dump the game was made from, owned: what Extract to tmpfs extracts again, and what a game made from its dump
    without extracting it reads its ExeFS and RomFS from. source= in the game's .ini (snx_game_ini's, else the one in its
    folder, where the 3DS, Vita and GBA drivers keep theirs), else <folder>/<name>.source, the

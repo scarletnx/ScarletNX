@@ -136,9 +136,11 @@ the game's image read from that image.
   leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
   target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
-  registers) and guest accesses are volatile (each happens, as on the hardware); logical immediates and SIMD
+  registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
+  Logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is
-  provably the soft-float helper's, flags included (`ir_fp_fast`); the AdvSIMD and crypto encodings are inline instead
+  provably the soft-float helper's, flags included (`fast_binary`, `fast_sqrt` and `fast_fma` in `ir_fpu.c`);
+  the AdvSIMD and crypto encodings are inline instead
   of `snx_simd`, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
   generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection), and the runtime library's
   helpers are portable C that LLVM compiles for each module's CPU; nothing is detected at run time. The emitters'

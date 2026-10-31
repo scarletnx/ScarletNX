@@ -12,7 +12,7 @@
    that run something run it through snx_run: no shell, the output kept off the protocol's stdout */
 #include "nx/runtime/driver/mcp_int.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/driver/hactool/cJSON.h"
+#include <yyjson.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +22,8 @@
 #define RUN_SECONDS    "--seconds=900" /* a launch's limit: edenprobe ends itself after its summary */
 
 /* ============================================================ text */
+/* key's string in the report line's object o, NULL when it has none or another type */
+static const char* str_of(yyjson_val* o, const char* key) { return yyjson_get_str(yyjson_obj_get(o, key)); }
 static char* slurp(const char* path) {
     size_t size = 0;
     unsigned char* data = snx_read_file(path, &size);
@@ -408,26 +410,24 @@ static void report_lines(Text* t, const char* report, const char* filter) {
     while (line && *line) {
         const char* end = strchr(line, '\n');
         Text l = {0};
-        cJSON* j;
+        yyjson_doc* j;
         mcp_put_n(&l, line, end ? (size_t)(end - line) : strlen(line));
-        j = l.p ? cJSON_Parse(l.p) : NULL;
+        j = l.p ? yyjson_read(l.p, strlen(l.p), 0) : NULL;
         if (j) {
-            const cJSON *type = cJSON_GetObjectItemCaseSensitive(j, "type"),
-                        *s = cJSON_GetObjectItemCaseSensitive(j, "suite"),
-                        *c = cJSON_GetObjectItemCaseSensitive(j, "name");
+            yyjson_val* o = yyjson_doc_get_root(j);
+            const char *type = str_of(o, "type"), *s = str_of(o, "suite"), *c = str_of(o, "name");
             int keep = 0;
-            if (cJSON_IsString(type) && !strcmp(type->valuestring, "note"))
+            if (type && !strcmp(type, "note"))
                 keep = !notes++;
-            else if (cJSON_IsString(type) && !strcmp(type->valuestring, "summary"))
+            else if (type && !strcmp(type, "summary"))
                 keep = 1;
-            else if (cJSON_IsString(type) && !strcmp(type->valuestring, "case") && cJSON_IsString(s) &&
-                     !strcmp(s->valuestring, suite) && (!name || (cJSON_IsString(c) && strstr(c->valuestring, name))))
+            else if (type && !strcmp(type, "case") && s && !strcmp(s, suite) && (!name || (c && strstr(c, name))))
                 keep = ++cases <= MAX_KEPT;
             if (keep) {
                 mcp_put(t, l.p);
                 mcp_put(t, "\n");
             }
-            cJSON_Delete(j);
+            yyjson_doc_free(j);
         }
         free(l.p);
         line = end ? end + 1 : NULL;
@@ -567,24 +567,19 @@ static int find_case(const char* path, const char* suite, const char* name, Line
     while (line && *line) {
         const char* end = strchr(line, '\n');
         Text l = {0};
-        cJSON* j;
+        yyjson_doc* j;
         mcp_put_n(&l, line, end ? (size_t)(end - line) : strlen(line));
-        j = l.p ? cJSON_Parse(l.p) : NULL;
+        j = l.p ? yyjson_read(l.p, strlen(l.p), 0) : NULL;
         if (j) {
-            const cJSON *type = cJSON_GetObjectItemCaseSensitive(j, "type"),
-                        *text = cJSON_GetObjectItemCaseSensitive(j, "text"),
-                        *s = cJSON_GetObjectItemCaseSensitive(j, "suite"),
-                        *c = cJSON_GetObjectItemCaseSensitive(j, "name"),
-                        *r = cJSON_GetObjectItemCaseSensitive(j, "result"),
-                        *d = cJSON_GetObjectItemCaseSensitive(j, "detail");
-            if (!found->build && cJSON_IsString(type) && !strcmp(type->valuestring, "note") && cJSON_IsString(text))
-                found->build = snx_strdup(text->valuestring);
-            if (!found->result && cJSON_IsString(s) && !strcmp(s->valuestring, suite) && cJSON_IsString(c) &&
-                !strcmp(c->valuestring, name) && cJSON_IsString(r)) {
-                found->result = snx_strdup(r->valuestring);
-                found->detail = snx_strdup(cJSON_IsString(d) ? d->valuestring : "");
+            yyjson_val* o = yyjson_doc_get_root(j);
+            const char *type = str_of(o, "type"), *text = str_of(o, "text"), *s = str_of(o, "suite"),
+                       *c = str_of(o, "name"), *r = str_of(o, "result"), *d = str_of(o, "detail");
+            if (!found->build && type && !strcmp(type, "note") && text) found->build = snx_strdup(text);
+            if (!found->result && s && !strcmp(s, suite) && c && !strcmp(c, name) && r) {
+                found->result = snx_strdup(r);
+                found->detail = snx_strdup(d ? d : "");
             }
-            cJSON_Delete(j);
+            yyjson_doc_free(j);
         }
         free(l.p);
         line = end ? end + 1 : NULL;

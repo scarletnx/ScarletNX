@@ -10,7 +10,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | FFmpeg | LGPL-2.1-or-later |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
-| hactool / cJSON / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / MIT / Unicode license |
+| hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
+| yyjson (the MCP server's JSON and the GPU driver packages' meta.json) | MIT |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
 | NVN's types and function prototypes (`src/nx/gpu/nvn/nvn.h`), h1k421's reconstruction, as [nxnative](https://github.com/seedds/nxnative) carries it | MIT (in the file) |
 | nvn_direct's NVN objects and command records (`src/nx/gpu/nvn/nvn_obj.h`, `nvn_object.c`, `nvn_cmd.c`, `nvn_queue.c`), ported from [nxnative](https://github.com/seedds/nxnative)'s `dm/gfx/nvn/hle_nvn.c` and `nvn_obj.h`, Copyright (c) 2026 seedds | MIT |
@@ -24,14 +25,16 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the Mii data, country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them | GPL-2.0-or-later |
 | Montserrat and GNU Unifont 10.0.05, the glyphs of the 3DS shared font's stand-in | OFL-1.1 ([text](../dist/licenses/Montserrat/OFL.txt)) / GPL-2.0-or-later with the GNU font embedding exception |
 | LZ4 (the library, `lib/`) | BSD-2-Clause |
-| xxHash 0.8.3 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
+| xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
 | SDL3 | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
-| miniz 3.1.2 (the zip of the launcher's Share Log, `src/gui/logzip.c`) | MIT |
+| miniz 3.1.2 (the zip around the launcher's Share Log, `src/gui/logzip.c`) | MIT |
+| libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments) | MIT |
+| libadrenotools / liblinkernsbypass (the GPU drivers a player adds on Android arm64, `cmake/adrenotools.cmake`) | BSD-2-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
@@ -78,6 +81,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/gpu/texture/astc.comp` (the ASTC decoder shader, compiled into `astc_spv.h`) | Eden and yuzu (`astc_decoder.comp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `tests/support/astc.c` and `astc.h` (the CPU ASTC decoder the tests check the shader against) | Eden and yuzu (`textures/astc.cpp`), with the University of North Carolina at Chapel Hill's FasTC decoder in it | GPL-3.0-or-later, GPL-2.0-or-later, Apache 2.0 |
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
+| `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, libadrenotools' call; Freedreno Settings' presets) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/gui/i18n.c` (`snx_mo_lookup`, the reader of the menu's catalogs; notice in [`src/gui/MUSL-NOTICE.txt`](../src/gui/MUSL-NOTICE.txt)) | musl (`src/locale/__mo_lookup.c`) | MIT |
 | `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 

@@ -45,7 +45,8 @@ with the current runtime writes a fresh cache.
 1. Recompile the game once so it has a prepared game folder.
 2. Set the game's `JIT optimization` (`jit_opt`) to the level you want the pack at.
 3. Play the game normally for a while. The runtime writes `<title>.jitcache` into its cache folder as it
-   compiles missed functions. A longer, representative session gives the pack more functions.
+   compiles missed code in batches of up to 256 PCs, with bounded discovery work. A longer, representative session
+   gives the pack more functions.
 4. Set the launcher's `Optimization level` (`opt`) to the same level.
 
 The cache is additive. A pack build never consumes or deletes it, so the same profile can be used again, and a

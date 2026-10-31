@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
+#include <stdio.h>
 
 /* A register snapshot is only valid in its owning basic block. Guest state is
    still written at every architectural store; this cache forwards IR values. */
@@ -73,6 +74,9 @@ static void flags_commit(SnxIr* ir, LLVMValueRef n, LLVMValueRef z, LLVMValueRef
 }
 
 static void flags_origin(SnxIr* ir, unsigned origin, LLVMValueRef left, LLVMValueRef right) {
+    if (ir->dump_active)
+        fprintf(stderr, "IR flags pc %llx block %s origin %u\n", (unsigned long long)ir->dump_instruction_pc,
+                LLVMGetBasicBlockName(LLVMGetInsertBlock(ir->b)), origin);
     ir->state.flags.origin = origin;
     ir->state.flags.left = left;
     ir->state.flags.right = right;

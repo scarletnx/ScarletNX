@@ -56,13 +56,23 @@ if(SNX_BUILD_NX)
     snx_quiet(snx_lz4)
 endif()
 
+# yyjson (MIT) for the driver's MCP server (src/nx/runtime/driver/mcp*.c) and, in every build, the GPU driver packages'
+# meta.json (src/common/utilities/gpu_driver.c)
+CPMAddPackage(NAME yyjson VERSION 0.13.0
+              URL https://github.com/ibireme/yyjson/archive/refs/tags/0.13.0.tar.gz
+              URL_HASH SHA256=34e0f62a2bc11ab20d601e8ca1cc2b2079503aa45119a19133d89d19b94a0fae
+              DOWNLOAD_ONLY YES)
+add_library(snx_yyjson STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
+target_include_directories(snx_yyjson PUBLIC "${yyjson_SOURCE_DIR}/src")
+snx_quiet(snx_yyjson)
+
 # xxHash (BSD-2-Clause) for the renderer's content hashes (src/nx/gpu/vk/cmd.c's vk_hash): XXH3, about three times
 # XXH64's speed. src/nx/gpu/vk/xxh3.c builds the dispatcher on x86 (the CPU's SSE2, AVX2 or AVX-512 loop, chosen at
 # run time) and xxhash.c on every other architecture, by the compiler's own macros
 if(SNX_BUILD_NX)
-    CPMAddPackage(NAME xxhash VERSION 0.8.3
-                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz
-                  URL_HASH SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
+    CPMAddPackage(NAME xxhash VERSION 0.8.4
+                  URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
+                  URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
                   DOWNLOAD_ONLY YES)
     add_library(snx_xxhash STATIC "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/xxh3.c")
     target_include_directories(snx_xxhash PUBLIC "${xxhash_SOURCE_DIR}")
@@ -165,9 +175,9 @@ if(SNX_JEMALLOC)
 endif()
 
 if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
-    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.365
-                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.365.tar.gz
-                  URL_HASH SHA256=ed832b3292cce324ebba6522fd2d3004bf1b797fa49bfbcad0b302ff23d56abc
+    CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
+                  URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
+                  URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
                   EXCLUDE_FROM_ALL YES)
     # volk.c is compiled into the vk components, VMA is a header
     CPMAddPackage(NAME volk VERSION 1.4.363
@@ -215,6 +225,21 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR snx_vita_runtime)
     include("${PROJECT_SOURCE_DIR}/cmake/ffmpeg.cmake")
 endif()
 
+# libadrenotools and liblinkernsbypass (BSD-2-Clause) for the GPU drivers a player adds on Android arm64, the only ABI
+# they build for (cmake/adrenotools.cmake). linkernsbypass is libadrenotools' submodule at that commit, which GitHub's
+# archives leave out
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
+    CPMAddPackage(NAME libadrenotools VERSION 2024.09.10
+                  URL https://github.com/bylaws/libadrenotools/archive/8fae8ce254dfc1344527e05301e43f37dea2df80.tar.gz
+                  URL_HASH SHA256=ceffce971676d4cfdf348a082df06fc92a1dca6d95bea892a480d63f200961cb
+                  DOWNLOAD_ONLY YES)
+    CPMAddPackage(NAME linkernsbypass VERSION 2024.09.10
+                  URL https://github.com/bylaws/liblinkernsbypass/archive/aa3975893d83ef1bc84c321ec60c65fbf1287887.tar.gz
+                  URL_HASH SHA256=da1128c8aa771c4d24766b53a47822d0717baa5c536ca8491220402942b80638
+                  DOWNLOAD_ONLY YES)
+    include("${PROJECT_SOURCE_DIR}/cmake/adrenotools.cmake")
+endif()
+
 # Extraction-only and tools-only builds do not contain the NX runtime or its graphics/media dependencies.
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     # the shared fonts' stand-ins (cmake/shared_fonts.cmake): Noto Sans subsets for the five text fonts, one per
@@ -241,9 +266,9 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                   DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
-    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.4.0
-                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
-                  URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
+    CPMAddPackage(NAME VulkanMemoryAllocator VERSION 3.5.0
+                  URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.5.0.tar.gz
+                  URL_HASH SHA256=c5f3db848fca9cb9726b41f256cc3007773321fa92a86d1e0902e66474e8a9e3
                   DOWNLOAD_ONLY YES)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     CPMAddPackage(NAME renderdoc_app VERSION 1.46
@@ -318,9 +343,28 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     endif()
 endif()
 
-# miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): its one-file release, miniz.c,
-# built alone, without its stdio functions (the zip is made in memory and written as every file is, for Windows'
-# UTF-8 paths) and without zlib's names, which another library's zlib could share
+# libdeflate (MIT), every deflate the project writes or reads: the launcher's Share Log (src/gui/logzip.c), the Vita
+# driver's VPK members and compressed eboot segments (src/vita/loader/inflate.c), and their CRC-32. Its library
+# without gzip, from its own sources; it picks the CPU's SIMD loops at run time
+if(SNX_BUILD_GUI OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
+    CPMAddPackage(NAME libdeflate VERSION 1.26
+                  URL https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+                  URL_HASH SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_libdeflate STATIC
+        "${libdeflate_SOURCE_DIR}/lib/utils.c" "${libdeflate_SOURCE_DIR}/lib/arm/cpu_features.c"
+        "${libdeflate_SOURCE_DIR}/lib/x86/cpu_features.c" "${libdeflate_SOURCE_DIR}/lib/deflate_compress.c"
+        "${libdeflate_SOURCE_DIR}/lib/deflate_decompress.c" "${libdeflate_SOURCE_DIR}/lib/adler32.c"
+        "${libdeflate_SOURCE_DIR}/lib/zlib_compress.c" "${libdeflate_SOURCE_DIR}/lib/zlib_decompress.c"
+        "${libdeflate_SOURCE_DIR}/lib/crc32.c")
+    target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
+    snx_quiet(snx_libdeflate)
+endif()
+
+# miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
+# libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory
+# and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could
+# share
 if(SNX_BUILD_GUI)
     CPMAddPackage(NAME miniz VERSION 3.1.2
                   URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip

@@ -113,6 +113,24 @@ static int load_probe(SnxCodeLoader* loader, char* error, size_t error_size) {
     return 0;
 }
 
+int llvm_steps_dump(LlvmSteps* s, const char* prefix, char* error, size_t error_size) {
+    char *raw = snx_format("%s-raw.ll", prefix), *after = snx_format("%s-after.ll", prefix);
+    char* path = snx_format("%s.o", prefix);
+    char* message = NULL;
+    unsigned char* object = NULL;
+    size_t size = 0;
+    int failed = LLVMPrintModuleToFile(s->ir->mod, raw, &message);
+    if (!failed) failed = snx_ir_object(s->ir, s->opt, &object, &size, error, error_size);
+    if (!failed) failed = LLVMPrintModuleToFile(s->ir->mod, after, &message);
+    if (!failed && snx_write_file(path, object, size)) {
+        snprintf(error, error_size, "cannot write %s", path);
+        failed = 1;
+    }
+    if (message) { snprintf(error, error_size, "%s", message); LLVMDisposeMessage(message); }
+    free(raw); free(after); free(path); free(object);
+    return failed ? -1 : 0;
+}
+
 int llvm_steps_load(LlvmSteps* s, char* error, size_t error_size) {
     const char* exports[1] = {"snx_test_steps"};
     LLVMValueRef table, getter;

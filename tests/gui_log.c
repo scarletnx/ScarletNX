@@ -6,6 +6,7 @@
    once keep their lines whole, each named by its pid; a run log held by one launcher is seen taken by another. */
 #include "gui/log.h"
 #include "common/utilities/common.h"
+#include "common/utilities/logscan.h"
 #include <assert.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -219,11 +220,33 @@ int main(void) {
         free(gone);
         free(held);
     }
+    { /* how a game's run ended, from its log: a crash, an error, an exit, and a log that isn't there */
+        char *log = snx_path_join(dir, "game.log"), what[512], lines[2048];
+        static const char crash[] = "[   0.00] ScarletNX - 0100000000001000\n[   3.00]\n"
+                                    "*** Crash (signal 11) at host pc=0x7f0000001234, access to 0x10 ***\n"
+                                    "[   3.00]   invalid memory access\n";
+        static const char fatal[] = "[   0.00] ScarletNX - 0100000000001000\n"
+                                    "[   0.58] FATAL: GPU driver Turnip did not load: the system's driver took its "
+                                    "place\n";
+        static const char done[] = "[   0.00] ScarletNX - 0100000000001000\n[  10.00] Exit.\n";
+        assert(!snx_write_file(log, crash, sizeof crash - 1));
+        assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == SNX_LOG_CRASH);
+        assert(!strcmp(what, "crash (signal 11)") && strstr(lines, "invalid memory access\n"));
+        assert(!snx_write_file(log, fatal, sizeof fatal - 1));
+        assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == SNX_LOG_FATAL);
+        assert(!strcmp(what, "GPU driver Turnip did not load: the system's driver took its place"));
+        assert(!snx_write_file(log, done, sizeof done - 1));
+        assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == SNX_LOG_NONE);
+        assert(!snx_remove_tree(log));
+        assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == -1);
+        assert(!strncmp(what, log, strlen(log)) && strstr(what, " did not open: ") && !lines[0]);
+        free(log);
+    }
     gui_log_folder(NULL);
     free(console);
     free(error);
     assert(!snx_remove_tree(dir));
     free(dir);
-    puts("gui_log: stamped lines, a fatal error in both logs, two writers at once");
+    puts("gui_log: stamped lines, a fatal error in both logs, two writers at once, how a game's run ended");
     return 0;
 }

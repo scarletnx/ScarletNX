@@ -167,10 +167,38 @@ static int device_rating(VkPhysicalDevice pd, const VkPhysicalDeviceProperties* 
     return device_score(pd, p, &gf, &cf, &gq);
 }
 
+/* g_vk.start_failure for no device found: each device with its Vulkan version, which a driver under 1.3 holds back
+   (a GPU driver package may have a newer one: gpu_driver) */
+static void start_failure_devices(void) {
+    VkPhysicalDevice devices[8];
+    u32 n = 8;
+    size_t at = 0;
+    if (vkEnumeratePhysicalDevices(g_vk.instance, &n, devices) < 0) n = 0;
+    for (u32 i = 0; i < n && at < sizeof g_vk.start_failure; ++i) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(devices[i], &p);
+        WARN("vulkan: %s has Vulkan %u.%u.%u, driver %08x\n", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
+        at += (size_t)snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at, "%s%s has Vulkan %u.%u.%u",
+                               i ? "; " : "", p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
+                               VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
+    }
+#ifdef __ANDROID__
+    const char* hint = n ? ". A GPU driver package may have it (Settings > App > GPU Drivers)" : "";
+#else
+    const char* hint = "";
+#endif
+    if (at < sizeof g_vk.start_failure)
+        snprintf(g_vk.start_failure + at, sizeof g_vk.start_failure - at,
+                 "%sScarletNX needs Vulkan 1.3 with a %s queue%s",
+                 n ? ", and " : "No Vulkan device: ", g_opt_headless ? "graphics" : "graphics and presentation", hint);
+}
+
 static int create_device(void) {
     g_vk.phys = snx_vk_best_device(g_vk.instance, VK_API_VERSION_1_3, device_rating, NULL);
     if (!g_vk.phys) {
         WARN("vulkan: no Vulkan 1.3 device with a suitable %s queue\n", g_opt_headless ? "graphics" : "presentation");
+        start_failure_devices();
         return 0;
     }
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
@@ -683,6 +711,13 @@ static int create_device(void) {
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     vk_uma_init();
+    {
+        /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */
+        VkPhysicalDeviceDriverProperties dp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 pp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &pp);
+        LOG("vulkan: the driver that runs: %s, %s (driver ID %d)\n", dp.driverName, dp.driverInfo, (int)dp.driverID);
+    }
     LOG("vulkan: %s, Vulkan %u.%u.%u, driver %08x, graphics queue family %u, compute %u%s\n", g_vk.props.deviceName,
         VK_API_VERSION_MAJOR(g_vk.props.apiVersion), VK_API_VERSION_MINOR(g_vk.props.apiVersion),
         VK_API_VERSION_PATCH(g_vk.props.apiVersion), g_vk.props.driverVersion, g_vk.gfx_family, g_vk.compute_family,
@@ -950,6 +985,17 @@ int vk_swapchain_create(int srgb) {
     return 1;
 }
 
+/* a start that failed once the window had its surface: the surface goes. On Android it holds the window, which takes
+   one producer at a time, and the error's own screen (backend/sdl3.c's fatal_screen) could not draw in it: the system's
+   plain box said the error instead */
+static int start_failed(void) {
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    return 0;
+}
+
+const char* vk_start_failure(void) { return g_vk.start_failure; }
+
 int vk_init(void) {
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
@@ -969,10 +1015,11 @@ int vk_init(void) {
     }
     vk_renderdoc_load(); /* its capture layer is enabled when the instance is created */
     if (!create_instance()) return 0;
+    backend_vk_check(); /* the instance opened the driver: the one asked for, or the run ends */
     if (!g_opt_headless && !backend_vk_surface(g_vk.instance, &g_vk.surface)) {
         WARN("vulkan: the window backend could not create a surface\n");
         return 0;
     }
-    if (!create_device()) return 0;
-    return g_opt_headless ? 1 : vk_swapchain_create(0);
+    if (!create_device()) return start_failed();
+    return g_opt_headless || vk_swapchain_create(0) ? 1 : start_failed();
 }

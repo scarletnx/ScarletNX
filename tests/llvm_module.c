@@ -402,7 +402,8 @@ int main(int argc, char** argv) {
     const char* args[24];
     int b, k;
     size_t i;
-    if (argc != 3) return 2;
+    int stats = argc == 4 && !strcmp(argv[3], "--stats");
+    if (argc != 3 && !stats) return 2;
     root = snx_temp_dir(NULL);
     if (!root) return 1;
     memset(image, 0, sizeof(image));
@@ -511,11 +512,17 @@ int main(int argc, char** argv) {
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = b ? "--unit_instructions=1000000" : "--unit_instructions=1";
+        if (stats) args[k++] = "--ir_stats=1"; /* the setting, as -r takes a recompile setting */
         args[k] = NULL;
         check(!snx_run(args, root, NULL, &text), "a build sized by unit_instructions");
         if (text && !strstr(text, b ? "LLVM: 1 code unit and" : "code units and")) fprintf(stderr, "%s\n", text);
         check(text && strstr(text, b ? "LLVM: 1 code unit and" : "code units and"),
               b ? "a million instructions: one code unit" : "one instruction: a code unit of each function");
+        if (stats) {
+            const char* line = text ? strstr(text, "IR stats code_000:") : NULL;
+            check(line != NULL, "the CLI prints enabled per-unit IR statistics");
+            if (line) printf("%.*s\n", (int)strcspn(line, "\r\n"), line);
+        }
         free(text);
         text = NULL;
         free(dir);
