@@ -4,7 +4,7 @@
    owner must not re-enter frame writeback while that owner is marked landing. */
 static int check_owned_readback(void) {
     const u64 cpu = HEAP_BASE + 0x700000, gva = 0xa000000;
-    if (!own_traps()) return 0;
+    if (!own_traps() || g_vk.uma) return 0; /* with unified memory a result is published in place, owned by nothing */
     gmmu_map(gva, cpu, 0x1000);
     vk_lock();
     vk_finish();
@@ -77,7 +77,7 @@ static int owned_test_fill(VkBuffer dst, u64 off, u32 len, u8 value) {
    The baseline must still distinguish untouched bytes and a later CPU edit. */
 static int check_owned_writable(void) {
     const u64 cpu = HEAP_BASE + 0x710000, gva = 0xa100000;
-    if (!own_traps()) return 0;
+    if (!own_traps() || g_vk.uma) return 0; /* as check_owned_readback */
     gmmu_map(gva, cpu, 0x1000);
     vk_lock();
     vk_finish();
