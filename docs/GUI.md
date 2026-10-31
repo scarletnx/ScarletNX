@@ -57,8 +57,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Back goes back, Tab to the next screen, Enter or Tap selects; Drag says what the finger does). A key of
   words between slashes presses the word clicked, `Left` or `Right` of `Left/Right`; the text after it
   presses the key when its words all press one. `Arrows`, `mouse`, `pad` and `D-pad` press nothing.
-- The menu, top to bottom: the three loads, **Install Keys**, **Settings**, **Share Log**,
-  **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
+- The menu, top to bottom: the three loads, **Install Keys**, **Settings**, **Recommended Settings**,
+  **Share Log**, **Folders**, and **Exit**. The games, and the recent ones, are the Games tab's. A load whose driver
   is neither beside ScarletNX nor on PATH, as those an app leaves out ([APPLE](APPLE.md)), is greyed out, still there,
   and Enter or a tap on it says which driver it misses rather than opening its screen; the drivers are looked for
   again each second, and with F5.
@@ -279,9 +279,22 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   which it took. A language written in two scripts goes by its script, written or implied by its country (`zh-CN`,
   `zh-SG` simplified, `zh-TW`, `zh-HK`, `zh-MO` traditional): a system in one never takes a catalog of the other. The
   words change at once; a phrase the language has not translated stays English.
+- **Recommended Settings** tests this computer in a few seconds (`scarletnx --probe`: the formats the GPU samples and
+  its memory's budget, the pipelines a second its driver makes on a few numbers of threads, the RAM it has free), then
+  proposes the settings that suit it: **ASTC as BC7** on a GPU that samples BCn but not ASTC with a budget under 8192
+  MB, fewer **Pipeline threads** than Auto when they make 95% of the best rate, **Memory fit** with less RAM free than
+  the game's memory, 700 MB and a GB more. Nothing runs before **Run Tests**, and nothing changes before **Apply**:
+  the rows it proposes start checked (Enter unchecks one), the others are greyed with their values, and the row in
+  focus gives the numbers that decided it. **Apply** writes them to `settings.ini` and the test to `recommended.ini`
+  beside it; Settings then shows `[recommended]` after a row while its value is the one Apply gave it, and the game's
+  log marks it (`settings: astc_bc=1 [recommended] (default 0)`). **Cancel** writes nothing. Run again, it proposes
+  only what moved: a row the player set otherwise after a test that said the same is greyed with both values
+  (`Off, your pick; the test says On`), and a test that proposes nothing says so with **Back** alone, which keeps the
+  test's date and values. A test that stops (Cancel, a crash, 60 s without an answer) says the step it was at, every
+  row's value, and why each row it did not reach is not tested.
 - **Share Log** asks how. **Share Zip** saves `scarletnx-logs-2026-10-28_14-05-33.zip`. Its `summary.txt` holds the message on the screen,
   the newest game log's summary, the last run's output, the queue's recompiles' (`last-recompile.log`), the launcher's
-  own log and its fatal errors (below) and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
+  own log and its fatal errors (below), `recommended.ini` and the game log. Beside it, whole, the launcher's logs (`launcher/`) and the
   games' logs of the last 14 days, each game's runs under `games/<its name> [<its folder>]/` by when each was last
   written; in every file a home folder is written `~`. **Share Log** saves that summary alone as `scarletnx.log`. Either
   goes in `share/` of Folders' Logs (`~/.local/state/scarletnx/share/`; on iOS Documents' `logs/share/`, which the Files
