@@ -116,7 +116,9 @@ int snx_setting_known(const char* key) { return find_row(key, NULL) || unattende
 /* ---- the file's values, the command line's, and the menu's waiting to be written ---- */
 
 #define KEY_MAX 64
-#define STORE_MAX 128
+/* every setting the runtime knows, which a file it wrote holds, and room for keys it doesn't (an older or newer
+   runtime's). At 128, below the settings it knows, a file it wrote lost the keys after the 128th */
+#define STORE_MAX (SETTINGS_KEYS + 64)
 #define VALUE_MAX 2048
 #define OVERRIDE_MAX 64
 #define PENDING_MAX 64
