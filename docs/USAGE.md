@@ -527,8 +527,10 @@ as [DEPRECATIONS](DEPRECATIONS.md) says.
 The console's users are in `users/users.ini` of the data folder ([Folders](#folders)), every game's: up to 8, each a
 section in the console's order. Without the file there is one, `Player`. User 1 has the uid users.ini gives it; with
 none it has the one it always had, `0123456789abcdeffedcba9876543210`, so the saves made before there were others stay
-its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is 4 to 20
-letters, digits, spaces, `.`, `_` or `-`, the names Eden's rooms take; any other stops the game and says why:
+its own. Each other one needs a uid of 32 hex digits of its own (not zero) and a nickname. A nickname is what the
+console's account service keeps: 1 to 32 bytes of UTF-8, with no control character and no space at either end; any
+other stops the game and says why. An Eden room takes 4 to 20 letters, digits, spaces, `.`, `_` or `-`, and says so
+when it refuses another:
 
 ```ini
 [user1]

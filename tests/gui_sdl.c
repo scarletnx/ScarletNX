@@ -11441,9 +11441,11 @@ int main(int argc, char** argv) {
                 free(kept);
                 key(&app, SDLK_RETURN);
                 for (int i = 0; i < 8; ++i) key(&app, SDLK_BACKSPACE);
-                typed(&app, "Ab");
+                typed(&app, "Ab ");
                 key(&app, SDLK_RETURN); /* refused in its dialog, which goes on */
-                assert(!strcmp(app.editor.note, "Ab is not a nickname: nickname 4 to 20 of A-Z a-z 0-9 space . _ -") &&
+                assert(!strcmp(app.editor.note,
+                               "Ab  is not a nickname: nickname of 1 to 32 bytes, no control character, "
+                               "no space at either end") &&
                        !strcmp(app.users_form.nick[0], "Aogo 55") && app.editor.typing);
                 for (int i = 0; i < 8; ++i) key(&app, SDLK_BACKSPACE); /* back as the tests below know it */
                 typed(&app, "Aogo");

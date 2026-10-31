@@ -2825,8 +2825,8 @@ msgid "The settings of All, or of player 1 to 8"
 msgstr "「全部」或玩家 1 到 8 的设置"
 
 #: src/gui/main.c
-msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 #, c-format
@@ -2851,8 +2851,8 @@ msgid "User %d"
 msgstr "用户 %d"
 
 #: src/gui/main.c
-msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Its nickname, as the games show it: 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，按游戏中的显示：1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "System driver"
@@ -3373,8 +3373,8 @@ msgid "Ctrl+S saves too"
 msgstr "Ctrl+S 也可保存"
 
 #: src/gui/main.c
-msgid "A nickname, 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr ""
+msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr "昵称，1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -3632,8 +3632,8 @@ msgid "Tip: Menu > Install Keys changes them"
 msgstr "提示：「菜单 > 安装密钥」可更改它们"
 
 #: src/gui/main.c
-msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
-msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+msgid "Tip: nickname of 1 to 32 bytes, no control character, no space at either end"
+msgstr "提示：昵称为 1 到 32 字节，不含控制字符，不以空格开始或结束"
 
 #: src/gui/main.c
 msgid "before"
@@ -5533,6 +5533,15 @@ msgstr "启动"
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr "LLVM 内部选项"
+
+#~ msgid "nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "其昵称，游戏和 Eden 房间中显示为：4 到 20 个 A-Z a-z 0-9 空格 . _ -"
+
+#~ msgid "Tip: nickname 4 to 20 of A-Z a-z 0-9 space . _ -"
+#~ msgstr "提示：昵称为 4 到 20 个 A-Z a-z 0-9 空格 . _ -"
 
 #~ msgid "The threads compiling the game's code when it is recompiled: 0 = one for each of the computer's cores"
 #~ msgstr "重新编译时编译游戏代码的线程数：0 = 电脑每个核心一个"

@@ -67,10 +67,26 @@ static uint32_t block(SnxCtrProcess* p, uint32_t id, uint8_t out[0x800]) {
         case 0x00090002: return 4;             /* ConsoleUniqueID3 */
         case 0x000a0000: {                     /* Console username: ten UTF-16 units, then two zero words. */
             const SnxUser* user = snx_users_selected();
-            /* ScarletNX validates profile names as ASCII. The 3DS limit is ten
-               characters, shorter than the launcher's twenty-character limit. */
-            const char* name = user && user->nickname[0] ? user->nickname : "Player";
-            for (unsigned i = 0; i < 10 && name[i]; ++i) out[i * 2] = (uint8_t)name[i];
+            /* the nickname is UTF-8 (users.c checks it is), up to ten UTF-16 units here: a character past them, or
+               whose surrogate pair would not fit, is left out */
+            const unsigned char* name = (const unsigned char*)(user && user->nickname[0] ? user->nickname : "Player");
+            unsigned units = 0;
+            while (*name && units < 10) {
+                unsigned c = *name, follow = c < 0x80 ? 0 : c < 0xE0 ? 1 : c < 0xF0 ? 2 : 3, k;
+                c = follow ? c & (0x3Fu >> follow) : c;
+                for (k = 1; k <= follow && name[k]; ++k) c = c << 6 | (name[k] & 0x3Fu);
+                name += k;
+                if (c >= 0x10000) {
+                    if (units > 8) break;
+                    c -= 0x10000;
+                    out[units * 2] = (uint8_t)(0xD800 + (c >> 10)),
+                                out[units * 2 + 1] = (uint8_t)((0xD800 + (c >> 10)) >> 8);
+                    units++;
+                    c = 0xDC00 + (c & 0x3FF);
+                }
+                out[units * 2] = (uint8_t)c, out[units * 2 + 1] = (uint8_t)(c >> 8);
+                units++;
+            }
             return 0x1c;
         }
         case 0x000a0001: out[0] = 11, out[1] = 7; return 2; /* Birthday: November 7th */
