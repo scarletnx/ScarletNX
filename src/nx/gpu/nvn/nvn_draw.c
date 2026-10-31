@@ -24,6 +24,7 @@
 #include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/shader/shader.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include <math.h>
@@ -32,8 +33,8 @@
 /* the inline banks' layout (above) */
 enum {
     C0_POINT_SIZE = 0x610,
-    C0_BASE_VERTEX = 0x640,
-    C0_BASE_INSTANCE = 0x644,
+    C0_BASE_VERTEX = SH_CB0_BASE_VERTEX,
+    C0_BASE_INSTANCE = SH_CB0_BASE_INSTANCE,
     C2_TEX = 0x20,
     C2_IMG = 0x120,
     C2_SEPTEX = 0x168,
@@ -511,9 +512,13 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
 /* An indirect draw's arguments stay in guest memory, which the GPU reads when it draws (DrawCall.indirect): NVN's
    DrawArraysIndirect and DrawElementsIndirect records have Vulkan's indirect command layouts, {count, instances, first,
    base instance} and {count, instances, first index, base vertex, base instance}, and a multi-draw's count is a 32-bit
-   word the GPU reads too. Nothing of them is read on the CPU: a compute program may write them just before */
+   word the GPU reads too. Nothing of them is read on the CPU: a compute program may write them just before.
+   The game's driver writes each draw's base vertex and base instance into bank 0 too (C0_BASE_VERTEX and
+   C0_BASE_INSTANCE), which only the GPU has here: the vertex program takes them from the record (DrawCall.params),
+   the base instance of either record and the base vertex of an indexed one */
 static void indirect(DrawCall* dc, u64 ind, u64 count, i32 max, i32 stride, u32 record) {
     dc->indirect = ind;
+    dc->params = record == 20 ? SH_PUSH_GPU_BASE_VERTEX | SH_PUSH_GPU_BASE_INSTANCE : SH_PUSH_GPU_BASE_INSTANCE;
     dc->indirect_count = count;
     dc->draw_count = count ? (u32)max : 1;
     dc->stride = count && stride > 0 ? (u32)stride : record;

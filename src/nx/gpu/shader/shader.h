@@ -141,6 +141,15 @@ extern int g_shader_float16;
 /* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
    arguments set on the GPU. 1 offline */
 extern int g_shader_draw_parameters;
+/* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
+   offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
+   draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
+   BaseVertex and BaseInstance where the push constant's z has SH_PUSH_GPU_BASE_VERTEX and SH_PUSH_GPU_BASE_INSTANCE
+   set (render.c) */
+#define SH_CB0_BASE_VERTEX 0x640u
+#define SH_CB0_BASE_INSTANCE 0x644u
+#define SH_PUSH_GPU_BASE_VERTEX 1u
+#define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */
