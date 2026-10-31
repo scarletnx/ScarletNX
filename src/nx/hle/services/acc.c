@@ -213,10 +213,11 @@ static int nn_account_profile_IProfile_LoadImage(SvcObj* self, IpcBuf image, u32
 }
 
 /* ============================================================ IManagerForApplication */
-/* the id the account would have, made from the user's */
+/* the id the account would have, made from the user's as Eden makes it (Common::UUID::Hash): the uid's first half
+   xor its second turned left by one bit */
 static int nn_account_baas_IManagerForApplication_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
     const AccUser* u = (const AccUser*)self->data;
-    *id = u->uid[0] ^ u->uid[1];
+    *id = u->uid[0] ^ (u->uid[1] << 1 | u->uid[1] >> 63);
     R_SUCCEED();
 }
 static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResourceCacheForApplication(SvcObj* self,
