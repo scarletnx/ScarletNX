@@ -633,6 +633,54 @@ static void test_administrator_service(void) {
     puts("PASS acc:su's own table: the users, ListQualifiedUsers at 140, a thumbnail for an application");
 }
 
+/* GetBaasAccountManagerForSystemService (102) of acc:u1 and acc:su: the application's manager (the id, no token), the
+   online account's caches the system reads, none (124-5249), and no license, refreshed at once */
+static void test_system_manager(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj* services[2];
+    Request r;
+    int i;
+    g_mem = memory;
+    services[0] = new_acc_system();
+    services[1] = new_acc_admin();
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    for (i = 0; i < 2; i++) {
+        SvcObj *manager, *context;
+        request(&r, 102);
+        acc_uid_put(r.raw, g_user_id);
+        call(services[i], &r);
+        CHECK(r.c.nout_objs == 1);
+        manager = r.c.out_objs[0];
+        request(&r, 102);
+        CHECK(services[i]->dispatch(services[i], &r.c) == RC(124, 20) && !r.c.out_objs[0]); /* the zero uid */
+        request(&r, 1);
+        call(manager, &r);
+        CHECK(reply64(&r, 0) == 0xFC9A30576503A9CEull);
+        memset(memory, 0xAA, sizeof memory);
+        token_request(&r, 4, 0x200);
+        call(manager, &r);
+        CHECK(reply32(&r, 0) == 0x100 && memory[0x1FF] == 0 && memory[0x200] == 0xAA);
+        request(&r, 130);
+        CHECK(manager->dispatch(manager, &r.c) == RC(124, 5249));
+        request(&r, 133);
+        CHECK(manager->dispatch(manager, &r.c) == RC(124, 5249));
+        request(&r, 143);
+        call(manager, &r);
+        CHECK(r.c.out_size == 0x10 && reply32(&r, 0) == 0 && reply64(&r, 8) == 0);
+        request(&r, 141);
+        call(manager, &r);
+        CHECK(r.c.nout_objs == 1);
+        context = r.c.out_objs[0];
+        request(&r, 3);
+        CHECK(context->dispatch(context, &r.c) == 0);
+        svcobj_unref(context);
+        svcobj_unref(manager);
+        svcobj_unref(services[i]);
+    }
+    puts("PASS the system's manager of the network service account, as the application's, with no license");
+}
+
 /* user 1 has the uid users.ini gives it (a setup's random one), and the fixed one only when it gives none */
 static void test_first_uid(void) {
     static u8 memory[0x400];
@@ -818,6 +866,7 @@ int main(void) {
     test_users();
     test_system_service();
     test_administrator_service();
+    test_system_manager();
     test_first_uid();
     test_start();
     test_rename();

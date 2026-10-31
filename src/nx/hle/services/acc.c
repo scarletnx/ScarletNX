@@ -14,6 +14,7 @@
 #define ACC_INVALID_USER_ID RC(124, 20)
 #define ACC_INVALID_APPLICATION RC(124, 22)
 #define ACC_INVALID_LENGTH  RC(124, 32)
+#define ACC_UNDER_MAINTENANCE   RC(124, 5249) /* the online account service is not there: "not available right now" */
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
 #define ACC_EMPTY_TOKEN     0x100        /* the zeros LoadIdTokenCache (19.0.0+) answers with no token */
@@ -275,6 +276,40 @@ static int nn_account_baas_IManagerForApplication_StoreOpenContext(SvcObj* self)
     R_SUCCEED();
 }
 
+/* ============================================================ IManagerForSystemService: the application's */
+static int nn_account_baas_IManagerForSystemService_GetAccountId(SvcObj* self, nn_account_NetworkServiceAccountId* id) {
+    return nn_account_baas_IManagerForApplication_GetAccountId(self, id);
+}
+static int nn_account_baas_IManagerForSystemService_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
+    return nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(self, context);
+}
+static int nn_account_baas_IManagerForSystemService_LoadIdTokenCacheDeprecated(SvcObj* self, IpcBuf token, u32* size) {
+    return nn_account_baas_IManagerForApplication_LoadIdTokenCacheDeprecated(self, token, size);
+}
+static int nn_account_baas_IManagerForSystemService_LoadIdTokenCache(SvcObj* self, IpcBuf token, u32* size) {
+    return nn_account_baas_IManagerForApplication_LoadIdTokenCache(self, token, size);
+}
+static int nn_account_baas_IManagerForSystemService_RefreshNetworkServiceLicenseCacheAsync(SvcObj* self,
+                                                                                           SvcObj** context) {
+    (void)self;
+    *context = nn_account_detail_IAsyncContext_new();
+    R_SUCCEED();
+}
+/* no account server, so no license (rEden's with online off) */
+static int nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCacheEx(SvcObj* self, u32* license,
+                                                                                    i64* expiration) {
+    (void)self;
+    *license = 0;
+    *expiration = 0;
+    R_SUCCEED();
+}
+/* the online account's user resource (130) and verification URL (133) caches, which the system's account pages read:
+   the online account service is not there, which they show as not available right now (rEden's answer) */
+static int acc_system_manager_other(SvcObj* self, IpcCtx* c) {
+    if (c->cmd == 130 || c->cmd == 133) R_THROW(ACC_UNDER_MAINTENANCE);
+    return stub_ok(self, c);
+}
+
 /* ============================================================ IAsyncContext: done at once, succeeded */
 static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
     (void)self;
@@ -332,6 +367,17 @@ static int nn_account_IAccountServiceForSystemService_StoreSaveDataThumbnail(Svc
                                                                              IpcBuf image) {
     return nn_account_IAccountServiceForApplication_StoreSaveDataThumbnail(self, uid, image);
 }
+/* the user's network service account, for the system: a user's only, as acc:u0's for the application */
+static int nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSystemService(SvcObj* self,
+                                                                                            const nn_account_Uid* uid,
+                                                                                            SvcObj** manager) {
+    (void)self;
+    R_UNLESS(acc_user(uid), ACC_INVALID_USER_ID);
+    *manager = acc_for_user(nn_account_baas_IManagerForSystemService_new_data(g_hle.acc.users, g_hle.acc.user_next,
+                                                                              "acc profiles and managers"),
+                            uid);
+    R_SUCCEED();
+}
 /* 140 here, 141 in acc:u0 */
 static int nn_account_IAccountServiceForSystemService_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
     return nn_account_IAccountServiceForApplication_ListQualifiedUsers(self, users);
@@ -383,6 +429,11 @@ static int nn_account_IAccountServiceForAdministrator_ListOpenContextStoredUsers
 }
 static int nn_account_IAccountServiceForAdministrator_ListQualifiedUsers(SvcObj* self, IpcBuf users) {
     return nn_account_IAccountServiceForApplication_ListQualifiedUsers(self, users);
+}
+static int nn_account_IAccountServiceForAdministrator_GetBaasAccountManagerForSystemService(SvcObj* self,
+                                                                                            const nn_account_Uid* uid,
+                                                                                            SvcObj** manager) {
+    return nn_account_IAccountServiceForSystemService_GetBaasAccountManagerForSystemService(self, uid, manager);
 }
 /* the system names the application the thumbnail is of: none is no application's */
 static int nn_account_IAccountServiceForAdministrator_StoreSaveDataThumbnail(SvcObj* self, const nn_account_Uid* uid,
