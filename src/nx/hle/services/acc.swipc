@@ -45,6 +45,11 @@ interface nn::account::profile::IProfile {
     [1] GetBase() -> nn::account::profile::ProfileBase base;
     [10] GetImageSize() -> u32 size;
     [11] LoadImage(buffer<u8, 6> image) -> u32 size;
+    # 18.0.0+: the large picture and the picture's id, which no user here has, answered as rEden does (its Unknown20, 21
+    # and 30)
+    @stub [20] GetLargeImageSize() -> u32 size;
+    @stub [21] LoadLargeImage(buffer<u8, 6> image) -> u32 size;
+    @stub [30] GetImageId() -> bytes<0x10> id;
 }
 
 # the user's network service account: there, with the id token an account server issued it, none here

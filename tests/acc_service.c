@@ -192,6 +192,21 @@ static void test_picture(void) {
     call(profile, &r);
     CHECK(reply32(&r, 0) == size && picture[0] == 0xff && picture[15] != 0xee && picture[16] == 0xee);
 
+    /* 18.0.0's large picture (20, 21) and the picture's id (30): none, the buffer as it was */
+    request(&r, 20);
+    call(profile, &r);
+    CHECK(reply32(&r, 0) == 0);
+    memset(g_mem + 0x1000, 0xee, 16);
+    request(&r, 21);
+    r.c.nb = 1;
+    r.c.b[0].addr = 0x1000;
+    r.c.b[0].size = 16;
+    call(profile, &r);
+    CHECK(reply32(&r, 0) == 0 && picture[0] == 0xee && picture[15] == 0xee);
+    request(&r, 30);
+    call(profile, &r);
+    CHECK(r.c.out_size == 0x10 && reply64(&r, 0) == 0 && reply64(&r, 8) == 0);
+
     svcobj_unref(profile);
     svcobj_unref(acc);
 }
