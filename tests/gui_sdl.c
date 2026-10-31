@@ -2492,19 +2492,6 @@ static void add_cheats(App* app, const char* temporary) {
     free(cheats);
     free(root);
 }
-#ifdef SNX_XDG
-/* the message an answer from a picker's own thread leaves, waited for up to 5 seconds */
-static void message_waited(App* app) {
-    SDL_Event e;
-    Uint64 until = SDL_GetTicks() + 5000;
-    while (!app->message[0] && SDL_GetTicks() < until) {
-        while (SDL_PollEvent(&e)) event(app, &e);
-        SDL_Delay(5);
-    }
-}
-/* the system's pickers the box's Add rows open, as SDL runs zenity (one of the test's own on PATH, which says what it
-   was asked and answers a folder or a file): Add Mod the folder picker, Add Cheats the file picker for a .txt, each
-   answer from SDL's thread added to the box. Off, the menu's own pickers go back to none */
 /* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
 static char* driver_zip(const char* temporary, const char* name) {
     mz_zip_archive z = {0};
@@ -2654,6 +2641,19 @@ static void game_gpu_driver(App* app) {
     free(ini);
     free(game);
 }
+#ifdef SNX_XDG
+/* the message an answer from a picker's own thread leaves, waited for up to 5 seconds */
+static void message_waited(App* app) {
+    SDL_Event e;
+    Uint64 until = SDL_GetTicks() + 5000;
+    while (!app->message[0] && SDL_GetTicks() < until) {
+        while (SDL_PollEvent(&e)) event(app, &e);
+        SDL_Delay(5);
+    }
+}
+/* the system's pickers the box's Add rows open, as SDL runs zenity (one of the test's own on PATH, which says what it
+   was asked and answers a folder or a file): Add Mod the folder picker, Add Cheats the file picker for a .txt, each
+   answer from SDL's thread added to the box. Off, the menu's own pickers go back to none */
 static void pickers_asked(App* app, const char* temporary, const char* self) {
     char *root = snx_path_join(temporary, "pickers"), *bin = snx_path_join(root, "bin");
     char *zenity = snx_path_join(bin, "zenity"), *asked = snx_path_join(root, "asked.txt");
