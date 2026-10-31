@@ -925,9 +925,8 @@ static void rt_retire_over(u64 gva, u64 size) {
    guest has them. 0 when it can't be (pitch-linear rows of part texels, or layers not a pitch's rows apart, no room):
    the caller flushes at once */
 int vk_surf_publish(Surf* s) {
-    u64 size = flush_bytes(s), at, off = 0;
+    u64 size = flush_bytes(s), off = 0;
     u32 mem_wgen = s ? s->mem_wgen : 0;
-    VkBuffer staged;
     VkOwnRes* r;
     VkCommandBuffer cb;
     if (!size || (s->gva >> 63)) return 0;
@@ -944,24 +943,24 @@ int vk_surf_publish(Surf* s) {
     VkBuffer kbuf = VK_NULL_HANDLE;
     r = vk_own_res_new(size);
     if (!r) return 0;
-    u8* p = vk_stage(size, vk_stage_align(), &staged, &at);
-    if (!p) {
+    /* straight into the buffer that becomes the span's owner, as the copy engine's destinations go (dma.c): the bytes
+       the GPU owns there are copied on the GPU, and only the CPU's cross the bus, once. Staged in host memory, the span
+       went out and came back several times, 12 to 14 MB a frame in one game */
+    if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
         vk_own_res_unref(r);
         return 0;
     }
-    vk_guest_read(s->gva, size, p, staged, at);
     for (u32 i = 0; i < kept; i++) kbytes += newer.run[i][1] - newer.run[i][0];
-    if (kept) { /* the CPU's runs as guest memory has them, before other targets go over the staged copy */
+    if (kept) { /* the CPU's runs as guest memory has them, before other targets go over the span */
         u64 k = 0;
-        if (!vk_stage(kbytes, vk_stage_align(), &kbuf, &kat)) {
+        if (!vk_stage_device(kbytes, vk_stage_align(), &kbuf, &kat)) {
             vk_own_res_unref(r);
             return 0;
         }
         cb = vk_cmd();
-        vk_all_barrier(cb);
         for (u32 i = 0; i < kept; i++) {
-            VkBufferCopy kc = {at + newer.run[i][0], kat + k, newer.run[i][1] - newer.run[i][0]};
-            rec_CmdCopyBuffer(cb, staged, kbuf, 1, &kc);
+            VkBufferCopy kc = {newer.run[i][0], kat + k, newer.run[i][1] - newer.run[i][0]};
+            rec_CmdCopyBuffer(cb, r->buf, kbuf, 1, &kc);
             k += kc.size;
         }
         vk_all_barrier(cb);
@@ -969,11 +968,9 @@ int vk_surf_publish(Surf* s) {
     /* the other targets over the span: s's own pixels go over them below, in the guest's layout, so a target leaves
        itself out (its tight rows would be a pitch-linear one's padding) */
     s->mem_wgen = s->wgen;
-    vk_rt_overlay(s->gva, size, staged, at);
+    vk_rt_overlay(s->gva, size, r->buf, 0);
     s->mem_wgen = mem_wgen;
     cb = vk_cmd();
-    VkBufferCopy c = {at, 0, size};
-    rec_CmdCopyBuffer(cb, staged, r->buf, 1, &c);
     vk_all_barrier(cb);
     if (!s->bl)
         flush_copy(cb, s, r->buf, 0, s->pitch);
