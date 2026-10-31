@@ -343,10 +343,11 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR sn
     endif()
 endif()
 
-# miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): its one-file release, miniz.c,
-# built alone, without its stdio functions (the zip is made in memory and written as every file is, for Windows'
-# UTF-8 paths) and without zlib's names, which another library's zlib could share
-if(SNX_BUILD_GUI)
+# miniz (MIT), the project's zip and deflate: the launcher's Share Log, the logs in one zip (src/gui/logzip.c), and the
+# Vita driver's VPKs and compressed eboot segments (src/vita/loader/inflate.c). Its one-file release, miniz.c, built
+# alone, without its stdio functions (the zip is made in memory and written as every file is, for Windows' UTF-8
+# paths) and without zlib's names, which another library's zlib could share
+if(SNX_BUILD_GUI OR (SNX_BUILD_VITA AND NOT SNX_TOOLS_ONLY))
     CPMAddPackage(NAME miniz VERSION 3.1.2
                   URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
                   URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
