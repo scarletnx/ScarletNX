@@ -273,12 +273,7 @@ int rec_key(const char* key) {
     return -1;
 }
 void rec_rules(const RecProbe* p, int memory_gb, RecRow rows[REC_COUNT]) {
-    const char* const* keys = rec_keys;
-    int i;
-    for (i = 0; i < REC_COUNT; i++) {
-        memset(&rows[i], 0, sizeof rows[i]);
-        rows[i].key = keys[i];
-    }
+    memset(rows, 0, REC_COUNT * sizeof *rows);
     rec_astc_bc(p, &rows[REC_ASTC_BC]);
     rec_pipeline_threads(p, &rows[REC_PIPELINE_THREADS]);
     rec_memory_fit(p, memory_gb, &rows[REC_MEMORY_FIT]);

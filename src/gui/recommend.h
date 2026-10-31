@@ -32,11 +32,11 @@ void rec_progress(const RecProbe* p, char* out, size_t size);
 
 /* the settings the rules give, in the order Recommended Settings shows them */
 enum { REC_ASTC_BC, REC_PIPELINE_THREADS, REC_MEMORY_FIT, REC_COUNT };
+/* a row is the setting rec_keys names at its index */
 typedef struct {
-    const char* key; /* the setting's key in the game's .ini */
-    int tested;      /* the probe gave what the rule needs; when not, value is "" and why says why */
-    char value[16];  /* the value the rule gives, as the .ini writes it */
-    char why[384];   /* the numbers that decided it, translated */
+    int tested;     /* the probe gave what the rule needs; when not, value is "" and why says why */
+    char value[16]; /* the value the rule gives, as the .ini writes it */
+    char why[384];  /* the numbers that decided it, translated */
 } RecRow;
 /* the rules on p, memory_gb the game's Memory (GB) setting (the pool memory_fit compares with) */
 void rec_rules(const RecProbe* p, int memory_gb, RecRow rows[REC_COUNT]);

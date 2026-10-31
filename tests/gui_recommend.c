@@ -54,8 +54,8 @@ int main(void) {
     assert(p.cpus == 12 && p.cores == 6 && p.ram_mb == 21267);
     assert(rec_gpu_tested(&p) && rec_pipelines_tested(&p) && rec_memory_tested(&p));
     rec_rules(&p, 0, rows);
-    assert(!strcmp(rows[REC_ASTC_BC].key, "astc_bc") && !strcmp(rows[REC_PIPELINE_THREADS].key, "pipeline_threads") &&
-           !strcmp(rows[REC_MEMORY_FIT].key, "memory_fit"));
+    assert(!strcmp(rec_keys[REC_ASTC_BC], "astc_bc") && !strcmp(rec_keys[REC_PIPELINE_THREADS], "pipeline_threads") &&
+           !strcmp(rec_keys[REC_MEMORY_FIT], "memory_fit"));
     /* every rule leaves this machine as it is, and says why with its numbers */
     assert(rows[REC_ASTC_BC].tested && !strcmp(rows[REC_ASTC_BC].value, "0"));
     assert(strstr(rows[REC_ASTC_BC].why, "11490 MB") && strstr(rows[REC_ASTC_BC].why, "8192 MB"));
@@ -160,7 +160,7 @@ int main(void) {
     /* a row against the settings: tested or not, the value they have (6.0 is 6), the one the player kept since the last
        test, a new one */
     {
-        RecRow row = {"pipeline_threads", 1, "6", ""}, untested = {"astc_bc", 0, "", ""};
+        RecRow row = {1, "6", ""}, untested = {0, "", ""};
         assert(rec_row_state(&untested, "0", "") == REC_ROW_UNTESTED);
         assert(rec_row_state(&row, "6.0", "") == REC_ROW_SAME);
         assert(rec_row_state(&row, "0", "6") == REC_ROW_KEPT);
