@@ -249,6 +249,8 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
+void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */
 void ir_stats_function(SnxIr* ir, LLVMValueRef fn);
 /* Starts a function body: entry block, c and M */
