@@ -62,6 +62,7 @@ void svc_core_init(void) {
     svc_register("time:u", new_time_user);
     nn_account_IAccountServiceForApplication_register(new_acc);
     nn_account_IAccountServiceForSystemService_register(new_acc_system);
+    nn_account_IAccountServiceForAdministrator_register(new_acc_admin);
     /* one interface, two kinds of session (ldr.c) */
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
