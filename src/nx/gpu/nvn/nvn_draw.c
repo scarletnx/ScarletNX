@@ -14,6 +14,7 @@
    (dm/gfx/nvn/nvn_mtl.m, MIT, Copyright (c) 2026 seedds). Bank 1 is the program's own constants, after its code in
    the code area; the application's uniform buffer r is bank 3 + r */
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "common/utilities/bits.h"
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_object.h"
@@ -609,8 +610,12 @@ static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
     if (s < 0) return;
     if (op == OP_BIND_UBO) {
         if (3 + r->index >= DS_CBUFS) return;
-        d->bind.cb_addr[s][3 + r->index] = r->address;
-        d->bind.cb_size[s][3 + r->index] = r->size >= 0x10000 ? 0 : (u32)r->size;
+        /* the game's driver writes the size rounded up to 256 bytes to CB_SIZE, and a size of 0 unbinds the slot
+           (CB_BIND with its valid bit clear; BindUniformBuffer of NVN 55.15). A shader reads zeros only past the
+           rounded size, as on the console */
+        u64 size = r->size >= 0x10000 ? 0x10000 : snx_align_up(r->size, 256);
+        d->bind.cb_addr[s][3 + r->index] = size ? r->address : 0;
+        d->bind.cb_size[s][3 + r->index] = size >= 0x10000 ? 0 : (u32)size;
         d->dirty |= D_BIND;
     } else {
         /* the storage buffer table's base in bank 0, measured for the vertex and fragment stages */
