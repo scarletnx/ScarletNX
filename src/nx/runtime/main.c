@@ -627,6 +627,7 @@ static void frontend_loop(void) {
         if (!paused) {
             hid_update();
             vi_vsync_tick();
+            am_vi2_vsync_tick();
         }
         if (++tick % 60 == 0) ini_poll(0);
         frontend_frame();

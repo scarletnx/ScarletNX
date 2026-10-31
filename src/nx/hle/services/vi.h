@@ -12,6 +12,7 @@
 #define VI_REFRESH_HZ 60
 
 void vi_vsync_tick(void); /* one display refresh: signals the vsync event */
+void am_vi2_vsync_tick(void); /* one display refresh: signals the Switch 2 display sessions' vsync events (am.c) */
 /* ---- HLE state in g_hle (hle.h) */
 #define VI_LAYERS 8
 #define VI_SLOTS  64    /* BufferQueueDefs::NUM_BUFFER_SLOTS */

@@ -414,7 +414,7 @@ static u32 am_vi2_event(AmVi2* s, u32 index) {
         if (!(e = kevent_new("nx2 vi2 event"))) return 0;
         kobj_ref(&e->o);
         s->ev[index] = kobj_id(&e->o);
-        ev_signal(s->ev[index]); /* nothing waits on the display: the SDK's wait is answered at once */
+        if (!index) ev_signal(s->ev[index]); /* the session's own: nothing here waits on it */
     }
     return s->ev[index];
 }
@@ -444,7 +444,7 @@ static int nn_am_service_IVi2Session_GetEvent(SvcObj* self, u32* event) {
     return *event ? 0 : AM_OUT_OF_HANDLES;
 }
 /* 31 and 32: the vsync events, which the console signals on every frame. One event per display's index, so a title
-   waiting on two fires of it gets one after the other (Eden's Switch 2 work signals them from its vblank timer) */
+   waiting on two fires of it gets one after the other (the main loop's 60 Hz signals them: am_vi2_vsync_tick) */
 static int nn_am_service_IVi2Session_GetVsyncEvent(SvcObj* self, u32 kind, u32* event) {
     AmVi2* s = am_vi2(self);
     u32 ev;
@@ -464,6 +464,18 @@ static int nn_am_service_IVi2Session_GetDisplayVsyncEvent(SvcObj* self, u32 vsyn
     if (!ev) return AM_OUT_OF_MEMORY;
     *event = ev_handle(ev);
     return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+/* the main loop's 60 Hz: a display's frame is done, so every event of every display session is signaled again. A title
+   clears the one it waited on before it waits again (the console's are auto-clear), so a signal only on the first
+   frame leaves it waiting from the second one on (Eden's Switch 2 work signals its displays' events from its vblank
+   timer) */
+void am_vi2_vsync_tick(void) {
+    u32 i, j;
+    for (i = 0; i < AM_VI2_SESSIONS; i++) {
+        AmVi2* s = &g_hle.am.vi2s[i];
+        for (j = 0; j < AM_VI2_EVENTS; j++)
+            if (s->ev[j]) ev_signal(s->ev[j]);
+    }
 }
 static int nn_am_service_IVi2Session_Unknown104(SvcObj* self) {
     (void)self;
