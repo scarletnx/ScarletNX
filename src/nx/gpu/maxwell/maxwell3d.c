@@ -179,6 +179,7 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
                    0,
                    0,
                    0,
+                   0,
                    0};
     if (verify)
         g_gpu_verify_draw(ch, &dc);

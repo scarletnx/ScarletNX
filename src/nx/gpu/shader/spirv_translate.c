@@ -41,6 +41,9 @@ typedef struct {
     u32 pred[7];
     u32 cc_c, cc_o, cc_z, cc_s;
     u32 cbuf[18], cbuf_pointer[18];
+    /* a vertex program's reads of NVN's draw parameters in bank 0 (shader.h SH_CB0_): the push block and pointer type
+       whose z says which come from BaseVertex and BaseInstance, and those inputs. 0 when it reads neither */
+    u32 dp_push, dp_push_pointer, dp_base_vertex, dp_base_instance;
     /* constant buffer words read in the block being written, by bank and offset (a cache: a word that collides is
        read again), and their bitcast to a float, 0 until made. A draw's constant buffers don't change under it */
     struct {
@@ -1110,8 +1113,23 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, (off >> 2) & 3);
     c->cbuf_seen[at].key = key;
     c->cbuf_seen[at].block = c->emit.block;
-    c->cbuf_seen[at].word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element,
-                                                       component, c->u32_type);
+    u32 word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
+                                          c->u32_type);
+    if (c->dp_push && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE)) {
+        /* an indirect draw's base vertex or instance: its record's, which the GPU has, where the push says so */
+        int vertex = off == SH_CB0_BASE_VERTEX;
+        u32 flags = spv_emit_bitcast(&c->emit, c->u32_type,
+                                     spv_emit_push_component_f32(&c->emit, c->dp_push_pointer, c->dp_push, c->zero,
+                                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 2),
+                                                                 c->f32_type));
+        u32 bit = spv_emit_constant_u32(&c->emit, c->u32_type,
+                                        vertex ? SH_PUSH_GPU_BASE_VERTEX : SH_PUSH_GPU_BASE_INSTANCE);
+        u32 on = spv_emit_i_not_equal(&c->emit, c->bool_type, spv_emit_bitwise_and_u32(&c->emit, c->u32_type, flags, bit),
+                                      c->zero);
+        u32 gpu = spv_emit_load(&c->emit, c->u32_type, vertex ? c->dp_base_vertex : c->dp_base_instance);
+        word = spv_emit_select(&c->emit, c->u32_type, on, gpu, word);
+    }
+    c->cbuf_seen[at].word = word;
     c->cbuf_seen[at].as_float = 0;
     return at;
 }
@@ -3427,6 +3445,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_demote = 0;
     int needs_image_query = 0, needs_derivatives = 0, needs_clock = 0;
     int needs_instance = 0;
+    int needs_draw_params = 0; /* a vertex program reads NVN's draw parameters (shader.h SH_CB0_) */
     int needs_local_id = 0, needs_group_id = 0;
     int needs_scale = 0, needs_texel_scale = 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
@@ -3921,6 +3940,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (idx >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[idx] = 1;
             if ((off | 15u) + 1 > cbuf_max[idx]) cbuf_max[idx] = (off | 15u) + 1;
+            if (stage == ST_VS && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE))
+                needs_draw_params = 1;
         }
         if (op->id == O_LOP3_C || op->id == O_IMNMX_C || op->id == O_XMAD_CR || op->id == O_XMAD_RC ||
             op->id == O_BFE_C || op->id == O_IADD3_C || op->id == O_LEA_LC || op->id == O_LEA_HC || op->id == O_F2I_C ||
@@ -3939,6 +3960,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (idx >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[idx] = 1;
             if ((off | 15u) + 1 > cbuf_max[idx]) cbuf_max[idx] = (off | 15u) + 1;
+            if (stage == ST_VS && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE))
+                needs_draw_params = 1;
         }
         if (op->id == O_OUT_R && b < 255) used[b] = 1;
         if (op->id == O_FSETP_R || op->id == O_FSETP_C || op->id == O_FSETP_I) {
@@ -4645,7 +4668,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (needs_f64) spv_emit_float64_capability(&c->emit);
     if (needs_clock) spv_emit_shader_clock_extension(&c->emit);
     if (needs_i64) spv_emit_capability(&c->emit, 11); /* Int64 */
-    if (needs_instance && g_shader_draw_parameters && stage == ST_VS) spv_emit_draw_parameters_capability(&c->emit);
+    if ((needs_instance || needs_draw_params) && g_shader_draw_parameters && stage == ST_VS)
+        spv_emit_draw_parameters_capability(&c->emit);
     if (needs_subgroup || converge) spv_emit_subgroup_capabilities(&c->emit);
     if (needs_quad) spv_emit_subgroup_quad_capability(&c->emit);
     c->quad = needs_quad;
@@ -4933,6 +4957,15 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             interfaces[count++] = base_instance;
         }
     }
+    u32 base_vertex = 0;
+    if (needs_draw_params && g_shader_draw_parameters && stage == ST_VS) {
+        if (!base_instance) {
+            base_instance = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4425); /* BaseInstance */
+            interfaces[count++] = base_instance;
+        }
+        base_vertex = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4424); /* BaseVertex */
+        interfaces[count++] = base_vertex;
+    }
     if (needs_fragcoord) {
         fragcoord = spv_emit_fragcoord_input(&c->emit, vec4);
         interfaces[count++] = fragcoord;
@@ -5029,11 +5062,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale)) || depth_fix || needs_instance) {
+    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale)) || depth_fix || needs_instance ||
+        base_vertex) {
         /* the fragment stage's uvec4: its scaled textures (scaled_coords) */
         push = spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
                                   stage == ST_FS && needs_texel_scale ? vec4_u32 : 0, &push_pointer);
         interfaces[count++] = push;
+    }
+    if (base_vertex) {
+        c->dp_push = push;
+        c->dp_push_pointer = push_pointer;
+        c->dp_base_vertex = base_vertex;
+        c->dp_base_instance = base_instance;
     }
     spv_emit_entry_str(&c->emit, (SpvShaderStage)stage, fn, "main", interfaces, count); /* ST_ is SPIR-V's model */
     if (xfb_on) {
