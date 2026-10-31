@@ -275,7 +275,11 @@ static const SnxU32 g_words[] = {
     0x4E22CC20UL, /* FMLA V0.4S,V1.4S,V2.4S: QNaN addend with inf*0, fused overflow cancelled; FPSR's NZCV, QC kept. */
     0x6E20D400UL, /* FADDP V0.4S,V0.4S,V0.4S: tie to even, SNaN priority, the destination its own source. */
     0x6E61D820UL, /* UCVTF V0.2D,V1.2D: lanes that fit, 0 is +0 under round toward minus infinity. */
-    0x6E21D820UL  /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x6E21D820UL, /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x7EA1D820UL, /* FRSQRTE S0,S1: an even exponent's estimate, the upper lanes cleared. */
+    0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under FZ: the estimates of normals, the smallest normal's of 2^126. */
+    0x6E218820UL, /* FRINTA V0.4S,V1.4S: ties away from zero, a tie's neighbours, -0.5 to -1. */
+    0x1E664020UL  /* FRINTA D0,D1: the half's predecessor rounds to +0. */
 };
 #define WORDS (sizeof(g_words) / sizeof(g_words[0]))
 
@@ -501,6 +505,26 @@ static void setup(unsigned i, CPU* c, unsigned char* memory) {
             SNX_VSET_S(c->v[1], 2, 0xFFFFFF);
             SNX_VSET_S(c->v[1], 3, 0x800000);
             break;
+        /* FRSQRTE and FRECPE's fast paths, which must not depend on the host's rounding mode */
+        case 51:
+            SNX_VSET_S(c->v[0], 2, 0x12345678);
+            SNX_VSET_S(c->v[1], 0, 0x40800001);
+            break;
+        case 52:
+            c->fpcr = 0x1000000;
+            SNX_VSET_S(c->v[1], 0, 0x3FC00000);
+            SNX_VSET_S(c->v[1], 1, 0xC2F6E979);
+            SNX_VSET_S(c->v[1], 2, 0x00800000);
+            SNX_VSET_S(c->v[1], 3, 0x7E7FFFFF);
+            break;
+        /* FRINTA's, the same */
+        case 53:
+            SNX_VSET_S(c->v[1], 0, 0xC0200000);
+            SNX_VSET_S(c->v[1], 1, 0x3EFFFFFF);
+            SNX_VSET_S(c->v[1], 2, 0x4AFFFFFF);
+            SNX_VSET_S(c->v[1], 3, 0xBF000000);
+            break;
+        case 54: SNX_VSET_D(c->v[1], 0, 0x3FDFFFFFFFFFFFFFULL); break;
         default: break;
     }
 }
@@ -604,6 +628,14 @@ static int verify(unsigned i, const CPU* c, const unsigned char* memory) {
         case 50:
             ok = SNX_VD(c->v[0], 0) == 0x3F80000000000000ULL && SNX_VD(c->v[0], 1) == 0x4B0000004B7FFFFFULL && !c->fpsr;
             break;
+        case 51: ok = SNX_VD(c->v[0], 0) == 0x3EFF8000ULL && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
+        case 52:
+            ok = SNX_VD(c->v[0], 0) == 0xBC0500003F2A8000ULL && SNX_VD(c->v[0], 1) == 0x008000007E7F8000ULL && !c->fpsr;
+            break;
+        case 53:
+            ok = SNX_VD(c->v[0], 0) == 0x00000000C0400000ULL && SNX_VD(c->v[0], 1) == 0xBF8000004B000000ULL && !c->fpsr;
+            break;
+        case 54: ok = !SNX_VD(c->v[0], 0) && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
         default: break;
     }
     return ok;
@@ -666,7 +698,8 @@ static void semantics_test(void) {
 }
 
 /* A loop of generated code runs with CPU.poll set: its backward branch calls rt->poll, the runtime's chance to take
-   the core from a thread that makes no SVC, and the loop still runs to its end; without the flag it never polls */
+   the core from a thread that makes no SVC, then calls the function again at the loop's head (its entry mismatch and
+   dispatch block), and the loop still runs to its end with the registers it had; without the flag it never polls */
 static void on_poll(CPU* c) {
     ++g_polls;
     __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
@@ -684,12 +717,14 @@ static int run_loop(GuestFn f, u64 count, u32 flag) {
     c.poll = flag;
     g_polls = 0;
     f(&c, SNX_CODE_BASE);
-    return c.x[0] == 0 && c.pc == 0x2000 ? g_polls : -1;
+    return c.x[0] == 0 && c.x[1] == count && c.pc == 0x2000 ? g_polls : -1;
 }
 
 static void poll_test(void) {
-    static const SnxU32 words[] = {0xF1000400UL,  /* SUBS X0,X0,#1 */
-                                   0x54FFFFE1UL,  /* B.NE back to it */
+    static const SnxU32 words[] = {0xD2800001UL,  /* MOV X1,#0 */
+                                   0x91000421UL,  /* ADD X1,X1,#1: the loop's head, not the function's start */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
                                    0xD65F03C0UL}; /* RET */
     unsigned char image[sizeof(words)];
     SnxProgram program;

@@ -156,18 +156,6 @@ static PMutex g_mem_lk = PMUTEX_INIT;
 static u64 g_host_page = PAGE; /* plat_vm_page: set by mem_init, before other threads */
 static MemBlock* g_blk;
 static u32 g_nblk, g_capblk;
-/* whether this thread holds g_mem_lk: a crash inside mem.c is reported by the thread that holds it, and the report's
-   queries (mem_query) read the list without taking the lock again */
-static _Thread_local int t_mem_held;
-static void mem_lock(void) {
-    pm_lock(&g_mem_lk);
-    t_mem_held = 1;
-}
-static void mem_unlock(void) {
-    t_mem_held = 0;
-    pm_unlock(&g_mem_lk);
-}
-
 /* bumped under g_mem_lk before guest pages lose their host memory or turn free or inaccessible, and by mem_init:
    until it moves, a run mem_mapped_run found mapped stays mapped, so each thread keeps the runs it found, one per
    megabyte granule of the address they were found for (direct mapped). The GPU thread asks this of every buffer and
@@ -176,10 +164,24 @@ static void mem_unlock(void) {
 static u64 g_unmap_gen = 1;
 #define MEM_RUNS 64
 #define MEM_RUN_SLOT(a) (((a) >> 20) & (MEM_RUNS - 1))
+/* this thread's state */
 static _Thread_local struct {
-    u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
-} t_runs;
+    /* whether this thread holds g_mem_lk: a crash inside mem.c is reported by the thread that holds it, and the
+       report's queries (mem_query) read the list without taking the lock again */
+    int held;
+    struct {
+        u64 lo[MEM_RUNS], hi[MEM_RUNS], gen;
+    } runs;
+} t_mem;
 static void runs_stale_nl(void) { __atomic_add_fetch(&g_unmap_gen, 1, __ATOMIC_RELEASE); }
+static void mem_lock(void) {
+    pm_lock(&g_mem_lk);
+    t_mem.held = 1;
+}
+static void mem_unlock(void) {
+    t_mem.held = 0;
+    pm_unlock(&g_mem_lk);
+}
 
 static void (*g_code_invalidate)(u64, u64); /* the runtime's JIT: what was compiled in the range is stale now */
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_code_invalidate = fn; }
@@ -188,6 +190,14 @@ static void code_invalidate(u64 addr, u64 size) {
     if (g_code_invalidate) g_code_invalidate(addr, size);
 }
 
+/* the renderer's: host pages under guest memory [a, a + size) are other pages now, or none (its imports of guest memory,
+   gpu/vk/uma.c, hold the old ones). Called under g_mem_lk */
+static void (*g_pages_replaced)(u64, u64);
+void mem_set_pages_replaced(void (*fn)(u64, u64)) { __atomic_store_n(&g_pages_replaced, fn, __ATOMIC_RELEASE); }
+static void pages_replaced_nl(u64 a, u64 size) {
+    void (*fn)(u64, u64) = __atomic_load_n(&g_pages_replaced, __ATOMIC_ACQUIRE);
+    if (fn) fn(a, size);
+}
 static u64 blk_end(const MemBlock* b) { return b->addr + b->size; }
 /* b follows a: they join when alike, the pool's pages continuing from a's when they are the pool's */
 static int blk_same(const MemBlock* a, const MemBlock* b) {
@@ -303,6 +313,7 @@ static void decommit_nl(u64 a, u64 size) {
     u64 mask = g_host_page - 1, end = a + size, first = a & ~mask, last = (end - 1) & ~mask, edge[2];
     int i, n = 0;
     runs_stale_nl();
+    pages_replaced_nl(a, size);
     own_drop(a, size);
     if (!((a | end) & mask)) { /* whole host pages, all of them free */
         plat_vm_decommit(GP(a), size);
@@ -459,6 +470,7 @@ static void unmap_nl(u64 a, u64 size) {
     u64 end = a + size;
     u32 i;
     runs_stale_nl(); /* before the pages go, not with the state after them */
+    pages_replaced_nl(a, size);
     own_drop(a, size); /* what the GPU held there goes with the mapping */
     for (i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
@@ -479,6 +491,7 @@ static void unmap_nl(u64 a, u64 size) {
    even this leaves nothing to run on */
 static void unpool_nl(u64 a, u64 size, const u64* off) {
     runs_stale_nl();
+    pages_replaced_nl(a, size);
     if (plat_alias_unmap(GP(a), size) || (off && (commit_nl(a, size) || plat_alias_read(*off, GP(a), size))))
         fatal("Could not put %llu KiB of guest memory back from the alias pool", (unsigned long long)(size >> 10));
 }
@@ -510,6 +523,7 @@ static int promote_nl(u64 a, u64 size) {
         pool_free_nl(off, size);
         return MEM_NOMEM;
     }
+    pages_replaced_nl(a, size); /* the pool's pages over the reservation's */
     if (plat_alias_map(GP(a), off, size)) {
         unpool_nl(a, size, &off);
         pool_free_nl(off, size);
@@ -742,7 +756,7 @@ void mem_query(u64 addr, MemBlock* out) {
         out->state = MS_INACCESSIBLE;
         return;
     }
-    if (t_mem_held) {
+    if (t_mem.held) {
         *out = g_blk[blk_index_nl(addr)];
         return;
     }
@@ -753,11 +767,11 @@ void mem_query(u64 addr, MemBlock* out) {
 u64 mem_mapped_run(u64 addr, u64 size) {
     u64 end, lo, lim = addr, run, gen;
     u32 i;
-    int mine = !t_mem_held; /* a crash report's queries come from the thread that holds the lock */
+    int mine = !t_mem.held; /* a crash report's queries come from the thread that holds the lock */
     if (!size) return 0;
     i = MEM_RUN_SLOT(addr);
-    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_runs.gen && addr >= t_runs.lo[i] &&
-        addr < t_runs.hi[i] && size <= t_runs.hi[i] - addr)
+    if (__atomic_load_n(&g_unmap_gen, __ATOMIC_ACQUIRE) == t_mem.runs.gen && addr >= t_mem.runs.lo[i] &&
+        addr < t_mem.runs.hi[i] && size <= t_mem.runs.hi[i] - addr)
         return size;
     if (mine) mem_lock();
     gen = __atomic_load_n(&g_unmap_gen, __ATOMIC_RELAXED);
@@ -778,12 +792,12 @@ u64 mem_mapped_run(u64 addr, u64 size) {
         }
         run = (lim < end ? lim : end) - addr;
         if (lim > addr) {
-            if (t_runs.gen != gen) { /* the runs kept are of an older generation */
-                memset(&t_runs, 0, sizeof t_runs);
-                t_runs.gen = gen;
+            if (t_mem.runs.gen != gen) { /* the runs kept are of an older generation */
+                memset(&t_mem.runs, 0, sizeof t_mem.runs);
+                t_mem.runs.gen = gen;
             }
-            t_runs.lo[i] = lo;
-            t_runs.hi[i] = lim;
+            t_mem.runs.lo[i] = lo;
+            t_mem.runs.hi[i] = lim;
         }
     }
     if (mine) mem_unlock();
@@ -1464,6 +1478,7 @@ int mem_restore_check(const MemBlock* blk, u32 n) {
 int mem_restore_blocks(const MemBlock* blk, u32 n) {
     u32 i;
     if (restore_check_nl(blk, n)) return -1;
+    pages_replaced_nl(0, ~0ull);
     for (i = 0; i < n; i++) {
         const MemBlock* b = &blk[i];
         if (b->state == MS_FREE || b->state == MS_CODE) continue;

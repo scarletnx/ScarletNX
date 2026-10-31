@@ -10,6 +10,7 @@
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
+#include "nx/runtime/clock.h"
 #include "nx/runtime/loader.h"
 
 /* ============================================================ guest memory */
@@ -88,6 +89,14 @@ u64 kernel_find_symbol_exact(const char* name) {
     for (u32 i = 0; i < g_hle.debug.nsyms; i++)
         if (readable(g_hle.debug.syms[i].name, len) && !memcmp(GP(g_hle.debug.syms[i].name), name, len)) return g_hle.debug.syms[i].addr;
     return 0;
+}
+/* the i-th exported function, in address order: its address, and its name in guest memory, NULL when the name isn't
+   readable. A name is a string of the module's DT_STRTAB, so it ends inside the module. 0 past the last */
+int kernel_symbol(u32 i, u64* addr, const char** name) {
+    if (i >= g_hle.debug.nsyms) return 0;
+    *addr = g_hle.debug.syms[i].addr;
+    *name = readable(g_hle.debug.syms[i].name, 1) ? (const char*)GP(g_hle.debug.syms[i].name) : NULL;
+    return 1;
 }
 /* the length of the guest string at a, at most max, when it is readable and ends within max; else 0 */
 static int gstr(u64 a, int max) {
@@ -335,6 +344,54 @@ static void dump_sleeps(const KThread* t, u64 since) {
     if (g_arm_mod) return; /* a 32-bit thread's frame pointer isn't among the SVC's registers */
     n = frames(t->sleep_x[29], 1, f, 3);
     for (i = 0; i < n; i++) dump_code(1, "code at a caller", f[i] - 0x20, f[i] + 0x20, f[i]);
+}
+/* At exit: each core's share of the run that a thread held it, the time threads spent waiting for it, and the
+   threads that waited longest. A thread waits for its core when another of its core holds it (emulated cores run one
+   thread at a time), so this is where the cores' contention shows */
+void kernel_core_report(void) {
+    enum { TOP = 10 };
+    const KThread* top[TOP] = {0};
+    u64 now = plat_ns(), run = now - g_t0_ns(), held[NCORES];
+    char line[256], name[64];
+    int i, j, k, len = 0;
+    if (!run) return;
+    pm_lock(&g_host.thread.core_lk);
+    for (k = 0; k < NCORES; k++)
+        held[k] = g_host.thread.core_held_ns[k] + (g_hle.thread.core_owner[k] ? now - g_host.thread.core_since[k] : 0);
+    for (k = 0; k < NCORES; k++)
+        len += snprintf(line + len, sizeof line - (size_t)len, " %d: %llu%% held, %.1f s waited for;", k,
+                        (unsigned long long)(held[k] * 100 / run), (double)g_host.thread.core_wait_ns[k] / 1e9);
+    for (i = 0; i < KTHREAD_MAX; i++) {
+        const KThread* t = &g_hle.thread.threads[i];
+        if (t->o.type != KO_THREAD || !t->core_wait_ns) continue;
+        for (j = TOP; j > 0 && (!top[j - 1] || top[j - 1]->core_wait_ns < t->core_wait_ns); j--)
+            if (j < TOP) top[j] = top[j - 1];
+        if (j < TOP) top[j] = t;
+    }
+    LOG("kernel: over %.1f s, cores%s\n", (double)run / 1e9, line);
+    for (k = 0; k < NCORES; k++) { /* each core's main holders: who the waiters waited behind */
+        const KThread* h[3] = {0};
+        for (i = 0; i < KTHREAD_MAX; i++) {
+            const KThread* t = &g_hle.thread.threads[i];
+            if (t->o.type != KO_THREAD || !t->core_held_ns || t->core != k) continue;
+            for (j = 3; j > 0 && (!h[j - 1] || h[j - 1]->core_held_ns < t->core_held_ns); j--)
+                if (j < 3) h[j] = h[j - 1];
+            if (j < 3) h[j] = t;
+        }
+        for (j = 0; j < 3 && h[j]; j++) {
+            if (!sdk_name(h[j], name, sizeof name)) snprintf(name, sizeof name, "%s", h[j]->name);
+            LOG("kernel:   core %d held by thread %llu '%s' prio %d for %llu%% of the run\n", k,
+                (unsigned long long)h[j]->id, name, h[j]->prio, (unsigned long long)(h[j]->core_held_ns * 100 / run));
+        }
+    }
+    for (j = 0; j < TOP && top[j]; j++) {
+        const KThread* t = top[j];
+        if (!sdk_name(t, name, sizeof name)) snprintf(name, sizeof name, "%s", t->name);
+        LOG("kernel:   thread %llu '%s' prio %d core %d mask %llx waited %.2f s for its core in %u waits\n",
+            (unsigned long long)t->id, name, t->prio, t->core, (unsigned long long)t->affinity,
+            (double)t->core_wait_ns / 1e9, t->core_waits);
+    }
+    pm_unlock(&g_host.thread.core_lk);
 }
 /* Read without g_klock or the pool's lock: the dump is how a hang is diagnosed, and a hang may be a thread that keeps
    the lock. The values can be a moment stale or mid-change (a slot freed or taken meanwhile), which is all a dump

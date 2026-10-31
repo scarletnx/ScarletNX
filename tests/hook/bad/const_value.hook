@@ -1,0 +1,2 @@
+family f
+hook f(const i32 a) = h

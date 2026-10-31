@@ -49,10 +49,11 @@ typedef double f64;
   14: code the guest patches at run time. IC IVAU calls RtAPI.code_changed, and each AOT function first reads its
       byte in SnxModule.stale, which the runtime sets when a line it was compiled from changed: the function then
       runs its entry through dispatch, where the runtime compiles the code there now.
-  15: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
+  15: calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold.
+  16: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
       load-exclusive stores (and returns 0), where every build before made it fail and return 1, so a game's retry
       loop never ended: both the generated code and the interpreter's helper emit the new comparison. */
-#define SNX_ABI 15
+#define SNX_ABI 16
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -389,6 +390,18 @@ u64 snx_fp_jcvt(CPU* c, u64 bits); /* FJCVTZS: the W result, and Z in bit 32 */
 u64 snx_fp_bfcvt(CPU* c, u64 bits); /* BFCVT: a single's bfloat16 */
 u32 urecpe32(u32 x);
 u32 ursqrte32(u32 x);
+/* The same operations with the host's IEEE arithmetic first (helpers/fp_host.c), for the operands it gives the
+   results and flags above for (NaNs, infinities, denormals, a single's tiny or inexact result), else the above's:
+   the emitters' slow paths. They read the host thread's FP environment, take the above's unless it is IEEE's default
+   (round to nearest, no flush to zero), and may raise the host's own exception flags */
+u64 snx_fp_host_binary(CPU* c, u64 a, u64 b, int width, int op);
+u64 snx_fp_host_fma(CPU* c, u64 add, u64 a, u64 b, int width);
+u64 snx_fp_host_unary(CPU* c, u64 bits, int width, int op);
+u32 snx_fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal);
+u64 snx_fp_host_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric);
+/* a vector's lanes through one of them in one call: desc's nibbles the helper (0 binary, 1 fma x + y * z, 2 unary,
+   3 minmax), the width in bytes, the lane count, the operation and minmax's numeric */
+void snx_fp_host_lanes(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 
 /* ---- AdvSIMD helpers out of line (helpers/crypto.c, helpers/vector.c) ---- */
 void v_aes(V128* d, const V128* k, int dec);         /* AESE (dec 0), AESD (1): d = round(d ^ k) */

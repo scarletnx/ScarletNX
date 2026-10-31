@@ -1,0 +1,4 @@
+family f
+hook f() = h
+# the same symbol twice
+hook f() = g

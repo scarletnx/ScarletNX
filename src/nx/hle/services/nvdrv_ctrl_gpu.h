@@ -48,8 +48,10 @@ enum { CTRL_GPU_PMU_GPU_LOAD = 0, CTRL_GPU_GPU_TIME = 0 };
 /* the GM20B's shape: one GPC of two TPCs, an SM each (the characteristics' num_gpc and num_tpc_per_gpc). TPC mask 3 has
    the GPC's two TPCs (Eden's tcp_mask), and VSMS_MAPPING's {gpc, tpc} byte pairs place SM 0 at TPC 0 and SM 1 at
    TPC 1 */
+#define NVGPU_NUM_GPCS  1u
 #define NVGPU_NUM_SMS   2u
 #define NVGPU_TPC_MASK  0x3u
+#define NVGPU_SM_WARPS  0x80u /* the characteristics' sm_arch_warp_count */
 /* Eden's GetActiveSlotMask and PmuGetGpuLoad answers: slot 7 with mask 1, and a load of 100 */
 #define NVGPU_ACTIVE_SLOT      0x07u
 #define NVGPU_ACTIVE_SLOT_MASK 0x01u

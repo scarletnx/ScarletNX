@@ -62,47 +62,57 @@ u64 g_vk_release_forwards;
 
 /* The queued payloads by the guest words they write: for each 4-byte word, the latest release queued over it and how
    many are, so the render enable finds the release that decides a count without looking through the queue
-   (count_queued), where one game keeps hundreds of reports a frame. A payload that isn't whole words of
-   one mapped page is counted in g_rodd instead, and while there is one the queue is looked through. Under g_rlock */
+   (count_queued), where one game keeps hundreds of reports a frame. And by the host pages they are in, each page's
+   latest release with how many are, and for each release the one queued in its page before it (g_rprev), so a range
+   the stream reads finds the latest release over it by the pages it covers (latest_over): looking through the queue
+   for each constant buffer read over a page that holds a payload was a twenty-fifth of an open-world game's GPU
+   thread. A payload that isn't whole words of one mapped page is counted in g_rodd instead, and while there is one
+   the queue is looked through. Under g_rlock */
 #define RIX_N 8192 /* twice four words for each release the queue holds: half full at most */
-static struct {
-    u64 word; /* its guest address, 0 for an empty entry */
-    u64 seq;  /* the latest release queued over it, by its queue number */
-    u32 n;    /* the releases queued over it */
-} g_rix[RIX_N];
+#define RPG_N 2048 /* twice a page for each */
+typedef struct {
+    u64 key; /* its guest word's or page's host address, 0 for an empty entry */
+    u64 seq; /* the latest release queued over it, by its queue number */
+    u32 n;   /* the releases queued over it */
+} Rix;
+static Rix g_rix[RIX_N], g_rpg[RPG_N];
+static u64 g_rprev[RQ_N]; /* by a release's queue slot: the release queued in its page before it */
 static u64 g_rodd;
-static u32 rix_home(u64 word) { return (u32)((word >> 2) * 0x9E3779B97F4A7C15ull >> 51) & (RIX_N - 1); }
-static u32 rix_find(u64 word) {
-    u32 i = rix_home(word);
-    while (g_rix[i].word && g_rix[i].word != word) i = (i + 1) & (RIX_N - 1);
+static u32 rix_home(u64 key, u32 mask) { return (u32)((key >> 2) * 0x9E3779B97F4A7C15ull >> 51) & mask; }
+static u32 rix_find(const Rix* t, u32 mask, u64 key) {
+    u32 i = rix_home(key, mask);
+    while (t[i].key && t[i].key != key) i = (i + 1) & mask;
     return i;
 }
-/* the word of the release queued as seq: its latest */
-static void rix_add(u64 word, u64 seq) {
-    u32 i = rix_find(word);
-    g_rix[i].word = word;
-    g_rix[i].seq = seq;
-    g_rix[i].n++;
+/* the key of the release queued as seq: its latest. The latest before it, ~0 for none */
+static u64 rix_add(Rix* t, u32 mask, u64 key, u64 seq) {
+    u32 i = rix_find(t, mask, key);
+    u64 before = t[i].key ? t[i].seq : ~0ull;
+    t[i].key = key;
+    t[i].seq = seq;
+    t[i].n++;
+    return before;
 }
-/* the oldest release over word is performed: an entry left with none goes, the ones after it in its run moving back
+/* the oldest release over key is performed: an entry left with none goes, the ones after it in its run moving back
    (linear probing's deletion, without tombstones) */
-static void rix_remove(u64 word) {
-    u32 i = rix_find(word), j, k;
-    if (!g_rix[i].word || --g_rix[i].n) return;
-    g_rix[i].word = 0;
-    for (j = (i + 1) & (RIX_N - 1); g_rix[j].word; j = (j + 1) & (RIX_N - 1)) {
-        k = rix_home(g_rix[j].word);
+static void rix_remove(Rix* t, u32 mask, u64 key) {
+    u32 i = rix_find(t, mask, key), j, k;
+    if (!t[i].key || --t[i].n) return;
+    t[i].key = 0;
+    for (j = (i + 1) & mask; t[j].key; j = (j + 1) & mask) {
+        k = rix_home(t[j].key, mask);
         /* it stays when its home is cyclically within (i, j] */
         if (i <= j ? i < k && k <= j : i < k || k <= j) continue;
-        g_rix[i] = g_rix[j];
+        t[i] = t[j];
         /* emptied whole: rix_add counts up from the slot's n, and a count left here made the next word there never
            go, until the full table left rix_find probing forever (the GPU thread hung in release) */
-        g_rix[j].word = 0;
-        g_rix[j].n = 0;
+        t[j].key = 0;
+        t[j].n = 0;
         i = j;
     }
 }
-/* a payload release is queued as seq or performed (delta -1) */
+/* a payload release is queued as seq or performed (delta -1): performed in queue order, it is the oldest of its words
+   and of its page */
 static void rix_track(Release* r, u64 seq, int delta) {
     if (delta > 0) {
         u64 c = gmmu_translate(r->gva);
@@ -114,10 +124,14 @@ static void rix_track(Release* r, u64 seq, int delta) {
     }
     for (u32 o = 0; o < r->len; o += 4) {
         if (delta > 0)
-            rix_add(r->cpu + o, seq);
+            rix_add(g_rix, RIX_N - 1, r->cpu + o, seq);
         else
-            rix_remove(r->cpu + o);
+            rix_remove(g_rix, RIX_N - 1, r->cpu + o);
     }
+    if (delta > 0)
+        g_rprev[seq % RQ_N] = rix_add(g_rpg, RPG_N - 1, r->cpu & ~4095ull, seq);
+    else
+        rix_remove(g_rpg, RPG_N - 1, r->cpu & ~4095ull);
 }
 
 static void perform(Release* r) {
@@ -188,6 +202,16 @@ static void release_thread(void* p) {
     }
 }
 
+/* Guest memory read in place (uma.c, vk_memory): the GPU reads those bytes when it runs the commands, not when they are
+   recorded. The guest writes them again once it sees a release, so the releases the stream stops holding, [from, to),
+   wait for every command recorded up to now that read guest memory in place: the commands after them too, which
+   the console's GPU runs at once (the stream's hold above). Gates stay in order: what the queue holds before from
+   waits for less, and the submit that read in place last only grows. Under g_rlock */
+static void hold_inplace(u64 from, u64 to) {
+    u64 bound = vk_uma() ? vk_uma_bound() : 0;
+    for (u64 i = from; bound && i < to; i++)
+        if (g_rq[i % RQ_N].gate < bound) g_rq[i % RQ_N].gate = bound;
+}
 /* the submit gate names, recorded still: submitted now, so waiting for it ends (vk_lock) */
 static void submit_through(u64 gate) {
     if (gate > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
@@ -213,6 +237,7 @@ static void release(Release* r) {
             r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now, held or not */
+        hold_inplace(g_rheld, g_rhead);
         g_rheld = g_rhead;
         u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
@@ -262,6 +287,7 @@ void vk_release_submit(void) {
     SNX_ZONE(z, "vk release submit");
     vk_lock();
     pm_lock(&g_rlock);
+    hold_inplace(g_rheld, g_rhead);
     g_rheld = g_rhead; /* the commands after the releases have read guest memory */
     u64 gate = g_rhead != g_rtail ? g_rq[(g_rhead - 1) % RQ_N].gate : 0; /* the gates only grow */
     if (g_rthread) pc_broadcast(&g_rcv);
@@ -298,46 +324,144 @@ void vk_release_incr(u32 id) {
 }
 /* Mapping changes hold vk_lock and drain the queue before changing translations.
    Thus these translations name the backing that was present at enqueue time. */
-static int release_overlaps(const Release* r, u64 gva, u64 len) {
-    if (!r->gva || !r->len || !len) return 0;
-    if (gva >= r->gva ? gva - r->gva < r->len : r->gva - gva < len) return 1;
-    for (u32 at = 0; at < r->len;) {
-        u64 a = r->gva + at, cpu = gmmu_translate(a);
-        u32 n = 4096 - (u32)(a & 4095);
-        if (n > r->len - at) n = r->len - at;
-        for (u64 off = 0; cpu && off < len;) {
-            u64 b = gva + off, other = gmmu_translate(b), span = 4096 - (b & 4095);
-            if (span > len - off) span = len - off;
+/* A range a stream reads or writes, as the guest memory behind it: its runs (gmmu_run), each compared with a payload
+   in a step. release_overlaps translated each page of the range again for every release queued, the payload's
+   aliases through other GPU addresses: with a few hundred releases queued, a constant buffer read over a page that
+   holds one cost thousands of translations, a tenth of one game's GPU thread. A range of more runs than RUNS_N is
+   compared a page at a time, and its unmapped pages meet nothing */
+#define RUNS_N 8
+typedef struct {
+    u64 gva, len;
+    u64 cpu[RUNS_N], n[RUNS_N];
+    u32 runs;
+    int paged; /* more runs than RUNS_N */
+} Backing;
+static void backing_of(Backing* b, u64 gva, u64 len) {
+    b->gva = gva;
+    b->len = len;
+    b->runs = 0;
+    b->paged = 0;
+    for (u64 off = 0; off < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + off, len - off, &cpu);
+        if (!n) { /* an unmapped page: nothing of it to meet */
+            u64 left = GMMU_PAGE_SIZE - ((gva + off) & GMMU_PAGE_MASK);
+            off += left < len - off ? left : len - off;
+            continue;
+        }
+        if (b->runs && b->cpu[b->runs - 1] + b->n[b->runs - 1] == cpu)
+            b->n[b->runs - 1] += n;
+        else if (b->runs == RUNS_N) {
+            b->paged = 1;
+            return;
+        } else {
+            b->cpu[b->runs] = cpu;
+            b->n[b->runs++] = n;
+        }
+        off += n;
+    }
+}
+/* [cpu, cpu + n) of guest memory meets the range */
+static int backing_meets(const Backing* b, u64 cpu, u64 n) {
+    if (b->paged) {
+        for (u64 off = 0; off < b->len;) {
+            u64 at = b->gva + off, other = gmmu_translate(at), span = GMMU_PAGE_SIZE - (at & GMMU_PAGE_MASK);
+            if (span > b->len - off) span = b->len - off;
             if (other && (other >= cpu ? other - cpu < n : cpu - other < span)) return 1;
             off += span;
         }
+        return 0;
+    }
+    for (u32 i = 0; i < b->runs; i++)
+        if (b->cpu[i] >= cpu ? b->cpu[i] - cpu < n : cpu - b->cpu[i] < b->n[i]) return 1;
+    return 0;
+}
+static int release_overlaps(const Release* r, const Backing* b) {
+    if (!r->gva || !r->len || !b->len) return 0;
+    if (b->gva >= r->gva ? b->gva - r->gva < r->len : r->gva - b->gva < b->len) return 1;
+    if (r->cpu) return backing_meets(b, r->cpu, r->len); /* one page's words, translated when it was queued */
+    for (u32 at = 0; at < r->len;) {
+        u64 a = r->gva + at, cpu = gmmu_translate(a);
+        u32 n = GMMU_PAGE_SIZE - (u32)(a & GMMU_PAGE_MASK);
+        if (n > r->len - at) n = r->len - at;
+        if (cpu && backing_meets(b, cpu, n)) return 1;
         at += n;
     }
     return 0;
 }
+/* the latest release over [cpu, cpu + n) of guest memory later than best (a queue number, -1 for none), page by page:
+   by the words' index for the range's words in a page, or by the page's releases from its newest back, until one
+   meets the range or is no later than best, whichever is shorter. A page that holds a game's semaphores and reports
+   also holds its constants often, and its hundreds of releases were looked at for each read of them that met none.
+   With g_rlock held and g_rodd 0 */
+static i64 latest_in(u64 cpu, u64 n, i64 best) {
+    for (u64 page = cpu & ~4095ull; page < cpu + n; page += 4096) {
+        const Rix* e = &g_rpg[rix_find(g_rpg, RPG_N - 1, page)];
+        if (!e->key || (i64)e->seq <= best) continue;
+        u64 lo = (cpu > page ? cpu : page) & ~3ull, hi = cpu + n < page + 4096 ? cpu + n : page + 4096;
+        if ((hi - lo + 3) / 4 < e->n) {
+            for (u64 w = lo; w < hi; w += 4) {
+                const Rix* x = &g_rix[rix_find(g_rix, RIX_N - 1, w)];
+                if (x->key && (i64)x->seq > best) best = (i64)x->seq;
+            }
+            continue;
+        }
+        u64 seq = e->seq;
+        for (u32 k = 0; k < e->n && (i64)seq > best; k++, seq = g_rprev[seq % RQ_N]) {
+            const Release* r = &g_rq[seq % RQ_N];
+            if (r->cpu >= cpu ? r->cpu - cpu < n : cpu - r->cpu < r->len) {
+                best = (i64)seq;
+                break;
+            }
+        }
+    }
+    return best;
+}
+/* the latest release queued over the range, -1 for none. By the pages of its runs (latest_in) while every payload is
+   in the page index and the range has fewer pages than the queue has releases, else through the queue */
+static i64 latest_over(const Backing* b) {
+    i64 best = -1;
+    u64 queued = g_rhead - g_rtail;
+    if (!g_rodd && b->len / 4096 + b->runs < queued) {
+        if (!b->paged)
+            for (u32 i = 0; i < b->runs; i++) best = latest_in(b->cpu[i], b->n[i], best);
+        else
+            for (u64 off = 0; off < b->len;) {
+                u64 at = b->gva + off, cpu = gmmu_translate(at), span = GMMU_PAGE_SIZE - (at & GMMU_PAGE_MASK);
+                if (span > b->len - off) span = b->len - off;
+                if (cpu) best = latest_in(cpu, span, best);
+                off += span;
+            }
+        return best;
+    }
+    for (u64 i = g_rtail; i < g_rhead; i++)
+        if (release_overlaps(&g_rq[i % RQ_N], b)) best = (i64)i;
+    return best;
+}
 /* Drain through the latest matching release. Gates are monotonic prefix maxima. */
 static void release_match(u64 gva, u64 len, u32 id, int all) {
-    u64 gate = 0, cgate = 0;
-    int found = 0;
+    i64 last = -1;
     if (vk_result_landing()) return;
     vk_lock();
     if (len && !all && !pend_hit(&g_rpages, gva, len)) { /* no queued payload there */
         vk_unlock();
         return;
     }
+    Backing range = {0};
+    if (len && !all) backing_of(&range, gva, len);
     pm_lock(&g_rlock);
+    hold_inplace(g_rheld, g_rhead);
     g_rheld = g_rhead; /* needed now: the stream holds them no longer */
     if (g_rthread) pc_broadcast(&g_rcv);
-    for (u64 i = g_rtail; i < g_rhead; i++) {
-        const Release* r = &g_rq[i % RQ_N];
-        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
-            gate = r->gate;
-            cgate = r->cgate;
-            found = 1;
-        }
-    }
+    if (all)
+        last = g_rhead != g_rtail ? (i64)g_rhead - 1 : -1;
+    else if (len)
+        last = latest_over(&range);
+    else
+        for (u64 i = g_rtail; i < g_rhead; i++)
+            if (!g_rq[i % RQ_N].gva && g_rq[i % RQ_N].id == id) last = (i64)i;
+    u64 gate = last >= 0 ? g_rq[last % RQ_N].gate : 0, cgate = last >= 0 ? g_rq[last % RQ_N].cgate : 0;
     pm_unlock(&g_rlock);
-    if (found) {
+    if (last >= 0) {
         submit_through(gate);
         vk_wait_submit(gate);
         vk_compute_wait(cgate);
@@ -359,10 +483,13 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         vk_unlock();
         return 0;
     }
+    Backing range = {0};
+    backing_of(&range, gva, len);
     pm_lock(&g_rlock);
-    for (u64 i = g_rtail; i < g_rhead && r >= 0; i++) {
+    u64 from = latest_over(&range) < 0 ? g_rhead : g_rtail; /* through the queue only when a release is there */
+    for (u64 i = from; i < g_rhead && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
-        if (!release_overlaps(q, gva, len)) continue;
+        if (!release_overlaps(q, &range)) continue;
         /* a count the GPU hasn't given yet, or the same memory through another address: not known here */
         r = !q->samples && gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
     }
@@ -400,12 +527,14 @@ static i64 count_queued(u64 gva) {
     u64 c = gmmu_translate(gva);
     if (!g_rodd && c && !(c & 3) && (c & 4095) <= 4096 - 8) /* by the words' index */
         for (u32 o = 0; o < 8; o += 4) {
-            u32 i = rix_find(c + o);
-            if (g_rix[i].word && (i64)g_rix[i].seq > last) last = (i64)g_rix[i].seq;
+            u32 i = rix_find(g_rix, RIX_N - 1, c + o);
+            if (g_rix[i].key && (i64)g_rix[i].seq > last) last = (i64)g_rix[i].seq;
         }
-    else
-        for (u64 i = g_rtail; i < g_rhead; i++)
-            if (release_overlaps(&g_rq[i % RQ_N], gva, 8)) last = (i64)i;
+    else {
+        Backing range;
+        backing_of(&range, gva, 8);
+        last = latest_over(&range);
+    }
     if (last >= 0) {
         const Release* r = &g_rq[last % RQ_N];
         if (!r->samples || r->gva != gva || r->len != 16) return -2;
@@ -419,11 +548,31 @@ static int reads_zero(u64 gva) {
     gmem_read_raw(gva, &v, 8);
     return v == 0;
 }
+/* two values results the GPU hasn't landed hold, no release queued over them: compared on the GPU too, where the
+   CPU would wait for the results to land. With vk_lock held: 2 with *pred, else -1 */
+static int compare_on_gpu(u64 a, int equal, u32* pred) {
+    u32 slot = 0;
+    int queued = 0;
+    if (!(vk_compute_pending(a, 24) || vk_buf_pending(a, 24) || vk_gfx_image_pending(a, 24))) return -1;
+    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+        pm_lock(&g_rlock);
+        queued = count_queued(a) != -1 || count_queued(a + 16) != -1;
+        pm_unlock(&g_rlock);
+    }
+    if (queued || !vk_query_pred_compare(a, &slot)) return -1;
+    *pred = (slot + 1) | (equal ? VK_PRED_EQUAL : 0);
+    return 2;
+}
 int vk_render_predicate(u64 a, int equal, u32* pred) {
     i64 ia, ib, at;
     u32 slot = 0;
     int got = -1, k;
-    if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) return -1;
+    if (!__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) {
+        vk_lock();
+        got = vk_query_pred_ok() ? compare_on_gpu(a, equal, pred) : -1;
+        vk_unlock();
+        return got;
+    }
     vk_lock();
     if (!vk_query_pred_ok()) { /* outside g_rlock, which the game's threads take: it may make the shader */
         vk_unlock();
@@ -439,8 +588,9 @@ int vk_render_predicate(u64 a, int equal, u32* pred) {
     else if (ib >= 0 && ia == -1 && reads_zero(a))
         at = ib;
     else {
+        got = ia == -1 && ib == -1 ? compare_on_gpu(a, equal, pred) : -1;
         vk_unlock();
-        return -1;
+        return got;
     }
     pm_lock(&g_rlock);
     if (!g_rq[at % RQ_N].pred) {

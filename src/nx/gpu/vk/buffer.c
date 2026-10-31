@@ -237,6 +237,7 @@ typedef struct GfxOut {
     VmaAllocation initial_mem;
     u64* pages; /* sorted guest CPU pages behind this GPU virtual range */
     u64* vmap;  /* the same pages in the range's order, ~0 for an unmapped one */
+    u64 cpu;    /* the guest CPU address of addr when vmap is one run of guest memory, ~0 otherwise */
     u32 npages;
     /* earlier pending results were copied into buf on the GPU when it was made (gfx_overlay, atlas_fill): org holds
        guest memory without them until each lands (out_rebase) */
@@ -269,22 +270,29 @@ static VkAccessFlags2 out_access(void) {
 }
 /* an output with its page lists and its original bytes after it, in one block */
 static GfxOut* gfx_out_new(u32 npages, u32 len) {
-    GfxOut* o = calloc(1, sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
+    /* not calloc: its caller fills the original bytes and out_map the page lists, and zeroing them first was a tenth
+       of one game's GPU thread's copying */
+    GfxOut* o = malloc(sizeof *o + 2 * (size_t)npages * sizeof *o->pages + len);
     if (!o) return NULL;
+    *o = (GfxOut){0};
     o->pages = (u64*)(o + 1);
     o->vmap = o->pages + npages;
     o->npages = npages;
     o->org = (u8*)(o->vmap + npages);
+    o->cpu = ~0ull;
     o->wseen = vk_ww_now(); /* before its caller reads org: a write in between only makes copyable_span compare */
     return o;
 }
 static int page_cmp(const void* a, const void* b);
 /* o's page lists for its range at gva, as the GMMU maps it now */
 static void out_map(GfxOut* o, u64 gva) {
+    int run = 1;
     for (u32 i = 0; i < o->npages; i++) {
         u64 cpu = gmmu_translate((gva & ~0xFFFull) + (u64)i * 0x1000);
         o->vmap[i] = o->pages[i] = cpu ? cpu >> 12 : ~0ull;
+        run &= cpu && o->vmap[i] == o->vmap[0] + i;
     }
+    o->cpu = run && o->npages ? o->vmap[0] << 12 | (gva & 0xFFF) : ~0ull;
     qsort(o->pages, o->npages, sizeof *o->pages, page_cmp);
 }
 /* The bytes of [gva, gva + len) that are bytes of o: the same guest memory, through the same GPU address or another
@@ -300,6 +308,19 @@ static void out_span_page(const GfxOut* o, u64 j, u64 gva, u64 gr, u64 ra, u64 r
 }
 static void out_spans(const GfxOut* o, u64 gva, u64 len, const u64* rmap, SpanFn fn, void* user) {
     u64 rbase = gva & ~4095ull, rend = gva + len, obase = o->addr & ~4095ull, n = o->npages;
+    /* both one run of guest memory (most are): their bytes in common are where the runs meet, one span. The walk
+       below looked each of the range's pages up in o's, for every result a draw's binding met: a storage range of
+       half a megabyte against a few dozen results was a sixth of one game's GPU thread */
+    if (len && o->cpu != ~0ull && rmap[0] != ~0ull) {
+        u64 np = (rend - rbase + 4095) >> 12, i = 1;
+        while (i < np && rmap[i] == rmap[0] + i) i++;
+        if (i == np) {
+            u64 rcpu = rmap[0] << 12 | (gva & 4095), lo = rcpu > o->cpu ? rcpu : o->cpu;
+            u64 hi = rcpu + len < o->cpu + o->size ? rcpu + len : o->cpu + o->size;
+            if (lo < hi) fn(user, lo - rcpu, lo - o->cpu, hi - lo);
+            return;
+        }
+    }
     for (u64 i = 0, gr = rbase; gr < rend; i++, gr += 4096) {
         u64 ra = gr > gva ? 0 : gva - gr, rb = gr + 4096 < rend ? 4096 : rend - gr, page = rmap[i];
         u64 same = gr >= obase && gr - obase < n * 4096 ? (gr - obase) >> 12 : n; /* o's page at this address */
@@ -332,8 +353,18 @@ static u64* range_map(u64 gva, u64 len, u64 local[16]) {
     return map;
 }
 
-/* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
-static _Thread_local int g_out_landing;
+typedef struct WwStage WwStage;
+/* this thread's state */
+static _Thread_local struct {
+    /* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
+    int out_landing;
+    /* A job on the GPU thread checks against the newest epoch when it started (vk_ww_stream), not one a later
+       submission starts while it runs: what the CPU wrote for that submission is the later job's to see. That leaves
+       the scanner thread (ww_scanner) the time until the job starts to scan what it will check */
+    u32 ww_stream;
+    int ww_streaming;
+    WwStage* wstage; /* the running scan's, for ww_note */
+} t_buffer;
 
 void vk_buf_writable_abort(void) {
     while (g_prep) {
@@ -374,7 +405,7 @@ static int pages_meet(const GfxOut* a, const GfxOut* b) {
    the shared pages at other addresses: they meet through the GMMU, whose mappings stay put while results are pending
    (a mapping change lands them first) */
 /* The runs of the landing result's bytes its draw changed, its 8-byte words that differ from its original ones,
-   merged: found once per landing (out_changed_runs). Rebasing every later composed result compared all of the landed
+   merged: found by the landing itself, which compares them already (vk_write_changed_runs). Rebasing every later composed result compared all of the landed
    result's bytes again for each of them. One game landed 20,000 results in 10 s that changed 4 MB of their 590, and
    the rebases read 42 GB, most of the release thread, under vk_lock, which the GPU thread waits for */
 typedef struct {
@@ -383,34 +414,24 @@ typedef struct {
 static ChgRun g_chg_first[64]; /* where the runs start, so even a failed allocation has room for one */
 static ChgRun* g_chg = g_chg_first;
 static u32 g_nchg, g_capchg = 64;
-/* e's changed runs into g_chg: 0 when none, or with no memory for them (every byte is a candidate then, one run) */
-static u32 out_changed_runs(const GfxOut* e) {
-    u32 k = 0;
-    g_nchg = 0;
-    while (k < e->size) {
-        u32 w = e->size - k < 8 ? e->size - k : 8;
-        if (memcmp(e->ptr + k, e->org + k, w)) {
-            if (g_nchg && g_chg[g_nchg - 1].to == k)
-                g_chg[g_nchg - 1].to = k + w;
-            else {
-                if (g_nchg == g_capchg) {
-                    u32 cap = g_capchg * 2;
-                    ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b)
-                                                     : realloc(g_chg, (size_t)cap * sizeof *b);
-                    if (!b) {
-                        g_chg[0] = (ChgRun){0, e->size};
-                        return g_nchg = 1;
-                    }
-                    if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);
-                    g_chg = b;
-                    g_capchg = cap;
-                }
-                g_chg[g_nchg++] = (ChgRun){k, k + w};
-            }
+/* a run of changed granules of the result landing (vk_write_changed_runs's) into g_chg; with no memory for more, every
+   byte is a candidate (one run) */
+static void chg_add(void* user, u32 from, u32 to) {
+    const GfxOut* e = (const GfxOut*)user;
+    if (g_nchg == 1 && g_chg[0].from == 0 && g_chg[0].to == e->size) return; /* every byte already */
+    if (g_nchg == g_capchg) {
+        u32 cap = g_capchg * 2;
+        ChgRun* b = g_chg == g_chg_first ? malloc((size_t)cap * sizeof *b) : realloc(g_chg, (size_t)cap * sizeof *b);
+        if (!b) {
+            g_chg[0] = (ChgRun){0, e->size};
+            g_nchg = 1;
+            return;
         }
-        k += w;
+        if (g_chg == g_chg_first) memcpy(b, g_chg_first, sizeof g_chg_first);
+        g_chg = b;
+        g_capchg = cap;
     }
-    return g_nchg;
+    g_chg[g_nchg++] = (ChgRun){from, to};
 }
 typedef struct {
     const GfxOut* e;
@@ -458,10 +479,11 @@ static void out_rebase(const GfxOut* e, GfxOut* o) {
     Rebase r = {e, o};
     out_spans(e, o->addr, o->size, o->vmap, rebase_span, &r);
 }
-/* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up */
+/* the composed results recorded after e, in this frame's landed list (rest), later frames' and the draw being set up,
+   from e's changed runs in g_chg, which its landing found */
 static void out_rebase_later(const GfxOut* e, GfxOut* rest) {
     GfxOut* lists[3] = {rest, g_out, g_prep};
-    if (!out_changed_runs(e)) return; /* it changed nothing: memory has what every later one took as original */
+    if (!g_nchg) return; /* it changed nothing: memory has what every later one took as original */
     for (int l = 0; l < 3; l++)
         for (GfxOut* o = lists[l]; o; o = o->next)
             if (o->composed && pages_meet(e, o)) out_rebase(e, o);
@@ -488,7 +510,7 @@ void vk_buf_frame_done(u64 frame) {
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
     g_gfx_any = g_out != NULL || done != NULL;
     VmaAllocation invalidated = VK_NULL_HANDLE;
-    g_out_landing++;
+    t_buffer.out_landing++;
     while (done) {
         GfxOut* o = done;
         done = o->next;
@@ -503,7 +525,8 @@ void vk_buf_frame_done(u64 frame) {
             memcpy(o->org, o->initial, o->size);
             o->initial = NULL;
         }
-        vk_write_changed(o->addr, o->ptr, o->org, o->size);
+        g_nchg = 0;
+        vk_write_changed_runs(o->addr, o->ptr, o->org, o->size, chg_add, o);
         out_pages(o, -1);
         out_rebase_later(o, done);
         if (copy_stats_on()) {
@@ -512,7 +535,7 @@ void vk_buf_frame_done(u64 frame) {
         }
         free(o);
     }
-    g_out_landing--;
+    t_buffer.out_landing--;
     g_gfx_any = g_out != NULL;
 }
 /* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
@@ -568,9 +591,9 @@ static void wait_finish(int reason) {
     }
 }
 static void land_reason(int reason) {
-    if (!g_gfx_any || g_out_landing) return;
+    if (!g_gfx_any || t_buffer.out_landing) return;
     vk_lock();
-    if (g_gfx_any && !g_out_landing) wait_finish(reason);
+    if (g_gfx_any && !t_buffer.out_landing) wait_finish(reason);
     vk_unlock();
 }
 void vk_buf_land(void) { land_reason(WB_SIGNAL); }
@@ -590,6 +613,7 @@ typedef struct {
     u32 n;
     u64 lo, hi; /* the lowest and highest guest page, ~0 and 0 when none is mapped */
     u64 a, an;
+    int run; /* every page mapped, each the one after the last: [lo, hi] whole */
 } RangePages;
 static void range_pages(u64 a, u64 an, RangePages* q) {
     q->n = 0;
@@ -597,10 +621,15 @@ static void range_pages(u64 a, u64 an, RangePages* q) {
     q->hi = 0;
     q->a = a;
     q->an = an;
+    q->run = 1;
     for (u64 ap = a >> 12, ae = (a + an - 1) >> 12; ap <= ae; ap++) {
         u64 ac = gmmu_translate(ap << 12), page;
-        if (!ac) continue;
+        if (!ac) {
+            q->run = 0;
+            continue;
+        }
         page = ac >> 12;
+        if (q->n && page != q->hi + 1) q->run = 0;
         if (q->n < 16) q->page[q->n] = page;
         q->n++;
         if (page < q->lo) q->lo = page;
@@ -616,6 +645,7 @@ static int backing_overlap(const RangePages* q, const GfxOut* o) {
     if (ohi == ~0ull) /* unmapped pages sort last */
         for (i = o->npages; i-- && o->pages[i] == ~0ull;) ohi = i ? o->pages[i - 1] : 0;
     if (q->hi < olo || ohi < q->lo) return 0;
+    if (q->run && o->cpu != ~0ull) return 1; /* two whole runs of pages whose bounds meet */
     if (q->n <= 16) {
         for (i = 0; i < q->n; i++)
             if (bsearch(&q->page[i], o->pages, o->npages, sizeof q->page[i], page_cmp)) return 1;
@@ -650,7 +680,7 @@ static int out_meets(const GfxOut* o, u64 gva, u64 len, const RangePages* q, u64
 static void mem_need_reason(u64 gva, u64 len, int reason) {
     RangePages q;
     u64 local[16], *rmap = NULL;
-    if (!g_gfx_any || g_out_landing || !len) return;
+    if (!g_gfx_any || t_buffer.out_landing || !len) return;
     vk_lock();
     if (reason != WB_MAP && !pend_hit(&g_out_pages, gva, len)) {
         vk_unlock();
@@ -895,15 +925,38 @@ static void overlay_part(void* user, u64 a, u64 b) {
     const Overlay* v = user;
     copy_add(v->c, v->o->buf, v->o->off + v->from + (a - v->at), v->dst_off + a, b - a);
 }
+/* the run [a, b) of an overlay's destination that no result gives: written in place, or staged and copied on the GPU
+   (0 when staging has no room) */
+static int overlay_gap(CopyBatch* c, u64 dst_off, u8* host, u64 a, u64 b, void (*gap)(void* user, u8* to, u64 a, u64 b),
+                       void* user) {
+    VkBuffer sb;
+    u64 so;
+    u8* p;
+    if (host) {
+        gap(user, host + a, a, b);
+        return 1;
+    }
+    if (!(p = vk_stage_upload(b - a, 4, &sb, &so))) return 0;
+    gap(user, p, a, b);
+    copy_add(c, sb, so, dst_off + a, b - a);
+    return 1;
+}
 static void overlay_span(void* user, u64 at, u64 from, u64 n) {
     Overlay* v = user;
     v->at = at;
     v->from = from;
     if (!cover_take(v->cov, at, at + n, overlay_part, v)) overlay_part(v, at, at + n);
 }
-/* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off, which holds
-   guest memory's bytes (after gfx_gpu_src said they can be): each byte from the newest result over it */
-static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
+/* copies the pending results' bytes in [gva, gva + len), through any GPU address, into dst at dst_off (after
+   gfx_gpu_src said they can be): each byte from the newest result over it. gap(user, to, a, b) writes the bytes of
+   each run [a, b) of the destination no result gives at to: into host, the destination's mapping, or (host NULL, dst
+   in device memory) into staging, which the GPU copies into dst with the results. A result gives most of a composed
+   range in the end, and copying all of it before (a few results over storage ranges of half a megabyte, bound and read
+   a few hundred times a frame) was a fifth of one game's GPU thread. The CPU writes the gaps before the submit that
+   copies the results, and a run cover_take couldn't record is filled too, then copied over on the GPU as before. 0 when
+   a gap couldn't be staged (never with host) */
+static int gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off, u8* host,
+                       void (*gap)(void* user, u8* to, u64 a, u64 b), void* user) {
     CopyBatch c;
     Covered cov;
     GfxOut *nlocal[64], **newest;
@@ -917,25 +970,20 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
         Overlay v = {&c, newest[i], dst_off, 0, 0, &cov};
         out_spans(newest[i], gva, len, rmap, overlay_span, &v);
     }
+    u64 at = 0;
+    int ok = 1;
+    for (u32 i = 0; i <= cov.n && at < len && ok; i++) {
+        u64 a = i < cov.n ? cov.v[i].a : len, b = a < len ? a : len;
+        if (b > at) ok = overlay_gap(&c, dst_off, host, at, b, gap, user);
+        if (i < cov.n && cov.v[i].b > at) at = cov.v[i].b;
+    }
     copy_end(&c);
     cover_free(&cov);
     if (newest != nlocal) free(newest);
     if (rmap != local) free(rmap);
+    return ok;
 }
 
-/* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
-   that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
-   at an offset bindings accept, from this submit when the reader writes it (its copy back for landing was recorded at
-   its submit's end) or this frame otherwise, at an offset that is a multiple of align. Returns 2 when pending results cover the range and can all be copied over
-   guest memory on the GPU (gfx_overlay), 0 when none do, or after landing them because one can't: it maps the range
-   through another virtual address, or the guest wrote its original bytes since. A result of the frame before is read
-   where it is too (transform feedback captures the same buffers every frame, over the last frame's capture), its
-   frame's rings held until the reader is done (vk_frame_hold) */
-/* o has bytes of [gva, gva + len): at the same GPU address, or on the same guest pages (q) */
-static int out_meets_range(const GfxOut* o, u64 gva, u64 len, const RangePages* q) {
-    u64 lo = gva > o->addr ? gva : o->addr, hi = gva + len < o->addr + o->size ? gva + len : o->addr + o->size;
-    return lo < hi || backing_overlap(q, o);
-}
 /* whether the guest still holds o's original bytes in [gva, gva + len) (rmap: made on first use) */
 static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64 local[16]) {
     Copyable c = {o, gva, o->frame_id + 1 >= vk_frame_id()};
@@ -943,18 +991,59 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, u64** rmap, u64
     if (c.ok) out_spans(o, gva, len, *rmap, copyable_span, &c);
     return c.ok;
 }
+/* A result of an earlier submit of this frame that a draw of this one writes again in place, landing at this submit's
+   end instead: its copy back for landing is recorded again then (the earlier one is left unread), and it moves to the
+   end of the list, which is the order results land in. Only when no result recorded after it has bytes of it: such a
+   result took its bytes as they were and lands before it, and it would land over those bytes as written since. A
+   game binding a suffix of a storage buffer for each of its passes, about thirty submits a frame, made a new result
+   for nearly every one: half a megabyte copied from guest memory and compared at landing each time */
+static int out_take_into_submit(GfxOut* m) {
+    RangePages q;
+    u64 local[16], *rmap = NULL;
+    int later = 0;
+    if (m->frame_id != vk_frame_id() || m->frame >= vk_submit_number()) return 0;
+    range_pages(m->addr, m->size, &q);
+    GfxOut* lists[2] = {m->next, g_prep};
+    for (int l = 0; l < 2 && !later; l++)
+        for (GfxOut* o = lists[l]; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rmap, local);
+    if (rmap && rmap != local) free(rmap);
+    if (later) return 0;
+    m->frame = vk_submit_number();
+    if (m != g_out_tail) {
+        GfxOut** pp = &g_out;
+        while (*pp != m) pp = &(*pp)->next;
+        *pp = m->next;
+        m->next = NULL;
+        g_out_tail->next = m;
+        g_out_tail = m;
+    }
+    return 1;
+}
+/* A draw or dispatch can read an earlier one's storage result without a round trip through guest RAM. Returns 1 with
+   that result's buffer itself in *buf, *off when the newest result over the range covers all of it, unchanged since,
+   at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
+   recorded at its submit's end) or taken into it (out_take_into_submit), from this frame otherwise. Returns 2 when
+   pending results cover the range and can all be copied over guest memory on the GPU (gfx_overlay), 0 when none do,
+   or after landing them because one can't: the guest wrote its original bytes since. A result counts only with bytes
+   of the range (out_meets): two storage buffers sharing a page, one after the other, made each read of one compose
+   with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
+   feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
+   reader is done (vk_frame_hold) */
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, u64 align) {
     GfxOut *match = NULL, *newest = NULL;
     int count = 0, before = 0;
     RangePages q;
     u64 local[16], *rmap = NULL;
-    if (!g_gfx_any || g_out_landing || !gva || !len) return 0;
+    if (!g_gfx_any || t_buffer.out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
     if (!pend_hit(&g_out_pages, gva, len)) return 0;
     range_pages(gva, len, &q);
     for (GfxOut* o = g_out; o; o = o->next)
-        if (out_meets_range(o, gva, len, &q)) newest = o;
-    if (!newest) return 0;
+        if (out_meets(o, gva, len, &q, &rmap, local)) newest = o;
+    if (!newest) {
+        if (rmap && rmap != local) free(rmap);
+        return 0;
+    }
     /* The newest result over the range was composed over the older ones when it was made (gfx_overlay, through any
        address), and its draw ran after theirs: when it covers the whole range at this address, its buffer holds every
        byte as all of them left it, and the older ones need no check. Requiring a single result made every binding
@@ -972,7 +1061,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
         before = newest->frame_id != vk_frame_id();
     } else
         for (GfxOut* o = g_out; o; o = o->next) {
-            if (!out_meets_range(o, gva, len, &q)) continue;
+            if (!out_meets(o, gva, len, &q, &rmap, local)) continue;
             if (!out_still_copyable(o, gva, len, &rmap, local)) {
                 if (copy_stats_on()) g_wb_draw_miss[o->frame_id != vk_frame_id() ? 0 : 2]++;
                 if (rmap && rmap != local) free(rmap);
@@ -988,7 +1077,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (before) vk_frame_hold(vk_frame_id() - 1);
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
-        (!writable || match->frame == vk_submit_number())) {
+        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
         /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
            either may read it next (a dispatch on the graphics queue binds like a draw) */
         static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
@@ -1008,13 +1097,20 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (copy_stats_on()) g_wb_draw_miss[count > 1 ? 1 : 3]++; /* composed: several results, or an offset or submit */
     return 2;
 }
-/* the range for reading on the GPU, with its pending results composed over guest memory in staging */
+typedef struct {
+    u64 gva;
+} GapRead;
+static void gap_read(void* user, u8* to, u64 a, u64 b) {
+    const GapRead* g = user;
+    read_untracked(g->gva + a, to, b - a);
+}
+/* the range for reading on the GPU, with its pending results composed over guest memory in device memory: the draws
+   that bind it read it there. In staging, the GPU's copies of the results went out over PCIe and every read came back
+   over it: about 45 MB a frame of composed storage ranges in one game, most of its GPU-to-host traffic */
 static int gfx_composed(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    u8* p = vk_stage(len, vk_stage_align(), buf, off);
-    if (!p) return 0;
-    read_untracked(gva, p, len);
-    gfx_overlay(gva, len, *buf, *off);
-    return 1;
+    if (!vk_stage_device(len, vk_stage_align(), buf, off)) return 0;
+    GapRead g = {gva};
+    return gfx_overlay(gva, len, *buf, *off, NULL, gap_read, &g);
 }
 
 /* written-page tracking (plat_ww_scan): a generation per 4K page of guest memory, bumped when a scan finds it
@@ -1031,11 +1127,6 @@ static u32 g_wleaf_max[AS_MAX >> WW_LEAF_SHIFT];
    g_wleaf_seen holds the epoch + 1 whose scans of the leaf its table has taken in (checks only, under vk_lock) */
 static u32 g_wleaf_seen[AS_MAX >> WW_LEAF_SHIFT];
 static u32 g_ww_epoch; /* atomic */
-/* A job on the GPU thread checks against the newest epoch when it started (vk_ww_stream), not one a later submission
-   starts while it runs: what the CPU wrote for that submission is the later job's to see. That leaves the scanner
-   thread (ww_scanner) the time until the job starts to scan what it will check */
-static _Thread_local u32 t_ww_stream;
-static _Thread_local int t_ww_streaming;
 static u32 g_wclock = 1;
 static int g_ww = -1; /* -1 not tried yet, 0 not available, 1 on */
 static void ww_mark(u8* p, u64 n) {
@@ -1126,12 +1217,11 @@ static u32 g_ww_used[WW_USED_EPOCHS];             /* the last epochs + 1 checks 
 static u32 g_ww_used_i;
 static u32 g_ww_used_from; /* atomic: the oldest of them */
 /* a scan's written pages before they go to g_wres: the scanner's, and the checks' (under vk_lock) */
-typedef struct {
+struct WwStage {
     WwRange r[WW_RES_N];
     int n;
-} WwStage;
+};
 static WwStage g_wstage_scanner, g_wstage_check;
-static _Thread_local WwStage* t_wstage; /* the running scan's, for ww_note */
 static WwRange g_wres[WW_RES_N]; /* what scans found written, for the next check to mark */
 static int g_wres_n;             /* atomic: read without the lock to skip it */
 static PMutex g_wres_lk = PMUTEX_INIT; /* after a leaf's claim */
@@ -1142,7 +1232,7 @@ static PCond g_wscan_cv;
 /* plat_ww_scan's callback: a run of written pages. When the stage is full its last range grows over the new one
    (scans go up through memory), marking more than was written: a cache over the rest only checks its contents once */
 static void ww_note(u8* p, u64 n) {
-    WwStage* st = t_wstage;
+    WwStage* st = t_buffer.wstage;
     u64 a = (u64)(p - g_mem);
     if (a >= AS_SIZE || !n) return;
     if (st->n && st->r[st->n - 1].e == a)
@@ -1159,7 +1249,7 @@ static int ww_claim(u64 l) {
 /* scans leaves [lo, hi], claimed by the caller, in the epoch seen - 1, and ends the claims: 0, or -1 when tracking
    failed */
 static int ww_scan_leaves(u64 lo, u64 hi, u32 seen, WwStage* st) {
-    t_wstage = st;
+    t_buffer.wstage = st;
     int r = plat_ww_scan(g_mem + (lo << WW_LEAF_SHIFT), (hi - lo + 1) << WW_LEAF_SHIFT, ww_note);
     pm_lock(&g_wres_lk);
     int n = g_wres_n;
@@ -1313,17 +1403,20 @@ static void ww_scanner(void* arg) {
 }
 void vk_ww_new_epoch(void) {
     u32 e = __atomic_add_fetch(&g_ww_epoch, 1, __ATOMIC_RELEASE);
-    if (t_ww_streaming) t_ww_stream = e; /* a wait of the running job ended: what the CPU wrote before is its to see */
+    if (t_buffer.ww_streaming)
+        t_buffer.ww_stream = e; /* a wait of the running job ended: what the CPU wrote before is its to see */
     if (__atomic_load_n(&g_wscan_on, __ATOMIC_ACQUIRE)) {
         pm_lock(&g_wscan_wlk);
         pc_signal(&g_wscan_cv);
         pm_unlock(&g_wscan_wlk);
     }
 }
-u32 vk_ww_epoch(void) { return t_ww_streaming ? t_ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE); }
+u32 vk_ww_epoch(void) {
+    return t_buffer.ww_streaming ? t_buffer.ww_stream : __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+}
 void vk_ww_stream(int on) {
-    t_ww_streaming = on;
-    t_ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
+    t_buffer.ww_streaming = on;
+    t_buffer.ww_stream = __atomic_load_n(&g_ww_epoch, __ATOMIC_ACQUIRE);
 }
 /* a check in the epoch seen - 1 needs leaves: the scanner's next passes scan what the last epochs needed */
 static void ww_used_epoch(u32 seen) {
@@ -1412,7 +1505,7 @@ static int page_written(u64 pg, u32 since) {
     u64 l = pg >> (WW_LEAF_SHIFT - 12);
     return g_wleaf_max[l] > since && (!g_wleaf[l] || g_wleaf[l][pg & ((1u << (WW_LEAF_SHIFT - 12)) - 1)] > since);
 }
-static void written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
+void vk_written_runs(const u8* host, u64 len, u32 since, void (*fn)(void*, u64, u64), void* user) {
     u64 o = (u64)(host - g_mem), first = o >> 12, last = (o + len - 1) >> 12, run = 0, pg;
     int in = 0;
     for (pg = first; pg <= last + 1; pg++) {
@@ -1480,6 +1573,13 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     return 1;
 }
 
+typedef struct {
+    const u8* src;
+} GapCopy;
+static void gap_copy(void* user, u8* to, u64 a, u64 b) {
+    const GapCopy* g = user;
+    memcpy(to, g->src + a, b - a);
+}
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
@@ -1492,7 +1592,13 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             *off = p->off;
             return 1;
         }
-    int pending = gfx_gpu_src(gva, len, buf, off, 1, vk_stage_align());
+    /* bound as a storage buffer, a storage texel buffer (a compute buffer image) or a transform feedback buffer (a
+       multiple of 4): an earlier result is taken in place at any offset those accept */
+    u64 bind_align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (bind_align < g_vk.props.limits.minTexelBufferOffsetAlignment)
+        bind_align = g_vk.props.limits.minTexelBufferOffsetAlignment;
+    if (bind_align < 4) bind_align = 4;
+    int pending = gfx_gpu_src(gva, len, buf, off, 1, bind_align);
     if (pending == 1) return 1;
     if (!pending) gmem_need(gva, len);
     int owned = !pending && range_owned(gva, len);
@@ -1523,9 +1629,11 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             free(o);
             return 0;
         }
+    } else if (pending == 2) {
+        GapCopy g = {o->org};
+        (void)gfx_overlay(gva, len, *buf, *off, o->ptr, gap_copy, &g); /* in place: nothing to stage */
     } else
         memcpy(o->ptr, o->org, len);
-    if (pending == 2) gfx_overlay(gva, len, *buf, *off);
     o->addr = gva;
     o->size = len;
     o->buf = *buf;
@@ -1653,6 +1761,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     else
         memset(o->org, 0, 4096);
     o->pages[0] = o->vmap[0] = p->key;
+    o->cpu = p->key << 12;
     o->composed = composed;
     o->addr = p->gva;
     o->size = 4096;
@@ -1683,7 +1792,7 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
     /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy */
-    for (GfxOut* o = g_out; o && !landed && !g_out_landing; o = o->next)
+    for (GfxOut* o = g_out; o && !landed && !t_buffer.out_landing; o = o->next)
         for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
             u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
             u32 at = draw_page_index(p, unique, key);
@@ -1705,7 +1814,8 @@ static int atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas,
     Covered cov;
     GfxOut *nlocal[64], **newest = NULL;
     u32 n = 0;
-    if (!g_out_landing && !(newest = out_newest_first(nlocal, 64, &n))) fatal("Out of memory composing a draw's atlas");
+    if (!t_buffer.out_landing && !(newest = out_newest_first(nlocal, 64, &n)))
+        fatal("Out of memory composing a draw's atlas");
     cover_init(&cov, (u64)unique * 4096);
     for (u32 k = 0; k < n && !cover_full(&cov); k++) {
         const GfxOut* o = newest[k];
@@ -1836,7 +1946,7 @@ static void drop_own(u32 i) {
     e->own = 0;
     e->buf = VK_NULL_HANDLE;
 }
-/* A big own buffer takes the pages of its range written since it last matched memory (written_runs), through this
+/* A big own buffer takes the pages of its range written since it last matched memory (vk_written_runs), through this
    frame's staging ring, with a copy on the GPU between the draws before and after: a write anywhere in a 64 MiB window
    (vk_buf_get_window) made it hash and copy all of it, again at each submit until it held still for two checks. In
    one game's underground, where terrain streams in as the player moves, that was most of each hitch */
@@ -1858,7 +1968,7 @@ static int patch_apply(const Vb* e, Patch* pt);
 static int patch_own(u32 i, const u8* host, u32 since) {
     Vb* e = &g_vb[i];
     Patch pt = {.src = host};
-    written_runs(host, e->len, since, patch_note, &pt);
+    vk_written_runs(host, e->len, since, patch_note, &pt);
     if (pt.n > PATCH_RUNS) { /* scattered: from the first written byte to the end of the last run, in one copy */
         u64 o = (u64)(host - g_mem), a = pt.r[0].dstOffset, b = e->len;
         for (u64 pg = (o + e->len - 1) >> 12; pg > o >> 12 && !page_written(pg, since); pg--) b = (pg << 12) - o;
@@ -1944,7 +2054,9 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
                               .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                       VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* render.c copies indices out of it */
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkBuffer b;
@@ -2019,8 +2131,8 @@ static int range_owned(u64 gva, u64 len) {
     }
     return 0;
 }
-/* A range over bytes the GPU holds: copied into this frame's staging ring, the CPU's bytes by the CPU and the owned
-   ones from their owners by the GPU (vk_guest_read), with nothing landed. It isn't hashed (the CPU's copy of the
+/* A range over bytes the GPU holds: copied into this frame's device ring, the CPU's bytes staged by the CPU and the
+   owned ones from their owners by the GPU (vk_guest_read_device), with nothing landed. It isn't hashed (the CPU's copy of the
    owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
    (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
    for the GPU each */
@@ -2037,9 +2149,9 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     e->hash = 0;
     e->stable = 0;
     vk_render_end(); /* the GPU's copies happen outside rendering passes */
-    u8* p = vk_stage_upload(len, vk_stage_align(), &sb, &so);
-    if (!p) return 0;
-    vk_guest_read(gva, len, p, sb, so);
+    /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU copied
+       its own bytes out over PCIe and every draw read them back over it */
+    if (!vk_stage_device(len, vk_stage_align(), &sb, &so) || !vk_guest_read_device(gva, len, sb, so)) return 0;
     if (copy_stats_on()) g_copy_stage += len;
     e->buf = sb;
     e->off = so;
@@ -2051,7 +2163,10 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     use(i, buf, off);
     return 1;
 }
-static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align) {
+/* inplace: IN_NO, the range is copied; IN_TRY, read in place in guest memory where it can be (uma.c), else copied;
+   IN_ONLY, in place or 0 (a window is copied instead) */
+enum { IN_NO, IN_TRY, IN_ONLY };
+static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
     u32 i = 0;
     Vb* e = NULL;
@@ -2075,6 +2190,10 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             e->gfx_adds = vk_buf_adds();
         }
     }
+    /* no GPU result is pending over it: guest memory holds its bytes, which the GPU reads where they are on a device
+       that shares memory with the CPU. Not GPU-owned bytes, which only the GPU holds */
+    if (inplace && vk_uma() && !range_owned(gva, len) && vk_uma_get(gva, len, align, buf, off)) return 1;
+    if (inplace == IN_ONLY) return 0;
     /* valid: the data is where draws can read it this frame */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
@@ -2204,13 +2323,15 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     return 1;
 }
 
-int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) { return buf_get(gva, len, buf, off, 0, vk_stage_align()); }
+int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
+}
 /* Vertex and index buffers bind at any offset that keeps their elements aligned, not only at the uniform and storage
    bindings' alignment: a draw reading an earlier draw's storage result at another offset reads its buffer in place
    instead of composing it over guest memory. In one game 216,000 vertex buffer bindings in 600 frames were composed
    that way, each a copy of its range into staging and a GPU copy of the result over it */
 int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 0, align);
+    return buf_get(gva, len, buf, off, 0, align, IN_TRY);
 }
 
 /* Windows: guest ranges that storage buffers with no size of their own (a bare address in a program's constant buffer,
@@ -2233,8 +2354,8 @@ static Win g_win[WIN_N];
 static int win_live(const Win* w) {
     return w->end && w->gen == g_vb_map_gen && (u32)(g_vk_present - w->used) < WIN_IDLE;
 }
-int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, at, cpu = 0;
+static int win_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    u64 at, cpu = 0;
     int slot = -1;
     if (!len || gva + len < gva) return 0;
     for (int i = 0; i < WIN_N && slot < 0; i++)
@@ -2245,7 +2366,7 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         if (gmmu_run(start, gva + len - start, &cpu) < gva + len - start) start = gva;
         run = gmmu_run(start, WIN_SIZE, &cpu) & ~3ull;
         if (run < gva + len - start) /* not one run: the range alone */
-            return buf_get(gva, len, buf, off, 0, vk_stage_align());
+            return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
         /* a window above, which ranges from its start on fall in: this one needs to hold no more than the ranges
            starting before it, so the two overlap by a range's length at most (ranges come in any order) */
         for (int i = 0; i < WIN_N; i++)
@@ -2261,12 +2382,26 @@ int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         g_win[slot] = (Win){start, start + run, 0, g_vb_map_gen};
     }
     g_win[slot].used = g_vk_present;
-    if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align())) return 0;
+    if (!buf_get(g_win[slot].start, g_win[slot].end - g_win[slot].start, buf, &at, 0, vk_stage_align(), IN_NO))
+        return 0;
     /* a binding's offset must be a multiple of the device's alignment: a range that would land off it is copied
        alone */
-    if ((at + (gva - g_win[slot].start)) % (align ? align : 1)) return buf_get(gva, len, buf, off, 0, vk_stage_align());
+    if ((at + (gva - g_win[slot].start)) % (align ? align : 1))
+        return buf_get(gva, len, buf, off, 0, vk_stage_align(), IN_NO);
     *off = at + (gva - g_win[slot].start);
     return 1;
+}
+int vk_buf_get_window(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1; /* no window needed in place */
+    return win_get(gva, len, align, buf, off);
+}
+/* A vertex or index range whose extent isn't known (an indirect draw's: the GPU reads the count), in a window as a
+   bare storage buffer's: a binding reads on to the window's end, and draws over the same memory share its copy.
+   align: the elements' */
+int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
+    if (vk_uma() && buf_get(gva, len, buf, off, 0, align, IN_ONLY)) return 1;
+    return win_get(gva, len, align, buf, off);
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot
    and then the entry the slot names: 88% of buf_get's own time in one game. A caller that knows its ranges first
@@ -2284,7 +2419,7 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
 }
 /* Constant buffers cannot accept the delayed checks used for stable vertex data: a changed word affects this draw. */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    return buf_get(gva, len, buf, off, 1, vk_stage_align());
+    return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
 }
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
@@ -2304,6 +2439,7 @@ void vk_buf_stats(u32* count, u64* bytes) {
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
 void vk_buf_frame(void) {
+    vk_uma_frame();
     if (g_vk_present % 4) return;
     if (copy_stats_on() && g_vk_present % 600 == 0) {
         LOG("vulkan: buffer bytes over 600 presents: uncached=%llu zero=%llu calls=%llu peak=%llu staged=%llu owned=%llu bound=%llu writeback=%llu/%llu waits=%llu/%llums reused=%llu\n",
@@ -2313,6 +2449,7 @@ void vk_buf_frame(void) {
             (unsigned long long)g_wb_waits, (unsigned long long)(g_wb_wait_ns / 1000000),
             (unsigned long long)g_wb_reuses);
         stage_report();
+        vk_stage_report();
         LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",
             (unsigned long long)g_wb_reason[WB_DRAW], (unsigned long long)(g_wb_reason_ns[WB_DRAW] / 1000000),
             (unsigned long long)g_wb_reason[WB_READ], (unsigned long long)(g_wb_reason_ns[WB_READ] / 1000000),
@@ -2353,6 +2490,7 @@ void vk_buf_frame(void) {
 /* a save state's load: every buffer kept of guest memory goes, and their host addresses with it */
 void vk_buf_forget_all(void) {
     u32 i;
+    vk_uma_forget_all();
     for (i = 0; i < g_nvb; i++)
         if (g_vb[i].len) {
             drop_own(i);

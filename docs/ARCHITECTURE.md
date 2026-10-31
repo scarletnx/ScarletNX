@@ -126,8 +126,15 @@ the game's image read from that image.
   forms. `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
   `tests/llvm_module.c` a whole program against the end state QEMU gives it, `tests/llvm_bench.c` times it on
   assembly kernels.
+- `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
+  (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
+  as lld's `CallGraphSort.cpp`) and writes their guest addresses. `module_llvm.c` gives each listed function a code
+  section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
+  No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
-  does, so a loop without SVCs gives its core to a waiting thread of higher priority.
+  does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
+  leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
+  target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
   Logical immediates and SIMD
@@ -187,6 +194,11 @@ too for an addition the games should get though older modules would run without 
 change to the recompiler's own output for the same contract leaves it alone, and every game keeps its old code until
 it is recompiled (`-r`, or R in Games).
 
+The module's `snx_routes()` table (`SnxRoutes`, with its own `SNX_ROUTES_VERSION`) is read as optional and left
+`SNX_ABI` alone: it names the symbols whose calls the module sends through their dispatch slots
+([Hooks](HOOKS.md#how-a-call-reaches-a-hook)). A module without it sends the calls to every function it exports through
+their slots, which every hook also works with.
+
 A bump costs little. The recompile it starts takes each code unit's object from the unit cache
 (`src/nx/loader/unit_cache.c`), which keys it on the unit's IR, not on `SNX_ABI`: a bump that leaves the IR alone
 reuses every unit, and one that changes it (a field moved) compiles them again, as it must. For a game of 255 units
@@ -208,7 +220,8 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 12 | `RtAPI.cas128`, and `snx_cas128` takes the CPU |
 | 13 | the AOT module's `snx_variants()` table, read as optional |
 | 14 | `RtAPI.code_changed` for IC IVAU, and `SnxModule`'s function table with the byte each AOT function checks first |
-| 15 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
+| 15 | calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold |
+| 16 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
 
 #### Code the game patches
 
@@ -287,7 +300,11 @@ the build, so a new build or driver reads only the files that hold programs agai
   graphics queue otherwise.
 
 Invalidation: host write tracking + `mem_unmap` -> `gpu_mem_changed`. Vk treats zeroed unmap/heap-return ranges
-as written at the next cache check.
+as written at the next cache check. Write tracking (`plat_ww_scan`) is userfaultfd's asynchronous write protection
+with `PAGEMAP_SCAN` on Linux 6.7 and later, and the reservation's write watch on Windows. Every other POSIX host
+(macOS, FreeBSD, Android, older Linux; `SNX_WW=signal` on any Linux) protects the pages a scan reported and takes the
+first write to each in the fault handler, which opens the page again. A system call can't fault into the handler, so
+the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`).
 
 `Renderer.save`: optional pipeline-cache persistence every 300 frontend ticks (~5s) + exit, concurrent with execution.
 Exit skips renderer teardown and guest-thread joins.

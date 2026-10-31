@@ -59,7 +59,9 @@ void (*g_gpu_mapping_end)(void);
 #define MEM_STATE_TYPE_MASK 0xFFu
 /* the runs of guest memory behind [gva, gva + size), copied in or out: 1 when every page was mapped. An unmapped
    page, or one the guest freed after mapping it here (gmmu_run), reads as zero and takes no write. What the GPU holds
-   of a run lands first (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then */
+   of a run lands first (memory/own.c): the caller may hold the renderer's lock, and a trap can't be answered then.
+   A read lands only bytes it reads: what the GPU holds beside them on their pages stays there (a shader's constant
+   buffer words beside a copy engine's result, in one game every frame) */
 static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
     int all = 1;
     while (size) {
@@ -71,7 +73,12 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
             all = 0;
             goto next;
         }
-        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) own_acquire(cpu, n);
+        if (__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+            /* a read none of whose bytes are the GPU's: own_stage copied them, through the mirror where a page is
+               trapped */
+            if (in && !own_stage(cpu, n, in, NULL, 0)) goto next;
+            own_acquire(cpu, n);
+        }
         if (in)
             memcpy(in, GP(cpu), (size_t)n);
         else
@@ -163,7 +170,7 @@ void gmem_w32(u64 gva, u32 v) {
 }
 /* Hardware fetches a program only up to its end, and TotK has compute programs ending next to an uncommitted page:
    the read stops at the first page that has no GPU mapping or no guest memory behind it */
-void gmem_read_code(u64 gva, void* dst, u64 size) {
+static u64 code_extent(u64 gva, u64 size) {
     MemBlock b;
     int have = 0;
     u64 done = 0;
@@ -181,12 +188,41 @@ void gmem_read_code(u64 gva, void* dst, u64 size) {
             break;
         done += n < size - done ? n : size - done;
     }
+    return done;
+}
+void gmem_read_code(u64 gva, void* dst, u64 size) {
+    u64 done = code_extent(gva, size);
     if (done) {
         gmem_need(gva, done);
         gmem_read_raw(gva, dst, done);
     }
     memset((u8*)dst + done, 0, (size_t)(size - done));
 }
+/* A program's window reaches past its end into whatever the game keeps after it, results of the GPU's included: one
+   game's compute lookups landed those at every dispatch's first lookup in a submit, a wait for the GPU each. The
+   CPU's bytes are read up to the first byte the GPU holds, through the pool's mirror where a page is trapped
+   (own_stage), and nothing lands */
+u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size) {
+    u64 done = code_extent(gva, size), at = 0;
+    if (done) gmem_need(gva, done);
+    while (at < done) {
+        u64 cpu = 0, n = gmmu_run(gva + at, done - at, &cpu), m;
+        OwnRange o;
+        if (!n) break;
+        if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+            memcpy((u8*)dst + at, GP(cpu), (size_t)n);
+            at += n;
+            continue;
+        }
+        m = own_lookup(cpu, n, &o, 1) ? o.addr - cpu : n;
+        if (own_stage(cpu, m, (u8*)dst + at, NULL, 0)) break; /* an owner since: from here on the GPU's */
+        at += m;
+        if (m < n) break;
+    }
+    memset((u8*)dst + at, 0, (size_t)(size - at));
+    return at;
+}
+int gmem_code_cut(u64 len, u64 cpu, u64 size) { return cpu < size && cpu < len + 16; }
 
 /* ------------------------------------------------------------ block linear layout (Eden's decoders.cpp) */
 /* A byte's offset in the layout (texture/blocklinear.h, docs/BLOCKLINEAR.md) is the sum of an x part and a (y, z)
@@ -418,6 +454,7 @@ static void channel_reset(GpuChannel* ch) {
     reset_3d(ch->r3d);
     memcpy(ch->r3d_shadow, ch->r3d, sizeof ch->r3d_shadow); /* the reset values count as tracked */
     ch->r3d_dirty = ~0u; /* nothing the renderer derived from another channel's registers holds for these */
+    ch->ds.owner = ch->id;
     /* Eden's Fermi2D dst.depth and src.depth: the 2D surfaces' depth, as NVIDIA's driver assumes */
     ch->r2d[FERMI2D_DST + FERMI2D_SURFACE_DEPTH] = ch->r2d[FERMI2D_SRC + FERMI2D_SURFACE_DEPTH] = 1;
 }
@@ -438,7 +475,7 @@ static GpuChannel* channel_get(u32 id) {
 /* ------------------------------------------------------------ the pushbuffer (Eden's dma_pusher.cpp) */
 /* a word of the stream (Eden's ProcessCommands): a data word the state owes is a method call (1, with *sub, *m, *v
    and *last, the header's last word); a header starts owing words (Eden's SetState) or, inline, is a call itself */
-static int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last) {
+int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last) {
     u32 mode, count;
     if (b->method_count) {
         *sub = b->subchannel;
@@ -490,6 +527,7 @@ static int engine_of(u32 cls) {
         default: return ENG_NONE;
     }
 }
+int gpu_class_known(u32 cls) { return engine_of(cls) != ENG_NONE; }
 /* Eden's ProcessSemaphoreTriggerMethod: the operation SEMAPHORED names on the semaphore at the address the puller's
    SEMAPHOREA/B hold, with SEMAPHOREC's payload. A release goes through the renderer, after the work before it */
 static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
@@ -566,6 +604,35 @@ static void method_call(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
                       ch->sub_class[sub], sub);
             break;
     }
+}
+
+GpuChannel* gpu_verify_channel_new(u32 id) {
+    GpuChannel* ch = (GpuChannel*)calloc(1, sizeof *ch);
+    if (!ch) fatal("gpu: out of memory for verify channel %x\n", id);
+    ch->id = id;
+    channel_reset(ch);
+    return ch;
+}
+void gpu_verify_channel_free(GpuChannel* ch) {
+    if (!ch) return;
+    free(ch->inline_indices);
+    free(ch);
+}
+void gpu_verify_word(GpuChannel* ch, u32 w) {
+    u32 sub, m, v;
+    int last;
+    if (!pb_decode(&ch->pb, w, &sub, &m, &v, &last)) return;
+    if (m < PULLER_NON_PULLER_METHODS) { /* the semaphores and syncpoints are the live stream's business */
+        ch->puller[m] = v;
+        if (m == PULLER_BIND_OBJECT) ch->sub_class[sub] = v & CLASS_ID_MASK;
+        return;
+    }
+    if (engine_of(ch->sub_class[sub]) == ENG_3D) {
+        maxwell3d_method(ch, m, v, last);
+        return;
+    }
+    r3d_const_flush(ch);
+    r3d_pending_flush();
 }
 
 /* ------------------------------------------------------------ waits */
@@ -909,13 +976,14 @@ static int run_pass(i64* wake) {
     }
     return 0;
 }
-void gpu_wait_note(const char* what, u64 value) {
-    if (!t_gpu) return;
+int gpu_wait_note(const char* what, u64 value) {
+    if (!t_gpu) return 0;
     if (what) {
         __atomic_store_n(&g_wait_value, value, __ATOMIC_RELAXED);
         __atomic_store_n(&g_wait_since, plat_ns(), __ATOMIC_RELAXED);
     }
     __atomic_store_n(&g_wait_what, what, __ATOMIC_RELEASE);
+    return 1;
 }
 /* read unlocked from the watchdog's thread: each value on its own, which is enough to say where the GPU thread is */
 void gpu_report_stall(void) {
@@ -1235,7 +1303,7 @@ void gpu_channel_close(u32 channel) {
     pm_unlock(&g_qlk);
     dma_snap_reset(channel);
     if (ch) {
-        if (ch->render_pred) g_renderer->render_predicate_drop(ch->render_pred);
+        if (ch->owner.pred) g_renderer->render_predicate_drop(ch->owner.pred);
         free(ch->inline_indices);
         free(ch->i2m.inner_buffer);
         free(ch);
@@ -1392,9 +1460,12 @@ GpuStaged* gpu_state_parse(StateIo* io) {
                 goto bad;
         }
         ch->r3d_dirty = ~0u; /* nothing the renderer derived holds */
+        /* the draw state's generations came from the saving process's sequence (gpu/draw_state.c), where this one may
+           hand the same numbers out for other states: new ones, which nothing kept matches */
+        for (u32 g = 0; g < DS_GENS; g++) ch->ds.gen[g] = ds_generation_next();
         memset(ch->mme_choice, 0, sizeof ch->mme_choice);
-        ch->render_pred = 0; /* the predicate was the renderer's: draws run until the next render enable */
-        ch->xfb_started = 0; /* the byte counters were the renderer's */
+        ch->owner.pred = 0;        /* the predicate was the renderer's: draws run until the next render enable */
+        ch->owner.xfb_started = 0; /* the byte counters were the renderer's */
     }
     if (io_get32(io, &n)) goto bad;
     for (i = 0; i < n; i++) {

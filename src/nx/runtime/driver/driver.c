@@ -1070,7 +1070,7 @@ static int addon_program(const char* input) {
 static int takes_value(const char* arg) {
     static const char* const names[] = {"--update", "--name",    "--out",    "--keys",    "--title-keys",
                                         "-o",       "--outname", "--outdir", "--runtime", "--target",
-                                        "-O",       "--jobs",    "--chunk"};
+                                        "-O",       "--jobs",    "--chunk",  "--layout"};
     size_t i;
     for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (!strcmp(arg, names[i])) return 1;

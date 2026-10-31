@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* g_hle, the HLE's state, its initialization, and its pools (hle.h) */
+/* g_hle, the HLE's state, its initialization, its pools, and t_hle, its thread state (hle.h) */
 #include "nx/hle/hle.h"
+#include "nx/runtime/platform/log.h"
 #include <assert.h>
 
 /* zero, in .bss: hle_init sets what starts out non-zero */
 Hle g_hle;
 HleHost g_host;
+_Thread_local HleTls t_hle;
 
 void hle_init(void) {
     int i;
@@ -69,9 +71,9 @@ void* pool_take(void* base, size_t size, u32 count, u32* next, const char* what)
             *next = i + 1 == count ? 0 : i + 1;
             return (u8*)base + (size_t)i * size;
         }
+    /* the assert's message can't name the pool, and a core dump of the game is too large to keep its stack */
+    logf_(0, "pool_take: more than %u %s at once\n", (unsigned)count, what);
     assert(!"an HLE pool is full");
-    (void)what;
-    /*fatal("More than %u %s at once", (unsigned)count, what);*/ /* NDEBUG builds */
     return NULL;
 }
 void pool_put(void* slot, size_t size) { memset(slot, 0, size); }

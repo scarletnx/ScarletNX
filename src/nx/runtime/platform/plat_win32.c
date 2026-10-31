@@ -62,6 +62,17 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
     return r;
 }
 
+void plat_wait_word(u32* w, u32 v, i64 timeout_ns) {
+    DWORD ms = INFINITE;
+    if (timeout_ns >= 0) {
+        u64 r = (u64)timeout_ns / 1000000u + ((u64)timeout_ns % 1000000u != 0); /* as cond_wait rounds it */
+        ms = r >= (u64)INFINITE ? INFINITE - 1 : (DWORD)r;
+        timer_period_1ms();
+    }
+    WaitOnAddress(w, &v, sizeof v, ms);
+}
+void plat_wake_word(u32* w) { WakeByAddressAll(w); }
+
 /* ================================================================ threads */
 typedef struct {
     PThreadFn fn;
@@ -222,6 +233,16 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
         if (n < sizeof pages / sizeof *pages) return 0;
     }
     return -1; /* pages may be left unreported: the caller compares contents */
+}
+
+/* the write watch sees the kernel's writes (ReadFile, recv) as it sees any other */
+void plat_ww_open(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+}
+void plat_ww_close(u8* p, u64 size) {
+    (void)p;
+    (void)size;
 }
 
 int plat_vm_commit(u8* p, u64 size) {
@@ -422,3 +443,5 @@ void plat_install_crash_handler(void) {
     AddVectoredExceptionHandler(1, shutdown_note);
     SetUnhandledExceptionFilter(crash_filter);
 }
+
+u64 plat_monotonic_ns(void) { return 0; }

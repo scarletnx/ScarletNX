@@ -50,9 +50,13 @@ include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
 snx_svcgen(snx_kernel)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
-              hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c)
+              hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
+              hle/hook/hook.c hle/hook/libc.c hle/hook/verify.c hle/hook/version.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which hle/services/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
+# the hooks' adapters and table, generated from hle/hook/hooks.hook
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+snx_hookgen(snx_hle)
 # the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
@@ -69,8 +73,12 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too; acc's user picture is a splash drawing (cmake/splash.cmake)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
-snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn_trace.c gpu/shipped_pass.c)
+snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
+              gpu/nvn_trace.c gpu/nvn/nvn_direct.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
+              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_verify.c gpu/nvn/nvn_state.c
+              gpu/shipped_pass.c)
+# the NVN functions nvn_direct implements: their adapters and table, generated from gpu/nvn/nvn.hook
+snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 # mme_jit.c compiles the macros mme_hle.c has no implementation for with the LLVM backend
 target_link_libraries(snx_gpu PRIVATE snx_llvm)
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
@@ -102,8 +110,8 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/record.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
-                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/compute.c
-                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c
+                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/pipeline_file.c gpu/vk/render.c gpu/vk/release.c gpu/vk/query.c gpu/vk/display.c gpu/vk/compute.c
+                 gpu/vk/pending_pages.c gpu/vk/memory.c gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/nvdec.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/vma.cpp gpu/vk/gpuprof.c gpu/vk/uma.c
                  gpu/vk/ftz_probe.c
                  "${volk_SOURCE_DIR}/volk.c")
 # the ASTC decoder's, the block linear deswizzle and swizzle's, the texture conversions', the VIC composition's and
@@ -122,7 +130,14 @@ snx_glsl_spirv(snx_vk SOURCE gpu/video/vic.comp NAME vic_unaligned_spv HEADER nx
                DEFINES VIC_UNALIGNED)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_predicate.comp NAME query_predicate_spv
                HEADER nx/gpu/vk/query_predicate_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_compare.comp NAME query_compare_spv
+               HEADER nx/gpu/vk/query_compare_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.vert NAME msaa_vert_spv HEADER nx/gpu/vk/msaa_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_UNPACK)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_unpack_depth_spv HEADER nx/gpu/vk/msaa_spv.h
+               DEFINES MS_UNPACK_DEPTH)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/msaa.frag NAME msaa_pack_spv HEADER nx/gpu/vk/msaa_spv.h DEFINES MS_PACK)
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation), cmake/dependencies.cmake
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS
@@ -155,6 +170,9 @@ include("${PROJECT_SOURCE_DIR}/cmake/window_icon.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_splash)
+if(WIN32)
+    target_link_libraries(snx_platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
+endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
 # the game's menu in YoRHa's colours, from src/gui/themes/yorha/theme.ini (cmake/gui_themes.cmake), and the shader
@@ -192,6 +210,9 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND) # scarletnx --mcp over stdio (runtime/driver/mcp.c)
         add_test(NAME mcp COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/mcp_test.py"
                  $<TARGET_FILE:scarletnx>)
+        # gpu/nvn/nvn_verify_kinds.inc is what tools/nvn_verify_kinds.py makes of nvn.h and nvn.hook
+        add_test(NAME nvn_verify_kinds COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/nvn_verify_kinds.py"
+                 --check)
     endif()
     if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
         add_test(NAME shader_direct COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/shader_direct_test.py"
@@ -224,6 +245,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
     # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
     # descriptorType-00330). Without the layer this is VIC's own checks again.
+    # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c), and its own
+    add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
+    set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"

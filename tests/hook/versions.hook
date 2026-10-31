@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# versioned hooks and struct layouts, for tests/hook_versions.c
+family os
+
+# a struct whose layout changed, its fields in another order the second time
+struct nn::os::MutexType @version(< 9.0.0) {
+    u8 state @0x0
+    u32 owner @0x4
+} size 0x10
+@version(>= 9.0.0)
+struct nn::os::MutexType { u32 owner @0x8; u8 state @0x0 } size 0x20
+
+# one symbol for two ranges with a handler each, the first split at the struct's 9.0.0
+@version(>= 5.0.0, < 12.0.0)
+hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
+@version(sdk >= 12.0.0) hook lock(addr m) -> u32 = os_lock uses nn::os::MutexType
+# unversioned, but its struct is: an entry per variant, none for an unknown version
+hook unlock(addr m) = os_unlock uses nn::os::MutexType
+
+family other
+# an unversioned struct holds for every version
+struct Plain { u64 a @0; i16 b @8; bool on @10; f32 f @12 } size 0x10
+hook any(addr p) -> u64 = test_any uses Plain
+@version(== 20.5.22) hook exact() = test_exact
+@version(nvn >= 55.0) hook nvn_only(addr p) = test_nvn uses Plain
+# a gap between two ranges
+@version(> 1.0.0, <= 3.0.0) hook gap() = test_gap
+@version(>= 5.0.0) hook gap() = test_gap

@@ -1,0 +1,2 @@
+family f
+hook f(u64 a, u64 b, u64 c3, u64 d, u64 e, u64 f, u64 g, u64 h, u64 i) = h

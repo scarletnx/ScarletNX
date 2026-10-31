@@ -1,0 +1,2 @@
+family f
+hook nvnDeviceFinalize(void* d) = nvn_DeviceFinalize

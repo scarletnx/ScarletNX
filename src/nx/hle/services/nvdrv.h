@@ -29,6 +29,11 @@ void nv_ioctl_abandon(u32 fd);
    outputs 0) for a dead handle */
 int nvmap_get(u32 h, u64* addr, u32* size);
 u64 nvmap_addr_by_id(u32 id); /* 0 when no live handle has that id */
+/* A handle the runtime makes for guest memory the game gave a front end (nvn_direct's memory pools), as the game's NVN
+   driver makes one for each pool: created and allocated at once, with one reference, its number its id. 0 when the
+   memory isn't page aligned, is past 4 GiB or no number is left. drop gives its reference back, as FREE does */
+u32 nvmap_handle_new(u64 addr, u64 size);
+void nvmap_handle_drop(u32 h);
 
 /* The guest address a GPU address maps to, 0 when its page isn't mapped */
 u64 gmmu_translate(u64 gva);
@@ -38,6 +43,14 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu);
 /* Points the pages of [gva, gva + size) at guest memory from cpu on, the renderer told (its mapping bracket): what
    nvhost-as-gpu's MapBufferEx does, and a test without the ioctls */
 void gmmu_map(u64 gva, u64 cpu, u64 size);
+/* GPU address space for a front end that maps guest memory itself (nvn_direct's memory pools), from the allocator and
+   page table nvhost-as-gpu uses: alloc reserves size bytes at the alignment (a power of two, 0 for the allocator's
+   64 KiB) and returns their GPU address, 0 when the space is full; map points page-aligned [gva, gva + size) at guest
+   memory from cpu on; unmap clears those pages; free clears them and gives the addresses back */
+u64 gmmu_space_alloc(u64 size, u64 align);
+void gmmu_space_map(u64 gva, u64 cpu, u64 size);
+void gmmu_space_unmap(u64 gva, u64 size);
+void gmmu_space_free(u64 gva, u64 size);
 /* Each GPU range that shows guest bytes of [cpu, cpu + size), clipped to them: fn(ctx, gva, n) for the n bytes at
    gva, each mapped page once. The same guest memory is mapped at several GPU addresses, so what is known of it by one
    address holds at the others, and this finds them all from the guest side. From any thread. fn runs under the
@@ -224,6 +237,12 @@ typedef struct {
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
 } HostNvdrv;
+/* nvdrv's thread state, t_hle.nvdrv (hle.h's) */
+typedef struct {
+    /* this thread's syncpt_add_quiet moved a syncpoint: its syncpt_events checks the event slots where syncpt_add would
+       have, so the same thread takes the kernel's lock, after vk_lock goes */
+    int events_due;
+} TlsNvdrv;
 extern const StateFnTable g_nvdrv_state_fns; /* the functions a save state may hold of nvdrv.c */
 
 #endif

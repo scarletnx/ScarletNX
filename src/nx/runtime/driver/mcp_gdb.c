@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The GDB tools (mcp_int.h): GDB driven through its machine interface (GDB/MI 3), connected to a game's GDB stub
    (nx/runtime/gdbstub.c: gdbserver attached to the runtime), and the guest's state read through it from the
-   runtime's own structures by their debug information. A guest thread's KThread is its host thread's tls_thread,
+   runtime's own structures by their debug information. A guest thread's KThread is its host thread's t_hle.thread.cur,
    with the registers in its cpu (a 64-bit game's) or arm (a 32-bit one's), and guest memory is at g_mem. One GDB at a
    time, from gdb_attach to gdb_detach or the server's end. The game resumes in the background (mi-async, the
    -exec-* commands): a console resume would hold GDB's input until the game stops, so no command would reach it
@@ -1206,12 +1206,12 @@ refused:
 }
 
 /* ============================================================ guest threads */
-/* thread's KThread: 1 and its bytes, 0 for a thread of the runtime's own (no tls_thread), or REFUSED or LOST with why
-   in err */
+/* thread's KThread: 1 and its bytes, 0 for a thread of the runtime's own (no t_hle.thread.cur), or REFUSED or LOST with
+   why in err */
 static int kthread(long thread, SnxU64* at, unsigned char* k, Text* err) {
     size_t size = (size_t)g_gdb.k[K_SIZE] < THREAD_BYTES ? (size_t)g_gdb.k[K_SIZE] : THREAD_BYTES;
     int rc;
-    if ((rc = eval(thread, "(unsigned long)tls_thread", at, err)) != DONE) return rc;
+    if ((rc = eval(thread, "(unsigned long)t_hle.thread.cur", at, err)) != DONE) return rc;
     if (!*at) return 0;
     return (rc = read_memory(*at, size, k, err)) != DONE ? rc : 1;
 }
@@ -1339,7 +1339,7 @@ char* mcp_gdb_threads(McpNamer name, const void* ctx, Text* err) {
         if (got == LOST) goto lost;
         if (got == REFUSED) {
             /* a thread's TLS that GDB can't read (no libthread_db: a musl build): said once, the rest unread */
-            mcp_put(&t, "(GDB can't read the threads' tls_thread: ");
+            mcp_put(&t, "(GDB can't read the threads' t_hle.thread.cur: ");
             mcp_put(&t, err->p);
             mcp_put(&t, ". Every thread is listed as the runtime's.)\n");
             clear(err);

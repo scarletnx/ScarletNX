@@ -35,6 +35,12 @@ void pc_broadcast(PCond* c);
 /* m held. timeout_ns < 0 waits without limit. Returns 1 when the time ran out, 0 when woken (or spuriously) */
 int pc_wait(PCond* c, PMutex* m, i64 timeout_ns);
 
+/* ---- waiting on a word, with no lock (a futex on Linux): plat_wait_word blocks while *w holds v, for at most
+   timeout_ns (negative: no limit), and may also return early for no reason; plat_wake_word wakes every thread waiting
+   on w. The waker changes *w before it wakes them */
+void plat_wait_word(u32* w, u32 v, i64 timeout_ns);
+void plat_wake_word(u32* w);
+
 /* ---- threads */
 typedef void (*PThreadFn)(void* arg);
 /* A detached thread running fn(arg) on a stack of that many bytes (0: the system's default). 0, or -1 when it
@@ -62,6 +68,9 @@ SNX_NORETURN void plat_exit_now(int code);
 
 /* ---- time */
 u64 plat_ns(void);        /* a monotonic clock in nanoseconds */
+/* the system's CLOCK_MONOTONIC in nanoseconds (Vulkan's VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR), which plat_ns isn't:
+   0 where there is none (Windows) */
+u64 plat_monotonic_ns(void);
 i64 plat_unix_time(void); /* seconds since 1970 UTC */
 i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 
@@ -79,10 +88,18 @@ int plat_address_space(u64* mapped, u64* largest_free);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.
-   -1 when the host can't tell (the caller then compares contents). Linux uses userfaultfd's asynchronous write
-   protection with PAGEMAP_SCAN, Windows the write watch of the reservation; SNX_NO_WW in the environment turns both
-   off */
+   -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
+   write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
+   FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
+   SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
+/* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
+   which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
+   protects them again until plat_ww_close with the same range, after the call. A range being moved (plat_freeze)
+   waits for the move first. Nothing to do where the kernel's writes are tracked as they come (Linux's userfaultfd,
+   Windows' write watch) */
+void plat_ww_open(u8* p, u64 size);
+void plat_ww_close(u8* p, u64 size);
 /* The alias pool: one host memory object whose pages can be mapped at several addresses of the reservation at once,
    and outside it, so two guest addresses (MapMemory's view and its source, code memory's owner and slave, shared
    memory and its service) are the same pages. Linux and Android (a memfd); elsewhere plat_alias_init says -1 and
@@ -107,8 +124,10 @@ u8* plat_alias_mirror(void);
 
 /* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
-   the pool and lets it go on with plat_trap_continue. Linux 5.13 and later (userfaultfd minor faults on shared
-   memory); elsewhere plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
+   the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
+   memory. Other hosts with the pool (older Linux, Android, or SNX_TRAPS=signal on any Linux) make the pages
+   inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
+   pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is
    the faulting thread's plat_tid */
 int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));

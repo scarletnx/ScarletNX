@@ -39,7 +39,8 @@ VkOwnRes* vk_own_res_new(u64 size) {
                              .size = size ? size : 16,
                              /* VIC binds the job's first words as a uniform buffer (vk/vic.c) */
                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!r) return NULL;
@@ -289,6 +290,86 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
         o += n;
     }
     if (any) read_barrier(vk_cmd(), 0);
+}
+
+/* Device memory's side of vk_guest_read: the guest bytes [gva, gva + size) into buf at at, which the CPU doesn't map.
+   The CPU's bytes are staged and copied, the owned ones copied from their owners, unmapped pages read as zero. Staged
+   into host memory and read there by the GPU, a copy engine's spans went over PCIe several times: the GPU copied its
+   own results and render targets out to host memory and read them back, about 34 MB a frame in one game's menu */
+typedef struct {
+    VkBuffer sb, buf; /* the staging copied from, holding the range's byte o at so + o */
+    u64 so, at;
+    VkBufferCopy r[64];
+    u32 n;
+} DevRead;
+static void dev_flush(DevRead* d) {
+    if (d->n) rec_CmdCopyBuffer(vk_cmd(), d->sb, d->buf, d->n, d->r);
+    d->n = 0;
+}
+/* the staged bytes [o, o + n) of the range go to buf */
+static void dev_gap(DevRead* d, u64 o, u64 n) {
+    if (!n) return;
+    if (d->n && d->r[d->n - 1].dstOffset + d->r[d->n - 1].size == d->at + o) { /* after the last one */
+        d->r[d->n - 1].size += n;
+        return;
+    }
+    if (d->n == sizeof d->r / sizeof *d->r) dev_flush(d);
+    d->r[d->n++] = (VkBufferCopy){d->so + o, d->at + o, n};
+}
+int vk_guest_read_device(u64 gva, u64 size, VkBuffer buf, u64 at) {
+    DevRead d = {.buf = buf, .at = at};
+    u8* p;
+    u64 o = 0;
+    int any = 0;
+    if (!size) return 1;
+    if (!(p = vk_stage_upload(size, 16, &d.sb, &d.so))) return 0;
+    vk_render_end(); /* the copies happen outside rendering passes */
+    gmem_need(gva, size); /* results the renderer has pending there land first, as gmem_read has them */
+    while (o < size) {
+        u64 cpu = 0, n = gmmu_run(gva + o, size - o, &cpu);
+        OwnRange r[16];
+        u32 k, i;
+        if (!n) { /* an unmapped page reads as zero */
+            n = 0x1000 - ((gva + o) & 0xFFF);
+            if (n > size - o) n = size - o;
+            memset(p + o, 0, (size_t)n);
+            dev_gap(&d, o, n);
+        } else if (!__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) {
+            memcpy(p + o, GP(cpu), (size_t)n);
+            dev_gap(&d, o, n);
+        } else if ((k = own_stage(cpu, n, p + o, r, sizeof r / sizeof *r)) > sizeof r / sizeof *r) {
+            own_acquire(cpu, n); /* more owners than noted: they land, and the bytes are read as they are then */
+            memcpy(p + o, GP(cpu), (size_t)n);
+            dev_gap(&d, o, n);
+        } else {
+            u64 from = cpu; /* the CPU's bytes between the owners, which own_stage staged; the owners' from them */
+            for (i = 0; i < k; i++) {
+                VkBufferCopy c = {r[i].res_off, at + o + (r[i].addr - cpu), r[i].size};
+                dev_gap(&d, o + (from - cpu), r[i].addr - from);
+                from = r[i].addr + r[i].size;
+                if (!any) read_barrier(vk_cmd(), 1);
+                any = 1;
+                rec_CmdCopyBuffer(vk_cmd(), ((const VkOwnRes*)r[i].res)->buf, buf, 1, &c);
+            }
+            dev_gap(&d, o + (from - cpu), cpu + n - from);
+        }
+        o += n;
+    }
+    dev_flush(&d);
+    /* before what reads the range, and what writes over it (render targets drawn over the bytes, vk_rt_overlay) */
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    rec_CmdPipelineBarrier2(vk_cmd(), &dep);
+    return 1;
+}
+int vk_guest_read_seen(u64 gva, u64 size, VkBuffer buf, u64 at) {
+    if (!vk_guest_read_device(gva, size, buf, at)) return 0;
+    vk_rt_overlay(gva, size, buf, at);
+    return 1;
 }
 
 void vk_guest_peek(u64 gva, void* dst, u64 size) {

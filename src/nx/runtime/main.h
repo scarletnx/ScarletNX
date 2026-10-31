@@ -12,6 +12,10 @@ int snx_main(int argc, char** argv); /* runs the game the arguments or the progr
 /* The AOT module's runtime code variants, from its snx_variants() (main.c's load_module); NULL for a module built
    without a profile cache */
 extern const SnxVariants* g_variants;
+/* The route list the AOT module was recompiled with, from its snx_routes() (main.c's load_module): the symbols whose
+   calls it sends through their dispatch slots. NULL for a module made before the list, which sends the calls to every
+   function it exports through their slots */
+extern const struct SnxRoutes* g_routes; /* nx/loader/module_abi.h */
 /* the launcher's menu (src/gui), for an executable built with it: a bare start of the runtime opens it, with the
    program's own path */
 extern int (*snx_menu)(const char* self);
@@ -41,11 +45,14 @@ extern int g_frames;        /* the frames shown so far, atomic: the presenting t
 void crash_report(void* host_pc, void* fault, int sig);
 /* one of vi's queued buffers on the display, once the GPU has drawn it (the GPU thread): nvmap_id's memory from offset,
    its layout, format and size, the crop rectangle (left, top, right, bottom; all 0 for the whole buffer) and the
-   transform's flips (bit 0 horizontal, bit 1 vertical) */
+   transform's flips (bit 0 horizontal, bit 1 vertical); slot is vi's, which present_pace was given at its dequeue */
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                    u32 transform);
+                    u32 transform, int slot);
 /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
-   frame before has been on the display for interval refreshes (its swap interval) */
-void present_pace(u32 interval);
+   frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
+void present_pace(u32 interval, int slot);
+/* A frame period (ns) on the display's clock: the nearest whole number of the display's refreshes (refresh, 0 unknown)
+   where that is within 1/32 of it, so a pace kept to it doesn't drift from the display (a 59.94 Hz one), else period */
+u64 present_display_period(u64 period, u64 refresh);
 
 #endif

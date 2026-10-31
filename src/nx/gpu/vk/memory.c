@@ -88,8 +88,11 @@ static int pieces_bind(VkImage img, const VkMemoryRequirements* req, Pieces* p, 
         VkFence fence;
         ok = VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &fence));
         if (ok) {
-            ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence)) &&
-                 VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
+            /* on the graphics queue, which the recording thread submits to meanwhile */
+            vk_queue_lock(g_vk.gfx);
+            ok = VK_OK(vkQueueBindSparse(g_vk.gfx, 1, &bi, fence));
+            vk_queue_unlock(g_vk.gfx);
+            ok = ok && VK_OK(vkWaitForFences(g_vk.dev, 1, &fence, VK_TRUE, UINT64_MAX));
             vkDestroyFence(g_vk.dev, fence, NULL);
         }
     }

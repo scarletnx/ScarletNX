@@ -33,6 +33,8 @@ int vk_buf_pending_unsubmitted(void);
 void vk_submit(u64, u64, u64);
 u64 vk_last_submit(void);
 u64 vk_submit_number(void);
+int vk_uma(void);
+u64 vk_uma_bound(void);
 void vk_rt_before_write(u64, u64);
 u64 vk_query_value(u32, u64, u64);
 #define VK_PRED_EQUAL 0x80000000u
@@ -43,9 +45,11 @@ int vk_query_pred_job(u32, u64, u64, u64, int, u32, u32*);
 int vk_query_pred_flush(void);
 void vk_query_pred_hold(u32);
 void vk_query_pred_drop(u32);
+int vk_query_pred_compare(u64, u32*);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
 #include "nx/gpu/vk/release.c"
+typedef void (*VkChangedRun)(void* user, u32 from, u32 to); /* vk.h's, for writeback.c */
 #include "nx/gpu/vk/writeback.c"
 
 int g_gpu_releases;
@@ -241,6 +245,15 @@ int vk_query_pred_flush(void) {
     pred_flushes++;
     return 1;
 }
+/* the GPU's comparison of two values a result not landed holds: slot 40 */
+static unsigned pred_compares;
+int vk_query_pred_compare(u64 a, u32* slot) {
+    assert(lock_depth && a == 0x10180);
+    pred_compares++;
+    pred_refs[40] = 1;
+    *slot = 40;
+    return 1;
+}
 void vk_query_pred_hold(u32 slot) { pred_refs[slot]++; }
 void vk_query_pred_drop(u32 slot) {
     assert(pred_refs[slot]);
@@ -248,10 +261,46 @@ void vk_query_pred_drop(u32 slot) {
 }
 u64 vk_last_submit(void) { return next_graphics; }
 u64 vk_submit_number(void) { return next_graphics + 1; }
+/* uma.c: guest memory read in place, last by submit uma_bound */
+static int uma_on;
+static u64 uma_bound;
+int vk_uma(void) { return uma_on; }
+u64 vk_uma_bound(void) { return uma_bound; }
 
 /* Compare both mapping paths against the byte merge rule, including chunk
  * boundaries, dense writes, unchanged output and intervening CPU writes.
  */
+/* the runs vk_write_changed_runs tells, collected, against buffer.c's former scan of its own: 8-byte granules from the
+   result's start where it differs from the original, merged when they touch */
+static u32 runs_seen[1024][2], nruns_seen;
+static void collect_run(void *user, u32 from, u32 to)
+{
+	(void)user;
+	assert(nruns_seen < 1024);
+	runs_seen[nruns_seen][0] = from;
+	runs_seen[nruns_seen][1] = to;
+	nruns_seen++;
+}
+static void check_runs(const u8 *result, const u8 *original, u32 n)
+{
+	u32 want[1024][2], nwant = 0;
+
+	for (u32 k = 0; k < n; k += 8) {
+		u32 w = n - k < 8 ? n - k : 8;
+
+		if (!memcmp(result + k, original + k, w))
+			continue;
+		if (nwant && want[nwant - 1][1] == k) {
+			want[nwant - 1][1] = k + w;
+		} else {
+			want[nwant][0] = k;
+			want[nwant][1] = k + w;
+			nwant++;
+		}
+	}
+	assert(nruns_seen == nwant && !memcmp(runs_seen, want, nwant * sizeof *want));
+}
+
 static void check_writeback_merge(void)
 {
 	u8 original[4099], result[4099], current[4099], expected[4099];
@@ -281,6 +330,15 @@ static void check_writeback_merge(void)
 				assert(!memcmp(memory + mapping, expected, n));
 				assert(!memcmp(memory + mapping + n, current + n, sizeof current - n));
 				assert(!vk_result_landing());
+				/* the same landing telling its runs */
+				memcpy(memory + mapping, current, sizeof current);
+				nruns_seen = 0;
+				vk_lock();
+				vk_write_changed_runs(0x31000, result, original, n, collect_run, NULL);
+				vk_unlock();
+				assert(!memcmp(memory + mapping, expected, n));
+				assert(!memcmp(memory + mapping + n, current + n, sizeof current - n));
+				check_runs(result, original, n);
 			}
 		}
 	}
@@ -314,6 +372,21 @@ int main(void) {
     assert(memory[1] == 0 && payload_writes == 3 && g_rhead == g_rtail + 1);
     vk_release_submit();
     assert(memory[1] == 17 && payload_writes == 4 && g_rhead == g_rtail);
+    /* with guest memory read in place, the same release waits at the stream's stop for the commands recorded up to
+       then that read in place, after it too: the GPU reads those bytes when it runs them, and the guest writes them
+       again once it sees the release. The stop submits them, and the release goes once they are done */
+    uma_on = 1;
+    value = 19;
+    vk_release_write(0x10000, &value, 1);
+    uma_bound = vk_submit_number(); /* a draw after the release reads in place */
+    unsigned uma_submits = submits;
+    vk_release_submit();
+    assert(memory[1] == 17 && g_rhead == g_rtail + 1 && g_rq[g_rtail % RQ_N].gate == uma_bound);
+    assert(submits == uma_submits + 1 && vk_last_submit() == uma_bound);
+    vk_release_drain();
+    assert(memory[1] == 19 && g_rhead == g_rtail && waited_graphics >= uma_bound);
+    uma_on = 0;
+    uma_bound = 0;
     pending = 1;
     vk_release_incr(5);
     vk_release_retire(5);
@@ -398,6 +471,14 @@ int main(void) {
     assert(pred_refs[10] == 1 && pred_refs[11] == 0 && g_rhead == g_rtail); /* the channel still holds slot 10 */
     vk_render_predicate_drop(11);
     assert(pred_refs[10] == 0);
+    /* values a result not landed holds, no release queued over them: compared on the GPU, not read (which would wait
+       for the result to land); with nothing pending they are read as before */
+    other_pending = 1;
+    assert(vk_render_predicate(0x10180, 1, &pred) == 2 && pred == (41 | VK_PRED_EQUAL) && pred_compares == 1);
+    vk_render_predicate_drop(pred);
+    assert(!pred_refs[40]);
+    other_pending = 0;
+    assert(vk_render_predicate(0x10180, 1, &pred) == -1 && pred_compares == 1);
     job_known = 0; /* a count known to be zero: IF_EQUAL draws, IF_NOT_EQUAL doesn't, without a predicate */
     vk_release_samples(0x10140, 16, 3, 13, 14, 0);
     assert(vk_render_predicate(0x10140, 1, &pred) == 1 && vk_render_predicate(0x10140, 0, &pred) == 0);
@@ -410,19 +491,46 @@ int main(void) {
     vk_submit(0, 0, 0); /* the second waits for a later submit, so the first is performed alone */
     vk_release_write(0x37ab4, &word4, 4);
     u64 seq_b = g_rhead - 1;
-    u32 home = rix_home(0x1100);
-    assert(home == rix_home(0x7ab4) && !g_rodd);
-    assert(g_rix[home].word == 0x1100 && g_rix[home].seq == seq_a && g_rix[(home + 1) & (RIX_N - 1)].word == 0x7ab4);
+    u32 home = rix_home(0x1100, RIX_N - 1);
+    assert(home == rix_home(0x7ab4, RIX_N - 1) && !g_rodd);
+    assert(g_rix[home].key == 0x1100 && g_rix[home].seq == seq_a && g_rix[(home + 1) & (RIX_N - 1)].key == 0x7ab4);
     assert(count_queued(0x10100) == -2 && count_queued(0x37ab4) == -2); /* queued, though not samples counts */
     vk_release_need(0x10100, 4);
-    assert(g_rtail == seq_b && g_rix[home].word == 0x7ab4 && g_rix[home].seq == seq_b && g_rix[home].n == 1);
-    assert(!g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x10100) == -1 && count_queued(0x37ab4) == -2);
+    assert(g_rtail == seq_b && g_rix[home].key == 0x7ab4 && g_rix[home].seq == seq_b && g_rix[home].n == 1);
+    assert(!g_rix[(home + 1) & (RIX_N - 1)].key && count_queued(0x10100) == -1 && count_queued(0x37ab4) == -2);
     /* the slot it left holds no count: a word of that home (guest 0x5254) queued there goes when it is performed */
-    assert(rix_home(0x5254) == ((home + 1) & (RIX_N - 1)) && !g_rix[(home + 1) & (RIX_N - 1)].n);
+    assert(rix_home(0x5254, RIX_N - 1) == ((home + 1) & (RIX_N - 1)) && !g_rix[(home + 1) & (RIX_N - 1)].n);
     vk_release_write(0x35254, &word4, 4);
-    assert(g_rix[(home + 1) & (RIX_N - 1)].word == 0x5254 && g_rix[(home + 1) & (RIX_N - 1)].n == 1);
+    assert(g_rix[(home + 1) & (RIX_N - 1)].key == 0x5254 && g_rix[(home + 1) & (RIX_N - 1)].n == 1);
     vk_release_drain();
-    assert(!g_rix[home].word && !g_rix[(home + 1) & (RIX_N - 1)].word && count_queued(0x37ab4) == -1);
+    assert(!g_rix[home].key && !g_rix[(home + 1) & (RIX_N - 1)].key && count_queued(0x37ab4) == -1);
+    /* a range finds the latest release over it by its pages (latest_over), through the words' index or the page's
+       releases: of three payloads in one page each queued after a submit, a read of the oldest performs it alone, one
+       over the page's other words none, and one over the newest the two left; with one queued in another page, which a
+       range over both performs */
+    u64 seq0 = g_rhead;
+    for (u32 i = 0; i < 3; i++) {
+        word4 = 30 + i;
+        vk_submit(0, 0, 0);
+        vk_release_write(0x10200 + 0x100 * i, &word4, 4);
+    }
+    vk_submit(0, 0, 0);
+    vk_release_write(0x37000, &word4, 4);
+    assert(g_rhead == seq0 + 4 && !g_rodd && g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].n == 3);
+    vk_release_need(0x10200, 4);
+    assert(g_rtail == seq0 + 1 && snx_ld_le32(memory + 4096 + 0x200) == 30 && snx_ld_le32(memory + 4096 + 0x300) == 0);
+    vk_release_need(0x10500, 0x100); /* by the page's releases (more words than releases) */
+    vk_release_need(0x10304, 0xfc);
+    vk_release_need(0x10304, 4); /* by the words' index */
+    assert(g_rtail == seq0 + 1);
+    vk_release_need(0x10380, 0x100);
+    assert(g_rtail == seq0 + 3 && snx_ld_le32(memory + 4096 + 0x400) == 32 && !g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key);
+    vk_submit(0, 0, 0);
+    for (u32 i = 0; i < 3; i++) vk_release_write(0x10200 + 0x100 * i, &word4, 4); /* the page path again */
+    vk_release_need(0x36ffc, 8);
+    assert(g_rtail == seq0 + 4 && snx_ld_le32(memory + 0x7000) == 32);
+    vk_release_drain();
+    assert(!g_rpg[rix_find(g_rpg, RPG_N - 1, 4096)].key && !g_rpg[rix_find(g_rpg, RPG_N - 1, 0x7000)].key);
     assert(lock_depth == 0 && events_signaled == 3 && !events_due); /* payload writes signal nothing */
 	check_writeback_merge();
     return 0;

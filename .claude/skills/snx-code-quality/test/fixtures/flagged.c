@@ -38,3 +38,5 @@ static void count(Queue* q) {
     __atomic_store_n(&g_first, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&g_second, 1, __ATOMIC_RELEASE);
 }
+static _Thread_local u32 t_depth;
+static _Thread_local int t_busy; /* a second loose thread-local: one struct holds them */

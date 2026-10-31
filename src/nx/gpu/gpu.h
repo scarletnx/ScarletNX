@@ -6,6 +6,7 @@
 #define SNX_GPU_H
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/pushbuffer.h"
+#include "nx/gpu/draw_state.h"
 
 /* The pushbuffer's decode state (Eden's DmaPusher::DmaState): the command header whose data words are still coming.
    A header's count can run past the end of its GPFIFO entry into the next one, so the state belongs to the channel,
@@ -16,6 +17,10 @@ typedef struct {
     u32 method;       /* the method the next word goes to */
     u32 method_count; /* the words still owed */
 } PbState;
+/* a word of the stream: 1 when it is a method call (*sub, *m, *v, and *last, its header's last word), 0 for a header */
+int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last);
+/* whether an engine here runs the class a subchannel binds */
+int gpu_class_known(u32 cls);
 
 /* The macro engine (mme.c) of a channel, kept between steps: a method a macro sends can make the stream wait
    (gpu_park), and the macro goes on from here (mme_resume) once the wait ends */
@@ -76,13 +81,28 @@ enum {
     R3D_VATTR = 1u << 1,    /* the vertex attributes 0x458-0x477 */
     R3D_VFORMAT = 1u << 2,  /* the vertex streams' stride and enable (0x700 + 4 * i), divisor (0x703 + 4 * i), and
                                whether each is per instance (0x620-0x63F): not their addresses or limits */
-    R3D_RTFORMAT = 1u << 3, /* RT_CONTROL 0x487 and each color target's format (0x204 + 0x10 * i) */
+    R3D_RTFORMAT = 1u << 3, /* RT_CONTROL 0x487, each color target's format (0x204 + 0x10 * i), the MSAA mode 0x574 */
     R3D_BLEND = 1u << 4,    /* blending 0x4B9, 0x4D0-0x4DF, 0x780-0x7BF, color masks 0x3E4 and
-                               0x680-0x687, sRGB writes 0x56E, the logic operation 0x671-0x672 */
+                               0x680-0x687, the logic operation 0x671-0x672 */
     R3D_PIPEMISC = 1u << 5, /* the rest of the pipeline key and the programs' keys: polygon mode 0x36B, patch size
                                0x373, tessellation parameters 0xC8, user clip enable 0x544, the geometry passthrough
-                               mask 0x490-0x497, the provoking vertex 0x5A1, the clip mode 0x64F */
-    R3D_XFB = 1u << 6       /* transform feedback: enable 0x1D1, buffer controls 0x1C0-0x1CF, layouts 0xA00-0xA7F */
+                               mask 0x490-0x497, the provoking vertex 0x5A1, the clip mode 0x64F, alpha to coverage
+                               0x54F, conservative rasterization 0x452 */
+    R3D_XFB = 1u << 6,      /* transform feedback: enable 0x1D1, buffer controls 0x1C0-0x1CF, layouts 0xA00-0xA7F */
+    /* the rest of what the draw state (maxwell/draw_state.c) reads */
+    R3D_TARGETS = 1u << 7,   /* RT_CONTROL 0x487, the color targets' first 8 words (0x200 + 0x10 * i), the depth
+                                target 0x3F8-0x3FC and 0x48A-0x48C, its enable 0x54E, sRGB writes 0x56E, the MSAA
+                                mode 0x574 */
+    R3D_DYNAMIC = 1u << 8,   /* what mx_draw_dynamic reads: cull and facing, rasterizer discard, depth bias, line
+                                widths, depth and stencil, alpha test, blend constants, the window origin, the surface
+                                clip, the point sprite origin, the depth mode */
+    R3D_VIEWPORTS = 1u << 9, /* viewports 0x280-0x2FF and 0x300-0x33F, scissors 0x380-0x3BF, transforms on 0x64B */
+    R3D_VBUF = 1u << 10,     /* the vertex streams' addresses (0x701 + 4 * i, 2 words) and limits 0x7C0-0x7FF */
+    R3D_INDEX = 1u << 11,    /* the index buffer 0x5F2-0x5F6, primitive restart 0x591-0x592 */
+    R3D_BIND = 1u << 12,     /* the texture bank 0x982, the TIC and TSC pools 0x557-0x559 and 0x55D-0x55F, the
+                                sampler index mode 0x48D, the capture buffers 0xE0-0xFF and their layouts 0x1C0-0x1CF */
+    R3D_CBIND = 1u << 13     /* a constant buffer bound (3D 0x904 + 8 * stage, written into GpuChannel.ds by
+                                r3d_cb_bind), not a register's change */
 };
 
 /* A GPU channel: an nvhost-gpu fd's state, named by its syncpoint id. It is made at the channel's first submission
@@ -97,6 +117,7 @@ typedef struct GpuChannel {
     /* the register groups (R3D_*) a method changed a register of since the renderer last took them (all of them
        after a reset): what it derived from the other groups' registers still holds */
     u32 r3d_dirty;
+    DsState ds; /* what a draw reads of the registers, for the renderer (maxwell/draw_state.c mx_draw_state_sync) */
     u32 r3d_shadow[MAXWELL3D_NUM_REGS]; /* the MME shadow RAM (SET_MME_SHADOW_RAM_CONTROL, 3D 0x49) */
     u32 shadow_mode;       /* 0 or 1 track, 2 passthrough, 3 replay */
     u32 rcomp[KEPLER_COMPUTE_METHODS]; /* compute's (maxwell/kepler_compute_regs.h) */
@@ -121,20 +142,14 @@ typedef struct GpuChannel {
     int mme_collecting;
     u32 mme_index;
     GpuMme mme; /* the macro running, or one a wait stopped after the method that asked for it */
-    /* transform feedback, a bit per buffer: its write pointer was loaded (3D 0xE4 + 8 * i) since its last capture,
-       and a capture since that left a byte count in the renderer's counter to resume from */
-    u8 xfb_reload, xfb_started;
     /* constant buffer data (3D 0x8E4-0x8F3) a batch is still sending: written to memory in one go */
     u64 cb_addr;
     u32 cb_n;
     u32 cb_words[256];
-    /* the constant buffers bound to each stage (3D 0x904 + 8 * stage), address and size, 0 when unbound. The renderer
-       reads the drawing channel's: another channel binds its own */
-    u64 cbind[5][18];
-    u32 cbind_size[5][18];
     int render_off; /* SetRenderEnable (3D 0x554-0x556) or its override (0x651) turned drawing off */
-    u32 render_pred; /* the render enable's comparison is made on the GPU: its draws and clears run on this predicate
-                        (renderer.h render_predicate), 0 for none */
+    /* the render enable's comparison made on the GPU (pred: its draws and clears run on it), and transform feedback's
+       buffers whose write pointer was loaded (3D 0xE4 + 8 * i) since their last capture (xfb_reload) */
+    DrawOwner owner;
     /* counter reports (3D 0x6C3 operation 2): g_draws at each selector's last reset, and the selectors reset */
     u64 counter_base[32];
     u32 counter_reset;
@@ -152,6 +167,11 @@ typedef struct GpuChannel {
     u64 park_addr; /* the semaphore's GPU address, or the syncpoint id */
     u64 park_end;  /* the plat_ns() past which the stream goes on anyway */
 } GpuChannel;
+/* A verify channel (gpu/nvn/nvn_verify.c): the game's NVN driver's stream, decoded into its registers on the GPU
+   thread for nvn_verify_shadow_draw to compare, with no effect anywhere else (no draw, write, release, barrier or
+   syncpoint). Its id, from GPU_VERIFY_ID, is no syncpoint's, and it is no channel of g_gpu's */
+#define GPU_VERIFY_ID 0x40000000u
+static inline int gpu_channel_verify(const GpuChannel* ch) { return ch->id >= GPU_VERIFY_ID; }
 enum {
     GPU_PARK_SEMAPHORE = 1, /* the puller's SemaphoreOperation acquire */
     GPU_PARK_REPORT,        /* the 3D or compute engine's report semaphore acquire */
@@ -214,7 +234,7 @@ typedef struct NvdecPic {
    down; rows from h on read as zero and take no writes). With remap, an element is ns components of cs bytes in and
    nd out, component k of it from sel[k] (0-3 a source component, 4 constant A, 5 constant B, 6 and 7 the
    destination's own bytes); fill: nothing is read. snap: the source's bytes as read at submission (pitch linear, its
-   span), or NULL */
+   span), or NULL; snap_id: nonzero when they are the renderer's (Renderer.snap_alloc), which dma_copy takes over */
 typedef struct {
     u64 addr;
     int bl;
@@ -226,6 +246,7 @@ typedef struct {
     u32 width, lines, line_in, line_out; /* elements a line, lines, a line's bytes in and out */
     GpuDmaSide src, dst;
     const u8* snap;
+    u64 snap_id;
 } GpuDmaOp;
 /* A 2D engine blit (maxwell/fermi2d.c) the renderer does on the GPU: each destination pixel of columns x0 to x1 - 1
    and rows y0 to y1 - 1 the source pixel at column scol[x - x0] and row srow[y - y0] (nearest sampled, the tables
@@ -259,6 +280,13 @@ void gmem_before_write(u64 gva, u64 size);
 void gmem_write_raw(u64 gva, const void* src, u64 size);
 /* a shader program: up to size bytes, stopping at the first page with no guest memory behind it, zeros after */
 void gmem_read_code(u64 gva, void* dst, u64 size);
+/* the same with nothing landed (memory/own.c): from the first byte the GPU holds on, zeros. How many bytes are the
+   CPU's (size when the GPU holds none) */
+u64 gmem_read_code_cpu(u64 gva, void* dst, u64 size);
+/* whether a program shader_hash measured len bytes long in a buffer whose bytes from cpu on gmem_read_code_cpu made
+   zero may go on into them (size: the buffer's): the scan ends at a zero word, which a control word can precede, so
+   one starting within two words of the end may be a zero of ours. Then gmem_read_code reads it with them landed */
+int gmem_code_cut(u64 len, u64 cpu, u64 size);
 /* the host address of [gva, gva + size) when it is contiguous in guest memory, after landing pending results over
    it; NULL otherwise */
 u8* gmem_ptr(u64 gva, u64 size);
@@ -321,6 +349,8 @@ void gpu_mem_written_shader(u64 gva, u64 size); /* a shader's result landing in 
 /* guest CPU bytes [cpu, cpu + size) written by an engine that doesn't go through the GPU's address space (VIC's
    picture, published over them, memory/own.c): what is built from them checks them again */
 void gpu_mem_written_cpu(u64 cpu, u64 size);
+/* fn(cpu, n) for each run of guest memory that a GPU-side write above changes (gpu/vk/uma.c's hazard count) */
+void gpu_set_write_watch(void (*fn)(u64 cpu, u64 n));
 u64 gpu_mem_generation(void);                   /* the last generation fully published */
 void gpu_mem_written_all(void); /* a save state's load: every page written, after anything asked before */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz); /* a GPU-side write after since touched [a, a + sz) */
@@ -335,6 +365,16 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* a verify channel with its id (from GPU_VERIFY_ID), reset as a new channel is, and freed; and a word of its stream,
+   decoded at once: its 3D engine's methods only, the puller's binds, and the 3D engine's held constants and draw
+   flushed before any other engine's method, as method_call does. On the GPU thread */
+GpuChannel* gpu_verify_channel_new(u32 id);
+/* where a verify channel's draws (with the DsState its registers give, ch->ds) and constant buffer data (host-order
+   words) go: nvn_verify's, set before it makes a channel (maxwell/maxwell3d.c) */
+extern void (*g_gpu_verify_draw)(GpuChannel* ch, const DrawCall* dc);
+extern void (*g_gpu_verify_cb)(u64 gva, const u32* words, u32 n);
+void gpu_verify_channel_free(GpuChannel* ch);
+void gpu_verify_word(GpuChannel* ch, u32 w);
 void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one with the same id starts from reset */
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
@@ -352,8 +392,8 @@ int gpu_hold(int timeout_ms);
 void gpu_release(void);
 extern volatile u64 g_gpu_submits;
 /* the blocking wait the GPU thread is in, for the stall report: what it waits for (a string that lives on) and a number
-   that names it, before the wait, and NULL after. Ignored on other threads */
-void gpu_wait_note(const char* what, u64 value);
+   that names it, before the wait, and NULL after. Ignored on other threads: 1 on the GPU thread */
+int gpu_wait_note(const char* what, u64 value);
 /* the stall watchdog's report of what the GPU thread and each channel with queued jobs are doing. Any thread */
 void gpu_report_stall(void);
 /* guest memory [cpu_addr, cpu_addr + len) changed without a write the host's write tracking sees: decommitted pages,
@@ -387,7 +427,7 @@ void r3d_draw_texture(GpuChannel* ch); /* DRAW_TEXTURE (3D 0x420-0x42B) */
 /* a draw: indexed 0 none, 1 the index buffer, 3 the channel's inline indices */
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances);
-void r3d_cb_bind(GpuChannel* ch, int stage, u32 v); /* records the binding in ch->cbind */
+void r3d_cb_bind(GpuChannel* ch, int stage, u32 v); /* records the binding in ch->ds.bind */
 void r3d_const_upload(GpuChannel* ch, u32 v, int last);
 void r3d_const_flush(GpuChannel* ch); /* writes the constant buffer data r3d_const_upload is holding */
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,

@@ -10,10 +10,11 @@
    conversions to and from integers and fixed point, between precisions), FEAT_FHM's widening products, FEAT_FCMA's
    complex additions and products, FEAT_FRINTTS, and FEAT_BF16's BFDOT, BFMMLA, BFMLAL and BFCVTN, on
    halves (FEAT_FP16) as on singles and doubles. Every lane is the architecture's: FPCR (FZ, FZ16, DN, AHP, RMode),
-   NaN propagation and FPSR's cumulative flags are the soft-float helpers' (helpers/fp.c), one call per lane. The
-   common single and double operations first try the host's IEEE arithmetic on whole vectors, behind the guards
-   ir_fpu.c's scalar fast paths use, checked in every lane: round to nearest, no denormal operand under FZ, a finite
-   result above the smallest normal or an exact zero, and IXC computed exactly or already set. */
+   NaN propagation and FPSR's cumulative flags are the helpers' (helpers/fp.c, through helpers/fp_host.c's host
+   arithmetic where it is exact), one call per lane. The common single and double operations first try the host's
+   IEEE arithmetic on whole vectors, behind the guards ir_fpu.c's scalar fast paths use, checked in every lane: round
+   to nearest, no denormal operand under FZ, a finite result above the smallest normal or an exact zero, and IXC
+   computed exactly or already set. */
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/recompiler/llvm/ir_fp.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -58,6 +59,13 @@ typedef struct {
     V rm;                 /* the i32 rounding mode of H_CONVERT, H_ROUND, H_ROUND_INT, H_TO_INT */
 } LaneOp;
 
+/* name(c, operands...): the helpers read c->fpcr and change c->fpsr, and no register (ir_noregs, as ir_fpu.c's) */
+static V fp_lane_call(SnxIr* ir, const char* name, LLVMTypeRef ret, const V* operands, unsigned count) {
+    V r = ir_vec_call(ir, name, ret, operands, count);
+    ir_noregs(ir, LLVMGetNamedFunction(ir->mod, name));
+    return r;
+}
+
 /* the i64 result (i32 NZCV for H_COMPARE) of one lane's operands (iN) */
 static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
     V ops[6];
@@ -66,27 +74,27 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
     LLVMTypeRef ret = ir->t_i64;
     switch (o->helper) {
         case H_BINARY:
-            name = "snx_fp_binary";
+            name = "snx_fp_host_binary";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
             ops[n++] = ir_i32(ir, o->op);
             break;
         case H_FMA: /* x + y * z */
-            name = "snx_fp_fma";
+            name = "snx_fp_host_fma";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = u64_of(ir, z);
             ops[n++] = ir_i32(ir, o->width);
             break;
         case H_UNARY:
-            name = "snx_fp_unary";
+            name = "snx_fp_host_unary";
             ops[n++] = u64_of(ir, x);
             ops[n++] = ir_i32(ir, o->width);
             ops[n++] = ir_i32(ir, o->op);
             break;
         case H_MINMAX:
-            name = "snx_fp_minmax";
+            name = "snx_fp_host_minmax";
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
@@ -94,7 +102,7 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             ops[n++] = ir_i32(ir, o->p1);
             break;
         case H_COMPARE:
-            name = "snx_fp_compare";
+            name = "snx_fp_host_compare";
             ret = ir->t_i32;
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
@@ -144,18 +152,34 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             ops[n++] = u64_of(ir, x);
             break;
     }
-    V call = ir_vec_call(ir, name, ret, ops, n);
-    /* This switch names only raw-bit FP helpers: cpu.h's contract reads FPCR and writes FPSR, not registers.
-       Mark at the first vector declaration too, before promotion of this function. */
-    ir_noregs(ir, LLVMGetCalledValue(call));
-    return call;
+    return fp_lane_call(ir, name, ret, ops, n);
 }
 
-/* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits> */
+/* v in a local of its type, for a helper to read */
+static V spill(SnxIr* ir, V v) {
+    V local = ir_local(ir, LLVMTypeOf(v));
+    LLVMSetAlignment(LLVMBuildStore(B, v, local), 8);
+    return local;
+}
+
+/* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits>. The arithmetic,
+   the estimates and FMAX and FMIN take a vector in one call (snx_fp_host_lanes), the rest one call a lane */
 static V map(SnxIr* ir, const LaneOp* o, V X, V Y, V Z, unsigned out_bits) {
     unsigned lanes = ir_vec_count(X);
     LLVMTypeRef type = LLVMVectorType(LLVMIntTypeInContext(ir->ctx, out_bits), lanes);
     V r = LLVMGetUndef(type);
+    if (lanes > 1 && o->helper <= H_MINMAX) {
+        V out = ir_local(ir, type), x = spill(ir, X), ops[5];
+        ops[0] = out;
+        ops[1] = x;
+        ops[2] = Y ? spill(ir, Y) : x;
+        ops[3] = Z ? spill(ir, Z) : x;
+        ops[4] = ir_i32(ir, o->helper | (o->width / 8) << 4 | lanes << 8 | o->op << 12 | o->p1 << 16);
+        fp_lane_call(ir, "snx_fp_host_lanes", ir->t_void, ops, 5);
+        V load = LLVMBuildLoad2(B, type, out, "");
+        LLVMSetAlignment(load, 8);
+        return load;
+    }
     for (unsigned i = 0; i < lanes; ++i) {
         V at = ir_i32(ir, i), x = LLVMBuildExtractElement(B, X, at, ""), y = NULL, z = NULL;
         if (Y) y = LLVMBuildExtractElement(B, Y, at, "");
@@ -243,6 +267,9 @@ static V binary_residual(SnxIr* ir, const BinaryResidual* r) {
         } else {
             inexact = nonzero(ir, fma3(ir, LLVMBuildFNeg(B, r->result, ""), r->b, r->a), 64);
         }
+        /* a zero divided by an infinity is an exact zero (FPDiv's zero1 || inf2), though its residual (0 * inf) is
+           a NaN */
+        inexact = both(ir, inexact, nonzero(ir, r->a, r->width));
     } else if (r->width == 32) {
         inexact = float_ne(ir, LLVMBuildFMul(B, widen_f(ir, r->a), widen_f(ir, r->b), ""),
                            widen_f(ir, r->result));
@@ -451,7 +478,7 @@ static void relax(SnxIr* ir, unsigned width, Fast* f) {
 
 /* ---- the operations, fast where they can be ---- */
 
-/* SNX_FP_* of a and b (lanes of width) */
+/* SNX_FP_* of a and b (lanes of width). FABD is the difference's, its sign cleared */
 static V binary(SnxIr* ir, unsigned op, unsigned width, V a, V b) {
     LaneOp o = op_binary(width, op);
     /* FABD is the exact subtraction, including its NaN processing and FPSR effects, with the result sign cleared. */
@@ -731,6 +758,58 @@ static V recip_exponent(SnxIr* ir, unsigned width, V a) {
     return result;
 }
 
+/* integer lanes v as the lanes of type: truncated or zero-extended */
+static V lanes_as(SnxIr* ir, V v, LLVMTypeRef type) {
+    unsigned from = LLVMGetIntTypeWidth(LLVMGetElementType(LLVMTypeOf(v)));
+    unsigned to = LLVMGetIntTypeWidth(LLVMGetElementType(type));
+    return from == to ? v : from > to ? LLVMBuildTrunc(B, v, type, "") : LLVMBuildZExt(B, v, type, "");
+}
+/* FRECPE and FRSQRTE where unary has no table path (x86 without AVX2, AArch64): of normal operands whose estimate
+   is normal (FPRecipEstimate's exponent 2*bias-1 - e at least 1; FPRSqrtEstimate's operand positive): no flag, no
+   rounding, and the result is the sign, the estimate's exponent
+   and the low 8 bits of RecipEstimate or RecipSqrtEstimate of the fraction's top bits. Those take integers a' from
+   513 to 1023 (RecipEstimate's 2a + 1, a = 1:frac<22:15>) and 257 to 1022 (RecipSqrtEstimate's: 0x101 + frac<22:16>:0
+   for an odd exponent, twice that for an even one) to (2^19 / a' + 1) / 2 and ceil(sqrt(2^28 / a')) / 2, which
+   single precision gives exactly in any rounding mode: the exact quotient and root are never closer than 0.003 to
+   an integer, a few hundred times the error of a single's rounded quotient and root of these sizes.
+   tests/llvm_vfp_lanes.c checks every a' of both, in every lane width, against the soft-float's table */
+static void fast_estimate(SnxIr* ir, unsigned op, unsigned width, V a, Fast* f) {
+    unsigned fb = width == 32 ? 23 : 52, bias = width == 32 ? 127 : 1023, lanes = ir_vec_count(a);
+    LLVMTypeRef i32v = ir_vec_type(ir, esz_of(32), lanes);
+    V e = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, fb), ""), ir_vec_like(ir, a, 2 * bias + 1), "");
+    V top = LLVMBuildAnd(B, LLVMBuildLShr(B, a, ir_vec_like(ir, a, fb - 8), ""), ir_vec_like(ir, a, 0xFF), "");
+    V divisor, exponent, sign = NULL;
+    top = lanes_as(ir, top, i32v);
+    if (op == SNX_FP_RECPE) {
+        divisor = LLVMBuildAdd(B, LLVMBuildShl(B, top, ir_vec_like(ir, top, 1), ""), ir_vec_like(ir, top, 0x201), "");
+        exponent = LLVMBuildSub(B, ir_vec_like(ir, e, 2 * bias - 1), e, "");
+        sign = LLVMBuildAnd(B, a, ir_vec_like(ir, a, sign_mask(width)), "");
+        f->ok = ir_vec_all(ir, magnitude_in(ir, width, a, min_normal(width), (SnxU64)(2 * bias - 1) << fb));
+    } else {
+        V even = lanes_as(ir, LLVMBuildXor(B, LLVMBuildAnd(B, e, ir_vec_like(ir, e, 1), ""), ir_vec_like(ir, e, 1), ""),
+                          i32v);
+        divisor =
+            LLVMBuildAdd(B, LLVMBuildAnd(B, top, ir_vec_like(ir, top, 0xFE), ""), ir_vec_like(ir, top, 0x101), "");
+        divisor = LLVMBuildShl(B, divisor, even, "");
+        exponent =
+            LLVMBuildLShr(B, LLVMBuildSub(B, ir_vec_like(ir, e, 3 * bias - 1), e, ""), ir_vec_like(ir, e, 1), "");
+        V offset = LLVMBuildSub(B, a, ir_vec_like(ir, a, min_normal(width)), "");
+        f->ok = ir_vec_all(
+            ir, LLVMBuildICmp(B, LLVMIntULT, offset, ir_vec_like(ir, a, inf_bits(width) - min_normal(width)), ""));
+    }
+    V q = LLVMBuildFDiv(B, KF(ir, 32, lanes, op == SNX_FP_RECPE ? 524288.0 : 268435456.0),
+                        LLVMBuildSIToFP(B, divisor, fvec(ir, 32, lanes), ""), "");
+    if (op == SNX_FP_RSQRTE) q = ir_intrinsic(ir, "llvm.sqrt", LLVMTypeOf(q), &q, 1);
+    V estimate = LLVMBuildAdd(B, LLVMBuildFPToSI(B, q, i32v, ""), ir_vec_like(ir, top, 1), "");
+    estimate = LLVMBuildAnd(B, LLVMBuildLShr(B, estimate, ir_vec_like(ir, estimate, 1), ""),
+                            ir_vec_like(ir, estimate, 0xFF), "");
+    V r = LLVMBuildOr(B, LLVMBuildShl(B, exponent, ir_vec_like(ir, a, fb), ""),
+                      LLVMBuildShl(B, lanes_as(ir, estimate, LLVMTypeOf(a)), ir_vec_like(ir, a, fb - 8), ""), "");
+    f->value = sign ? LLVMBuildOr(B, r, sign, "") : r;
+    f->inexact = NULL;
+    f->quick = NULL;
+}
+
 static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
     LaneOp o = op_simple(H_UNARY, width);
     o.op = op;
@@ -755,6 +834,14 @@ static V unary(SnxIr* ir, unsigned op, unsigned width, V a) {
         LLVMPositionBuilderAtEnd(B, off);
         V slow = op == SNX_FP_RECPE ? recip_exact(ir, a, exponent, width) : rsqrt_exact(ir, a, exponent, width);
         return split_end(ir, &s, slow);
+    }
+    /* the other hosts, where the table's gather is not validated: fast_estimate needs no table */
+    if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && host_native(ir)) {
+        Fast f;
+        Split s;
+        fast_estimate(ir, op, width, a, &f);
+        split_begin(ir, NULL, f.ok, f.value, NULL, &s);
+        return split_end(ir, &s, map(ir, &o, a, NULL, NULL, width));
     }
     if (op == SNX_FP_SQRT && width != 16 && host_native(ir)) {
         Fast f;
@@ -798,15 +885,15 @@ static V compare(SnxIr* ir, unsigned cmp, unsigned width, V a, V b, int abs) {
     return compare_slow(ir, &o, cmp, a, b);
 }
 
-/* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR; exact: FRINTX's IXC). The host's rounding instructions
-   give the encoding's modes exactly for every lane but a NaN or a flushed denormal, and raise nothing (ties away
-   from zero only on AArch64) */
+/* FRINT[NPMZA] (rm 0-4), FRINTX and FRINTI (rm RM_FPCR: FPCR's mode, ir_fp_round_value; exact: FRINTX's IXC).
+   The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for every lane
+   but a NaN or a flushed denormal, and raises nothing. FRINTX's IXC is a lane that rounding changed */
 static V round_lanes(SnxIr* ir, unsigned width, unsigned rm, unsigned exact, V a) {
     LaneOp o = op_simple(H_ROUND, width);
     o.p1 = exact;
     o.rm = rm == RM_FPCR ? fpcr_rmode(ir) : ir_i32(ir, rm);
-    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
-        V fa = as_float(ir, a, width), r = ir_fp_round_value(ir, fa, rm);
+    if (width != 16 && host_round(ir)) {
+        V fa = as_float(ir, a, width), r = rm == RM_FPCR ? ir_fp_round_value(ir, fa, rm) : host_rint(ir, fa, rm);
         Split s;
         split_begin(ir, NULL, both(ir, no_nan(ir, width, a), unflushed(ir, width, a)), as_bits(ir, r, width),
                     exact && snx_ir_fpsr_exact() ? ir_vec_any(ir, float_ne(ir, fa, r)) : NULL, &s);
@@ -854,15 +941,14 @@ static V to_int(SnxIr* ir, unsigned width, unsigned integer, unsigned uns, unsig
     o.p2 = uns;
     o.p3 = fbits;
     o.rm = ir_i32(ir, rm);
-    if (width != 16 && integer == width && (rm == 3 || (host_round(ir) && (rm != 4 || ir->features->aarch64)))) {
-        static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", NULL, "llvm.round"};
+    if (width != 16 && integer == width && (rm == 3 || host_round(ir))) {
         unsigned precision = width == 32 ? 24 : 53, lanes = ir_vec_count(a);
         LLVMTypeRef type = ir_vec_type(ir, esz_of(integer), lanes);
         V f = as_float(ir, a, width), low;
         double top = (double)((SnxU64)1 << (integer - 1)) * (uns ? 2.0 : 1.0);
         Split s;
         if (fbits) f = LLVMBuildFMul(B, f, KF(ir, width, lanes, (double)((SnxU64)1 << (fbits - 1)) * 2.0), "");
-        V rounded = rm == 3 ? f : ir_intrinsic(ir, names[rm], LLVMTypeOf(f), &f, 1);
+        V rounded = rm == 3 ? f : host_rint(ir, f, rm);
         if (uns)
             low = LLVMBuildFCmp(B, LLVMRealOGT, rounded, KF(ir, width, lanes, -1.0), "");
         else if (integer < precision)

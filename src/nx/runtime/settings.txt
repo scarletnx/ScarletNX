@@ -197,6 +197,16 @@ setting Vsync
     words Off|On
     help 1 = images wait for the display's refresh, so nothing tears; 0 = the newest is shown at the next refresh
     help the display allows, else at once
+setting Frame pacing
+    key frame_pacing
+    int 0 2
+    default 1
+    words Timer|Display|Display and hold
+    help With VSync and fps_limit=game: 0 = the game's frames are paced by a timer; 1 = the game's next frame also
+    help waits until the frame before is on the display (VK_KHR_present_wait or VK_GOOGLE_display_timing), so frames
+    help don't queue for it; 2 = and a game that asks for two refreshes or more a frame has each frame held until its
+    help refresh where the display can say when (VK_EXT_present_timing or VK_GOOGLE_display_timing), so its frames
+    help are shown evenly. Where the display can't do one, the one before it
 setting Anisotropic filtering
     key anisotropy
     int 0 16
@@ -566,6 +576,15 @@ setting Log level
     int 0 2
     default 1
     help The log's detail, 0 to 2: 2 logs everything, which slows the game down
+setting Emulated cores
+    key emulated_cores
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help On = a guest thread runs only while it holds one of the console's cores, one thread per core at a time, in
+    help priority order. Off = every guest thread runs as soon as the host schedules it (svcGetCurrentProcessorNumber
+    help still answers the thread's core)
 setting Log size limit
     key log_max
     int 1 1024
@@ -709,6 +728,31 @@ setting Profiler
     startup
     words Off|On
     help 1 = writes profile.txt every 10 seconds (the CPU profiler is Windows only)
+setting Native hooks
+    key hooks
+    int 0 1
+    default 1
+    startup
+    words Off|On
+    help 1 = the game's exported functions that the runtime has a native handler for (hle/hook/hooks.hook: the C
+    help library's memcpy, memmove and memset) run that handler instead of their own code. 0 runs every function's own
+    help code, to tell whether a problem comes from a hook
+setting Hook families off
+    key hooks_off
+    text 256
+    default ""
+    startup
+    help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
+    help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
+setting Hook families verified
+    key hooks_verify
+    text 256
+    default ""
+    startup
+    help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
+    help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
+    help and the log names each call whose result, registers or bytes differ (docs/HOOKS.md). Slow: for checking a
+    help hook, never for playing. Empty: none
 setting NVN trace
     key nvn_trace
     int 0 1
@@ -718,6 +762,25 @@ setting NVN trace
     help 1 = logs each NVN function the game resolves, the GPFIFO submissions during each queue call, and at exit
     help the calls of every function used (gpu/nvn_trace.c). Calls by direct branch are counted only in a game
     help recompiled with --hook-direct-calls. The game runs slower
+setting NVN direct
+    key nvn_direct
+    int 0 2
+    default 0
+    startup
+    words Off|On|Auto
+    help 1 = the runtime runs the game's NVN calls itself and the game's NVN driver doesn't run (gpu/nvn/nvn_direct.c);
+    help 2 = it does where the game's NVN API version is one nvn_direct has measured layouts for, read from the game's
+    help driver at its first NVN call, and the driver runs elsewhere (the log says which once); 0 = the driver runs.
+    help Unfinished: the game stops at the first NVN function it calls that isn't implemented yet, naming it
+setting NVN verify
+    key nvn_verify
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = with nvn_direct, the game's own NVN driver also runs every NVN call, on shadow objects of its own, and its
+    help command stream is decoded beside nvn_direct's replay: the log names each part of a draw's state where the two
+    help differ, once (gpu/nvn/nvn_verify.c, docs/NVN_HLE.md). Slow: for checking nvn_direct, never for playing
 setting Shader corpus
     key shader_corpus
     text 1024
@@ -739,6 +802,16 @@ setting GPU profile
     startup
     words Off|On
     help 1 = the GPU's time per rendering pass, summed per target and logged every 10 seconds (Vulkan timestamps)
+setting Guest memory
+    key vk_memory
+    int 0 2
+    default 0
+    startup
+    words Auto|Copy|UMA
+    help How the GPU reads guest buffers (vertices, indices, read-only storage; docs/GPU_OWNERSHIP.md). 1 = copied into
+    help the renderer's buffers when they change. 2 = read where they are in guest memory (VK_EXT_external_memory_host),
+    help as the console's GPU reads them: for a GPU that shares system memory. On a discrete GPU it reads them across
+    help the bus, which is slow, but it shows that the path is correct. 0 = 2 on a GPU that shares system memory, else 1
 setting Buffer copy stats
     key vk_buffer_stats
     int 0 1

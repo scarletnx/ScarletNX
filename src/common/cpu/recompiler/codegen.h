@@ -56,6 +56,9 @@ int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
 SnxU64 snx_function_address(const SnxFunction* function, size_t index);
 int snx_function_contains(const SnxFunction* function, SnxU64 address);
 const SnxFunction* snx_codegen_function(const SnxCodegen* codegen, SnxU64 address);
+/* whether a module routes the function at address (SnxCodeImage.routed): a call to it goes through its dispatch slot
+   even when it is compiled (CALLDYN), so a hook in the slot (nx/hle/hook/hook.h) sees every call that isn't inlined */
+int snx_codegen_routed(const SnxCodegen* codegen, SnxU64 address);
 /* the function that starts at address, or else one that has a leader there: what GuestFn(c, address) enters. NULL when
    none has */
 const SnxFunction* snx_codegen_entry(const SnxCodegen* codegen, SnxU64 address);

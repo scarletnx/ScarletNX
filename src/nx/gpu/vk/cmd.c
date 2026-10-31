@@ -34,6 +34,7 @@ typedef struct {
     u8* ptr;
     u64 cap, used;
     u32 small; /* frames in a row that used a quarter of it or less */
+    u32 in;    /* where its memory is: an XFER_ index */
 } Ring;
 
 #define SPARE_SETS 32
@@ -48,6 +49,7 @@ typedef struct {
     Ring stage;           /* uploads and draw data, written by the CPU and read by the GPU */
     Ring output;          /* GPU-written storage and draw state, near the GPU when its budget allows */
     Ring back;            /* storage results copied back by the GPU for the CPU to read (vk_stage_back) */
+    Ring dev;             /* made and read by the GPU alone, in device memory (vk_stage_device) */
     Ring* stage_spare; /* full-size overflow blocks, owned by this frame slot */
     u32 nstage, capstage, istage;
     /* destroyed once this frame's work is done */
@@ -215,12 +217,15 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
     int heap = bar_heap();
     u64 size, use, budget, whole;
     if (heap < 0) return 0;
+    /* the mapping failure above is of a big ring in the window, whatever the window's size: with resizable BAR too,
+       the staging rings grew to 256 MiB there, and one game's draws then took up to 1.5 s each to write their data */
+    if (add > BAR_RING_MAX) return 0;
     use = b[heap].usage;
     budget = b[heap].budget;
     if (heap == vk_mem_heap()) return use + add <= (back ? budget / 4 * 3 : budget);
     vmaGetMemoryProperties(g_vk.vma, &mp);
     size = mp->memoryHeaps[heap].size;
-    if (add && (add > BAR_RING_MAX || b[heap].statistics.blockBytes + add > size / 4)) return 0;
+    if (add && b[heap].statistics.blockBytes + add > size / 4) return 0;
     whole = use + budget + (1u << 20) >= size && use + budget <= size + (1u << 20); /* NVIDIA's use */
     if (whole) use = 0;                                                           /* the budget is what is left */
     return budget >= use + (add ? add + size / 16 : 0);
@@ -246,15 +251,25 @@ static void ring_reset(Ring* r, const VmaBudget* budget) {
     r->used = 0;
 }
 
-static void timeline_wait(u64 value) {
+u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* the GPU thread's alone, which writes them */
+/* kind: VK_WAIT_*, for the statistics */
+static void timeline_wait(u64 value, int kind) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
+    u64 t0 = plat_ns(), done = 0;
     SNX_ZONE_C(z_wait, "vk timeline wait", 0xb05252);
-    gpu_wait_note("a graphics submission", value);
+    /* a wait for work already done is no stall */
+    if (VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)) && done >= value) return;
+    int mine = gpu_wait_note("a graphics submission", value);
+    if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
+    if (mine) {
+        g_vk_wait_ns[kind] += plat_ns() - t0;
+        g_vk_waits[kind]++;
+    }
 }
 /* the storage results of every submission up to value, which has finished, land in guest memory, in order */
 static void land_through(u64 value) {
@@ -269,7 +284,7 @@ static void frame_recycle(Frame* f) {
     u64 done = f->last > f->hold ? f->last : f->hold;
     SNX_ZONE(z, "vk frame recycle");
     if (done) {
-        timeline_wait(done);
+        timeline_wait(done, VK_WAIT_RECYCLE);
         land_through(done);
         f->last = 0;
         f->hold = 0;
@@ -293,6 +308,7 @@ static void frame_recycle(Frame* f) {
         f->istage = 0;
     }
     ring_reset(&f->back, NULL);
+    ring_reset(&f->dev, NULL);
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
     f->fresh = 0;
@@ -317,6 +333,7 @@ VkCommandBuffer vk_cmd(void) {
             f->ncb++;
         }
         vk_rec_begin(f->cbs[f->icb]);
+        vk_gpuprof_cb_begin(f->cbs[f->icb]);
         f->recording = 1;
         g_cb_begun++;
     }
@@ -350,12 +367,41 @@ static int stage_rotate(Frame* f)
 	return 1;
 }
 
-/* bar: the ring may go in device-local memory the CPU maps, when that has room (bar_room), else it is host memory */
-static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
-                      int bar, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+/* Where a ring's memory is: host memory, device-local memory the CPU maps when that has room (bar_room) and host
+   memory otherwise, or device memory the CPU doesn't map */
+enum { RING_HOST, RING_BAR, RING_DEVICE };
+/* What the rings handed out, by ring and by where its memory is, for vk_buffer_stats: a byte in host memory the GPU
+   reads or writes crosses PCIe, once for each time it does */
+enum { XFER_HOST, XFER_MAPPED, XFER_DEVICE, XFER_N };
+enum { XRING_STAGE, XRING_OUTPUT, XRING_BACK, XRING_DEVICE, XRING_READBACK, XRING_N };
+static u64 g_xfer[XRING_N][XFER_N];
+static u32 xfer_where(const VmaAllocationInfo* info) {
+    const VkPhysicalDeviceMemoryProperties* mp;
+    VkMemoryPropertyFlags f;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    f = mp->memoryTypes[info->memoryType].propertyFlags;
+    return !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? XFER_HOST
+         : f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT    ? XFER_MAPPED
+                                                      : XFER_DEVICE;
+}
+void vk_stage_report(void) {
+    static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback"};
+    char line[512];
+    int at = 0;
+    for (u32 r = 0; r < XRING_N; r++)
+        at += snprintf(line + at, sizeof line - (size_t)at, " %s %llu/%llu/%llu", ring[r],
+                       (unsigned long long)(g_xfer[r][XFER_HOST] >> 20),
+                       (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20),
+                       (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
+    LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s\n", line);
+    memset(g_xfer, 0, sizeof g_xfer);
+}
+/* size bytes of the ring at *off of *buf: 0 when none could be made. The mapped rings' bytes are at r->ptr + *off */
+static int ring_take(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
+                     int where, VkBuffer* buf, u64* off, VmaAllocation* mem) {
     if (align < 16) align = 16;
     u64 at = (r->used + align - 1) & ~(align - 1);
-    if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
+    if (size > g_vk.alloc_cap) return 0; /* no allocation is bigger (memory.c) */
     if (r == &f->stage && r->buf && at + size > r->cap && r->cap == g_vk.alloc_cap) {
         vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
         if (stage_rotate(f)) at = 0;
@@ -380,7 +426,9 @@ static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags
         VmaAllocationCreateInfo aci = {.flags = flags | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
         VmaAllocationInfo info;
-        if (bar) {
+        if (where == RING_DEVICE)
+            aci = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        else if (where == RING_BAR) {
             VmaBudget budget[VK_MAX_MEMORY_HEAPS];
             vmaGetHeapBudgets(g_vk.vma, budget);
             if (bar_room(budget, cap, 0)) aci.usage = VMA_MEMORY_USAGE_AUTO;
@@ -388,18 +436,25 @@ static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags
         if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &r->buf, &r->mem, &info))) {
             r->buf = VK_NULL_HANDLE;
             r->cap = 0;
-            return NULL;
+            return 0;
         }
         vk_mem_track(r->mem);
         r->ptr = info.pMappedData;
         r->cap = cap;
+        r->in = xfer_where(&info);
         at = 0;
     }
+    g_xfer[r == &f->back ? XRING_BACK : r == &f->dev ? XRING_DEVICE : r == &f->output ? XRING_OUTPUT : XRING_STAGE]
+          [r->in] += size;
     r->used = at + size;
     *buf = r->buf;
     *off = at;
     if (mem) *mem = r->mem;
-    return r->ptr + at;
+    return 1;
+}
+static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
+                      int where, VkBuffer* buf, u64* off, VmaAllocation* mem) {
+    return ring_take(f, r, size, align, usage, flags, where, buf, off, mem) ? r->ptr + *off : NULL;
 }
 
 static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem, int output)
@@ -413,8 +468,8 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocati
 		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
 		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
-		(g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
-		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, output, buf, off, mem);
+		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, output ? RING_BAR : RING_HOST, buf, off, mem);
 }
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem)
 {
@@ -442,11 +497,27 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem) {
     /* storage: render targets are swizzled into it (vk/blocklinear.c) */
     return ring_alloc(&g_fr[g_cur], &g_fr[g_cur].back, size, g_vk.props.limits.nonCoherentAtomSize,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, 0, buf, off, mem);
+                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT, RING_HOST, buf, off, mem);
 }
 
-/* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most) */
-static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land) {
+/* What the GPU makes for itself to read, in the frame's device memory. In host memory, where staging is, each byte
+   crossed PCIe twice or more: written there by the GPU and read back by every draw that bound it */
+int vk_stage_device(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    vk_cmd();
+    Frame* f = &g_fr[g_cur];
+    return ring_take(f, &f->dev, size, align,
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+                         VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                         (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
+                     0, RING_DEVICE, buf, off, NULL);
+}
+
+/* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
+   why (VK_SUB_*: the statistics) */
+static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
     vk_render_end();
     Frame* f = &g_fr[g_cur];
@@ -475,6 +546,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
                                    .value = g_gval + 1,
                                    .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     if (xs) s[1] = *xs;
+    vk_gpuprof_cb_end(cb, why, g_gval + 1);
     /* ended and submitted after its commands, on the recording thread (a submission that fails signals the timeline
        from the host there, so waits for it end) */
     vk_rec_submit(cb, w, nw, s, xs ? 2u : 1u);
@@ -492,18 +564,22 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     SNX_ZONE_END(z_submit);
 }
 
-void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
+static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal, int why) {
     VkSemaphoreSubmitInfo w = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
                                .stageMask = wait_stage};
     VkSemaphoreSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
                                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    submit(wait ? &w : NULL, signal ? &s : NULL, 1);
+    submit(wait ? &w : NULL, signal ? &s : NULL, 1, why);
+}
+/* a submission that signals a binary semaphore is the present's (renderer.c) */
+void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal) {
+    submit_why(wait, wait_stage, signal, signal ? VK_SUB_PRESENT : VK_SUB_OTHER);
 }
 /* Ownership readback runs while its ranges are marked landing. Flush only an
    open command buffer: starting/recycling a frame or landing completed results
    here could acquire those same ranges and wait for this thread itself. */
 void vk_submit_for_readback(void) {
-    if (g_fr[g_cur].recording) submit(NULL, NULL, 0);
+    if (g_fr[g_cur].recording) submit(NULL, NULL, 0, VK_SUB_READBACK);
     vk_rec_sync(); /* the immediate copy must follow the recorder's queue calls */
 }
 void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
@@ -517,8 +593,8 @@ u64 g_vk_finishes, g_vk_finish_ns;
 void vk_finish(void) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
-    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
-    timeline_wait(g_gval);
+    submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
+    timeline_wait(g_gval, VK_WAIT_FINISH);
     land_through(g_gval);
     g_vk_finishes++;
     g_vk_finish_ns += plat_ns() - t0;
@@ -526,7 +602,7 @@ void vk_finish(void) {
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
 void vk_frame_next(void) {
-    if (g_fr[g_cur].recording) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    if (g_fr[g_cur].recording) submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FRAME);
     g_cur = (g_cur + 1) % VK_FRAMES;
     g_fr[g_cur].fresh = 1;
     g_frame_id++;
@@ -547,7 +623,7 @@ void vk_frame_check(void) {
     if (f->icb >= 128 || f->ipool >= 32 || vk_rec_frame_sets(g_cur) >= 32 * 1024)
         vk_frame_next();
     else if (f->recording && plat_ns() - g_sub_ns >= SUBMIT_EVERY_NS)
-        submit(NULL, NULL, 1);
+        submit(NULL, NULL, 1, VK_SUB_PERIODIC);
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
@@ -558,7 +634,7 @@ void vk_submit_progress(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done));
 }
-void vk_wait_submit(u64 value) { timeline_wait(value); }
+void vk_wait_submit(u64 value) { timeline_wait(value, VK_WAIT_SUBMIT); }
 void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }
 void vk_frame_hold(u64 frame_id) {
@@ -675,6 +751,7 @@ static VmaAllocation g_rb_mem;
 static u8* g_rb_ptr;
 static u64 g_rb_cap;
 static u32 g_rb_small; /* readbacks in a row of an eighth of it or less */
+static u32 g_rb_in;    /* where its memory is: an XFER_ index */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
     /* it grows to the biggest readback, and shrinks back after many small ones */
     if (size > g_vk.alloc_cap) return NULL; /* read back in parts (memory.c) */
@@ -702,7 +779,9 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
         vk_mem_track(g_rb_mem);
         g_rb_ptr = info.pMappedData;
         g_rb_cap = cap;
+        g_rb_in = xfer_where(&info);
     }
+    g_xfer[XRING_READBACK][g_rb_in] += size;
     *buf = g_rb;
     return g_rb_ptr;
 }

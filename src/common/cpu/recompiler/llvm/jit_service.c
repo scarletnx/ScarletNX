@@ -390,7 +390,10 @@ static int known(void* user, SnxU64 address) {
     return result;
 }
 
-/* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there */
+/* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there, or
+   when its dispatch slot holds something else: a hook of the runtime's (nx/hle/hook/hook.c) took its place, which
+   only a call through the slot reaches. A unit of the cache that calls it directly is refused at its load, and
+   compiled again */
 static SnxU64 direct(void* user, SnxU64 target) {
     const SnxJitService* s = (const SnxJitService*)user;
     size_t lo = 0, hi = s->config.aot_count;
@@ -403,7 +406,12 @@ static SnxU64 direct(void* user, SnxU64 target) {
     }
     if (lo == s->config.aot_count || s->config.aot_addresses[lo] != target) return 0;
     /* a function the runtime found stale (its code changed: SNX_ABI 14) leaves the table while the JIT runs */
-    return (SnxU64)(size_t)__atomic_load_n(&s->config.aot_functions[lo], __ATOMIC_ACQUIRE);
+    GuestFn function = __atomic_load_n(&s->config.aot_functions[lo], __ATOMIC_ACQUIRE);
+    /* and a hooked one is called through its slot, which holds the hook (SNX_ABI 15) */
+    if (function && s->config.dispatch && target >= s->config.code_lo && target < s->config.code_hi &&
+        __atomic_load_n(&s->config.dispatch[(target - s->config.code_lo) >> 2], __ATOMIC_RELAXED) != function)
+        return 0;
+    return (SnxU64)(size_t)function;
 }
 
 /* the loader's resolver: snx_aot_<target>, the AOT module's function for target (ir_codegen.c's call) */

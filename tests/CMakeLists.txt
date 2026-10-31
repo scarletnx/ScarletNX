@@ -65,7 +65,7 @@ if(SNX_TEST_SANITIZERS)
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # the code generators, which tests run on files they refuse
-        snx-swipc snx-svcgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
+        snx-swipc snx-svcgen snx-hookgen snx-shaderdec snx-settingsgen snx-uigen snx-a64dec)
 endif()
 # one Python for the scripted tests: without it they are left out
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -599,7 +599,35 @@ snx_test_target(snx-test-crc32-helper 11)
 target_link_libraries(snx-test-crc32-helper PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME crc32_helper COMMAND snx-test-crc32-helper)
 
-# the FP fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
+# the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/NVN_HLE.md's fields,
+# and the NVN functions' types that hookgen makes of gpu/nvn/nvn.hook, against prototypes in NVN's types
+add_executable(snx-test-nvn-header nvn_header.c)
+snx_test_target(snx-test-nvn-header 99)
+target_include_directories(snx-test-nvn-header PRIVATE "${PROJECT_SOURCE_DIR}/src")
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+snx_hookgen(snx-test-nvn-header SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+add_test(NAME nvn_header COMMAND snx-test-nvn-header)
+# nvn_direct's TIC and TSC encoders (src/nx/gpu/nvn/nvn_tic.c) read back through the renderer's decoders
+add_executable(snx-test-nvn-descriptors nvn_descriptors.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c")
+snx_test_target(snx-test-nvn-descriptors 99)
+target_include_directories(snx-test-nvn-descriptors PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-nvn-descriptors PRIVATE m)
+add_test(NAME nvn_descriptors COMMAND snx-test-nvn-descriptors)
+# nvn_direct's texture storage answers (src/nx/gpu/nvn/nvn_tex.c nvn_tex_storage) against the game driver's rules
+add_executable(snx-test-nvn-tex-storage nvn_tex_storage.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c")
+snx_test_target(snx-test-nvn-tex-storage 99)
+target_include_directories(snx-test-nvn-tex-storage PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME nvn_tex_storage COMMAND snx-test-nvn-tex-storage)
+# the vector FP instructions with fast paths through the LLVM steps against the soft-float helpers, lane by lane,
+# with lanes the host's arithmetic can and can't take in one vector
+add_executable(snx-test-llvm-vfp-lanes llvm_vfp_lanes.c llvm_steps.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-llvm-vfp-lanes 11)
+snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
+target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
+# the same fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
 # left once LLVM folds the guards
 add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
 snx_test_target(snx-test-llvm-fp-fast 11)
@@ -614,6 +642,14 @@ snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
 target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
 
+# the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
+add_executable(snx-test-fp-host fp_host_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-fp-host 11)
+snx_cpu_helpers_flags(snx-test-fp-host)
+if(NOT WIN32)
+    target_link_libraries(snx-test-fp-host PRIVATE m)
+endif()
+add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
 add_executable(snx-test-llvm-recpe llvm_recpe.c llvm_steps.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-llvm-recpe 11)
@@ -734,6 +770,120 @@ set_tests_properties(network_icmp PROPERTIES TIMEOUT 30)
 # requests; the same output compiled as strict C99 against a stand-in for ipc.h;
 # and definitions the generator has to refuse, each with its line and message
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
+# tools/hookgen's adapters (tests/hook/test.hook), and declarations it has to refuse, each with its line and message
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+add_executable(snx-test-hook-adapters hook_adapters.c)
+snx_test_target(snx-test-hook-adapters 99)
+target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook")
+add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
+# versioned hooks and struct layouts (tests/hook/versions.hook): the entries by version, the layout variant each
+# adapter passes, the SDK labels a module's bytes hold and the entry hook_select picks for a module's version
+add_executable(snx-test-hook-versions hook_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+snx_test_target(snx-test-hook-versions 99)
+target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
+add_test(NAME hook_versions COMMAND snx-test-hook-versions)
+# the route list (src/nx/loader/hook_routes.c): hookgen --routes over two specs (tests/hook/routes.hook and
+# versions.hook), and the runtime's own list, its lookup and the hashes a module carries
+add_executable(snx-test-hook-routes hook_routes.c)
+snx_test_target(snx-test-hook-routes 99)
+target_link_libraries(snx-test-hook-routes PRIVATE snx_test_common snx_nx_module)
+snx_hook_routes(snx-test-hook-routes SPECS "${CMAKE_CURRENT_SOURCE_DIR}/hook/routes.hook"
+                "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
+add_test(NAME hook_routes COMMAND snx-test-hook-routes)
+# verify mode (src/nx/hle/hook/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
+# function's own code, on copies of their buffers, and each kind of difference it reports
+add_executable(snx-test-hook-verify hook_verify.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/verify.c")
+snx_test_target(snx-test-hook-verify 99)
+target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
+add_test(NAME hook_verify COMMAND snx-test-hook-verify)
+# the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
+# (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions nvn_direct=auto takes
+add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_driver.c")
+snx_test_target(snx-test-nvn-versions 99)
+target_include_directories(snx-test-nvn-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-nvn-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/nvn_versions.hook" PREFIX nvn
+    NAME gpu/nvn/nvn_versions.hook)
+add_test(NAME nvn_versions COMMAND snx-test-nvn-versions)
+# nvn_direct's command buffers: recordings across segments, and CopyCommands' copies of them
+add_executable(snx-test-nvn-commands nvn_commands.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+snx_test_target(snx-test-nvn-commands 11)
+target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
+snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
+add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c")
+snx_test_target(snx-test-nvn-queue-lifetime 11)
+add_dependencies(snx-test-nvn-queue-lifetime snx_settings)
+target_include_directories(snx-test-nvn-queue-lifetime PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/settingsgen")
+add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
+# the NVN functions of API 53 and 55 nvn_direct took over last, by family: records and their replay into the draw
+# state (nvn_cmd.c, nvn_draw.c), the objects' getters and setters (nvn_object.c) and the queue and window (nvn_queue.c)
+add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+snx_test_target(snx-test-nvn-names 11)
+target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-nvn-names PRIVATE m)
+snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+add_test(NAME nvn_names COMMAND snx-test-nvn-names)
+foreach(bad IN ITEMS
+        unknown_type 2 "unknown type 'u128'"
+        stack_argument 2 "would be on the stack"
+        duplicate_symbol 4 "f is hooked on line 2 too"
+        handler_mismatch 3 "h takes other arguments on line 2"
+        argument_c 2 "'c' can't name an argument"
+        no_family 1 "after a family line"
+        family_twice 2 "family a is named twice"
+        version_overlap 4 "f's versions overlap line 3's"
+        version_mixed 3 "f is declared without @version on line 2"
+        version_keys 3 "f is versioned by sdk on line 2"
+        version_key 2 "unknown version key 'gpu'"
+        version_malformed 2 "malformed version '12.x'"
+        version_empty 2 "no version satisfies this @version"
+        version_dangling 2 "@version goes before a hook or a struct"
+        struct_field_type 2 "struct S's field a is a u64, and a u32 on line 1"
+        struct_field_missing 2 "struct S has no field b, which line 1's has"
+        struct_overlap 2 "struct S's versions overlap line 1's"
+        struct_mixed 3 "struct S is declared without @version on line 1"
+        struct_past_end 3 "field a runs past the end of struct S"
+        uses_unknown 2 "unknown struct 'T'"
+        uses_uncovered 3 "no declaration of struct S holds for f's versions"
+        buffer_length 2 "p's length names n, which isn't an argument"
+        buffer_impure 2 "only a pure hook's buffers are checked"
+        buffer_type 2 "only an addr or a pointer argument is a buffer, not p"
+        buffer_length_type 2 "p's length q is not an integer"
+        route_twice 3 "f is routed on line 1 too"
+        route_hooked 3 "f is hooked on line 2, which routes it already"
+        route_versioned 1 "@version goes before a hook or a struct"
+        argument_array 2 "v is an array, which the language doesn't take"
+        pointer_unknown 4 "unknown type 'NVNtextur'"
+        by_value_struct 3 "NVNtexture is passed by value, but it isn't nx/gpu/nvn/nvn.h's enum or pointer"
+        const_value 2 "const i32 has no '\\*' after it"
+        include_missing 2 "cannot find nx/none.h"
+        function_type_versions 4 "nvnQueueFinish takes other types on line 3"
+        handler_underived 2 "memcpy names no handler"
+        handler_derived 2 "nvn_DeviceFinalize is the handler that nvnDeviceFinalize names already")
+    if(NOT DEFINED bad_name)
+        set(bad_name "${bad}")
+    elseif(NOT DEFINED bad_line)
+        set(bad_line "${bad}")
+    else()
+        add_test(NAME hookgen_refuses_${bad_name} COMMAND snx-hookgen -I "${PROJECT_SOURCE_DIR}/src"
+                 --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/${bad_name}.hook")
+        set_tests_properties(hookgen_refuses_${bad_name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "${bad_name}.hook:${bad_line}: .*${bad}")
+        unset(bad_name)
+        unset(bad_line)
+    endif()
+endforeach()
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
 snx_test_target(snx-test-swipc-dispatch 23)
 snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
@@ -1034,6 +1184,7 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
+    add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME controls_atlas_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
     add_test(NAME ui_shaders_current
@@ -1148,7 +1299,7 @@ add_executable(snx-test-driver driver_workflow.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/setup.c" "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/common/utilities/process.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/logscan.c")
 snx_test_target(snx-test-driver 99)
-target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle)
+target_link_libraries(snx-test-driver PRIVATE snx_test_common snx_setup snx_lz4 OpenSSL::Crypto snx_demangle snx_nx_module)
 set_target_properties(snx-test-driver PROPERTIES LINKER_LANGUAGE CXX)
 if(APPLE) # driver/setup.c's weak snx_menu_language, as snx_driver has it: ld64 wants it named
     target_link_options(snx-test-driver PRIVATE "LINKER:-U,_snx_menu_language")
@@ -1223,7 +1374,7 @@ add_test(NAME extraction_native COMMAND snx-test-extract)
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/game_name.c")
 snx_test_target(snx-test-loader 99)
-target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto)
+target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto snx_nx_module) # the route list
 add_test(NAME loader_native COMMAND snx-test-loader)
 
 add_executable(snx-test-runtime-nro runtime_nro.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/loader.c")
@@ -1854,21 +2005,30 @@ snx_test_target(snx-test-audren-host 23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-render-enable 23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
+
+add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
+snx_test_target(snx-test-draw-state-groups 23)
+add_test(NAME draw_state_groups COMMAND snx-test-draw-state-groups)
 
 add_executable(snx-test-clear-flags clear_flags.c)
 snx_test_target(snx-test-clear-flags 23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)
 
 add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-instance-array 23)
 add_test(NAME instance_array COMMAND snx-test-instance-array)
 
 add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-texture 23)
 add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 
@@ -1877,6 +2037,7 @@ add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 if(UNIX)
     add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme_hle.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c"
         support/dma_ref.c own_stub.c)
@@ -1987,6 +2148,9 @@ if(UNIX)
     # the same calls with the alias pool off (alias_pool=0): views are copies, as on Windows
     add_test(NAME memory_alias_copies COMMAND snx-test-memory-alias --copies)
     set_tests_properties(memory_alias_copies PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+    # views over pages the write tracking protects (SNX_WW=signal: the tracking of hosts without Linux 6.7's)
+    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias)
+    set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
     # GPU-owned memory over the real pool and traps, owners whose GPU copy is host memory (77 without traps)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
@@ -1996,6 +2160,16 @@ if(UNIX)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME memory_own COMMAND snx-test-memory-own)
     set_tests_properties(memory_own PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # traps over pages the write tracking protects (SNX_WW=signal)
+    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
+    # traps by protection and the fault handler (SNX_TRAPS=signal: those of Linux before 5.13 and Android), beside
+    # userfaultfd's write tracking and beside the tracking by protection
+    add_test(NAME memory_own_signal_traps COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_traps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_TRAPS=signal)
+    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own)
+    set_tests_properties(memory_own_signal_both PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+                         ENVIRONMENT "SNX_TRAPS=signal;SNX_WW=signal")
 endif()
 
 endif() # SNX_BUILD_NX
@@ -2018,6 +2192,9 @@ add_test(NAME depth_texel COMMAND snx-test-depth-texel)
 add_executable(snx-test-write-pages write_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-test-write-pages 23)
 add_test(NAME write_pages COMMAND snx-test-write-pages)
+add_executable(snx-test-draw-state-mx draw_state_mx.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
+snx_test_target(snx-test-draw-state-mx 99)
+add_test(NAME draw_state_mx COMMAND snx-test-draw-state-mx)
 add_executable(snx-bench-write-pages EXCLUDE_FROM_ALL bench_write_pages.c
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-bench-write-pages 11)
@@ -2041,6 +2218,17 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
+    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler
+    add_test(NAME platform_posix_signal_ww COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(platform_posix_signal_ww PROPERTIES ENVIRONMENT SNX_WW=signal)
+endif()
+if(WIN32 AND TARGET SDL3::SDL3)
+    # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
+    add_executable(snx-test-platform-win32 platform_win32.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/plat_sdl.c"
+        "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
+    snx_test_target(snx-test-platform-win32 11)
+    target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization)
+    add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-shader-brx shader_brx.c)

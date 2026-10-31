@@ -22,23 +22,20 @@ static u64 plane_span(const GpuDmaSide* s) {
     u64 gobs_x = ((u64)s->wb + 63) >> 6, rows = ((((u64)s->h + 7) >> 3) + (1u << s->bh) - 1) >> s->bh;
     return gobs_x * rows * ((u64)512 << (s->bh + s->bd)) * ((u64)(s->z >> s->bd) + 1);
 }
-static u8* stage_range(u64 gva, u64 span, VkBuffer* buf, u64* at) {
-    u8* p = vk_stage(span, vk_stage_align(), buf, at);
-    if (!p) return NULL;
-    vk_guest_read(gva, span, p, *buf, *at);
-    vk_rt_overlay(gva, span, *buf, *at);
-    return p;
+/* guest bytes [gva, gva + span) as the GPU sees them, in the frame's device memory, for a side that is only read */
+static int stage_range(u64 gva, u64 span, VkBuffer* buf, u64* at) {
+    return vk_stage_device(span, vk_stage_align(), buf, at) && vk_guest_read_seen(gva, span, *buf, *at);
 }
 
 static int blit(const GpuBlit* b) {
     u32 n = b->x1 - b->x0, rows = b->y1 - b->y0, bd = GPU_BLIT_DST_BPP(b), nb = n * bd;
-    u64 sspan = plane_span(&b->src), dspan = plane_span(&b->dst), cap, sat, dat, tat;
+    u64 sspan = plane_span(&b->src), dspan = plane_span(&b->dst), cap, sat, tat;
     u32 pa = b->src.bl ? (u32)up(b->src.wb, 16) : b->src.pitch, pb = (u32)up(nb, 4), pc = (u32)up(b->dst.wb, 16);
     /* the scratch: the source's rows, the tables, the gathered rows, the destination's rows (block linear) */
     u64 at_a = 0, at_t = up(b->src.bl ? (u64)pa * b->src.h : sspan, 16);
     u64 at_b = up(at_t + 4ull * (n + rows), 16), at_c = up(at_b + (u64)pb * rows, 16);
     u64 used = at_c + (b->dst.bl ? (u64)pc * rows : 0) + 16;
-    VkBuffer sb, db, tb, scr;
+    VkBuffer sb, tb, scr;
     VkCommandBuffer cb;
     VkOwnRes* d;
     int ok = 1;
@@ -46,21 +43,23 @@ static int blit(const GpuBlit* b) {
     vk_render_end();
     if (sspan > g_vk.alloc_cap || dspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(used, &cap))) return 0;
     u32* t = (u32*)vk_stage(4ull * (n + rows), vk_stage_align(), &tb, &tat);
-    if (!t || !stage_range(b->src.addr, sspan, &sb, &sat)) return 0;
+    /* a source no render target is drawn over: the buffer cache's copy, made again only when its bytes change */
+    if (!t || !(vk_rt_over(b->src.addr, sspan) ? stage_range(b->src.addr, sspan, &sb, &sat)
+                                               : vk_buf_get_strict(b->src.addr, sspan, &sb, &sat)))
+        return 0;
     memcpy(t, b->scol, 4ull * n);
     memcpy(t + n, b->srow, 4ull * rows);
     snx_le32_array(t, (size_t)n + rows); /* the device reads the tables' words little-endian */
     d = vk_own_res_new(dspan);
-    if (!d || !stage_range(b->dst.addr, dspan, &db, &dat)) {
+    if (!d || !vk_guest_read_seen(b->dst.addr, dspan, d->buf, 0)) { /* straight into the buffer that becomes its owner */
         if (d) vk_own_res_unref(d);
         return 0;
     }
     cb = vk_cmd();
     {
-        VkBufferCopy c[3] = {{dat, 0, dspan}, {tat, at_t, 4ull * (n + rows)}, {sat, at_a, sspan}};
-        rec_CmdCopyBuffer(cb, db, d->buf, 1, &c[0]);
-        rec_CmdCopyBuffer(cb, tb, scr, 1, &c[1]);
-        if (!b->src.bl) rec_CmdCopyBuffer(cb, sb, scr, 1, &c[2]); /* pitch linear rows as they are */
+        VkBufferCopy c[2] = {{tat, at_t, 4ull * (n + rows)}, {sat, at_a, sspan}};
+        rec_CmdCopyBuffer(cb, tb, scr, 1, &c[0]);
+        if (!b->src.bl) rec_CmdCopyBuffer(cb, sb, scr, 1, &c[1]); /* pitch linear rows as they are */
     }
     vk_all_barrier(cb);
     VkBlMove ms = {b->src.wb, b->src.h, b->src.bh, b->src.bd, 0, b->src.h, b->src.z, 1, pa};

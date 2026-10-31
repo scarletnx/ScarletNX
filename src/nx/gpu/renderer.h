@@ -41,14 +41,29 @@ typedef struct Renderer {
        but not those a later submission makes meanwhile */
     void (*stream_run)(int on);
     /* the 3D engine (maxwell3d.c) */
-    void (*clear)(GpuChannel* ch, u32 v);
-    void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
-                 u32 instances);
+    /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
+       of the state ds (gpu/draw_state.h): everything they read but their own arguments, the resource bindings
+       included. The front end brings it up to date before each call (a GPU channel's mx_draw_state_sync, the NVN
+       replay's own fill) and gives each group whose bytes changed a new generation (DsState.gen, the renderer keeps
+       what it made from a group while its generation holds); the renderer only reads it. ds->owner names the
+       front end's queue: the renderer keys what it keeps between draws, and the samples-passed counter, by it.
+       Constant buffers are guest memory (DsBindings.cb_addr) or blocks of ds->inl (cb_inline, NVN's driver banks:
+       storage buffer addresses in bank 0, texture and image handles in bank 2 with tex_bank 2, the application's
+       uniform buffer r at slot 3 + r). Texture handles name the TIC and TSC entries of the pools in guest memory.
+       A draw's inline indices come with it (DrawCall.inline_indices). The owner o is shared with the front end: it
+       sets o->pred (the render predicate) and the capture buffers to start over (o->xfb_reload), and the renderer
+       clears what it took of those and keeps which buffers' capture began (o->xfb_started). Called on the GPU
+       thread */
+    void (*clear)(const DsState* ds, const DrawClear* c, const DrawOwner* o);
+    void (*draw)(const DsState* ds, const DrawCall* dc, DrawOwner* o);
+    void (*draw_texture)(const DsState* ds, const DrawTexture* t);
+    /* the contents of the targets ds names in targets (bit i color slot i, bit 8 depth and stencil) no longer matter
+       (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
+       next loaded. NULL: they are kept */
+    void (*discard)(const DsState* ds, u32 targets);
     /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);
-    /* DRAW_TEXTURE: a texture's rectangle onto color target 0. NULL: not drawn */
-    void (*draw_texture)(GpuChannel* ch);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
@@ -61,15 +76,26 @@ typedef struct Renderer {
        Video on this renderer's GPU, for NVDEC's decoder, whose pictures then reach nvdec_write as GPU images: NULL when
        the GPU has no decode queue or the vulkan_video setting is off */
     void* (*nvdec_hw_device)(void);
-    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be */
+    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be. It takes over
+       o->snap_id's memory, used or not */
     int (*dma_copy)(const GpuDmaOp* o);
+    /* memory for the DMA engine's copies of linear sources at submission (maxwell/dma.c), which the GPU reads in place,
+       from any thread: len bytes, *id naming them; NULL when there is none (the caller allocates its own then).
+       snap_free lets go of a copy no launch used */
+    u8* (*snap_alloc)(u64 len, u64* id);
+    void (*snap_free)(u64 id);
     /* a 2D blit the GPU's own blit can't do (its source isn't a render target) done on the GPU from memory, its
        destination kept there: 0 when it couldn't be */
     int (*blit_mem)(const GpuBlit* b);
     void (*rt_flush)(u64 gva);  /* a render target at gva is about to be read from guest memory: write it back */
     void (*rt_reload)(u64 gva); /* guest memory under a render target changed: load it again */
-    /* a compute launch (q: its QMD's 64 words, converted to host numbers by compute.c) */
-    void (*dispatch)(GpuChannel* ch, const u32* q, u64 code);
+    /* A compute dispatch of the state d (gpu/draw_state.h), which the front end fills for the call (the compute
+       engine's launch description, the NVN replay's own fill) and the renderer only reads: the program, the grid,
+       block and shared memory, the constant buffers (guest memory or d's inline blocks: NVN's driver banks, the
+       dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210, storage buffers from 0x310 and texture
+       handles in bank 2 with tex_bank 2), and the texture and sampler pools in guest memory. Storage buffers are read
+       through constant buffer 0 as a draw's are. Called on the GPU thread */
+    void (*dispatch)(const DispatchState* d);
     /* gmem_read and gmem_ptr land pending compute or graphics storage writes before reading memory */
     void (*cs_mem_need)(u64 a, u64 n);
     /* 0 when no pending result or queued release covers [a, a + n): a read needs none of the mem_need hooks */
@@ -91,18 +117,21 @@ typedef struct Renderer {
     int (*release_read)(u64 a, void* dst, u64 n);
     u32 (*release_value)(u32 id); /* completed and queued increments, read consistently */
     /* the render enable (3D 0x556 IF_EQUAL when equal is set, else IF_NOT_EQUAL) compares the count at a with the one
-       at a + 16, one side a samples-passed count not known yet, the other zero: NVN's occlusion test. -1 when that
-       isn't so here (the caller reads both and compares, waiting for the count); 0 or 1, the comparison's result when
-       the count is known to be zero or not without the GPU; 2 when the GPU makes it, *pred the predicate the draws and
+       at a + 16, one side a samples-passed count not known yet, the other zero: NVN's occlusion test. Values that
+       results the GPU hasn't landed hold (a compute program's) are compared on the GPU as well. -1 when neither is so
+       here (the caller reads both and compares, waiting for what is pending); 0 or 1, the comparison's result when the
+       count is known to be zero or not without the GPU; 2 when the GPU makes it, *pred the predicate the draws and
        clears under it run on (the channel's render_pred), held until render_predicate_drop */
     int (*render_predicate)(u64 a, int equal, u32* pred);
     void (*render_predicate_drop)(u32 pred);
-    /* the 3D engine's samples-passed counter (occlusion queries), one per channel: it counts from its reset, while
-       SampleCounterEnable is on. A report writes the count at gva as a release, len 4 (the count's low word) or 16 (the
-       count, then ticks). samples_report 0: no count to give (no reset yet), and the caller writes a value of its own */
-    void (*samples_reset)(GpuChannel* ch);
-    void (*samples_enable)(GpuChannel* ch, int on);
-    int (*samples_report)(GpuChannel* ch, u64 gva, u32 len, u64 ticks);
+    /* the 3D engine's samples-passed counter (occlusion queries), one per draw owner (DsState.owner: a channel's
+       id, another front end's queue): it counts that owner's draws from its reset, while SampleCounterEnable is on. A
+       report writes the count at gva as a release, len 4 (the count's low word) or 16 (the count, then ticks).
+       samples_report 0: no count to give (no reset yet), and the caller writes a value of its own. A render enable on a
+       report's count is render_predicate's, whichever owner made the report */
+    void (*samples_reset)(u32 owner);
+    void (*samples_enable)(u32 owner, int on);
+    int (*samples_report)(u32 owner, u64 gva, u32 len, u64 ticks);
     /* a GPFIFO submission ran to its end or waits (gpu_park): what the guest may look at now goes to the GPU */
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
@@ -125,8 +154,20 @@ typedef struct Renderer {
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
+    /* released_ns: when the game was given the buffer to draw the frame in (plat_ns), 0 unknown: the log's display
+       times count from there. period_ns: the game's own pace, a frame every period (its swap interval), 0 for none
+       (fps_limit not game, or a swap interval of 0): a renderer that can holds each frame until its refresh.
+       shown_syncpt: a syncpoint the renderer increments once the frame is on the display, or once it knows the frame
+       won't be (not shown, or no display clock to say), the frames in the order they were given (0: none) */
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
-                           u32 transform);
+                           u32 transform, u64 released_ns, u64 period_ns, u32 shown_syncpt);
+    /* the display's clock, before the game is given a buffer for its next frame at its own pace: waits until the
+       game's frames presented have been displayed (all but one where the display doesn't hold them until their
+       refresh, and one more when deadline_ns has passed already), or until deadline_ns (plat_ns), and sets
+       *refresh_ns to the display's refresh period (0 not known). 1 when they have; 0 at the deadline; -1 when the
+       renderer can't tell or isn't to (frame_pacing 0, no display clock, a present mode that doesn't show every
+       frame, nothing presented yet). Any thread; NULL for none */
+    int (*display_wait)(u64 deadline_ns, u64* refresh_ns);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
     /* the last presented frame scaled to w x h RGBA8 (a save state's thumbnail): 0, or -1 when there is none */
     int (*thumbnail)(u8* rgba, u32 w, u32 h);

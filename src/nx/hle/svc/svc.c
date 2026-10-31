@@ -8,6 +8,7 @@
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
 /* the SVC dispatch: each SVC's registers in the 64-bit ABI (and the 32-bit one's, through snx_svc32), the thread's
    entry and exit (its core, pausing), and the SVCs that aren't memory or synchronization */
+#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
 #include "nx/runtime/arm.h"
@@ -54,12 +55,14 @@ static int pause_point(KThread* t, int where) {
     t->pause_at = where;
     t->park = where == 1 ? PARK_ENTER : PARK_RUN;
     kobj_wake_nl(&t->o, 5);
-    while (t->suspended) {
+    for (;;) {
+        u32 seq = kt_seq(t);
         kthread_retire_check(&g_host.kernel.klock);
-        pc_wait(kt_cv(t), &g_host.kernel.klock, -1);
+        if (!t->suspended) break;
+        kt_wait(t, seq, &g_host.kernel.klock, -1);
     }
     t->pause_at = 0;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     return 1;
 }
 /* cur (with g_klock held) waits until t, asked to pause, runs no game code: it is inside an SVC, stopped at a pause
@@ -120,7 +123,7 @@ void svc_resume(KThread* t) {
         pm_lock(&g_host.kernel.klock);
         if (o) waiter_del(o, t);
         t->wait_kind = 0;
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         kobj_unref(o); /* the reference the SVC took (thread_of) */
         if (g_arm_mod)
             t->arm.r[15] -= t->arm.cpsr & SNX_ARM_T ? 2u : 4u;
@@ -157,7 +160,7 @@ static u32 start_thread(u32 h) {
     R_UNLESS(t, R_BADHANDLE);
     pm_lock(&g_host.kernel.klock);
     st = t->state;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     if (st == 0) kthread_start(t);
     thread_put(t);
     R_UNLESS(st == 0, R_BADSTATE);
@@ -180,7 +183,7 @@ static void sleep_thread(KThread* t, i64 ns) {
         t->woken = 0;
         t->wait_svc = WAIT_SVC_SLEEP;
         sleep_nl(t, ns);
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         return;
     }
     if (ns != 0 && ns != -1 && ns != -2) return;
@@ -195,7 +198,7 @@ static u32 set_thread_priority(u32 h, i32 prio) {
     R_UNLESS(t, R_BADHANDLE);
     pm_lock(&g_host.kernel.klock);
     prio_set_base_nl(t, prio);
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     thread_put(t);
     R_SUCCEED();
 }
@@ -220,7 +223,7 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     if (core == -3) {
         core = t->ideal_core;
         if (core >= 0 && !((mask >> core) & 1)) {
-            pm_unlock(&g_host.kernel.klock);
+            klock_unlock();
             thread_put(t);
             R_THROW(R_BADCOMBO);
         }
@@ -228,7 +231,7 @@ static u32 set_thread_core_mask(KThread* cur, u32 h, i32 core, u64 mask) {
     __atomic_store_n(&t->ideal_core, core, __ATOMIC_RELAXED);
     __atomic_store_n(&t->affinity, mask, __ATOMIC_RELAXED);
     if (t->state == 0) t->core = core_allowed(t); /* not started: on no core's list yet */
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     if (t == cur) {
         int k = core >= 0 ? core : (mask >> t->core) & 1 ? t->core : core_allowed(t);
         if (k != t->core) { /* the caller holds its core: nothing else changes its core field meanwhile */
@@ -258,12 +261,12 @@ static u32 set_thread_activity(KThread* cur, u32 h, u32 act) {
     else {
         __atomic_store_n(&t->suspended, (int)act, __ATOMIC_SEQ_CST);
         if (!act) {
-            pc_broadcast(kt_cv(t));
+            kt_notify(t);
             kobj_wake_nl(&t->o, 5); /* a GetThreadContext3 waiting for it to pause has its answer */
         } else
             pause_settle_nl(cur, t);
     }
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     thread_put(t);
     return r;
 }
@@ -293,7 +296,7 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
     pm_lock(&g_host.kernel.klock);
     pause_settle_nl(cur, t);
     if (t->state != 2 && (t->state != 1 || !t->suspended)) {
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
         thread_put(t);
         R_THROW(R_BADSTATE);
     }
@@ -342,7 +345,7 @@ static u32 get_thread_context(KThread* cur, u64 out, u32 h) {
         snx_st_le32(ctx + 0x314, c->fpsr);
         put64(ctx + 0x318, c->tpidr);
     }
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     thread_put(t);
     memcpy(GP(out), ctx, sizeof ctx);
     R_SUCCEED();
@@ -356,7 +359,7 @@ static u32 cancel_sync(u32 h) {
         wake(t, R_CANCELLED);
     else
         t->cancel = 1;
-    pm_unlock(&g_host.kernel.klock);
+    klock_unlock();
     thread_put(t);
     R_SUCCEED();
 }
@@ -405,7 +408,7 @@ static u32 clear_event(u32 h, int reset) {
             r = R_BADSTATE;
         else
             e->signaled = 0;
-        pm_unlock(&g_host.kernel.klock);
+        klock_unlock();
     }
     kobj_unref(o);
     return r;
@@ -463,6 +466,7 @@ static void svc_break(CPU* c, u32 reason, u64 info, u64 size) {
     if (reason & 0x80000000u) return;
     WARN("\n*** The game called svcBreak (reason %x, info %llx, %llu bytes) ***\n", reason, (unsigned long long)info,
          (unsigned long long)size);
+    if (nvn_verify_running()) WARN("  in nvn_verify's shadow call of the NVN driver's %s\n", nvn_verify_running());
     if (size && size <= 0x400) { /* what the info points at, as far as it is mapped: a message, or words */
         u64 n = readable_len(info, size), i, len = 0;
         const u8* p = GP(info);

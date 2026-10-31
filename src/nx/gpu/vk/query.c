@@ -1,22 +1,23 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The 3D engine's samples-passed counter (3D 0x545 SampleCounterEnable, 0x54C ResetCounter 1, a counter report of
-   selector 0x15: NVN's and deko3d's occlusion queries), counted with Vulkan occlusion queries. Each channel has a
-   counter of its own, as each channel's 3D context has on the console.
+   selector 0x15: NVN's and deko3d's occlusion queries), counted with Vulkan occlusion queries. Each draw owner
+   (DsState.owner: a GPU channel, or another front end's queue) has a counter of its own, as each channel's 3D
+   context has on the console.
 
    The count runs from its reset. It is kept in segments: a segment is one query, begun at the first draw counted in a
-   rendering pass and ended with the pass, at a reset, at a report, or at a draw of another channel or another sample
-   count. A segment belongs to the channel that began it, and holds that draw's guest sample count. At a submit (and
+   rendering pass and ended with the pass, at a reset, at a report, or at a draw of another owner or another sample
+   count. A segment belongs to the owner that began it, and holds that draw's guest sample count. At a submit (and
    at a report), the results of the segments ended so far are copied into host-cached memory and their queries reset,
    in the same command buffer: once per submit, as each copy waits for its queries on the GPU. A report is a release
    (release.c) gated on the submit being recorded, which happens when anything needs the release, and at the latest
    when the GPFIFO submission ends (renderer.h stream_end): a game that reports often doesn't submit once for each.
-   When it is performed, the GPU has counted, and the channel's segments since its previous report are added to the
+   When it is performed, the GPU has counted, and the owner's segments since its previous report are added to the
    epoch's sum, which is its value: a game that resets once and subtracts reports keeps only the segments since its
    last report live. Whatever reads the report (a semaphore acquire, the CPU, the render enable's comparison but the one
    with zero) waits for that release, as for any other.
 
-   Counting starts at a channel's first reset: deko3d and NVN turn the counter on at startup, and a game that never
+   Counting starts at an owner's first reset: deko3d and NVN turn the counter on at startup, and a game that never
    resets it never reads it, so it costs those games nothing. A report before any reset, or in an epoch that outgrew
    the ring, keeps the made-up value the front end writes (maxwell/engines.c), over which a render enable draws.
 
@@ -31,28 +32,29 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/query_compare_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
 
 #define QN    4096 /* segments the ring holds: queries in the pool, and result slots */
 #define QWAIT 1024 /* a counter's reports queued and not performed yet, at most (the release queue's size) */
-#define QCH   VK_QUERY_COUNTERS /* channels that can count at once */
+#define QCH   VK_QUERY_COUNTERS /* owners that can count at once */
 
 static VkQueryPool g_qpool;
 static VkBuffer g_qbuf;
 static VmaAllocation g_qmem;
 static u64* g_qres;   /* segment s's count at s % QN, once its copy has run */
 static int g_qfailed; /* the pool couldn't be made: reports keep the made-up value */
-/* each slot's segment: its counter (1 + its index in g_qc, 0 none) and its guest sample count */
-static u8 g_qown[QN], g_qmul[QN];
+/* each slot's segment: its counter (1 + its index in g_qc, 0 none) */
+static u8 g_qown[QN];
 static struct {
     u64 next;   /* segments begun */
     u64 copied; /* segments whose results have their copy recorded */
     int open;   /* the last segment's query is active in the rendering pass */
 } g_q;
 typedef struct {
-    u32 chan;     /* the channel's id */
-    int used;     /* the channel has counted */
+    u32 owner;    /* the owner's id (DsState.owner) */
+    int used;     /* the owner has counted */
     int disabled; /* SampleCounterEnable is off: its draws aren't counted */
     int started;  /* a reset came: counting is on from there */
     int bad;      /* the epoch outgrew the ring: its reports keep the made-up value until the next reset */
@@ -105,22 +107,22 @@ static int pool_make(void) {
     return 1;
 }
 
-/* the counter of channel chan, made if make is set; NULL when there is none (or no room for one) */
-static QCounter* counter(u32 chan, int make) {
+/* the counter of owner, made if make is set; NULL when there is none (or no room for one) */
+static QCounter* counter(u32 owner, int make) {
     QCounter* free_one = NULL;
     for (int i = 0; i < QCH; i++) {
-        if (g_qc[i].used && g_qc[i].chan == chan) return &g_qc[i];
+        if (g_qc[i].used && g_qc[i].owner == owner) return &g_qc[i];
         if (!g_qc[i].used && !free_one) free_one = &g_qc[i];
     }
     if (!make) return NULL;
     if (!free_one) {
-        LOG_LIMIT(4, "vulkan: more than %d channels count samples passed, channel %u's reports are made up\n", QCH,
-                  chan);
+        LOG_LIMIT(4, "vulkan: more than %d draw owners count samples passed, owner %#x's reports are made up\n", QCH,
+                  owner);
         return NULL;
     }
     memset(free_one, 0, sizeof *free_one);
     free_one->used = 1;
-    free_one->chan = chan;
+    free_one->owner = owner;
     return free_one;
 }
 /* the oldest segment a counter's report may still add: its oldest queued report's, or its next report's */
@@ -131,12 +133,6 @@ static u64 live_oldest(void) {
     for (int i = 0; i < QCH; i++)
         if (g_qc[i].used && g_qc[i].started && live_from(&g_qc[i]) < oldest) oldest = live_from(&g_qc[i]);
     return oldest;
-}
-/* the guest sample count of an MsaaMode (3D 0x574): 1x1, 2x1, 2x2, 4x2, 4x2 D3D, 2x1 D3D, 4x4, and the 2x2 and 4x2
-   virtual coverage modes */
-static u32 msaa_samples(u32 mode) {
-    static const u8 n[16] = {1, 2, 4, 8, 8, 2, 16, 1, 4, 4, 8, 8, 1, 1, 1, 1};
-    return n[mode & 15];
 }
 
 /* A counter's live segments run from its oldest report not performed yet, or from its last report: a game that keeps
@@ -160,18 +156,17 @@ static void fold_done(void) {
             c->sum = 0;
         }
         for (u64 s = c->sum_end; s < upto; s++)
-            if (g_qown[s % QN] == i + 1) c->sum += snx_le64(g_qres[s % QN]) * g_qmul[s % QN];
+            if (g_qown[s % QN] == i + 1) c->sum += snx_le64(g_qres[s % QN]);
         if (upto > c->sum_end) c->sum_end = upto;
         c->reported = c->sum_end;
     }
 }
-void vk_query_draw(VkCommandBuffer cb, u32 chan, u32 msaa_mode) {
-    QCounter* c = counter(chan, 0);
-    u32 mul = msaa_samples(msaa_mode);
+void vk_query_draw(VkCommandBuffer cb, u32 owner) {
+    QCounter* c = counter(owner, 0);
     int own = c ? (int)(c - g_qc) + 1 : 0;
     if (g_q.open) {
         u32 at = (u32)((g_q.next - 1) % QN);
-        if (g_qown[at] == own && g_qmul[at] == mul) return; /* the segment open now counts this draw too */
+        if (g_qown[at] == own) return; /* the segment open now counts this draw too */
         vk_query_pass_end(cb);
     }
     if (!c || !c->started || c->disabled || c->bad) return;
@@ -184,7 +179,6 @@ void vk_query_draw(VkCommandBuffer cb, u32 chan, u32 msaa_mode) {
     }
     u32 at = (u32)(g_q.next % QN);
     g_qown[at] = (u8)own;
-    g_qmul[at] = (u8)mul;
     rec_CmdBeginQuery(cb, g_qpool, at, g_vk.feat.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
     g_q.next++;
     g_q.open = 1;
@@ -219,7 +213,7 @@ void vk_query_flush(VkCommandBuffer cb) {
 static void end_own(const QCounter* c) {
     if (g_q.open && g_qown[(g_q.next - 1) % QN] == (u8)(c - g_qc + 1)) vk_query_pass_end(vk_cmd());
 }
-void vk_query_reset(u32 chan) {
+void vk_query_reset(u32 owner) {
     if (!g_qpool) {
         if (g_qfailed) return;
         if (!pool_make()) {
@@ -227,22 +221,22 @@ void vk_query_reset(u32 chan) {
             return;
         }
     }
-    QCounter* c = counter(chan, 1);
+    QCounter* c = counter(owner, 1);
     if (!c) return;
     end_own(c);
-    if (!c->started) LOG("vulkan: channel %u counts samples passed, with occlusion queries\n", chan);
+    if (!c->started) LOG("vulkan: draw owner %#x counts samples passed, with occlusion queries\n", owner);
     c->started = 1;
     c->bad = 0;
     c->first = c->reported = g_q.next;
 }
-void vk_query_enable(u32 chan, int on) {
-    QCounter* c = counter(chan, 1);
+void vk_query_enable(u32 owner, int on) {
+    QCounter* c = counter(owner, 1);
     if (!c) return;
     if (!on) end_own(c);
     c->disabled = !on;
 }
-int vk_query_report(u32 chan, u64 gva, u32 len, u64 ticks) {
-    QCounter* c = counter(chan, 0);
+int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks) {
+    QCounter* c = counter(owner, 0);
     if (!c || !c->started || c->bad || c->whead - c->wtail == QWAIT) return 0;
     end_own(c);
     vk_render_end();
@@ -262,7 +256,7 @@ u64 vk_query_value(u32 ci, u64 first, u64 end) {
         c->sum = 0;
     }
     for (u64 s = c->sum_end; s < end; s++)
-        if (g_qown[s % QN] == ci % QCH + 1) c->sum += snx_le64(g_qres[s % QN]) * g_qmul[s % QN]; /* the device's */
+        if (g_qown[s % QN] == ci % QCH + 1) c->sum += snx_le64(g_qres[s % QN]); /* the device's */
     if (end > c->sum_end) c->sum_end = end;
     if (c->whead != c->wtail) c->wtail++;
     double area = (double)g_vk_scale * (double)g_vk_scale;
@@ -518,6 +512,108 @@ int vk_query_pred_flush(void) {
                                                VK_ACCESS_2_TRANSFER_WRITE_BIT};
     d.pMemoryBarriers = &after;
     rec_CmdPipelineBarrier2(cb, &d);
+    return 1;
+}
+
+/* A predicate of two 64-bit values in guest memory, at a and a + 16, compared on the GPU (query_compare.comp): for a
+   render enable over values that results the GPU hasn't landed hold (a compute program's, a draw's storage), which
+   reading them on the CPU would wait for. The values are read where the GPU holds them (vk_buf_get). 1 with *slot
+   held once for the caller, 0 when it can't be made */
+static VkDescriptorSetLayout g_cds;
+static VkPipelineLayout g_clayout;
+static VkPipeline g_cpipe;
+static int g_cfailed;
+static int compare_init(void) {
+    if (g_cpipe) return 1;
+    if (g_cfailed || !pred_init()) return 0;
+    g_cfailed = 1; /* until everything below is made */
+    VkDescriptorSetLayoutBinding b[2];
+    for (u32 i = 0; i < 2; i++)
+        b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+                                              NULL};
+    VkDescriptorSetLayoutCreateInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_cds))) return 0;
+    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 2 * sizeof(u32)};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &g_cds,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &push};
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_clayout))) return 0;
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = query_compare_spv_size,
+                                   .pCode = query_compare_spv};
+    VkShaderModule m;
+    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                .module = m,
+                                                .pName = "main"},
+                                      .layout = g_clayout};
+    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_cpipe));
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    if (!ok) {
+        g_cpipe = VK_NULL_HANDLE;
+        return 0;
+    }
+    g_cfailed = 0;
+    return 1;
+}
+int vk_query_pred_compare(u64 a, u32* slot) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, off, base;
+    VkBuffer buf;
+    u32 k, at, push[2];
+    if ((a & 3) || !compare_init()) return 0;
+    for (k = 0; k < PN && g_pref[(g_pnext + k) % PN]; k++) {
+    }
+    if (k == PN) return 0;
+    at = (g_pnext + k) % PN;
+    if (!vk_buf_get(a, 24, &buf, &off)) return 0;
+    VkDescriptorSet set = vk_desc_alloc(g_cds);
+    if (!set) return 0;
+    base = align ? off / align * align : off; /* a storage binding's offset is a multiple of the device's alignment */
+    VkDescriptorBufferInfo bufs[2] = {{buf, base, off - base + 24}, {g_pbuf, 0, VK_WHOLE_SIZE}};
+    VkWriteDescriptorSet w[2];
+    for (u32 i = 0; i < 2; i++)
+        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                      .dstSet = set,
+                                      .dstBinding = i,
+                                      .descriptorCount = 1,
+                                      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                      .pBufferInfo = &bufs[i]};
+    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    VkCommandBuffer cb = vk_cmd();
+    vk_render_end(); /* a dispatch is outside a rendering pass */
+    /* whatever wrote the values, and the draws predicated on the slot before it is written again; the predicate
+       before the draws that read it */
+    VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                                VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT},
+                      after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT,
+                               .dstAccessMask = VK_ACCESS_2_CONDITIONAL_RENDERING_READ_BIT_EXT};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &before};
+    rec_CmdPipelineBarrier2(cb, &d);
+    push[0] = at;
+    push[1] = (u32)((off - base) / 4);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_cpipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_clayout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    rec_CmdDispatch(cb, 1, 1, 1);
+    d.pMemoryBarriers = &after;
+    rec_CmdPipelineBarrier2(cb, &d);
+    g_pslot_batch[at] = g_pbatch; /* not a batch's predicate to go on from */
+    g_pref[at] = 1;
+    g_pnext = at + 1;
+    *slot = at;
     return 1;
 }
 

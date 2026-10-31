@@ -73,8 +73,9 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     return LLVMBuildCall2(B, ir->t_guest, function, args, 2, "");
 }
 
-/* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
-   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return. The runtime JIT also calls the AOT module's
+/* call(): F_target(c,target) when the target is a recompiled function the module doesn't route (snx_codegen_routed: a
+   hook names its symbol) and direct calls aren't hooked (--hook-direct-calls), CALLDYN(target) otherwise, so a hook in
+   a routed function's slot sees every call to it; tail: then return. The runtime JIT also calls the AOT module's
    functions directly (ir->direct says which have one, jit_service.c), through snx_aot_<target>: a symbol its loader
    resolves at each load, so the object holds no host address and a later run can load it again (the JIT's cache) */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
@@ -82,9 +83,10 @@ static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) 
     char name[40];
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
-    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
+    int through_slot = codegen->hook_direct_calls || snx_codegen_routed(codegen, target);
+    if (!through_slot && snx_codegen_function(codegen, target))
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
-    else if (!codegen->hook_direct_calls && ir->direct && ir->direct(ir->direct_user, target) != 0) {
+    else if (!through_slot && ir->direct && ir->direct(ir->direct_user, target) != 0) {
         sprintf(name, "snx_aot_%llx", (unsigned long long)target);
         aot = LLVMGetNamedFunction(ir->mod, name);
         if (!aot) aot = LLVMAddFunction(ir->mod, name, ir->t_guest);
@@ -107,8 +109,25 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ [c->pc=resume;] c->rt->poll(c); } (codegen.c): a loop
-   that makes no SVC can still be taken off its core, for a waiter of higher priority */
+/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
+   can still be taken off its core, for a waiter of higher priority.
+   On a backward branch (resume, its target) the poll then leaves the function: { c->pc=resume; c->rt->poll(c);
+   F_start(c,resume); return; }. The call of the function itself goes to the target's label through the entry mismatch
+   and D_, with the registers that the poll's site stored. A poll that returned into the loop was a call in every loop
+   that can change every register: ir_promote.c reloaded each live register after it, and the reloads met the loop's
+   own values in PHIs at the loop's head and after the poll. In large functions those PHIs outnumbered the register's
+   accesses, so the register stayed in the CPU structure in the whole function, its loops too. Not CALLDYN(resume):
+   for a loop at the function's start, that runs whatever hook holds the start's dispatch slot. The function's address
+   goes through an empty asm, which LLVM can't see through: LLVM turns a direct call of the function itself (tail
+   recursion) into a branch back to its entry, which made each function with a loop one loop through its entry, and
+   one game's code units then took several times as long to compile, until the compile ran out of memory.
+   The dispatch block's poll (resume NULL) returns: the block already joins every way into the function.
+   The compiler barrier after the flag's load (a single-thread fence: no instruction on any host) keeps every guest
+   load of the loop in it. Guest loads aren't volatile (ir_state.c's ir_rd), so without it LLVM sees no write in the
+   loop, or only the cold path's, and moves the load of an address the loop builds from constants (ADRP, MOV) out of
+   the loop or onto that path: a spin on memory another thread writes then spins on the poll flag alone, and sees the
+   store only when a waiter of higher priority flags its core, or never without emulated cores
+   (tests/recompiler_library.c) */
 static void poll(SnxIr* ir, const SnxU64* resume) {
     if (ir->stats.enabled) ++ir->stats.polls;
     LLVMBasicBlockRef yes = ir_block(ir, "poll"), no = ir_block(ir, "run");
@@ -117,12 +136,19 @@ static void poll(SnxIr* ir, const SnxU64* resume) {
     LLVMSetOrdering(flag, LLVMAtomicOrderingMonotonic);
     LLVMSetAlignment(flag, 4);
     ir_tag_cpu(ir, flag);
+    LLVMBuildFence(B, LLVMAtomicOrderingAcquire, 1, "");
     ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, flag, ir_i32(ir, 0), ""), yes, no));
     LLVMPositionBuilderAtEnd(B, yes);
     if (resume) ir_set_pc(ir, ir_i64(ir, *resume));
     args[0] = ir->c;
     ir_rt_call(ir, ir_rt_poll(), ir->t_void, &param, args, 1);
-    LLVMBuildBr(B, no);
+    if (resume) {
+        LLVMTypeRef same = LLVMFunctionType(ir->t_ptr, &param, 1, 0);
+        LLVMValueRef hide = LLVMGetInlineAsm(same, "", 0, "=r,0", 4, 0, 0, LLVMInlineAsmDialectATT, 0);
+        LLVMValueRef self = LLVMBuildCall2(B, same, hide, &ir->fn, 1, ""), again[2] = {ir->c, ir_i64(ir, *resume)};
+        must_tail(ir, LLVMBuildCall2(B, ir->t_guest, self, again, 2, ""));
+    } else
+        LLVMBuildBr(B, no);
     LLVMPositionBuilderAtEnd(B, no);
 }
 

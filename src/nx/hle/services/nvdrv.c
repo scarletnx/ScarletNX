@@ -34,6 +34,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/video/host1x.h"
 #include "nx/runtime/clock.h"
+#include "nx/gpu/nvn/nvn_verify.h"
 #include <stdlib.h>
 #include <string.h>
 static void nv_events_check(void);
@@ -616,17 +617,14 @@ void syncpt_add(u32 id, u32 n) {
     nv_events_check();
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
-/* this thread's syncpt_add_quiet moved a syncpoint: its syncpt_events checks the event slots where syncpt_add would
-   have, so the same thread takes the kernel's lock, after vk_lock goes */
-static _Thread_local int t_events_due;
 void syncpt_add_quiet(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
-    t_events_due = 1;
+    t_hle.nvdrv.events_due = 1;
     gpu_kick();
 }
 void syncpt_events(void) {
-    if (!t_events_due) return;
-    t_events_due = 0;
+    if (!t_hle.nvdrv.events_due) return;
+    t_hle.nvdrv.events_due = 0;
     nv_events_check();
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
@@ -928,6 +926,28 @@ static u32 nvmap_ioc_free(u8* d) {
     if (retire) nvmap_retire(h);
     return NV_RESULT_SUCCESS;
 }
+u32 nvmap_handle_new(u64 addr, u64 size) {
+    u8 d[NVMAP_ALLOC_ADDRESS + 8]; /* the largest of the arguments */
+    u32 h;
+    if (!size || size > 0xffffffffull || !page_aligned(addr)) return 0;
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_CREATE_SIZE, (u32)size);
+    if (nvmap_ioc_create(d)) return 0;
+    h = rd32(d, NVMAP_CREATE_HANDLE);
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_ALLOC_HANDLE, h);
+    wr64(d, NVMAP_ALLOC_ADDRESS, addr);
+    if (!nvmap_ioc_alloc(d)) return h;
+    nvmap_handle_drop(h);
+    return 0;
+}
+void nvmap_handle_drop(u32 h) {
+    u8 d[NVMAP_FREE_FLAGS + 4];
+    if (!h) return;
+    memset(d, 0, sizeof d);
+    wr32(d, NVMAP_FREE_HANDLE, h);
+    nvmap_ioc_free(d);
+}
 /* PARAM: one of the handle's properties (Eden's IocParam) */
 static u32 nvmap_ioc_param(u8* d) {
     u32 v = 0, r = NV_RESULT_SUCCESS;
@@ -1009,6 +1029,39 @@ static u32 as_free_space(const u8* d) {
     gmap_cut(gva, size);
     va_free(gva, size);
     return NV_RESULT_SUCCESS;
+}
+/* GPU address space for a front end that maps guest memory itself, without nvhost-as-gpu's ioctls (nvn_direct's
+   memory pools): the same allocator and page table, under the same lock */
+u64 gmmu_space_alloc(u64 size, u64 align) {
+    u64 gva;
+    if (!size || !gva_ok(0, size)) return 0;
+    pm_lock(&g_host.nvdrv.aslock);
+    gva = va_alloc(size, align && pow2(align) ? align : VA_UNIT);
+    pm_unlock(&g_host.nvdrv.aslock);
+    return gva;
+}
+void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
+    if (!size || !gva_ok(gva, size) || !cpu_ok(cpu, size) || !page_aligned(gva) || !page_aligned(cpu)) {
+        WARN_LIMIT(8, "nvdrv: a mapping of %llx bytes of %llx at %llx is outside the address spaces or unaligned\n",
+                   (unsigned long long)size, (unsigned long long)cpu, (unsigned long long)gva);
+        return;
+    }
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_map(gva, cpu, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
+void gmmu_space_unmap(u64 gva, u64 size) {
+    if (!size || !gva_ok(gva, size)) return;
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_unmap(gva, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK, 0, 0);
+    pm_unlock(&g_host.nvdrv.aslock);
+}
+void gmmu_space_free(u64 gva, u64 size) {
+    if (!size || !gva_ok(gva, size)) return;
+    pm_lock(&g_host.nvdrv.aslock);
+    gmmu_unmap(gva, (size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK, 0, 0);
+    va_free(gva, size);
+    pm_unlock(&g_host.nvdrv.aslock);
 }
 /* UNMAP_BUFFER: every piece of the mapping MAP_BUFFER_EX made at base, and its allocator VA */
 static u32 as_unmap_buffer(u64 base) {
@@ -1285,10 +1338,10 @@ static const NvgpuGpuCharacteristics gm20b_characteristics = {
     .arch = 0x120,                          /* NVGPU_GPU_ARCH_GM200 */
     .impl = 0xB,                            /* NVGPU_GPU_IMPL_GM20B */
     .rev = 0xA1,                            /* revision A1 */
-    .num_gpc = 1,
+    .num_gpc = NVGPU_NUM_GPCS,
     .l2_cache_size = 0x40000,               /* 256 KiB */
     .on_board_video_memory_size = 0,        /* none: the GPU uses system memory */
-    .num_tpc_per_gpc = 2,
+    .num_tpc_per_gpc = NVGPU_NUM_SMS / NVGPU_NUM_GPCS,
     .bus_type = 0x20,                       /* NVGPU_GPU_BUS_TYPE_AXI */
     .big_page_size = 0x20000,
     .compression_page_size = 0x20000,
@@ -1297,7 +1350,7 @@ static const NvgpuGpuCharacteristics gm20b_characteristics = {
     .gpc_mask = 1,
     .sm_arch_sm_version = 0x503,            /* SM 5.3 */
     .sm_arch_spa_version = 0x503,
-    .sm_arch_warp_count = 0x80,
+    .sm_arch_warp_count = NVGPU_SM_WARPS,
     .gpu_va_bit_count = GMMU_ADDRESS_SPACE_BITS,
     .reserved = 0,
     .flags = 0x55,
@@ -1427,6 +1480,16 @@ static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, 
        them */
     incs = host + ((flags & GPU_SUBMIT_INCREMENT_VALUE) ? fval : 0);
     sp = gpu_channel_syncpt(f);
+    if (nvn_verify_fd_is((u32)(f - g_hle.nvdrv.nvf))) { /* the shadow driver's: decoded for nvn_verify, never run */
+        nvn_verify_gpfifo((u32)(f - g_hle.nvdrv.nvf), entries, num);
+        pm_lock(&g_host.nvdrv.submit_lk);
+        promised = syncpt_promise(sp, incs);
+        pm_unlock(&g_host.nvdrv.submit_lk);
+        if (incs) syncpt_add(sp, incs);
+        wr32(d, GPU_SUBMIT_FENCE_ID, sp);
+        wr32(d, GPU_SUBMIT_FENCE_VALUE, promised);
+        return NV_RESULT_SUCCESS;
+    }
     /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
     pm_lock(&g_host.nvdrv.submit_lk);
     promised = syncpt_promise(sp, incs);
@@ -1503,6 +1566,7 @@ static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32
         }
     pm_unlock(&g_host.nvdrv.lock);
     if (slot < 0) host1x_close(h1x);
+    if (slot >= 0) nvn_verify_fd((u32)slot, nvn_verify_shadow_thread());
     LOG("nvdrv: open %s -> %d\n", name, slot);
     *fd = (u32)slot;
     *error = slot < 0 ? NV_RESULT_FILE_OPERATION_FAILED : NV_RESULT_SUCCESS; /* every fd taken (or no memory) */

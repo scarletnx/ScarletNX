@@ -24,7 +24,7 @@ typedef struct {
 #define VALUE(name)     {#name, (unsigned long long)(name), 0}
 
 /* the SNX_ABI the table below was recorded at, and the table */
-#define RECORDED_ABI 15
+#define RECORDED_ABI 16
 static const Field g_recorded[] = {
     {"sizeof(V128)", 16, 0},
     {"sizeof(CPU)", 904, 0},

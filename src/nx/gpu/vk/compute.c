@@ -224,7 +224,8 @@ static int arena_fit(u64 need) {
                               .size = cap,
                               .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /* an indirect dispatch's grid */
                               /* both queues use it, one at a time, without ownership transfers */
                               .sharingMode = fam[0] != fam[1] ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
                               .queueFamilyIndexCount = fam[0] != fam[1] ? 2 : 0,
@@ -321,7 +322,9 @@ static void cs_submit(void) {
                         .pSignalSemaphoreInfos = &sig};
     vk_rec_queue(g_vk.compute); /* after the graphics submissions before it, when the queue is theirs too */
     vk_wait_foreground();
+    vk_queue_lock(g_vk.compute);
     VkResult r = vkQueueSubmit2(g_vk.compute, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock(g_vk.compute);
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     g_recording = 0;
     g_inflight = 1;
@@ -766,17 +769,21 @@ static void cs_read_code(u64 pa, u8* dst) {
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
        clients keep the whole window. */
-    if (pa >= 0x100) {
-        const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
-        if (header) {
-            u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-            if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
-                gmem_ptr_untracked(pa, declared))
-                code_size = declared;
-        }
+    u8 header[8];
+    if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
+        u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
+        if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+            gmem_host(pa, declared))
+            code_size = declared;
     }
     memset(dst, 0, 0x10000 + 80);
-    gmem_read_code(pa, dst + 80, code_size);
+    /* what the GPU holds in the window lands only when the program may reach it (gmem_code_cut) */
+    u64 cpu = gmem_read_code_cpu(pa, dst + 80, code_size);
+    if (cpu < code_size) {
+        u32 len;
+        vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
+        if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
+    }
 }
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
@@ -784,15 +791,13 @@ static void cs_read_code(u64 pa, u8* dst) {
    Project, GPL-3.0-or-later), on the ownership ScarletNX's engines already use (docs/GPU_OWNERSHIP.md), so that the
    guest's own pages are trapped and land only when the CPU touches them, not at a sync point. A range one resource
    holds whole is bound where it is. Any other is copied, the CPU's bytes by the CPU and the GPU's by the GPU
-   (vk_guest_read): into staging when it is only read, into a resource of its own when it is written, which then
+   (vk_guest_read_device): into staging when it is only read, into a resource of its own when it is written, which then
    holds those bytes (res_publish). Nothing is waited for, compared or written back */
 /* how recently the CPU must have made a written range land for a dispatch writing it to run on the compute queue */
 #define CS_CPU_READ_PRESENTS 1200
 static int res_bind(u64 gva, u64 len, int written, VkBuffer* buf, u64* off, VkOwnRes** made) {
     OwnRange o[2];
-    VkBuffer sb;
-    u64 cpu = 0, so;
-    u8* p;
+    u64 cpu = 0;
     *made = NULL;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     if (gmmu_run(gva, len, &cpu) == len && own_lookup(cpu, len, o, 2) == 1 && o[0].addr == cpu && o[0].size == len &&
@@ -807,12 +812,12 @@ static int res_bind(u64 gva, u64 len, int written, VkBuffer* buf, u64* off, VkOw
        four buffers for every one they write) */
     if (!written) return vk_buf_get_strict(gva, len, buf, off);
     vk_render_end(); /* the copies happen outside rendering passes */
-    if (!(p = vk_stage_upload(len, vk_stage_align(), &sb, &so))) return 0;
-    vk_guest_read(gva, len, p, sb, so);
     VkOwnRes* r = vk_own_res_new(len);
     if (!r) return 0;
-    VkBufferCopy c = {so, 0, len};
-    rec_CmdCopyBuffer(vk_cmd(), sb, r->buf, 1, &c);
+    if (!vk_guest_read_device(gva, len, r->buf, 0)) { /* straight into it: the GPU's bytes stay on the GPU */
+        vk_own_res_unref(r);
+        return 0;
+    }
     *buf = r->buf;
     *off = 0;
     *made = r;
@@ -838,16 +843,16 @@ static void res_unref_all(VkOwnRes** made, int n) {
         }
 }
 
-void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
-    u32* rc = ch->rcomp;
-    u32 gx = qmd_grid_dim_x(q), gy = qmd_grid_dim_y(q), gz = qmd_grid_dim_z(q), lx = qmd_block_dim_x(q),
-        ly = qmd_block_dim_y(q), lz = qmd_block_dim_z(q), shm = qmd_shared_alloc(q);
+void vk_dispatch(const DispatchState* d) {
+    u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
+        shm = d->shared;
     CsKey ck = {0};
     u32 tcb_key;
     u64 tic_key_base;
     CsBufImg bimg[8] = {0};
     int i;
     vk_frame_check();
+    if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
     if (!gx || !gy || !gz || !lx || !ly || !lz) return;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||
@@ -862,16 +867,20 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         return;
     }
     cs_init();
-    /* constant buffers from the QMD (reading them lands results they overlap) */
-    u64 cba[QMD_NUM_CONST_BUFFERS] = {0};
+    /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
     for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
         g_cbn[i] = 0;
-        if (!qmd_const_buffer_enabled(q, i)) continue;
-        cba[i] = qmd_const_buffer_address(q, i);
-        u32 sz = qmd_const_buffer_size(q, i);
+        if (!(d->cb_on >> i & 1)) continue;
+        DsCbBlock in = dx_cb_inline(d, i);
+        if (in.bytes) {
+            memcpy(g_cb[i], in.bytes, in.size);
+            g_cbn[i] = in.size;
+            continue;
+        }
+        u32 sz = d->cb_size[i];
         if (!sz || sz > sizeof g_cb[i]) sz = sizeof g_cb[i];
         g_cbn[i] = sz;
-        gmem_read(cba[i], g_cb[i], sz);
+        gmem_read(d->cb_addr[i], g_cb[i], sz);
     }
     /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does. */
     struct cs_fast {
@@ -882,7 +891,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         CsPipe* p;
     };
     static struct cs_fast fc[64];
-    u64 pa = code + qmd_program_start(q);
+    u64 pa = d->code;
     struct cs_fast* fe = &fc[((pa >> 8) ^ (pa >> 16)) & 63];
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
@@ -908,8 +917,8 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     }
     /* Stores default to unsigned for bindless images and float for bound ones. Descriptors of another class,
        signed stores, and integer sampled textures select a variant keyed on their numeric types. */
-    tcb_key = kepler_compute_tex_cb_index(rc);
-    tic_key_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC);
+    tcb_key = d->tex_bank;
+    tic_key_base = d->tex_pool;
     if (!p->failed)
         for (i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
@@ -977,9 +986,9 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         u64 tic_base;
         u32 h = 0, tic[8];
         if (p->si.img[i].type != 1) continue;
-        tic_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC);
+        tic_base = d->tex_pool;
         if ((u32)i >= g_vk_buffer_image_slots ||
-            !cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : kepler_compute_tex_cb_index(rc), p->si.img[i].cbuf_off * 4,
+            !cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : d->tex_bank, p->si.img[i].cbuf_off * 4,
                         &h)) {
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
             return;
@@ -996,6 +1005,11 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
        pending compute results overlap land those first, before anything is put in the arena */
     int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, retries = 0;
+    /* so does an indirect one: its grid is read where the graphics queue's buffers hold guest memory (vk_buf_get) */
+    gfx = gfx || d->indirect != 0;
+    VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
+    u64 grid_off = 0, cb0_off = 0;
+    u32 cb0_range = 0;
     /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
        reads the result on the GPU instead of the compute queue waiting for it to land (one game: three a frame) */
     for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
@@ -1118,6 +1132,11 @@ rebind:
             }
             memcpy(dst, g_cb[i], n);
             memset(dst + n, 0, range - n);
+            if (!i) {
+                cb0_buf = cbuf;
+                cb0_off = o;
+                cb0_range = range;
+            }
             bi[nw] = (VkDescriptorBufferInfo){cbuf, o, range};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
@@ -1183,8 +1202,8 @@ rebind:
     if (gfx) {
         /* textures from the compute engine's headers; texture handles from its texture constant buffer bank. Their
            number types are what the program was keyed on (vk_tex_num), and depth textures aren't sampled here */
-        u64 tic_base = kepler_compute_address(rc, KEPLER_COMPUTE_TIC), tsc_base = kepler_compute_address(rc, KEPLER_COMPUTE_TSC);
-        u32 tcb = kepler_compute_tex_cb_index(rc);
+        u64 tic_base = d->tex_pool, tsc_base = d->smp_pool;
+        u32 tcb = d->tex_bank;
         int fmt_used = 0;
         i32 fmt[320] = {0}; /* SNX_FMT, std140: snx_ic[8] snx_tc[32] snx_ib[8] snx_tb[32], 16 bytes each */
         for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
@@ -1196,13 +1215,11 @@ rebind:
             vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
             vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             VkImageViewType want = vk_tex_view_type(st);
-            if (st->flags & 2) {
-                LOG_LIMIT(4, "vulkan: multisample texture upload is unavailable (skipped)\n");
-                g_cs_skips[CS_SKIP_TEXTURE]++;
-                cs_abandon_binding(originals);
-                return;
-            }
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
+            /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
+               image of other samples reads zeros, as a missing texture does */
+            int ms = (st->flags & 2) != 0;
+            if (t && ms != (t->msaa != 0)) t = NULL;
             if ((st->flags & 1) && !t) {
                 LOG_LIMIT(4, "vulkan: raw surface load requires a 32-bit color format (skipped)\n");
                 g_cs_skips[CS_SKIP_TEXTURE]++;
@@ -1222,7 +1239,7 @@ rebind:
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else {
-                v = vk_null_view(want, num);
+                v = vk_null_view(want, num, ms);
                 sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
             VkSampler smp = vk_tex_bind_sampler(tsc, tic, st, num, sampled, want);
@@ -1371,6 +1388,15 @@ rebind:
             nw++;
         }
     }
+    /* an indirect dispatch's grid, as the GPU holds it (a compute program's results that haven't landed where they
+       are) */
+    if (d->indirect && ((d->indirect & 3) || !vk_buf_get(d->indirect, 12, &grid_buf, &grid_off))) {
+        LOG_LIMIT(4, "vulkan: an indirect dispatch's grid at %llx can't be read\n", (unsigned long long)d->indirect);
+        vk_buf_writable_abort();
+        res_unref_all(made, ng);
+        g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
+        return;
+    }
     /* reading an input landed results and submitted: what was read before may be stale, as in a draw's setup */
     if (deferred && setup_sub != vk_submit_number()) {
         for (i = 0; i < p->si.nimg && i < 8; i++)
@@ -1445,9 +1471,19 @@ rebind:
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &cmb};
         rec_CmdPipelineBarrier2(cb, &cdi);
     }
+    if (d->indirect && cb0_buf && cb0_range >= 0x20c) {
+        /* the grid into bank 0's dispatch size too, on the GPU, after whatever wrote it */
+        VkBufferCopy gc = {grid_off, cb0_off + 0x200, 12};
+        vk_all_barrier(cb);
+        rec_CmdCopyBuffer(cb, grid_buf, cb0_buf, 1, &gc);
+        vk_all_barrier(cb);
+    }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
-    rec_CmdDispatch(cb, gx, gy, gz);
+    if (d->indirect)
+        rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
+    else
+        rec_CmdDispatch(cb, gx, gy, gz);
     if (resident) {
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {

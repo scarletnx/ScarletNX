@@ -1,0 +1,4 @@
+include "nx/gpu/nvn/nvn.h"
+family f
+@version(nvn >= 53.0, < 55.0) hook nvnQueueFinish(NVNqueue* q) = finish_53
+@version(nvn >= 55.0) hook nvnQueueFinish(const NVNqueue* q) = finish_55

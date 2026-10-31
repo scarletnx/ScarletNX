@@ -240,7 +240,8 @@ static void vi_present(void* arg) {
     if (!pitch) pitch = gb32(s, 0x0c) * ((fmt >= 4 && fmt <= 7 && fmt != 5) ? 2 : 4);
     pm_unlock(&g_host.vi.lock);
     if (li == VI_SHOWN)
-        vi_show_buffer(nvmap, offset, w, h, pitch, layout, bhl, fmt, crop, transform & 3); /* the flips; no rotation */
+        vi_show_buffer(nvmap, offset, w, h, pitch, layout, bhl, fmt, crop, transform & 3, /* the flips; no rotation */
+                       (int)(key & 0xff));
     pm_lock(&g_host.vi.lock);
     if (vi_key(li, (int)(key & 0xff)) == key && s->state == SLOT_QUEUED) {
         s->state = SLOT_FREE;
@@ -449,7 +450,7 @@ static void vi_transact(ViLayer* l, u32 code, IpcBuf parcel, IpcBuf reply) {
         }
         nv_gpu_call_after(n, ids, vals, vi_present, (void*)qkey);
     }
-    if (dequeued && li == VI_SHOWN) present_pace(interval); /* only the display's frames wait for it */
+    if (dequeued && li == VI_SHOWN) present_pace(interval, slot); /* only the display's frames wait for it */
 }
 
 /* ============================================================ IHOSBinderDriver */

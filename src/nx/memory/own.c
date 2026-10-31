@@ -349,7 +349,8 @@ int own_init(const OwnHooks* h) {
     g_hooks = *h;
     g_page = plat_vm_page();
     pc_init(&g_own_cv);
-    if (!plat_alias_mirror() || plat_trap_init(own_fault)) {
+    /* SNX_NO_TRAPS: as a host without traps (Windows, macOS), to measure and test that path here */
+    if (getenv("SNX_NO_TRAPS") || !plat_alias_mirror() || plat_trap_init(own_fault)) {
         LOG("memory: no traps on this host: GPU engines land their results in guest memory at their fence\n");
         return -1;
     }
@@ -412,10 +413,27 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) {
     return n;
 }
 
+/* the CPU's bytes of [a, b) into dst at a - addr: page by page, a page an owner is on through the mirror (its CPU
+   bytes are in the pool), the others as they are. A page landed meanwhile reads the same through either */
+static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
+    while (a < b) {
+        u64 end = (a & ~(g_page - 1)) + g_page, off;
+        int owned;
+        if (end > b) end = b;
+        pm_lock(&g_own_lk);
+        owned = page_owned_nl(a & ~(g_page - 1));
+        pm_unlock(&g_own_lk);
+        if (owned && !mem_pool_offset(a, &off))
+            memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
+        else
+            memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
+        a = end;
+    }
+}
+
 u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
-    u64 lo = addr & ~(g_page - 1), hi = (addr + size + g_page - 1) & ~(g_page - 1), a;
-    u8* mirror;
-    u32 n = own_lookup(addr, size, out, max);
+    u64 lo = addr & ~(g_page - 1), hi = (addr + size + g_page - 1) & ~(g_page - 1), at = addr;
+    u32 n = own_lookup(addr, size, out, max), i;
     int trapped;
     if (n > max) return n;
     trapped = region_owned(lo, hi);
@@ -431,21 +449,13 @@ u32 own_stage(u64 addr, u64 size, u8* dst, OwnRange* out, u32 max) {
         memcpy(dst, GP(addr), (size_t)size);
         return n;
     }
-    /* page by page: a page an owner is on through the mirror (its CPU bytes are in the pool), the others as they are.
-       A page landed meanwhile reads the same through either */
-    mirror = plat_alias_mirror();
-    for (a = addr; a < addr + size;) {
-        u64 end = (a & ~(g_page - 1)) + g_page, off;
-        int owned;
-        if (end > addr + size) end = addr + size;
-        pm_lock(&g_own_lk);
-        owned = page_owned_nl(a & ~(g_page - 1));
-        pm_unlock(&g_own_lk);
-        if (owned && !mem_pool_offset(a, &off))
-            memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else
-            memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
-        a = end;
+    /* only the gaps between the owned parts (sorted, apart, clipped to the range): the caller copies those from
+       their resources over dst. Copying them too made the CPU copy every target a publish staged (55 of the 58 GB
+       the CPU staged in 40 s of one game) for the GPU to overwrite */
+    for (i = 0; i <= n; i++) {
+        u64 end = i < n ? out[i].addr : addr + size;
+        if (end > at) stage_cpu(addr, at, end, dst, plat_alias_mirror());
+        if (i < n) at = out[i].addr + out[i].size;
     }
     return n;
 }

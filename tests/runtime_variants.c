@@ -152,6 +152,12 @@ u64* hints_copy(size_t* count) {
 }
 
 int nvn_trace_active(void) { return 0; }
+int nvn_direct_active(void) { return 0; }
+/* no hooks here: nothing goes back in a slot */
+void hook_restore(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+}
 
 static int word(void* user, SnxU64 address, SnxU32* out) {
     (void)user;

@@ -10,11 +10,14 @@
 #include "common/utilities/common.h"
 #include "common/utilities/ini_lines.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn_trace.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/hle/services/hid.h"
 #include "nx/runtime/guest_jit.h"
 #include "nx/hle/services/nvdrv.h"
@@ -74,6 +77,7 @@ int (*snx_menu)(const char* self);
 void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
 const SnxVariants* g_variants;
+const SnxRoutes* g_routes;
 GuestFn* g_disp;
 
 /* A build that links a game's code into the runtime defines it; none does yet (src/nx/CMakeLists.txt) */
@@ -82,6 +86,7 @@ const SnxModule* snx_module_static(void) __attribute__((weak));
 typedef const SnxModule* (*ModuleFn)(void);
 typedef const SnxArmModule* (*ArmModuleFn)(void);
 typedef const SnxVariants* (*VariantsFn)(void);
+typedef const SnxRoutes* (*RoutesFn)(void);
 
 static int is_separator(char c) { return c == '/' || c == '\\'; }
 
@@ -168,6 +173,18 @@ static const char* program_path(const char* argv0) {
 
 /* ---- the game's code ---- */
 
+/* the module's route list (snx_routes, module_abi.h): NULL for a module made before it, which routes every function it
+   exports, and for one of another version, said once */
+static void routes_load(RoutesFn get) {
+    g_routes = get();
+    if (g_routes && g_routes->version != SNX_ROUTES_VERSION) {
+        WARN("game: its route list is of version %u, where this runtime reads %u: the hooks can't tell which of their "
+             "functions it calls directly\n",
+             (unsigned)g_routes->version, (unsigned)SNX_ROUTES_VERSION);
+        g_routes = NULL;
+    }
+}
+
 #ifdef MODULE_PACK
 /* The pack's objects loaded into an arena of the JIT loader's, after the runtime library this app embeds (the pack has
    none: its host had none for this machine). Each of the arena's regions is what the two loads take of it
@@ -207,12 +224,14 @@ static const SnxModule* load_pack(const char* path) {
     free(data); /* the loaded code is a copy */
     {
         SnxU64 variants = 0;
+        SnxU64 routes = 0;
         if (snx_code_lookup(loader, "snx_variants", &variants)) { /* a global of the pack, in the loader's table */
             VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
             g_variants = get_variants();
             if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
                 fatal("%s has a runtime variant table of another version", path);
         }
+        if (snx_code_lookup(loader, "snx_routes", &routes)) routes_load((RoutesFn)(uintptr_t)routes);
     }
     get = (ModuleFn)(uintptr_t)address;
     return get();
@@ -261,6 +280,11 @@ static const SnxModule* load_module(const char* path) {
         g_variants = get_variants();
         if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
             fatal("%s has a runtime variant table of another version", path);
+    }
+    if ((sym = plat_dl_sym(lib, "snx_routes")) != NULL) {
+        RoutesFn get_routes;
+        memcpy(&get_routes, &sym, sizeof get_routes);
+        routes_load(get_routes);
     }
     return m;
 }
@@ -499,6 +523,7 @@ void snx_save_before_exit(void) {
         svc_core_exit();
         jit_report();
         nvn_trace_report();
+        kernel_core_report();
         saved = 1;
     }
     pm_unlock(&lock);
@@ -517,9 +542,9 @@ static void write_threads(u64 second) {
     f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "second %llu, frames %d\n", (unsigned long long)second, __atomic_load_n(&g_frames, __ATOMIC_RELAXED));
-    tls_log_redirect = f; /* this thread's lines only: the others keep the log */
+    t_plat.log_redirect = f; /* this thread's lines only: the others keep the log */
     kernel_dump_threads();
-    tls_log_redirect = NULL;
+    t_plat.log_redirect = NULL;
     fclose(f);
 }
 
@@ -825,6 +850,7 @@ int snx_main(int argc, char** argv) {
     const SnxModule* mod;
     int status, i;
     hle_init(); /* before anything, the options included, touches g_hle */
+    nvn_init(); /* and g_nvn */
     /* The driver's dump-play options also belong to the runtime when it reads the dump in place. */
     status = runtime_key_options(&argc, argv, &keys, &title_keys);
     if (status) {
@@ -953,6 +979,8 @@ int snx_main(int argc, char** argv) {
     load_hints();
     if (loader_load()) fatal("Could not load the game executables. See the .log for details.");
     kernel_load_symbols();
+    hook_install(); /* before the trace, which wraps what a slot holds, and the JIT, which reads the slots */
+    nvn_direct_init(); /* before the trace, which stands aside when it runs */
     nvn_trace_init();
     /* after the trace, which says whether calls must go through the slots it wraps. The JIT compiles A64: a 32-bit
        game's blocks are arm.c's, and its hints are A32 block keys the JIT must not warm-compile */

@@ -43,6 +43,20 @@ typedef struct SnxModule {
     u8* stale;
 } SnxModule;
 
+/* What snx_routes() of a module returns: the route list it was recompiled with (nx/loader/hook_routes.h), the symbols
+   whose calls it sends through their dispatch slots. list is the list's hash and names[0..count) each symbol's hash,
+   sorted by value; all is 1 when the module sends every call through dispatch (--hook-direct-calls). A module of
+   SNX_ABI 15 or 16 without snx_routes sends the calls to every function it exports through their slots. A separate
+   symbol with a version of its own, so SnxModule and SNX_ABI stay as they are */
+#define SNX_ROUTES_VERSION 1
+typedef struct SnxRoutes {
+    u32 version;
+    u32 count;
+    u64 list;
+    const u64* names;
+    u32 all, reserved;
+} SnxRoutes;
+
 /* What a 32-bit program's module returns from snx_module_arm() instead. Its code is AArch32 blocks
    (common/cpu/arm/), each running to its next control transfer, which runtime/arm.c dispatches one after another.
    Being another symbol with a version of its own, it leaves SNX_ABI and 64-bit modules alone. abi comes first here
@@ -83,6 +97,9 @@ SNX_ABI_CHECK(module_main, offsetof(SnxModule, main_stack) == 80 && offsetof(Snx
 SNX_ABI_CHECK(module_fns, offsetof(SnxModule, nfns) == 92 && offsetof(SnxModule, fn) == 96 &&
                               offsetof(SnxModule, fn_lo) == 104 && offsetof(SnxModule, fn_len) == 112 &&
                               offsetof(SnxModule, stale) == 120);
+SNX_ABI_CHECK(routes_size, sizeof(SnxRoutes) == 32);
+SNX_ABI_CHECK(routes_fields,
+              offsetof(SnxRoutes, list) == 8 && offsetof(SnxRoutes, names) == 16 && offsetof(SnxRoutes, all) == 24);
 SNX_ABI_CHECK(arm_size, sizeof(SnxArmModule) == 80 && offsetof(SnxArmModule, poll_offset) == 72);
 SNX_ABI_CHECK(arm_entries, offsetof(SnxArmModule, entry_addr) == 24 && offsetof(SnxArmModule, entry_fn) == 32);
 SNX_ABI_CHECK(arm_title, offsetof(SnxArmModule, title) == 40 && offsetof(SnxArmModule, title_id) == 48);

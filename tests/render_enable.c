@@ -19,15 +19,12 @@ u8* g_mem;
 u64 g_draws;
 int g_renderer_up = 1;
 static int draws, clears;
-static void count_clear(GpuChannel* ch, u32 v) {
-    (void)ch;
-    (void)v;
+static void count_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
+    (void)ds, (void)c, (void)o;
     clears++;
 }
-static void count_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex,
-                       u32 base_instance, u32 instances) {
-    (void)ch, (void)indexed, (void)topology, (void)first, (void)count, (void)base_vertex, (void)base_instance;
-    (void)instances;
+static void count_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
+    (void)ds, (void)dc, (void)o;
     draws++;
 }
 static const Renderer counting = {.name = "counting", .clear = count_clear, .draw = count_draw};

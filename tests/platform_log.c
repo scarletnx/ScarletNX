@@ -138,9 +138,9 @@ int main(int argc, char** argv) {
 
     /* the redirect takes this thread's lines away from the log */
     r = fopen(redir, "w");
-    tls_log_redirect = r;
+    t_plat.log_redirect = r;
     LOG("into the redirect\n");
-    tls_log_redirect = NULL;
+    t_plat.log_redirect = NULL;
     fclose(r);
     CHECK(!strstr(slurp(log), "into the redirect"), "a redirected line reached the log");
     CHECK(!strcmp(slurp(redir), "into the redirect\n"), "the redirect did not get its line");
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
 
     /* fatal: the log, the box, and an exit with 1, even with a redirect set */
     r = fopen(redir, "w");
-    tls_log_redirect = r;
+    t_plat.log_redirect = r;
     code = setjmp(g_exit_jump);
     if (!code) fatal("boom %d", 42);
     fclose(r);

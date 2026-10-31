@@ -14,9 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the guest thread a host thread runs (thread.c); not in plat.h, which C99 code includes too */
-extern _Thread_local void* tls_thread;
-
 /* The kernel's results (module 1), as RC(1, description) gives them */
 #define R_OUTOFMEM      0xD001  /* 104 OutOfMemory */
 #define R_BADSIZE       0xCA01  /* 101 InvalidSize */
@@ -80,6 +77,17 @@ int h_close(u32 h);
 void waiter_add(KObj* o, KThread* t);
 void waiter_del(KObj* o, KThread* t);
 void wake(KThread* t, int result);
+/* A thread blocked in the kernel waits on its word (kt_word), with no lock held: kt_seq reads it before the thread
+   checks what it waits for, and kt_wait blocks while the word still holds that value, so a change made after the check
+   ends the wait at once. kt_notify changes t's word and wakes it now; kt_notify_later changes it now and wakes it when
+   the caller next lets go of g_klock (klock_unlock) or of core_lk, or waits itself, so that the woken thread doesn't
+   wake only to wait for the lock its waker still holds. kt_wait lets go of held (if any) while it waits */
+u32 kt_seq(const KThread* t);
+void kt_notify(KThread* t);
+void kt_notify_later(KThread* t);
+void kt_flush(void);
+void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns);
+void klock_unlock(void);
 void kobj_signal_nl(KObj* o);
 int sleep_nl(KThread* t, i64 timeout);
 
@@ -200,7 +208,9 @@ typedef struct {
        one core comes from here: a core that falls free goes to its best waiter (lowest priority value, then the
        earliest), never to whichever host thread wakes first. Every field below and each thread's on_core, core,
        core_next and core_ticket change under core_lk, which is taken after g_klock when both are held (sleep_nl lets
-       go of its core with g_klock held), and never the other way round */
+       go of its core with g_klock held), and never the other way round. Two are read without it, with __atomic loads:
+       a thread's on_core by the thread itself (only it lets go of a core it holds, and it waits for one handed to it
+       on its word), and the heads of core_wait by core_yield */
     u32 core_owner[NCORES];      /* the thread holding each core (kt_at), or 0 */
     u32 core_wait[NCORES];       /* the threads waiting for it, through core_next, in no order */
     int core_best[NCORES];       /* the best priority among them, 64 with none */
@@ -217,8 +227,13 @@ typedef struct {
 } HleThread;
 /* thread's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {
-    PCond cv[KTHREAD_MAX]; /* each thread's, which it waits on (kt_cv) */
+    /* each thread's wait word (kt_word), which it blocks on in the kernel's waits: whoever ends the wait changes the
+       word, then wakes it (kt_notify) */
+    u32 wword[KTHREAD_MAX];
     PMutex core_lk;
+    /* for kernel_core_report, under core_lk: when each core's holder took it (plat_ns), and per core the time it was
+       held and the time threads waited for it */
+    u64 core_since[NCORES], core_held_ns[NCORES], core_wait_ns[NCORES];
     /* a save state's load (thread.c): the guest threads' host threads running, retire asking them to end, and the
        service wait each is in (kthread_wait), where it is woken to */
     int nhost, retire;
@@ -229,6 +244,18 @@ typedef struct {
     /* the request each thread serves changed what a service holds (kthread_commit), until its SVC leaves */
     u8 committed[KTHREAD_MAX];
 } HostThread;
+/* thread's thread state, t_hle.thread (hle.h's) */
+enum { KT_LATER = 16 };
+typedef struct {
+    KThread* cur; /* the guest thread this host thread runs, NULL in a thread of the runtime's own */
+    /* the threads this host thread changed the word of with kt_notify_later, to wake once it lets go of its lock: a
+       wait's end comes with the lock held, and a thread woken then would only wait again for that lock. Too many for
+       the list are woken at once */
+    struct {
+        u32 n;
+        u32 ix[KT_LATER];
+    } later;
+} TlsThread;
 /* sync.c: the threads blocked in each kind of wait, in arrival order, linked by next_waiter (sync.c says how the
    lists are kept: one for mutexes, one per bucket of the word for the others). Under g_host.kernel.klock */
 #define WAIT_BUCKETS 256

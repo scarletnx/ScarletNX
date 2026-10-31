@@ -19,6 +19,8 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
         views[i].function_count = m->function_count;
         views[i].relptrs = m->relptrs;
         views[i].relptr_count = m->relptr_count;
+        views[i].routed = m->routed;
+        views[i].routed_count = m->routed_count;
         views[i].fde = m->fde;
         views[i].fde_count = m->fde_count;
     }

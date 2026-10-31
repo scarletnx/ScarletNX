@@ -155,7 +155,7 @@ for raw in sys.stdin:
         size = re.match(r'\(long\)\((sizeof\(KThread\))\)$', expr)
         if member or size:
             value = LAYOUT[(member or size).group(1)]
-        elif expr == '(unsigned long)tls_thread':
+        elif expr == '(unsigned long)t_hle.thread.cur':
             value = 0x5000 if m.group(1) == '2' else 0
         else:
             value = values.get(expr)

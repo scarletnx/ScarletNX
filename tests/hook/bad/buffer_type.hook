@@ -1,0 +1,2 @@
+family a
+hook f(u64 p out[8]) = h pure

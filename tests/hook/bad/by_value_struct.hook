@@ -1,0 +1,3 @@
+include "nx/gpu/nvn/nvn.h"
+family f
+hook f(NVNtexture t) = h

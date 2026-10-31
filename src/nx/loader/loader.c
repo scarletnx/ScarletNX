@@ -8,6 +8,7 @@
    Written from Switchbrew's NSO, NRO, MOD0, NPDM and NACP pages, the ELF and LSB specifications (dynamic section,
    relocations, DT_RELR, DWARF pointer encodings) and what the callers expect */
 #include "nx/loader/loader.h"
+#include "nx/loader/hook_routes.h"
 #include <stdlib.h>
 #include <string.h>
 #include <lz4.h>
@@ -137,7 +138,7 @@ typedef struct {
     SnxModuleImage* m;
     int is64;
     unsigned word; /* an address's size in the module: 8, or 4 for ELF32 */
-    List functions, relptrs, fdes;
+    List functions, relptrs, fdes, routed;
     char* error;
     size_t error_size;
 } Parse;
@@ -336,7 +337,12 @@ static int read_symbols(Parse* p, const Dynamic* d) {
             imported[imported_n++] = name;
             continue;
         }
-        if (type == STT_FUNC && code_address(p, value)) push(&p->functions, value);
+        if (type == STT_FUNC && code_address(p, value)) {
+            push(&p->functions, value);
+            /* only a hooked function's calls pay for its slot: a game that exports nearly all of its functions would
+               otherwise make most of its direct calls indirect */
+            if (snx_hook_routed((const char*)m->image + strtab + name)) push(&p->routed, value);
+        }
         if (type <= STT_FUNC && value) {
             defined[defined_n].value = value;
             defined[defined_n].size = size;
@@ -638,23 +644,28 @@ static int read_metadata(SnxModuleImage* m, int is64, char* error, size_t error_
     if (!rc) {
         sort_unique(&p.functions);
         sort_unique(&p.relptrs);
-        /* one block: the functions, the relptrs, then the FDEs */
-        bytes = (p.functions.n + p.relptrs.n + p.fdes.n) * sizeof(SnxU64);
+        sort_unique(&p.routed);
+        /* one block: the functions, the relptrs, the routed functions, then the FDEs */
+        bytes = (p.functions.n + p.relptrs.n + p.routed.n + p.fdes.n) * sizeof(SnxU64);
         m->functions = (SnxU64*)snx_alloc(bytes);
         m->relptrs = m->functions + p.functions.n;
-        m->fde = (SnxFde*)(m->relptrs + p.relptrs.n);
+        m->routed = m->relptrs + p.relptrs.n;
+        m->fde = (SnxFde*)(m->routed + p.routed.n);
         if (p.functions.n) memcpy(m->functions, p.functions.v, p.functions.n * sizeof(SnxU64));
         if (p.relptrs.n) memcpy(m->relptrs, p.relptrs.v, p.relptrs.n * sizeof(SnxU64));
+        if (p.routed.n) memcpy(m->routed, p.routed.v, p.routed.n * sizeof(SnxU64));
         for (i = 0; i < p.fdes.n / 2; ++i) {
             m->fde[i].start = p.fdes.v[2 * i];
             m->fde[i].size = p.fdes.v[2 * i + 1];
         }
         m->function_count = p.functions.n;
         m->relptr_count = p.relptrs.n;
+        m->routed_count = p.routed.n;
         m->fde_count = p.fdes.n / 2;
     }
     free(p.functions.v);
     free(p.relptrs.v);
+    free(p.routed.v);
     free(p.fdes.v);
     return rc ? -1 : 0;
 }
@@ -680,7 +691,7 @@ void snx_free_module(SnxModuleImage* module) {
     free(module->image);
     free(module->nacp_data);
     free(module->symbols);   /* the imports too */
-    free(module->functions); /* the relptrs and the FDEs too */
+    free(module->functions); /* the relptrs, the routed functions and the FDEs too */
     free(module->eh_error);
     memset(module, 0, sizeof(*module));
 }

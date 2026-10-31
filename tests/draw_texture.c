@@ -16,10 +16,11 @@ u8* g_mem;
 u64 g_draws;
 int g_renderer_up = 1;
 static int calls;
-static u32 seen[12];
-static void record(GpuChannel* ch) {
+static DrawTexture seen;
+static void record(const DsState* ds, const DrawTexture* t) {
+    (void)ds;
     calls++;
-    memcpy(seen, &ch->r3d[0x420], sizeof seen);
+    seen = *t;
 }
 static const Renderer recording = {.name = "recording", .draw_texture = record};
 const Renderer* g_renderer = &recording;
@@ -76,7 +77,9 @@ int main(void) {
         failures++;
     }
     maxwell3d_method(&ch, 0x42B, words[11], 1);
-    if (calls != 1 || memcmp(seen, words, sizeof words)) {
+    /* the words decoded: the rectangle in pixels, a texel per pixel, texture 5 with sampler 3 */
+    if (calls != 1 || seen.x0 != 40 || seen.y0 != 24 || seen.w != 32 || seen.h != 16 || seen.du != 1 || seen.dv != 1 ||
+        seen.handle != (3u << 20 | 5) || seen.sx0 != 0 || seen.sy0 != 0) {
         fprintf(stderr, "FAIL: %d calls after the last word, or its words weren't in place\n", calls);
         failures++;
     }

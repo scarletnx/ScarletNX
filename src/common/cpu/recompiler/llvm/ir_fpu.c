@@ -71,7 +71,7 @@ static V call_binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_binary", ir->t_i64, operands, 4), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_binary", ir->t_i64, operands, 4), width);
 }
 static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     V operands[4];
@@ -79,14 +79,14 @@ static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     operands[1] = u64_of(ir, a);
     operands[2] = u64_of(ir, b);
     operands[3] = ir_i32(ir, width);
-    return to_width(ir, fp_call(ir, "snx_fp_fma", ir->t_i64, operands, 4), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_fma", ir->t_i64, operands, 4), width);
 }
 static V call_unary(SnxIr* ir, V a, unsigned width, unsigned op) {
     V operands[3];
     operands[0] = u64_of(ir, a);
     operands[1] = ir_i32(ir, width);
     operands[2] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_unary", ir->t_i64, operands, 3), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_unary", ir->t_i64, operands, 3), width);
 }
 static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
     V operands[5];
@@ -95,7 +95,7 @@ static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsi
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, minimum);
     operands[4] = ir_i32(ir, numeric);
-    return to_width(ir, fp_call(ir, "snx_fp_minmax", ir->t_i64, operands, 5), width);
+    return to_width(ir, fp_call(ir, "snx_fp_host_minmax", ir->t_i64, operands, 5), width);
 }
 /* the NZCV nibble (i32) */
 static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
@@ -104,7 +104,7 @@ static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, signal);
-    return fp_call(ir, "snx_fp_compare", ir->t_i32, operands, 4);
+    return fp_call(ir, "snx_fp_host_compare", ir->t_i32, operands, 4);
 }
 /* rm: an i32, FPCR's mode or the encoding's */
 static V call_convert(SnxIr* ir, V a, unsigned from, unsigned to, V rm) {
@@ -164,9 +164,11 @@ static V call_from_int(SnxIr* ir, V v, unsigned integer, unsigned width, unsigne
    exactly where that is cheap (TwoSum for sums; for singles the double product, quotient remainder or square, all
    exact; for doubles an FMA residual where the host has FMA, kept to operands whose residual can't underflow), and
    otherwise the path is taken only once IXC is set: it is sticky, so an inexact result changes nothing then.
-   Compares, FMAX and FMIN, widening and narrowing, and the integer conversions have guards of their own. Nothing
-   reads the host's FP state, so this assumes only that the host thread never flushes denormals (x86's MXCSR.FTZ
-   and DAZ, FPCR.FZ on an AArch64 host), which the runtime never sets. Halves always take the helpers. */
+   Compares, FMAX and FMIN, widening and narrowing, the FRINTs and the integer conversions have guards of their own.
+   Nothing reads the host's FP state, so this assumes only that the host thread never flushes denormals (x86's
+   MXCSR.FTZ and DAZ, FPCR.FZ on an AArch64 host), which the runtime never sets. Halves always take the helpers. The
+   slow paths call the helpers' snx_fp_host_* forms, which try the host's arithmetic on what these guards refuse
+   (NaNs, infinities, underflows) before the soft-float. */
 
 
 static SnxU64 inf_bits(unsigned width) { return width == 16 ? 0x7C00u : width == 32 ? 0x7F800000u : 0x7FF0000000000000ull; }
@@ -314,6 +316,8 @@ static V fast_binary(SnxIr* ir, unsigned op, unsigned width, V a, V b, V* ok, V*
                 *inexact = float_ne(ir, fma3(ir, LLVMBuildFNeg(B, r, ""), fb, fa), kfloat(ir, 64, 0.0));
                 cut = either(ir, is_zero(ir, 64, a), magnitude_in(ir, 64, a, RESIDUAL_FLOOR, inf_bits(64)));
             }
+            /* a zero divided by an infinity is an exact zero, though its residual (0 * inf) is a NaN */
+            if (*inexact) *inexact = both(ir, *inexact, LLVMBuildNot(B, exact_zero, ""));
             break;
     }
     *ok = both(ir, both(ir, fpcr_clear(ir, FPCR_RMODE), both(ir, unflushed(ir, width, a), unflushed(ir, width, b))),
@@ -448,14 +452,16 @@ static void fp_sqrt(SnxIr* ir, const SnxA64Args* a) {
     set_fp_reg(ir, (unsigned)a->rd, r);
 }
 
-/* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's); exact: FRINTX's IXC */
+/* FRINTN, P, M, Z, A (rm the encoding's), X and I (rm < 0: FPCR's mode, ir_fp_round_value); exact: FRINTX's IXC.
+   The host's rounding (host_rint, which on x86 gives ties away from zero too) gives the modes exactly for all but a
+   NaN or a flushed denormal, and raises nothing; FRINTX's IXC is a value rounding changed */
 static void fp_round(SnxIr* ir, const SnxA64Args* a, int rm, unsigned exact) {
     unsigned width = width_of(a->esz);
     V mode = rm < 0 ? fpcr_rmode(ir) : ir_i32(ir, (SnxU32)rm);
     V n = fp_reg(ir, (unsigned)a->rn, width), result;
-    if (width != 16 && host_round(ir) && (rm != 4 || ir->features->aarch64)) {
+    if (width != 16 && host_round(ir)) {
         V value = as_float(ir, n, width);
-        V rounded = ir_fp_round_value(ir, value, rm < 0 ? 5 : (unsigned)rm);
+        V rounded = rm < 0 ? ir_fp_round_value(ir, value, 5) : host_rint(ir, value, (unsigned)rm);
         V ok = both(ir, LLVMBuildNot(B, is_nan(ir, width, n), ""), unflushed(ir, width, n));
         Split s;
         split_begin(ir, ok, as_bits(ir, rounded, width),
@@ -616,20 +622,18 @@ static void fp_from_int(SnxIr* ir, const SnxA64Args* a, unsigned uns) {
 /* FCVT[NPMZA][SU] to Wd or Xd, fixed point with shift fraction bits, rounding mode rm (do_fcvt_g). On the host when
    the scaled value (exact: a product by a power of two that overflows only out of range) rounds to an integer in
    range and no denormal is flushed; IXC when rounding changed it. Toward zero is the conversion's own rounding, the
-   other modes need the host's rounding instructions (ties away from zero only AArch64's FRINTA) */
+   other modes need the host's rounding (host_rint) */
 static void fp_to_int(SnxIr* ir, const SnxA64Args* a, unsigned rm, unsigned uns) {
     unsigned width = width_of(a->esz), integer = a->sf ? 64 : 32, fbits = (unsigned)a->shift;
     unsigned precision = width == 32 ? 24 : 53;
     V n = fp_reg(ir, (unsigned)a->rn, width), r;
-    int fast_path = width != 16 && (rm == 3 || (host_round(ir) && (rm != 4 || ir->features->aarch64)));
-    if (fast_path) {
-        static const char* const rounding[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", NULL, "llvm.round"};
+    if (width != 16 && (rm == 3 || host_round(ir))) {
         LLVMTypeRef type = ir_int_type(ir, integer);
         V f = as_float(ir, n, width), low;
         Split s;
         double top = (double)((SnxU64)1 << (integer - 1)) * (uns ? 2.0 : 1.0);
         if (fbits) f = LLVMBuildFMul(B, f, kfloat(ir, width, (double)((SnxU64)1 << (fbits - 1)) * 2.0), "");
-        V rounded = rm == 3 ? f : ir_intrinsic(ir, rounding[rm], LLVMTypeOf(f), &f, 1);
+        V rounded = rm == 3 ? f : host_rint(ir, f, rm);
         /* the lowest integer in range less one, where the format holds it (trunc of anything above it is in
            range), else the lowest integer itself */
         if (uns)

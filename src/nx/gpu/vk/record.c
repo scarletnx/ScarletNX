@@ -166,6 +166,14 @@ void vk_rec_queue(VkQueue q) {
     if (q == g_vk.gfx) vk_rec_sync();
 }
 
+/* The graphics and the compute queue's locks (vk_queue_lock): this thread submits and presents on the graphics queue
+   while the GPU thread may bind an image's pieces on it (memory.c). The compute queue's is the graphics queue's when
+   they are one queue */
+static PMutex g_gfx_qlock = PMUTEX_INIT, g_compute_qlock = PMUTEX_INIT;
+static PMutex* queue_mutex(VkQueue q) { return q == g_vk.gfx ? &g_gfx_qlock : &g_compute_qlock; }
+void vk_queue_lock(VkQueue q) { pm_lock(queue_mutex(q)); }
+void vk_queue_unlock(VkQueue q) { pm_unlock(queue_mutex(q)); }
+
 /* ------------------------------------------------------------ beginning and submitting */
 static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -200,7 +208,9 @@ static void submit_run(const void* p) {
                         .signalSemaphoreInfoCount = x->ns,
                         .pSignalSemaphoreInfos = x->s};
     vk_wait_foreground();
+    vk_queue_lock(g_vk.gfx);
     VkResult r = vkQueueSubmit2(g_vk.gfx, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock(g_vk.gfx);
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */
@@ -233,6 +243,11 @@ typedef struct {
     VkSwapchainKHR sc;
     VkSemaphore wait;
     u32 idx;
+    u64 id;     /* display.c's, 0 none */
+    u64 target; /* not shown before then (with VK_CLOCK_WAIT2, in the time domain domain), 0 none */
+    u64 domain; /* the time domain's id */
+    u32 stage;  /* the present stage the domain is local to, 0 none */
+    int clock;  /* the swapchain's VkClock: how the id and the time are given */
 } Present;
 static VkResult g_present_result; /* atomic: the last present's result that wasn't VK_SUCCESS, until it is taken */
 static VkResult present_run(const Present* x) {
@@ -242,15 +257,39 @@ static VkResult present_run(const Present* x) {
                            .swapchainCount = 1,
                            .pSwapchains = &x->sc,
                            .pImageIndices = &x->idx};
+    VkPresentIdKHR pid = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .swapchainCount = 1, .pPresentIds = &x->id};
+    VkPresentId2KHR pid2 = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR, .swapchainCount = 1, .pPresentIds = &x->id};
+    VkPresentTimingInfoEXT ti = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+                                 .targetTime = x->target,
+                                 .timeDomainId = x->domain,
+                                 .targetTimeDomainPresentStage = x->stage};
+    VkPresentTimingsInfoEXT tis = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .swapchainCount = 1, .pTimingInfos = &ti};
+    VkPresentTimeGOOGLE gt = {.presentID = (u32)x->id, .desiredPresentTime = x->target};
+    VkPresentTimesInfoGOOGLE gtis = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, .swapchainCount = 1, .pTimes = &gt};
+    if (x->id && x->clock == VK_CLOCK_WAIT2) {
+        pi.pNext = &pid2;
+        if (x->target) pid2.pNext = &tis;
+    } else if (x->id && x->clock == VK_CLOCK_GOOGLE)
+        pi.pNext = &gtis;
+    else if (x->id)
+        pi.pNext = &pid;
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
-    return vkQueuePresentKHR(g_vk.gfx, &pi);
+    pm_lock(&g_vk.sc_lock); /* the swapchain, which the GPU thread acquires from and display.c waits on meanwhile */
+    vk_queue_lock(g_vk.gfx);
+    VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
+    vk_queue_unlock(g_vk.gfx);
+    pm_unlock(&g_vk.sc_lock);
+    vk_display_made(x->id, r);
+    return r;
 }
 static void present_queued(const void* p) {
     VkResult r = present_run(p);
     if (r != VK_SUCCESS) __atomic_store_n(&g_present_result, r, __ATOMIC_RELEASE);
 }
-VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait) {
-    Present x = {sc, wait, idx};
+VkResult vk_rec_present(VkSwapchainKHR sc, u32 idx, VkSemaphore wait, u64 id, u64 target) {
+    Present x = {sc, wait, idx, id, g_vk.sc_hold ? target : 0, g_vk.sc_time_domain, g_vk.sc_time_stage, g_vk.sc_clock};
     if (g_rec <= 0) return present_run(&x);
     *(Present*)rec_push(present_queued, sizeof x) = x;
     publish();
@@ -378,8 +417,41 @@ void rec_CmdDrawIndexed(VkCommandBuffer cb, u32 indices, u32 instances, u32 firs
     *x = (DrawIndexedArgs){cb, indices, instances, first_index, vertex_offset, first_instance};
     rec_commit();
 }
+/* the indirect draws: kind bit 0 indexed, bit 1 limited by the count at count_buf */
+typedef struct {
+    VkCommandBuffer cb;
+    VkBuffer buf, count_buf;
+    VkDeviceSize off, count_off;
+    u32 kind, max, stride;
+} DrawIndirectArgs;
+static void draw_indirect_now(const DrawIndirectArgs* x) {
+    switch (x->kind) {
+        case 0: vkCmdDrawIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
+        case 1: vkCmdDrawIndexedIndirect(x->cb, x->buf, x->off, x->max, x->stride); break;
+        case 2: vkCmdDrawIndirectCount(x->cb, x->buf, x->off, x->count_buf, x->count_off, x->max, x->stride); break;
+        default:
+            vkCmdDrawIndexedIndirectCount(x->cb, x->buf, x->off, x->count_buf, x->count_off, x->max, x->stride);
+            break;
+    }
+}
+static void draw_indirect_run(const void* p) {
+    if (!rec_drop_draw()) draw_indirect_now((const DrawIndirectArgs*)p);
+}
+void rec_CmdDrawIndirect(VkCommandBuffer cb, int indexed, VkBuffer buf, VkDeviceSize off, VkBuffer count_buf,
+                         VkDeviceSize count_off, u32 max, u32 stride) {
+    DrawIndirectArgs a = {cb, buf, count_buf, off, count_off, (indexed ? 1u : 0u) | (count_buf ? 2u : 0u), max,
+                          stride};
+    if (!rec_on(cb)) {
+        draw_indirect_now(&a);
+        return;
+    }
+    DrawIndirectArgs* x = rec_push(draw_indirect_run, sizeof *x);
+    *x = a;
+    rec_commit();
+}
 REC3(CmdBindIndexBuffer, VkBuffer, VkDeviceSize, VkIndexType)
 REC3(CmdDispatch, u32, u32, u32)
+REC2(CmdDispatchIndirect, VkBuffer, VkDeviceSize)
 REC0(CmdEndRendering)
 REC1(CmdSetCullMode, VkCullModeFlags)
 REC1(CmdSetFrontFace, VkFrontFace)
@@ -688,6 +760,10 @@ static void blit_run(const void* p) {
     const XferArgs* x = p;
     vkCmdBlitImage(x->cb, (VkImage)x->h1, x->l1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x), (VkFilter)x->e);
 }
+static void resolve_run(const void* p) {
+    const XferArgs* x = p;
+    vkCmdResolveImage(x->cb, (VkImage)x->h1, x->l1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x));
+}
 static void buffer_to_image_run(const void* p) {
     const XferArgs* x = p;
     vkCmdCopyBufferToImage(x->cb, (VkBuffer)x->h1, (VkImage)x->h2, x->l2, x->n, XFER_REGIONS(x));
@@ -753,6 +829,15 @@ void rec_CmdBlitImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage
         return;
     }
     rec_xfer(blit_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r)->e = filter;
+    rec_commit();
+}
+void rec_CmdResolveImage(VkCommandBuffer cb, VkImage src, VkImageLayout sl, VkImage dst, VkImageLayout dl, u32 n,
+                         const VkImageResolve* r) {
+    if (!rec_on(cb)) {
+        vkCmdResolveImage(cb, src, sl, dst, dl, n, r);
+        return;
+    }
+    rec_xfer(resolve_run, cb, (u64)src, sl, (u64)dst, dl, n, r, n * sizeof *r);
     rec_commit();
 }
 void rec_CmdCopyBufferToImage(VkCommandBuffer cb, VkBuffer src, VkImage dst, VkImageLayout dl, u32 n,
