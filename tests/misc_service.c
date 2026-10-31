@@ -17,6 +17,11 @@ const u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
 /* acc.c's IsUserAccountSwitchLocked asks am.c, which this test doesn't compile: the NACP field is a switch here */
 static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
+/* the runtime's users.c reads the deprecated user through options.c, which this test doesn't compile */
+const char* ini_deprecated_value(const char* key) {
+    (void)key;
+    return NULL;
+}
 char g_exedir[1024];
 static unsigned test_checks, test_objects, test_kobjs;
 static u32 test_next_handle = 0x100;

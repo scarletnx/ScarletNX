@@ -291,6 +291,17 @@ done:
     free(path);
     return rc;
 }
+/* user 1 alone, as without users.ini: what a users.ini that is refused leaves */
+static void users_reset(void) {
+    free(g_user_pictures);
+    g_user_pictures = NULL;
+    memset(g_users, 0, sizeof g_users);
+    g_users[0].uid[0] = SNX_USERS_FIRST_UID0;
+    g_users[0].uid[1] = SNX_USERS_FIRST_UID1;
+    strcpy(g_users[0].nickname, USERS_FIRST_NAME);
+    g_user_count = 1;
+    g_user_selected = 0;
+}
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     char *path = snx_path_join(dir, USERS_FILE), *text, *key, *value;
     const char* bad;
@@ -367,15 +378,45 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
     g_user_selected = selected - 1;
     rc = users_read_pictures(dir, why, why_size);
 done:
-    if (rc) { /* nothing half read stays: the caller stops the game */
-        memset(g_users, 0, sizeof g_users);
-        g_users[0].uid[0] = SNX_USERS_FIRST_UID0;
-        g_users[0].uid[1] = SNX_USERS_FIRST_UID1;
-        strcpy(g_users[0].nickname, USERS_FIRST_NAME);
-        g_user_count = 1;
-        g_user_selected = 0;
-    }
+    if (rc) users_reset(); /* nothing half read stays: the caller stops the game */
     free(text);
     free(path);
     return rc;
+}
+int snx_users_choose(const char* dir, const char* uid_text, const char* old_number, int* old, char* why,
+                     size_t why_size) {
+    uint64_t uid[2];
+    char* end;
+    long number;
+    *old = 0;
+    if (uid_text && uid_text[0]) {
+        if (users_uid_parse(uid_text, uid) || (!uid[0] && !uid[1])) {
+            snprintf(why, why_size, "user_uid=%.40s is not 32 hex digits, nor zero", uid_text);
+            users_reset();
+            return -1;
+        }
+        if (snx_users_load(dir, 1, why, why_size)) return -1;
+        for (int i = 0; i < g_user_count; i++)
+            if (g_users[i].uid[0] == uid[0] && g_users[i].uid[1] == uid[1]) {
+                g_user_selected = i;
+                return 0;
+            }
+        snprintf(why, why_size, "user_uid=%s is no user's: users.ini of %s has %d user%s", uid_text, dir, g_user_count,
+                 g_user_count == 1 ? "" : "s");
+        users_reset();
+        return -1;
+    }
+    if (old_number && old_number[0]) {
+        number = strtol(old_number, &end, 10);
+        if (*end || end == old_number || number < 1 || number > SNX_USERS_MAX) {
+            snprintf(why, why_size, "user=%.40s, which user_uid replaces, is not a number from 1 to %d", old_number,
+                     SNX_USERS_MAX);
+            users_reset();
+            return -1;
+        }
+        if (snx_users_load(dir, (int)number, why, why_size)) return -1;
+        *old = (int)number;
+        return 0;
+    }
+    return snx_users_load(dir, 1, why, why_size);
 }

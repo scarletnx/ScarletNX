@@ -22,6 +22,8 @@ int main(void) {
     assert(!strcmp(ini_deprecated("lsfg_flow"), "LSFG went with the OpenGL renderer"));
     assert(!strcmp(ini_deprecated("touch_controls"), "now controls") &&
            !strcmp(ini_deprecated("modo_tv"), "now docked"));
+    assert(!strcmp(ini_deprecated("user"), "now user_uid, the uid of the user it named") &&
+           !ini_deprecated("user_uid"));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
     /* the section, word for word */
     f = tmpfile();
