@@ -148,7 +148,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
     launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
     `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
-    **Extra** folders, whose dumps Games lists, and **Add a folder**;
+    **Extra** folders, whose dumps Games lists, and **Add a folder**. Main's box, or Del on it, has **Remove from
+    Library**, which asks first: Games no longer lists it and ScarletNX no longer makes it as it starts, its files kept;
+    its row then says `not listed`, greyed, and **Add to Library** puts it back;
   - **Recompiled Library**: its **Main**, `recompiled/`, where recompiled games go, then its **Extra** folders, whose games
     ready to run Games lists too, and **Add a folder**;
   - **Reset to Defaults**, last, which asks first.
@@ -240,7 +242,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
   said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
   with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
-  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it) and `language` (`auto`, `en` or a
+  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
+  dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
