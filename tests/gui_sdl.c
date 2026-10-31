@@ -2528,7 +2528,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     render(app);
     key(app, SDLK_RETURN);
     /* System driver, picked, and Add Driver; this device's line, which says packages do not load here */
-    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 2 && !app->editor.row);
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->editor.row);
     assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: ") &&
            strstr(app->editor.note, "custom drivers load on Android 9 (API 28) or newer"));
     render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon */
@@ -2539,7 +2539,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     driver_picked(app, zip, NULL, false);
     assert(app->packages_count == 1 && !strcmp(app->packages[0].id, "Turnip_v32") && !app->gpu_driver[0]);
     assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. This device: "));
-    assert(gui_editor_rows(&app->editor) == 3 && !strcmp(app->drivers_form.value[1], "( )"));
+    assert(gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[1], "( )"));
     package = snx_path_join(dir, "Turnip_v32/libvulkan_freedreno.so");
     assert(snx_is_file(package));
     /* its box: Use refused here, saying this device; Remove asked first, then the folder gone */
@@ -2605,6 +2605,127 @@ static void gpu_drivers(App* app, const char* temporary) {
     free(zip);
     free(bad);
 }
+/* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does),
+   and the package a release's asset is */
+static struct {
+    char* zip; /* the package's bytes */
+    size_t zip_size;
+} g_fake_net;
+static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    const char* body = "[]";
+    memset(out, 0, sizeof *out);
+    snprintf(out->url, sizeof out->url, "%s", url);
+    out->status = 200;
+    if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
+        body = "[{\"tag_name\": \"T30\", \"name\": \"Turnip T30\", \"prerelease\": false, \"body\": \"Notes\","
+               " \"published_at\": \"2026-08-17T12:38:01Z\", \"assets\": [{\"name\": \"turnip.zip\", \"size\": 300,"
+               " \"browser_download_url\": \"https://example.invalid/turnip.zip\"}, {\"name\": \"gone.zip\","
+               " \"size\": 300, \"browser_download_url\": \"https://example.invalid/gone.zip\"}]}]";
+    else if (strstr(url, "/repos/crueter/GameHub-8Elite-Drivers/releases"))
+        body = "[{\"tag_name\": \"842.8\", \"name\": \"842.8\", \"prerelease\": false, \"body\": \"\","
+               " \"published_at\": \"2025-10-27T00:00:00Z\", \"assets\": [{\"name\": \"adreno-driver-842.8.zip\","
+               " \"size\": 13235821, \"browser_download_url\": \"https://example.invalid/blob.zip\"}]}]";
+    else if (strstr(url, "/repos/K11MCH1/")) {
+        out->status = 403;
+        body = "{\"message\": \"API rate limit exceeded\"}";
+    } else if (!strcmp(url, "https://example.invalid/turnip.zip")) {
+        out->body = (char*)malloc(g_fake_net.zip_size + 1);
+        memcpy(out->body, g_fake_net.zip, g_fake_net.zip_size);
+        out->size = g_fake_net.zip_size;
+        if (o && o->progress) o->progress(o->user, out->size, out->size);
+        return 0;
+    } else if (!strcmp(url, "https://example.invalid/gone.zip")) { /* redirected to a CDN's long link, not there */
+        memset(out->url, 'a', 2000);
+        out->status = 404;
+        body = "Not Found";
+    } else if (!strcmp(url, "https://example.invalid/blob.zip")) {
+        snprintf(why, size, "GET %s: the answer stopped coming, 0 bytes in", url);
+        return -1;
+    }
+    out->body = snx_strdup(body);
+    out->size = strlen(body);
+    return 0;
+}
+/* the events the threads push, taken until busy is false, 10 s at most */
+static void pump_until(App* app, const bool* busy) {
+    Uint64 end = SDL_GetTicks() + 10000;
+    SDL_Event e;
+    while (*busy && SDL_GetTicks() < end) {
+        while (SDL_PollEvent(&e)) event(app, &e);
+        SDL_Delay(1);
+    }
+    assert(!*busy);
+}
+/* GPU Drivers > Download Driver against the test's network: the lists fetched as the page opens, one repository's
+   failure said, a GPU maker's own marked in its release's box, a download failing said, and a package downloaded,
+   added and, as nothing loads here, not picked */
+static void download_driver(App* app, const char* temporary) {
+    char* zip = driver_zip(temporary, "turnip.zip");
+    size_t i;
+    int row = -1, blob = -1;
+    g_fake_net.zip = (char*)snx_read_file(zip, &g_fake_net.zip_size);
+    assert(g_fake_net.zip);
+    app->https_get = fake_get;
+    open_drivers(app, NULL, NULL, 0);
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->packages_count);
+    app->editor.row = 1; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FETCH);
+    pump_until(app, &app->fetching);
+    assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 1);
+    assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
+           strstr(app->fetch_error[2], "API rate limit exceeded"));
+    assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
+    assert(strstr(app->editor.note, "GPU: ") && strstr(app->editor.note, "Recommended: "));
+    render(app); /* its rows drawn: a repository each, its releases under it */
+    for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
+        if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 0) row = (int)i;
+        if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 1) blob = (int)i;
+    }
+    assert(row >= 0 && blob >= 0 && !strcmp(app->fetch_form.value[0], "1 release") &&
+           !strcmp(app->fetch_form.value[row], "Latest"));
+    /* the GPU maker's own, marked; its download failing, said */
+    app->editor.row = blob;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_ASSET && app->picks.count == 1 &&
+           strstr(pick_label(app, 0), "adreno-driver-842.8.zip, ") &&
+           strstr(pick_label(app, 0), "(proprietary, no license)"));
+    render(app);
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(!strcmp(
+        app->editor.note + strlen(app->editor.note) -
+            strlen("Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"),
+        "Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"));
+    /* an asset that is not there: said with its own link, not the one it was redirected to */
+    app->editor.row = row;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks.count == 2 && strstr(pick_label(app, 1), "gone.zip, "));
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(strstr(app->editor.note, "Not downloaded: GET https://example.invalid/gone.zip: HTTP 404") &&
+           !strstr(app->editor.note, "aaaa"));
+    /* a package's: downloaded and added, GPU Drivers showing it, not picked here */
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && !app->picks.focus && strstr(pick_label(app, 0), "turnip.zip, ") &&
+           !strstr(pick_label(app, 0), "proprietary"));
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "turnip") &&
+           !app->gpu_driver[0]);
+    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. This device: "));
+    app->editor.row = 1;
+    app->driver_off = 0;
+    change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
+    assert(!app->packages_count);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP);
+    for (i = 0; i < GUI_DRIVER_REPOS; ++i) gui_driver_releases_free(&app->fetch_lists[i]);
+    free(g_fake_net.zip);
+    free(zip);
+    app->https_get = NULL;
+}
 /* a game's box's GPU Driver: Global and the launcher's first, then the game's own pick kept in its .ini (System
    driver, gpu_driver= with nothing), Global again taking the key out; its Freedreno Settings start with none of its
    own; and each run's option, the game's own when it has one */
@@ -2616,7 +2737,7 @@ static void game_gpu_driver(App* app) {
     app->addons_focus = row;
     key(app, SDLK_RETURN);
     assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
-           gui_editor_rows(&app->editor) == 3 && !strcmp(app->drivers_form.value[0], "(*)"));
+           gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[0], "(*)"));
     assert(strstr(app->editor.note, ": its own GPU driver. This device: "));
     app->editor.row = 1; /* System driver, its own */
     key(app, SDLK_RETURN);
@@ -4240,6 +4361,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
     gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
+    download_driver(&app, temporary);
     app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];

@@ -21,7 +21,9 @@
 #include "gui/browser.h"
 #include "gui/editor.h"
 #include "common/utilities/font.h"
+#include "common/network/https.h"
 #include "gui/gpu_driver.h"
+#include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
 #include "gui/i18n.h"
 #include "gui/icons.h"
@@ -96,8 +98,9 @@ enum {
     GUI_FORM_THEME,
     GUI_FORM_PAD,
     GUI_FORM_USERS,
-    GUI_FORM_DRIVERS,  /* Settings > App > GPU Drivers, or a game's own GPU driver */
-    GUI_FORM_FREEDRENO /* Settings > App > Freedreno Settings, or a game's own */
+    GUI_FORM_DRIVERS,   /* Settings > App > GPU Drivers, or a game's own GPU driver */
+    GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
+    GUI_FORM_FETCH      /* GPU Drivers > Download Driver */
 };
 /* Settings > User's values: who the games play as, then each user's nickname as it is typed */
 typedef struct {
@@ -118,7 +121,7 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER } GuiPicksOf;
+typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET } GuiPicksOf;
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
     GUI_LIST_USERS = GUI_CHOICES_PICKS + 1,
@@ -229,7 +232,7 @@ typedef struct {
 } GuiAppForm;
 /* GPU Drivers' values: each row's mark, (*) on the pick */
 #define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
-#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 3) /* a game's Global, System driver, the packages, Add Driver */
+#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 4) /* Global, System driver, the packages, Download Driver, Add Driver */
 typedef struct {
     char value[GUI_DRIVER_ROWS][8];
 } GuiDriversForm;
@@ -240,6 +243,15 @@ typedef struct {
     char name[48], value[192];
     char shown[GUI_FREEDRENO_ROWS][200];
 } GuiFreedrenoForm;
+/* Download Driver's values: a repository's state, a release's Latest or Prerelease */
+#define GUI_FETCH_ROWS   (GUI_DRIVER_REPOS * 31) /* a repository's row and 30 releases, as many as GitHub lists */
+#define GUI_FETCH_ASSETS 16                      /* the downloads of a release its box lists */
+enum { GUI_FETCH_NONE, GUI_FETCH_LOADING, GUI_FETCH_LISTED, GUI_FETCH_FAILED };
+typedef struct {
+    char value[GUI_FETCH_ROWS][24];
+} GuiFetchForm;
+/* the launcher's HTTPS GET (common/network/https.h), a test's own in its place */
+typedef int (*GuiHttpsGet)(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size);
 /* the head's measures: the row of tabs (its height and the tabs' width), the title's height and width (0: none), the
    user's box (0: none), a cell of the text */
 typedef struct {
@@ -555,6 +567,23 @@ typedef struct App {
     GuiFreedrenoForm fd_form;
     GuiThemeKey fd_keys[GUI_FREEDRENO_ROWS];
     char fd_about[GUI_FREEDRENO_ROWS][300];
+    /* GPU Drivers > Download Driver: each repository's releases and its state, the page's rows (what repository and
+       release each is), a release's downloads in the picks box, the download going and what it said last */
+    GuiHttpsGet https_get; /* NULL in a build without OpenSSL */
+    Uint32 fetch_event;    /* the threads' answers (fetch_answer) */
+    bool fetching, downloading;
+    GuiDriverReleases fetch_lists[GUI_DRIVER_REPOS];
+    int fetch_state[GUI_DRIVER_REPOS];
+    char fetch_error[GUI_DRIVER_REPOS][700];
+    GuiFetchForm fetch_form;
+    GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
+    char fetch_label[GUI_FETCH_ROWS][180];
+    char fetch_about[GUI_FETCH_ROWS][900];
+    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
+    char asset_labels[GUI_FETCH_ASSETS][240];
+    const char* asset_picks[GUI_FETCH_ASSETS + 1];
+    char download_name[160], download_said[400];
+    char vk_gpu[256]; /* the system's GPU, as Vulkan names it (vk_system_ask): Download Driver's recommendation */
     char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
     char* run_freedreno;
     char users_label[SNX_USERS_MAX][32];
@@ -784,9 +813,11 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #endif
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove. Back.")
+#define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again. Back.")
 #define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save. Back.")
 #else
 #define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove.")
+#define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again.")
 #define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save.")
 #endif
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
@@ -833,6 +864,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD              SNX_TR_KEYS("Arrows/pad: move, change. Enter/A: select. Del: default. ESC: back.")
 #define SAY_USERS            SNX_TR_KEYS("Up/Down: user. Left/Right: current user. Enter: rename. ESC: back.")
 #define SAY_DRIVERS          SNX_TR_KEYS("Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back.")
+#define SAY_FETCH            SNX_TR_KEYS("Up/Down: row. Enter: downloads, or fetch again. ESC: back.")
 #define SAY_FREEDRENO        SNX_TR_KEYS("Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back.")
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
 #define SAY_QUEUE_MOVE       SNX_TR_KEYS("Up/Down: queue.")
@@ -870,6 +902,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_RESET            SNX_TR_KEYS("A: reset.")
 #define SAY_PAD_USERS            SNX_TR_KEYS("D-pad: user, current user. A: rename. B: back.")
 #define SAY_PAD_DRIVERS          SNX_TR_KEYS("D-pad: row. A: use, add or remove. X: remove. B: back.")
+#define SAY_PAD_FETCH            SNX_TR_KEYS("D-pad: row. A: downloads, or fetch again. B: back.")
 #define SAY_PAD_FREEDRENO        SNX_TR_KEYS("D-pad: row. A: apply, type, remove or save. X: remove. B: back.")
 #define SAY_PAD_TAB              SNX_TR_KEYS("LB/RB: screen.")
 #define SAY_PAD_QUEUE_MOVE       SNX_TR_KEYS("D-pad: queue.")
@@ -2797,6 +2830,7 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
                    : app->form == GUI_FORM_FOLDERS   ? SAY_PAD_FOLDERS
                    : app->form == GUI_FORM_USERS     ? SAY_PAD_USERS
                    : app->form == GUI_FORM_DRIVERS   ? SAY_PAD_DRIVERS
+                   : app->form == GUI_FORM_FETCH     ? SAY_PAD_FETCH
                    : app->form == GUI_FORM_FREEDRENO ? SAY_PAD_FREEDRENO
                                                      : SAY_PAD_SETTINGS;
         else
@@ -2819,6 +2853,7 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
                    : app->form == GUI_FORM_FOLDERS   ? SAY_FOLDERS
                    : app->form == GUI_FORM_USERS     ? SAY_USERS
                    : app->form == GUI_FORM_DRIVERS   ? SAY_DRIVERS
+                   : app->form == GUI_FORM_FETCH     ? SAY_FETCH
                    : app->form == GUI_FORM_FREEDRENO ? SAY_FREEDRENO
                                                      : SAY_SETTINGS;
         else if (app->menu.view == GUI_LOAD_GAMES)
@@ -5368,6 +5403,8 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FOLDERS"));
     else if (app->form == GUI_FORM_DRIVERS)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS"));
+    else if (app->form == GUI_FORM_FETCH)
+        snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
     else if (app->form == GUI_FORM_FREEDRENO)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
     else
@@ -8530,6 +8567,7 @@ static void vk_system_ask(App* app) {
         snprintf(app->vk_system, sizeof app->vk_system, "%s", snx_tr("Vulkan lists no GPU"));
     else {
         props(devices[0], &p);
+        snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", p.deviceName);
         snprintf(app->vk_system, sizeof app->vk_system, snx_tr("%s, Vulkan %u.%u.%u, driver %08x"), p.deviceName,
                  VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
                  VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
@@ -8590,6 +8628,12 @@ static int drivers_fill(App* app) {
         app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
                                         sizeof f->value[0], app->drivers_about[r]);
     }
+    snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
+    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+             snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and "
+                    "added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"));
+    app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    ++r;
     snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Add Driver"));
     snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
              snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases "
@@ -8735,14 +8779,12 @@ static void driver_pick(App* app) {
 }
 /* the picker's answer: the zip added (gui_gpu_driver_add) and, where packages load, picked as Eden picks one added;
    none picked, or why the picker could not open, said */
+static void driver_take(App* app, const void* zip, size_t size, const char* name);
 static void driver_picked(App* app, const char* picked, const char* error, bool failed) {
     SDL_IOStream* io;
     Sint64 size;
     void* zip = NULL;
-    char id[100], said[700], loads[512], *path = NULL;
-    size_t n;
-    int added, i;
-    SnxGpuDriverHost host;
+    char* path = NULL;
     bool here = app->editing && app->form == GUI_FORM_DRIVERS; /* the page still open, else the menu's message */
     if (failed || !picked) {
         snprintf(app->editor.note, sizeof app->editor.note,
@@ -8778,13 +8820,23 @@ static void driver_picked(App* app, const char* picked, const char* error, bool 
         return;
     }
     SDL_CloseIO(io);
-    snx_gpu_driver_host(&host);
-    added = gui_gpu_driver_add(zip, (size_t)size, path ? path : picked, app->drivers_dir,
-                               !strcmp(host.system, "Android") ? host.api : 0, id, sizeof id, said, sizeof said);
+    driver_take(app, zip, (size_t)size, path ? path : picked);
     SDL_free(zip);
     free(path);
+}
+/* a package's zip, of size bytes, named name (its file's path or name), added (gui_gpu_driver_add) and, where packages
+   load, picked as Eden picks one added, said on GPU Drivers; the page left meanwhile, on the menu */
+static void driver_take(App* app, const void* zip, size_t size, const char* name) {
+    char id[100], said[700], loads[512];
+    size_t n;
+    int added, i;
+    SnxGpuDriverHost host;
+    bool here = app->editing && app->form == GUI_FORM_DRIVERS;
+    snx_gpu_driver_host(&host);
+    added = gui_gpu_driver_add(zip, size, name, app->drivers_dir, !strcmp(host.system, "Android") ? host.api : 0, id,
+                               sizeof id, said, sizeof said);
     drivers_load(app);
-    if (!here) { /* the page was left while the picker was open: added all the same, said on the menu */
+    if (!here) { /* the page was left while the picker or the download went: added all the same, said on the menu */
         snprintf(app->message, sizeof app->message, "%s", said);
         return;
     }
@@ -8803,14 +8855,293 @@ static void driver_picked(App* app, const char* picked, const char* error, bool 
 }
 /* Select on a GPU Drivers row: a package's box (Use, Remove), System driver or Global used, Add Driver's picker */
 static void picks_open(App* app, GuiPicksOf of);
+static void open_fetch(App* app);
 static void driver_select(App* app, int r) {
     if (r == gui_editor_rows(&app->editor) - 1)
         driver_pick(app);
+    else if (r == gui_editor_rows(&app->editor) - 2)
+        open_fetch(app);
     else if (driver_of(app, r) >= 0) {
         app->pick_row = r;
         picks_open(app, GUI_PICKS_DRIVER);
     } else
         driver_use(app, r);
+}
+
+/* ---- GPU Drivers > Download Driver: the releases of Eden's driver repositories (gui/gpu_driver_fetch.h), fetched
+   from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's asset picked is downloaded and
+   added as Add Driver adds a zip ---- */
+enum { GUI_FETCH_EVENT_LIST, GUI_FETCH_EVENT_PROGRESS, GUI_FETCH_EVENT_DONE };
+/* the fetch thread's answer for a repository, or the download's, an event's data1 the main thread frees */
+typedef struct {
+    int repo;
+    int failed;
+    SnxHttpsResponse r;
+    char why[700];
+    char name[160]; /* a download's asset */
+} GuiFetchAnswer;
+/* a thread's: what it gets, through the launcher's client (a test's own in its place), the event its answers come as */
+typedef struct {
+    GuiHttpsGet get;
+    Uint32 event;
+    char url[600];
+    char name[160];
+    unsigned long long said; /* the bytes the last progress event said */
+} GuiFetchJob;
+static void fetch_push(Uint32 event, int code, void* data) {
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = event;
+    e.user.code = code;
+    e.user.data1 = data;
+    if (!SDL_PushEvent(&e)) free(data); /* the queue is full or SDL is going: the answer is lost with it */
+}
+/* the five repositories' releases, one after the other: GitHub's rate limit counts each request */
+static int SDLCALL fetch_run(void* data) {
+    GuiFetchJob* job = (GuiFetchJob*)data;
+    for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+        SnxHttpsOptions o = {"application/vnd.github+json", 30, 8ull << 20, 0, NULL, NULL};
+        char url[300];
+        if (!a) continue;
+        a->repo = i;
+        snprintf(url, sizeof url, "https://api.github.com/repos/%s/releases", gui_driver_repos[i].path);
+        a->failed = job->get(url, &o, &a->r, a->why, sizeof a->why) != 0;
+        if (!a->failed && a->r.status != 200) {
+            snprintf(a->why, sizeof a->why, snx_tr("GET %s: HTTP %d, %.200s"), url, a->r.status, a->r.body);
+            a->failed = 1;
+        }
+        fetch_push(job->event, GUI_FETCH_EVENT_LIST, a);
+    }
+    free(job);
+    return 0;
+}
+static int fetch_progress(void* user, unsigned long long got, unsigned long long total) {
+    GuiFetchJob* job = (GuiFetchJob*)user;
+    if (got - job->said >= (256u << 10) || (total && got == total)) { /* a quarter MB apart: the note keeps up */
+        unsigned long long* both = (unsigned long long*)malloc(2 * sizeof *both);
+        job->said = got;
+        if (both) {
+            both[0] = got;
+            both[1] = total;
+            fetch_push(job->event, GUI_FETCH_EVENT_PROGRESS, both);
+        }
+    }
+    return 0;
+}
+static int SDLCALL download_run(void* data) {
+    GuiFetchJob* job = (GuiFetchJob*)data;
+    GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+    SnxHttpsOptions o = {NULL, 600, GUI_GPU_DRIVER_MAX, 0, fetch_progress, job};
+    if (a) {
+        snprintf(a->name, sizeof a->name, "%s", job->name);
+        a->failed = job->get(job->url, &o, &a->r, a->why, sizeof a->why) != 0;
+        if (!a->failed && a->r.status != 200) {
+            /* the asset's link, not the CDN's signed one it led to: that one runs past 1500 bytes */
+            snprintf(a->why, sizeof a->why, snx_tr("GET %s: HTTP %d"), job->url, a->r.status);
+            a->failed = 1;
+        }
+        fetch_push(job->event, GUI_FETCH_EVENT_DONE, a);
+    }
+    free(job);
+    return 0;
+}
+/* a thread for run with job, detached: 0 when it could not start, said in the note */
+static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
+    SDL_Thread* t;
+    if (!app->fetch_event) app->fetch_event = SDL_RegisterEvents(1);
+    job->event = app->fetch_event;
+    job->get = app->https_get;
+    t = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
+    if (!t) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Download Driver: no thread: %s"), SDL_GetError());
+        free(job);
+        return 0;
+    }
+    SDL_DetachThread(t);
+    return 1;
+}
+/* the page's rows: a repository each, its state, then its releases, newest or as GitHub orders them */
+static int fetch_fill(App* app) {
+    int r = 0;
+    memset(&app->fetch_form, 0, sizeof app->fetch_form);
+    for (int i = 0; i < GUI_DRIVER_REPOS && r < GUI_FETCH_ROWS; ++i) {
+        const GuiDriverReleases* list = &app->fetch_lists[i];
+        snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", gui_driver_repos[i].name);
+        if (app->fetch_state[i] == GUI_FETCH_LISTED)
+            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r],
+                     list->count == 1 ? snx_tr("%zu release") : snx_tr("%zu releases"), list->count);
+        else
+            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s",
+                     app->fetch_state[i] == GUI_FETCH_FAILED ? snx_tr("Failed") : snx_tr("Loading..."));
+        snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s",
+                 app->fetch_state[i] == GUI_FETCH_FAILED ? app->fetch_error[i] : gui_driver_repos[i].path);
+        app->fetch_keys[r] =
+            page_row(app->fetch_label[r], offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
+                     sizeof app->fetch_form.value[0], app->fetch_about[r]);
+        app->fetch_repo[r] = i;
+        app->fetch_release[r++] = -1;
+        for (size_t k = 0; app->fetch_state[i] == GUI_FETCH_LISTED && k < list->count && r < GUI_FETCH_ROWS; ++k, ++r) {
+            const GuiDriverRelease* rel = &list->releases[k];
+            char* c;
+            snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "  %s", rel->title);
+            snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s",
+                     rel->latest       ? snx_tr("Latest")
+                     : rel->prerelease ? snx_tr("Prerelease")
+                                       : "");
+            snprintf(app->fetch_about[r], sizeof app->fetch_about[r], snx_tr("%s, %zu downloads. %s"),
+                     rel->published[0] ? rel->published : rel->tag, rel->count, rel->body);
+            for (c = app->fetch_about[r]; *c; ++c)
+                if (*c == '\r' || *c == '\n' || *c == '\t') *c = ' ';
+            app->fetch_keys[r] = page_row(app->fetch_label[r],
+                                          offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
+                                          sizeof app->fetch_form.value[0], app->fetch_about[r]);
+            app->fetch_repo[r] = i;
+            app->fetch_release[r] = (int)k;
+        }
+    }
+    return r;
+}
+/* the page's note: the GPU and the driver Eden recommends for it, then what the last answer or press did */
+static void fetch_head(App* app, char* out, size_t size) {
+    int model = gui_adreno_model(app->vk_gpu);
+    snprintf(out, size, snx_tr("GPU: %s. Recommended: %s."), app->vk_gpu[0] ? app->vk_gpu : snx_tr("not known"),
+             snx_tr(gui_driver_recommended(model)));
+}
+static void fetch_show(App* app, int row, const char* said) {
+    int n = fetch_fill(app);
+    char head[400];
+    gui_editor_form(&app->editor, app->fetch_keys, n, &app->fetch_form, NULL);
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(row, 0, n - 1);
+    app->form = GUI_FORM_FETCH;
+    app->editing = true;
+    fetch_head(app, head, sizeof head);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s%s%s", head, said && said[0] ? " " : "", said ? said : "");
+}
+/* Download Driver: the releases fetched again, every repository's, while none is being fetched */
+static void open_fetch(App* app) {
+    GuiFetchJob* job;
+#ifdef SNX_GUI_HTTPS
+    snx_https_init(); /* libcurl's global setup, here on the main thread before any thread */
+#endif
+    if (!app->https_get) {
+        fetch_show(app, 0,
+                   snx_tr("This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded "
+                          "by hand"));
+        return;
+    }
+    if (!app->fetching) {
+        for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
+            gui_driver_releases_free(&app->fetch_lists[i]);
+            app->fetch_state[i] = GUI_FETCH_LOADING;
+            app->fetch_error[i][0] = 0;
+        }
+        job = (GuiFetchJob*)calloc(1, sizeof *job);
+        app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
+    }
+    fetch_show(app, 0, app->downloading ? app->download_said : "");
+}
+/* a release's assets in the picks box (GUI_PICKS_ASSET), each with its size, a GPU maker's own marked */
+static void fetch_assets(App* app, int row) {
+    const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[row]];
+    const GuiDriverRelease* rel = &list->releases[app->fetch_release[row]];
+    size_t i, n = SDL_min(rel->count, (size_t)GUI_FETCH_ASSETS);
+    if (!n) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s has no download"), rel->title);
+        return;
+    }
+    for (i = 0; i < n; ++i) {
+        const GuiDriverAsset* a = &gui_driver_assets(list)[rel->first + i];
+        char size[32];
+        gui_size_text(size, sizeof size, a->size);
+        if (a->proprietary)
+            snprintf(app->asset_labels[i], sizeof app->asset_labels[i], snx_tr("%s, %s (proprietary, no license)"),
+                     a->name, size);
+        else
+            snprintf(app->asset_labels[i], sizeof app->asset_labels[i], "%s, %s", a->name, size);
+        app->asset_picks[i] = app->asset_labels[i];
+    }
+    app->asset_picks[n] = NULL;
+    app->pick_row = row;
+    picks_open(app, GUI_PICKS_ASSET);
+}
+/* asset i of the release in the box downloaded, one at a time */
+static void fetch_download(App* app, int i) {
+    const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[app->pick_row]];
+    const GuiDriverRelease* rel = &list->releases[app->fetch_release[app->pick_row]];
+    const GuiDriverAsset* a = &gui_driver_assets(list)[rel->first + (size_t)i];
+    GuiFetchJob* job;
+    if (app->downloading) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s downloads already: one at a time"),
+                 app->download_name);
+        return;
+    }
+    job = (GuiFetchJob*)calloc(1, sizeof *job);
+    if (!job) return;
+    snprintf(job->url, sizeof job->url, "%s", a->url);
+    snprintf(job->name, sizeof job->name, "%s", a->name);
+    snprintf(app->download_name, sizeof app->download_name, "%s", a->name);
+    snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s..."), a->name);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", app->download_said);
+    app->downloading = fetch_start(app, download_run, "driver download", job);
+}
+/* Select on a row: a repository that failed fetched again, a release's box of its downloads */
+static void fetch_select(App* app, int row) {
+    if (row < 0 || row >= gui_editor_rows(&app->editor)) return;
+    if (app->fetch_release[row] >= 0)
+        fetch_assets(app, row);
+    else if (app->fetch_state[app->fetch_repo[row]] == GUI_FETCH_FAILED && !app->fetching)
+        open_fetch(app);
+}
+/* an answer of the threads: a repository's releases listed, a download's progress, its zip added (driver_take) */
+static void fetch_answer(App* app, int code, void* data) {
+    bool here = app->editing && app->form == GUI_FORM_FETCH;
+    if (code == GUI_FETCH_EVENT_PROGRESS) {
+        const unsigned long long* both = (const unsigned long long*)data;
+        char got[32], total[32];
+        gui_size_text(got, sizeof got, both[0]);
+        gui_size_text(total, sizeof total, both[1]);
+        if (both[1])
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s: %s of %s (%d%%)"),
+                     app->download_name, got, total, (int)(both[0] * 100 / both[1]));
+        else
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s: %s"), app->download_name,
+                     got);
+        if (here) fetch_show(app, app->editor.row, app->download_said);
+    } else if (code == GUI_FETCH_EVENT_LIST) {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)data;
+        int i = a->repo;
+        if (!a->failed && gui_driver_releases_parse(a->r.body, a->r.size, &gui_driver_repos[i], &app->fetch_lists[i],
+                                                    app->fetch_error[i], sizeof app->fetch_error[i]))
+            app->fetch_state[i] = GUI_FETCH_LISTED;
+        else {
+            if (a->failed) snprintf(app->fetch_error[i], sizeof app->fetch_error[i], "%s", a->why);
+            app->fetch_state[i] = GUI_FETCH_FAILED;
+            gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
+        }
+        if (i == GUI_DRIVER_REPOS - 1) app->fetching = false;
+        free(a->r.body);
+        if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
+    } else {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)data;
+        app->downloading = false;
+        if (a->failed) {
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Not downloaded: %s"), a->why);
+            gui_log("Download Driver: %s", a->why);
+            if (here)
+                fetch_show(app, app->editor.row, app->download_said);
+            else
+                snprintf(app->message, sizeof app->message, "%s", app->download_said);
+        } else {
+            app->download_said[0] = 0;
+            /* on GPU Drivers, whose rows show it added and picked; the page left, on the menu */
+            if (here) drivers_show(app, 0);
+            driver_take(app, a->r.body, a->r.size, a->name);
+        }
+        free(a->r.body);
+    }
+    free(data);
 }
 
 /* Freedreno Settings' rows: Eden's presets, a row a variable set (a press removes it, as Eden's delete does),
@@ -9082,6 +9413,11 @@ static void leave_form(App* app) {
         addons_open(app, game, title, true);
         free(game);
         free(title);
+    } else if (form == GUI_FORM_FETCH) { /* GPU Drivers again, on Download Driver */
+        drivers_load(app);
+        drivers_show(app, 0);
+        app->editor.row = gui_editor_rows(&app->editor) - 2;
+        drivers_note(app);
     } else if (form == GUI_FORM_DRIVERS)
         open_app(app, GUI_APP_DRIVERS);
     else if (form == GUI_FORM_FREEDRENO)
@@ -9954,6 +10290,10 @@ static void editor_key(App* app, GuiKey key) {
         else if (app->editor.dirty && app->editor.row)
             users_commit(app);
     }
+    if (app->form == GUI_FORM_FETCH) { /* a release's downloads, or the lists fetched again */
+        if (what == GUI_EDITOR_ACTION && !app->editor.step) fetch_select(app, app->editor.row);
+        if (what != GUI_EDITOR_LEAVE) return;
+    }
     if (app->form == GUI_FORM_DRIVERS) { /* a row used, a package's box, or Add Driver's picker */
         if (what == GUI_EDITOR_ACTION && !app->editor.step) driver_select(app, app->editor.row);
         if (what != GUI_EDITOR_LEAVE) return;
@@ -10288,7 +10628,10 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
                : r == GUI_APP_MOVE      ? GUI_ICON_FOLDER_INPUT
                : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW
                                         : GUI_ICON_NONE;
-    if (e->keys == app->drivers_keys) return r == gui_editor_rows(e) - 1 ? GUI_ICON_PACKAGE_PLUS : GUI_ICON_NONE;
+    if (e->keys == app->drivers_keys)
+        return r == gui_editor_rows(e) - 1   ? GUI_ICON_PACKAGE_PLUS
+               : r == gui_editor_rows(e) - 2 ? GUI_ICON_HARD_DRIVE_DOWNLOAD
+                                             : GUI_ICON_NONE;
     if (e->keys == app->folder_keys)
         return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
@@ -12620,6 +12963,7 @@ static const char* const* picks_list(const App* app) {
     int at, group, kind;
     if (app->picks_of == GUI_PICKS_SHARE) return share_picks;
     if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
+    if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
     if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
     if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
@@ -12631,6 +12975,7 @@ static const char* pick_label(App* app, int i) {
     int n = 0, at, group;
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
+    if (app->picks_of == GUI_PICKS_ASSET) return picks[i]; /* an asset's name, as it is */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -12656,7 +13001,14 @@ static void picks_question(App* app, char* out, size_t size, const char** tab) {
     const char* path;
     *tab = app->picks_of == GUI_PICKS_SHARE    ? snx_tr("Share Log")
            : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
+           : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
                                                : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_ASSET) {
+        const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[app->pick_row]];
+        snprintf(out, size, "%s: %s", gui_driver_repos[app->fetch_repo[app->pick_row]].name,
+                 list->releases[app->fetch_release[app->pick_row]].title);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_DRIVER) {
         int i = driver_of(app, app->pick_row);
         snprintf(out, size, "%s %s", i >= 0 ? package_name(&app->packages[i]) : "",
@@ -12719,6 +13071,10 @@ static void pick_take(App* app, int i) {
     int at, group, kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
+        fetch_download(app, i);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_DRIVER) { /* Use or Remove */
         if (i == 0)
             driver_use(app, app->pick_row);
@@ -15711,6 +16067,11 @@ static void event_take(App* app, const SDL_Event* e) {
         SDL_free(e->user.data2);
         return;
     }
+    /* Download Driver's threads: a repository's releases, a download's progress and its end */
+    if (app->fetch_event && e->type == app->fetch_event) {
+        fetch_answer(app, e->user.code, e->user.data1);
+        return;
+    }
     /* Add Driver's picker's answer: a zip, none, or why it could not open */
     if (app->driver_picked && e->type == app->driver_picked) {
         driver_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
@@ -16181,6 +16542,9 @@ static void open_files(App* app) {
     }
     free(app->drivers_dir);
     app->drivers_dir = snx_gpu_drivers_dir(); /* GPU Drivers' packages, which its rows and the App's name */
+#ifdef SNX_GUI_HTTPS
+    app->https_get = snx_https_get;
+#endif
     drivers_load(app);
     if (!app->look_only)
         gui_log("%s starts, its data folder %s", snx_build_info(), app->data_dir ? app->data_dir : "(none)");
