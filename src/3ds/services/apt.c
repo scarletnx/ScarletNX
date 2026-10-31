@@ -80,14 +80,15 @@ static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
 }
-static void receive_parameter(SnxCtrIpc* c) {
+/* ReceiveParameter (0xd) takes the queued parameter; GlanceParameter (0xe) answers the same and leaves it queued */
+static void receive_parameter(SnxCtrIpc* c, bool consume) {
     if (!snx_ctr_ipc_expect(c, 2, 0)) return;
     SnxCtrProcess* p = c->process;
     if (c->in[1] != 0x300 || c->in[2] > 4096) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
-    if (p->apt_phase != 2) {
+    if (consume ? p->apt_phase != 2 : p->apt_phase < 1 || p->apt_phase > 2) {
         snx_ctr_ipc_error_reply(c, p->apt_phase >= 3 ? 0xc8a0cfefu : SNX_CTR_IPC_INVALID_STATE);
         return;
     }
@@ -109,7 +110,7 @@ static void receive_parameter(SnxCtrIpc* c) {
         c->transport_result = 0xe0e01bf5u;
         return;
     }
-    c->out[0] = 0x000d0104;
+    c->out[0] = consume ? 0x000d0104 : 0x000e0104;
     c->out[2] = 0;    /* sender: none, no Home Menu process is claimed */
     c->out[3] = 1;    /* the queued initial Wakeup, implicit in the startup phase */
     c->out[4] = 0;    /* actual payload size */
@@ -117,7 +118,7 @@ static void receive_parameter(SnxCtrIpc* c) {
     c->out[6] = 0;
     c->out[7] = (size << 14) | 2; /* static buffer 0 */
     c->out[8] = address;
-    p->apt_phase = 3; /* wakeup received, startup transition not yet released */
+    if (consume) p->apt_phase = 3; /* wakeup received, startup transition not yet released */
 }
 /* AppletUtility: a utility command, its input in static buffer 1, its output (output_size bytes) in the caller's
    receive buffer 0. As Azahar answers them: success, and an output of zeros, but for TryLockTransition (6), which
@@ -163,8 +164,8 @@ static void applet_utility(SnxCtrIpc* c) {
     c->out[4] = address;
 }
 void snx_ctr_apt_dispatch(SnxCtrIpc* c) {
-    if (c->in[0] >> 16 == 0xd)
-        receive_parameter(c);
+    if (c->in[0] >> 16 == 0xd || c->in[0] >> 16 == 0xe)
+        receive_parameter(c, c->in[0] >> 16 == 0xd);
     else if (c->in[0] >> 16 == 0x4b)
         applet_utility(c);
     else

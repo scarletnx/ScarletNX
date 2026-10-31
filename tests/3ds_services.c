@@ -125,9 +125,15 @@ int main(void) {
         assert(p->apt_phase == 2 && get(p, 0) == receive[0]);
         assert(snx_ctr_read_ram(p->space, 0x301f80, unchanged, 128) == SNX_CTR_MEM_OK && !memcmp(fill, unchanged, 128));
         static_output(p, 256, 0x300800);
+        uint32_t glance[] = {0xe0080, 0x300, 256};
+        request(p, glance, 3); /* a glance answers as the receive does and leaves the parameter queued */
+        send(p, apt, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0xe0104 && !get(p, 1) && !get(p, 2) && get(p, 3) == 1 && !get(p, 4));
+        assert(get(p, 8) == 0x300800 && p->apt_phase == 2);
+        static_output(p, 256, 0x300800);
         request(p, receive, 3);
         send(p, apt, SNX_CTR_SVC_RETURN, 0);
-        assert(get(p, 0) == 0xd0104 && !get(p, 1) && !get(p, 2) && get(p, 3) == 1 && !get(p, 4));
+        assert(get(p, 0) == 0xd0104&& !get(p, 1) && !get(p, 2) && get(p, 3) == 1 && !get(p, 4));
         assert(get(p, 5) == 0x10 && !get(p, 6) && get(p, 7) == 0x400002 && get(p, 8) == 0x300800);
         assert(p->apt_phase == 3);
         uint32_t utility[] = {0x4b00c2, 7, 4, 1, 0x10402, 0x300700};
