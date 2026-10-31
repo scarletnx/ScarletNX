@@ -4,7 +4,7 @@
    GpuDriverMetadata.kt and native.cpp (SupportsCustomDriver); the rest is ScarletNX's */
 #include "common/utilities/gpu_driver.h"
 #include "common/utilities/common.h"
-#include <cJSON.h>
+#include <yyjson.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +16,8 @@
 #endif
 
 /* a field's text: a string as it is, a number as JSON writes it; 1, else 0 with why naming the key, its value and why */
-static int field(const cJSON* root, const char* key, int needed, char* out, size_t size, char* why, size_t why_size) {
-    const cJSON* item = cJSON_GetObjectItemCaseSensitive(root, key);
+static int field(yyjson_val* root, const char* key, int needed, char* out, size_t size, char* why, size_t why_size) {
+    yyjson_val* item = yyjson_obj_get(root, key);
     const char* text = NULL;
     char number[64], *shown;
     out[0] = 0;
@@ -25,15 +25,15 @@ static int field(const cJSON* root, const char* key, int needed, char* out, size
         if (needed) snprintf(why, why_size, "meta.json has no %s", key);
         return !needed;
     }
-    if (cJSON_IsString(item))
-        text = item->valuestring;
-    else if (cJSON_IsNumber(item)) {
-        snprintf(number, sizeof number, "%.17g", item->valuedouble);
+    if (yyjson_is_str(item))
+        text = yyjson_get_str(item);
+    else if (yyjson_is_num(item)) {
+        snprintf(number, sizeof number, "%.17g", yyjson_get_num(item));
         text = number;
     } else {
-        shown = cJSON_PrintUnformatted(item);
+        shown = yyjson_val_write(item, 0, NULL);
         snprintf(why, why_size, "meta.json's %s is %s, not a text", key, shown ? shown : "a value it cannot write");
-        cJSON_free(shown);
+        free(shown);
         return 0;
     }
     if (strlen(text) >= size) {
@@ -49,9 +49,9 @@ static int field(const cJSON* root, const char* key, int needed, char* out, size
 }
 
 int snx_gpu_driver_meta(const char* text, size_t n, SnxGpuDriverMeta* meta, char* why, size_t size) {
-    char* copy;
-    const char* end = NULL;
-    cJSON *root, *api;
+    yyjson_read_err err;
+    yyjson_doc* doc;
+    yyjson_val *root, *api;
     char* shown;
     int ok;
     memset(meta, 0, sizeof *meta);
@@ -59,25 +59,18 @@ int snx_gpu_driver_meta(const char* text, size_t n, SnxGpuDriverMeta* meta, char
         snprintf(why, size, "meta.json is %zu bytes, over the %d a driver's takes", n, SNX_GPU_DRIVER_META_MAX);
         return 0;
     }
-    copy = (char*)malloc(n + 1);
-    if (!copy) {
-        snprintf(why, size, "no memory to read meta.json's %zu bytes", n);
+    doc = yyjson_read_opts((char*)text, n, YYJSON_READ_NOFLAG, NULL, &err);
+    if (!doc) {
+        if (err.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION)
+            snprintf(why, size, "no memory to read meta.json's %zu bytes", n);
+        else
+            snprintf(why, size, "meta.json is not JSON near byte %zu of %zu", err.pos, n);
         return 0;
     }
-    memcpy(copy, text, n);
-    copy[n] = 0;
-    root = cJSON_ParseWithOpts(copy, &end, 1);
-    if (!root || strlen(copy) != n) {
-        size_t at = strlen(copy) != n ? strlen(copy) : end ? (size_t)(end - copy) : 0;
-        snprintf(why, size, "meta.json is not JSON near byte %zu of %zu", at, n);
-        cJSON_Delete(root);
-        free(copy);
-        return 0;
-    }
-    free(copy);
-    if (!cJSON_IsObject(root)) {
+    root = yyjson_doc_get_root(doc);
+    if (!yyjson_is_obj(root)) {
         snprintf(why, size, "meta.json is not a JSON object");
-        cJSON_Delete(root);
+        yyjson_doc_free(doc);
         return 0;
     }
     ok = field(root, "name", 1, meta->name, sizeof meta->name, why, size) &&
@@ -87,19 +80,19 @@ int snx_gpu_driver_meta(const char* text, size_t n, SnxGpuDriverMeta* meta, char
          field(root, "vendor", 0, meta->vendor, sizeof meta->vendor, why, size) &&
          field(root, "driverVersion", 0, meta->driver_version, sizeof meta->driver_version, why, size) &&
          field(root, "packageVersion", 0, meta->package_version, sizeof meta->package_version, why, size);
-    api = cJSON_GetObjectItemCaseSensitive(root, "minApi");
+    api = yyjson_obj_get(root, "minApi");
     if (ok && !api) {
         snprintf(why, size, "meta.json has no minApi");
         ok = 0;
-    } else if (ok && (!cJSON_IsNumber(api) || api->valuedouble < 0 || api->valuedouble > 1000 ||
-                      api->valuedouble != (double)(int)api->valuedouble)) {
-        shown = cJSON_PrintUnformatted(api);
+    } else if (ok && (!yyjson_is_num(api) || yyjson_get_num(api) < 0 || yyjson_get_num(api) > 1000 ||
+                      yyjson_get_num(api) != (double)(int)yyjson_get_num(api))) {
+        shown = yyjson_val_write(api, 0, NULL);
         snprintf(why, size, "meta.json's minApi is %s, not an Android API level (a whole number)",
                  shown ? shown : "a value it cannot write");
-        cJSON_free(shown);
+        free(shown);
         ok = 0;
     } else if (ok)
-        meta->min_api = (int)api->valuedouble;
+        meta->min_api = (int)yyjson_get_num(api);
     /* the hook opens it by name in the package's folder: a file name, which a path in it would leave */
     if (ok && (strchr(meta->library, '/') || strchr(meta->library, '\\') || meta->library[0] == '.' ||
                !snx_ends_with_nocase(meta->library, ".so") || strlen(meta->library) < 4)) {
@@ -109,7 +102,7 @@ int snx_gpu_driver_meta(const char* text, size_t n, SnxGpuDriverMeta* meta, char
                  meta->library);
         ok = 0;
     }
-    cJSON_Delete(root);
+    yyjson_doc_free(doc);
     return ok;
 }
 

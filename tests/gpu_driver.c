@@ -50,7 +50,7 @@ int main(void) {
     assert(!meta_of("{\"name\": \"\", \"libraryName\": \"a.so\", \"minApi\": 28}", &m, why) &&
            has(why, "name is empty"));
     assert(!meta_of("[1, 2]", &m, why) && has(why, "not a JSON object"));
-    assert(!meta_of("{\"name\": \"A\",, }", &m, why) && has(why, "not JSON near byte 14 of 16"));
+    assert(!meta_of("{\"name\": \"A\",, }", &m, why) && has(why, "not JSON near byte 13 of 16")); /* the second comma */
     assert(!snx_gpu_driver_meta("{\"name\"\0}", 10, &m, why, sizeof why) && has(why, "near byte 7 of 10"));
     big = (char*)malloc(SNX_GPU_DRIVER_META_MAX + 2);
     memset(big, ' ', SNX_GPU_DRIVER_META_MAX + 1);
