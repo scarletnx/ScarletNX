@@ -1145,6 +1145,19 @@ static void icons_named(void) {
         }
     }
     assert(sections >= 10 && pages >= 3);
+    /* the User section is the users' form (users_fill), which shows its one setting: another row in its table would be
+       shown nowhere */
+    {
+        const char* table = strstr(text, "\ntable g_user_ini\n");
+        int rows = 0;
+        assert(table);
+        for (line = strchr(table + 1, '\n') + 1; line && strncmp(line, "table ", 6) && strncmp(line, "section ", 8);
+             line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL)
+            rows += !strncmp(line, "setting ", 8);
+        if (rows != 1)
+            fprintf(stderr, "settings.txt's table g_user_ini has %d settings, where the User page shows one\n", rows);
+        assert(rows == 1);
+    }
     free(text);
 }
 /* a running step's line ends in its progress as the theme says, a done one in OK */
