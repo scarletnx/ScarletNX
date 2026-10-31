@@ -5326,6 +5326,18 @@ msgstr "单独的一个值 [默认]，与选中的同一值并列"
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的 .ini 保持"
 
+#: src/common/utilities/setup.c
+msgid "ASTC as BC7 and Memory fit"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 was Off"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 is Auto, the default; Off is 2"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"

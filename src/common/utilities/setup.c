@@ -66,7 +66,9 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_NOTICE_ALL},
     {SNX_TR_NOOP("A setting's default"), SNX_TR_NOOP("a value of its own, [default], beside the same value picked"),
      SNX_TR_NOOP("[default] on that value, which no run is given: the game's .ini keeps it"),
-     "`<key>=.ini` for any other setting", SNX_NOTICE_ALL}};
+     "`<key>=.ini` for any other setting", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("ASTC as BC7 and Memory fit"), SNX_TR_NOOP("0 was Off"),
+     SNX_TR_NOOP("0 is Auto, the default; Off is 2"), "`astc_bc = 0` and `memory_fit = 0`", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

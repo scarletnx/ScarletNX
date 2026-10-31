@@ -5326,6 +5326,18 @@ msgstr "um valor à parte, [padrão], ao lado do mesmo valor escolhido"
 msgid "[default] on that value, which no run is given: the game's .ini keeps it"
 msgstr "[padrão] nesse valor, que nenhuma execução recebe: o .ini do jogo o mantém"
 
+#: src/common/utilities/setup.c
+msgid "ASTC as BC7 and Memory fit"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 was Off"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 is Auto, the default; Off is 2"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"
