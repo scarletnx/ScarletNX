@@ -113,18 +113,20 @@ u64 mem_fit_budget(u64 available, u64 footprint) {
     if (other < FIT_OTHER_LEAST) other = FIT_OTHER_LEAST;
     return limit > other + FIT_LEAST ? limit - other : FIT_LEAST;
 }
-void mem_fit(int measured, u64 available, u64 footprint) {
+void mem_fit(int setting, int measured, u64 available, u64 footprint) {
+    const char* as = setting == SNX_MEMORY_FIT_AUTO ? " (Auto)" : "";
     g_hle.svcmem.fit = 0;
+    if (setting == SNX_MEMORY_FIT_OFF) return;
     if (!measured) {
-        LOG("memory: memory_fit=1, but this system tells neither what it can still give nor what the process holds: "
+        LOG("memory: memory_fit=%d%s, but this system tells neither what it can still give nor what the process holds: "
             "the game is told the console's %llu MiB\n",
-            (unsigned long long)(process_memory_total() >> 20));
+            setting, as, (unsigned long long)(process_memory_total() >> 20));
         return;
     }
     g_hle.svcmem.fit = mem_fit_budget(available, footprint);
-    LOG("memory: memory_fit=1: the game is told %llu MiB, the console's being %llu (the system can still give %llu MiB, "
-        "the process holds %llu)\n",
-        (unsigned long long)(process_memory_total() >> 20),
+    LOG("memory: memory_fit=%d%s: the game is told %llu MiB, the console's being %llu (the system can still give %llu "
+        "MiB, the process holds %llu)\n",
+        setting, as, (unsigned long long)(process_memory_total() >> 20),
         (unsigned long long)((pool() < HEAP_SIZE ? pool() : HEAP_SIZE) >> 20), (unsigned long long)(available >> 20),
         (unsigned long long)(footprint >> 20));
 }
