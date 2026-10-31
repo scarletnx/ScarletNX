@@ -1215,7 +1215,9 @@ static int check_rt_overlap(void) {
    the submit is what the GPU reads, with no new bind. A write of the runtime's over a range a recorded draw reads in
    place waits for that draw and takes the range out of place for good, a range becoming GPU-owned too, and the
    imports over pages the guest unmaps go */
-#define UMA_A  (HEAP_BASE + 0x700000) /* past the DMA check's */
+/* past every other check's, whose pages the runtime may have written: those are never read in place again (uma.c's
+   front) */
+#define UMA_A  (HEAP_BASE + 0x800000)
 #define UMA_GA 0x400000000ull
 #define UMA_R  (HEAP_BASE + 0x1000000) /* mapped and unmapped by the check */
 #define UMA_GR 0x410000000ull
@@ -1678,7 +1680,7 @@ int main(int argc, char** argv) {
     shot = snx_path_join(root, "frame");
     ppm = snx_format("%s.ppm", shot);
     mem_init(); /* the real reservation and alias pool: the renderer traps what the GPU owns where the host can */
-    CHECK(mem_map(HEAP_BASE, 0x800000, MS_NORMAL, PERM_RW) == 0);
+    CHECK(mem_map(HEAP_BASE, 0x900000, MS_NORMAL, PERM_RW) == 0); /* check_uma's 0x90000 at the top (UMA_A) */
     nv_init(); /* color targets may import guest memory through the GPU page table */
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
