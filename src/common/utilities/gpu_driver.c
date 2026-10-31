@@ -237,8 +237,22 @@ int snx_gpu_driver_loads(const SnxGpuDriverHost* host, char* what, size_t size) 
     return 0;
 }
 
+/* a folder of path, its first len bytes, is dir by its device and inode */
+static int mapped_under(const char* path, size_t len, const char* dir) {
+    char folder[4096];
+    if (len >= sizeof folder) return 0;
+    memcpy(folder, path, len);
+    folder[len] = 0;
+    for (char* cut = strrchr(folder, '/'); cut && cut > folder; cut = strrchr(folder, '/')) {
+        *cut = 0;
+        if (snx_same_file(folder, dir)) return 1;
+    }
+    return 0;
+}
+
 int snx_gpu_driver_mapped(const char* maps, const char* dir) {
-    size_t n = strlen(dir);
+    const char* last = NULL;
+    size_t n = strlen(dir), last_len = 0;
     while (n > 1 && dir[n - 1] == '/') --n;
     for (const char* line = maps; line && *line;) {
         const char* end = strchr(line, '\n');
@@ -246,6 +260,13 @@ int snx_gpu_driver_mapped(const char* maps, const char* dir) {
         size_t len = end ? (size_t)(end - line) : strlen(line);
         /* the path is the line's last field, the only one starting with '/' */
         if (path && (size_t)(line + len - path) > n && !strncmp(path, dir, n) && path[n] == '/') return 1;
+        /* the kernel may name the folder otherwise (Android's /data/data for /data/user/0); a file's mappings follow
+           each other, so each path is looked up once */
+        if (path && !(last && last_len == (size_t)(line + len - path) && !memcmp(last, path, last_len))) {
+            last = path;
+            last_len = (size_t)(line + len - path);
+            if (mapped_under(path, last_len, dir)) return 1;
+        }
         line = end ? end + 1 : NULL;
     }
     return 0;
