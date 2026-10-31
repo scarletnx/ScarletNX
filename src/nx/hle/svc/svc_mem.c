@@ -88,6 +88,13 @@ static int user_writable(u64 a, u64 size) {
 /* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
    boards), see docs/MEMORY_ACCOUNTING.md */
 static u64 pool(void) {
+    /* A Switch 2 program is a 12 GiB board's, whatever memory_gb is set to for a Switch 1 title (g_guest_features is
+       SNX_A64_TARGET_SWITCH2): the console has 12 GiB of DRAM beside the graphics server's own 8 GiB, and a Switch 2
+       title sizes its heap from the total GetInfo reports (nninitStartup plans a heap of the total less the ~6.3 GiB
+       it reserves for VAMM), so a 4 or 6 GiB pool leaves it with a heap too small for the pools it sets up and it
+       stops at boot. The 12 GiB arrangement's pool (Eden's GetApplicationPoolSize for MemoryArrangement_12GB, whose
+       Switch 2 work switches the layout to for the same reason) */
+    if (g_guest_features) return 9809 * MIB;
     if (g_settings.memory_gb >= 8) return 6964 * MIB;
     if (g_settings.memory_gb >= 6) return 4916 * MIB;
     return 3285 * MIB;
@@ -100,8 +107,13 @@ u64 mem_total(void) {
    gets 2 GiB without an alias region and 1 GiB with one, however large the application pool is; a game that asks
    GetInfo for the total and sets its heap to nearly all of it would otherwise ask for more than its heap region */
 static u64 process_memory_total(void) {
-    u64 total = mem_total();
-    return total < HEAP_SIZE ? total : HEAP_SIZE;
+    /* A Switch 2 process has more memory than a heap region holds: its SDK reserves a VAMM region of ~6.3 GiB in the
+       alias region beside its heap, so the alias region counts as well (Eden's KProcess::LoadFromMetadata for a
+       Switch 2 NPDM: m_max_process_memory = heap region + alias region). Without it the pool above is clamped to
+       the 8 GiB heap region, which is what leaves a Switch 2 title with a 1.5 GiB heap */
+    u64 max = HEAP_SIZE, total = mem_total();
+    if (g_guest_features) max += ALIAS_SIZE; /* a Switch 2 program's */
+    return total < max ? total : max;
 }
 /* what the game may have of what the process can reach: the rest takes the runtime as it is now and the graphics'
    first allocations, never less than a phone's run measured, and the game keeps a GiB however little is left */
@@ -151,13 +163,16 @@ void mem_report(char* out, int n) {
 }
 
 /* ============================================================ the heap and physical memory */
-/* svcSetHeapSize: 2 MiB steps below 8 GiB (InvalidSize), within what the heap region leaves beside the process's own
-   memory and within heap_max_mb (OutOfMemory), then the resource limit (LimitReached). Each request is logged: a
-   refused one is often why a game stops at boot */
+/* svcSetHeapSize: 2 MiB steps below the largest heap any process may set (InvalidSize), within what the heap region
+   leaves beside the process's own memory and within heap_max_mb (OutOfMemory), then the resource limit (LimitReached).
+   That largest heap is the console's 8 GiB, or a Switch 2 program's 12 GiB region (mem_layout_switch2): its titles
+   size their heap from the total memory and ask for nearly all of it (Mario Kart World 8.1 GiB). Each request is
+   logged: a refused one is often why a game stops at boot */
 u32 svc_set_heap_size(u64 size) {
     u64 proc = g_code_memory + g_main_stack_size;
+    u64 largest = HEAP_SIZE > (8ull << 30) ? HEAP_SIZE : (8ull << 30);
     u32 r;
-    if ((size & 0x1FFFFF) || size >= (8ull << 30))
+    if ((size & 0x1FFFFF) || size >= largest)
         r = R_BADSIZE;
     else if (proc > HEAP_SIZE || size > HEAP_SIZE - proc || (g_heap_max && size > g_heap_max))
         r = R_OUTOFMEM;

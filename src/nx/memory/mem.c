@@ -150,6 +150,20 @@ void mem_layout36(void) {
     g_layout.kern_end = AS36;
 }
 
+/* A Switch 2 program's layout: the 39-bit one with the heap region grown to the 12 GiB the console's 12 GB board
+   holds (k_system_control's GetIntendedMemorySize for the 12 GB arrangement, whose application pool is 9809 MiB and
+   whose heap region is not the Switch 1's 8 GiB). A Switch 2 title sizes its heap from the total svcGetInfo reports
+   and asks for all of it less the small reserve it keeps for VAMM: Mario Kart World 8.3 GiB, Pokopia 9.5 GiB. Both
+   are more than an 8 GiB heap region holds, and the console answers such a request, so the region is 12 GiB here.
+   The stack and the kernel's pages move above the bigger region */
+void mem_layout_switch2(void) {
+    g_layout.heap_size = 12 * GIB;
+    g_layout.stack = g_layout.heap + g_layout.heap_size;
+    g_layout.stack_size = 2 * GIB;
+    g_layout.kern = g_layout.stack + g_layout.stack_size;
+    g_layout.kern_end = g_layout.kern + 4 * GIB;
+}
+
 /* The 32-bit layouts (Eden's 32-bit entries in k_address_space_info.cpp): the code region from 2 MiB to 1 GiB, which
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */

@@ -490,11 +490,21 @@ static void say_old_layout(void) {
 
 static u32 rd32le(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
 
+/* Whether the npdm bytes are a Switch 2 program's: its ACID blob has an extended ACID header before its ACID one,
+   so "ACID" comes twice, 0x100 apart, where a Switch 1 one has it once. npdm_layout needs it before mem_init sizes
+   the blocks, and read_npdm after it for the guest's decode features */
+static int npdm_is_switch2(u8* d, u64 size) {
+    u32 acid = rd32le(d + 0x78), acid_size = rd32le(d + 0x7c);
+    return acid_size >= 0x304 && (u64)acid + 0x304 <= size && memcmp(d + acid + 0x200, "ACID", 4) &&
+           !memcmp(d + acid + 0x300, "ACID", 4);
+}
+
 /* exefs/main.npdm's MMU flags (its byte at 0x0C): the address space type, which decides the layout mem_init sizes
    its blocks in and the loader places the code at. The npdm is read through the fs, which fs_init has just brought
    up. A 64-bit program of type 1 is the console's pre-2.0 36-bit one, and mem_layout36's comment says what the
    layout has to guarantee for it: what its SDK marshals into an IPC buffer descriptor drops every address bit above
-   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them */
+   36, and the 39-bit layout's stack and heap, above 64 GiB, came back as addresses with no memory behind them. A
+   Switch 2 program gets the 39-bit layout with the 12 GiB heap region its titles size their heap from */
 static void npdm_layout(void) {
     u64 size = 0;
     unsigned char* d = fs_read_file("exefs/main.npdm", &size);
@@ -504,6 +514,9 @@ static void npdm_layout(void) {
         if ((flags & 1) && ((flags >> 1) & 7) == 1) {
             mem_layout36();
             LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
+        } else if (npdm_is_switch2(d, size)) {
+            mem_layout_switch2();
+            LOG("npdm: a Switch 2 address space: a 12 GiB heap region, the code region at 128 MiB\n");
         }
     }
     free(d);
@@ -515,7 +528,7 @@ static void npdm_layout(void) {
 static void read_npdm(void) {
     u64 size = 0;
     u8* d = fs_read_file("exefs/main.npdm", &size);
-    u32 aci, aci_size, caps, caps_size, i, acid, acid_size;
+    u32 aci, aci_size, caps, caps_size, i;
     if (!d) return;
     if (size < 0x80 || size > 0x4000 || memcmp(d, "META", 4)) {
         WARN("npdm: exefs/main.npdm is not one, the defaults apply\n");
@@ -546,12 +559,7 @@ static void read_npdm(void) {
     }
     /* The ACID blob with an extended ACID header before its ACID one, as a Switch 2 program has: its guest decodes with
        the Switch 2 features (a64.profile's switch2 target), which the JIT compiles the code the recompiler left for */
-    acid = rd32le(d + 0x78);
-    acid_size = rd32le(d + 0x7c);
-    g_guest_features = acid_size >= 0x304 && (u64)acid + 0x304 <= size && memcmp(d + acid + 0x200, "ACID", 4) &&
-                               !memcmp(d + acid + 0x300, "ACID", 4)
-                           ? (u64)SNX_A64_TARGET_SWITCH2
-                           : 0;
+    g_guest_features = npdm_is_switch2(d, size) ? (u64)SNX_A64_TARGET_SWITCH2 : 0;
     LOG("npdm: system resource %llu MB, cores %llx, priorities %llx%s\n",
         (unsigned long long)(g_hle.kernel.sysres_size >> 20), (unsigned long long)g_hle.svcmem.core_mask,
         (unsigned long long)g_hle.svcmem.prio_mask, g_guest_features ? ", a Switch 2 program" : "");
