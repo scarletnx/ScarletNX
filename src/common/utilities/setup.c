@@ -54,7 +54,9 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_TR_NOOP("off, as LLVM 23 can break a module with it: Settings > Debug turns it on"), "LLVM's SLP vectorizer",
      SNX_NOTICE_ALL},
     {SNX_TR_NOOP("The launcher's UI scale"), SNX_TR_NOOP("Auto, and 0.25, 0.5 and 0.75 of it"),
-     SNX_TR_NOOP("1x to 4x: the number Auto gave that screen"), "`ui_scale = auto`", SNX_NOTICE_ALL}};
+     SNX_TR_NOOP("1x to 4x: the number Auto gave that screen"), "`ui_scale = auto`", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("ASTC as BC7 and Memory fit"), SNX_TR_NOOP("0 was Off"),
+     SNX_TR_NOOP("0 is Auto, the default; Off is 2"), "`astc_bc = 0` and `memory_fit = 0`", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)

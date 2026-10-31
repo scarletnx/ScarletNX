@@ -4445,6 +4445,18 @@ msgstr ""
 msgid "1x to 4x: the number Auto gave that screen"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "ASTC as BC7 and Memory fit"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 was Off"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "0 is Auto, the default; Off is 2"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""
