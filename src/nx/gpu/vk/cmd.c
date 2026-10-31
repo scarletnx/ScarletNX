@@ -217,12 +217,15 @@ static int bar_room(const VmaBudget* b, u64 add, int back) {
     int heap = bar_heap();
     u64 size, use, budget, whole;
     if (heap < 0) return 0;
+    /* the mapping failure above is of a big ring in the window, whatever the window's size: with resizable BAR too,
+       the staging rings grew to 256 MiB there, and one game's draws then took up to 1.5 s each to write their data */
+    if (add > BAR_RING_MAX) return 0;
     use = b[heap].usage;
     budget = b[heap].budget;
     if (heap == vk_mem_heap()) return use + add <= (back ? budget / 4 * 3 : budget);
     vmaGetMemoryProperties(g_vk.vma, &mp);
     size = mp->memoryHeaps[heap].size;
-    if (add && (add > BAR_RING_MAX || b[heap].statistics.blockBytes + add > size / 4)) return 0;
+    if (add && b[heap].statistics.blockBytes + add > size / 4) return 0;
     whole = use + budget + (1u << 20) >= size && use + budget <= size + (1u << 20); /* NVIDIA's use */
     if (whole) use = 0;                                                           /* the budget is what is left */
     return budget >= use + (add ? add + size / 16 : 0);
