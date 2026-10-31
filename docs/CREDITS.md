@@ -27,7 +27,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
-| miniz 3.1.2 (the zip of the launcher's Share Log, `src/gui/logzip.c`, and the Vita driver's VPKs and eboot segments) | MIT |
+| miniz 3.1.2 (the zip of the launcher's Share Log, `src/gui/logzip.c`) | MIT |
+| libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments) | MIT |
 | libadrenotools / liblinkernsbypass (the GPU drivers a player adds on Android arm64, `cmake/adrenotools.cmake`) | BSD-2-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |

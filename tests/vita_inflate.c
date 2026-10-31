@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* vita/loader/inflate.c and vpk.c: raw DEFLATE and zlib streams read to exactly their size, a stream of another size, a
-   cut one and a zlib one whose Adler-32 is wrong refused; a VPK made by a zip writer, one member stored and one
-   deflated, read by name and extracted whole */
+/* vita/loader/inflate.c and vpk.c, on streams and a zip another encoder made (miniz's): raw DEFLATE and zlib read to
+   exactly their size, a stream of another size, a cut one and a zlib one whose Adler-32 is wrong refused; a VPK with one
+   member stored and one deflated read by name and extracted whole, and a member whose CRC-32 doesn't match refused */
 #include "vita/loader/inflate.h"
 #include "vita/loader/vpk.h"
 #include "common/utilities/common.h"
@@ -47,6 +47,17 @@ int main(void) {
         assert(mz_zip_writer_add_mem(&zip, "data/level.bin", data, SIZE, MZ_BEST_COMPRESSION));
         assert(mz_zip_writer_finalize_heap_archive(&zip, &bytes, &n) && !snx_write_file(vpk, bytes, n));
         mz_zip_writer_end(&zip);
+        {
+            unsigned char *at = bytes, *end = at + n - (sizeof text - 1); /* the stored eboot's bytes, one changed */
+            char* bad = snx_path_join(dir, "bad.vpk");
+            while (at <= end && memcmp(at, text, sizeof text - 1)) ++at;
+            assert(at <= end);
+            at[3] ^= 1;
+            assert(bad && !snx_write_file(bad, bytes, n));
+            assert(!vita_vpk_member(bad, "eboot.bin", &n, error, sizeof error) && strstr(error, "CRC"));
+            free(bad);
+        }
+        mz_free(bytes);
         read = vita_vpk_member(vpk, "data/level.bin", &n, error, sizeof error);
         assert(read && n == SIZE && !memcmp(read, data, SIZE));
         free(read);

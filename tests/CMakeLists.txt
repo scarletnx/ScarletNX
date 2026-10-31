@@ -1764,8 +1764,9 @@ snx_test_target(snx-test-vita-rgb24-glsl 23)
 target_include_directories(snx-test-vita-rgb24-glsl PRIVATE glsl)
 add_test(NAME vita_rgb24_glsl COMMAND snx-test-vita-rgb24-glsl)
 # the Vita's imports given memory that isn't the game's: their errors, and no access there
-# the VPK's members and the eboot's compressed segments, inflated by miniz (vita/loader/inflate.c, vpk.c)
-if(TARGET snx_vita_loader)
+# the VPK's members and the eboot's compressed segments, inflated by libdeflate (vita/loader/inflate.c, vpk.c), from
+# streams and a zip miniz made
+if(TARGET snx_vita_loader AND TARGET snx_miniz)
     add_executable(snx-test-vita-inflate vita_inflate.c)
     snx_test_target(snx-test-vita-inflate 11)
     target_link_libraries(snx-test-vita-inflate PRIVATE snx_vita_loader snx_miniz)

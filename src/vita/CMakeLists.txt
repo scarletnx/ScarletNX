@@ -4,7 +4,7 @@
 # compiler, src/common/cpu/arm, whose ARMv8 AArch32 holds the Vita's ARMv7-A user mode), and the runtime: the kernel and
 # system libraries answered by NID, sceGxm on the host's Vulkan device
 add_library(snx_vita_loader STATIC loader/inflate.c loader/vpk.c loader/image.c)
-target_link_libraries(snx_vita_loader PUBLIC scarletnx-common OpenSSL::Crypto PRIVATE snx_miniz)
+target_link_libraries(snx_vita_loader PUBLIC scarletnx-common OpenSSL::Crypto PRIVATE snx_libdeflate)
 target_compile_definitions(snx_vita_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 
 # the USSE translator, which the runtime and snx-vita-usse (the shader corpus' tool) share
