@@ -235,6 +235,12 @@ int plat_vm_commit(u8* p, u64 size) {
     return -1;
 }
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, (SIZE_T)size, MEM_DECOMMIT); }
+int plat_vm_populate(u8* p, u64 size) {
+    (void)p;
+    (void)size;
+    errno = ENOSYS;
+    return -1;
+}
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */

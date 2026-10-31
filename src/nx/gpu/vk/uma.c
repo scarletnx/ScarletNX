@@ -30,6 +30,7 @@
    on the GPU after them in place comes after a barrier (order), what copies them on the GPU copies them from the import
    (owned.c's cpu_read), and the runtime's own CPU readers wait for the submit (vk_uma_mem_need), as do its writes.
    The submit's end makes them visible to the host (vk_uma_host_barrier) before the release that tells the guest. */
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/bits.h"
@@ -268,6 +269,13 @@ static int import_span(u64 key, u64 lo, u64 hi) {
     VkMemoryRequirements req;
     UmaImport m = {.lo = lo, .hi = hi, .key = key};
     u32 bits;
+    /* the pages faulted in first: on amdgpu an import of pages not faulted in yet took 1 to 10 s, in whole seconds,
+       and the GPU thread waited for it */
+    if (plat_vm_populate(GP(lo), hi - lo))
+        LOG_LIMIT(1,
+                  "vulkan: unified memory: %llu KiB at %llx not faulted in before their import (%s): such an import "
+                  "may take seconds\n",
+                  (unsigned long long)((hi - lo) >> 10), (unsigned long long)lo, strerror(errno));
     if (vkGetMemoryHostPointerPropertiesEXT(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, GP(lo),
                                             &pointer) != VK_SUCCESS)
         return 0;
