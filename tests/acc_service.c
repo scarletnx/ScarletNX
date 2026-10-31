@@ -381,6 +381,42 @@ static void test_id_token(void) {
     puts("PASS the id token: none, as 3 and 4 answer it apart, and one as far as the buffer takes");
 }
 
+/* EnsureIdTokenCacheAsync (2): its context is done at once, its event signaled, and it succeeded, with no token to
+   load after it; Cancel then changes nothing */
+static void test_ensure_id_token(void) {
+    static u8 memory[0x400];
+    char why[512];
+    SvcObj *acc = new_acc(), *manager, *context;
+    Request r;
+    g_mem = memory;
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0);
+    manager = manager_for(acc, g_user_id);
+    request(&r, 2);
+    call(manager, &r);
+    CHECK(r.c.nout_objs == 1);
+    context = r.c.out_objs[0];
+    request(&r, 0);
+    call(context, &r);
+    CHECK(r.c.nout_copy == 1);
+    request(&r, 2);
+    call(context, &r);
+    CHECK(r.c.out_size >= 1 && r.c.out[0] == 1);
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    request(&r, 1);
+    call(context, &r);
+    request(&r, 3);
+    CHECK(context->dispatch(context, &r.c) == 0);
+    memset(memory, 0xAA, sizeof memory);
+    token_request(&r, 3, 0x40);
+    call(manager, &r);
+    CHECK(reply32(&r, 0) == 0 && memory[0x100] == 0xAA);
+    svcobj_unref(context);
+    svcobj_unref(manager);
+    svcobj_unref(acc);
+    puts("PASS EnsureIdTokenCacheAsync done at once and succeeded, with no token");
+}
+
 /* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
    pid in, nothing out, as on the console */
 static void test_initialize_application_info_v2(void) {
@@ -674,6 +710,7 @@ int main(void) {
     test_open_context();
     test_account_id();
     test_id_token();
+    test_ensure_id_token();
     g_mem = calloc(1, 0x30000); /* user 1 alone, with no picture of its own */
     CHECK(g_mem != NULL);
     test_picture();

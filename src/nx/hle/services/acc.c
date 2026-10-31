@@ -3,8 +3,8 @@
    Ported from Eden (src/core/hle/service/acc/acc.cpp, errors.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project (GPL-2.0-or-later) */
-/* acc: the console's users (users.c), the one the game plays as open since it started, with no network service
-   account */
+/* acc: the console's users (users.c), the one the game plays as open since it started, each with a network service
+   account no server stands behind: an id made from the uid, and no id token */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "gui/splash.h"
@@ -14,7 +14,6 @@
 #define ACC_INVALID_USER_ID RC(124, 20)
 #define ACC_INVALID_LENGTH  RC(124, 32)
 #define ACC_THUMBNAIL_SIZE  0x24000      /* a save's thumbnail: 256x144 RGBA */
-#define ACC_NOT_CONNECTED   RC(110, 300) /* nifm's: there is no network to reach the account server */
 #define ACC_LAST_EDIT       1546300800   /* the user's profile was last changed on the first day of 2019 */
 #define ACC_EMPTY_TOKEN     0x100        /* the zeros LoadIdTokenCache (19.0.0+) answers with no token */
 
@@ -231,6 +230,8 @@ static int nn_account_baas_IManagerForApplication_GetNintendoAccountUserResource
        the same one here, as there is no account behind either */
     return nn_account_baas_IManagerForApplication_GetAccountId(self, id);
 }
+/* where an account server would issue the title's token (g_hle.acc.token): there is none to ask, so the token stays
+   none and the context succeeds, as rEden's with online off */
 static int nn_account_baas_IManagerForApplication_EnsureIdTokenCacheAsync(SvcObj* self, SvcObj** context) {
     (void)self;
     *context = nn_account_detail_IAsyncContext_new();
@@ -270,7 +271,7 @@ static int nn_account_baas_IManagerForApplication_StoreOpenContext(SvcObj* self)
     R_SUCCEED();
 }
 
-/* ============================================================ IAsyncContext: done at once, failed */
+/* ============================================================ IAsyncContext: done at once, succeeded */
 static int nn_account_detail_IAsyncContext_GetSystemEvent(SvcObj* self, u32* event) {
     (void)self;
     return new_event(event, "acc async context", 1);
@@ -282,7 +283,7 @@ static int nn_account_detail_IAsyncContext_HasDone(SvcObj* self, u8* done) {
 }
 static int nn_account_detail_IAsyncContext_GetResult(SvcObj* self) {
     (void)self;
-    R_THROW(ACC_NOT_CONNECTED);
+    R_SUCCEED();
 }
 
 SvcObj* new_acc(void) { return nn_account_IAccountServiceForApplication_new(); }
