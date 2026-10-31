@@ -302,7 +302,7 @@ static void frame_recycle(Frame* f) {
         VmaBudget budget[VK_MAX_MEMORY_HEAPS];
         vmaSetCurrentFrameIndex(g_vk.vma, (u32)g_frame_id); /* VMA asks the driver for its budgets again */
         vmaGetHeapBudgets(g_vk.vma, budget);
-        ring_reset(&f->stage, g_vk.mem_model == VK_MEM_REBAR ? budget : NULL); /* in the window (vk_stage_upload) */
+        ring_reset(&f->stage, NULL);
         ring_reset(&f->output, budget);
         for (u32 i = 0; i < f->nstage; i++) ring_reset(&f->stage_spare[i], NULL);
         f->istage = 0;
@@ -457,9 +457,7 @@ static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags
     return ring_take(f, r, size, align, usage, flags, where, buf, off, mem) ? r->ptr + *off : NULL;
 }
 
-/* output: the output ring (GPU-written storage), else the staging ring; bar: in device-local memory the CPU maps where
-   there is room */
-static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem, int output, int bar)
+static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem, int output)
 {
 	Frame* f;
 
@@ -471,28 +469,24 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocati
 		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
 		VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
 		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | (g_vk.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0),
-		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, bar ? RING_BAR : RING_HOST, buf, off, mem);
+		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, output ? RING_BAR : RING_HOST, buf, off, mem);
 }
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem)
 {
-	return stage_alloc(size, align, buf, off, mem, 1, 1);
+	return stage_alloc(size, align, buf, off, mem, 1);
 }
 
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off)
 {
-	return stage_alloc(size, align, buf, off, NULL, 1, 1);
+	return stage_alloc(size, align, buf, off, NULL, 1);
 }
 
 /* Streamed uploads can be hundreds of megabytes per frame. CPU writes through
  * a mapped device-memory window are slower than writes to host RAM. Keep these
- * snapshots in host memory; stable buffers get their own device-local copies.
- * With resizable BAR (uma.c's model) the window is all of the device's memory:
- * the CPU's sequential writes cross the bus once there, where every draw that
- * reads them from host memory read them across it again. bar_room keeps the
- * rings within the heap's budget, and the caches count them. */
+ * snapshots in host memory; stable buffers get their own device-local copies. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 {
-	return stage_alloc(size, align, buf, off, NULL, 0, g_vk.mem_model == VK_MEM_REBAR);
+	return stage_alloc(size, align, buf, off, NULL, 0);
 }
 
 /* The staging ring can be device-local memory behind the BAR, where every CPU read crosses PCIe uncached: comparing
