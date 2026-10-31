@@ -292,6 +292,12 @@ interface nn::am::service::IGraphicsSystemSession {
     # A Switch 2 SDK's nn::gpu::sdk::BootWithRemoteMemory opens its GPU session under 497, which it then asks for an
     # id range, an event per id and starts the id it waits on. Eden's Switch 2 work answers it the same way
     [497] OpenGpuSession(u64 size) -> handle<copy, session> session;
+    # The GPU address space a Switch 2 title's SDK asks of the server before it reserves any, where a Switch 1 SDK
+    # reads the alias and heap regions of GetInfo: a newer SDK asks 201 and 301 of the GPU session, and this SDK asks
+    # both of the server itself. The answer is the region a title's NVN reserves in (Eden's Switch 2 work names the
+    # same range for its newer SDK), and the second one is the server's own partition
+    [201] GetUserPartition() -> (u64 first, u64 last);
+    [301] GetGsvPartition() -> (u64 first, u64 last);
     # The Switch 2 display session nn::vi2::sdk opens, which it then asks how many displays and timestamp
     # recorders there are, an event per display and the vsync one, and presents its client buffer on. Eden's Switch 2
     # work hands this one out under 305
@@ -346,6 +352,9 @@ interface nn::am::service::ISyncpointSession {
     # the SDK handshakes with a token it must get back: the echo is its own argument
     [0] Handshake(u64 request) -> u64 reply;
     [1] GetCount() -> u32 count;
+    # a slot's event, the same one 22 hands out: Mario Kart World's and Pokopia's SDK asks for it under 21, where
+    # Eden's Switch 2 titles ask under 22
+    [21] GetSlotEvent21(u32 slot) -> handle<copy, event> event;
     [22] GetSlotEvent(u32 slot) -> handle<copy, event> event;
     [103] QueryCounter(u32 counter) -> (u32 value_low, u32 value_high, u32 zero);
     # slot, the counter to watch, the value it must reach, and a mode (0 compares 32-bit wrapping, 1 64-bit)

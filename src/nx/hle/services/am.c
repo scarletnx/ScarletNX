@@ -238,6 +238,23 @@ static int nn_am_service_IGraphicsSystemSession_OpenGpuSession(SvcObj* self, u64
     *session = session_new(o);
     return *session ? 0 : AM_OUT_OF_HANDLES;
 }
+/* gsv 201 and 301: the GPU address spaces a Switch 2 title's SDK asks for before it reserves any, where a Switch 1
+   SDK reads the alias and heap regions of GetInfo. The answer is the region a title's NVN reserves in, as Eden's
+   Switch 2 work names it for the newer SDK that asks its GPU session for the same */
+#define GMMU_USER_FIRST 0x8000000ull
+#define GMMU_USER_LAST  0xC000000000ull
+static int nn_am_service_IGraphicsSystemSession_GetUserPartition(SvcObj* self, u64* first, u64* last) {
+    (void)self;
+    *first = GMMU_USER_FIRST;
+    *last = GMMU_USER_LAST;
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsSystemSession_GetGsvPartition(SvcObj* self, u64* first, u64* last) {
+    (void)self;
+    *first = 0; /* the server's own partition is empty here, as Eden's Switch 2 work has it */
+    *last = 0;
+    R_SUCCEED();
+}
 /* gsv 305: the display session a Switch 2 title's nn::vi2::sdk boots with (IVi2Session, below), which it then asks
    what the display has before it sizes its window, and presents its client buffer on */
 static int nn_am_service_IGraphicsSystemSession_OpenViSession(SvcObj* self, u32* session) {
@@ -594,21 +611,27 @@ static int nn_am_service_IGraphicsSystemSession_AttachSyncpointMemory(SvcObj* se
         kobj_unref(&rot->o);
         return AM_INVALID_OFFSET;
     }
+    /* the page's two events are obj ids, as the session's slot events are: ev_handle takes one to make the reply's
+       handle, and the reference the session keeps holds the object for the page's lifetime */
     if (!g_hle.am.syncpt_page.request_ev) {
-        new_event(&g_hle.am.syncpt_page.request_ev, "nx2 syncpt request", 0);
-        if (!g_hle.am.syncpt_page.request_ev) { /* the handle table is full */
+        KEvent* e = kevent_new("nx2 syncpt request");
+        if (!e) {
             kobj_unref(&rwt->o);
             kobj_unref(&rot->o);
-            return AM_OUT_OF_HANDLES;
+            return AM_OUT_OF_MEMORY;
         }
+        kobj_ref(&e->o);
+        g_hle.am.syncpt_page.request_ev = kobj_id(&e->o);
     }
     if (!g_hle.am.syncpt_page.notify_ev) {
-        new_event(&g_hle.am.syncpt_page.notify_ev, "nx2 syncpt notify", 0);
-        if (!g_hle.am.syncpt_page.notify_ev) {
+        KEvent* e = kevent_new("nx2 syncpt notify");
+        if (!e) {
             kobj_unref(&rwt->o);
             kobj_unref(&rot->o);
-            return AM_OUT_OF_HANDLES;
+            return AM_OUT_OF_MEMORY;
         }
+        kobj_ref(&e->o);
+        g_hle.am.syncpt_page.notify_ev = kobj_id(&e->o);
     }
     /* the page's guest addresses are held, not the objects: the game unmaps them when it has no further use for the
        syncpoint session, and the values it last wrote back are what stays there */
@@ -662,6 +685,10 @@ static int nn_am_service_ISyncpointSession_GetSlotEvent(SvcObj* self, u32 slot, 
     if (!ev) return AM_OUT_OF_MEMORY;
     *event = ev_handle(ev);
     return *event ? 0 : AM_OUT_OF_HANDLES;
+}
+/* 21: the same slot's event, which this SDK asks for by that number instead of 22 (am.swipc) */
+static int nn_am_service_ISyncpointSession_GetSlotEvent21(SvcObj* self, u32 slot, u32* event) {
+    return nn_am_service_ISyncpointSession_GetSlotEvent(self, slot, event);
 }
 static int nn_am_service_ISyncpointSession_QueryCounter(SvcObj* self, u32 counter, u32* value_low, u32* value_high,
                                                         u32* zero) {
