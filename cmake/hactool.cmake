@@ -16,7 +16,7 @@ add_library(hactool_lib STATIC ${hactool_sources})
 # the tree as paths from src/ ("nx/runtime/driver/hactool/nca.h")
 set(hactool_definitions _BSD_SOURCE _POSIX_SOURCE _POSIX_C_SOURCE=200112L _DEFAULT_SOURCE __USE_MINGW_ANSI_STDIO=1
                         _FILE_OFFSET_BITS=64)
-target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4 snx_cjson)
+target_link_libraries(hactool_lib PUBLIC OpenSSL::Crypto snx_lz4)
 target_compile_definitions(hactool_lib PRIVATE ${hactool_definitions})
 add_library(hactool_internals INTERFACE)
 target_compile_definitions(hactool_internals INTERFACE ${hactool_definitions})

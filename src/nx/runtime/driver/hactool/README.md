@@ -2,15 +2,15 @@
 
 [hactool](https://github.com/SciresM/hactool) by SciresM, from commit `1d64a83450e025622f3468c28fc4164dad2c5ef6`
 (1.4.0), under its ISC license ([LICENSE](LICENSE)). ConvertUTF (Unicode license) comes with it, its notice at the top
-of its files; its cJSON is the build's (`cmake/dependencies.cmake`). `storage.c` and `storage.h` port LibHac's storages
-(MIT, Copyright (c) 2018 Alex Barney, as Ryubing maintains it), their notice at the top of `storage.c`. ScarletNX's
-changes are GPL-3.0-or-later.
+of its files. `storage.c` and `storage.h` port LibHac's storages (MIT, Copyright (c) 2018 Alex Barney, as Ryubing
+maintains it), their notice at the top of `storage.c`. ScarletNX's changes are GPL-3.0-or-later.
 
 It is a library inside the driver (`cmake/hactool.cmake`), not a program: `main.c`, the bundled mbedtls and its LZ4 are
-left out; its LZ4 calls go to the build's (`snx_lz4`). The driver calls it through `snx_hac.h` (`snx_hac.c`), and
-`snx_io.h`, included ahead of every file, keeps what it prints from the console (it can hold keys), turns its `exit`
-into one the driver cleans up after, and counts what it writes for the progress row. The files keep hactool's own style
-(`.clang-format` here formats nothing).
+left out; its LZ4 calls go to the build's (`snx_lz4`), and the JSON it writes for NPDMs and KIPs as a program is cut, as
+the driver never asks for it. The driver calls it through `snx_hac.h` (`snx_hac.c`), and `snx_io.h`, included ahead of
+every file, keeps what it prints from the console (it can hold keys), turns its `exit` into one the driver cleans up
+after, and counts what it writes for the progress row. The files keep hactool's own style (`.clang-format` here formats
+nothing).
 
 What ScarletNX changed, each change marked `ScarletNX` where it is not a file of its own:
 
