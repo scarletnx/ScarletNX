@@ -165,7 +165,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   zip's top, its library an arm64 one, its `minApi` at most the device's API level) and unpacked into a folder of
   `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the value. A
   package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
-  load. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
+  load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
+  (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
+  opens, with the GPU and the driver Eden recommends for it; a repository that failed says why, and Enter fetches the
+  lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
+  one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
+  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
   what this device is and, anywhere else, why games there use the system driver, and Use is refused there with that
   line. A game whose package does not load stops, saying why. **Freedreno Settings** sets Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
