@@ -16108,6 +16108,8 @@ static void forget(App* app) {
     app->run_locked = false;
     free(app->self);
     free(app->drivers);
+    free(app->drivers_dir);
+    free(app->packages);
     free(app->file);
     free(app->data_dir);
     free(app->home_dir);
