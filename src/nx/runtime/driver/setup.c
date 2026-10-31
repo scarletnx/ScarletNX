@@ -309,12 +309,12 @@ static int user(Ask* a) {
     /* the saves where the launcher puts the games, else in the games/ an older version left, whose games still run */
     games = recompiled_folder(a);
     old = snx_path_join(a->data, "games");
-    if (!snx_setup_first_saves(games) && snx_is_dir(old)) {
+    if (!snx_setup_first_saves(games, NULL) && snx_is_dir(old)) {
         free(games);
         games = old;
         old = NULL;
     }
-    saves = !rc && yes ? snx_setup_first_uid(games, uid) : 0;
+    saves = !rc && yes ? snx_setup_first_uid(games, a->data, uid) : 0;
     free(games);
     free(old);
     if (saves < 0) {
