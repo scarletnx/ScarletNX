@@ -195,6 +195,16 @@ setting Vulkan Video decode
     help 1 = H.264 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver
     help have an H.264 decode queue. Experimental and untested. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting ASTC BC
+    label ASTC as BC7
+    key astc_bc
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
+    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
+    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 
 table g_performance_ini
 setting FPS limit
@@ -585,16 +595,6 @@ setting Native ASTC
     help 1 = ASTC textures are sampled as the game's blocks where the GPU samples ASTC (most phone and tablet GPUs),
     help in a quarter to a 36th of the memory. 0 = they are decoded to RGBA8 on the GPU, as they are on GPUs without
     help ASTC (most desktop ones), to compare the two. On such a GPU 1 is a warning at start
-setting ASTC BC
-    label ASTC as BC7
-    key astc_bc
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 0 = ASTC textures are decoded to RGBA8, exactly as the game's blocks decode. 1 = on a GPU that samples BCn
-    help but not ASTC (most desktop ones), they are decoded and then encoded again as BC7, in a quarter of RGBA8's
-    help memory, close to what the blocks decode to but not always the same. Where the GPU samples ASTC it does nothing
 setting Native BC
     label Native BCn
     key native_bc
