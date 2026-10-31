@@ -148,6 +148,10 @@ typedef struct {
 /* acc's host side: the picture's lock (hle.h's g_host) */
 typedef struct {
     PMutex pic_lk;
+    /* acc's commands read and change the users (g_users) under it: acc:su's registration and editor change them while
+       the game's threads read them */
+    PMutex users_lk;
+    char users_dir[4096]; /* the users/ folder users.ini is in (snx_users_init); empty: nothing is written */
 } HostAcc;
 
 /* ---- am.c */

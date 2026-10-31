@@ -303,10 +303,88 @@ done:
     free(path);
     return rc;
 }
+int snx_users_begin(const uint64_t uid[2], char* why, size_t why_size) {
+    SnxUser* u;
+    if (g_user_count >= SNX_USERS_MAX) {
+        snprintf(why, why_size, "there are %d users, the most there can be", g_user_count);
+        return -1;
+    }
+    if ((!uid[0] && !uid[1]) || snx_users_find(uid)) {
+        snprintf(why, why_size, "a uid of zero, or a user's already, is no new user's");
+        return -1;
+    }
+    u = &g_users[g_user_count++];
+    memset(u, 0, sizeof *u);
+    u->uid[0] = uid[0];
+    u->uid[1] = uid[1];
+    strcpy(u->nickname, USERS_FIRST_NAME);
+    u->unsaved = 1;
+    return 0;
+}
+int snx_users_save(const char* dir, int number, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, USERS_FILE), *staged = snx_format("%s.new", path), *text = NULL, *out = NULL, *more;
+    char hex[33], data[2 * SNX_USERS_DATA + 1];
+    size_t size = 0;
+    int rc = -1, i, any, k;
+    if (number < 1 || number > g_user_count) {
+        snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
+        goto done;
+    }
+    for (i = 0; i < number && !g_users[i].unsaved; i++) {}
+    if (i == number) {
+        rc = 0; /* all of them in users.ini already */
+        goto done;
+    }
+    if (!snx_is_file(path) && snx_users_start(dir, g_users[0].uid, g_users[0].nickname, why, why_size)) goto done;
+    text = (char*)snx_read_file(path, &size);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    out = snx_format("%s%s", text, size && text[size - 1] != '\n' ? "\n" : "");
+    for (; out && i < number; i++) {
+        snx_users_uid_text(g_users[i].uid, hex);
+        for (k = 0, any = 0; k < SNX_USERS_DATA; k++) {
+            snprintf(data + 2 * k, 3, "%02x", g_users[i].user_data[k]);
+            any |= g_users[i].user_data[k];
+        }
+        more = snx_format("%s[user%d]\nuid=%s\nnickname=%s\n%s%s%s", out, i + 1, hex, g_users[i].nickname,
+                          any ? "user_data=" : "", any ? data : "", any ? "\n" : "");
+        free(out);
+        out = more;
+    }
+    /* written beside it first: a full disk leaves users.ini as it was */
+    if (!out || snx_write_file(staged, out, strlen(out))) {
+        snprintf(why, why_size, "%s could not be written", staged);
+        remove(staged);
+        goto done;
+    }
+    if (snx_replace(staged, path)) {
+        snprintf(why, why_size, "%s could not be put in place of %s", staged, path);
+        remove(staged);
+        goto done;
+    }
+    for (i = 0; i < number; i++) g_users[i].unsaved = 0;
+    rc = 0;
+done:
+    free(out);
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
+}
 int snx_users_rename(const char* dir, int number, const char* nickname, char* why, size_t why_size) {
     if (!snx_users_nickname_valid(nickname)) {
         snprintf(why, why_size, "the nickname ");
         nickname_refused(why, why_size, nickname);
+        return -1;
+    }
+    if (number >= 1 && number <= g_user_count && g_users[number - 1].unsaved) { /* in users.ini with it */
+        char old[sizeof g_users[0].nickname];
+        memcpy(old, g_users[number - 1].nickname, sizeof old);
+        snprintf(g_users[number - 1].nickname, sizeof g_users[number - 1].nickname, "%s", nickname);
+        if (!snx_users_save(dir, number, why, why_size)) return 0;
+        memcpy(g_users[number - 1].nickname, old, sizeof old);
         return -1;
     }
     if (users_set_key(dir, number, "nickname", nickname, why, why_size)) return -1;
@@ -320,6 +398,14 @@ int snx_users_set_data(const char* dir, int number, const unsigned char data[SNX
     for (int i = 0; i < SNX_USERS_DATA; i++) {
         snprintf(hex + 2 * i, 3, "%02x", data[i]);
         any |= data[i];
+    }
+    if (number >= 1 && number <= g_user_count && g_users[number - 1].unsaved) { /* in users.ini with it */
+        unsigned char old[SNX_USERS_DATA];
+        memcpy(old, g_users[number - 1].user_data, sizeof old);
+        memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);
+        if (!snx_users_save(dir, number, why, why_size)) return 0;
+        memcpy(g_users[number - 1].user_data, old, sizeof old);
+        return -1;
     }
     if (users_set_key(dir, number, "user_data", any ? hex : "", why, why_size)) return -1;
     memcpy(g_users[number - 1].user_data, data, SNX_USERS_DATA);

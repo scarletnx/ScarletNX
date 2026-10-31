@@ -1129,12 +1129,13 @@ target_link_libraries(snx-test-am-nacp PRIVATE snx_test_common) # snx_nacp_aoc_b
 add_test(NAME am_nacp COMMAND snx-test-am-nacp)
 
 # acc.c and users.c: the console's users from users/users.ini, as acc lists them, every file that lists none refused,
-# and the picture of a user with none of its own, Wimsy as a 256x256 JPEG (the splash's drawing), decoded by plutovg
-if(NOT SNX_TOOLS_ONLY)
+# and the picture of a user with none of its own, Wimsy as a 256x256 JPEG (the splash's drawing), decoded by plutovg;
+# acc:su's registration makes a user's uid of OpenSSL's random bytes
+if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-acc-service acc_service.c)
     snx_test_target(snx-test-acc-service 23)
     snx_service_swipc(snx-test-acc-service hle/services/acc.swipc)
-    target_link_libraries(snx-test-acc-service PRIVATE snx_splash scarletnx-common)
+    target_link_libraries(snx-test-acc-service PRIVATE snx_splash scarletnx-common OpenSSL::Crypto)
     target_include_directories(snx-test-acc-service SYSTEM PRIVATE "${plutovg_SOURCE_DIR}/include")
     target_compile_definitions(snx-test-acc-service PRIVATE PLUTOVG_BUILD_STATIC)
     set_target_properties(snx-test-acc-service PROPERTIES LINKER_LANGUAGE CXX)

@@ -80,6 +80,10 @@ interface nn::account::IAccountServiceForAdministrator is acc:su {
         -> object<nn::account::baas::IManagerForSystemService> manager;
     [110] StoreSaveDataThumbnail(nn::account::Uid uid, nn::ApplicationId application_id, buffer<u8, 5> image);
     [140] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    # a user registered: in the users from Begin, its nickname the first user's ("Player") until one is stored, as
+    # rEden's (acc.cpp BeginUserRegistration), and in users.ini from Complete
+    [200] BeginUserRegistration() -> nn::account::Uid uid;
+    [201] CompleteUserRegistration(nn::account::Uid uid);
     [250] GetBaasAccountAdministrator(nn::account::Uid uid) -> object<nn::account::baas::IAdministrator> administrator;
     [401] GetPinCodeLength() -> u32 length;
 }
