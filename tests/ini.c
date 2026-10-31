@@ -220,6 +220,18 @@ int main(void) {
                strstr(list, "astc_bc=1 (default 0)"));
         g_settings.astc_bc = 0;
     }
+    /* astc_bc's Auto, On and Off are 0, 1 and 2; one past them is refused, saying the value it keeps */
+    {
+        const IniOpt* o = ini_find(g_graphics_ini, "astc_bc");
+        ini_set_say(catch_said);
+        ini_read(o, "2");
+        assert(g_settings.astc_bc == 2);
+        ini_read(o, "3");
+        assert(g_settings.astc_bc == 2 &&
+               !strcmp(line_said, "settings: astc_bc=3 is not a whole number from 0 to 2: it keeps 2"));
+        ini_set_say(NULL);
+        g_settings.astc_bc = 0;
+    }
     puts("ini passed");
     return 0;
 }
