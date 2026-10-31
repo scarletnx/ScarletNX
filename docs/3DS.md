@@ -180,9 +180,8 @@ blocks presented frames until it was ended. It is **not playable** yet:
 - Input is the pad and the touch screen (the mouse's left button or a finger on
   the window's bottom screen). The sensors are a gamepad's accelerometer and
   gyroscope when one has them, else at rest (`hid:USER`, below).
-- The music has a gap after every rendered frame, because rendering and presenting
-  run inside the guest's GSP call.
-- Geometry shaders, procedural textures and shadows still stop the run explicitly.
+- The music gap after each rendered frame (rendering and presenting run inside the guest's GSP call) is addressed by pacing the DSP from the output device's queue once it has audio (`kernel/thread.c`, about 60 ms kept queued, up to eight frames at once). That is untested with a real game or device: only the unchanged tests ran.
+- Geometry shaders run in the software pipeline (the CPU reference, point and fixed-primitive modes tested) but not on the GPU, where a draw with one still stops the run explicitly. Procedural textures and shadows stop it too.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.
@@ -390,6 +389,27 @@ C-stick is `IJKL` or a gamepad's right stick. The raw C-stick form (`raw_c_stick
 and `WriteToTwoFields` are not modelled, as in Azahar. Any model gets the service,
 as Azahar's does.
 
+`mic:u` (`services/mic.c`, from Azahar's `mic_u.cpp` with its "None" input) takes
+every command, keeps the settings a game stores (gain, power, clamp, rate) and
+starts and stops sampling, but no sample reaches the game's memory. Its buffer
+full event is real and is never signalled. `cam:u` (`services/cam.c`, from
+Azahar's `cam.cpp`) has no camera: its commands check their arguments and keep
+the settings, the transfer arithmetic (`GetMaxLines`, `GetMaxBytes`) is
+Azahar's, and a receiving ends one frame time after the capture starts with a
+black (zero) frame in the game's buffer and its event signalled. The vsync event
+comes once a frame. `GetLatestVsyncTiming` and `GetStereoCameraCalibrationData`,
+which answer in static buffers, are left to the unknown-command path. Nothing of
+either is tried with a game: only the tests (`3ds_mic`, `3ds_cam`) exercise them.
+
+`csnd:SND` (`services/csnd.c`, from Azahar's `csnd_snd.cpp`) makes the shared
+memory and mutex of Initialize, hands out channels 8 to 31 and two capture units,
+walks the command lists of ExecuteCommands and writes the states UpdateState
+gives back (masks, whether a channel plays, its ADPCM state). It makes no sound
+and emulates no capture, as Azahar's. Unlike Azahar's, a stop or a pause takes
+effect at once, without the fade of some milliseconds, and the commands that set
+volumes, addresses, timers and loops are accepted and ignored. The test is
+`3ds_csnd`.
+
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
 GX/interrupt shared block and up to four relay threads with real interrupt-queue
@@ -424,8 +444,8 @@ raises P3D without running. Draws go to the GPU (see above). The software render
 ported from Azahar's (`gpu/shader.c`, `gpu/draw.c`, `gpu/raster.c`, `gpu/lighting.c`,
 `gpu/texture.c`) is only built into the tests, as the reference the GPU's draws are
 compared with. It samples the nearest texel only, as Azahar's does, so texture
-filtering has no reference. Geometry shaders and shadow textures and rendering are not
-drawn yet: a draw that needs one stops the run and names it. The ExHeader's address-mapping capabilities
+filtering has no reference. Shadow textures and rendering are not
+drawn yet: a draw that needs one stops the run and names it. The geometry pipeline (`draw.c`, from Azahar's `geometry_pipeline.cpp`) feeds a geometry shader in point, variable-primitive and fixed-primitive modes; the tests cover point and fixed ones. The ExHeader's address-mapping capabilities
 are applied at process creation (VRAM, DSP RAM, New 3DS extra RAM), as Azahar's
 `HandleSpecialMapping` does; MMIO areas stay unmapped. SetBufferSwap and the shared
 FrameBufferUpdate blocks latch real framebuffer descriptors in the five formats

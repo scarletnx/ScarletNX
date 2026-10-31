@@ -11,5 +11,7 @@
 bool snx_ctr_audio_init(const char* wav_path);
 /* Before init, or with no output, the frame is dropped */
 void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]);
+/* How many frames the device still has queued, or UINT32_MAX with no device (a recording alone has no clock) */
+uint32_t snx_ctr_audio_queued_frames(void);
 void snx_ctr_audio_free(void);
 #endif

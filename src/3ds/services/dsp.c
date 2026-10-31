@@ -43,7 +43,8 @@ void snx_ctr_dsp_frame(SnxCtrProcess* p, uint64_t now_ns) {
     p->dsp.next_frame_ns += SNX_CTR_DSP_FRAME_NS;
     if (now_ns > p->dsp.next_frame_ns + DSP_MAX_LATE_NS) p->dsp.next_frame_ns = now_ns + SNX_CTR_DSP_FRAME_NS;
     int16_t frame[SNX_CTR_DSP_SAMPLES][2];
-    if (snx_ctr_dsp_tick(p->dsp.core, frame)) snx_ctr_audio_frame(frame);
+    p->dsp.producing = snx_ctr_dsp_tick(p->dsp.core, frame);
+    if (p->dsp.producing) snx_ctr_audio_frame(frame);
 }
 
 static void reply(SnxCtrIpc* c, unsigned normal, unsigned translated) {

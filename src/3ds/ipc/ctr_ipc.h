@@ -22,6 +22,9 @@ enum {
     SNX_CTR_SERVICE_AM,     /* am:app (services/am.c) */
     SNX_CTR_SERVICE_Y2R,    /* y2r:u (services/y2r.c) */
     SNX_CTR_SERVICE_IR,     /* ir:rst (services/ir.c) */
+    SNX_CTR_SERVICE_MIC,    /* mic:u (services/mic.c) */
+    SNX_CTR_SERVICE_CAM,    /* cam:u (services/cam.c) */
+    SNX_CTR_SERVICE_CSND,   /* csnd:SND (services/csnd.c) */
     SNX_CTR_SERVICE_COUNT
 };
 /* SNX_CTR_IPC_UNKNOWN: a command the service does not have, as opposed to a form of a known one it does not

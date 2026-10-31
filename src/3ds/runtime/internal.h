@@ -145,6 +145,7 @@ typedef struct {
     uint32_t semaphore;        /* the semaphore event (retained), made at its first GetSemaphoreEventHandle */
     uint16_t semaphore_mask;
     uint64_t next_frame_ns; /* host monotonic deadline of the next audio frame */
+    bool producing;         /* the last frame had audio: then the output device's queue paces the frames */
 } SnxCtrDspService;
 /* y2r:u: the Y2R engine's configuration as the application set it, and the conversion running (services/y2r.c) */
 typedef struct {
@@ -172,6 +173,45 @@ typedef struct {
     uint64_t next_ns;
     uint32_t period_ms, index;
 } SnxCtrIr;
+/* mic:u's state (services/mic.c): the buffer full event (retained), whether sampling runs, the rate and the settings a
+   game stored */
+typedef struct {
+    uint32_t event;
+    uint8_t sampling, sample_rate, gain, power, clamp, allow_shell_closed;
+} SnxCtrMic;
+/* csnd:SND's state (services/csnd.c): the shared memory and mutex (retained objects), the layout the game gave, the
+   masks of the channels and capture units it holds, and what each channel's hardware would show */
+typedef struct {
+    uint32_t adpcm, loop_adpcm;
+    uint8_t enable;
+} SnxCtrCsndChannel;
+typedef struct {
+    uint32_t mutex, shared, size;
+    uint32_t master_offset, channel_offset, capture_offset, direct_offset;
+    uint32_t channel_mask, capture_mask, capture_in_use, mask_register[2];
+    SnxCtrCsndChannel channel[32];
+    uint8_t initialized;
+} SnxCtrCsnd;
+/* cam:u's state (services/cam.c): two ports (the first the outer left and inner cameras', the second the outer right camera's) and the three cameras */
+typedef struct {
+    uint32_t completion_event, error_event, vsync_event; /* event objects (retained), made at the first request */
+    uint64_t done_ns, vsync_ns;                          /* host monotonic ns (0: none) of the receiving's end, the next vsync */
+    uint32_t dest, dest_size;                            /* the receiving buffer in the game's memory */
+    uint16_t transfer_bytes, x0, y0, x1, y1;
+    uint8_t active, receiving, trimming, camera;         /* camera: the one the port takes (Activate) */
+} SnxCtrCamPort;
+typedef struct {
+    uint8_t flip, effect, format, size_preset;
+    uint16_t width, height;
+} SnxCtrCamContext;
+typedef struct {
+    SnxCtrCamPort port[2];
+    struct {
+        uint8_t frame_rate, context;
+        SnxCtrCamContext contexts[2];
+    } camera[3];
+    uint8_t initialized;
+} SnxCtrCam;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
     FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
@@ -200,6 +240,9 @@ struct SnxCtrProcess {
     SnxCtrHid hid;
     uint32_t ir_objects[2]; /* ir:rst's shared memory, then its update event */
     SnxCtrIr ir;
+    SnxCtrMic mic;
+    SnxCtrCam cam;
+    SnxCtrCsnd csnd;
     uint32_t shell_closed; /* virtual console starts with its shell open */
     double clock_origin;   /* host monotonic origin for the base ARM11 tick domain */
     CtrSelfArchive self_archives[CTR_SELF_ARCHIVES];

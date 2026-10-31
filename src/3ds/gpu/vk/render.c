@@ -1366,7 +1366,7 @@ static void draw_reads(const PipeKey* k, const uint32_t binding_pa[12], uint32_t
 }
 static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     const uint32_t* r = p->regs;
-    if (r[SNX_PICA_USE_GS] & 3) return stop(p, "geometry shaders are not ported yet");
+    if (r[SNX_PICA_USE_GS] & 3) return stop(p, "geometry shaders are not on the GPU yet (the software pipeline has them)");
     if (!made()) return stop(p, "the Vulkan renderer could not be set up");
     /* the target: a colour buffer outside RAM draws nothing */
     TargetKey key = {.color_pa = (r[FB_COLOR_ADDR] & 0x0fffffff) * 8,

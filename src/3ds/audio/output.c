@@ -66,6 +66,10 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
         }
     }
 }
+uint32_t snx_ctr_audio_queued_frames(void) {
+    int queued = o.stream ? SDL_GetAudioStreamQueued(o.stream) : -1;
+    return queued < 0 ? UINT32_MAX : (uint32_t)queued / FRAME_BYTES;
+}
 void snx_ctr_audio_free(void) {
     if (o.stream) {
         SDL_DestroyAudioStream(o.stream);

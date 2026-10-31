@@ -118,6 +118,7 @@ struct SnxCtrPica {
     /* the primitive assembler (PrimitiveAssembler), kept across draws; topology and restart writes reset it */
     SnxCtrAssembler assembler;
     /* the list being run, a staged copy of guest memory; a jump (a command buffer trigger) replaces it */
+    struct SnxCtrGsPipe* gs_pipe; /* the geometry pipeline (draw.c), made at the first draw with a geometry shader */
     uint32_t* list;
     uint32_t list_address, list_words, list_index;
     uint32_t stop_register;  /* the register whose write stopped the last run (UNSUPPORTED, FAULT) */
