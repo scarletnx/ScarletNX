@@ -31,6 +31,7 @@
      on them go (vk_uma_pages_replaced), as the driver holds the old pages.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
      counted (the hazards line of the report). That command can read the new bytes. */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
@@ -54,8 +55,6 @@ typedef struct {
     u32 used; /* g_vk_present when last bound */
     int dead; /* its pages are other pages now (mem.c): it goes at the next lookup */
 } Imp;
-static Imp g_imp[UMA_MAX]; /* sorted by cpu, none overlapping, g_nimp of them */
-static u32 g_nimp;
 /* Spans the driver refused to import (a page it can't pin: a trapped GPU-owned page, say), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
    again, twice: one game fell from 28 to 5 frames a second */
@@ -64,20 +63,46 @@ typedef struct {
     u64 lo, hi; /* hi 0: none */
     u32 at;     /* g_vk_present when it failed */
 } Fail;
-static VkResult g_import_result;      /* the last import's, for the log */
-static Fail g_fail[FAIL_N];           /* under g_imp_lk */
-static PMutex g_imp_lk = PMUTEX_INIT; /* a leaf, under vk_lock or mem.c's lock: the dead flags and the table */
-static int g_any_dead;                /* under g_imp_lk */
-static u64 g_align = 4096;            /* minImportedHostPointerAlignment */
-static u64 g_bound;                   /* the submit that last read guest memory in place (vk_submit_number) */
-/* statistics, under vk_lock but the hazards (atomic) */
-static u64 g_hits, g_hit_bytes, g_misses, g_imports, g_import_bytes, g_import_ns, g_failed, g_dropped, g_hazards;
-/* the submit that last read each guest page in place, by page number modulo the table: page << 20 | submit's low
-   20 bits would lose order, so the two in their own words. Read by the threads that write guest memory for the GPU */
-static u64 g_hz_page[1u << HZ_BITS], g_hz_sub[1u << HZ_BITS];
+typedef struct {
+    u64 cpu, len, sub;
+} Seen;
+#define UMA_LINE 64 /* a cache line (x86-64, AArch64) */
+/* The file's state. Different threads write its groups, each apart from the next by a cache line: the GPU thread
+   (under vk_lock), the threads that change guest mappings (mem.c's hook, under lk), any thread that writes guest memory
+   for the GPU (the hazard count), and the GPU thread again for the page table that those threads read */
+typedef struct {
+    /* the GPU thread's, under vk_lock */
+    Imp imp[UMA_MAX]; /* sorted by cpu, none overlapping, nimp of them; their dead flags under lk */
+    u32 nimp;
+    VkResult import_result; /* the last import's, for the log */
+    u64 align;              /* minImportedHostPointerAlignment */
+    u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
+    Seen seen[256];         /* the ranges hz_mark marked, with their submit */
+    /* statistics */
+    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped;
+    char apart0[UMA_LINE];
+    /* mem.c's hook writes these too */
+    PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags and the table */
+    int any_dead;      /* under lk */
+    Fail fail[FAIL_N]; /* under lk */
+    char apart1[UMA_LINE];
+    u64 hazards; /* any thread's, atomic */
+    char apart2[UMA_LINE];
+    /* the submit that last read each guest page in place, by page number modulo the table: page << 20 | submit's low
+       20 bits would lose order, so the two in their own words. The GPU thread writes them, atomic, and the threads
+       that write guest memory for the GPU read them */
+    u64 hz_page[1u << HZ_BITS], hz_sub[1u << HZ_BITS];
+} Uma;
+/* C99 has no static assert: an array of negative size if two groups would share a line */
+typedef char uma_apart[offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
+                               offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE &&
+                               offsetof(Uma, hz_page) - offsetof(Uma, apart2) >= UMA_LINE
+                           ? 1
+                           : -1];
+static Uma g_uma = {.lk = PMUTEX_INIT, .align = 4096};
 
 int vk_uma(void) { return g_vk.mem_path == VK_MEM_PATH_UMA; }
-u64 vk_uma_bound(void) { return g_bound; }
+u64 vk_uma_bound(void) { return g_uma.bound; }
 
 /* ------------------------------------------------------------ the model */
 static const char* model_name(int m) {
@@ -151,48 +176,49 @@ static void imp_free(void* p) {
 static void imp_drop(u32 i) {
     Imp* d = malloc(sizeof *d);
     if (!d) fatal("vulkan: out of memory for an import of guest memory");
-    *d = g_imp[i];
+    *d = g_uma.imp[i];
     vk_defer_call(imp_free, d);
-    g_dropped++;
-    pm_lock(&g_imp_lk);
-    memmove(&g_imp[i], &g_imp[i + 1], sizeof *g_imp * (size_t)(g_nimp - i - 1));
-    g_nimp--;
-    pm_unlock(&g_imp_lk);
+    g_uma.dropped++;
+    pm_lock(&g_uma.lk);
+    memmove(&g_uma.imp[i], &g_uma.imp[i + 1], sizeof *g_uma.imp * (size_t)(g_uma.nimp - i - 1));
+    g_uma.nimp--;
+    pm_unlock(&g_uma.lk);
 }
 /* mem.c: host pages under guest memory [a, a + size) are other pages now (under its lock). The imports on them hold the
    old ones */
 static void pages_replaced(u64 a, u64 size) {
     u64 end = a + size < a ? ~0ull : a + size;
-    pm_lock(&g_imp_lk);
+    pm_lock(&g_uma.lk);
     for (u32 i = 0; i < FAIL_N; i++)
-        if (g_fail[i].hi && g_fail[i].lo < end && a < g_fail[i].hi) g_fail[i].hi = 0; /* other pages: try again */
-    for (u32 i = 0; i < g_nimp; i++)
-        if (g_imp[i].cpu < end && a < g_imp[i].cpu + g_imp[i].size) {
-            g_imp[i].dead = 1;
-            g_any_dead = 1;
+        if (g_uma.fail[i].hi && g_uma.fail[i].lo < end && a < g_uma.fail[i].hi)
+            g_uma.fail[i].hi = 0; /* other pages: try again */
+    for (u32 i = 0; i < g_uma.nimp; i++)
+        if (g_uma.imp[i].cpu < end && a < g_uma.imp[i].cpu + g_uma.imp[i].size) {
+            g_uma.imp[i].dead = 1;
+            g_uma.any_dead = 1;
         }
-    pm_unlock(&g_imp_lk);
+    pm_unlock(&g_uma.lk);
 }
 /* the dead ones go (vk_lock held) */
 static void drop_dead(void) {
-    pm_lock(&g_imp_lk);
-    int any = g_any_dead;
-    g_any_dead = 0;
-    pm_unlock(&g_imp_lk);
+    pm_lock(&g_uma.lk);
+    int any = g_uma.any_dead;
+    g_uma.any_dead = 0;
+    pm_unlock(&g_uma.lk);
     if (!any) return;
-    for (u32 i = g_nimp; i-- > 0;) {
-        pm_lock(&g_imp_lk);
-        int dead = g_imp[i].dead;
-        pm_unlock(&g_imp_lk);
+    for (u32 i = g_uma.nimp; i-- > 0;) {
+        pm_lock(&g_uma.lk);
+        int dead = g_uma.imp[i].dead;
+        pm_unlock(&g_uma.lk);
         if (dead) imp_drop(i);
     }
 }
 /* the first import that ends after cpu */
 static u32 imp_find(u64 cpu) {
-    u32 lo = 0, hi = g_nimp;
+    u32 lo = 0, hi = g_uma.nimp;
     while (lo < hi) {
         u32 mid = (lo + hi) / 2;
-        if (g_imp[mid].cpu + g_imp[mid].size <= cpu)
+        if (g_uma.imp[mid].cpu + g_uma.imp[mid].size <= cpu)
             lo = mid + 1;
         else
             hi = mid;
@@ -219,9 +245,9 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
     u64 t0 = plat_ns();
     *m = (Imp){.cpu = cpu, .size = size, .used = g_vk_present};
     /* a refusal is expected (pages the driver can't pin) and said once for the span (fail), not as a failed call */
-    g_import_result = vkGetMemoryHostPointerPropertiesEXT(
+    g_uma.import_result = vkGetMemoryHostPointerPropertiesEXT(
         g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host, &hp);
-    if (g_import_result != VK_SUCCESS) return 0;
+    if (g_uma.import_result != VK_SUCCESS) return 0;
     if (!VK_OK(vkCreateBuffer(g_vk.dev, &bci, NULL, &m->buf))) {
         m->buf = VK_NULL_HANDLE;
         return 0;
@@ -242,7 +268,7 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
                                .allocationSize = size,
                                .memoryTypeIndex = type};
     if (type == ~0u || req.size > size ||
-        (g_import_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem)) != VK_SUCCESS) {
+        (g_uma.import_result = vkAllocateMemory(g_vk.dev, &ai, NULL, &m->mem)) != VK_SUCCESS) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         m->buf = VK_NULL_HANDLE;
         m->mem = VK_NULL_HANDLE;
@@ -255,57 +281,58 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
         m->mem = VK_NULL_HANDLE;
         return 0;
     }
-    g_imports++;
-    g_import_bytes += size;
-    g_import_ns += plat_ns() - t0;
+    g_uma.imports++;
+    g_uma.import_bytes += size;
+    g_uma.import_ns += plat_ns() - t0;
     return 1;
 }
 /* whether [lo, hi) meets a span the driver refused lately (vk_lock held) */
 static int failed(u64 lo, u64 hi) {
     int r = 0;
-    pm_lock(&g_imp_lk);
+    pm_lock(&g_uma.lk);
     for (u32 i = 0; i < FAIL_N && !r; i++)
-        r = g_fail[i].hi && (u32)(g_vk_present - g_fail[i].at) <= UMA_IDLE && g_fail[i].lo < hi && lo < g_fail[i].hi;
-    pm_unlock(&g_imp_lk);
+        r = g_uma.fail[i].hi && (u32)(g_vk_present - g_uma.fail[i].at) <= UMA_IDLE && g_uma.fail[i].lo < hi &&
+            lo < g_uma.fail[i].hi;
+    pm_unlock(&g_uma.lk);
     return r;
 }
 /* [lo, hi) refused: in place of the oldest span kept */
 static void fail(u64 lo, u64 hi) {
     u32 old = 0;
-    g_failed++;
+    g_uma.failed++;
     LOG_LIMIT(8, "vulkan: guest memory %llx+%llx could not be imported (%s): its ranges are copied for a while\n",
-              (unsigned long long)lo, (unsigned long long)(hi - lo), snx_vk_result_str(g_import_result));
-    pm_lock(&g_imp_lk);
-    for (u32 i = 1; i < FAIL_N && g_fail[old].hi; i++)
-        if (!g_fail[i].hi || (i32)(g_fail[i].at - g_fail[old].at) < 0) old = i;
-    g_fail[old] = (Fail){lo, hi, g_vk_present};
-    pm_unlock(&g_imp_lk);
+              (unsigned long long)lo, (unsigned long long)(hi - lo), snx_vk_result_str(g_uma.import_result));
+    pm_lock(&g_uma.lk);
+    for (u32 i = 1; i < FAIL_N && g_uma.fail[old].hi; i++)
+        if (!g_uma.fail[i].hi || (i32)(g_uma.fail[i].at - g_uma.fail[old].at) < 0) old = i;
+    g_uma.fail[old] = (Fail){lo, hi, g_vk_present};
+    pm_unlock(&g_uma.lk);
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
    copied) */
 static u32 imp_get(u64 cpu, u64 len) {
     u32 i = imp_find(cpu);
-    if (i < g_nimp && g_imp[i].cpu <= cpu && cpu + len <= g_imp[i].cpu + g_imp[i].size) return i;
+    if (i < g_uma.nimp && g_uma.imp[i].cpu <= cpu && cpu + len <= g_uma.imp[i].cpu + g_uma.imp[i].size) return i;
     /* the windows the range touches, and the imports they meet, as one import */
     u64 lo = cpu & ~(UMA_WINDOW - 1), hi = (cpu + len + UMA_WINDOW - 1) & ~(UMA_WINDOW - 1);
     u32 first = imp_find(lo), last = first;
-    while (last < g_nimp && g_imp[last].cpu < hi) {
-        if (g_imp[last].cpu < lo) lo = g_imp[last].cpu;
-        if (g_imp[last].cpu + g_imp[last].size > hi) hi = g_imp[last].cpu + g_imp[last].size;
+    while (last < g_uma.nimp && g_uma.imp[last].cpu < hi) {
+        if (g_uma.imp[last].cpu < lo) lo = g_uma.imp[last].cpu;
+        if (g_uma.imp[last].cpu + g_uma.imp[last].size > hi) hi = g_uma.imp[last].cpu + g_uma.imp[last].size;
         last++;
     }
     /* only mapped guest memory: the range's own pages where the windows are not all mapped */
     if (mem_mapped_run(lo, hi - lo) != hi - lo) {
         if (last > first) return ~0u;
-        lo = cpu & ~(g_align - 1);
-        hi = (cpu + len + g_align - 1) & ~(g_align - 1);
+        lo = cpu & ~(g_uma.align - 1);
+        hi = (cpu + len + g_uma.align - 1) & ~(g_uma.align - 1);
         if (mem_mapped_run(lo, hi - lo) != hi - lo) return ~0u;
     }
     if (hi - lo > g_vk.alloc_cap || failed(lo, hi)) return ~0u;
-    if (g_nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
+    if (g_uma.nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
         u32 old = 0;
-        for (u32 k = 1; k < g_nimp; k++)
-            if ((i32)(g_imp[k].used - g_imp[old].used) < 0) old = k;
+        for (u32 k = 1; k < g_uma.nimp; k++)
+            if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
         imp_drop(old);
         return ~0u; /* the indexes moved: the next lookup makes it */
     }
@@ -315,11 +342,11 @@ static u32 imp_get(u64 cpu, u64 len) {
         return ~0u; /* the imports there stay */
     }
     for (u32 k = last; k-- > first;) imp_drop(k);
-    pm_lock(&g_imp_lk);
-    memmove(&g_imp[first + 1], &g_imp[first], sizeof *g_imp * (size_t)(g_nimp - first));
-    g_imp[first] = m;
-    g_nimp++;
-    pm_unlock(&g_imp_lk);
+    pm_lock(&g_uma.lk);
+    memmove(&g_uma.imp[first + 1], &g_uma.imp[first], sizeof *g_uma.imp * (size_t)(g_uma.nimp - first));
+    g_uma.imp[first] = m;
+    g_uma.nimp++;
+    pm_unlock(&g_uma.lk);
     return first;
 }
 
@@ -331,39 +358,36 @@ static void hz_mark(u64 cpu, u64 len);
 int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
     if (!len || gmmu_run(gva, len, &cpu) < len) { /* not one run of guest memory */
-        g_misses++;
+        g_uma.misses++;
         return 0;
     }
     drop_dead();
     u32 i = imp_get(cpu, len);
-    if (i == ~0u || ((cpu - g_imp[i].cpu) % (align ? align : 1))) {
-        g_misses++;
+    if (i == ~0u || ((cpu - g_uma.imp[i].cpu) % (align ? align : 1))) {
+        g_uma.misses++;
         return 0;
     }
-    g_imp[i].used = g_vk_present;
-    *buf = g_imp[i].buf;
-    *off = cpu - g_imp[i].cpu;
-    g_bound = vk_submit_number();
-    g_hits++;
-    g_hit_bytes += len;
+    g_uma.imp[i].used = g_vk_present;
+    *buf = g_uma.imp[i].buf;
+    *off = cpu - g_uma.imp[i].cpu;
+    g_uma.bound = vk_submit_number();
+    g_uma.hits++;
+    g_uma.hit_bytes += len;
     hz_mark(cpu, len);
     return 1;
 }
 /* the pages of [cpu, cpu + len) as read in place by the submit being recorded: once a submit for each range, as draws
    bind the same ranges again and again */
 static void hz_mark(u64 cpu, u64 len) {
-    static struct {
-        u64 cpu, len, sub;
-    } seen[256];
     u32 h = (u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56);
-    if (seen[h].cpu == cpu && seen[h].len == len && seen[h].sub == g_bound) return;
-    seen[h].cpu = cpu;
-    seen[h].len = len;
-    seen[h].sub = g_bound;
+    if (g_uma.seen[h].cpu == cpu && g_uma.seen[h].len == len && g_uma.seen[h].sub == g_uma.bound) return;
+    g_uma.seen[h].cpu = cpu;
+    g_uma.seen[h].len = len;
+    g_uma.seen[h].sub = g_uma.bound;
     for (u64 p = cpu >> 12; p <= (cpu + len - 1) >> 12; p++) {
         u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
-        __atomic_store_n(&g_hz_page[s], p, __ATOMIC_RELAXED);
-        __atomic_store_n(&g_hz_sub[s], g_bound, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_uma.hz_page[s], p, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_uma.hz_sub[s], g_uma.bound, __ATOMIC_RELAXED);
     }
 }
 /* a GPU-side write to guest memory [cpu, cpu + n): counted when a command that is not done yet read a page of it in
@@ -373,11 +397,11 @@ static void gpu_wrote(u64 cpu, u64 n) {
     if (!n) return;
     for (u64 p = cpu >> 12; p <= (cpu + n - 1) >> 12; p++) {
         u32 s = (u32)(p & ((1u << HZ_BITS) - 1));
-        if (__atomic_load_n(&g_hz_page[s], __ATOMIC_RELAXED) != p) continue;
-        u64 sub = __atomic_load_n(&g_hz_sub[s], __ATOMIC_RELAXED), dummy;
+        if (__atomic_load_n(&g_uma.hz_page[s], __ATOMIC_RELAXED) != p) continue;
+        u64 sub = __atomic_load_n(&g_uma.hz_sub[s], __ATOMIC_RELAXED), dummy;
         if (!done) vk_submit_progress(&dummy, &done);
         if (sub > done) {
-            __atomic_add_fetch(&g_hazards, 1, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&g_uma.hazards, 1, __ATOMIC_RELAXED);
             return;
         }
     }
@@ -389,10 +413,10 @@ void vk_uma_init(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-    if (hp.minImportedHostPointerAlignment > g_align) g_align = hp.minImportedHostPointerAlignment;
-    if (g_align > UMA_WINDOW) {
+    if (hp.minImportedHostPointerAlignment > g_uma.align) g_uma.align = hp.minImportedHostPointerAlignment;
+    if (g_uma.align > UMA_WINDOW) {
         WARN("vulkan: imports must be aligned to %llu KiB: guest memory is copied\n",
-             (unsigned long long)(g_align >> 10));
+             (unsigned long long)(g_uma.align >> 10));
         g_vk.mem_path = VK_MEM_PATH_COPY;
         return;
     }
@@ -404,22 +428,24 @@ void vk_uma_frame(void) {
     if (!vk_uma()) return;
     drop_dead();
     if (g_vk_present % 60 == 0)
-        for (u32 i = g_nimp; i-- > 0;)
-            if ((u32)(g_vk_present - g_imp[i].used) > UMA_IDLE) imp_drop(i);
+        for (u32 i = g_uma.nimp; i-- > 0;)
+            if ((u32)(g_vk_present - g_uma.imp[i].used) > UMA_IDLE) imp_drop(i);
     if (g_vk_present % 600) return;
     u64 bytes = 0;
-    for (u32 i = 0; i < g_nimp; i++) bytes += g_imp[i].size;
+    for (u32 i = 0; i < g_uma.nimp; i++) bytes += g_uma.imp[i].size;
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place)\n",
-        (unsigned long long)g_hits, (unsigned long long)(g_hit_bytes >> 20), (unsigned long long)g_misses,
-        (unsigned long long)g_imports, (unsigned long long)(g_import_bytes >> 20),
-        (unsigned long long)(g_import_ns / 1000000), (unsigned long long)g_failed, (unsigned long long)g_dropped,
-        g_nimp, (unsigned long long)(bytes >> 20), (unsigned long long)__atomic_load_n(&g_hazards, __ATOMIC_RELAXED));
-    g_hits = g_hit_bytes = g_misses = g_imports = g_import_bytes = g_import_ns = g_failed = g_dropped = 0;
-    __atomic_store_n(&g_hazards, 0, __ATOMIC_RELAXED);
+        (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
+        (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
+        (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
+        (unsigned long long)g_uma.dropped, g_uma.nimp, (unsigned long long)(bytes >> 20),
+        (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED));
+    g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
+        g_uma.dropped = 0;
+    __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {
-    for (u32 i = g_nimp; i-- > 0;) imp_drop(i);
+    for (u32 i = g_uma.nimp; i-- > 0;) imp_drop(i);
 }
