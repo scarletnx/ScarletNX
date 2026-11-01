@@ -110,10 +110,43 @@ int main(void) {
         NvnTexDesc d = desc(NVN_TEXTURE_TARGET_2D, NVN_FORMAT_RGBA8, 1280, 720, 1, 1, 0, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
         NvnTexStorage st;
         nvn_tex_storage(&d, &st);
-        CHECK(st.kind == 0xcc, "compressible RGBA8: kind %x", st.kind);
+        CHECK(st.kind == 0xdb, "compressible RGBA8: kind %x", st.kind);
         d.format = NVN_FORMAT_RGBA16F;
         nvn_tex_storage(&d, &st);
-        CHECK(st.kind == 0xcd, "compressible RGBA16F: kind %x", st.kind);
+        CHECK(st.kind == 0xe9, "compressible RGBA16F: kind %x", st.kind);
+        d.format = NVN_FORMAT_RGBA32F;
+        nvn_tex_storage(&d, &st);
+        CHECK(st.kind == 0xf5, "compressible RGBA32F: kind %x", st.kind);
+        { /* the kinds the driver answered in the verify sweep: color by element size, depth by samples */
+            static const struct {
+                int format;
+                u32 samples, kind;
+            } k[] = {{NVN_FORMAT_RGBA8, 2, 0xcc},
+                     {NVN_FORMAT_RGBA8, 4, 0xe0},
+                     {NVN_FORMAT_RG16F, 0, 0xdb},
+                     {NVN_FORMAT_R11G11B10F, 0, 0xdb},
+                     {NVN_FORMAT_RGBA16F, 2, 0xcd},
+                     {NVN_FORMAT_RGBA16F, 4, 0xee},
+                     {NVN_FORMAT_RGBA32F, 2, 0xf7},
+                     {NVN_FORMAT_RGBA32F, 4, 0xf9},
+                     {NVN_FORMAT_DEPTH16, 0, 0x07},
+                     {NVN_FORMAT_DEPTH16, 2, 0x08},
+                     {NVN_FORMAT_DEPTH16, 4, 0x09},
+                     {NVN_FORMAT_DEPTH24_STENCIL8, 0, 0x51},
+                     {NVN_FORMAT_DEPTH24_STENCIL8, 2, 0x52},
+                     {NVN_FORMAT_DEPTH24_STENCIL8, 4, 0x53},
+                     {NVN_FORMAT_DEPTH32F, 0, 0x86},
+                     {NVN_FORMAT_DEPTH32F, 2, 0x87},
+                     {NVN_FORMAT_DEPTH32F, 4, 0x88}};
+            size_t i;
+            for (i = 0; i < sizeof k / sizeof k[0]; i++) {
+                d = desc(k[i].samples ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D, k[i].format, 64, 64,
+                         1, 1, (int)k[i].samples, NVN_TEXTURE_FLAGS_COMPRESSIBLE);
+                nvn_tex_storage(&d, &st);
+                CHECK(st.kind == k[i].kind, "compressible format %#x, %u samples: kind %x, the driver's %x",
+                      k[i].format, k[i].samples, st.kind, k[i].kind);
+            }
+        }
         d = desc(NVN_TEXTURE_TARGET_2D, NVN_FORMAT_DEPTH24_STENCIL8, 320, 192, 1, 1, 0, 0);
         nvn_tex_storage(&d, &st);
         CHECK(st.kind == 0x46 && st.zcull == 0x860, "D24S8 320x192: kind %x zcull %llx", st.kind,
