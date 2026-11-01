@@ -1169,6 +1169,60 @@ static GpuDmaSide bl_side(u64 addr, u32 wb, u32 h, u32 bh, u32 ox, u32 oy) {
     GpuDmaSide s = {addr, 1, 0, wb, h, 0, bh, 0, ox, oy};
     return s;
 }
+/* texel (x, y) of the RGBA8 texture t as its image holds it */
+static u32 dma_texel(Surf* t, u32 x, u32 y) {
+    VkBuffer buffer;
+    u8* result = vk_readback_buffer(4, &buffer);
+    if (!result) return 0;
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageOffset = {(i32)x, (i32)y, 0},
+                              .imageExtent = {1, 1, 1}};
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    return snx_ld_le32(result);
+}
+/* A DMA copy into a window of a block linear texture the cache holds (a texture upload, or a tile streamed into a big
+   one): 16 lines of 8 RGBA8 texels at (16, 16) of a 64x64 one. The texture takes them in its image without loading
+   all of it again, its other texels stay, and guest memory gets them as the CPU reference does */
+static int check_dma_texture(void) {
+    const u64 tex = 0x40000, ga = DMA_GA + tex;
+    const u32 rgba8 = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+    const u32 tic[8] = {rgba8, (u32)ga, (u32)(ga >> 32) | 3u << 21, 0, 63u | 1u << 23, 63u, 0, 0};
+    GpuDmaOp o = {.multi = 1, .width = 32, .line_in = 32, .line_out = 32, .lines = 16};
+    u64 uploads, bytes, again;
+    for (int k = 0; k < 2; k++) {
+        u8* t = GP(k ? DMA_B : DMA_A);
+        for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 37 + (i >> 9) * 3 + 11);
+    }
+    const u32 corner = snx_ld_le32(GP(DMA_A) + tex), copied = snx_ld_le32(GP(DMA_A) + 0x1000 + 5 * 64 + 3 * 4);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    vk_unlock();
+    CHECK(t && t->upload_valid && t->bl && t->w == 64 && t->h == 64);
+    vk_tex_stats(&uploads, &bytes);
+    o.src = pitch_side(DMA_GA + 0x1000, 64);
+    o.dst = bl_side(ga, 256, 64, 0, 64, 16);
+    CHECK(g_renderer->dma_copy(&o));
+    o.src.addr += DMA_GB - DMA_GA, o.dst.addr += DMA_GB - DMA_GA;
+    dma_copy_ref(&o);
+    vk_lock();
+    Surf* same = vk_tex_from_tic(tic);
+    vk_tex_stats(&again, &bytes);
+    u32 inside = same ? dma_texel(same, 19, 21) : 0, outside = same ? dma_texel(same, 0, 0) : 0;
+    vk_unlock();
+    if (same != t || again != uploads || inside != copied || outside != corner)
+        fprintf(stderr,
+                "dma into a texture: the same texture %d, %llu loads again, texel (19, 21) %08x expected %08x, texel "
+                "(0, 0) %08x expected %08x\n",
+                same == t, (unsigned long long)(again - uploads), inside, copied, outside, corner);
+    CHECK(same == t && again == uploads && inside == copied && outside == corner);
+    CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
+    puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -1557,6 +1611,7 @@ int main(int argc, char** argv) {
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
+    CHECK(!check_dma_texture());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
