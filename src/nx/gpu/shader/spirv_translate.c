@@ -1888,6 +1888,147 @@ static int direct_guard_implied(const u64* insn, u32 n, u32 def, u32 use) {
     return direct_guard_under(insn, def, floor, B(insn[def], 16, 4), known, value, 0) == 1;
 }
 
+/* Whether a write under a predicate is followed, before the predicate changes or other flow, by a branch under
+   want (that predicate or its complement) to where control doesn't reach use: under the same predicate the write's
+   lanes all leave, so its value never arrives at use; under the complement the lanes that skipped it leave, so every
+   lane that goes on to use made it */
+static int direct_guard_branch(const u64* insn, u32 n, u32 def, u32 use, u32 want) {
+    u32 guard = B(insn[def], 16, 4);
+    if ((guard & 7) == 7) return 0;
+    for (u32 m = def + 1; m < use; m++) {
+        const Op* op;
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        if (!IDX_OK(m)) continue;
+        op = decode(insn[m]);
+        if (!op || direct_pred_writes(insn[m], op->id) >> (guard & 7) & 1) return 0;
+        if (op->id == O_BRA && B(insn[m], 16, 4) == want && B(insn[m], 0, 5) == 15) {
+            count = direct_flow_targets(insn, n, m, targets, elsewhere);
+            if (count <= 0) return 0;
+            for (int t = 0; t < count; t++)
+                if (elsewhere[t] || direct_can_reach(insn, n, targets[t], use) != 0) return 0;
+            return 1;
+        }
+        if (op->id == O_BRA || op->id == O_BRX || op->id == O_JMP || op->id == O_CAL || op->id == O_RET ||
+            op->id == O_SYNC || op->id == O_BRK || op->id == O_CONT || op->id == O_EXIT || op->id == O_KIL)
+            return 0;
+    }
+    return 0;
+}
+
+/* The writes of reg that reach use, as bits of defs (bit 63: the value entering the program), from the reaching
+   definitions over the program's flow: an unpredicated write replaces what reached it, a predicated one adds to it.
+   0 when the flow isn't known (JMP, BRK, CONT, a target elsewhere) or reg has more than 63 writes */
+static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32* defs, u32* ndefs) {
+    u64* in;
+    u64 reach;
+    int changed = 1;
+    *ndefs = 0;
+    if (n > DIRECT_WORDS_MAX || use >= n) return 0;
+    for (u32 k = 11; k < n; k++) {
+        const Op* op;
+        if (!IDX_OK(k)) continue;
+        op = decode(insn[k]);
+        if (!op) return 0;
+        if (!shader_writes_reg(insn[k], op->id, reg)) continue;
+        if (*ndefs == 63) return 0;
+        defs[(*ndefs)++] = k;
+    }
+    in = calloc(n + 1, sizeof *in);
+    if (!in) return 0;
+    in[11] = 1ull << 63;
+    while (changed) {
+        changed = 0;
+        for (u32 k = 11, d = 0; k < n; k++) {
+            const Op* op;
+            u32 targets[64];
+            u8 elsewhere[64];
+            int count, fall = 1;
+            u64 out = in[k];
+            if (!IDX_OK(k)) {
+                changed |= (in[k + 1] | out) != in[k + 1];
+                in[k + 1] |= out;
+                continue;
+            }
+            op = decode(insn[k]);
+            while (d < *ndefs && defs[d] < k) d++;
+            if (d < *ndefs && defs[d] == k) out = (B(insn[k], 16, 4) == 7 ? 0 : out) | 1ull << d;
+            switch (op->id) {
+                case O_EXIT: fall = !flow_always(insn[k]); break;
+                case O_KIL:
+                case O_RET:
+                case O_PRET:
+                case O_PEXIT:
+                case O_BRX: fall = 0; break;
+                case O_BRK:
+                case O_CONT:
+                case O_JMP: free(in); return 0;
+                case O_BRA: fall = !flow_always(insn[k]); break;
+                default: break;
+            }
+            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            /* an SSY carries no values to its target: each SYNC takes its own there, to the target of the innermost
+               SSY still open (the nearest before it whose target is past it); a predicated one lets the others on */
+            if (op->id == O_SSY) count = 0;
+            if (op->id == O_SYNC) {
+                count = -1;
+                for (u32 m = k; m-- > 11 && count < 0;) {
+                    if (!IDX_OK(m) || decode(insn[m])->id != O_SSY || bra_target(insn[m], m) <= k) continue;
+                    targets[0] = bra_target(insn[m], m);
+                    elsewhere[0] = 0;
+                    count = 1;
+                }
+                fall = !flow_always(insn[k]);
+            }
+            if (count < 0 || (op->id == O_BRX && !count)) {
+                free(in);
+                return 0;
+            }
+            for (int t = 0; t < count; t++) {
+                if (elsewhere[t] || targets[t] >= n) {
+                    free(in);
+                    return 0;
+                }
+                changed |= (in[targets[t]] | out) != in[targets[t]];
+                in[targets[t]] |= out;
+            }
+            if (fall && k + 1 < n) {
+                changed |= (in[k + 1] | out) != in[k + 1];
+                in[k + 1] |= out;
+            }
+        }
+    }
+    reach = in[use];
+    free(in);
+    return reach;
+}
+
+/* Whether def's value reaches use however the lanes went: every write of reg that reaches use defines what def does
+   (same), but a predicated one whose lanes all leave by a branch under the same predicate; and no lane arrives
+   without one, or one of them is made by every lane that reaches use (unpredicated, or a branch under the complement
+   takes away the lanes that skipped it) and dominates use. A handle written on each side of a branch, or under each
+   side of a predicate rewritten before the use, is so one handle */
+static int direct_all_defs_same(const u64* insn, u32 n, u32 def, u32 use, u32 reg,
+                                int (*same)(const u64*, u32, u32, u32, int), int depth) {
+    u32 defs[63], ndefs;
+    u64 reach;
+    int covered;
+    if (depth > 6) return 0;
+    reach = direct_reaching_writes(insn, n, use, reg, defs, &ndefs);
+    if (!reach) return 0;
+    covered = !(reach >> 63 & 1);
+    for (u32 d = 0; d < ndefs; d++) {
+        u32 k = defs[d], guard = B(insn[k], 16, 4);
+        if (!(reach >> d & 1)) continue;
+        if (guard != 7 && direct_guard_branch(insn, n, k, use, guard)) continue;
+        if (B(insn[k], 0, 8) != reg || (k != def && !same(insn, n, def, k, depth + 1))) return 0;
+        if (!covered && k < use && (guard == 7 || direct_guard_branch(insn, n, k, use, guard ^ 8)))
+            covered = direct_def_dominates(insn, n, k, use, reg, same, depth);
+    }
+    return covered;
+}
+
 /* The instruction that last wrote reg before index, as its first destination, or -1. In index's basic block, a
    write under a predicate reaches only an instruction under the same one, with that predicate not written between
    them (others may be): the compiler loads a handle and uses it under the guard of one side of a branch it made
@@ -1931,13 +2072,15 @@ static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
         /* A write in an earlier block that control never carries to index isn't the value there: the block's branch
            jumped past the use. */
         if (j < block_start && direct_can_reach(insn, n, j + 1, index) == 0) continue;
+        /* A write under the complement of index's guard, the predicate kept since, runs in none of index's lanes */
+        if ((guard & 7) != 7 && B(insn[j], 16, 4) == (guard ^ 8) && !crossed && !(pred_written >> (guard & 7) & 1))
+            continue;
         /* A write that reaches reg from a lower destination leaves no single source. */
         if (B(insn[j], 0, 8) != reg) return -1;
-        if (B(insn[j], 16, 4) != 7 &&
-            (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
-            !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index))
-            return -1;
-        if (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)) return -1;
+        if ((B(insn[j], 16, 4) != 7 && (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
+             !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index)) ||
+            (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)))
+            return same && direct_all_defs_same(insn, n, j, index, reg, same, depth) ? (int)j : -1;
         return (int)j;
     }
     return -1;
