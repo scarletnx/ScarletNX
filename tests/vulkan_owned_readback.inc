@@ -147,3 +147,28 @@ static int check_owned_writable(void) {
     puts("GPU-owned writable inputs avoid draw-time landing and preserve later CPU edits");
     return 0;
 }
+
+/* A writer that keeps an owned range in place (a resident dispatch's store into the buffer it was bound to) publishes
+   nothing new. Its write is still recorded and unsubmitted when the CPU touches the range. The landing must wait for
+   that write, also where it copies on a compute queue of its own and waits only for the owner's submission */
+static int check_owned_in_place_write(void) {
+    const u64 cpu = HEAP_BASE + 0x730000;
+    if (!own_traps()) return 0;
+    vk_lock();
+    vk_finish();
+    memset(GP(cpu), 0x11, 0x1000);
+    VkOwnRes* owner = vk_own_res_new(256);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
+    vk_own_publish(cpu, 256, owner, 0);
+    vk_finish(); /* the owner's submission is done: a landing now waits for nothing */
+    CHECK(own_lookup(cpu, 256, NULL, 0) == 1);
+    CHECK(!owned_test_fill(owner->buf, 0, 256, 0x55)); /* recorded in the open command buffer */
+    vk_own_res_wrote(owner);
+    own_acquire(cpu, 256);
+    CHECK(own_lookup(cpu, 256, NULL, 0) == 0);
+    for (u32 i = 0; i < 256; i++) CHECK(GP(cpu)[i] == 0x55);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("Owned ranges written in place land the newest write");
+    return 0;
+}

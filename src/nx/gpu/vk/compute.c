@@ -836,6 +836,23 @@ static void res_publish(u64 gva, u64 len, VkOwnRes* r) {
         at += n;
     }
 }
+/* a dispatch wrote [gva, gva + len) where it is owned already (res_bind bound the owner in place, or a binding of the
+   same range did): no publish follows, so the owners take the submission that records the write themselves. A landing
+   of the range waits for it (owned.c own_land) */
+static void res_wrote(u64 gva, u64 len) {
+    for (u64 at = 0; at < len;) {
+        u64 cpu = 0, n = gmmu_run(gva + at, len - at, &cpu);
+        if (!n) { /* an unmapped page takes no write */
+            n = 0x1000 - ((gva + at) & 0xFFF);
+            if (n > len - at) n = len - at;
+        } else {
+            OwnRange o[4];
+            u32 k = own_lookup(cpu, n, o, 4);
+            for (u32 j = 0; j < k && j < 4; j++) vk_own_res_wrote((VkOwnRes*)o[j].res);
+        }
+        at += n;
+    }
+}
 static void res_unref_all(VkOwnRes** made, int n) {
     for (int i = 0; i < n; i++)
         if (made[i]) {
@@ -1489,7 +1506,10 @@ rebind:
         vk_all_barrier(cb); /* its writes before what reads them next */
         for (int i = 0; i < ng; i++) {
             if (!(((p->si.gbuf_wmask >> i) & 1) && sa[i])) continue;
-            if (made[i]) res_publish(sa[i], ss[i], made[i]);
+            if (made[i])
+                res_publish(sa[i], ss[i], made[i]);
+            else
+                res_wrote(sa[i], ss[i]);
             gpu_mem_written(sa[i], ss[i]); /* what is built from these bytes (buffers, textures) takes the new ones */
         }
         res_unref_all(made, ng);
