@@ -2035,10 +2035,17 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
     rhs = B(w, 20, 8);
     if (lhs == 255) return direct_track_image_handle_pair(insn, n, (u32)j, rhs, bank, off, bank2, off2, depth + 1);
     if (rhs == 255) return direct_track_image_handle_pair(insn, n, (u32)j, lhs, bank, off, bank2, off2, depth + 1);
-    return direct_track_image_handle(insn, n, (u32)j, lhs, bank, off, depth + 1) &&
-                   direct_track_image_handle(insn, n, (u32)j, rhs, bank2, off2, depth + 1)
-               ? 2
-               : 0;
+    /* both halves read, or one read and the other a constant (a sampler's from a MOV32I), kept as itself */
+    for (int k = 0; k < 2; k++) {
+        u32 half = k ? rhs : lhs, other = k ? lhs : rhs, value;
+        if (!direct_track_image_handle(insn, n, (u32)j, half, bank, off, depth + 1)) continue;
+        if (direct_track_image_handle(insn, n, (u32)j, other, bank2, off2, depth + 1)) return 2;
+        if (!direct_track_const(insn, n, (u32)j, other, &value, depth + 1)) return 0;
+        *bank2 = SH_HANDLE_IMM;
+        *off2 = value;
+        return 2;
+    }
+    return 0;
 }
 
 /* Whether the write of reg at b defines the same handle as the one at a: a loop that rewrites reg with the same
