@@ -177,6 +177,39 @@ So a walk ends a recording at a JUMP into a piece that a command buffer is still
 the records written so far there is nothing final to run. The stop message names the segment of the runtime's memory,
 how far it is cut, and the pieces in use there (`nvn_cmd_describe`).
 
+## Control memory, counted as the driver writes it
+
+nvn keeps no control entries of its own, but it counts the bytes the game's driver would write there
+(`nvn_cmd.c`'s `ctl_count`), so `GetControlMemoryUsed`, `GetControlMemoryFree` and `GetControlMemorySize` answer as
+the driver does. Before, `Used` was 0, and one game gave several command buffers the same control memory while it still
+called the recordings made there. The counts, from one NVN 55 driver's code:
+
+| Entry | Bytes |
+| --- | --- |
+| a recording's start mark (`BeginRecording`) | 0x10 |
+| its end mark (`EndRecording`) | 8 |
+| a range of the commands since the last entry, in an open block / opening one | 0x18 / 0x20 |
+| a compute-stage texture, sampler or image bind; a dispatch | 0x10 (and the range before it, closing the block) |
+| a compute-stage uniform or storage buffer bind | 0x18 |
+| a call | a range entry per callee (0x18, or 0x20 opening a block) |
+| a copy | the range of the commands it copies |
+| a recording still open when the game adds control memory | 0x10, the link to the new memory |
+
+The driver keeps the last 0x10 bytes of the memory for that link. When the entries don't fit, it calls the memory
+callback with event 1 and 0x100 bytes at least, and stops the game if there is still no room: nvn counts nothing
+more then. It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
+higher. A call also copies the callee's other entries (its compute binds), which nvn doesn't count: the handles of
+recordings in the runtime's memory are used again once their pieces come back, so a count kept by handle went to the
+wrong recording (a recording that calls the one before it at the same handle counted 0x18 more each frame, and one
+game's 0x200 bytes of control memory ran out).
+
+The pieces of the runtime's memory that carry a recording's records are anchored in both memories: where the
+recording starts in command memory and in control memory. A look at either memory over the anchor gives them back. A
+recording that counted no command bytes (calls, compute binds) is all control entries on the console, so only a look
+at the control memory gives it back. One game hands the command memory such a recording starts in to another command
+buffer while it still calls the recording. Before, the pieces of a recording of calls alone came back only when the
+command memory wrapped round, and one game's records grew to 64 MiB of the runtime's memory in a minute.
+
 ## Observing NVN calls
 
 `tools/nvn_coverage.py` builds a local index of public declarations, runtime handlers and possible Vulkan call

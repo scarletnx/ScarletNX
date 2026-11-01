@@ -282,7 +282,7 @@ typedef struct {
     u32 lent, seen_serial;
     u64 origin;
     u64 game_end;           /* the end of the memory the game last added (the getters' size and room) */
-    u64 control_size;       /* the control memory the game last added: the records use none of it */
+    u32 ctl, ctl_pad;       /* its control memory's slot in nvn_cmd.c's g_nvn.cmd.ctl, plus 1 (0 none) */
     i64 row_stride, image_stride; /* SetCopyRowStride's and SetCopyImageStride's, for their getters */
     u64 game_cur, last, seen;
 } NvnCmdBuf;
