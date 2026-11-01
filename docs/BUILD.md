@@ -377,6 +377,8 @@ Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by defa
   CI's `Linux (x86_64, ASan + UBSan)` job runs the tests this way, with `LSAN_OPTIONS=use_stacks=0:use_registers=0`
   so the leak check finds the same leaks on every machine.
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
+- `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
+  edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/EDENPROBE.md).
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
   configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once. CI's Linux, ASan, Windows and
   macOS jobs run them.
