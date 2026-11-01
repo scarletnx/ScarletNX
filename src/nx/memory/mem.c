@@ -702,6 +702,7 @@ void mem_init(void) {
     pm_lock_announce(&g_mem_lk, "guest memory"); /* every thread's reads and writes of the game's memory */
     g_host_page = plat_vm_page();
     mem_reserve();
+    plat_vm_track(g_mem, g_as_size); /* the settings are read by now, which mem_reserve may have run before */
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);

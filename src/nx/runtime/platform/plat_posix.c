@@ -435,7 +435,7 @@ static int traps_by_signal(void) {
     return how && !strcmp(how, "signal");
 }
 static int g_uffd_minor_on(void);
-static void ww_init(u8* p, u64 size) {
+void plat_vm_track(u8* p, u64 size) {
     const char* how = getenv("SNX_WW");
     int no_ww = getenv("SNX_NO_WW") != NULL;
 #if SNX_UFFD
@@ -447,7 +447,7 @@ static void ww_init(u8* p, u64 size) {
 #endif
     if (fd < 0 && wp) fd = uffd_open(wp);
     if (fd >= 0) {
-        g_uffd = fd; /* before any other thread exists: mem_init runs on the main thread at startup */
+        g_uffd = fd; /* before any thread that reads it: mem_init runs on the main thread at startup */
         if (wp && !ww_register(p, size)) {
             pm = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
             if (pm >= 0) {
@@ -966,12 +966,10 @@ u64 plat_vm_page(void) {
     const char* forced = getenv("SNX_HOST_PAGE");
     if (forced) { /* a larger power of two only: the host's pages can't be split */
         u64 v = strtoull(forced, NULL, 0);
-        if (v > page && v <= (1u << 20) && !(v & (v - 1))) page = v;
+        if (v > page && v <= SNX_PLAT_PAGE_MAX && !(v & (v - 1))) page = v;
     }
     return page;
 }
-/* mmap aligns to the host's own page: a larger plat_vm_page (SNX_HOST_PAGE) takes a page more and trims the rest, so
-   guest addresses sit at the same place in a page as their host addresses */
 int plat_address_space(u64* mapped, u64* largest_free) {
     u64 total = 0, hole = 0, last = 0;
 #if defined(__linux__)
@@ -1010,16 +1008,16 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     *largest_free = hole;
     return 1;
 }
+/* mmap aligns to the host's own page: the reservation takes SNX_PLAT_PAGE_MAX more and trims the rest, so guest
+   addresses sit at the same place in any page plat_vm_page may work in as their host addresses */
 u8* plat_vm_reserve(u64 size) {
-    u64 page = plat_vm_page(), extra = page - (u64)sysconf(_SC_PAGESIZE), head;
+    u64 host = (u64)sysconf(_SC_PAGESIZE), align = SNX_PLAT_PAGE_MAX, extra = align > host ? align - host : 0, head;
     u8* p = (u8*)mmap(NULL, (size_t)(size + extra), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == (u8*)MAP_FAILED) return NULL;
-    head = (page - (u64)(uintptr_t)p % page) % page;
+    head = (align - (u64)(uintptr_t)p % align) % align;
     if (head) munmap(p, (size_t)head);
     if (extra > head) munmap(p + head + size, (size_t)(extra - head));
-    p += head;
-    ww_init(p, size);
-    return p;
+    return p + head;
 }
 int plat_vm_commit(u8* p, u64 size) {
     int r;

@@ -239,6 +239,8 @@ static void test_guest_memory(const char* dir) {
     printf("written-page tracking\n");
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
+    CHECK(!((uintptr_t)g_base & (SNX_PLAT_PAGE_MAX - 1)), "the reservation is not aligned to SNX_PLAT_PAGE_MAX");
+    plat_vm_track(g_base, (u64)1 << 30);
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
     if (getenv("SNX_NO_WW") || plat_ww_scan(g_base, 4096, on_written) < 0) {
         printf("written-page tracking unavailable here: only checking that it says so\n");

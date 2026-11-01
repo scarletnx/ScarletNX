@@ -80,7 +80,14 @@ i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
    AArch64 distributions (mem.c). SNX_HOST_PAGE in the environment, a larger power of two up to 1 MiB, makes a host
    with smaller pages work in those, to test the larger pages' paths on any machine */
 u64 plat_vm_page(void);
-u8* plat_vm_reserve(u64 size); /* aligned to plat_vm_page, inaccessible until committed; NULL, the reason in errno */
+#define SNX_PLAT_PAGE_MAX ((u64)1 << 20) /* the largest page plat_vm_page works in */
+/* Inaccessible until committed; NULL, the reason in errno. Aligned to SNX_PLAT_PAGE_MAX, so it can be made before the
+   settings say which page the runtime works in (Windows: its 64 KiB allocation granularity, as it commits any 4 KiB
+   page) */
+u8* plat_vm_reserve(u64 size);
+/* The written-page tracking (plat_ww_scan) and the traps' page states (plat_trap_init) of the reservation [p, p +
+   size): once, after the settings are read and before a page of it is committed (mem_init) */
+void plat_vm_track(u8* p, u64 size);
 /* The process's address space now: what is mapped or reserved in all, and its largest free run between them, for a
    run that fails for want of it (a thread's stack, a mapping). Whether the system told it (Linux, macOS, iOS and
    Windows do) */
