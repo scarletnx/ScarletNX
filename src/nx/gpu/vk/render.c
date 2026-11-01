@@ -2082,8 +2082,8 @@ typedef struct {
    draw and compared: the fragment variant's key (its textures' formats), the targets' formats, which vertex streams
    are empty, and whether the draw samples a target it renders to. Draws made all of it again, a 1 KiB key built and
    compared included, for each of the ~3,400 draws a frame in one game, most of them with the state of the draw
-   before. SNX_DIRTY_CHECK makes it again for each draw that keeps it, and warns of any difference: a register missing
-   from a group, or an input that isn't compared */
+   before. draw_state_check=1 makes it again for each draw that keeps it, and warns of any difference: a register
+   missing from a group, or an input that isn't compared */
 static struct {
     u32 ch_id;        /* the owner of the state it was made from */
     u64 gen[DS_GENS]; /* that state's generations */
@@ -2102,13 +2102,15 @@ static struct {
        what was read kept 66% of its draws where the register groups alone kept 60% */
     DsVertexFormat vfmt;
     u32 vstreams;       /* the streams the attributes the vertex program reads name */
-    int check;          /* SNX_DIRTY_CHECK, -1 until read */
+    int check;          /* draw_state_check, -1 until read */
 } g_draw = {.check = -1};
 u64 g_vk_draw_kept, g_vk_draw_checked;
 
 static void draw_differs(const char* what) {
-    WARN_LIMIT(32, "vulkan: SNX_DIRTY_CHECK: a draw that kept the last draw's state has another %s when it is made "
-                   "again (%llu draws checked)\n", what, (unsigned long long)g_vk_draw_checked);
+    WARN_LIMIT(32,
+               "vulkan: draw_state_check=1: a draw that kept the last draw's state has another %s when it is made "
+               "again (%llu draws checked)\n",
+               what, (unsigned long long)g_vk_draw_checked);
 }
 /* whether the vertex format f is, in what the kept state read of it, the one it was made from: the attributes the
    vertex program reads, the streams they name, and which of all 32 attributes are integers (they key the program) */
@@ -2729,10 +2731,9 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     if (!count || !instances) return;
     vk_frame_check();
     if (g_draw.check < 0) {
-        const char* e = getenv("SNX_DIRTY_CHECK");
-        g_draw.check = e && *e && *e != '0';
+        g_draw.check = g_settings.draw_state_check != 0;
         if (g_draw.check)
-            LOG("vulkan: SNX_DIRTY_CHECK: draws that keep the last draw's shaders and pipeline make them again to "
+            LOG("vulkan: draw_state_check=1: draws that keep the last draw's shaders and pipeline make them again to "
                 "compare\n");
     }
     u32 initial_first = first, initial_count = count, draw_topo = topology;
@@ -2745,7 +2746,7 @@ retry:
     u64 setup_frame = vk_submit_number();
     u32 epoch = vk_ww_epoch();
     /* kept: the state the last draw made holds for this one, as far as each check below tells. Each part is made
-       here when it doesn't (and when SNX_DIRTY_CHECK compares) */
+       here when it doesn't (and when draw_state_check compares) */
     int kept = draw_kept(ds, draw_topo, epoch);
     if (kept && g_draw.check) g_vk_draw_checked++;
     DrawShaders sh;

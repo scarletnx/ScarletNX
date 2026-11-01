@@ -760,6 +760,24 @@ setting Host page size
     help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
     help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
     help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
+setting GPU page check
+    key gpu_page_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = the GPU's written pages (gpu/writes.c) and the renderer's pending results (gpu/vk/pending_pages.c), which
+    help the runtime counts by GPU page, are also counted by guest address, and each lookup translates its range
+    help through the GMMU too: the log warns of each write or result only that finds. Slow: for checking those tables
+setting Draw state check
+    key draw_state_check
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = a draw that keeps the last draw's shaders and pipeline makes them again to compare, and the log names
+    help each difference (a register missing from a group, an input that is not compared). Slow: for checking what
+    help a draw keeps
 setting Profiler
     key profile
     int 0 1
