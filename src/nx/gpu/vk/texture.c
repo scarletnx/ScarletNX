@@ -451,6 +451,45 @@ static int tex_rehash(Surf* t) {
     return 1;
 }
 
+int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at,
+                    u32 rows_pitch, Surf** hit, int max) {
+    int n = 0;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    for (Surf* t = vk_surf_first(gva); t && n < max; t = t->next) {
+        const VkFmt* f = &t->f;
+        if (t->is_rt || t->gva != gva || !t->upload_valid || !t->bl || t->bh != bh || t->bd || t->msaa ||
+            t->type == VK_IMAGE_VIEW_TYPE_3D || f->depth || f->conv || vk_tc_converts(f) || !f->bpp || !f->bw ||
+            !f->bh || ox % f->bpp || line_bytes % f->bpp || rows_pitch % f->bpp || (rows_at % f->bpp) || (rows_at & 3))
+            continue;
+        u32 tw = (t->w + f->bw - 1) / f->bw, th = (t->h + f->bh - 1) / f->bh;
+        /* the same layout: as many GOBs a row (their addresses don't depend on the height), the rows within level 0
+           of a texture with more of them after it */
+        if (((u64)tw * f->bpp + 63) >> 6 != ((u64)wb + 63) >> 6 || oy >= th ||
+            ((t->levels > 1 || t->layers > 1) && oy + rows > th))
+            continue;
+        /* what an engine wrote since its last check would be lost */
+        if (gpu_mem_dirty_since(t->gw, t->gva, t->size)) continue;
+        u32 x = ox / f->bpp * f->bw, y = oy * f->bh, w = line_bytes / f->bpp * f->bw, h = rows * f->bh;
+        if (x >= t->w) continue;
+        if (w > t->w - x) w = t->w - x;
+        if (h > t->h - y) h = t->h - y;
+        VkBufferImageCopy r = {.bufferOffset = rows_at,
+                               .bufferRowLength = rows_pitch / f->bpp * f->bw,
+                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                               .imageOffset = {(i32)x, (i32)y, 0},
+                               .imageExtent = {w, h, 1}};
+        if (!cb) cb = vk_cmd();
+        vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+        hit[n++] = t;
+    }
+    return n;
+}
+void vk_tex_dma_seen(Surf** hit, int n) {
+    for (int i = 0; i < n; i++) hit[i]->gw = gpu_mem_generation();
+}
+
 void vk_tex_note_writeback(Surf* t) {
     t->hash = mem_hash(t->gva, t->size);
     t->gw = gpu_mem_generation();
