@@ -70,6 +70,9 @@ void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
     (void)dc;
 }
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
+/* no GPU thread: each submission is read at once */
+u64 nvn_replay_submitted(void) { return 0; }
+u64 nvn_replay_walked(void) { return 0; }
 SnxArmCPU* arm_cpu(CPU* c) {
     (void)c;
     return NULL;
