@@ -296,6 +296,9 @@ static u64 alloc_rec(CPU* c, u64 cb, u32 op, u32 size, u32 cost) {
         o->anchor = o->origin + o->used - cost; /* where the driver would start the recording */
     else if (o->recording == 2)
         o->anchor = o->origin + o->used;
+    /* a recording's records in the game's memory lie in its own bytes: the ones before its anchor are an earlier
+       recording's, though that one's records may be in the runtime's memory */
+    if (o->recording == 2 && !o->lent && o->cur < ((o->anchor + 7) & ~7ull)) o->cur = (o->anchor + 7) & ~7ull;
     if (!o->lent && (!o->cur || o->cur + size > o->origin + o->used)) divert(cb, size);
     if (o->lent && o->cur + size + OP_RESERVE > area_end(o)) spill_next(cb, size);
     at = o->cur;
