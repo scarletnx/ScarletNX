@@ -147,7 +147,13 @@ int vk_uma_choose(int has_import, int has_placed) {
     int want = g_settings.guest_memory;
     g_vk.mem_model = mem_model();
     g_vk.mem_path = VK_MEM_PATH_COPY;
-    if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)) {
+    /* Not on a device whose GPU is the CPU (lavapipe): its shaders read an import through the CPU's own mapping of
+       guest memory, where the pages a GPU result is published over are trapped until the CPU needs them
+       (memory/own.c). A draw recorded before such a publish faulted when it ran, and landing those pages waited for a
+       readback queued behind that same draw: edenprobe's 128 dispatch and draw pairs over one buffer hung there. A GPU
+       reads the pages themselves, as they were when the command was recorded */
+    int cpu_device = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA && !cpu_device)) {
         if (has_import)
             g_vk.mem_path = VK_MEM_PATH_UMA;
         else
@@ -160,7 +166,9 @@ int vk_uma_choose(int has_import, int has_placed) {
         want == 1   ? "copy"
         : want == 2 ? "uma"
                     : "auto",
-        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus" : "",
+        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus"
+        : want == 0 && cpu_device                 ? ", the GPU is the CPU"
+                                                  : "",
         has_import ? "yes" : "no", has_placed ? "yes (not used yet)" : "no");
     return g_vk.mem_path == VK_MEM_PATH_UMA;
 }
