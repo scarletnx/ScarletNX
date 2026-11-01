@@ -192,24 +192,41 @@ enum {
     TT_2D_NO_MIPMAP = 7, TT_CUBE_ARRAY = 8
 };
 
-/* an NVN channel (ZERO, ONE, R, G, B, A) as the hardware's source: the format's own channel for R to A */
-static u32 swizzle(const TicFormat* f, u32 s) {
+/* an NVN channel (ZERO, ONE, R, G, B, A) as the hardware's source: R to A take the channels of word (bits 19-30) */
+static u32 swizzle(const TicFormat* f, u32 word, u32 s) {
     switch (s) {
         case 0: return SWZ_ZERO;
         case 1: return f->raw_int ? SWZ_ONE_INT : SWZ_ONE_FLOAT;
-        case 2: return (f->word >> 19) & 7;
-        case 3: return (f->word >> 22) & 7;
-        case 4: return (f->word >> 25) & 7;
-        case 5: return (f->word >> 28) & 7;
+        case 2: return (word >> 19) & 7;
+        case 3: return (word >> 22) & 7;
+        case 4: return (word >> 25) & 7;
+        case 5: return (word >> 28) & 7;
     }
     return SWZ_ZERO;
 }
 
-int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8]) {
+/* the channels (x, y, z, w sources) as word 0's bits 19-30 */
+static u32 channels(u32 x, u32 y, u32 z, u32 w) { return x << 19 | y << 22 | z << 25 | w << 28; }
+
+/* Where the game's driver puts a depth or stencil format's data before the game's swizzle picks from it: depth
+   (stencil) in R but for the Z24 formats, which hold depth in G and stencil in R; STENCIL8's in R, integer. Drivers
+   of API 55 describe depth as (d, 0, 0, 1) and stencil as (s, 0, 0, 1) with an integer one, those of API 53 depth as
+   (d, d, d, 1) and stencil in every channel (each driver's table and TIC code, API 53.13 to 53.313 and 55.8 to
+   55.15) */
+static u32 depth_channels(u32 format, int stencil, u32 api) {
+    int d24 = format == NVN_FORMAT_DEPTH24 || format == NVN_FORMAT_DEPTH24_STENCIL8;
+    u32 s = (d24 ^ stencil) ? SWZ_G : SWZ_R;
+    if (format == NVN_FORMAT_STENCIL8) return channels(SWZ_R, SWZ_ZERO, SWZ_ZERO, SWZ_ONE_INT);
+    if (api && api < (55u << 16)) return stencil ? channels(s, s, s, s) : channels(s, s, s, SWZ_ONE_FLOAT);
+    return channels(s, SWZ_ZERO, SWZ_ZERO, stencil ? SWZ_ONE_INT : SWZ_ONE_FLOAT);
+}
+
+int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {
     u32 format = v && (v->set & NVN_VIEW_FORMAT) ? v->format : t->d.format;
     u32 target = v && (v->set & NVN_VIEW_TARGET) ? v->target : t->d.target, orig = t->d.target;
     const TicFormat* f;
-    u32 sw[4], w = t->d.width, h = t->d.height, d = t->d.depth, layer = 0, i;
+    u32 sw[4], w = t->d.width, h = t->d.height, d = t->d.depth, layer = 0, i, word;
+    int stencil;
     u64 address = t->gpu;
     NvnTexLayout l;
     memset(out, 0, 8 * sizeof *out); /* every word: the descriptor goes to guest memory */
@@ -223,26 +240,16 @@ int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8])
         for (i = 0; i < 4; i++) sw[i] = (t->d.swizzle >> (3 * i)) & 7;
     else
         for (i = 0; i < 4; i++) sw[i] = 2 + i;
-    out[0] = f->word & 0x7ffff;
-    if (!f->depth)
-        out[0] |= swizzle(f, sw[0]) << 19 | swizzle(f, sw[1]) << 22 | swizzle(f, sw[2]) << 25 | swizzle(f, sw[3]) << 28;
-    else {
-        /* depth in R (stencil in G) but for Z24 formats, which keep depth in G: the view's depth-stencil mode, else
-           the texture's */
-        int d24 = format == NVN_FORMAT_DEPTH24 || format == NVN_FORMAT_DEPTH24_STENCIL8;
-        int stencil = v && (v->set & NVN_VIEW_DSMODE) ? (v->set >> 6) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL
-                                                      : (t->d.bits & NVN_TEX_STENCIL) != 0;
-        u32 s = (d24 ^ stencil) ? SWZ_G : SWZ_R;
-        /* depth as (d, 0, 0, 1), as the game's driver describes a depth texture; stencil in every channel, but a
-           DEPTH24_STENCIL8 texture's stencil, which the driver describes as R8G24 with an integer R (stencil, 0, 0,
-           1): the renderer reads a target's stencil through that format */
-        if (stencil && format == NVN_FORMAT_DEPTH24_STENCIL8)
-            out[0] = 0x24a0eu | (u32)SWZ_R << 19 | (u32)SWZ_ZERO << 22 | (u32)SWZ_ZERO << 25 | (u32)SWZ_ONE_INT << 28;
-        else if (stencil)
-            out[0] |= s << 19 | s << 22 | s << 25 | s << 28;
-        else
-            out[0] |= s << 19 | (u32)SWZ_ZERO << 22 | (u32)SWZ_ZERO << 25 | (u32)SWZ_ONE_FLOAT << 28;
-    }
+    /* a depth or stencil format's channels are the driver's for the view's depth-stencil mode, else the texture's; a
+       DEPTH24_STENCIL8 texture's stencil is R8G24 (0x0E) with an integer R, as API 55's driver describes it (API 53's
+       keeps Z24S8): the renderer reads a target's stencil through that format only */
+    stencil = v && (v->set & NVN_VIEW_DSMODE) ? (v->set >> 6) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL
+                                              : (t->d.bits & NVN_TEX_STENCIL) != 0;
+    word = f->depth ? depth_channels(format, stencil, api) : f->word;
+    out[0] = stencil && format == NVN_FORMAT_DEPTH24_STENCIL8 ? 0x24a0eu : f->word & 0x7ffff;
+    /* the game's swizzle picks from those channels, a depth format's as any other's */
+    out[0] |= swizzle(f, word, sw[0]) << 19 | swizzle(f, word, sw[1]) << 22 | swizzle(f, word, sw[2]) << 25 |
+              swizzle(f, word, sw[3]) << 28;
     out[4] |= (u32)f->srgb << 22;
     if (target == NVN_TEXTURE_TARGET_BUFFER) {
         out[2] |= (u32)TIC_HDR_BUFFER << 21;
