@@ -15415,7 +15415,12 @@ static void share_log(App* app, bool zip) {
         char said_open[sizeof app->message];
         while (leaf > saved && leaf[-1] != '/' && leaf[-1] != '\\') --leaf;
         app->log_due = false; /* the crash's log is out */
-        if (show_folder(app, share)) /* the system's file manager shares it from there, as it shares any file */
+        bool shown =
+#ifdef SDL_PLATFORM_IOS /* a file:// URL of the app's own folder opens nothing there: the share sheet takes the file */
+            gui_apple_share(app->window, saved) ||
+#endif
+            show_folder(app, share); /* the system's file manager shares it from there, as it shares any file */
+        if (shown)
             snprintf(app->message, sizeof(app->message), snx_tr("%s is in %s, opened"), leaf, share);
         else {
             snprintf(said_open, sizeof said_open, "%s", app->message);
