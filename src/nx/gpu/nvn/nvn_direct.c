@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* nvn_direct=1: the runtime runs the game's NVN calls itself (Part C of the NVN plan). A game gets every NVN function
    by name, from nvnBootstrapLoader and the nvnDeviceGetProcAddress it returns, and calls them through those
-   pointers. Both are wrapped here as gpu/nvn_trace.c wraps them: the driver's own lookup still answers with the
+   pointers. Both are wrapped here: the driver's own lookup still answers with the
    function's address, a search of its name table that touches nothing else, and that address's dispatch slot then
    holds the runtime's implementation (gpu/nvn/nvn.hook) instead of the driver's code. Every call the game makes
    through the pointer goes through the slot, so no instruction of the driver past its lookup runs, and the driver
@@ -21,12 +21,11 @@
 #include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_driver.h"
-#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
-#include "nx/gpu/nvn_trace.h"
 #include "nx/hle/hook/hook.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
@@ -35,6 +34,30 @@
 #include <string.h>
 
 #include "gpu/nvn/nvn.hook.inc"
+
+/* a NUL-terminated name of at most 127 characters in guest memory, read a page at a time (memory permissions are per
+   page): its length, or 0 when it is empty, unreadable or longer */
+static int readable(u64 addr) {
+    if (addr < AS_BASE || addr >= AS_SIZE) return 0;
+    MemBlock block;
+    mem_query(addr, &block);
+    return block.state != MS_FREE && block.state != MS_INACCESSIBLE && (block.perm & PERM_R);
+}
+static u32 nvn_read_name(u64 ptr, char name[128]) {
+    u64 readable_end = 0;
+    size_t i;
+    for (i = 0; i < 127 && ptr + i >= ptr; i++) {
+        u64 at = ptr + i;
+        if (at >= readable_end) {
+            if (!readable(at)) break;
+            readable_end = (at | 0xFFF) + 1;
+        }
+        name[i] = *(const char*)GP(at);
+        if (!name[i]) return (u32)i;
+    }
+    name[i] = 0;
+    return 0;
+}
 
 static void getproc(CPU* c, u64 entry);
 static void bootstrap(CPU* c, u64 entry);
@@ -75,7 +98,7 @@ static int ours32(SnxArmBlock fn) {
 /* whether a slot holds one of this file's handlers */
 static int ours(GuestFn fn) {
     int i;
-    if (fn == unimplemented || nvn_verify_ours(fn)) return 1;
+    if (fn == unimplemented) return 1;
     for (i = 0; i < NVN_COUNT; i++)
         if (nvn_fn[i] == fn) return 1;
     return 0;
@@ -171,9 +194,6 @@ static void take(u64 addr, const char* name, u32 len) {
     if (!ours(*slot) && !strcmp(name, "nvnSyncInitializeFromNvRmSyncNVX"))
         g_nvn.direct.nvrm_init = *slot, g_nvn.direct.nvrm_init_at = addr;
     if (fn == unimplemented && !missing_find(addr)) note_missing(addr, name, versioned);
-    /* verify mode: the driver's code, which the slot holds until now, runs after the handler on shadows */
-    if (g_settings.nvn_verify)
-        fn = nvn_verify_take(addr, name, len, fn, ours(*slot) ? NULL : *slot, fn != unimplemented);
     __atomic_store_n(slot, fn, __ATOMIC_RELEASE);
     pm_unlock(&g_nvn.direct.lock);
 }
@@ -184,10 +204,6 @@ static void take(u64 addr, const char* name, u32 len) {
    runtime's state. With no device the lookup answers the same address and leaves the flag 0 (one game's driver: its
    lookup stores device && no debug layer in it) */
 static void getproc(CPU* c, u64 entry) {
-    if (nvn_verify_shadow_thread()) { /* the shadow driver's own lookups, with its device: as they are */
-        g_nvn.direct.getproc_original(c, entry);
-        return;
-    }
     char name[128];
     u32 len = nvn_read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     c->x[0] = 0;
@@ -276,10 +292,6 @@ static void decide_from(void) {
 
 static void bootstrap(CPU* c, u64 entry) {
     GuestFn* slot;
-    if (nvn_verify_shadow_thread()) {
-        g_nvn.direct.bootstrap_original(c, entry);
-        return;
-    }
     char name[128];
     u32 len = nvn_read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     pm_lock(&g_nvn.direct.lock);
@@ -381,7 +393,6 @@ static void bootstrap32(SnxArmCPU* a) {
 static void init32(int automatic) {
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     SnxArmBlock* slot = entry && !(entry >> 32) ? arm_slot((u32)entry & ~1u, entry & 1) : NULL;
-    if (g_settings.nvn_verify) fatal("nvn: nvn_verify doesn't run a 32-bit game's NVN driver");
     if (!slot) {
         if (automatic) {
             LOG("nvn: nvn_direct=auto: the game has no nvnBootstrapLoader in its code, so no NVN to take\n");
@@ -406,10 +417,6 @@ void nvn_direct_init(void) {
     GuestFn* slot;
     int automatic = g_settings.nvn_direct == 2;
     if (!g_settings.nvn_direct) return;
-    if (automatic && g_settings.nvn_trace) {
-        LOG("nvn: nvn_direct=auto: the game's NVN driver runs, for nvn_trace to trace\n");
-        return;
-    }
     if (g_arm_mod) {
         init32(automatic);
         return;

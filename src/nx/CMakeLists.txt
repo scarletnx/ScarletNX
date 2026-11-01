@@ -74,8 +74,8 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/mme_hle.c gpu/maxwell/mme_jit.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn_trace.c gpu/nvn/nvn_direct.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
-              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_verify.c gpu/nvn/nvn_state.c
+              gpu/nvn/nvn_direct.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
+              gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
               gpu/shipped_pass.c)
 # the NVN functions nvn_direct implements: their adapters and table, generated from gpu/nvn/nvn.hook
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
@@ -210,9 +210,6 @@ if(BUILD_TESTING)
     if(Python3_Interpreter_FOUND) # scarletnx --mcp over stdio (runtime/driver/mcp.c)
         add_test(NAME mcp COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/mcp_test.py"
                  $<TARGET_FILE:scarletnx>)
-        # gpu/nvn/nvn_verify_kinds.inc is what tools/nvn_verify_kinds.py makes of nvn.h and nvn.hook
-        add_test(NAME nvn_verify_kinds COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/nvn_verify_kinds.py"
-                 --check)
     endif()
     if(SNX_SPIRV_VAL AND SNX_SPIRV_DIS AND Python3_Interpreter_FOUND)
         add_test(NAME shader_direct COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/shader_direct_test.py"

@@ -32,11 +32,6 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     g_lent += size;
     return at;
 }
-/* verify mode is off: nothing shadows the lent memory */
-void nvn_verify_memory_back(u64 mem, u64 size) {
-    (void)mem;
-    (void)size;
-}
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
 /* no GPU thread: each submission is read at once */
 u64 nvn_replay_submitted(void) { return 0; }
@@ -251,7 +246,7 @@ int main(void) {
 
     /* one game's display lists: recorded once into scratch memory, GetCommandMemoryUsed gives the size the game
        allocates for each (from a heap sized by the console's figures), and the list is recorded again into exactly
-       that. The bytes are the driver's (measured under nvn_verify: a texture or uniform buffer bind 20, a color state
+       that. The bytes are the driver's (measured against it: a texture or uniform buffer bind 20, a color state
        12, a draw from a base vertex 48, a compute stage's bind none), the second recording takes no byte past them
        and needs no callback, and the list replays whole */
     {

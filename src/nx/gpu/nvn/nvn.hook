@@ -6,14 +6,14 @@
 # nvnDeviceGetProcAddress), with its arguments and result in the types of src/nx/gpu/nvn/nvn.h (an NVNboolean is a
 # bool, an int an i32, a size_t a usize and a ptrdiff_t an isize, which a 32-bit game passes in 4 bytes). This file is the one prototype of
 # each function: hookgen makes its PFNNVN...PROC type of them (the generated gpu/nvn/nvn.hook.h), and
-# tools/nvn_verify_kinds.py and tools/nvn_hash.py read them here. The handler is the function's name with a '_' after
+# tools/nvn_hash.py reads them here. The handler is the function's name with a '_' after
 # nvn (nvn_DeviceFinalize) unless '= HANDLER' names another. A family per NVN object. A function the game resolves
 # that isn't here stops the game with its name when it is called. The handlers: gpu/nvn/nvn_object.c (device, pools,
 # buffers, textures, samplers, programs, syncs, state objects), nvn_cmd.c (command buffers) and nvn_queue.c (queue,
 # window).
 include "nx/gpu/nvn/nvn.h"
 
-# The resolvers, which nvn_direct.c and nvn_trace.c wrap with C of their own: the recompiler calls them through their
+# The resolvers, which nvn_direct.c wraps with C of its own: the recompiler calls them through their
 # dispatch slots, as it calls a hooked function (hookgen's route lines)
 route nvnBootstrapLoader
 route nvnDeviceGetProcAddress

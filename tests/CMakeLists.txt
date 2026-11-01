@@ -821,7 +821,7 @@ snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
-# nvn_direct's constant banks and sprite origin against the game's driver (nvn_verify): nvn_draw_init, a program's bind
+# nvn_direct's constant banks and sprite origin against the game's driver: nvn_draw_init, a program's bind
 # and a draw's dynamic state, through the public records
 add_executable(snx-test-nvn-draw-banks nvn_draw_banks.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
@@ -830,7 +830,7 @@ target_include_directories(snx-test-nvn-draw-banks PRIVATE "${PROJECT_SOURCE_DIR
 target_link_libraries(snx-test-nvn-draw-banks PRIVATE m)
 snx_hookgen(snx-test-nvn-draw-banks SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_draw_banks COMMAND snx-test-nvn-draw-banks)
-# a window's present transform against the game's driver (nvn_verify): lower left is queued to vi flipped
+# a window's present transform against the game's driver: lower left is queued to vi flipped
 add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-present-flip 11)

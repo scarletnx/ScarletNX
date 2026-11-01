@@ -61,14 +61,6 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     lent += size;
     return at;
 }
-void nvn_verify_memory_back(u64 mem, u64 size) {
-    (void)mem;
-    (void)size;
-}
-void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
-    (void)ds;
-    (void)dc;
-}
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
 /* no GPU thread: each submission is read at once */
 u64 nvn_replay_submitted(void) { return 0; }
