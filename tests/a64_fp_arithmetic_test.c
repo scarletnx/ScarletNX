@@ -62,7 +62,7 @@ static void binary(void) {
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         CPU c = state(t[i].control);
-        u64 got = snx_fp_binary(&c, t[i].a, t[i].b, t[i].w, t[i].op);
+        u64 got = snx_fp_binary_c(&c, t[i].a, t[i].b, t[i].w, t[i].op);
         result(&c, got, t[i].out, t[i].flags, t[i].control, "binary");
     }
 }
@@ -83,7 +83,7 @@ static void fused(void) {
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         CPU c = state(t[i].control);
-        u64 got = snx_fp_fma(&c, t[i].d, t[i].a, t[i].b, t[i].w);
+        u64 got = snx_fp_fma_c(&c, t[i].d, t[i].a, t[i].b, t[i].w);
         result(&c, got, t[i].out, t[i].flags, t[i].control, "fused");
     }
 }
@@ -115,7 +115,7 @@ static void unary(void) {
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         CPU c = state(t[i].control);
-        u64 got = snx_fp_unary(&c, t[i].a, t[i].w, t[i].op);
+        u64 got = snx_fp_unary_c(&c, t[i].a, t[i].w, t[i].op);
         result(&c, got, t[i].out, t[i].flags, t[i].control, "unary");
     }
 }
@@ -147,7 +147,7 @@ static void formats(void) {
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         CPU c = state(t[i].control);
-        u64 got = snx_fp_convert(&c, t[i].a, t[i].src, t[i].dst, t[i].rm);
+        u64 got = snx_fp_convert_c(&c, t[i].a, t[i].src, t[i].dst, t[i].rm);
         result(&c, got, t[i].out, t[i].flags, t[i].control, "format conversion");
     }
 }
@@ -174,8 +174,8 @@ static void integers(void) {
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         CPU c = state(t[i].control);
-        u64 got = t[i].from ? snx_fp_from_int(&c, t[i].a, t[i].iw, t[i].fw, t[i].uns, t[i].fb)
-                            : snx_fp_to_int(&c, t[i].a, t[i].fw, t[i].iw, t[i].uns, t[i].fb, t[i].rm);
+        u64 got = t[i].from ? snx_fp_from_int_c(&c, t[i].a, t[i].iw, t[i].fw, t[i].uns, t[i].fb)
+                            : snx_fp_to_int_c(&c, t[i].a, t[i].fw, t[i].iw, t[i].uns, t[i].fb, t[i].rm);
         result(&c, got, t[i].out, t[i].flags, t[i].control, "integer conversion");
     }
 }
@@ -207,7 +207,7 @@ static void vector_and_state(void) {
     check(snx_mrs(&c, 0x5A20), 0x07C80000, "FPCR RES0");
     snx_msr(&c, 0x5A21, ~0ull);
     check(snx_mrs(&c, 0x5A21), 0xF800009F, "A57 FPSR RES0");
-    check(snx_fp_binary(&c, 0x3F800000, 0x3F800000, 32, SNX_FP_ADD), 0x40000000, "exact sum");
+    check(snx_fp_binary_c(&c, 0x3F800000, 0x3F800000, 32, SNX_FP_ADD), 0x40000000, "exact sum");
     check(c.fpsr, 0xF800009F, "exact operation preserves every existing exception");
 }
 /* FEAT_FP16's halves (FPCR.FZ16 flushes them without IDC, FPCR.AHP only reaches conversions), FEAT_FRINTTS's
@@ -252,11 +252,11 @@ static void later_features(void) {
         CPU c = state(t[i].control);
         u64 got = 0;
         switch (t[i].kind) {
-            case 0: got = snx_fp_binary(&c, t[i].a, t[i].b, t[i].w, t[i].op); break;
-            case 1: got = snx_fp_convert(&c, t[i].a, t[i].w, t[i].op, 0); break;
-            case 2: got = snx_fp_round_int(&c, t[i].a, t[i].w, (int)t[i].b, t[i].op); break;
-            case 3: got = snx_fp_jcvt(&c, t[i].a); break;
-            default: got = snx_fp_bfcvt(&c, t[i].a); break;
+            case 0: got = snx_fp_binary_c(&c, t[i].a, t[i].b, t[i].w, t[i].op); break;
+            case 1: got = snx_fp_convert_c(&c, t[i].a, t[i].w, t[i].op, 0); break;
+            case 2: got = snx_fp_round_int_c(&c, t[i].a, t[i].w, (int)t[i].b, t[i].op); break;
+            case 3: got = snx_fp_jcvt_c(&c, t[i].a); break;
+            default: got = snx_fp_bfcvt_c(&c, t[i].a); break;
         }
         result(&c, got, t[i].out, t[i].flags, t[i].control, "later feature");
     }

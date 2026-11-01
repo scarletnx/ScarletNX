@@ -272,7 +272,7 @@ void snx_vec_sm4(CPU* c, u32 op, u32 d, u32 n, u32 m) {
 /* sum + e1.lo * e2.lo + e1.hi * e2.hi of bfloat16 pairs, as singles: unfused, every product and sum rounded to odd
    (overflowing to infinity), denormals flushed, default NaNs, whatever FPCR says, and no FPSR flag */
 u32 snx_vec_bfdot(CPU* c, u32 sum, u32 e1, u32 e2) {
-    CPU fixed;
+    SnxFpEnv fixed;
     (void)c;
     fixed.fpcr = FPCR_DN | FPCR_FZ;
     fixed.fpsr = 0;

@@ -20,7 +20,7 @@ static void check(LlvmStep step, unsigned lanes, const u32 input[4], u32 fpcr, u
     expected.pc = 0x1000;
     actual = expected;
     for (unsigned i = 0; i < lanes; i++)
-        expected.v[0].s[i] = (u32)snx_fp_unary(&expected, input[i], 32, SNX_FP_RSQRTE);
+        expected.v[0].s[i] = (u32)snx_fp_unary_c(&expected, input[i], 32, SNX_FP_RSQRTE);
     if (lanes == 2) expected.v[0].d[1] = 0;
     u64 next = step(&actual);
     checked++;

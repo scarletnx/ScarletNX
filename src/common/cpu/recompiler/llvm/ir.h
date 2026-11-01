@@ -350,6 +350,9 @@ LLVMValueRef ir_intrinsic(SnxIr* ir, const char* name, LLVMTypeRef type, LLVMVal
 /* memory effects of a declared function: none (pure), or only memory reached through its pointer arguments */
 void ir_pure(SnxIr* ir, LLVMValueRef function);
 void ir_argmem(SnxIr* ir, LLVMValueRef function);
+/* memory(none) alone: a call whose effect is invisible to this module but which must not be deleted, unlike
+   ir_pure's, whose willreturn lets LLVM remove it when its result goes unused (snx_fp_env) */
+void ir_no_memory(SnxIr* ir, LLVMValueRef function);
 /* a helper that takes c but touches none of its registers (X, SP, NZCV, V), only FPCR, FPSR or the exclusive
    monitor: ir_promote_registers needs the CPU structure to hold none of them around its calls */
 void ir_noregs(SnxIr* ir, LLVMValueRef function);
