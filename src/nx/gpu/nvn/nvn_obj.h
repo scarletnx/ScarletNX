@@ -210,14 +210,18 @@ NVN_FITS(NvnProgram, 0x78);
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
    none; nvn_replay_shown_syncpt, a present on the display) and the pacer's clock (plat_ns) reaches ready: its queue's
    work before it replayed and done, and what the queue waited for before it (a window's texture comes free at the
-   display's pace) */
+   display's pace).
+   A fence writes from byte 8 on, as the game's driver's does (its first 8 bytes are the device, set at Initialize):
+   a game may free a sync between nvnCommandBufferFenceSync and the submission that fences it, and the first 8 bytes
+   of a freed block link its heap's free list */
 typedef struct {
-    u32 magic, fenced;
-    u32 syncpt, value;
+    u32 magic, pad;
+    u32 fenced, syncpt;
+    u32 value, shown;
     u64 ready;
-    u32 shown, pad;
 } NvnSync;
 NVN_FITS(NvnSync, 0x20);
+typedef char nvn_check_sync_fence[offsetof(NvnSync, fenced) == 8 ? 1 : -1];
 
 /* an event: a 32-bit value in pool memory, which the CPU and the GPU signal and the CPU reads */
 typedef struct {
