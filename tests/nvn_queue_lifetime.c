@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Exercise the real replay queue allocator with an ordered fake GPU stream. Destruction must follow submitted
-   work and its deferred fence, and repeated temporary queues must release their slots and syncpoints. */
+   work and its deferred fence, and repeated temporary queues must release their slots and syncpoints. A sync the game
+   frees before the submission that fences it keeps the bytes its heap wrote over it. */
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -124,6 +125,36 @@ static void submit(u32 queue) {
     u32 shown = 0;
     nvn_replay_submit(queue, 1, 0x100, &ready, &shown);
 }
+/* One game records nvnCommandBufferFenceSync into a command buffer, then finalizes and frees the sync, then submits
+   the recording. The game's driver fences the sync at the submission all the same, writing from its byte 8 on, and a
+   freed block's first 8 bytes are its heap's free list link, which the heap's next allocation of that size decodes */
+static void freed_sync(void) {
+    const u64 live = 0x400, freed = 0x440, link = 0x2cd4aad71d5bed03ull; /* a free list link as one heap encodes it */
+    const NvnRecHdr fence = {OP_FENCE_SYNC, 16}, end = {OP_END, 8};
+    NvnSync s = {0};
+    u64 ready = 0;
+    u32 shown = 0, queue = nvn_replay_queue(), id = nvn_replay_syncpt(queue);
+    memcpy(GP(0x300), &fence, sizeof fence);
+    snx_st_le64(GP(0x308), live);
+    memcpy(GP(0x310), &fence, sizeof fence);
+    snx_st_le64(GP(0x318), freed);
+    memcpy(GP(0x320), &end, sizeof end);
+    snx_st_le64(GP(0x108), 0x300);
+    s.magic = NVN_MAGIC('S', 'Y', 'N', 'C'); /* nvn_SyncInitialize's */
+    memcpy(GP(live), &s, sizeof s);
+    memcpy(GP(freed), &s, sizeof s);
+    snx_st_le64(GP(freed), link); /* finalized and freed after the recording */
+    nvn_replay_submit(queue, 1, 0x108, &ready, &shown);
+    assert(gr64(freed) == link);
+    const NvnSync* f = NVN_OBJ(const NvnSync, live);
+    assert(f->magic == NVN_MAGIC('S', 'Y', 'N', 'C') && f->fenced == 1 && f->syncpt == id);
+    u32 first = f->value;
+    nvn_replay_fence(queue, freed, 0, 0); /* nvnQueueFenceSync writes where the submission's fence does */
+    assert(gr64(freed) == link);
+    nvn_replay_finish(queue);
+    assert((i32)(fixture.current[id] - first) >= 0); /* the live sync signals once the submission is replayed */
+    nvn_replay_queue_free(queue);
+}
 int main(void) {
     NvnRecHdr draw = {OP_DRAW, 8}, stride = {OP_COPY_STRIDE, 24}, end = {OP_END, 8};
     memcpy(GP(0x200), &draw, sizeof draw);
@@ -165,6 +196,7 @@ int main(void) {
     u32 live_syncpoints = 0;
     for (u32 i = 1; i < 32; i++) live_syncpoints += fixture.used[i];
     assert(live_syncpoints == 1); /* one display syncpoint shared by the lifetime of the process */
+    freed_sync();
     puts("nvn_queue_lifetime: ok");
     return 0;
 }
