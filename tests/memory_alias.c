@@ -9,6 +9,7 @@
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/clock.h"
+#include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <dirent.h>
 #include <stdarg.h>
@@ -385,9 +386,22 @@ static void test_physical_pool(void)
 }
 
 int main(int argc, char** argv) {
-    int copies = argc > 1 && strcmp(argv[1], "--copies") == 0;
-    /* --copies runs the Windows path on a host that has a pool (alias_pool=0) */
-    if (copies) g_settings.alias_pool = 0;
+    int copies = 0;
+    /* Debug settings as the runtime takes them, --key=value (--write_tracking=1: the tracking of hosts without Linux
+       6.7's); --copies runs the Windows path on a host that has a pool (alias_pool=0) */
+    for (int i = 1; i < argc; i++) {
+        const char* eq = strchr(argv[i], '=');
+        char key[64];
+        if (!strcmp(argv[i], "--copies")) {
+            copies = 1;
+            g_settings.alias_pool = 0;
+            continue;
+        }
+        CHECK(!strncmp(argv[i], "--", 2) && eq && (size_t)(eq - argv[i] - 2) < sizeof key);
+        snprintf(key, sizeof key, "%.*s", (int)(eq - argv[i] - 2), argv[i] + 2);
+        CHECK(ini_find(g_debug_ini, key));
+        ini_read(ini_find(g_debug_ini, key), eq + 1);
+    }
     hle_init();
     u64 info = STACK_BASE, off, mapped = 0, hole = 0;
     u8* p;

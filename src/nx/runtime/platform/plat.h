@@ -77,8 +77,8 @@ i64 plat_tz_offset(void); /* local time minus UTC, in seconds */
 /* ---- the guest's address space */
 /* The host's page, which the reservation is committed, decommitted and aliased in: 4 KiB, the Switch's own, on x86-64
    and most AArch64 systems, 16 KiB on Apple silicon and some Android kernels, 64 KiB on most PowerPC64 and some
-   AArch64 distributions (mem.c). SNX_HOST_PAGE in the environment, a larger power of two up to 1 MiB, makes a host
-   with smaller pages work in those, to test the larger pages' paths on any machine */
+   AArch64 distributions (mem.c). The setting host_page, a larger power of two up to 1 MiB, makes a host with smaller
+   pages work in those, to test the larger pages' paths on any machine; another value is said once */
 u64 plat_vm_page(void);
 #define SNX_PLAT_PAGE_MAX ((u64)1 << 20) /* the largest page plat_vm_page works in */
 /* Inaccessible until committed; NULL, the reason in errno. Aligned to SNX_PLAT_PAGE_MAX, so it can be made before the
@@ -98,7 +98,7 @@ void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when 
    -1 when the host can't tell (the caller then compares contents). Linux 6.7 and later use userfaultfd's asynchronous
    write protection with PAGEMAP_SCAN, Windows the write watch of the reservation. The other POSIX hosts (macOS,
    FreeBSD, Android, older Linux) protect what a scan reported and take the first write to it in the fault handler;
-   SNX_WW=signal takes that path on any Linux, and SNX_NO_WW in the environment turns all of them off */
+   write_tracking=1 takes that path on any Linux, and write_tracking=2 turns all of them off */
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size));
 /* [p, p + size) of the reservation is about to be written by the kernel (a system call given guest memory to fill),
    which the protection plat_ww_scan uses on some hosts would fail with EFAULT: the pages open, written, and no scan
@@ -132,7 +132,7 @@ u8* plat_alias_mirror(void);
 /* Traps on pool pages of the reservation (memory/own.c, docs/GPU_OWNERSHIP.md): an access to an armed page, by any
    thread, waits while fault (on a thread of the trap's own, never in a signal handler) gets the page's contents into
    the pool and lets it go on with plat_trap_continue. Linux 5.13 and later use userfaultfd's minor faults on shared
-   memory. Other hosts with the pool (older Linux, Android, or SNX_TRAPS=signal on any Linux) make the pages
+   memory. Other hosts with the pool (older Linux, Android, or memory_traps=1 on any Linux) make the pages
    inaccessible, and the faulting thread waits in the signal handler while the trap's thread lands them. Without the
    pool plat_trap_init says -1. An access from the kernel (a system call given a pointer into an armed
    page) fails with EFAULT instead of waiting, so the runtime opens a range before it hands it to the kernel. tid is

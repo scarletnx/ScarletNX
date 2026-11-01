@@ -40,6 +40,10 @@ def main():
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--artifact-dir', type=Path, default=Path('build/nx-smoke-failures'))
+    parser.add_argument(
+        '--runtime-arg', action='append', default=[], help="an argument of the game's runs (--host_page=65536)"
+    )
+    parser.add_argument('--log-has', action='append', default=[], help="a line each run's log must hold")
     args = parser.parse_args()
     runtime, repo, artifacts = args.runtime.resolve(), args.repo.resolve(), args.artifact_dir.resolve()
     with tempfile.TemporaryDirectory(prefix='scarletnx-nx-smoke-') as temporary:
@@ -78,7 +82,7 @@ def main():
             for mode in ('2', '0', '1'):
                 log.unlink(missing_ok=True)  # each mode judged on its own log
                 result = subprocess.run(
-                    [str(launcher), '-H', f'--prepare_shaders={mode}'],
+                    [str(launcher), '-H', f'--prepare_shaders={mode}', *args.runtime_arg],
                     cwd=folder,
                     env=env,
                     capture_output=True,
@@ -94,6 +98,9 @@ def main():
                         f'NX runtime returned {result.returncode} or did not execute the Horizon SVC markers'
                         f' (prepare_shaders={mode})'
                     )
+                for line in args.log_has:
+                    if line not in text:
+                        raise RuntimeError(f'the log of prepare_shaders={mode} lacks {line!r}')
                 passed = "vulkan: the game's own shaders:" in text
                 if mode == '2' and (not passed or text.index("the game's own shaders:") > text.index('[game] NX')):
                     raise RuntimeError("prepare_shaders=2: the shader pass didn't end before the game ran")

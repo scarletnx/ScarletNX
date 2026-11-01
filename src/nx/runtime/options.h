@@ -12,6 +12,12 @@
 
 /* --key=value: k's value for this run, over the file's, which keeps its own. Before ini_open; v is kept, not copied */
 void ini_override(const char* k, const char* v);
+const char* ini_overridden(const char* k); /* k's value for this run, NULL when nothing gave one */
+/* deprecated_env.c: the environment variables an older version read for settings the .ini has now
+   (docs/DEPRECATIONS.md). ini_open makes each one set this run's value for its setting as ini_override does, unless
+   the command line or a variable before it gives that key; then says each, with the value in effect */
+void options_old_environment(void);
+void options_old_environment_say(void);
 /* a value the game's menu set, already applied: written to the file at the next poll, even over an edit made meanwhile */
 void ini_set(const char* k, const char* v);
 /* every setting of the file's sections but the game's own (a control's place), a line each on stdout, nine fields

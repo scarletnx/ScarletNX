@@ -9,6 +9,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
+#include "snx_settings.h"
 #include <SDL3/SDL_thread.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -426,21 +427,17 @@ static int uffd_open(u64 features) {
 #endif
 
 /* One userfaultfd serves the written-page tracking and the traps (a mapping is registered with one at most). Without
-   minor faults (before Linux 5.13) it does the tracking alone; SNX_NO_WW leaves it the traps alone. Where it can't
-   track writes, protection does (wp_init, below) */
+   minor faults (before Linux 5.13) it does the tracking alone; write_tracking=2 leaves it the traps alone. Where it
+   can't track writes, protection does (wp_init, below) */
 static void wp_init(u8* p, u64 size, int track);
-/* SNX_TRAPS=signal: traps by protection (plat_trap_init) on a Linux whose userfaultfd could take them */
-static int traps_by_signal(void) {
-    const char* how = getenv("SNX_TRAPS");
-    return how && !strcmp(how, "signal");
-}
+/* memory_traps=1: traps by protection (plat_trap_init) on a Linux whose userfaultfd could take them */
+static int traps_by_signal(void) { return g_settings.memory_traps == 1; }
 static int g_uffd_minor_on(void);
 void plat_vm_track(u8* p, u64 size) {
-    const char* how = getenv("SNX_WW");
-    int no_ww = getenv("SNX_NO_WW") != NULL;
+    int by_signal = g_settings.write_tracking == 1, no_ww = g_settings.write_tracking == 2;
 #if SNX_UFFD
     int fd = -1, pm;
-    u64 wp = no_ww || (how && !strcmp(how, "signal")) ? 0 : UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED;
+    u64 wp = no_ww || by_signal ? 0 : UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED;
 #if SNX_UFFD_MINOR
     fd = uffd_open(wp | UFFD_FEATURE_MINOR_SHMEM | UFFD_FEATURE_THREAD_ID);
     g_uffd_minor = fd >= 0;
@@ -462,7 +459,7 @@ void plat_vm_track(u8* p, u64 size) {
         }
     }
 #endif
-    (void)how;
+    (void)by_signal;
     /* the states also serve traps by protection, where userfaultfd's minor faults don't (plat_trap_init) */
     if (!no_ww || !g_uffd_minor_on() || traps_by_signal()) wp_init(p, size, !no_ww);
 }
@@ -475,7 +472,7 @@ static void ww_remapped(u8* p, u64 size) {
 }
 
 /* Written-page tracking by protection, where the kernel tracks no writes (macOS, FreeBSD, Android, Linux before 6.7;
-   SNX_WW=signal takes it on a later Linux, to test it): a scan makes the written pages it reports read only, and the
+   write_tracking=1 takes it on a later Linux, to test it): a scan makes the written pages it reports read only, and the
    first write to one faults. The fault handler (wp_fault, on the faulting thread) makes the page writable again and
    notes it written, and the write goes on. Each host page of the reservation has a state byte: WP_MAPPED while the
    reservation's own protection lets it be written (committed, or a view of the pool), WP_CLEAN while no write came
@@ -641,7 +638,7 @@ static int wp_reserve(u64 n) {
     } while (!__atomic_compare_exchange_n(&g_wp_held, &held, held + n, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     return 1;
 }
-/* Traps by protection (Linux without userfaultfd's minor faults, or SNX_TRAPS=signal): plat_trap_arm makes the
+/* Traps by protection (Linux without userfaultfd's minor faults, or memory_traps=1): plat_trap_arm makes the
    pool pages inaccessible (WP_TRAP), and a guest access faults into the handler (wp_fault) on the faulting thread.
    That thread posts the page to the trap thread, which calls the fault callback in ordinary thread context, and waits
    in the handler, on a futex, until some trap lets pages go (g_trap_gen moves); then the access goes again, and faults
@@ -960,13 +957,18 @@ int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
 #endif
 }
 
+static int g_host_page_said; /* plat_vm_page told why it refused host_page */
 u64 plat_vm_page(void) {
     long host = sysconf(_SC_PAGESIZE);
-    u64 page = host > 0 ? (u64)host : 4096;
-    const char* forced = getenv("SNX_HOST_PAGE");
-    if (forced) { /* a larger power of two only: the host's pages can't be split */
-        u64 v = strtoull(forced, NULL, 0);
-        if (v > page && v <= SNX_PLAT_PAGE_MAX && !(v & (v - 1))) page = v;
+    u64 page = host > 0 ? (u64)host : 4096, v = g_settings.host_page_size > 0 ? (u64)g_settings.host_page_size : 0;
+    if (!v) return page;
+    if (v >= page && v <= SNX_PLAT_PAGE_MAX && !(v & (v - 1))) return v; /* the host's pages can't be split */
+    if (!g_host_page_said) { /* mem_init asks first, on the main thread at startup */
+        g_host_page_said = 1;
+        WARN("memory: host_page=%llu is not a power of two from the host's page, %llu bytes, to %llu: the runtime "
+             "works in %llu-byte pages\n",
+             (unsigned long long)v, (unsigned long long)page, (unsigned long long)SNX_PLAT_PAGE_MAX,
+             (unsigned long long)page);
     }
     return page;
 }

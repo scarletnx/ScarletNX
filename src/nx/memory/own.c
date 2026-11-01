@@ -23,6 +23,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "snx_settings.h"
 
 typedef struct {
     u64 lo, hi;   /* guest bytes */
@@ -349,9 +350,12 @@ int own_init(const OwnHooks* h) {
     g_hooks = *h;
     g_page = plat_vm_page();
     pc_init(&g_own_cv);
-    /* SNX_NO_TRAPS: as a host without traps (Windows, macOS), to measure and test that path here */
-    if (getenv("SNX_NO_TRAPS") || !plat_alias_mirror() || plat_trap_init(own_fault)) {
-        LOG("memory: no traps on this host: GPU engines land their results in guest memory at their fence\n");
+    /* memory_traps=2: as a host without traps (Windows, macOS), to measure and test that path here */
+    if (g_settings.memory_traps == 2 || !plat_alias_mirror() || plat_trap_init(own_fault)) {
+        LOG("memory: no traps (%s): GPU engines land their results in guest memory at their fence\n",
+            g_settings.memory_traps == 2   ? "memory_traps=2"
+            : g_settings.memory_traps == 1 ? "memory_traps=1, page protection, has none on this host"
+                                           : "none on this host");
         return -1;
     }
     g_traps = 1;
