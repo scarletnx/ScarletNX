@@ -242,17 +242,23 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
-    # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
-    # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
-    # descriptorType-00330). Without the layer this is VIC's own checks again.
-    # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c), and its own
-    add_test(NAME vulkan_headless_descriptor_buffers COMMAND snx-test-vulkan -H --vk_descriptors=1)
-    add_test(NAME vulkan_headless_descriptor_buffers_uma COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_memory=2)
+    # every check again with graphics descriptors in descriptor buffers (gpu/vk/descriptors.c, vk_descriptors), also
+    # with guest memory read in place, under the validation layer when it is installed. A device without
+    # VK_EXT_descriptor_buffer skips them (77). The layer reports errors only: the targetless-stores check draws with
+    # a fragment output and no color target, as the console does, which the layer warns about with sets too
+    add_test(NAME vulkan_headless_descriptor_buffers COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_validation=1)
+    add_test(NAME vulkan_headless_descriptor_buffers_uma
+        COMMAND snx-test-vulkan -H --vk_descriptors=1 --vk_memory=2 --vk_validation=1)
     set_tests_properties(vulkan_headless_descriptor_buffers vulkan_headless_descriptor_buffers_uma PROPERTIES
-        TIMEOUT 60 SKIP_RETURN_CODE 77 FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT "VK_KHRONOS_VALIDATION_REPORT_FLAGS=error"
+        FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # every check again with guest memory read in place where the device can import it (gpu/vk/uma.c)
     add_test(NAME vulkan_headless_uma COMMAND snx-test-vulkan -H --vk_memory=2)
     set_tests_properties(vulkan_headless_uma PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+    # VIC only, under the validation layer when it is installed: its job binds the same buffer as a uniform and a
+    # storage buffer, which the layer checks against the buffer's usage flags (VUID-VkWriteDescriptorSet-
+    # descriptorType-00330). Without the layer this is VIC's own checks again.
     add_test(NAME vulkan_headless_vic_validation COMMAND snx-test-vulkan -H --vk_validation=1)
     set_tests_properties(vulkan_headless_vic_validation PROPERTIES TIMEOUT 60
         ENVIRONMENT "SNX_TEST_VIC_ONLY=1"
