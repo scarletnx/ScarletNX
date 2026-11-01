@@ -297,7 +297,18 @@ u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 /* a descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
 #define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
-extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in the compute set, from SNX_VKB_IMGBUF */
+extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
+/* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads
+   and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted stores are
+   typeless in the shader, unsigned for bindless images: an integer format is viewed as itself, a 32-bit float one as
+   the integer format of the same bits, which the shader's stores of register bits match. 0 for a header that isn't
+   one, or a format this GPU can't store to so */
+typedef struct {
+    u64 gva;
+    u32 bytes;
+    VkFormat fmt;
+} VkBufImg;
+int vk_buffer_image(const u32* tic, int kind, VkBufImg* out);
 /* the staging alignment that suits every use: uniform, storage, vertex and index buffers */
 u64 vk_stage_align(void);
 u64 vk_hash(const void* p, u64 size);
