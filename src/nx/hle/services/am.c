@@ -531,10 +531,8 @@ static void am_syncpt_poll(void);
 static int am_syncpt_mirror(void);
 static void am_syncpt_armed(void) {
     AmSyncpt* s;
-    u8* ro;
     u32 i, slot, id, thresh;
-    int acked;
-    if (!(ro = g_hle.am.syncpt_page.attached ? g_host.am.syncpt.ro : NULL)) return;
+    int acked = 0;
     pm_lock(&g_am_syncpt_lk);
     for (i = 0; i < AM_SYNCPT_SESSIONS; ++i) {
         s = &g_hle.am.syncpts[i];
@@ -550,7 +548,7 @@ static void am_syncpt_armed(void) {
     }
     /* the values the client polls are mirrored before its armed bits are answered, so a wait it takes back sees the
        counter that ended it */
-    acked = am_syncpt_mirror();
+    if (g_hle.am.syncpt_page.attached) acked = am_syncpt_mirror();
     pm_unlock(&g_am_syncpt_lk);
     if (acked) ev_signal(g_hle.am.syncpt_page.notify_ev);
 }
@@ -630,6 +628,50 @@ static int nn_am_service_IGraphicsSystemSession_CalculateImagePoolRequirements(S
                                                                              u64* alignment) {
     (void)self;
     am_surface_layout(1920, 1080, size, alignment);
+    R_SUCCEED();
+}
+/* 1510: the block-linear size and alignment of the surface an InterModuleUserImagePreference describes, which
+   nn::gsv::shim::CalculateRequirements reads the size of a title's window from. The preference holds the surface's
+   dimensions, the log2 of its block height (rows of its Gob class) and its pitch in 64-byte GOBs; a preference outside
+   those bounds falls back to 4 bytes a pixel in 128-row blocks, as Eden's Switch 2 work does */
+static void am_block_linear(u32 dims, u32 block_height, u32 pitch_gobs, u64* size, u64* align) {
+    u64 width = (dims & 0xFFFF) + 1, height = (dims >> 16) + 1, pitch, rows;
+    u32 bh = block_height;
+    if (bh > 8 || pitch_gobs < (width * 4 + 63) / 64 || pitch_gobs > 4096) { /* not a usable block-linear preference */
+        pitch = (width * 4 + 63) & ~(u64)63;
+        bh = 7; /* 128 rows */
+    } else {
+        pitch = (u64)pitch_gobs * 64;
+    }
+    rows = (height + (((u64)1 << bh) - 1)) & ~(((u64)1 << bh) - 1);
+    *size = pitch * rows;
+    *align = ((u64)1 << bh) * 64 > 0x1000 ? ((u64)1 << bh) * 64 : 0x1000;
+}
+static int nn_am_service_IGraphicsSystemSession_CalculateShimRequirements(SvcObj* self, u32 kind, u32 reserved,
+                                                                         u32 dims, u32 fmt, u32 block_height,
+                                                                         u32 pitch_gobs, u32 w6, u32 w7, u32 w8,
+                                                                         u32 w9, u32 w10, u32 w11, u32 w12, u32 w13,
+                                                                         u32 w14, u32 w15, u32 count, u64* size,
+                                                                         u64* alignment) {
+    (void)self;
+    (void)reserved;
+    (void)fmt;
+    (void)w6;
+    (void)w7;
+    (void)w8;
+    (void)w9;
+    (void)w10;
+    (void)w11;
+    (void)w12;
+    (void)w13;
+    (void)w14;
+    (void)w15;
+    (void)count;
+    if (kind != 2) { /* only a block-linear preference has a block height and a pitch to lay it out with */
+        am_surface_layout(1920, 1080, size, alignment);
+        R_SUCCEED();
+    }
+    am_block_linear(dims, block_height, pitch_gobs, size, alignment);
     R_SUCCEED();
 }
 /* 115: the session is done with what it opened (Eden's Switch 2 work answers its 115 with a plain success) */
@@ -782,9 +824,11 @@ static int nn_am_service_IGraphicsSystemSession_AttachSyncpointMemory(SvcObj* se
 
 /* the syncpoint session's TIPC commands. Its asks are a token it must get back, a slot's event, a counter's value,
    and an armed wait; Eden's Switch 2 work answers them the same way */
-static int nn_am_service_ISyncpointSession_Handshake(SvcObj* self, u64 request, u64* reply) {
+static int nn_am_service_ISyncpointSession_Handshake(SvcObj* self, u32 request_lo, u32 request_hi, u32* reply_lo,
+                                                     u32* reply_hi) {
     (void)self;
-    *reply = request; /* the newer SDKs abort unless the token is echoed back */
+    *reply_lo = request_lo; /* the newer SDKs abort unless the token is echoed back */
+    *reply_hi = request_hi;
     R_SUCCEED();
 }
 static int nn_am_service_ISyncpointSession_GetCount(SvcObj* self, u32* count) {
@@ -819,9 +863,10 @@ static int nn_am_service_ISyncpointSession_QueryCounter(SvcObj* self, u32 counte
     *zero = 0;
     R_SUCCEED();
 }
-static int nn_am_service_ISyncpointSession_RequestSlotEvent(SvcObj* self, u32 slot, u32 counter, u64 value,
-                                                           u32 mode) {
+static int nn_am_service_ISyncpointSession_RequestSlotEvent(SvcObj* self, u32 slot, u32 counter, u32 value_lo,
+                                                           u32 value_hi, u32 mode) {
     AmSyncpt* s = am_syncpt(self);
+    u64 value = (u64)value_lo | ((u64)value_hi << 32);
     u32 id, ev;
     (void)mode; /* both modes compare the value against the counter's; only its width differs */
     if (!s) return AM_OUT_OF_MEMORY;

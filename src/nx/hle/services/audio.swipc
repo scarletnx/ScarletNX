@@ -112,6 +112,40 @@ interface nn::audio::detail::IAudioDevice {
     [14] ListAudioOutputDeviceName(array<nn::audio::AudioDeviceName, 6> names) -> i32 count;
 }
 
+# A Switch 2 title's nn::audio::CreateUserClientSessionByHipc opens "aud:u", and reaches the same audio stack a
+# Switch 1 title reaches through audren:u: its command 2 hands back the renderer manager, which is an object of the
+# Switch 2 SDK's own manager, where the commands it knows by number take the arguments its SDK sends. The fork's
+# Switch 2 work hands back its own IAudioRendererManager the same way, backed by its audren
+interface nn::audio::detail::IAudioUserSession is aud:u {
+    [2] GetAudioRendererManager(u32 arg) -> object<nn::audio::detail::IAudioRendererManager2> renderer;
+}
+
+# The manager a Switch 2 SDK's aud:u hands back: the same audio stack a Switch 1 title reaches through audren:u's
+# IAudioRendererManager, with the argument shapes this SDK sends. Its 2 asks for the device service with no argument
+# of its own, where a Switch 1 SDK sends the aruid with it
+interface nn::audio::detail::IAudioRendererManager2 is audren2 {
+    [0] OpenAudioRenderer(nn::audio::detail::AudioRendererParameterInternal params, u64 work_buffer_size, aruid aruid,
+                          handle<copy, transfer_memory> work_buffer, handle<copy, process> process)
+        -> object<nn::audio::detail::IAudioRenderer> renderer;
+    [1] GetWorkBufferSize(nn::audio::detail::AudioRendererParameterInternal params) -> u64 size;
+    [2] GetAudioDeviceService() -> object<nn::audio::detail::IAudioDevice2> device;
+}
+
+# The device a Switch 2 SDK's audio manager hands back (Eden's work reaches the same stack through its own device
+# session): the renderer parameter its SDK opens a renderer with asks 1 for the work buffer the renderer needs, which
+# is what the same parameter asks of the Switch 1 manager (the parameter is 52 bytes, a REv? tag at its end)
+interface nn::audio::detail::IAudioDevice2 is auddev2 {
+    # 0: the renderer itself, over the work buffer its parameter sized, as the same parameter opens one on the Switch 1
+    [0] OpenAudioRenderer(nn::audio::detail::AudioRendererParameterInternal params, u64 work_buffer_size, aruid aruid,
+                          handle<copy, transfer_memory> work_buffer, handle<copy, process> process)
+        -> object<nn::audio::detail::IAudioRenderer> renderer;
+    [1] GetWorkBufferSize(nn::audio::detail::AudioRendererParameterInternal params) -> u64 size;
+    # the output names this SDK's device lists, from the revision tag it sends first: the tag, a word, a count and a
+    # zero word, answered with the device object itself, into which the SDK writes the names it sized its buffer for
+    [4] ListAudioOutputDeviceName(u32 revision, u32 reserved, u32 count, u32 zero)
+        -> object<nn::audio::detail::IAudioDevice2> device;
+}
+
 interface nn::audio::detail::IAudioOutManager is audout:u {
     [0] ListAudioOuts(array<nn::audio::AudioOutName, 6> names) -> u32 count;
     [1] OpenAudioOut(nn::audio::AudioOutParameter params, aruid aruid, handle<copy, process> process,

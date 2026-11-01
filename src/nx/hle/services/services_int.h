@@ -88,6 +88,7 @@ SvcObj* new_ro1(void);
 void audio_init(void); /* the renderer's event, before the audio clock runs */
 void audio_clock(void* arg);
 SvcObj* new_audren(void);
+SvcObj* new_audren2(void); /* the Switch 2 SDK's manager, which its aud:u hands back (audio.c) */
 SvcObj* new_audout(void);
 SvcObj* new_hwopus(void);
 

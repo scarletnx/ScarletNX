@@ -273,6 +273,15 @@ interface nn::am::service::IGraphicsSystemSession {
     # buffer, which is what Eden's Switch 2 CalculateRequirements answers a title's window with
     [1501] CalculateRequirements() -> (u64 size, u64 alignment);
     [1502] CalculateImagePoolRequirements() -> (u64 size, u64 alignment);
+    # nn::gsv::shim::CalculateRequirements, which this SDK's window init sends before it makes its window: the
+    # InterModuleUserImagePreference it built (16 words) and a count, answered with the block-linear size and alignment
+    # of the surface it describes. A zero size made the window's init fail and its acquire wait forever, as Eden's
+    # Switch 2 work found the same way. Each word comes in as a u32, since a generator sorting the request's u64s
+    # behind its u32s would move them off the preference's own words
+    [1510] CalculateShimRequirements(u32 kind, u32 reserved, u32 dims, u32 fmt, u32 block_height, u32 pitch_gobs,
+                                     u32 w6, u32 w7, u32 w8, u32 w9, u32 w10, u32 w11, u32 w12, u32 w13, u32 w14,
+                                     u32 w15, u32 count)
+        -> (u64 size, u64 alignment);
     [115] Finalize();
     # A title asks the console for an image and releases it: neither takes an argument, as the console has the one
     # image a title presents and lays it out from the display's own size
@@ -372,8 +381,9 @@ interface nn::am::service::IGpuSession {
 # it must get back, takes a slot event per slot and arms one (a counter, which is the bitwise NOT of a syncpoint id)
 # for a value, and reads a counter back. Eden's Switch 2 work answers them as these do
 interface nn::am::service::ISyncpointSession {
-    # the SDK handshakes with a token it must get back: the echo is its own argument
-    [0] Handshake(u64 request) -> u64 reply;
+    # the SDK handshakes with a token it must get back: the echo is its own argument. Each word comes in as a u32,
+    # since the generator sorts a request's u64s behind its u32s and would move the token off its own words
+    [0] Handshake(u32 request_lo, u32 request_hi) -> (u32 reply_lo, u32 reply_hi);
     [1] GetCount() -> u32 count;
     # 21: this SDK asks under 21 for nothing but a result: it reads its reply's result at the first data word, where
     # a handle section would put its descriptor, so answering with the slot event of 22 aborted its boot. Eden's
@@ -381,7 +391,8 @@ interface nn::am::service::ISyncpointSession {
     [21] GetSlotEvent21(u32 slot);
     [22] GetSlotEvent(u32 slot) -> handle<copy, event> event;
     [103] QueryCounter(u32 counter) -> (u32 value_low, u32 value_high, u32 zero);
-    # slot, the counter to watch, the value it must reach, and a mode (0 compares 32-bit wrapping, 1 64-bit)
-    [201] RequestSlotEvent(u32 slot, u32 counter, u64 value, u32 mode);
+    # slot, the counter to watch, the value it must reach, and a mode (0 compares 32-bit wrapping, 1 64-bit). The
+    # value's two words come in apart, as the generator sorts a request's u64s behind its u32s
+    [201] RequestSlotEvent(u32 slot, u32 counter, u32 value_lo, u32 value_hi, u32 mode);
     [202] CancelSlotEvent(u32 slot);
 }

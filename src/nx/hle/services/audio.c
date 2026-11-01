@@ -560,6 +560,49 @@ static SvcObj* new_device(void) {
     return o;
 }
 
+/* ------------------------------------------------------------ the Switch 2 manager and device (audio.swipc) */
+/* IAudioRendererManager2 (aud:u's own): the same renderers, devices and sizes as audren:u's manager, with the
+   argument shapes a Switch 2 SDK sends. The device service is asked for with no argument of its own, where a Switch 1
+   SDK sends the aruid with it, so the one this machine plays on is the answer either way */
+static int nn_audio_detail_IAudioRendererManager2_OpenAudioRenderer(
+    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64 work_buffer_size_, u64 aruid,
+    u32 work_buffer, u32 process, SvcObj** renderer) {
+    (void)self, (void)work_buffer_size_, (void)aruid, (void)work_buffer;
+    return open_renderer(params, process, 0, renderer);
+}
+static int nn_audio_detail_IAudioRendererManager2_GetWorkBufferSize(
+    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64* size) {
+    return nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(self, params, size);
+}
+static int nn_audio_detail_IAudioRendererManager2_GetAudioDeviceService(SvcObj* self, SvcObj** device) {
+    (void)self;
+    *device = nn_audio_detail_IAudioDevice2_new();
+    R_SUCCEED();
+}
+
+/* the output names, from the revision tag this device's 4 is sent with: the device object itself, into which the
+   SDK writes the names it sized its buffer for (the one output this machine has, as a Switch 1 SDK's list gives) */
+static int nn_audio_detail_IAudioDevice2_ListAudioOutputDeviceName(SvcObj* self, u32 revision, u32 reserved,
+                                                                   u32 count_in, u32 zero, SvcObj** device) {
+    (void)revision, (void)reserved, (void)count_in, (void)zero;
+    *device = nn_audio_detail_IAudioDevice2_new(); /* an object of its own, as the SDK's device impl is */
+    R_SUCCEED();
+}
+/* the renderer whose parameter this device's 0 is sent with, over the work buffer its parameter sized (open_renderer) */
+static int nn_audio_detail_IAudioDevice2_OpenAudioRenderer(SvcObj* self,
+                                                           const nn_audio_detail_AudioRendererParameterInternal* params,
+                                                           u64 work_buffer_size_, u64 aruid, u32 work_buffer,
+                                                           u32 process, SvcObj** renderer) {
+    (void)self, (void)work_buffer_size_, (void)aruid, (void)work_buffer;
+    return open_renderer(params, process, 0, renderer);
+}
+/* the work buffer of the renderer whose parameter this device's 1 is sent with: the same one the parameter asks of
+   the Switch 1 manager, since it is the same stack underneath */
+static int nn_audio_detail_IAudioDevice2_GetWorkBufferSize(
+    SvcObj* self, const nn_audio_detail_AudioRendererParameterInternal* params, u64* size) {
+    return nn_audio_detail_IAudioRendererManager_GetWorkBufferSize(self, params, size);
+}
+
 static int nn_audio_detail_IAudioRendererManager_GetAudioDeviceService(SvcObj* self, nn_applet_AppletResourceUserId aruid,
                                                                        SvcObj** device) {
     (void)self, (void)aruid;
@@ -650,6 +693,16 @@ static int nn_audio_detail_IAudioDevice_QueryAudioDeviceOutputEvent(SvcObj* self
 }
 
 SvcObj* new_audren(void) { return nn_audio_detail_IAudioRendererManager_new(); }
+SvcObj* new_audren2(void) { return nn_audio_detail_IAudioRendererManager2_new(); }
+
+/* ------------------------------------------------------------ aud:u's Switch 2 session (audio.swipc) */
+/* 2: the renderer manager a Switch 2 title reaches the audio stack through (IAudioRendererManager2, above). The
+   argument is the session's own, which this SDK sends and nothing reads */
+static int nn_audio_detail_IAudioUserSession_GetAudioRendererManager(SvcObj* self, u32 arg, SvcObj** renderer) {
+    (void)self, (void)arg;
+    *renderer = new_audren2();
+    R_SUCCEED();
+}
 
 /* ============================================================ the clock */
 void audio_init(void) {
