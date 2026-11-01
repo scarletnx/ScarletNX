@@ -424,8 +424,12 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
     u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
     int flip = origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
-    if (g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W)
+    if (g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W) {
         flip = !flip;
+        /* that flip reverses the facing (vk_render_front_face), and the front face the driver writes with it is the
+           other one: the two keep the game's facing, as two games of these drivers draw it */
+        y.front_cw = !y.front_cw;
+    }
     y.window_origin = flip ? DS_ORIGIN_FLIP_Y : 0;
     y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
