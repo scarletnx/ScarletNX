@@ -267,7 +267,10 @@ u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z) {
    - the kind (the GMMU page kind, GetStorageClass's low byte, above 0x100): 0 for a buffer or a linear texture; for a
      block-linear one, a depth kind for a depth or stencil format, a compression kind for a COMPRESSIBLE color format
      of one-texel blocks and 4 bytes or more, else 0xfe. The driver asks the GPU library to choose it from the format's
-     kind class and the sample count, and the GPU's kind table to accept it: these are the kinds a Tegra X1 accepts
+     kind class and the sample count, and the GPU's kind table to accept it: these are the kinds a Tegra X1 accepts.
+     A compression kind has one value for no multisampling (0 or 1 samples) and one more for each of 2, 4 and 8
+     samples, so a COMPRESSIBLE depth format has its base kind, plus 1 at 2 samples, 2 at 4 and 3 at 8; the color kinds
+     per element size are the table in kind_of
    - the alignment: 0x80 for LINEAR_RENDER_TARGET, 0x20 for LINEAR (both before the buffer test), a buffer's element
      size, else 512, and the big page (64 KiB) for every kind but 0 and 0xfe
    - the size: the layout's, rounded up to the big page for those kinds too. A format the driver doesn't take gives 0
@@ -280,21 +283,23 @@ static u32 kind_of(const NvnTexDesc* d, Fmt t) {
     static const struct {
         u32 format;
         u8 plain, comp;
-    } depth[] = {{NVN_FORMAT_STENCIL8, 0x2a, 0x2b},       {NVN_FORMAT_DEPTH16, 0x01, 0x08},
-                 {NVN_FORMAT_DEPTH24, 0x46, 0x52},        {NVN_FORMAT_DEPTH32F, 0x7b, 0x87},
-                 {NVN_FORMAT_DEPTH24_STENCIL8, 0x46, 0x52}, {NVN_FORMAT_DEPTH32F_STENCIL8, 0xc3, 0xcf}};
+    } depth[] = {{NVN_FORMAT_STENCIL8, 0x2a, 0x2b},         {NVN_FORMAT_DEPTH16, 0x01, 0x07},
+                 {NVN_FORMAT_DEPTH24, 0x46, 0x51},          {NVN_FORMAT_DEPTH32F, 0x7b, 0x86},
+                 {NVN_FORMAT_DEPTH24_STENCIL8, 0x46, 0x51}, {NVN_FORMAT_DEPTH32F_STENCIL8, 0xc3, 0xcf}};
+    u32 step = s >= 8 ? 3 : s >= 4 ? 2 : s >= 2 ? 1 : 0;
     size_t i;
     if (d->target == NVN_TEXTURE_TARGET_BUFFER || (d->flags & NVN_TEX_LINEAR)) return 0;
     for (i = 0; i < sizeof depth / sizeof depth[0]; i++)
         if (depth[i].format == f) {
-            if (f == NVN_FORMAT_DEPTH32F && comp && s >= 4) return s >= 8 ? 0x89 : 0x88;
-            return comp ? depth[i].comp : depth[i].plain;
+            if (!comp) return depth[i].plain;
+            /* the stencil formats' compression kinds are not read from the driver for more than one sample */
+            return f == NVN_FORMAT_STENCIL8 || f == NVN_FORMAT_DEPTH32F_STENCIL8 ? depth[i].comp : depth[i].comp + step;
         }
     if (!comp || t.bw > 1 || t.bpb < 4) return 0xfe;
-    /* the compression kinds by element size and samples (1 and 2 samples share one) */
-    if (t.bpb >= 16) return s >= 8 ? 0xfb : s >= 4 ? 0xf9 : 0xf7;
-    if (t.bpb >= 8) return s >= 8 ? 0xf3 : s >= 4 ? 0xee : 0xcd;
-    return s >= 8 ? 0xe5 : s >= 4 ? 0xe0 : 0xcc;
+    /* the compression kinds by element size and samples: none (0 or 1), 2, 4, 8 */
+    if (t.bpb >= 16) return step == 3 ? 0xfb : step == 2 ? 0xf9 : step == 1 ? 0xf7 : 0xf5;
+    if (t.bpb >= 8) return step == 3 ? 0xf3 : step == 2 ? 0xee : step == 1 ? 0xcd : 0xe9;
+    return step == 3 ? 0xe5 : step == 2 ? 0xe0 : step == 1 ? 0xcc : 0xdb;
 }
 void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s) {
     Fmt t = fmt_of(d->format);

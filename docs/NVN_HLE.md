@@ -188,9 +188,9 @@ drivers' code (NVN 12.3 and 55.15, the same rules):
 The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
 size over targets, formats, sizes, levels, samples and flags. Verify mode's storage sweep runs the driver's getters
 and nvn_direct's on the same 7,986 builder states at the game's first query: sizes, alignments and ZCull areas agree.
-The compression kinds of some formats still differ (RG16F: the driver's 0xdb, nvn_direct's 0xcc): the driver picks
-them from a kind class in its format table, which nvn_direct doesn't have yet. The size and alignment don't depend
-on which compression kind it is.
+The compression kinds agree too, over the swept formats: a compression kind has one value for no multisampling and one
+more at 2, 4 and 8 samples (depth: the base kind plus 0, 1, 2, 3; color: a table by element size). The 8-sample
+kinds and the formats outside the sweep are extrapolated from that pattern.
 
 ### What the first runs found (one game, SDK NVN 55.15)
 
