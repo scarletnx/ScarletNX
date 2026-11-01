@@ -423,6 +423,10 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
                           ? DS_ORIGIN_FLIP_Y
                           : DS_ORIGIN_LOWER_LEFT;
     y.depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    /* a point sprite's T as the game's driver leaves it (render.c reads it with the window origin): its sprite
+       origin bit is set in either origin (NVN 53.13, 53.314 and 55.12), but for a lower left window it flips y with
+       DS_ORIGIN_FLIP_Y where nvn_direct sets DS_ORIGIN_LOWER_LEFT, which takes the bit clear for the same T */
+    y.sprite_origin = y.window_origin == DS_ORIGIN_FLIP_Y;
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
     for (int f = 0; f < 2; f++) {

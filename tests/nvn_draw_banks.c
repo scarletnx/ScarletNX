@@ -179,7 +179,7 @@ static void test_bind_program(void) {
     check(d.bind.cb_size[fs][1] == 0, "fragment bank 1 size (no data): expected 0, found %#x", d.bind.cb_size[fs][1]);
 }
 
-/* a draw's dynamic state, built by sync on the draw: its window and sprite origins */
+/* a draw's dynamic state, built by sync on the draw: the sprite origin follows the window origin */
 #define DRAW 0x2000u
 static void draw_with(u32 origin) {
     NvnPDraw r;
@@ -195,7 +195,7 @@ static void test_sprite_origin(void) {
     draw_with(NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT);
     check(d.ds.dyn.window_origin == DS_ORIGIN_FLIP_Y, "upper left window_origin: expected %#x, found %#x",
           DS_ORIGIN_FLIP_Y, d.ds.dyn.window_origin);
-    check(d.ds.dyn.sprite_origin == 0, "upper left sprite_origin: expected 0, found %u", d.ds.dyn.sprite_origin);
+    check(d.ds.dyn.sprite_origin == 1, "upper left sprite_origin: expected 1, found %u", d.ds.dyn.sprite_origin);
     draw_with(NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);
     check(d.ds.dyn.window_origin == DS_ORIGIN_LOWER_LEFT, "lower left window_origin: expected %#x, found %#x",
           DS_ORIGIN_LOWER_LEFT, d.ds.dyn.window_origin);
