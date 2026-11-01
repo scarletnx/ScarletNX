@@ -32,10 +32,13 @@ static int64_t file_mmap(GnuProcess* p, const uint64_t a[6]) {
     return mapped;
 }
 static int64_t dispatch(GnuProcess* p, uint64_t number, const uint64_t a[6]);
-/* SNX_GNU_STRACE=1: every syscall on stderr, with its arguments and result, a line each */
+static struct {
+    int trace; /* gnu_syscall_trace's */
+} g_syscalls;
+void gnu_syscall_trace(int on) { g_syscalls.trace = on; }
+/* --strace: every syscall on stderr, with its arguments and result, a line each */
 int64_t gnu_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
-    static int trace = -1;
-    if (trace < 0) trace = getenv("SNX_GNU_STRACE") && getenv("SNX_GNU_STRACE")[0] == '1';
+    int trace = g_syscalls.trace;
     /* arm64 el0_svc_common takes an int syscall number from x8. */
     number = (uint32_t)number;
     if (trace)

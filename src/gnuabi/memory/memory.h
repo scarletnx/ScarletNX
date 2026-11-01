@@ -23,6 +23,9 @@ typedef struct GnuMemory {
     void (*code_changed)(void* context, uint64_t address, uint64_t length);
     void* code_context;
 } GnuMemory;
+/* --host-page=N: the page gnu_memory_init's memories work in, a power of two from the host's page to 1 MiB that main
+   checked (0: the host's), as a host with those pages does (tests). Before any memory is made; POSIX only */
+void gnu_memory_host_page(uint64_t page);
 int gnu_memory_init(GnuMemory* memory);
 void gnu_memory_destroy(GnuMemory* memory);
 void* gnu_memory_access(GnuMemory* memory, uint64_t address, size_t length, unsigned permissions);

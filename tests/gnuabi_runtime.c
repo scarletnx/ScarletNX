@@ -67,9 +67,13 @@ static void faulting_guest(CPU* cpu, uint64_t entry) {
     (void)entry;
     cpu->x[0] = *(volatile unsigned char*)(cpu->mem + 0x80000);
 }
-int main(void) {
+int main(int argc, char** argv) {
     GnuProcess* p = calloc(1, sizeof *p);
     CHECK(p);
+    if (argc > 1) { /* --host-page=N, as the runtime's option: a host with N-byte pages (gnuabi_memory_64k_pages) */
+        CHECK(argc == 2 && !strncmp(argv[1], "--host-page=", 12));
+        gnu_memory_host_page(strtoull(argv[1] + 12, NULL, 10));
+    }
     CHECK(gnu_memory_init(&p->memory) == 0);
     CHECK(gnu_memory_map(&p->memory, 0x10000, 8192, 3, 0) == 0);
     const char marker[] = "test";
@@ -89,7 +93,7 @@ int main(void) {
     CHECK(gnu_memory_unmap(&p->memory, 0x10000, 4096) == 0);
     gnu_memory_destroy(&p->memory);
 #if defined(__linux__)
-    /* Guest pages sharing a host page (larger than 4 KiB here, or with SNX_HOST_PAGE): it is as permissive as the
+    /* Guest pages sharing a host page (larger than 4 KiB here, or with --host-page): it is as permissive as the
        most permissive of them, and less again when that one changes */
     CHECK(gnu_memory_init(&p->memory) == 0);
     if (p->memory.host_page > 4096) {

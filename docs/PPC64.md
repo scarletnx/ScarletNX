@@ -82,9 +82,9 @@ when mapped again, as on the console. The differences from a 4 KiB host:
 - The Linux runtime (`src/gnuabi/`) protects each host page as the most permissive of its guest pages, so a write to
   compiled code beside writable data in one host page isn't seen.
 
-The runtime's setting `host_page=16384` or `65536` makes any machine work in those pages, which is how the tests and
-CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`, `nx_runtime_homebrew_64k_pages`; for `scarletnx-gnuabi`,
-`SNX_HOST_PAGE` in the environment, `gnuabi_memory_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by
+The runtime's setting `host_page=16384` or `65536` (`scarletnx-gnuabi --host-page=N`) makes any machine work in those
+pages, which is how the tests and CI check these paths on 4 KiB hosts (`ldr_service_64k_pages`,
+`nx_runtime_homebrew_64k_pages`, `gnuabi_memory_64k_pages`); `memory_accounting` runs as on 16 and 64 KiB hosts by
 itself.
 
 ## What differs from the other hosts
