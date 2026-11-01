@@ -16,6 +16,7 @@ enum {
     OLD_COPY,   /* its value is the setting's */
     OLD_SET,    /* set at all, to anything: the setting is `to` */
     OLD_SIGNAL, /* "signal" alone: the setting is `to`; another value did nothing */
+    OLD_SWITCH, /* empty or starting with 0: the setting is 0, else 1 */
 };
 typedef struct {
     const char* name;  /* the variable */
@@ -40,6 +41,8 @@ void options_old_environment(void) {
         {"SNX_NO_TRAPS", getenv("SNX_NO_TRAPS"), OLD_SET, "memory_traps", "2"},
         {"SNX_TRAPS", getenv("SNX_TRAPS"), OLD_SIGNAL, "memory_traps", "1"},
         {"SNX_HOST_PAGE", getenv("SNX_HOST_PAGE"), OLD_COPY, "host_page", NULL},
+        {"SNX_ALIAS_CHECK", getenv("SNX_ALIAS_CHECK"), OLD_SWITCH, "gpu_page_check", NULL},
+        {"SNX_DIRTY_CHECK", getenv("SNX_DIRTY_CHECK"), OLD_SWITCH, "draw_state_check", NULL},
     };
     size_t i;
     int j, n = 0;
@@ -50,6 +53,8 @@ void options_old_environment(void) {
         if (!v->value) continue;
         if (v->how == OLD_COPY)
             given = v->value;
+        else if (v->how == OLD_SWITCH)
+            given = v->value[0] && v->value[0] != '0' ? "1" : "0";
         else if (v->how == OLD_SET || !strcmp(v->value, "signal"))
             given = v->to;
         for (j = 0; j < n && !first; j++)

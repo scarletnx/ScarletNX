@@ -14,7 +14,7 @@ struct PendLeaf {
     u32 pages;                  /* the leaf's pages with a count */
 };
 /* the tables that count guest pages, each listed when it first gains one, for pend_remap to redo their GPU pages; and
-   SNX_ALIAS_CHECK, which has pend_hit answer the old way too, translating the GPU range, and warn when only that way
+   gpu_page_check, which has pend_hit answer the old way too, translating the GPU range, and warn when only that way
    finds a result (-1 until read) */
 static struct {
     PendPages* table[8];
@@ -133,7 +133,7 @@ void pend_add(PendPages* t, u64 gva, u64 size, int delta) {
     count_add(t, delta);
     each_run(gva, size, add_pages, t, delta);
 }
-/* whether a guest page of [first, last] has a count: pend_hit's answer before the GPU pages, for SNX_ALIAS_CHECK */
+/* whether a guest page of [first, last] has a count: pend_hit's answer before the GPU pages, for gpu_page_check */
 static int hit_pages(void* table, u64 first, u64 last, int delta) {
     const PendPages* t = table;
     (void)delta;
@@ -159,9 +159,8 @@ static int gpu_ranges(u64 gva, u64 size, u64 r[4]) {
 }
 static int alias_check_on(void) {
     if (g_pending_pages.check < 0) {
-        const char* e = getenv("SNX_ALIAS_CHECK");
-        g_pending_pages.check = e && *e && *e != '0';
-        if (g_pending_pages.check) LOG("vulkan: SNX_ALIAS_CHECK: pending results are checked through the GMMU too\n");
+        g_pending_pages.check = g_settings.gpu_page_check != 0;
+        if (g_pending_pages.check) LOG("vulkan: gpu_page_check=1: pending results are checked through the GMMU too\n");
     }
     return g_pending_pages.check;
 }

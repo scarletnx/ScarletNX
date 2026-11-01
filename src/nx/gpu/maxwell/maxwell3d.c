@@ -21,19 +21,18 @@
    reads as written after anything asked before. Exact per page: a texture is dirty only when a write touched one of
    its own pages. Writers take the lock, readers don't (gpu_mem_dirty_since); the generation is published with
    release order for those reads.
-   SNX_ALIAS_CHECK keeps the guest-address table as well and has gpu_mem_dirty_since answer the old way too,
+   gpu_page_check=1 keeps the guest-address table as well and has gpu_mem_dirty_since answer the old way too,
    translating the range, warning when only that way finds a write */
 static PMutex g_wlk = PMUTEX_INIT;
 static WritePages g_wgpu, g_wcpu;
 static u64 g_wgen;
-static int g_wcheck = -1; /* SNX_ALIAS_CHECK, -1 until read */
+static int g_wcheck = -1; /* gpu_page_check, -1 until read */
 static int wcheck_on(void) {
     int c = __atomic_load_n(&g_wcheck, __ATOMIC_RELAXED);
     if (c < 0) { /* threads reading it at once all read the same */
-        const char* e = getenv("SNX_ALIAS_CHECK");
-        c = e && *e && *e != '0';
+        c = g_settings.gpu_page_check != 0;
         if (__atomic_exchange_n(&g_wcheck, c, __ATOMIC_RELAXED) < 0 && c)
-            LOG("gpu: SNX_ALIAS_CHECK: GPU-side writes are checked through the GMMU too\n");
+            LOG("gpu: gpu_page_check=1: GPU-side writes are checked through the GMMU too\n");
     }
     return c;
 }
@@ -147,13 +146,10 @@ static u32 topology_of(const u32* r, u32 topology) {
     }
 }
 
-/* SNX_DIRTY_CHECK: each draw's state, kept from the register groups, is compared with its registers read again */
+/* draw_state_check=1: each draw's state, kept from the register groups, is compared with its registers read again */
 static int dirty_check(void) {
     static int on = -1;
-    if (on < 0) {
-        const char* e = getenv("SNX_DIRTY_CHECK");
-        on = e && *e && *e != '0';
-    }
+    if (on < 0) on = g_settings.draw_state_check != 0;
     return on;
 }
 void (*g_gpu_verify_draw)(GpuChannel* ch, const DrawCall* dc);
@@ -166,7 +162,7 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
     if (dirty_check()) {
         u32 stale = mx_draw_state_stale(ch);
         if (stale)
-            WARN_LIMIT(32, "gpu: SNX_DIRTY_CHECK: the draw state's groups %x differ from the registers\n", stale);
+            WARN_LIMIT(32, "gpu: draw_state_check=1: the draw state's groups %x differ from the registers\n", stale);
     }
     DrawCall dc = {topology_of(ch->r3d, topology),
                    (u32)indexed,
