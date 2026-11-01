@@ -44,8 +44,17 @@ static int dma(const GpuDmaOp* o) {
     VkBuffer sb = VK_NULL_HANDLE, scr;
     VkCommandBuffer cb;
     VkOwnRes* d;
+    /* the destination's bytes the lines land in: a block linear side's rows of blocks they touch, as the rest of the
+       surface keeps its bytes and their owner */
+    VkBlMove md = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, dv, o->dst.z, 1, pb};
+    u64 dlo = 0, dhi = dspan;
+    if (o->dst.bl) {
+        if (!dv) return 1; /* every line past the surface: nothing lands */
+        vk_bl_range(&md, &dlo, &dhi);
+    }
+    u64 dlen = dhi - dlo;
     vk_render_end();
-    if (dspan > g_vk.alloc_cap || sspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(scratch_size, &cap))) return 0;
+    if (dlen > g_vk.alloc_cap || sspan > g_vk.alloc_cap || !(scr = vk_bl_scratch(scratch_size, &cap))) return 0;
     if (!o->fill) {
         int got;
         if (o->snap) { /* the source as the caller read it */
@@ -59,9 +68,9 @@ static int dma(const GpuDmaOp* o) {
             got = stage_range(o->src.addr, sspan, &sb, &sat);
         if (!got) return 0;
     }
-    /* the destination's span as it is, read straight into the buffer that becomes its owner */
-    d = vk_own_res_new(dspan);
-    if (!d || !vk_guest_read_seen(o->dst.addr, dspan, d->buf, 0)) {
+    /* those bytes as they are, read straight into the buffer that becomes their owner */
+    d = vk_own_res_new(dlen);
+    if (!d || !vk_guest_read_seen(o->dst.addr + dlo, dlen, d->buf, 0)) {
         if (d) vk_own_res_unref(d);
         return 0;
     }
@@ -101,11 +110,8 @@ static int dma(const GpuDmaOp* o) {
     VkBuffer tb = d->buf;
     u64 tat = 0;
     u32 tp = o->dst.pitch, tl = dv;
-    VkBlMove md = {o->dst.wb, o->dst.h, o->dst.bh, o->dst.bd, o->dst.oy, dv, o->dst.z, 1, pb};
-    u64 dlo = 0, dhi;
     if (o->dst.bl) {
-        vk_bl_range(&md, &dlo, &dhi);
-        if (dv) ok = ok && vk_bl_move(cb, &md, 0, d->buf, dlo, scr, at_b);
+        ok = ok && vk_bl_move(cb, &md, 0, d->buf, 0, scr, at_b);
         tb = scr;
         tat = at_b + o->dst.ox;
         tp = pb;
@@ -121,21 +127,28 @@ static int dma(const GpuDmaOp* o) {
         } else
             vk_copy_rows(cb, ib, iat, ip, tb, tat, tp, o->line_out, tl);
         vk_all_barrier(cb);
-        if (ok && o->dst.bl && dv) ok = vk_bl_move(cb, &md, 1, d->buf, dlo, scr, at_b);
+        if (ok && o->dst.bl) ok = vk_bl_move(cb, &md, 1, d->buf, 0, scr, at_b);
         vk_all_barrier(cb);
     }
-    if (ok) { /* the destination's span is the buffer's from now on, run by run of guest memory */
+    /* the textures over a block linear destination take its rows now in scratch */
+    Surf* hit[8];
+    int hits = ok && tl && o->dst.bl && !o->dst.bd && !o->dst.z
+                   ? vk_tex_dma_rows(o->dst.addr, o->dst.wb, o->dst.bh, o->dst.ox, o->dst.oy, o->line_out, dv, scr,
+                                     at_b + o->dst.ox, pb, hit, 8)
+                   : 0;
+    if (ok) { /* those bytes are the buffer's from now on, run by run of guest memory */
         u64 off = 0;
-        while (off < dspan) {
-            u64 cpu = 0, n = gmmu_run(o->dst.addr + off, dspan - off, &cpu);
+        while (off < dlen) {
+            u64 cpu = 0, n = gmmu_run(o->dst.addr + dlo + off, dlen - off, &cpu);
             if (!n) { /* an unmapped page takes no write */
-                n = 0x1000 - ((o->dst.addr + off) & 0xFFF);
-                if (n > dspan - off) n = dspan - off;
+                n = 0x1000 - ((o->dst.addr + dlo + off) & 0xFFF);
+                if (n > dlen - off) n = dlen - off;
             } else
                 vk_own_publish(cpu, n, d, off);
             off += n;
         }
-        gpu_mem_written(o->dst.addr, dspan);
+        gpu_mem_written(o->dst.addr + dlo, dlen);
+        vk_tex_dma_seen(hit, hits);
     } else
         LOG_LIMIT(4, "gpu: a DMA copy of %u lines of %u bytes exceeds the device's limits: skipped\n", lines,
                   o->line_out);

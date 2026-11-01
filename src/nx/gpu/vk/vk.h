@@ -647,6 +647,15 @@ u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen);
 void vk_tex_note_writeback(Surf* s);
+/* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
+   byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
+   is that surface, so its image keeps them without loading the whole texture again (the console's copy changes
+   those bytes only). A texture qualifies when no engine wrote its memory since its last check (what it lacks would
+   be lost), and it is 2D, of one sample, and loaded as memory holds it. Into hit (max of them), for vk_tex_dma_seen
+   once the copy's write is published; how many */
+int vk_tex_dma_rows(u64 gva, u32 wb, u32 bh, u32 ox, u32 oy, u32 line_bytes, u32 rows, VkBuffer buf, u64 rows_at,
+                    u32 rows_pitch, Surf** hit, int max);
+void vk_tex_dma_seen(Surf** hit, int n); /* their memory as of now is the copy's, which they hold */
 void vk_rt_drawn(Surf* s);      /* a render target was drawn to (gpu/vk/render.c) */
 void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
