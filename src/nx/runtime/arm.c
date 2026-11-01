@@ -11,6 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/kernel/kernel_int.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -148,28 +149,59 @@ static void stop(KThread* t, const char* what, u32 pc, u32 detail) {
     fatal("The game stopped at %x: %s. See the .log for details.", pc, what);
 }
 
+/* the block at c's r15, in the state its CPSR says */
+static SnxArmBlock next_block(KThread* t, SnxArmCPU* c) {
+    u32 pc = c->r[15];
+    int thumb = (c->cpsr & SNX_ARM_T) != 0;
+    if (UNLIKELY(!pc)) svc_exit_thread(t); /* the entry function returned (lr was 0) */
+    if (UNLIKELY(!thumb && (pc & 3))) stop(t, "a branch to a misaligned A32 address", pc, pc);
+    SnxArmBlock b = lookup(pc, thumb);
+    if (UNLIKELY(!b)) stop(t, "a branch to an address with no code", pc, pc);
+    return b;
+}
+
+/* runs block b, then what its exit asks for */
+static void run_block(KThread* t, SnxArmCPU* c, SnxArmBlock b) {
+    b(c);
+    if (UNLIKELY(c->exit)) {
+        u32 e = c->exit;
+        c->exit = SNX_ARM_OK;
+        if (e == SNX_ARM_SVC)
+            snx_svc32(c, c->syndrome);
+        else
+            stop(t, exit_name(e), c->r[15], c->syndrome);
+    }
+    /* a thread of higher priority waits for its core: blocks end at every branch, so this is as often as the
+       64-bit code's backward branches check it */
+    if (UNLIKELY(__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED))) core_poll(t);
+}
+
 void arm_thread_run(KThread* t) {
     SnxArmCPU* c = &t->arm;
     LOGV("[thread %llu] starts at %x%s\n", (unsigned long long)t->id, c->r[15], c->cpsr & SNX_ARM_T ? " (Thumb)" : "");
+    for (;;) run_block(t, c, next_block(t, c));
+}
+
+static KThread* arm_thread(SnxArmCPU* c) { return (KThread*)(void*)((char*)c - offsetof(KThread, arm)); }
+
+CPU* hook_a32_cpu(SnxArmCPU* arm) { return &arm_thread(arm)->cpu; }
+
+SnxArmBlock* arm_slot(u32 addr, int thumb) { return slot(addr, thumb); }
+SnxArmBlock arm_block(u32 addr, int thumb) { return lookup(addr, thumb); }
+int arm_code_range(u64* lo, u64* hi) {
+    *lo = g_lo;
+    *hi = g_hi;
+    return g_hi > g_lo;
+}
+SnxArmCPU* arm_cpu(CPU* c) { return &((KThread*)(void*)((char*)c - offsetof(KThread, cpu)))->arm; }
+
+void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
+    KThread* t = arm_thread(c);
+    SnxArmBlock b = first ? first : next_block(t, c);
     for (;;) {
-        u32 pc = c->r[15];
-        int thumb = (c->cpsr & SNX_ARM_T) != 0;
-        if (UNLIKELY(!pc)) svc_exit_thread(t); /* the entry function returned (lr was 0) */
-        if (UNLIKELY(!thumb && (pc & 3))) stop(t, "a branch to a misaligned A32 address", pc, pc);
-        SnxArmBlock b = lookup(pc, thumb);
-        if (UNLIKELY(!b)) stop(t, "a branch to an address with no code", pc, pc);
-        b(c);
-        if (UNLIKELY(c->exit)) {
-            u32 e = c->exit;
-            c->exit = SNX_ARM_OK;
-            if (e == SNX_ARM_SVC)
-                snx_svc32(c, c->syndrome);
-            else
-                stop(t, exit_name(e), c->r[15], c->syndrome);
-        }
-        /* a thread of higher priority waits for its core: blocks end at every branch, so this is as often as the
-           64-bit code's backward branches check it */
-        if (UNLIKELY(__atomic_load_n(&t->cpu.poll, __ATOMIC_RELAXED))) core_poll(t);
+        run_block(t, c, b);
+        if (c->r[15] == (stop_at & ~1u) && !(c->cpsr & SNX_ARM_T) == !(stop_at & 1)) return;
+        b = next_block(t, c);
     }
 }
 

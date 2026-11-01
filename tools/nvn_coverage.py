@@ -116,8 +116,8 @@ def abi_type(declaration, argument=False):
         return 'addr'
     known = {'void': 'void', 'NVNboolean': 'bool', 'int': 'i32', 'int32_t': 'i32', 'u32': 'u32',
              'uint32_t': 'u32', 'i32': 'i32', 'float': 'f32', 'f32': 'f32', 'double': 'f64',
-             'uint64_t': 'u64', 'u64': 'u64', 'size_t': 'u64', 'i64': 'i64', 'int64_t': 'i64',
-             'ptrdiff_t': 'i64', 'NVNbufferAddress': 'u64', 'NVNtextureHandle': 'u64',
+             'uint64_t': 'u64', 'u64': 'u64', 'size_t': 'usize', 'usize': 'usize', 'i64': 'i64', 'int64_t': 'i64',
+             'ptrdiff_t': 'isize', 'isize': 'isize', 'NVNbufferAddress': 'u64', 'NVNtextureHandle': 'u64',
              'NVNimageHandle': 'u64', 'NVNcommandHandle': 'u64'}
     return known.get(text)
 
@@ -131,7 +131,7 @@ def checked_binding(line, apis, functions):
     if handler not in functions:
         raise ValueError('binding needs a known API and an implemented handler: ' + line)
     args = parameters(args)
-    if any(not re.fullmatch(r'(addr|bool|i32|u32|i64|u64|f32|f64) [A-Za-z_]\w*', a) for a in args):
+    if any(not re.fullmatch(r'(addr|bool|i32|u32|i64|u64|usize|isize|f32|f64) [A-Za-z_]\w*', a) for a in args):
         raise ValueError('invalid hook arguments: ' + line)
     types = [a.split()[0] for a in args]
     api = apis[name]
@@ -145,7 +145,8 @@ def checked_binding(line, apis, functions):
     native = impl[0]
     actual = [abi_type(a, True) for a in native['args'][1:]]
     # Hook bool adapters use int on the host. Do not permit other width or sign changes.
-    compatible = lambda a, b: a == b or (a == 'bool' and b == 'i32') or (a == 'addr' and b == 'u64')
+    compatible = lambda a, b: (a == b or (a == 'bool' and b == 'i32') or (a in ('addr', 'usize') and b == 'u64') or
+                               (a == 'isize' and b == 'i64'))
     if len(actual) != len(types) or any(not compatible(a, b) for a, b in zip(types, actual)) or not compatible(
             ret or 'void', abi_type(native['return'])):
         raise ValueError('handler ABI differs: ' + line)

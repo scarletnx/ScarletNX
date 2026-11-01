@@ -7,6 +7,7 @@
    nvnCommandBufferCopyCommands copies a recording's records into another command buffer so the game can take the
    source's memory back at once: the copy follows the source's JUMPs, keeps its CALLs, and moves the texture snapshots a
    record carries to its own copy. The records are walked here as the replay walks them (gpu/nvn/nvn_replay.c) */
+#include "nx/runtime/arm.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
@@ -35,6 +36,16 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
 void nvn_verify_memory_back(u64 mem, u64 size) {
     (void)mem;
     (void)size;
+}
+/* a 64-bit game's: no 32-bit thread runs the game's callbacks */
+SnxArmCPU* arm_cpu(CPU* c) {
+    (void)c;
+    return NULL;
+}
+void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
+    (void)c;
+    (void)first;
+    (void)stop_at;
 }
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
@@ -213,6 +224,7 @@ int main(void) {
         walk(h3, &a);
         check(a.n == 6 && (a.at[5] & ~0xffffull) == lent_at && g_lent == top, "the runtime's memory takes no more");
     }
+
 
     /* one game's display lists: recorded once into scratch memory, GetCommandMemoryUsed gives the size the game
        allocates for each (from a heap sized by the console's figures), and the list is recorded again into exactly

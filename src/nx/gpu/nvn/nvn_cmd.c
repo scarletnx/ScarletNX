@@ -32,6 +32,7 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_verify.h"
 #include "gpu/nvn/nvn.hook.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <string.h>
@@ -52,6 +53,19 @@
    NVN call may clobber */
 static void guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     u64 lr = c->x[30], pc = fn;
+    if (g_nvn.direct.a32) { /* a 32-bit game's callback: AAPCS32, each argument in a word, and back to lr */
+        SnxArmCPU* a = arm_cpu(c);
+        u32 lr32 = a->r[14];
+        a->r[0] = (u32)a0;
+        a->r[1] = (u32)a1;
+        a->r[2] = (u32)a2;
+        a->r[3] = (u32)a3;
+        a->r[15] = (u32)fn & ~1u;
+        a->cpsr = (a->cpsr & ~SNX_ARM_T) | (fn & 1 ? SNX_ARM_T : 0);
+        arm_run(a, NULL, lr32);
+        a->r[14] = lr32;
+        return;
+    }
     c->x[0] = a0;
     c->x[1] = a1;
     c->x[2] = a2;
@@ -60,6 +74,9 @@ static void guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     while ((pc = c->pc) != lr);
     c->x[30] = lr;
 }
+
+/* the return address of the NVN call that c runs: its call site */
+static u64 nvn_caller(CPU* c) { return g_nvn.direct.a32 ? arm_cpu(c)->r[14] : c->x[30]; }
 
 /* a record's header: its op, its size, and the driver's bytes for its command (which a copy of it counts again) */
 static void put_hdr(u64 at, u32 op, u32 size, u32 cost) {
@@ -574,8 +591,9 @@ void nvn_CommandBufferSetRenderTargets(CPU* c, u64 cb, i32 n, u64 colors, u64 vi
     r = (NvnPSetRT*)(void*)GP(payload);
     r->count = n;
     for (i = 0; i < n; i++) {
-        r->color[i] = colors ? tex_snap(payload, SNAP_OFF(NvnPSetRT), i, gr64(colors + 8 * (u64)i)) : 0;
-        copy_view(&r->cview[i], &r->has_cview[i], views ? gr64(views + 8 * (u64)i) : 0);
+        r->color[i] =
+            colors ? tex_snap(payload, SNAP_OFF(NvnPSetRT), i, nvn_gptr(colors + nvn_ptr_bytes() * (u64)i)) : 0;
+        copy_view(&r->cview[i], &r->has_cview[i], views ? nvn_gptr(views + nvn_ptr_bytes() * (u64)i) : 0);
     }
     r->depth = tex_snap(payload, SNAP_OFF(NvnPSetRT), n, depth);
     copy_view(&r->dview, &r->has_dview, depth_view);
@@ -1385,7 +1403,7 @@ void nvn_CommandBufferDrawElementsBaseVertex(CPU* c, u64 cb, i32 prim, i32 type,
 }
 /* caller: the game's call site, which names the dispatcher */
 void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
-    u64 caller = c->x[30];
+    u64 caller = nvn_caller(c);
     NvnPDispatch* r = REC(c, cb, OP_DISPATCH, NvnPDispatch, COST_RECORD);
     r->x = x;
     r->y = y;
@@ -1394,7 +1412,7 @@ void nvn_CommandBufferDispatchCompute(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
 }
 /* the group counts at ind are read by the GPU when it dispatches */
 void nvn_CommandBufferDispatchComputeIndirect(CPU* c, u64 cb, u64 ind) {
-    u64 caller = c->x[30];
+    u64 caller = nvn_caller(c);
     NvnPDispatch* r = REC(c, cb, OP_DISPATCH, NvnPDispatch, COST_RECORD);
     LOG_LIMIT(1, "nvn: the game records indirect dispatches (DispatchComputeIndirect)\n");
     r->caller = caller;

@@ -8,6 +8,7 @@ hook narrow_u16(u16 a) -> u16 = test_narrow_u16
 hook flag(bool on) -> bool = test_flag
 hook half(f64 x) -> f64 = test_half
 hook single(f32 x) -> f32 = test_single
+hook sizes(usize n, isize d, u64 w) -> isize = test_sizes
 family other
 hook nothing() = test_nothing
 hook eight(u64 a, u64 b, u64 c3, u64 d, u64 e, u64 f, u64 g, u64 h) -> u64 = test_eight

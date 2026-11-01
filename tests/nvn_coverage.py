@@ -34,7 +34,7 @@ int nvn_DeviceIsExternalDebuggerAttached(CPU* c, u64 d) { return 0; }
         self.apis = {r['name']: r for r in reference['apis']}
         runtime = coverage.scan_file(('runtime', str(self.source)))
         self.functions = {r['name']: [r] for r in runtime['functions']}
-        self.binding = ('hook nvnCommandBufferGetCommandMemorySize(addr cb) -> u64 = '
+        self.binding = ('hook nvnCommandBufferGetCommandMemorySize(addr cb) -> usize = '
                         'nvn_CommandBufferGetCommandMemorySize')
 
     def test_lexical_boundaries(self):
@@ -68,7 +68,7 @@ hook nvnDeviceGetInteger(addr d, i32 item, addr out) = custom_get_integer
         self.assertEqual(coverage.checked_binding(implicit, self.apis, self.functions), implicit)
 
     def test_reject_width_sign_and_absent_handler(self):
-        for bad in (self.binding.replace('-> u64', '-> i64'),
+        for bad in (self.binding.replace('-> usize', '-> i64'),
                     self.binding.replace('addr cb', 'u32 cb'),
                     self.binding.replace('= nvn_', '= absent_')):
             with self.subTest(binding=bad), self.assertRaises(ValueError):

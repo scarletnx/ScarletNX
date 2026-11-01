@@ -5,6 +5,7 @@
    (nvn_draw.c) turns the records into the renderer's draw state, which a renderer of the test's takes; the device,
    textures, samplers, programs, events, syncs and state objects (nvn_object.c); and the queue and window
    (nvn_queue.c) */
+#include "nx/runtime/arm.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_replay.h"
@@ -68,6 +69,16 @@ void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
     (void)ds;
     (void)dc;
 }
+/* a 64-bit game's: no 32-bit thread runs the game's callbacks */
+SnxArmCPU* arm_cpu(CPU* c) {
+    (void)c;
+    return NULL;
+}
+void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at) {
+    (void)c;
+    (void)first;
+    (void)stop_at;
+}
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
@@ -116,6 +127,13 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
     (void)func;
     (void)item;
     (void)out;
+    return 0;
+}
+int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
+    return nvn_driver_info(mem, lo, hi, func, item, out);
+}
+int arm_code_range(u64* lo, u64* hi) {
+    *lo = *hi = 0;
     return 0;
 }
 /* the GPU's addresses are the guest's: a pool at its storage */

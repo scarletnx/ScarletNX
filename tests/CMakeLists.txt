@@ -611,7 +611,7 @@ add_executable(snx-test-nvn-header nvn_header.c)
 snx_test_target(snx-test-nvn-header 99)
 target_include_directories(snx-test-nvn-header PRIVATE "${PROJECT_SOURCE_DIR}/src")
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
-snx_hookgen(snx-test-nvn-header SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-header SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_header COMMAND snx-test-nvn-header)
 # nvn_direct's TIC and TSC encoders (src/nx/gpu/nvn/nvn_tic.c) read back through the renderer's decoders
 add_executable(snx-test-nvn-descriptors nvn_descriptors.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c"
@@ -781,7 +781,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 add_executable(snx-test-hook-adapters hook_adapters.c)
 snx_test_target(snx-test-hook-adapters 99)
 target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
-snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook")
+snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook" A32)
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
 # versioned hooks and struct layouts (tests/hook/versions.hook): the entries by version, the layout variant each
 # adapter passes, the SDK labels a module's bytes hold and the entry hook_select picks for a module's version
@@ -819,7 +819,7 @@ add_executable(snx-test-nvn-commands nvn_commands.c "${PROJECT_SOURCE_DIR}/src/n
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
 snx_test_target(snx-test-nvn-commands 11)
 target_include_directories(snx-test-nvn-commands PRIVATE "${PROJECT_SOURCE_DIR}/src")
-snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-commands SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_commands COMMAND snx-test-nvn-commands)
 # nvn_direct's constant banks and sprite origin against the game's driver (nvn_verify): nvn_draw_init, a program's bind
 # and a draw's dynamic state, through the public records
@@ -828,7 +828,7 @@ add_executable(snx-test-nvn-draw-banks nvn_draw_banks.c "${PROJECT_SOURCE_DIR}/s
 snx_test_target(snx-test-nvn-draw-banks 11)
 target_include_directories(snx-test-nvn-draw-banks PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-draw-banks PRIVATE m)
-snx_hookgen(snx-test-nvn-draw-banks SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-draw-banks SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_draw_banks COMMAND snx-test-nvn-draw-banks)
 # a window's present transform against the game's driver (nvn_verify): lower left is queued to vi flipped
 add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c"
@@ -836,7 +836,7 @@ add_executable(snx-test-nvn-present-flip nvn_present_flip.c "${PROJECT_SOURCE_DI
 snx_test_target(snx-test-nvn-present-flip 11)
 target_include_directories(snx-test-nvn-present-flip PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-present-flip PRIVATE m)
-snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
 # the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
 add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
@@ -862,7 +862,7 @@ add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
-snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_names COMMAND snx-test-nvn-names)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
