@@ -37,6 +37,8 @@ typedef struct {
     u64 zcull; /* the ZCull save area of a depth texture, 0 for any other */
 } NvnTexStorage;
 void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s);
+/* the ZCull save area of a depth (or zcull stencil) texture of d's extent */
+u64 nvn_tex_zcull(const NvnTexDesc* d);
 /* bytes per block (0 for a format it doesn't know), and the block's width and height */
 int nvn_fmt_bpb(int format, int* bw, int* bh);
 

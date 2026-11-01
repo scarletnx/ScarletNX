@@ -168,6 +168,10 @@ void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s) {
     (void)d;
     memset(s, 0, sizeof *s);
 }
+u64 nvn_tex_zcull(const NvnTexDesc* d) {
+    (void)d;
+    return 0;
+}
 
 static int failures;
 static void check(int ok, const char* what, ...) {
