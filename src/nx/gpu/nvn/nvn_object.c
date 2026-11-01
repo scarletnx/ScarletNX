@@ -726,7 +726,7 @@ i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
     return (i32)(0x100 | st.kind);
 }
 /* The size of a depth texture's ZCull save area, as the driver answers; the drivers before 53.209 give a STENCIL8
-   texture one without NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL too (nvn_verify). The runtime does no ZCull and never
+   texture one without NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL too (measured against the driver). The runtime does no ZCull and never
    touches it, but games allocate it from their pools */
 static u64 zcull_size(const NvnTexDesc* d) {
     NvnTexStorage st;

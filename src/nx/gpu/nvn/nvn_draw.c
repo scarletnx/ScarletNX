@@ -21,7 +21,6 @@
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
-#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
@@ -417,7 +416,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.stencil_test = (u8)nvn_field(s, NVN_DS_STENCIL);
     y.alpha_test = alpha != NVN_ALPHA_FUNC_ALWAYS;
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
-    /* the window origin register as the game's driver writes it (nvn_verify, 43 games of NVN 53.5 to 55.15): the
+    /* the window origin register as the game's driver writes it (measured in 43 games of NVN 53.5 to 55.15): the
        flip, which reverses the facing, for a lower left origin whatever the depth mode, and never the lower left bit,
        so y counts from the top of the targets as on the driver's. A driver older than 53.105 (53.13) flips for
        near = -w too, unless the origin is lower left */
@@ -554,7 +553,6 @@ static void draw_arrays(NvnDraw* d, u64 payload, u32 size) {
     }
     if (d->render_off) return;
     sync(d, 0, dc.base_instance);
-    if (g_settings.nvn_verify) nvn_verify_live_draw(&d->ds, &dc);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
 /* how far an indirect draw's indices may reach, which NVN doesn't say (DrawElementsIndirect takes the index buffer's
@@ -595,7 +593,6 @@ static void draw_elements(NvnDraw* d, u64 payload, u32 size) {
     }
     if (d->render_off) return;
     sync(d, (i32)dc.base_vertex, dc.base_instance);
-    if (g_settings.nvn_verify) nvn_verify_live_draw(&d->ds, &dc);
     if (g_renderer->draw) g_renderer->draw(&d->ds, &dc, &d->own);
 }
 

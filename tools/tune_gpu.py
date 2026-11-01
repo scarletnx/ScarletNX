@@ -41,7 +41,7 @@ AXES = {'vk_descriptors': ['0', '1'], 'vk_record': ['1', '0'], 'emulated_cores':
         'vk_memory': ['0', '1', '2'], 'pipeline_threads': ['0', '1', '2'],
         'jit_threads': ['0', '1', '4']}
 FIXED = {'async_pipelines': '0', 'compute': '1', 'vk_gpu_profile': '0',
-         'vk_buffer_stats': '0', 'nvn_verify': '0'}
+         'vk_buffer_stats': '0'}
 
 
 def settings_args(values):

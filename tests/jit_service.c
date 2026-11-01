@@ -104,7 +104,7 @@ static void report(const SnxJitReport* r) {
     }
 }
 
-/* the function at 0x3400 behind a wrapper, as gpu/nvn_trace.c puts one into an empty slot: its original is the miss */
+/* the function at 0x3400 behind a wrapper put into an empty slot: its original is the miss */
 static void wrapper(CPU* c, u64 e) {
     __atomic_fetch_add(&wrapped, 1, __ATOMIC_RELAXED);
     rt.miss(c, e);

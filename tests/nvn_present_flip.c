@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_QueuePresentTexture's transform against the game's driver (nvn_verify, NVN 55.12): a lower left window is
+/* nvn_QueuePresentTexture's transform against the game's driver (measured on NVN 55.12): a lower left window is
    queued to vi flipped (FlipV, 2), an upper left one as it is (0). The present is caught at nvn_replay_present */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_queue.h"

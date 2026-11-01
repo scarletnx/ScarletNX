@@ -83,7 +83,7 @@ void kernel_load_symbols(void) {
     if (g_hle.debug.nsyms) qsort(g_hle.debug.syms, g_hle.debug.nsyms, sizeof *g_hle.debug.syms, sym_cmp);
     LOG("symbols: %u functions named\n", g_hle.debug.nsyms);
 }
-/* the address of the function the game exports as name (nvn_trace.c finds nvnBootstrapLoader so), 0 when none */
+/* the address of the function the game exports as name (gpu/nvn/nvn_direct.c finds nvnBootstrapLoader so), 0 when none */
 u64 kernel_find_symbol_exact(const char* name) {
     size_t len = strlen(name) + 1;
     for (u32 i = 0; i < g_hle.debug.nsyms; i++)

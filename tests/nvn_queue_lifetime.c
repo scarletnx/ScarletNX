@@ -7,7 +7,6 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_copy.h"
-#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
 #include "nx/hle/services/nvdrv.h"
@@ -122,7 +121,6 @@ void nvn_cmd_describe(u64 p, char* out, size_t n) {
     (void)p;
     if (n) out[0] = 0;
 }
-void nvn_verify_replay_submit(u32 queue) { (void)queue; }
 u64 guest_ticks(void) { return 0; }
 u64 gmmu_translate(u64 gva) { return gva; }
 u32 gmem_r32(u64 gva) { return gr32(gva); }
