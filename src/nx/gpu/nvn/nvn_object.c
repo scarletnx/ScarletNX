@@ -624,7 +624,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     }
     memcpy(&tex, GP(t), sizeof tex);
     if (v) memcpy(&view, GP(v), sizeof view);
-    if (!nvn_tic_encode(&tex, v ? &view : NULL, image, tic))
+    if (!nvn_tic_encode(&tex, v ? &view : NULL, image, g_nvn.direct.api, tic))
         LOG_LIMIT(8, "nvn: a texture of format %#x, which has no texture descriptor: an empty one at %d\n",
                   v && (view.set & NVN_VIEW_FORMAT) ? view.format : tex.d.format, id);
     memcpy(GP(slot), tic, sizeof tic);

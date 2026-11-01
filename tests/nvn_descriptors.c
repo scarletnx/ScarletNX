@@ -107,7 +107,7 @@ static void check_formats(void) {
         TicFields d;
         NvnTexture t = texture(f, NVN_TEXTURE_TARGET_2D, 300, 200, 1, 5);
         NvnTexLayout l;
-        check(nvn_tic_encode(&t, NULL, 0, tic), "a descriptor for the format", f);
+        check(nvn_tic_encode(&t, NULL, 0, 0, tic), "a descriptor for the format", f);
         tic_decode(tic, &d);
         nvn_tex_layout(&t.d, &l);
         check((d.format & 0x7F) == formats[i].code, "the hardware's format code", f);
@@ -138,7 +138,7 @@ static void check_targets(void) {
     /* a 2D array: its layers in the depth; a view's layers move the address by whole layers */
     t = texture(0x25, NVN_TEXTURE_TARGET_2D_ARRAY, 256, 128, 6, 3);
     nvn_tex_layout(&t.d, &l);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 5 && d.depth == 6 && d.width == 256 && d.height == 128, "a 2D array's layers", 0x25);
     memset(&v, 0, sizeof v);
@@ -147,7 +147,7 @@ static void check_targets(void) {
     v.layers = 3;
     v.base_level = 1;
     v.levels = 1;
-    nvn_tic_encode(&t, &v, 0, tic);
+    nvn_tic_encode(&t, &v, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.address == t.gpu + 2 * l.layer_size && d.depth == 3, "a view of layers 2 to 4", 0x25);
     check(d.base_level == 1 && d.max_level == 1 && d.levels == 3, "a view of level 1", 0x25);
@@ -155,57 +155,114 @@ static void check_targets(void) {
     v.set = NVN_VIEW_TARGET | NVN_VIEW_FORMAT;
     v.target = NVN_TEXTURE_TARGET_2D;
     v.format = 0x38;
-    nvn_tic_encode(&t, &v, 0, tic);
+    nvn_tic_encode(&t, &v, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 1 && d.srgb && d.depth == 1, "a view as 2D in sRGB", 0x25);
     /* a cube map: 6 faces, one cube; a cube array counts its faces; as images, layers */
     t = texture(0x29, NVN_TEXTURE_TARGET_CUBEMAP, 64, 64, 6, 1);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 3 && d.depth == 1, "a cube map", 0x29);
-    nvn_tic_encode(&t, NULL, 1, tic);
+    nvn_tic_encode(&t, NULL, 1, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 5 && d.depth == 6, "a cube map as an image: its 6 layers", 0x29);
     t = texture(0x29, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, 64, 64, 12, 1);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 8 && d.depth == 2, "a cube array of 12 faces: 2 cubes", 0x29);
     /* 3D: its depth, and its block depth */
     t = texture(0x25, NVN_TEXTURE_TARGET_3D, 32, 32, 32, 1);
     nvn_tex_layout(&t.d, &l);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.type == 2 && d.depth == 32 && d.block_d == l.tile_d, "a 3D texture", 0x25);
     /* a pitch-linear texture: its stride */
     t = texture(0x25, NVN_TEXTURE_TARGET_2D, 100, 50, 1, 1);
     t.d.flags = NVN_TEXTURE_FLAGS_LINEAR;
     t.d.stride = 512;
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.header == 2 && d.type == 7 && d.pitch == 512 && d.width == 100, "a pitch-linear texture", 0x25);
     /* a buffer texture: its texels across words 3 and 4 */
     t = texture(0x0A, NVN_TEXTURE_TARGET_BUFFER, 100000, 1, 1, 1);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     tic_decode(tic, &d);
     check(d.header == 0 && d.type == 6 && d.buffer_width == 100000, "a buffer texture", 0x0A);
     /* depth reads red (Z24S8's in green) */
     t = texture(0x35, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     check(((tic[0] >> 19) & 7) == 3 && ((tic[0] >> 28) & 7) == 7, "Z24S8's depth in green, alpha one", 0x35);
     t.d.bits |= NVN_TEX_STENCIL;
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     /* its stencil as the game's driver describes it: R8G24 (0x0E), an integer R, (stencil, 0, 0, 1) */
     check((tic[0] & 0x7fffffffu) == 0x60124a0eu, "Z24S8's stencil as R8G24", 0x35);
     /* a swizzle: B G R ONE of RGBA8 */
     t = texture(0x25, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
     t.d.swizzle = (u16)(NVN_TEX_SWIZZLE_SET | 4 | 3 << 3 | 2 << 6 | 1 << 9);
-    nvn_tic_encode(&t, NULL, 0, tic);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
     check(((tic[0] >> 19) & 7) == 4 && ((tic[0] >> 22) & 7) == 3 && ((tic[0] >> 25) & 7) == 2 &&
               ((tic[0] >> 28) & 7) == 7,
           "a swizzle B G R ONE", 0x25);
     /* a format the encoder has no entry for: an empty descriptor */
     t = texture(0x19, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
-    check(!nvn_tic_encode(&t, NULL, 0, tic) && !tic[0] && !tic[1], "RGB8: no descriptor", 0x19);
+    check(!nvn_tic_encode(&t, NULL, 0, 0, tic) && !tic[0] && !tic[1], "RGB8: no descriptor", 0x19);
+}
+
+/* A depth or stencil texture's word 0 as each driver writes it: its channels, then the game's swizzle over them
+   (texture 285 of an API 55.15 game, (R, R, R, R): 0x2497ffaf; API 53.13's table: 0x7497ffaf and 0x76da4a29) */
+static void check_depth(void) {
+    const u32 v55 = 55u << 16 | 15, v53 = 53u << 16 | 13;
+    const u16 rrrr = (u16)(NVN_TEX_SWIZZLE_SET | 2 | 2 << 3 | 2 << 6 | 2 << 9);
+    u32 tic[8];
+    NvnTexture t = texture(0x34, NVN_TEXTURE_TARGET_CUBEMAP, 1, 1, 6, 1);
+    NvnView v;
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(tic[0] == 0x7017ffafu, "API 55's DEPTH32F: (d, 0, 0, 1)", 0x34);
+    t.d.swizzle = rrrr;
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(tic[0] == 0x2497ffafu, "API 55's DEPTH32F with the game's swizzle R R R R: depth in every channel", 0x34);
+    nvn_tic_encode(&t, NULL, 0, 0, tic);
+    check(tic[0] == 0x2497ffafu, "no API read: API 55's", 0x34);
+    t.d.swizzle = 0;
+    nvn_tic_encode(&t, NULL, 0, v53, tic);
+    check(tic[0] == 0x7497ffafu, "API 53's DEPTH32F: (d, d, d, 1)", 0x34);
+    /* a view's swizzle before the texture's: G B A ONE of (d, 0, 0, 1) */
+    memset(&v, 0, sizeof v);
+    v.set = NVN_VIEW_SWIZZLE;
+    v.swizzle[0] = 3;
+    v.swizzle[1] = 4;
+    v.swizzle[2] = 5;
+    v.swizzle[3] = 1;
+    t.d.swizzle = rrrr;
+    nvn_tic_encode(&t, &v, 0, v55, tic);
+    check(((tic[0] >> 19) & 0xfff) == (0u | 0u << 3 | 7u << 6 | 7u << 9), "a view's G B A ONE: 0, 0, 1, 1", 0x34);
+    /* Z24 formats: depth in G */
+    t = texture(0x35, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, v53, tic);
+    check(tic[0] == 0x76da4a29u, "API 53's DEPTH24_STENCIL8: (d, d, d, 1), d in G", 0x35);
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(tic[0] == 0x701a4a29u, "API 55's DEPTH24_STENCIL8: (d, 0, 0, 1), d in G", 0x35);
+    /* its stencil: R8G24 in both, API 53's stencil in every channel */
+    t.d.bits |= NVN_TEX_STENCIL;
+    nvn_tic_encode(&t, NULL, 0, v53, tic);
+    check(tic[0] == 0x24924a0eu, "API 53's DEPTH24_STENCIL8 stencil: (s, s, s, s)", 0x35);
+    t.d.swizzle = (u16)(NVN_TEX_SWIZZLE_SET | 2 | 2 << 3 | 0 << 6 | 1 << 9);
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(tic[0] == 0x70924a0eu, "API 55's stencil with R R ZERO ONE: (s, s, 0, 1), its one a float", 0x35);
+    /* STENCIL8: its R, an integer one, in either mode and API */
+    t = texture(0x31, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    nvn_tic_encode(&t, NULL, 0, v53, tic);
+    check(tic[0] == 0x6014921du, "API 53's STENCIL8", 0x31);
+    t.d.bits |= NVN_TEX_STENCIL;
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(tic[0] == 0x6014921du, "API 55's STENCIL8 in stencil mode", 0x31);
+    /* DEPTH32F_STENCIL8's stencil: G, (s, 0, 0, 1) in API 55, every channel in API 53 */
+    t = texture(0x36, NVN_TEXTURE_TARGET_2D, 64, 64, 1, 1);
+    t.d.bits |= NVN_TEX_STENCIL;
+    nvn_tic_encode(&t, NULL, 0, v55, tic);
+    check(((tic[0] >> 19) & 0xfff) == (3u | 0u << 3 | 0u << 6 | 6u << 9), "API 55's D32F_S8 stencil", 0x36);
+    nvn_tic_encode(&t, NULL, 0, v53, tic);
+    check(((tic[0] >> 19) & 0xfff) == (3u | 3u << 3 | 3u << 6 | 3u << 9), "API 53's D32F_S8 stencil", 0x36);
 }
 
 static void check_samplers(void) {
@@ -253,6 +310,7 @@ static void check_samplers(void) {
 int main(void) {
     check_formats();
     check_targets();
+    check_depth();
     check_samplers();
     if (!failures) printf("NVN's TIC and TSC entries decode as the renderer reads them (%d checks)\n", checks);
     return failures ? 1 : 0;
