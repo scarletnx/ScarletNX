@@ -137,7 +137,9 @@ int main(void) {
                      {NVN_FORMAT_DEPTH24_STENCIL8, 4, 0x53},
                      {NVN_FORMAT_DEPTH32F, 0, 0x86},
                      {NVN_FORMAT_DEPTH32F, 2, 0x87},
-                     {NVN_FORMAT_DEPTH32F, 4, 0x88}};
+                     {NVN_FORMAT_DEPTH32F, 4, 0x88},
+                     {NVN_FORMAT_DEPTH32F_STENCIL8, 0, 0xce},
+                     {NVN_FORMAT_DEPTH32F_STENCIL8, 4, 0xd0}};
             size_t i;
             for (i = 0; i < sizeof k / sizeof k[0]; i++) {
                 d = desc(k[i].samples ? NVN_TEXTURE_TARGET_2D_MULTISAMPLE : NVN_TEXTURE_TARGET_2D, k[i].format, 64, 64,

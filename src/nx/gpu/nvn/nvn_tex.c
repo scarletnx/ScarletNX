@@ -285,15 +285,15 @@ static u32 kind_of(const NvnTexDesc* d, Fmt t) {
         u8 plain, comp;
     } depth[] = {{NVN_FORMAT_STENCIL8, 0x2a, 0x2b},         {NVN_FORMAT_DEPTH16, 0x01, 0x07},
                  {NVN_FORMAT_DEPTH24, 0x46, 0x51},          {NVN_FORMAT_DEPTH32F, 0x7b, 0x86},
-                 {NVN_FORMAT_DEPTH24_STENCIL8, 0x46, 0x51}, {NVN_FORMAT_DEPTH32F_STENCIL8, 0xc3, 0xcf}};
+                 {NVN_FORMAT_DEPTH24_STENCIL8, 0x46, 0x51}, {NVN_FORMAT_DEPTH32F_STENCIL8, 0xc3, 0xce}};
     u32 step = s >= 8 ? 3 : s >= 4 ? 2 : s >= 2 ? 1 : 0;
     size_t i;
     if (d->target == NVN_TEXTURE_TARGET_BUFFER || (d->flags & NVN_TEX_LINEAR)) return 0;
     for (i = 0; i < sizeof depth / sizeof depth[0]; i++)
         if (depth[i].format == f) {
             if (!comp) return depth[i].plain;
-            /* the stencil formats' compression kinds are not read from the driver for more than one sample */
-            return f == NVN_FORMAT_STENCIL8 || f == NVN_FORMAT_DEPTH32F_STENCIL8 ? depth[i].comp : depth[i].comp + step;
+            /* STENCIL8's compression kind is not read from the driver for more than one sample */
+            return f == NVN_FORMAT_STENCIL8 ? depth[i].comp : depth[i].comp + step;
         }
     if (!comp || t.bw > 1 || t.bpb < 4) return 0xfe;
     /* the compression kinds by element size and samples: none (0 or 1), 2, 4, 8 */
