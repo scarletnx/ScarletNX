@@ -713,6 +713,7 @@ typedef struct VkOwnRes {
     VmaAllocation mem;
     u64 size;
     u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
+    u64 serial;  /* new with each write: what its bytes hash as (vk_guest_peek), never its address, a freed one's */
     u32 refs;    /* the creator's, and one an owned range */
 } VkOwnRes;
 int vk_own_init(void);
