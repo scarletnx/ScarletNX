@@ -1123,6 +1123,21 @@ setting Vita screenshot interval
     default 0
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
+setting Vita lockstep
+    key vita_lockstep
+    int -1 INT_MAX
+    default -1
+    words Off|#
+    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
+    help the first difference in registers, flags or written memory stops the run with both states (docs/VITA.md).
+    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
+setting Vita lockstep steps
+    key vita_lockstep_steps
+    int 0 INT_MAX
+    default 0
+    words No limit|#
+    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
+    help 0 = no limit
 
 section Game: g_game_ini
 section Display: g_display_ini
