@@ -24,11 +24,12 @@ typedef struct {
     u8 bindless;
     u8 bl_cbuf;  /* bindless: the constant buffer holding the handle */
     u8 bl2;      /* the handle is two reads ORed: the texture's and the sampler's */
-    u8 bl2_cbuf; /* the second read's constant buffer */
+    u8 bl2_cbuf; /* the second read's constant buffer, or SH_HANDLE_IMM: bl2_off is the second half itself */
     u8 flags;    /* bit 0 raw integer surface load, bit 1 multisample fetch, bit 2 SNX_TEX_INDEXED; bits 4-7 the
                     indexed table's stride shift */
     u32 bl2_off; /* the second read's offset, in words */
 } ShTex;
+#define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */
 /* whether two indexed slots read the same handle table the same way */
 static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&

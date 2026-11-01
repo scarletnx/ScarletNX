@@ -936,7 +936,10 @@ void vk_dispatch(const DispatchState* d) {
             int num;
             if (st->shadow || st->flags) continue; /* raw and multisample textures are declared on their own */
             if (!cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb_key, st->cbuf_off * 4, &h)) continue;
-            if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2)) h |= h2;
+            if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
+                h |= st->bl2_off;
+            else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
+                h |= h2;
             vk_gmem_words(tic_key_base + (h & 0xFFFFF) * 32ull, tic, 8);
             /* by the header alone: textures are resolved only when bound, a color texture's surface has its header's
                number type, and depth isn't sampled here */
@@ -1220,7 +1223,10 @@ rebind:
             ShTex* st = &p->si.tex[i];
             u32 h = 0, h2 = 0;
             cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb, st->cbuf_off * 4, &h);
-            if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2)) h |= h2;
+            if (st->bindless && st->bl2 && st->bl2_cbuf == SH_HANDLE_IMM)
+                h |= st->bl2_off;
+            else if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2))
+                h |= h2;
             u32 tic[8], tsc[8];
             vk_gmem_words(tic_base + (u64)(h & 0xFFFFFu) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
             vk_gmem_words(tsc_base + (u64)(h >> 20) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
