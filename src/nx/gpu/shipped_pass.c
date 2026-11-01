@@ -6,6 +6,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/loader.h"
 #include <stdarg.h>
+#include <zstd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +75,7 @@ typedef struct {
        taken as read: a game's update runs as a program of its own, with shader files of its own */
     u64 all;
     int counting, stop;
+    int ounce;            /* an Ounce game's: SM70+ programs (shipped_ounce_programs), and its zstd files */
     int again;             /* translating the hits counting found: what counting counted is met a second time */
     u32 stages[ST_CS + 2]; /* the programs counted by stage, VertexA's last */
     u32 found, made, known, skipped, lone, failed, lacked, unread, big;
@@ -149,8 +151,9 @@ static int each_program(void* ctx, const u8* sph, size_t avail, int stage, const
     Walk* w = ctx;
     if (stopped(w)) return 1;
     w->found++;
+    int vertex_a = stage == SHIPPED_VERTEX_A || stage == SHIPPED_OUNCE_VERTEX_A;
     if (w->counting) {
-        w->stages[stage == SHIPPED_VERTEX_A ? ST_CS + 1 : stage]++;
+        w->stages[vertex_a ? ST_CS + 1 : stage & ~SHIPPED_OUNCE]++;
         return 0;
     }
     __atomic_add_fetch(&w->progress->programs_done, 1, __ATOMIC_RELAXED);
@@ -158,7 +161,7 @@ static int each_program(void* ctx, const u8* sph, size_t avail, int stage, const
         case SHIP_NEW: w->made++; break;
         case SHIP_KNOWN: w->known++; break;
         case SHIP_SKIPPED:
-            if (stage == SHIPPED_VERTEX_A)
+            if (vertex_a)
                 w->lone++;
             else
                 w->skipped++;
@@ -210,7 +213,10 @@ static int scan_yaz0(Walk* w, const u8* in, size_t n, int depth) {
 /* the programs in d[0, n), and in the Yaz0 entries of a SARC there, which no scan of its bytes reaches */
 static int scan_bytes(Walk* w, const u8* d, size_t n, int depth) {
     int count = shipped_sarc_count(d, n), rc = 0;
-    shipped_programs(d, n, each_program, w);
+    if (w->ounce)
+        shipped_ounce_programs(d, n, each_program, w);
+    else
+        shipped_programs(d, n, each_program, w);
     for (int i = 0; depth < 2 && i < count && !stopped(w); i++) {
         size_t off, size;
         const char* name;
@@ -218,6 +224,25 @@ static int scan_bytes(Walk* w, const u8* d, size_t n, int depth) {
             scan_yaz0(w, d + off, size, depth + 1))
             rc = -1;
     }
+    return rc;
+}
+/* a zstd stream (an Ounce game's file): decompressed whole and scanned, as scan_yaz0 does. The size its frame
+   header gives is what's made: a stream without one, or of more than one frame, can't be read on any run */
+static int scan_zstd(Walk* w, const u8* in, size_t n, int depth) {
+    unsigned long long total = ZSTD_getFrameContentSize(in, n);
+    int rc = 0;
+    if (total == ZSTD_CONTENTSIZE_UNKNOWN || total == ZSTD_CONTENTSIZE_ERROR) return 0;
+    if (total > FILE_MAX || hold(w, total)) {
+        w->big += !w->again;
+        return 0;
+    }
+    u8* out = malloc(total ? (size_t)total : 1);
+    if (!out)
+        rc = -1;
+    else if (ZSTD_decompress(out, (size_t)total, in, n) == total)
+        rc = scan_bytes(w, out, (size_t)total, depth);
+    free(out);
+    unhold(w, total);
     return rc;
 }
 /* whether a Yaz0 file of the RomFS at off holds programs, from its stream's start: 1, 0, or -1 when it couldn't be
@@ -267,7 +292,9 @@ static int source_bytes(Walk* w, const Source* s, int kind, const u8** d, u8** o
 }
 static int scan_source(Walk* w, const u8* d, size_t n, int kind) {
     u32 lacked = w->lacked;
-    int rc = kind == SHIPPED_YAZ0 ? scan_yaz0(w, d, n, 0) : scan_bytes(w, d, n, 0);
+    int rc = kind == SHIPPED_YAZ0   ? scan_yaz0(w, d, n, 0)
+             : kind == SHIPPED_ZSTD ? scan_zstd(w, d, n, 0)
+                                    : scan_bytes(w, d, n, 0);
     return w->lacked > lacked ? -1 : rc; /* a program not handled for want of memory: the source isn't read */
 }
 /* a source's name, place and size mixed: a file's id in the SHIP_NONE records, which reading none of it tells */
@@ -277,7 +304,7 @@ static u64 place_of(const Source* s) {
 }
 /* what a source holds, by its first bytes: -1 when they couldn't be read, or its kind and its id in the SHIP_FILE
    records (its place, place_of's, and first bytes) */
-static int source_kind(const Source* s, u64 place, u64* id) {
+static int source_kind(const Walk* w, const Source* s, u64 place, u64* id) {
     u8 head[SHIPPED_HEAD] = {0};
     size_t n = s->size < sizeof head ? (size_t)s->size : sizeof head;
     if (s->mem)
@@ -285,7 +312,12 @@ static int source_kind(const Source* s, u64 place, u64* id) {
     else if (romfs_peek(s->off, head, n))
         return -1;
     *id = mix(place, head, n);
-    return s->mem ? SHIPPED_SCAN : shipped_kind(head, n);
+    if (s->mem) return SHIPPED_SCAN;
+    int kind = shipped_kind(head, n), named = w->ounce ? shipped_name_ounce(s->name) : 0;
+    /* a zstd stream is read only when its name says it is a shader container: nearly every file of an Ounce game's
+       RomFS is one (its textures, models, physics), and only a few dozen hold programs */
+    if (kind == SHIPPED_ZSTD && (!w->ounce || !named)) return SHIPPED_SKIP;
+    return kind == SHIPPED_SKIP && named == 2 ? SHIPPED_SCAN : kind;
 }
 /* a source the walk translates nothing from, marked read: a file for every build (SHIP_NONE, by its place), a segment
    for this one (whose name, place and size an update of the game keeps more often than a file's) */
@@ -342,7 +374,7 @@ static int add_hit(Walk* w, Hit** hit, u32* nhit, u32 src, int kind, u64 id, u8*
     return 0;
 }
 
-int ship_walk(const ShipSink* sink, ShipProgress* progress, int count) {
+int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce) {
     Walk w = {0};
     Hit* hit = NULL;
     u32 nhit = 0, i;
@@ -350,6 +382,8 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count) {
     w.sink = sink;
     w.progress = progress;
     w.all = 0xCBF29CE484222325ull;
+    w.ounce = ounce;
+    if (ounce) w.all = mix(w.all, "ounce", 5); /* read for other programs than a Switch game's walk */
     for (i = 0; i < g_shipped_pass.nseg; i++) { /* the segments, then the RomFS's files, listed once */
         const Source* seg = &g_shipped_pass.seg[i].src;
         if (add_source(&w, seg->name, seg->off, seg->size)) break;
@@ -379,8 +413,10 @@ int ship_walk(const ShipSink* sink, ShipProgress* progress, int count) {
         int kind, got, rc;
         __atomic_add_fetch(&progress->files_seen, 1, __ATOMIC_RELAXED);
         /* a file of a kind skipped by its name, or that an earlier run of this walk found nothing in: none of it read */
-        if (!s->mem && (shipped_name_skips(s->name) || sink->scanned(sink->ctx, SHIP_NONE, place))) continue;
-        kind = source_kind(s, place, &id);
+        if (!s->mem && ((shipped_name_skips(s->name) && !(w.ounce && shipped_name_ounce(s->name))) ||
+                        sink->scanned(sink->ctx, SHIP_NONE, place)))
+            continue;
+        kind = source_kind(&w, s, place, &id);
         if (kind < 0) {
             w.unread++;
             continue;
