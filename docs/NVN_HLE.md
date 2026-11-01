@@ -116,13 +116,14 @@ stack of the runtime's, 1 MiB for each thread, never on the game's.
 ### The shadow's command and control memory
 
 The game places its command and control memory by `GetCommandMemoryUsed` and `GetControlMemoryUsed`, and those are
-nvn_direct's answers: its records are other sizes than the driver's methods, and it keeps no control memory, so its
-`GetControlMemoryUsed` is 0. In shadows of the game's memory, offset for offset, the driver wrote recordings over each
-other. One game gave several command buffers, one after the other, the same control memory, which to it was still
-empty, while it still called the recordings made there. The driver's `CallCommands` copies each callee's records
-into the caller's control memory, 0x18 bytes a range, read garbage there, and aborted "CommandBuffer has run out of
-control memory with no out-of-memory callback" (in `sdk` at the record copy that the abort's backtrace names). The
-1 GiB ring the shadow fed memory from earlier went round in about 3 seconds and did the same.
+nvn_direct's answers: the first counts the driver's bytes only for the commands measured against it (`nvn_cmd.c`), its
+records' size for the others, and nvn_direct keeps no control memory, so its `GetControlMemoryUsed` is 0. In shadows of
+the game's memory, offset for offset, the driver wrote recordings over each other. One game gave several command
+buffers, one after the other, the same control memory, which to it was still empty, while it still called the recordings
+made there. The driver's `CallCommands` copies each callee's records into the caller's control memory, 0x18 bytes a
+range, read garbage there, and aborted "CommandBuffer has run out of control memory with no out-of-memory callback" (in
+`sdk` at the record copy that the abort's backtrace names). The 1 GiB ring the shadow fed memory from earlier went round
+in about 3 seconds and did the same.
 
 So (`nvn_verify.c`, the lend section):
 

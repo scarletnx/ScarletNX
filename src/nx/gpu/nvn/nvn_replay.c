@@ -50,27 +50,30 @@ u32 nvn_replay_shown_syncpt(void) { return g_nvn.replay.shown; }
 /* ---- the records */
 typedef void (*RecordFn)(void* ctx, u32 op, u64 payload, u32 size);
 /* each record of the recording at p, in order: a JUMP continues in another segment, a CALL runs another recording,
-   an END returns */
+   the recording's last record (or the empty recording's END) returns */
 static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
     if (depth > 8) fatal("nvn: recordings call each other more than 8 deep (at %llx)", (unsigned long long)p);
     u32 prev = OP_BEGIN;
     for (;;) {
         NvnRecHdr h;
+        u32 op;
         memcpy(&h, GP(p), sizeof h);
-        if (h.op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
+        op = NVN_REC_OP(h.op);
+        if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
             fatal("nvn: a command record at %llx (after a record of op %u) has op %u and size %u, which nvn_direct "
                   "never writes",
-                  (unsigned long long)p, prev, h.op, h.size);
-        prev = h.op;
-        if (h.op == OP_END) return;
-        if (h.op == OP_JUMP) {
+                  (unsigned long long)p, prev, op, h.size);
+        prev = op;
+        if (op == OP_END) return;
+        if (op == OP_JUMP) {
             p = gr64(p + 8);
             continue;
         }
-        if (h.op == OP_CALL)
+        if (op == OP_CALL)
             walk(gr64(p + 8), fn, ctx, depth + 1);
         else
-            fn(ctx, h.op, p + 8, h.size - 8);
+            fn(ctx, op, p + 8, h.size - 8);
+        if (h.op & NVN_REC_LAST) return;
         p += h.size;
     }
 }
