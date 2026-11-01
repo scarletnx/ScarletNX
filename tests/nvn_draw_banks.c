@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's constant banks and point sprite origin, which the game's driver's must match:
+/* nvn's constant banks and point sprite origin, which the game's driver's must match:
    nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1 and the sprite origin of a draw's dynamic
    state. The records go in through nvn_draw_record */
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -212,7 +212,7 @@ static void test_sprite_origin(void) {
          "53.13 lower left, near = 0"},
     };
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
-        g_nvn.direct.api = cases[i].api;
+        g_nvn.loader.api = cases[i].api;
         draw_with(cases[i].origin, cases[i].depth_mode);
         check(d.ds.dyn.window_origin == cases[i].window, "%s window_origin: expected %#x, found %#x", cases[i].what,
               cases[i].window, d.ds.dyn.window_origin);

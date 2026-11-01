@@ -153,9 +153,9 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
 
 /* ---- indirect calls: the function compiled for a pc, or the runtime JIT for one discovery missed ---- */
 /* A slot goes from NULL to a function while other threads read it (the runtime JIT publishes with release ordering,
-   gpu/nvn/nvn_direct.c installs NVN's handlers): a relaxed load, which costs a plain one, makes that no data race. The code and
-   data behind a published address were written before the release store, and reaching them depends on the loaded
-   address, which orders them on every host the backends target */
+   gpu/nvn/nvn_loader.c installs NVN's handlers): a relaxed load, which costs a plain one, makes that no data race.
+   The code and data behind a published address were written before the release store, and reaching them depends on
+   the loaded address, which orders them on every host the backends target */
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc);
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc) {
     u64 offset = pc - c->code_lo;

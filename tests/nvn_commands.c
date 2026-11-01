@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's command buffers (gpu/nvn/nvn_cmd.c): GetCommandMemoryUsed counts the bytes the game's driver writes for
+/* nvn's command buffers (gpu/nvn/nvn_cmd.c): GetCommandMemoryUsed counts the bytes the game's driver writes for
    each command (one game records a display list, allocates what that says from a heap sized by the console's figures,
    and records it again into exactly that), records past those bytes go on in the runtime's memory, which comes back
    when the game adds its memory again, the game's memory callback runs when the driver would run out, and
@@ -362,7 +362,7 @@ int main(void) {
               "the second recording replays as recorded");
     }
 
-    /* a recording of calls alone: the driver writes them to control memory and counts no command bytes, nvn_direct
+    /* a recording of calls alone: the driver writes them to control memory and counts no command bytes, nvn
        counts 4, so the next recording starts past it */
     {
         const u64 cb9 = 0xa00, ch = 0x4e0;

@@ -16,7 +16,7 @@
 
    The game's pace (renderer.h display_wait, runtime/present.c) waits here for the display to take its frames, and
    every STATS game frames the log says how evenly they were displayed and how long they took to get there. A frame
-   given a syncpoint (renderer.h present_buffer's shown_syncpt: nvn_direct's window) increments it once displayed or
+   given a syncpoint (renderer.h present_buffer's shown_syncpt: nvn's window) increments it once displayed or
    let go, in the order the frames came: one not presented, or presented without an id, goes into the queue as a
    marker behind those still watched, and only goes up at once when none are */
 #include "nx/gpu/vk/vk.h"

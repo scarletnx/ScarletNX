@@ -80,11 +80,11 @@ typedef struct Renderer {
        destination kept there: 0 when it couldn't be */
     int (*blit_mem)(const GpuBlit* b);
     void (*rt_reload)(u64 gva); /* guest memory under a render target changed: load it again */
-    /* A compute dispatch of the state d (gpu/draw_state.h), which the front end (the NVN replay) fills for the call
-       and the renderer only reads: the program, the grid, block and shared memory, the constant buffers (guest
-       memory or d's inline blocks: NVN's driver banks, the dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210, storage buffers from 0x310 and texture
-       handles in bank 2 with tex_bank 2), and the texture and sampler pools in guest memory. Storage buffers are read
-       through constant buffer 0 as a draw's are. Called on the GPU thread */
+    /* A compute dispatch of the state d (gpu/draw_state.h), which the front end (the NVN replay) fills for the call and
+       the renderer only reads: the program, the grid, block and shared memory, the constant buffers (guest memory or
+       d's inline blocks: NVN's driver banks, the dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210,
+       storage buffers from 0x310 and texture handles in bank 2 with tex_bank 2), and the texture and sampler pools in
+       guest memory. Storage buffers are read through constant buffer 0 as a draw's are. Called on the GPU thread */
     void (*dispatch)(const DispatchState* d);
     /* gmem_read and gmem_ptr land pending compute or graphics storage writes before reading memory */
     void (*cs_mem_need)(u64 a, u64 n);

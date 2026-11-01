@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's replay: a queue's submitted recordings run on the GPU thread, in submission order, as the console's
+/* nvn's replay: a queue's submitted recordings run on the GPU thread, in submission order, as the console's
    GPU runs a submission's methods (neutral_draw_state's 4f: never at record time, since a recording may be submitted
    many times and what it reads changes between). Each queue keeps the state its commands set (gpu/nvn/nvn_draw.c),
    which makes the renderer's draw state of it, for the draws and clears.
@@ -63,7 +63,7 @@ static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
         if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7)) {
             char where[512];
             nvn_cmd_describe(piece, where, sizeof where);
-            fatal("nvn: a command record at %llx (after a record of op %u) has op %u and size %u, which nvn_direct "
+            fatal("nvn: a command record at %llx (after a record of op %u) has op %u and size %u, which nvn "
                   "never writes%s",
                   (unsigned long long)p, prev, op, h.size, where);
         }
@@ -147,7 +147,7 @@ typedef struct {
 static void effect(u32 kind, u64 gva, const void* data, u32 len) {
     NvnReplayState* st = &g_nvn.replay;
     if (st->nfx == NVN_EFFECTS)
-        fatal("nvn: a submission signals more than %u fences and events, which nvn_direct holds", NVN_EFFECTS);
+        fatal("nvn: a submission signals more than %u fences and events, which nvn holds", NVN_EFFECTS);
     NvnEffect* e = &st->fx[st->nfx++];
     e->kind = kind;
     e->gva = gva;
@@ -257,10 +257,10 @@ static void run(void* arg) {
    is 1 up */
 static NvnJob* job(u32 queue, u32 kind, u32 n) {
     if (n > NVN_JOB_HANDLES)
-        fatal("nvn: a submission of %u command handles, more than the %u nvn_direct holds", n, NVN_JOB_HANDLES);
+        fatal("nvn: a submission of %u command handles, more than the %u nvn holds", n, NVN_JOB_HANDLES);
     NvnJob* j = POOL_TAKE(g_nvn.replay.jobs, g_nvn.replay.next_job, "NVN jobs");
     if (!j)
-        fatal("nvn: more than %u submissions, fences and presents queued for the GPU thread at once, which nvn_direct "
+        fatal("nvn: more than %u submissions, fences and presents queued for the GPU thread at once, which nvn "
               "holds",
               NVN_JOBS);
     j->queue = queue;

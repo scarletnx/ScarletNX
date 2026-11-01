@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's copies. NVN's copies between buffers and textures are the DMA engine's work on the console, and here
-   they are the DMA engine's launches (gpu.h GpuDmaOp) that the renderer does on the GPU (vk/dma.c): a texture is a block-linear (or pitch-linear) surface plane at its GPU address, a buffer a
-   pitch-linear one. A copy of several slices or layers is a launch for each. The driver copies between textures with
-   the 2D engine (its CopyTextureToTexture has no other path), whose blit between render targets the renderer does
-   between its images: those copies are that blit when the source is a render target, and a launch when it isn't.
+/* nvn's copies. NVN's copies between buffers and textures are the DMA engine's work on the console, and here they are
+   the DMA engine's launches (gpu.h GpuDmaOp) that the renderer does on the GPU (vk/dma.c): a texture is a block-linear
+   (or pitch-linear) surface plane at its GPU address, a buffer a pitch-linear one. A copy of several slices or layers
+   is a launch for each. The driver copies between textures with the 2D engine (its CopyTextureToTexture has no other
+   path), whose blit between render targets the renderer does between its images: those copies are that blit when the
+   source is a render target, and a launch when it isn't.
 
    The CPU's own texel writes (nvnTextureWriteTexels) swizzle into the texture's storage, which is the GPU's work
    (docs/BLOCKLINEAR.md): the source's bytes are read as the game calls, and the GPU writes them in order with the
@@ -183,8 +184,9 @@ static int blit_gpu(const NvnPCopyT2T* r, i32 k, int raw, Surf2D* s, Surf2D* d, 
            g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, r->sr.xoffset,
                             r->sr.yoffset, sdx, sdy);
 }
-/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit: the renderer's image blit when the source is a render target, filtered when
-   it scales, else its blit from memory, nearest sampled, between formats of the same bytes a pixel */
+/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit, the renderer's image blit
+   when the source is a render target, filtered when it scales, else its blit from memory, nearest sampled, between
+   formats of the same bytes a pixel */
 static void blit_texture(const NvnPCopyT2T* r) {
     i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
     if (r->sr.width <= 0 || r->sr.height <= 0 || r->dr.width <= 0 || r->dr.height <= 0) return;
@@ -214,7 +216,7 @@ static void blit_texture(const NvnPCopyT2T* r) {
         if (b.x0 >= b.x1 || b.y0 >= b.y1) continue;
         u32 n = b.x1 - b.x0;
         if (n > NVN_BLIT_MAX || b.y1 - b.y0 > NVN_BLIT_MAX)
-            fatal("nvn: a texture blit %u pixels wide and %u high, larger than the %u a side nvn_direct holds", n,
+            fatal("nvn: a texture blit %u pixels wide and %u high, larger than the %u a side nvn holds", n,
                   b.y1 - b.y0, NVN_BLIT_MAX);
         u32* tab = g_nvn.copy.blit; /* the GPU thread's: blit_mem copies the tables before it returns */
         for (u32 i = 0; i < n; i++) {

@@ -17,10 +17,10 @@ int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* ou
    make, as the hooks' nvn key takes it (hle/hook/hook.h HOOK_NVN): major << 16 | minor, 0 when either is out of
    range (a major of 0, or either past 65535) */
 u32 nvn_api_pack(i32 major, i32 minor);
-/* Whether nvn_direct describes NVN API version api (packed as nvn_api_pack does), so nvn_direct=auto takes the game's
-   NVN calls (gpu/nvn/nvn_direct.c): a driver whose object footprints tools/nvn_census.py --footprints measured, which
+/* Whether the runtime describes NVN API version api (packed as nvn_api_pack does), which the log says at the game's
+   first NVN call (gpu/nvn/nvn_loader.c): a driver whose object footprints tools/nvn_census.py --footprints measured, which
    every layout in gpu/nvn/nvn_obj.h fits, whose shader control sections the runtime reads at the offsets its driver
-   reads them, and whose game ran under nvn_direct. API 53.209, 53.312 and 55.8 to 55.15 (55.12 between the
+   reads them, and whose game ran under the runtime's NVN. API 53.209, 53.312 and 55.8 to 55.15 (55.12 between the
    measured ones); other versions between them aren't described */
 int nvn_api_described(u32 api);
 /* the described versions as text ("53.209, 53.312, 55.8 to 55.15") */

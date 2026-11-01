@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Ported from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/hle_nvn.c */
-/* nvn_direct's queue, syncs and window. A submission goes to the GPU thread, which replays it (gpu/nvn/nvn_replay.c):
+/* nvn's queue, syncs and window. A submission goes to the GPU thread, which replays it (gpu/nvn/nvn_replay.c):
    its fences are syncpoint values the replay reaches. The display sets the pace, as on the console: a window texture
    comes free once the display has taken the frames before it, and no earlier than one period after its own present's
    slot (nxnative's pacer, on the display's refresh where the renderer knows it); the sync AcquireTexture hands out
@@ -327,7 +327,7 @@ void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
     i32 i;
     (void)c;
     if (n < 0 || n > 4) {
-        LOG("nvn: a window of %d textures: nvn_direct keeps 4\n", n);
+        LOG("nvn: a window of %d textures: nvn keeps 4\n", n);
         n = n < 0 ? 0 : 4;
     }
     o->count = (i16)n;

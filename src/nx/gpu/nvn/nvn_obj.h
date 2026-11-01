@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Ported from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/nvn_obj.h */
-/* nvn_direct's NVN objects and command records (Part C of the NVN plan). The game allocates every NVN object itself
+/* nvn's NVN objects and command records (Part C of the NVN plan). The game allocates every NVN object itself
    and hands the runtime its address, so an object's state lives in place, in the game's own object memory: each
    layout here fits in the fewest bytes any SDK's driver measured for that object (tools/nvn_census.py
    --footprints over seven games, SDK 5.4 to 20.5), and a static assertion holds it there. The game copies the small
