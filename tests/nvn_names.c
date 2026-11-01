@@ -489,6 +489,16 @@ static void test_texture(void) {
                     (unsigned long long)colors[i].color);
         check(gr64(s + 8) == colors[i].color, colors[i].what);
     }
+    /* a STENCIL8 texture's ZCull save area: none without its zcull flag, but on the drivers before 53.209 */
+    nvn_TextureBuilderSetDefaults(NULL, TEX_B);
+    nvn_TextureBuilderSetFormat(NULL, TEX_B, NVN_FORMAT_STENCIL8);
+    nvn_TextureBuilderSetSize2D(NULL, TEX_B, 100, 60);
+    g_nvn.direct.api = 53u << 16 | 105;
+    check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0x1e0, "53.105 STENCIL8: a ZCull area as for depth");
+    g_nvn.direct.api = 53u << 16 | 209;
+    check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0, "53.209 STENCIL8: no ZCull area");
+    nvn_TextureBuilderSetFlags(NULL, TEX_B, NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL);
+    check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0x1e0, "53.209 STENCIL8 with its zcull flag");
     g_nvn.direct.api = 0;
     nvn_MemoryPoolFinalize(NULL, POOL);
     check(g_nvmap_live == 0, "the pool's handle goes with it");
