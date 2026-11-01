@@ -198,7 +198,7 @@ blocks presented frames until it was ended. It is **not playable** yet:
   the window's bottom screen). The sensors are a gamepad's accelerometer and
   gyroscope when one has them, else at rest (`hid:USER`, below).
 - The music gap after each rendered frame (rendering and presenting run inside the guest's GSP call) is addressed by pacing the DSP from the output device's queue once it has audio (`kernel/thread.c`, about 60 ms kept queued, up to eight frames at once). That is untested with a real game or device: only the unchanged tests ran.
-- Geometry shaders run in the software pipeline (the CPU reference, all three modes tested) but not on the GPU, where a draw with one still stops the run explicitly. Procedural textures and shadows stop it too.
+- Geometry shaders run on the CPU (the reference pipeline, all three modes tested) and the triangles they make are drawn by the GPU, through a pass-through vertex shader. Procedural textures and shadows still stop the run explicitly.
 
 The [parity roadmap](#parity-roadmap-azahar) lists the remaining work, and the
 [SuperTux integration target](3DS-SUPERTUX.md) holds the pinned input.

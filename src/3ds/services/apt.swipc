@@ -8,5 +8,6 @@ interface snx::ctr::apt_wire is APT:S {
     [3] Enable(u32 attributes);
     [0x43] NotifyToWait(u32 app_id);
     [0x44] GetSharedFont() -> (u32 address, handle<copy> memory);
+    [0x101] GetTargetPlatform() -> u32 platform;
     [0x102] IsNew3DS() -> u32 is_new;
 }

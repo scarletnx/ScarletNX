@@ -78,6 +78,11 @@ static uint32_t snx_ctr_apt_wire_NotifyToWait(SnxCtrIpc* c, uint32_t app_id) {
     p->apt_phase = 2;
     return 0;
 }
+/* GetTargetPlatform (0x101): 1 for an Old 3DS, 2 for a New 3DS */
+static uint32_t snx_ctr_apt_wire_GetTargetPlatform(SnxCtrIpc* c, uint32_t* platform) {
+    *platform = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW ? 2 : 1;
+    return 0;
+}
 static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
     return 0;
