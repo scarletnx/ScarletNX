@@ -160,6 +160,142 @@ static int case_value(const Image* m, const Switch* s, u32 item, i32* out) {
     return 0;
 }
 
+/* ---- A32: a 32-bit program's driver (its code in A32 state, as the 32-bit SDK builds it) ----
+   The same switch: a bound (cmp rN, #max), and a jump either through a table of words relative to the table, which an
+   ADR (add rT, pc, #imm) names (ldr rX, [rI, rT]; add pc, rX, rT), or through a table of absolute addresses right
+   after the jump (ldr pc, [pc, rI, lsl #2]). A case sets r0 to a constant, keeps the value r0 got before the jump, or
+   reads the driver's state */
+static u32 a32_ror_imm(u32 x) {
+    u32 imm = x & 0xff, rot = ((x >> 8) & 15) * 2;
+    return rot ? (imm >> rot) | (imm << (32 - rot)) : imm;
+}
+/* whether x, unconditional, sets r0 from a constant (mov, mvn, movw) or its top half (movt): 1 and *v updated */
+static int a32_constant_r0(u32 x, u32* v) {
+    if (x >> 28 != 0xe || ((x >> 12) & 15) != 0) return 0;
+    if ((x & 0x0fef0000) == 0x03a00000) { /* mov r0, #imm */
+        *v = a32_ror_imm(x);
+        return 1;
+    }
+    if ((x & 0x0fef0000) == 0x03e00000) { /* mvn r0, #imm */
+        *v = ~a32_ror_imm(x);
+        return 1;
+    }
+    if ((x & 0x0ff00000) == 0x03000000) { /* movw r0, #imm16 */
+        *v = ((x >> 4) & 0xf000) | (x & 0xfff);
+        return 1;
+    }
+    if ((x & 0x0ff00000) == 0x03400000) { /* movt r0, #imm16 */
+        *v = (*v & 0xffff) | (((x >> 4) & 0xf000) | (x & 0xfff)) << 16;
+        return 1;
+    }
+    return 0;
+}
+/* whether x returns: bx lr, or a pop (ldm sp!) that loads pc */
+static int a32_returns(u32 x) { return x == 0xe12fff1e || ((x & 0xffff0000) == 0xe8bd0000 && (x & 0x8000)); }
+/* whether x leaves r0 alone for sure: a store, a compare, a change of sp, a pop without r0 or pc */
+static int a32_keeps_r0(u32 x) {
+    u32 op = (x >> 21) & 15;
+    if (x >> 28 != 0xe) return 0;
+    if ((x & 0x0e000000) == 0x02000000 || (x & 0x0e000010) == 0) /* data processing */
+        return (op >= 8 && op <= 11) || ((x >> 12) & 15) != 0;   /* tst, teq, cmp, cmn, or rd isn't r0 */
+    if ((x & 0x0c100000) == 0x04000000) return 1;                /* str */
+    if ((x & 0x0fff0000) == 0x08bd0000) return !(x & 1);         /* pop without r0 */
+    return 0;
+}
+
+typedef struct {
+    u64 table;    /* the table's address */
+    int absolute; /* its words are addresses, else offsets from table */
+    u32 bound;    /* the largest index the bound lets through */
+    int has_default;
+    u32 fallback; /* r0 at the jump */
+} Switch32;
+static int find_switch32(const Image* m, u64 start, Switch32* s) {
+    u64 addr[16] = {0};
+    u32 known = 0, j, r0 = 0; /* bit r: addr[r] holds an address */
+    int has_bound = 0;
+    s->has_default = 0;
+    for (j = 0; j < 64; j++) {
+        u64 pc = start + 4 * (u64)j;
+        u32 x, rn, rm, rd;
+        if (!load(m, pc, 4, &x) || a32_returns(x)) return 0; /* not past the function's return */
+        rn = (x >> 16) & 15;
+        rd = (x >> 12) & 15;
+        rm = x & 15;
+        if ((x & 0x0fff0000) == 0x028f0000) { /* add rd, pc, #imm (adr) */
+            addr[rd] = pc + 8 + a32_ror_imm(x);
+            known |= 1u << rd;
+        } else if ((x & 0x0ff0f000) == 0x03500000) { /* cmp rn, #imm: the bound */
+            s->bound = a32_ror_imm(x);
+            has_bound = 1;
+        } else if ((x & 0x0f000000) == 0x0b000000) { /* bl: r0 is the callee's */
+            s->has_default = 0;
+        } else if (a32_constant_r0(x, &r0)) {
+            s->fallback = r0;
+            s->has_default = 1;
+        } else if ((x & 0x0e50f010) == 0x0610f000 && rn == 15 && (x & 0x00800000) && ((x >> 5) & 3) == 0 &&
+                   ((x >> 7) & 31) == 2) { /* ldr pc, [pc, rm, lsl #2]: the table follows */
+            s->table = pc + 8;
+            s->absolute = 1;
+            return has_bound;
+        } else if ((x & 0x0ff0f010) == 0x0080f000 && (known >> rn & 1) != (known >> rm & 1) && !((x >> 7) & 31)) {
+            /* add pc, rn, rm, one of them the table's address */
+            s->table = known >> rn & 1 ? addr[rn] : addr[rm];
+            s->absolute = 0;
+            return has_bound;
+        }
+    }
+    return 0;
+}
+static int case_value32(const Image* m, const Switch32* s, u32 item, i32* out) {
+    u32 entry, k, follows = 0, r0 = s->fallback;
+    int r0_known = s->has_default;
+    u64 target;
+    if (item > s->bound || !load(m, s->table + (u64)item * 4, 4, &entry)) return 0;
+    target = s->absolute ? (u64)entry : s->table + (u64)entry;
+    for (k = 0; k < 12; k++) {
+        u32 x;
+        if (!load(m, target, 4, &x)) return 0;
+        if (a32_constant_r0(x, &r0)) {
+            r0_known = 1;
+        } else if (a32_returns(x)) {
+            if (!r0_known) return 0;
+            *out = (i32)r0;
+            return 1;
+        } else if ((x & 0xff000000) == 0xea000000 && follows++ < 2) { /* b: the shared return */
+            target = target + 8 + (u64)(sext(x & 0xffffff, 24) * 4);
+            continue;
+        } else if (!a32_keeps_r0(x)) {
+            return 0;
+        }
+        target += 4;
+    }
+    return 0;
+}
+
+int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
+    Image m;
+    u64 starts[2];
+    u32 n = 1, j, i;
+    m.mem = mem;
+    m.lo = lo;
+    m.hi = hi;
+    starts[0] = func;
+    for (j = 0; j < 16; j++) { /* the first BL */
+        u32 x;
+        if (!load(&m, func + 4 * (u64)j, 4, &x)) return 0;
+        if ((x & 0x0f000000) == 0x0b000000 && x >> 28 == 0xe) {
+            starts[n++] = func + 4 * (u64)j + 8 + (u64)(sext(x & 0xffffff, 24) * 4);
+            break;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        Switch32 s;
+        if (find_switch32(&m, starts[i], &s)) return case_value32(&m, &s, item, out);
+    }
+    return 0;
+}
+
 u32 nvn_api_pack(i32 major, i32 minor) {
     if (major <= 0 || major > 0xFFFF || minor < 0 || minor > 0xFFFF) return 0;
     return (u32)major << 16 | (u32)minor;

@@ -17,7 +17,8 @@
    part in lower case; an '= HANDLER' that names that handler is refused, as the symbol says it already.
 
    The types are void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address, u64), f32
-   and f64, each the size its name says in the guest (AArch64, LP64), and pointers: a type followed by '*', each '*'
+   and f64, each the size its name says in the guest (AArch64, LP64), usize and isize (the guest's size_t and
+   ptrdiff_t: 8 bytes under AAPCS64, 4 under AAPCS32, which the handler takes as a u64 and an i64), and pointers: a type followed by '*', each '*'
    optionally followed by const, after an optional const (const NVNtexture* const* textures). A pointer points to
    void, char, one of the types above, or a type of the header that the spec's include line names (include
    "nx/gpu/nvn/nvn.h", found in the folders -I gives): hookgen reads the names its typedefs declare, and refuses an
@@ -91,8 +92,9 @@
    wraps with C code of its own, with no adapter, is named on a line of its own, `route SYMBOL`
    (gpu/nvn/nvn.hook's nvnBootstrapLoader).
 
-   Usage: hookgen [--prefix NAME] [-I DIR]... --header OUT.h --out OUT.inc SPEC (NAME, hook by default, names the
-          tables; each -I DIR a folder to find the include line's header in)
+   Usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC (NAME, hook by default,
+          names the tables; --a32 adds the adapters for a 32-bit program, <prefix>_a32; each -I DIR a folder to find
+          the include line's header in)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
           name, sorted by strcmp and without duplicates, as hook_route_names and HOOK_ROUTE_COUNT, for
           nx/loader/hook_routes.c)
@@ -118,18 +120,35 @@
 #define NREGS        8
 #define UNBOUNDED    0xFFFFFFFFul
 
-typedef enum { T_VOID, T_BOOL, T_U8, T_U16, T_U32, T_U64, T_I8, T_I16, T_I32, T_I64, T_ADDR, T_F32, T_F64 } Kind;
+/* T_USIZE and T_ISIZE are a size_t and a ptrdiff_t of the guest: 8 bytes under AAPCS64, 4 under AAPCS32 */
+typedef enum {
+    T_VOID,
+    T_BOOL,
+    T_U8,
+    T_U16,
+    T_U32,
+    T_U64,
+    T_I8,
+    T_I16,
+    T_I32,
+    T_I64,
+    T_ADDR,
+    T_F32,
+    T_F64,
+    T_USIZE,
+    T_ISIZE
+} Kind;
 
 static const struct {
     const char* name;  /* in the declarations */
     const char* ctype; /* the handler's */
     const char* cname; /* the function type's: its size in the guest */
     unsigned bytes;    /* as a struct's field */
-} kinds[] = {{"void", "void", "void", 0},   {"bool", "int", "uint8_t", 1},  {"u8", "u8", "uint8_t", 1},
-             {"u16", "u16", "uint16_t", 2}, {"u32", "u32", "uint32_t", 4},  {"u64", "u64", "uint64_t", 8},
-             {"i8", "i8", "int8_t", 1},     {"i16", "i16", "int16_t", 2},   {"i32", "i32", "int32_t", 4},
-             {"i64", "i64", "int64_t", 8},  {"addr", "u64", "uint64_t", 8}, {"f32", "f32", "float", 4},
-             {"f64", "f64", "double", 8}};
+} kinds[] = {{"void", "void", "void", 0},   {"bool", "int", "uint8_t", 1},   {"u8", "u8", "uint8_t", 1},
+             {"u16", "u16", "uint16_t", 2}, {"u32", "u32", "uint32_t", 4},   {"u64", "u64", "uint64_t", 8},
+             {"i8", "i8", "int8_t", 1},     {"i16", "i16", "int16_t", 2},    {"i32", "i32", "int32_t", 4},
+             {"i64", "i64", "int64_t", 8},  {"addr", "u64", "uint64_t", 8},  {"f32", "f32", "float", 4},
+             {"f64", "f64", "double", 8},   {"usize", "u64", "uint64_t", 8}, {"isize", "i64", "int64_t", 8}};
 
 /* the version keys, as hook.h numbers them */
 enum { K_ANY, K_SDK, K_NVN };
@@ -139,7 +158,7 @@ static const char* const key_macro[] = {"HOOK_ANY", "HOOK_SDK", "HOOK_NVN"};
 static const char* const ret_macro[] = {"HOOK_RET_VOID", "HOOK_RET_BOOL", "HOOK_RET_X8",   "HOOK_RET_X16",
                                         "HOOK_RET_X32",  "HOOK_RET_X64",  "HOOK_RET_X8",   "HOOK_RET_X16",
                                         "HOOK_RET_X32",  "HOOK_RET_X64",  "HOOK_RET_ADDR", "HOOK_RET_F32",
-                                        "HOOK_RET_F64"};
+                                        "HOOK_RET_F64",  "HOOK_RET_X64",  "HOOK_RET_X64"};
 
 /* the versions [lo, hi) of key; K_ANY (0 to UNBOUNDED) for none given */
 typedef struct {
@@ -156,6 +175,9 @@ typedef struct {
     char name[MAX_NAME];
     char cname[MAX_NAME]; /* its C type, in the function type: const NVNtexture* const* */
     int reg;              /* its x or v register */
+    /* under AAPCS32 (--a32): where it is, A32_CORE (r<at>), A32_PAIR (r<at> and r<at + 1>), A32_WORD or A32_DWORD
+       (the caller's stack at byte at), A32_S (s<at>) or A32_D (d<at>) */
+    int a32, a32_at;
     /* a buffer (an address with in[...], out[...] or inout[...]): its use and its length, len_add bytes and the
        argument len_name's value times len_mul, when there is one (len_arg its index once the arguments are read) */
     int mode, len_arg;
@@ -633,11 +655,63 @@ static void resolve_buffers(Hook* h, int line) {
         for (j = 0; j < h->nargs && strcmp(h->args[j].name, a->len_name); j++) {
         }
         if (j == h->nargs) fail(line, "%s's length names %s, which isn't an argument", a->name, a->len_name);
-        if (h->args[j].kind < T_U8 || h->args[j].kind > T_I64)
+        if ((h->args[j].kind < T_U8 || h->args[j].kind > T_I64) && h->args[j].kind != T_USIZE &&
+            h->args[j].kind != T_ISIZE)
             fail(line, "%s's length %s is not an integer", a->name, a->len_name);
         a->len_arg = j;
     }
     if (h->nbufs && !h->pure) fail(line, "only a pure hook's buffers are checked: say pure, or drop the buffers");
+}
+
+enum { A32_CORE, A32_PAIR, A32_WORD, A32_DWORD, A32_S, A32_D };
+
+/* Where AAPCS32 with VFP arguments (the hard-float variant a 32-bit Switch program is built for) puts each of h's
+   arguments: an integer, a pointer, a size_t or a ptrdiff_t of at most 4 bytes in the next of r0-r3; a u64 or an i64
+   in the next even pair of them; a float in the first free one of s0-s15 and a double in the first free pair, d0-d7,
+   which a float after a double may fill back. What finds no register is on the caller's stack, a word 4-aligned and
+   a double word 8-aligned, and once a core argument or a VFP one is there, the next of its kind is there too */
+static void assign_a32(Hook* h) {
+    int core = 0, at = 0, i, k, vfp_full = 0;
+    unsigned s_used = 0; /* s0-s15 taken, by bit */
+    for (i = 0; i < h->nargs; i++) {
+        Arg* a = &h->args[i];
+        if (a->kind == T_F32 || a->kind == T_F64) {
+            int d = a->kind == T_F64, found = -1;
+            for (k = 0; !vfp_full && found < 0 && k < 16; k += d ? 2 : 1)
+                if (!(s_used >> k & (d ? 3u : 1u))) found = k;
+            if (found >= 0) {
+                s_used |= (d ? 3u : 1u) << found;
+                a->a32 = d ? A32_D : A32_S;
+                a->a32_at = d ? found / 2 : found;
+                continue;
+            }
+            vfp_full = 1;
+            if (d) at = (at + 7) & ~7;
+            a->a32 = d ? A32_DWORD : A32_WORD;
+            a->a32_at = at;
+            at += d ? 8 : 4;
+        } else if (a->kind == T_U64 || a->kind == T_I64) {
+            core = (core + 1) & ~1;
+            if (core + 2 <= 4) {
+                a->a32 = A32_PAIR;
+                a->a32_at = core;
+                core += 2;
+                continue;
+            }
+            core = 4;
+            at = (at + 7) & ~7;
+            a->a32 = A32_DWORD;
+            a->a32_at = at;
+            at += 8;
+        } else if (core < 4) {
+            a->a32 = A32_CORE;
+            a->a32_at = core++;
+        } else {
+            a->a32 = A32_WORD;
+            a->a32_at = at;
+            at += 4;
+        }
+    }
 }
 
 /* hook SYMBOL(TYPE NAME, ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure] */
@@ -675,6 +749,7 @@ static void parse_hook(const char* p, int line, const Range* range) {
         else if (*p != ')')
             fail(line, "expected ',' or ')'");
     }
+    assign_a32(h);
     p = skip_space(p + 1);
     h->ret = T_VOID;
     strcpy(h->ret_cname, "void");
@@ -790,6 +865,8 @@ static int parse_fields(const char* p, int line) {
         p = word(p, type, line, "field's type");
         f->kind = find_kind(type, line);
         if (f->kind == T_VOID) fail(line, "a field can't be void");
+        if (f->kind == T_USIZE || f->kind == T_ISIZE)
+            fail(line, "a field's size can't change with the guest's ABI: write u32 or u64 for %s", f->name);
         p = word(p, f->name, line, "field's name");
         if (!is_identifier(f->name) || !strcmp(f->name, "size")) fail(line, "'%s' can't name a field", f->name);
         for (i = 0; i < s->nfields - 1; i++)
@@ -1126,6 +1203,92 @@ static void adapter(const Entry* e, int index) {
     out("}\n");
 }
 
+/* --a32: each entry also gets an adapter for a 32-bit program, a block of its code table (common/cpu/arm/arm.h's
+   SnxArmBlock) that reads the arguments where AAPCS32 puts them (assign_a32), calls the same handler with the
+   thread's CPU, puts the result in r0 (and r1 for 64 bits), s0 or d0, and returns to lr as the function's bx lr
+   would, in the state lr's bit 0 says */
+static int a32;
+
+/* an argument's 32 or 64 bits under AAPCS32, as a u32 or u64 expression */
+static void a32_bits(const Arg* a) {
+    switch (a->a32) {
+        case A32_CORE: out("arm->r[%d]", a->a32_at); break;
+        case A32_PAIR: out("((u64)arm->r[%d] | (u64)arm->r[%d] << 32)", a->a32_at, a->a32_at + 1); break;
+        case A32_WORD: out("hook_a32_word(arm, %d)", a->a32_at); break;
+        default: out("hook_a32_dword(arm, %d)", a->a32_at); break;
+    }
+}
+
+static void a32_argument(const Arg* a) {
+    switch (a->kind) {
+        case T_F32:
+            if (a->a32 == A32_S)
+                out("hook_a32_s(arm, %d)", a->a32_at);
+            else
+                out("hook_a32_f32_at(arm, %d)", a->a32_at);
+            break;
+        case T_F64:
+            if (a->a32 == A32_D)
+                out("hook_a32_d(arm, %d)", a->a32_at);
+            else
+                out("hook_a32_f64_at(arm, %d)", a->a32_at);
+            break;
+        case T_BOOL:
+            out("(");
+            a32_bits(a);
+            out(" & 0xFF) != 0");
+            break;
+        case T_U64:
+        case T_ADDR:
+        case T_USIZE: /* a pointer and a size_t zero-extended */
+            out("(u64)");
+            a32_bits(a);
+            break;
+        case T_I64:
+            out("(i64)");
+            a32_bits(a);
+            break;
+        case T_ISIZE: /* a ptrdiff_t sign-extended */
+            out("(i64)(i32)");
+            a32_bits(a);
+            break;
+        default:
+            out("(%s)", kinds[a->kind].ctype);
+            a32_bits(a);
+            break;
+    }
+}
+
+static void adapter_a32(const Entry* e, int index) {
+    const Hook* h = &hooks[e->hook];
+    int i;
+    out("static void %s_a32_%d(SnxArmCPU* RESTRICT arm) {\n", prefix, index);
+    out("    CPU* c = hook_a32_cpu(arm);\n    ");
+    switch (h->ret) {
+        case T_VOID: break;
+        case T_F32: out("hook_a32_set_s0(arm, "); break;
+        case T_F64: out("hook_a32_set_d0(arm, "); break;
+        case T_U64:
+        case T_I64: out("hook_a32_set_r01(arm, (u64)("); break;
+        case T_I8:
+        case T_I16:
+        case T_I32: out("arm->r[0] = (u32)(i32)("); break;
+        default: out("arm->r[0] = (u32)("); break; /* a pointer, a size_t or a ptrdiff_t: its low word */
+    }
+    out("%s(c", h->handler);
+    for (i = 0; i < h->nuses; i++) {
+        const Variant* s = &variants[e->variant[i]];
+        out(", &%s_layout_%s[%d]", prefix, s->cname, s->index);
+    }
+    for (i = 0; i < h->nargs; i++) {
+        out(", ");
+        a32_argument(&h->args[i]);
+    }
+    out(h->ret == T_VOID ? ");\n" : h->ret == T_U64 || h->ret == T_I64 ? ")));\n" : "));\n");
+    out("    hook_a32_return(arm);\n");
+    out("}\n");
+}
+
 /* the hooked functions' types, PFN<SYMBOL>PROC, as the guest calls them */
 static void function_types(void) {
     int i, k;
@@ -1203,6 +1366,13 @@ static void write_table(const char* path) {
     }
     if (nvariants) out("\n");
     for (i = 0; i < nentries; i++) adapter(&entries[i], i);
+    if (a32) {
+        out("\n/* the adapters for a 32-bit program */\n");
+        for (i = 0; i < nentries; i++) adapter_a32(&entries[i], i);
+        out("static const SnxArmBlock %s_a32[%s_COUNT + 1] = {\n", prefix, upper);
+        for (i = 0; i < nentries; i++) out("    %s_a32_%d,\n", prefix, i);
+        out("    0};\n");
+    }
     out("\nstatic const char* const %s_symbol[%s_COUNT + 1] = {\n", prefix, upper);
     for (i = 0; i < nentries; i++) out("    \"%s\",\n", hooks[entries[i].hook].symbol);
     out("    0};\nstatic const char* const %s_handler[%s_COUNT + 1] = {\n", prefix, upper);
@@ -1309,6 +1479,8 @@ int main(int argc, char** argv) {
             routes_path = argv[++i];
         else if (!strcmp(argv[i], "--prefix") && i + 1 < argc)
             prefix = argv[++i];
+        else if (!strcmp(argv[i], "--a32"))
+            a32 = 1;
         else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
             include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
@@ -1322,7 +1494,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (nspecs != 1 || (!header && !table)) {
-        fprintf(stderr, "usage: hookgen [--prefix NAME] [-I DIR]... --header OUT.h --out OUT.inc SPEC\n"
+        fprintf(stderr, "usage: hookgen [--prefix NAME] [--a32] [-I DIR]... --header OUT.h --out OUT.inc SPEC\n"
                         "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }

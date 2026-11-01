@@ -59,8 +59,15 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
   name (`_ZN2nn2os...`). Names are never parsed, demangled or mangled.
 - The arguments and result are the function's as C sees them. A C++ method takes `this` as its first argument. The
   types are `void` (a result only), `bool`, `u8` to `u64`, `i8` to `i64`, `addr` (a guest address) and `f32`/`f64`,
-  each of the size its name says in the guest (AArch64, LP64), and pointers. Integers take x0 to x7 and floats v0 to
-  v7 under AAPCS64, counted apart. An argument that would go on the stack is refused.
+  each of the size its name says in the guest (AArch64, LP64), `usize` and `isize` (the guest's `size_t` and
+  `ptrdiff_t`), and pointers. Integers take x0 to x7 and floats v0 to v7 under AAPCS64, counted apart. An argument
+  that would go on the stack is refused.
+- `hookgen --a32` (`snx_hookgen(... A32)`) also generates an adapter for a 32-bit program, a block of its code table
+  (`SnxArmBlock`). It reads the arguments where AAPCS32 with VFP arguments puts them: an integer, a pointer, a `usize`
+  or an `isize` in a word, a `u64` or an `i64` in an even pair of r0 to r3, floats in s0 to s15 and doubles in d0 to
+  d7, and the rest on the stack. It calls the same handler with the thread's `CPU`, and returns to lr in the state lr's
+  bit 0 gives. A pointer and a `usize` reach the handler zero-extended, an `isize` sign-extended. The NVN spec uses it:
+  `tests/hook_adapters.c` checks the mapping.
 - A pointer is a type followed by `*`, each `*` optionally followed by `const`, after an optional `const`:
   `const NVNtexture* const* textures`. It points to `void`, `char`, one of the types above, or a type of the C header
   that the spec's `include` line names (`include "nx/gpu/nvn/nvn.h"`, found in the folders that `-I` gives hookgen).

@@ -3,6 +3,7 @@
 #ifndef SNX_NVN_DIRECT_H
 #define SNX_NVN_DIRECT_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/arm/arm.h"
 #include "common/filesystem/host.h"
 
 /* the functions the game resolved that aren't implemented: their addresses and names, for the message when one is
@@ -15,15 +16,17 @@ typedef struct {
 /* the file's state: the missing functions, the lock their table and the slots are changed under, the resolvers'
    recompiled code, the game's NVN API version (nvn_api_pack, 0 unknown) once decided (under lock) and whether the
    runtime runs the game's NVN calls: from nvn_direct_init on, and with auto until the first bootstrap call says no.
-   g_nvn.direct (gpu/nvn/nvn_state.h) */
+   g_nvn.direct (gpu/nvn/nvn_state.h). A 32-bit game (a32) has its resolvers as blocks of its A32 code (the *32 ones),
+   its NVN functions' slots in its block table, and 4-byte pointers */
 typedef struct {
     NvnMissing missing[NVN_MISSING_SLOTS];
     PMutex lock;
     GuestFn bootstrap_original, getproc_original;
+    SnxArmBlock bootstrap_original32, getproc_original32;
     u64 bootstrap_entry;
     u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
     u32 api;
-    int active, decided;
+    int active, decided, a32;
     /* the driver's recompiled code for the NvRm sync conversions and their addresses, which the game resolved and
        nvn_direct took over (nvn_object.c runs them on a sync in the driver's layout); 0 until resolved */
     GuestFn nvrm_get, nvrm_init;

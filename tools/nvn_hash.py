@@ -747,7 +747,7 @@ def layout_signatures(image, code, names, funcs, named):
         if ret in FLOATS:
             parts.append('ret %s' % d0[: 4 if ret == 'f32' else 8].hex())
         elif ret not in ('void', '?'):
-            wide = ret in ('addr', 'u64', 'i64')
+            wide = ret in ('addr', 'u64', 'i64', 'usize', 'isize')
             parts.append('ret %x' % (x0 & ((1 << (64 if wide else 32)) - 1)))
         out[n] = ' '.join(parts)
     return out

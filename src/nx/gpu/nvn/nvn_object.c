@@ -21,6 +21,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -207,17 +208,19 @@ static int ro_after(void* ctx, const char* name, size_t n, const u8* bytes, u64 
 }
 void nvn_device_driver(u64 func) {
     RoAfter r = {0};
-    u64 hi;
+    u64 lo = g_code_lo, hi;
+    /* a 32-bit game's driver is A32 code, in the block table's range */
+    int (*info)(const u8*, u64, u64, u64, u32, i32*) = g_nvn.direct.a32 ? nvn_driver_info32 : nvn_driver_info;
     if (__atomic_load_n(&g_nvn.object.driver, __ATOMIC_ACQUIRE)) return; /* resolved again: read once */
+    if (g_nvn.direct.a32 && !arm_code_range(&lo, &hi)) return;
     r.func = func;
     loader_segments(ro_after, &r);
-    hi = r.end ? r.end : g_code_hi;
+    hi = r.end ? r.end : g_nvn.direct.a32 ? hi : g_code_hi;
     u32 i, n = 0;
     memcpy(g_nvn.object.info, device_info, sizeof device_info);
-    for (i = 0; i < NVN_DEVICE_INFO_ITEMS; i++)
-        n += (u32)nvn_driver_info(g_mem, g_code_lo, hi, func, i, &g_nvn.object.info[i]);
-    g_nvn.object.read_api = nvn_driver_info(g_mem, g_code_lo, hi, func, 0, &g_nvn.object.info[0]) &&
-                            nvn_driver_info(g_mem, g_code_lo, hi, func, 1, &g_nvn.object.info[1]);
+    for (i = 0; i < NVN_DEVICE_INFO_ITEMS; i++) n += (u32)info(g_mem, lo, hi, func, i, &g_nvn.object.info[i]);
+    g_nvn.object.read_api =
+        info(g_mem, lo, hi, func, 0, &g_nvn.object.info[0]) && info(g_mem, lo, hi, func, 1, &g_nvn.object.info[1]);
     if (!g_nvn.object.read_api)
         WARN("nvn: the game's nvnDeviceGetInteger at %llx doesn't read as a known switch: the device answers API "
              "%d.%d from its own table, which the game may refuse\n",
@@ -409,20 +412,23 @@ int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
     (void)c;
     for (i = 0; i < n; i++) {
         const NvnMapRequest* r = NVN_OBJ(const NvnMapRequest, requests + (u64)i * sizeof(NvnMapRequest));
-        u64 phys = nvn_pool_memory(r->physical), at = o->gpu + (u64)r->virtual_offset;
+        /* the pool pointer is a word in a 32-bit game, the next one padding: the offsets are where they are in a
+           64-bit one */
+        u64 physical = nvn_gptr(requests + (u64)i * sizeof(NvnMapRequest) + offsetof(NvnMapRequest, physical));
+        u64 phys = nvn_pool_memory(physical), at = o->gpu + (u64)r->virtual_offset;
         if (r->virtual_offset < 0 || (u64)r->virtual_offset + r->size > o->size) {
             LOG_LIMIT(8, "nvn: virtual pool %llx: a request at %llx of %llx bytes past its %llx\n",
                       (unsigned long long)p, (unsigned long long)r->virtual_offset, (unsigned long long)r->size,
                       (unsigned long long)o->size);
             return 0;
         }
-        if (!r->physical) {
+        if (!physical) {
             gmmu_space_unmap(at, r->size);
             continue;
         }
         if (!phys) {
             LOG_LIMIT(8, "nvn: virtual pool %llx: request %d maps pool %llx, which has no storage\n",
-                      (unsigned long long)p, i, (unsigned long long)r->physical);
+                      (unsigned long long)p, i, (unsigned long long)physical);
             return 0;
         }
         gmmu_space_map(at, phys + (u64)r->physical_offset, r->size);
@@ -1551,7 +1557,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
-        u64 control = gr64(sd + stride * (u64)i + 8);
+        u64 control = nvn_gptr(sd + stride * (u64)i + 8); /* a pointer: its word in a 32-bit game */
         u32 stage;
         i32 rank;
         if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
@@ -1756,7 +1762,7 @@ i64 nvn_EventBuilderGetMemoryOffset(CPU* c, u64 b) {
 u64 nvn_EventBuilderGetStorage(CPU* c, u64 b, u64 offset) {
     const NvnEventBuilder* o = NVN_OBJ(const NvnEventBuilder, b);
     (void)c;
-    gw64(offset, (u64)o->offset);
+    nvn_gw_isize(offset, o->offset); /* a ptrdiff_t */
     return o->pool;
 }
 u64 nvn_EventGetMemoryPool(CPU* c, u64 e) {
@@ -2092,7 +2098,7 @@ void nvn_VertexAttribStateGetFormat(CPU* c, u64 s, u64 format, u64 offset) {
     u32 w = ld32(s);
     (void)c;
     gw32(format, (u32)nvn_field(w, NVN_VA_FORMAT));
-    gw64(offset, nvn_field(w, NVN_VA_OFFSET));
+    nvn_gw_isize(offset, (i64)nvn_field(w, NVN_VA_OFFSET)); /* a ptrdiff_t */
 }
 i32 nvn_VertexAttribStateGetStreamIndex(CPU* c, u64 s) {
     (void)c;

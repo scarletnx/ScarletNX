@@ -331,7 +331,7 @@ void nvn_WindowBuilderSetTextures(CPU* c, u64 b, i32 n, u64 textures) {
         n = n < 0 ? 0 : 4;
     }
     o->count = (i16)n;
-    for (i = 0; i < n; i++) o->texture[i] = gr64(textures + 8 * (u64)i);
+    for (i = 0; i < n; i++) o->texture[i] = nvn_gptr(textures + nvn_ptr_bytes() * (u64)i);
 }
 void nvn_WindowFinalize(CPU* c, u64 w) {
     (void)c;
