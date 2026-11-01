@@ -32,6 +32,7 @@ static struct {
     VmaAllocation mem;
     u8* ptr;
     u64 cap;
+    u64 serial; /* the last VkOwnRes.serial given */
 } g_owned;
 
 /* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
@@ -69,6 +70,7 @@ VkOwnRes* vk_own_res_new(u64 size) {
     vk_mem_track(r->mem);
     r->size = size;
     r->refs = 1;
+    r->serial = __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED);
     return r;
 }
 static void res_retain(void* res) { __atomic_add_fetch(&((VkOwnRes*)res)->refs, 1, __ATOMIC_RELAXED); }
@@ -264,6 +266,7 @@ int vk_own_init(void) {
 
 void vk_own_res_wrote(VkOwnRes* r) {
     if (r->written < vk_submit_number()) r->written = vk_submit_number();
+    __atomic_store_n(&r->serial, __atomic_add_fetch(&g_owned.serial, 1, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
 }
 
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
@@ -445,8 +448,10 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
                 own_acquire(cpu, n);
                 memcpy(d + o, GP(cpu), (size_t)n);
             } else
-                for (i = 0; i < k; i++) { /* the owner's identity in place of its stale bytes */
-                    u64 tag = ((u64)(uintptr_t)r[i].res * 0x9E3779B97F4A7C15ull) ^ (r[i].res_off - (r[i].addr - cpu));
+                for (i = 0; i < k; i++) { /* the owner's identity in place of its stale bytes: its serial, as a new
+                                             owner can take a freed one's address (a glyph cache's copies did) */
+                    u64 serial = __atomic_load_n(&((const VkOwnRes*)r[i].res)->serial, __ATOMIC_ACQUIRE);
+                    u64 tag = (serial * 0x9E3779B97F4A7C15ull) ^ (r[i].res_off - (r[i].addr - cpu));
                     u8* t = d + o + (r[i].addr - cpu);
                     u8 word[8];
                     u64 b = 0;

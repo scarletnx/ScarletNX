@@ -148,6 +148,38 @@ static int check_owned_writable(void) {
     return 0;
 }
 
+/* GPU-owned bytes peek as their owner's identity (texture hashes, vk_guest_peek): an owner written again in place, or a
+   new one at a freed one's address, has to peek otherwise, or a texture over it keeps the texels it had */
+static int check_owned_peek_identity(void) {
+    const u64 cpu = HEAP_BASE + 0x740000, gva = 0xa400000;
+    u8 before[256], after[256];
+    if (!own_traps()) return 0;
+    gmmu_map(gva, cpu, 0x1000);
+    vk_lock();
+    vk_finish();
+    VkOwnRes* owner = vk_own_res_new(256);
+    CHECK(owner && !owned_test_fill(owner->buf, 0, 256, 0x22));
+    vk_own_publish(cpu, 256, owner, 0);
+    vk_guest_peek(gva, before, sizeof before);
+    vk_guest_peek(gva, after, sizeof after);
+    CHECK(!memcmp(before, after, sizeof before)); /* nothing written: the same */
+    CHECK(!owned_test_fill(owner->buf, 0, 256, 0x55));
+    vk_own_res_wrote(owner);
+    vk_guest_peek(gva, after, sizeof after);
+    CHECK(memcmp(before, after, sizeof before)); /* written in place */
+    memcpy(before, after, sizeof before);
+    VkOwnRes* next = vk_own_res_new(256); /* a new owner over the same bytes, as each copy of a whole surface makes */
+    CHECK(next && !owned_test_fill(next->buf, 0, 256, 0x55));
+    vk_own_publish(cpu, 256, next, 0);
+    vk_guest_peek(gva, after, sizeof after);
+    CHECK(memcmp(before, after, sizeof before));
+    own_acquire(cpu, 256);
+    vk_own_res_unref(next);
+    vk_own_res_unref(owner);
+    vk_unlock();
+    puts("GPU-owned bytes peek as a new identity after each write");
+    return 0;
+}
 /* A writer that keeps an owned range in place (a resident dispatch's store into the buffer it was bound to) publishes
    nothing new. Its write is still recorded and unsubmitted when the CPU touches the range. The landing must wait for
    that write, also where it copies on a compute queue of its own and waits only for the owner's submission */
