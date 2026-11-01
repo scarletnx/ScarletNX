@@ -174,7 +174,7 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 	CHECK(surface && surface->f.vk == format.vk && surface->levels == levels - base);
 	/* a header over a live target's own pixels writes the target, which the draws after it sample before guest
 	 * memory has the store */
-	if (mip_case == 6) CHECK(surface == vk_rt_find(target));
+	if (mip_case == 3 || mip_case == 6) CHECK(surface == vk_rt_find(target));
 	info.nimg = 1;
 	info.img[0].type = (u8)dim;
 	info.img[0].kind = numeric == 2 ? 0 : numeric == 1 ? 3 : 2;
@@ -225,7 +225,7 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 			}
 	}
 	CHECK(!memcmp(result, expected, sizeof(result)));
-	if (mip_case == 6) { /* the store is in the target's image, not only in memory */
+	if (mip_case == 3 || mip_case == 6) { /* the store is in the target's image, not only in memory */
 		vk_lock();
 		CHECK(!storage_pixel(vk_rt_find(target), 0, 0, 0, expected + offset));
 		vk_unlock();
@@ -242,6 +242,38 @@ static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 		CHECK(!storage_pixel(chain, base, dim == 4 ? 1 : 0, dim == 5 ? 1 : 0, expected + offset));
 		vk_unlock();
 	}
+	return 0;
+}
+
+/* which headers put their pixels where a target's are: a 16x4 R32 target, blocks one GOB tall, rows one GOB wide */
+static int check_rt_same_layout(void)
+{
+	Surf s = {0};
+
+	s.w = 16;
+	s.h = 4;
+	s.f.bpp = 4;
+	s.bl = 1;
+	CHECK(vk_rt_same_layout(&s, 16, 4, 1, 0, 0));
+	CHECK(vk_rt_same_layout(&s, 12, 3, 1, 0, 0)); /* a corner of it, in the same GOB */
+	CHECK(!vk_rt_same_layout(&s, 17, 4, 1, 0, 0)); /* larger */
+	CHECK(!vk_rt_same_layout(&s, 16, 4, 0, 0, 64)); /* pitch linear */
+	s.w = 32; /* rows two GOBs wide: a header one GOB wide has its rows elsewhere */
+	CHECK(!vk_rt_same_layout(&s, 16, 4, 1, 0, 0));
+	CHECK(vk_rt_same_layout(&s, 17, 4, 1, 0, 0));
+	s.h = 64; /* 8 GOBs tall, in blocks of 4 (bh 2) */
+	s.bh = 2;
+	CHECK(vk_rt_same_layout(&s, 32, 40, 1, 2, 0));
+	CHECK(!vk_rt_same_layout(&s, 32, 64, 1, 1, 0)); /* blocks of another height */
+	CHECK(!vk_rt_same_layout(&s, 32, 8, 1, 2, 0));  /* one GOB tall: its blocks shrink to one GOB */
+	s.msaa = DS_MSAA_2X2;
+	CHECK(!vk_rt_same_layout(&s, 32, 64, 1, 2, 0));
+	s.msaa = 0;
+	s.bl = 0;
+	s.pitch = 128;
+	CHECK(vk_rt_same_layout(&s, 20, 64, 0, 0, 128));
+	CHECK(!vk_rt_same_layout(&s, 20, 64, 0, 0, 96));
+	CHECK(!vk_rt_same_layout(&s, 20, 64, 1, 0, 0));
 	return 0;
 }
 
@@ -315,7 +347,9 @@ static int check_storage_image_formats(void)
 	/* R32_UINT bit masks a light-tiling pass keeps per tile and adds to across draws, through a header the size
 	 * of the live target */
 	CHECK(!storage_image_case(channel, qmd, address, uint_word, 1, 4, 24, 3, 0, 0, 6));
-	completed++;
+	/* and through a narrower one over the same rows, as dynamic resolution binds it */
+	CHECK(!storage_image_case(channel, qmd, address, uint_word, 1, 4, 25, 3, 0, 0, 3));
+	completed += 2;
 	/* a scaled target's pixels aren't where the program's coordinates write: the header keeps a surface of its
 	 * own */
 	{
@@ -332,7 +366,8 @@ static int check_storage_image_formats(void)
 		g_vk_scale = 1.0f;
 		CHECK(rt && rt->sw == 16 && surface && surface != rt);
 	}
-	CHECK(completed >= 37);
+	CHECK(completed >= 38);
+	CHECK(!check_rt_same_layout());
 	printf("storage image formats: %u signed/unsigned/float, bound/bindless and mip cases checked\n", completed);
 	free(channel);
 	return 0;
