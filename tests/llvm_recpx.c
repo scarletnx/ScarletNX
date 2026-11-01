@@ -14,7 +14,7 @@ static int check(LlvmStep step, unsigned width, u64 input, u32 fpcr, u32 fpsr) {
     expected.fpsr = fpsr;
     expected.pc = 0x1000;
     CPU actual = expected;
-    u64 result = snx_fp_unary(&expected, input, (int)width, SNX_FP_RECPX);
+    u64 result = snx_fp_unary_c(&expected, input, (int)width, SNX_FP_RECPX);
     expected.v[0] = (V128){.d = {result, 0}};
     if (step(&actual) == 0x1004 && !memcmp(&actual, &expected, sizeof actual)) return 0;
     fprintf(stderr, "FRECPX width %u input %llx FPCR %x: result %llx/%llx FPSR %x/%x\n", width,

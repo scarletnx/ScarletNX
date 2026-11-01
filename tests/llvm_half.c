@@ -18,7 +18,7 @@ static int check(LlvmStep step,const Insn* insn,unsigned destination,const CPU* 
     for(unsigned lane=0;lane<insn->lanes;++lane) {
         unsigned at=insn->first_in+lane;
         u64 bits=insn->from==16?input->v[1].h[at]:input->v[1].s[at];
-        u64 value=snx_fp_convert(&expected,bits,(int)insn->from,(int)insn->to,(int)((input->fpcr>>22)&3));
+        u64 value = snx_fp_convert_c(&expected, bits, (int)insn->from, (int)insn->to, (int)((input->fpcr >> 22) & 3));
         at=insn->first_out+lane;
         if(insn->to==16)expected.v[destination].h[at]=(u16)value;
         else if(insn->to==32)expected.v[destination].s[at]=(u32)value;
@@ -47,7 +47,7 @@ static int run(int jit,int portable,char opt,unsigned long long* checks) {
                     c.fpcr=(bits&3)<<22|(mode&1)<<26|((mode>>1)&1)<<25|((mode>>2)&1)<<19;
                     c.fpsr=bits&16?0x0800009fu:0;
                     CPU convert={0};
-                    u32 expanded=(u32)snx_fp_convert(&convert,bits,16,32,0);
+                    u32 expanded = (u32)snx_fp_convert_c(&convert, bits, 16, 32, 0);
                     for(unsigned lane=0;lane<insn->lanes;++lane) {
                         if(insn->from==16)c.v[1].h[insn->first_in+lane]=(u16)bits;
                         else c.v[1].s[lane]=expanded+(lane&1?0x1000u:0);

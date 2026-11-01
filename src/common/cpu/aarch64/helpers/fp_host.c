@@ -65,7 +65,7 @@ static int fp_host_default(void) {
 }
 /* the format's width and the host's environment allow the paths below (each assumes it: their callers check it,
    once a vector), and (rounded) FPCR rounds to nearest, which the arithmetic needs */
-static int fp_host_ready(const CPU* c, int width, int rounded) {
+static int fp_host_ready(const SnxFpEnv* c, int width, int rounded) {
     return width != 16 && (!rounded || !(c->fpcr & (3u << 22))) && fp_host_default();
 }
 
@@ -83,7 +83,7 @@ static int fp_host_inf(const FpHostFormat* f, u64 x) { return (x & f->magnitude)
 static int fp_host_zero(const FpHostFormat* f, u64 x) { return !(x & f->magnitude); }
 /* an operand's encoding (the bits above its width dropped, as FPUnpack reads it), flushed under FPCR.FZ: a denormal
    is a zero of its sign, and IDC */
-static u64 fp_host_flush(const CPU* c, const FpHostFormat* f, u64 x, u32* flags) {
+static u64 fp_host_flush(const SnxFpEnv* c, const FpHostFormat* f, u64 x, u32* flags) {
     u64 m = x & f->magnitude;
     x &= f->sign | f->magnitude;
     if (!(c->fpcr & FPCR_FZ) || !m || m >= f->normal) return x;
@@ -91,12 +91,12 @@ static u64 fp_host_flush(const CPU* c, const FpHostFormat* f, u64 x, u32* flags)
     return x & f->sign;
 }
 /* FPProcessNaN of x (a NaN): quieted, or the default NaN under FPCR.DN; IOC when it signals */
-static u64 fp_host_process(const CPU* c, const FpHostFormat* f, int width, u64 x, u32* flags) {
+static u64 fp_host_process(const SnxFpEnv* c, const FpHostFormat* f, int width, u64 x, u32* flags) {
     if (!(x & f->quiet)) *flags |= FPSR_IOC;
     return c->fpcr & FPCR_DN ? fp_default_nan(width) : x | f->quiet;
 }
 /* FPProcessNaNs: the first signalling NaN of a and b, else the first quiet one (one of them is a NaN) */
-static u64 fp_host_nans(const CPU* c, const FpHostFormat* f, int width, u64 a, u64 b, u32* flags) {
+static u64 fp_host_nans(const SnxFpEnv* c, const FpHostFormat* f, int width, u64 a, u64 b, u32* flags) {
     u64 pick = fp_host_snan(f, a) ? a : fp_host_snan(f, b) ? b : fp_host_nan(f, a) ? a : b;
     if (fp_host_snan(f, a) || fp_host_snan(f, b)) *flags |= FPSR_IOC;
     return fp_host_process(c, f, width, pick, flags);
@@ -105,7 +105,7 @@ static u64 fp_host_invalid(int width, u32* flags) {
     *flags |= FPSR_IOC;
     return fp_default_nan(width);
 }
-static int fp_host_done(CPU* c, u64 r, u32 flags, u64* out) {
+static int fp_host_done(SnxFpEnv* c, u64 r, u32 flags, u64* out) {
     c->fpsr |= flags;
     *out = r;
     return 1;
@@ -125,7 +125,7 @@ static double fp_host_err64(double x, double y, double s) {
 /* a single's result r (finite, from the host) whose exact value v is known by a double: its tininess (|v| below the
    smallest normal) and inexactness. Under FZ a tiny one is a zero of its sign with UFC, else the host's value with
    UFC and IXC when inexact */
-static u64 fp_host_finish32(const CPU* c, u64 r, int tiny, int inexact, u32* flags) {
+static u64 fp_host_finish32(const SnxFpEnv* c, u64 r, int tiny, int inexact, u32* flags) {
     if (tiny && (c->fpcr & FPCR_FZ)) {
         *flags |= FPSR_UFC;
         return r & 0x80000000u;
@@ -135,7 +135,7 @@ static u64 fp_host_finish32(const CPU* c, u64 r, int tiny, int inexact, u32* fla
 }
 
 /* FPAdd, FPSub, FPMul, FPDiv, FPMulX and FABD of singles and doubles */
-SNX_INLINE int fp_host_binary(CPU* c, u64 a, u64 b, int width, int op, u64* out) {
+SNX_INLINE int fp_host_binary(SnxFpEnv* c, u64 a, u64 b, int width, int op, u64* out) {
     if (op > SNX_FP_ABD) return 0;
     int sum = op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD, mul = op == SNX_FP_MUL || op == SNX_FP_MULX;
     FpHostFormat f = fp_host_format(width);
@@ -221,7 +221,7 @@ SNX_INLINE int fp_host_binary(CPU* c, u64 a, u64 b, int width, int op, u64* out)
 /* RN(v * 2^scale) as a single, v = p + z exactly (p, z doubles, s = p + z rounded, err its TwoSum error, both
    finite): s rounded to odd first, which a single rounds as it would v. Exact zeros take s's sign (IEEE's, the Arm
    ARM's in round to nearest) */
-static u64 fp_host_fused32(const CPU* c, double s, double err, int scale, u32* flags) {
+static u64 fp_host_fused32(const SnxFpEnv* c, double s, double err, int scale, u32* flags) {
     u64 bits = fp_host_dbits(s);
     if (err != 0.0) { /* v lies beyond s, or short of it: truncated, the lowest bit set */
         if ((err < 0) != (s < 0)) bits -= 1;
@@ -246,7 +246,7 @@ static u64 fp_host_fused32(const CPU* c, double s, double err, int scale, u32* f
 
 /* FPMulAdd of singles: add + a * b, rounded once. NaNs: the signalling ones first, in the order add, a, b, then the
    quiet ones; a quiet NaN addend with an infinity times zero is invalid too */
-SNX_INLINE int fp_host_fma(CPU* c, u64 add, u64 a, u64 b, int width, u64* out) {
+SNX_INLINE int fp_host_fma(SnxFpEnv* c, u64 add, u64 a, u64 b, int width, u64* out) {
     if (width != 32) return 0;
     FpHostFormat f = fp_host_format(32);
     u32 flags = 0;
@@ -275,7 +275,7 @@ SNX_INLINE int fp_host_fma(CPU* c, u64 add, u64 a, u64 b, int width, u64* out) {
 }
 
 /* FPRecipStepFused (2 - a * b) and FPRSqrtStepFused ((3 - a * b) / 2) of singles: a negated first */
-static int fp_host_step(CPU* c, u64 a, u64 b, int width, int op, u64* out) {
+static int fp_host_step(SnxFpEnv* c, u64 a, u64 b, int width, int op, u64* out) {
     if (width != 32) return 0;
     FpHostFormat f = fp_host_format(32);
     u32 flags = 0;
@@ -291,7 +291,7 @@ static int fp_host_step(CPU* c, u64 a, u64 b, int width, int op, u64* out) {
 }
 
 /* FPMax, FPMin, FPMaxNum and FPMinNum: integer tests and the host's ordering */
-SNX_INLINE int fp_host_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric, u64* out) {
+SNX_INLINE int fp_host_minmax(SnxFpEnv* c, u64 a, u64 b, int width, int minimum, int numeric, u64* out) {
     FpHostFormat f = fp_host_format(width);
     u32 flags = 0;
     a = fp_host_flush(c, &f, a, &flags);
@@ -313,7 +313,7 @@ SNX_INLINE int fp_host_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int 
 }
 
 /* FPCompare: NZCV 8 less, 6 equal, 2 greater, 3 unordered (IOC for a signalling NaN, any NaN when signal) */
-static int fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal, u32* out) {
+static int fp_host_compare(SnxFpEnv* c, u64 a, u64 b, int width, int signal, u32* out) {
     FpHostFormat f = fp_host_format(width);
     u32 flags = 0;
     a = fp_host_flush(c, &f, a, &flags);
@@ -334,7 +334,7 @@ static int fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal, u32* out
 /* FPRecipEstimate and FPRSqrtEstimate of singles and doubles without the soft-float's unpacking: NaNs, zeros (an
    infinity and DZC), negative operands of FRSQRTE (the default NaN and IOC) and infinities here, numbers through
    fp_arithmetic.c's estimates. Integer arithmetic, the same in any host environment */
-static int fp_host_estimate(CPU* c, u64 a, int width, int op, u64* out) {
+static int fp_host_estimate(SnxFpEnv* c, u64 a, int width, int op, u64* out) {
     FpHostFormat f = fp_host_format(width);
     u32 flags = 0;
     a = fp_host_flush(c, &f, a, &flags);
@@ -349,7 +349,7 @@ static int fp_host_estimate(CPU* c, u64 a, int width, int op, u64* out) {
 
 /* FPSqrt of everything but a positive number (the emitters' fast path, else the soft-float): NaNs, zeros of either
    sign, infinities and negative values */
-static int fp_host_sqrt(CPU* c, u64 a, int width, u64* out) {
+static int fp_host_sqrt(SnxFpEnv* c, u64 a, int width, u64* out) {
     FpHostFormat f = fp_host_format(width);
     u32 flags = 0;
     a = fp_host_flush(c, &f, a, &flags);
@@ -392,7 +392,7 @@ static FpHostM4 fp_host_tiny4(FpHostD4 v) {
 }
 
 /* fp_host_flush of four lanes */
-static FpHostU4 fp_host_flush4(const CPU* c, FpHostU4 x, FpHostU4* flags) {
+static FpHostU4 fp_host_flush4(const SnxFpEnv* c, FpHostU4 x, FpHostU4* flags) {
     FpHostU4 m = x & 0x7FFFFFFFu;
     if (!(c->fpcr & FPCR_FZ)) return x;
     FpHostM4 denormal = (m != 0) & (m < 0x00800000u);
@@ -402,20 +402,20 @@ static FpHostU4 fp_host_flush4(const CPU* c, FpHostU4 x, FpHostU4* flags) {
 static FpHostM4 fp_host_nan4(FpHostU4 x) { return (x & 0x7FFFFFFFu) > 0x7F800000u; }
 static FpHostM4 fp_host_snan4(FpHostU4 x) { return fp_host_nan4(x) & ((x & 0x00400000u) == 0); }
 /* fp_host_process of a NaN picked in each lane */
-static FpHostU4 fp_host_process4(const CPU* c, FpHostU4 pick, FpHostU4* flags) {
+static FpHostU4 fp_host_process4(const SnxFpEnv* c, FpHostU4 pick, FpHostU4* flags) {
     FpHostU4 dnan = {FP_HOST_DNAN32, FP_HOST_DNAN32, FP_HOST_DNAN32, FP_HOST_DNAN32};
     *flags |= fp_host_flag4(fp_host_snan4(pick), FPSR_IOC);
     return c->fpcr & FPCR_DN ? dnan : pick | 0x00400000u;
 }
 /* fp_host_nans of four lanes (the lanes without a NaN get b's operand, to be replaced) */
-static FpHostU4 fp_host_nans4(const CPU* c, FpHostU4 a, FpHostU4 b, FpHostU4* flags) {
+static FpHostU4 fp_host_nans4(const SnxFpEnv* c, FpHostU4 a, FpHostU4 b, FpHostU4* flags) {
     FpHostU4 pick =
         fp_host_sel4(fp_host_snan4(a), a, fp_host_sel4(fp_host_snan4(b), b, fp_host_sel4(fp_host_nan4(a), a, b)));
     return fp_host_process4(c, pick, flags);
 }
 
 /* fp_host_binary of four single lanes (op ADD, SUB, MUL, DIV, MULX, ABD) */
-static FpHostU4 fp_host_binary4(const CPU* c, FpHostU4 a, FpHostU4 b, int op, FpHostU4* flags, FpHostM4* slow) {
+static FpHostU4 fp_host_binary4(const SnxFpEnv* c, FpHostU4 a, FpHostU4 b, int op, FpHostU4* flags, FpHostM4* slow) {
     int sum = op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD, mul = op == SNX_FP_MUL || op == SNX_FP_MULX;
     FpHostU4 f = {0, 0, 0, 0};
     a = fp_host_flush4(c, a, &f);
@@ -466,7 +466,7 @@ static FpHostU4 fp_host_binary4(const CPU* c, FpHostU4 a, FpHostU4 b, int op, Fp
 
 /* fp_host_fused32 of four lanes: RN(v * 2^-scale) as a single, v = p + z exactly (p and z doubles, finite where
    fused is set), with its flags in the lanes of fused */
-static FpHostU4 fp_host_fused4(const CPU* c, FpHostD4 p, FpHostD4 z, int scale, FpHostM4 fused, FpHostU4* flags) {
+static FpHostU4 fp_host_fused4(const SnxFpEnv* c, FpHostD4 p, FpHostD4 z, int scale, FpHostM4 fused, FpHostU4* flags) {
     FpHostD4 s = p + z, t = s - p, err = (p - (s - t)) + (z - t);
     FpHostL4 rounded = err != 0.0;
     FpHostQ4 bits = ((FpHostQ4)s + (FpHostQ4)(rounded & ((err < 0.0) ^ (s < 0.0)))) | ((FpHostQ4)rounded & 1);
@@ -484,7 +484,7 @@ static FpHostU4 fp_host_fused4(const CPU* c, FpHostD4 p, FpHostD4 z, int scale, 
 }
 
 /* fp_host_fma of four single lanes: add + a * b */
-static FpHostU4 fp_host_fma4(const CPU* c, FpHostU4 add, FpHostU4 a, FpHostU4 b, FpHostU4* flags) {
+static FpHostU4 fp_host_fma4(const SnxFpEnv* c, FpHostU4 add, FpHostU4 a, FpHostU4 b, FpHostU4* flags) {
     FpHostU4 f = {0, 0, 0, 0}, sign = f + 0x80000000u,
              dnan = {FP_HOST_DNAN32, FP_HOST_DNAN32, FP_HOST_DNAN32, FP_HOST_DNAN32};
     add = fp_host_flush4(c, add, &f);
@@ -519,7 +519,7 @@ static FpHostU4 fp_host_fma4(const CPU* c, FpHostU4 add, FpHostU4 a, FpHostU4 b,
 }
 
 /* fp_host_step of four single lanes: FPRecipStepFused (2 - a * b, op RECPS) or FPRSqrtStepFused ((3 - a * b) / 2) */
-static FpHostU4 fp_host_step4(const CPU* c, FpHostU4 a, FpHostU4 b, int op, FpHostU4* flags) {
+static FpHostU4 fp_host_step4(const SnxFpEnv* c, FpHostU4 a, FpHostU4 b, int op, FpHostU4* flags) {
     FpHostU4 f = {0, 0, 0, 0};
     a = fp_host_flush4(c, a ^ 0x80000000u, &f);
     b = fp_host_flush4(c, b, &f);
@@ -540,7 +540,7 @@ static FpHostU4 fp_host_step4(const CPU* c, FpHostU4 a, FpHostU4 b, int op, FpHo
 }
 
 /* fp_host_minmax of four single lanes */
-static FpHostU4 fp_host_minmax4(const CPU* c, FpHostU4 a, FpHostU4 b, int minimum, int numeric, FpHostU4* flags) {
+static FpHostU4 fp_host_minmax4(const SnxFpEnv* c, FpHostU4 a, FpHostU4 b, int minimum, int numeric, FpHostU4* flags) {
     FpHostU4 f = {0, 0, 0, 0};
     a = fp_host_flush4(c, a, &f);
     b = fp_host_flush4(c, b, &f);
@@ -564,9 +564,14 @@ static FpHostU4 fp_host_minmax4(const CPU* c, FpHostU4 a, FpHostU4 b, int minimu
 
 /* ---- the entry points (cpu.h): the host's result where the above takes the operation, else the soft-float's ---- */
 
+/* the soft-float's reply (cpu.h) into c: its flags raised, its value returned */
+static u64 fp_host_soft(SnxFpEnv* c, SnxFpReply r) {
+    c->fpsr |= r.flags;
+    return r.value;
+}
 /* one lane of helper (0 binary, 1 FMA: a + b * d, 2 unary, 3 minmax) through the paths above where ready (the
    host's environment, and the width) and rounded (and FPCR's rounding) allow them, else the soft-float */
-SNX_INLINE u64 fp_host_lane(CPU* c, unsigned helper, int width, int op, int numeric, int ready, int rounded, u64 a,
+SNX_INLINE u64 fp_host_lane(SnxFpEnv* c, unsigned helper, int width, int op, int numeric, int ready, int rounded, u64 a,
                             u64 b, u64 d) {
 #ifdef FP_HOST_ON
     u64 r;
@@ -581,24 +586,24 @@ SNX_INLINE u64 fp_host_lane(CPU* c, unsigned helper, int width, int op, int nume
                                                                       : fp_host_binary(c, a, b, width, op, &r)))
                 return r;
 #endif
-            return snx_fp_binary(c, a, b, width, op);
+            return fp_host_soft(c, snx_fp_binary(a, b, width, op, c->fpcr));
         case 1:
 #ifdef FP_HOST_ON
             if (rounded && fp_host_fma(c, a, b, d, width, &r)) return r;
 #endif
-            return snx_fp_fma(c, a, b, d, width);
+            return fp_host_soft(c, snx_fp_fma(a, b, d, width, c->fpcr));
         case 2:
 #ifdef FP_HOST_ON
             if (ready && op == SNX_FP_SQRT && fp_host_sqrt(c, a, width, &r)) return r;
             if ((op == SNX_FP_RECPE || op == SNX_FP_RSQRTE) && width != 16 && fp_host_estimate(c, a, width, op, &r))
                 return r;
 #endif
-            return snx_fp_unary(c, a, width, op);
+            return fp_host_soft(c, snx_fp_unary(a, width, op, c->fpcr));
         default:
 #ifdef FP_HOST_ON
             if (ready && fp_host_minmax(c, a, b, width, op, numeric, &r)) return r;
 #endif
-            return snx_fp_minmax(c, a, b, width, op, numeric);
+            return fp_host_soft(c, snx_fp_minmax(a, b, width, op, numeric, c->fpcr));
     }
 }
 #ifdef FP_HOST_ON
@@ -607,34 +612,44 @@ SNX_INLINE u64 fp_host_lane(CPU* c, unsigned helper, int width, int op, int nume
 #define FP_HOST_READY(c, width, rounded) 0
 #endif
 
-u64 snx_fp_host_binary(CPU* c, u64 a, u64 b, int width, int op) {
-    return fp_host_lane(c, 0, width, op, 0, 0, FP_HOST_READY(c, width, 1), a, b, 0);
-}
-u64 snx_fp_host_fma(CPU* c, u64 add, u64 a, u64 b, int width) {
-    return fp_host_lane(c, 1, width, 0, 0, 0, FP_HOST_READY(c, width, 1), add, a, b);
-}
-u64 snx_fp_host_unary(CPU* c, u64 bits, int width, int op) {
-    return fp_host_lane(c, 2, width, op, 0, op == SNX_FP_SQRT && FP_HOST_READY(c, width, 0), 0, bits, 0, 0);
-}
-u64 snx_fp_host_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric) {
-    return fp_host_lane(c, 3, width, minimum, numeric, FP_HOST_READY(c, width, 0), 0, a, b, 0);
-}
-u32 snx_fp_host_compare(CPU* c, u64 a, u64 b, int width, int signal) {
-#ifdef FP_HOST_ON
-    u32 r;
-    if (fp_host_ready(c, width, 0) && fp_host_compare(c, a, b, width, signal, &r)) return r;
-#endif
-    return snx_fp_compare(c, a, b, width, signal);
+/* one lane of helper (as fp_host_lane's) with the paths its entry point allows: the arithmetic and FMA when FPCR
+   rounds to nearest, FSQRT and minmax in the host's environment, the estimates in any */
+static u64 fp_host_each(SnxFpEnv* c, unsigned helper, int width, int op, int numeric, u64 a, u64 b, u64 d) {
+    switch (helper) {
+        case 0: return fp_host_lane(c, 0, width, op, 0, 0, FP_HOST_READY(c, width, 1), a, b, 0);
+        case 1: return fp_host_lane(c, 1, width, 0, 0, 0, FP_HOST_READY(c, width, 1), a, b, d);
+        case 2: return fp_host_lane(c, 2, width, op, 0, op == SNX_FP_SQRT && FP_HOST_READY(c, width, 0), 0, a, 0, 0);
+        default: return fp_host_lane(c, 3, width, op, numeric, FP_HOST_READY(c, width, 0), 0, a, b, 0);
+    }
 }
 
-/* one lane of a vector through its entry point above */
-static u64 fp_host_each(CPU* c, unsigned helper, int width, int op, int numeric, u64 a, u64 b, u64 d) {
-    switch (helper) {
-        case 0: return snx_fp_host_binary(c, a, b, width, op);
-        case 1: return snx_fp_host_fma(c, a, b, d, width);
-        case 2: return snx_fp_host_unary(c, a, width, op);
-        default: return snx_fp_host_minmax(c, a, b, width, op, numeric);
-    }
+SnxFpReply snx_fp_host_binary(u64 a, u64 b, int width, int op, u32 fpcr, u32 fpsr) {
+    SnxFpEnv c = {fpcr, fpsr};
+    u64 r = fp_host_each(&c, 0, width, op, 0, a, b, 0);
+    return (SnxFpReply){r, c.fpsr};
+}
+SnxFpReply snx_fp_host_fma(u64 add, u64 a, u64 b, int width, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    u64 r = fp_host_each(&c, 1, width, 0, 0, add, a, b);
+    return (SnxFpReply){r, c.fpsr};
+}
+SnxFpReply snx_fp_host_unary(u64 bits, int width, int op, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    u64 r = fp_host_each(&c, 2, width, op, 0, bits, 0, 0);
+    return (SnxFpReply){r, c.fpsr};
+}
+SnxFpReply snx_fp_host_minmax(u64 a, u64 b, int width, int minimum, int numeric, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    u64 r = fp_host_each(&c, 3, width, minimum, numeric, a, b, 0);
+    return (SnxFpReply){r, c.fpsr};
+}
+SnxFpReply snx_fp_host_compare(u64 a, u64 b, int width, int signal, u32 fpcr) {
+#ifdef FP_HOST_ON
+    SnxFpEnv c = {fpcr, 0};
+    u32 r;
+    if (fp_host_ready(&c, width, 0) && fp_host_compare(&c, a, b, width, signal, &r)) return (SnxFpReply){r, c.fpsr};
+#endif
+    return snx_fp_compare(a, b, width, signal, fpcr);
 }
 /* a lane of width bits at byte offset at, read and written as a number of its width (the same on a host of either
    byte order) */
@@ -667,7 +682,7 @@ static void fp_host_put(char* v, unsigned at, int width, u64 x) {
 #ifdef FP_HOST_ON
 /* up to four single lanes through the four-lane paths, where the host's environment and FPCR's rounding allow them
    (else 0, nothing done); the lanes they leave go one at a time */
-static int fp_host_vector4(CPU* c, char* out, const char* x, const char* y, const char* z, unsigned helper,
+static int fp_host_vector4(SnxFpEnv* c, char* out, const char* x, const char* y, const char* z, unsigned helper,
                            unsigned lanes, int op, int numeric) {
     if (helper == 2 || !fp_host_ready(c, 32, helper != 3)) return 0;
     FpHostU4 a = {0, 0, 0, 0}, b = a, d = a, flags = a, r;
@@ -706,16 +721,18 @@ static int fp_host_vector4(CPU* c, char* out, const char* x, const char* y, cons
 /* the lanes of a vector: desc's nibbles are the helper (0 binary, 1 FMA, x + y * z, 2 unary, 3 minmax), the width in
    bytes, the lane count, the operation (minmax's minimum) and minmax's numeric; x, y, z and out hold the lanes in
    memory, lane 0 first. Singles four lanes at a time where they can be, the rest one lane at a time */
-void snx_fp_host_lanes(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr) {
+    SnxFpEnv env = {fpcr, fpsr}, *c = &env;
     unsigned helper = desc & 15, bytes = desc >> 4 & 15, lanes = desc >> 8 & 15;
     int op = (int)(desc >> 12 & 15), numeric = (int)(desc >> 16 & 15), width = (int)bytes * 8;
     const char *a = (const char*)x, *b = (const char*)y, *d = (const char*)z;
 #ifdef FP_HOST_ON
     if (bytes == 4 && (lanes == 2 || lanes == 4) && fp_host_vector4(c, (char*)out, a, b, d, helper, lanes, op, numeric))
-        return;
+        return env.fpsr;
 #endif
     for (unsigned i = 0; i < lanes; ++i)
         fp_host_put((char*)out, i * bytes, width,
                     fp_host_each(c, helper, width, op, numeric, fp_host_get(a, i * bytes, width),
                                  fp_host_get(b, i * bytes, width), fp_host_get(d, i * bytes, width)));
+    return env.fpsr;
 }

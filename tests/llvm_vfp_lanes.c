@@ -180,8 +180,8 @@ static unsigned estimates(int portable) {
                         }
                         ref = c;
                         for (lane = 0; lane < lanes; lane++)
-                            want[lane] = snx_fp_unary(&ref, get_lane(&c.v[1], width, lane), width,
-                                                      k & 1 ? SNX_FP_RSQRTE : SNX_FP_RECPE);
+                            want[lane] = snx_fp_unary_c(&ref, get_lane(&c.v[1], width, lane), width,
+                                                        k & 1 ? SNX_FP_RSQRTE : SNX_FP_RECPE);
                         fesetround(g_host_modes[(top + e + m) % 4]);
                         step(&c);
                         fesetround(FE_TONEAREST);
@@ -246,10 +246,11 @@ int main(void) {
                         u64 d = get_lane(&c.v[0], width, lane), n = get_lane(&c.v[1], width, lane);
                         u64 m = get_lane(&c.v[2], width, lane);
                         int op = g_insns[k].op;
-                        want[lane] = op < 0          ? snx_fp_fma(&ref, d, n, m, width)
-                                     : op >= UNARY  ? snx_fp_unary(&ref, n, width, op - UNARY)
-                                     : op >= MINMAX ? snx_fp_minmax(&ref, n, m, width, (op - MINMAX) & 1, (op - MINMAX) >> 1)
-                                                    : snx_fp_binary(&ref, n, m, width, op);
+                        want[lane] = op < 0        ? snx_fp_fma_c(&ref, d, n, m, width)
+                                     : op >= UNARY ? snx_fp_unary_c(&ref, n, width, op - UNARY)
+                                     : op >= MINMAX
+                                         ? snx_fp_minmax_c(&ref, n, m, width, (op - MINMAX) & 1, (op - MINMAX) >> 1)
+                                         : snx_fp_binary_c(&ref, n, m, width, op);
                     }
                     if (g_insns[k].op >= UNARY) fesetround(g_host_modes[i % 4]); /* the estimates' own rounding */
                     step(&c);
@@ -300,9 +301,9 @@ int main(void) {
                     c.fpsr = fpsr;
                     ref = c;
                     for (lane = 0; lane < lanes; lane++)
-                        want[lane] = snx_fp_round(&ref, get_lane(&c.v[1], width, lane), width,
-                                                  g_rounds[k].rm < 0 ? (int)(fpcr >> 22 & 3) : g_rounds[k].rm,
-                                                  g_rounds[k].exact);
+                        want[lane] = snx_fp_round_c(&ref, get_lane(&c.v[1], width, lane), width,
+                                                    g_rounds[k].rm < 0 ? (int)(fpcr >> 22 & 3) : g_rounds[k].rm,
+                                                    g_rounds[k].exact);
                     step(&c);
                     fesetround(FE_TONEAREST);
                     checks++;
@@ -359,8 +360,8 @@ int main(void) {
                     c.fpsr = fpsr;
                     ref = c;
                     for (lane = 0; lane < lanes; lane++)
-                        want[lane] = snx_fp_to_int(&ref, get_lane(&c.v[1], width, lane), width, width,
-                                                   g_converts[k].uns, 0, g_converts[k].rm);
+                        want[lane] = snx_fp_to_int_c(&ref, get_lane(&c.v[1], width, lane), width, width,
+                                                     g_converts[k].uns, 0, g_converts[k].rm);
                     fesetround(g_host_modes[i % 4]);
                     step(&c);
                     fesetround(FE_TONEAREST);

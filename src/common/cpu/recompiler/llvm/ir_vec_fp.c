@@ -59,22 +59,17 @@ typedef struct {
     V rm;                 /* the i32 rounding mode of H_CONVERT, H_ROUND, H_ROUND_INT, H_TO_INT */
 } LaneOp;
 
-/* name(c, operands...): the helpers read c->fpcr and change c->fpsr, and no register (ir_noregs, as ir_fpu.c's) */
-static V fp_lane_call(SnxIr* ir, const char* name, LLVMTypeRef ret, const V* operands, unsigned count) {
-    V r = ir_vec_call(ir, name, ret, operands, count);
-    ir_noregs(ir, LLVMGetNamedFunction(ir->mod, name));
-    return r;
-}
-
-/* the i64 result (i32 NZCV for H_COMPARE) of one lane's operands (iN) */
+/* the result of one lane's operands (iN): the value of the helper's reply, whose NZCV nibble an H_COMPARE lane
+   holds in its low bits */
 static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
     V ops[6];
     unsigned n = 0;
     const char* name;
-    LLVMTypeRef ret = ir->t_i64;
+    int with_fpsr = 0;
     switch (o->helper) {
         case H_BINARY:
             name = "snx_fp_host_binary";
+            with_fpsr = 1;
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
@@ -103,7 +98,6 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             break;
         case H_COMPARE:
             name = "snx_fp_host_compare";
-            ret = ir->t_i32;
             ops[n++] = u64_of(ir, x);
             ops[n++] = u64_of(ir, y);
             ops[n++] = ir_i32(ir, o->width);
@@ -152,7 +146,10 @@ static V lane(SnxIr* ir, const LaneOp* o, V x, V y, V z) {
             ops[n++] = u64_of(ir, x);
             break;
     }
-    return fp_lane_call(ir, name, ret, ops, n);
+    /* ir_fp.h's ir_fp_call: the operands, then FPCR by value; the flags come back and go into FPSR. Nothing of the
+       CPU structure is behind the call, so no lane's call is a site for ir_promote_registers and every lane of an
+       instruction shares one FPCR load. */
+    return ir_fp_reply_call(ir, name, ops, n, with_fpsr);
 }
 
 /* v in a local of its type, for a helper to read */
@@ -160,6 +157,17 @@ static V spill(SnxIr* ir, V v) {
     V local = ir_local(ir, LLVMTypeOf(v));
     LLVMSetAlignment(LLVMBuildStore(B, v, local), 8);
     return local;
+}
+
+/* snx_fp_host_lanes(out, x, y, z, desc, FPCR, FPSR): it touches only its pointers' memory, the locals here, and
+   returns FPSR after the lanes, which goes into FPSR */
+static void lanes_call(SnxIr* ir, V* ops) {
+    LLVMTypeRef params[7] = {ir->t_ptr, ir->t_ptr, ir->t_ptr, ir->t_ptr, ir->t_i32, ir->t_i32, ir->t_i32};
+    V args[7] = {ops[0], ops[1], ops[2], ops[3], ops[4], fpcr(ir), fpsr(ir)};
+    V function = ir_extern(ir, "snx_fp_host_lanes", ir->t_i32, params, 7);
+    ir_argmem(ir, function);
+    V flags = LLVMBuildCall2(B, LLVMFunctionType(ir->t_i32, params, 7, 0), function, args, 7, "");
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr(ir), flags, ""), offsetof(CPU, fpsr));
 }
 
 /* the lanes of X (Y, Z: the other operands, or NULL) through the helper, as <lanes x i out_bits>. The arithmetic,
@@ -175,7 +183,7 @@ static V map(SnxIr* ir, const LaneOp* o, V X, V Y, V Z, unsigned out_bits) {
         ops[2] = Y ? spill(ir, Y) : x;
         ops[3] = Z ? spill(ir, Z) : x;
         ops[4] = ir_i32(ir, o->helper | (o->width / 8) << 4 | lanes << 8 | o->op << 12 | o->p1 << 16);
-        fp_lane_call(ir, "snx_fp_host_lanes", ir->t_void, ops, 5);
+        lanes_call(ir, ops);
         V load = LLVMBuildLoad2(B, type, out, "");
         LLVMSetAlignment(load, 8);
         return load;
