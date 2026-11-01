@@ -201,6 +201,9 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     char* pipelines = snx_path_join(directory, "pipelines.cache");
     snx_ctr_vk_cache_file(pipelines);
     free(pipelines);
+    char* shaders = snx_path_join(directory, "shaders.cache");
+    snx_ctr_vk_shader_cache_file(shaders);
+    free(shaders);
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
     else

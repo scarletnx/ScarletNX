@@ -50,6 +50,10 @@ bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
 /* The file the pipeline cache is read from when the device is made, and written to when it is freed (copied; call
    before snx_ctr_vk_init). Without one the driver's own cache is all there is. */
 void snx_ctr_vk_cache_file(const char* path);
+/* The file the renderer's compiled shader objects are read from when the renderer starts, and written to when it
+   stops (copied; call before snx_ctr_vk_init). With it, a shader seen in an earlier run is created without
+   compiling. */
+void snx_ctr_vk_shader_cache_file(const char* path);
 void snx_ctr_vk_free(void);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
 VkCommandBuffer snx_ctr_vk_commands(void);

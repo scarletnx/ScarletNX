@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/common.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -145,6 +146,9 @@ static void uber_free(VkDevice d);
 static double now_ms(void);
 static VkShaderEXT shader_object(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words,
                                  size_t count);
+static bool bin_known(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words, size_t count);
+static void bins_load(void);
+static void bins_save(void);
 static bool pipe_worker_start(void);
 typedef struct PipeJob PipeJob;
 static void pipe_job_queue(PipeJob* j);
@@ -160,6 +164,7 @@ typedef struct PipeJob {
     uint32_t* words;
     size_t word_count;
     VkShaderEXT object;
+    bool vertex; /* the words are a vertex shader's, else a fragment shader's */
     bool done;
     struct PipeJob* next;
 } PipeJob;
@@ -170,6 +175,7 @@ typedef struct {
     VkShaderEXT object; /* with shader objects */
     uint32_t* words;    /* with them, the SPIR-V is kept for the draws that go through a pipeline (ensure_modules) */
     size_t word_count;
+    PipeJob* job; /* the object's build, until it is collected */
     const char* why;
 } VsShader;
 typedef struct {
@@ -410,6 +416,7 @@ static bool made(void) {
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &uber_range};
     if (vkCreatePipelineLayout(v->device, &li, NULL, &g.layout) != VK_SUCCESS) return false;
+    if (v->shader_object) bins_load();
     if (v->shader_object && !uber_init()) {
         fprintf(stderr, "3ds gpu: the uber shader cannot be made: a draw waits for its exact shaders\n");
         uber_free(v->device);
@@ -1008,7 +1015,7 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
         if (g.vs[i].hash == h && !memcmp(&g.vs[i].config, c, sizeof *c)) {
             *index = (uint32_t)i;
             *why = g.vs[i].why;
-            return g.vs[i].module != VK_NULL_HANDLE || g.vs[i].object != VK_NULL_HANDLE;
+            return g.vs[i].module != VK_NULL_HANDLE || g.vs[i].job != NULL || g.vs[i].object != VK_NULL_HANDLE;
         }
     if (!grow((void**)&g.vs, &g.vs_capacity, g.vs_count, sizeof *g.vs)) {
         *why = "the host is out of memory";
@@ -1022,19 +1029,34 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     size_t count;
     double began = now_ms();
     if (snx_ctr_vs_spirv(&p->vs, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
+        double generated = now_ms() - began;
+        if (generated > 2.0) fprintf(stderr, "3ds gpu: vertex shader %zu generated in %.1f ms\n", g.vs_count, generated);
         if (snx_ctr_vk()->shader_object) {
-            s->object = shader_object(VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, words, count);
-            if (!s->object) s->why = "the device refuses a shader object";
+            /* a shader of an earlier run is created from its binary at once; a new one is compiled on a worker,
+               and the draw waits for it (a vertex shader has no stand-in) */
+            PipeJob* j = NULL;
+            if (g_settings.ctr_async_pipelines == 1 && !bin_known(VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, words, count) &&
+                pipe_worker_start() && (j = (PipeJob*)calloc(1, sizeof *j)) && (j->words = (uint32_t*)malloc(count * 4))) {
+                memcpy(j->words, words, count * 4);
+                j->word_count = count;
+                j->vertex = true;
+                s->job = j;
+                pipe_job_queue(j);
+            } else {
+                free(j);
+                s->object = shader_object(VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, words, count);
+                if (!s->object) s->why = "the device refuses a shader object";
+            }
             s->words = words;
             s->word_count = count;
         } else
             s->module = module(words, count, &s->why);
     }
-    if (now_ms() - began > 2.0) fprintf(stderr, "3ds gpu: vertex shader %zu built in %.1f ms\n", g.vs_count, now_ms() - began);
-    if (!s->module && !s->object) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
+    if (now_ms() - began > 2.0) fprintf(stderr, "3ds gpu: vertex shader %zu ready in %.1f ms\n", g.vs_count, now_ms() - began);
+    if (!s->module && !s->object && !s->job) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
     *index = (uint32_t)g.vs_count++;
     *why = s->why;
-    return s->module != VK_NULL_HANDLE || s->object != VK_NULL_HANDLE;
+    return s->module != VK_NULL_HANDLE || s->job != NULL || s->object != VK_NULL_HANDLE;
 }
 static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why) {
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, c, sizeof *c);
@@ -1056,7 +1078,8 @@ static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why
     size_t count;
     double began = now_ms();
     snx_ctr_fs_spirv(c, snx_ctr_vk()->preserve_infnan, &words, &count);
-    if (snx_ctr_vk()->shader_object && g_settings.ctr_async_pipelines && pipe_worker_start()) {
+    if (snx_ctr_vk()->shader_object && g_settings.ctr_async_pipelines &&
+        !bin_known(VK_SHADER_STAGE_FRAGMENT_BIT, 0, words, count) && pipe_worker_start()) {
         /* the object is built on a worker thread; the draw uses the uber shader meanwhile */
         PipeJob* j = (PipeJob*)calloc(1, sizeof *j);
         if (j && (j->words = (uint32_t*)malloc(count * 4))) {
@@ -1320,6 +1343,150 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
 }
 /* ---- the uber shader, as a fragment shader object ---- */
 static VkShaderEXT g_uber;
+/* The draws skipped while a build was pending, by what they waited for (vertex shader, fragment shader, pipeline):
+   reported about once a second while any are, so a lost object can be told from one the game never drew. */
+static struct {
+    size_t count[3], total;
+    double reported;
+} skipped;
+static SnxCtrPicaResult draw_skipped(unsigned what) {
+    skipped.count[what]++;
+    skipped.total++;
+    double now = now_ms();
+    if (now - skipped.reported > 1000.0) {
+        if (skipped.reported)
+            fprintf(stderr, "3ds gpu: %zu draws skipped for a vertex shader, %zu for a fragment shader, %zu for a pipeline (%zu in all)\n",
+                    skipped.count[0], skipped.count[1], skipped.count[2], skipped.total);
+        skipped.reported = now;
+    }
+    return SNX_CTR_PICA_OK;
+}
+
+/* The compiled binaries of the shader objects, kept in a file between runs: the driver compiles a shader once, and
+   a later run creates it from the binary (a few ms in place of over a hundred). An entry is keyed by the hash of the
+   SPIR-V with its stage; the file is for one driver (its binary UUID and version) and one layout of the renderer
+   (BIN_FORMAT), and anything else in it is ignored. The workers add entries while the draws look them up. */
+#define BIN_MAGIC 0x42584e53u /* "SNXB" */
+#define BIN_FORMAT 1u
+typedef struct {
+    uint64_t key;
+    uint32_t size;
+    unsigned char* data;
+} ShaderBin;
+static struct {
+    SDL_Mutex* lock;
+    ShaderBin* items;
+    size_t count, capacity;
+    char* file;
+    bool dirty;
+    uint8_t uuid[VK_UUID_SIZE];
+    uint32_t version;
+} bins;
+void snx_ctr_vk_shader_cache_file(const char* path) {
+    free(bins.file);
+    bins.file = path ? snx_strdup(path) : NULL;
+}
+static uint64_t bin_key(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words, size_t count) {
+    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, words, count * 4);
+    uint32_t extra[2] = {(uint32_t)stage, (uint32_t)next};
+    return snx_fnv1a(h, extra, sizeof extra) ^ (uint64_t)count << 40;
+}
+/* a copy of the entry of a key (its data stays until bins_save); false for none */
+static bool bin_find(uint64_t key, ShaderBin* out) {
+    bool found = false;
+    SDL_LockMutex(bins.lock);
+    for (size_t i = 0; i < bins.count && !found; ++i)
+        if (bins.items[i].key == key) {
+            *out = bins.items[i];
+            found = true;
+        }
+    SDL_UnlockMutex(bins.lock);
+    return found;
+}
+static bool bin_known(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words, size_t count) {
+    ShaderBin b;
+    return bins.lock && bin_find(bin_key(stage, next, words, count), &b);
+}
+static void bin_add(uint64_t key, const void* data, size_t size) {
+    unsigned char* copy = (unsigned char*)malloc(size);
+    if (!copy) return;
+    memcpy(copy, data, size);
+    SDL_LockMutex(bins.lock);
+    bool have = false;
+    for (size_t i = 0; i < bins.count && !have; ++i) have = bins.items[i].key == key;
+    if (!have && grow((void**)&bins.items, &bins.capacity, bins.count, sizeof *bins.items)) {
+        bins.items[bins.count++] = (ShaderBin){key, (uint32_t)size, copy};
+        bins.dirty = true;
+        copy = NULL;
+    }
+    SDL_UnlockMutex(bins.lock);
+    free(copy);
+}
+static uint32_t bin_u32(const unsigned char* p) {
+    uint32_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
+}
+static void bins_load(void) {
+    SnxCtrVk* v = snx_ctr_vk();
+    bins.lock = SDL_CreateMutex();
+    VkPhysicalDeviceShaderObjectPropertiesEXT so = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 pr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &so};
+    vkGetPhysicalDeviceProperties2(v->phys, &pr);
+    memcpy(bins.uuid, so.shaderBinaryUUID, sizeof bins.uuid);
+    bins.version = so.shaderBinaryVersion;
+    size_t size = 0;
+    unsigned char* file = bins.file ? snx_read_file(bins.file, &size) : NULL;
+    const size_t header = 4 * 3 + VK_UUID_SIZE + 4;
+    if (file && size >= header && bin_u32(file) == BIN_MAGIC && bin_u32(file + 4) == BIN_FORMAT &&
+        bin_u32(file + 8) == bins.version && !memcmp(file + 12, bins.uuid, VK_UUID_SIZE)) {
+        uint32_t entries = bin_u32(file + 12 + VK_UUID_SIZE);
+        size_t at = header;
+        for (uint32_t i = 0; i < entries && size - at >= 12; ++i) {
+            uint64_t key;
+            memcpy(&key, file + at, sizeof key);
+            uint32_t n = bin_u32(file + at + 8);
+            at += 12;
+            if (n > size - at) break;
+            bin_add(key, file + at, n);
+            at += n;
+        }
+        bins.dirty = false;
+    }
+    free(file);
+}
+static void bins_save(void) {
+    if (bins.lock) {
+        if (bins.file && bins.dirty) {
+            size_t total = 4 * 3 + VK_UUID_SIZE + 4;
+            for (size_t i = 0; i < bins.count; ++i) total += 12 + bins.items[i].size;
+            unsigned char* out = (unsigned char*)malloc(total);
+            if (out) {
+                uint32_t head[3] = {BIN_MAGIC, BIN_FORMAT, bins.version};
+                uint32_t entries = (uint32_t)bins.count;
+                size_t at = 0;
+                memcpy(out, head, sizeof head);
+                memcpy(out + 12, bins.uuid, VK_UUID_SIZE);
+                memcpy(out + 12 + VK_UUID_SIZE, &entries, sizeof entries);
+                at = 12 + VK_UUID_SIZE + 4;
+                for (size_t i = 0; i < bins.count; ++i) {
+                    memcpy(out + at, &bins.items[i].key, 8);
+                    memcpy(out + at + 8, &bins.items[i].size, 4);
+                    memcpy(out + at + 12, bins.items[i].data, bins.items[i].size);
+                    at += 12 + bins.items[i].size;
+                }
+                (void)snx_write_file(bins.file, out, total);
+                free(out);
+            }
+        }
+        for (size_t i = 0; i < bins.count; ++i) free(bins.items[i].data);
+        free(bins.items);
+        SDL_DestroyMutex(bins.lock);
+    }
+    char* file = bins.file;
+    memset(&bins, 0, sizeof bins);
+    bins.file = file; /* the renderer can start again with the same file */
+}
 static VkShaderEXT shader_object(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words,
                                  size_t count) {
     SnxCtrVk* v = snx_ctr_vk();
@@ -1337,7 +1504,24 @@ static VkShaderEXT shader_object(VkShaderStageFlagBits stage, VkShaderStageFlags
                                 .pushConstantRangeCount = 1,
                                 .pPushConstantRanges = &range};
     VkShaderEXT object = VK_NULL_HANDLE;
+    uint64_t key = bins.lock ? bin_key(stage, next, words, count) : 0;
+    ShaderBin bin;
+    bool have = bins.lock && bin_find(key, &bin);
+    if (have) {
+        VkShaderCreateInfoEXT from = ci;
+        from.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT;
+        from.codeSize = bin.size;
+        from.pCode = bin.data;
+        if (vkCreateShadersEXT(v->device, 1, &from, NULL, &object) == VK_SUCCESS) return object;
+        object = VK_NULL_HANDLE; /* the driver does not take it: compiled from the SPIR-V */
+    }
     if (vkCreateShadersEXT(v->device, 1, &ci, NULL, &object) != VK_SUCCESS) return VK_NULL_HANDLE;
+    size_t size = 0;
+    if (bins.lock && !have && vkGetShaderBinaryDataEXT(v->device, object, &size, NULL) == VK_SUCCESS && size) {
+        void* data = malloc(size);
+        if (data && vkGetShaderBinaryDataEXT(v->device, object, &size, data) == VK_SUCCESS) bin_add(key, data, size);
+        free(data);
+    }
     return object;
 }
 static bool uber_init(void) {
@@ -1400,9 +1584,10 @@ static int pipe_work(void* arg) {
         VkShaderEXT object = VK_NULL_HANDLE;
         if (j->words) {
             double began = now_ms();
-            object = shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, j->words, j->word_count);
+            object = j->vertex ? shader_object(VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, j->words, j->word_count)
+                               : shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, j->words, j->word_count);
             double took = now_ms() - began;
-            if (took > 2.0) fprintf(stderr, "3ds gpu: fragment shader object built in %.1f ms\n", took);
+            if (took > 2.0) fprintf(stderr, "3ds gpu: %s shader object built in %.1f ms\n", j->vertex ? "vertex" : "fragment", took);
             free(j->words);
             j->words = NULL;
         } else
@@ -1457,6 +1642,34 @@ static void pipe_job_queue(PipeJob* j) {
     SDL_SignalCondition(pipe_worker.wake);
     SDL_UnlockMutex(pipe_worker.lock);
 }
+/* Whether a shader object's build is done, after waiting up to wait_ms for it: its job is then freed (*job NULL) and
+   the object (NULL when the device refused it) is in *object */
+static bool job_collect(PipeJob** job, VkShaderEXT* object, double wait_ms) {
+    PipeJob* j = *job;
+    double until = now_ms() + wait_ms;
+    SDL_LockMutex(pipe_worker.lock);
+    while (!j->done) {
+        double left = until - now_ms();
+        if (left <= 0) break;
+        SDL_WaitConditionTimeout(pipe_worker.finished, pipe_worker.lock, (int32_t)(left + 0.999));
+    }
+    bool done = j->done;
+    VkShaderEXT made = j->object;
+    SDL_UnlockMutex(pipe_worker.lock);
+    if (done) {
+        free(j);
+        *job = NULL;
+        *object = made;
+    }
+    return done;
+}
+/* The vertex shader object of a draw: its own once built, else NULL with *pending set (a draw has no stand-in for it) */
+static VkShaderEXT vs_object(VsShader* v, bool* pending) {
+    *pending = false;
+    if (v->job && job_collect(&v->job, &v->object, 0.0) && !v->object) v->why = "the device refuses a shader object";
+    *pending = v->job != NULL;
+    return v->object;
+}
 /* The fragment shader object of a config: its own once built, else (when the uber shader draws the config) the
    uber shader, else NULL with *pending set. Waits up to wait_ms for a build. */
 static VkShaderEXT fs_object(FsShader* f, const SnxCtrFsConfig* c, bool* pending, bool* uber) {
@@ -1465,24 +1678,8 @@ static VkShaderEXT fs_object(FsShader* f, const SnxCtrFsConfig* c, bool* pending
         *uber = true;
         return g_uber;
     }
-    if (f->job) {
-        double until = now_ms() + 1.0;
-        SDL_LockMutex(pipe_worker.lock);
-        while (!f->job->done) {
-            double left = until - now_ms();
-            if (left <= 0) break;
-            SDL_WaitConditionTimeout(pipe_worker.finished, pipe_worker.lock, (int32_t)(left + 0.999));
-        }
-        bool done = f->job->done;
-        VkShaderEXT object = f->job->object;
-        SDL_UnlockMutex(pipe_worker.lock);
-        if (done) {
-            free(f->job);
-            f->job = NULL;
-            f->object = object;
-            if (!object) f->why = "the device refuses a shader object";
-        }
-    }
+    /* the stand-in draws at once; a config without one waits a moment for the build */
+    if (f->job && job_collect(&f->job, &f->object, uber_draws(c) ? 0.0 : 1.0) && !f->object) f->why = "the device refuses a shader object";
     if (f->object) return f->object;
     if (!f->job) return VK_NULL_HANDLE; /* refused */
     if (!uber_draws(c)) {
@@ -1836,14 +2033,16 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     bool objects = snx_ctr_vk()->shader_object &&
                    !(!k.blend_on && snx_ctr_vk()->logic_op && (k.logic & 15) != 3);
     if (objects) {
-        shaders[0] = g.vs[k.vs].object;
+        bool vs_pending;
+        shaders[0] = vs_object(&g.vs[k.vs], &vs_pending);
+        if (vs_pending) return draw_skipped(0); /* the worker is still building it */
         shaders[1] = fs_object(&g.fs[k.fs], &fs, &pending, &uber);
-        if (pending) return SNX_CTR_PICA_OK; /* the worker is still building it */
+        if (pending) return draw_skipped(1); /* the worker is still building it */
         if (!shaders[0] || !shaders[1]) return stop(p, "the device refuses a draw's shader object");
     } else {
         if (snx_ctr_vk()->shader_object && !ensure_modules(&k)) return stop(p, "the device refuses a shader module");
         pipe = pipeline(&k, &pending);
-        if (pending) return SNX_CTR_PICA_OK; /* the worker is still building it */
+        if (pending) return draw_skipped(2); /* the worker is still building it */
         if (!pipe) return stop(p, "the device refuses a draw's pipeline");
     }
     /* the vertices: an index buffer, the loaders' bindings, or the immediate vertices */
@@ -2010,9 +2209,12 @@ void snx_ctr_vk_render_free(void) {
         return;
     }
     pipe_worker_stop();
+    bins_save();
     VkDevice d = device();
     vkDeviceWaitIdle(d);
-    fprintf(stderr, "3ds gpu: %zu pipelines, %zu vertex and %zu fragment shaders\n", g.pipe_count, g.vs_count, g.fs_count);
+    fprintf(stderr, "3ds gpu: %zu pipelines, %zu vertex and %zu fragment shaders, %zu draws skipped for a build\n", g.pipe_count,
+            g.vs_count, g.fs_count, skipped.total);
+    memset(&skipped, 0, sizeof skipped);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {
         for (size_t i = 0; i < g.view_count[s]; ++i) vkDestroyBufferView(d, g.views[s][i], NULL);
         free(g.views[s]);
@@ -2030,8 +2232,12 @@ void snx_ctr_vk_render_free(void) {
         free(j);
     }
     for (size_t i = 0; i < g.vs_count; ++i) {
+        PipeJob* j = g.vs[i].job;
+        VkShaderEXT object = j ? j->object : g.vs[i].object;
         if (g.vs[i].module) vkDestroyShaderModule(d, g.vs[i].module, NULL);
-        if (g.vs[i].object) vkDestroyShaderEXT(d, g.vs[i].object, NULL);
+        if (object) vkDestroyShaderEXT(d, object, NULL);
+        if (j) free(j->words);
+        free(j);
         free(g.vs[i].words);
     }
     for (size_t i = 0; i < g.fs_count; ++i) {
