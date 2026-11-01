@@ -116,6 +116,23 @@ framebuffers are decoded and turned to the landscape screen by a compute shader
 straight from guest memory into the window's swapchain; the frame dumps are the
 one readback.
 
+Building shaders must not stall a frame, so the renderer builds them off the draw
+thread. The `ctr_async_pipelines` setting picks the mode: 0 builds on the draw
+thread, 1 (the default) uses worker threads, 2 draws with the stand-in fragment
+shader only (the tests use it). With `VK_EXT_shader_object` there are no pipelines: a vertex
+and a fragment shader object are bound per draw, and depth, stencil and the rest of
+the state are dynamic. A draw whose fragment shader is still compiling uses
+`shaders/uber.frag`, which reads the TEV setup from push constants. It leaves out
+lighting, fog and the procedural texture, and cube, shadow and gas draws wait for the
+real shader. A vertex shader has no stand-in, so its draws are skipped until a worker
+has built it. A logic op cannot be set dynamically on some devices, so those draws
+keep the pipeline path (built on a worker, with the draw skipped meanwhile). The
+driver's pipeline cache is kept in `pipelines.cache` of the game's folder, and the
+shader objects' binaries in `shaders.cache`, so a shader seen in an earlier run is
+created without compiling. The log reports builds over 2 ms and the draws skipped for
+a build. `VK_EXT_graphics_pipeline_library` is not used: on one AMD driver, enabling
+it made compute shaders with 8-bit storage writes give wrong bytes.
+
 What the GPU makes stays on it, and guest memory catches up only when something
 reads it. A render target's images are kept, and loaded from guest memory by a compute
 shader only when memory changed under them. The pages a draw makes newer stay the
