@@ -1377,6 +1377,55 @@ static int all_bytes(const u8* p, u32 n, u8 v) {
         if (p[i] != v) return 0;
     return 1;
 }
+/* A copy's source written where the write tracking can't see (through the alias pool's file, as a save state's restore
+   writes): the next copy, in a later submission, takes the new bytes. The source is big enough for the buffer cache to
+   keep a buffer of its own, which the tracking would vouch for (one game's upload ring was written past the tracking,
+   and its lightmap atlas copied with stale bytes) */
+static int check_dma_untracked_source(void) {
+    const u64 size = 0x40000, src = HEAP_BASE + 0x800000, dst = src + size, gsrc = 0x380000000ull,
+              gdst = 0x390000000ull;
+    GpuDmaOp o;
+    MemBlock b;
+    u8* bytes;
+    CHECK(mem_map(src, 2 * size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gsrc, src, size);
+    gmmu_map(gdst, dst, size);
+    vk_lock();
+    int tracking = vk_written_since(gmem_host(gsrc, size), size, 0) >= 0;
+    vk_unlock();
+    if (!tracking || !mem_pool_active() || mem_alias_begin(src, size)) {
+        printf("skip: an untracked copy source needs write tracking and the alias pool\n");
+        return 0;
+    }
+    memset(&o, 0, sizeof o);
+    o.width = o.line_in = o.line_out = (u32)size;
+    o.lines = 1;
+    o.src = pitch_side(gsrc, 0);
+    o.dst = pitch_side(gdst, 0);
+    memset(GP(src), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    CHECK(g_renderer->dma_copy(&o));
+    CHECK(all_bytes(GP(dst), (u32)size, 0x11));
+    /* the same copy again: the tracking reports the first fill and protects its pages, the baseline the third copy's
+       check counts from */
+    g_renderer->mem_may_have_changed();
+    CHECK(g_renderer->dma_copy(&o));
+    CHECK(all_bytes(GP(dst), (u32)size, 0x11));
+    mem_query(src, &b);
+    CHECK(b.pool && (bytes = malloc(size)));
+    memset(bytes, 0x22, size);
+    CHECK(mem_restore_write(b.pool - 1 + (src - b.addr), bytes, size) == 0 && GP(src)[size - 1] == 0x22);
+    free(bytes);
+    g_renderer->mem_may_have_changed();
+    CHECK(g_renderer->dma_copy(&o));
+    if (!all_bytes(GP(dst), (u32)size, 0x22))
+        fprintf(stderr, "untracked copy source: the copy took %#x, the source holds 0x22\n", GP(dst)[0]);
+    CHECK(all_bytes(GP(dst), (u32)size, 0x22));
+    mem_alias_end(src, size);
+    puts("dma: a source written past the write tracking is copied as it is now");
+    return 0;
+}
+
 /* Render targets over one another in the DMA test's region, as when a program frees an image and makes a bigger one
    there: a red 64 by 64 target 64 KiB into a blue 160 by 128 one cleared after it is its block columns 8 and 9 (pixels
    128 to 159 of every row). The newer one's pixels are on top in a DMA copy of it, and in guest memory once both are
@@ -1612,6 +1661,7 @@ int main(int argc, char** argv) {
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
     CHECK(!check_dma_texture());
+    CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
