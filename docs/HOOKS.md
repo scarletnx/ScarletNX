@@ -137,7 +137,8 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   Each NVN function the game then resolves takes the declaration that holds for that version, and one declared only
   for other versions stops the game with its name and the version when it is called
   (`tests/nvn_versions.c`). `nvn_direct=2` (auto) takes the game's NVN calls only for the versions
-  `nvn_api_described` holds (`gpu/nvn/nvn_driver.c`: 53.209 and 55.8 to 55.15), and leaves the others to the driver.
+  `nvn_api_described` holds (`gpu/nvn/nvn_driver.c`: 53.5, 53.13, 53.105, 53.209, 53.311 to 53.314 and 55.8 to 55.15),
+  and leaves the others to the driver.
 - A hook is matched per module, against the version of the module that exports its function. An unknown version
   (0) matches only unversioned hooks: a hook that reads the guest's structs never guesses their layout.
 - One symbol may be declared several times, each with its own handler, for versions of one key that don't overlap.
