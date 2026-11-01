@@ -680,9 +680,9 @@ static void test_moved(void) {
     CHECK(mem_reserve_identity(from) == 1);
     CHECK(mem_identity() && mem_moved() == by && g_mem == NULL);
     CHECK(g_layout.base == by + 0x8000000ull && g_layout.end == by + size && g_as_size == by + size);
-    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 8ull << 30 &&
-          g_layout.heap == by + (12ull << 30) && g_layout.heap_size == 8ull << 30 &&
-          g_layout.stack == by + (20ull << 30) && g_layout.stack_size == 2ull << 30 &&
+    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 16ull << 30 &&
+          g_layout.heap == by + (20ull << 30) && g_layout.heap_size == 8ull << 30 &&
+          g_layout.stack == by + (28ull << 30) && g_layout.stack_size == 2ull << 30 &&
           g_layout.kern == by + (47ull << 30) && g_layout.kern_end == by + size);
     CHECK((u64)(uintptr_t)reservation == g_layout.base && reservation_size == size - 0x8000000ull);
     mem_init();

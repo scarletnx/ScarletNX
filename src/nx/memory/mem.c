@@ -760,7 +760,7 @@ static void layout_for(u64 size) {
     }
     g_layout.end = size;
     if (size >= 16 * GIB) {
-        u64 alias = size >= 64 * GIB ? 32 * GIB : size >= 32 * GIB ? 8 * GIB : 4 * GIB;
+        u64 alias = size >= 64 * GIB ? 32 * GIB : size >= 32 * GIB ? 16 * GIB : 4 * GIB;
         u64 heap = size >= 24 * GIB ? 8 * GIB : 4 * GIB;
         g_layout.alias = 4 * GIB;
         g_layout.alias_size = alias;
