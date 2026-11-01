@@ -1219,8 +1219,6 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ui_shaders_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
     add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
-    # every 3D method that acts is marked in the fast path's table (engines.c g_m3d_group)
-    add_test(NAME m3d_acts COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/m3d_acts_test.py")
     # no keys, dumps, stray binaries, piracy sites or the console maker's name in prose among the tracked files: the
     # checks on planted ones (self test), then on the checkout. Skipped (77) without git or outside a checkout
     add_test(NAME tracked_material_self_test
@@ -1532,11 +1530,6 @@ endif()
 add_executable(snx-test-vp9-rebuild vp9_rebuild.cpp "${PROJECT_SOURCE_DIR}/src/nx/gpu/video/vp9_rebuild.cpp")
 snx_test_target(snx-test-vp9-rebuild 23)
 add_test(NAME vp9_rebuild COMMAND snx-test-vp9-rebuild)
-# the 2D engine's blit in guest memory (fermi2d.c, dma.c's bl_span_ptr): block linear scaling, an odd window, the
-# renderer's hooks once a blit
-add_executable(snx-test-fermi2d-blit fermi2d_blit.c support/fermi2d_ref.c support/half.c)
-snx_test_target(snx-test-fermi2d-blit 23)
-add_test(NAME fermi2d_blit COMMAND snx-test-fermi2d-blit)
 # vic.c's CPU composition, through vic_execute, with a renderer that declines the GPU
 add_executable(snx-test-vic-compose vic_compose.c support/vic_ref.c)
 snx_test_target(snx-test-vic-compose 23)
@@ -2050,66 +2043,6 @@ add_executable(snx-test-audren-host audren_host.c)
 snx_test_target(snx-test-audren-host 23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
-add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
-snx_test_target(snx-test-render-enable 23)
-add_test(NAME render_enable COMMAND snx-test-render-enable)
-
-add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
-snx_test_target(snx-test-draw-state-groups 23)
-add_test(NAME draw_state_groups COMMAND snx-test-draw-state-groups)
-
-add_executable(snx-test-clear-flags clear_flags.c)
-snx_test_target(snx-test-clear-flags 23)
-add_test(NAME clear_flags COMMAND snx-test-clear-flags)
-
-add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
-snx_test_target(snx-test-instance-array 23)
-add_test(NAME instance_array COMMAND snx-test-instance-array)
-
-add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
-snx_test_target(snx-test-draw-texture 23)
-add_test(NAME draw_texture COMMAND snx-test-draw-texture)
-
-# gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
-# inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)
-if(UNIX)
-    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme_hle.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c"
-        support/dma_ref.c own_stub.c)
-    snx_test_target(snx-test-gpu-park 23)
-    target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
-        add_test(NAME gpu_park COMMAND snx-test-gpu-park)
-    set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
-endif()
-
-# mme.c's native macros chosen by the hash of their code, the interpreter for unknown code, and the verify mode
-add_executable(snx-test-mme-native mme_native.c)
-snx_test_target(snx-test-mme-native 23)
-add_test(NAME mme_native COMMAND snx-test-mme-native)
-
-# mme_hle.c's native macros against the interpreter, each over a macro written in the test from what it does
-add_executable(snx-test-mme-hle mme_hle.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme_hle.c")
-snx_test_target(snx-test-mme-hle 23)
-add_test(NAME mme_hle COMMAND snx-test-mme-hle)
-
-# the macros mme_hle.c has no implementation for, compiled by mme_jit.c: every instruction and branch case compared
-# with the interpreter's, then seeded random programs
-add_executable(snx-test-mme-jit mme_jit.c)
-snx_test_target(snx-test-mme-jit 23)
-target_link_libraries(snx-test-mme-jit PRIVATE snx_llvm)
-add_test(NAME mme_jit COMMAND snx-test-mme-jit)
-
 # the shader programs a game ships, found in containers built by the test (gpu/shader/shipped.c)
 add_executable(snx-test-shipped-shaders shipped_shaders.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c")
 snx_test_target(snx-test-shipped-shaders 99)
@@ -2235,14 +2168,11 @@ include(architecture.cmake)
 add_executable(snx-test-depth-texel depth_texel.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/depth.c")
 snx_test_target(snx-test-depth-texel 23)
 add_test(NAME depth_texel COMMAND snx-test-depth-texel)
-add_executable(snx-test-write-pages write_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+add_executable(snx-test-write-pages write_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/write_pages.c")
 snx_test_target(snx-test-write-pages 23)
 add_test(NAME write_pages COMMAND snx-test-write-pages)
-add_executable(snx-test-draw-state-mx draw_state_mx.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
-snx_test_target(snx-test-draw-state-mx 99)
-add_test(NAME draw_state_mx COMMAND snx-test-draw-state-mx)
 add_executable(snx-bench-write-pages EXCLUDE_FROM_ALL bench_write_pages.c
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/write_pages.c")
 snx_test_target(snx-bench-write-pages 11)
 add_executable(snx-test-pending-pages pending_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pending_pages.c")
 snx_test_target(snx-test-pending-pages 23)

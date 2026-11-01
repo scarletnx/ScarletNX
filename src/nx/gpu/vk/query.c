@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The 3D engine's samples-passed counter (3D 0x545 SampleCounterEnable, 0x54C ResetCounter 1, a counter report of
    selector 0x15: NVN's and deko3d's occlusion queries), counted with Vulkan occlusion queries. Each draw owner
-   (DsState.owner: a GPU channel, or another front end's queue) has a counter of its own, as each channel's 3D
-   context has on the console.
+   (DsState.owner: the front end's queue) has a counter of its own, as each channel's 3D context has on the
+   console.
 
    The count runs from its reset. It is kept in segments: a segment is one query, begun at the first draw counted in a
    rendering pass and ended with the pass, at a reset, at a report, or at a draw of another owner or another sample
@@ -11,7 +11,7 @@
    at a report), the results of the segments ended so far are copied into host-cached memory and their queries reset,
    in the same command buffer: once per submit, as each copy waits for its queries on the GPU. A report is a release
    (release.c) gated on the submit being recorded, which happens when anything needs the release, and at the latest
-   when the GPFIFO submission ends (renderer.h stream_end): a game that reports often doesn't submit once for each.
+   when the submission's replay ends (renderer.h stream_end): a game that reports often doesn't submit once for each.
    When it is performed, the GPU has counted, and the owner's segments since its previous report are added to the
    epoch's sum, which is its value: a game that resets once and subtracts reports keeps only the segments since its
    last report live. Whatever reads the report (a semaphore acquire, the CPU, the render enable's comparison but the one
@@ -19,7 +19,7 @@
 
    Counting starts at an owner's first reset: deko3d and NVN turn the counter on at startup, and a game that never
    resets it never reads it, so it costs those games nothing. A report before any reset, or in an epoch that outgrew
-   the ring, keeps the made-up value the front end writes (maxwell/engines.c), over which a render enable draws.
+   the ring, keeps the made-up value the front end writes, over which a render enable draws.
 
    Targets are drawn single-sampled, where the console counts each sample of a multisampled one: a segment's count is
    multiplied by its guest sample count (3D 0x574, deko3d's MsaaMode). Render targets scaled by the resolution
@@ -275,10 +275,10 @@ u64 vk_query_value(u32 ci, u64 first, u64 end) {
    the start of a frame and draws the object under its result, and its GPU thread stood waiting for the GPU, and the
    GPU for it, for 40% of a frame. Predicates are made in batches, the reports queued when one is first needed, so a
    frame's tests take one pause of the rendering pass.
-   A predicate's slot is held by its report until the report is performed and by each channel whose render enable
+   A predicate's slot is held by its report until the report is performed and by each owner whose render enable
    uses it (release.c), and isn't given out again until both let go: draws recorded later may still use it. The GPU's
    reads of a slot before it is written again come first, by the barrier before each batch */
-#define PN 4096 /* predicate slots: more than the release queue holds, with the channels' */
+#define PN 4096 /* predicate slots: more than the release queue holds, with the owners' */
 static VkBuffer g_pbuf;
 static VmaAllocation g_pmem;
 static VkDescriptorSetLayout g_pds;

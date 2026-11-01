@@ -838,27 +838,6 @@ setting Vulkan memory budget
     startup
     help The caches keep within this many MiB of the GPU's heap, below the driver's budget, for testing. 0 = the
     help driver's budget alone
-setting Native macros
-    key mme_hle
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    help 1 = the GPU macros the runtime knows run natively (gpu/maxwell/mme_hle.c); 0 = every macro is interpreted
-setting Compiled macros
-    key mme_jit
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    help 1 = GPU macros without a native version are compiled with LLVM; 0 = they are interpreted
-setting Verify macros
-    key mme_verify
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = runs each native and compiled macro against the interpreter too, and logs where they differ
 setting RenderDoc captures
     key renderdoc
     text 1024

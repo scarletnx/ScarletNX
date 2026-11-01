@@ -34,7 +34,7 @@ typedef struct {
     u8 data[16];
     /* samples: a samples-passed report of query.c's counter qch, whose value is the count of its segments [qfirst,
        qend), known once the gate is done. data holds the timestamp after it. Its gate is the submit being recorded when
-       it came, which whoever needs the release submits (submit_through), and the end of the GPFIFO submission */
+       it came, which whoever needs the release submits (submit_through), and the end of the submission's replay */
     int samples;
     u32 qch;
     u64 qfirst, qend;
@@ -226,7 +226,7 @@ static void release(Release* r) {
     /* the work before it: none when nothing is pending (a samples-passed report always waits for the GPU, its count
        is the draws'). Else results of earlier submits are older, and the submit being recorded holds the rest (and a
        samples-passed report's counts). The release waits for that submit without submitting it now: whoever needs the
-       release submits it (submit_through), and so do the end of the GPFIFO submission and a wait in it (stream_end).
+       release submits it (submit_through), and so does the end of the submission's replay (stream_end).
        Submitting at each release made Pokemon Legends Z-A submit about 150 times a frame, with storage results
        pending through most of its releases */
     u64 recording = vk_submit_number();
@@ -281,7 +281,7 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
     memcpy(r.data, data, r.len);
     release(&r);
 }
-/* the GPFIFO submission ended or waits: the stream's releases go, those no GPU work holds at once, and a release still
+/* the submission's replay ended: the stream's releases go, those no GPU work holds at once, and a release still
    gated on the submit being recorded goes to the GPU, as the guest may look at it now */
 void vk_release_submit(void) {
     SNX_ZONE(z, "vk release submit");

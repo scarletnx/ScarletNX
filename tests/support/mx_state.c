@@ -1,13 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The 3D engine's registers as the neutral draw state. Register numbers are method / 4 (NVIDIA open-gpu-doc
-   classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the hardware's from 1 and
+/* The 3D engine's registers as the neutral draw state, for the tests (mx_state.h). Register numbers are method / 4
+   (NVIDIA open-gpu-doc classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the hardware's from 1 and
    OpenGL's enumerants, both in Vulkan's order */
-#include "nx/gpu/maxwell/draw_state.h"
-#include "nx/gpu/maxwell/kepler_compute_regs.h"
-#include "nx/gpu/maxwell/maxwell_3d_regs.h"
+#include "mx_state.h"
+#include <string.h>
+#include "kepler_compute_regs.h"
+#include "maxwell_3d_regs.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/renderer.h"
 
+/* a clear is cut to scissor 0 when CLEAR_FLAGS (3D 0x43E) has SCISSOR, bit 8, and that scissor is enabled */
+static int r3d_clear_scissored(const u32* r) { return (r[0x43E] & 0x100) && (r[0x380] & 1); }
 static u32 cmp_op(u32 v) {
     if (v >= 0x200 && v <= 0x207) return v - 0x200;
     if (v >= 1 && v <= 8) return v - 1;
@@ -367,8 +371,8 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
     return 0;
 }
 /* Brings ch's draw state up to its registers: the groups whose registers a method changed since the last time
-   (GpuChannel.r3d_dirty, which this takes), each with a new generation when its bytes changed */
-void mx_draw_state_sync(GpuChannel* ch) {
+   (MxRegs.r3d_dirty, which this takes), each with a new generation when its bytes changed */
+void mx_draw_state_sync(MxRegs* ch) {
     const u32* r = ch->r3d;
     u32 dirty = ch->r3d_dirty;
     DsState* ds = &ch->ds;
@@ -430,41 +434,11 @@ void mx_draw_state_sync(GpuChannel* ch) {
         mx_draw_bindings(r, &b);
         keep(&ds->bind, &b, sizeof b, &ds->gen[DS_BIND]);
     }
-    if (dirty & R3D_CBIND) ds->gen[DS_BIND] = ds_generation_next(); /* r3d_cb_bind wrote the slots in place */
+    if (dirty & R3D_CBIND) ds->gen[DS_BIND] = ds_generation_next(); /* the test wrote the slots in place */
 }
 
-u32 mx_draw_state_stale(const GpuChannel* ch) {
-    const u32* r = ch->r3d;
-    const DsState* ds = &ch->ds;
-    DsState f; /* every group filled again */
-    u32 stale = 0;
-    mx_draw_programs(r, &f.prog);
-    mx_draw_vertex_format(r, &f.vfmt);
-    mx_draw_blend(r, &f.blend);
-    mx_draw_raster_key(r, &f.rkey);
-    mx_draw_xfb(r, &f.xfb);
-    mx_draw_targets(r, &f.tgt);
-    mx_draw_dynamic(r, &f.dyn);
-    mx_draw_viewports(r, &f.vp);
-    mx_draw_vertex_buffers(r, &f.vbuf);
-    mx_draw_index(r, &f.index);
-    f.bind = ds->bind; /* the constant buffer slots are the 3D engine's binds, kept nowhere else */
-    mx_draw_bindings(r, &f.bind);
-    stale |= (u32)(memcmp(&f.prog, &ds->prog, sizeof f.prog) != 0) << DS_PROGRAMS;
-    stale |= (u32)(memcmp(&f.vfmt, &ds->vfmt, sizeof f.vfmt) != 0) << DS_VFORMAT;
-    stale |= (u32)(memcmp(&f.blend, &ds->blend, sizeof f.blend) != 0) << DS_BLEND;
-    stale |= (u32)(memcmp(&f.rkey, &ds->rkey, sizeof f.rkey) != 0) << DS_RASTER_KEY;
-    stale |= (u32)(memcmp(&f.xfb, &ds->xfb, sizeof f.xfb) != 0) << DS_XFB;
-    stale |= (u32)(memcmp(&f.tgt, &ds->tgt, sizeof f.tgt) != 0) << DS_TARGETS;
-    stale |= (u32)(memcmp(&f.dyn, &ds->dyn, sizeof f.dyn) != 0) << DS_DYNAMIC;
-    stale |= (u32)(memcmp(&f.vp, &ds->vp, sizeof f.vp) != 0) << DS_VIEWPORTS;
-    stale |= (u32)(memcmp(&f.vbuf, &ds->vbuf, sizeof f.vbuf) != 0) << DS_VBUF;
-    stale |= (u32)(memcmp(&f.index, &ds->index, sizeof f.index) != 0) << DS_INDEX;
-    stale |= (u32)(memcmp(&f.bind, &ds->bind, sizeof f.bind) != 0) << DS_BIND;
-    return stale;
-}
 
-/* The registers of the bindings, not the constant buffer slots (r3d_cb_bind writes those): the texture bank 0x982,
+/* The registers of the bindings, not the constant buffer slots (a test writes those): the texture bank 0x982,
    the TIC pool 0x55D/0x55E with its highest index 0x55F, the TSC pool 0x557/0x558 with 0x559, the sampler index mode
    0x48D, and capture buffer i at 0xE0 + 8 i (enable, address bits 32-39 and 0-31, size, start offset), which captures
    when its layout (0x1C1 + 4 i, 0x1C2 + 4 i) has words or a stride */
@@ -505,4 +479,7 @@ void mx_dispatch_state(const u32* q, const u32* r, u64 code_loc, DispatchState* 
     d->smp_max = r[KEPLER_COMPUTE_TSC + 2];
     d->smp_mode = (q[QMD_LINKED_TSC] >> 30) & 1;
     d->tex_bank = kepler_compute_tex_cb_index(r);
+}
+void mx_invalidate_shaders(u32 v) {
+    if (invalidate_shader_cache_instruction(v) && g_renderer->method_barrier) g_renderer->method_barrier(5);
 }

@@ -3,8 +3,8 @@
    Ported from Eden (src/video_core/engines/maxwell_dma.cpp, src/video_core/textures/decoders.cpp):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
-/* A launch of the DMA copy engine done on the CPU in guest memory, as maxwell/dma.c did it before it went to the GPU:
-   the reference the tests hold the renderer's dma_copy to (tests/vulkan_headless.c, tests/gpu_park.c). The runtime
+/* A launch of the DMA copy engine done on the CPU in guest memory, as the DMA engine does it:
+   the reference the tests hold the renderer's dma_copy to (tests/vulkan_headless.c). The runtime
    copies on the GPU (vk/dma.c, docs/GPU_OWNERSHIP.md), so this file isn't built into it. As Eden's MaxwellDMA splits
    CopyBlockLinearToPitch and CopyPitchToBlockLinear, an operand is read and written by its layout (pitch linear lines
    or block linear GOBs), with the remap between */
@@ -12,9 +12,10 @@
 #include <string.h>
 #include "common/utilities/endian.h"
 #include "dma_ref.h"
-#include "nx/gpu/maxwell/gob.h"
-#include "nx/gpu/maxwell/maxwell_dma_regs.h"
+#include "nx/gpu/texture/blocklinear.h"
 
+/* a remap component's source (GpuDmaOp.sel): a source component, constant A or B, or the destination's own bytes */
+enum { REMAP_SWIZZLE_SRC_W = 3, REMAP_SWIZZLE_CONST_A = 4, REMAP_SWIZZLE_CONST_B = 5 };
 /* the bytes block linear addressing moves at once: the run of a GOB's row bl_offset keeps contiguous */
 #define BL_RUN_BYTES 16u
 
@@ -22,9 +23,9 @@
    of its slices up to z */
 static u64 span_of(const GpuDmaSide* s, u32 lines, u32 line) {
     if (!s->bl) return (u64)s->pitch * (lines - 1) + line;
-    u64 gobs_x = ((u64)s->wb + MAXWELL_GOB_SIZE_X - 1) >> MAXWELL_GOB_SIZE_X_SHIFT;
-    u64 rows = ((((u64)s->h + MAXWELL_GOB_SIZE_Y - 1) >> MAXWELL_GOB_SIZE_Y_SHIFT) + (1u << s->bh) - 1) >> s->bh;
-    return gobs_x * rows * ((u64)MAXWELL_GOB_SIZE << (s->bh + s->bd)) * ((u64)(s->z >> s->bd) + 1);
+    u64 gobs_x = ((u64)s->wb + GOB_SIZE_X - 1) >> GOB_SIZE_X_SHIFT;
+    u64 rows = ((((u64)s->h + GOB_SIZE_Y - 1) >> GOB_SIZE_Y_SHIFT) + (1u << s->bh) - 1) >> s->bh;
+    return gobs_x * rows * ((u64)GOB_SIZE << (s->bh + s->bd)) * ((u64)(s->z >> s->bd) + 1);
 }
 /* the byte offset of line y's byte x of a block linear operand, from its origin */
 static u64 bl_line_offset(const GpuDmaSide* s, u32 y, u32 x) {

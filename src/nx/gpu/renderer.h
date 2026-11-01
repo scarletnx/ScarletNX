@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The renderer interface: what the GPU front end (gpu.c, engines.c, maxwell3d.c) and the window backends ask of the
-   Vulkan renderer (gpu/vk/renderer.c). It works with a window or offscreen without a swapchain. */
+/* The renderer interface: what the GPU front end (NVN's replay, gpu/nvn/), VIC, NVDEC and the window backends ask of
+   the Vulkan renderer (gpu/vk/renderer.c). It works with a window or offscreen without a swapchain. */
 #ifndef SNX_RENDERER_H
 #define SNX_RENDERER_H
 #include "common/cpu/aarch64/cpu.h"
@@ -33,19 +33,17 @@ typedef struct Renderer {
     /* after a start that returned 0: why, with the values that decided it (a device's Vulkan version), or "" */
     const char* (*start_failure)(void);
     /* guest memory may have changed since the renderer's caches last checked it: a submission came (on the
-       submitting thread), or a stream goes on after a wait (gpu_park, on the GPU thread) that the CPU may have ended
-       after writing data. Caches read guest memory again. Any thread */
+       submitting thread). Caches read guest memory again. Any thread */
     void (*mem_may_have_changed)(void);
-    /* the GPU thread starts running a job (1) or stops (0): the caches' checks while it runs need the CPU's writes from
-       before the submissions and wait ends so far (mem_may_have_changed), and from before those its own waits end,
-       but not those a later submission makes meanwhile */
+    /* the GPU thread starts replaying a submission (1) or stops (0): the caches' checks while it runs need the CPU's
+       writes from before the submissions so far (mem_may_have_changed), but not those a later submission makes
+       meanwhile */
     void (*stream_run)(int on);
-    /* the 3D engine (maxwell3d.c) */
     /* A draw, a clear and a texture draw (DRAW_TEXTURE: a texture's rectangle onto color target 0, NULL: not drawn)
        of the state ds (gpu/draw_state.h): everything they read but their own arguments, the resource bindings
-       included. The front end brings it up to date before each call (a GPU channel's mx_draw_state_sync, the NVN
-       replay's own fill) and gives each group whose bytes changed a new generation (DsState.gen, the renderer keeps
-       what it made from a group while its generation holds); the renderer only reads it. ds->owner names the
+       included. The front end (the NVN replay) brings it up to date before each call and gives each group whose
+       bytes changed a new generation (DsState.gen, the renderer keeps what it made from a group while its generation
+       holds); the renderer only reads it. ds->owner names the
        front end's queue: the renderer keys what it keeps between draws, and the samples-passed counter, by it.
        Constant buffers are guest memory (DsBindings.cb_addr) or blocks of ds->inl (cb_inline, NVN's driver banks:
        storage buffer addresses in bank 0, texture and image handles in bank 2 with tex_bank 2, the application's
@@ -61,10 +59,10 @@ typedef struct Renderer {
        (NVN's DiscardColor and DiscardDepthStencil): the renderer may leave them undefined, at the latest when they are
        next loaded. NULL: they are kept */
     void (*discard)(const DsState* ds, u32 targets);
-    /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
+    /* ordering, as NVN's barriers give it: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
        3 descriptor-cache invalidate, 4 wait for idle, 5 shader instruction invalidate. */
     void (*method_barrier)(int kind);
-    /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
+    /* a 2D blit between render targets: 1 when the renderer did it on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
     /* the VIC composition (gpu/video/vic.c), on the GPU, its picture kept there (docs/GPU_OWNERSHIP.md): 0 when
@@ -76,23 +74,15 @@ typedef struct Renderer {
        Video on this renderer's GPU, for NVDEC's decoder, whose pictures then reach nvdec_write as GPU images: NULL when
        the GPU has no decode queue or the vulkan_video setting is off */
     void* (*nvdec_hw_device)(void);
-    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be. It takes over
-       o->snap_id's memory, used or not */
+    /* a launch of the DMA copy engine on the GPU, its destination kept there: 0 when it couldn't be */
     int (*dma_copy)(const GpuDmaOp* o);
-    /* memory for the DMA engine's copies of linear sources at submission (maxwell/dma.c), which the GPU reads in place,
-       from any thread: len bytes, *id naming them; NULL when there is none (the caller allocates its own then).
-       snap_free lets go of a copy no launch used */
-    u8* (*snap_alloc)(u64 len, u64* id);
-    void (*snap_free)(u64 id);
     /* a 2D blit the GPU's own blit can't do (its source isn't a render target) done on the GPU from memory, its
        destination kept there: 0 when it couldn't be */
     int (*blit_mem)(const GpuBlit* b);
-    void (*rt_flush)(u64 gva);  /* a render target at gva is about to be read from guest memory: write it back */
     void (*rt_reload)(u64 gva); /* guest memory under a render target changed: load it again */
-    /* A compute dispatch of the state d (gpu/draw_state.h), which the front end fills for the call (the compute
-       engine's launch description, the NVN replay's own fill) and the renderer only reads: the program, the grid,
-       block and shared memory, the constant buffers (guest memory or d's inline blocks: NVN's driver banks, the
-       dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210, storage buffers from 0x310 and texture
+    /* A compute dispatch of the state d (gpu/draw_state.h), which the front end (the NVN replay) fills for the call
+       and the renderer only reads: the program, the grid, block and shared memory, the constant buffers (guest
+       memory or d's inline blocks: NVN's driver banks, the dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210, storage buffers from 0x310 and texture
        handles in bank 2 with tex_bank 2), and the texture and sampler pools in guest memory. Storage buffers are read
        through constant buffer 0 as a draw's are. Called on the GPU thread */
     void (*dispatch)(const DispatchState* d);
@@ -101,7 +91,6 @@ typedef struct Renderer {
     /* 0 when no pending result or queued release covers [a, a + n): a read needs none of the mem_need hooks */
     int (*mem_pending)(u64 a, u64 n);
     void (*gfx_mem_need)(u64 a, u64 n);
-    void (*before_syncwait)(void); /* the stream is about to wait on a syncpoint: flush everything in flight */
     void (*stream_incr)(u32 id);   /* a syncpoint increment in the stream, after everything before it is done */
     /* a semaphore or report the game can poll: len bytes written at gva once everything before it is done (it may
        happen later, in order with the other releases). data is guest bytes, its numbers little-endian already: the
@@ -115,30 +104,28 @@ typedef struct Renderer {
        count not known yet, another pending result there, the same memory through another GPU address), and the caller
        waits for it (release_need). dst gets guest bytes, as from gmem_read */
     int (*release_read)(u64 a, void* dst, u64 n);
-    u32 (*release_value)(u32 id); /* completed and queued increments, read consistently */
     /* the render enable (3D 0x556 IF_EQUAL when equal is set, else IF_NOT_EQUAL) compares the count at a with the one
        at a + 16, one side a samples-passed count not known yet, the other zero: NVN's occlusion test. Values that
        results the GPU hasn't landed hold (a compute program's) are compared on the GPU as well. -1 when neither is so
        here (the caller reads both and compares, waiting for what is pending); 0 or 1, the comparison's result when the
        count is known to be zero or not without the GPU; 2 when the GPU makes it, *pred the predicate the draws and
-       clears under it run on (the channel's render_pred), held until render_predicate_drop */
+       clears under it run on (the owner's pred), held until render_predicate_drop */
     int (*render_predicate)(u64 a, int equal, u32* pred);
     void (*render_predicate_drop)(u32 pred);
-    /* the 3D engine's samples-passed counter (occlusion queries), one per draw owner (DsState.owner: a channel's
-       id, another front end's queue): it counts that owner's draws from its reset, while SampleCounterEnable is on. A
-       report writes the count at gva as a release, len 4 (the count's low word) or 16 (the count, then ticks).
-       samples_report 0: no count to give (no reset yet), and the caller writes a value of its own. A render enable on a
-       report's count is render_predicate's, whichever owner made the report */
+    /* the samples-passed counter (occlusion queries), one per draw owner (DsState.owner: the front end's queue): it
+       counts that owner's draws from its reset, while SampleCounterEnable is on. A report writes the count at gva as a
+       release, len 4 (the count's low word) or 16 (the count, then ticks). samples_report 0: no count to give (no
+       reset yet), and the caller writes a value of its own. A render enable on a report's count is
+       render_predicate's, whichever owner made the report */
     void (*samples_reset)(u32 owner);
     void (*samples_enable)(u32 owner, int on);
     int (*samples_report)(u32 owner, u64 gva, u32 len, u64 ticks);
-    /* a GPFIFO submission ran to its end or waits (gpu_park): what the guest may look at now goes to the GPU */
+    /* a submission's replay ended: what the guest may look at now goes to the GPU */
     void (*stream_end)(void);
-    void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     void (*report_stall)(void); /* the stall watchdog: what the renderer holds back. Any thread, unlocked */
     /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
-       release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
-       jobs. NULL when the renderer has nothing in flight */
+       release performed, so nothing of the renderer's writes guest memory until the next call. The GPU thread, between
+       calls. NULL when the renderer has nothing in flight */
     void (*idle)(void);
     /* a save state's load, the GPU held and guest memory about to be replaced: every surface, buffer and counter kept
        of guest memory goes, so each later use reads the state's memory. NULL when the renderer keeps nothing */
