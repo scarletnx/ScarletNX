@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An FP helper's reply (cpu.h's SnxFpReply, 16 bytes) comes back as the C compiler returns it on each target: on
-   x86-64 Windows through memory, the call passing a local as its hidden first argument (sret), as Clang compiles the
-   helpers there; on x86-64 elsewhere and on AArch64 as an LLVM structure, in two registers. FADD S0, S1, S2's slow
-   path calls snx_fp_host_binary on each triple, and the call stays no site of ir_promote_registers either way. */
+/* An FP helper's reply (cpu.h's SnxFpReply, 16 bytes) comes back as the C compiler returns it: on x86-64 Windows
+   through memory, the call passing a local as its hidden first argument (sret), as Clang compiles the helpers there;
+   elsewhere as an LLVM structure, in two registers. The code runs where it is built, so the triples here are the
+   host's architecture's, Windows or not: FADD S0, S1, S2's slow path calls snx_fp_host_binary on each, and the call
+   stays no site of ir_promote_registers either way. */
 #include "common/cpu/recompiler/llvm/ir_fpu.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <llvm-c/Analysis.h>
@@ -87,10 +88,13 @@ int main(void) {
         const char* triple;
         int in_memory;
     } targets[] = {
+#ifdef __x86_64__
         {"x86_64-w64-windows-gnu", 1},
         {"x86_64-pc-linux-gnu", 0},
-        {"aarch64-linux-android", 0},
+#else
         {"aarch64-w64-windows-gnu", 0},
+        {"aarch64-linux-android", 0},
+#endif
     };
     char error[512];
     if (snx_ir_init(error, sizeof error)) {
