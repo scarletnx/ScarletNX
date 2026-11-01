@@ -467,6 +467,29 @@ static void test_texture(void) {
     check(gr32(s + 0x10) == 1 && gr32(s + 0x14) == 0x400 && gr32(s + 0x20) == 0 && gr64(s + 8) == 0xf09200408ull &&
               gr64(s + 0x38) == 0x400ull * 20,
           "pitch linear: the texture's stride");
+    /* the color formats of the 55.12 driver and of the 55.15 one, which doubles bits 16 to 31 */
+    static const struct {
+        u32 format, api;
+        u64 color;
+        const char* what;
+    } colors[] = {
+        {NVN_FORMAT_RGBA8_SRGB, 55u << 16 | 12, 0x200532120ull, "55.12 RGBA8_SRGB"},
+        {NVN_FORMAT_RGBA8_SRGB, 55u << 16 | 15, 0x200a62120ull, "55.15 RGBA8_SRGB"},
+        {NVN_FORMAT_RGBX8_SRGB, 55u << 16 | 12, 0x20a532120ull, "55.12 RGBX8_SRGB, no alpha"},
+        {NVN_FORMAT_R8, 55u << 16 | 15, 0xf12400408ull, "55.15 R8"},
+        {NVN_FORMAT_BGRA8, 55u << 16 | 15, 0x201a22120ull, "55.15 BGRA8"},
+        {NVN_FORMAT_DEPTH32F_STENCIL8, 55u << 16 | 12, 0, "a depth format, which no driver describes"},
+    };
+    for (size_t i = 0; i < sizeof colors / sizeof *colors; i++) {
+        g_nvn.direct.api = colors[i].api;
+        tex_init(TEX + 0x80, colors[i].format, 64, 64, 0);
+        nvn_TextureGetNvRmSurfaceNVX(NULL, TEX + 0x80, 0, s);
+        if (gr64(s + 8) != colors[i].color)
+            fprintf(stderr, "%s: color format %llx, expected %llx\n", colors[i].what, (unsigned long long)gr64(s + 8),
+                    (unsigned long long)colors[i].color);
+        check(gr64(s + 8) == colors[i].color, colors[i].what);
+    }
+    g_nvn.direct.api = 0;
     nvn_MemoryPoolFinalize(NULL, POOL);
     check(g_nvmap_live == 0, "the pool's handle goes with it");
     nvn_TextureReadTexelsStrided(NULL, TEX, 0, SCRATCH, SCRATCH2, 0x300, 0x9000);
