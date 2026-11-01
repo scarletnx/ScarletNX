@@ -49,7 +49,7 @@ page cache.
   scanned before (write-protect markers left after the zap), re-registering a span replaces its modes, and a
   kernel-mode access gets EFAULT.
 
-A Linux host without minor faults (older kernels, Android's 5.10 kernels, or any Linux with `SNX_TRAPS=signal`)
+A Linux host without minor faults (older kernels, Android's 5.10 kernels, or any Linux with `memory_traps=1`)
 uses Skyline's own shape: `plat_trap_arm` makes the span's views inaccessible with `mprotect`, and the SIGSEGV
 handler, checked before the crash handler, posts the page to the trap's own thread through a lock-free ring and waits
 on a futex. That thread lands it as the userfaultfd's would, and `plat_trap_continue` opens the pages and wakes the
@@ -320,11 +320,11 @@ Nothing of the game leaves the machine: the steps below compare numbers and scre
    the renderer. Inline-to-memory stays a CPU write: its data is born on the CPU (the pushbuffer), and the runtime's
    own readers of what it writes (the shader translator, MME macros) would land every GPU-owned copy of it again.
    `vulkan_headless` holds the DMA engine and the 2D blit to `dma_ref.c` and `fermi2d_ref.c` on lavapipe.
-5. Windows and the other hosts. Linux without minor faults and Android trap by protection now (`SNX_TRAPS=signal`
+5. Windows and the other hosts. Linux without minor faults and Android trap by protection now (`memory_traps=1`
    tests that path on any Linux). Windows, macOS and FreeBSD need the alias pool first (placeholders and section
    views on Windows, a shared memory object on the others). Until then their `plat_trap_*` fail, and a published
-   result lands at once (a readback per result, correct and slow). The environment variable `SNX_NO_TRAPS` makes a Linux host take that path, to measure and test it
-   there.
+   result lands at once (a readback per result, correct and slow). The setting `memory_traps=2` makes a Linux host
+   take that path, to measure and test it there.
 6. Started: memory the CPU and the GPU share (above). Guest vertex, index and read-only storage ranges are read in
    place on a GPU that shares memory (`vk_memory`). Next: writable storage in place (its results then need the fence,
    not the copy back), constant buffers with the front end's writes done on the GPU in order, the hazards traced, and

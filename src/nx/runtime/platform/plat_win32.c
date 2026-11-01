@@ -164,23 +164,28 @@ void plat_exit_now(int code) {
 }
 
 /* ================================================================ the guest's address space */
-/* The reservation carries a write watch, which plat_ww_scan reads unless SNX_NO_WW is set: without it the caches hash
+/* The reservation carries a write watch, which plat_ww_scan reads unless write_tracking=2: without it the caches hash
    guest memory to find changes (a third of Super Mario Odyssey's GPU thread). The watch is chosen as the reservation
    is made, before the settings are read */
 static u8* g_ww_base;
 static u64 g_ww_size;
 static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
 
+static int g_host_page_said; /* plat_vm_page told why it refused host_page */
 u64 plat_vm_page(void) {
     u64 page = 4096; /* VirtualAlloc commits and protects 4 KiB pages on every Windows system */
-    const char* forced = getenv("SNX_HOST_PAGE");
-    if (forced) { /* a larger power of two only: the host's pages can't be split */
-        u64 v = strtoull(forced, NULL, 0);
-        if (v > page && v <= (1u << 20) && !(v & (v - 1))) page = v;
+    u64 v = g_settings.host_page_size > 0 ? (u64)g_settings.host_page_size : 0;
+    if (!v) return page;
+    if (v >= page && v <= SNX_PLAT_PAGE_MAX && !(v & (v - 1))) return v; /* the host's pages can't be split */
+    if (!g_host_page_said) { /* mem_init asks first, on the main thread at startup */
+        g_host_page_said = 1;
+        WARN("memory: host_page=%llu is not a power of two from the host's page, %llu bytes, to %llu: the runtime "
+             "works in %llu-byte pages\n",
+             (unsigned long long)v, (unsigned long long)page, (unsigned long long)SNX_PLAT_PAGE_MAX,
+             (unsigned long long)page);
     }
     return page;
 }
-/* VirtualAlloc places a reservation at its 64 KiB allocation granularity, which covers SNX_HOST_PAGE up to that */
 int plat_address_space(u64* mapped, u64* largest_free) {
     SYSTEM_INFO system;
     MEMORY_BASIC_INFORMATION region;
@@ -215,7 +220,11 @@ u8* plat_vm_reserve(u64 size) {
     return (u8*)p;
 }
 void plat_vm_track(u8* p, u64 size) {
-    if (p != g_ww_watched || getenv("SNX_NO_WW")) return;
+    if (g_settings.write_tracking == 1)
+        WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
+             p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
+                               : "the reservation has no write watch, so the caches compare contents");
+    if (p != g_ww_watched || g_settings.write_tracking == 2) return;
     g_ww_base = p; /* mem_init runs before any thread that scans */
     g_ww_size = size;
 }

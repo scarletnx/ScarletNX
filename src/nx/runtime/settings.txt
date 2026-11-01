@@ -730,6 +730,36 @@ setting Alias pool
     help host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). 0 = every view is a
     help copy: a write through it reaches the source at its unmap, or at a flushed line (IC IVAU, DC CVAC) after the
     help write, as hosts without a pool run (Windows among them). For tests of that path, and a diagnosis
+setting Write tracking
+    key write_tracking
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime finds the guest pages written since the caches last looked (docs/ARCHITECTURE.md). 0 = the
+    help host's own: userfaultfd's write protection on Linux 6.7 and later, the reservation's write watch on Windows,
+    help page protection on the other hosts. 1 = page protection and the fault handler, as macOS, FreeBSD, Android
+    help and older Linux track (not on Windows, which says so at start). 2 = none: the caches compare guest memory's
+    help contents, to measure and test that path
+setting Memory traps
+    key memory_traps
+    int 0 2
+    default 0
+    startup
+    words Auto|Protection|Off
+    help How the runtime traps guest memory the GPU owns until the CPU touches it (docs/GPU_OWNERSHIP.md). 0 =
+    help userfaultfd's minor faults where Linux has them, else page protection; none yet on Windows, macOS and
+    help FreeBSD. 1 = page protection and the fault handler, as Android and Linux before 5.13 trap (Linux and Android
+    help only: elsewhere it says so at start). 2 = none: a GPU result lands in guest memory at its fence, to measure
+    help and test that path
+setting Host page size
+    key host_page
+    int 0 1048576
+    default 0
+    startup
+    help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
+    help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
+    help pages: docs/PPC64.md). 0 = the host's own. Any other value runs with the host's own, said at start
 setting Profiler
     key profile
     int 0 1

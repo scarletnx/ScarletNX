@@ -224,6 +224,8 @@ void ini_override(const char* k, const char* v) {
     g_over[i].value = v;
 }
 
+const char* ini_overridden(const char* k) { return override_of(k); }
+
 void ini_set(const char* k, const char* v) {
     size_t kn = strlen(k), vn = strlen(v);
     int i;
@@ -440,12 +442,14 @@ void ini_open(const char* path) {
     ini_set_say(say_setting);
     for (i = 0; i < g_nover; i++)
         if (!snx_setting_known(g_over[i].key)) WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
+    options_old_environment();
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
         WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         apply_all();
+        options_old_environment_say();
         debug_shown(0);
         g_started = 1;
         return;
@@ -458,6 +462,7 @@ void ini_open(const char* path) {
     n = pending_take(taken);
     say_deprecated();
     apply_all();
+    options_old_environment_say();
     debug_shown(0);
     if (!write_file()) pending_written(taken, n);
     g_started = 1;

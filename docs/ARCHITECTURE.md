@@ -306,7 +306,7 @@ the build, so a new build or driver reads only the files that hold programs agai
 Invalidation: host write tracking + `mem_unmap` -> `gpu_mem_changed`. Vk treats zeroed unmap/heap-return ranges
 as written at the next cache check. Write tracking (`plat_ww_scan`) is userfaultfd's asynchronous write protection
 with `PAGEMAP_SCAN` on Linux 6.7 and later, and the reservation's write watch on Windows. Every other POSIX host
-(macOS, FreeBSD, Android, older Linux; `SNX_WW=signal` on any Linux) protects the pages a scan reported and takes the
+(macOS, FreeBSD, Android, older Linux; `write_tracking=1` on any Linux) protects the pages a scan reported and takes the
 first write to each in the fault handler, which opens the page again. A system call can't fault into the handler, so
 the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`).
 

@@ -1441,9 +1441,8 @@ if(NOT WIN32)
     snx_cpu_helpers_flags(snx-test-ldr-service)
     add_test(NAME ldr_service COMMAND snx-test-ldr-service)
     # again as on a host with 64 KiB pages (PowerPC64), each holding sixteen guest pages
-    add_test(NAME ldr_service_64k_pages COMMAND snx-test-ldr-service)
+    add_test(NAME ldr_service_64k_pages COMMAND snx-test-ldr-service --host_page=65536)
     set_tests_properties(ldr_service ldr_service_64k_pages PROPERTIES TIMEOUT 60)
-    set_tests_properties(ldr_service_64k_pages PROPERTIES ENVIRONMENT SNX_HOST_PAGE=65536)
 endif()
 
 # Deterministic FFmpeg API double: no decoder dependency in tools-only builds.
@@ -2202,9 +2201,9 @@ if(UNIX)
     # the same calls with the alias pool off (alias_pool=0): views are copies, as on Windows
     add_test(NAME memory_alias_copies COMMAND snx-test-memory-alias --copies)
     set_tests_properties(memory_alias_copies PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
-    # views over pages the write tracking protects (SNX_WW=signal: the tracking of hosts without Linux 6.7's)
-    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias)
-    set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
+    # views over pages the write tracking protects (write_tracking=1: the tracking of hosts without Linux 6.7's)
+    add_test(NAME memory_alias_signal_ww COMMAND snx-test-memory-alias --write_tracking=1)
+    set_tests_properties(memory_alias_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # GPU-owned memory over the real pool and traps, owners whose GPU copy is host memory (77 without traps)
     add_executable(snx-test-memory-own memory_own.c
         "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/own.c"
@@ -2214,16 +2213,17 @@ if(UNIX)
     target_link_libraries(snx-test-memory-own PRIVATE Threads::Threads SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME memory_own COMMAND snx-test-memory-own)
     set_tests_properties(memory_own PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-    # traps over pages the write tracking protects (SNX_WW=signal)
-    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own)
-    set_tests_properties(memory_own_signal_ww PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_WW=signal)
-    # traps by protection and the fault handler (SNX_TRAPS=signal: those of Linux before 5.13 and Android), beside
+    # traps over pages the write tracking protects (write_tracking=1)
+    add_test(NAME memory_own_signal_ww COMMAND snx-test-memory-own --write_tracking=1)
+    # traps by protection and the fault handler (memory_traps=1: those of Linux before 5.13 and Android), beside
     # userfaultfd's write tracking and beside the tracking by protection
-    add_test(NAME memory_own_signal_traps COMMAND snx-test-memory-own)
-    set_tests_properties(memory_own_signal_traps PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77 ENVIRONMENT SNX_TRAPS=signal)
-    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own)
-    set_tests_properties(memory_own_signal_both PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
-                         ENVIRONMENT "SNX_TRAPS=signal;SNX_WW=signal")
+    add_test(NAME memory_own_signal_traps COMMAND snx-test-memory-own --memory_traps=1)
+    add_test(NAME memory_own_signal_both COMMAND snx-test-memory-own --memory_traps=1 --write_tracking=1)
+    # no traps, asked for (memory_traps=2) and where the protection has no pool to trap: the log says which
+    add_test(NAME memory_own_no_traps COMMAND snx-test-memory-own --memory_traps=2)
+    add_test(NAME memory_own_signal_traps_no_pool COMMAND snx-test-memory-own --memory_traps=1 --alias_pool=0)
+    set_tests_properties(memory_own_signal_ww memory_own_signal_traps memory_own_signal_both memory_own_no_traps
+                         memory_own_signal_traps_no_pool PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
 
 endif() # SNX_BUILD_NX
@@ -2264,6 +2264,10 @@ add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_
 snx_test_target(snx-test-unattended-script 11)
 target_link_libraries(snx-test-unattended-script PRIVATE m)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)
+# the environment variables an older runtime read, this run's values for their settings and said with them
+add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/deprecated_env.c")
+snx_test_target(snx-test-deprecated-env 11)
+add_test(NAME deprecated_env COMMAND snx-test-deprecated-env)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/plat.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/filesystem/host.c")
 snx_test_target(snx-test-platform-log 11)
@@ -2278,8 +2282,11 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
     # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler
-    add_test(NAME platform_posix_signal_ww COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
-    set_tests_properties(platform_posix_signal_ww PROPERTIES ENVIRONMENT SNX_WW=signal)
+    add_test(NAME platform_posix_signal_ww COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}"
+                                                   --write_tracking=1)
+    # none: the scan says so, and the caches compare contents
+    add_test(NAME platform_posix_no_tracking COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}"
+                                                     --write_tracking=2)
 endif()
 if(WIN32 AND TARGET SDL3::SDL3)
     # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
@@ -2288,6 +2295,11 @@ if(WIN32 AND TARGET SDL3::SDL3)
     snx_test_target(snx-test-platform-win32 11)
     target_link_libraries(snx-test-platform-win32 PRIVATE SDL3::SDL3 synchronization)
     add_test(NAME platform_win32 COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}")
+    # the protection's tracking has no Windows version: the watch tracks, said; and none, which the scan says
+    add_test(NAME platform_win32_protection COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}"
+                                                    --write_tracking=1)
+    add_test(NAME platform_win32_no_tracking COMMAND snx-test-platform-win32 "${CMAKE_CURRENT_BINARY_DIR}"
+                                                     --write_tracking=2)
 endif()
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-shader-brx shader_brx.c)
