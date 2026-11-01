@@ -435,10 +435,16 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
     for (int f = 0; f < 2; f++) {
-        y.face[f].fail = from1(nvn_field(s, f ? NVN_DS_FAIL_B : NVN_DS_FAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
-        y.face[f].zfail = from1(nvn_field(s, f ? NVN_DS_ZFAIL_B : NVN_DS_ZFAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
-        y.face[f].pass = from1(nvn_field(s, f ? NVN_DS_ZPASS_B : NVN_DS_ZPASS_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
-        y.face[f].cmp = from1(nvn_field(s, f ? NVN_DS_SFUNC_B : NVN_DS_SFUNC_F), DS_CMP_ALWAYS, DS_CMP_ALWAYS);
+        /* a field macro is two arguments: chosen by ?: inside nvn_field, the comma operator made them `f ? 4 : 15`
+           and the width, the back face's four fields all bits 4 to 7 */
+        y.face[f].fail =
+            from1(f ? nvn_field(s, NVN_DS_FAIL_B) : nvn_field(s, NVN_DS_FAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
+        y.face[f].zfail =
+            from1(f ? nvn_field(s, NVN_DS_ZFAIL_B) : nvn_field(s, NVN_DS_ZFAIL_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
+        y.face[f].pass =
+            from1(f ? nvn_field(s, NVN_DS_ZPASS_B) : nvn_field(s, NVN_DS_ZPASS_F), DS_STENCIL_DECREMENT_AND_WRAP, 0);
+        y.face[f].cmp =
+            from1(f ? nvn_field(s, NVN_DS_SFUNC_B) : nvn_field(s, NVN_DS_SFUNC_F), DS_CMP_ALWAYS, DS_CMP_ALWAYS);
         y.face[f].ref = d->sref[f];
         y.face[f].cmask = d->svalue[f];
         y.face[f].wmask = d->smask[f];

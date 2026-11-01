@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nvn's constant banks and point sprite origin, which the game's driver's must match:
-   nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1 and the sprite origin of a draw's dynamic
-   state. The records go in through nvn_draw_record */
+   nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1, and the sprite origin and stencil faces of a
+   draw's dynamic state. The records go in through nvn_draw_record */
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/renderer.h"
@@ -221,11 +221,54 @@ static void test_sprite_origin(void) {
     }
 }
 
+/* OP_BIND_STATE of a depth-stencil word whose faces differ, then a draw: each face of the dynamic state takes its own
+   fields (the back's four were read from bits 4 to 7, under the depth function) */
+#define STATE 0x3000u
+static void test_stencil_faces(void) {
+    NvnPBindState st;
+    NvnPDraw r;
+    u64 w = 0;
+    w = nvn_set_field(w, NVN_DS_TEST, 1);
+    w = nvn_set_field(w, NVN_DS_FUNC, NVN_DEPTH_FUNC_GEQUAL);
+    w = nvn_set_field(w, NVN_DS_STENCIL, 1);
+    w = nvn_set_field(w, NVN_DS_SFUNC_F, NVN_STENCIL_FUNC_ALWAYS);
+    w = nvn_set_field(w, NVN_DS_FAIL_F, NVN_STENCIL_OP_KEEP);
+    w = nvn_set_field(w, NVN_DS_ZFAIL_F, NVN_STENCIL_OP_KEEP);
+    w = nvn_set_field(w, NVN_DS_ZPASS_F, NVN_STENCIL_OP_INCR_WRAP);
+    w = nvn_set_field(w, NVN_DS_SFUNC_B, NVN_STENCIL_FUNC_NOTEQUAL);
+    w = nvn_set_field(w, NVN_DS_FAIL_B, NVN_STENCIL_OP_ZERO);
+    w = nvn_set_field(w, NVN_DS_ZFAIL_B, NVN_STENCIL_OP_REPLACE);
+    w = nvn_set_field(w, NVN_DS_ZPASS_B, NVN_STENCIL_OP_DECR_WRAP);
+    memset(&st, 0, sizeof st);
+    st.kind = 5;
+    memcpy(st.bytes, &w, sizeof w);
+    memcpy(g_mem + STATE, &st, sizeof st);
+    memset(&r, 0, sizeof r);
+    r.count = 3;
+    memcpy(g_mem + DRAW, &r, sizeof r);
+    memset(&d, 0, sizeof d);
+    nvn_draw_init(&d, 0);
+    check(nvn_draw_record(&d, OP_BIND_STATE, STATE, sizeof st) == 1, "OP_BIND_STATE was not taken");
+    check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
+    const DsDynamic* y = &d.ds.dyn;
+    check(y->face[0].cmp == DS_CMP_ALWAYS && y->face[0].fail == DS_STENCIL_KEEP &&
+              y->face[0].zfail == DS_STENCIL_KEEP && y->face[0].pass == DS_STENCIL_INCREMENT_AND_WRAP,
+          "front face: expected compare %u, operations %u %u %u; found %u, %u %u %u", DS_CMP_ALWAYS, DS_STENCIL_KEEP,
+          DS_STENCIL_KEEP, DS_STENCIL_INCREMENT_AND_WRAP, y->face[0].cmp, y->face[0].fail, y->face[0].zfail,
+          y->face[0].pass);
+    check(y->face[1].cmp == DS_CMP_NOT_EQUAL && y->face[1].fail == DS_STENCIL_ZERO &&
+              y->face[1].zfail == DS_STENCIL_REPLACE && y->face[1].pass == DS_STENCIL_DECREMENT_AND_WRAP,
+          "back face: expected compare %u, operations %u %u %u; found %u, %u %u %u", DS_CMP_NOT_EQUAL, DS_STENCIL_ZERO,
+          DS_STENCIL_REPLACE, DS_STENCIL_DECREMENT_AND_WRAP, y->face[1].cmp, y->face[1].fail, y->face[1].zfail,
+          y->face[1].pass);
+}
+
 int main(void) {
     nvn_init();
     test_init();
     test_bind_program();
     test_sprite_origin();
+    test_stencil_faces();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;
