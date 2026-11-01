@@ -29,11 +29,11 @@ void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown);
 void nvn_replay_finish(u32 queue);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
-   all 0 for the whole texture), and for the renderer's display times and holds (renderer.h present_buffer) when the
-   game was given the texture to draw the frame in and the game's pace (0 none) */
+   all 0 for the whole texture), its flips as vi takes them (FlipV 2), and for the renderer's display times and holds
+   (renderer.h present_buffer) when the game was given the texture to draw the frame in and the game's pace (0 none) */
 typedef struct {
     u64 gva;
-    u32 w, h, fmt, linear, bhl, pitch;
+    u32 w, h, fmt, linear, bhl, pitch, transform;
     i32 crop[4];
     u64 released_ns, period_ns;
 } NvnReplayPresent;

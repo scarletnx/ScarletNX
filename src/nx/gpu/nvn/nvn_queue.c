@@ -520,6 +520,9 @@ void nvn_QueuePresentTexture(CPU* c, u64 q, u64 w, i32 index) {
         p.crop[2] = o->crop[0] + o->crop[2];
         p.crop[3] = o->crop[1] + o->crop[3];
     }
+    /* a lower left window's rows count up, so the game's driver queues its texture flipped (vi's FlipV, 2; NVN 55.12)
+       and an upper left one's as it is */
+    p.transform = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT ? 2 : 0;
     if (tex) memcpy(&t, GP(tex), sizeof t);
     if (tex && t.magic == NVN_MAGIC('T', 'E', 'X', 0)) {
         p.fmt = vi_format(t.d.format);
