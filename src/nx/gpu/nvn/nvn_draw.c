@@ -108,7 +108,9 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->scissor[2] = d->scissor[3] = 0x10000;
     d->bind.tex_bank = 2;
     for (s = 0; s < DS_GFX_STAGES; s++) {
-        const float point = 2047.0f; /* Maxwell's largest point size, which GLSLC clamps a written size to */
+        /* Maxwell's largest point size (11.4 fixed point), which GLSLC clamps a written size to: the game's driver
+           writes 2047.9375 (NVN 53.13 and 55.12) */
+        const float point = 2047.9375f;
         d->bind.cb_inline[s][0] = DS_CB_BANK0;
         d->bind.cb_inline[s][2] = DS_CB_BANK2;
         memcpy(d->inl.bank0[s] + C0_POINT_SIZE, &point, 4);
