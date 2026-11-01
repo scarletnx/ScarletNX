@@ -838,7 +838,8 @@ static u32 cb_word(const DsState* ds, int stage, u32 bank, u64 off) {
 static u32 tex_handle(const DsState* ds, int stage, u32 tcb, const ShTex* st) {
     u32 ci = (st->bindless ? st->bl_cbuf : tcb) & 31, c2i = st->bl2_cbuf & 31;
     u32 h = cb_word(ds, stage, ci, st->cbuf_off * 4);
-    if (st->bindless && st->bl2) h |= cb_word(ds, stage, c2i, st->bl2_off * 4);
+    if (st->bindless && st->bl2)
+        h |= st->bl2_cbuf == SH_HANDLE_IMM ? st->bl2_off : cb_word(ds, stage, c2i, st->bl2_off * 4);
     return h;
 }
 

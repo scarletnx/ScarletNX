@@ -1054,6 +1054,31 @@ static void buffer_formatted_loads(void) {
     free(code);
 }
 
+/* A bindless handle whose sampler half is a constant, as one game's fragment program builds it: the texture half
+   from MOV R2, c[0x2][0x380], ORed with MOV32I R1, 0x3f000000 (sampler 0x3f0). The constant is kept as the second
+   half (SH_HANDLE_IMM), in either operand */
+static void immediate_sampler_handle(void) {
+    for (int swap = 0; swap < 2; swap++) {
+        const u64 ops[] = {
+            0x4c9807880e070002ull, /* MOV R2, c[0x2][0x380] */
+            0x0103f0000007f001ull, /* MOV32I R1, 0x3f000000 */
+            0x5c4000000007000aull | (swap ? 1ull : 2ull) << 8 | (swap ? 2ull : 1ull) << 20 |
+                1ull << 41,                                                      /* LOP.OR R10 */
+            0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (10ull << 20), /* TEX.B R8, [R0], R10 */
+        };
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(ops, 4, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a handle with a constant sampler half translates");
+        if (code)
+            check(info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 &&
+                      info.tex[0].cbuf_off == 0x380 / 4 && info.tex[0].bl2 && info.tex[0].bl2_cbuf == SH_HANDLE_IMM &&
+                      info.tex[0].bl2_off == 0x3f000000u,
+                  "a handle with a constant sampler half keeps the read and the constant");
+        free(code);
+    }
+}
+
 static void volume_surface_atomics(void) {
     const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull,
                                0xeb50020a00070008ull, 0xeb50020a01170008ull};
@@ -3299,6 +3324,7 @@ int main(int argc, char** argv) {
     txd_grad();
     fragment_storage_images();
     buffer_formatted_loads();
+    immediate_sampler_handle();
     volume_surface_atomics();
     draw_buffer_surfaces();
     layered_surface_loads();
