@@ -1634,6 +1634,14 @@ i32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
     (void)c;
     return (i32)PB(b)->rt_flags;
 }
+/* A Switch 2 control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
+   share their layout */
+static int switch2_section(u64 control) {
+    u32 format = gr32(control + 8);
+    if (gr32(control + 4) != 0xc9) return 0;
+    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: a Switch 2 control section of format %u\n", format);
+    return 1;
+}
 /* a Switch 2 program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
    address data: compute when there is none */
 static u32 stage11(u64 data) {
@@ -1762,9 +1770,9 @@ static void xfb_of(u64 control, u64 serial) {
                                    0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
                                    0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
     const u8* c = GP(control);
-    /* the Switch 2's format 11 (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
+    /* a Switch 2 control section (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
        capture flag, so treat it as not capturing (the old layout's reads would misread garbage) */
-    if (gr32(control + 4) == 0xc9 && gr32(control + 8) == 11) return;
+    if (switch2_section(control)) return;
     if (!c[0x6ec]) return;
     NvnXfbEntry e = {0};
     e.serial = serial;
@@ -1801,14 +1809,19 @@ static int set_shaders(u64 p, const NvnShaderSet* st, i32 n) {
     }
     /* guest memory: every byte the game sees */
     memset(o->st, 0, sizeof o->st);
+    if (g_nvn.loader.api >= 231u << 16) memset(NVN_PROG_C0(p), 0, NVN_C0_RECORD);
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
         u32 stage;
         i32 rank;
         if (!stage_of(o, st[i].data, st[i].control)) return 0;
+        /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
+        if (g_nvn.loader.api >= 231u << 16 && switch2_section(st[i].control) &&
+            stage11(st[i].data) == NVN_SHADER_STAGE_COMPUTE)
+            memcpy(NVN_PROG_C0(p), GP(st[i].control + 0xa8), NVN_C0_RECORD);
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = gr32(st[i].control + 0x714);
+        stage = switch2_section(st[i].control) ? stage11(st[i].data) : gr32(st[i].control + 0x714);
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1

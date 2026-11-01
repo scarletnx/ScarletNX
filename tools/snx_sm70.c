@@ -70,7 +70,7 @@ static const char* stage_name(int stage) {
 
 int main(int argc, char** argv) {
     const char *path = NULL, *out = NULL, *sph_path = NULL;
-    int translate = 0, check = 0, verbose = 0;
+    int translate = 0, check = 0, verbose = 0, list = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
@@ -82,6 +82,8 @@ int main(int argc, char** argv) {
             translate = check = 1;
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
+        else if (!strcmp(argv[i], "--list"))
+            list = 1;
         else if (argv[i][0] != '-' && !path)
             path = argv[i];
         else {
@@ -129,7 +131,22 @@ int main(int argc, char** argv) {
         for (u32 i = 0; i < n; i++) {
             Sm70Insn in;
             const u8* at = data + pr->code + 16 * i;
-            if (sm70_decode(snx_ld_le64(at), snx_ld_le64(at + 8), &in))
+            int ok = sm70_decode(snx_ld_le64(at), snx_ld_le64(at + 8), &in);
+            if (list) {
+                /* the instruction: its index, guard, name and form, destination and sources, and its words */
+                static const char kinds[] = "-RUIC";
+                printf("  %4u %s%c%u %-14s f%u d%-3u", i, in.pred_not ? "!" : " ", in.pred == 7 ? 'T' : 'P', in.pred,
+                       sm70_ops[in.op].name, in.form, in.dst);
+                const Sm70Src* s3[3] = {&in.a, &in.b, &in.c};
+                for (int k = 0; k < 3; k++)
+                    if (s3[k]->kind == SM70_SRC_CBUF)
+                        printf(" c[%u][0x%x]", s3[k]->bank, s3[k]->value);
+                    else if (s3[k]->kind)
+                        printf(" %c%s%x", kinds[s3[k]->kind], s3[k]->neg ? "-" : "",
+                               s3[k]->kind == SM70_SRC_IMM ? s3[k]->value : s3[k]->reg);
+                printf("  %016llx %016llx\n", (unsigned long long)in.lo, (unsigned long long)in.hi);
+            }
+            if (ok)
                 known[in.op]++;
             else {
                 unknown[in.lo & 0xfff]++;
@@ -167,6 +184,9 @@ int main(int argc, char** argv) {
                 if (si.cbuf_mask & (1u << k)) printf("    cbuf %d: %u bytes read\n", k, si.cbuf_max[k]);
             for (int k = 0; k < si.ntex; k++)
                 printf("    texture %d: handle c[%u][0x%x]\n", k, si.tex[k].bl_cbuf, si.tex[k].cbuf_off * 4);
+            for (int k = 0; k < si.ngbuf; k++)
+                printf("    global buffer %d: base c[%u][0x%x]%s\n", k, SH_GBUF_BANK(si.gbuf_cbuf_off[k]),
+                       SH_GBUF_OFFSET(si.gbuf_cbuf_off[k]), si.gbuf_wmask >> k & 1 ? ", written" : "");
         }
         if (check && wrote) {
             char msg[512];

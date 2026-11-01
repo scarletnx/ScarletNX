@@ -21,6 +21,8 @@
     generation's own, which a 53.x game's driver has no name for. A game's name is looked up in both, nvn2's
     first, so a generation's functions stay their own: nothing of nvn.hook can be selected by a 231.x game's
     version, and nothing of nvn2.hook's by a 53.x game's */
+#include "nx/gpu/shader/shader.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/gpu/nvn/nvn_state.h"
@@ -335,6 +337,7 @@ static void version_read(void) {
     char version[32], described_text[64];
     g_nvn.loader.api = nvn_device_api();
     g_shader_sm70 = g_nvn.loader.api >= 231u << 16; /* the Switch 2's GPU runs SM70+ programs */
+    g_gob_native = g_shader_sm70;                   /* and lays its block linear surfaces out in its own GOB */
     hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
     nvn_api_described_text(described_text, sizeof described_text);
     g_nvn.loader.decided = 1;

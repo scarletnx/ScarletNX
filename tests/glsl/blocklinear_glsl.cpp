@@ -17,6 +17,7 @@ using namespace glsl;
 struct Mover : Invocation {
     uint runs, rows, lin_runs, y0, gob_y0, z0, bh, hmask, bd, dmask, bsh, block_row, slab, bl_bias, lin_bias, to_bl;
     uvec4 tail_mask;
+    uint native;
     const uvec4* src;
     uvec4* dst;
 #include "nx/gpu/texture/blocklinear.glsl"
@@ -32,14 +33,17 @@ static uint32_t random_word() {
     return rng;
 }
 
+static int g_native; // a Switch 2 game's GOB, bits 5 and 6 of the offset swapped (blocklinear.h)
+
 // gpu.c's bl_offset
 static uint64_t bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t wb, uint32_t h, uint32_t bh, uint32_t bd) {
     uint64_t gobs_x = (wb + 63) >> 6, gy = y >> 3;
     uint64_t rows = ((((uint64_t)h + 7) >> 3) + (1u << bh) - 1) >> bh, block = (uint64_t)512 << (bh + bd);
     uint64_t in_block = ((((uint64_t)z & ((1u << bd) - 1)) << bh) + (gy & ((1u << bh) - 1))) << 9;
-    return ((uint64_t)(x >> 6) << (9 + bh + bd)) + ((x & 32) << 3) + ((x & 16) << 1) + (x & 15) +
-           (((uint64_t)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block + (((y & 7) >> 1) << 6) +
-           ((y & 1) << 4);
+    uint64_t gx = g_native ? ((x & 32) << 3) + ((x & 16) << 2) : ((x & 32) << 3) + ((x & 16) << 1);
+    uint64_t gyo = g_native ? ((y & 4) << 5) + ((y & 2) << 4) : ((y & 6) >> 1) << 6;
+    return ((uint64_t)(x >> 6) << (9 + bh + bd)) + gx + (x & 15) +
+           (((uint64_t)(z >> bd) * rows + (gy >> bh)) * gobs_x) * block + in_block + gyo + ((y & 1) << 4);
 }
 
 static unsigned failures;
@@ -67,7 +71,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
                                   m.runs = runs, m.rows = rows, m.lin_runs = lin_runs, m.y0 = y0, m.gob_y0 = y0 >> 3;
                                   m.z0 = z0, m.bh = bh, m.hmask = (1u << bh) - 1, m.bd = bd, m.dmask = (1u << bd) - 1;
                                   m.bsh = 5 + bh + bd, m.block_row = (uint32_t)(block_row / 16);
-                                  m.slab = (uint32_t)(slab / 16), m.to_bl = (uint32_t)to_bl;
+                                  m.slab = (uint32_t)(slab / 16), m.to_bl = (uint32_t)to_bl, m.native = (uint32_t)g_native;
                                   // the block linear buffer starts lo - pad * 16 bytes into the layout
                                   m.bl_bias = bl_bias, m.lin_bias = lin_pad;
                                   m.src = to_bl ? lin.data() : bl_bound;
@@ -105,6 +109,7 @@ static void one(uint32_t row_bytes, uint32_t h, uint32_t d, uint32_t bh, uint32_
 }
 
 int main() {
+    for (g_native = 0; g_native < 2; g_native++) { // the Maxwell GOB, then a Switch 2 game's
     for (uint32_t width = 1; width <= 33; width++) one(width, 3, 2, 0, 0, 0, 3, 0, 2);
     for (int i = 0; i < 400; i++) {
         uint32_t row_bytes = 1 + random_word() % 400, h = 1 + random_word() % 90, bh = random_word() % 6;
@@ -118,10 +123,11 @@ int main() {
         if (i % 4 == 0) y0 = 0, rows = h, z0 = 0, slices = d;
         one(row_bytes, h, d, bh, bd, y0, rows, z0, slices);
     }
+    }
     if (failures) {
         std::printf("blocklinear_glsl: %u failures\n", failures);
         return 1;
     }
-    std::puts("blocklinear_glsl: the shader moves every run where bl_offset puts it, and nothing else");
+    std::puts("blocklinear_glsl: the shader moves every run where bl_offset puts it, and nothing else, in both GOBs");
     return 0;
 }

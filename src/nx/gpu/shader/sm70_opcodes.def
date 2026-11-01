@@ -168,6 +168,9 @@ SM70_OP(SUST_D, 0xb9d, SM70_K_FIX, 0, "SUST.D")
 SM70_OP(SUST_P_B, 0x99c, SM70_K_FIX, 0, "SUST.P.B")
 SM70_OP(SUST_D_B, 0x99e, SM70_K_FIX, 0, "SUST.D.B")
 SM70_OP(SURED_B, 0x3a0, SM70_K_FIX, 0, "SURED.B")
+/* SURED with the handle in a constant buffer: no source names 0x59f. The bindless 0x3a0 plus 0x1ff, as 0x998 is to
+   0xb97, and its fields (the handle at 40-58, the dimension, ADD, U32) agree in a game's program */
+SM70_OP(SURED, 0x59f, SM70_K_FIX, 0, "SURED")
 SM70_OP(SUATOM_B, 0x394, SM70_K_FIX, 0, "SUATOM.B")
 SM70_OP(SUATOM_CAS_B, 0x396, SM70_K_FIX, 0, "SUATOM.CAS.B")
 /* control flow: convergence barriers (BSSY, BSYNC, BREAK, BMOV) in place of Maxwell's CRS stack */

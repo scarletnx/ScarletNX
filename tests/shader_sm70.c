@@ -424,6 +424,12 @@ static void test_game_forms(const char* spirv_val, const char* dir) {
     set(&x, 64, 8, 255);
     set(&x, 72, 4, 0xf);
     put(fs, n++, x);
+    x = fix(0x326); /* IPA R15, a[0x3fc], the front face */
+    set(&x, 16, 8, 15);
+    set(&x, 32, 8, 255);
+    set(&x, 64, 8, 0x3fc >> 2);
+    set(&x, 81, 3, 7);
+    put(fs, n++, x);
     x = fix(0x326); /* IPA R12, a[0x2e4] */
     set(&x, 16, 8, 12);
     set(&x, 32, 8, 255);
@@ -727,6 +733,45 @@ static void test_compute_forms(const char* spirv_val, const char* dir) {
     free(spv);
 }
 
+/* SUST.P to a 2D image with its handle in c[0][0x30], and SULD.P from it, by the kind of the renderer's key: the
+   bindless rule of spirv_translate.c gives 2 (unsigned) without bit 8 of rt_int_mask, 0 (float) with it, and 3
+   (signed) with bit 8 of rt_sint_mask. ShaderInfo.img[].type is the dimension code, 3 for 2D */
+static void test_image_kinds(const char* spirv_val, const char* dir) {
+    u8 code[16 * 4] = {0};
+    Word x = fix(0xb9b); /* SUST.P.2D.RGBA [R0], R4, c[0][0x30] */
+    set(&x, 24, 8, 0);
+    set(&x, 32, 8, 4);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 3);
+    set(&x, 72, 4, 0xf);
+    put(code, 0, x);
+    x = fix(0xb97); /* SULD.P.2D.R R8, [R0], c[0][0x30] */
+    set(&x, 16, 8, 8);
+    set(&x, 24, 8, 0);
+    set(&x, 40, 14, 0x30 / 4);
+    set(&x, 61, 3, 3);
+    set(&x, 72, 4, 1);
+    set(&x, 81, 3, 7);
+    put(code, 1, x);
+    put(code, 2, exit_insn());
+    put(code, 3, bra(3, 3, 7, 0));
+    static const char* const names[3] = {"cs_image_u", "cs_image_s", "cs_image_f"};
+    static const u8 kinds[3] = {2, 3, 0};
+    for (u32 k = 0; k < 3; k++) {
+        ShaderInfo si = {0};
+        si.cs_local[0] = si.cs_local[1] = si.cs_local[2] = 1;
+        if (k == 1) si.rt_sint_mask = 1u << 8;
+        if (k == 2) si.rt_int_mask = 1u << 8;
+        size_t count = 0;
+        u32* spv = sm70_to_spirv(code, 4 * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) fprintf(stderr, "image kind: %s\n", si.first_unsupported);
+        CHECK(si.nimg == 1 && si.img[0].kind == kinds[k] && si.img[0].type == 3 && si.img[0].cbuf_off == 0x30 / 4);
+        if (spv) CHECK(validate(spirv_val, dir, names[k], spv, count));
+        free(spv);
+    }
+}
+
 int main(int argc, char** argv) {
     const char* spirv_val = argc > 2 ? argv[2] : NULL;
     const char* dir = argc > 1 ? argv[1] : ".";
@@ -740,6 +785,7 @@ int main(int argc, char** argv) {
     test_brx(spirv_val, dir);
     test_alu_group(spirv_val, dir);
     test_compute_forms(spirv_val, dir);
+    test_image_kinds(spirv_val, dir);
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
         return 1;

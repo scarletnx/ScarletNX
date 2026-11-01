@@ -29,9 +29,17 @@
 /* the largest block the hardware has: 2^5 = 32 GOBs high or deep (Eden's GOBsPerBlock up to THIRTYTWO_GOBS) */
 #define GOB_BLOCK_LOG2_MAX 5u
 
+/* A Switch 2 game's GOBs (the T239's) have bits 5 and 6 of that offset swapped: x bit 4 goes to bit 6 and y bit 1 to
+   bit 5, for every format (Eden's native_tiling, which swaps the two bits of SwizzleTable's offset). Set once, before
+   the game's first surface, by the NVN loader from the game's API version: 1 for the swapped GOB */
+extern int g_gob_native;
 /* where byte x of a GOB's row and row y of it go in the GOB: the two add up to the byte's offset in the GOB */
-static inline u32 gob_x_offset(u32 x) { return ((x & 32) << 3) | ((x & 16) << 1) | (x & 15); }
-static inline u32 gob_y_offset(u32 y) { return (((y & 7) >> 1) << 6) | ((y & 1) << 4); }
+static inline u32 gob_x_offset(u32 x) {
+    return ((x & 32) << 3) | (g_gob_native ? (x & 16) << 2 : (x & 16) << 1) | (x & 15);
+}
+static inline u32 gob_y_offset(u32 y) {
+    return g_gob_native ? ((y & 4) << 5) | ((y & 2) << 4) | ((y & 1) << 4) : (((y & 7) >> 1) << 6) | ((y & 1) << 4);
+}
 /* GOBs across a row width_bytes wide, and rows of blocks 2^bh GOBs high in a slice height rows high (both rounded
    up: a surface is whole blocks) */
 static inline u64 bl_gobs_x(u32 width_bytes) { return ((u64)width_bytes + GOB_SIZE_X - 1) >> GOB_SIZE_X_SHIFT; }
