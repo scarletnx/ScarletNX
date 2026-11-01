@@ -45,7 +45,7 @@ static u64 ticks(void) {
 static void fpcr(CPU* c) { (void)c; }
 static void event(void) {}
 static void wait_event(CPU* c) { (void)c; }
-/* one guest thread: nothing asks for the core back. SNX_GNU_SAMPLE's watchdog (main.c) asks, to see where a loop that
+/* one guest thread: nothing asks for the core back. --sample-pc's watchdog (main.c) asks, to see where a loop that
    makes no syscall runs */
 static void poll(CPU* c) {
     GnuProcess* p = c->thread;
@@ -57,9 +57,13 @@ static void poll(CPU* c) {
 const RtAPI gnu_rtapi = {syscall_entry, undefined,  hint, ticks, breakpoint,   fpcr,
                          event,         wait_event, poll, NULL,  gnu_jit_miss, snx_runtime_cas128, NULL};
 
-/* SNX_GNU_SAMPLE=1: once a second, the guest's pc on stderr (poll above), for a loop that makes no syscall. A forked
-   child has no watchdog thread, so it starts its own at its next exec */
+/* --sample-pc: once a second, the guest's pc on stderr (poll above), for a loop that makes no syscall. A forked child
+   has no watchdog thread, so it starts its own at its next exec */
 #ifndef _WIN32
+static struct {
+    int sample; /* gnu_sample_pc's */
+} g_runtime;
+void gnu_sample_pc(int on) { g_runtime.sample = on; }
 static void* sampler(void* process) {
     GnuProcess* p = process;
     for (;;) {
@@ -71,7 +75,7 @@ static void* sampler(void* process) {
 void gnu_start_sampler(GnuProcess* p) {
     static uint32_t started_for;
     pthread_t thread;
-    if (!getenv("SNX_GNU_SAMPLE") || started_for == (uint32_t)getpid()) return;
+    if (!g_runtime.sample || started_for == (uint32_t)getpid()) return;
     started_for = (uint32_t)getpid();
     if (!pthread_create(&thread, NULL, sampler, p)) pthread_detach(thread);
 }
