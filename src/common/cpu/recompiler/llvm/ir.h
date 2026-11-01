@@ -225,7 +225,7 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
    unit cache's key holds it (unit_cache.c), so a change there that changes the object of the same IR bumps it */
-#define SNX_IR_OBJECT_VERSION 3
+#define SNX_IR_OBJECT_VERSION 4
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
    caller's */
