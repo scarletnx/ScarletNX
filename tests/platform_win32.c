@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
     printf("written-page tracking\n");
     g_base = plat_vm_reserve((u64)1 << 30);
     CHECK(g_base != NULL, "no reservation");
+    plat_vm_track(g_base, (u64)1 << 30);
     CHECK(!plat_vm_commit(g_base, 64 * 4096), "commit failed");
     if (getenv("SNX_NO_WW")) {
         CHECK(scan() == ~0ull, "a scan without tracking did not fail");

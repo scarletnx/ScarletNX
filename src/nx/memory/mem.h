@@ -94,7 +94,8 @@ void mem_layout32(unsigned aspace);
    guest address has to fit in 36 bits */
 void mem_layout36(void);
 /* The guest's address space reserved now, the largest tier the system gives from the console's 128 GiB down to 5 GiB,
-   each refused one said: before the game's code takes a share of a small one. mem_init finds it kept */
+   each refused one said: before the game's code takes a share of a small one. mem_init finds it kept, and sets its
+   written-page tracking up once the settings are read (plat_vm_track) */
 void mem_reserve(void);
 void mem_init(void);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0, MEM_BADSTATE when it isn't free, MEM_NOMEM */

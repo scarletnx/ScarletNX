@@ -52,6 +52,7 @@ u8* plat_vm_reserve(u64 size) {
     reservation_size = size + host_page;
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
 }
+void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
 int plat_vm_commit(u8* p, u64 size) {
     if (mapping_begins) CHECK(mapping_depth == 1);
     commit_calls++;

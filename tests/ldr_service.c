@@ -48,6 +48,7 @@ u8* plat_vm_reserve(u64 size) {
     void* p = mmap(NULL, size + page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : (u8*)(((uintptr_t)p + page - 1) & ~(uintptr_t)(page - 1));
 }
+void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
 int plat_vm_commit(u8* p, u64 size) {
     if (fail_commit) {
         fail_commit = 0;

@@ -164,10 +164,12 @@ void plat_exit_now(int code) {
 }
 
 /* ================================================================ the guest's address space */
-/* The reservation carries a write watch unless SNX_NO_WW is set: without it the caches hash guest memory to find
-   changes (a third of Super Mario Odyssey's GPU thread) */
+/* The reservation carries a write watch, which plat_ww_scan reads unless SNX_NO_WW is set: without it the caches hash
+   guest memory to find changes (a third of Super Mario Odyssey's GPU thread). The watch is chosen as the reservation
+   is made, before the settings are read */
 static u8* g_ww_base;
 static u64 g_ww_size;
+static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
 
 u64 plat_vm_page(void) {
     u64 page = 4096; /* VirtualAlloc commits and protects 4 KiB pages on every Windows system */
@@ -200,11 +202,9 @@ int plat_address_space(u64* mapped, u64* largest_free) {
     return 1;
 }
 u8* plat_vm_reserve(u64 size) {
-    void* p = NULL;
-    if (!getenv("SNX_NO_WW")) p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
+    void* p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
     if (p) {
-        g_ww_base = (u8*)p; /* mem_init runs before any thread that scans */
-        g_ww_size = size;
+        g_ww_watched = (u8*)p;
         return (u8*)p;
     }
     p = VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE, PAGE_NOACCESS);
@@ -213,6 +213,11 @@ u8* plat_vm_reserve(u64 size) {
         errno = why == ERROR_NOT_ENOUGH_MEMORY || why == ERROR_COMMITMENT_LIMIT ? ENOMEM : EINVAL;
     }
     return (u8*)p;
+}
+void plat_vm_track(u8* p, u64 size) {
+    if (p != g_ww_watched || getenv("SNX_NO_WW")) return;
+    g_ww_base = p; /* mem_init runs before any thread that scans */
+    g_ww_size = size;
 }
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
