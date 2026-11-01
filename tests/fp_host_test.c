@@ -78,14 +78,14 @@ static CPU state(u32 fpcr, u32 fpsr) {
 
 static void binary(int width, int op, u64 a, u64 b, u32 fpcr, u32 fpsr) {
     CPU host = state(fpcr, fpsr), soft = host;
-    u64 got = snx_fp_host_binary(&host, a, b, width, op), want = snx_fp_binary(&soft, a, b, width, op);
+    u64 got = snx_fp_host_binary_c(&host, a, b, width, op), want = snx_fp_binary_c(&soft, a, b, width, op);
     g_test.checks++;
     if (got != want || host.fpsr != soft.fpsr)
         report("binary", width, op, a, b, 0, fpcr, fpsr, got, want, host.fpsr, soft.fpsr);
 }
 static void fma(int width, u64 add, u64 a, u64 b, u32 fpcr, u32 fpsr) {
     CPU host = state(fpcr, fpsr), soft = host;
-    u64 got = snx_fp_host_fma(&host, add, a, b, width), want = snx_fp_fma(&soft, add, a, b, width);
+    u64 got = snx_fp_host_fma_c(&host, add, a, b, width), want = snx_fp_fma_c(&soft, add, a, b, width);
     g_test.checks++;
     if (got != want || host.fpsr != soft.fpsr)
         report("fma", width, 0, add, a, b, fpcr, fpsr, got, want, host.fpsr, soft.fpsr);
@@ -94,22 +94,22 @@ static void others(int width, u64 a, u64 b, u32 fpcr, u32 fpsr) {
     int k;
     for (k = 0; k < 4; ++k) {
         CPU host = state(fpcr, fpsr), soft = host;
-        u64 got = snx_fp_host_minmax(&host, a, b, width, k & 1, k >> 1),
-            want = snx_fp_minmax(&soft, a, b, width, k & 1, k >> 1);
+        u64 got = snx_fp_host_minmax_c(&host, a, b, width, k & 1, k >> 1),
+            want = snx_fp_minmax_c(&soft, a, b, width, k & 1, k >> 1);
         g_test.checks++;
         if (got != want || host.fpsr != soft.fpsr)
             report("minmax", width, k, a, b, 0, fpcr, fpsr, got, want, host.fpsr, soft.fpsr);
     }
     for (k = 0; k < 2; ++k) {
         CPU host = state(fpcr, fpsr), soft = host;
-        u32 got = snx_fp_host_compare(&host, a, b, width, k), want = snx_fp_compare(&soft, a, b, width, k);
+        u32 got = snx_fp_host_compare_c(&host, a, b, width, k), want = snx_fp_compare_c(&soft, a, b, width, k);
         g_test.checks++;
         if (got != want || host.fpsr != soft.fpsr)
             report("compare", width, k, a, b, 0, fpcr, fpsr, got, want, host.fpsr, soft.fpsr);
     }
     for (k = SNX_FP_SQRT; k <= SNX_FP_RECPX; ++k) {
         CPU host = state(fpcr, fpsr), soft = host;
-        u64 got = snx_fp_host_unary(&host, a, width, k), want = snx_fp_unary(&soft, a, width, k);
+        u64 got = snx_fp_host_unary_c(&host, a, width, k), want = snx_fp_unary_c(&soft, a, width, k);
         g_test.checks++;
         if (got != want || host.fpsr != soft.fpsr)
             report("unary", width, k, a, 0, 0, fpcr, fpsr, got, want, host.fpsr, soft.fpsr);
@@ -134,7 +134,7 @@ static void fused_edges(void) {
         u32 fpcr = control(), fpsr = status();
         u64 a = operand(32, -63), b = operand(32, -63), add;
         CPU c = state(0, 0);
-        u64 p = snx_fp_binary(&c, a, b, 32, SNX_FP_MUL);
+        u64 p = snx_fp_binary_c(&c, a, b, 32, SNX_FP_MUL);
         add = ((p ^ 0x80000000u) + (next() % 5) - 2) & 0xFFFFFFFFu; /* near minus the rounded product */
         fma(32, add, a, b, fpcr, fpsr);
         fma(32, operand(32, -126), a, b, fpcr, fpsr);
@@ -217,7 +217,7 @@ static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
                 case 0: b[i] = ((a[i] ^ (u64)1 << (width - 1)) + (next() % 3) - 1) & mask; break; /* sums cancel */
                 case 1: { /* a fused sum near zero: the addend near minus the product */
                     CPU product = state(0, 0);
-                    a[i] = ((snx_fp_binary(&product, b[i], d[i], width, SNX_FP_MUL) ^ (u64)1 << (width - 1)) +
+                    a[i] = ((snx_fp_binary_c(&product, b[i], d[i], width, SNX_FP_MUL) ^ (u64)1 << (width - 1)) +
                             (next() % 5) - 2) &
                            mask;
                     break;
@@ -237,16 +237,16 @@ static void lanes(int width, int near, u32 fpcr, u32 fpsr) {
             memcpy(y + i * bytes, width == 32 ? (const void*)&(u32){(u32)b[i]} : (const void*)&b[i], bytes);
             memcpy(z + i * bytes, width == 32 ? (const void*)&(u32){(u32)d[i]} : (const void*)&d[i], bytes);
             switch (kinds[k].helper) {
-                case 0: want[i] = snx_fp_binary(&soft, a[i], b[i], width, kinds[k].op); break;
-                case 1: want[i] = snx_fp_fma(&soft, a[i], b[i], d[i], width); break;
-                case 2: want[i] = snx_fp_unary(&soft, a[i], width, kinds[k].op); break;
-                default: want[i] = snx_fp_minmax(&soft, a[i], b[i], width, kinds[k].op, kinds[k].numeric); break;
+                case 0: want[i] = snx_fp_binary_c(&soft, a[i], b[i], width, kinds[k].op); break;
+                case 1: want[i] = snx_fp_fma_c(&soft, a[i], b[i], d[i], width); break;
+                case 2: want[i] = snx_fp_unary_c(&soft, a[i], width, kinds[k].op); break;
+                default: want[i] = snx_fp_minmax_c(&soft, a[i], b[i], width, kinds[k].op, kinds[k].numeric); break;
             }
         }
         for (i = 0; i < 16; ++i) out[i] = 0xA5;
-        snx_fp_host_lanes(&host, out, x, y, z,
-                          kinds[k].helper | bytes << 4 | count << 8 | (u32)kinds[k].op << 12 |
-                              (u32)kinds[k].numeric << 16);
+        snx_fp_host_lanes_c(&host, out, x, y, z,
+                            kinds[k].helper | bytes << 4 | count << 8 | (u32)kinds[k].op << 12 |
+                                (u32)kinds[k].numeric << 16);
         g_test.checks++;
         for (i = 0; i < count; ++i) {
             u64 got = 0;

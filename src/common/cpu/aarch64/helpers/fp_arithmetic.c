@@ -62,7 +62,7 @@ static FpWide fp_mul64(u64 a, u64 b) {
 }
 
 /* sign * X * 2^(e - 125), X normalized and compressed to 64 bits with a sticky bit, rounded (times 2^scale) */
-static u64 fp_pack_wide(CPU* c, int sign, int e, FpWide x, int scale, int width, int rm) {
+static u64 fp_pack_wide(SnxFpEnv* c, int sign, int e, FpWide x, int scale, int width, int rm) {
     int top = fp_wide_top(x);
     if (top > 125) {
         x = fp_wide_shr_jam(x, top - 125);
@@ -79,7 +79,7 @@ static u64 fp_pack_wide(CPU* c, int sign, int e, FpWide x, int scale, int width,
    smaller one shifted with a sticky bit: their lowest bits are zero (at most 106 significant bits of 126), so the
    sticky bit can't disturb a cancellation. An exact zero is +0, or -0 when rounding toward -inf; the callers
    handle zeros of the same sign before. */
-static u64 fp_sum(CPU* c, int sa, int ea, FpWide a, int sb, int eb, FpWide b, int scale, int width, int rm) {
+static u64 fp_sum(SnxFpEnv* c, int sa, int ea, FpWide a, int sb, int eb, FpWide b, int scale, int width, int rm) {
     FpWide r;
     int sign;
     if (fp_wide_zero(a) && fp_wide_zero(b)) return fp_zero(rm == 2, width);
@@ -121,7 +121,7 @@ static FpWide fp_wide_of(FpValue v) { /* a finite or zero operand as X (frac << 
 /* FPMulAdd: add + a * b with one rounding, times 2^scale (scale -1 halves for the RSQRTS steps, still with one
    rounding). NaNs: signalling ones first, in the order addend, a, b, then quiet ones in that order; a quiet NaN
    addend with an infinity times zero is invalid too. */
-static u64 fp_fused(CPU* c, u64 add, u64 a, u64 b, int width, int scale) {
+static u64 fp_fused(SnxFpEnv* c, u64 add, u64 a, u64 b, int width, int scale) {
     FpValue z = fp_unpack(c, add, width), x = fp_unpack(c, a, width), y = fp_unpack(c, b, width);
     int rm = fp_rmode(c), sp = x.sign ^ y.sign, product_inf = x.kind == FPV_INF || y.kind == FPV_INF;
     int product_zero = x.kind == FPV_ZERO || y.kind == FPV_ZERO;
@@ -138,10 +138,13 @@ static u64 fp_fused(CPU* c, u64 add, u64 a, u64 b, int width, int scale) {
     return fp_sum(c, z.sign, z.exp, fp_wide_of(z), sp, x.exp + y.exp + 1, p, scale, width, rm);
 }
 
-u64 snx_fp_fma(CPU* c, u64 add, u64 a, u64 b, int width) { return fp_fused(c, add, a, b, width, 0); }
+SnxFpReply snx_fp_fma(u64 add, u64 a, u64 b, int width, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    return (SnxFpReply){fp_fused(&c, add, a, b, width, 0), c.fpsr};
+}
 
 /* the quotient of two finite nonzero values, a sticky bit from the remainder */
-static u64 fp_divide(CPU* c, FpValue x, FpValue y, int width, int rm) {
+static u64 fp_divide(SnxFpEnv* c, FpValue x, FpValue y, int width, int rm) {
     u64 rem = x.frac, q = 0;
     int e = x.exp - y.exp;
     if (rem < y.frac) {
@@ -161,7 +164,7 @@ static u64 fp_divide(CPU* c, FpValue x, FpValue y, int width, int rm) {
 /* FPAdd, FPSub, FPMul, FPDiv, FPMulX, FABD (the difference, then the sign cleared, NaNs included), and the fused
    steps FPRecipStepFused (2 - a * b) and FPRSqrtStepFused ((3 - a * b) / 2), which negate a before anything else,
    so a NaN a comes out with its sign flipped */
-static u64 fp_binary_rm(CPU* c, u64 a, u64 b, int width, int op, int rm) {
+static u64 fp_binary_rm(SnxFpEnv* c, u64 a, u64 b, int width, int op, int rm) {
     u64 r;
     if (op == SNX_FP_RECPS || op == SNX_FP_RSQRTS) a ^= fp_signbit(1, width);
     FpValue x = fp_unpack(c, a, width);
@@ -216,7 +219,10 @@ static u64 fp_binary_rm(CPU* c, u64 a, u64 b, int width, int op, int rm) {
         default: return 0;
     }
 }
-u64 snx_fp_binary(CPU* c, u64 a, u64 b, int width, int op) { return fp_binary_rm(c, a, b, width, op, fp_rmode(c)); }
+SnxFpReply snx_fp_binary(u64 a, u64 b, int width, int op, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    return (SnxFpReply){fp_binary_rm(&c, a, b, width, op, fp_rmode(&c)), c.fpsr};
+}
 
 /* ---- the reciprocal and reciprocal square root estimates (vfp_helper.c) ---- */
 
@@ -245,7 +251,7 @@ u32 ursqrte32(u32 x) {
 /* FPRecipEstimate on a finite nonzero operand's raw fields (after FZ, which made denormals zeros): the scaled
    fraction 1:frac<51:44> of the double-aligned fraction, the result exponent 2*bias-1 - e, denormal results at
    exponents 0 and -1 */
-static u64 fp_recpe(CPU* c, u64 bits, int width) {
+static u64 fp_recpe(SnxFpEnv* c, u64 bits, int width) {
     int fb = fp_fbits(width), bias = fp_bias(width), sign = (int)((bits >> (width - 1)) & 1);
     int e = (int)((bits >> fb) & (u64)((1 << fp_ebits(width)) - 1));
     u64 frac = (bits & (((u64)1 << fb) - 1)) << (52 - fb);
@@ -296,7 +302,7 @@ static u64 fp_rsqrte(u64 bits, int width) {
 }
 
 /* the square root of a positive finite value, digit by digit: 63 result bits and a sticky bit */
-static u64 fp_sqrt(CPU* c, FpValue v, int width, int rm) {
+static u64 fp_sqrt(SnxFpEnv* c, FpValue v, int width, int rm) {
     int odd = v.exp & 1, half = (v.exp - odd) / 2;
     FpWide n = fp_wide_shl(fp_wide(0, v.frac), 62 + odd), rem = fp_wide(0, 0);
     u64 root = 0;
@@ -315,89 +321,118 @@ static u64 fp_sqrt(CPU* c, FpValue v, int width, int rm) {
 }
 
 /* FPSqrt, FPRecipEstimate, FPRSqrtEstimate, FPRecpX */
-u64 snx_fp_unary(CPU* c, u64 bits, int width, int op) {
+SnxFpReply snx_fp_unary(u64 bits, int width, int op, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
     FpValue v;
+    u64 r;
     if (op == SNX_FP_RECPX) { /* NaNs before flushing; then the exponent inverted and the fraction cleared */
         int fb = fp_fbits(width), emax = (1 << fp_ebits(width)) - 1;
-        v = fp_unpack(c, bits, width);
-        if (v.kind >= FPV_QNAN) return fp_nan(c, v, width);
+        v = fp_unpack(&c, bits, width);
+        if (v.kind >= FPV_QNAN) return (SnxFpReply){fp_nan(&c, v, width), c.fpsr};
         int e = v.kind == FPV_ZERO ? 0 : (int)((bits >> fb) & (u64)emax);
-        return fp_signbit(v.sign, width) | (u64)(e ? ~e & emax : emax - 1) << fb;
+        r = fp_signbit(v.sign, width) | (u64)(e ? ~e & emax : emax - 1) << fb;
+        return (SnxFpReply){r, c.fpsr};
     }
-    v = fp_unpack(c, bits, width);
-    if (v.kind >= FPV_QNAN) return fp_nan(c, v, width);
+    v = fp_unpack(&c, bits, width);
+    if (v.kind >= FPV_QNAN) return (SnxFpReply){fp_nan(&c, v, width), c.fpsr};
     switch (op) {
         case SNX_FP_SQRT:
-            if (v.kind == FPV_ZERO) return fp_zero(v.sign, width);
-            if (v.sign) return fp_invalid(c, width);
-            if (v.kind == FPV_INF) return fp_inf(0, width);
-            return fp_sqrt(c, v, width, fp_rmode(c));
+            if (v.kind == FPV_ZERO)
+                r = fp_zero(v.sign, width);
+            else if (v.sign)
+                r = fp_invalid(&c, width);
+            else if (v.kind == FPV_INF)
+                r = fp_inf(0, width);
+            else
+                r = fp_sqrt(&c, v, width, fp_rmode(&c));
+            break;
         case SNX_FP_RECPE:
-            if (v.kind == FPV_INF) return fp_zero(v.sign, width);
-            if (v.kind == FPV_ZERO) {
-                c->fpsr |= FPSR_DZC;
-                return fp_inf(v.sign, width);
+            if (v.kind == FPV_INF) {
+                r = fp_zero(v.sign, width);
+            } else if (v.kind == FPV_ZERO) {
+                c.fpsr |= FPSR_DZC;
+                r = fp_inf(v.sign, width);
+            } else {
+                r = fp_recpe(&c, bits, width);
             }
-            return fp_recpe(c, bits, width);
+            break;
         case SNX_FP_RSQRTE:
             if (v.kind == FPV_ZERO) {
-                c->fpsr |= FPSR_DZC;
-                return fp_inf(v.sign, width);
+                c.fpsr |= FPSR_DZC;
+                r = fp_inf(v.sign, width);
+            } else if (v.sign) {
+                r = fp_invalid(&c, width);
+            } else if (v.kind == FPV_INF) {
+                r = fp_zero(0, width);
+            } else {
+                r = fp_rsqrte(bits, width);
             }
-            if (v.sign) return fp_invalid(c, width);
-            if (v.kind == FPV_INF) return fp_zero(0, width);
-            return fp_rsqrte(bits, width);
-        default: return 0;
+            break;
+        default: r = 0; break;
     }
+    return (SnxFpReply){r, c.fpsr};
 }
 
 /* FPConvert (FCVT, FCVTN/FCVTL, FCVTXN with rm 5): halves are never flushed on input, NaNs keep their sign and the
    top of their payload (default NaN under DN), and a half with FPCR.AHP takes no NaN or infinity: IOC, and a zero
    or the largest magnitude. Numbers are rounded once, from the source (f64 to f16 directly). */
-u64 snx_fp_convert(CPU* c, u64 bits, int src_width, int dst_width, int rm) {
-    FpValue v = fp_unpack_as(c, bits, src_width, 1);
-    int alt = dst_width == 16 && (c->fpcr & FPCR_AHP), sfb = fp_fbits(src_width), dfb = fp_fbits(dst_width);
+SnxFpReply snx_fp_convert(u64 bits, int src_width, int dst_width, int rm, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack_as(&c, bits, src_width, 1);
+    int alt = dst_width == 16 && (c.fpcr & FPCR_AHP), sfb = fp_fbits(src_width), dfb = fp_fbits(dst_width);
+    u64 r;
     if (v.kind >= FPV_QNAN) {
         u64 payload = v.frac & (((u64)1 << (sfb - 1)) - 1);
-        if (v.kind == FPV_SNAN || alt) c->fpsr |= FPSR_IOC;
-        if (alt) return fp_zero(v.sign, dst_width);
-        if (c->fpcr & FPCR_DN) return fp_default_nan(dst_width);
-        payload = dfb >= sfb ? payload << (dfb - sfb) : payload >> (sfb - dfb);
-        return fp_inf(v.sign, dst_width) | ((u64)1 << (dfb - 1)) | payload;
+        if (v.kind == FPV_SNAN || alt) c.fpsr |= FPSR_IOC;
+        if (alt) {
+            r = fp_zero(v.sign, dst_width);
+        } else if (c.fpcr & FPCR_DN) {
+            r = fp_default_nan(dst_width);
+        } else {
+            payload = dfb >= sfb ? payload << (dfb - sfb) : payload >> (sfb - dfb);
+            r = fp_inf(v.sign, dst_width) | ((u64)1 << (dfb - 1)) | payload;
+        }
+    } else if (v.kind == FPV_INF) {
+        if (!alt) {
+            r = fp_inf(v.sign, dst_width);
+        } else {
+            c.fpsr |= FPSR_IOC;
+            r = fp_signbit(v.sign, 16) | 0x7FFF;
+        }
+    } else if (v.kind == FPV_ZERO) {
+        r = fp_zero(v.sign, dst_width);
+    } else {
+        r = fp_round_pack_as(&c, v.sign, v.exp, v.frac, dst_width, rm, 1);
     }
-    if (v.kind == FPV_INF) {
-        if (!alt) return fp_inf(v.sign, dst_width);
-        c->fpsr |= FPSR_IOC;
-        return fp_signbit(v.sign, 16) | 0x7FFF;
-    }
-    if (v.kind == FPV_ZERO) return fp_zero(v.sign, dst_width);
-    return fp_round_pack_as(c, v.sign, v.exp, v.frac, dst_width, rm, 1);
+    return (SnxFpReply){r, c.fpsr};
 }
 
 /* FixedToFP (SCVTF, UCVTF): the operand masked to its width (and two's complement for signed), divided by
    2^fbits exactly, rounded once in FPCR's mode */
-u64 snx_fp_from_int(CPU* c, u64 bits, int int_width, int fp_width, int uns, int fbits) {
+SnxFpReply snx_fp_from_int(u64 bits, int int_width, int fp_width, int uns, int fbits, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
     u64 mag = int_width >= 64 ? bits : bits & (((u64)1 << int_width) - 1);
     int sign = 0;
     if (!uns && ((mag >> (int_width - 1)) & 1)) {
         sign = 1;
         mag = (0 - mag) & (int_width >= 64 ? ~(u64)0 : (((u64)1 << int_width) - 1));
     }
-    if (!mag) return fp_zero(0, fp_width);
+    if (!mag) return (SnxFpReply){fp_zero(0, fp_width), c.fpsr};
     FpValue v = fp_from_magnitude(sign, mag, -fbits);
-    return fp_round_pack(c, sign, v.exp, v.frac, fp_width, fp_rmode(c));
+    return (SnxFpReply){fp_round_pack(&c, sign, v.exp, v.frac, fp_width, fp_rmode(&c)), c.fpsr};
 }
 
 /* FPToFixed (FCVT[NPMZA][SU], fixed point with fbits): the value times 2^fbits rounded in mode rm, then saturated:
    a NaN is 0, and out of range after rounding (infinities included, and any negative nonzero for unsigned)
    raises IOC without IXC and gives the nearest end of the range. The result is masked to the integer width. */
-u64 snx_fp_to_int(CPU* c, u64 bits, int fp_width, int int_width, int uns, int fbits, int rm) {
-    FpValue v = fp_unpack(c, bits, fp_width);
-    u64 mask = int_width >= 64 ? ~(u64)0 : (((u64)1 << int_width) - 1), mag, top = (u64)1 << (int_width - 1);
+SnxFpReply snx_fp_to_int(u64 bits, int fp_width, int int_width, int uns, int fbits, int rm, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack(&c, bits, fp_width);
+    u64 mask = int_width >= 64 ? ~(u64)0 : (((u64)1 << int_width) - 1), mag, top = (u64)1 << (int_width - 1), r;
     int inexact = 0, huge = 0, overflow;
     if (v.kind >= FPV_QNAN) {
-        c->fpsr |= FPSR_IOC;
-        return 0;
+        c.fpsr |= FPSR_IOC;
+        return (SnxFpReply){0, c.fpsr};
     }
     if (v.kind == FPV_INF)
         huge = 1, mag = 0;
@@ -408,47 +443,49 @@ u64 snx_fp_to_int(CPU* c, u64 bits, int fp_width, int int_width, int uns, int fb
     else
         overflow = huge || (v.sign ? mag > top : mag >= top);
     if (overflow) {
-        c->fpsr |= FPSR_IOC;
-        if (uns) return v.sign ? 0 : mask;
-        return v.sign ? top : top - 1;
+        c.fpsr |= FPSR_IOC;
+        r = uns ? (v.sign ? 0 : mask) : (v.sign ? top : top - 1);
+        return (SnxFpReply){r, c.fpsr};
     }
-    if (inexact) c->fpsr |= FPSR_IXC;
-    return (v.sign ? 0 - mag : mag) & mask;
+    if (inexact) c.fpsr |= FPSR_IXC;
+    return (SnxFpReply){(v.sign ? 0 - mag : mag) & mask, c.fpsr};
 }
 
 /* FPRoundIntN (FRINT32Z, FRINT32X, FRINT64Z, FRINT64X; vfp_helper.c's frint_s, frint_d): rounded to an integral value
    in mode rm as FPRoundInt does, IXC when that changed it, then checked against the intsize-bit integers. A NaN, an
    infinity or a value out of their range raises IOC alone and gives -2^(intsize-1). */
-u64 snx_fp_round_int(CPU* c, u64 bits, int width, int rm, int intsize) {
-    FpValue v = fp_unpack(c, bits, width);
+SnxFpReply snx_fp_round_int(u64 bits, int width, int rm, int intsize, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack(&c, bits, width);
     u64 mag, top = (u64)1 << (intsize - 1);
     int inexact = 0, huge = 0;
-    if (v.kind == FPV_ZERO) return fp_zero(v.sign, width);
+    if (v.kind == FPV_ZERO) return (SnxFpReply){fp_zero(v.sign, width), c.fpsr};
     if (v.kind == FPV_FINITE) {
         mag = fp_round_magnitude(v, 0, rm, &inexact, &huge);
         if (!huge && (v.sign ? mag <= top : mag < top)) {
-            if (inexact) c->fpsr |= FPSR_IXC;
-            if (!mag) return fp_zero(v.sign, width);
-            return fp_repack(c, fp_from_magnitude(v.sign, mag, 0), width);
+            if (inexact) c.fpsr |= FPSR_IXC;
+            if (!mag) return (SnxFpReply){fp_zero(v.sign, width), c.fpsr};
+            return (SnxFpReply){fp_repack(&c, fp_from_magnitude(v.sign, mag, 0), width), c.fpsr};
         }
     }
-    c->fpsr |= FPSR_IOC;
-    return fp_signbit(1, width) | (u64)(fp_bias(width) + intsize - 1) << fp_fbits(width);
+    c.fpsr |= FPSR_IOC;
+    return (SnxFpReply){fp_signbit(1, width) | (u64)(fp_bias(width) + intsize - 1) << fp_fbits(width), c.fpsr};
 }
 
 /* FPToFixedJS (FJCVTZS; vfp_helper.c's fjcvtzs, softfloat's float_to_sint_modulo): a double rounded toward zero, the
    low 32 bits of the integer whatever its size, and bit 32 the Z flag: set when the double was exactly that integer
    in the int32 range, not -0, and not a denormal flushed by FPCR.FZ. A NaN, an infinity or an integer outside the
    int32 range raises IOC (and gives 0 for the first two), else a dropped fraction raises IXC */
-u64 snx_fp_jcvt(CPU* c, u64 bits) {
-    FpValue v = fp_unpack(c, bits, 64);
+SnxFpReply snx_fp_jcvt(u64 bits, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack(&c, bits, 64);
     u64 mag;
     int inexact = 0, huge = 0, overflow;
     if (v.kind >= FPV_INF) {
-        c->fpsr |= FPSR_IOC;
-        return 0;
+        c.fpsr |= FPSR_IOC;
+        return (SnxFpReply){0, c.fpsr};
     }
-    if (v.kind == FPV_ZERO) return (u64)(!v.sign && !(bits & (((u64)1 << 52) - 1))) << 32;
+    if (v.kind == FPV_ZERO) return (SnxFpReply){(u64)(!v.sign && !(bits & (((u64)1 << 52) - 1))) << 32, c.fpsr};
     if (v.exp > 62) { /* integral, at least 2^63: only its low bits survive */
         int shift = v.exp - 62;
         mag = shift < 64 ? v.frac << shift : 0;
@@ -459,23 +496,24 @@ u64 snx_fp_jcvt(CPU* c, u64 bits) {
     }
     mag = (u32)(v.sign ? 0 - mag : mag);
     if (overflow)
-        c->fpsr |= FPSR_IOC;
+        c.fpsr |= FPSR_IOC;
     else if (inexact)
-        c->fpsr |= FPSR_IXC;
-    return mag | (u64)(!overflow && !inexact) << 32;
+        c.fpsr |= FPSR_IXC;
+    return (SnxFpReply){mag | (u64)(!overflow && !inexact) << 32, c.fpsr};
 }
 
 /* FPConvertBF (BFCVT; vfp_helper.c's bfcvt, softfloat's float32_to_bfloat16): a single to a bfloat16, its top half,
    rounded in FPCR's mode. The formats share the exponent range and their denormal grids, so a number is its
    encoding with the low 16 bits rounded off: a carry reaches the exponent, and past the largest number infinity
    (OFC). Tiny before rounding is a denormal, which raises UFC when inexact; FPCR.FZ flushed it already (IDC) */
-u64 snx_fp_bfcvt(CPU* c, u64 bits) {
-    FpValue v = fp_unpack(c, bits, 32);
+SnxFpReply snx_fp_bfcvt(u64 bits, u32 fpcr) {
+    SnxFpEnv c = {fpcr, 0};
+    FpValue v = fp_unpack(&c, bits, 32);
     u64 magnitude = bits & 0x7FFFFFFFu, low = magnitude & 0xFFFF, mant = magnitude >> 16, up;
-    if (v.kind >= FPV_QNAN) return fp_nan(c, v, 32) >> 16;
-    if (v.kind == FPV_ZERO) return (u64)v.sign << 15;
-    if (v.kind == FPV_INF) return fp_inf(v.sign, 32) >> 16;
-    switch (fp_rmode(c)) {
+    if (v.kind >= FPV_QNAN) return (SnxFpReply){fp_nan(&c, v, 32) >> 16, c.fpsr};
+    if (v.kind == FPV_ZERO) return (SnxFpReply){(u64)v.sign << 15, c.fpsr};
+    if (v.kind == FPV_INF) return (SnxFpReply){fp_inf(v.sign, 32) >> 16, c.fpsr};
+    switch (fp_rmode(&c)) {
         case 0: up = low > 0x8000 || (low == 0x8000 && (mant & 1)); break;
         case 1: up = low && !v.sign; break;
         case 2: up = low && v.sign; break;
@@ -483,9 +521,9 @@ u64 snx_fp_bfcvt(CPU* c, u64 bits) {
     }
     mant += up;
     if (low) {
-        c->fpsr |= FPSR_IXC;
-        if (!(magnitude >> 23)) c->fpsr |= FPSR_UFC;
-        if (mant == 0x7F80) c->fpsr |= FPSR_OFC;
+        c.fpsr |= FPSR_IXC;
+        if (!(magnitude >> 23)) c.fpsr |= FPSR_UFC;
+        if (mant == 0x7F80) c.fpsr |= FPSR_OFC;
     }
-    return (u64)v.sign << 15 | mant;
+    return (SnxFpReply){(u64)v.sign << 15 | mant, c.fpsr};
 }

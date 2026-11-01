@@ -222,6 +222,7 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 14 | `RtAPI.code_changed` for IC IVAU, and `SnxModule`'s function table with the byte each AOT function checks first |
 | 15 | calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold |
 | 16 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
+| 17 | the FP helpers take FPCR by value and return their result with the FPSR flags they raised, and generated functions call `snx_fp_env` on entry |
 
 #### Code the game patches
 

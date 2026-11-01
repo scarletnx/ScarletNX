@@ -39,6 +39,15 @@ LLVMValueRef snx_ir_guest_function(SnxIr* ir, SnxU64 address) {
     return function;
 }
 
+/* The host FP environment the fast paths assume (cpu.h's snx_fp_env): this thread's control word must be the IEEE
+   default, and entering any generated function is the one point every guest instruction passes. The call is
+   memory(none) but not willreturn, so ir_promote_registers makes no site of it and LLVM may not delete it */
+static void fp_env(SnxIr* ir) {
+    LLVMValueRef function = ir_extern(ir, "snx_fp_env", ir->t_void, NULL, 0);
+    ir_no_memory(ir, function);
+    LLVMBuildCall2(B, LLVMGlobalGetValueType(function), function, NULL, 0, "");
+}
+
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     ir_state_invalidate(ir);
     ir->dump_active = 0;
@@ -46,6 +55,7 @@ void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     LLVMPositionBuilderAtEnd(B, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
     ir->c = LLVMGetParam(function, 0);
     ir->M = ir_cpu_load(ir, ir->t_ptr, ir_off_mem());
+    fp_env(ir);
 }
 
 /* code after a return in the C is unreachable until the next label: give it a block of its own */

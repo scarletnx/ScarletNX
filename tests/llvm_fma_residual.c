@@ -44,7 +44,7 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input) {
         u64 add = insn->width == 32 ? input->v[insn->addreg].s[lane] : input->v[insn->addreg].d[lane];
         if (insn->negate_add) add ^= 1ull << (insn->width - 1);
         if (insn->negate_n) a ^= 1ull << (insn->width - 1);
-        u64 result = snx_fp_fma(&expected, add, a, b, (int)insn->width);
+        u64 result = snx_fp_fma_c(&expected, add, a, b, (int)insn->width);
         if (insn->width == 32) expected.v[0].s[lane] = (u32)result;
         else expected.v[0].d[lane] = result;
     }
