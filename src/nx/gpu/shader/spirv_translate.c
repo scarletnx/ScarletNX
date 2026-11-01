@@ -4061,10 +4061,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int dim = (int)B(insn[i], 33, 3), buffer = dim == 1;
             u32 bank, off, handle;
             int bindless;
-            if (buffer && stage != ST_CS) return direct_reject(si, "buffer surface outside compute");
             /* a fragment program's 2D loads are texel fetches, as a compute program's are: render.c binds the raw
                view their slot asks for. A vertex program stores and reduces through images as a fragment one does
-               (one game filters a texture so, a vertex for each texel, with no compute at all) */
+               (one game filters a texture so, a vertex for each texel, with no compute at all). Buffer surfaces
+               too: a base pass writes its texture feedback into one */
             if (stage != ST_CS && stage != ST_FS && (stage != ST_VS || op->id == O_SULD))
                 return direct_reject(si, "surface operation outside supported stage");
             bank = 0;

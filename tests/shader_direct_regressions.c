@@ -1053,6 +1053,47 @@ static void volume_surface_atomics(void) {
     }
 }
 
+/* A fragment program storing into a buffer surface, as a base pass writes its texture feedback: SUST.P.RGBA on
+   dimension 1, the handle MOV R28, c[0x2][0x120]. Vertex programs store through it too; their loads and the
+   geometry stage stay refused, as for other surfaces */
+static void draw_buffer_surfaces(void) {
+    const u64 store[] = {0x4c9807880487001cull, unguarded(0xeb200e0200f00f18ull, 24, 15, 28)};
+    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as Ender Magnolia's compute loads it */
+    const u64 load[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
+    const int stages[] = {ST_FS, ST_VS};
+    for (int i = 0; i < 2; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(store, 2, stages[i], &info, &words, 1);
+        check_translated(code, &info, "a draw's buffer surface store translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && has_storage_image_dim(code, words, 5) &&
+                      count_opcode(code, words, 99, 0xffffffffu) == 1,
+                  "a draw's buffer surface store writes one texel buffer");
+        free(code);
+    }
+    {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(load, 2, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a fragment program's buffer surface load translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && count_opcode(code, words, 98, 0xffffffffu) == 1,
+                  "a fragment program's buffer surface load reads the texel buffer");
+        free(code);
+    }
+    const u64* refused[] = {load, store};
+    const int refused_stages[] = {ST_VS, ST_GS};
+    for (int i = 0; i < 2; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(refused[i], 2, refused_stages[i], &info, &words, 1);
+        check_refused(code, &info, "surface operation outside supported stage",
+                      "vertex buffer surface loads and geometry stores stay refused");
+        free(code);
+    }
+}
+
 static void layered_surface_loads(void) {
     for (u32 stage = 0; stage < 2; stage++)
         for (u32 dim = 4; dim <= 5; dim++)
@@ -3225,6 +3266,7 @@ int main(int argc, char** argv) {
     txd_grad();
     fragment_storage_images();
     volume_surface_atomics();
+    draw_buffer_surfaces();
     layered_surface_loads();
     transform_feedback();
     nro_shader_modes();
