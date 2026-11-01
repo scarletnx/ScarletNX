@@ -16,6 +16,8 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -627,6 +629,87 @@ static int check_sparse_while_submitting(void) {
         vk_unlock();
     }
     g_vk.alloc_cap = saved_cap;
+    return 0;
+}
+
+/* one texel of level `level` of texture t read back, at x, y */
+static int sparse_texel(Surf* t, u32 level, u32 x, u32 y, u32* texel) {
+    VkBuffer buffer;
+    u8* result = vk_readback_buffer(4, &buffer);
+    CHECK(result);
+    vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1},
+                              .imageOffset = {(i32)x, (i32)y, 0},
+                              .imageExtent = {1, 1, 1}};
+    rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    vk_finish();
+    vk_readback_ready();
+    *texel = snx_ld_le32(result);
+    return 0;
+}
+
+/* A texture that guest memory maps only in part (a game's sparse texture, in a virtual pool): its image has sparse
+   residency, with memory for the mapped levels and the mip tail only, and their texels loaded. When the guest maps
+   the other levels, they get memory and their texels; when it unmaps them, their memory goes */
+static int check_sparse_texture(void) {
+    const u64 gva = 0x48000000, cpu = HEAP_BASE + 0x100000;
+    NvnTexture nt = {.d = {.format = NVN_FORMAT_RGBA8,
+                           .target = NVN_TEXTURE_TARGET_2D,
+                           .levels = 8,
+                           .width = 1024,
+                           .height = 1024,
+                           .depth = 1},
+                     .gpu = gva};
+    NvnTexLayout layout;
+    nvn_tex_layout(&nt.d, &layout);
+    u64 low = nvn_tex_level_offset(&nt.d, 3); /* levels 0 to 2: 0x540000 bytes, whole pages */
+    u64 size = (layout.size + 0xFFF) & ~0xFFFull;
+    u32 tic[8], texel = 0;
+    CHECK(low == 0x540000 && size <= 0x700000 && nvn_tic_encode(&nt, NULL, 0, 0, tic));
+    memset(GP(cpu), 0x5a, (size_t)size);
+    gmmu_map(gva + low, cpu + low, size - low); /* the small levels only */
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && t->upload_valid);
+    if (!t->sparse) {
+        printf("skip: the device makes no RGBA8 textures with sparse residency\n");
+        vk_unlock();
+        gmmu_space_unmap(gva, size);
+        return 0;
+    }
+    u64 part = t->bytes;
+    CHECK(part && part < (1u << 20)); /* level 3 and the mip tail, of 5.3 MiB */
+    CHECK(vk_image_sparse_bound(t->img, 0, 3, 0, 128, 0, 1, 1) && vk_image_sparse_bound(t->img, 0, 7, 0, 8, 0, 1, 1));
+    CHECK(!vk_image_sparse_bound(t->img, 0, 0, 0, 1024, 0, 1, 0) &&
+          !vk_image_sparse_bound(t->img, 0, 2, 0, 256, 0, 1, 0));
+    CHECK(!sparse_texel(t, 3, 5, 7, &texel) && texel == 0x5a5a5a5au);
+    /* one 64 KiB page of level 0: its block-linear blocks of 64 bytes by 128 rows hold texels 0 to 127 of rows 512 to
+       639, one sparse block of 128x128 texels, which gets memory alone */
+    memset(GP(cpu), 0x3c, (size_t)low);
+    gmmu_map(gva + 0x200000, cpu + 0x200000, 0x10000);
+    CHECK(vk_tex_recheck(t) == t && t->upload_valid);
+    CHECK(vk_image_sparse_bound(t->img, 0, 0, 512, 640, 0, 1, 0) &&
+          !vk_image_sparse_bound(t->img, 0, 0, 512, 640, 0, 1, 1));
+    CHECK(!vk_image_sparse_bound(t->img, 0, 0, 0, 512, 0, 1, 0));
+    CHECK(!vk_image_sparse_bound(t->img, 0, 0, 640, 1024, 0, 1, 0) && t->bytes == part + (64u << 10));
+    CHECK(!sparse_texel(t, 0, 100, 600, &texel) && texel == 0x3c3c3c3cu);
+    /* the large levels mapped whole: bound, and loaded */
+    gmmu_map(gva, cpu, low);
+    CHECK(vk_tex_recheck(t) == t && t->upload_valid);
+    u64 whole = t->bytes;
+    CHECK(vk_image_sparse_bound(t->img, 0, 0, 0, 1024, 0, 1, 1) && whole >= (4u << 20));
+    CHECK(!sparse_texel(t, 0, 1000, 900, &texel) && texel == 0x3c3c3c3cu);
+    CHECK(!sparse_texel(t, 3, 5, 7, &texel) && texel == 0x5a5a5a5au);
+    /* unmapped again: their memory goes, once the frames that could read it are done */
+    gmmu_space_unmap(gva, low);
+    CHECK(vk_tex_recheck(t) == t && t->upload_valid);
+    CHECK(!vk_image_sparse_bound(t->img, 0, 0, 0, 1024, 0, 1, 0) && t->bytes == part);
+    CHECK(!sparse_texel(t, 4, 1, 1, &texel) && texel == 0x5a5a5a5au);
+    vk_unlock();
+    gmmu_space_unmap(gva, size);
+    printf("Sparse texture: %llu KiB bound of its small levels, %llu MiB with all of them mapped\n",
+           (unsigned long long)(part >> 10), (unsigned long long)(whole >> 20));
     return 0;
 }
 
@@ -1803,6 +1886,7 @@ int main(int argc, char** argv) {
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
     CHECK(!check_descriptor_room());
+    CHECK(!check_sparse_texture());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
           vk_pipeline_worker_count(0, 4) == 2 && vk_pipeline_worker_count(0, 0) == 2 &&

@@ -305,7 +305,8 @@ static int create_device(void) {
     WANT(geometryShader);
     WANT(tessellationShader);
     WANT(shaderTessellationAndGeometryPointSize);
-    /* images bigger than one allocation may be are bound in pieces, on the graphics queue (memory.c) */
+    /* images bigger than one allocation may be are bound in pieces, on the graphics queue, and textures that guest
+       memory maps only in part get sparse residency there (memory.c) */
     int sparse_queue = 0;
     {
         u32 nq = 0;
@@ -313,7 +314,11 @@ static int create_device(void) {
         sparse_queue = g_vk.gfx_family < nq && (q[g_vk.gfx_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT);
         free(q);
     }
-    if (sparse_queue) WANT(sparseBinding);
+    if (sparse_queue) {
+        WANT(sparseBinding);
+        WANT(sparseResidencyImage2D);
+        WANT(sparseResidencyImage3D);
+    }
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
     g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;

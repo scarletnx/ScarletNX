@@ -102,6 +102,10 @@ static void lru_add(Surf* s, int kind) {
     g_held[kind].n++;
     g_held[kind].bytes += s->bytes;
 }
+void vk_surf_set_bytes(Surf* s, u64 bytes) {
+    if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
+    s->bytes = bytes;
+}
 void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
     *count = g_held[kind].n;
     *bytes = g_held[kind].bytes;

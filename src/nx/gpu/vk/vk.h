@@ -5,7 +5,8 @@
    against a Vulkan library.
 
    device.c    instance, device, queues, swapchain, memory allocator (VMA)
-   memory.c    the cap on one allocation, and images bigger than it bound in pieces (sparse binding); the device
+   memory.c    the cap on one allocation, and images bigger than it bound in pieces (sparse binding); textures
+               that guest memory maps in part, with memory only where it maps them (sparse residency); the device
                memory budget the caches keep within (surface.c vk_mem_trim), and the present clock
    cmd.c       frames in flight: the command buffer being recorded, staging and readback rings, deferred destruction
    record.c    recording the frame's command buffer on a thread of its own
@@ -110,7 +111,8 @@ typedef struct {
     int has_shader_draw_parameters; /* shaders take an instance's ID from BaseInstance (spirv_translate.c) */
     int has_draw_indirect_count;    /* drawIndirectCount: an indirect draw's count from the GPU's memory */
     u64 alloc_cap; /* the most one device memory allocation may be (memory.c) */
-    int sparse;    /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces */
+    int sparse;    /* sparseBinding on the graphics queue: images bigger than alloc_cap are bound in pieces, and
+                      textures mapped in part get sparse residency where feat has it (memory.c) */
     /* VK_EXT_attachment_feedback_loop_layout: a draw samples a color target it renders to in place (gpu/vk/render.c),
        with the loop enabled per draw by dynamic state (VK_EXT_attachment_feedback_loop_dynamic_state) or else by a
        pipeline flag, and ordered within the pass by a barrier there (dynamicRenderingLocalRead) or else by beginning
@@ -184,6 +186,32 @@ int vk_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* me
 /* the same, with the result of the call that failed in res (VK_ERROR_OUT_OF_DEVICE_MEMORY: no memory for it) */
 int vk_image_create_r(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, VkResult* res);
 void vk_image_destroy(VkImage img, VmaAllocation mem);
+/* Sparse residency (memory.c), for a texture that guest memory maps only in part. vk_sparse_supported: the device
+   makes an image of ii's format, type and usage with sparse residency. vk_image_create_sparse: such an image, with no
+   memory bound yet (destroyed by vk_image_destroy with no allocation). 0 when the device can't, or when the image is
+   too small to save memory.
+   Its sparse blocks are in the order of VkSparseShape: layer by layer, in a layer level by level up to the mip tail,
+   in a level slice by slice, row by row, left to right. vk_image_sparse_bind binds memory to the blocks whose bit is
+   set in bits (block b: bit b & 7 of bits[b >> 3]) and to the mip tail, which is bound always. It releases the memory
+   of the other blocks. It gives -1 when memory ran out (nothing changed), 0 when nothing had to change, 1 when the
+   binds changed, with the bytes bound now in *bytes. vk_image_sparse_need: the bytes that a bind of bits adds.
+   vk_image_sparse_bound: a block of the level's texel rows y0 to y1 and slices z0 to z1 has memory (all: each block
+   has), or the level is in the mip tail */
+#define VK_SPARSE_LEVELS 16
+typedef struct {
+    VkExtent3D gran;                 /* a sparse block, in texels */
+    u32 layers, levels, tail_first;  /* tail_first: the mip tail's first level, levels when there is none */
+    u32 per_layer;                   /* the blocks of a layer */
+    u32 first[VK_SPARSE_LEVELS + 1]; /* level l's first block in its layer */
+    u32 bx[VK_SPARSE_LEVELS], by[VK_SPARSE_LEVELS], bz[VK_SPARSE_LEVELS]; /* level l's blocks across, down, deep */
+} VkSparseShape;
+int vk_sparse_supported(const VkImageCreateInfo* ii);
+int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img);
+const VkSparseShape* vk_image_sparse_shape(VkImage img); /* NULL for an image without sparse residency */
+int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes);
+u64 vk_image_sparse_need(VkImage img, const u8* bits);
+int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all);
+void vk_sparse_stats(u64* binds, u64* bind_ns); /* statistics: sparse binds, and the host's wait for them */
 /* Tracy memory events for VMA allocations. */
 #if defined(SNX_TRACY)
 void vk_mem_track(VmaAllocation a);
@@ -574,6 +602,9 @@ typedef struct Surf {
     struct Surf *lru_prev, *lru_next;
     u64 bytes;
     int took_drawn; /* textures: pixels copied from render targets since the last upload (memory may not have them) */
+    /* textures: an image with sparse residency, memory bound only for the levels that guest memory maps
+       (gpu/vk/texture.c tex_bind). mem is VK_NULL_HANDLE, and bytes counts the memory bound now */
+    u8 sparse;
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
@@ -680,6 +711,8 @@ extern u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 Surf* vk_surf_first(u64 gva);
 void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recency list */
+/* a surface's device memory changed to bytes (a sparse texture's binds): its recency list's count follows */
+void vk_surf_set_bytes(Surf* s, u64 bytes);
 /* s used now: last_used is this present, and it moves to the recent end of its list */
 void vk_surf_touch(Surf* s);
 /* s's pixels can be had again now: off the list of old ones whose pixels would be lost, if it is on it */

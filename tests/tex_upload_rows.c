@@ -337,6 +337,32 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     (void)ii, (void)img, (void)mem, (void)bytes;
     return 0;
 }
+/* sparse residency: no device has it here */
+void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
+void vk_surf_set_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
+void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) {
+    fn(ctx, gva, gva, size);
+}
+int vk_image_create_sparse(const VkImageCreateInfo* ii, VkImage* img) {
+    (void)ii, (void)img;
+    return 0;
+}
+const VkSparseShape* vk_image_sparse_shape(VkImage img) {
+    (void)img;
+    return NULL;
+}
+int vk_image_sparse_bind(VkImage img, const u8* bits, u64* bytes) {
+    (void)img, (void)bits, (void)bytes;
+    return -1;
+}
+u64 vk_image_sparse_need(VkImage img, const u8* bits) {
+    (void)img, (void)bits;
+    return 0;
+}
+int vk_image_sparse_bound(VkImage img, u32 layer, u32 level, u32 y0, u32 y1, u32 z0, u32 z1, int all) {
+    (void)img, (void)layer, (void)level, (void)y0, (void)y1, (void)z0, (void)z1, (void)all;
+    return 1;
+}
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, the GOB's 16 byte groups
    in their order */
 u64 bl_offset(u32 x, u32 y, u32 z, u32 wb, u32 h, u32 bh_log2, u32 bd_log2) {
