@@ -13,7 +13,9 @@
 typedef struct {
     u64 at, size, top; /* top: the end of the pieces cut so far */
     u64 owner;         /* the command buffer cutting a piece from it now, 0 none */
-    u32 live, pad;     /* its pieces in use, the one being cut included */
+    u32 live;          /* its pieces in use, the one being cut included */
+    u32 reset;         /* the serial of the last piece cut when its pieces were last all given back, so the next
+                          piece starts at its start again */
 } NvnSpillSeg;
 /* a piece in use: where its recording starts in the game's memory as the driver counts it (anchor), its segment, the
    order it was cut in, and the next piece of its bucket (or the next free slot), 0 for none: slots count from 1 */
@@ -39,5 +41,11 @@ typedef struct {
 
 /* the game finalizes the pool of [memory, memory + size): the runtime's pieces of recordings there come back */
 void nvn_cmd_memory_back(u64 memory, u64 size);
+/* what the runtime's record memory knows of address p, for the message of a record nvn_direct never writes: the
+   segment it is in, how far it is cut, and the pieces in use there, into out (n bytes); empty when p isn't in one */
+void nvn_cmd_describe(u64 p, char* out, size_t n);
+/* whether p is in the piece of the runtime's memory a command buffer is cutting now: its records past the ones written
+   so far aren't there yet */
+int nvn_cmd_unfinished(u64 p);
 
 #endif
