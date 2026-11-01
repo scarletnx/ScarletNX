@@ -66,6 +66,7 @@ int audren_state_update(ARState* s, const u8* in, u64 in_size, u8* out, u64 out_
     (void)s, (void)in, (void)in_size, (void)out, (void)out_size;
     return 0;
 }
+int audren_revision(u32 rev) { return (int)(rev >> 24) - '0'; }
 int audren_frame(ARState* s, i16* stereo) {
     (void)s, (void)stereo;
     return 1;

@@ -1106,6 +1106,15 @@ setting Optimization level
     help LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game
     help made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it
     help to match JIT optimization
+setting LLVM batch
+    key llvm_batch
+    text 8
+    default full
+    words full=Full|ipo=IPO only
+    help What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the
+    help passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two
+    help thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code
+    help (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled
 setting AOT threads
     key aot_threads
     int 0 1024

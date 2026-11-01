@@ -94,6 +94,7 @@ void svc_core_init(void) {
     nn_nfp_detail_IUserManager_register(new_nfp);
     nn_nfc_detail_IUserManager_register(new_nfc);
     nn_bcat_detail_ipc_IServiceCreator_register(new_bcat);
+    nn_nim_detail_IShopServiceAccessServerInterface_register(new_nim);
     nn_aocsrv_detail_IAddOnContentManager_register(new_aoc);
     nn_irsensor_IIrSensorServer_register(new_irs);
     nn_mii_detail_IStaticService_register(new_mii);

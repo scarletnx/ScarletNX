@@ -146,6 +146,8 @@ void audren_state_pack(const ARState* s, u8* out);
 ARState* audren_state_unpack(const u8* in, u64 size);
 /* RequestUpdate's input into the state, and its output written: 0, or the result code to return */
 int audren_state_update(ARState* s, const u8* in, u64 in_size, u8* out, u64 out_size);
+/* the revision's number in an update's magic word: "REV" and '0' plus it (REV3, REV11 as "REV;") */
+int audren_revision(u32 rev);
 /* one frame. The device sink's first two channels go to stereo (frame samples, interleaved); returns 1 when a
    device sink is in use and stereo holds its output, 0 when there is none */
 int audren_frame(ARState* s, i16* stereo);

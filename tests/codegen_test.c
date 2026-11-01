@@ -765,6 +765,67 @@ static void poll_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* the allocas left in fn (the registers' slots, until ir_clean_function makes them SSA values), or with named the blocks
+   and instructions that keep a name (whose order in the bitcode SROA's names leave different from run to run) */
+static int left_over(LLVMValueRef fn, int named) {
+    int count = 0;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        size_t length = 0;
+        (void)LLVMGetValueName2(LLVMBasicBlockAsValue(bb), &length);
+        count += named && length;
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            length = 0;
+            (void)LLVMGetValueName2(inst, &length);
+            if (named ? length != 0 : LLVMIsAAllocaInst(inst) != NULL) ++count;
+        }
+    }
+    return count;
+}
+
+/* A function comes out of snx_ir_emit at O2 cleaned: its registers' slots SSA values, and no local name in it. The loop's
+   head is not its start, so it has a dispatch block and a poll */
+static void clean_test(void) {
+    static const SnxU32 words[] = {0xD2800062UL,  /* MOV X2,#3 */
+                                   0x91000421UL,  /* ADD X1,X1,#1, the loop's head */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
+                                   0x8B020021UL,  /* ADD X1,X1,X2 */
+                                   0xD65F03C0UL}; /* RET */
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxFde range;
+    const SnxFunction* function;
+    LlvmSteps steps;
+    char error[1024];
+    size_t i, index;
+    int left;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    range.start = 0;
+    range.size = sizeof(image);
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the counting loop");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(function != NULL && function->leader_count > 1, "the counting loop is one function, entered by dispatch");
+    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
+        index = llvm_steps_add_function(&steps, &codegen, function);
+        left = left_over(steps.fns[index], 0);
+        if (left) fprintf(stderr, "clean: %d allocas left in the emitted function\n", left);
+        check(left == 0, "the function is emitted with its registers' slots made SSA values");
+        left = left_over(steps.fns[index], 1);
+        if (left) fprintf(stderr, "clean: %d named blocks and instructions in the emitted function\n", left);
+        check(left == 0, "the emitted function keeps no local name, its bitcode the same in every run");
+        llvm_steps_end(&steps);
+    } else if (function) {
+        fprintf(stderr, "%s\n", error);
+        check(0, "start the counting loop's module");
+    }
+    snx_codegen_free(&codegen);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -773,6 +834,7 @@ int main(void) {
     large_range_test();
     semantics_test();
     poll_test();
+    clean_test();
     printf("Native codegen: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

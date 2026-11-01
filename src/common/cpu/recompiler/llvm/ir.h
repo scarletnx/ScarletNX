@@ -110,11 +110,19 @@ typedef struct {
     SnxIrFlags flags;
 } SnxIrBlockState;
 
+/* what ir_clean_function runs over each function as it is emitted, and what llvm_batch=ipo runs over a unit after it
+   in place of default<O?>: the inliner, and a cleanup of what it inlined */
+#define SNX_IR_CLEAN_PASSES "sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg"
+#define SNX_IR_IPO_PASSES                                                                                              \
+    "cgscc(inline),globaldce,function(instcombine<no-verify-fixpoint>,simplifycfg),function(sink,simplifycfg)"
+
 /* the AOT recompile's LLVM settings (nx/runtime/settings_llvm.h): the pipeline run in place of default<O?>, NULL for
-   that one, and what is set on the pass builder's options and on the target machine, NULL for nothing. Without one
-   (the runtime JIT's, the recompiler library's) LLVM keeps its own */
+   that one, the passes each function runs as it is emitted, NULL for none, and what is set on the pass builder's
+   options and on the target machine, NULL for nothing. Without one (the runtime JIT's, the recompiler library's)
+   LLVM keeps its own, and each function runs SNX_IR_CLEAN_PASSES */
 typedef struct SnxIrTuning {
     const char* pipeline;
+    const char* clean;
     void (*builder)(LLVMPassBuilderOptionsRef options);
     void (*machine)(LLVMTargetMachineRef machine);
     /* every value the three above are made from, as text: what the unit cache keys objects with (unit_cache.c) */
@@ -249,6 +257,8 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
+void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
 /* Accumulates one emitted function's call counts when stats.enabled is set. */
 void ir_stats_function(SnxIr* ir, LLVMValueRef fn);
 /* Starts a function body: entry block, c and M */

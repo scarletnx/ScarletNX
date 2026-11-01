@@ -437,6 +437,36 @@ static void size_attributes(LLVMModuleRef module, char opt) {
     }
 }
 
+/* Each function as it is emitted: the unit's pipeline then starts from about half the instructions, and the unit never
+   holds them all at once. The passes LLVM Internals turn off are cut out of it (llvm_tuning.c) */
+void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
+    const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
+    if (!passes) return;
+    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+    if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
+    LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
+    LLVMDisposePassBuilderOptions(options);
+    if (failure) {
+        char* message = LLVMGetErrorMessage(failure);
+        fprintf(stderr, "LLVM passes on %s as it is emitted: %s; its unit's pipeline takes it as emitted\n",
+                LLVMGetValueName(fn), message);
+        LLVMDisposeErrorMessage(message);
+    }
+    /* the unit cache keys the bitcode, and a function's names go into it in the order of its symbol table, which the
+       names SROA made and numbered (in an order that changes from run to run) leave different: no name stays */
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef block = LLVMBasicBlockAsValue(bb);
+        size_t length = 0;
+        (void)LLVMGetValueName2(block, &length);
+        if (length) LLVMSetValueName2(block, "", 0);
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            length = 0;
+            (void)LLVMGetValueName2(inst, &length);
+            if (length) LLVMSetValueName2(inst, "", 0);
+        }
+    }
+}
+
 /* a change here, or to new_ir's target machine, that changes the object of the same IR bumps SNX_IR_OBJECT_VERSION */
 int snx_ir_module_object(SnxIr* ir, LLVMModuleRef module, char opt, unsigned char** data, size_t* size, char* error,
                          size_t error_size) {

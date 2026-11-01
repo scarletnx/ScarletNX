@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc,
+# The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
 # irs, mii, ectx, spl, btm, audin. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
@@ -315,6 +315,19 @@ interface nn::bcat::detail::ipc::INotifierService {
 }
 # holding it suspends the delivery task, which never runs here
 interface nn::bcat::detail::ipc::IDeliveryTaskSuspensionService {
+}
+
+# ================================================================ nim:eca: the shop, never reached
+interface nn::nim::detail::IShopServiceAccessServerInterface is nim:eca {
+    [0] CreateServerInterface(pid, u64 size, handle<copy, transfer_memory> transfer_memory)
+        -> object<nn::nim::detail::IShopServiceAccessServer> server;
+    @stub [4] IsLargeResourceAvailable(pid) -> b8 available;
+}
+interface nn::nim::detail::IShopServiceAccessServer {
+    [0] CreateAccessorInterface(u8 type) -> object<nn::nim::detail::IShopServiceAccessor> accessor;
+}
+# its requests go to the shop's server, which nothing here stands in for
+interface nn::nim::detail::IShopServiceAccessor {
 }
 
 # ================================================================ aoc:u: the add-on content in system/archives

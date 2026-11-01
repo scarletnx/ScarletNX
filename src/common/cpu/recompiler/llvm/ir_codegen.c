@@ -444,6 +444,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         LLVMDisposeMessage(text);
     }
     ir_stats_function(ir, fn);
+    if (ir->promote) ir_clean_function(ir, fn);
     ir->dump_active = 0;
     free(labels);
 }

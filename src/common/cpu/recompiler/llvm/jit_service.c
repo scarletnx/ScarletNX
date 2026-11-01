@@ -5,6 +5,7 @@
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
@@ -1267,7 +1268,7 @@ static DWORD WINAPI worker_main(LPVOID s) {
     return 0;
 }
 static int thread_start(JitThread* t, SnxJitService* s) {
-    *t = CreateThread(NULL, 0, worker_main, s, 0, NULL);
+    *t = snx_compile_thread(worker_main, s);
     return *t ? 0 : -1;
 }
 static void thread_join(JitThread t) {
@@ -1280,7 +1281,7 @@ static void* worker_main(void* s) {
     return NULL;
 }
 static int thread_start(JitThread* t, SnxJitService* s) {
-    int failed = pthread_create(t, NULL, worker_main, s);
+    int failed = snx_compile_thread(t, worker_main, s);
     if (failed) errno = failed; /* the reason, for what the caller says */
     return failed ? -1 : 0;
 }

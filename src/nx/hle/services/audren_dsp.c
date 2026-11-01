@@ -316,6 +316,7 @@ static int rev_number(u32 rev) {
     int n = (int)((rev >> 24) & 0xFF) - '0';
     return n < 0 ? 0 : n;
 }
+int audren_revision(u32 rev) { return rev_number(rev); }
 
 #define SNX_AUDREN_MAGIC(a, b, c, d) ((u32)(a) | (u32)(b) << 8 | (u32)(c) << 16 | (u32)(d) << 24)
 
@@ -528,17 +529,17 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
         q[i * (eff_v2 ? 0x90 : 0x10)] = ei[2] ? 3 : 4;
     }
     q += o_ef;
-    /* mixes by mix id; a destination's splitter applies when the destination is unused */
+    /* mixes: before REV7 entry i is mix i, whatever its mix id holds (older games leave it 0), as Eden's UpdateMixes
+       takes it; a destination's splitter applies when the destination is unused */
     for (u32 i = 0; i < nmix; i++) {
         const u8* mi = mixes + i * 0x930;
-        u32 id = rd32(mi + 0x10);
+        u32 id = revn >= 7 ? rd32(mi + 0x10) : i;
         /* from REV7 an entry is not mix i: one naming a mix the renderer did not open is skipped */
         if (id >= s->nmix && revn >= 7) {
             warn_once(s, SNX_AUDREN_WARN_MIX_ID, "the update of mix %u is skipped: the renderer opened %u mixes", id,
                       s->nmix);
             continue;
         }
-        if (id >= s->nmix) id = i;
         if (id >= s->nmix) continue;
         ARMix* m = &s->mix[id];
         m->in_use = mi[0xC];
