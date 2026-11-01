@@ -907,6 +907,9 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 void vk_buf_prefetch(u64 gva, u64 len, int step);
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off); /* no delayed content checks */
+/* a copy engine's source (DMA, 2D): as strict, and compared by contents rather than trusted to the write tracking,
+   since what a copy lands in keeps a stale byte for good */
+int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 /* a copy of len bytes made now (data that changes within a frame), or of zeros when gva is 0 */
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off);
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off);
