@@ -140,8 +140,8 @@ static void test_init(void) {
     }
 }
 
-/* OP_BIND_PROGRAM: a stage with constants binds their bytes as its bank 1, at data + 256 * cb; a stage without
-   them binds nothing */
+/* OP_BIND_PROGRAM: a stage with code binds its bank 1 as 64 KiB at data + 256 * cb, whatever cb_size says; a stage
+   without code binds nothing */
 #define PROG 0x1000u
 static void bind(const NvnStage* vs, const NvnStage* fs) {
     NvnPBindProgram r;
@@ -164,12 +164,13 @@ static void test_bind_program(void) {
     a.data = 0x40000, a.cb = 5, a.cb_size = 0;
     b.data = 0x50000, b.cb = 7, b.cb_size = 3;
     bind(&a, &b);
-    check(d.bind.cb_addr[0][1] == 0, "vertex bank 1 address (cb_size 0): expected 0, found %#llx",
-          (unsigned long long)d.bind.cb_addr[0][1]);
-    check(d.bind.cb_size[0][1] == 0, "vertex bank 1 size (cb_size 0): expected 0, found %#x", d.bind.cb_size[0][1]);
+    check(d.bind.cb_addr[0][1] == 0x40000 + 256 * 5, "vertex bank 1 address: expected %#llx, found %#llx",
+          0x40000ull + 256 * 5, (unsigned long long)d.bind.cb_addr[0][1]);
+    check(d.bind.cb_size[0][1] == 0x10000, "vertex bank 1 size (cb_size 0): expected 0x10000, found %#x",
+          d.bind.cb_size[0][1]);
     check(d.bind.cb_addr[fs][1] == 0x50000 + 256 * 7, "fragment bank 1 address: expected %#llx, found %#llx",
           0x50000ull + 256 * 7, (unsigned long long)d.bind.cb_addr[fs][1]);
-    check(d.bind.cb_size[fs][1] == 0x300, "fragment bank 1 size (cb_size 3): expected 0x300, found %#x",
+    check(d.bind.cb_size[fs][1] == 0x10000, "fragment bank 1 size (cb_size 3): expected 0x10000, found %#x",
           d.bind.cb_size[fs][1]);
     /* no code in the fragment stage: nothing bound */
     memset(&b, 0, sizeof b);
