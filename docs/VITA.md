@@ -65,9 +65,9 @@ lacks make it compile the module again with them, so the next runs have them ahe
 ## Checking the CPU backend
 
 Configure with `-DSNX_VITA_LOCKSTEP=ON` (and `SNX_UNICORN_INCLUDE`, `SNX_UNICORN_LIBRARY` pointing at Unicorn 2) and
-run with `VITA_LOCKSTEP=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
-difference in registers, flags or written memory stops the run with both states. This is how the Thumb backend's
-bugs this driver ran into were found.
+run with `--vita_lockstep=N`: from the Nth import call on, every instruction group runs in Unicorn too, and the first
+difference in registers, flags or written memory stops the run with both states (`--vita_lockstep_steps=M` stops
+comparing after M groups). This is how the Thumb backend's bugs this driver ran into were found.
 
 ## Limits
 
