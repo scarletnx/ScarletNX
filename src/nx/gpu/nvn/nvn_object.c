@@ -719,13 +719,19 @@ i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
     nvn_tex_storage(&TB(b)->d, &st);
     return (i32)(0x100 | st.kind);
 }
-/* The size of a depth texture's ZCull save area, as the driver answers. The runtime does no ZCull and never touches
-   it, but games allocate it from their pools */
-u64 nvn_TextureBuilderGetZCullStorageSize(CPU* c, u64 b) {
+/* The size of a depth texture's ZCull save area, as the driver answers; the drivers before 53.209 give a STENCIL8
+   texture one without NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL too (nvn_verify). The runtime does no ZCull and never
+   touches it, but games allocate it from their pools */
+static u64 zcull_size(const NvnTexDesc* d) {
     NvnTexStorage st;
-    (void)c;
-    nvn_tex_storage(&TB(b)->d, &st);
+    nvn_tex_storage(d, &st);
+    if (d->format == NVN_FORMAT_STENCIL8 && g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 209))
+        return nvn_tex_zcull(d);
     return st.zcull;
+}
+u64 nvn_TextureBuilderGetZCullStorageSize(CPU* c, u64 b) {
+    (void)c;
+    return zcull_size(&TB(b)->d);
 }
 i32 nvn_TextureBuilderGetTarget(CPU* c, u64 b) {
     (void)c;
@@ -999,10 +1005,8 @@ int nvn_TextureCompare(CPU* c, u64 a, u64 b) {
     return !memcmp(&x->d, &y->d, sizeof x->d) && x->gpu == y->gpu;
 }
 u64 nvn_TextureGetZCullStorageSize(CPU* c, u64 t) {
-    NvnTexStorage st;
     (void)c;
-    nvn_tex_storage(&CT(t)->d, &st);
-    return st.zcull;
+    return zcull_size(&CT(t)->d);
 }
 /* the texels written into the storage's layout on the GPU (gpu/nvn/nvn_copy.c): a swizzle is the GPU's work */
 void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {

@@ -274,7 +274,7 @@ the runtime. Hookgen supplies the actual register adapters after the declaration
 
 API 53.312's measured object footprints fit the runtime's layouts, and format 15 control sections render through
 direct mode. So do the object sizes and alignments of 53.5, 53.13, 53.105 and 53.311 to 53.314 (nvn_verify over their
-games); the drivers before 53.311 answer a 1D depth texture's zcull storage size with 0x100 where nvn_direct answers 0. Its sampler writer reaches 0x60 bytes, beyond the public header's 0x30 reserved bytes, so the header's
+games); the drivers before 53.209 give a STENCIL8 texture a ZCull save area without its zcull flag, as for depth. Its sampler writer reaches 0x60 bytes, beyond the public header's 0x30 reserved bytes, so the header's
 size alone is not a safe bound for a shadow driver's writes. The command buffer's command and control size queries
 report the last ranges the game supplied. Runtime lending does not enlarge the advertised guest capacity, and the
 control range stays free because direct recording needs no driver control bookkeeping.

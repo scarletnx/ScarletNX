@@ -318,9 +318,10 @@ void nvn_tex_storage(const NvnTexDesc* d, NvnTexStorage* s) {
         s->align = BIG_PAGE;
         s->size = (s->size + BIG_PAGE - 1) & ~(u64)(BIG_PAGE - 1);
     }
-    s->zcull = 0;
-    if (depth_bits || (stencil_bits && (d->flags & NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL))) {
-        u64 w = (d->width + 31u) & ~31u, h = (d->height + 31u) & ~31u, n = (w * h + 0x3FF) / 0x400;
-        s->zcull = 0x20 * n * (d->depth ? d->depth : 1) + 0x20 + 0xC0;
-    }
+    s->zcull =
+        depth_bits || (stencil_bits && (d->flags & NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL)) ? nvn_tex_zcull(d) : 0;
+}
+u64 nvn_tex_zcull(const NvnTexDesc* d) {
+    u64 w = (d->width + 31u) & ~31u, h = (d->height + 31u) & ~31u, n = (w * h + 0x3FF) / 0x400;
+    return 0x20 * n * (d->depth ? d->depth : 1) + 0x20 + 0xC0;
 }
