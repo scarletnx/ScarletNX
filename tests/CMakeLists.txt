@@ -368,9 +368,11 @@ if(TARGET snx_ctr_board)
     if(Python3_Interpreter_FOUND AND NOT APPLE)
         add_test(NAME 3ds_aot_workers COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot_workers.py"
             "${SNX_CTR_PROGRAM}")
-        # 15 to 35 s here, over a minute on a CI runner
+        # 15 to 35 s here, over a minute on a CI runner, and 170 to 300 s or more there with the sanitizers
         if(CMAKE_CROSSCOMPILING_EMULATOR)
             set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 1800)
+        elseif(SNX_TEST_SANITIZERS)
+            set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 900)
         else()
             set_tests_properties(3ds_aot_workers PROPERTIES TIMEOUT 300)
         endif()
