@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/gpu.h"
-#include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -139,10 +138,12 @@ u64 vk_cs_skipped(char* why, size_t size) {
     return total;
 }
 
-static u8 g_cb[QMD_NUM_CONST_BUFFERS][MAX_CONST_BUFFER_BYTES];
-static u32 g_cbn[QMD_NUM_CONST_BUFFERS];
+#define MAX_CONST_BUFFER_BYTES   0x10000u /* a constant buffer's bytes at most, 64 KiB */
+#define TEXTURE_POOL_ENTRY_BYTES 32u      /* a TIC or TSC entry */
+static u8 g_cb[DX_CBUFS][MAX_CONST_BUFFER_BYTES];
+static u32 g_cbn[DX_CBUFS];
 static int cs_cb_read(u32 idx, u32 off, u32* out) {
-    if (idx < QMD_NUM_CONST_BUFFERS && off + 4 <= g_cbn[idx]) {
+    if (idx < DX_CBUFS && off + 4 <= g_cbn[idx]) {
         *out = snx_ld_le32(g_cb[idx] + off); /* g_cb keeps the guest's bytes, for the uniform buffers */
         return 1;
     }
@@ -886,7 +887,7 @@ void vk_dispatch(const DispatchState* d) {
     }
     cs_init();
     /* the constant buffers bound (reading them lands results they overlap), or the dispatch's inline blocks */
-    for (u32 i = 0; i < QMD_NUM_CONST_BUFFERS; i++) {
+    for (u32 i = 0; i < DX_CBUFS; i++) {
         g_cbn[i] = 0;
         if (!(d->cb_on >> i & 1)) continue;
         DsCbBlock in = dx_cb_inline(d, i);
@@ -1230,8 +1231,8 @@ rebind:
             cs_cb_read(st->bindless ? (st->bl_cbuf & 7) : tcb, st->cbuf_off * 4, &h);
             if (st->bindless && st->bl2 && cs_cb_read(st->bl2_cbuf & 7, st->bl2_off * 4, &h2)) h |= h2;
             u32 tic[8], tsc[8];
-            vk_gmem_words(tic_base + (u64)texture_handle_tic_id(h) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
-            vk_gmem_words(tsc_base + (u64)texture_handle_tsc_id(h) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
+            vk_gmem_words(tic_base + (u64)(h & 0xFFFFFu) * TEXTURE_POOL_ENTRY_BYTES, tic, 8);
+            vk_gmem_words(tsc_base + (u64)(h >> 20) * TEXTURE_POOL_ENTRY_BYTES, tsc, 8);
             VkImageViewType want = vk_tex_view_type(st);
             Surf* t = st->flags & 1 ? vk_tex_from_tic_raw(tic) : vk_tex_from_tic(tic);
             /* a program fetching samples (flags bit 1) reads a multisampled image, others a single-sampled one: an
@@ -1520,7 +1521,7 @@ rebind:
         /* pending from here: the submit copies them where the host reads them (vk_buf_host_barrier). Submitted at
            once, the GPU runs it while the stream goes on, and a reader of its results waits for that submit alone,
            not for the draws recorded after it: Pokemon Legends Z-A writes command lists with a dispatch and fetches
-           them a little later (a GPFIFO entry with SYNC), once a frame */
+           them a little later (a submission that waits), once a frame */
         vk_buf_writable_commit();
         for (i = 0; i < p->si.nimg && i < 8; i++)
             if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);

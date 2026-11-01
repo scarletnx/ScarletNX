@@ -601,7 +601,6 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
    the same layout gets no barrier of its own */
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
-void vk_rt_flush(u64 gva);
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 int vk_gfx_image_pending(u64 gva, u64 size);
 void vk_gfx_image_land(void);
@@ -827,11 +826,6 @@ void* vk_nvdec_hw_device(void);
 /* dma.c: a launch of the DMA copy engine on the GPU (gpu.h's GpuDmaOp), its destination published: 1 when done, 0
    past the device's limits (skipped). Takes vk_lock */
 int vk_dma_copy(const GpuDmaOp* o);
-/* memory for the DMA engine's copies of sources at submission, which the copy reads in place (Renderer.snap_alloc and
-   snap_free, from any thread), and the bytes it holds */
-u8* vk_snap_alloc(u64 len, u64* id);
-void vk_snap_free(u64 id);
-u64 vk_snap_bytes(void);
 /* blit.c: a 2D blit from memory on the GPU (gpu.h's GpuBlit), its destination published: 1 when done. Takes vk_lock */
 int vk_blit_mem(const GpuBlit* b);
 /* msaa.c: a multisampled surface's samples moved between its image and the guest's layout of them (sample i of pixel
@@ -935,7 +929,7 @@ void vk_release_incr(u32 id);
    segments [first, end), once the GPU has done the submit being recorded */
 void vk_release_samples(u64 gva, u32 len, u32 counter, u64 first, u64 end, u64 ticks);
 void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and its oldest's gates (any thread) */
-void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
+void vk_release_submit(void); /* the submission's replay ended: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */

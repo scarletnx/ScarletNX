@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Render targets by guest GPU address, in a table textures share (gpu/vk/texture.c). A render target lives on the
-   GPU; vk_rt_flush writes it back to guest memory when the CPU side needs it (DMA and 2D copies), vk_rt_reload reads
-   it again after the CPU side wrote that memory. Games reuse one address for render targets of different sizes and
+   GPU (vk_surf_flush writes it back to guest memory when the CPU side needs it), and vk_rt_reload reads it again
+   after the CPU side wrote that memory. Games reuse one address for render targets of different sizes and
    formats within a frame: a target whose address is taken by another is parked and reused when its size and format
    come back. Textures and render targets are each in a list from the least recently used to the most, which the
    caches' eviction takes from (vk_surf_reclaim): idle ones, and more when device memory nears its budget
@@ -906,7 +906,6 @@ void vk_surf_flush(Surf* s, const u8* original) {
     surf_flush(s, original);
     vk_result_end();
 }
-void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
 /* The pending targets wholly in [gva, gva + size), whose pixels vk_rt_overlay copied into a buffer about to be
    published over those bytes: guest memory (its owner) has them from then on, so they are pending no more. Left
    pending, publishing the buffer flushed each again (vk_rt_before_write_cpu), a wait for the GPU and its readback, and

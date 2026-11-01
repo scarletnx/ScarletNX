@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The 2D engine's blits that the GPU's own image blit can't take (a source that isn't a render target), done on the
-   GPU from memory, the destination kept there (docs/GPU_OWNERSHIP.md). maxwell/fermi2d.c works out which source pixel
-   each destination column and row takes (nearest sampled, scaled); here the source's surface is staged as the GPU
+/* The 2D blits that the GPU's own image blit can't take (a source that isn't a render target), done on the GPU from
+   memory, the destination kept there (docs/GPU_OWNERSHIP.md). The caller (gpu/nvn/nvn_copy.c) works out which source
+   pixel each destination column and row takes (nearest sampled, scaled); here the source's surface is staged as the GPU
    sees it (guest bytes, what the GPU holds, render targets drawn over it) and taken apart into rows, the destination
    rectangle's rows are gathered through the tables (texconv.comp), a row of the rectangle a word an invocation, the
    components converted between float formats when the blit says so (TC_BLIT_FLOAT), and copied into the

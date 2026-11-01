@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A draw's state as the game asked for it, for any front end (the Maxwell 3D engine's registers today) and read by
+/* A draw's state as the game asked for it, for the front end (NVN's replay, gpu/nvn/) and read by
    the renderer, which decides what the device does with it: the feature clamps, the resolution scale, empty viewports
    and the render area are its business, not this struct's. Where no guest memory shows the state, the values are
    Vulkan's enumerants as plain integers, so the header needs no Vulkan header (vk/render.c asserts they are equal) */
@@ -298,10 +298,10 @@ typedef struct {
     u8 bank0[DS_GFX_STAGES][DS_INLINE_BANK0], bank2[DS_GFX_STAGES][DS_INLINE_BANK2];
 } DsInline;
 
-/* Everything a draw reads but its arguments, written by its owner's front end (a GPU channel's 3D engine registers,
-   mx_draw_state_sync) and only read by the renderer */
+/* Everything a draw reads but its arguments, written by its owner's front end (the NVN replay's queue) and only read
+   by the renderer */
 typedef struct {
-    u32 owner; /* who draws: a GPU channel's id, the NVN replay's queues from 0x80000000 */
+    u32 owner; /* who draws: the NVN replay's queues, from 0x80000000 */
     u32 pad;
     DsPrograms prog;
     DsVertexFormat vfmt;

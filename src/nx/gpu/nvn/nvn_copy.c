@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nvn_direct's copies. NVN's copies between buffers and textures are the DMA engine's work on the console, and here
-   they are the DMA engine's launches (gpu.h GpuDmaOp) that the renderer does on the GPU (vk/dma.c), as
-   maxwell/dma.c's are: a texture is a block-linear (or pitch-linear) surface plane at its GPU address, a buffer a
+   they are the DMA engine's launches (gpu.h GpuDmaOp) that the renderer does on the GPU (vk/dma.c): a texture is a block-linear (or pitch-linear) surface plane at its GPU address, a buffer a
    pitch-linear one. A copy of several slices or layers is a launch for each. The driver copies between textures with
    the 2D engine (its CopyTextureToTexture has no other path), whose blit between render targets the renderer does
    between its images: those copies are that blit when the source is a render target, and a launch when it isn't.
@@ -155,7 +154,7 @@ static int surf2d(u64 snapshot, const NvnView* v, int has_v, i32 z, Surf2D* o, u
     }
     return o->width && o->height;
 }
-/* a surface as a plane of the GPU's blit from memory: its slice's rows, as fermi2d.c's f2d_plane lays a 2D surface */
+/* a surface as a plane of the GPU's blit from memory: its slice's rows, as the 2D engine lays a surface */
 static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
     GpuDmaSide p = {0};
     p.addr = s->addr;
@@ -184,8 +183,7 @@ static int blit_gpu(const NvnPCopyT2T* r, i32 k, int raw, Surf2D* s, Surf2D* d, 
            g_renderer->blit(s, d, r->dr.xoffset, r->dr.yoffset, r->dr.width, r->dr.height, r->sr.xoffset,
                             r->sr.yoffset, sdx, sdy);
 }
-/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit, done as the 3D engine's
-   channels' blits are (maxwell/fermi2d.c): the renderer's image blit when the source is a render target, filtered when
+/* A copy between textures' regions of different sizes or formats: NVN's 2D engine blit: the renderer's image blit when the source is a render target, filtered when
    it scales, else its blit from memory, nearest sampled, between formats of the same bytes a pixel */
 static void blit_texture(const NvnPCopyT2T* r) {
     i32 depth = r->sr.depth > 0 ? r->sr.depth : 1;
@@ -196,7 +194,7 @@ static void blit_texture(const NvnPCopyT2T* r) {
     for (i32 k = 0; k < depth; k++) {
         Surf2D s, d;
         u32 bs, bd;
-        /* the destination target holds the pixels: nothing to load from memory (fermi2d.c's too) */
+        /* the destination target holds the pixels: nothing to load from memory */
         if (blit_gpu(r, k, 0, &s, &d, &bs, &bd)) continue;
         if (!s.format) {
             LOG_LIMIT(4, "nvn: a texture blit of a texture no render target takes isn't replayed\n");
@@ -422,7 +420,7 @@ void nvn_write_texels(u64 t, u64 v, u64 region, u64 src, i64 row, i64 image) {
     if (!w) fatal("nvn: out of memory for a texel write's %llu bytes", (unsigned long long)span);
     w->c = x;
     memcpy(w->bytes, GP(src), span); /* the source's whole span, read as the game writes it */
-    gpu_call(texel_write, w, NULL, 0);
+    gpu_call(texel_write, w);
 }
 
 /* A texel read: the copy, on the stack of the game's thread, which waits for the GPU thread's increment of syncpt
@@ -463,7 +461,7 @@ void nvn_read_texels(u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     if (!g_nvn.copy.read_syncpt) g_nvn.copy.read_syncpt = syncpt_alloc();
     r.syncpt = g_nvn.copy.read_syncpt;
     u32 value = syncpt_promise(r.syncpt, 1);
-    gpu_call(texel_read, &r, NULL, 0);
+    gpu_call(texel_read, &r);
     pm_unlock(&g_nvn.copy.read_lock);
     syncpt_wait(g_nvn.copy.read_syncpt, value, -1);
     gmmu_space_unmap(va, size);

@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's replay: a queue's submitted recordings run on the GPU thread, in submission order, as a GPFIFO
-   submission's methods do (neutral_draw_state's 4f: never at record time, since a recording may be submitted many
-   times and what it reads changes between). Each queue keeps the state its commands set (gpu/nvn/nvn_draw.c), which
-   makes the renderer's draw state of it as maxwell/draw_state.c makes a channel's, for the draws and clears.
+/* nvn_direct's replay: a queue's submitted recordings run on the GPU thread, in submission order, as the console's
+   GPU runs a submission's methods (neutral_draw_state's 4f: never at record time, since a recording may be submitted
+   many times and what it reads changes between). Each queue keeps the state its commands set (gpu/nvn/nvn_draw.c),
+   which makes the renderer's draw state of it, for the draws and clears.
 
    What the CPU sees happens in order too: counter reports and event writes through the renderer's ordered releases,
    fences as increments of the queue's syncpoint. A sync is fenced at submission with the syncpoint value its point
    will reach, and signals when the GPU thread has replayed up to it and the renderer's work before it is done (the
-   stream increment gpu.c makes after a GPFIFO job's work). A window present shows the presented texture once the
+   renderer's stream_incr). A window present shows the presented texture once the
    work before it is replayed, and its point on the presents' own syncpoint is reached once the display shows it (the
    renderer learns when, renderer.h present_buffer's shown_syncpt) */
 #include "nx/gpu/nvn/nvn_replay.h"
@@ -181,7 +181,7 @@ static void replay(void* ctx, u32 op, u64 payload, u32 size) {
         case OP_WAIT_SYNC: break; /* held at submission (promise) */
         case OP_REPORT_COUNTER: {
             /* {counter, timestamp}, written in order with the stream, as the 3D engine's reports are (a render enable
-               later in the same submission reads it, maxwell/engines.c): samples passed as the renderer counts the
+               later in the same submission reads it): samples passed as the renderer counts the
                queue's draws since its reset, else a made-up count, so an occlusion test before any reset finds
                something drawn; the timestamp types put 0 in the counter, as the game's driver writes them (a report
                of payload 0). One game makes each conditional clear of a target run once a frame that way: it sets the
@@ -279,12 +279,12 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     p.ready = *ready;
     for (i = 0; i < n; i++) j->handles[i] = gr64(handles + 8 * (u64)i);
     /* what the CPU wrote before the submission is for its work to see: the renderer's caches check guest memory
-       again (gpu.c does the same before a GPFIFO job) */
+       again */
     if (g_renderer->mem_may_have_changed) g_renderer->mem_may_have_changed();
     pm_lock(&g_nvn.replay.lock);
     for (i = 0; i < n; i++) walk(j->handles[i], promise, &p, 0);
     __atomic_add_fetch(&g_nvn.replay.submitted, 1, __ATOMIC_RELEASE);
-    gpu_call(run, j, NULL, 0);
+    gpu_call(run, j);
     pm_unlock(&g_nvn.replay.lock);
     *ready = p.ready;
     *shown = p.shown;
@@ -299,14 +299,14 @@ void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown) {
     s->ready = ready;
     s->shown = shown;
     __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
-    gpu_call(run, job(queue, JOB_FENCE, 0), NULL, 0);
+    gpu_call(run, job(queue, JOB_FENCE, 0));
     pm_unlock(&g_nvn.replay.lock);
 }
 void nvn_replay_queue_free(u32 queue) {
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);
-    gpu_call(run, job(queue, JOB_DESTROY, 0), NULL, 0);
+    gpu_call(run, job(queue, JOB_DESTROY, 0));
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);
     pm_lock(&g_nvn.replay.lock);
@@ -318,7 +318,7 @@ void nvn_replay_finish(u32 queue) {
     u32 id = nvn_replay_syncpt(queue), value;
     pm_lock(&g_nvn.replay.lock);
     value = syncpt_promise(id, 1);
-    gpu_call(run, job(queue, JOB_FENCE, 0), NULL, 0);
+    gpu_call(run, job(queue, JOB_FENCE, 0));
     pm_unlock(&g_nvn.replay.lock);
     syncpt_wait(id, value, -1);
 }
@@ -329,7 +329,7 @@ u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown) {
     j->present = *p;
     value = syncpt_promise(nvn_replay_syncpt(queue), 1);
     *shown = syncpt_promise(g_nvn.replay.shown, 1); /* the presents reach the display in the order queued here */
-    gpu_call(run, j, NULL, 0);
+    gpu_call(run, j);
     pm_unlock(&g_nvn.replay.lock);
     return value;
 }

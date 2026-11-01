@@ -3,9 +3,9 @@
    Ported from Eden (src/video_core/engines/maxwell_3d.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project */
-/* The 3D engine's (MAXWELL_B, class 0xB197) registers that maxwell/engines.c acts on or groups, and the fields of
-   the words written to them. Each name is Eden's Maxwell3D::Regs field, upper case. The values are method indices
-   (the register's byte offset / 4, Eden's MAXWELL3D_REG_INDEX), which index GpuChannel.r3d; Eden's
+/* The 3D engine's (MAXWELL_B, class 0xB197) registers that the tests' register state (mx_state.c) reads, and the
+   fields of the words written to them. Each name is Eden's Maxwell3D::Regs field, upper case. The values are method
+   indices (the register's byte offset / 4, Eden's MAXWELL3D_REG_INDEX), which index MxRegs.r3d; Eden's
    ASSERT_REG_POSITION lists the byte offsets. Registers inside a struct of Eden's are its base plus the member's
    word */
 #ifndef SNX_MAXWELL_3D_REGS_H
