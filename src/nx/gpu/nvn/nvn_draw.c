@@ -689,9 +689,10 @@ static void bind_program(NvnDraw* d, u64 payload) {
             d->prog_on |= 1u << j;
         }
         if (j == 0) continue;
-        /* bank 1: the program's constants, after its code */
-        d->bind.cb_addr[s][1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
-        d->bind.cb_size[s][1] = 256 * (u32)st->cb_size;
+        /* bank 1: the program's constants, after its code. The game's driver binds 64 KiB from there, constants or
+           not (NVN 53.13, 53.314 and 55.12): a read past them gets what follows, as on the console */
+        d->bind.cb_addr[s][1] = st->data ? st->data + 256 * (u64)st->cb : 0;
+        d->bind.cb_size[s][1] = st->data ? 0x10000 : 0;
     }
     if ((u32)r.stages & NVN_SHADER_STAGE_FRAGMENT_BIT) {
         d->sample_shading = (u8)(r.sample_shading >> 8); /* as its SetShaders applied it */
