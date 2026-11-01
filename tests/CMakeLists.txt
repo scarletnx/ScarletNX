@@ -1671,6 +1671,23 @@ snx_test_target(snx-test-runtime-module-abi 99)
 target_link_libraries(snx-test-runtime-module-abi PRIVATE snx_test_common)
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
+# edenprobe (docs/EDENPROBE.md) as CI runs it, against its baseline, once with guest buffers copied and once read in
+# place (vk_memory=2: the path a GPU that shares memory takes, lavapipe's in CI). -DSNX_TEST_EDENPROBE=/path/to/
+# edenprobe.nro, the release that .github/workflows/build.yml pins
+if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    get_filename_component(snx_edenprobe_nro "${SNX_TEST_EDENPROBE}" ABSOLUTE)
+    foreach(snx_memory 1 2)
+        add_test(NAME edenprobe_vk_memory_${snx_memory}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
+                --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}"
+                --mode "quick notime fatal cpu graphics fs video display kernel audio"
+                --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-vk_memory-${snx_memory}"
+                --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/linux-x86_64.txt" --timeout 120
+                --setting vk_memory=${snx_memory})
+        set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
+    endforeach()
+endif()
 # the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
 if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
     if(APPLE)
