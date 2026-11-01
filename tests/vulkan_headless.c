@@ -39,6 +39,37 @@
         }                                                                                                              \
     } while (0)
 
+/* Graphics descriptor tables fill the frame's descriptor memory. vk_frame_check, which runs before a draw's setup,
+   moves on to the next frame while the tables of one more draw still fit: the setup itself never submits for room */
+static int check_descriptor_room(void) {
+    if (!g_vk.has_descriptor_buffers) return 0;
+    vk_lock();
+    vk_finish();
+    vk_frame_next();
+    VkBuffer buffer;
+    u64 offset;
+    CHECK(vk_stage(256, vk_stage_align(), &buffer, &offset));
+    VkDescriptorBufferInfo info = {buffer, offset, 16};
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0,
+                                  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .pBufferInfo = &info};
+    u32 slot = vk_frame_slot();
+    u64 submit = vk_submit_number(), tables = 0;
+    while (vk_descriptors_room(slot)) { /* what vk_frame_check asks before each draw */
+        for (int stage = 0; stage < 5; stage++) CHECK(vk_descriptors_write(g_vk_dslayout[0][0], 1, &write));
+        tables += 5;
+        CHECK(vk_frame_slot() == slot && vk_submit_number() == submit); /* no submit inside the "setup" */
+    }
+    CHECK(tables > 5 && !vk_descriptors_room(slot));
+    vk_frame_check();
+    CHECK(vk_frame_slot() != slot && vk_descriptors_room(vk_frame_slot()));
+    vk_finish();
+    vk_unlock();
+    printf("Descriptor memory moves on to the next frame before a draw's setup, after %llu tables\n",
+           (unsigned long long)tables);
+    return 0;
+}
+
 /* A buffer copied into staging as it is hashed gets the hash vk_hash gives it, which the cache compares with hashes
    taken without a copy, and the bytes: every size around the hash's 32-byte steps, from every alignment */
 static int check_hash_copy(void) {
@@ -1524,6 +1555,7 @@ int main(int argc, char** argv) {
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
     CHECK(!check_uma());
+    CHECK(!check_descriptor_room());
     /* the pipeline workers: pipeline_threads when given, else a quarter of the CPUs, two to six */
     CHECK(vk_pipeline_worker_count(0, 8) == 6 && vk_pipeline_worker_count(0, 12) == 10 &&
           vk_pipeline_worker_count(0, 4) == 2 && vk_pipeline_worker_count(0, 0) == 2 &&
