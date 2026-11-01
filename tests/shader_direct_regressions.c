@@ -1079,6 +1079,80 @@ static void immediate_sampler_handle(void) {
     }
 }
 
+/* Handles written under each side of a predicate, as one game's fragment and compute programs write them. The
+   instruction i lies at word 11 + i + i / 3 (guest_program), which the branch offsets count from */
+static void guarded_handle_merges(void) {
+    const u64 tex_b = 0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20);
+    const u64 load = 0x4c98078800070006ull, other_load = 0x4c98078800170006ull; /* MOV R6, c[2][0] / c[2][4] */
+    const u64 under_p0 = ~(0xfull << 16), not_p0 = 8ull << 16, fsetp_p0 = 0x4bb1838c30f7ff07ull;
+    const u64 fmul_r6 = FMUL_KEEP | 6, fmul_r5 = FMUL_KEEP | 5, sync = 0xf0f800000007000full;
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code;
+    /* a write under P0 runs in none of the lanes of a use under !P0, P0 kept since: the handle loaded under !P0
+       reaches it, unless P0 changes between or the write is under !P0 too */
+    const u64 complement[] = {(load & under_p0) | not_p0, fmul_r6 & under_p0, (tex_b & under_p0) | not_p0};
+    code = translate(complement, 3, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a write under the use's complement guard leaves the handle");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle under the use's own guard is the one bound");
+    free(code);
+    const u64 same_guard[] = {(load & under_p0) | not_p0, (fmul_r6 & under_p0) | not_p0, (tex_b & under_p0) | not_p0};
+    code = translate(same_guard, 3, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a write under the use's own guard replaces the handle");
+    free(code);
+    const u64 rewritten[] = {(load & under_p0) | not_p0, fmul_r6 & under_p0, fsetp_p0, (tex_b & under_p0) | not_p0};
+    code = translate(rewritten, 4, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a complement write counts again once P0 changes");
+    free(code);
+    /* the handle under !P0; under P0 something else, whose lanes leave by @P0 BRA (word 13) to the EXIT (word 20);
+       P0 rewritten, the same handle loaded under it, P0 rewritten again, then the sample under P0 */
+    const u64 leave = 0xe24000000000000full | (48ull << 20);
+    const u64 both_sides[] = {
+        (load & under_p0) | not_p0, fmul_r6 & under_p0, leave, fsetp_p0, load & under_p0, fsetp_p0, tex_b & under_p0};
+    code = translate(both_sides, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "one handle written under each side of a rewritten predicate reaches the sample");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle written under each side is the one bound");
+    free(code);
+    u64 variant[7];
+    memcpy(variant, both_sides, sizeof variant);
+    variant[4] = other_load & under_p0;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "different handles under each side stay refused");
+    free(code);
+    memcpy(variant, both_sides, sizeof variant);
+    variant[2] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle",
+                  "the other side's value reaches the sample without the branch");
+    free(code);
+    memcpy(variant, both_sides, sizeof variant);
+    variant[0] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "lanes that load no handle reach the sample");
+    free(code);
+    /* if and else between an SSY (word 11, to the sample at word 19) and their SYNCs: @!P0 BRA (word 12) to the else
+       side (word 16), each side loading the handle */
+    const u64 ssy = 0xe290000000000000ull | (56ull << 20), to_else = 0xe24000000008000full | (24ull << 20);
+    const u64 if_else[] = {ssy, to_else, load, sync, load, sync, tex_b};
+    code = translate(if_else, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "one handle loaded on each side of an SSY's branch reaches its reconvergence point");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle loaded on each side is the one bound");
+    free(code);
+    memcpy(variant, if_else, sizeof variant);
+    variant[2] = other_load;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "different handles on each side of an SSY stay refused");
+    free(code);
+    memcpy(variant, if_else, sizeof variant);
+    variant[2] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a side that loads no handle reaches the sample");
+    free(code);
+}
+
 static void volume_surface_atomics(void) {
     const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull,
                                0xeb50020a00070008ull, 0xeb50020a01170008ull};
@@ -3325,6 +3399,7 @@ int main(int argc, char** argv) {
     fragment_storage_images();
     buffer_formatted_loads();
     immediate_sampler_handle();
+    guarded_handle_merges();
     volume_surface_atomics();
     draw_buffer_surfaces();
     layered_surface_loads();
