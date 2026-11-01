@@ -8,6 +8,10 @@
 #include <fenv.h>
 #include <stdio.h>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 static int failures;
 static void check(u64 actual, u64 expected, const char* label) {
     if (actual != expected) {
@@ -56,7 +60,8 @@ static void rounding(void) {
         CPU c = {0};
         c.fpcr = cases[i].fpcr;
         c.fpsr = 0x08000002; /* unrelated cumulative flags must survive */
-        check(snx_fp_round(&c, cases[i].input, cases[i].width, cases[i].rm, cases[i].exact), cases[i].output, "round");
+        check(snx_fp_round_c(&c, cases[i].input, cases[i].width, cases[i].rm, cases[i].exact), cases[i].output,
+              "round");
         check(c.fpsr, 0x08000002 | cases[i].flags, "round FPSR");
     }
 }
@@ -68,37 +73,60 @@ static void selection_and_comparison(void) {
         u64 quiet = width == 32 ? 0x400000ull : 0x8000000000000ull;
         u64 qnan = sign | inf | quiet | 123, snan = inf | 456;
         CPU c = {0};
-        check(snx_fp_minmax(&c, 0, sign, width, 0, 0), 0, "max signed zero");
-        check(snx_fp_minmax(&c, 0, sign, width, 1, 0), sign, "min signed zero");
-        check(snx_fp_minmax(&c, qnan, inf, width, 0, 1), inf, "maxnum QNaN");
-        check(snx_fp_minmax(&c, inf, qnan, width, 1, 1), inf, "minnum QNaN");
+        check(snx_fp_minmax_c(&c, 0, sign, width, 0, 0), 0, "max signed zero");
+        check(snx_fp_minmax_c(&c, 0, sign, width, 1, 0), sign, "min signed zero");
+        check(snx_fp_minmax_c(&c, qnan, inf, width, 0, 1), inf, "maxnum QNaN");
+        check(snx_fp_minmax_c(&c, inf, qnan, width, 1, 1), inf, "minnum QNaN");
         check(c.fpsr, 0, "quiet NaN FPSR");
-        check(snx_fp_minmax(&c, qnan, snan, width, 0, 1), snan | quiet, "SNaN priority");
+        check(snx_fp_minmax_c(&c, qnan, snan, width, 0, 1), snan | quiet, "SNaN priority");
         check(c.fpsr, 1, "SNaN IOC");
         c.fpcr = 1u << 25;
         c.fpsr = 0;
-        check(snx_fp_minmax(&c, qnan, inf, width, 0, 0), inf | quiet, "default NaN");
-        check(snx_fp_minmax(&c, qnan, inf, width, 0, 1), inf, "numeric before DN");
-        check(snx_fp_compare(&c, qnan, 0, width, 0), 3, "FCMP unordered");
+        check(snx_fp_minmax_c(&c, qnan, inf, width, 0, 0), inf | quiet, "default NaN");
+        check(snx_fp_minmax_c(&c, qnan, inf, width, 0, 1), inf, "numeric before DN");
+        check(snx_fp_compare_c(&c, qnan, 0, width, 0), 3, "FCMP unordered");
         check(c.fpsr, 0, "FCMP quiet");
-        check(snx_fp_compare(&c, qnan, 0, width, 1), 3, "FCMPE unordered");
+        check(snx_fp_compare_c(&c, qnan, 0, width, 1), 3, "FCMPE unordered");
         check(c.fpsr, 1, "FCMPE IOC");
         c.fpsr = 0;
-        check(snx_fp_compare(&c, snan, 0, width, 0), 3, "FCMP signalling");
+        check(snx_fp_compare_c(&c, snan, 0, width, 0), 3, "FCMP signalling");
         check(c.fpsr, 1, "FCMP SNaN IOC");
         c.fpcr = 1u << 24;
         c.fpsr = 0;
-        check(snx_fp_minmax(&c, sign | 1, 1, width, 1, 0), sign, "min FZ zeros");
+        check(snx_fp_minmax_c(&c, sign | 1, 1, width, 1, 0), sign, "min FZ zeros");
         check(c.fpsr, 0x80, "min IDC");
-        check(snx_fp_compare(&c, 1, sign | 1, width, 0), 6, "compare FZ zeros");
+        check(snx_fp_compare_c(&c, 1, sign | 1, width, 0), 6, "compare FZ zeros");
         c.fpcr = 0;
-        check(snx_fp_compare(&c, sign | 1, 1, width, 0), 8, "compare tiny numbers");
+        check(snx_fp_compare_c(&c, sign | 1, 1, width, 0), 8, "compare tiny numbers");
     }
+}
+
+/* The fast paths (ir_fpu.c, ir_vec_fp.c) compute in the host's arithmetic, so they need the IEEE default control
+   word: snx_fp_env puts a drifted one back, and generated functions call it on entry. */
+static void host_environment(void) {
+#if defined(_M_X64) || defined(__x86_64__)
+    _mm_setcsr(0xFFC0u); /* round toward zero, flush to zero, denormals are zero; exceptions masked */
+    snx_fp_env();
+    if ((_mm_getcsr() & 0xFFC0u) != 0x1F80u) {
+        fprintf(stderr, "snx_fp_env left MXCSR %#x\n", _mm_getcsr());
+        ++failures;
+    }
+#elif defined(__aarch64__)
+    u64 fpcr = (1u << 24) | (1u << 25) | (1u << 22); /* FZ, DN, RMode 1 */
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
+    snx_fp_env();
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    if (fpcr & 0x07C8FF00ull) {
+        fprintf(stderr, "snx_fp_env left FPCR %#llx\n", (unsigned long long)fpcr);
+        ++failures;
+    }
+#endif
 }
 
 int main(void) {
     static const int modes[] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
     int original = fegetround();
+    host_environment();
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
         if (fesetround(modes[i])) return 2;
         rounding();

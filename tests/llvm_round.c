@@ -58,7 +58,7 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input) {
     for (unsigned lane = 0; lane < insn->lanes; ++lane) {
         u64 bits = insn->width == 32 ? input->v[1].s[lane] : input->v[1].d[lane];
         int mode = insn->mode == 5 ? (int)((input->fpcr >> 22) & 3) : (int)insn->mode;
-        u64 result = snx_fp_round(&expected, bits, (int)insn->width, mode, (int)insn->exact);
+        u64 result = snx_fp_round_c(&expected, bits, (int)insn->width, mode, (int)insn->exact);
         if (insn->width == 32) expected.v[0].s[lane] = (u32)result;
         else expected.v[0].d[lane] = result;
     }

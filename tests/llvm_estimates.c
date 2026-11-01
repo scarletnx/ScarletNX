@@ -16,7 +16,7 @@ static int check(LlvmStep step,const Insn* insn,const CPU* input) {
     expected.v[0] = (V128){0};
     for (unsigned lane=0;lane<insn->lanes;++lane) {
         u64 bits=insn->width==32 ? input->v[1].s[lane] : input->v[1].d[lane];
-        u64 value=snx_fp_unary(&expected,bits,(int)insn->width,(int)insn->op);
+        u64 value = snx_fp_unary_c(&expected, bits, (int)insn->width, (int)insn->op);
         if(insn->width==32)expected.v[0].s[lane]=(u32)value;else expected.v[0].d[lane]=value;
     }
     if(step(&actual)==0x1004&&!memcmp(&actual,&expected,sizeof actual))return 0;

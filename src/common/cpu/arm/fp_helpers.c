@@ -31,14 +31,20 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/helpers/fp.c"
 
+/* the helpers take the FPCR and return the FPSR bits they raised: this state accumulates them */
+static u64 take(SnxFpEnv* c, SnxFpReply r) {
+    c->fpsr |= r.flags;
+    return r.value;
+}
+
 /* AArch32 FPRecipStep/FPRSqrtStep round the product BEFORE subtraction.
    A64's fused step helpers are not interchangeable with these operations. */
-static u64 step(CPU* c, u64 x, u64 y, int half) {
+static u64 step(SnxFpEnv* c, u64 x, u64 y, int half) {
     FpValue a = fp_unpack(c, x, 32), b = fp_unpack(c, y, 32);
     if (a.kind >= FPV_QNAN || b.kind >= FPV_QNAN) return fp_nan(c, fp_nan2(a, b), 32);
     int special = (a.kind == FPV_INF && b.kind == FPV_ZERO) || (b.kind == FPV_INF && a.kind == FPV_ZERO);
-    u64 product = special ? 0 : snx_fp_binary(c, x, y, 32, SNX_FP_MUL);
-    if (!half) return snx_fp_binary(c, 0x40000000, product, 32, SNX_FP_SUB);
+    u64 product = special ? 0 : take(c, snx_fp_binary(x, y, 32, SNX_FP_MUL, c->fpcr));
+    if (!half) return take(c, snx_fp_binary(0x40000000, product, 32, SNX_FP_SUB, c->fpcr));
     /* FPHalvedSub(3, product): a single rounding of the exact difference / 2. */
     return fp_fused(c, 0x40400000, product ^ 0x80000000u, 0x3f800000, 32, -1);
 }
@@ -105,10 +111,10 @@ static bool host_mul_div(uint64_t x, uint64_t y, uint32_t width, int div, uint64
     /* zero only from a zero operand (else it underflowed) */
     return plain(*out, width, (x & ~(1ull << (width - 1))) == 0 || (!div && (y & ~(1ull << (width - 1))) == 0));
 }
-static bool host_fp(const CPU* c, uint32_t ixc, uint64_t x, uint64_t y, uint64_t add, uint32_t op, uint32_t width,
+static bool host_fp(uint32_t fpcr, uint32_t ixc, uint64_t x, uint64_t y, uint64_t add, uint32_t op, uint32_t width,
                     uint32_t param, uint64_t* out) {
     uint64_t sign = 1ull << (width - 1), product;
-    if ((width != 32 && width != 64) || (c->fpcr & 0x00c09f00u)) return false; /* rounding mode, trap enables */
+    if ((width != 32 && width != 64) || (fpcr & 0x00c09f00u)) return false; /* rounding mode, trap enables */
     switch (op) {
         case AV_FCMP:
         case AV_FCMPE: /* no flag, ordered */
@@ -156,7 +162,7 @@ static bool host_fp(const CPU* c, uint32_t ixc, uint64_t x, uint64_t y, uint64_t
         }
         case AV_FTOI: { /* toward zero (VCVT's), in range, to a 32-bit integer */
             unsigned rm = (param >> 24) & 15, iw = (param >> 8) & 255, fb = (param >> 16) & 255;
-            if (rm == 8) rm = (c->fpcr >> 22) & 3;
+            if (rm == 8) rm = (fpcr >> 22) & 3;
             if (rm != 3 || iw != 32 || fb || !plain(x, width, true)) return false;
             double d = width == 32 ? (double)f32_of(x) : f64_of(x);
             bool uns = param & (1u << 28);
@@ -166,7 +172,7 @@ static bool host_fp(const CPU* c, uint32_t ixc, uint64_t x, uint64_t y, uint64_t
         }
         case AV_FCVT: { /* between single and double, to nearest */
             unsigned to = param & 255, rm = (param >> 24) & 15;
-            if (rm == 8) rm = (c->fpcr >> 22) & 3;
+            if (rm == 8) rm = (fpcr >> 22) & 3;
             if (rm || !plain(x, width, true) || to == width || (to != 32 && to != 64)) return false;
             if (to == 64) {
                 *out = bits_f64((double)f32_of(x));
@@ -179,30 +185,30 @@ static bool host_fp(const CPU* c, uint32_t ixc, uint64_t x, uint64_t y, uint64_t
     }
 }
 uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32_t op, uint32_t width, uint32_t param) {
-    CPU c; /* only fpcr/fpsr are consumed by the raw-bit primitives */
+    SnxFpEnv c; /* only fpcr/fpsr are consumed by the raw-bit primitives */
     c.fpcr = param & (1u << 30) ? (cpu->fpscr & (1u << 26)) | 0x03000000 : cpu->fpscr;
     c.fpsr = 0;
     uint64_t fast;
-    if (host_fp(&c, cpu->fpscr & 0x10u, x, y, add, op, width, param, &fast)) return fast;
+    if (host_fp(c.fpcr, cpu->fpscr & 0x10u, x, y, add, op, width, param, &fast)) return fast;
     unsigned rm = (param >> 24) & 15, iw = (param >> 8) & 255, fb = (param >> 16) & 255;
     int uns = !!(param & (1u << 28));
     uint64_t sign = 1ull << (width - 1), result = 0, product;
     if (rm == 8) rm = (c.fpcr >> 22) & 3;
     switch (op) {
-        case AV_FADD: result = snx_fp_binary(&c, x, y, width, SNX_FP_ADD); break;
-        case AV_FSUB: result = snx_fp_binary(&c, x, y, width, SNX_FP_SUB); break;
-        case AV_FMUL: result = snx_fp_binary(&c, x, y, width, SNX_FP_MUL); break;
-        case AV_FDIV: result = snx_fp_binary(&c, x, y, width, SNX_FP_DIV); break;
-        case AV_FABD: result = snx_fp_binary(&c, x, y, width, SNX_FP_ABD); break;
+        case AV_FADD: result = take(&c, snx_fp_binary(x, y, width, SNX_FP_ADD, c.fpcr)); break;
+        case AV_FSUB: result = take(&c, snx_fp_binary(x, y, width, SNX_FP_SUB, c.fpcr)); break;
+        case AV_FMUL: result = take(&c, snx_fp_binary(x, y, width, SNX_FP_MUL, c.fpcr)); break;
+        case AV_FDIV: result = take(&c, snx_fp_binary(x, y, width, SNX_FP_DIV, c.fpcr)); break;
+        case AV_FABD: result = take(&c, snx_fp_binary(x, y, width, SNX_FP_ABD, c.fpcr)); break;
         case AV_FMLA:
         case AV_FMLS:
         case AV_FNMLA:
         case AV_FNMLS:
         case AV_FNMUL:
-            product = snx_fp_binary(&c, x, y, width, SNX_FP_MUL);
+            product = take(&c, snx_fp_binary(x, y, width, SNX_FP_MUL, c.fpcr));
             if (op == AV_FMLS || op == AV_FNMLA || op == AV_FNMUL) product ^= sign;
             if (op == AV_FNMLA || op == AV_FNMLS) add ^= sign;
-            result = op == AV_FNMUL ? product : snx_fp_binary(&c, add, product, width, SNX_FP_ADD);
+            result = op == AV_FNMUL ? product : take(&c, snx_fp_binary(add, product, width, SNX_FP_ADD, c.fpcr));
             break;
         case AV_FMA:
         case AV_FMS:
@@ -210,20 +216,20 @@ uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32
         case AV_FNMS:
             if (op == AV_FMS || op == AV_FNMA) x ^= sign;
             if (op == AV_FNMA || op == AV_FNMS) add ^= sign;
-            result = snx_fp_fma(&c, add, x, y, width);
+            result = take(&c, snx_fp_fma(add, x, y, width, c.fpcr));
             break;
-        case AV_FSQRT: result = snx_fp_unary(&c, x, width, SNX_FP_SQRT); break;
+        case AV_FSQRT: result = take(&c, snx_fp_unary(x, width, SNX_FP_SQRT, c.fpcr)); break;
         case AV_MOV: result = x; break;
         case AV_FABS: result = x & (sign - 1); break;
         case AV_FNEG: result = x ^ sign; break;
-        case AV_FRECPE: result = snx_fp_unary(&c, x, width, SNX_FP_RECPE); break;
-        case AV_FRSQRTE: result = snx_fp_unary(&c, x, width, SNX_FP_RSQRTE); break;
+        case AV_FRECPE: result = take(&c, snx_fp_unary(x, width, SNX_FP_RECPE, c.fpcr)); break;
+        case AV_FRSQRTE: result = take(&c, snx_fp_unary(x, width, SNX_FP_RSQRTE, c.fpcr)); break;
         case AV_URECPE: result = urecpe32((u32)x); break;
         case AV_URSQRTE: result = ursqrte32((u32)x); break;
         case AV_FRECPS:
         case AV_FRSQRTS: result = step(&c, x, y, op == AV_FRSQRTS); break;
         case AV_FCMP:
-        case AV_FCMPE: result = snx_fp_compare(&c, x, y, width, op == AV_FCMPE); break;
+        case AV_FCMPE: result = take(&c, snx_fp_compare(x, y, width, op == AV_FCMPE, c.fpcr)); break;
         case AV_FCEQ:
         case AV_FCGE:
         case AV_FCGT:
@@ -233,21 +239,21 @@ uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32
                 x &= sign - 1;
                 y &= sign - 1;
             }
-            unsigned f = snx_fp_compare(&c, x, y, width, op != AV_FCEQ);
+            unsigned f = (unsigned)take(&c, snx_fp_compare(x, y, width, op != AV_FCEQ, c.fpcr));
             int ok = op == AV_FCEQ ? f == 6 : (op == AV_FCGE || op == AV_FACGE) ? f == 6 || f == 2 : f == 2;
             result = ok ? UINT32_MAX : 0;
             break;
         }
-        case AV_FCVT: result = snx_fp_convert(&c, x, width, param & 255, rm); break;
-        case AV_ITOF: result = snx_fp_from_int(&c, x, iw, width, uns, fb); break;
-        case AV_FTOI: result = snx_fp_to_int(&c, x, width, iw, uns, fb, rm); break;
-        case AV_FROUND: result = snx_fp_round(&c, x, width, rm, param & 1); break;
+        case AV_FCVT: result = take(&c, snx_fp_convert(x, width, param & 255, rm, c.fpcr)); break;
+        case AV_ITOF: result = take(&c, snx_fp_from_int(x, iw, width, uns, fb, c.fpcr)); break;
+        case AV_FTOI: result = take(&c, snx_fp_to_int(x, width, iw, uns, fb, rm, c.fpcr)); break;
+        case AV_FROUND: result = take(&c, snx_fp_round(x, width, rm, param & 1, c.fpcr)); break;
         case AV_FMIN:
         case AV_FMAX:
         case AV_FMINNM:
         case AV_FMAXNM:
-            result =
-                snx_fp_minmax(&c, x, y, width, op == AV_FMIN || op == AV_FMINNM, op == AV_FMINNM || op == AV_FMAXNM);
+            result = take(&c, snx_fp_minmax(x, y, width, op == AV_FMIN || op == AV_FMINNM,
+                                            op == AV_FMINNM || op == AV_FMAXNM, c.fpcr));
             break;
         default: break; /* emitter only calls this API for the above operations */
     }

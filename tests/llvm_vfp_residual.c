@@ -45,7 +45,7 @@ static int check(LlvmStep step, const Insn* insn, const CPU* input) {
     for (unsigned lane = 0; lane < insn->lanes; ++lane) {
         u64 a = insn->width == 32 ? input->v[1].s[lane] : input->v[1].d[lane];
         u64 b = insn->width == 32 ? input->v[2].s[lane] : input->v[2].d[lane];
-        u64 result = snx_fp_binary(&expected, a, b, (int)insn->width, (int)insn->op);
+        u64 result = snx_fp_binary_c(&expected, a, b, (int)insn->width, (int)insn->op);
         if (insn->width == 32) expected.v[0].s[lane] = (u32)result;
         else expected.v[0].d[lane] = result;
     }

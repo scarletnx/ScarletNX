@@ -140,8 +140,19 @@ static int pointer_uses(SnxIr* ir, Scan* s, LLVMValueRef pointer, size_t offset)
     return 0;
 }
 
-/* what a call can see of the registers in the CPU structure: NONE for an intrinsic or a function that touches no
-   memory (ir_pure), ENV for a helper that uses only FPCR, FPSR and the exclusive monitor (ir_noregs), ALL else */
+/* every pointer the call is given is a local of the function (ir_local's allocas) */
+static int locals_only(LLVMValueRef call) {
+    unsigned n = LLVMGetNumArgOperands(call);
+    for (unsigned i = 0; i < n; ++i) {
+        LLVMValueRef arg = LLVMGetOperand(call, i);
+        if (LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMPointerTypeKind && !LLVMIsAAllocaInst(arg)) return 0;
+    }
+    return 1;
+}
+/* what a call can see of the registers in the CPU structure: NONE for an intrinsic, a function that touches no
+   memory (ir_pure), or one that touches only its arguments' memory (ir_argmem, the argument bits of "memory") given
+   locals alone (snx_fp_host_lanes); ENV for a helper that uses only FPCR, FPSR and the exclusive monitor
+   (ir_noregs); ALL else */
 enum { NONE, ENV, ALL };
 static int call_site(LLVMValueRef call) {
     LLVMValueRef callee = LLVMGetCalledValue(call);
@@ -151,6 +162,7 @@ static int call_site(LLVMValueRef call) {
         memory = LLVMGetEnumAttributeAtIndex(callee, LLVMAttributeFunctionIndex,
                                              LLVMGetEnumAttributeKindForName("memory", 6));
         if (memory && LLVMGetEnumAttributeValue(memory) == 0) return NONE;
+        if (memory && !(LLVMGetEnumAttributeValue(memory) & ~3ull) && locals_only(call)) return NONE;
         if (LLVMGetStringAttributeAtIndex(callee, LLVMAttributeFunctionIndex, "snx-noregs", 10)) return ENV;
     }
     return ALL;

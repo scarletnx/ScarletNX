@@ -44,25 +44,9 @@ static V gpr(SnxIr* ir, unsigned n, int sf) {
 }
 static void set_gpr(SnxIr* ir, unsigned d, V value) { ir_setx(ir, d, ir_cast(ir, value, ir->t_i64, 0)); }
 
+/* ---- the helpers (cpu.h): integer arithmetic on IEEE encodings, taking FPCR and returning the flags raised ----
+   ir_fp.h's ir_fp_call declares and calls them; nothing of the CPU structure is behind a call. */
 
-/* ---- the helpers (cpu.h): integer arithmetic on IEEE encodings, reading c->fpcr and raising c->fpsr's flags ---- */
-
-/* name(c, operands...), declared from the operands' types (u64 for an encoding or integer, int for the rest) */
-static V fp_call(SnxIr* ir, const char* name, LLVMTypeRef ret, const V* operands, unsigned count) {
-    LLVMTypeRef params[8];
-    V args[8];
-    params[0] = ir->t_ptr;
-    args[0] = ir->c;
-    for (unsigned i = 0; i < count; ++i) {
-        args[i + 1] = operands[i];
-        params[i + 1] = LLVMTypeOf(operands[i]);
-    }
-    V function = ir_extern(ir, name, ret, params, count + 1);
-    ir_argmem(ir, function); /* only c->fpcr and c->fpsr */
-    ir_noregs(ir, function);
-    ir_state_invalidate(ir);
-    return LLVMBuildCall2(B, LLVMFunctionType(ret, params, count + 1, 0), function, args, count + 1, "");
-}
 static V to_width(SnxIr* ir, V bits, unsigned width) { return ir_cast(ir, bits, ir_int_type(ir, width), 0); }
 
 static V call_binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
@@ -71,7 +55,7 @@ static V call_binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_host_binary", ir->t_i64, operands, 4), width);
+    return to_width(ir, ir_fp_call_fpsr(ir, "snx_fp_host_binary", operands, 4), width);
 }
 static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     V operands[4];
@@ -79,14 +63,14 @@ static V call_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     operands[1] = u64_of(ir, a);
     operands[2] = u64_of(ir, b);
     operands[3] = ir_i32(ir, width);
-    return to_width(ir, fp_call(ir, "snx_fp_host_fma", ir->t_i64, operands, 4), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_host_fma", operands, 4), width);
 }
 static V call_unary(SnxIr* ir, V a, unsigned width, unsigned op) {
     V operands[3];
     operands[0] = u64_of(ir, a);
     operands[1] = ir_i32(ir, width);
     operands[2] = ir_i32(ir, op);
-    return to_width(ir, fp_call(ir, "snx_fp_host_unary", ir->t_i64, operands, 3), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_host_unary", operands, 3), width);
 }
 static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
     V operands[5];
@@ -95,7 +79,7 @@ static V call_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsi
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, minimum);
     operands[4] = ir_i32(ir, numeric);
-    return to_width(ir, fp_call(ir, "snx_fp_host_minmax", ir->t_i64, operands, 5), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_host_minmax", operands, 5), width);
 }
 /* the NZCV nibble (i32) */
 static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
@@ -104,7 +88,7 @@ static V call_compare(SnxIr* ir, V a, V b, unsigned width, unsigned signal) {
     operands[1] = u64_of(ir, b);
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, signal);
-    return fp_call(ir, "snx_fp_host_compare", ir->t_i32, operands, 4);
+    return ir_cast(ir, ir_fp_call(ir, "snx_fp_host_compare", operands, 4), ir->t_i32, 0);
 }
 /* rm: an i32, FPCR's mode or the encoding's */
 static V call_convert(SnxIr* ir, V a, unsigned from, unsigned to, V rm) {
@@ -113,7 +97,7 @@ static V call_convert(SnxIr* ir, V a, unsigned from, unsigned to, V rm) {
     operands[1] = ir_i32(ir, from);
     operands[2] = ir_i32(ir, to);
     operands[3] = rm;
-    return to_width(ir, fp_call(ir, "snx_fp_convert", ir->t_i64, operands, 4), to);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_convert", operands, 4), to);
 }
 static V call_round(SnxIr* ir, V a, unsigned width, V rm, unsigned exact) {
     V operands[4];
@@ -121,7 +105,7 @@ static V call_round(SnxIr* ir, V a, unsigned width, V rm, unsigned exact) {
     operands[1] = ir_i32(ir, width);
     operands[2] = rm;
     operands[3] = ir_i32(ir, exact);
-    return to_width(ir, fp_call(ir, "snx_fp_round", ir->t_i64, operands, 4), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_round", operands, 4), width);
 }
 static V call_round_int(SnxIr* ir, V a, unsigned width, V rm, unsigned intsize) {
     V operands[4];
@@ -129,7 +113,7 @@ static V call_round_int(SnxIr* ir, V a, unsigned width, V rm, unsigned intsize) 
     operands[1] = ir_i32(ir, width);
     operands[2] = rm;
     operands[3] = ir_i32(ir, intsize);
-    return to_width(ir, fp_call(ir, "snx_fp_round_int", ir->t_i64, operands, 4), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_round_int", operands, 4), width);
 }
 /* the integer (i64, masked to its width) */
 static V call_to_int(SnxIr* ir, V a, unsigned width, unsigned integer, unsigned uns, unsigned fbits, unsigned rm) {
@@ -140,7 +124,7 @@ static V call_to_int(SnxIr* ir, V a, unsigned width, unsigned integer, unsigned 
     operands[3] = ir_i32(ir, uns);
     operands[4] = ir_i32(ir, fbits);
     operands[5] = ir_i32(ir, rm);
-    return fp_call(ir, "snx_fp_to_int", ir->t_i64, operands, 6);
+    return ir_fp_call(ir, "snx_fp_to_int", operands, 6);
 }
 static V call_from_int(SnxIr* ir, V v, unsigned integer, unsigned width, unsigned uns, unsigned fbits) {
     V operands[5];
@@ -149,7 +133,7 @@ static V call_from_int(SnxIr* ir, V v, unsigned integer, unsigned width, unsigne
     operands[2] = ir_i32(ir, width);
     operands[3] = ir_i32(ir, uns);
     operands[4] = ir_i32(ir, fbits);
-    return to_width(ir, fp_call(ir, "snx_fp_from_int", ir->t_i64, operands, 5), width);
+    return to_width(ir, ir_fp_call(ir, "snx_fp_from_int", operands, 5), width);
 }
 
 /* ---- the fast paths ----
@@ -657,7 +641,7 @@ static void fp_to_int(SnxIr* ir, const SnxA64Args* a, unsigned rm, unsigned uns)
 
 /* FJCVTZS: Wd, and NZCV 0Z00 */
 static void fp_jcvt(SnxIr* ir, const SnxA64Args* a) {
-    V operand = fp_reg(ir, (unsigned)a->rn, 64), r = fp_call(ir, "snx_fp_jcvt", ir->t_i64, &operand, 1);
+    V operand = fp_reg(ir, (unsigned)a->rn, 64), r = ir_fp_call(ir, "snx_fp_jcvt", &operand, 1);
     V z = ir_u32(ir, LLVMBuildLShr(B, r, ir_i64(ir, 32), ""));
     set_gpr(ir, (unsigned)a->rd, ir_u32(ir, r));
     ir_flags_set_nzcv(ir, LLVMBuildShl(B, z, ir_i32(ir, 2), ""));
@@ -666,7 +650,7 @@ static void fp_jcvt(SnxIr* ir, const SnxA64Args* a) {
 /* BFCVT: a single to a bfloat16 (FEAT_BF16) */
 static void fp_bfcvt(SnxIr* ir, const SnxA64Args* a) {
     V operand = fp_reg(ir, (unsigned)a->rn, 32);
-    set_fp_reg(ir, (unsigned)a->rd, to_width(ir, fp_call(ir, "snx_fp_bfcvt", ir->t_i64, &operand, 1), 16));
+    set_fp_reg(ir, (unsigned)a->rd, to_width(ir, ir_fp_call(ir, "snx_fp_bfcvt", &operand, 1), 16));
 }
 
 /* ---- the entry points ---- */

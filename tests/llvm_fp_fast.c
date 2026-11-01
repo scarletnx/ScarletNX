@@ -4,7 +4,8 @@
    result, in round to nearest, with FPCR.FZ clear, with FZ set (most games run with it), and with FZ set when FPSR's
    flags aren't kept (fpsr_flags=0). Each instruction's LLVM step (llvm_steps.c) is called from a probe function that
    hands it a CPU in a stack slot holding those constants, and the module goes through LLVM's O2: the guards fold, and
-   the probe must have no call left, the soft-float helpers' included. A guard that is always false for the case
+   the probe must have no call left, the soft-float helpers' included (snx_ir_begin's snx_fp_env is the one call every
+   step is born with, and is not a helper). A guard that is always false for the case
    keeps its helper call: llvm_vfp_lanes checks the results the paths give, this checks that the fast one is used.
    A probe in round towards plus infinity, which the fast paths leave to the helpers, must keep its call, so a probe
    folded away entirely can't pass, except for the instructions whose results don't depend on FPCR's rounding (the
@@ -99,7 +100,7 @@ static LLVMValueRef probe(SnxIr* ir, LLVMValueRef step, const Insn* insn, u32 fp
     return fn;
 }
 
-/* the calls left in fn that aren't LLVM's intrinsics */
+/* the calls left in fn that aren't LLVM's intrinsics or the entry's snx_fp_env */
 static unsigned calls(LLVMValueRef fn, char* first, size_t first_size) {
     LLVMBasicBlockRef block;
     LLVMValueRef inst;
@@ -114,8 +115,27 @@ static unsigned calls(LLVMValueRef fn, char* first, size_t first_size) {
             if (callee && LLVMIsAFunction(callee)) {
                 name = LLVMGetValueName2(callee, &length);
                 if (LLVMGetIntrinsicID(callee)) continue;
+                if (length == 10 && !memcmp(name, "snx_fp_env", 10)) continue;
             }
             if (!n++) snprintf(first, first_size, "%s", name);
+        }
+    return n;
+}
+
+/* the calls left in fn to name (LLVM's intrinsics excluded) */
+static unsigned named_calls(LLVMValueRef fn, const char* name) {
+    size_t length = strlen(name);
+    unsigned n = 0;
+    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(fn); block; block = LLVMGetNextBasicBlock(block))
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
+            LLVMValueRef callee;
+            size_t callee_length = 0;
+            const char* callee_name;
+            if (LLVMGetInstructionOpcode(inst) != LLVMCall) continue;
+            callee = LLVMGetCalledValue(inst);
+            if (!callee || !LLVMIsAFunction(callee) || LLVMGetIntrinsicID(callee)) continue;
+            callee_name = LLVMGetValueName2(callee, &callee_length);
+            if (callee_length == length && !memcmp(callee_name, name, length)) ++n;
         }
     return n;
 }
@@ -126,7 +146,7 @@ int main(void) {
     LLVMValueRef probes[NCASES][NINSNS];
     LLVMPassBuilderOptionsRef options;
     LLVMErrorRef failed;
-    unsigned k, i, checked = 0, failures = 0;
+    unsigned k, i, env, checked = 0, failures = 0;
     int fma, round;
     if (llvm_steps_begin(&s, 0, 0, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
@@ -174,7 +194,14 @@ int main(void) {
                     fprintf(stderr, "FAIL: %s, %s: no helper call is left\n", g_insns[i].name, g_cases[k].name);
             }
         }
+    /* snx_ir_begin's snx_fp_env is memory(none) but not willreturn: O2 must keep it, or a host thread whose control
+       word drifted (another rounding mode, flush to zero) silently changes the fast paths' results */
+    env = probes[0][0] ? named_calls(probes[0][0], "snx_fp_env") : 0;
     llvm_steps_end(&s);
+    if (env != 1) {
+        fprintf(stderr, "FAIL: %u snx_fp_env calls survive O2 in an FP probe\n", env);
+        ++failures;
+    }
     printf("FP fast paths taken: %u probes, %u failed%s\n", checked, failures, fma ? "" : " (no host FMA: FMA skipped)");
     return failures ? 1 : 0;
 }

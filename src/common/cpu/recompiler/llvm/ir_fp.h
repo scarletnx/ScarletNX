@@ -35,6 +35,42 @@ static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
     LLVMValueRef bit = LLVMBuildShl(ir->b, LLVMBuildZExt(ir->b, inexact, ir->t_i32, ""), ir_i32(ir, 4), "");
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), bit, ""), offsetof(CPU, fpsr));
 }
+
+/* One call of an FP helper (cpu.h), shared by ir_fpu.c's scalar path and ir_vec_fp.c's lanes so both declare it
+   the same way: the operands, then the guest's FPCR by value. The reply is {value, flags}: the value is the result
+   (an encoding, an integer, or a compare's NZCV nibble), zero-extended to i64, and "flags" the FPSR bits the
+   operation raised, which are ORed into FPSR here. The
+   helper reads and writes no memory, so it is no site for ir_promote_registers (nothing of the CPU structure is
+   unknown behind it) and LLVM may share the FPCR load and the calls themselves. */
+static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
+                                            int with_fpsr) {
+    LLVMTypeRef params[9], fields[2] = {ir->t_i64, ir->t_i32};
+    LLVMValueRef args[9];
+    unsigned n = count;
+    for (unsigned i = 0; i < count; ++i) {
+        args[i] = operands[i];
+        params[i] = LLVMTypeOf(operands[i]);
+    }
+    args[n] = fpcr(ir);
+    params[n++] = ir->t_i32;
+    if (with_fpsr) {
+        args[n] = fpsr(ir);
+        params[n++] = ir->t_i32;
+    }
+    LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
+    LLVMValueRef function = ir_extern(ir, name, reply, params, n);
+    ir_pure(ir, function);
+    LLVMValueRef call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
+    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), LLVMBuildExtractValue(ir->b, call, 1, ""), ""), offsetof(CPU, fpsr));
+    return LLVMBuildExtractValue(ir->b, call, 0, "");
+}
+static inline LLVMValueRef ir_fp_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
+    return ir_fp_reply_call(ir, name, operands, count, 0);
+}
+/* snx_fp_host_binary, which also takes FPSR (cpu.h) and replies with FPSR after it */
+static inline LLVMValueRef ir_fp_call_fpsr(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
+    return ir_fp_reply_call(ir, name, operands, count, 1);
+}
 static inline LLVMValueRef both(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildAnd(ir->b, a, b, ""); }
 static inline LLVMValueRef either(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildOr(ir->b, a, b, ""); }
 
