@@ -249,7 +249,7 @@ bool snx_ctr_romfs_open_image(const unsigned char* image, uint64_t size, uint64_
         *out = r;
         return true;
     }
-    if (size < 0x28 || size > LIMIT) return false;
+    if (size < 0x28) return false; /* a mapped image has no cap of its own: the readers check each offset against its size */
     SnxCtrRomfs* r = calloc(1, sizeof *r);
     if (!r) return false;
     r->image = image;
@@ -442,5 +442,32 @@ bool snx_ctr_romfs_read(SnxCtrRomfs* r, uint64_t offset, void* output, size_t si
     return true;
 error:
     pm_unlock(&r->tree->lock);
+    return false;
+}
+bool snx_ctr_romfs_image_file(const unsigned char* image, uint64_t size, const char* name, uint64_t* offset,
+                              uint64_t* length) {
+    SnxCtrRomfs view = {.image = image, .image_size = size};
+    uint32_t dir_table = image32(&view, 12), dir_size = image32(&view, 16), file_table = image32(&view, 28),
+             file_size = image32(&view, 32), data = image32(&view, 36);
+    uint16_t wanted[256];
+    uint32_t bytes;
+    if (size < 0x28 || dir_table == NONE || dir_size < 24 || file_table == NONE || file_size == NONE || data == NONE ||
+        (uint64_t)dir_table + dir_size > size || (uint64_t)file_table + file_size > size || !name16(name, wanted, &bytes))
+        return false;
+    uint32_t at = image32(&view, (uint64_t)dir_table + 12); /* the root folder's first file */
+    for (unsigned guard = 0; at != NONE && guard < 100000; ++guard) {
+        if (at > file_size || file_size - at < 32) return false;
+        const unsigned char* record = image + file_table + at;
+        uint32_t length16 = snx_ld_le32(record + 28);
+        if (length16 > file_size - at - 32) return false;
+        if (length16 == bytes && !memcmp(record + 32, wanted, bytes)) {
+            uint64_t start = snx_ld_le64(record + 8), count = snx_ld_le64(record + 16);
+            if (start > size || data > size - start || count > size - start - data) return false;
+            *offset = data + start;
+            *length = count;
+            return true;
+        }
+        at = snx_ld_le32(record + 4);
+    }
     return false;
 }

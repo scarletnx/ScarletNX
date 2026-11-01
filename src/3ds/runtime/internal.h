@@ -236,6 +236,8 @@ struct SnxCtrProcess {
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
+    uint32_t apt_font, apt_font_address; /* the shared font block: its CTR_OBJ_SHARED object, 0 before the first GetSharedFont, and its address */
+    uint32_t ro_crs, ro_crs_buffer, ro_crs_size; /* ldr:ro: the static module (CRS) at its address, the game's buffer it is mapped from, and its size; 0 before Initialize */
     uint32_t apt_preloaded[4]; /* the library applets the game preloaded (PreloadLibraryApplet), 0 for a free slot */
     struct { /* the one parameter an applet has sent the game, the next ReceiveParameter and GlanceParameter answer; 0 for none */
         uint32_t signal, sender, size, object;
@@ -323,6 +325,10 @@ uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size);
 uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t name_address, uint32_t* out);
 SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* transport_result);
 /* SVC helpers use only RAM transactions, never MMIO or a flat pointer. */
+/* ldr:ro's mappings of a library (kernel.c) */
+uint32_t snx_ctr_alias_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
+uint32_t snx_ctr_alias_unmap(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
+uint32_t snx_ctr_alias_trim(SnxCtrProcess* p, uint32_t target, uint32_t keep);
 uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t operation, uint32_t va, uint32_t source, uint32_t size,
                                uint32_t permissions, uint32_t* output);
 #endif

@@ -358,6 +358,28 @@ static uint32_t map_own_block(SnxCtrProcess* p, uint32_t id, uint32_t address, u
     if (!mirror(p, address, o->data.shared.address, size, asked)) return OUT_OF_MEMORY;
     return record_map(p, id, address, size);
 }
+/* ldr:ro maps a library from the game's buffer to its address as the console's RO does (Azahar Process::Map): a MAP the
+   game could ask for, read-write here and set to its final rights by the caller. The tail of a library the fix cuts off
+   is given back with a trim, which shrinks the pair MAP made, so that the UNMAP of the rest matches it */
+uint32_t snx_ctr_alias_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size) {
+    uint32_t result = alias(p, true, target, source, size, SNX_CTR_READ | SNX_CTR_WRITE);
+    if (!result) p->cpu.state.cpu.exclusive_valid = 0;
+    return result;
+}
+uint32_t snx_ctr_alias_unmap(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size) {
+    return alias(p, false, target, source, size, SNX_CTR_READ | SNX_CTR_WRITE);
+}
+uint32_t snx_ctr_alias_trim(SnxCtrProcess* p, uint32_t target, uint32_t keep) {
+    for (unsigned i = 0; i < sizeof p->aliases / sizeof *p->aliases; ++i)
+        if (p->aliases[i].size && p->aliases[i].target == target && keep <= p->aliases[i].size) {
+            if (keep < p->aliases[i].size &&
+                snx_ctr_unmap(p->space, target + keep, p->aliases[i].size - keep) != SNX_CTR_MEM_OK)
+                return INVALID_STATE;
+            p->aliases[i].size = keep;
+            return OK;
+        }
+    return INVALID_STATE;
+}
 /* Heap/linear commit, free and protect, and MAP/UNMAP aliases; no mappings, ownership or accounting change on
    rejected calls. */
 uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t op, uint32_t va, uint32_t source, uint32_t size,
@@ -921,6 +943,7 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
                 r[0] = map_own_block(p, id, r[1], r[2], r[3]);
             else {
                 CtrObject* o = &p->objects[id];
+                if (!r[1]) r[1] = o->data.shared.address; /* a system block has its own address, which the game names with 0 (Azahar SharedMemory::Map) */
                 if ((r[1] & 4095) || r[1] < 0x10000000 || (uint64_t)r[1] + o->data.shared.size > 0x1f800000)
                     r[0] = INVALID_ADDRESS;
                 else if (r[2] != o->data.shared.permissions || (r[3] != 0 && r[3] != 0x10000000))

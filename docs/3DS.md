@@ -427,6 +427,26 @@ effect at once, without the fade of some milliseconds, and the commands that set
 volumes, addresses, timers and loops are accepted and ignored. The test is
 `3ds_csnd`.
 
+`ldr:ro` (`services/ro.c`, from Azahar's `ldr_ro.cpp` and `cro_helper.cpp`) loads
+CRO libraries. Initialize maps the static module, and LoadCRO (both forms) maps
+the library from the game's buffer into the process image region, rebases it,
+applies its internal and external relocations, copies its data segment to the
+buffer the game gave, links it with the registered modules and cuts it to its fix
+level. UnloadCRO, LinkCRO, UnlinkCRO and Shutdown undo these steps. Two points
+differ from Azahar: the data copy, which Azahar leaves out, and the ARM and Thumb
+branch relocation types, which it does not apply. The signature in the CRR is not
+checked. The code of a library has no static entry, so it compiles at run time
+(the title's hints keep its blocks for the next recompile). The test is `3ds_ro`,
+with a library built by hand.
+
+`APT:GetSharedFont` (`services/font.c`, from Azahar's `apt.cpp` and
+`bcfnt.cpp`) makes the shared font block at its first call: the font of the
+stand-in archive (`cbf_std.bcfnt.lz`) decompressed, with its section offsets made
+absolute for the address of the block in the old linear heap region, and a
+shared block for the game to map with `MapMemoryBlock` at address 0. A RomFS
+image of more than 1 GiB (a cartridge with a large RomFS) mounts, as it is read
+where it lies.
+
 `gsp::Gpu` is modeled with real bounded resources: RegisterInterruptRelayQueue
 returns the genuine `0x2a07` first-initialization result, one writable 0x1000
 GX/interrupt shared block and up to four relay threads with real interrupt-queue

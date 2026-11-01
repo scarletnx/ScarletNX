@@ -18,6 +18,9 @@ bool snx_ctr_romfs_open(FsTree* tree, SnxCtrRomfs** out);
    none), as an empty romfs/ folder serializes. False for an image too small
    or too large */
 bool snx_ctr_romfs_open_image(const unsigned char* image, uint64_t size, uint64_t mtime, SnxCtrRomfs** out);
+/* A file of the root folder of a level-3 image by its name: where its bytes lie in the image and how many */
+bool snx_ctr_romfs_image_file(const unsigned char* image, uint64_t size, const char* name, uint64_t* offset,
+                              uint64_t* length);
 void snx_ctr_romfs_free(SnxCtrRomfs* fs);
 uint64_t snx_ctr_romfs_size(const SnxCtrRomfs* fs);
 bool snx_ctr_romfs_read(SnxCtrRomfs* fs, uint64_t offset, void* data, size_t size);

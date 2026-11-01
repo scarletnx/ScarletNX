@@ -8,6 +8,8 @@
 static bool preloaded(const SnxCtrProcess* p, uint32_t id);
 #include "common/utilities/endian.h"
 #include "3ds/services/apt.h"
+#include "3ds/services/font.h"
+#include <stdlib.h>
 #include "services/apt.swipc.inc"
 static uint32_t snx_ctr_apt_wire_GetLockHandle(SnxCtrIpc* c, uint32_t attributes, uint32_t* corrected, uint32_t* state,
                                                uint32_t* lock) {
@@ -78,6 +80,42 @@ static uint32_t snx_ctr_apt_wire_NotifyToWait(SnxCtrIpc* c, uint32_t app_id) {
 }
 static uint32_t snx_ctr_apt_wire_IsNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;
+    return 0;
+}
+/* GetSharedFont (0x44): the font block the console's APT loads at boot, a system-pool block at its address in the old
+   linear heap region (also for a New 3DS title, as Azahar answers), made at the first call from the stand-in archive
+   and read-only for the game. Its handle is a shared block the game may map */
+extern const unsigned char snx_ctr_shared_font[];
+extern const size_t snx_ctr_shared_font_size;
+#define FONT_SIZE 0x332000u
+static uint32_t snx_ctr_apt_wire_GetSharedFont(SnxCtrIpc* c, uint32_t* address, uint32_t* memory) {
+    SnxCtrProcess* p = c->process;
+    uint32_t result = p->apt_font ? snx_ctr_handle_add(p, p->apt_font, memory)
+                                  : snx_ctr_object_create(p, CTR_OBJ_SHARED, memory);
+    if (result) return result;
+    if (!p->apt_font) {
+        uint32_t physical = snx_ctr_shared_pages(p, FONT_SIZE), virt = CTR_LINEAR + (physical - CTR_PHYS_BASE);
+        unsigned char* block = physical ? calloc(1, FONT_SIZE) : NULL;
+        bool ok = block && snx_ctr_shared_font_build(snx_ctr_shared_font, snx_ctr_shared_font_size, block, FONT_SIZE, virt) &&
+                  snx_ctr_map(p->space, virt, physical, FONT_SIZE, SNX_CTR_READ | SNX_CTR_WRITE) == SNX_CTR_MEM_OK &&
+                  snx_ctr_write_ram(p->space, virt, block, FONT_SIZE) == SNX_CTR_MEM_OK &&
+                  snx_ctr_unmap(p->space, virt, FONT_SIZE) == SNX_CTR_MEM_OK; /* the game maps the block itself */
+        free(block);
+        if (!ok) {
+            fprintf(stderr, "3ds apt: the shared font block cannot be made\n");
+            (void)snx_ctr_handle_close(p, *memory);
+            return 0xd86007f3u;
+        }
+        p->apt_font = snx_ctr_handle_object(p, *memory);
+        ++p->objects[p->apt_font].refs;
+        p->apt_font_address = virt;
+        CtrObject* shared = &p->objects[p->apt_font];
+        shared->data.shared.physical = physical;
+        shared->data.shared.size = FONT_SIZE;
+        shared->data.shared.permissions = SNX_CTR_READ;
+        shared->data.shared.address = virt; /* where MapMemoryBlock at address 0 puts it */
+    }
+    *address = p->apt_font_address;
     return 0;
 }
 /* ReceiveParameter (0xd) takes the queued parameter; GlanceParameter (0xe) answers the same and leaves it queued */
