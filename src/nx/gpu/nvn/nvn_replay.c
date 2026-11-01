@@ -216,8 +216,8 @@ static void run(void* arg) {
             const NvnReplayPresent* p = &j->present;
             u64 cpu = p->gva ? gmmu_translate(p->gva) : 0;
             if (g_renderer_up && cpu)
-                g_renderer->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop, 0,
-                                           p->released_ns, p->period_ns, g_nvn.replay.shown);
+                g_renderer->present_buffer(cpu, p->w, p->h, p->pitch, p->linear ? 0 : 3, p->bhl, p->fmt, p->crop,
+                                           p->transform, p->released_ns, p->period_ns, g_nvn.replay.shown);
             else if (g_renderer_up) /* nothing to show: black, which still ends the renderer's frame */
                 g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 0, p->crop, 0, p->released_ns, p->period_ns,
                                            g_nvn.replay.shown);
