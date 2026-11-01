@@ -339,7 +339,11 @@ static u32 flags_of(const char* n, u32 len, const VfKinds* k) {
         "nvnCommandBufferSetCommandMemoryCallbackEnabled", "nvnDeviceFinalizeCommandHandle",
         /* a CPU read of the texels of a region into the game's memory: nothing the GPU draws, and the shadow has no
            room of the region's size for them (the 0x100 bytes of an output argument) */
-        "nvnTextureReadTexels"};
+        "nvnTextureReadTexels",
+        /* an NvRm sync is an object of the game's NvRm library, which the driver's code calls through its vtable to
+           reset, read or fill: the zeroed output the shadow would hand it has none, and a copy of the game's would
+           close or duplicate the game's own fences */
+        "nvnSyncGetNvRmSyncNVX", "nvnSyncInitializeFromNvRmSyncNVX"};
     u32 f = 0, i;
     if (k && k->kinds && k->kinds[0] && ends(n, len, LIT("Initialize")) && !strstr(n, "Builder")) f |= F_INIT;
     if (ends(n, len, LIT("Finalize"))) f |= F_FINAL;
