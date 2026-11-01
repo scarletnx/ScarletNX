@@ -75,7 +75,7 @@ typedef struct {
     const u64* aot_addresses;
     const GuestFn* aot_functions;
     size_t aot_count;
-    /* every call through CPU.disp, as the AOT module's --hook-direct-calls (gpu/nvn_trace.c wraps slots) */
+    /* every call through CPU.disp, as the AOT module's --hook-direct-calls (gpu/nvn/nvn_direct.c takes slots) */
     int hook_direct_calls;
     /* SVC #imm through RtAPI.svcs, as the AOT module's (SnxCodegen.direct_svc): the runtime must give RtAPI.svcs */
     int direct_svc;

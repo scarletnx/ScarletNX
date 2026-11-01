@@ -10,7 +10,7 @@ rendering equivalence. Command recording defers work to nvn_replay.
 --contracts accepts reviewed hook declarations in a JSON list. --emit-bindings
 emits those declarations only after checking the reference ABI and an existing
 C handler. It never invents a handler body or marks an unimplemented API supported.
---log also records actual calls that stopped nvn_direct and nvn_verify differences.
+--log also records actual calls that stopped nvn_direct.
 Keep reports and caches outside the checkout when indexing private references.
 """
 
@@ -202,13 +202,11 @@ def main():
     if not apis:
         p.error('no NVN API declarations found in --reference')
     bindings = registered_bindings(a.runtime / 'src/nx/gpu/nvn/nvn.hook')
-    called, resolved, differences = set(), set(), []
+    called, resolved = set(), set()
     for log in a.log:
         for line in log.read_text(errors='replace').splitlines():
             called.update(re.findall(r'game called (nvn\w+)', line))
             resolved.update(re.findall(r'game resolved (nvn\w+)', line))
-            if 'nvn_verify:' in line or 'nvn verify:' in line:
-                differences.append(line)
     names = sorted(set(apis) | set(bindings) | called | resolved)
     report = []
     for name in names:
@@ -225,7 +223,7 @@ def main():
                                    '\n'.join(generated) + '\n')
     a.out.parent.mkdir(parents=True, exist_ok=True)
     result = {'schema': SCHEMA, 'files': len(rows), 'cached_files': reused, 'jobs': a.jobs,
-              'seconds': round(time.perf_counter() - start, 4), 'apis': report, 'verify_differences': differences,
+              'seconds': round(time.perf_counter() - start, 4), 'apis': report,
               'limits': 'Lexical index, not semantic equivalence. Indirect calls and deferred replay need review.'}
     a.out.write_text(json.dumps(result, indent=2) + '\n')
     print(f'{len(names)} APIs, {len(bindings)} bindings, {len(called)} called blockers, '

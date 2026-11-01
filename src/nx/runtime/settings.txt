@@ -753,15 +753,6 @@ setting Hook families verified
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
     help and the log names each call whose result, registers or bytes differ (docs/HOOKS.md). Slow: for checking a
     help hook, never for playing. Empty: none
-setting NVN trace
-    key nvn_trace
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = logs each NVN function the game resolves, the GPFIFO submissions during each queue call, and at exit
-    help the calls of every function used (gpu/nvn_trace.c). Calls by direct branch are counted only in a game
-    help recompiled with --hook-direct-calls. The game runs slower
 setting NVN direct
     key nvn_direct
     int 0 2
@@ -772,15 +763,6 @@ setting NVN direct
     help 2 = it does where the game's NVN API version is one nvn_direct has measured layouts for, read from the game's
     help driver at its first NVN call, and the driver runs elsewhere (the log says which once); 0 = the driver runs.
     help Unfinished: the game stops at the first NVN function it calls that isn't implemented yet, naming it
-setting NVN verify
-    key nvn_verify
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    help 1 = with nvn_direct, the game's own NVN driver also runs every NVN call, on shadow objects of its own, and its
-    help command stream is decoded beside nvn_direct's replay: the log names each part of a draw's state where the two
-    help differ, once (gpu/nvn/nvn_verify.c, docs/NVN_HLE.md). Slow: for checking nvn_direct, never for playing
 setting Shader corpus
     key shader_corpus
     text 1024

@@ -52,7 +52,7 @@ static void usage(void) {
          "  --tmpfs                Leave the RomFS in the extraction (in tmpfs), which the game reads it from");
     puts("  --jit-only             Generate no code: the runtime JIT compiles all of it\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
-         "  --hook-direct-calls    Route calls and branches between functions through dispatch (nvn_trace)\n"
+         "  --hook-direct-calls    Route calls and branches between functions through dispatch (NVN)\n"
          "  --keep-ir              Save the generated code (LLVM IR) in <NAME>/<NAME>_build\n"
          "  -q, --quiet            Suppress progress");
     puts("Each game is a folder of <outdir>, <NAME>/: its program <NAME>, <NAME>_code and <NAME>_data/.\n"

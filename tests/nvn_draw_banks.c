@@ -1,12 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's constant banks and point sprite origin, which the game's driver's must match (nvn_verify):
+/* nvn_direct's constant banks and point sprite origin, which the game's driver's must match:
    nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1 and the sprite origin of a draw's dynamic
    state. The records go in through nvn_draw_record */
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/renderer.h"
-#include "nx/gpu/nvn/nvn_verify.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
@@ -24,7 +23,7 @@ static u8 memory[1 << 20];
 u8* g_mem = memory; /* guest address a is memory + a */
 
 /* ---- what the file needs of the runtime: stubs, none of them reached by the cases below */
-Settings g_settings;    /* nvn_verify off */
+Settings g_settings;
 static Renderer g_none; /* a renderer with no draw: a draw only builds the state */
 const Renderer* g_renderer = &g_none;
 void pm_init(PMutex* m) { (void)m; }
@@ -86,10 +85,6 @@ int nvn_fmt_bpb(int format, int* bw, int* bh) {
     (void)format;
     *bw = *bh = 1;
     return 0;
-}
-void nvn_verify_live_draw(const DsState* ds, const DrawCall* dc) {
-    (void)ds;
-    (void)dc;
 }
 void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;

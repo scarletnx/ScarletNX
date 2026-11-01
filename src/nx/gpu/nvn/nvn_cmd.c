@@ -7,7 +7,7 @@
    Memory, as NVN hands it out: the game adds command memory (AddCommandMemory, a pool and a range) and records into
    it; when the game's driver would run out of it, the command buffer calls the game's memory callback, which adds
    more. GetCommandMemoryUsed counts the bytes the game's driver writes for each command (its methods, measured
-   against it under nvn_verify), not the records' own: games size what they allocate for a recording, and place the
+   against it), not the records' own: games size what they allocate for a recording, and place the
    next one, by it, and one game sizes heaps by a table of what the driver takes on the console, which a recording
    counted bigger overflows. A command nobody measured counts its record's size.
 
@@ -30,7 +30,6 @@
 #include "nx/gpu/nvn/nvn_cmd.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
-#include "nx/gpu/nvn/nvn_verify.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
@@ -121,7 +120,6 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at) {
         if (!q->owner && !q->live && q->top && (i64)(nvn_replay_walked() - q->quiet) >= 0) {
             q->top = 0;
             q->reset = st->serial;
-            nvn_verify_memory_back(q->at, q->size);
         }
         if (!st->s[t].owner && st->s[t].size - st->s[t].top >= want) {
             k = t;
