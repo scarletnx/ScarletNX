@@ -282,19 +282,15 @@ void vk_pipeline_init(void) {
             g_vk.props.limits.maxDescriptorSetSampledImages < 5 * (SH_MAXTEX + 2 * SNX_TEX_ARRAY))
             g_shader_texture_arrays = 0;
         for (i = 0; i < SNX_VKB_END; i++) {
-            int image = i >= SNX_VKB_IMG && i < SNX_VKB_RS;
-            if (image && (s >= 2 || i - SNX_VKB_IMG >= image_slots)) continue; /* compute, vertex and fragment */
+            /* storage images and buffer images: compute, vertex and fragment */
+            if (i >= SNX_VKB_IMG && i < SNX_VKB_RS && (s >= 2 || i - SNX_VKB_IMG >= image_slots)) continue;
             if (i >= SNX_VKB_TEXARRAY && !g_shader_texture_arrays) continue;
-            if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY && (s != 0 || i - SNX_VKB_IMGBUF >= buffer_slots)) continue;
-            if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY) image = 1;
+            if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY && (s >= 2 || i - SNX_VKB_IMGBUF >= buffer_slots)) continue;
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
                 .descriptorType = binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
-                .stageFlags = !image               ? vis[s]
-                              : s == 1             ? VK_SHADER_STAGE_FRAGMENT_BIT
-                              : i < SNX_VKB_IMGBUF ? VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT
-                                                   : VK_SHADER_STAGE_COMPUTE_BIT};
+                .stageFlags = vis[s]};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;

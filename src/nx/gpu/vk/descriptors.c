@@ -119,6 +119,9 @@ static size_t descriptor_size(VkDescriptorType type) {
             return g_vk.feat.robustBufferAccess ? p->robustStorageBufferDescriptorSize : p->storageBufferDescriptorSize;
         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: return p->combinedImageSamplerDescriptorSize;
         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: return p->storageImageDescriptorSize;
+        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            return g_vk.feat.robustBufferAccess ? p->robustStorageTexelBufferDescriptorSize
+                                                : p->storageTexelBufferDescriptorSize;
         default: fatal("vulkan: unsupported graphics descriptor type %u", (u32)type); return 0;
     }
 }
@@ -171,7 +174,13 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     g_descriptors.bytes += size;
     for (u32 i = 0; i < count; i++) {
         const VkWriteDescriptorSet* w = &writes[i];
-        if (w->pNext || w->dstBinding >= SNX_VKB_END) fatal("vulkan: invalid graphics descriptor write");
+        /* a texel buffer's write carries its view's create info, which names the buffer, range and format (render.c) */
+        int texel = w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+        const VkBufferViewCreateInfo* view = w->pNext;
+        if (texel != !!view ||
+            (texel && (w->descriptorCount != 1 || view->sType != VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO)) ||
+            w->dstBinding >= SNX_VKB_END)
+            fatal("vulkan: invalid graphics descriptor write");
         size_t stride = descriptor_size(w->descriptorType);
         VkDeviceSize offset = g_descriptors.layouts[index].offset[w->dstBinding] + (u64)w->dstArrayElement * stride;
         if (offset > size || w->descriptorCount > (size - offset) / stride)
@@ -185,6 +194,11 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
                 buffer.range = b->range;
                 if (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) info.data.pUniformBuffer = &buffer;
                 else info.data.pStorageBuffer = &buffer;
+            } else if (texel) {
+                buffer.address = address(view->buffer) + view->offset;
+                buffer.range = view->range;
+                buffer.format = view->format;
+                info.data.pStorageTexelBuffer = &buffer;
             } else if (w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                 info.data.pCombinedImageSampler = &w->pImageInfo[j];
             else info.data.pStorageImage = &w->pImageInfo[j];
