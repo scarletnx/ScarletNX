@@ -262,12 +262,15 @@ int vk_own_init(void) {
     return g_owned.traps ? 0 : -1;
 }
 
+void vk_own_res_wrote(VkOwnRes* r) {
+    if (r->written < vk_submit_number()) r->written = vk_submit_number();
+}
+
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     OwnRange o;
     u8* d;
     if (!size) return;
-    /* every producer records its writes before it publishes them: they are in the submission being recorded */
-    if (r->written < vk_submit_number()) r->written = vk_submit_number();
+    vk_own_res_wrote(r); /* every producer records its writes before it publishes them */
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     if (g_owned.traps) vk_uma_quiesce(cpu, size); /* commands reading the pages in place run before the trap */
