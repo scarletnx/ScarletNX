@@ -24,6 +24,10 @@ typedef struct {
     u64 flag; /* nvnPrivate0's address, 0 when the driver exports none */
     u32 api;
     int active, decided;
+    /* the driver's recompiled code for the NvRm sync conversions and their addresses, which the game resolved and
+       nvn_direct took over (nvn_object.c runs them on a sync in the driver's layout); 0 until resolved */
+    GuestFn nvrm_get, nvrm_init;
+    u64 nvrm_get_at, nvrm_init_at;
 } NvnDirectState;
 
 /* nvn_direct=1: the runtime runs the game's NVN calls itself, and the game's NVN driver doesn't run; 2 (auto): where
@@ -38,6 +42,10 @@ int nvn_direct_active(void);
    characters) on c (it puts the name below c's stack pointer and returns to c's link register), the function's
    address or 0; and the driver's nvnPrivate0 word (0 when it exports none), read and put back */
 u64 nvn_direct_lookup(CPU* c, const char* name, size_t n);
+/* The driver's code fn, recompiled for its function at (whose slot nvn_direct took), run on c from inside an NVN
+   call with the arguments a0 to a2, as the driver runs a callback: its return to the NVN call's return address ends
+   the run. Its x0 */
+u64 nvn_direct_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2);
 u32 nvn_direct_flag(void);
 void nvn_direct_flag_set(u32 v);
 

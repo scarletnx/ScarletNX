@@ -100,6 +100,15 @@ void loader_segments(LoaderSegEach each, void* ctx) {
     (void)ctx;
 }
 u32 nvn_api_pack(i32 major, i32 minor) { return (u32)major << 16 | (u32)minor; }
+u64 nvn_direct_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
+    (void)c;
+    (void)fn;
+    (void)at;
+    (void)a0;
+    (void)a1;
+    (void)a2;
+    return 0;
+}
 int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
     (void)mem;
     (void)lo;
