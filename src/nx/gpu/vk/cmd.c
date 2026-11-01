@@ -260,7 +260,10 @@ static void ring_reset(Ring* r, const VmaBudget* budget) {
 }
 
 u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* the GPU thread's alone, which writes them */
-/* kind: VK_WAIT_*, for the statistics */
+/* in slices, with the timeline read between them: a driver can miss the wake of a wait for a value submitted after the
+   wait began (radv: the release thread stayed in vkWaitSemaphores for 3002 with the timeline at 3003, and a game's
+   frame never ended). Such a wait ends once the timeline is past its value, and says so. kind: VK_WAIT_*, for the
+   statistics */
 static void timeline_wait(u64 value, int kind) {
     VkSemaphoreWaitInfo wi = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_gsem, .pValues = &value};
@@ -271,7 +274,20 @@ static void timeline_wait(u64 value, int kind) {
     int mine = gpu_wait_note("a graphics submission", value);
     if (mine) vk_gpuprof_waited(value, kind);
     SNX_ZONE_V(z, "timeline wait", value);
-    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
+    for (;;) {
+        VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 50000000ull);
+        if (r != VK_TIMEOUT) {
+            VK_OK(r);
+            break;
+        }
+        if (VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done)) && done >= value) {
+            WARN_LIMIT(4,
+                       "vulkan: the wait for graphics submission %llu didn't end with the timeline at %llu: the driver "
+                       "missed its wake, and the wait ends here\n",
+                       (unsigned long long)value, (unsigned long long)done);
+            break;
+        }
+    }
     SNX_ZONE_END(z);
     gpu_wait_note(NULL, 0);
     if (mine) {
