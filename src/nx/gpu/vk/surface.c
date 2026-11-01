@@ -181,6 +181,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     s->sh = is_rt ? vk_sc(h) : h;
     s->layers = layers;
     s->levels = 1;
+    s->depth3d = 1; /* one slice deep, which a storage image over the target compares (tex_from_tic) */
     s->fkey = fkey;
     s->f = f;
     s->bl = bl;

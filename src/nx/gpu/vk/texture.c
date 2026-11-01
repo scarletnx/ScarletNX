@@ -844,8 +844,10 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
             if (rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
             /* Crops are sampling snapshots, without storage usage or a guest
                layout for publishing writes. Resolve writable mismatches into
-               a surface with the descriptor's own guest layout instead. */
-            if (storage && (rt->w != w || rt->h != h || rt->layers != layers ||
+               a surface with the descriptor's own guest layout instead. A
+               scaled target's pixels aren't where the program's coordinates
+               write */
+            if (storage && (rt->w != w || rt->h != h || rt->sw != rt->w || rt->sh != rt->h || rt->layers != layers ||
                             rt->depth3d != d3 || rt->f.vk != f.vk || !rt->storage_capable))
                 goto texture_from_memory;
             /* the same bytes in another color format (an RGBA8 target read as R32_Uint): sampling the target itself
