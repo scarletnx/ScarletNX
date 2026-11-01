@@ -585,6 +585,7 @@ static inline VkSampleCountFlagBits vk_surf_samples(const Surf* s) {
 /* whether the device makes images of format f, usage and flags with samples of the sample layout msaa */
 int vk_ms_supported(VkFormat f, VkImageUsageFlags usage, VkImageCreateFlags flags, u32 msaa);
 Surf* vk_rt_find(u64 gva);
+int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /* a header with s's pixels */
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): reload it if the GPU wrote its memory */
@@ -1203,9 +1204,9 @@ void vk_pass_ends_log(void);
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
 void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o);
-/* viewport index of a draw's state with the resolution scale, and the facing its first viewport gives */
+/* viewport index of a draw's state with the resolution scale, and the draw's facing */
 VkViewport vk_viewport_from(const DsDynamic* d, const DsViewports* v, u32 index);
-VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v);
+VkFrontFace vk_render_front_face(const DsDynamic* d);
 void vk_render_draw_texture(const DsState* ds, const DrawTexture* t);
 void vk_render_discard(const DsState* ds, u32 targets);
 void vk_render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o);

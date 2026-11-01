@@ -842,12 +842,17 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
             vk_rt_note_read(rt);
             if (rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) goto texture_from_memory;
-            /* Crops are sampling snapshots, without storage usage or a guest
-               layout for publishing writes. Resolve writable mismatches into
-               a surface with the descriptor's own guest layout instead. */
-            if (storage && (rt->w != w || rt->h != h || rt->layers != layers ||
-                            rt->depth3d != d3 || rt->f.vk != f.vk || !rt->storage_capable))
-                goto texture_from_memory;
+            /* Crops are sampling snapshots, without storage usage or a guest layout for publishing writes: a
+               storage image is the target itself when its pixels lie where the target's do, a smaller header of the
+               same rows too (dynamic resolution writes a frame's corner of it, which its samples' crops then take
+               up), else a surface with the descriptor's own guest layout. A scaled target's pixels aren't where the
+               program's coordinates write */
+            if (storage) {
+                if (!vk_rt_same_layout(rt, w, h, bl, bh, pitch) || rt->sw != rt->w || rt->sh != rt->h ||
+                    rt->layers != layers || rt->depth3d != d3 || rt->f.vk != f.vk || !rt->storage_capable)
+                    goto texture_from_memory;
+                return rt;
+            }
             /* the same bytes in another color format (an RGBA8 target read as R32_Uint): sampling the target itself
                would convert its texels, so a copy in the texture's format holds them as they are. sRGB and linear
                twins are views of one image and need no copy */

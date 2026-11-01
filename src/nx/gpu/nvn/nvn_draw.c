@@ -417,15 +417,16 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.stencil_test = (u8)nvn_field(s, NVN_DS_STENCIL);
     y.alpha_test = alpha != NVN_ALPHA_FUNC_ALWAYS;
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
-    /* the window origin register as the game's driver writes it (NVN 53.13, 53.314 and 55.12, nvn_verify): the
-       flip, which reverses the facing, when one of a lower left origin and near = -w is set but not both, and never
-       the lower left bit, so y counts from the top of the targets as on the driver's (one game's NVN queue writes
-       the flip itself after its first submission) */
+    /* the window origin register as the game's driver writes it (nvn_verify, 43 games of NVN 53.5 to 55.15): the
+       flip, which reverses the facing, for a lower left origin whatever the depth mode, and never the lower left bit,
+       so y counts from the top of the targets as on the driver's. A driver older than 53.105 (53.13) flips for
+       near = -w too, unless the origin is lower left */
     u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
     u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
-    y.window_origin = (origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT) != (depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W)
-                          ? DS_ORIGIN_FLIP_Y
-                          : 0;
+    int flip = origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+    if (g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W)
+        flip = !flip;
+    y.window_origin = flip ? DS_ORIGIN_FLIP_Y : 0;
     y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597

@@ -169,6 +169,15 @@ u64 vk_rt_made(void) { return g_rt_made; }
 /* the guest's width and height of s: its pixels', or a multisampled one's samples' (DS_MSAA_) */
 static u32 guest_w(const Surf* s) { return s->w << ds_msaa_log2_x(s->msaa); }
 static u32 guest_h(const Surf* s) { return s->h << ds_msaa_log2_y(s->msaa); }
+/* whether a w x h image of s's texel size laid out as given (block linear with blocks 2^bh GOBs tall, or pitch linear
+   rows pitch bytes apart) has each of its pixels at the guest bytes where single-sampled s has it: no larger than s,
+   its rows as many GOBs wide (or as far apart) and its blocks as tall. Dynamic resolution writes and samples a target
+   through such a smaller header */
+int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch) {
+    if (s->msaa || w > s->w || h > s->h || !bl != !s->bl) return 0;
+    if (!bl) return pitch == s->pitch;
+    return (w * s->f.bpp + 63) / 64 == (s->w * s->f.bpp + 63) / 64 && bl_height(h, bh) == bl_height(s->h, s->bh);
+}
 /* a surface of w by h pixels with the samples of the sample layout msaa (render targets only: textures have one) */
 static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 bh, u32 pitch, int is_rt, u32 layers,
                          u32 msaa) {
@@ -181,6 +190,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     s->sh = is_rt ? vk_sc(h) : h;
     s->layers = layers;
     s->levels = 1;
+    s->depth3d = 1; /* one slice deep, which a storage image over the target compares (tex_from_tic) */
     s->fkey = fkey;
     s->f = f;
     s->bl = bl;
