@@ -25,6 +25,7 @@ SnxIrFeatures snx_ir_host;
 static struct {
     int slp_off;
     int domain_off; /* snx_ir_init's, of X86DomainReassignment */
+    int region_budget; /* snx_ir_init's, of the greedy allocator's growRegion */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
@@ -88,6 +89,13 @@ int snx_ir_init(char* error, size_t error_size) {
         static const char* const off[] = {"scarletnx", "-disable-x86-domain-reassignment"};
         LLVMParseCommandLineOptions(2, off, NULL);
         g_ir.domain_off = 1;
+    }
+    if (!g_ir.region_budget) {
+        /* the greedy allocator's growRegion, at LLVM's budget of 10000, did not end on a 4310-block function with a
+           cold helper call at each of its 714 vector FP sites; at 2000 that function takes 4 s, and its whole unit 76 s */
+        static const char* const budget[] = {"scarletnx", "-grow-region-complexity-budget=2000"};
+        LLVMParseCommandLineOptions(2, budget, NULL);
+        g_ir.region_budget = 1;
     }
     if (x86 && !snx_ir_host.x86) {
         char* f = LLVMGetHostCPUFeatures();
