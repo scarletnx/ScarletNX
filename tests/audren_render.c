@@ -1169,6 +1169,14 @@ static void update_mix_by_position(void) {
     audren_state_free(state);
 }
 
+/* the first update's line says the revision's number: the magic's fourth byte is '0' plus it, so 51 for revision 3 */
+static void revision_number(void) {
+    const u32 rev3 = ('R' << 0) | ('E' << 8) | ('V' << 16) | ((u32)('0' + 3) << 24);
+    const u32 rev11 = ('R' << 0) | ('E' << 8) | ('V' << 16) | ((u32)('0' + 11) << 24);
+    CHECK(audren_revision(rev3) == 3 && audren_revision(rev11) == 11, "revisions %d and %d", audren_revision(rev3),
+          audren_revision(rev11));
+}
+
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
@@ -1182,6 +1190,7 @@ int main(void) {
     update_voice_rev14();
     update_mix_dirty_only();
     update_mix_by_position();
+    revision_number();
 
     /* the resampler at a ratio of one: an 11 kHz voice keeps its level at default quality as at high */
     for (u8 q = 0; q < 2; q++) {
