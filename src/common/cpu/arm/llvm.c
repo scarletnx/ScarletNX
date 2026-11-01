@@ -456,9 +456,12 @@ static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef v
         if (bytes < 4) value = LLVMBuildTrunc(a->b, value, type, "");
         LLVMValueRef store = LLVMBuildStore(a->b, host_order(a, value, bytes), memptr(a, addr));
         LLVMSetAlignment(store, 1);
-        /* A local ordinary store may clear the monitor. Clearing on every local
-           store is a permitted spurious exclusive failure. */
-        PUT(a, exclusive_valid, c32(a, 0));
+        /* A store clears the local monitor only when it overlaps the reserved bytes. Clearing on every store
+           would starve a loop that stores to its stack between LDREXD and STREXD, which never succeeds. */
+        LLVMValueRef end = LLVMBuildAdd(a->b, addr, c32(a, bytes), "");
+        LLVMValueRef reserved_end = LLVMBuildAdd(a->b, GET(a, exclusive_address), GET(a, exclusive_size), "");
+        LLVMValueRef overlap = band(a, cmp(a, LLVMIntULT, addr, reserved_end), cmp(a, LLVMIntUGT, end, GET(a, exclusive_address)));
+        PUT(a, exclusive_valid, LLVMBuildSelect(a->b, overlap, c32(a, 0), GET(a, exclusive_valid), ""));
         return;
     }
     LLVMValueRef fn = get(a, offsetof(SnxArmCPU, io), a->ptr);
