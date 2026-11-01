@@ -491,6 +491,24 @@ static int nn_am_service_IVi2Session_Unknown105(SvcObj* self) {
     (void)self;
     R_SUCCEED();
 }
+/* the present: the frame's buffer slots and the fence its work reaches, answered with the mask of the slots the client
+   may acquire next. Nothing is shown here, so every slot is handed back at once, which is what keeps a title from
+   waiting on a buffer this machine never holds: the console frees a buffer once its frame's fence has passed, and the
+   60 Hz the main loop signals the vsync events with is what paces a title instead (Eden's Switch 2 work reports its
+   slots free the same way and hold each present to the next vblank)
+
+   The fence in the request is not waited for: holding a present until its frame reaches the value this SDK asks for
+   blocked a title's presentation thread for seconds at a time, since its driver signals its work with semaphore
+   releases that reach it much later than the fence does */
+static int nn_am_service_IVi2Session_PresentClientBuffer(SvcObj* self, const u8* present, u32* mask_lo,
+                                                         u32* mask_hi, u32* zero0, u32* zero1, u32* zero2,
+                                                         u32* zero3) {
+    (void)self, (void)present;
+    *mask_lo = 0x7fffu; /* every slot, as the console hands each back once its frame's fence has passed */
+    *mask_hi = 0;
+    *zero0 = *zero1 = *zero2 = *zero3 = 0;
+    R_SUCCEED();
+}
 
 /* ============================================ the Switch 2 syncpoint session (am.swipc) */
 /* The shared page AttachSyncpointMemory (gsv 204) laid out: one per application, as the console has one graphics

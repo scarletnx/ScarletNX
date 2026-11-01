@@ -590,6 +590,26 @@ static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
         default: LOG_LIMIT(4, "gpu: semaphore operation %08x is unknown\n", v); break;
     }
 }
+/* the Ampere puller's semaphore: a Switch 2 title's driver releases and acquires through method 0x1B (SEM_EXECUTE),
+   where an Ampere host uses 0x17..0x1A for SEM_ADDR_LO, SEM_ADDR_HI, SEM_PAYLOAD_LO and SEM_PAYLOAD_HI, and puts the
+   operation in bits 2:0 of the argument (Eden's Switch 2 work reads them the same way). A release names the value to
+   write; the rest compare the semaphore with the payload and never hold the GPU thread back (Eden checks them once and
+   goes on, so a title isn't stalled behind one it waits for a second channel to release) */
+static void ampere_semaphore(GpuChannel* ch, u32 v) {
+    u64 a = ((u64)(ch->puller[0x18] & 0x1FFFFFFu) << 32) | (ch->puller[0x17] & ~3u);
+    u32 payload = ch->puller[0x19];
+    switch (v & 7u) {
+        case 1: { /* RELEASE, as the Fermi layout's WriteLong: 4 bytes a Switch 2 title frees its buffers with */
+            u64 mirror = sem_mirror(a);
+            u8 rel[4];
+            snx_st_le32(rel, payload);
+            gpu_release_write(a, rel, sizeof rel);
+            if (mirror) gpu_release_write(mirror, rel, sizeof rel);
+            return;
+        }
+        default: return; /* 0 equals, 2 reaches, 3 reaches signed, 4 ands to non-zero, 5 ands to zero: look, and go on */
+    }
+}
 /* Eden's ProcessFenceActionMethod: SYNCPOINTB increments its syncpoint after the work before it, or waits for it to
    reach SYNCPOINTA's threshold */
 static void process_fence_action(GpuChannel* ch, u32 v) {
@@ -619,6 +639,11 @@ static void puller_method(GpuChannel* ch, u32 sub, u32 m, u32 v) {
     switch (m) {
         case PULLER_BIND_OBJECT: ch->sub_class[sub] = engine_class(v); break;
         case PULLER_SEMAPHORE_OPERATION: process_semaphore_trigger(ch, v); break;
+        case PULLER_SEMAPHORE_RELEASE:
+            /* on an Ampere (Switch 2) host this is SEM_EXECUTE, the semaphore release and acquire its driver uses;
+               on a Fermi one it is the old release method, which nothing in this runtime needs */
+            if (gpu_ampere_classes_on()) ampere_semaphore(ch, v);
+            break;
         case PULLER_SYNCPOINT_OPERATION: process_fence_action(ch, v); break;
         default: break;
     }
