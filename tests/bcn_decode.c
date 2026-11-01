@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* BC1 to BC7 blocks built by hand, against values worked out from the Khronos Data Format Specification's S3TC, RGTC
-   and BPTC chapters */
+   and BPTC chapters, with BC1 to BC5's interpolants as NVIDIA's GPUs decode them (support/bcn.c) */
 #include "support/bcn.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -51,16 +51,17 @@ static void ch16(const u8* blk, int kind, u32 x, u32 y, const u16* want, const c
 int main(void) {
     u8 blk[16];
 
-    /* BC1, four colors: red (0xF800) above blue (0x001F); pixels 0 to 3 take indices 0 to 3, the interpolants
-       (2 * 255 + 1) / 3 = 170 and (255 + 1) / 3 = 85 */
+    /* BC1, four colors: red (0xF800) above blue (0x001F); pixels 0 to 3 take indices 0 to 3, the interpolants of the
+       5 bit endpoints (2 * 31 + 0) * 22 / 8 = 170 and 31 * 22 / 8 = 85 */
     put_le(blk, 0xE4ull << 32 | 0x001Fu << 16 | 0xF800u);
     rgba(blk, BCN_BC1, 0, 0, 255, 0, 0, 255, "BC1 four colors, index 0");
     rgba(blk, BCN_BC1, 1, 0, 0, 0, 255, 255, "BC1 four colors, index 1");
     rgba(blk, BCN_BC1, 2, 0, 170, 0, 85, 255, "BC1 four colors, index 2");
     rgba(blk, BCN_BC1, 3, 0, 85, 0, 170, 255, "BC1 four colors, index 3");
-    /* three colors: the first endpoint the smaller; index 2 the midpoint (rounded up), index 3 transparent black */
+    /* three colors: the first endpoint the smaller; index 2 the midpoint, (0 + 31) * 33 / 8 = 127, index 3
+       transparent black */
     put_le(blk, 0xE4ull << 32 | 0xF800u << 16 | 0x001Fu);
-    rgba(blk, BCN_BC1, 2, 0, 128, 0, 128, 255, "BC1 three colors, index 2");
+    rgba(blk, BCN_BC1, 2, 0, 127, 0, 127, 255, "BC1 three colors, index 2");
     rgba(blk, BCN_BC1, 3, 0, 0, 0, 0, 0, "BC1 three colors, index 3");
 
     /* BC2: 4 bit alpha (15 and 8, times 17), and the same color block taken as four colors */
@@ -71,24 +72,24 @@ int main(void) {
     put_le(blk, 0x8Full);
     rgba(blk, BCN_BC2, 1, 0, 255, 0, 0, 136, "BC2 alpha 8");
 
-    /* BC3 alpha: 255 above 0, eight values: index 2 is 6/7 of 255, index 7 1/7 of it (rounded) */
+    /* BC3 alpha: 255 above 0, eight values: index 2 is 255 less 289/2048 of it, 219, index 7 289/2048 of it, 36 */
     put_le(blk, 7ull << 19 | 2ull << 16 | 0x00FFu);
     put_le(blk + 8, 0xF800u);
     rgba(blk, BCN_BC3, 0, 0, 255, 0, 0, 219, "BC3 eight alphas, index 2");
     rgba(blk, BCN_BC3, 1, 0, 255, 0, 0, 36, "BC3 eight alphas, index 7");
-    /* 0 below 255, six values: index 2 is 1/5, 6 is 0 and 7 is 255 */
+    /* 0 below 255, six values: index 2 is 385/2048 of 255, (1024 + 385 * 255) / 2048 = 48, 6 is 0 and 7 is 255 */
     put_le(blk, 7ull << 22 | 6ull << 19 | 2ull << 16 | 0xFF00u);
-    rgba(blk, BCN_BC3, 0, 0, 255, 0, 0, 51, "BC3 six alphas, index 2");
+    rgba(blk, BCN_BC3, 0, 0, 255, 0, 0, 48, "BC3 six alphas, index 2");
     rgba(blk, BCN_BC3, 1, 0, 255, 0, 0, 0, "BC3 six alphas, index 6");
     rgba(blk, BCN_BC3, 2, 0, 255, 0, 0, 255, "BC3 six alphas, index 7");
 
-    /* BC4: 6/7 of the range to 16 bits, 56172.86 rounded */
+    /* BC4: 221/257 of 255 * 257 (NVIDIA's weight in place of 6/7), 56355 */
     put_le(blk, 2ull << 16 | 0x00FFu);
-    ch16(blk, BCN_BC4, 0, 0, (const u16[]){56173}, "BC4 unorm, index 2");
+    ch16(blk, BCN_BC4, 0, 0, (const u16[]){56355}, "BC4 unorm, index 2");
     ch16(blk, BCN_BC4, 1, 0, (const u16[]){65535}, "BC4 unorm, index 0");
-    /* signed: 127 and -128 (read as -127); index 2 is (6 * 127 - 127) / 7, 5/7 of 32767: 23405 */
+    /* signed: 127 and -128 (read as -127); index 2 is (222 * 127 - 36 * 127) / 258, 186/258 of 32767 rounded: 23623 */
     put_le(blk, 1ull << 19 | 2ull << 16 | 0x807Fu);
-    ch16(blk, BCN_BC4_SNORM, 0, 0, (const u16[]){23405}, "BC4 snorm, index 2");
+    ch16(blk, BCN_BC4_SNORM, 0, 0, (const u16[]){23623}, "BC4 snorm, index 2");
     ch16(blk, BCN_BC4_SNORM, 1, 0, (const u16[]){0x8001}, "BC4 snorm, index 1: -32767");
     /* BC5: the second block is green */
     put_le(blk, 0x00FFu);
