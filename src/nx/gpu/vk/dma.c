@@ -63,7 +63,7 @@ static int dma(const GpuDmaOp* o) {
         } else if (!vk_rt_over(o->src.addr, sspan)) {
             /* the buffer cache's copy, made again only when its bytes change: one game's menu copied the same
                1080p surface from guest memory twice a frame, 17 MB a frame over PCIe */
-            got = vk_buf_get_strict(o->src.addr, sspan, &sb, &sat);
+            got = vk_buf_get_copy_src(o->src.addr, sspan, &sb, &sat);
         } else
             got = stage_range(o->src.addr, sspan, &sb, &sat);
         if (!got) return 0;

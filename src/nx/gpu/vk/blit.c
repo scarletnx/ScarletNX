@@ -45,7 +45,7 @@ static int blit(const GpuBlit* b) {
     u32* t = (u32*)vk_stage(4ull * (n + rows), vk_stage_align(), &tb, &tat);
     /* a source no render target is drawn over: the buffer cache's copy, made again only when its bytes change */
     if (!t || !(vk_rt_over(b->src.addr, sspan) ? stage_range(b->src.addr, sspan, &sb, &sat)
-                                               : vk_buf_get_strict(b->src.addr, sspan, &sb, &sat)))
+                                               : vk_buf_get_copy_src(b->src.addr, sspan, &sb, &sat)))
         return 0;
     memcpy(t, b->scol, 4ull * n);
     memcpy(t + n, b->srow, 4ull * rows);

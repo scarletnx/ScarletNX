@@ -2238,9 +2238,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             use(i, buf, off);
             return 1;
         }
-        /* with write tracking, an own buffer is checked only when its memory was written */
-        const u8* host = e->own ? entry_host(e, gva, len) : NULL;
-        int w = !e->own ? -1 : host ? vk_written_since(host, len, e->wseen) : written_since_gva(gva, len, e->wseen);
+        /* with write tracking, an own buffer is checked only when its memory was written. Not a copy engine's source
+           (strict 2), which is compared: the tracking can miss a CPU write (one game's upload ring, whose lightmap atlas
+           was then copied with stale bytes), and what a copy lands in keeps them */
+        const u8* host = e->own && strict < 2 ? entry_host(e, gva, len) : NULL;
+        int w = !e->own || strict == 2 ? -1
+                : host                 ? vk_written_since(host, len, e->wseen)
+                                       : written_since_gva(gva, len, e->wseen);
         if (w == 1 && host && len >= PATCH_MIN) { /* the written pages, not the whole range again */
             u32 wnow = vk_ww_now();
             if (patch_own(i, host, e->wseen)) {
@@ -2457,6 +2461,9 @@ void vk_buf_prefetch(u64 gva, u64 len, int step) {
 /* Constant buffers cannot accept the delayed checks used for stable vertex data: a changed word affects this draw. */
 int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return buf_get(gva, len, buf, off, 1, vk_stage_align(), IN_NO);
+}
+int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
+    return buf_get(gva, len, buf, off, 2, vk_stage_align(), IN_NO);
 }
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
