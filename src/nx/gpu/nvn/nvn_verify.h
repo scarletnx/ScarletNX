@@ -22,7 +22,7 @@ struct GpuChannel;
 #define VF_RANGES     8192
 #define VF_PENDING    64
 #define VF_LEND_MAX   16384
-#define VF_REC_MAX    16384
+#define VF_REC_MAX    65535 /* a recording's index is 16 bits (CB_REC): one game keeps more than 16384 */
 #define VF_REC_PIECES 15
 #define VF_CMD_POOLS  256
 typedef struct VfKinds VfKinds; /* a function's argument kinds (tools/nvn_verify_kinds.py) */
@@ -94,6 +94,7 @@ typedef struct {
     u64 callback;      /* the guest address of the shadow's memory callback */
     VfPiece piece[VF_LEND_MAX];
     u32 n, nrec, rec_free;
+    u32 open, open_used; /* the control piece small adds take parts of (lend_part), 1 up, and its bytes taken */
     u32 free[2][32];               /* the free pieces of each kind and size (log2), 1 up */
     u32 cool, cool_tail, presents; /* the pieces free since fewer than COOL presents, oldest first, 1 up */
     VfRec rec[VF_REC_MAX];         /* a free one's n is the next free one, 1 up */

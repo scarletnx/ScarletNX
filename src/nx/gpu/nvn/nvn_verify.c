@@ -437,19 +437,24 @@ static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) {
 
    So the shadow's command memory is a shadow of the game's pool at CMD_SCALE times each offset (cmd_pool): each
    recording keeps the place the game gave it, with more room, and is reused when the game reuses its own. Its control
-   memory is the runtime's, in pieces (lend_take): each AddControlMemory of the game adds a piece of at least its size
-   in place of the game's memory. Command memory the shadow pool doesn't hold (a game can place it by an address it
+   memory is the runtime's, in pieces (lend_take): each AddControlMemory of the game adds the same size of it in place
+   of the game's memory, a part of the open piece (lend_part) or a piece of its own when it is bigger than a piece. One
+   game initializes a command buffer for each of thousands of small recordings, adds a few hundred bytes of control
+   memory, records, and finalizes it. It places the recordings one after the other in command pools it adds again only
+   much later, so they stay callable: with a piece of its own for each add, each held 64 KiB, and the pieces ran out
+   within two minutes. Command memory the shadow pool doesn't hold (a game can place it by an address it
    read, as an offset from its pool: one game's offsets put it in memory nvn_direct lent, gpu/nvn/nvn_cmd.c) is a
    piece too. Each shadow command buffer has this file's memory callback (shadow_memory): when the driver's own check
-   finds too little, it adds a piece at least as big as the driver asks for.
+   finds too little, it adds a piece at least as big as the driver asks for (control memory: a part, as an add).
 
    A piece is free again when no recording the game can still call or submit has records in it. Each piece counts its
-   users (refs): the command buffer writing in it, each recording made in it, and each recording that calls one with
-   commands in it, until the game records again at that recording's handle, or the memory the handle is in is reused
-   (nvn_direct's handle is its first record's address: the game adds that command memory again, or nvn_direct takes
-   back the memory it lent there). A game can still call a recording right after it adds the memory its handle is in
-   again (one game records a recording, gives its command memory to another command buffer, and calls it from there:
-   the driver kept all of it in control memory), so a free piece is taken again only after COOL presents */
+   users (refs): the open piece while it gives parts, the command buffer writing in it, each recording made in it, and
+   each recording that calls one with commands in it, until the game records again at that recording's handle, or the
+   memory the handle is in is reused (nvn_direct's handle is its first record's address: the game adds that command
+   memory again, or nvn_direct takes back the memory it lent there). A game can still call a recording right after it
+   adds the memory its handle is in again (one game records a recording, gives its command memory to another command
+   buffer, and calls it from there: the driver kept all of it in control memory), so a free piece is taken again only
+   after COOL presents */
 static u32 log2_of(u64 pow2) { return 63u - snx_clz64(pow2); }
 
 /* the areas and the pool, on the first shadow command buffer's device. Another thread waits for the one that makes
@@ -649,19 +654,15 @@ static void cb_moves(u64 cb, u32 kind, u32 i) {
     u64 v = cb_get(cb);
     piece_unref(CB_CUR(v, kind));
     if (i) {
-        g_nvn.verify.lend.piece[i - 1].refs++;
+        if (g_nvn.verify.lend.piece[i - 1].refs != PINNED) g_nvn.verify.lend.piece[i - 1].refs++;
         if (CB_REC(v)) rec_add(CB_REC(v), i);
     }
     v = (v & ~(0xFFFFull << (16 * kind))) | (u64)i << (16 * kind);
     map_put(&g_nvn.verify.lend.cb, cb, v);
 }
-/* a piece of kind for the shadow command buffer cb, of at least min bytes, which cb writes in from now on: ~0 when
-   there is none */
-static u64 lend_take(u32 kind, u64 cb, u64 min, u32* size) {
-    u64 want = lend_min[kind], at = ~0ull;
+/* a piece of kind and want bytes, a power of two (under the lock): 0 when there is none */
+static u32 piece_get(u32 kind, u64 want) {
     u32 i;
-    while (want < min) want <<= 1;
-    pm_lock(&g_nvn.verify.lock);
     pieces_cooled();
     i = g_nvn.verify.lend.free[kind][log2_of(want)];
     if (i)
@@ -680,15 +681,52 @@ static u64 lend_take(u32 kind, u64 cb, u64 min, u32* size) {
                 i, (unsigned long long)(g_nvn.verify.lend.used[LEND_CMD] >> 10),
                 (unsigned long long)(g_nvn.verify.lend.used[LEND_CTRL] >> 10));
     }
+    return i;
+}
+static void used_up(u32 kind) {
+    LOG_LIMIT(4, "nvn verify: the shadow driver needs %s memory, and the runtime's is used up\n",
+              kind == LEND_CMD ? "command" : "control");
+}
+/* a piece of kind for the shadow command buffer cb, of at least min bytes, which cb writes in from now on: ~0 when
+   there is none */
+static u64 lend_take(u32 kind, u64 cb, u64 min, u32* size) {
+    u64 want = lend_min[kind], at = ~0ull;
+    u32 i;
+    while (want < min) want <<= 1;
+    pm_lock(&g_nvn.verify.lock);
+    i = piece_get(kind, want);
     if (i) {
         cb_moves(cb, kind, i);
         at = g_nvn.verify.lend.piece[i - 1].at;
         *size = (u32)want;
     }
     pm_unlock(&g_nvn.verify.lock);
-    if (at == ~0ull)
-        LOG_LIMIT(4, "nvn verify: the shadow driver needs %s memory, and the runtime's is used up\n",
-                  kind == LEND_CMD ? "command" : "control");
+    if (at == ~0ull) used_up(kind);
+    return at;
+}
+/* size bytes of control memory for the shadow command buffer cb, which the game adds or the driver asks for (lend
+   section): a part of the open piece (64 bytes for none), the next one when the part doesn't fit, or a piece of its
+   own when it is bigger than a piece. cb writes in that piece from now on. ~0 when there is none */
+static u64 lend_part(u64 cb, u64 size, u32* got) {
+    VfLend* l = &g_nvn.verify.lend;
+    u64 part = size ? (size + 63) & ~63ull : 64, at = ~0ull;
+    if (part > lend_min[LEND_CTRL]) return lend_take(LEND_CTRL, cb, size, got);
+    pm_lock(&g_nvn.verify.lock);
+    if (!l->open || l->open_used + part > lend_min[LEND_CTRL]) {
+        u32 i = piece_get(LEND_CTRL, lend_min[LEND_CTRL]);
+        if (i) l->piece[i - 1].refs++; /* the open piece's own reference */
+        piece_unref(l->open);
+        l->open = i;
+        l->open_used = 0;
+    }
+    if (l->open) {
+        cb_moves(cb, LEND_CTRL, l->open);
+        at = l->piece[l->open - 1].at + l->open_used;
+        l->open_used += (u32)part;
+        *got = (u32)part;
+    }
+    pm_unlock(&g_nvn.verify.lock);
+    if (at == ~0ull) used_up(LEND_CTRL);
     return at;
 }
 /* the game's calls that change what the pieces are used by: cb is the shadow command buffer */
@@ -769,8 +807,8 @@ static void shadow_memory(CPU* c) {
     memcpy(&saved, c, REGS_SIZE);
     sp = (saved.x[31] - 0x100) & ~15ull;
     /* the command event's least is in words or bytes (the driver's checks before and after the call differ): taken
-       as words */
-    at = lend_take(kind, cb, kind == LEND_CMD ? min * 4 : min, &size);
+       as words. The control event's is a few hundred bytes after the game adds none: a part, as an add takes */
+    at = kind == LEND_CMD ? lend_take(LEND_CMD, cb, min * 4, &size) : lend_part(cb, min, &size);
     if (at != ~0ull) {
         if (kind == LEND_CMD)
             drv_call(c, &saved, sp, LIT("nvnCommandBufferAddCommandMemory"), cb, g_nvn.verify.lend.pool, at, size);
@@ -1229,12 +1267,12 @@ static void verify_fn(CPU* RESTRICT c, u64 entry) {
         if (f->flags & F_ADDCTRL) {
             u32 got;
             u64 at = __atomic_load_n(&g_nvn.verify.lend.state, __ATOMIC_ACQUIRE) == 2
-                         ? lend_take(LEND_CTRL, base.x[0], before.x[2], &got)
+                         ? lend_part(base.x[0], before.x[2], &got)
                          : ~0ull;
             if (at != ~0ull) {
                 c->x[1] = at;
                 c->x[2] = got;
-            } else {
+            } else if (before.x[2]) { /* a size of 0 keeps the game's arguments: it adds nothing to shadow */
                 c->x[1] = mem_shadow(before.x[1], before.x[2]);
                 c->x[2] = before.x[2];
             }
