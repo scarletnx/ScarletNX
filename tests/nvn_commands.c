@@ -223,6 +223,56 @@ int main(void) {
         check(a.n == 6 && (a.at[5] & ~0xffffull) == lent_at && g_lent == top, "the runtime's memory takes no more");
     }
 
+    /* Control memory, counted as the driver writes it: a recording's start (0x10) and end (8) marks, and a range entry
+       of its commands with its block (0x20). A recording of calls only counts no command bytes: the driver keeps it in
+       control memory, so another command buffer recording over its command memory leaves its pieces alone, and the
+       game giving the same control memory again and recording over it gives them back */
+    {
+        const u64 cbc = 0x900, cbd = 0x9a0, ctl = 0x48000, callee = 0x4e0;
+        u64 hd, hc;
+        u32 before, i;
+        int found = 0;
+        nvn_CommandBufferInitialize(&cpu, cbc, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbc, 1, 0x9000, 0x100);
+        nvn_CommandBufferAddControlMemory(&cpu, cbc, ctl, 0x400);
+        check(nvn_CommandBufferGetControlMemoryFree(&cpu, cbc) == 0x400, "all the control memory is free");
+        nvn_CommandBufferBeginRecording(&cpu, cbc);
+        nvn_CommandBufferDrawArrays(&cpu, cbc, 4, 0, 3);
+        hd = nvn_CommandBufferEndRecording(&cpu, cbc);
+        check(nvn_CommandBufferGetControlMemoryUsed(&cpu, cbc) == 0x38, "a recording of one draw: 0x38 control bytes");
+        before = g_nvn.cmd.np;
+        gw64(callee, hd);
+        nvn_CommandBufferBeginRecording(&cpu, cbc);
+        nvn_CommandBufferCallCommands(&cpu, cbc, 1, callee);
+        hc = nvn_CommandBufferEndRecording(&cpu, cbc);
+        check(g_nvn.cmd.np > before, "the calls go to the runtime's memory");
+        /* another command buffer records over the command memory where the call-only recording started */
+        nvn_CommandBufferInitialize(&cpu, cbd, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbd, 1, 0x9000, 0x100);
+        for (int k = 0; k < 2; k++) {
+            nvn_CommandBufferBeginRecording(&cpu, cbd);
+            for (int j = 0; j < 4; j++) nvn_CommandBufferDrawArrays(&cpu, cbd, 4, j, 3);
+            nvn_CommandBufferEndRecording(&cpu, cbd);
+        }
+        for (i = 1; i <= g_nvn.cmd.slots; i++)
+            if (g_nvn.cmd.p[i].anchor && (g_nvn.cmd.p[i].flags & NVN_PIECE_NO_COMMAND)) found = 1;
+        check(found, "the call-only recording's pieces stay, as it isn't in command memory");
+        walk(hc, &a);
+        check(a.n == 1 && a.op[0] == OP_CALL, "the call-only recording walks");
+        /* the game gives the same control memory again and records over it */
+        nvn_CommandBufferAddCommandMemory(&cpu, cbc, 1, 0xc000, 0x1000);
+        nvn_CommandBufferAddControlMemory(&cpu, cbc, ctl, 0x400);
+        for (int k = 0; k < 3; k++) {
+            nvn_CommandBufferBeginRecording(&cpu, cbc);
+            nvn_CommandBufferDrawArrays(&cpu, cbc, 4, k, 3);
+            nvn_CommandBufferEndRecording(&cpu, cbc);
+        }
+        found = 0;
+        for (i = 1; i <= g_nvn.cmd.slots; i++)
+            if (g_nvn.cmd.p[i].anchor && g_nvn.cmd.p[i].canchor == ctl + 0x38) found = 1;
+        check(!found, "recorded over in control memory, its pieces come back");
+    }
+
     /* a piece of the runtime's memory a recording is still cut from: records past those written aren't there yet, so a
        walk of another submission that jumps there ends (nvn_replay.c), and the piece is whole once the recording ends */
     {
