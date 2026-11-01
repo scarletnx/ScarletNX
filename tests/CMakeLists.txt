@@ -724,6 +724,12 @@ snx_test_target(snx-test-llvm-fp-helper-effects 11)
 target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
 add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
 
+add_executable(snx-test-llvm-fp-reply-abi llvm_fp_reply_abi.c)
+snx_test_target(snx-test-llvm-fp-reply-abi 11)
+target_link_libraries(snx-test-llvm-fp-reply-abi PRIVATE snx_llvm snx_driver)
+add_test(NAME llvm_fp_reply_abi COMMAND snx-test-llvm-fp-reply-abi)
+set_tests_properties(llvm_fp_reply_abi PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-a64-fp-arithmetic 11)

@@ -10,6 +10,7 @@
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
+#include <string.h>
 
 #define FPCR_RMODE (3u << 22)
 #define FPCR_FZ    (1u << 24)
@@ -36,12 +37,19 @@ static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), bit, ""), offsetof(CPU, fpsr));
 }
 
+/* x86-64 Windows returns a 16-byte structure through memory, the caller passing where as a hidden first argument
+   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX */
+static inline int ir_fp_reply_in_memory(SnxIr* ir) {
+    return ir->windows && !strncmp(LLVMGetTarget(ir->mod), "x86_64", 6);
+}
+
 /* One call of an FP helper (cpu.h), shared by ir_fpu.c's scalar path and ir_vec_fp.c's lanes so both declare it
    the same way: the operands, then the guest's FPCR by value. The reply is {value, flags}: the value is the result
    (an encoding, an integer, or a compare's NZCV nibble), zero-extended to i64, and "flags" the FPSR bits the
    operation raised, which are ORed into FPSR here. The
    helper reads and writes no memory, so it is no site for ir_promote_registers (nothing of the CPU structure is
-   unknown behind it) and LLVM may share the FPCR load and the calls themselves. */
+   unknown behind it) and LLVM may share the FPCR load and the calls themselves. Where the reply comes back
+   through memory it lands in a local, which keeps the call out of ir_promote_registers too. */
 static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
                                             int with_fpsr) {
     LLVMTypeRef params[9], fields[2] = {ir->t_i64, ir->t_i32};
@@ -58,9 +66,27 @@ static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMVal
         params[n++] = ir->t_i32;
     }
     LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
-    LLVMValueRef function = ir_extern(ir, name, reply, params, n);
-    ir_pure(ir, function);
-    LLVMValueRef call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
+    LLVMValueRef call;
+    if (ir_fp_reply_in_memory(ir)) {
+        LLVMTypeRef with[10] = {ir->t_ptr};
+        LLVMValueRef pass[10] = {ir_local(ir, reply)};
+        for (unsigned i = 0; i < n; ++i) {
+            with[i + 1] = params[i];
+            pass[i + 1] = args[i];
+        }
+        LLVMValueRef function = ir_extern(ir, name, ir->t_void, with, n + 1);
+        LLVMAttributeRef sret = LLVMCreateTypeAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("sret", 4), reply);
+        LLVMAddAttributeAtIndex(function, 1, sret);
+        ir_argmem(ir, function);
+        LLVMValueRef made =
+            LLVMBuildCall2(ir->b, LLVMFunctionType(ir->t_void, with, n + 1, 0), function, pass, n + 1, "");
+        LLVMAddCallSiteAttribute(made, 1, sret);
+        call = LLVMBuildLoad2(ir->b, reply, pass[0], "");
+    } else {
+        LLVMValueRef function = ir_extern(ir, name, reply, params, n);
+        ir_pure(ir, function);
+        call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
+    }
     ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), LLVMBuildExtractValue(ir->b, call, 1, ""), ""), offsetof(CPU, fpsr));
     return LLVMBuildExtractValue(ir->b, call, 0, "");
 }
