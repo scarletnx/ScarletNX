@@ -177,14 +177,17 @@ static void vkr_method_barrier(int kind)
 
 	/* Texture descriptors are read at every bind. Surface transitions and
 	 * memory write tracking supply their ordering without expiring caches.
-	 * A fragment barrier (NVN's ORDER_FRAGMENTS and INVALIDATE_TEXTURE) orders
-	 * what the renderer orders itself: a target sampled after it was drawn
-	 * gets its barrier when it is bound (vk_surf_use), one sampled while it is
-	 * drawn gets one in the pass (feedback_order), and draws that read results
-	 * of earlier ones get one there (buffer.c gfx_gpu_src). Ended here, the
-	 * pass ended about 120 times a frame in one game's open world.
+	 * A fragment barrier (NVN's ORDER_FRAGMENTS and INVALIDATE_TEXTURE)
+	 * mostly orders what the renderer orders itself: a target sampled after
+	 * it was drawn gets its barrier when it is bound (vk_surf_use), one
+	 * sampled while it is drawn gets one in the pass (feedback_order), and
+	 * draws that read results of earlier ones get one there (buffer.c
+	 * gfx_gpu_src). Ended here, the pass ended about 120 times a frame in one
+	 * game's open world. Writes that none of those track (stores into guest
+	 * memory read in place) are not covered yet, so only the opt-in
+	 * vk_descriptors setting skips it.
 	 */
-	if (kind == 0 || kind == 1 || kind == 3)
+	if (kind == 1 || kind == 3 || (kind == 0 && g_settings.descriptor_buffers))
 		return;
 
 	vk_lock();
