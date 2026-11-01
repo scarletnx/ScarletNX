@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* compile_thread.h: a thread made for LLVM's passes takes 16 MiB of recursion, more than a thread gets by default
-   (1 MiB on Android and Windows, 8 MiB from glibc): without its stack the test dies of a stack overflow */
+/* compile_thread.h: a thread made for LLVM's passes takes 4 MiB of recursion, more than the 1 MiB a thread gets by
+   default on Android and Windows. With glibc the test sets that default first (its own is 8 MiB), so without the
+   helper's stack the test dies of a stack overflow everywhere */
 #ifndef _WIN32
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE /* pthread_setattr_default_np */
 #endif
 #include "common/cpu/recompiler/compile_thread.h"
 #include <stdio.h>
 #include <string.h>
 
 #define FRAME 4096u /* bytes each level keeps on the stack */
-#define DEPTH 4096u /* 16 MiB of levels */
+#define DEPTH 1024u /* 4 MiB of levels */
 
 /* a level's frame holds FRAME bytes the compiler cannot drop, and the call is no tail call */
 static unsigned deep(unsigned n) {
@@ -44,7 +45,17 @@ int main(void) {
     CloseHandle(t);
 #else
     pthread_t t;
-    int rc = snx_compile_thread(&t, run, &result);
+    int rc;
+#ifdef __GLIBC__
+    pthread_attr_t fallback;
+    if (pthread_attr_init(&fallback) || pthread_attr_setstacksize(&fallback, (size_t)1 << 20) ||
+        pthread_setattr_default_np(&fallback)) {
+        fprintf(stderr, "compile_thread.c: the 1 MiB default stack was not set\n");
+        return 1;
+    }
+    pthread_attr_destroy(&fallback);
+#endif
+    rc = snx_compile_thread(&t, run, &result);
     if (rc) {
         fprintf(stderr, "compile_thread.c: the thread did not start: %s\n", strerror(rc));
         return 1;
