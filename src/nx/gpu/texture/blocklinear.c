@@ -7,6 +7,8 @@
 #include <string.h>
 #include "nx/gpu/texture/blocklinear.h"
 
+int g_gob_native;
+
 /* GOBs are walked in memory order, so the whole ones next to each other in memory (a block's, and the blocks of a
    row of blocks when the row's width is a multiple of 64 bytes) are one memcpy. GOB g of the layout is GOB in of
    block g >> (bh + bd); blocks go gobs_x to a row of blocks, block_rows rows to a slab of 2^bd slices, and inside a

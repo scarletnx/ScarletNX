@@ -1600,6 +1600,14 @@ i32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
     (void)c;
     return (i32)PB(b)->rt_flags;
 }
+/* A Switch 2 control section: version 0xc9 at 0x04 (where the older ones have 1), in formats 7 and 11 so far, which
+   share their layout */
+static int switch2_section(u64 control) {
+    u32 format = gr32(control + 8);
+    if (gr32(control + 4) != 0xc9) return 0;
+    if (format != 7 && format != 11) LOG_LIMIT(1, "nvn: a Switch 2 control section of format %u\n", format);
+    return 1;
+}
 /* a Switch 2 program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
    address data: compute when there is none */
 static u32 stage11(u64 data) {
@@ -1620,11 +1628,11 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
-    /* The Switch 2's format 11 (version 0xc9): its program is SM70+ code at data, with no wrapper. A graphics program
+    /* A Switch 2 control section (version 0xc9, formats 7 and 11): its program is SM70+ code at data, with no wrapper. A graphics program
        starts with its 128-byte header, whose word 0 gives the stage, and a compute program with its first
        instruction. 0x38 is the code's bytes and 0x3c the constants' (bank 1), which start at 0x40, the code's bytes
        rounded up to 256 (a jump table at c[1][0] shows it) */
-    if (magic == 0x98761234u && one == 0xc9 && format == 11) {
+    if (magic == 0x98761234u && switch2_section(control)) {
         if (!data) return 0;
         st = &o->st[stage11(data)];
         st->data = data;
@@ -1695,9 +1703,9 @@ static void xfb_of(u64 control, u64 serial) {
                                    0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
                                    0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
     const u8* c = GP(control);
-    /* the Switch 2's format 11 (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
+    /* a Switch 2 control section (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
        capture flag, so treat it as not capturing (the old layout's reads would misread garbage) */
-    if (gr32(control + 4) == 0xc9 && gr32(control + 8) == 11) return;
+    if (switch2_section(control)) return;
     if (!c[0x6ec]) return;
     NvnXfbEntry e = {0};
     e.serial = serial;
@@ -1733,6 +1741,7 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     }
     /* guest memory: every byte the game sees */
     memset(o->st, 0, sizeof o->st);
+    if (g_nvn.loader.api >= 231u << 16) memset(NVN_PROG_C0(p), 0, NVN_C0_RECORD);
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
@@ -1741,8 +1750,12 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
         u32 stage;
         i32 rank;
         if (!stage_of(o, data, control)) return 0;
+        /* a Switch 2 compute program's c[0] record (NVN_PROG_C0) */
+        if (g_nvn.loader.api >= 231u << 16 && switch2_section(control) &&
+            stage11(data) == NVN_SHADER_STAGE_COMPUTE)
+            memcpy(NVN_PROG_C0(p), GP(control + 0xa8), NVN_C0_RECORD);
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = gr32(control + 4) == 0xc9 && gr32(control + 8) == 11 ? stage11(data) : gr32(control + 0x714);
+        stage = switch2_section(control) ? stage11(data) : gr32(control + 0x714);
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1

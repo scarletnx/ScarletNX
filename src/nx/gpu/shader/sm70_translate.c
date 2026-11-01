@@ -38,7 +38,7 @@ typedef struct {
     u32 vertex_index, instance_index, local_id, group_id, lane_id;
     u32 push, push_ptr; /* a vertex program's push constant vec4: the base instance, the depth fix (vk/render.c) */
     u32 centroid_mask;  /* the inputs decorated Centroid */
-    u32 point_coord;
+    u32 point_coord, front_facing;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
     u32 img[8], img_type[8];
     u32 interfaces[MAX_INTERFACES], ninterfaces;
@@ -554,7 +554,8 @@ static u32 global_address(Ctx* c, const Sm70Insn* in, int uniform_form, int writ
     u32 key = c->addr_key[c->cur];
     if (!key) {
         u32 src = c->addr_key[c->n + 1 + c->cur];
-        fail(c, "global address whose base no constant buffer holds (from %s)", src ? sm70_ops[src].name : "nothing");
+        fail(c, "global address whose base no constant buffer holds (from %s, at %u)",
+             src ? sm70_ops[src].name : "nothing", c->cur);
         return 0;
     }
     key--;
@@ -581,15 +582,23 @@ static int track_globals(Ctx* c) {
     for (u32 i = 0; i < c->n; i++) {
         const Sm70Insn* in = &c->in[i];
         int op = in->op, uniform = sm70_ops[op].kind == SM70_K_UALU;
-        if (op == SM70_LDG || op == SM70_STG || op == SM70_LDG_NOU || op == SM70_STG_NOU) {
-            int uniform_form = op == SM70_LDG || op == SM70_STG;
+        if (op == SM70_LDG || op == SM70_STG || op == SM70_LDG_NOU || op == SM70_STG_NOU || op == SM70_ATOMG ||
+            op == SM70_ATOMG_NOU || op == SM70_RED) {
+            int uniform_form = op == SM70_LDG || op == SM70_STG || op == SM70_ATOMG || op == SM70_RED;
             u32 reg = sm70_field(in, 24, 8), ur = uniform_form ? sm70_field(in, op == SM70_LDG ? 32 : 64, 6) : SM70_URZ;
             u32 k = ur < SM70_URZ && ukey[ur] ? ukey[ur] : reg < SM70_RZ ? rkey[reg] : 0;
             c->addr_key[i] = k;
             c->addr_key[c->n + 1 + i] = ur < SM70_URZ && ukey[ur] ? usrc[ur] : reg < SM70_RZ ? rsrc[reg] : 0;
             if (!k && ur < SM70_URZ && !ukey[ur] && usrc[ur]) c->addr_key[c->n + 1 + i] = usrc[ur];
-            if (op == SM70_LDG || op == SM70_LDG_NOU) /* the loaded words are data */
-                for (u32 w = 0; w < 4 && in->dst + w < SM70_RZ; w++) rkey[in->dst + w] = 0, rsrc[in->dst + w] = (u16)op;
+            if (op == SM70_LDG || op == SM70_LDG_NOU || op == SM70_ATOMG || op == SM70_ATOMG_NOU) {
+                /* the words loaded are data: one, or two or four for an LDG.64 or .128 */
+                u32 type = sm70_field(in, 73, 3), words = op == SM70_ATOMG || op == SM70_ATOMG_NOU ? 1
+                                                          : type == 5                              ? 2
+                                                          : type == 6                              ? 4
+                                                                                                   : 1;
+                for (u32 w = 0; w < words && in->dst + w < SM70_RZ; w++)
+                    rkey[in->dst + w] = 0, rsrc[in->dst + w] = (u16)op;
+            }
             continue;
         }
         u32 key = 0;
@@ -610,13 +619,19 @@ static int track_globals(Ctx* c) {
         } else if ((op == SM70_IADD3 || op == SM70_UIADD3 || op == SM70_IMAD || op == SM70_UIMAD ||
                     op == SM70_IMAD_WIDE || op == SM70_UIMAD_WIDE || op == SM70_LEA || op == SM70_ULEA) &&
                    !sm70_field(in, 74, 1) && !((op == SM70_LEA || op == SM70_ULEA) && sm70_field(in, 80, 1))) {
-            /* one source with a base: the result is that base at an offset */
+            /* one source with a base: the result is that base at an offset. A constant buffer operand is a base
+               itself, as in ptxas's LEA R0, P0, R2, c[0x0][0x60], 0x2 */
             const Sm70Src* s3[3] = {&in->a, &in->b, &in->c};
-            u32 count = 0;
-            for (u32 k = 0; k < 3; k++) {
+            u32 count = 0, first = 0, last = 3;
+            if (op == SM70_IMAD || op == SM70_UIMAD || op == SM70_IMAD_WIDE || op == SM70_UIMAD_WIDE)
+                first = 2; /* a product is an offset: only the sum's c can be the base */
+            else if (op == SM70_LEA || op == SM70_ULEA)
+                first = 1, last = 2; /* the shifted a is an offset: only b */
+            for (u32 k = first; k < last; k++) {
                 const Sm70Src* x = s3[k];
                 u32 v = x->kind == SM70_SRC_REG && x->reg < SM70_RZ     ? rkey[x->reg]
                         : x->kind == SM70_SRC_UREG && x->reg < SM70_URZ ? ukey[x->reg]
+                        : x->kind == SM70_SRC_CBUF && !x->bindless      ? (u32)(x->bank << 16 | x->value) + 1
                                                                         : 0;
                 if (v) key = v, count++;
             }
@@ -631,7 +646,8 @@ static int track_globals(Ctx* c) {
         if (to_uniform) {
             if (d < SM70_URZ) ukey[d] = key, usrc[d] = (u16)op;
             if (wide && d + 1 < SM70_URZ) ukey[d + 1] = 0;
-        } else if (sm70_ops[op].kind == SM70_K_ALU || op == SM70_LDC || op == SM70_S2R || op == SM70_CS2R) {
+        } else if ((sm70_ops[op].kind == SM70_K_ALU || op == SM70_LDC || op == SM70_S2R || op == SM70_CS2R) &&
+                   op != SM70_FSETP && op != SM70_ISETP && op != SM70_DSETP && op != SM70_HSETP2 && op != SM70_R2P) {
             if (d < SM70_RZ) rkey[d] = key, rsrc[d] = (u16)op;
             if (wide && d + 1 < SM70_RZ) rkey[d + 1] = 0;
         }
@@ -682,7 +698,23 @@ static void mem_load(Ctx* c, u32 buffer, u32 address, u32 type, u32 dst, int uni
 }
 static void mem_store(Ctx* c, u32 buffer, u32 address, u32 type, u32 data) {
     if (type < 4) {
-        fail(c, "sub-word store");
+        /* a byte or halfword: its bits in the word cleared, then set, by two atomics, so that the other bytes of
+           the word, which other invocations can store, stay */
+        u32 width = type < 2 ? 8 : 16;
+        u32 shift = spv_emit_shift_left_u32(
+            &c->e, c->t_u32, spv_emit_bitwise_and_u32(&c->e, c->t_u32, address, cu(c, type < 2 ? 3 : 2)), cu(c, 3));
+        u32 mask = spv_emit_shift_left_u32(&c->e, c->t_u32, cu(c, (1u << width) - 1), shift);
+        u32 bits = spv_emit_bitwise_and_u32(&c->e, c->t_u32,
+                                            spv_emit_shift_left_u32(&c->e, c->t_u32, rd(c, data), shift), mask);
+        u32 ptr = mem_ptr(c, buffer, address, 0);
+        if (buffer) {
+            spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr, spv_emit_not_u32(&c->e, c->t_u32, mask));
+            spv_emit_atomic_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR, ptr, bits);
+        } else {
+            spv_emit_atomic_shared_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_AND, ptr,
+                                       spv_emit_not_u32(&c->e, c->t_u32, mask));
+            spv_emit_atomic_shared_u32(&c->e, c->t_u32, SPV_OP_ATOMIC_OR, ptr, bits);
+        }
         return;
     }
     u32 words = type == 5 ? 2 : type == 6 ? 4 : 1;
@@ -899,19 +931,24 @@ static void texture_query(Ctx* c, const Sm70Insn* in) {
     v[3] = spv_emit_image_query_levels(&c->e, c->t_u32, c->tex_sampled[slot], c->tex[slot]);
     tex_results(c, in, spv_emit_vec4_construct(&c->e, c->t_v4u, v), c->t_u32);
 }
+/* the sampled type of a storage image of a kind: float (0), unsigned (1, 2), signed (3) */
+static u32 image_scalar(Ctx* c, u32 kind) { return kind == 0 ? c->t_f32 : kind == 3 ? c->t_i32 : c->t_u32; }
 /* NAK's ImageDim (bits 61-63): the SPIR-V dimension, arrayed, and the integer coordinates */
 static int image_dim(u32 dim, u32* sdim, u32* array, u32* coords, u32* type) {
+    /* ShaderInfo.img[].type is the code itself (0 1D, 1 1D buffer, 2 1D array, 3 2D, 4 2D array, 5 3D), which the
+       renderer reads as Maxwell's SUST dimension */
+    *type = dim;
     switch (dim) {
-        case 0: *sdim = 0, *array = 0, *coords = 1, *type = 0; return 1;
-        case 2: *sdim = 0, *array = 1, *coords = 2, *type = 0; return 1;
-        case 3: *sdim = 1, *array = 0, *coords = 2, *type = 1; return 1;
-        case 4: *sdim = 1, *array = 1, *coords = 3, *type = 1; return 1;
-        case 5: *sdim = 2, *array = 0, *coords = 3, *type = 2; return 1;
+        case 0: *sdim = 0, *array = 0, *coords = 1; return 1;
+        case 2: *sdim = 0, *array = 1, *coords = 2; return 1;
+        case 3: *sdim = 1, *array = 0, *coords = 2; return 1;
+        case 4: *sdim = 1, *array = 1, *coords = 3; return 1;
+        case 5: *sdim = 2, *array = 0, *coords = 3; return 1;
         default: return 0;
     }
 }
 static void surface(Ctx* c, const Sm70Insn* in) {
-    int store = in->op == SM70_SUST_P;
+    int store = in->op == SM70_SUST_P, atomic = in->op == SM70_SURED;
     u32 sdim, array, coords, type;
     if (!image_dim(sm70_field(in, 61, 3), &sdim, &array, &coords, &type)) {
         fail(c, "%s dimension %u", sm70_ops[in->op].name, sm70_field(in, 61, 3));
@@ -921,21 +958,29 @@ static void surface(Ctx* c, const Sm70Insn* in) {
     ShaderInfo* si = c->si;
     int slot = -1;
     for (int i = 0; i < si->nimg; i++)
-        if (si->img[i].bl_cbuf == bank && si->img[i].cbuf_off == off && si->img[i].type == type) slot = i;
+        if (si->img[i].bl_cbuf == bank && si->img[i].cbuf_off == off && si->img[i].type == type &&
+            (si->img[i].kind == 1) == atomic)
+            slot = i;
     if (slot < 0) {
         if (si->nimg >= 8) {
             fail(c, "more than 8 storage images");
             return;
         }
         slot = si->nimg++;
+        /* the kind, as spirv_translate.c's rule for a bindless image: an R32ui image for an atomic (1); else the
+           renderer's key, bit 8 + slot of rt_int_mask for a format of the other class, gives a float image (0) or
+           an unsigned one (2), and of rt_sint_mask a signed one (3) */
+        u32 kind = atomic ? 1 : si->rt_int_mask & (1u << (8 + slot)) ? 0 : 2;
+        if (!atomic && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
         si->img[slot].cbuf_off = off;
         si->img[slot].type = (u8)type;
         si->img[slot].bindless = 1;
         si->img[slot].bl_cbuf = (u8)bank;
-        si->img[slot].kind = 0;
-        spv_emit_capability(&c->e, 55); /* StorageImageReadWithoutFormat */
-        c->img[slot] = spv_emit_storage_image(&c->e, c->t_f32, (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
-                                              sdim == 0 ? 1 : sdim, (int)array, 0, &c->img_type[slot]);
+        si->img[slot].kind = (u8)kind;
+        if (kind != 1) spv_emit_capability(&c->e, 55); /* StorageImageReadWithoutFormat */
+        c->img[slot] =
+            spv_emit_storage_image(&c->e, image_scalar(c, kind), (u32)shader_vk_set(c->stage), SNX_VKB_IMG + (u32)slot,
+                                   sdim == 0 ? 1 : sdim, (int)array, kind == 1 ? 33 : 0, &c->img_type[slot]);
         add_interface(c, c->img[slot]);
     }
     /* integer coordinates, a 1D image's as a 2D one's */
@@ -950,23 +995,54 @@ static void surface(Ctx* c, const Sm70Insn* in) {
     u32 coord = spv_emit_bitcast(&c->e, ivec,
                                  count == 2 ? spv_emit_vec2_construct(&c->e, uvec, v[0], v[1])
                                             : spv_emit_vec3_construct(&c->e, uvec, v[0], v[1], v[2]));
+    if (atomic) {
+        /* SURED: NAK's set_atom_op at 87-89 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor) and atom type at 73-75 (0
+           u32, 1 s32), the data at 32 */
+        static const u16 ops[2][8] = {{SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_U_MIN, SPV_OP_ATOMIC_U_MAX, 0, 0,
+                                       SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR},
+                                      {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_S_MIN, SPV_OP_ATOMIC_S_MAX, 0, 0,
+                                       SPV_OP_ATOMIC_AND, SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR}};
+        u32 how = sm70_field(in, 87, 3), atype = sm70_field(in, 73, 3);
+        if (atype > 1 || !ops[atype][how]) {
+            fail(c, "SURED of type %u, operation %u", atype, how);
+            return;
+        }
+        u32 ptr = spv_emit_image_texel_pointer(&c->e, c->t_u32, c->img[slot], coord, c->zero);
+        spv_emit_atomic_u32(&c->e, c->t_u32, ops[atype][how], ptr, rd(c, sm70_field(in, 32, 8)));
+        return;
+    }
+    /* the texel in the image's own type: the register words as floats (kind 0) or integers (2, 3); a component
+       that the mask leaves out is 0, the alpha 1 */
+    u32 kind = si->img[slot].kind, scalar = image_scalar(c, kind);
+    u32 vec4 = spv_emit_type_vec4(&c->e, scalar);
     u32 mask = sm70_field(in, 72, 4);
     if (store) {
         u32 data = sm70_field(in, 32, 8), f[4], next = 0;
-        for (u32 k = 0; k < 4; k++)
-            f[k] =
-                mask & (1u << k) ? to_f(c, rd(c, data >= SM70_RZ ? data : data + next++)) : cf(c, k == 3 ? 1.0f : 0.0f);
-        spv_emit_image_write(&c->e, c->img_type[slot], c->img[slot], coord,
-                             spv_emit_vec4_construct(&c->e, c->t_v4f, f));
+        for (u32 k = 0; k < 4; k++) {
+            if (mask & (1u << k))
+                f[k] = spv_emit_bitcast(&c->e, scalar, rd(c, data >= SM70_RZ ? data : data + next++));
+            else
+                f[k] = kind == 0 ? cf(c, k == 3 ? 1.0f : 0.0f) : spv_emit_bitcast(&c->e, scalar, cu(c, k == 3));
+        }
+        spv_emit_image_write(&c->e, c->img_type[slot], c->img[slot], coord, spv_emit_vec4_construct(&c->e, vec4, f));
     } else {
-        u32 texel = spv_emit_image_read(&c->e, c->t_v4f, c->img_type[slot], c->img[slot], coord);
+        u32 texel = spv_emit_image_read(&c->e, vec4, c->img_type[slot], c->img[slot], coord);
         u32 d = in->dst, written = 0;
         for (u32 k = 0; k < 4; k++)
             if (mask & (1u << k)) {
-                wr(c, d >= SM70_RZ ? d : d + written, to_u(c, spv_emit_vec4_extract(&c->e, c->t_f32, texel, k)));
+                wr(c, d >= SM70_RZ ? d : d + written, to_u(c, spv_emit_vec4_extract(&c->e, scalar, texel, k)));
                 written++;
             }
     }
+}
+
+static u32 system_value(Ctx* c, u32 sr);
+/* the ballot of a predicate over the invocation's 32 lanes, on a subgroup of 32 or 64 */
+static u32 ballot32(Ctx* c, u32 pred) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
+    u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
+    u32 half = spv_emit_shift_right_u32(&c->e, c->t_u32, system_value(c, 0), cu(c, 5));
+    return SPV(&c->e, 77 /* OpVectorExtractDynamic */, c->t_u32, all, half);
 }
 
 /* ---- one instruction ---- */
@@ -1415,15 +1491,17 @@ static void emit_insn(Ctx* c, const Sm70Insn* in) {
                         0);
             return;
         }
+        case SM70_UPLOP3:
         case SM70_PLOP3: {
             /* bit 67: the third source is a uniform predicate (NAK) */
-            u32 x = prd(c, sm70_field(in, 87, 3), sm70_field(in, 90, 1), 0);
-            u32 y = prd(c, sm70_field(in, 77, 3), sm70_field(in, 80, 1), 0);
-            u32 z = prd(c, sm70_field(in, 68, 3), sm70_field(in, 71, 1), (int)sm70_field(in, 67, 1));
+            int u = op == SM70_UPLOP3; /* all of UPLOP3's predicates are uniform (NAK) */
+            u32 x = prd(c, sm70_field(in, 87, 3), sm70_field(in, 90, 1), u);
+            u32 y = prd(c, sm70_field(in, 77, 3), sm70_field(in, 80, 1), u);
+            u32 z = prd(c, sm70_field(in, 68, 3), sm70_field(in, 71, 1), u || (int)sm70_field(in, 67, 1));
             u32 lut0 = sm70_field(in, 64, 3) | sm70_field(in, 72, 5) << 3, lut1 = sm70_field(in, 16, 8);
             u32 p = sm70_field(in, 81, 3), q = sm70_field(in, 84, 3);
-            if (p < SM70_PT) pwr(c, p, lut3(c, lut0, c->t_bool, x, y, z, c->true_v, c->false_v), 0);
-            if (q < SM70_PT) pwr(c, q, lut3(c, lut1, c->t_bool, x, y, z, c->true_v, c->false_v), 0);
+            if (p < SM70_PT) pwr(c, p, lut3(c, lut0, c->t_bool, x, y, z, c->true_v, c->false_v), u);
+            if (q < SM70_PT) pwr(c, q, lut3(c, lut1, c->t_bool, x, y, z, c->true_v, c->false_v), u);
             return;
         }
         case SM70_CS2R: {
@@ -1476,6 +1554,101 @@ static void emit_insn(Ctx* c, const Sm70Insn* in) {
             u32 got = SPV(&c->e, 345 /* OpGroupNonUniformShuffle */, c->t_u32, cu(c, 3), value, source);
             wr(c, in->dst, spv_emit_select(&c->e, c->t_u32, ok, got, value));
             pwr(c, sm70_field(in, 81, 3), ok, 0);
+            return;
+        }
+        case SM70_VOTE:
+        case SM70_UVOTE: {
+            /* NAK's OpVote: the ballot of the predicate at 87-90 into the destination, and ALL (0), ANY (1) or EQ
+               (2, bits 72-73) of it into the predicate at 81-83. The ballot is of the invocation's 32 lanes */
+            u32 pred = prd(c, sm70_field(in, 87, 3), sm70_field(in, 90, 1), 0), how = sm70_field(in, 72, 2);
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
+            spv_emit_capability(&c->e, 62 /* GroupNonUniformVote */);
+            u32 ballot = ballot32(c, pred);
+            if (op == SM70_UVOTE)
+                uwr(c, sm70_field(in, 16, 6), ballot);
+            else
+                wr(c, in->dst, ballot);
+            if (how > 2) {
+                fail(c, "VOTE mode %u", how);
+                return;
+            }
+            u32 vote = SPV(&c->e,
+                           how == 0   ? 334
+                           : how == 1 ? 335
+                                      : 336 /* All, Any, AllEqual */,
+                           c->t_bool, cu(c, 3), pred);
+            pwr(c, sm70_field(in, 81, 3), vote, op == SM70_UVOTE);
+            return;
+        }
+        case SM70_MATCH: {
+            /* NAK's OpMatch: the lanes of the invocation's 32 whose value (a pair with bit 73) is the same. ANY
+               (bit 79) gives them; ALL gives all the active lanes when they all are, else 0, and the predicate */
+            int any = (int)sm70_field(in, 79, 1), pair = (int)sm70_field(in, 73, 1);
+            u32 r = sm70_field(in, 24, 8);
+            u32 lo = rd(c, r), hi = pair ? rd(c, r >= SM70_RZ ? r : r + 1) : 0;
+            u32 id = system_value(c, 0), base = spv_emit_bitwise_and_u32(&c->e, c->t_u32, id, cu(c, ~31u));
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_SHUFFLE);
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
+            u32 mask = c->zero;
+            for (u32 j = 0; j < 32; j++) {
+                u32 lane = spv_emit_bitwise_or_u32(&c->e, c->t_u32, base, cu(c, j));
+                u32 same = spv_emit_i_equal(&c->e, c->t_bool, SPV(&c->e, 345, c->t_u32, cu(c, 3), lo, lane), lo);
+                if (pair)
+                    same = op2(c, SPV_OP_LOGICAL_AND, c->t_bool, same,
+                               spv_emit_i_equal(&c->e, c->t_bool, SPV(&c->e, 345, c->t_u32, cu(c, 3), hi, lane), hi));
+                mask = spv_emit_bitwise_or_u32(&c->e, c->t_u32, mask,
+                                               spv_emit_select(&c->e, c->t_u32, same, cu(c, 1u << j), c->zero));
+            }
+            u32 active = ballot32(c, c->true_v);
+            mask = spv_emit_bitwise_and_u32(&c->e, c->t_u32, mask, active);
+            if (any)
+                wr(c, in->dst, mask);
+            else {
+                u32 all = spv_emit_i_equal(&c->e, c->t_bool, mask, active);
+                wr(c, in->dst, spv_emit_select(&c->e, c->t_u32, all, mask, c->zero));
+                pwr(c, sm70_field(in, 81, 3), all, 0);
+            }
+            return;
+        }
+        case SM70_ATOMG:
+        case SM70_ATOMG_NOU:
+        case SM70_RED: {
+            /* NAK's OpAtom on global memory: the operation at 87-90 (0 add, 1 min, 2 max, 5 and, 6 or, 7 xor, 8
+               exchange), the type at 73-75 (0 u32, 1 s32), the data at 32; RED returns nothing */
+            static const u16 ops[2][9] = {
+                {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_U_MIN, SPV_OP_ATOMIC_U_MAX, 0, 0, SPV_OP_ATOMIC_AND,
+                 SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE},
+                {SPV_OP_ATOMIC_I_ADD, SPV_OP_ATOMIC_S_MIN, SPV_OP_ATOMIC_S_MAX, 0, 0, SPV_OP_ATOMIC_AND,
+                 SPV_OP_ATOMIC_OR, SPV_OP_ATOMIC_XOR, SPV_OP_ATOMIC_EXCHANGE}};
+            u32 how = sm70_field(in, 87, op == SM70_RED ? 3 : 4), type = sm70_field(in, 73, 3);
+            if (type > 1 || how > 8 || !ops[type][how]) {
+                fail(c, "%s of type %u, operation %u", sm70_ops[op].name, type, how);
+                return;
+            }
+            u32 address, buffer = global_address(c, in, op != SM70_ATOMG_NOU, 1, &address);
+            if (!buffer) return;
+            u32 old = spv_emit_atomic_u32(&c->e, c->t_u32, ops[type][how], mem_ptr(c, buffer, address, 0),
+                                          rd(c, sm70_field(in, 32, 8)));
+            if (op != SM70_RED) wr(c, in->dst, old);
+            return;
+        }
+        case SM70_REDUX: {
+            /* NAK's OpRedux: of the source over the invocation's 32 lanes, into a uniform register: 78-80 0 and, 1
+               or, 2 xor, 3 sum, 4 min, 5 max, bit 73 signed. A clustered reduction of 32 keeps it to those lanes */
+            static const u16 ops[6] = {359, 360, 361, 349, 354, 357}; /* BitwiseAnd, Or, Xor, IAdd, UMin, UMax */
+            u32 how = sm70_field(in, 78, 3), opcode;
+            if (how > 5) {
+                fail(c, "REDUX operation %u", how);
+                return;
+            }
+            opcode = ops[how];
+            if (sm70_field(in, 73, 1) && how == 4) opcode = 353; /* SMin */
+            if (sm70_field(in, 73, 1) && how == 5) opcode = 356; /* SMax */
+            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC);
+            spv_emit_capability(&c->e, 67 /* GroupNonUniformClustered */);
+            u32 v = SPV(&c->e, opcode, c->t_u32, cu(c, 3), 3 /* ClusteredReduce */, rd(c, sm70_field(in, 24, 8)),
+                        cu(c, 32));
+            uwr(c, sm70_field(in, 16, 6), v);
             return;
         }
         case SM70_MEMBAR:
@@ -1728,6 +1901,14 @@ static void emit_insn(Ctx* c, const Sm70Insn* in) {
                     v = spv_emit_fmul(&c->e, c->t_f32, v, frag_coord(c, 3));
                     spv_emit_no_contraction(&c->e, v);
                 }
+            } else if (addr == 0x3fc) {
+                /* NAK's NAK_ATTR_FRONT_FACE: all ones for a front face, as spirv_translate.c reads Maxwell's */
+                if (!c->front_facing) {
+                    c->front_facing = spv_emit_builtin_input_u32(&c->e, c->t_bool, 17);
+                    add_interface(c, c->front_facing);
+                }
+                v = to_f(c, spv_emit_select(&c->e, c->t_u32, spv_emit_load(&c->e, c->t_bool, c->front_facing),
+                                            cu(c, 0xffffffffu), c->zero));
             } else if (addr == 0x2e0 || addr == 0x2e4) {
                 /* NAK's NAK_ATTR_POINT_SPRITE_S and _T: PointCoord. The Maxwell path flips T with the sprite's
                    origin, a push constant of the fragment stage that this translation does not have */
@@ -1750,7 +1931,8 @@ static void emit_insn(Ctx* c, const Sm70Insn* in) {
         case SM70_TLD: texel_fetch(c, in); return;
         case SM70_TXQ: texture_query(c, in); return;
         case SM70_SULD_P:
-        case SM70_SUST_P: surface(c, in); return;
+        case SM70_SUST_P:
+        case SM70_SURED: surface(c, in); return;
         case SM70_KILL:
             spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION);
             spv_emit_demote(&c->e);
@@ -2060,7 +2242,7 @@ static ShStructure* build_structure(Ctx* c) {
             sw_first[b] = nsw;
             if (in->op == SM70_BRA && !never) {
                 succ[2 * b] = block_of[sm70_branch_target(in, last)];
-                if (always)
+                if (always || succ[2 * b] == b + 1) /* as terminators() takes a branch to the next block */
                     term[b] = SHT_GOTO;
                 else if (b + 1 < nb) {
                     term[b] = SHT_COND;
@@ -2123,6 +2305,13 @@ static Sm70Insn* inline_calls(Ctx* c, Sm70Insn* insn, u32* count) {
             free(out);
             return NULL;
         }
+        /* ptxas also leaves a loop with @P CALL.REL.NOINC to the code after it, which no RET ends: a branch */
+        int returns = 0;
+        for (u32 k = entry; k <= end; k++) returns |= insn[k].op == SM70_RET;
+        if (!returns) {
+            out[i] = make_bra(&out[i], i, entry);
+            continue;
+        }
         u32 len = end - entry + 1;
         if ((size_t)n + len > 65536) {
             fail(c, "CALLs inlined past 65536 instructions");
@@ -2151,6 +2340,15 @@ static Sm70Insn* inline_calls(Ctx* c, Sm70Insn* insn, u32* count) {
                 out[n + k] = call;
             } else if (in->op == SM70_RET)
                 out[n + k] = make_bra(in, n + k, i + 1);
+            else if (in->op == SM70_BRA || in->op == SM70_BSSY) {
+                /* a branch out of the copied function keeps its target in the original */
+                u32 t = sm70_branch_target(in, entry + k);
+                if (t < entry || t > end) {
+                    Sm70Insn far = make_bra(in, n + k, t);
+                    if (in->op == SM70_BSSY) far = *in; /* BSSY's target only names a convergence point */
+                    out[n + k] = far;
+                }
+            }
         }
         out[i] = make_bra(&out[i], i, n);
         n += len;

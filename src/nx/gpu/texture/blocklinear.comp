@@ -34,6 +34,7 @@ layout(push_constant) uniform Params {
     uint lin_bias;  /* where the first linear row is in the bound range */
     uint to_bl;     /* nonzero: linear rows to block linear */
     uvec4 tail_mask; /* valid bytes of the last run, all bits set for whole runs */
+    uint native;     /* nonzero: a Switch 2 game's GOB, bits 5 and 6 of a byte's offset swapped (blocklinear.h) */
 };
 
 /* binding 0 is the side read, binding 1 the side written: block linear first when deswizzling */

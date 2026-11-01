@@ -208,6 +208,16 @@ typedef struct {
     u16 block[3], sample_shading;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
+/* The Switch 2's compute program (API 231) and the driver's record of its c[0], bytes 0xa8-0xbb of its format 11
+   control section, which its macro 0xeac reads: [0] the kind, 1 for the packed c[0] below; [1-8] the words of root
+   table 0-7 (push constants); [9] uniform buffers; [10] storage buffers; [11] textures; [12] separate textures;
+   [13] separate samplers; [14] images; [15] addresses; [17] bit 0: 16 bytes more at the end; [18-19] c[0]'s bytes.
+   The packed c[0]: its bytes rounded up to 16, the grid, the root tables' words (each table padded to 16 bytes),
+   uniform and storage buffers {address, size, 0}, then the handles' low words {handle, 0} in the order above. Kept
+   in the guest's program past NvnProgram, for API 231 */
+#define NVN_C0_RECORD 0x14
+#define NVN_PROG_C0(p) GP((p) + 0x78)
+typedef char nvn_fits_NvnProgramC0[0x78 + NVN_C0_RECORD <= 0xc0 ? 1 : -1];
 /* the Switch 2's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
    turns it into a program. The shader list is the Switch 2 shader-data array (0x18-byte entries); its parsing is
    deferred to the mesh-shader work */
@@ -491,6 +501,7 @@ typedef struct {
     NvnStage st[6];
     u64 serial; /* the program's SetShaders (nvn_program_xfb) */
     u16 block[3], sample_shading;
+    u8 c0[NVN_C0_RECORD]; /* a Switch 2 compute program's c[0] record (NVN_PROG_C0), zero for others */
 } NvnPBindProgram;
 /* kind: 0 blend 1 color 2 channel mask 3 multisample 4 polygon 5 depth-stencil; the object's bytes */
 typedef struct {

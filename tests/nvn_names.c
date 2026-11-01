@@ -168,6 +168,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
     memcpy(GP(gva), src, size);
     return 1;
 }
+int g_shader_sm70; /* shader.c's: Maxwell programs */
 u64 ds_generation_next(void) {
     static u64 g;
     return ++g;

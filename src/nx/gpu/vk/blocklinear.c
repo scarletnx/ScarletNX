@@ -7,6 +7,7 @@
    lifetime, like the other internal pipelines. Uses are on g_vk.gfx, under vk_lock() */
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/texture/blocklinear_spv.h" /* compiled from blocklinear.comp by the build (cmake/glsl.cmake) */
 #include "nx/runtime/platform/log.h"
 
@@ -14,6 +15,7 @@
 typedef struct {
     u32 runs, rows, lin_runs, y0, gob_y0, z0, bh, hmask, bd, dmask, bsh, block_row, slab, bl_bias, lin_bias, to_bl;
     u32 tail_mask[4];
+    u32 native;
 } BlParams;
 
 static VkDescriptorSetLayout g_bl_ds;
@@ -161,7 +163,8 @@ int vk_bl_move(VkCommandBuffer cb, const VkBlMove* m, int to_bl, VkBuffer bl, u6
                   /* the run at lo is at bl_at: modulo 2^32, as the shader adds it */
                   .bl_bias = (u32)((bl_at - bl_off) >> 4) - (u32)(lo >> 4),
                   .lin_bias = (u32)((lin_at - lin_off) >> 4),
-                  .to_bl = (u32)to_bl};
+                  .to_bl = (u32)to_bl,
+                  .native = (u32)g_gob_native};
     for (u32 i = 0; i < 4; i++) {
         u32 tail = m->row_bytes & 15;
         u32 bytes = !tail ? 4 : tail > 4 * i ? tail - 4 * i : 0;

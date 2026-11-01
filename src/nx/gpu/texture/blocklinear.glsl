@@ -9,6 +9,8 @@
      bit 1: run & 1        (x & 16) << 1 bytes
      bits 2, 3: row >> 1   ((y & 7) >> 1) << 6 bytes
      bit 4: run >> 1       (x & 32) << 3 bytes
+   A Switch 2 game's GOB (native) swaps bits 1 and 2 of k: row (k & 3) | ((k >> 1) & 4), run ((k >> 2) & 1) |
+   ((k >> 3) & 2).
    Lane x of a workgroup is that k, so a GOB's 32 lanes read or write its 512 bytes in order, and each row's four
    runs (64 bytes) on the linear side are four neighboring lanes' worth. The workgroup's y lanes are two GOBs side by
    side: each linear row gets 128 bytes in a row from a workgroup.
@@ -25,11 +27,13 @@
 
 void main() {
     uint k = gl_LocalInvocationID.x;
-    uint run = ((gl_WorkGroupID.x * 2u + gl_LocalInvocationID.y) << 2) | ((k >> 1) & 1u) | ((k >> 3) & 2u);
+    uint k_run = native != 0u ? ((k >> 2) & 1u) | ((k >> 3) & 2u) : ((k >> 1) & 1u) | ((k >> 3) & 2u);
+    uint k_row = native != 0u ? (k & 3u) | ((k >> 1) & 4u) : (k & 1u) | ((k >> 1) & 6u);
+    uint run = ((gl_WorkGroupID.x * 2u + gl_LocalInvocationID.y) << 2) | k_run;
     uint gy = gob_y0 + gl_WorkGroupID.y;
     /* the row relative to the first one moved: wraps past rows for the rows of the first GOB above y0, so one
        unsigned compare drops those and the ones past the last */
-    uint y = ((gy << 3) | ((k >> 1) & 6u) | (k & 1u)) - y0;
+    uint y = ((gy << 3) | k_row) - y0;
     if (run >= runs || y >= rows) return;
     uint z = z0 + gl_WorkGroupID.z;
     uint gob = ((z & dmask) << bh) | (gy & hmask);

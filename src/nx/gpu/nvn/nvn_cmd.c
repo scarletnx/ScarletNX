@@ -1644,6 +1644,7 @@ void nvn_CommandBufferBindProgram(CPU* c, u64 cb, u64 program, i32 stages) {
         r->serial = p->serial;
         memcpy(r->block, p->block, sizeof r->block);
         r->sample_shading = p->sample_shading;
+        if (g_nvn.loader.api >= 231u << 16) memcpy(r->c0, NVN_PROG_C0(program), NVN_C0_RECORD);
     } else if (program)
         LOG_LIMIT(4, "nvn: program %llx isn't initialized as it is bound\n", (unsigned long long)program);
 }
