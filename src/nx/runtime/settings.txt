@@ -711,6 +711,15 @@ setting IR dump PC
     recompile
     help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
     help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
+setting IR branch profile
+    key ir_branch_profile
+    text 1024
+    default ""
+    startup
+    recompile
+    help A file of branch counts, a line each: the branch's address and instruction word in hex, then how many times
+    help it was taken and not taken. The recompiler gives LLVM those odds for each branch whose address and word
+    help match. Empty: none. It applies to the next recompile, and to the JIT's next run
 setting GDB JIT symbols
     key gdb_jit
     int 0 1

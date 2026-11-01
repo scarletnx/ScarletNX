@@ -343,6 +343,9 @@ void ir_yield(SnxIr* ir);                         /* YIELD() */
 /* Optional offline branch profile: entries are keyed by guest PC and exact word.
    No profile means the existing LLVM branch prediction stays unchanged. */
 void ir_profile_branch(SnxIr* ir, LLVMValueRef branch, SnxU64 pc, SnxU32 word);
+/* the setting ir_branch_profile: the file ir_profile_branch reads, once, at the first branch of a module made after
+   (NULL or "": none). Before any module is made */
+void snx_ir_branch_profile(const char* path);
 void ir_unlikely(SnxIr* ir, LLVMValueRef branch);
 void ir_likely(SnxIr* ir, LLVMValueRef branch);
 /* a call to an LLVM intrinsic, overloaded on type (NULL: not overloaded) */

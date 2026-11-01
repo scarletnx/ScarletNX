@@ -1872,6 +1872,12 @@ add_executable(snx-test-llvm-tuning llvm_tuning.c)
 snx_test_target(snx-test-llvm-tuning 11)
 target_link_libraries(snx-test-llvm-tuning PRIVATE snx_driver)
 add_test(NAME llvm_tuning COMMAND snx-test-llvm-tuning)
+# the offline branch profile (ir_profile.c, the setting ir_branch_profile): weights where address and word match, and
+# what it cannot read said
+add_executable(snx-test-llvm-branch-profile llvm_branch_profile.c)
+snx_test_target(snx-test-llvm-branch-profile 11)
+target_link_libraries(snx-test-llvm-branch-profile PRIVATE snx_driver)
+add_test(NAME llvm_branch_profile COMMAND snx-test-llvm-branch-profile "${CMAKE_CURRENT_BINARY_DIR}")
 # the X registers' cache within a block (ir_state.c)
 add_executable(snx-test-llvm-gpr-cache llvm_gpr_cache.c)
 snx_test_target(snx-test-llvm-gpr-cache 11)

@@ -957,6 +957,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_fpsr_flags(g_settings.fpsr_flags);
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
     snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
+    snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */

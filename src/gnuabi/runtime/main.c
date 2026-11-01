@@ -193,6 +193,15 @@ int snx_gnuabi_main(int argc, char** argv) {
         options_free(changes, change_count, sysroot);
         return 2;
     }
+    /* what an older version's JIT read (docs/DEPRECATIONS.md), replaced by ir_branch_profile, a setting of scarletnx's
+       runtime and recompile only. Removed with tests/architecture.py's ENV_DEPRECATED row */
+    const char* old_profile = getenv("SNX_LLVM_BRANCH_PROFILE");
+    if (old_profile)
+        fprintf(stderr,
+                "scarletnx-gnuabi: SNX_LLVM_BRANCH_PROFILE=%s is deprecated, replaced by ir_branch_profile, a setting "
+                "of scarletnx's runtime and recompile and not of this one: its JIT runs without branch weights "
+                "(docs/DEPRECATIONS.md)\n",
+                old_profile);
     if (!isolated && !sysroot) sysroot = default_sysroot(argv[0]);
     if (!no_cache) {
         if (cache_option)

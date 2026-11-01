@@ -60,6 +60,26 @@ static void usage(void) {
          "settings and saves and reads the dump in place. A DLC has no program: the driver checks it for its game.\n"
          "Hints: <outdir>/<NAME>/<NAME>.hints (hex PCs, one per line).");
 }
+/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/DEPRECATIONS.md): for this version still the value of
+   ir_branch_profile when the recompile is given none, and said either way. Removed with tests/architecture.py's
+   ENV_DEPRECATED row */
+static void old_branch_profile(void) {
+    const char* old = getenv("SNX_LLVM_BRANCH_PROFILE");
+    if (!old) return;
+    if (g_settings.ir_branch_profile[0])
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and the recompile gives ir_branch_profile first: "
+                  "ir_branch_profile=%s (docs/DEPRECATIONS.md)",
+                  old, g_settings.ir_branch_profile);
+    else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
+        memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir_branch_profile=%s "
+                  "(docs/DEPRECATIONS.md)",
+                  old, old);
+    } else
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and longer than ir_branch_profile's %u bytes: "
+                  "ir_branch_profile is empty, no branch weights (docs/DEPRECATIONS.md)",
+                  old, (unsigned)sizeof g_settings.ir_branch_profile - 1);
+}
 static unsigned number(const char* text, unsigned max) {
     char* end;
     unsigned long n;
@@ -678,6 +698,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
+        old_branch_profile();
+        snx_ir_branch_profile(g_settings.ir_branch_profile);
         llvm.tuning = snx_llvm_tuning(llvm.opt, error, sizeof error);
         if (!llvm.tuning) {
             snx_error("%s", error);

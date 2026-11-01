@@ -279,9 +279,9 @@ devirtualization or permission to bypass hooks. Extracted RTTI records stay loca
 
 Rosetta translates each instruction once with almost no optimization. ScarletNX runs LLVM, which can use a profile.
 
-- **Now.** `ir_profile.c` reads branch counts (pc, word, taken, not taken) from the file in `SNX_LLVM_BRANCH_PROFILE`,
-  and only `tests/llvm_perf/test_profile.py` writes one.
-- **Change.** Add separate opt-in settings to collect a profile and to use it for a recompile. Keep both off by
+- **Now.** `ir_profile.c` reads branch counts (pc, word, taken, not taken) from the file the setting
+  `ir_branch_profile` names, and only the tests (`llvm_branch_profile`, `tests/llvm_perf/test_profile.py`) write one.
+- **Change.** Add a separate opt-in setting to collect a profile. Keep both off by
   default, since gains are workload dependent and collection has a cost. Instrument guest branches and `BLR` targets
   and write the profile beside the game at exit. An explicitly enabled profile build can set branch weights, order
   functions by heat and split cold code. L2 may use the `BLR` targets when that option is enabled. Reject stale
