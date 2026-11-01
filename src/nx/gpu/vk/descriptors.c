@@ -29,6 +29,7 @@ static struct {
         VkDeviceSize offset[SNX_VKB_END];
     } layouts[10];
     u32 nlayouts;
+    VkDeviceSize largest; /* the largest layout's size, aligned: what one stage of a draw takes at most */
     struct {
         VkBuffer buffer;
         VmaAllocation memory;
@@ -63,6 +64,9 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
     u32 slot = g_descriptors.nlayouts++;
     g_descriptors.layouts[slot].layout = layout;
     vkGetDescriptorSetLayoutSizeEXT(g_vk.dev, layout, &g_descriptors.layouts[slot].size);
+    VkDeviceSize aligned =
+        snx_align_up(g_descriptors.layouts[slot].size, g_vk.descriptor_props.descriptorBufferOffsetAlignment);
+    if (aligned > g_descriptors.largest) g_descriptors.largest = aligned;
     for (u32 i = 0; i < count; i++) {
         u32 binding = bindings[i].binding;
         if (binding >= SNX_VKB_END) fatal("vulkan: invalid graphics descriptor binding");
@@ -71,6 +75,11 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 }
 void vk_descriptors_reset(u32 slot) {
     if (slot < VK_FRAMES) g_descriptors.frame[slot].used = 0;
+}
+int vk_descriptors_room(u32 slot) {
+    if (!g_vk.has_descriptor_buffers || slot >= VK_FRAMES || !g_descriptors.frame[slot].buffer) return 1;
+    /* a draw writes one table for each of its five stages at most */
+    return g_descriptors.frame[slot].capacity - g_descriptors.frame[slot].used >= 5 * g_descriptors.largest;
 }
 static void arena(u32 slot) {
     if (g_descriptors.frame[slot].buffer) return;
@@ -140,6 +149,8 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     VkDeviceSize size = snx_align_up(g_descriptors.layouts[index].size, align);
     if (size > g_descriptors.frame[slot].capacity) fatal("vulkan: graphics descriptor layout exceeds the arena");
     if (size > g_descriptors.frame[slot].capacity - g_descriptors.frame[slot].used) {
+        /* vk_frame_check advances the frame before a draw's setup comes this far (vk_descriptors_room). Here the
+           submission changes under the setup, which then starts again (render.c) */
         vk_frame_next();
         vk_cmd();
         slot = vk_frame_slot();

@@ -8,6 +8,9 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes);
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets);
 void vk_descriptors_reset(u32 slot);
+/* whether the frame slot's descriptor memory holds the tables of one more draw: else vk_frame_check moves on to the
+   next frame before the draw's setup starts, which must not submit */
+int vk_descriptors_room(u32 slot);
 void vk_descriptors_stats(void);
 VkResult vk_buffer_create(VmaAllocator allocator, const VkBufferCreateInfo* info,
                            const VmaAllocationCreateInfo* allocation, VkBuffer* buffer,
