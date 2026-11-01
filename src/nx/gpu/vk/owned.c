@@ -10,6 +10,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/hle/services/nvdrv.h"
@@ -33,8 +34,24 @@ static struct {
     u64 cap;
 } g_owned;
 
+/* Landings copy on the compute queue where it is a queue of its own: there the copy waits for the submission that wrote
+   its resource alone (VkOwnRes.written, on the graphics timeline), not behind every submission queued after it, which
+   one game's landings waited 30 to 130 ms for. On a device with one queue they copy on it, behind all of them */
+static int land_apart(void) { return g_vk.compute && g_vk.compute != g_vk.gfx; }
+/* a buffer both queues use: concurrent where they are of two families (an exclusive one would need its ownership
+   moved at each landing) */
+static void land_sharing(VkBufferCreateInfo* bi, u32 fam[2]) {
+    fam[0] = g_vk.gfx_family;
+    fam[1] = g_vk.compute_family;
+    if (!land_apart() || fam[0] == fam[1]) return;
+    bi->sharingMode = VK_SHARING_MODE_CONCURRENT;
+    bi->queueFamilyIndexCount = 2;
+    bi->pQueueFamilyIndices = fam;
+}
+
 VkOwnRes* vk_own_res_new(u64 size) {
     VkOwnRes* r = (VkOwnRes*)calloc(1, sizeof *r);
+    u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                              .size = size ? size : 16,
                              /* VIC binds the job's first words as a uniform buffer (vk/vic.c) */
@@ -44,7 +61,8 @@ VkOwnRes* vk_own_res_new(u64 size) {
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!r) return NULL;
-    if (size > g_vk.alloc_cap || !VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
+    land_sharing(&bi, fam);
+    if (size > g_vk.alloc_cap || !VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &r->buf, &r->mem, NULL))) {
         free(r);
         return NULL;
     }
@@ -109,7 +127,7 @@ int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) {
 static void land_prepare(u64 size) {
     if (!g_owned.pool) {
         VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                                      .queueFamilyIndex = g_vk.gfx_family};
+                                      .queueFamilyIndex = land_apart() ? g_vk.compute_family : g_vk.gfx_family};
         VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         if (!VK_OK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_owned.pool)) ||
             !VK_OK(vkCreateFence(g_vk.dev, &fi, NULL, &g_owned.fence)))
@@ -129,14 +147,16 @@ static void land_prepare(u64 size) {
         vk_mem_untrack(g_owned.mem);
         vmaDestroyBuffer(g_vk.vma, g_owned.back, g_owned.mem);
     }
+    u32 fam[2];
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap,
                              .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    land_sharing(&bi, fam);
     VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
                                            VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                   .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
     VmaAllocationInfo info;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_owned.back, &g_owned.mem, &info)))
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_owned.back, &g_owned.mem, &info)))
         fatal("vulkan: no host memory for ownership readback");
     vk_mem_track(g_owned.mem);
     g_owned.ptr = info.pMappedData;
@@ -150,8 +170,22 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
     u32 i = 0;
     SNX_ZONE_V(z, "vk own land", n);
     vk_lock();
-    for (u32 k = 0; k < n; k++) cpu_read_note(r[k].addr, r[k].size);
-    vk_submit_for_readback();
+    u64 writer = 0;
+    for (u32 k = 0; k < n; k++) {
+        u64 w = ((const VkOwnRes*)r[k].res)->written;
+        cpu_read_note(r[k].addr, r[k].size);
+        if (w > writer) writer = w;
+    }
+    int apart = land_apart();
+    VkQueue queue = apart ? g_vk.compute : g_vk.gfx;
+    /* the open commands go only when the writes are among them: on the graphics queue the copy follows them anyway */
+    if (!apart || !writer || writer > vk_last_submit())
+        vk_submit_for_readback();
+    else
+        vk_rec_sync(); /* the recorder's calls on the queue (the compute one may be its too) before the copy's */
+    /* unstamped: everything submitted. Past the last submission: nothing was recording, so nothing of it was written
+       there, and a wait for a value never signaled would never end */
+    if (!writer || writer > vk_last_submit()) writer = vk_last_submit();
     while (i < n) {
         Piece pc[64];
         u32 np = 0, j;
@@ -184,11 +218,24 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
         }
         land_barrier(cb, 0);
         VkCommandBufferSubmitInfo ci = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+        /* on the compute queue, the writer's submission alone: its signal carries the writes to the copy */
+        VkSemaphoreSubmitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                    .semaphore = vk_gfx_timeline(),
+                                    .value = writer,
+                                    .stageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
         VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                            .waitSemaphoreInfoCount = apart && writer ? 1u : 0u,
+                            .pWaitSemaphoreInfos = &wi,
                             .commandBufferInfoCount = 1, .pCommandBufferInfos = &ci};
-        if (!VK_OK(vkEndCommandBuffer(cb)) || !VK_OK(vkResetFences(g_vk.dev, 1, &g_owned.fence)) ||
-            !VK_OK(vkQueueSubmit2(g_vk.gfx, 1, &si, g_owned.fence)))
+        if (!VK_OK(vkEndCommandBuffer(cb)) || !VK_OK(vkResetFences(g_vk.dev, 1, &g_owned.fence)))
             fatal("vulkan: could not submit ownership readback");
+        if (apart) {
+            vk_rec_queue(queue); /* after the recorder's compute submissions, as cs_submit's */
+            vk_queue_lock(queue);
+        }
+        VkResult sr = vkQueueSubmit2(queue, 1, &si, g_owned.fence);
+        if (apart) vk_queue_unlock(queue);
+        if (!VK_OK(sr)) fatal("vulkan: could not submit ownership readback");
         gpu_wait_note("GPU-owned memory readback", 0);
         int ok = VK_OK(vkWaitForFences(g_vk.dev, 1, &g_owned.fence, VK_TRUE, UINT64_MAX));
         gpu_wait_note(NULL, 0);
@@ -219,6 +266,8 @@ void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
     OwnRange o;
     u8* d;
     if (!size) return;
+    /* every producer records its writes before it publishes them: they are in the submission being recorded */
+    if (r->written < vk_submit_number()) r->written = vk_submit_number();
     vk_rt_before_write_cpu(cpu, size);
     gpu_mem_written_cpu(cpu, size); /* what is built from the bytes (textures, buffers) takes the new ones */
     if (g_owned.traps) vk_uma_quiesce(cpu, size); /* commands reading the pages in place run before the trap */

@@ -15,6 +15,7 @@
    the copy writes. Its strips then start on whole 4x4 blocks. */
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/texture/astc_spv.h" /* compiled from astc.comp by the build (cmake/glsl.cmake) */
 #include "nx/gpu/texture/bc7_spv.h"  /* compiled from bc7.comp */
 #include "nx/runtime/platform/log.h"
@@ -93,7 +94,7 @@ static void astc_init(void) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_astc_scratch, &g_astc_mem, NULL)))
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_astc_scratch, &g_astc_mem, NULL)))
         fatal("vulkan: cannot allocate ASTC scratch memory");
     vk_mem_track(g_astc_mem);
 }
@@ -129,7 +130,7 @@ static void bc7_init(void) {
                              .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_bc7_scratch, &g_bc7_mem, NULL)))
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_bc7_scratch, &g_bc7_mem, NULL)))
         fatal("vulkan: cannot allocate the BC7 encoder's scratch memory");
     vk_mem_track(g_bc7_mem);
 }

@@ -819,6 +819,14 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting Descriptor buffers
+    key vk_descriptors
+    int 0 1
+    default 0
+    startup
+    words Sets|Buffers
+    help 1 = graphics descriptors use addressable Vulkan buffers when supported, with no descriptor-set allocations.
+    help Compute keeps its own descriptor pools. 0 = descriptor sets for graphics too
 setting Vulkan recording thread
     key vk_record
     int 0 1

@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/backend.h"
@@ -87,11 +88,18 @@ u32 g_vk_epoch, g_vk_present;
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86) /* as xxh3.c builds it */
 #include "xxh_x86dispatch.h"
 #define SNX_XXH3(p, n) XXH3_64bits_dispatch(p, n)
+#define SNX_XXH128(p, n) XXH3_128bits_dispatch(p, n)
 #else
 #include "xxhash.h"
 #define SNX_XXH3(p, n) XXH3_64bits(p, n)
+#define SNX_XXH128(p, n) XXH3_128bits(p, n)
 #endif
 u64 vk_hash(const void* p, u64 size) { return (u64)SNX_XXH3(p, (size_t)size); }
+void vk_hash128(const void* p, u64 size, u64 hash[2]) {
+    XXH128_hash_t h = SNX_XXH128(p, (size_t)size);
+    hash[0] = h.low64;
+    hash[1] = h.high64;
+}
 /* the same hash as vk_hash, which an entry's next check may compute instead, with src copied to dst: the bytes are
    hashed where they are (dst may be write-combined staging, slow to read back) and then copied, from cache */
 u64 vk_hash_copy(void* dst, const void* src, u64 size) {
@@ -309,6 +317,7 @@ static void frame_recycle(Frame* f) {
     }
     ring_reset(&f->back, NULL);
     ring_reset(&f->dev, NULL);
+    vk_descriptors_reset((u32)(f - g_fr));
     vk_rec_frame_reset((u32)(f - g_fr)); /* the slot's sets made on the recording thread too */
     f->icb = 0;
     f->fresh = 0;
@@ -433,7 +442,7 @@ static int ring_take(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags 
             vmaGetHeapBudgets(g_vk.vma, budget);
             if (bar_room(budget, cap, 0)) aci.usage = VMA_MEMORY_USAGE_AUTO;
         }
-        if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &r->buf, &r->mem, &info))) {
+        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &r->buf, &r->mem, &info))) {
             r->buf = VK_NULL_HANDLE;
             r->cap = 0;
             return 0;
@@ -629,6 +638,7 @@ void vk_frame_check(void) {
 u64 vk_submit_number(void) { return g_gval + 1; }
 u32 vk_cb_begun(void) { return g_cb_begun; }
 u64 vk_last_submit(void) { return g_gval; }
+VkSemaphore vk_gfx_timeline(void) { return g_gsem; }
 void vk_submit_progress(u64* submitted, u64* done) {
     *submitted = __atomic_load_n(&g_gval, __ATOMIC_RELAXED);
     *done = 0;
@@ -771,7 +781,7 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
                                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
         VmaAllocationInfo info;
-        if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &g_rb, &g_rb_mem, &info))) {
+        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_rb, &g_rb_mem, &info))) {
             g_rb = VK_NULL_HANDLE;
             g_rb_cap = 0;
             return NULL;

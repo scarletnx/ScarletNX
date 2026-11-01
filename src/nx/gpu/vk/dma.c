@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
@@ -51,7 +52,7 @@ static int snap_chunk_new(SnapChunk* c) {
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
     VmaVirtualBlockCreateInfo vbi = {.size = SNAP_CHUNK};
     VmaAllocationInfo info;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &c->buf, &c->mem, &info))) return 0;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &c->buf, &c->mem, &info))) return 0;
     if (!VK_OK(vmaCreateVirtualBlock(&vbi, &c->block))) {
         vmaDestroyBuffer(g_vk.vma, c->buf, c->mem);
         c->buf = VK_NULL_HANDLE;

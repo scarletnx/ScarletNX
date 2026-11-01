@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/ui_spv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/hud.h"
@@ -186,7 +187,7 @@ static void atlas_upload(VkCommandBuffer cb) {
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {(u32)w, (u32)h, 1}};
     if (!px || version == g_atlas_version) return;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &bai, &buf, &mem, &info))) return;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &bai, &buf, &mem, &info))) return;
     vk_mem_track(mem);
     memcpy(info.pMappedData, px, (size_t)w * (size_t)h * 4);
     vmaFlushAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);

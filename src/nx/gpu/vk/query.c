@@ -32,6 +32,7 @@
 #include <string.h>
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/query_compare_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
@@ -92,7 +93,7 @@ static int pool_make(void) {
                                       VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                   .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
     VmaAllocationInfo info;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_qbuf, &g_qmem, &info))) {
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_qbuf, &g_qmem, &info))) {
         vkDestroyQueryPool(g_vk.dev, g_qpool, NULL);
         g_qpool = VK_NULL_HANDLE;
         return 0;
@@ -313,7 +314,7 @@ static int pred_init(void) {
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &g_pbuf, &g_pmem, NULL))) return 0;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &g_pbuf, &g_pmem, NULL))) return 0;
     vk_mem_track(g_pmem);
     VkDescriptorSetLayoutBinding b[3];
     for (u32 i = 0; i < 3; i++)
