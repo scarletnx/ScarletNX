@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/utilities/common.h"
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +25,20 @@ static struct {
     _Atomic(BranchProfile*) published;
     atomic_flag initializing;
     _Atomic int ready;
+    char path[1024]; /* snx_ir_branch_profile's, "" for none */
 } g_profile = {.initializing = ATOMIC_FLAG_INIT};
+
+void snx_ir_branch_profile(const char* path) {
+    free(atomic_exchange_explicit(&g_profile.published, NULL, memory_order_relaxed));
+    atomic_store_explicit(&g_profile.ready, 0, memory_order_relaxed);
+    atomic_flag_clear_explicit(&g_profile.initializing, memory_order_release);
+    if (path && strlen(path) >= sizeof g_profile.path) {
+        snx_error("ir: ir_branch_profile=%s is longer than %u bytes: no branch weights", path,
+                  (unsigned)sizeof g_profile.path - 1);
+        path = NULL;
+    }
+    snprintf(g_profile.path, sizeof g_profile.path, "%s", path ? path : "");
+}
 
 static int by_site(const void* a, const void* b) {
     const BranchCount* x = a;
@@ -32,28 +47,46 @@ static int by_site(const void* a, const void* b) {
     return (x->word > y->word) - (x->word < y->word);
 }
 
+/* The file ir_branch_profile names, said when it cannot be read and for each kind of line that gives no weights */
 static BranchProfile* read_profile(void) {
-    const char* path = getenv("SNX_LLVM_BRANCH_PROFILE");
+    const char* path = g_profile.path;
     FILE* file;
-    size_t count = 0, capacity = 64;
-    if (!path || !*path || !(file = fopen(path, "r"))) return NULL;
+    size_t count = 0, capacity = 64, number = 0, bad = 0, bad_at = 0;
+    char bad_line[96] = {0};
+    if (!*path) return NULL;
+    if (!(file = fopen(path, "r"))) {
+        snx_error("ir: ir_branch_profile=%s cannot be read (%s): no branch weights", path, strerror(errno));
+        return NULL;
+    }
     BranchProfile* profile = malloc(sizeof(*profile) + capacity * sizeof(BranchCount));
     if (!profile) {
         fclose(file);
+        snx_error("ir: ir_branch_profile=%s: no memory to read it: no branch weights", path);
         return NULL;
     }
     char line[160];
     while (fgets(line, sizeof(line), file)) {
         unsigned long long pc, taken, fall;
         unsigned word;
+        ++number;
         if (line[0] == '#' || line[0] == '\n') continue;
-        if (sscanf(line, "%llx %x %llu %llu", &pc, &word, &taken, &fall) != 4) continue;
+        if (sscanf(line, "%llx %x %llu %llu", &pc, &word, &taken, &fall) != 4) {
+            if (!bad++) {
+                bad_at = number;
+                snprintf(bad_line, sizeof bad_line, "%.*s", (int)strcspn(line, "\r\n"), line);
+            }
+            continue;
+        }
         if (!taken && !fall) continue;
         if (count == capacity) {
-            if (capacity >= (1u << 20)) break;
+            BranchProfile* larger =
+                capacity < (1u << 20) ? realloc(profile, sizeof(*profile) + capacity * 2 * sizeof(BranchCount)) : NULL;
+            if (!larger) {
+                snx_error("ir: ir_branch_profile=%s: %s %zu branches: line %zu and those after it give no weights",
+                          path, capacity < (1u << 20) ? "no memory for more than" : "it reads at most", count, number);
+                break;
+            }
             capacity *= 2;
-            BranchProfile* larger = realloc(profile, sizeof(*profile) + capacity * sizeof(BranchCount));
-            if (!larger) break;
             profile = larger;
         }
         /* Normalize counts before converting to LLVM's 32-bit metadata. */
@@ -64,6 +97,10 @@ static BranchProfile* read_profile(void) {
         profile->sites[count++] = (BranchCount){pc, word, (SnxU32)taken, (SnxU32)fall};
     }
     fclose(file);
+    if (bad)
+        snx_error("ir: ir_branch_profile=%s: %zu line%s not a branch's address and word in hex, then how many times it "
+                  "was taken and not taken (line %zu: \"%s\"): no weights from %s",
+                  path, bad, bad > 1 ? "s are" : " is", bad_at, bad_line, bad > 1 ? "them" : "it");
     qsort(profile->sites, count, sizeof(BranchCount), by_site);
     /* Keep one representative per identity. qsort does not preserve the input order of equal identities,
        so this does not promise which repeated entry supplies its counts. */

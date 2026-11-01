@@ -43,6 +43,7 @@ void options_old_environment(void) {
         {"SNX_HOST_PAGE", getenv("SNX_HOST_PAGE"), OLD_COPY, "host_page", NULL},
         {"SNX_ALIAS_CHECK", getenv("SNX_ALIAS_CHECK"), OLD_SWITCH, "gpu_page_check", NULL},
         {"SNX_DIRTY_CHECK", getenv("SNX_DIRTY_CHECK"), OLD_SWITCH, "draw_state_check", NULL},
+        {"SNX_LLVM_BRANCH_PROFILE", getenv("SNX_LLVM_BRANCH_PROFILE"), OLD_COPY, "ir_branch_profile", NULL},
     };
     size_t i;
     int j, n = 0;
