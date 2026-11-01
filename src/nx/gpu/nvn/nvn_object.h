@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's NVN objects (gpu/nvn/nvn_object.c): the device, memory pools, buffers, textures, samplers, programs
+/* nvn's NVN objects (gpu/nvn/nvn_object.c): the device, memory pools, buffers, textures, samplers, programs
    and state objects, and their builders. What the command buffer and queue files share with it */
 #ifndef SNX_NVN_OBJECT_H
 #define SNX_NVN_OBJECT_H

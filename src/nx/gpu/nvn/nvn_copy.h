@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's copies: NVN's buffer and texture copies, and the CPU's texel writes, as the DMA engine's launches the
+/* nvn's copies: NVN's buffer and texture copies, and the CPU's texel writes, as the DMA engine's launches the
    renderer does on the GPU (gpu/nvn/nvn_copy.c) */
 #ifndef SNX_NVN_COPY_H
 #define SNX_NVN_COPY_H

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's queue, syncs and window (gpu/nvn/nvn_queue.c). The functions are the NVN functions'
+/* nvn's queue, syncs and window (gpu/nvn/nvn_queue.c). The functions are the NVN functions'
    (gpu/nvn/nvn.hook.h); here is the file's state */
 #ifndef SNX_NVN_QUEUE_H
 #define SNX_NVN_QUEUE_H

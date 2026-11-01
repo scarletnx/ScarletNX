@@ -10,7 +10,7 @@ rendering equivalence. Command recording defers work to nvn_replay.
 --contracts accepts reviewed hook declarations in a JSON list. --emit-bindings
 emits those declarations only after checking the reference ABI and an existing
 C handler. It never invents a handler body or marks an unimplemented API supported.
---log also records actual calls that stopped nvn_direct.
+--log also records actual calls that stopped nvn.
 Keep reports and caches outside the checkout when indexing private references.
 """
 

@@ -31,7 +31,7 @@ only, with relocated words and the ARM and Thumb BL immediates masked):
 - norm, norm_closure: the masked instructions as llvm-objdump prints them, the register numbers dropped and the
   lines sorted: equal for code a compiler only allocated registers for or scheduled differently.
 
-A function's role says what nvn_direct takes from it (layout_role): object sizes (SetDefaults, Initialize), device
+A function's role says what nvn takes from it (layout_role): object sizes (SetDefaults, Initialize), device
 constants (DeviceGetInteger), command memory accounting (the CommandBuffer memory functions), constant bank 0 and
 handles (the CommandBuffer bind, draw and dispatch functions, the Device handle getters), or nothing. The layout key
 hashes the closures of the procedures with a role.
@@ -67,7 +67,7 @@ import moduledump  # noqa: E402
 import nvn_census as nc  # noqa: E402
 
 # ---------------------------------------------------------------------------------------------------------------
-# What nvn_direct takes from each procedure
+# What nvn takes from each procedure
 
 CMDMEM = re.compile(r'CommandBuffer(Initialize|Finalize|AddCommandMemory|AddControlMemory|SetMemoryCallback'
                     r'(Data)?|GetCommandMemory|GetControlMemory|GetMemoryCallback|BeginRecording|EndRecording|Reset'
@@ -895,7 +895,7 @@ def layout_key(r, roles=None):
 
 
 def semantic_key(r):
-    """SHA-256 of what nvn_direct depends on as this tool can read it: the layout signatures, the device's constant
+    """SHA-256 of what nvn depends on as this tool can read it: the layout signatures, the device's constant
     answers, the command buffer's offsets and the object footprints, none of which depends on how the compiler laid
     the code out"""
     h = hashlib.sha256()

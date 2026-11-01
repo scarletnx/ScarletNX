@@ -220,7 +220,7 @@ static int indirect_cases(MxRegs* channel, u64 target, u64 indices, u64 args) {
 
 /* NVN's draw parameters in an indirect draw (DrawCall.params): the game's driver writes each draw's base vertex and
    base instance into constant buffer 0 at 0x640 and 0x644 from the record, on the GPU, and instanced vertex programs
-   add the base instance to their instance ID to find their instance's data. nvn_direct's bank 0 holds 0 there for an
+   add the base instance to their instance ID to find their instance's data. nvn's bank 0 holds 0 there for an
    indirect draw, so one game drew every instance of its street props from the first records of its instance data,
    out of sight. Here a vertex program replaces the green component of the green quad's color with c[0][0x644], with
    bank 0 all zeros, and the record's base instance is 1.0f's bits: the quad is green only when the read takes the

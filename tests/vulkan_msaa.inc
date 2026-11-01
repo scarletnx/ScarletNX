@@ -407,7 +407,7 @@ static int check_msaa(void) {
     return 0;
 }
 
-/* NVN direct's multisampled texture as a render target and its Downsample (gpu/nvn/nvn_draw.c's target,
+/* NVN's multisampled texture as a render target and its Downsample (gpu/nvn/nvn_draw.c's target,
    nvn_copy.c's resolve): a 16x8 RGBA8 texture of 4 samples (NVN's 2x2 layout) in a one GOB high block linear
    layout, its samples 0 and 3 green and 1 and 2 blue in guest memory, bound as the target and cleared in alpha alone
    (a masked clear, drawn at every sample), then downsampled into a 16x8 texture of one sample: every pixel the
@@ -428,7 +428,7 @@ static void ms_nvn_texture_of(u64 at, u64 gpu, int samples, u16 format) {
     memcpy(GP(at), &t, NVN_TEX_SNAP);
 }
 static void ms_nvn_texture(u64 at, u64 gpu, int samples) { ms_nvn_texture_of(at, gpu, samples, NVN_FORMAT_RGBA8); }
-/* NVN direct's multisampled depth texture and its Downsample on the GPU (gpu/vk/surface.c resolve_depth): a 16x8
+/* NVN's multisampled depth texture and its Downsample on the GPU (gpu/vk/surface.c resolve_depth): a 16x8
    DEPTH32F texture of 4 samples bound as the depth target and cleared to 0.25, then downsampled into a 16x8 DEPTH32F
    texture of one sample, whose every pixel is 0.25 */
 static int check_msaa_nvn_depth(NvnDraw* d, u64 gpu, u64 cpu) {
@@ -483,7 +483,7 @@ static int check_msaa_nvn_depth(NvnDraw* d, u64 gpu, u64 cpu) {
     }
     return 0;
 }
-/* NVN direct's copy between two DEPTH24_STENCIL8 textures of one size (nvn_copy.c's copy_texture_texture): the game's
+/* NVN's copy between two DEPTH24_STENCIL8 textures of one size (nvn_copy.c's copy_texture_texture): the game's
    driver copies them with the 2D engine, and the renderer's packed depth and stencil target never goes to guest
    memory, so a copy through memory left the destination undefined (one game's lighting then tested against garbage
    depth and drew black). The source, bound as the depth target and cleared to 0.25 and stencil 0x5A, is copied

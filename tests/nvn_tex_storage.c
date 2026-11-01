@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's texture storage answers (src/nx/gpu/nvn/nvn_tex.c nvn_tex_storage) against the rules of the game's
+/* nvn's texture storage answers (src/nx/gpu/nvn/nvn_tex.c nvn_tex_storage) against the rules of the game's
    NVN driver (docs/NVN_HLE.md, "Texture storage answers"), over targets, formats, sizes, levels, samples and flags:
    the kind, the alignment, the size and the ZCull area, and that each texture's extent (its layout) stays inside the
    storage the game allocates for it. A storage sweep compared the same answers with the driver's own code in a game

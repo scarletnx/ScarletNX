@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The NVN functions of API 53 and 55 that nvn_direct took over last, family by family, against what the games'
+/* The NVN functions of API 53 and 55 that nvn took over last, family by family, against what the games'
    drivers do (their code, NVN 53.314 and 55.15): command buffers (gpu/nvn/nvn_cmd.c) record and the queue's replay
    (nvn_draw.c) turns the records into the renderer's draw state, which a renderer of the test's takes; the device,
    textures, samplers, programs, events, syncs and state objects (nvn_object.c); and the queue and window
@@ -106,7 +106,7 @@ void loader_segments(LoaderSegEach each, void* ctx) {
     (void)ctx;
 }
 u32 nvn_api_pack(i32 major, i32 minor) { return (u32)major << 16 | (u32)minor; }
-u64 nvn_direct_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
+u64 nvn_loader_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
     (void)c;
     (void)fn;
     (void)at;
@@ -494,7 +494,7 @@ static void test_texture(void) {
         {NVN_FORMAT_DEPTH32F_STENCIL8, 55u << 16 | 12, 0, "a depth format, which no driver describes"},
     };
     for (size_t i = 0; i < sizeof colors / sizeof *colors; i++) {
-        g_nvn.direct.api = colors[i].api;
+        g_nvn.loader.api = colors[i].api;
         tex_init(TEX + 0x80, colors[i].format, 64, 64, 0);
         nvn_TextureGetNvRmSurfaceNVX(NULL, TEX + 0x80, 0, s);
         if (gr64(s + 8) != colors[i].color)
@@ -506,13 +506,13 @@ static void test_texture(void) {
     nvn_TextureBuilderSetDefaults(NULL, TEX_B);
     nvn_TextureBuilderSetFormat(NULL, TEX_B, NVN_FORMAT_STENCIL8);
     nvn_TextureBuilderSetSize2D(NULL, TEX_B, 100, 60);
-    g_nvn.direct.api = 53u << 16 | 105;
+    g_nvn.loader.api = 53u << 16 | 105;
     check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0x1e0, "53.105 STENCIL8: a ZCull area as for depth");
-    g_nvn.direct.api = 53u << 16 | 209;
+    g_nvn.loader.api = 53u << 16 | 209;
     check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0, "53.209 STENCIL8: no ZCull area");
     nvn_TextureBuilderSetFlags(NULL, TEX_B, NVN_TEXTURE_FLAGS_ZCULL_SUPPORT_STENCIL);
     check(nvn_TextureBuilderGetZCullStorageSize(NULL, TEX_B) == 0x1e0, "53.209 STENCIL8 with its zcull flag");
-    g_nvn.direct.api = 0;
+    g_nvn.loader.api = 0;
     nvn_MemoryPoolFinalize(NULL, POOL);
     check(g_nvmap_live == 0, "the pool's handle goes with it");
     nvn_TextureReadTexelsStrided(NULL, TEX, 0, SCRATCH, SCRATCH2, 0x300, 0x9000);

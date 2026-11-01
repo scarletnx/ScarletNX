@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    The driver constant buffers' layout from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/nvn_mtl.m */
-/* nvn_direct's draws. A queue's replayed records set NVN's state here, as the game recorded it: state objects,
+/* nvn's draws. A queue's replayed records set NVN's state here, as the game recorded it: state objects,
    viewports, programs, vertex layout and buffers, uniform and storage buffers, texture handles. A draw makes the
    renderer's draw state of it (gpu/draw_state.h), each group whose bytes changed with a new generation, and
    hands it the draw.
@@ -423,7 +423,7 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
     u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
     int flip = origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
-    if (g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W) {
+    if (g_nvn.loader.api && g_nvn.loader.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W) {
         flip = !flip;
         /* that flip reverses the facing (vk_render_front_face), and the front face the driver writes with it is the
            other one: the two keep the game's facing, as two games of these drivers draw it */

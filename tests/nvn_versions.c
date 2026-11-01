@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The NVN key of versioned hooks (tests/hook/nvn_versions.hook, generated with --prefix nvn as gpu/nvn/nvn.hook is):
-   the API version a driver's nvnDeviceGetInteger answers, read from its code (gpu/nvn/nvn_driver.c) as nvn_direct
+   the API version a driver's nvnDeviceGetInteger answers, read from its code (gpu/nvn/nvn_driver.c) as nvn
    reads it at the game's first NVN call, packed as the key takes it, the entry hook_select picks for it, and the
-   versions nvn_direct=auto takes the game's NVN calls for */
+   versions the runtime has measured layouts for */
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/hle/hook/hook.h"
 #include "gpu/nvn/nvn_versions.hook.h"
@@ -85,7 +85,7 @@ static void driver32(u32 major, u32 minor) {
     put(0x80, 0xE12FFF1E);         /* bx lr */
 }
 
-/* the API version nvn_direct reads from the driver at func, 0 when it can't */
+/* the API version nvn reads from the driver at func, 0 when it can't */
 static u32 api(u64 func) {
     i32 major, minor;
     if (!nvn_driver_info(image, 0, sizeof image, func, 0, &major) ||
@@ -93,7 +93,7 @@ static u32 api(u64 func) {
         return 0;
     return nvn_api_pack(major, minor);
 }
-/* the handler nvn_direct takes for symbol at that API version (its adapter run), NULL when none holds */
+/* the handler nvn takes for symbol at that API version (its adapter run), NULL when none holds */
 static const char* pick(const char* symbol, u32 version) {
     static u8 mem[0x40];
     static CPU c;
@@ -153,7 +153,7 @@ int main(void) {
         u32 versions[HOOK_KEYS] = {0};
         versions[HOOK_NVN] = 56u << 16;
         k = hook_select(&nvn_table, "nvnWindowAcquireTexture", versions, &first);
-        assert(k == -2 && first >= 0); /* declared, but not for this version: nvn_direct names it so */
+        assert(k == -2 && first >= 0); /* declared, but not for this version: nvn names it so */
         hook_range_text(text, sizeof text, nvn_key[first], nvn_lo[first], nvn_hi[first]);
         assert(!strcmp(text, "nvn >= 53.0, < 55.0"));
     }

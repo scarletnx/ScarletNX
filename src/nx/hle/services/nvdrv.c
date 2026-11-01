@@ -997,7 +997,7 @@ static u32 as_free_space(const u8* d) {
     va_free(gva, size);
     return NV_RESULT_SUCCESS;
 }
-/* GPU address space for a front end that maps guest memory itself, without nvhost-as-gpu's ioctls (nvn_direct's
+/* GPU address space for a front end that maps guest memory itself, without nvhost-as-gpu's ioctls (nvn's
    memory pools): the same allocator and page table, under the same lock */
 u64 gmmu_space_alloc(u64 size, u64 align) {
     u64 gva;
