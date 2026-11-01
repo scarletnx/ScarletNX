@@ -10,6 +10,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/hle/kernel/kernel.h"
+#include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "gpu/nvn/nvn.hook.h"
@@ -84,6 +85,13 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
     (void)func;
     (void)item;
     (void)out;
+    return 0;
+}
+int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out) {
+    return nvn_driver_info(mem, lo, hi, func, item, out);
+}
+int arm_code_range(u64* lo, u64* hi) {
+    *lo = *hi = 0;
     return 0;
 }
 u64 gmmu_space_alloc(u64 size, u64 align) {
