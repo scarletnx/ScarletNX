@@ -14,6 +14,59 @@ spec.loader.exec_module(architecture)
 
 
 class ArchitectureTests(unittest.TestCase):
+    def environment_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_environment(root)
+
+    def test_an_option_read_from_the_environment_is_rejected(self):
+        errors = self.environment_errors(
+            {'src/nx/gpu/check.c': 'int on;\nvoid f(void) { on = !!getenv("SNX_CHECK"); }\n'}
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn('src/nx/gpu/check.c:2: getenv("SNX_CHECK"): SNX_CHECK is not the system\'s', errors[0])
+        self.assertIn('src/nx/runtime/settings.txt', errors[0])
+
+    def test_the_systems_variables_pass(self):
+        files = {
+            'src/common/home.c': 'const char* h(void) { return getenv("HOME") ? getenv("XDG_CONFIG_HOME") : 0; }\n',
+            'src/gui/pads.c': 'int p(void) { return SDL_getenv_unsafe("SDL_GAMECONTROLLERCONFIG_FILE") != 0; }\n',
+            'src/gui/win.cpp': 'void w(char* b) { std::getenv("APPDATA"); GetEnvironmentVariableW(L"PATH", b, 9); }\n',
+            'src/common/msvc.c': 'void m(char** v, size_t* n) { _dupenv_s(v, n, "TMPDIR"); }\n',
+        }
+        self.assertEqual(self.environment_errors(files), [])
+
+    def test_every_reading_call_is_seen(self):
+        files = {
+            'src/a.c': 'void a(char** v, size_t* n) { _dupenv_s(v, n, "SNX_A"); }\n',
+            'src/b.cpp': 'void b() { std::getenv("SNX_B"); }\n',
+            'src/c.c': 'void c(void) { secure_getenv ("SNX_C"); SDL_getenv("SNX_D"); }\n',
+        }
+        errors = self.environment_errors(files)
+        self.assertEqual(len(errors), 4)
+        for name in ('SNX_A', 'SNX_B', 'SNX_C', 'SNX_D'):
+            self.assertTrue(any(f'("{name}"): {name} is not' in error for error in errors), (name, errors))
+
+    def test_a_name_that_is_no_literal_is_rejected(self):
+        errors = self.environment_errors({'src/common/x.c': 'const char* x(const char* v) { return getenv(v); }\n'})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('src/common/x.c:1: getenv of a name that is not a string literal', errors[0])
+
+    def test_comments_and_strings_do_not_read(self):
+        text = '/* getenv("SNX_X") */\n// getenv("SNX_Y")\nconst char* u = "set getenv(\\"SNX_Z\\")";\n'
+        self.assertEqual(self.environment_errors({'src/common/u.c': text}), [])
+
+    def test_a_deprecated_variable_is_read_only_where_it_is_listed(self):
+        listed = next(iter(architecture.ENV_DEPRECATED['SNX_WW']))
+        read = 'const char* o(void) { return getenv("SNX_WW"); }\n'
+        self.assertEqual(self.environment_errors({listed: read}), [])
+        errors = self.environment_errors({'src/nx/runtime/platform/plat_posix.c': read})
+        self.assertEqual(len(errors), 1)
+        self.assertIn(f'SNX_WW is deprecated, and read only in {listed}', errors[0])
+
     def test_compiling_nx_source_into_common_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             repo = Path(temporary)

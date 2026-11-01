@@ -1066,9 +1066,10 @@ int snx_same_file(const char* a, const char* b) {
    the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
    names no home */
 #if !defined(_WIN32) && !defined(SNX_IOS)
-/* $var/scarletnx, else ~/fallback/scarletnx: the XDG spec ignores a relative path */
-static char* home_folder(const char* var, const char* fallback) {
-    const char* base = var ? getenv(var) : NULL;
+/* xdg/scarletnx (xdg an XDG variable's value, NULL for none), else ~/fallback/scarletnx: the XDG spec ignores a
+   relative path */
+static char* home_folder(const char* xdg, const char* fallback) {
+    const char* base = xdg;
     if (base && base[0] == '/') return snx_path_join(base, "scarletnx");
     base = getenv("HOME");
     if (!base || !base[0]) return NULL;
@@ -1089,16 +1090,16 @@ char* snx_user_data_dir(void) {
 #elif defined(__APPLE__)
     return home_folder(NULL, "Library/Application Support");
 #else
-    return home_folder("XDG_DATA_HOME", ".local/share");
+    return home_folder(getenv("XDG_DATA_HOME"), ".local/share");
 #endif
 }
 static const char* const kind_names[] = {NULL, "config", "state", "cache"};
 char* snx_user_dir(int kind) {
     char *data, *dir;
 #ifdef SNX_XDG
-    if (kind == SNX_USER_CONFIG) return home_folder("XDG_CONFIG_HOME", ".config");
-    if (kind == SNX_USER_STATE) return home_folder("XDG_STATE_HOME", ".local/state");
-    if (kind == SNX_USER_CACHE) return home_folder("XDG_CACHE_HOME", ".cache");
+    if (kind == SNX_USER_CONFIG) return home_folder(getenv("XDG_CONFIG_HOME"), ".config");
+    if (kind == SNX_USER_STATE) return home_folder(getenv("XDG_STATE_HOME"), ".local/state");
+    if (kind == SNX_USER_CACHE) return home_folder(getenv("XDG_CACHE_HOME"), ".cache");
 #endif
 #ifdef SNX_IOS
     /* the Files app shows Documents: what is not the player's to move (settings, state, caches) is in Library, which the system makes */
