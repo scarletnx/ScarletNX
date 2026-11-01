@@ -720,6 +720,10 @@ int vk_own_init(void);
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents);
 VkOwnRes* vk_own_res_new(u64 size); /* with the caller's reference; NULL when out of memory */
 void vk_own_res_unref(VkOwnRes* r);
+/* r's bytes are written by work recorded in the submission being recorded: a landing of them waits for that
+   submission (owned.c own_land). vk_own_publish does it. A writer that keeps an owned range in place, with no new
+   publish, calls it itself. Under vk_lock */
+void vk_own_res_wrote(VkOwnRes* r);
 /* the guest CPU bytes [cpu, cpu + size) hold r's bytes from off on once the work recorded so far is done: owned, or,
    where the host can't trap them, landed at once (the GPU waited for). Under vk_lock */
 void vk_own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off);
