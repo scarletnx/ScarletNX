@@ -126,8 +126,8 @@ static void batch(void) {
     const IniOpt* instcombine = ini_find(g_llvm_ini, "llvm_pass_instcombine");
     const SnxIrTuning* t;
     char error[256], *full = NULL, clean[256];
-    CHECK(option != NULL && instcombine != NULL && !strcmp(g_settings.llvm_batch, "full"));
-    if (!option || !instcombine) return;
+    CHECK(option != NULL && !strcmp(g_settings.llvm_batch, "full"));
+    if (!option) return;
     t = snx_llvm_tuning('2', error, sizeof error);
     CHECK(t && !t->pipeline && t->clean && !strcmp(t->clean, SNX_IR_CLEAN_PASSES));
     if (t && t->text) full = snx_strdup(t->text);
@@ -138,15 +138,19 @@ static void batch(void) {
     CHECK(t && t->text && full &&
           !strncmp(t->text, "pipeline=" SNX_IR_IPO_PASSES "\n", 10 + strlen(SNX_IR_IPO_PASSES)) &&
           strcmp(t->text, full));
-    ini_read(instcombine, "0");
-    t = snx_llvm_tuning('2', error, sizeof error);
-    CHECK(t && t->pipeline && !has_pass(t->pipeline, "instcombine") && runs(t->pipeline));
-    CHECK(t && t->clean && !has_pass(t->clean, "instcombine") && has_pass(t->clean, "sroa"));
-    if (t && t->clean) {
-        snprintf(clean, sizeof clean, "function(%s)", t->clean);
-        CHECK(runs(clean));
+    /* a pass turned off: there only where settingsgen listed the passes, which needs an opt of this LLVM where it was
+       built (main's SKIP) */
+    if (instcombine) {
+        ini_read(instcombine, "0");
+        t = snx_llvm_tuning('2', error, sizeof error);
+        CHECK(t && t->pipeline && !has_pass(t->pipeline, "instcombine") && runs(t->pipeline));
+        CHECK(t && t->clean && !has_pass(t->clean, "instcombine") && has_pass(t->clean, "sroa"));
+        if (t && t->clean) {
+            snprintf(clean, sizeof clean, "function(%s)", t->clean);
+            CHECK(runs(clean));
+        }
+        ini_read(instcombine, "1");
     }
-    ini_read(instcombine, "1");
     ini_read(option, "full");
     t = snx_llvm_tuning('2', error, sizeof error);
     CHECK(t && !t->pipeline && t->text && full && !strcmp(t->text, full));
