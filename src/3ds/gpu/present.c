@@ -54,6 +54,9 @@ static struct {
 
 static void swap_destroy(void) { snx_vk_swapchain_free(snx_ctr_vk()->device, &g_present.swap); }
 /* the window's swapchain, made anew for its size */
+/* a locked workstation or a remote session can leave the window with no image to acquire for a long time: a frame
+   waits this long for one, then goes unshown, in place of stopping the emulation thread */
+enum { ACQUIRE_NS = 100000000 };
 static bool swap_create(void) {
     const SnxCtrVk* v = snx_ctr_vk();
     static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
@@ -359,10 +362,10 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     g_present.bottom_alone = screen ? g_present.bottom_alone + 1 : 0;
     bool show = (screen == 0 || g_present.bottom_alone >= 2) && g_present.windowed;
     if (show) {
-        VkResult acquired = vkAcquireNextImageKHR(v->device, g_present.swap.swapchain, UINT64_MAX,
+        VkResult acquired = vkAcquireNextImageKHR(v->device, g_present.swap.swapchain, ACQUIRE_NS,
                                                   g_present.acquire[slot],
                                                   VK_NULL_HANDLE, &index);
-        if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
+        if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_ERROR_SURFACE_LOST_KHR) {
             g_present.windowed = swap_create();
             show = false;
         } else if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
@@ -387,7 +390,8 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .pSwapchains = &g_present.swap.swapchain,
                                     .pImageIndices = &index};
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
-        if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) g_present.windowed = swap_create();
+        if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR || shown == VK_ERROR_SURFACE_LOST_KHR)
+            g_present.windowed = swap_create();
     }
     pump();
     if (!ok) return false;
