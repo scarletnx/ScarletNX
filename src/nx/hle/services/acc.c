@@ -727,6 +727,17 @@ static int nn_account_profile_IProfileEditor_StoreWithImage(SvcObj* self, const 
     return acc_store(self, base, user_data, &image);
 }
 
+void acc_playing(u64 uid[2], char* nickname, size_t size) {
+    const SnxUser* u;
+    pm_lock(&g_host.acc.users_lk);
+    u = snx_users_selected();
+    if (uid) {
+        uid[0] = u->uid[0];
+        uid[1] = u->uid[1];
+    }
+    if (size) snprintf(nickname, size, "%s", u->nickname);
+    pm_unlock(&g_host.acc.users_lk);
+}
 /* every command of an object that reads or changes the users, under g_host.acc.users_lk: acc:su changes them while the
    game's threads read them */
 static int acc_locked(SvcObj* o, IpcCtx* c, int (*dispatch)(SvcObj*, IpcCtx*)) {

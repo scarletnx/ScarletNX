@@ -534,6 +534,7 @@ static int nn_am_service_IAudioController_ChangeMainAppletMasterVolume(SvcObj* s
 /* ============================================================ IApplicationFunctions */
 static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, u32 kind, SvcObj** storage) {
     u8* d;
+    u64 uid[2];
     u32 v;
     (void)self;
     if (kind == 1) { /* UserChannel: the last storage unpopped, which the channel's reference goes with */
@@ -550,11 +551,12 @@ static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, 
     pm_unlock(&g_host.am.lock);
     R_UNLESS(!v, AM_NO_DATA);
     /* AccountPreselectedUser: the user the game plays as, selected */
+    acc_playing(uid, NULL, 0);
     *storage = am_storage_new(0x88, NULL);
     d = am_storage_bytes(*storage);
     am_put32(d, AM_PRESELECTED_USER_MAGIC);
     am_put32(d + 4, 1);
-    am_put_uid(d + 8, snx_users_selected()->uid);
+    am_put_uid(d + 8, uid);
     R_SUCCEED();
 }
 
@@ -1064,7 +1066,9 @@ static int am_kb_given(const char* where, const char* text, u32 min, u32 max, ch
    am_kb_given takes it. 0 with the answer in out, 1 cancelled */
 static int am_kb_unasked(const char* what, const OverlayKeyboard* k, char* out, size_t size) {
     const char* where = k->text[0] ? "the game's text" : "the user's nickname";
-    const char* text = k->text[0] ? k->text : snx_users_selected()->nickname;
+    char nickname[SNX_USERS_NICKNAME + 1];
+    const char* text = k->text[0] ? k->text : nickname;
+    if (!k->text[0]) acc_playing(NULL, nickname, sizeof nickname);
     LOG("am: no window to show the %s's box in: it answers %s \"%s\"\n", what, where, text);
     return am_kb_given(where, text, k->min, k->max, out, size);
 }
@@ -1537,10 +1541,13 @@ static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj*
         }
         break;
     }
-    case AM_APPLET_PROFILE_SELECT: /* UiReturnArg: success, the user the game plays as */
+    case AM_APPLET_PROFILE_SELECT: { /* UiReturnArg: success, the user the game plays as */
+        u64 uid[2];
+        acc_playing(uid, NULL, 0);
         *storage = am_storage_new(0x18, NULL);
-        am_put_uid(am_storage_bytes(*storage) + 8, snx_users_selected()->uid);
+        am_put_uid(am_storage_bytes(*storage) + 8, uid);
         break;
+    }
     case AM_APPLET_SWKBD: *storage = am_swkbd(a); break;
     case AM_APPLET_MII_EDIT: *storage = am_mii_edit(a); break;
     case AM_APPLET_WEB:
