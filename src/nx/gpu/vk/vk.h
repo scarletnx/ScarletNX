@@ -5,7 +5,8 @@
    against a Vulkan library.
 
    device.c    instance, device, queues, swapchain, memory allocator (VMA)
-   memory.c    the cap on one allocation, and images bigger than it bound in pieces (sparse binding); the device
+   memory.c    the cap on one allocation, and images bigger than it bound in pieces (sparse binding); textures
+               that guest memory maps in part, with memory only where it maps them (sparse residency); the device
                memory budget the caches keep within (surface.c vk_mem_trim), and the present clock
    cmd.c       frames in flight: the command buffer being recorded, staging and readback rings, deferred destruction
    record.c    recording the frame's command buffer on a thread of its own
@@ -763,6 +764,8 @@ extern u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 Surf* vk_surf_first(u64 gva);
 void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recency list */
+/* a surface's device memory changed to bytes (a sparse texture's binds): its recency list's count follows */
+void vk_surf_set_bytes(Surf* s, u64 bytes);
 /* s used now: last_used is this present, and it moves to the recent end of its list */
 void vk_surf_touch(Surf* s);
 /* s's pixels can be had again now: off the list of old ones whose pixels would be lost, if it is on it */

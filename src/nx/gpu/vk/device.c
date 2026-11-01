@@ -306,7 +306,8 @@ static int create_device(void) {
     WANT(geometryShader);
     WANT(tessellationShader);
     WANT(shaderTessellationAndGeometryPointSize);
-    /* images bigger than one allocation may be are bound in pieces, on the graphics queue (memory.c) */
+    /* images bigger than one allocation may be are bound in pieces, on the graphics queue, and textures that guest
+       memory maps only in part get sparse residency there (memory.c) */
     int sparse_queue = 0;
     {
         u32 nq = 0;
