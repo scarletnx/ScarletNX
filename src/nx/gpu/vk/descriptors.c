@@ -12,6 +12,9 @@
 #include <string.h>
 
 #define DESCRIPTOR_BYTES (64ull << 20)
+/* the arenas' memory: the CPU writes the tables into it, and cached memory keeps the reads of image encodings cheap */
+#define ARENA_MEMORY                                                                                                   \
+    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
 #define IMAGE_ENCODINGS 4096
 /* Handles cannot be recycled within a frame: image views are deferred until its fence, and the sampler cache
    retains its objects. A new frame invalidates the encoding shortcut before any recycled handle can match it. */
@@ -53,6 +56,13 @@ VkResult vk_buffer_create(VmaAllocator allocator, const VkBufferCreateInfo* info
         create.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     return vmaCreateBuffer(allocator, &create, allocation, buffer, memory, details);
 }
+int vk_descriptors_memory(VkPhysicalDevice phys) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (u32 i = 0; i < mp.memoryTypeCount; i++)
+        if ((mp.memoryTypes[i].propertyFlags & ARENA_MEMORY) == ARENA_MEMORY) return 1;
+    return 0;
+}
 static VkDeviceAddress address(VkBuffer buffer) {
     if (!buffer) return 0;
     VkBufferDeviceAddressInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer};
@@ -90,8 +100,7 @@ static void arena(u32 slot) {
     VmaAllocationCreateInfo allocation = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
                                                    VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-        .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                         VK_MEMORY_PROPERTY_HOST_CACHED_BIT};
+        .requiredFlags = ARENA_MEMORY};
     VmaAllocationInfo details;
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &info, &allocation, &g_descriptors.frame[slot].buffer,
                               &g_descriptors.frame[slot].memory, &details)))

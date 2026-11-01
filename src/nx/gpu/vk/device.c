@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -514,6 +515,11 @@ static int create_device(void) {
     LOG("vulkan: graphics descriptor buffers %s\n", g_vk.has_descriptor_buffers
         ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled") : "unavailable, using sets");
     g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
+    if (g_vk.has_descriptor_buffers && !vk_descriptors_memory(g_vk.phys)) {
+        WARN("vulkan: descriptor buffers need host-visible, coherent and cached memory, which this device has not: "
+             "graphics descriptors use sets\n");
+        g_vk.has_descriptor_buffers = 0;
+    }
     /* FFmpeg's decoder makes views of its two plane pictures */
     VkPhysicalDeviceVulkan11Features f11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
