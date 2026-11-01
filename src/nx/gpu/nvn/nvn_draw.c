@@ -114,6 +114,8 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
         d->bind.cb_inline[s][0] = DS_CB_BANK0;
         d->bind.cb_inline[s][2] = DS_CB_BANK2;
         memcpy(d->inl.bank0[s] + C0_POINT_SIZE, &point, 4);
+        /* bank 2 starts with the words 0 to 7, as the driver's bank of each stage does (NVN 53.13 and 55.12) */
+        for (u32 k = 0; k < 8; k++) snx_st_le32(d->inl.bank2[s] + 4 * k, k);
     }
     /* compute: bank 0 and 2 inline (slots 0 and 2), bank 2 starting with the words 0 to 7 as the driver's does */
     d->dx.cb_on = 1u << 0 | 1u << 2;
