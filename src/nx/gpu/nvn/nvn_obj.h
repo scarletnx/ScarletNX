@@ -260,24 +260,27 @@ typedef struct {
 NVN_FITS(NvnWindow, 0x148);
 
 /* ---- command buffers ---- */
-/* cur, end: the current command memory segment (guest addresses). begin: the recording's first record, its handle.
-   recording: 0 no, 1 yes, 2 yes with no record yet. used: bytes written since the game last added command memory, the
-   segments' JUMPs included (GetCommandMemoryUsed). lent: the current segment is the runtime's (nvn_cmd.c's lend), not
-   the game's, and takes nothing of used; origin: where the memory the game last added starts, which the segments lent
-   after it go back with. +0x10 is the game's: its inlined NVN code writes the byte 1 there after AddCommandMemory (an
-   internal flag of the driver's) */
+/* cur: where the next record goes (a guest address). begin: the recording's first record, its handle; last: its last
+   record so far; anchor: where the driver would start it in the game's memory. recording: 0 no, 1 yes, 2 yes with no
+   record yet. origin, game_end: the command memory the game last added; used: the bytes the game's driver would have
+   written there since (GetCommandMemoryUsed), which no record of ours passes; seen, seen_serial: the used bytes and
+   the spill serial at the last look for pieces they write over. lent: the records go on in a piece of the runtime's
+   memory (segment lent - 1 of nvn_cmd.c's spill), 0 in the game's; game_cur: where the next recording starts in the
+   game's memory while lent. +0x10 is the game's: its inlined NVN code writes the byte 1 there after AddCommandMemory
+   (an internal flag of the driver's) */
 typedef struct {
     u32 magic, recording;
     u64 cur;
     u64 game_flag10;
-    u64 end, begin;
+    u64 anchor, begin;
     u64 callback, callback_data;
     u64 device, used;
-    u32 lent, pad;
+    u32 lent, seen_serial;
     u64 origin;
     u64 game_end;           /* the end of the memory the game last added (the getters' size and room) */
     u64 control_size;       /* the control memory the game last added: the records use none of it */
     i64 row_stride, image_stride; /* SetCopyRowStride's and SetCopyImageStride's, for their getters */
+    u64 game_cur, last, seen;
 } NvnCmdBuf;
 NVN_FITS(NvnCmdBuf, 0x90);
 typedef char nvn_check_cmd_flag[offsetof(NvnCmdBuf, game_flag10) == 0x10 ? 1 : -1];
@@ -345,9 +348,17 @@ typedef struct {
 NVN_FITS(NvnVertexStream, 0x8);
 
 /* ---- command records ---- */
+/* op: the record's op (NVN_REC_OP), the bytes the game's driver writes for its command (NVN_REC_COST, which a copy of
+   the record counts again), and NVN_REC_LAST on the last record of a recording, which ends it (an END is the runtime's
+   empty recording). size: the record's, header included */
 typedef struct {
     u32 op, size;
 } NvnRecHdr;
+#define NVN_REC_OP(w)      ((w) & 0xFFu)
+#define NVN_REC_COST_SHIFT 8
+#define NVN_REC_COST_MAX   0x7FFFFFu
+#define NVN_REC_COST(w)    (((w) >> NVN_REC_COST_SHIFT) & NVN_REC_COST_MAX)
+#define NVN_REC_LAST       0x80000000u
 enum {
     OP_END, OP_JUMP, OP_BEGIN, OP_CALL, /* OP_BEGIN isn't recorded: a recording starts with its first command */
     OP_SIGNAL_EVENT, OP_REPORT_COUNTER, OP_COPY_B2B, OP_UPDATE_UB, /* effects the CPU can see */
