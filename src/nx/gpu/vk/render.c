@@ -949,7 +949,8 @@ int vk_tex_num(const u32* tic, const Surf* t) {
 }
 
 int vk_image_keyable(const ShaderInfo* si, int i) {
-    return (si->img[i].type == 3 || si->img[i].type == 4 || si->img[i].type == 5) && si->img[i].kind != 1;
+    return (si->img[i].type == 1 || si->img[i].type == 3 || si->img[i].type == 4 || si->img[i].type == 5) &&
+           si->img[i].kind != 1;
 }
 
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic) {

@@ -740,7 +740,7 @@ int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
               : fmt == VK_FORMAT_R8G8_SINT         ? VK_FORMAT_R8G8_UINT
               : fmt == VK_FORMAT_R8_SINT           ? VK_FORMAT_R8_UINT
                                                    : VK_FORMAT_UNDEFINED;
-    else if (kind == 0 && f.is_int)
+    else if ((kind == 0 && f.is_int) || (kind == 3 && !f.sint))
         fmt = VK_FORMAT_UNDEFINED;
     if (fmt == VK_FORMAT_UNDEFINED) return 0;
     bytes = texels * f.bpp;

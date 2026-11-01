@@ -277,6 +277,71 @@ static int check_rt_same_layout(void)
 	return 0;
 }
 
+/* A formatted load from a buffer surface converts by the header's format, as the console's does: SULD.P.RGBA of texel
+ * 1 of an RGBA8_UNORM buffer (header 2), then SUST.P.RGBA of it into texel 0 of an RGBA32_FLOAT one (header 3), both
+ * handles bindless and keyed float. The floats are 0, 128/255, 1 and 64/255; texel 1 of the second keeps its bytes.
+ */
+static int buffer_formatted_load(MxRegs *channel, const u32 *qmd, u64 address)
+{
+	const u64 program = address + 0x7000, source = address + 0x66000, target = address + 0x67000;
+	const u32 unorm = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
+	const u32 rgba32f = 0x01 | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16;
+	const u32 headers[16] = {
+		unorm, (u32)source, (u32)(source >> 32), 0, 3u | 6u << 23, 0, 0, 0,
+		rgba32f, (u32)target, (u32)(target >> 32), 0, 1u | 6u << 23, 0, 0, 0,
+	};
+	const u64 suld = 0xeb00028200170202ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xfull << 20 | 0xffull << 39);
+	const u64 sust = 0xeb203a0200f77614ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xffull << 39 | 7ull << 33);
+	const u64 instructions[] = {
+		0x4c98078804a70004ull, /* MOV R4, c[2][0x128]: the source's handle */
+		0x4c98078804b70006ull, /* MOV R6, c[2][0x12c]: the target's */
+		storage_mov(0, 1),
+		suld | 8 | 7ull << 16 | 0xfull << 20 | 4ull << 39, /* SULD.P.RGBA R8, [R0], R4 */
+		storage_mov(1, 0),
+		sust | 8 | 1ull << 8 | 7ull << 16 | 6ull << 39 | 1ull << 33, /* SUST.P.RGBA [R1], R8, R6 */
+		0xe30000000007000full,
+	};
+	const u8 texels[16] = {1, 2, 3, 4, 0x00, 0x80, 0xff, 0x40, 5, 6, 7, 8, 9, 10, 11, 12};
+	const float expected[4] = {0.0f, 128.0f / 255.0f, 1.0f, 64.0f / 255.0f};
+	u8 code[128] = {0}, initial[32], result[32];
+	u64 dispatches = g_vk_dispatches;
+	u32 at = 0;
+
+	for (u32 i = 0; i < sizeof(instructions) / sizeof(instructions[0]); i++) {
+		if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+		snx_st_le64(code + 8 * at++, instructions[i]);
+	}
+	CHECK(!gmem_write(program, code, sizeof(code)));
+	g_renderer->method_barrier(5);
+	CHECK(!storage_write_words(address + 0x21040, headers, 16));
+	CHECK(!storage_write_words(address + 0x20000 + 0x128, (const u32[2]){2, 3}, 2));
+	CHECK(!gmem_write(source, texels, sizeof(texels)));
+	memset(initial, 0xa5, sizeof(initial));
+	CHECK(!gmem_write(target, initial, sizeof(initial)));
+	vk_lock();
+	{
+		DispatchState d;
+		mx_dispatch_state(qmd, channel->rcomp, program, &d);
+		vk_dispatch(&d);
+	}
+	vk_unlock();
+	CHECK(!gmem_read(target, result, sizeof(result)));
+	int same = g_vk_dispatches == dispatches + 1 && !memcmp(result + 16, initial + 16, 16);
+	for (u32 c = 0; c < 4; c++) {
+		u32 bits = snx_ld_le32(result + 4 * c);
+		float value;
+
+		memcpy(&value, &bits, sizeof(value));
+		same &= value - expected[c] < 1e-6f && expected[c] - value < 1e-6f;
+	}
+	if (!same)
+		fprintf(stderr, "buffer formatted load: dispatched %d, texel 0 %08x %08x %08x %08x, expected 0 %08x 3f800000 "
+			"%08x\n", g_vk_dispatches == dispatches + 1, snx_ld_le32(result), snx_ld_le32(result + 4),
+			snx_ld_le32(result + 8), snx_ld_le32(result + 12), 0x3f008081u, 0x3e808081u);
+	CHECK(same);
+	return 0;
+}
+
 static int check_storage_image_formats(void)
 {
 	static const struct {
@@ -366,6 +431,11 @@ static int check_storage_image_formats(void)
 		g_vk_scale = 1.0f;
 		CHECK(rt && rt->sw == 16 && surface && surface != rt);
 	}
+	if (g_vk.feat.shaderStorageImageReadWithoutFormat) {
+		CHECK(!buffer_formatted_load(channel, qmd, address));
+		completed++;
+	} else
+		puts("storage image formats: unformatted reads unavailable, the buffer formatted load skipped");
 	CHECK(completed >= 38);
 	CHECK(!check_rt_same_layout());
 	printf("storage image formats: %u signed/unsigned/float, bound/bindless and mip cases checked\n", completed);
