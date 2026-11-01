@@ -11,9 +11,8 @@
 #include "3ds/gpu/pica.h"
 #include <stddef.h>
 
-/* OutputVertex(regs, output): the vertex shader's output registers through the output map, colours clamped to
-   |c| <= 1 */
-void snx_ctr_output_vertex(const uint32_t* regs, const float (*output)[4], SnxCtrVertex* vertex);
+/* Sends the pica's triangles (draw.c) to this back end */
+void snx_ctr_raster_attach(SnxCtrPica* pica);
 /* NULL when the configured state is drawable, else a sentence naming the first unported feature it enables */
 const char* snx_ctr_raster_check(const SnxCtrPica* pica);
 /* ComputeFragmentsColors (lighting.c): the primary and secondary fragment colours of a fragment with the

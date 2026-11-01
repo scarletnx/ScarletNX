@@ -7,6 +7,7 @@
    against the host's rules) and round interpolated values differently, so a pixel may differ by a few steps, a depth
    by a thousandth of its range, and a few pixels on edges by more. */
 #include "3ds/gpu/pica.h"
+#include "3ds/gpu/raster.h"
 #include "3ds/gpu/texture.h"
 #include "3ds/gpu/transfer.h"
 #include "3ds/gpu/vk/vk.h"
@@ -145,6 +146,7 @@ static bool draw(SnxCtrMemory* m, const Scene* s, const SnxCtrPicaHost* host, un
                  unsigned char* depth) {
     SnxCtrPica* p = calloc(1, sizeof *p);
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
     SnxCtrPicaResult r = snx_ctr_pica_run(p, m, LIST, s->list.n * 4, host);
     if (r != SNX_CTR_PICA_OK)
         fprintf(stderr, "%s: the list stopped at 0x%03x: %s\n", s->name, p->stop_register,
@@ -324,6 +326,47 @@ static void scenes(SnxCtrMemory* m) {
         Scene* s = scene("logic op xor", 0, 0xff);
         put(&s->list, 0x102, 11);
         triangles(s, 4);
+        array_draw(s);
+        run(m, s);
+        free(s);
+    }
+    {
+        /* a geometry shader in point mode makes a triangle of each vertex: it adds three corner offsets (c0 to c2) to the
+           position and passes the colour and texture coordinate through. The host runs it; the GPU draws what it emits */
+        Scene* s = scene("geometry shader", 0, 0xff);
+        enum { EMIT = 0x2au << 26 };
+#define SETEMIT(vertex, prim) (0x2bu << 26 | (vertex) << 24 | (prim) << 23)
+        const uint32_t program[] = {
+            SETEMIT(0, 0), op1(0x00, 0, 0x20, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
+            SETEMIT(1, 0), op1(0x00, 0, 0x21, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT,
+            SETEMIT(2, 1), op1(0x00, 0, 0x22, 0, 0), op1(0x13, 1, 1, 0, 0), op1(0x13, 2, 2, 0, 0), EMIT, END};
+#undef SETEMIT
+        const float corners[3][2] = {{-0.3f, -0.3f}, {0.3f, -0.3f}, {0.0f, 0.3f}};
+        put(&s->list, SNX_PICA_GS_EXCLUSIVE, 1);
+        put(&s->list, SNX_PICA_USE_GS, 2);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
+        for (unsigned i = 0; i < sizeof program / sizeof *program; ++i)
+            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_PROGRAM_WORD, program[i]);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_SWIZZLE_WORD, XYZW);
+        for (unsigned c = 0; c < 3; ++c) { /* the corner offsets: float uniforms c0 to c2 */
+            uint32_t x = f24(corners[c][0]), y = f24(corners[c][1]), z = f24(0.0f), w = f24(0.0f);
+            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_SETUP, c);
+            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, w << 8 | z >> 16);
+            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, (z & 0xffff) << 16 | y >> 8);
+            put(&s->list, SNX_PICA_GS + SNX_PICA_SH_UNIFORM_VALUE, (y & 0xff) << 24 | x);
+        }
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG, 2 | 0x08u << 24); /* three inputs: one vertex of three outputs */
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_ATTR_MAP_LOW, 0x210);
+        put(&s->list, SNX_PICA_GS + SNX_PICA_SH_OUTPUT_MASK, 7);
+        put(&s->list, 0x24a, 2); /* vertex outputs minus one, counted twice */
+        put(&s->list, 0x251, 2);
+        put(&s->list, 0x252, 0); /* point mode */
+        put(&s->list, SNX_PICA_TOPOLOGY, 3u << 8); /* the geometry shader's primitives */
+        s->vertices[0] = vertex(-0.5f, -0.4f, -0.5f, 0xff4020ffu, 0, 0);
+        s->vertices[1] = vertex(0.4f, 0.1f, -0.6f, 0x20ff40ffu, 0, 0);
+        s->vertices[2] = vertex(-0.1f, 0.5f, -0.4f, 0x4020ffffu, 0, 0);
+        s->vertex_count = 3;
         array_draw(s);
         run(m, s);
         free(s);

@@ -658,6 +658,9 @@ const char* snx_ctr_raster_check(const SnxCtrPica* p) {
     return NULL;
 }
 
+static const SnxCtrTriangleSink sink = {snx_ctr_raster_triangle, snx_ctr_raster_check};
+void snx_ctr_raster_attach(SnxCtrPica* p) { p->sink = &sink; }
+
 void snx_ctr_raster_triangle(const SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* a, const SnxCtrVertex* b,
                              const SnxCtrVertex* c) {
     Vertex buffers[2][MAX_VERTICES] = {0};

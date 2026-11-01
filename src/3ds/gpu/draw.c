@@ -6,7 +6,6 @@
    2014-2026 Citra Emulator Project / Azahar Emulator Project) at azahar-emu/azahar a4b335e, and geometry_pipeline.cpp. */
 
 #include "3ds/gpu/pica.h"
-#include "3ds/gpu/raster.h"
 #include "3ds/gpu/shader.h"
 #include "common/utilities/endian.h"
 #include <math.h>
@@ -109,6 +108,27 @@ static void load_vertex(const SnxCtrPica* p, SnxCtrMemory* m, const Loader* l, u
     }
 }
 
+/* a triangle of the assembler: to the sink's back end, or kept for the renderer that draws it */
+static void triangle(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* a, const SnxCtrVertex* b, const SnxCtrVertex* c) {
+    if (p->sink) {
+        p->sink->triangle(p, m, a, b, c);
+        return;
+    }
+    if (p->captured_count + 3 > p->captured_capacity) {
+        size_t n = p->captured_capacity ? p->captured_capacity * 2 : 384;
+        SnxCtrVertex* grown = realloc(p->captured, n * sizeof *grown);
+        if (!grown) {
+            p->capture_failed = true;
+            return;
+        }
+        p->captured = grown;
+        p->captured_capacity = n;
+    }
+    p->captured[p->captured_count++] = *a;
+    p->captured[p->captured_count++] = *b;
+    p->captured[p->captured_count++] = *c;
+}
+
 /* PrimitiveAssembler::SubmitVertex: lists (and the geometry shader's topology) every three vertices, strips and
    fans from the third on */
 static void assemble(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* v) {
@@ -122,13 +142,13 @@ static void assemble(SnxCtrPica* p, SnxCtrMemory* m, const SnxCtrVertex* v) {
             }
             a->index = 0;
             if (a->topology == 3 && a->winding) {
-                snx_ctr_raster_triangle(p, m, &a->buffer[1], &a->buffer[0], v);
+                triangle(p, m, &a->buffer[1], &a->buffer[0], v);
                 a->winding = false;
             } else
-                snx_ctr_raster_triangle(p, m, &a->buffer[0], &a->buffer[1], v);
+                triangle(p, m, &a->buffer[0], &a->buffer[1], v);
             break;
         default: /* Strip, Fan */
-            if (a->strip_ready) snx_ctr_raster_triangle(p, m, &a->buffer[0], &a->buffer[1], v);
+            if (a->strip_ready) triangle(p, m, &a->buffer[0], &a->buffer[1], v);
             a->buffer[a->index] = *v;
             a->strip_ready |= a->index == 1;
             a->index = a->topology == 1 ? !a->index : 1;
@@ -269,7 +289,7 @@ static SnxCtrPicaResult drawable(SnxCtrPica* p, bool reconfigure) {
         missing = "an unknown geometry shader setting";
     else if (gs_used(p) && (reconfigure || !p->gs_pipe))
         missing = gs_reconfigure(p);
-    if (!missing) missing = snx_ctr_raster_check(p);
+    if (!missing && p->sink) missing = p->sink->check(p);
     if (!missing) return SNX_CTR_PICA_OK;
     p->stop_reason = missing;
     return SNX_CTR_PICA_UNSUPPORTED;

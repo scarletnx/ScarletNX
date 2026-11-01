@@ -6,6 +6,7 @@
    PackedAttribute's float24 packing, pica_types.h's float24, nihstro's instruction encoding, the tiled framebuffer
    of sw_framebuffer.cpp), worked out by hand here. */
 #include "3ds/gpu/pica.h"
+#include "3ds/gpu/raster.h"
 #include "3ds/gpu/shader.h"
 #include "3ds/gpu/texture.h"
 #include <math.h>
@@ -61,6 +62,7 @@ static void writes(SnxCtrMemory* m) {
     List l = {{0}, 0};
     const uint32_t seq[3] = {0x11, 0x22, 0x33}, oob = 0xffffffffu, masked = 0xaabbccddu;
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
     check(p->regs[SNX_PICA_IRQ_AUTOSTOP] == 1 && p->regs[SNX_PICA_IRQ_MASK] == 0xfffffff0u &&
               p->regs[SNX_PICA_IRQ_COMPARE] == 0x12345678u &&
               p->regs[SNX_PICA_GS + SNX_PICA_SH_INPUT_CONFIG] == 0xa0000001u,
@@ -90,6 +92,7 @@ static void uploads(SnxCtrMemory* m) {
     unsigned i;
     for (i = 0; i < 4; ++i) memcpy(&f32[i], &v[i], 4);
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_SETUP, 5);
     cmd(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_VALUE, 15, false, f24, 3);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_UNIFORM_SETUP, (1u << 31) | 95);
@@ -137,6 +140,7 @@ static void control(SnxCtrMemory* m) {
     List l = {{0}, 0}, sub = {{0}, 0};
     const uint32_t attr[3] = {0x3e0000c0u, 0x00004000u, 0x003f0000u};
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
 
     /* P3D: a byte of the request equal to the same byte of the compare value; autostop ends the list */
     put(&l, SNX_PICA_IRQ_REQUEST, 0x00000099u);
@@ -296,6 +300,7 @@ static void render(SnxCtrMemory* m) {
               snx_ctr_phys_write(m, TEXTURE, texture, sizeof texture) == SNX_CTR_MEM_OK,
           "the draw's buffers are written");
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_OFFSET, 0);
     cmd(&l, SNX_PICA_VS + SNX_PICA_SH_PROGRAM_WORD, 15, false, program, 4);
     put(&l, SNX_PICA_VS + SNX_PICA_SH_SWIZZLE_OFFSET, 0);
@@ -410,6 +415,7 @@ static void geometry(SnxCtrMemory* m) {
               snx_ctr_phys_write(m, FB, fb, sizeof fb) == SNX_CTR_MEM_OK,
           "the geometry draw's buffers are written");
     snx_ctr_pica_init(p);
+    snx_ctr_raster_attach(p);
     p->gs.f[0][0] = -1, p->gs.f[0][1] = -1;
     p->gs.f[1][0] = 3, p->gs.f[1][1] = -1;
     p->gs.f[2][0] = -1, p->gs.f[2][1] = 3;

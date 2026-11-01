@@ -63,6 +63,9 @@ void snx_ctr_pica_free(SnxCtrPica* p) {
     p->list = NULL;
     free(p->gs_pipe);
     p->gs_pipe = NULL;
+    free(p->captured);
+    p->captured = NULL;
+    p->captured_count = p->captured_capacity = 0;
 }
 
 /* the shader units share configuration unless unit 3 is set exclusive or a geometry shader is in use */

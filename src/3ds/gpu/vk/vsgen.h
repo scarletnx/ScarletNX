@@ -28,7 +28,9 @@ typedef struct {
     uint32_t vs_output_attributes[7]; /* the rasterizer's semantic map words */
     uint8_t input_type[16], input_size[16];
     uint8_t clip_planes;
-    uint8_t pad[3];
+    uint8_t passthrough; /* the vertices are the host's (a geometry shader's): the 24 semantic slots in six vec4 inputs,
+                            locations 0 to 5, with no program; every other member but clip_planes is then zero */
+    uint8_t pad[2];
 } SnxCtrVsConfig;
 typedef struct {
     uint32_t b, pad[3];

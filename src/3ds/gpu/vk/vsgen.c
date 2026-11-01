@@ -760,41 +760,11 @@ static uint32_t semantic(Gen* g, const uint32_t* outputs, unsigned slot) {
 static uint32_t output_var(Gen* g, uint32_t type, uint32_t location) {
     return spv_emit_location(g->s, SPV_STORAGE_OUTPUT, type, location);
 }
-/* main: the input registers read from their attributes, the registers' first values, the program run, and EmitVtx */
-static uint32_t generate_main(Gen* g, uint32_t main_sub) {
+/* SanitizeVertex and the outputs from the 24 semantic slots' values, the function ended and the entry point declared */
+static uint32_t emit_outputs(Gen* g, uint32_t entry, const uint32_t* v) {
     SpvEmitter* s = g->s;
     const SnxCtrVsConfig* c = g->config;
     uint32_t f = g->t_float, v4 = g->t_vec4;
-    uint32_t entry = spv_emit_function(s, 0, spv_emit_type_void(s), NULL, 0, NULL);
-    g->open = true;
-    for (unsigned i = 0; i < 16; ++i) {
-        if (!g->in_reg[i]) continue;
-        unsigned type = c->input_type[i] ? c->input_type[i] : SNX_CTR_VS_FLOAT;
-        uint32_t integer = spv_emit_type_int(s, 32, type == SNX_CTR_VS_SINT);
-        uint32_t typed = type == SNX_CTR_VS_FLOAT ? v4 : spv_emit_type_vector(s, integer, 4);
-        uint32_t v = load(g, typed, spv_emit_location(s, SPV_STORAGE_INPUT, typed, i));
-        if (type != SNX_CTR_VS_FLOAT)
-            v = SPV(s, type == SNX_CTR_VS_SINT ? SPV_OP_CONVERT_S_TO_F : SPV_OP_CONVERT_U_TO_F, v4, v);
-        /* the components the attribute lacks read as 0, 0, 0, 1, whatever the bound format held there */
-        unsigned size = c->input_size[i];
-        if (size && size < 4)
-            v = SPV(s, SPV_OP_VECTOR_SHUFFLE, v4, v, vec4_const(g, 0, 0, 0, 1), 0, size > 1 ? 1 : 5, size > 2 ? 2 : 6,
-                    7);
-        store(g, g->in_reg[i], v);
-    }
-    uint32_t initial = vec4_const(g, 0, 0, 0, 1);
-    for (unsigned i = 0; i < 16; ++i)
-        if (g->tmp[i]) store(g, g->tmp[i], initial);
-    for (unsigned i = 0; i < c->num_outputs; ++i) store(g, g->out[i], initial);
-    for (unsigned i = 0; i < 3; ++i) store(g, g->addr[i], sconst(g, 0));
-    for (unsigned i = 0; i < 2; ++i) store(g, g->cc[i], spv_emit_const_bool(s, false));
-    SPV(s, SPV_OP_FUNCTION_CALL, g->t_bool, main_sub);
-
-    uint32_t outputs[16], v[24];
-    for (unsigned i = 0; i < c->num_outputs; ++i) outputs[i] = load(g, v4, g->out[i]);
-    /* RasterizerRegs::VSOutputAttributes: position 0-3, quaternion 4-7, color 8-11, texcoord0 12-13, texcoord1
-       14-15, texcoord0_w 16, view 18-20, texcoord2 22-23 */
-    for (unsigned slot = 0; slot < 24; ++slot) v[slot] = semantic(g, outputs, slot);
     /* SanitizeVertex: z flushed to 0 when z / w is in (0, 1e-6), to -w when it is in (-1.00001, -1) */
     uint32_t x = v[0], y = v[1], z = v[2], w = v[3], t_bool = g->t_bool;
     uint32_t ndc_z = SPV(s, SPV_OP_F_DIV, f, z, w);
@@ -841,6 +811,56 @@ static uint32_t generate_main(Gen* g, uint32_t main_sub) {
     spv_emit_entry_str(s, SPV_STAGE_VERTEX, entry, "main", s->interface, s->interface_count);
     return entry;
 }
+/* The program of a draw whose vertices the host formed (a geometry shader's): main reads the 24 semantic slots from
+   six vec4 inputs, locations 0 to 5 */
+static uint32_t generate_passthrough(Gen* g) {
+    SpvEmitter* s = g->s;
+    uint32_t entry = spv_emit_function(s, 0, spv_emit_type_void(s), NULL, 0, NULL);
+    g->open = true;
+    uint32_t v[24];
+    for (unsigned i = 0; i < 6; ++i) {
+        uint32_t in = load(g, g->t_vec4, spv_emit_location(s, SPV_STORAGE_INPUT, g->t_vec4, i));
+        for (unsigned c = 0; c < 4; ++c) v[i * 4 + c] = extract(g, g->t_float, in, c);
+    }
+    return emit_outputs(g, entry, v);
+}
+/* main: the input registers read from their attributes, the registers' first values, the program run, and EmitVtx */
+static uint32_t generate_main(Gen* g, uint32_t main_sub) {
+    SpvEmitter* s = g->s;
+    const SnxCtrVsConfig* c = g->config;
+    uint32_t v4 = g->t_vec4;
+    uint32_t entry = spv_emit_function(s, 0, spv_emit_type_void(s), NULL, 0, NULL);
+    g->open = true;
+    for (unsigned i = 0; i < 16; ++i) {
+        if (!g->in_reg[i]) continue;
+        unsigned type = c->input_type[i] ? c->input_type[i] : SNX_CTR_VS_FLOAT;
+        uint32_t integer = spv_emit_type_int(s, 32, type == SNX_CTR_VS_SINT);
+        uint32_t typed = type == SNX_CTR_VS_FLOAT ? v4 : spv_emit_type_vector(s, integer, 4);
+        uint32_t v = load(g, typed, spv_emit_location(s, SPV_STORAGE_INPUT, typed, i));
+        if (type != SNX_CTR_VS_FLOAT)
+            v = SPV(s, type == SNX_CTR_VS_SINT ? SPV_OP_CONVERT_S_TO_F : SPV_OP_CONVERT_U_TO_F, v4, v);
+        /* the components the attribute lacks read as 0, 0, 0, 1, whatever the bound format held there */
+        unsigned size = c->input_size[i];
+        if (size && size < 4)
+            v = SPV(s, SPV_OP_VECTOR_SHUFFLE, v4, v, vec4_const(g, 0, 0, 0, 1), 0, size > 1 ? 1 : 5, size > 2 ? 2 : 6,
+                    7);
+        store(g, g->in_reg[i], v);
+    }
+    uint32_t initial = vec4_const(g, 0, 0, 0, 1);
+    for (unsigned i = 0; i < 16; ++i)
+        if (g->tmp[i]) store(g, g->tmp[i], initial);
+    for (unsigned i = 0; i < c->num_outputs; ++i) store(g, g->out[i], initial);
+    for (unsigned i = 0; i < 3; ++i) store(g, g->addr[i], sconst(g, 0));
+    for (unsigned i = 0; i < 2; ++i) store(g, g->cc[i], spv_emit_const_bool(s, false));
+    SPV(s, SPV_OP_FUNCTION_CALL, g->t_bool, main_sub);
+
+    uint32_t outputs[16], v[24];
+    for (unsigned i = 0; i < c->num_outputs; ++i) outputs[i] = load(g, v4, g->out[i]);
+    /* RasterizerRegs::VSOutputAttributes: position 0-3, quaternion 4-7, color 8-11, texcoord0 12-13, texcoord1
+       14-15, texcoord0_w 16, view 18-20, texcoord2 22-23 */
+    for (unsigned slot = 0; slot < 24; ++slot) v[slot] = semantic(g, outputs, slot);
+    return emit_outputs(g, entry, v);
+}
 /* the types, the uniform blocks and the registers every program has */
 static void declare(Gen* g) {
     SpvEmitter* s = g->s;
@@ -871,8 +891,29 @@ static void declare(Gen* g) {
     for (unsigned i = 0; i < 3; ++i) g->addr[i] = spv_emit_variable(s, SPV_STORAGE_PRIVATE, g->t_int);
     for (unsigned i = 0; i < 2; ++i) g->cc[i] = spv_emit_variable(s, SPV_STORAGE_PRIVATE, g->t_bool);
 }
+static bool passthrough_spirv(const SnxCtrVsConfig* c, bool preserve_infnan, uint32_t** words, size_t* count,
+                              const char** why) {
+    SpvEmitter s;
+    spv_emit_init(&s, 0);
+    s.version = 0x00010300; /* SPIR-V 1.3 */
+    spv_emit_glsl450_import(&s);
+    spv_emit_shader_capability(&s);
+    Gen g = {.config = c, .s = &s};
+    declare(&g);
+    uint32_t entry = generate_passthrough(&g);
+    if (preserve_infnan) {
+        spv_emit_extension(&s, "SPV_KHR_float_controls");
+        spv_emit_capability(&s, SPV_CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE);
+        spv_emit_execution_mode(&s, entry, SPV_MODE_SIGNED_ZERO_INF_NAN_PRESERVE, 1, 32);
+    }
+    *words = spv_emit_finish(&s, count);
+    spv_emit_destroy(&s);
+    if (!*words) *why = "the host is out of memory";
+    return *words != NULL;
+}
 bool snx_ctr_vs_spirv(const SnxCtrShaderSetup* setup, const SnxCtrVsConfig* c, bool preserve_infnan, uint32_t** words,
                       size_t* count, const char** why) {
+    if (c->passthrough) return passthrough_spirv(c, preserve_infnan, words, count, why);
     Flow flow = {.code = setup->code};
     if (!add_sub(&flow, c->main_offset, PROGRAM_END) && !flow.fail) flow.fail = "a program the analysis lost";
     if (!flow.fail && find_sub(&flow, c->main_offset, PROGRAM_END)->exit != EXIT_END)

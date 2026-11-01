@@ -12,6 +12,7 @@
 #define SNX_CTR_PICA_H
 #include "3ds/memory/ctr_memory.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define SNX_CTR_PICA_REGS 0x300u
@@ -84,6 +85,14 @@ typedef struct {
 } SnxCtrAssembler;
 
 typedef struct SnxCtrPica SnxCtrPica;
+/* Where the primitive assembler's triangles go (draw.c): the software back end (raster.c, the CPU reference, set up by
+   snx_ctr_raster_attach), or, with no sink, into pica->captured for a renderer that draws them itself. check names
+   the first feature the back end does not draw, NULL for none. */
+typedef struct {
+    void (*triangle)(const SnxCtrPica* pica, SnxCtrMemory* memory, const SnxCtrVertex* v0, const SnxCtrVertex* v1,
+                     const SnxCtrVertex* v2);
+    const char* (*check)(const SnxCtrPica* pica);
+} SnxCtrTriangleSink;
 typedef enum {
     SNX_CTR_PICA_OK,          /* the list ran to its end or to an interrupt with autostop */
     SNX_CTR_PICA_UNSUPPORTED, /* a draw using a part not ported yet (stop_reason), or a list past the staging bound */
@@ -119,6 +128,10 @@ struct SnxCtrPica {
     SnxCtrAssembler assembler;
     /* the list being run, a staged copy of guest memory; a jump (a command buffer trigger) replaces it */
     struct SnxCtrGsPipe* gs_pipe; /* the geometry pipeline (draw.c), made at the first draw with a geometry shader */
+    const SnxCtrTriangleSink* sink; /* NULL: the triangles are kept in captured (3 vertices each) */
+    SnxCtrVertex* captured;
+    size_t captured_count, captured_capacity;
+    bool capture_failed; /* a vertex that could not be kept (the host is out of memory) */
     uint32_t* list;
     uint32_t list_address, list_words, list_index;
     uint32_t stop_register;  /* the register whose write stopped the last run (UNSUPPORTED, FAULT) */
@@ -129,6 +142,9 @@ struct SnxCtrPica {
 void snx_ctr_pica_init(SnxCtrPica* pica);
 void snx_ctr_pica_free(SnxCtrPica* pica);
 
+/* OutputVertex(regs, output): the vertex shader's output registers through the output map, colours clamped to
+   |c| <= 1 */
+void snx_ctr_output_vertex(const uint32_t* regs, const float (*output)[4], SnxCtrVertex* vertex);
 /* the software renderer's draws (draw.c, the CPU reference): DrawArrays, indexed or not, and DrawImmediate for the
    vertex immediate mode formed */
 SnxCtrPicaResult snx_ctr_pica_draw(SnxCtrPica* pica, SnxCtrMemory* memory, bool indexed);
