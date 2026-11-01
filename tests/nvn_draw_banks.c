@@ -121,14 +121,14 @@ static NvnDraw d; /* big: not on the stack */
 
 /* nvn_draw_init: bank 0's point size and bank 2's first words in every graphics stage, and in compute's bank 2 */
 static void test_init(void) {
-    static const float want = 2047.0f;
+    static const float want = 2047.9375f;
     u32 want_bits, s, k;
     memcpy(&want_bits, &want, 4);
     memset(&d, 0, sizeof d); /* nvn_draw_init's contract: a state all zero */
     nvn_draw_init(&d, 0);
     for (s = 0; s < DS_GFX_STAGES; s++) {
         u32 got = snx_ld_le32(d.inl.bank0[s] + 0x610);
-        check(got == want_bits, "stage %u bank 0 at 0x610: expected %#x (2047.0f), found %#x", s, want_bits, got);
+        check(got == want_bits, "stage %u bank 0 at 0x610: expected %#x (2047.9375f), found %#x", s, want_bits, got);
         for (k = 0; k < 8; k++) {
             u32 w = snx_ld_le32(d.inl.bank2[s] + 4 * k);
             check(w == 0, "stage %u bank 2 word %u: expected 0, found %u", s, k, w);
