@@ -23,6 +23,10 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown);
 /* work that waits for sync s (if it is fenced) is done no earlier than s signals: *ready and *shown (as above) held
    behind s's */
 void nvn_sync_hold(u64* ready, u32* shown, const NvnSync* s);
+/* the submissions made so far, and the ones whose records the GPU thread has read: a piece of the runtime's memory
+   that came back is written again only once the second reaches the first as it was then (nvn_cmd.c) */
+u64 nvn_replay_submitted(void);
+u64 nvn_replay_walked(void);
 /* a fence after the work submitted so far: the sync signals once the replay reaches it */
 void nvn_replay_fence(u32 queue, u64 sync, u64 ready, u32 shown);
 /* returns once the queue's work submitted so far is replayed and done (a fence of its own, waited for) */
@@ -82,6 +86,7 @@ typedef struct {
     u32 nfx;
     u64 unknown; /* the ops logged as not replayed (GPU thread) */
     u32 shown;   /* the presents' syncpoint: up by one as each reaches the display, 0 before the first queue */
+    u64 submitted, walked; /* nvn_replay_submitted and nvn_replay_walked */
 } NvnReplayState;
 
 #endif

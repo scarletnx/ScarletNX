@@ -14,8 +14,9 @@ typedef struct {
     u64 at, size, top; /* top: the end of the pieces cut so far */
     u64 owner;         /* the command buffer cutting a piece from it now, 0 none */
     u32 live;          /* its pieces in use, the one being cut included */
-    u32 reset;         /* the serial of the last piece cut when its pieces were last all given back, so the next
-                          piece starts at its start again */
+    u32 reset;         /* the serial of the last piece cut when it was last cut from its start again */
+    u64 quiet;         /* the submissions made when its pieces last all came back: it is cut from its start again
+                          once the GPU thread has read that many (nvn_replay_walked) */
 } NvnSpillSeg;
 /* a piece in use: where its recording starts in the game's memory as the driver counts it (anchor), its segment, the
    order it was cut in, and the next piece of its bucket (or the next free slot), 0 for none: slots count from 1 */
@@ -23,7 +24,7 @@ typedef struct {
     u64 anchor;
     u32 seg, serial, next, pad;
 } NvnSpillPiece;
-#define NVN_SPILL_SEGS    1024
+#define NVN_SPILL_SEGS    4096 /* 256 MiB: a segment waits for the GPU thread, which runs seconds late at loads */
 #define NVN_SPILL_PIECES  65536
 #define NVN_SPILL_BUCKETS 4096 /* the pieces by the 4 KiB page of their anchor */
 /* the file's state, g_nvn.cmd (gpu/nvn/nvn_state.h), under the lock (the game's threads record into several command
