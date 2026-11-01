@@ -357,6 +357,7 @@ void nvn_MemoryPoolFinalize(CPU* c, u64 p) {
     u64 lead = o->gpu & 0xfff;
     (void)c;
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->gpu) gmmu_space_free(o->gpu - lead, lead + o->size);
+    if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L') && o->memory) nvn_cmd_memory_back(o->memory, o->size);
     if (o->magic == NVN_MAGIC('P', 'O', 'O', 'L')) nvmap_handle_drop(__atomic_exchange_n(&o->nvmap, 0, __ATOMIC_ACQ_REL));
     o->magic = 0;
     o->gpu = 0;

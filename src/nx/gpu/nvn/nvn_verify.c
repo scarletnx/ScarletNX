@@ -428,12 +428,13 @@ static void shadow_flush(CPU* c, const CPU* base, u64 sp, u64 queue) {
 /* ---- the shadow driver's command and control memory
    The game places its command and control memory by what the driver takes: it places each recording by
    GetCommandMemoryUsed and GetControlMemoryUsed, and its memory callback adds more when the driver runs short. Under
-   nvn_direct those answers are nvn_direct's: its records are other sizes than the driver's methods, and it keeps no
-   control memory (GetControlMemoryUsed is 0). In shadows of the game's memory, offset for offset, the driver wrote
-   recordings over each other: the game gave several command buffers, one after the other, the same control memory,
-   which to it was still empty, and placed command memory after recordings the driver's methods made longer than
-   nvn_direct's records. The recordings it still called were garbage: CallCommands, copying a callee's records,
-   aborted "out of control memory with no out-of-memory callback", and the shadow's command streams went out of step.
+   nvn_direct those answers are nvn_direct's: the first counts the driver's bytes only for the commands measured against
+   it (nvn_cmd.c), its records' size for the others, and it keeps no control memory (GetControlMemoryUsed is 0). In
+   shadows of the game's memory, offset for offset, the driver wrote recordings over each other: the game gave several
+   command buffers, one after the other, the same control memory, which to it was still empty, and placed command memory
+   after recordings the driver's methods made longer than nvn_direct's records. The recordings it still called were
+   garbage: CallCommands, copying a callee's records, aborted "out of control memory with no out-of-memory callback",
+   and the shadow's command streams went out of step.
 
    So the shadow's command memory is a shadow of the game's pool at CMD_SCALE times each offset (cmd_pool): each
    recording keeps the place the game gave it, with more room, and is reused when the game reuses its own. Its control

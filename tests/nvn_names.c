@@ -250,14 +250,17 @@ static u32 replay(NvnDraw* d, u64 p, u32 want) {
     u32 found = 0;
     for (;;) {
         NvnRecHdr h;
+        u32 op;
         memcpy(&h, GP(p), sizeof h);
-        if (h.op == OP_END) return found;
-        if (h.op == OP_JUMP) {
+        op = NVN_REC_OP(h.op);
+        if (op == OP_END) return found;
+        if (op == OP_JUMP) {
             p = gr64(p + 8);
             continue;
         }
-        if (h.op == want) found++;
-        nvn_draw_record(d, h.op, p + 8, h.size - 8);
+        if (op == want) found++;
+        nvn_draw_record(d, op, p + 8, h.size - 8);
+        if (h.op & NVN_REC_LAST) return found;
         p += h.size;
     }
 }
@@ -278,8 +281,8 @@ static void test_command_buffer(void) {
     nvn_CommandBufferAddCommandMemory(NULL, CMDBUF, POOL, 0, 0x8000);
     nvn_CommandBufferAddControlMemory(NULL, CMDBUF, SCRATCH + 0x1000, 0x400);
     check(nvn_CommandBufferGetCommandMemorySize(NULL, CMDBUF) == 0x8000, "command memory size: what the game added");
-    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 0x8000 - 16,
-          "command memory free: all but a JUMP's room");
+    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) == 0x8000,
+          "command memory free: all of it, as the game's driver answers (its end less its write pointer)");
     check(nvn_CommandBufferGetControlMemorySize(NULL, CMDBUF) == 0x400 &&
               nvn_CommandBufferGetControlMemoryFree(NULL, CMDBUF) == 0x400,
           "control memory: what the game added, none of it used");
@@ -289,7 +292,7 @@ static void test_command_buffer(void) {
     check(nvn_CommandBufferGetCopyRowStride(NULL, CMDBUF) == 0x140 &&
               nvn_CommandBufferGetCopyImageStride(NULL, CMDBUF) == 0x5000,
           "the copy strides' getters");
-    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) < 0x8000 - 16, "records take command memory");
+    check(nvn_CommandBufferGetCommandMemoryFree(NULL, CMDBUF) < 0x8000, "records take command memory");
     /* the rasterizer's state: a line width, the first vertex provoking, conservative rasterization of 0.3 pixels
        (rounded up to 2 quarters), every sample shaded */
     nvn_CommandBufferSetLineWidth(NULL, CMDBUF, 3.0f);
