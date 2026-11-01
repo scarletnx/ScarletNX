@@ -118,15 +118,19 @@ int main(void) {
     /* exact measured older versions, then the described newer range; no inference for adjacent versions */
     assert(nvn_api_described(55u << 16 | 8) && nvn_api_described(55u << 16 | 12) && nvn_api_described(55u << 16 | 15));
     assert(nvn_api_described(53u << 16 | 209) && nvn_api_described(api(0x100)));
-    assert(nvn_api_described(53u << 16 | 312));
+    assert(nvn_api_described(53u << 16 | 5) && nvn_api_described(53u << 16 | 13) && nvn_api_described(53u << 16 | 105));
+    assert(nvn_api_described(53u << 16 | 311) && nvn_api_described(53u << 16 | 312) &&
+           nvn_api_described(53u << 16 | 313) && nvn_api_described(53u << 16 | 314));
     assert(!nvn_api_described(55u << 16 | 7) && !nvn_api_described(55u << 16 | 16) &&
            !nvn_api_described(53u << 16 | 208) && !nvn_api_described(53u << 16 | 210) &&
-           !nvn_api_described(53u << 16 | 311) && !nvn_api_described(53u << 16 | 313) &&
+           !nvn_api_described(53u << 16 | 310) && !nvn_api_described(53u << 16 | 315) &&
+           !nvn_api_described(53u << 16 | 4) && !nvn_api_described(53u << 16 | 6) &&
+           !nvn_api_described(53u << 16 | 104) && !nvn_api_described(53u << 16 | 106) &&
            !nvn_api_described(54u << 16) && !nvn_api_described(0));
     nvn_api_described_text(text, sizeof text);
-    assert(!strcmp(text, "53.209, 53.312, 55.8 to 55.15"));
+    assert(!strcmp(text, "53.5, 53.13, 53.105, 53.209, 53.311 to 53.314, 55.8 to 55.15"));
     nvn_api_described_text(text, 8); /* cut short, still terminated */
-    assert(!strcmp(text, "53.209,"));
+    assert(!strcmp(text, "53.5, 5"));
     puts("nvn versions: ok");
     return 0;
 }
