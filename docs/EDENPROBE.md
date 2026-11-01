@@ -24,6 +24,14 @@ or killed after `--timeout` seconds (600) without a new line in the report, is f
 the case it ended inside, reported as `crashed`. The baseline is lavapipe's: a GPU passes other cases, so on one the
 run says what differs rather than what regressed.
 
+`--setting KEY=VALUE` gives each launch that runtime setting as `--KEY=VALUE`, for example `vk_memory=2` to read guest
+buffers in place, the default on an integrated GPU, where a driver can still refuse the imports and copy. Lavapipe,
+which CI runs on, copies by default: its GPU is the CPU, which can't read pages the runtime traps. To run lavapipe
+without installing it, point `VK_DRIVER_FILES` at its ICD file.
+
+With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
+`edenprobe_vk_memory_2` (in place) against the baseline.
+
 ## The mode words
 
 Those of the example, which CI runs; edenprobe's

@@ -230,12 +230,12 @@ def stop(process):
     process.wait()
 
 
-def launch(game, log, env, sdmc, quiet):
+def launch(game, log, env, sdmc, quiet, settings):
     """the game's exit status, or None when it was killed after quiet seconds without a new line in its report: a
     slow machine goes on as long as cases end"""
     with open(log, 'wb') as out:
         process = subprocess.Popen(
-            [str(game), '-H'],
+            [str(game), '-H', *(f'--{s}' for s in settings)],
             cwd=game.parent,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -288,7 +288,7 @@ def play(args, out):
     report, cases = None, -1
     for number in range(1, args.launches + 1):
         began = time.monotonic()
-        status = launch(game, out / f'launch-{number}.log', env, sdmc, args.timeout)
+        status = launch(game, out / f'launch-{number}.log', env, sdmc, args.timeout, args.setting)
         ended = f'killed after {args.timeout:g} s with no new line' if status is None else f'exit {status}'
         steps.append(f'launch {number}: {ended}, {time.monotonic() - began:.0f} s')
         print(steps[-1], flush=True)
@@ -437,6 +437,13 @@ def main():
     )
     runs.add_argument('--launches', type=int, default=16, help='launches at most (default 16)')
     runs.add_argument('--jobs', type=int, default=os.cpu_count() or 2)
+    runs.add_argument(
+        '--setting',
+        action='append',
+        default=[],
+        metavar='KEY=VALUE',
+        help="a runtime setting for every launch, as --KEY=VALUE (vk_memory=2: the in-place path, which lavapipe takes)",
+    )
     writes = commands.add_parser('baseline', help='the cases that end the same way in every baseline.txt given')
     writes.add_argument('baselines', type=Path, nargs='+')
     writes.add_argument('-o', '--output', type=Path, required=True)
