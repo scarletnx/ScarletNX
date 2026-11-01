@@ -135,7 +135,10 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     return r == VK_SUCCESS;
 }
 VkCommandBuffer vk_cmd(void) { return (VkCommandBuffer)(uintptr_t)0xCB; }
-void vk_render_end(void) {}
+void vk_render_end_at(const char* file, int line) {
+    (void)file;
+    (void)line;
+}
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage_,
                  VkAccessFlags2 access) {
     (void)cb, (void)s, (void)layout, (void)stage_, (void)access;
