@@ -364,6 +364,7 @@ void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, 
 
 /* ---- gpu.c: GPFIFO submission and the GPU thread's queue */
 void gpu_init(void);
+void gpu_ampere_classes(int on);               /* a Switch 2 title binds its Ampere classes, which the Maxwell engines run */
 /* queues GPFIFO entries for the GPU thread, which waits for the fence (wait_id ~0: none) as the stream's first
    method, runs them on channel (the channel's syncpoint id), then increments the syncpoint incs times, after which it
    should be at expect (the fence nvdrv promised). The entries are u64s at any alignment. A channel's jobs run in

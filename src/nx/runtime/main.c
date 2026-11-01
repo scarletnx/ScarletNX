@@ -1087,6 +1087,7 @@ int snx_main(int argc, char** argv) {
     nv_init();
     romfs_init();
     gpu_init();
+    if (g_guest_features) gpu_ampere_classes(1); /* a Switch 2 title's NVN2 binds its Ampere classes */
     {
         char addons[256];
         addons_line(addons, sizeof addons);

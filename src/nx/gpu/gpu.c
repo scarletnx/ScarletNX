@@ -47,6 +47,7 @@
 
 GpuState g_gpu;
 volatile u64 g_gpu_submits;
+static int g_ampere; /* a Switch 2 title's driver binds its Ampere classes, which run on the Maxwell engines */
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
 void (*g_gpu_before_write)(u64 gva, u64 size);
 int g_gpu_releases;
@@ -602,11 +603,21 @@ static void process_fence_action(GpuChannel* ch, u32 v) {
     gpu_park(ch, GPU_PARK_SYNCPOINT, id, ch->puller[PULLER_SYNCPOINT_PAYLOAD], 1);
     if (ch->park && g_renderer->before_syncwait) g_renderer->before_syncwait();
 }
+static int gpu_ampere_classes_on(void);
+/* the class a subchannel is bound to, as Eden's ProcessBindMethod reads it: a Switch 2 title binds its Ampere 3D and
+   compute classes (C797 and C7C0), which run on the Maxwell engines' own, as the fork's Switch 2 work has them. Its
+   copy class (C7B5) stays as it is, the copy engine's method layout being the one this class already answers */
+static u32 engine_class(u32 cls) {
+    cls &= CLASS_ID_MASK; /* BindObject's class is its low 16 bits; the rest are the object's flags */
+    if (gpu_ampere_classes_on() && cls == 0xC797) return CLASS_MAXWELL_B;
+    if (gpu_ampere_classes_on() && cls == 0xC7C0) return CLASS_KEPLER_COMPUTE_B;
+    return cls;
+}
 /* Eden's CallPullerMethod: a method below NonPullerMethods, kept in the puller's registers */
 static void puller_method(GpuChannel* ch, u32 sub, u32 m, u32 v) {
     ch->puller[m] = v;
     switch (m) {
-        case PULLER_BIND_OBJECT: ch->sub_class[sub] = v & CLASS_ID_MASK; break; /* Eden's ProcessBindMethod */
+        case PULLER_BIND_OBJECT: ch->sub_class[sub] = engine_class(v); break;
         case PULLER_SEMAPHORE_OPERATION: process_semaphore_trigger(ch, v); break;
         case PULLER_SYNCPOINT_OPERATION: process_fence_action(ch, v); break;
         default: break;
@@ -1110,6 +1121,9 @@ void gpu_init(void) {
     queue_init();
     pm_unlock(&g_qlk);
 }
+/* a Switch 2 title's driver binds its Ampere classes, which run on the Maxwell engines (gpu.c's engine_class) */
+void gpu_ampere_classes(int on) { __atomic_store_n(&g_ampere, on ? 1 : 0, __ATOMIC_RELAXED); }
+int gpu_ampere_classes_on(void) { return __atomic_load_n(&g_ampere, __ATOMIC_RELAXED); }
 void gpu_kick(void) {
     pm_lock(&g_qlk);
     g_qgen++;
@@ -1208,7 +1222,7 @@ static int scan_method(GpuScan* s, u32 chan, u64 job, u32* launches, u32 sub, u3
     int eng;
     if (m < PULLER_NON_PULLER_METHODS) {
         u32 op = v & PULLER_SEMAPHORE_OP_MASK;
-        if (m == PULLER_BIND_OBJECT) s->sub_class[sub] = v & CLASS_ID_MASK;
+        if (m == PULLER_BIND_OBJECT) s->sub_class[sub] = engine_class(v);
         if (m == PULLER_SEMAPHORE_OPERATION &&
             (op == PULLER_SEMAPHORE_OP_ACQUIRE_EQUAL || op == PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL ||
              op == PULLER_SEMAPHORE_OP_ACQUIRE_MASK))
