@@ -405,7 +405,8 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
 extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
 /* the renderer's memory lock held across a change of backing. full is for CPU guest pages, whose GPU aliases are
-   unknown; GPU address space changes give the range. Begin is taken before the memory manager's own lock */
+   unknown: gva and size are then the guest range (size ~0: any of it). GPU address space changes give their GPU
+   range. Begin is taken before the memory manager's own lock */
 extern void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);
 extern void (*g_gpu_mapping_end)(void);
 

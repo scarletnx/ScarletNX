@@ -195,6 +195,7 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 u64 vk_uma_bound(void); /* the submit that last read guest memory in place */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
+void vk_uma_quiesce(u64 cpu, u64 size); /* before a trap or a remap there (size ~0: all): its in-place readers run */
 
 #endif
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to

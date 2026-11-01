@@ -1199,7 +1199,7 @@ int state_save(const char* path, char* why, size_t whysize) {
     }
     /* what the GPU holds of guest memory lands, and stays landed while the state is written: the GPU is held */
     if (g_renderer->flush_targets) g_renderer->flush_targets();
-    if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, 0, 1);
+    if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, ~0ull, 1);
     own_land_all();
     t_land = plat_ns();
     header_make(&h);

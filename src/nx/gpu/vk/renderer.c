@@ -64,8 +64,9 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
 static u64 g_mapping_gva, g_mapping_size;
 static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
-    g_mapping_gva = gva;
+    g_mapping_gva = full ? 0 : gva;
     g_mapping_size = full ? 0 : size;
+    if (full) vk_uma_quiesce(gva, size); /* mem.c's change of guest memory [gva, gva + size): its in-place readers run */
     vk_release_drain();
     if (full) {
         vk_buf_land_map();
