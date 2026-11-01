@@ -59,8 +59,7 @@ u32 syncpt_promise(u32 id, u32 n) {
     return fixture.promised[id] += n;
 }
 void syncpt_incr(u32 id) { assert(fixture.used[id]); fixture.current[id]++; }
-void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 n) {
-    (void)chans; (void)n;
+void gpu_call(void (*fn)(void*), void* arg) {
     assert(fixture.count < 64);
     u32 i = (fixture.head + fixture.count++) % 64;
     fixture.jobs[i].fn = fn;

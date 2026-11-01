@@ -30,7 +30,7 @@ static int check_vertex_restride(void) {
     u64 fragment[5];
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
     const float green[4] = {0, 1, 0, 1}, blue[4] = {0, 0, 1, 1}, white[4] = {1, 1, 1, 1};
-    GpuChannel* channel = calloc(1, sizeof *channel);
+    MxRegs* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 124;
     gmmu_map(address, cpu, 0x20000);

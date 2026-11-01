@@ -142,7 +142,6 @@ static int schema_out(u64* h, const char* fmt, ...) {
     return 0;
 }
 /* instances of the types written raw outside g_hle, for their walk */
-static const GpuChannel z_chan;
 static const ARState z_ar;
 static const ARVoice z_voice;
 static const ARChannel z_archan;
@@ -163,7 +162,6 @@ static u64 state_schema(void) {
     hash_str(&h, #name);                                                                                               \
     __builtin_dump_struct(&(obj), schema_out, &h);
     HLE_WALKS(SCHEMA_WALK, g_hle)
-    SCHEMA_WALK(GpuChannel, z_chan)
     SCHEMA_WALK(ARState, z_ar)
     SCHEMA_WALK(ARVoice, z_voice)
     SCHEMA_WALK(ARChannel, z_archan)
@@ -177,7 +175,6 @@ static u64 state_schema(void) {
     SCHEMA_WALK(VaRange, z_va)
     SCHEMA_WALK(MemBlock, z_blk)
 #undef SCHEMA_WALK
-    gpu_state_schema(schema_out, &h);
     return hash = h;
 }
 

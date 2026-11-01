@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Offline write-tracking kernel. Both range boundaries cross summary groups and larger ranges cross a leaf.
    Each run verifies touched pages and clean neighbors after the timed command's workload. No guest data. */
-#include "nx/gpu/maxwell/write_pages.h"
+#include "nx/gpu/write_pages.h"
 #include <stdio.h>
 #include <stdlib.h>
 

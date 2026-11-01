@@ -142,33 +142,14 @@ static KObj* handle_object(u32 h) {
     return test_handles[h - 0x100];
 }
 
-/* the GPU: submissions, calls, kicks and retired channels, recorded */
+/* the GPU: calls, recorded, and the syncpoint of the channel the submissions went to */
 static struct {
-    u64 entries[8];
-    u32 n, channel, incs, wait_id, wait_val, expect, submits, closed_channel, calls, call_chans[4], ncall_chans, kicks;
+    u32 channel, calls;
 } test_gpu;
-void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
-    CHECK(n <= 8);
-    memcpy(test_gpu.entries, entries, n * sizeof *test_gpu.entries);
-    snx_le64_array(test_gpu.entries, n); /* the entries as nvdrv found them in guest memory, little-endian */
-    test_gpu.n = n;
-    test_gpu.channel = channel;
-    test_gpu.incs = incs;
-    test_gpu.wait_id = wait_id;
-    test_gpu.wait_val = wait_val;
-    test_gpu.expect = expect;
-    test_gpu.submits++;
-}
-void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
-    CHECK(nchans <= 4);
+void gpu_call(void (*fn)(void*), void* arg) {
     test_gpu.calls++;
-    memcpy(test_gpu.call_chans, chans, nchans * sizeof *chans);
-    test_gpu.ncall_chans = nchans;
     fn(arg); /* the GPU thread has nothing queued before it */
 }
-void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
-void gpu_release_retire(u32 channel) { (void)channel; }
-void gpu_kick(void) { test_gpu.kicks++; }
 void gpu_mem_written(u64 gva, u64 size) { (void)gva, (void)size; }
 
 /* host1x: one channel per NVDEC or VIC fd. Its ioctl can run a hook in the middle, as another guest thread would */
@@ -278,11 +259,10 @@ static void test_ioctl2(u32 gpu) {
     ctx.a[1] = buf(IN1, sizeof entries);
     ctx.b[0] = buf(OUT0, 0x18);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && ctx.out_size == 4 && reply(0) == 0);
-    CHECK(test_gpu.submits == 1 && test_gpu.n == 3 && !memcmp(test_gpu.entries, entries, sizeof entries));
-    u32 sp = test_gpu.channel;
-    CHECK(sp >= SYNCPT_FIRST && sp < SYNCPT_N && test_gpu.incs == 2 && test_gpu.expect == 2);
-    /* the fence the submission promises comes back in the output */
-    CHECK(gr32(OUT0 + 16) == sp && gr32(OUT0 + 20) == 2);
+    /* the fence the submission promises comes back in the output, and is reached at once: nothing draws */
+    u32 sp = gr32(OUT0 + 16);
+    test_gpu.channel = sp;
+    CHECK(sp >= SYNCPT_FIRST && sp < SYNCPT_N && gr32(OUT0 + 20) == 2 && syncpt_read(sp) == 2);
 
     /* the same through the pointer buffer: the header in X0, the entries in X1, the A list empty */
     submit_header(2, 2);
@@ -292,28 +272,26 @@ static void test_ioctl2(u32 gpu) {
     ctx.x[1] = buf(IN1 + 8, 16);
     ctx.c[0] = buf(OUT0, 0x18);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(test_gpu.submits == 2 && test_gpu.n == 2 && !memcmp(test_gpu.entries, entries + 1, 16));
-    CHECK(test_gpu.channel == sp && test_gpu.expect == 4 && gr32(OUT0 + 20) == 4);
+    CHECK(gr32(OUT0 + 16) == sp && gr32(OUT0 + 20) == 4 && syncpt_read(sp) == 4);
 
-    /* mapped header, inline entries through X1: an AutoSelect buffer takes index 1 in both lists */
+    /* mapped header, inline entries through X1: an AutoSelect buffer takes index 1 in both lists. No increment */
     submit_header(1, 0);
     request(11, gpu, SUBMIT_GPFIFO_EX);
     ctx.a[0] = buf(IN0, 0x18);
     ctx.x[1] = buf(IN1 + 16, 8);
     ctx.b[0] = buf(OUT0, 0x18);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(test_gpu.submits == 3 && test_gpu.n == 1 && test_gpu.entries[0] == entries[2] && test_gpu.incs == 0);
+    CHECK(gr32(OUT0 + 16) == sp && gr32(OUT0 + 20) == 4 && syncpt_read(sp) == 4);
 
-    /* the entries count is cut to what the inline buffer holds */
+    /* more entries than the inline buffer holds: answered all the same */
     submit_header(3, 0);
     request(11, gpu, SUBMIT_GPFIFO_EX);
     ctx.a[0] = buf(IN0, 0x18);
     ctx.a[1] = buf(IN1, 8);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(test_gpu.submits == 4 && test_gpu.n == 1 && test_gpu.entries[0] == entries[0]);
 
-    /* FenceWait (1): the fence goes to the GPU thread as the stream's first wait, whoever increments it, and the
-       ioctl returns at once (the pc_wait stand-in fails any wait here) */
+    /* FenceWait (1): the ioctl returns at once, whoever increments the fence (the pc_wait stand-in fails any wait
+       here) */
     u8 h[0x18];
     u32 fence[2] = {7, 0x1234}, flags = 1, one = 1;
     memset(h, 0, sizeof h);
@@ -326,10 +304,10 @@ static void test_ioctl2(u32 gpu) {
     ctx.a[0] = buf(IN0, 0x18);
     ctx.a[1] = buf(IN1, 8);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(test_gpu.submits == 5 && test_gpu.wait_id == 7 && test_gpu.wait_val == 0x1234);
+    CHECK(syncpt_read(sp) == 4);
 
-    /* IncrementWithValue (0x100) with FenceIncrement: the entries increment fval times themselves, so the job adds only
-       the host's two, while the fence promises all five */
+    /* IncrementWithValue (0x100) with FenceIncrement: the entries' fval increments and the host's two, all reached
+       now, as the fence promises */
     fence[1] = 3;
     flags = 0x102;
     snx_st_le32(h + 12, flags);
@@ -341,11 +319,10 @@ static void test_ioctl2(u32 gpu) {
     ctx.a[1] = buf(IN1, 8);
     ctx.b[0] = buf(OUT0, 0x18);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
-    CHECK(test_gpu.submits == 6 && test_gpu.incs == 2 && test_gpu.expect == 9 && gr32(OUT0 + 20) == 9);
+    CHECK(gr32(OUT0 + 16) == sp && gr32(OUT0 + 20) == 9 && syncpt_read(sp) == 9);
 }
 
-/* the ctrl device's syncpoint ioctls: an increment wakes the GPU thread (gpu_kick), an id past the table is
-   refused, and an unregistered event slot isn't signaled by a later increment */
+/* the ctrl device's syncpoint ioctls: an increment counts, an id past the table is refused, and an unregistered event slot isn't signaled by a later increment */
 #define SYNCPT_READ   0xC0080014u
 #define SYNCPT_INCR   0x40040015u
 #define EVENT_WAIT_AS 0xC010001Eu
@@ -353,13 +330,12 @@ static void test_ioctl2(u32 gpu) {
 #define EVENT_UNREG   0xC0040020u
 static void put(u32 off, u32 v) { gw32(IN0 + off, v); }
 static void test_ctrl_syncpoints(u32 ctrl) {
-    u32 kicks = test_gpu.kicks;
     put(0, 40);
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && test_gpu.kicks == kicks + 1 && syncpt_read(40) == 1);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && syncpt_read(40) == 1);
     put(0, 40);
     CHECK(nv_ioctl1(ctrl, SYNCPT_READ, 8) == 0 && gr32(OUT0 + 4) == 1);
     put(0, SYNCPT_IDS + 40); /* would land on 40's entry */
-    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 4 && syncpt_read(40) == 1 && test_gpu.kicks == kicks + 1);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 4 && syncpt_read(40) == 1);
     /* slot 9: registered, armed by an async wait for 40 to reach 2, unregistered, then 40 reaches 2 */
     put(0, 9);
     CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
@@ -446,16 +422,16 @@ static void test_ctrl_event_fds(u32 ctrl) {
     CHECK(nv_close(other) == 0 && !g_hle.nvdrv.ctrl_ev[other]); /* its slots go with it */
 }
 
-/* an increment under the renderer's lock (syncpt_add_quiet) wakes the GPU thread but signals an armed slot only at
+/* an increment under the renderer's lock (syncpt_add_quiet) counts at once but signals an armed slot only at
    the thread's syncpt_events, once, and a zero increment leaves nothing due */
 static void test_quiet_increments(u32 ctrl) {
     put(0, 11);
     CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
     NvEvent* e = &CTRL_EV(ctrl)[11];
-    u32 base = syncpt_read(42), kicks = test_gpu.kicks;
+    u32 base = syncpt_read(42);
     CHECK(event_wait(ctrl, 42, base + 1, 100, 11) == 5 && e->armed);
     syncpt_add_quiet(42, 1);
-    CHECK(syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1 && e->armed && !kev(e->ev)->signaled);
+    CHECK(syncpt_read(42) == base + 1 && e->armed && !kev(e->ev)->signaled);
     syncpt_events();
     CHECK(!e->armed && kev(e->ev)->signaled);
     /* armed again where it already is, so only a check of the slots signals it: none is due */
@@ -465,7 +441,7 @@ static void test_quiet_increments(u32 ctrl) {
     CHECK(e->armed && !kev(e->ev)->signaled);
     syncpt_add_quiet(42, 0);
     syncpt_events();
-    CHECK(e->armed && !kev(e->ev)->signaled && syncpt_read(42) == base + 1 && test_gpu.kicks == kicks + 1);
+    CHECK(e->armed && !kev(e->ev)->signaled && syncpt_read(42) == base + 1);
     syncpt_add(42, 1); /* checks at once */
     CHECK(!e->armed && kev(e->ev)->signaled);
     put(0, 11);
@@ -989,11 +965,10 @@ int main(void) {
     KEvent* slot = query_event(ctrl, 0x10000005u);
     CHECK(slot == kev(CTRL_EV(ctrl)[5].ev) && query_event(ctrl, 5) == slot);
 
-    /* closing the GPU channel retires its syncpoint once the GPU thread has run what was queued on it: a call after
-       the channel's jobs */
+    /* closing the GPU channel gives its syncpoint back at once: nothing of it is queued */
     u32 sp = test_gpu.channel, calls = test_gpu.calls;
-    CHECK(nv_close(gpu) == 0 && test_gpu.closed_channel == sp && !g_hle.nvdrv.syncpt_used[sp] && !g_hle.nvdrv.nvf[gpu].dev);
-    CHECK(test_gpu.calls == calls + 1 && test_gpu.ncall_chans == 1 && test_gpu.call_chans[0] == sp);
+    CHECK(nv_close(gpu) == 0 && !g_hle.nvdrv.syncpt_used[sp] && !g_hle.nvdrv.nvf[gpu].dev);
+    CHECK(test_gpu.calls == calls);
     CHECK(sm->o.refs == 2); /* the game's two handles keep it, the fd's reference is gone */
     CHECK(nv_ioctl1(gpu, SUBMIT_GPFIFO_EX, 0x18) == 8);
     CHECK(nv_close(gpu) == 8 && nv_close(0) == 8 && nv_close(0xFFFF) == 8); /* not open: as an ioctl to it */

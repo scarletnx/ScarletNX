@@ -135,9 +135,9 @@ static void vkr_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o)
     vk_unlock();
 }
 static void vkr_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
-    /* a draw predicated on the GPU (gpu.h render_pred) counts too: whether it runs isn't known here without the wait
-       the predicate is there to avoid, and the counters made up from this (maxwell/engines.c counter_report) only
-       stand in for what the console counts, growing with the work given */
+    /* a draw predicated on the GPU (DrawOwner.pred) counts too: whether it runs isn't known here without the wait
+       the predicate is there to avoid, and the counters made up from this only stand in for what the console counts,
+       growing with the work given */
     g_draws++;
     vk_lock();
     vk_render_draw(ds, dc, o);
@@ -207,19 +207,13 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     vk_lock();
     int r = vk_blit2d(s, d, dx, dy, dw, dh, sx, sy, sdx, sdy);
     vk_unlock();
-    return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
+    return r; /* 0: the front end copies through memory */
 }
 static int vkr_vic_compose(const VicJob* j) { return vk_vic_compose(j); } /* it takes vk_lock */
 static int vkr_nvdec_write(const NvdecPic* p) { return vk_nvdec_write(p); }   /* it takes vk_lock */
 static void* vkr_nvdec_hw_device(void) { return vk_nvdec_hw_device(); }
 static int vkr_dma_copy(const GpuDmaOp* o) { return vk_dma_copy(o); }         /* it takes vk_lock */
 static int vkr_blit_mem(const GpuBlit* b) { return vk_blit_mem(b); }          /* it takes vk_lock */
-static void vkr_rt_flush(u64 gva) {
-    vk_lock();
-    vk_gfx_image_mem_need(gva, 1);
-    vk_rt_flush(gva);
-    vk_unlock();
-}
 static void vkr_rt_reload(u64 gva) {
     vk_lock();
     vk_rt_reload(gva);
@@ -227,17 +221,9 @@ static void vkr_rt_reload(u64 gva) {
 }
 static void vkr_dispatch(const DispatchState* d) {
     if (!g_settings.compute_dispatches) return;
-    r3d_pending_flush(); /* a merged draw the front end is holding comes first */
     vk_lock();
     vk_dispatch(d);
     vk_unlock();
-}
-/* Pending shader results land before the stream signals or waits. */
-static void vkr_before_syncwait(void) {
-    SNX_ZONE(z, "vk before syncwait");
-    vk_buf_land_syncwait();
-    vk_gfx_image_land();
-    vk_compute_land();
 }
 static void vkr_stream_incr(u32 id) { vk_release_incr(id); }
 
@@ -888,24 +874,18 @@ const Renderer vk_renderer = {
     .nvdec_write = vkr_nvdec_write,
     .nvdec_hw_device = vkr_nvdec_hw_device,
     .dma_copy = vkr_dma_copy,
-    .snap_alloc = vk_snap_alloc,
-    .snap_free = vk_snap_free,
     .blit_mem = vkr_blit_mem,
-    .rt_flush = vkr_rt_flush,
     .rt_reload = vkr_rt_reload,
     .dispatch = vkr_dispatch,
     .cs_mem_need = vk_compute_mem_need,
     .mem_pending = vkr_mem_pending,
     .gfx_mem_need = vkr_gfx_mem_need,
-    .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
     .release_write = vk_release_write,
     .release_need = vk_release_need,
     .release_read = vk_release_read,
-    .release_value = vk_release_value,
     .render_predicate = vk_render_predicate,
     .render_predicate_drop = vk_render_predicate_drop,
-    .release_retire = vk_release_retire,
     .report_stall = vk_report_stall,
     .idle = vkr_idle,
     .reset = vkr_reset,

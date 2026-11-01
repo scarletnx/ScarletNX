@@ -4,15 +4,13 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
-#include "nx/gpu/maxwell/draw_state.h"
+#include "support/mx_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/shader/shader.h"
-#include "nx/gpu/maxwell/kepler_compute_regs.h"
-#include "nx/gpu/maxwell/engines_int.h"
-#include "nx/gpu/maxwell/maxwell_3d_regs.h"
-#include "nx/gpu/maxwell/gob.h"
+#include "support/kepler_compute_regs.h"
+#include "support/maxwell_3d_regs.h"
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -367,9 +365,16 @@ static int check_packed_depth(void) {
 }
 
 /* Clear separate shadow cascades through the real register path, then read each depth layer back. */
+/* the render target at gva written back to guest memory, the results drawn into it landed first */
+static void rt_flush(u64 gva) {
+    vk_lock();
+    vk_gfx_image_mem_need(gva, 1);
+    vk_surf_flush(vk_rt_find(gva), NULL);
+    vk_unlock();
+}
 /* a clear as the 3D engine hands it to the renderer (maxwell3d.c r3d_clear). The tests set the registers directly,
    not through the engine's methods, so every register group counts as changed */
-static void engine_clear(GpuChannel* ch, u32 v) {
+static void engine_clear(MxRegs* ch, u32 v) {
     DrawClear c;
     ch->r3d_dirty = ~0u;
     mx_draw_state_sync(ch);
@@ -377,7 +382,7 @@ static void engine_clear(GpuChannel* ch, u32 v) {
     vk_render_clear(&ch->ds, &c, &ch->owner);
 }
 static int check_depth_array(void) {
-    GpuChannel* ch = calloc(1, sizeof *ch);
+    MxRegs* ch = calloc(1, sizeof *ch);
     CHECK(ch);
     u32* r = ch->r3d;
     r[0x54E] = 1;
@@ -443,7 +448,7 @@ static int check_depth_array(void) {
 /* Switch sRGB writes on one image without losing its contents. Both full clears and the masked-clear draw
    must use the selected attachment format, including when it changes in an already-open pass. */
 static int check_srgb_write(void) {
-    GpuChannel* ch = calloc(1, sizeof *ch);
+    MxRegs* ch = calloc(1, sizeof *ch);
     CHECK(ch);
     u32* r = ch->r3d;
     r[0x487] = 1;
@@ -510,7 +515,7 @@ static int read_pixel0(Surf* target, u8 out[4]) {
    pixels a vkCmdClearAttachments gave. A discarded target's next pass loads it as DONT_CARE, and what that pass writes
    is there */
 static int check_clear_load_op(void) {
-    GpuChannel* ch = calloc(1, sizeof *ch);
+    MxRegs* ch = calloc(1, sizeof *ch);
     CHECK(ch);
     u32* r = ch->r3d;
     r[0x487] = 1;
@@ -1133,34 +1138,27 @@ static int dma_case(GpuDmaOp o) {
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN)); /* reading the GPU's lands it */
     return 0;
 }
-/* the same with a linear source read at submission into the renderer's memory (maxwell/dma.c's snapshot): the copy
-   takes those bytes, not guest memory's, which changed after (the program freed its source), and lets go of them */
+/* the same with a linear source the caller read (GpuDmaOp.snap, as NVN's buffer to texture copies give it): the copy
+   takes those bytes, not guest memory's, which changed after */
 static int dma_snap_case(GpuDmaOp o) {
     GpuDmaOp g = o, c = o;
-    u64 span = (u64)o.src.pitch * (o.lines - 1) + o.line_in, id = 0, held = vk_snap_bytes();
+    u64 span = (u64)o.src.pitch * (o.lines - 1) + o.line_in;
     for (int k = 0; k < 2; k++) {
         u8* t = GP(k ? DMA_B : DMA_A);
         for (u32 i = 0; i < DMA_SPAN; i++) t[i] = (u8)(i * 31 + (i >> 9) * 5 + 1);
     }
     g.src.addr += DMA_GA, g.dst.addr += DMA_GA;
     c.src.addr += DMA_GB, c.dst.addr += DMA_GB;
-    u8* snap = g_renderer->snap_alloc(span, &id);
-    CHECK(snap && id && vk_snap_bytes() == held + span);
+    u8* snap = malloc((size_t)span);
+    CHECK(snap);
     memcpy(snap, GP(DMA_A) + o.src.addr, span);
     for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* guest memory changes after the read */
     g.snap = snap;
-    g.snap_id = id;
     CHECK(g_renderer->dma_copy(&g));
+    free(snap);
     for (u64 i = 0; i < span; i++) GP(DMA_A)[o.src.addr + i] ^= 0x5A; /* the same again, for the comparison */
     dma_copy_ref(&c);
     CHECK(!memcmp(GP(DMA_A), GP(DMA_B), DMA_SPAN));
-    vk_lock();
-    for (int i = 0; i <= VK_FRAMES; i++) { /* the copy's frame slot used again, its work done: its memory went */
-        vk_frame_next();
-        vk_cmd();
-    }
-    vk_unlock();
-    CHECK(vk_snap_bytes() == held);
     return 0;
 }
 static GpuDmaSide pitch_side(u64 addr, u32 pitch) {
@@ -1293,7 +1291,7 @@ static int check_blit(void) {
 }
 
 /* a block linear A8B8G8R8 target of w by h at gva (blocks 2^bh GOBs high) cleared to red or blue */
-static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue, u32 format) {
+static void rt_clear_format(MxRegs* ch, u64 gva, u32 w, u32 h, u32 bh, int blue, u32 format) {
     u32* r = ch->r3d;
     const float color[4] = {blue ? 0.0f : 1.0f, 0, blue ? 1.0f : 0.0f, 1};
     r[0x487] = 1;
@@ -1309,7 +1307,7 @@ static void rt_clear_format(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int b
     engine_clear(ch, 15 << 2);
     vk_render_end();
 }
-static void rt_clear(GpuChannel* ch, u64 gva, u32 w, u32 h, u32 bh, int blue) {
+static void rt_clear(MxRegs* ch, u64 gva, u32 w, u32 h, u32 bh, int blue) {
     rt_clear_format(ch, gva, w, h, bh, blue, 0xD5);
 }
 /* n bytes at p all blue pixels */
@@ -1331,7 +1329,7 @@ static int all_bytes(const u8* p, u32 n, u8 v) {
    written back, together or the newer one alone. A target reaching past a copy's range is one whose memory a smaller
    surface took over: the copy takes what the program wrote there since */
 static int check_rt_overlap(void) {
-    GpuChannel* ch = calloc(1, sizeof *ch);
+    MxRegs* ch = calloc(1, sizeof *ch);
     GpuDmaOp o;
     u64 readbacks;
     CHECK(ch);
@@ -1350,7 +1348,7 @@ static int check_rt_overlap(void) {
     /* the newer one written back alone: the older one first, under it, and not again after */
     rt_clear(ch, DMA_GA + 0x10000, 64, 64, 3, 0);
     rt_clear(ch, DMA_GA, 160, 128, 4, 1);
-    g_renderer->rt_flush(DMA_GA);
+    rt_flush(DMA_GA);
     vk_rt_before_write(DMA_GA, 0x14000);
     CHECK(all_blue(GP(DMA_A), 0x14000));
     /* a 160 by 256 target, the program's own bytes over its memory after it, and a copy of the 160 by 128 surface */

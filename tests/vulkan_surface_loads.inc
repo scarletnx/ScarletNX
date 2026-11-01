@@ -15,7 +15,7 @@ static int check_layered_surface_loads(void)
 	const u64 address = 0x700000000ull;
 	const u64 cbuf = address + 0x20000, descriptors = address + 0x21000, samplers = address + 0x22000;
 	const u64 source = address + 0x30000, target = address + 0x32000;
-	GpuChannel *channel = calloc(1, sizeof(*channel));
+	MxRegs *channel = calloc(1, sizeof(*channel));
 	u32 qmd[64] = {0}, count = 0;
 
 	CHECK(channel);

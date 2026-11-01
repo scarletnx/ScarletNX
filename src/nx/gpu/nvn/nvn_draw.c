@@ -3,8 +3,8 @@
    The driver constant buffers' layout from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/nvn_mtl.m */
 /* nvn_direct's draws. A queue's replayed records set NVN's state here, as the game recorded it: state objects,
    viewports, programs, vertex layout and buffers, uniform and storage buffers, texture handles. A draw makes the
-   renderer's draw state of it (gpu/draw_state.h), each group whose bytes changed with a new generation, as
-   maxwell/draw_state.c makes it of a channel's 3D engine registers, and hands it the draw.
+   renderer's draw state of it (gpu/draw_state.h), each group whose bytes changed with a new generation, and
+   hands it the draw.
 
    Where the 3D engine reads what NVN's driver put in its own constant buffers, the queue gives them as inline blocks
    (renderer.h): bank 0 holds each stage's storage buffers (address and size, 16 bytes apart: the vertex stage's at
@@ -663,7 +663,7 @@ static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
     }
 }
 /* the capture buffers, each capturing when the layout gives it words or a stride (as the 3D engine's registers
-   do, maxwell/draw_state.c mx_draw_bindings) */
+   do) */
 static void tf_buffers(NvnDraw* d) {
     u32 i;
     for (i = 0; i < 4; i++) {
@@ -737,7 +737,7 @@ static void bind_state(NvnDraw* d, u64 payload) {
 }
 
 /* SetRenderEnable (modes 2 and 3: on, off) and SetRenderEnableConditional (0: draw when the counts at address and
-   address + 16 are equal, 1: when they differ), as the 3D engine's render enable (maxwell/engines.c): NVN's occlusion
+   address + 16 are equal, 1: when they differ), as the 3D engine's render enable: NVN's occlusion
    test, a samples-passed count against zero, compared by the GPU when the count isn't known yet */
 static void render_enable(NvnDraw* d, const NvnPRenderCond* r) {
     u32 pred = 0;

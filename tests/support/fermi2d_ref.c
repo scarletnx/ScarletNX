@@ -3,8 +3,8 @@
    Named after Eden (src/video_core/engines/sw_blitter/blitter.cpp, its SoftwareBlitEngine and NearestNeighbor):
    SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project */
 /* The CPU reference of a 2D engine blit from memory, as Eden's software blitter does it: done in guest memory, pixel
-   by pixel, nearest neighbor, from the source columns and rows the engine worked out (maxwell/fermi2d.c). The tests
-   hold the renderer's blit_mem to it (tests/fermi2d_blit.c, tests/vulkan_headless.c). The runtime blits on the GPU
+   by pixel, nearest neighbor, from the source columns and rows the caller worked out (gpu.h GpuBlit). The tests
+   hold the renderer's blit_mem to it (tests/vulkan_headless.c). The runtime blits on the GPU
    (vk/blit.c, docs/GPU_OWNERSHIP.md), so this file isn't built into it. Between float formats of different sizes each
    component is converted (half.c), as the software blitter does */
 #include "fermi2d_ref.h"

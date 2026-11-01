@@ -29,7 +29,7 @@ typedef struct {
 
 /* the render predicate index_draw's draw runs on (its clear doesn't), 0 for none */
 static u32 g_index_pred;
-static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, IndexPixels* px) {
+static int index_draw(MxRegs* channel, u64 target, const DrawCall* call, IndexPixels* px) {
     u64 drawn = g_vk_drawn;
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 1);
@@ -63,7 +63,7 @@ static int index_draw(GpuChannel* channel, u64 target, const DrawCall* call, Ind
 
 /* indices n of size isz (1, 2 or 4) at the index buffer's address, from index first on, and the restart index ri
    (restart on when ri isn't ~0) */
-static int index_buffer(GpuChannel* channel, u64 at, const u32* idx, u32 n, u32 isz, u32 ri) {
+static int index_buffer(MxRegs* channel, u64 at, const u32* idx, u32 n, u32 isz, u32 ri) {
     u8 bytes[64];
     u32* r = channel->r3d;
     for (u32 i = 0; i < n; i++)
@@ -91,7 +91,7 @@ static int index_half_green(const IndexPixels* px) {
     return px->green >= 6 && px->blue >= 6 && px->green + px->blue == 16 && !px->red;
 }
 
-static int index_cases(GpuChannel* channel, u64 target, u64 indices) {
+static int index_cases(MxRegs* channel, u64 target, u64 indices) {
     IndexPixels px;
     const u32 quad[5] = {9, 4, 5, 6, 7}, quad0[4] = {0, 1, 2, 3}, strip[5] = {4, 5, 7, 2, 4};
     /* quads of vertex numbers from vertex 4 */
@@ -153,7 +153,7 @@ static int put_words(u64 at, const u32* w, u32 n) {
     CHECK(!gmem_write(at, bytes, 4 * (size_t)n));
     return 0;
 }
-static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args) {
+static int indirect_cases(MxRegs* channel, u64 target, u64 indices, u64 args) {
     IndexPixels px;
     const u32 list0[6] = {0, 1, 3, 1, 2, 3};
     const u32 fan[4] = {4, 1, 4, 0}; /* count, instances, first vertex, base instance */
@@ -225,7 +225,7 @@ static int indirect_cases(GpuChannel* channel, u64 target, u64 indices, u64 args
    out of sight. Here a vertex program replaces the green component of the green quad's color with c[0][0x644], with
    bank 0 all zeros, and the record's base instance is 1.0f's bits: the quad is green only when the read takes the
    record's base instance */
-static int draw_params_case(GpuChannel* channel, u64 target, u64 indices, u64 address) {
+static int draw_params_case(MxRegs* channel, u64 target, u64 indices, u64 address) {
     const u64 program = address + 0x2000, cb0 = address + 0x4000, args = address + 0x16100;
     const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
                           0xeff1ff800707ff00ull, /* position */
@@ -261,7 +261,7 @@ static int draw_params_case(GpuChannel* channel, u64 target, u64 indices, u64 ad
    range until the range's memory changes. In a stream of 512 vertices, 0 to 3 a red quad and 508 to 511 a green one,
    indices of the red quad bound the range to its first 4 KiB. The same indices rewritten to the green quad's must
    bound it again: a kept bound of 3 leaves vertices 508 to 511 past the range, which strict bounds read as zeros */
-static int index_bound_cases(GpuChannel* channel, u64 target, u64 indices, u64 positions, u64 colors) {
+static int index_bound_cases(MxRegs* channel, u64 target, u64 indices, u64 positions, u64 colors) {
     const float corner[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
     u32* r = channel->r3d;
     u8 bytes[16];
@@ -315,7 +315,7 @@ static int check_index_draws(void) {
     /* two quads over the whole target, corners in the order quads take them */
     const float corner[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
-    GpuChannel* channel = calloc(1, sizeof *channel);
+    MxRegs* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 125;
     gmmu_map(address, cpu, 0x20000);
