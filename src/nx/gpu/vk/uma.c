@@ -27,8 +27,10 @@
      read guest memory in place before the stream stopped (release.c, vk_uma_bound). The copy path read those bytes when
      the commands were recorded. In place, the GPU reads them when it runs them, and after a release the guest writes
      the next frame's data.
-   - mem.c tells which guest pages get other host pages (an unmap, a decommit, a move into the alias pool): the imports
-     on them go (vk_uma_pages_replaced), as the driver holds the old pages.
+   - Before guest pages are trapped (a GPU result published over them) or get other host pages (an unmap, a decommit, a
+     move into the alias pool), the commands that read an import over them run (vk_uma_quiesce). mem.c then tells which
+     pages changed, and the imports on them go (pages_replaced): a driver that pins pages (NVIDIA) holds the old ones,
+     and amdgpu looks them up again at each submit and refuses pages in the alias pool, a file's pages.
    - A GPU-side write (a front end write, a landed result) on a page that a command not finished yet reads in place is
      counted (the hazards line of the report). That command can read the new bytes. */
 #include <stddef.h>
@@ -53,9 +55,10 @@ typedef struct {
     VkDeviceMemory mem;
     VkBuffer buf;
     u32 used; /* g_vk_present when last bound */
+    u64 sub;  /* the submit that last read it (vk_submit_number), which vk_uma_quiesce waits for */
     int dead; /* its pages are other pages now (mem.c): it goes at the next lookup */
 } Imp;
-/* Spans the driver refused to import (a page it can't pin: a trapped GPU-owned page, say), whose ranges are copied
+/* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
    again, twice: one game fell from 28 to 5 frames a second */
 #define FAIL_N 64
@@ -79,7 +82,7 @@ typedef struct {
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
     Seen seen[256];         /* the ranges hz_mark marked, with their submit */
     /* statistics */
-    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped;
+    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces;
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
     PMutex lk;         /* a leaf, under vk_lock or mem.c's lock: the dead flags and the table */
@@ -147,13 +150,7 @@ int vk_uma_choose(int has_import, int has_placed) {
     int want = g_settings.guest_memory;
     g_vk.mem_model = mem_model();
     g_vk.mem_path = VK_MEM_PATH_COPY;
-    /* Not on a device whose GPU is the CPU (lavapipe): its shaders read an import through the CPU's own mapping of
-       guest memory, where the pages a GPU result is published over are trapped until the CPU needs them
-       (memory/own.c). A draw recorded before such a publish faulted when it ran, and landing those pages waited for a
-       readback queued behind that same draw: edenprobe's 128 dispatch and draw pairs over one buffer hung there. A GPU
-       reads the pages themselves, as they were when the command was recorded */
-    int cpu_device = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
-    if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA && !cpu_device)) {
+    if (want == 2 || (want == 0 && g_vk.mem_model == VK_MEM_UMA)) {
         if (has_import)
             g_vk.mem_path = VK_MEM_PATH_UMA;
         else
@@ -166,9 +163,7 @@ int vk_uma_choose(int has_import, int has_placed) {
         want == 1   ? "copy"
         : want == 2 ? "uma"
                     : "auto",
-        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus"
-        : want == 0 && cpu_device                 ? ", the GPU is the CPU"
-                                                  : "",
+        want == 2 && g_vk.mem_model != VK_MEM_UMA ? ", forced: the GPU reads them across the bus" : "",
         has_import ? "yes" : "no", has_placed ? "yes (not used yet)" : "no");
     return g_vk.mem_path == VK_MEM_PATH_UMA;
 }
@@ -376,6 +371,7 @@ int vk_uma_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         return 0;
     }
     g_uma.imp[i].used = g_vk_present;
+    g_uma.imp[i].sub = vk_submit_number();
     *buf = g_uma.imp[i].buf;
     *off = cpu - g_uma.imp[i].cpu;
     g_uma.bound = vk_submit_number();
@@ -443,15 +439,37 @@ void vk_uma_frame(void) {
     for (u32 i = 0; i < g_uma.nimp; i++) bytes += g_uma.imp[i].size;
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
-        "GPU-side write on a page that unfinished work reads in place)\n",
+        "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
+        "remap\n",
         (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
         (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
         (unsigned long long)g_uma.dropped, g_uma.nimp, (unsigned long long)(bytes >> 20),
-        (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED));
+        (unsigned long long)__atomic_load_n(&g_uma.hazards, __ATOMIC_RELAXED), (unsigned long long)g_uma.quiesces);
     g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
-        g_uma.dropped = 0;
+        g_uma.dropped = g_uma.quiesces = 0;
     __atomic_store_n(&g_uma.hazards, 0, __ATOMIC_RELAXED);
+}
+/* Guest memory [cpu, cpu + size) (size ~0: all of it) is about to be trapped (a GPU result published over it,
+   memory/own.c) or to get other pages (mem.c): the commands that read an import over it in place run first, submitted
+   if they are still recorded (vk_lock held, mem.c's lock not). A device whose GPU is the CPU (lavapipe) reads an import
+   through the CPU's own mapping, and faulted on the trapped page in a command that ran later: landing the page waited
+   for a readback queued behind that command, and edenprobe's dispatch and draw pairs over one buffer hung there.
+   amdgpu looks up an import's pages again at every submit and refuses them once they are in the alias pool, whose
+   pages are a file's (the trap moves them there): a command recorded before the publish and submitted after it would
+   be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them */
+void vk_uma_quiesce(u64 cpu, u64 size) {
+    u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size, sub = 0, submitted, done;
+    if (!vk_uma()) return;
+    for (u32 i = 0; i < g_uma.nimp; i++)
+        if (g_uma.imp[i].cpu < end && cpu < g_uma.imp[i].cpu + g_uma.imp[i].size && g_uma.imp[i].sub > sub)
+            sub = g_uma.imp[i].sub;
+    if (!sub) return;
+    vk_submit_progress(&submitted, &done);
+    if (done >= sub) return;
+    if (sub > vk_last_submit()) vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE); /* still the one being recorded */
+    vk_wait_submit(sub);
+    g_uma.quiesces++;
 }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {

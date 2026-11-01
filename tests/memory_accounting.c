@@ -108,8 +108,11 @@ void gpu_mem_changed(u64 a, u64 size) {
     (void)a;
     (void)size;
 }
+static u64 mapping_a, mapping_size; /* the guest range the last change named */
 static void mapping_begin(u64 a, u64 size, int full) {
-    CHECK(a == 0 && size == 0 && full == 1);
+    CHECK(full == 1 && size != 0);
+    mapping_a = a;
+    mapping_size = size;
     CHECK(mapping_depth == 0);
     mapping_depth++;
     mapping_begins++;
@@ -365,8 +368,11 @@ static void test_mapping_boundary(void) {
     g_gpu_mapping_begin = mapping_begin;
     g_gpu_mapping_end = mapping_end;
     CHECK(mem_map(ALIAS_BASE, 0x1000, MS_SHARED, PERM_RW) == 0);
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000); /* the range it changes */
     CHECK(mem_unmap(ALIAS_BASE, 0x1000) == 0);
+    CHECK(mapping_a == ALIAS_BASE && mapping_size == 0x1000);
     CHECK(mem_heap_set(0x2000, mem_total()) == 0);
+    CHECK(mapping_a == 0 && mapping_size == ~0ull); /* the heap's change: any of it */
     CHECK(mem_heap_set(0x2000, mem_total()) == 0);
     CHECK(mem_heap_set(0, mem_total()) == 0);
     CHECK(mapping_begins == 4 && mapping_ends == 4 && mapping_depth == 0);
