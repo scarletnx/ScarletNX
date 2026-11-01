@@ -155,15 +155,23 @@ uint bc1_pixel(uint e, uint idx, bool three, uint i) {
     int r1 = bc_expand(e1 >> 11, 5u), g1 = bc_expand((e1 >> 5) & 63u, 6u), b1 = bc_expand(e1 & 31u, 5u);
     if (k == 0u) return tc_rgba(r0, g0, b0, 255u);
     if (k == 1u) return tc_rgba(r1, g1, b1, 255u);
+    int rq0 = int(e0 >> 11), bq0 = int(e0 & 31u), rq1 = int(e1 >> 11), bq1 = int(e1 & 31u), d = g1 - g0;
     if (e0 > e1 || !three) {
-        int wa = k == 2u ? 2 : 1, wb = 3 - wa;
-        return tc_rgba((wa * r0 + wb * r1 + 1) / 3, (wa * g0 + wb * g1 + 1) / 3, (wa * b0 + wb * b1 + 1) / 3, 255u);
+        if (k == 2u)
+            return tc_rgba((2 * rq0 + rq1) * 22 / 8, (256 * g0 + d / 4 + 128 + d * 80) / 256, (2 * bq0 + bq1) * 22 / 8,
+                           255u);
+        return tc_rgba((rq0 + 2 * rq1) * 22 / 8, (256 * g1 - d / 4 + 128 - d * 80) / 256, (bq0 + 2 * bq1) * 22 / 8,
+                       255u);
     }
     if (k == 3u) return 0u;
-    return tc_rgba((r0 + r1 + 1) / 2, (g0 + g1 + 1) / 2, (b0 + b1 + 1) / 2, 255u);
+    return tc_rgba((rq0 + rq1) * 33 / 8, (256 * g0 + d / 4 + 128 + d * 128) / 256, (bq0 + bq1) * 33 / 8, 255u);
 }
-/* pixel i of a BC4 block hi:lo as 16 bit unorm or (sn) snorm: the interpolant's exact value (x / d of the endpoints,
-   sevenths or fifths) rounded to nearest */
+/* NVIDIA's BC4 weights of the second endpoint for indices 2 to 7 (tests/support/bcn.c): eight values, then six, in
+   257ths unsigned and 258ths signed */
+const int BC4_W[24] = {36, 72, 113, 144, 185, 221, 48, 96, 161, 209, 0, 0,
+                      36, 72, 114, 144, 186, 222, 48, 96, 162, 210, 0, 0};
+/* pixel i of a BC4 block hi:lo as 16 bit unorm or (sn) snorm, as NVIDIA's GPUs decode it: unsigned, the weights'
+   sum exactly; signed, rounded to nearest */
 uint bc4_value(uint hi, uint lo, bool sn, uint i) {
     int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u);
     if (sn) {
@@ -174,27 +182,28 @@ uint bc4_value(uint hi, uint lo, bool sn, uint i) {
     int x, d = 1;
     if (k < 2u) {
         x = k == 0u ? a0 : a1;
-    } else if (a0 > a1) {
-        x = int(8u - k) * a0 + int(k - 1u) * a1;
-        d = 7;
-    } else if (k < 6u) {
-        x = int(6u - k) * a0 + int(k - 1u) * a1;
-        d = 5;
-    } else {
+    } else if (a0 <= a1 && k >= 6u) {
         x = k == 6u ? (sn ? -127 : 0) : (sn ? 127 : 255);
+    } else {
+        int w = BC4_W[(sn ? 12u : 0u) + (a0 > a1 ? 0u : 6u) + k - 2u];
+        d = sn ? 258 : 257;
+        x = (d - w) * a0 + w * a1;
     }
     if (!sn) return uint((x * 257 + d / 2) / d);
     int m = x < 0 ? -x : x, v = (m * 32767 + 127 * d / 2) / (127 * d);
     return uint(x < 0 ? -v : v) & 0xFFFFu;
 }
-/* pixel i's 8 bit alpha of a BC3 alpha block hi:lo, rounded to nearest */
+/* NVIDIA's BC3 alpha weights in 2048ths by the steps from the nearer endpoint: eight values, then six */
+const int BC3_W[8] = {0, 289, 578, 892, 0, 385, 770, 0};
+/* pixel i's 8 bit alpha of a BC3 alpha block hi:lo, as NVIDIA's GPUs decode it */
 uint bc3_alpha(uint hi, uint lo, uint i) {
-    int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u);
-    uint k = tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i);
-    if (k < 2u) return uint(k == 0u ? a0 : a1);
-    if (a0 > a1) return uint((int(8u - k) * a0 + int(k - 1u) * a1 + 3) / 7);
-    if (k < 6u) return uint((int(6u - k) * a0 + int(k - 1u) * a1 + 2) / 5);
-    return k == 6u ? 0u : 255u;
+    int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u), n = a0 > a1 ? 7 : 5;
+    int k = int(tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i));
+    if (k < 2) return uint(k == 0 ? a0 : a1);
+    if (n == 5 && k >= 6) return k == 6 ? 0u : 255u;
+    int t = n == 7 ? 0 : 4; /* the sum is never negative */
+    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + BC3_W[t + k - 1] * (a1 - a0)) / 2048);
+    return uint((2048 * a1 + 1024 + BC3_W[t + n + 1 - k] * (a0 - a1)) / 2048);
 }
 
 /* BPTC's tables (tests/support/bcn.c's, packed): the subset bit of each pixel of the two subset partitions, 16 bits each; the

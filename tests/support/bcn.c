@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* BC1 to BC7 decoding, from the Khronos Data Format Specification's S3TC, RGTC and BPTC chapters. A block is
    little-endian; pixel (x, y) of a 4x4 block is number y * 4 + x (rows first). Where the specification leaves the
-   rounding of an interpolated value to the implementation (BC1 to BC5) it is rounded to nearest */
+   precision of an interpolated value to the implementation (BC1 to BC5) it is NVIDIA's, or rounded to nearest */
 #include "bcn.h"
 #include "common/utilities/endian.h"
 #include <string.h>
@@ -27,37 +27,59 @@ static u64 le64(const u8* p) {
     return v;
 }
 
-/* ---- BC1 to BC5 ---- */
+/* ---- BC1 to BC5 ----
+   The specification leaves the precision of the interpolants to the implementation. The Switch's GPU is NVIDIA's,
+   and its decode is the one a game's textures were made for: an NVIDIA GPU here (an RTX 2080) gives these values for
+   every pair of endpoints, in each mode (tests/astc_vulkan.c's native case). Its BC1 red and blue interpolate the 5
+   bit endpoints, its green the 8 bit ones by a weight of 321/1024 in place of 1/3 (as rgbcx's BC1 decoder for
+   NVIDIA). Its alpha and BC4 weights are not sevenths or fifths: BC4 interpolates in 257ths (258ths signed), BC3's
+   alpha in 2048ths from the nearer endpoint. Other GPUs round the exact value (spec: the decode of
+   bcn_decode_image_spec) */
 
 static int expand(u32 v, int bits) { return (int)(v << (8 - bits) | v >> (2 * bits - 8)); }
 
 /* a BC1 color block into out[pixel][0..2], and alpha 0 or 255. three: a block whose first endpoint isn't the larger
    has three colors and a transparent black (BC1); BC2 and BC3 take every block as four colors */
-static void bc1_block(u64 b, int three, u8 out[16][4]) {
+static void bc1_block(u64 b, int three, int spec, u8 out[16][4]) {
     u32 e0 = (u32)b & 0xFFFF, e1 = (u32)(b >> 16) & 0xFFFF, idx = (u32)(b >> 32);
     int c[4][4];
+    int q[2][3] = {{(int)(e0 >> 11), (int)(e0 >> 5 & 63), (int)(e0 & 31)},
+                   {(int)(e1 >> 11), (int)(e1 >> 5 & 63), (int)(e1 & 31)}};
     int ends[2][3] = {{expand(e0 >> 11, 5), expand(e0 >> 5 & 63, 6), expand(e0 & 31, 5)},
                       {expand(e1 >> 11, 5), expand(e1 >> 5 & 63, 6), expand(e1 & 31, 5)}};
+    int d = ends[1][1] - ends[0][1], four = e0 > e1 || !three;
     for (int k = 0; k < 3; k++) {
         c[0][k] = ends[0][k];
         c[1][k] = ends[1][k];
-        if (e0 > e1 || !three) {
+        c[3][k] = 0;
+        if (spec && four) {
             c[2][k] = (2 * ends[0][k] + ends[1][k] + 1) / 3;
             c[3][k] = (ends[0][k] + 2 * ends[1][k] + 1) / 3;
-        } else {
+        } else if (spec)
             c[2][k] = (ends[0][k] + ends[1][k] + 1) / 2;
-            c[3][k] = 0;
-        }
+        else if (four && k == 1) {
+            c[2][k] = (256 * ends[0][1] + d / 4 + 128 + d * 80) / 256;
+            c[3][k] = (256 * ends[1][1] - d / 4 + 128 - d * 80) / 256;
+        } else if (four) {
+            c[2][k] = (2 * q[0][k] + q[1][k]) * 22 / 8;
+            c[3][k] = (q[0][k] + 2 * q[1][k]) * 22 / 8;
+        } else
+            c[2][k] = k == 1 ? (256 * ends[0][1] + d / 4 + 128 + d * 128) / 256 : (q[0][k] + q[1][k]) * 33 / 8;
     }
     c[0][3] = c[1][3] = c[2][3] = 255;
-    c[3][3] = e0 > e1 || !three ? 255 : 0;
+    c[3][3] = four ? 255 : 0;
     for (int i = 0; i < 16; i++)
         for (int k = 0; k < 4; k++) out[i][k] = (u8)c[idx >> 2 * i & 3][k];
 }
+/* NVIDIA's BC4 weights of the second endpoint for indices 2 to 7: eight values (the first endpoint the larger), then
+   six. Unsigned they are 257ths, signed 258ths (each signed one but the low two is one more) */
+static const int bc4_w[2][2][6] = {{{36, 72, 113, 144, 185, 221}, {48, 96, 161, 209}},
+                                   {{36, 72, 114, 144, 186, 222}, {48, 96, 162, 210}}};
 
-/* a BC4 block's 16 values as 16 bit unorm or (sn) snorm. The interpolants are taken to 16 bits from their exact value
-   (a sum of sevenths or fifths of the endpoints), rounded to nearest */
-static void bc4_block(u64 b, int sn, u16 out[16]) {
+/* a BC4 block's 16 values as 16 bit unorm or (sn) snorm. spec: the interpolants are taken to 16 bits from their exact
+   value (a sum of sevenths or fifths of the endpoints), rounded to nearest. NVIDIA's unsigned ones are exact in
+   257ths, its signed ones within one step of these 258ths rounded */
+static void bc4_block(u64 b, int sn, int spec, u16 out[16]) {
     int a0 = (int)(b & 0xFF), a1 = (int)(b >> 8 & 0xFF);
     if (sn) {
         a0 = (int)(i8)a0;
@@ -72,12 +94,15 @@ static void bc4_block(u64 b, int sn, u16 out[16]) {
             x = a0, d = 1;
         else if (k == 1)
             x = a1, d = 1;
-        else if (eight)
-            x = (8 - k) * a0 + (k - 1) * a1, d = 7;
-        else if (k < 6)
-            x = (6 - k) * a0 + (k - 1) * a1, d = 5;
-        else
+        else if (!eight && k >= 6)
             x = k == 6 ? (sn ? -127 : 0) : (sn ? 127 : 255), d = 1;
+        else if (!spec) {
+            int w = bc4_w[sn][!eight][k - 2];
+            x = (sn ? 258 - w : 257 - w) * a0 + w * a1, d = sn ? 258 : 257;
+        } else if (eight)
+            x = (8 - k) * a0 + (k - 1) * a1, d = 7;
+        else
+            x = (6 - k) * a0 + (k - 1) * a1, d = 5;
         if (!sn)
             out[i] = (u16)((x * 257 + d / 2) / d);
         else {
@@ -86,19 +111,26 @@ static void bc4_block(u64 b, int sn, u16 out[16]) {
         }
     }
 }
-/* BC3's alpha: a BC4 block to 8 bits, rounded to nearest */
-static void bc3_alpha(u64 b, u8 out[16][4]) {
-    int a0 = (int)(b & 0xFF), a1 = (int)(b >> 8 & 0xFF);
+/* NVIDIA's BC3 alpha weights in 2048ths, by the steps from the nearer endpoint: eight values, then six */
+static const int bc3_w[2][4] = {{0, 289, 578, 892}, {0, 385, 770}};
+
+/* BC3's alpha: a BC4 block to 8 bits. spec: rounded to nearest */
+static void bc3_alpha(u64 b, int spec, u8 out[16][4]) {
+    int a0 = (int)(b & 0xFF), a1 = (int)(b >> 8 & 0xFF), n = a0 > a1 ? 7 : 5;
     for (int i = 0; i < 16; i++) {
         int k = (int)(b >> (16 + 3 * i) & 7), v;
         if (k < 2)
             v = k ? a1 : a0;
-        else if (a0 > a1)
-            v = ((8 - k) * a0 + (k - 1) * a1 + 3) / 7;
-        else if (k < 6)
-            v = ((6 - k) * a0 + (k - 1) * a1 + 2) / 5;
-        else
+        else if (n == 5 && k >= 6)
             v = k == 6 ? 0 : 255;
+        else if (!spec && 2 * (k - 1) < n) /* the nearer one is a0, k - 1 steps away; never negative */
+            v = (2048 * a0 + 1024 + bc3_w[n == 5][k - 1] * (a1 - a0)) / 2048;
+        else if (!spec)
+            v = (2048 * a1 + 1024 + bc3_w[n == 5][n + 1 - k] * (a0 - a1)) / 2048;
+        else if (n == 7)
+            v = ((8 - k) * a0 + (k - 1) * a1 + 3) / 7;
+        else
+            v = ((6 - k) * a0 + (k - 1) * a1 + 2) / 5;
         out[i][3] = (u8)v;
     }
 }
@@ -384,7 +416,7 @@ u32 bcn_pixel_bytes(int kind) {
     return kind == BCN_BC4 || kind == BCN_BC4_SNORM ? 2 : kind == BCN_BC6H_UF || kind == BCN_BC6H_SF ? 8 : 4;
 }
 
-void bcn_decode_image(const u8* src, u32 w, u32 h, int kind, u8* dst) {
+static void decode_image(const u8* src, u32 w, u32 h, int kind, int spec, u8* dst) {
     u32 bw = (w + 3) / 4, bh = (h + 3) / 4, bb = bcn_block_bytes(kind), pb = bcn_pixel_bytes(kind);
     for (u32 by = 0; by < bh; by++)
         for (u32 bx = 0; bx < bw; bx++) {
@@ -392,23 +424,23 @@ void bcn_decode_image(const u8* src, u32 w, u32 h, int kind, u8* dst) {
             u8 rgba[16][4];
             u16 ch[4][16], half[16][4];
             switch (kind) {
-                case BCN_BC1: bc1_block(le64(blk), 1, rgba); break;
+                case BCN_BC1: bc1_block(le64(blk), 1, spec, rgba); break;
                 case BCN_BC2: {
                     u64 a = le64(blk);
-                    bc1_block(le64(blk + 8), 0, rgba);
+                    bc1_block(le64(blk + 8), 0, spec, rgba);
                     for (int i = 0; i < 16; i++) rgba[i][3] = (u8)((a >> 4 * i & 15) * 17);
                     break;
                 }
                 case BCN_BC3:
-                    bc1_block(le64(blk + 8), 0, rgba);
-                    bc3_alpha(le64(blk), rgba);
+                    bc1_block(le64(blk + 8), 0, spec, rgba);
+                    bc3_alpha(le64(blk), spec, rgba);
                     break;
                 case BCN_BC4:
-                case BCN_BC4_SNORM: bc4_block(le64(blk), kind == BCN_BC4_SNORM, ch[0]); break;
+                case BCN_BC4_SNORM: bc4_block(le64(blk), kind == BCN_BC4_SNORM, spec, ch[0]); break;
                 case BCN_BC5:
                 case BCN_BC5_SNORM:
-                    bc4_block(le64(blk), kind == BCN_BC5_SNORM, ch[0]);
-                    bc4_block(le64(blk + 8), kind == BCN_BC5_SNORM, ch[1]);
+                    bc4_block(le64(blk), kind == BCN_BC5_SNORM, spec, ch[0]);
+                    bc4_block(le64(blk + 8), kind == BCN_BC5_SNORM, spec, ch[1]);
                     break;
                 case BCN_BC6H_UF:
                 case BCN_BC6H_SF: bc6_block(blk, kind == BCN_BC6H_SF, half); break;
@@ -430,3 +462,5 @@ void bcn_decode_image(const u8* src, u32 w, u32 h, int kind, u8* dst) {
             }
         }
 }
+void bcn_decode_image(const u8* src, u32 w, u32 h, int kind, u8* dst) { decode_image(src, w, h, kind, 0, dst); }
+void bcn_decode_image_spec(const u8* src, u32 w, u32 h, int kind, u8* dst) { decode_image(src, w, h, kind, 1, dst); }
