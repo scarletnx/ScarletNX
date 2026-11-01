@@ -22,10 +22,13 @@ static int test_account_switch_lock;
 int am_user_account_switch_lock(void) { return test_account_switch_lock; }
 /* fs.c's, which this test doesn't compile: the folders of saves test_saves names, as fs_user_saves_take gives them */
 static char test_saves[2][FS_TREE_PATH_MAX];
-static int test_saves_count;
+static int test_saves_count, test_saves_held;
+/* acc's lock, counted: how deep it is held, and how often it was taken */
+static int test_users_held, test_users_locks;
 int fs_user_saves_take(const u64 uid[2], char (*paths)[FS_TREE_PATH_MAX], int max) {
     int i;
     (void)uid;
+    test_saves_held = test_users_held;
     for (i = 0; i < test_saves_count && i < max; i++) memcpy(paths[i], test_saves[i], FS_TREE_PATH_MAX);
     return i;
 }
@@ -58,8 +61,12 @@ void fatal(const char* format, ...) {
     va_end(args);
     exit(1);
 }
-void pm_lock(PMutex* m) { (void)m; }
-void pm_unlock(PMutex* m) { (void)m; }
+void pm_lock(PMutex* m) {
+    if (m == &g_host.acc.users_lk) test_users_held++, test_users_locks++;
+}
+void pm_unlock(PMutex* m) {
+    if (m == &g_host.acc.users_lk) test_users_held--;
+}
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     SvcObj* obj = calloc(1, sizeof *obj);
     CHECK(obj != NULL);
@@ -1065,6 +1072,7 @@ static void test_delete_user(void) {
     memcpy(r.raw, uid.v, 16);
     call(su, &r);
     CHECK(g_user_count == 2 && !strcmp(g_users[1].nickname, "Afugo") && snx_users_selected_number() == 1);
+    CHECK(test_saves_held == 1 && !test_users_held); /* the saves taken under acc's lock */
     now = (char*)snx_read_file(path, &count);
     CHECK(now && !strcmp(now, "[user1]\nnickname=Aogo\n[user2]\nuid=" UID3 "\nnickname=Afugo\n"));
     free(now);
@@ -1119,6 +1127,27 @@ static void test_delete_user(void) {
     puts("PASS DeleteUser: into the Trash with its picture and saves, the users after it a place up");
 }
 
+/* acc_playing: the uid and nickname of the user playing, under acc's lock, as every acc command runs */
+static void test_playing(void) {
+    char why[512], nickname[SNX_USERS_NICKNAME + 1], text[33];
+    u64 uid[2];
+    SvcObj* su = new_acc_admin();
+    Request r;
+    int locks = test_users_locks;
+    put_ini("[user1]\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n");
+    CHECK(snx_users_load(DIR, 2, why, sizeof why) == 0);
+    acc_playing(uid, nickname, sizeof nickname);
+    snx_users_uid_text(uid, text);
+    CHECK(!strcmp(text, UID2) && !strcmp(nickname, "Xuji") && test_users_locks == locks + 1 && !test_users_held);
+    acc_playing(NULL, nickname, 3);
+    CHECK(!strcmp(nickname, "Xu"));
+    request(&r, 0); /* GetUserCount */
+    call(su, &r);
+    CHECK(reply32(&r, 0) == 2 && test_users_locks == locks + 3 && !test_users_held);
+    svcobj_unref(su);
+    gone("users.ini");
+    puts("PASS acc_playing: the user playing, read under acc's lock");
+}
 /* SetUserPosition (acc:su 204): position (0 the first) and the uid; the users in their new order in users.ini and in
    the users, user 1's uid and nickname written as it leaves [user1], the one playing the same user; a place past them
    or a uid no user's changes nothing and succeeds, as rEden's */
@@ -1369,6 +1398,7 @@ int main(void) {
     test_profile_editor();
     test_delete_user();
     test_user_position();
+    test_playing();
     test_user_data();
     test_system_service();
     test_administrator_service();

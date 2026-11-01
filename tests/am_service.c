@@ -288,6 +288,19 @@ static void test_user_channel(void) {
     svcobj_unref(b);
     CHECK(test_objects == 0);
 }
+extern const u64 test_playing_uid[2]; /* the user playing, as the stubs' acc_playing answers it */
+/* PreselectedUser (2): AccountPreselectedUser with the uid of the user playing, which acc answers, popped once */
+static void test_preselected(void) {
+    SvcObj* s = NULL;
+    const u8* d;
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == 0);
+    d = am_storage_bytes(s);
+    CHECK(((StorageData*)s->data)->size == 0x88 && get32(d) == 0xc79497cau && get32(d + 4) == 1);
+    CHECK(snx_ld_le64(d + 8) == test_playing_uid[0] && snx_ld_le64(d + 16) == test_playing_uid[1]);
+    svcobj_unref(s);
+    s = NULL;
+    CHECK(nn_am_service_IApplicationFunctions_PopLaunchParameter(NULL, 2, &s) == AM_NO_DATA);
+}
 static void test_previous_program(void) {
     i32 index = 0;
     CHECK(nn_am_service_IApplicationFunctions_GetPreviousProgramIndex(NULL, &index) == 0 && index == -1);
@@ -689,6 +702,13 @@ static void test_applets(void) {
     out = offline_page("missing.htdocs/index.html");
     CHECK(get32(((StorageData*)out->data)->d) == 0);
     svcobj_unref(out);
+    out = run_applet(0x10, in, 0); /* the user selector: the user playing, as acc answers it */
+    {
+        const u8* d = ((StorageData*)out->data)->d;
+        CHECK(((StorageData*)out->data)->size == 0x18 && get32(d) == 0 && snx_ld_le64(d + 8) == test_playing_uid[0] &&
+              snx_ld_le64(d + 16) == test_playing_uid[1]);
+    }
+    svcobj_unref(out);
     out = run_applet(0x0e, in, 0); /* the error applet */
     CHECK(((StorageData*)out->data)->size == 0x10 && get32(((StorageData*)out->data)->d) == 0);
     svcobj_unref(out);
@@ -819,6 +839,7 @@ int main(void) {
     test_mii_edit();
     test_audio_controller();
     test_user_channel();
+    test_preselected();
     test_previous_program();
     test_storage_read();
     test_vr_mode();

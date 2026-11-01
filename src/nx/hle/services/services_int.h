@@ -70,6 +70,9 @@ SvcObj* new_time_user(void); /* time:u, an application's: no write */
 SvcObj* new_acc(void);
 SvcObj* new_acc_system(void); /* acc:u1 */
 SvcObj* new_acc_admin(void);  /* acc:su */
+/* the uid (NULL: not asked) and the nickname (size 0: not asked) of the user playing, read under acc's lock: acc:su
+   moves, deletes and renames users while other services ask */
+void acc_playing(u64 uid[2], char* nickname, size_t size);
 
 /* ---- ldr.c: ldr:ro and ro:1 */
 SvcObj* new_ldr(void);
