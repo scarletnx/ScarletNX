@@ -840,7 +840,7 @@ add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src
 snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
-snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 add_test(NAME nvn_nvrm_sync COMMAND snx-test-nvn-nvrm-sync)
 add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
