@@ -104,6 +104,12 @@ static void take(u64 addr, const char* name, u32 len) {
             return;
         }
     }
+    /* the NvRm sync conversions run the driver's own code on a sync in its layout (nvn_object.c): it is the slot's
+       until the handler takes it */
+    if (!ours(*slot) && !strcmp(name, "nvnSyncGetNvRmSyncNVX"))
+        g_nvn.direct.nvrm_get = *slot, g_nvn.direct.nvrm_get_at = addr;
+    if (!ours(*slot) && !strcmp(name, "nvnSyncInitializeFromNvRmSyncNVX"))
+        g_nvn.direct.nvrm_init = *slot, g_nvn.direct.nvrm_init_at = addr;
     if (fn == unimplemented && !missing_find(addr)) {
         u32 j = missing_hash(addr);
         char version[32];
@@ -142,6 +148,17 @@ static void getproc(CPU* c, u64 entry) {
     if (g_nvn.direct.flag && gr32(g_nvn.direct.flag))
         fatal("nvn: the driver's lookup of %s set nvnPrivate0, which turns on the game's inlined command writes", name);
     if (len && c->x[0]) take(c->x[0], name, len);
+}
+
+u64 nvn_direct_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
+    u64 lr = c->x[30], pc;
+    c->x[0] = a0;
+    c->x[1] = a1;
+    c->x[2] = a2;
+    fn(c, at);
+    while ((pc = c->pc) != lr) snx_lookup(c, pc)(c, pc);
+    c->x[30] = lr;
+    return c->x[0];
 }
 
 /* The driver's own lookup of name (n characters), run on c from inside the game's bootstrap call (entry: the loader's address) as
