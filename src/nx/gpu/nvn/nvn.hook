@@ -259,6 +259,8 @@ hook nvnSyncInitializeFromFencedGLSync(NVNsync* s, NVNdevice* d, u32 gl_sync, i3
 hook nvnSyncFinalize(NVNsync* s)
 hook nvnSyncInitialize(NVNsync* s, NVNdevice* d) -> bool
 hook nvnSyncWait(const NVNsync* sync, u64 timeout) -> NVNsyncWaitResult
+hook nvnSyncGetNvRmSyncNVX(const NVNsync* s, void* nvrm) -> bool
+hook nvnSyncInitializeFromNvRmSyncNVX(NVNsync* s, NVNdevice* d, const void* nvrm) -> bool
 
 family event
 hook nvnEventBuilderGetMemoryOffset(const NVNeventBuilder* b) -> i64
