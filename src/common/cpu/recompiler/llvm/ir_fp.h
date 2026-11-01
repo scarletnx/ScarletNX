@@ -10,7 +10,6 @@
 #include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
-#include <string.h>
 
 #define FPCR_RMODE (3u << 22)
 #define FPCR_FZ    (1u << 24)
@@ -38,9 +37,14 @@ static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
 }
 
 /* x86-64 Windows returns a 16-byte structure through memory, the caller passing where as a hidden first argument
-   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX */
+   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX. The code runs
+   where it is built, so the host's architecture is the target's */
 static inline int ir_fp_reply_in_memory(SnxIr* ir) {
-    return ir->windows && !strncmp(LLVMGetTarget(ir->mod), "x86_64", 6);
+#ifdef __x86_64__
+    return ir->windows;
+#else
+    return 0;
+#endif
 }
 
 /* One call of an FP helper (cpu.h), shared by ir_fpu.c's scalar path and ir_vec_fp.c's lanes so both declare it
