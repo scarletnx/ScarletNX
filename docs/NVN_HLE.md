@@ -288,6 +288,20 @@ sampler's, as in later SDKs. The game keeps each object at least as far from the
 layout needs: buffers 0x30 apart, memory pools 0x118, programs 0x100, samplers 0x78 and textures in wrappers mostly
 0x2a8. It ran from boot to a race on nvn_direct, at 60 frames a second in the menus.
 
+## A recording written over while it is submitted
+
+One game records a small list each frame into the same command memory on one thread, after it waits for the last
+frame's fences, and submits it on another. At loads the submitting thread can still hold the last frame's handle, at
+the same address, when the recording thread has begun the next frame's list there. The console's GPU then runs the
+commands that the two left there. nvn_direct read its handle's first record, now a JUMP to the piece of the runtime's
+memory that the new recording was still cut from, and then bytes not written yet: `a command record ... has op 0 and
+size 0`, in about one run in five. An event ring showed the order. The fences signal in order, and no
+`AddCommandMemory` comes between the two, so nothing the game calls can wait for the replay there.
+
+So a walk ends a recording at a JUMP into a piece that a command buffer is still cut from (`nvn_cmd_unfinished`): past
+the records written so far there is nothing final to run. The stop message names the segment of the runtime's memory,
+how far it is cut, and the pieces in use there (`nvn_cmd_describe`).
+
 ## Observing NVN calls
 
 `tools/nvn_coverage.py` builds a local index of public declarations, runtime handlers and possible Vulkan call

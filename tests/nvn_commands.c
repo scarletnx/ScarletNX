@@ -225,6 +225,26 @@ int main(void) {
         check(a.n == 6 && (a.at[5] & ~0xffffull) == lent_at && g_lent == top, "the runtime's memory takes no more");
     }
 
+    /* a piece of the runtime's memory a recording is still cut from: records past those written aren't there yet, so a
+       walk of another submission that jumps there ends (nvn_replay.c), and the piece is whole once the recording ends */
+    {
+        const u64 cb4 = 0x580;
+        u64 at = 0, h4;
+        u32 k;
+        nvn_CommandBufferInitialize(&cpu, cb4, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cb4, 1, 0x5000, 0x60);
+        nvn_CommandBufferBeginRecording(&cpu, cb4);
+        for (int i = 0; i < 6; i++) nvn_CommandBufferDrawArrays(&cpu, cb4, 4, i, 3);
+        for (k = 0; k < g_nvn.cmd.ns; k++)
+            if (g_nvn.cmd.s[k].owner == cb4) at = g_nvn.cmd.s[k].at + g_nvn.cmd.s[k].top;
+        check(at && nvn_cmd_unfinished(at) && nvn_cmd_unfinished(at + 0x40), "the piece being cut is unfinished");
+        check(!nvn_cmd_unfinished(0x5000) && !nvn_cmd_unfinished(a.at[5]),
+              "the game's memory and ended recordings aren't");
+        h4 = nvn_CommandBufferEndRecording(&cpu, cb4);
+        check(!nvn_cmd_unfinished(at), "the piece is whole once its recording ends");
+        walk(h4, &a);
+        check(a.n == 6, "the recording's records");
+    }
 
     /* one game's display lists: recorded once into scratch memory, GetCommandMemoryUsed gives the size the game
        allocates for each (from a heap sized by the console's figures), and the list is recorded again into exactly

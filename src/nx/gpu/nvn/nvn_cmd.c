@@ -85,9 +85,11 @@ static void put_hdr(u64 at, u32 op, u32 size, u32 cost) {
     h.size = size;
     memcpy(GP(at), &h, sizeof h);
 }
+/* the target before the header: a walk of another submission that reads the JUMP reads where it goes (nvn_replay.c) */
 static void put_jump(u64 at, u64 to) {
-    put_hdr(at, OP_JUMP, 16, 0);
     memcpy(GP(at + 8), &to, 8);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    put_hdr(at, OP_JUMP, 16, 0);
 }
 
 /* ---- the runtime's memory for the records the game's memory has no room for */
@@ -102,6 +104,7 @@ static void spill_stop(u32 k, u64 end) {
     s->top = (end - s->at + 7) & ~7ull;
     if (!s->live) {
         s->top = 0;
+        s->reset = g_nvn.cmd.serial;
         nvn_verify_memory_back(s->at, s->size);
     }
     pm_unlock(&g_nvn.cmd.lock);
@@ -183,10 +186,12 @@ static u32 spill_back(u64 from, u64 to, u32 before) {
             *at = q->next;
             q->next = st->free;
             st->free = slot;
+            q->anchor = 0; /* free: nvn_cmd_describe lists the others */
             st->np--;
             s = &st->s[q->seg];
             if (!--s->live && !s->owner) {
                 s->top = 0;
+                s->reset = st->serial;
                 nvn_verify_memory_back(s->at, s->size);
             }
         }
@@ -195,6 +200,43 @@ static u32 spill_back(u64 from, u64 to, u32 before) {
     return serial;
 }
 void nvn_cmd_memory_back(u64 memory, u64 size) { spill_back(memory, memory + size, ~0u); }
+int nvn_cmd_unfinished(u64 p) {
+    NvnCmdState* st = &g_nvn.cmd;
+    u32 k;
+    int r = 0;
+    pm_lock(&st->lock);
+    for (k = 0; k < st->ns; k++)
+        if (p >= st->s[k].at && p < st->s[k].at + st->s[k].size) {
+            r = st->s[k].owner && p >= st->s[k].at + st->s[k].top;
+            break;
+        }
+    pm_unlock(&st->lock);
+    return r;
+}
+void nvn_cmd_describe(u64 p, char* out, size_t n) {
+    NvnCmdState* st = &g_nvn.cmd;
+    u32 k, i, at;
+    int w;
+    if (!n) return;
+    out[0] = 0;
+    pm_lock(&st->lock);
+    for (k = 0; k < st->ns && (p < st->s[k].at || p >= st->s[k].at + st->s[k].size); k++) {}
+    if (k < st->ns) {
+        const NvnSpillSeg* s = &st->s[k];
+        w = snprintf(out, n,
+                     " (the runtime's segment %u at %llx: cut to +%llx, %u pieces in use, reset after cut %u of %u;"
+                     " its pieces' cuts:",
+                     k, (unsigned long long)s->at, (unsigned long long)s->top, s->live, s->reset, st->serial);
+        at = w > 0 && (size_t)w < n ? (u32)w : (u32)n - 1;
+        for (i = 1; i <= st->slots && at + 16 < n; i++)
+            if (st->p[i].seg == k && st->p[i].anchor) {
+                w = snprintf(out + at, n - at, " %u", st->p[i].serial);
+                if (w > 0) at += (u32)w;
+            }
+        snprintf(out + at, n - at, ")");
+    }
+    pm_unlock(&st->lock);
+}
 /* the bytes cb counted in the game's memory since its last look: the pieces anchored there come back, and the ones cut
    from now on are past this look */
 static void written(u64 cb) {
