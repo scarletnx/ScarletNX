@@ -1139,6 +1139,10 @@ VkShaderModule vk_module_spv(const u32* words, size_t count);
 VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 location);
 /* pipelines of earlier runs made in the background: made so far, how many the pipeline cache had, and still to make */
 void vk_pipeline_prewarm_stats(u64* made, u64* hits, u64* left);
+/* until the workers have made every queued pipeline and wait for more: none is inside the driver then. A process that
+   returns from main sooner can run the driver's exit handlers under a worker's vkCreateGraphicsPipelines (any thread,
+   without vk_lock) */
+void vk_pipeline_quiesce(void);
 /* what is made before the game draws, so far (the renderer's prepare) */
 struct RendererPrepare;
 void vk_pipeline_prepare(struct RendererPrepare* p);
