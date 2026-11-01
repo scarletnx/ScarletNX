@@ -1494,6 +1494,7 @@ int main(int argc, char** argv) {
     CHECK(!check_staging_overflow());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
+    CHECK(!check_owned_in_place_write());
     CHECK(!check_storage_suffix());
     CHECK(!check_buffer_texture_rows());
     CHECK(!check_storage_image_formats());
