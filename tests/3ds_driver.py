@@ -13,8 +13,9 @@ def main():
     # absolute, not resolved: scarletnx-3ds may be a link to scarletnx, which runs the driver its name says
     driver = pathlib.Path(sys.argv[1]).absolute()
 
-    def run(args, status, contains, cwd=None):
-        p = subprocess.run([str(driver), *args], capture_output=True, text=True, cwd=cwd, timeout=10)
+    def run(args, status, contains, cwd=None, env=None):
+        environment = {**os.environ, **env} if env else None
+        p = subprocess.run([str(driver), *args], capture_output=True, text=True, cwd=cwd, env=environment, timeout=10)
         output = p.stdout + p.stderr
         assert p.returncode == status, (args, p.returncode, output)
         assert contains in output, (args, output)
@@ -39,6 +40,21 @@ def main():
     run(['--model', 'new', '--board-info'], 0, 'New 3DS\nARM11 cores: 4')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS debug table's
+    # an older version's packet trace (docs/DEPRECATIONS.md): still ctr_uds_trace=1, under the command line's own
+    old = 'SNX_3DS_UDS_PACKET_TRACE'
+    run(
+        ['--board-info'],
+        0,
+        f'{old}=1 is deprecated, and this run reads it as --ctr_uds_trace=1: ctr_uds_trace=1',
+        env={old: '1'},
+    )
+    run(
+        ['--board-info', '--ctr_uds_trace=0'],
+        0,
+        'the command line gives ctr_uds_trace first: ctr_uds_trace=0',
+        env={old: '1'},
+    )
+    run(['--board-info'], 0, f'{old}=yes is deprecated, and only 1 did anything: ctr_uds_trace=0', env={old: 'yes'})
     with tempfile.TemporaryDirectory(prefix='snx-3ds-') as temp:
         root = pathlib.Path(temp)
         for name in ['game with spaces;literal.CIA', 'game.nsp', '--game.cia', 'game.cci']:

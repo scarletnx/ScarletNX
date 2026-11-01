@@ -1045,6 +1045,13 @@ setting CTR GPU trace
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
+setting CTR UDS trace
+    key ctr_uds_trace
+    int 0 1
+    default 0
+    words Off|On
+    help 1 = logs each local wireless packet of the 3DS game that goes through an Eden room (sent, received,
+    help delivered): its direction, the time, its size and its first 96 bytes in hex
 setting CTR run-time compile trace
     key ctr_jit_trace
     int 0 1

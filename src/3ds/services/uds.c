@@ -28,6 +28,7 @@
 #define UDS_NETWORK   0xc8a113f8u
 static struct {
     char password[256], nickname[21];
+    unsigned said; /* the old variables room_open said, a bit each */
 } g_uds;
 void snx_ctr_uds_settings(const char* data) {
     g_uds.password[0] = g_uds.nickname[0] = 0;
@@ -128,9 +129,8 @@ static unsigned population(uint16_t m) {
     return n;
 }
 static void trace_packet(const SnxCtrProcess* p, const char* direction, const uint8_t* bytes, unsigned size) {
-    const char* enabled = getenv("SNX_3DS_UDS_PACKET_TRACE");
     (void)p;
-    if (!enabled || strcmp(enabled, "1")) return;
+    if (!g_settings.ctr_uds_trace) return;
     fprintf(stderr, "uds packet %s %.3f %u:", direction, snx_ctr_now_ns() / 1000000.0, size);
     for (unsigned i = 0; i < size && i < 96; ++i) fprintf(stderr, "%02x", bytes[i]);
     fputc('\n', stderr);
@@ -455,9 +455,21 @@ void snx_ctr_uds_poll(SnxCtrProcess* p) {
         fprintf(stderr, "3ds uds: peer timed out\n");
     }
 }
+/* The variables an older version read for the room, its password and the nickname (docs/DEPRECATIONS.md), still read
+   for this version, each said once a run. Removed with tests/architecture.py's ENV_DEPRECATED rows */
+enum { OLD_ROOM = 1, OLD_PASSWORD = 2, OLD_NICKNAME = 4 };
+static int old_said(unsigned which) {
+    int first = !(g_uds.said & which);
+    g_uds.said |= which;
+    return first;
+}
 static int room_open(SnxCtrProcess* p) {
     struct SnxCtrUds* u = p->uds;
     const char* room = getenv("SNX_3DS_ROOM");
+    if (room && *room && old_said(OLD_ROOM))
+        snx_error("3ds uds: SNX_3DS_ROOM=%s is deprecated, replaced by the room of the launcher's Network settings "
+                  "(\"%s\" there): this run joins %s (docs/DEPRECATIONS.md)",
+                  room, g_settings.eden_room, room);
     if (!room || !*room) room = g_settings.eden_room;
     if (!*room) {
         fprintf(stderr, "3ds uds: select an Eden room in Network settings before enabling room wireless\n");
@@ -484,7 +496,21 @@ static int room_open(SnxCtrProcess* p) {
         if (RAND_bytes((unsigned char*)&random, 4) != 1) return 0;
         snprintf(nickname, sizeof nickname, "%.11s-%08x", g_uds.nickname[0] ? g_uds.nickname : "Player", random);
     }
+    /* its length, never the nickname: it can name the player, and players attach the log to public reports */
+    if (name && old_said(OLD_NICKNAME)) {
+        if (strcmp(name, nickname))
+            snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place, and has %zu bytes, not 4 to "
+                      "20: this run joins as the user's nickname and a random suffix, as later ones do "
+                      "(docs/DEPRECATIONS.md)",
+                      strlen(name));
+        else
+            snx_error("3ds uds: SNX_3DS_NICKNAME is deprecated, with nothing in its place: this run joins as its "
+                      "value, later ones as the user's nickname and a random suffix (docs/DEPRECATIONS.md)");
+    }
     const char* password = getenv("SNX_3DS_ROOM_PASSWORD");
+    if (password && old_said(OLD_PASSWORD))
+        snx_error("3ds uds: SNX_3DS_ROOM_PASSWORD is deprecated, replaced by room_password in users/online.ini: this "
+                  "run joins with its value, not online.ini's (docs/DEPRECATIONS.md)");
     int why = 0;
     /* The room's title metadata is Switch-specific. Its unknown-title sentinel
        permits a 3DS name without sending an invalid Switch title ID. Actual UDS

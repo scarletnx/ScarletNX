@@ -179,7 +179,7 @@ int main(void) {
     g_settings.airplane_mode = 0;
     snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "lan");
     g_settings.eden_room[0] = 0;
-    env("SNX_3DS_ROOM", "");
+    env("SNX_3DS_ROOM", ""); /* an older version's room, still read (docs/DEPRECATIONS.md): none here */
     uint32_t handle, shared;
     SnxCtrProcess* p = process(&handle, &shared);
     uint32_t shared_id = snx_ctr_handle_object(p, shared);

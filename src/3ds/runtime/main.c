@@ -428,6 +428,11 @@ int snx_ctr_main(int argc, char** argv) {
     SnxCtrBoard board;
     snx_tool_console();
     setvbuf(stdout, NULL, _IOLBF, 0);
+    /* SNX_3DS_UDS_PACKET_TRACE, which an older version read (docs/DEPRECATIONS.md): "1" is still ctr_uds_trace=1 for
+       this version, under the command line's --ctr_uds_trace. Removed with tests/architecture.py's ENV_DEPRECATED
+       row */
+    const char* old_trace = getenv("SNX_3DS_UDS_PACKET_TRACE");
+    if (old_trace && !strcmp(old_trace, "1")) g_settings.ctr_uds_trace = 1;
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
         if (!positional && !strcmp(arg, "--"))
@@ -513,6 +518,12 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
+    if (old_trace)
+        snx_error("SNX_3DS_UDS_PACKET_TRACE=%s is deprecated, %s: ctr_uds_trace=%d (docs/DEPRECATIONS.md)", old_trace,
+                  strcmp(old_trace, "1")     ? "and only 1 did anything"
+                  : g_settings.ctr_uds_trace ? "and this run reads it as --ctr_uds_trace=1"
+                                             : "and the command line gives ctr_uds_trace first",
+                  g_settings.ctr_uds_trace);
     /* the game's own copy of the runtime plays it, or --game= names it */
     char* folder = game ? snx_strdup(game) : input || info ? NULL : own_game(argv[0]);
     /* --ipc-stubs only changes a run: with an option that does not run the game it is a mistake to report */
