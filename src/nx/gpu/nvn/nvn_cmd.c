@@ -102,11 +102,7 @@ static void spill_stop(u32 k, u64 end) {
     s = &g_nvn.cmd.s[k];
     s->owner = 0;
     s->top = (end - s->at + 7) & ~7ull;
-    if (!s->live) {
-        s->top = 0;
-        s->reset = g_nvn.cmd.serial;
-        nvn_verify_memory_back(s->at, s->size);
-    }
+    if (!s->live) s->quiet = nvn_replay_submitted();
     pm_unlock(&g_nvn.cmd.lock);
 }
 /* cb's next piece, for the recording anchored at anchor, room for need bytes and a JUMP after them at least: cut from
@@ -118,6 +114,15 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at) {
     pm_lock(&st->lock);
     for (i = 0, k = st->ns; i < st->ns; i++) { /* from the segment the last piece came from */
         u32 t = (st->hint + i) % st->ns;
+        NvnSpillSeg* q = &st->s[t];
+        /* A segment whose pieces all came back is cut from its start again once the GPU thread has read every
+           submission made by then: the game may give the memory a recording is anchored in to another command buffer
+           as soon as a sync of its own signals, while a submission that calls the recording waits to be replayed */
+        if (!q->owner && !q->live && q->top && (i64)(nvn_replay_walked() - q->quiet) >= 0) {
+            q->top = 0;
+            q->reset = st->serial;
+            nvn_verify_memory_back(q->at, q->size);
+        }
         if (!st->s[t].owner && st->s[t].size - st->s[t].top >= want) {
             k = t;
             break;
@@ -189,11 +194,7 @@ static u32 spill_back(u64 from, u64 to, u32 before) {
             q->anchor = 0; /* free: nvn_cmd_describe lists the others */
             st->np--;
             s = &st->s[q->seg];
-            if (!--s->live && !s->owner) {
-                s->top = 0;
-                s->reset = st->serial;
-                nvn_verify_memory_back(s->at, s->size);
-            }
+            if (!--s->live && !s->owner) s->quiet = nvn_replay_submitted();
         }
     }
     pm_unlock(&st->lock);
