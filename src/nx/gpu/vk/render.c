@@ -2050,16 +2050,13 @@ static u32 gs_input_vertices(u32 topology, int tes_on, u32 params) {
                                               : 3;
 }
 
-static VkFrontFace front_face_at_viewport(const DsDynamic* d, float viewport_height) {
+/* WINDOW_ORIGIN_FLIP_Y reverses the facing over a negative viewport too: the guest's negative scale, NegativeY and
+   the lower-left origin mirror the winding on the console as their negative Vulkan viewports do here (Eden's
+   UpdateFrontFace) */
+VkFrontFace vk_render_front_face(const DsDynamic* d) {
     int cw = d->front_cw;
-    /* A negative Vulkan viewport already reverses framebuffer winding. WINDOW_ORIGIN_FLIP_Y also reverses guest
-       facing, so only compensate for that bit when the viewport has not performed the same reversal. */
-    if ((d->window_origin & DS_ORIGIN_FLIP_Y) && viewport_height > 0) cw = !cw;
+    if (d->window_origin & DS_ORIGIN_FLIP_Y) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-}
-
-VkFrontFace vk_render_front_face(const DsDynamic* d, const DsViewports* v) {
-    return front_face_at_viewport(d, vk_viewport_from(d, v, 0).height);
 }
 
 /* the Vulkan topology of a draw's (the 3D engine's numbers, 14 a patch list) */
@@ -3322,7 +3319,7 @@ retry:
     /* Triangle facing has its own window-origin control, independent of viewport scale and swizzle. */
     {
         VkCullModeFlags cull = ds->dyn.cull;
-        VkFrontFace front = front_face_at_viewport(&ds->dyn, vp.height);
+        VkFrontFace front = vk_render_front_face(&ds->dyn);
         u32 prim_restart = restart && (indexed == 1 || indexed == 3);
         DYN(cull, cull, rec_CmdSetCullMode(cb, cull));
         DYN(front, front, rec_CmdSetFrontFace(cb, front));

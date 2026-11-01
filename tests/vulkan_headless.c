@@ -199,10 +199,8 @@ static VkViewport viewport_of(const u32* r, u32 index) {
 }
 static VkFrontFace front_face_of(const u32* r) {
     DsDynamic d;
-    DsViewports v;
     mx_draw_dynamic(r, &d);
-    mx_draw_viewports(r, &v);
-    return vk_render_front_face(&d, &v);
+    return vk_render_front_face(&d);
 }
 
 static int check_viewport_orientation(void) {
@@ -229,11 +227,19 @@ static int check_viewport_orientation(void) {
     CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
     r[0x4EB] = 0x10;
     CHECK(front_face_of(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    /* The origin facing flip and a negative viewport cancel. */
+    /* The origin's facing flip holds over a negative viewport too, which mirrors the winding on the console as it
+       does in Vulkan: here NegativeY's, then the guest's own scale. A game's meshes drawn with the flip and a
+       negative y scale came out inside out, and its full-screen passes that cull back faces culled whole */
     transform[1] = 17;
     memcpy(&r[0x280], transform, sizeof transform);
     CHECK(viewport_of(r, 0).height == -34);
-    CHECK(front_face_of(r) == VK_FRONT_FACE_CLOCKWISE);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    r[0x286] = 0x6420;
+    transform[1] = -17;
+    memcpy(&r[0x280], transform, sizeof transform);
+    CHECK(viewport_of(r, 0).height == -34);
+    CHECK(front_face_of(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    r[0x286] = 0x6430;
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
     r[0x647] = 0x901;
