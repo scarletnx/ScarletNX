@@ -32,6 +32,8 @@ static bool image_parse(const unsigned char* ex, bool (*code)(const void*, unsig
     image->title_id = (uint64_t)snx_ld_le32(ex + 0x200) | (uint64_t)snx_ld_le32(ex + 0x204) << 32;
     memcpy(image->name, ex, sizeof image->name);
     image->main_priority = ex[0x20f];
+    image->new_mode = ex[0x20d] & 15;
+    image->old_mode = ex[0x20e] >> 4;
     for (unsigned i = 0; i < 28; ++i) image->kernel_caps[i] = snx_ld_le32(ex + 0x370 + i * 4);
     const char* reason = "invalid ExHeader main thread priority";
     if (image->main_priority > 63) goto fail;

@@ -173,6 +173,11 @@ typedef struct {
     uint64_t next_ns;
     uint32_t period_ms, index;
 } SnxCtrIr;
+/* ir:USER's state (services/iru.c): the retained objects, the game's shared memory then the receive, send and
+   connection status events */
+typedef struct {
+    uint32_t objects[4];
+} SnxCtrIru;
 /* mic:u's state (services/mic.c): the buffer full event (retained), whether sampling runs, the rate and the settings a
    game stored */
 typedef struct {
@@ -248,6 +253,7 @@ struct SnxCtrProcess {
     uint32_t ir_objects[2]; /* ir:rst's shared memory, then its update event */
     SnxCtrIr ir;
     SnxCtrMic mic;
+    SnxCtrIru iru;
     SnxCtrCam cam;
     SnxCtrCsnd csnd;
     uint32_t shell_closed; /* virtual console starts with its shell open */

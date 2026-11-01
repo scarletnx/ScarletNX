@@ -138,7 +138,13 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
 SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) {
     const SnxCtrProfile* profile = snx_ctr_profile(model);
     if (!image || !image->code || !profile || !image->stack_size || image->stack_size > 0x800000) return NULL;
-    uint32_t app_limit = model == SNX_CTR_OLD ? 0x4000000 : 0x7c00000;
+    /* the application region of the system mode the title's ExHeader asks for (Azahar's memory layouts): the Old 3DS
+       modes 0 to 4, then the New 3DS extended modes 1 to 3 when the console is one. A mode no console has gets the
+       smallest */
+    static const uint32_t old_modes[5] = {0x4000000, 0x6000000, 0x5000000, 0x4800000, 0x2000000};
+    static const uint32_t new_modes[4] = {0, 0x7c00000, 0xb200000, 0x7c00000};
+    uint32_t app_limit = old_modes[image->old_mode < 5 ? image->old_mode : 0];
+    if (model == SNX_CTR_NEW && image->new_mode && image->new_mode < 4) app_limit = new_modes[image->new_mode];
     SnxCtrProcess* p = calloc(1, sizeof *p + app_limit / 4096);
     if (!p) return NULL;
     p->app_limit = app_limit;
@@ -202,9 +208,10 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
     config[0x10] = config[0x64] = 2;
     config[0x18] = config[0x68] = 0x50;
     config[0x19] = config[0x69] = 0xf4;
-    uint32_t sizes[] = {p->app_limit, model == SNX_CTR_OLD ? 0x2c00000u : 0x6400000u,
-                        model == SNX_CTR_OLD ? 0x1400000u : 0x2000000u};
-    config[0x30] = model == SNX_CTR_OLD ? 0 : 6;
+    const uint32_t base = model == SNX_CTR_OLD ? 0x1400000u : 0x2000000u;
+    uint32_t sizes[] = {p->app_limit, snx_ctr_profile(model)->fcram_size - p->app_limit - base, base};
+    bool extended = model == SNX_CTR_NEW && image->new_mode && image->new_mode < 4;
+    config[0x30] = (unsigned char)(extended ? 4 + image->new_mode : image->old_mode < 5 ? image->old_mode : 0);
     for (unsigned i = 0; i < 3; ++i)
         for (unsigned j = 0; j < 4; ++j) config[0x40 + i * 4 + j] = (unsigned char)(sizes[i] >> (j * 8));
     if (snx_ctr_write_ram(p->space, CTR_CONFIG, config, sizeof config) != SNX_CTR_MEM_OK ||

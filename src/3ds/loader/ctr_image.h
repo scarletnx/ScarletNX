@@ -14,6 +14,9 @@ typedef struct {
     uint64_t title_id;
     char name[8];           /* the codeset's name (ExHeader 0x0), not terminated when all eight are used */
     uint32_t main_priority; /* the main thread's priority (ExHeader 0x20F, ARM11 local capabilities), 0 to 63 */
+    /* the system modes (ExHeader 0x20D bits 0 to 3 and 0x20E bits 4 to 7): how much FCRAM the application gets on a New
+       3DS (0: as its Old 3DS mode says) and on an Old 3DS */
+    uint32_t new_mode, old_mode;
     /* the ARM11 kernel capability descriptors (ExHeader 0x370): the address mappings live here */
     uint32_t kernel_caps[28];
     unsigned char identity[32]; /* SHA-256(domain || full ExHeader || expanded .code) */
