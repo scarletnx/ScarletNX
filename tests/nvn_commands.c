@@ -353,6 +353,34 @@ int main(void) {
               "it replays its calls after the next recording");
     }
 
+    /* a recording after one whose records all went to the runtime's memory: its own records lie in its own counted
+       bytes or in a piece, never in the bytes the game was told the first one took. The game reuses the first one's 20
+       bytes for a new recording while it still calls the second */
+    {
+        const u64 cb10 = 0xa80, hs = 0x4f0, sync = 0x4f8;
+        u64 r1, r2;
+        Walk w;
+        nvn_CommandBufferInitialize(&cpu, cb10, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cb10, 1, 0xe000, 0x1000);
+        nvn_CommandBufferBeginRecording(&cpu, cb10);
+        nvn_CommandBufferBindTexture(&cpu, cb10, 0, 0, 0x10200102); /* 20 bytes counted, its 24-byte record a piece's */
+        r1 = nvn_CommandBufferEndRecording(&cpu, cb10);
+        gw64(hs, r1);
+        nvn_CommandBufferBeginRecording(&cpu, cb10);
+        nvn_CommandBufferCallCommands(&cpu, cb10, 1, hs);
+        r2 = nvn_CommandBufferEndRecording(&cpu, cb10);
+        walk(r2, &w);
+        check(w.n == 1 && (w.at[0] < 0x1e000 || w.at[0] >= 0x1e000 + 20),
+              "the second recording's record lies past the first one's 20 bytes");
+        nvn_CommandBufferAddCommandMemory(&cpu, cb10, 1, 0xe000, 20);
+        nvn_CommandBufferBeginRecording(&cpu, cb10);
+        nvn_CommandBufferFenceSync(&cpu, cb10, sync, 0, 0);
+        nvn_CommandBufferEndRecording(&cpu, cb10);
+        walk(r2, &w);
+        check(w.n == 1 && w.op[0] == OP_CALL && gr64(w.at[0] + 8) == r1,
+              "the second recording still calls the first after a new one takes the first one's bytes");
+    }
+
     /* recordings without records: the runtime's one END, which replays nothing and counts nothing */
     {
         const u64 cb6 = 0x800;
