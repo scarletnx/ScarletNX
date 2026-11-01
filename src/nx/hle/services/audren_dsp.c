@@ -316,6 +316,7 @@ static int rev_number(u32 rev) {
     int n = (int)((rev >> 24) & 0xFF) - '0';
     return n < 0 ? 0 : n;
 }
+int audren_revision(u32 rev) { return rev_number(rev); }
 
 #define SNX_AUDREN_MAGIC(a, b, c, d) ((u32)(a) | (u32)(b) << 8 | (u32)(c) << 16 | (u32)(d) << 24)
 

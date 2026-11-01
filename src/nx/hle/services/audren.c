@@ -73,9 +73,7 @@ int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
     if (rc == -41 || rc == -4) R_THROW(RC(153, -rc));
     R_UNLESS(rc >= 0, RC(153, 2)); /* OperationFailed */
     rev = snx_ld_le32(GP(in.addr));
-    /* the magic "REV" and the revision as a number (REV11 and the like) */
-    LOG_LIMIT(1, "audren: the first update, revision %c%c%c%u\n", (char)(rev & 0xff), (char)(rev >> 8 & 0xff),
-              (char)(rev >> 16 & 0xff), (unsigned)(rev >> 24));
+    LOG_LIMIT(1, "audren: the first update, revision REV%d\n", audren_revision(rev));
     R_SUCCEED();
 }
 
