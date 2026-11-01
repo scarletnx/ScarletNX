@@ -2707,12 +2707,11 @@ static int supported(u64 w, int op) {
         /* every type up to 3D (a fetch can't address a cube), multisample only on 2D and 2D arrays */
         case O_TLD:
         case O_TLD_B: return !B(w, 54, 1) && B(w, 28, 3) <= 4 && (!B(w, 50, 1) || B(w, 28, 3) == 2 || B(w, 28, 3) == 3);
-        /* Formatted and raw 32-bit loads from 2D, array and volume surfaces;
-           buffer loads use storage texel buffers. */
+        /* Formatted and raw 32-bit loads from buffer, 2D, array and volume surfaces; buffer loads use storage texel
+           buffers. */
         case O_SULD:
-            return ((B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5) &&
-                    (!B(w, 52, 1) || B(w, 20, 4) == 4)) ||
-                   (B(w, 33, 3) == 1 && B(w, 52, 1) && B(w, 20, 4) == 4);
+            return (B(w, 33, 3) == 1 || B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5) &&
+                   (!B(w, 52, 1) || B(w, 20, 4) == 4);
         /* stores and atomics also reach 2D array surfaces (4), the layer in the coordinates' third register; stores
            reach 3D surfaces (5) too, z in that register */
         case O_SUST:
@@ -4093,14 +4092,15 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             /* buffer loads read the storage texel buffer: a sampled 1D image of a buffer is one row of at most
                16384 texels, and the dispatch's own stores and atomics wouldn't reach it */
             if (op->id != O_SULD || buffer) {
-                int r32ui = op->id != O_SUST;
+                /* raw loads and atomics see R32UI; formatted loads and stores see the header's format */
+                int r32ui = op->id != O_SUST && (op->id != O_SULD || raw);
                 int type = dim; /* 1, 3, 4 or 5: the forms supported() takes here */
                 int slot = direct_image_slot(&image_info, off, bindless, bank, r32ui, type);
                 if (slot == image_info.nimg) {
                     if (slot >= 8) return direct_reject(si, "storage image descriptor count");
                     int different_format = !!(si->rt_int_mask & (1u << (8 + slot)));
                     int kind = r32ui ? 1 : (bindless != different_format ? 2 : 0);
-                    if (!r32ui && !buffer && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
+                    if (!r32ui && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
                     image_info.img[slot].cbuf_off = off;
                     image_info.img[slot].type = (u8)type;
                     image_info.img[slot].bindless = (u8)bindless;
@@ -7797,13 +7797,28 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                                              reg_read_as(c, a + 2, i32_type))
                                    : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
             }
-            u32 mask = op == O_SULD && B(w, 52, 1) ? 1u : B(w, 20, 4), source = d;
+            int raw = op == O_SULD && B(w, 52, 1);
+            u32 mask = raw ? 1u : B(w, 20, 4), source = d;
             if (op != O_SULD || buffer) {
-                int slot = direct_image_slot(&image_info, off, bindless, bank, op != O_SUST, dim);
+                int slot =
+                    direct_image_slot(&image_info, off, bindless, bank, op != O_SUST && (op != O_SULD || raw), dim);
                 int kind = image_info.img[slot].kind;
-                if (op == O_SULD) {
+                if (op == O_SULD && kind == 1) {
                     u32 texel = spv_emit_image_read(&c->emit, vec4_u32, c->image_type[slot], c->image[slot], coord);
                     reg_write(c, d, spv_emit_vec4_extract(&c->emit, c->u32_type, texel, 0));
+                } else if (op == O_SULD) { /* formatted: the view's format converts each component, as a load does */
+                    u32 scalar = kind == 3 ? i32_type : kind == 2 ? c->u32_type : c->f32_type, target = d;
+                    spv_emit_capability(&c->emit, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
+                    u32 texel = spv_emit_image_read(&c->emit,
+                                                    kind == 3   ? vec4_i32
+                                                    : kind == 2 ? vec4_u32
+                                                                : vec4,
+                                                    c->image_type[slot], c->image[slot], coord);
+                    for (u32 q = 0; q < 4; q++)
+                        if (mask & (1u << q)) {
+                            reg_write_as(c, target, spv_emit_vec4_extract(&c->emit, scalar, texel, q), scalar);
+                            if (target < 255) target++;
+                        }
                 } else if (kind == 1) {
                     u32 opcode;
                     if (op == O_SURED) {

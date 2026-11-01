@@ -299,10 +299,10 @@ u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 /* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads
-   and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted stores are
-   typeless in the shader, unsigned for bindless images: an integer format is viewed as itself, a 32-bit float one as
-   the integer format of the same bits, which the shader's stores of register bits match. 0 for a header that isn't
-   one, or a format this GPU can't store to so */
+   and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted loads and stores
+   see the format itself, of the number type the program was keyed on (kind 0 float, 2 unsigned, 3 signed); unkeyed,
+   a 32-bit float one is viewed as the integer format of the same bits, which register bits match. 0 for a header
+   that isn't one, or a format this GPU can't load and store so */
 typedef struct {
     u64 gva;
     u32 bytes;
