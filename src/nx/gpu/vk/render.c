@@ -1008,6 +1008,34 @@ static u32 image_variant(const DsState* ds, int stage, const VkSh* s, u32* signe
     return bits;
 }
 
+/* the textures of s, a vertex program, whose headers are integer, by the header alone as image_variant reads its
+   images: its variant's unsigned and signed masks, which the key holds for its first 32 textures. Depth compares,
+   indexed tables and raw loads take their number type elsewhere */
+static u32 vs_tex_variant(const DsState* ds, const VkSh* s, u32* signed_textures) {
+    u64 tic_base = ds->bind.tex_pool;
+    int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
+    u32 bits = 0;
+    *signed_textures = 0;
+    for (int i = 0; i < nt; i++) {
+        const ShTex* st = &s->si.tex[i];
+        if (st->shadow || (st->flags & (SNX_TEX_INDEXED | 1))) continue;
+        u32 handle = tex_handle(ds, 0, ds->bind.tex_bank, st), tic[8];
+        vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
+        int num = vk_tex_num(tic, NULL);
+        if (!num) continue;
+        if (i >= 32) {
+            LOG_LIMIT(1,
+                      "vulkan: a vertex program's texture %d has an integer header (format %02x), past the 32 its key "
+                      "holds: it reads zeros\n",
+                      i, tic[0] & 0x7F);
+            continue;
+        }
+        bits |= 1u << i;
+        if (num == 2) *signed_textures |= 1u << i;
+    }
+    return bits;
+}
+
 /* What picks the fragment shader's variant: which of its textures and outputs are integer (signed), its color textures
    compared as depth and their functions, and its inputs the stage before doesn't write. 0s when the program itself
    is drawn */
@@ -1980,6 +2008,15 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         else if (view)
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else {
+            if (t)
+                LOG_LIMIT(4,
+                          "vulkan: texture %d of stage %d (header format %02x) has no %s view of its %s surface: it "
+                          "reads zeros\n",
+                          i, stage, x->tic[0] & 0x7F,
+                          num == 2 ? "signed"
+                          : num    ? "unsigned"
+                                   : "float",
+                          t->f.is_int ? (t->f.sint ? "signed" : "unsigned") : "float");
             view = vk_null_view(want, st->shadow ? 3 : num, ms);
             layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
@@ -2316,12 +2353,13 @@ static int draw_shaders(const DsState* ds, u32 topology, DrawShaders* o) {
     o->attr_sint = attr_sint;
     o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, 0, 0,
                           tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0, xfb_on && !tes_on && !gs_on ? xfb : NULL);
-    /* a vertex program's images pick its variant as a fragment program's do (fs_key) */
-    u32 vs_signed_images = 0;
+    /* a vertex program's images and integer textures pick its variant as a fragment program's do (fs_key) */
+    u32 vs_signed_images = 0, vs_signed_tex = 0;
     u32 vs_images = o->vs && !o->vs->failed && o->vs->si.nimg ? image_variant(ds, 0, o->vs, &vs_signed_images) : 0;
-    if (vs_images || vs_signed_images)
-        o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint,
-                              vs_images << 8, vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
+    u32 vs_tex = o->vs && !o->vs->failed && o->vs->si.ntex ? vs_tex_variant(ds, o->vs, &vs_signed_tex) : 0;
+    if (vs_images || vs_signed_images || vs_tex)
+        o->vs = vk_shader_get(ds, p->code[1], (p->on & 1) ? p->code[0] : 0, ST_VS, attr_int, attr_sint, vs_images << 8,
+                              vs_signed_images << 8, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, vs_tex, vs_signed_tex,
                               xfb_on && !tes_on && !gs_on ? xfb : NULL);
     o->tcs = tcs_on ? vk_shader_get(ds, p->code[2], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0, NULL) : NULL;
     o->tes = tes_on ? vk_shader_get(ds, p->code[3], 0, ST_TES, 0, 0, p->tess_params & 0x333, 0,

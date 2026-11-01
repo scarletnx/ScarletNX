@@ -433,6 +433,9 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
     } else {
         si->attr_int_mask = ints;
         si->attr_sint_mask = sints;
+        /* a vertex program's integer textures, in the words of the fragment stage's dc_funcs and unfed */
+        si->tex_int_mask = mask[9];
+        si->tex_sint_mask = mask[10];
         si->rt_int_mask = mask[4]; /* the tessellation or geometry primitive */
         si->clip_enable = mask[6];
         memcpy(si->gp_skip_mask, mask + 12, sizeof si->gp_skip_mask);

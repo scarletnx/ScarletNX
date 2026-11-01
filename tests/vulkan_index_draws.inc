@@ -257,6 +257,62 @@ static int draw_params_case(MxRegs* channel, u64 target, u64 indices, u64 addres
     return 0;
 }
 
+/* A vertex program's texture of an integer format keys the program's variant, as a fragment program's does: its texels
+   come back as their bits, where a program keyed float got no view of the image and read zeros (one game's virtual
+   texture page table, drawn by a vertex program from an unsigned buffer texture, pointed past its cache). Here a
+   vertex program fetches texel 0 of an R32_UINT buffer texture, 1.0f's bits, into the green quad's green: the quad
+   is green only when the fetch keeps them. The header is entry 0 of the pool at address + 0x1F000, its handle (header 0,
+   sampler 0) in the vertex stage's constant buffer 2 at 0x40 */
+static int vertex_int_texture_case(MxRegs* channel, u64 target, u64 address) {
+    const u64 program = address + 0x3000, pool = address + 0x1F000, samplers = pool + 0x100, cbuf = pool + 0x200,
+              texels = pool + 0x400;
+    const u32 tic[8] = {0x0F | 4u << 7 | 4u << 10 | 4u << 13 | 4u << 16 | 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28,
+                        (u32)texels,
+                        (u32)(texels >> 32),
+                        0,
+                        3 | 6u << 23,
+                        0,
+                        0,
+                        0}; /* R32_UINT, a buffer of 4 */
+    const u32 words[4] = {0x3f800000, 0, 0, 0};
+    const u64 vertex[] = {0xefd9ff800807ff00ull, /* ALD R0..3, a[0x80] */
+                          0xeff1ff800707ff00ull, /* position */
+                          0xefd9ff800907ff08ull, /* ALD R8..11, a[0x90]: the green quad's 0, 1, 0, 1 */
+                          0x0100000000071005ull, /* MOV32I R5, 0 */
+                          /* TLDS.1D R0..R3 (a register a component), the texel in R5 */
+                          0xd000000000000000ull | 1ull << 59 | 1ull << 57 | 4ull << 50 | 0x10ull << 36 | 2ull << 28 |
+                              0xffull << 20 | 7ull << 16 | 5ull << 8,
+                          0x5c98078000070009ull, /* MOV R9, R0 */
+                          0xeff1ff800807ff08ull, /* color varying from R8..11 */
+                          0xe30000000007000full};
+    u8 bytes[256] = {0};
+    IndexPixels px;
+    for (u32 i = 0; i < 8; i++) snx_st_le32(bytes + i * 4, tic[i]);
+    CHECK(!gmem_write(pool, bytes, 32));
+    memset(bytes, 0, 32);
+    CHECK(!gmem_write(samplers, bytes, 32)); /* a sampler of zeros: a texel fetch doesn't filter */
+    CHECK(!gmem_write(cbuf, bytes, 256));    /* the handle at 0x40: 0 */
+    CHECK(!put_words(texels, words, 4));
+    CHECK(index_program(program, vertex, 8, 0));
+    u32* r = channel->r3d;
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    r[0x557] = (u32)(samplers >> 32), r[0x558] = (u32)samplers, r[0x559] = 0;
+    r[0x48D] = 0;
+    r[0x982] = 2;
+    r[0x811] = (u32)(program - address); /* VertexB's offset */
+    channel->ds.bind.cb_addr[0][2] = cbuf;
+    channel->ds.bind.cb_size[0][2] = 256;
+    DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
+    int ok = !index_draw(channel, target, &call, &px) && index_all_green(&px);
+    if (!ok) fprintf(stderr, "vertex integer texture: %u green, %u blue, %u red\n", px.green, px.blue, px.red);
+    r[0x811] = 0;
+    channel->ds.bind.cb_addr[0][2] = 0;
+    channel->ds.bind.cb_size[0][2] = 0;
+    CHECK(ok);
+    puts("vertex textures: a vertex program reads an unsigned buffer texture's texel as its bits");
+    return 0;
+}
+
 /* The highest index a draw reads (render.c's draw_last_vertex) bounds its streams' ranges, and is kept for an index
    range until the range's memory changes. In a stream of 512 vertices, 0 to 3 a red quad and 508 to 511 a green one,
    indices of the red quad bound the range to its first 4 KiB. The same indices rewritten to the green quad's must
@@ -367,6 +423,7 @@ static int check_index_draws(void) {
     g_vk.has_index8 = had8;
     CHECK(!indirect_cases(channel, target, indices, address + 0x16000));
     if (g_vk.has_shader_draw_parameters) CHECK(!draw_params_case(channel, target, indices, address));
+    CHECK(!vertex_int_texture_case(channel, target, address));
     CHECK(!index_bound_cases(channel, target, indices, address + 0x1A000, address + 0x1C000));
     printf("index draws: quads, widened and native 8-bit indices, restart indices and rewritten indices' bounds checked "
            "(8-bit indices %s)\n",
