@@ -834,6 +834,14 @@ target_include_directories(snx-test-nvn-present-flip PRIVATE "${PROJECT_SOURCE_D
 target_link_libraries(snx-test-nvn-present-flip PRIVATE m)
 snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
+# the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
+add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+snx_test_target(snx-test-nvn-nvrm-sync 11)
+target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
+snx_hookgen(snx-test-nvn-nvrm-sync SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+add_test(NAME nvn_nvrm_sync COMMAND snx-test-nvn-nvrm-sync)
 add_executable(snx-test-nvn-queue-lifetime nvn_queue_lifetime.c
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_replay.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hle.c")

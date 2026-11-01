@@ -9,6 +9,8 @@
    Where nxnative and the game's own driver disagree, the driver wins: nvnDeviceGetInteger answers from the driver's
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
+#include "nx/gpu/nvn/nvn_replay.h"
+#include "nx/gpu/nvn/nvn_direct.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -1624,6 +1626,67 @@ int nvn_SyncInitialize(CPU* c, u64 s, u64 d) {
     o.magic = NVN_MAGIC('S', 'Y', 'N', 'C');
     memcpy(GP(s), &o, sizeof o);
     return 1;
+}
+
+/* The driver's sync, as its NvRm conversions read and write it: the kind at 0x08 (5: made of NvRm fences, below 2:
+   none), the fence count at 0x0c and up to four fences (syncpoint, value) from 0x10, in 0x40 bytes. Each conversion
+   runs the driver's own code on one built below the stack pointer, which hands the fences to and from the game's NvRm
+   library */
+#define NVRM_SYNC 0x40
+static u64 nvrm_sync_run(CPU* c, GuestFn fn, u64 at, u64 a1, u64 a2, u8 sync[NVRM_SYNC]) {
+    u64 sp = c->x[31], tmp = (sp - NVRM_SYNC) & ~15ull, r;
+    memcpy(GP(tmp), sync, NVRM_SYNC); /* guest memory: every byte the driver reads */
+    c->x[31] = tmp;
+    r = nvn_direct_run_driver(c, fn, at, tmp, a1, a2);
+    c->x[31] = sp;
+    memcpy(sync, GP(tmp), NVRM_SYNC);
+    return r;
+}
+/* the fences a sync waits for, the presents' syncpoint among them when it waits for a present on the display */
+int nvn_SyncGetNvRmSyncNVX(CPU* c, u64 s, u64 nvrm) {
+    const NvnSync* o = NVN_OBJ(const NvnSync, s);
+    u8 sync[NVRM_SYNC] = {0};
+    u32 n = 0;
+    if (!g_nvn.direct.nvrm_get) fatal("nvn: nvnSyncGetNvRmSyncNVX was called before the game resolved it");
+    if (__atomic_load_n(&o->fenced, __ATOMIC_ACQUIRE)) {
+        if (o->syncpt) {
+            snx_st_le32(sync + 0x10, o->syncpt);
+            snx_st_le32(sync + 0x14, o->value);
+            n++;
+        }
+        if (o->shown) {
+            snx_st_le32(sync + 0x10 + 8 * n, nvn_replay_shown_syncpt());
+            snx_st_le32(sync + 0x14 + 8 * n, o->shown);
+            n++;
+        }
+    }
+    snx_st_le32(sync + 0x08, n ? 5 : 0);
+    snx_st_le32(sync + 0x0c, n);
+    return (int)(nvrm_sync_run(c, g_nvn.direct.nvrm_get, g_nvn.direct.nvrm_get_at, nvrm, 0, sync) & 1);
+}
+/* a sync of the NvRm fences the game's library gives (a decoder's), which the runtime's sync waits for by its first:
+   one syncpoint, as the queues' fences have */
+int nvn_SyncInitializeFromNvRmSyncNVX(CPU* c, u64 s, u64 d, u64 nvrm) {
+    u8 sync[NVRM_SYNC] = {0};
+    NvnSync o = {0};
+    u32 n, i;
+    int ok;
+    if (!g_nvn.direct.nvrm_init) fatal("nvn: nvnSyncInitializeFromNvRmSyncNVX was called before the game resolved it");
+    ok = (int)(nvrm_sync_run(c, g_nvn.direct.nvrm_init, g_nvn.direct.nvrm_init_at, d, nvrm, sync) & 1);
+    n = snx_ld_le32(sync + 0x0c);
+    o.magic = NVN_MAGIC('S', 'Y', 'N', 'C');
+    if (ok && snx_ld_le32(sync + 0x08) == 5 && n) {
+        o.fenced = 1;
+        o.syncpt = snx_ld_le32(sync + 0x10);
+        o.value = snx_ld_le32(sync + 0x14);
+        for (i = 1; i < n && i < 4; i++)
+            LOG_LIMIT(8,
+                      "nvn: an NvRm sync's fence %u of %u, syncpoint %u at %u: the sync waits for the first only, "
+                      "syncpoint %u at %u\n",
+                      i + 1, n, snx_ld_le32(sync + 0x10 + 8 * i), snx_ld_le32(sync + 0x14 + 8 * i), o.syncpt, o.value);
+    }
+    memcpy(GP(s), &o, sizeof o);
+    return ok;
 }
 
 void nvn_SyncFinalize(CPU* c, u64 s) {
