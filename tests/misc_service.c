@@ -1404,6 +1404,34 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
+   resources are available */
+static void test_nim(void) {
+    SvcObj *nim = new_nim(), *server;
+    Request r;
+    request(&r, 0);
+    argument64(&r, 8, 0x100000); /* the transfer memory's size, after the pid's slot */
+    r.c.has_pid = 1;
+    r.c.ncopy = 1;
+    r.c.copy_h[0] = 0x1234;
+    call(nim, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::nim::detail::IShopServiceAccessServer"));
+    server = r.c.out_objs[0];
+    request(&r, 0);
+    argument32(&r, 0, 1);
+    call(server, &r);
+    CHECK(r.c.nout_objs == 1 && !strcmp(r.c.out_objs[0]->name, "nn::nim::detail::IShopServiceAccessor"));
+    svcobj_unref(r.c.out_objs[0]);
+    svcobj_unref(server);
+    request(&r, 0); /* without the transfer memory */
+    r.c.has_pid = 1;
+    CHECK(nim->dispatch(nim, &r.c) == RC(11, 420) && r.c.nout_objs == 0);
+    request(&r, 4);
+    r.c.has_pid = 1;
+    call(nim, &r);
+    CHECK(r.c.out_size == 4 && reply32(&r, 0) == 0); /* false, padded to a word */
+    svcobj_unref(nim);
+}
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
@@ -1430,6 +1458,7 @@ int main(void) {
     test_prepo_reports();
     test_mii_latest();
     test_pctl_play_timer();
+    test_nim();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
     printf("misc_service: %u checks passed\n", test_checks);
