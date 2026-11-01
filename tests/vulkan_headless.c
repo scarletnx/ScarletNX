@@ -1497,12 +1497,14 @@ int main(int argc, char** argv) {
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
         puts("SKIP descriptor-buffer checks: the device does not support this path");
+        vk_pipeline_quiesce(); /* the earlier runs' pipelines, which workers still make, before the driver's exit */
         CHECK(!snx_remove_tree(root));
         free(root); free(shot); free(ppm);
         return 77;
     }
     if (benchmark_sets) {
         int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images);
+        vk_pipeline_quiesce();
         CHECK(!snx_remove_tree(root));
         free(root); free(shot); free(ppm);
         return result;
@@ -1511,6 +1513,7 @@ int main(int argc, char** argv) {
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());
         CHECK(!check_msaa_nvn());
+        vk_pipeline_quiesce();
         printf("PASS headless Vulkan multisampling only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
@@ -1518,6 +1521,7 @@ int main(int argc, char** argv) {
         CHECK(!check_vic());
         CHECK(!check_vic_chain(shot));
         CHECK(!check_nvdec_vic());
+        vk_pipeline_quiesce();
         printf("PASS headless Vulkan VIC only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
@@ -1618,6 +1622,7 @@ int main(int argc, char** argv) {
     g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full, 0, 0, 0, 0);
     CHECK(vk_frame_id() == before + 1);
     vk_finish();
+    vk_pipeline_quiesce();
     CHECK(!snx_remove_tree(root));
     free(root);
     free(shot);

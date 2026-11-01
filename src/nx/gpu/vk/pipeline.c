@@ -981,7 +981,7 @@ static PMutex g_pj_lock = PMUTEX_INIT;
 static PCond g_pj_work, g_pj_done;
 static Pipe *g_pj_head, *g_pj_tail; /* a draw's */
 static Pipe *g_pw_head, *g_pw_tail; /* the file's */
-static int g_pj_started, g_pj_threads;
+static int g_pj_started, g_pj_threads, g_pj_busy; /* g_pj_busy: the workers making a pipeline now */
 static void pipe_worker(void* arg) {
     (void)arg;
     SNX_THREAD_NAME("Vulkan pipelines");
@@ -1000,14 +1000,27 @@ static void pipe_worker(void* arg) {
             if (!g_pw_head) g_pw_tail = NULL;
         }
         e->queued = 0;
+        g_pj_busy++;
         pm_unlock(&g_pj_lock);
         p = pipe_make(e, 0);
         pm_lock(&g_pj_lock);
+        g_pj_busy--;
         e->p = p;
         __atomic_store_n(&e->ready, 1, __ATOMIC_RELEASE);
         pc_broadcast(&g_pj_done);
         pm_unlock(&g_pj_lock);
     }
+}
+void vk_pipeline_quiesce(void) {
+    if (g_pf.on) { /* the reading thread queues the file's pipelines, then may translate the shipped programs */
+        pm_lock(&g_pf.lock);
+        while (!g_pf.loaded) pc_wait(&g_pf.done, &g_pf.lock, -1);
+        pm_unlock(&g_pf.lock);
+        while (!__atomic_load_n(&g_pf.ship_ready, __ATOMIC_ACQUIRE)) plat_sleep_ns(1000000);
+    }
+    pm_lock(&g_pj_lock);
+    while (g_pj_threads && (g_pj_head || g_pw_head || g_pj_busy)) pc_wait(&g_pj_done, &g_pj_lock, -1);
+    pm_unlock(&g_pj_lock);
 }
 int vk_pipeline_worker_count(int setting, int cpus) {
     int n = cpus - 2;
