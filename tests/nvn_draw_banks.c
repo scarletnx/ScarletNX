@@ -180,27 +180,36 @@ static void test_bind_program(void) {
     check(d.bind.cb_size[fs][1] == 0, "fragment bank 1 size (no data): expected 0, found %#x", d.bind.cb_size[fs][1]);
 }
 
-/* a draw's dynamic state, built by sync on the draw: the sprite origin follows the window origin */
+/* a draw's dynamic state, built by sync on the draw: the window origin the driver writes (the flip when one of a
+   lower left origin and near = -w is set but not both) and its sprite origin bit, set in all four */
 #define DRAW 0x2000u
-static void draw_with(u32 origin) {
+static void draw_with(u32 origin, u32 depth_mode) {
     NvnPDraw r;
     memset(&r, 0, sizeof r);
     r.count = 3;
     memcpy(g_mem + DRAW, &r, sizeof r);
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
-    nvn_draw_device(origin, NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
+    nvn_draw_device(origin, depth_mode);
     check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
 }
 static void test_sprite_origin(void) {
-    draw_with(NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT);
-    check(d.ds.dyn.window_origin == DS_ORIGIN_FLIP_Y, "upper left window_origin: expected %#x, found %#x",
-          DS_ORIGIN_FLIP_Y, d.ds.dyn.window_origin);
-    check(d.ds.dyn.sprite_origin == 1, "upper left sprite_origin: expected 1, found %u", d.ds.dyn.sprite_origin);
-    draw_with(NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT);
-    check(d.ds.dyn.window_origin == DS_ORIGIN_LOWER_LEFT, "lower left window_origin: expected %#x, found %#x",
-          DS_ORIGIN_LOWER_LEFT, d.ds.dyn.window_origin);
-    check(d.ds.dyn.sprite_origin == 0, "lower left sprite_origin: expected 0, found %u", d.ds.dyn.sprite_origin);
+    static const struct {
+        u32 origin, depth_mode, window;
+        const char* what;
+    } cases[] = {
+        {NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y, "upper left, near = -w"},
+        {NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, 0, "lower left, near = -w"},
+        {NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0, "upper left, near = 0"},
+        {NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y, "lower left, near = 0"},
+    };
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        draw_with(cases[i].origin, cases[i].depth_mode);
+        check(d.ds.dyn.window_origin == cases[i].window, "%s window_origin: expected %#x, found %#x", cases[i].what,
+              cases[i].window, d.ds.dyn.window_origin);
+        check(d.ds.dyn.sprite_origin == 1, "%s sprite_origin: expected 1, found %u", cases[i].what,
+              d.ds.dyn.sprite_origin);
+    }
 }
 
 int main(void) {

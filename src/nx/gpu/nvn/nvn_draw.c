@@ -417,16 +417,17 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.stencil_test = (u8)nvn_field(s, NVN_DS_STENCIL);
     y.alpha_test = alpha != NVN_ALPHA_FUNC_ALWAYS;
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
-    /* lower left: y counts up from the surface's bottom; upper left reverses the facing (one game's NVN queue writes
-       the window origin register 0x10, the flip, after its first submission) */
-    y.window_origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT
+    /* the window origin register as the game's driver writes it (NVN 53.13, 53.314 and 55.12, nvn_verify): the
+       flip, which reverses the facing, when one of a lower left origin and near = -w is set but not both, and never
+       the lower left bit, so y counts from the top of the targets as on the driver's (one game's NVN queue writes
+       the flip itself after its first submission) */
+    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
+    u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
+    y.window_origin = (origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT) != (depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W)
                           ? DS_ORIGIN_FLIP_Y
-                          : DS_ORIGIN_LOWER_LEFT;
-    y.depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED) == NVN_DEPTH_MODE_NEAR_IS_ZERO;
-    /* a point sprite's T as the game's driver leaves it (render.c reads it with the window origin): its sprite
-       origin bit is set in either origin (NVN 53.13, 53.314 and 55.12), but for a lower left window it flips y with
-       DS_ORIGIN_FLIP_Y where nvn_direct sets DS_ORIGIN_LOWER_LEFT, which takes the bit clear for the same T */
-    y.sprite_origin = y.window_origin == DS_ORIGIN_FLIP_Y;
+                          : 0;
+    y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
+    y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
                           and 0x649 zero) */
     for (int f = 0; f < 2; f++) {
