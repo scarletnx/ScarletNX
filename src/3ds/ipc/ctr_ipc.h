@@ -26,6 +26,7 @@ enum {
     SNX_CTR_SERVICE_CAM,    /* cam:u (services/cam.c) */
     SNX_CTR_SERVICE_CSND,   /* csnd:SND (services/csnd.c) */
     SNX_CTR_SERVICE_RO,     /* ldr:ro (services/ro.c) */
+    SNX_CTR_SERVICE_IRU,    /* ir:USER (services/iru.c) */
     SNX_CTR_SERVICE_COUNT
 };
 /* SNX_CTR_IPC_UNKNOWN: a command the service does not have, as opposed to a form of a known one it does not
