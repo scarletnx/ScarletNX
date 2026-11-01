@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/backing.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -236,7 +237,7 @@ static int arena_fit(u64 need) {
     VmaAllocationInfo info;
     g_ar = VK_NULL_HANDLE;
     g_ar_cap = 0;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
     vk_mem_track(g_ar_mem);
     g_ar_ptr = info.pMappedData;
     g_ar_cap = cap;
@@ -695,7 +696,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                 .module = m,
                                                 .pName = "main"},
-                                      .layout = g_vk_playout};
+                                      .layout = g_vk.cs_playout};
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &p->p))) p->failed = 1;
     vkDestroyShaderModule(g_vk.dev, m, NULL);
     if (!p->failed)
@@ -1080,7 +1081,7 @@ rebind:
     setup_sub = vk_submit_number();
     if (deferred) {
         vk_buf_writable_abort();
-        set = vk_desc_alloc(g_vk_dslayout[0][shader_vk_set(ST_CS)]);
+        set = vk_desc_alloc(g_vk.cs_dslayout);
         if (!set) {
             g_cs_skips[CS_SKIP_RESOURCES]++;
             return;
@@ -1089,7 +1090,7 @@ rebind:
         VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                            .descriptorPool = g_dpool,
                                            .descriptorSetCount = 1,
-                                           .pSetLayouts = &g_vk_dslayout[0][shader_vk_set(ST_CS)]};
+                                           .pSetLayouts = &g_vk.cs_dslayout};
         if (vkAllocateDescriptorSets(g_vk.dev, &dai, &set) != VK_SUCCESS) {
             cs_land();
             if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) {
@@ -1479,7 +1480,7 @@ rebind:
         vk_all_barrier(cb);
     }
     rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
-    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk.cs_playout, 0, 1, &set, 0, NULL);
     if (d->indirect)
         rec_CmdDispatchIndirect(cb, grid_buf, grid_off);
     else

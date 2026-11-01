@@ -51,6 +51,10 @@ typedef struct {
     VkPhysicalDevice phys;
     VkPhysicalDeviceProperties props;
 	u64 shader_generation; /* shader instruction invalidations, separate from memory epochs */
+    int has_descriptor_buffers;
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
+    VkPipelineLayout cs_playout;
+    VkDescriptorSetLayout cs_dslayout;
     VkDevice dev;
     VmaAllocator vma;
     /* compute is a second queue of the graphics family, or of a compute-only family, when the device has one; else
@@ -276,6 +280,7 @@ u64 vk_frame_id(void);
    done. Only the frame before the current one can be held: older slots were reused already */
 void vk_frame_hold(u64 frame_id);
 u64 vk_last_submit(void);        /* the last submission's number, which its completion signals */
+VkSemaphore vk_gfx_timeline(void); /* the timeline those numbers are values of: another queue can wait for one */
 void vk_submit_progress(u64* submitted, u64* done); /* the last submission and the last done (any thread) */
 void vk_wait_submit(u64 value);  /* until the GPU has done that submission (any thread, without vk_lock) */
 /* Flush recorded work without frame recycling or guest result callbacks, under
@@ -296,6 +301,7 @@ extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in the comp
 /* the staging alignment that suits every use: uniform, storage, vertex and index buffers */
 u64 vk_stage_align(void);
 u64 vk_hash(const void* p, u64 size);
+void vk_hash128(const void* p, u64 size, u64 hash[2]);
 u64 vk_hash_copy(void* dst, const void* src, u64 size); /* vk_hash(src, size), with src copied into dst on the way */
 /* a hash of guest memory: all of it when small, else its ends and 62 samples between them */
 u64 vk_sample_hash(u64 gva, u64 len);
@@ -706,7 +712,8 @@ typedef struct VkOwnRes {
     VkBuffer buf;
     VmaAllocation mem;
     u64 size;
-    u32 refs; /* the creator's, and one an owned range */
+    u64 written; /* the graphics submission its last publish's writes were recorded in: a landing waits for that one */
+    u32 refs;    /* the creator's, and one an owned range */
 } VkOwnRes;
 int vk_own_init(void);
 /* whether the CPU made GPU-owned bytes of guest memory [cpu, cpu + size) land within the last presents presents */
@@ -1187,7 +1194,11 @@ void vk_uma_forget_all(void);
 u64 vk_cs_skipped(char* why, size_t size);
 
 /* render.c */
-void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
+/* ends the dynamic rendering pass, if one is open. The caller's file and line count the passes it ended, which the
+   stats every 600 presents name (vk_pass_ends_log): what splits a frame into many passes */
+void vk_render_end_at(const char* file, int line);
+#define vk_render_end() vk_render_end_at(__FILE__, __LINE__)
+void vk_pass_ends_log(void);
 /* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
    safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
 void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);

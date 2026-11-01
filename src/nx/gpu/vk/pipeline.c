@@ -15,6 +15,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/gpu/renderer.h"
@@ -299,9 +300,17 @@ void vk_pipeline_init(void) {
             u32 n = count;
             while (!arrays && n && b[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
             VkDescriptorSetLayoutCreateInfo dl = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n, .pBindings = b};
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
+                .bindingCount = n, .pBindings = b};
             if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
                 fatal("vulkan: cannot create shader descriptor layout");
+            vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
+            if (g_vk.has_descriptor_buffers && !s && !arrays) {
+                dl.flags = 0;
+                if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk.cs_dslayout)))
+                    fatal("vulkan: cannot create compute descriptor layout");
+            }
         }
     }
     {
@@ -322,6 +331,15 @@ void vk_pipeline_init(void) {
                  l->maxPerStageDescriptorSamplers, l->maxPerStageDescriptorStorageImages);
     }
     g_vk_playout = vk_playout(0);
+    g_vk.cs_playout = g_vk_playout;
+    if (g_vk.has_descriptor_buffers) {
+        VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 48};
+        VkPipelineLayoutCreateInfo compute = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1, .pSetLayouts = &g_vk.cs_dslayout,
+            .pushConstantRangeCount = 1, .pPushConstantRanges = &pc};
+        if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &compute, NULL, &g_vk.cs_playout)))
+            fatal("vulkan: cannot create compute pipeline layout");
+    } else g_vk.cs_dslayout = g_vk_dslayout[0][0];
     if (!g_vk_playout) fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_cache_dir, sizeof g_cache_dir, "%sshader_cache", g_cachedir);
     plat_mkdir(g_cache_dir);
@@ -919,8 +937,8 @@ static VkPipeline pipe_create(const Pipe* e) {
                                         .stencilAttachmentFormat = (VkFormat)k->stencil};
     VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                        .pNext = &ri,
-                                       .flags =
-                                           k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0,
+                                       .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
+                                           (k->feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0),
                                        .stageCount = nst,
                                        .pStages = st,
                                        .pVertexInputState = &vi,

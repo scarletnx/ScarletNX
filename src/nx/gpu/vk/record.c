@@ -17,6 +17,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -591,6 +592,52 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
     *x = (SetsArgs){cb, bp, layout, first, n, ndyn};
     memcpy((u8*)x + so, sets, n * sizeof *sets);
     if (ndyn) memcpy((u8*)x + dof, dyn, ndyn * sizeof *dyn);
+    rec_commit();
+}
+
+typedef struct {
+    VkCommandBuffer cb;
+    VkDeviceAddress address;
+} DescriptorBufferArgs;
+static void descriptor_buffer_run(const void* p) {
+    const DescriptorBufferArgs* x = p;
+    VkDescriptorBufferBindingInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+        .address = x->address,
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT};
+    vkCmdBindDescriptorBuffersEXT(x->cb, 1, &info);
+}
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address) {
+    DescriptorBufferArgs args = {cb, address};
+    if (!rec_on(cb)) {
+        descriptor_buffer_run(&args);
+        return;
+    }
+    DescriptorBufferArgs* x = rec_push(descriptor_buffer_run, sizeof *x);
+    *x = args;
+    rec_commit();
+}
+typedef struct {
+    VkCommandBuffer cb;
+    VkPipelineLayout layout;
+    u32 first, count;
+    VkDeviceSize offsets[5];
+} DescriptorOffsetsArgs;
+static void descriptor_offsets_run(const void* p) {
+    const DescriptorOffsetsArgs* x = p;
+    const u32 indices[5] = {0};
+    vkCmdSetDescriptorBufferOffsetsEXT(x->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, x->layout,
+                                        x->first, x->count, indices, x->offsets);
+}
+void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
+                                         const VkDeviceSize* offsets) {
+    DescriptorOffsetsArgs args = {.cb = cb, .layout = layout, .first = first, .count = count};
+    for (u32 i = 0; i < count && i < 5; i++) args.offsets[i] = offsets[i];
+    if (!rec_on(cb)) {
+        descriptor_offsets_run(&args);
+        return;
+    }
+    DescriptorOffsetsArgs* x = rec_push(descriptor_offsets_run, sizeof *x);
+    *x = args;
     rec_commit();
 }
 
