@@ -1297,6 +1297,8 @@ typedef struct {
     VkDescriptorImageInfo ii[SNX_VKB_SMAP + 1];
     VkDescriptorImageInfo depth_table[SNX_TEX_ARRAY];
     VkDescriptorImageInfo table[SNX_TEX_ARRAY];
+    VkBufferView bv[8];
+    VkBufferViewCreateInfo bvci[8]; /* what descriptor buffers write for bv (vk_descriptors_write) */
     u32 n;
 } DescWrites;
 
@@ -1554,6 +1556,64 @@ static void dw_buffer(DescWrites* d, VkDescriptorSet set, u32 binding, VkDescrip
                                           .descriptorCount = 1,
                                           .descriptorType = type,
                                           .pBufferInfo = &d->bi[binding]};
+}
+
+/* The buffer images' views of the frame, for its later draws, whose sets then match (desc_set_cached) */
+#define BUFIMG_VIEWS 16
+static struct {
+    struct {
+        VkBuffer buf;
+        u64 off, frame;
+        u32 bytes;
+        VkFormat fmt;
+        VkBufferView view;
+    } kept[BUFIMG_VIEWS];
+    u32 next;
+} g_bufimg;
+/* A draw's buffer image in slot i: a writable copy of its texels (vk_buf_copy_writable), which lands in guest memory
+   as a storage buffer's result does, bound as a storage texel buffer */
+static int dw_buffer_image(DescWrites* d, VkDescriptorSet set, int i, const u32* tic, int kind, u32 handle) {
+    VkBufImg bi;
+    if ((u32)i >= g_vk_buffer_image_slots || !vk_buffer_image(tic, kind, &bi)) {
+        LOG_LIMIT(4,
+                  "vulkan: unsupported buffer image (draw skipped): handle %08x, header word 0 %08x, slot %d of the "
+                  "%u this GPU binds\n",
+                  handle, tic[0], i, g_vk_buffer_image_slots);
+        return 0;
+    }
+    VkBuffer b;
+    u64 o, frame = vk_frame_id() + 1;
+    if (!vk_buf_copy_writable(bi.gva, bi.bytes, &b, &o)) return 0;
+    d->bvci[i] = (VkBufferViewCreateInfo){.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+                                          .buffer = b,
+                                          .format = bi.fmt,
+                                          .offset = o,
+                                          .range = bi.bytes};
+    VkBufferView view = VK_NULL_HANDLE;
+    for (u32 k = 0; k < BUFIMG_VIEWS && !view; k++)
+        if (g_bufimg.kept[k].frame == frame && g_bufimg.kept[k].buf == b && g_bufimg.kept[k].off == o &&
+            g_bufimg.kept[k].bytes == bi.bytes && g_bufimg.kept[k].fmt == bi.fmt)
+            view = g_bufimg.kept[k].view;
+    if (!view) {
+        if (!VK_OK(vkCreateBufferView(g_vk.dev, &d->bvci[i], NULL, &view))) return 0;
+        vk_defer_buffer_view(view); /* destroyed with the frame's sets */
+        u32 k = g_bufimg.next++ % BUFIMG_VIEWS;
+        g_bufimg.kept[k].buf = b;
+        g_bufimg.kept[k].off = o;
+        g_bufimg.kept[k].frame = frame;
+        g_bufimg.kept[k].bytes = bi.bytes;
+        g_bufimg.kept[k].fmt = bi.fmt;
+        g_bufimg.kept[k].view = view;
+    }
+    d->bv[i] = view; /* the key the set is found by (desc_set_cached), in descriptor buffers too */
+    d->w[d->n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                          .pNext = g_vk.has_descriptor_buffers ? &d->bvci[i] : NULL,
+                                          .dstSet = set,
+                                          .dstBinding = SNX_VKB_IMGBUF + (u32)i,
+                                          .descriptorCount = 1,
+                                          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+                                          .pTexelBufferView = &d->bv[i]};
+    return 1;
 }
 
 static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
@@ -1941,9 +2001,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u64 tic_base = ds->bind.tex_pool;
         u32 tic[8];
         vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
+        int kind = s->si.img[i].kind;
+        if (s->si.img[i].type == 1) {
+            if (!dw_buffer_image(&d, set, i, tic, kind, handle)) return VK_NULL_HANDLE;
+            continue;
+        }
         Surf* surf = vk_tex_from_tic_storage(tic);
         u64 size = vk_surf_guest_size(surf);
-        int kind = s->si.img[i].kind;
         /* a draw can't also write one of its own attachments through a storage image */
         VkImageView view =
             surf && is_target(surf, rt, zt, n) ? VK_NULL_HANDLE : vk_storage_image_view(surf, &s->si, i, &size);

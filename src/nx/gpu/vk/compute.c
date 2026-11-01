@@ -706,16 +706,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k)
     return p;
 }
 
-/* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy in the
-   arena. Raw loads and atomics view it as R32_UINT, as the console reads it for them whatever its format. Formatted
-   stores are typeless in the shader, unsigned for bindless images: an integer format is viewed as itself, a 32-bit
-   float one as the integer format of the same bits, which the shader's stores of register bits match. */
-typedef struct {
-    u64 gva;
-    u32 bytes;
-    VkFormat fmt;
-} CsBufImg;
-static int cs_buffer_image(const u32* tic, int kind, CsBufImg* out) {
+int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
     u32 hv = (tic[2] >> 21) & 7, type = (tic[4] >> 23) & 0xF;
     u64 gva;
     u64 texels;
@@ -868,7 +859,7 @@ void vk_dispatch(const DispatchState* d) {
     CsKey ck = {0};
     u32 tcb_key;
     u64 tic_key_base;
-    CsBufImg bimg[8] = {0};
+    VkBufImg bimg[8] = {0};
     int i;
     vk_frame_check();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */
@@ -1013,7 +1004,7 @@ void vk_dispatch(const DispatchState* d) {
             return;
         }
         vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
-        if (!cs_buffer_image(tic, p->si.img[i].kind, &bimg[i])) {
+        if (!vk_buffer_image(tic, p->si.img[i].kind, &bimg[i])) {
             LOG_LIMIT(4, "vulkan: unsupported compute buffer image (header word 0 %08x, skipped)\n", tic[0]);
             g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
             return;
