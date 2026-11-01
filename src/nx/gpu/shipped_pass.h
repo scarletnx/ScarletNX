@@ -47,5 +47,5 @@ void ship_snapshot(void);
 void ship_release(void);
 /* the walk: counted first when count, so programs is known for the progress; else each program handed on as it is
    found. 0 when everything was read, 1 when the sink said stop, -1 when something couldn't be read */
-int ship_walk(const ShipSink* sink, ShipProgress* progress, int count);
+int ship_walk(const ShipSink* sink, ShipProgress* progress, int count, int ounce);
 #endif

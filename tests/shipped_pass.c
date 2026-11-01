@@ -123,7 +123,7 @@ static int walk(int count, int answer, int stop_after, ShipProgress* p) {
     g_sink.programs = 0;
     g_sink.answer = answer;
     g_sink.stop_after = stop_after;
-    return ship_walk(&sink, p, count);
+    return ship_walk(&sink, p, count, 0); /* a Switch game's walk */
 }
 
 int main(void) {

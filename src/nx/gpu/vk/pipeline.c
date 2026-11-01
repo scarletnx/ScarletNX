@@ -1869,6 +1869,10 @@ static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const
     /* a VertexA and its VertexB share one code area, whose constants the draws bind for the vertex stage */
     g_ship_consts = consts;
     g_ship_nconsts = nconsts;
+    /* an Ounce game's (SM70+): its programs as a draw reads them, from their header. A VertexA, which no draw of the
+       Ounce path pairs, is left to its draws */
+    if (stage == SHIPPED_OUNCE_VERTEX_A) return SHIP_SKIPPED;
+    stage &= ~SHIPPED_OUNCE;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so
        no key made without a draw is one a draw asks for */
@@ -1917,7 +1921,7 @@ static void pf_ship_pass(void) {
         pf_open_mapped(&g_pf.scan, g_pf.scan_path, key, pf_scan_rec, NULL);
         pf_unseal(&g_pf.scan);
         __atomic_store_n(&g_pf.scanning, 1, __ATOMIC_RELAXED);
-        int rc = ship_walk(&sink, &g_pf.progress, g_settings.prepare_shaders == 2);
+        int rc = ship_walk(&sink, &g_pf.progress, g_settings.prepare_shaders == 2, g_ounce);
         __atomic_store_n(&g_pf.scanning, 0, __ATOMIC_RELAXED);
         pf_close(&g_pf.scan);
         LOG("vulkan: the game's own shaders: %u translated new, %u in %s, in %llu ms%s\n",

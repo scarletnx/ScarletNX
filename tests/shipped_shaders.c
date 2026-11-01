@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* gpu/shader/shipped.c on containers built here: NVN's program wrapper and SPH, a bare NVN shader file, a BNSH's code
    records that name programs' constants, a SARC that names its entries, and Yaz0 streams of literals and of copies
-   that overlap what they write */
+   that overlap what they write. An Ounce game's programs, found by their ends, and its zstd files */
 #include "nx/gpu/shader/shipped.h"
 #include "nx/gpu/shader/shader.h"
 #include <stdio.h>
@@ -239,6 +239,49 @@ static void yaz0(void) {
     }
 }
 
+/* an Ounce program at d + at: its 128-byte header of version 4 (type, shader type), n instructions that look like
+   SM70+ code (their control bits set), then EXIT and the branch to itself that ends every program */
+static size_t ounce_program(u8* d, size_t at, u32 type, u32 shader, u32 n) {
+    put32(d + at, type | 4u << 5 | shader << 10);
+    size_t i = at + 0x80;
+    for (u32 k = 0; k < n; k++, i += 16) {
+        put64(d + i, 0x0000000000007802ull + k); /* a MOV's opcode, any operands */
+        put64(d + i + 8, 0x000fe20000000000ull);
+    }
+    put64(d + i, 0x000000000000794dull); /* EXIT */
+    put64(d + i + 8, 0x000fea0003800000ull);
+    put64(d + i + 16, 0xfffffff000007947ull); /* BRA to itself */
+    put64(d + i + 24, 0x000fc0000383ffffull);
+    return i + 32;
+}
+static void ounce_programs(void) {
+    static u8 d[0x1000];
+    memset(d, 0, sizeof d);
+    ounce_program(d, 0x100, 1, 1, 5); /* a vertex program */
+    ounce_program(d, 0x400, 2, 5, 9); /* a fragment program */
+    /* an EXIT and a branch to itself with no header before the code: no program */
+    put64(d + 0x800, 0x000000000000794dull);
+    put64(d + 0x808, 0x000fea0003800000ull);
+    put64(d + 0x810, 0xfffffff000007947ull);
+    put64(d + 0x818, 0x000fc0000383ffffull);
+    Seen s = {0};
+    s.base = d;
+    CHECK(shipped_ounce_programs(d, sizeof d, seen, &s) == 2);
+    CHECK(s.n == 2);
+    CHECK(s.at[0] == 0x100 && s.stage[0] == (SHIPPED_OUNCE | ST_VS));
+    CHECK(s.at[1] == 0x400 && s.stage[1] == (SHIPPED_OUNCE | ST_FS));
+    /* the Switch 1 search finds none of them */
+    Seen m = {0};
+    m.base = d;
+    CHECK(shipped_programs(d, sizeof d, seen, &m) == 0);
+    /* a zstd stream, and the names an Ounce game's walk reads whatever their first bytes say */
+    u8 zs[16] = {0x28, 0xb5, 0x2f, 0xfd};
+    CHECK(shipped_kind(zs, sizeof zs) == SHIPPED_ZSTD);
+    CHECK(shipped_name_ounce("Shader/Mii.bnsh.zs") == 1);
+    CHECK(shipped_name_ounce("a/shader_pack.bin") == 2);
+    CHECK(shipped_name_ounce("model.bfres.zs") == 0);
+    CHECK(shipped_name_ounce("tex/a.Nin_Ounce_NVN2.bntx.zs") == 0); /* the platform's tag alone says nothing */
+}
 static void names(void) {
     CHECK(shipped_name_skips("BGM_Title.bfstm"));
     CHECK(shipped_name_skips("course_model.bfres"));
@@ -257,6 +300,7 @@ int main(void) {
     bnsh();
     archive();
     yaz0();
+    ounce_programs();
     if (failures) return 1;
     puts("shipped shaders: ok");
     return 0;

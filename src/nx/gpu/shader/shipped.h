@@ -8,20 +8,27 @@
    arrays at any multiple of 8, so the programs are found by that wrapper at every 4-byte word of any uncompressed
    bytes, not by each container's tables. A bare NVN shader file (0x19866891, one game's) has its SPH at 0xB50.
    SARC archives are scanned as they are, Yaz0 (.szs) after decompressing them, when the SARC inside names a shader
-   container. Nothing here reads files or keeps state */
+   container. An Ounce game's programs (SM70+, SPH version 4) have no wrapper: they are found by their last
+   instruction instead (shipped_ounce_programs), and its RomFS keeps its shader containers as zstd streams (.zs),
+   which the walk decompresses for such a game alone. Nothing here reads files or keeps state */
 #ifndef SNX_SHADER_SHIPPED_H
 #define SNX_SHADER_SHIPPED_H
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
 
 /* what a file's first bytes say it is: scanned whole, decompressed first, or of no use */
-enum { SHIPPED_SKIP, SHIPPED_SCAN, SHIPPED_YAZ0 };
+enum { SHIPPED_SKIP, SHIPPED_SCAN, SHIPPED_YAZ0, SHIPPED_ZSTD };
 #define SHIPPED_HEAD 16 /* the bytes of a file's start read: shipped_kind looks at 4, all of them say it was changed */
 int shipped_kind(const u8* head, size_t n);
 
 /* whether a file's name (the RomFS's) ends in a format that holds no shader program (sound, textures, models,
    fonts, video, text): its first bytes then aren't read */
 int shipped_name_skips(const char* name);
+/* For an Ounce game's walk: whether a file's name says it holds shader programs its first bytes don't tell, so its
+   name-skip and first-byte checks are passed by: 1 for a zstd stream of a shader container or a SARC (".bfsha.zs",
+   ".bnsh.zs", ".sharcb.zs", ".sarc.zs", ".genvb.zs"), 2 for a shader binary of its own format (".bin" with "shader" in its last
+   part, sead's), else 0 */
+int shipped_name_ounce(const char* name);
 
 /* Yaz0: the size its header gives (0 when it isn't Yaz0), and the stream in[0, n) decompressed into out until want
    bytes (at most the header's size): how many it made, fewer when the input or the stream ends first */
@@ -44,7 +51,7 @@ int shipped_sarc_wants(const u8* d, size_t n);
    and -1 for bytes that are no SPH */
 #define SHIPPED_VERTEX_A (-2)
 int shipped_sph_stage(const u8* sph);
-/* a stage's name as the log says it (shipped_sph_stage's, SHIPPED_VERTEX_A included) */
+/* a stage's name as the log says it (shipped_sph_stage's, SHIPPED_VERTEX_A included, SHIPPED_OUNCE ignored) */
 const char* shipped_stage_name(int stage);
 /* each program in d[0, n) to each, in order while it returns 0: its SPH, the bytes from there to the end of d, its
    stage (shipped_sph_stage's, SHIPPED_VERTEX_A included), and its constants, the bytes the game's driver binds as
@@ -52,4 +59,13 @@ const char* shipped_stage_name(int stage);
    section (NULL and 0 otherwise). Returns how many each took (returned 0 for) */
 typedef int (*ShippedEach)(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts);
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
+/* An Ounce game's programs in d[0, n), handed to each as shipped_programs does, with SHIPPED_OUNCE in
+   their stage (ST_VS to ST_FS), and a VertexA as SHIPPED_OUNCE_VERTEX_A. Each one ends in an
+   unconditional branch to itself after its EXIT, and starts after its 0x80-byte SPH of version 4: from that branch,
+   at every 8 bytes, back over the words that look like instructions to the nearest such SPH */
+#define SHIPPED_OUNCE 0x100
+#define SHIPPED_OUNCE_VERTEX_A (SHIPPED_OUNCE | 0x80)
+/* the stage of the SPH (version 4) at sph, as shipped_sph_stage's of version 3 (SHIPPED_VERTEX_A for a VertexA) */
+int shipped_ounce_stage(const u8* sph);
+u32 shipped_ounce_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
 #endif

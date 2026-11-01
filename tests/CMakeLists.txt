@@ -2144,6 +2144,7 @@ add_test(NAME shipped_shaders COMMAND snx-test-shipped-shaders)
 add_executable(snx-test-shipped-pass shipped_pass.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c")
 snx_test_target(snx-test-shipped-pass 99)
+target_link_libraries(snx-test-shipped-pass PRIVATE snx_zstd) # an Ounce game's .zs files
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk("${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c")
 add_test(NAME shipped_pass COMMAND snx-test-shipped-pass)

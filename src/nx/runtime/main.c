@@ -35,6 +35,8 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/gpu/shader/shader.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/plat.h"
@@ -72,6 +74,7 @@ u64 g_addon;
 char g_addondir[1024], g_gamename[256];
 char g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 volatile int g_quit;
+int g_ounce;
 int (*snx_menu)(const char* self);
 void (*snx_menu_run_theme)(const char* folder, SnxRunTheme* out);
 const SnxModule* g_mod;
@@ -900,6 +903,8 @@ int snx_main(int argc, char** argv) {
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
     if (mod->title_id) g_hle.kernel.title_id = mod->title_id;
+    g_ounce = (g_hle.kernel.title_id >> 56) == 0x04;
+    if (g_ounce) g_shader_sm70 = g_gob_native = 1;
     /* this run's settings: each --key=value before a "--" (-v is log=2); -f and --fullscreen=0|1 through startup.c's
        record of the last given, which a --fullscreen=... here would only repeat */
     for (i = 1; i < argc && strcmp(argv[i], "--"); i++) {
