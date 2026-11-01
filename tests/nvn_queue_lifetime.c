@@ -114,6 +114,14 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     return 1;
 }
 int nvn_draw_samples(NvnDraw* d, u64 at, u64 ticks) { (void)d; (void)at; (void)ticks; return 0; }
+int nvn_cmd_unfinished(u64 p) {
+    (void)p;
+    return 0;
+}
+void nvn_cmd_describe(u64 p, char* out, size_t n) {
+    (void)p;
+    if (n) out[0] = 0;
+}
 void nvn_verify_replay_submit(u32 queue) { (void)queue; }
 u64 guest_ticks(void) { return 0; }
 u64 gmmu_translate(u64 gva) { return gva; }

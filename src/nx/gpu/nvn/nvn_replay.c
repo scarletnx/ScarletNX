@@ -54,24 +54,40 @@ typedef void (*RecordFn)(void* ctx, u32 op, u64 payload, u32 size);
 static void walk(u64 p, RecordFn fn, void* ctx, int depth) {
     if (depth > 8) fatal("nvn: recordings call each other more than 8 deep (at %llx)", (unsigned long long)p);
     u32 prev = OP_BEGIN;
+    u64 start = p, piece = p; /* piece: where the records walked now start, its handle or the last JUMP's target */
     for (;;) {
         NvnRecHdr h;
         u32 op;
         memcpy(&h, GP(p), sizeof h);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE); /* a JUMP's target is written before its header (nvn_cmd.c) */
         op = NVN_REC_OP(h.op);
-        if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
+        if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7)) {
+            char where[512];
+            nvn_cmd_describe(piece, where, sizeof where);
             fatal("nvn: a command record at %llx (after a record of op %u) has op %u and size %u, which nvn_direct "
-                  "never writes",
-                  (unsigned long long)p, prev, op, h.size);
+                  "never writes%s",
+                  (unsigned long long)p, prev, op, h.size, where);
+        }
         prev = op;
         if (op == OP_END) return;
-        if (op == OP_JUMP) {
-            p = gr64(p + 8);
-            continue;
-        }
-        if (op == OP_CALL)
-            walk(gr64(p + 8), fn, ctx, depth + 1);
-        else
+        if (op == OP_JUMP || op == OP_CALL) {
+            u64 to = gr64(p + 8);
+            /* A game may record over a recording while another of its threads still submits it: the console's GPU
+               then runs the commands both left there. Past a jump into a piece still cut from, or to where no record
+               can start (a record the new one is writing now), nothing is final */
+            if (!to || (to & 7) || (op == OP_JUMP && nvn_cmd_unfinished(to))) {
+                LOG_LIMIT(4,
+                          "nvn: the submitted recording %llx goes on in records its command buffer is writing now "
+                          "(%s to %llx): the game records over a recording it submits, which ends there\n",
+                          (unsigned long long)start, op == OP_JUMP ? "a jump" : "a call", (unsigned long long)to);
+                return;
+            }
+            if (op == OP_JUMP) {
+                p = piece = to;
+                continue;
+            }
+            walk(to, fn, ctx, depth + 1);
+        } else
             fn(ctx, op, p + 8, h.size - 8);
         if (h.op & NVN_REC_LAST) return;
         p += h.size;
