@@ -3411,7 +3411,8 @@ retry:
     /* push constants: the depth mode (snx_vp.y) for the vertex stage, the alpha test (on, function, reference) and
        the point sprite's T flip for the fragment stage. PointCoord's T is 0 at row 0, which is a lower-left window's
        bottom: it flips when the sprite's origin (1 the top) is the other side. Then the fragment stage's scaled
-       textures (stage_set) */
+       textures (stage_set), and whether the window is lower left and its surface clip's height, which the fragment's
+       y counts up from there (spirv_translate.c's frag_y_origin) */
     float pc[12] = {0, ds->dyn.depth_mode ? 0.0f : 1.0f, 0, 0};
     /* the instance ID: InstanceIndex less the base instance pushed (depth_word, the 3D engine's base instance), or
        with draw parameters less BaseInstance plus what the draw's first instance adds to the base instance: the
@@ -3430,6 +3431,8 @@ retry:
     pc[7] = ds->dyn.sprite_origin == ((ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0) ? 1.0f : 0.0f;
     u32 scaled_words[2] = {(u32)scaled, (u32)(scaled >> 32)};
     memcpy(&pc[8], scaled_words, sizeof scaled_words);
+    u32 origin_words[2] = {(ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) != 0, ds->dyn.clip_height};
+    memcpy(&pc[10], origin_words, sizeof origin_words);
     rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof pc, pc);
 
     /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are */

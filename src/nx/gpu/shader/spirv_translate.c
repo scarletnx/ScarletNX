@@ -1016,6 +1016,23 @@ static void scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_ty
     }
 }
 
+/* The fragment's y (a[0x74]) in a lower-left window (WINDOW_ORIGIN bit 0, pushed as the uvec4's z) counts up from the
+   bottom of the surface clip, its height the w, as the viewport and the scissor measure it there: the guest's GL driver
+   leaves its own gl_FragCoord transform the identity for the window it draws lower left */
+static u32 frag_y_origin(DirectCtx* c, u32 push, u32 y) {
+    u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
+    u32 pointer = spv_emit_type_pointer(&c->emit, 9, c->u32_type); /* PushConstant */
+    u32 lower_left = spv_emit_push_component_f32(&c->emit, pointer, push, one,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type);
+    u32 height = spv_emit_push_component_f32(&c->emit, pointer, push, one,
+                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->u32_type);
+    u32 up = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_convert_u_to_f(&c->emit, c->f32_type, height),
+                           spv_emit_fnegate(&c->emit, c->f32_type, y));
+    spv_emit_no_contraction(&c->emit, up);
+    return spv_emit_select(&c->emit, c->f32_type, spv_emit_i_not_equal(&c->emit, c->bool_type, lower_left, c->zero), up,
+                           y);
+}
+
 static void vertex_depth_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type) {
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
@@ -3447,7 +3464,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_instance = 0;
     int needs_draw_params = 0; /* a vertex program reads NVN's draw parameters (shader.h SH_CB0_) */
     int needs_local_id = 0, needs_group_id = 0;
-    int needs_scale = 0, needs_texel_scale = 0;
+    int needs_scale = 0, needs_texel_scale = 0, needs_frag_y = 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
@@ -4412,6 +4429,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             } else
                 needs_fragcoord = 1;
             if (addr == 0x70 || addr == 0x74) needs_scale = 1;
+            if (addr == 0x74) needs_frag_y = 1;
             if (B(insn[i], 54, 2) == 1 && b < 255) used[b] = 1;
         }
         if (op->id == O_EXIT && flow_always(insn[i])) has_exit = 1;
@@ -5062,11 +5080,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale)) || depth_fix || needs_instance ||
-        base_vertex) {
-        /* the fragment stage's uvec4: its scaled textures (scaled_coords) */
+    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale || needs_frag_y)) || depth_fix ||
+        needs_instance || base_vertex) {
+        /* the fragment stage's uvec4: its scaled textures (scaled_coords) and the window's origin (frag_y_origin) */
         push = spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
-                                  stage == ST_FS && needs_texel_scale ? vec4_u32 : 0, &push_pointer);
+                                  stage == ST_FS && (needs_texel_scale || needs_frag_y) ? vec4_u32 : 0, &push_pointer);
         interfaces[count++] = push;
     }
     if (base_vertex) {
@@ -7433,6 +7451,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     value = spv_emit_fmul(&c->emit, c->f32_type, value, scale);
                     spv_emit_no_contraction(&c->emit, value);
                 }
+                if (addr == 0x74) value = frag_y_origin(c, push, value);
             } else if (interpolation == 2) {
                 /* The hardware interpolates attr/w for a perspective input, and the shader multiplies by w
                    (IPA.MUL with the reciprocal of a[0x7c]). Vulkan's input is attr itself: times the

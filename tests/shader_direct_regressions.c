@@ -344,6 +344,28 @@ static int sprite_t_selects_flipped_on_true(const u32* code, size_t words) {
     return 0;
 }
 
+/* the fragment's y read as the pushed clip height less it (FNegate, then FAdd with a ConvertUToF) when the pushed
+   lower-left word isn't zero (INotEqual feeding the Select whose true side that is), as it is otherwise */
+static int frag_y_selects_clip_less_y(const u32* code, size_t words) {
+    u32 negated = 0, height = 0, up = 0, lower_left = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        u32 op = code[i] & 0xffff;
+        if (op == 127 && width == 4) negated = code[i + 2];
+        if (op == 112 && width == 4) height = code[i + 2];
+        if (op == 129 && width == 5 && negated && height &&
+            ((code[i + 3] == height && code[i + 4] == negated) || (code[i + 3] == negated && code[i + 4] == height)))
+            up = code[i + 2];
+        if (op == 171 && width == 5) lower_left = code[i + 2];
+        if (op == 169 && width == 6 && up && lower_left && code[i + 3] == lower_left && code[i + 4] == up &&
+            code[i + 5] != up)
+            return 1;
+        i += width;
+    }
+    return 0;
+}
+
 static int clock_pair_extracts_both_words(const u32* code, size_t words) {
     u32 clock = 0;
     for (size_t i = 5; i < words;) {
@@ -1887,6 +1909,21 @@ static void fragment_queries(void) {
     if (code)
         check(sprite_t_selects_flipped_on_true(code, words),
               "point sprite T selects the flipped value for the flip condition");
+    free(code);
+    /* the fragment's y counts up from the surface clip's bottom in a lower-left window, both pushed; x stays */
+    static const u64 position[] = {
+        0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
+        0xe003ff874ff7ff01ull, /* IPA R1, a[0x74] */
+    };
+    code = translate(&position[1], 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "IPA reads the fragment's y");
+    if (code)
+        check(frag_y_selects_clip_less_y(code, words),
+              "the fragment's y is the clip height less it when the window is lower left");
+    free(code);
+    code = translate(position, 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "IPA reads the fragment's x");
+    if (code) check(!frag_y_selects_clip_less_y(code, words), "the fragment's x keeps its value in any window");
     free(code);
 }
 
