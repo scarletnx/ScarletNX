@@ -21,6 +21,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -176,8 +177,14 @@ static void vkr_method_barrier(int kind)
 
 	/* Texture descriptors are read at every bind. Surface transitions and
 	 * memory write tracking supply their ordering without expiring caches.
+	 * A fragment barrier (NVN's ORDER_FRAGMENTS and INVALIDATE_TEXTURE) orders
+	 * what the renderer orders itself: a target sampled after it was drawn
+	 * gets its barrier when it is bound (vk_surf_use), one sampled while it is
+	 * drawn gets one in the pass (feedback_order), and draws that read results
+	 * of earlier ones get one there (buffer.c gfx_gpu_src). Ended here, the
+	 * pass ended about 120 times a frame in one game's open world.
 	 */
-	if (kind == 1 || kind == 3)
+	if (kind == 0 || kind == 1 || kind == 3)
 		return;
 
 	vk_lock();
@@ -605,6 +612,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 "by their load op\n",
                 (unsigned long long)g_vk_passes, (unsigned long long)g_vk_clear_cmds,
                 (unsigned long long)g_vk_clear_loads, (unsigned long long)g_vk_dontcare_loads);
+            vk_pass_ends_log();
+            vk_descriptors_stats();
             /* what the GPU engines keep on the GPU (docs/GPU_OWNERSHIP.md), and what the CPU had to wait for */
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times, render targets written back for an "
                 "engine %llu times\n",

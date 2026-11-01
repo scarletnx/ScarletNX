@@ -327,6 +327,7 @@ static int create_device(void) {
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
     int has_host_import = 0, has_placed = 0;
+    int has_descriptor_buffer = 0;
     const char* index8_ext = NULL; /* VK_KHR_index_type_uint8, or the EXT it was promoted from */
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     {
@@ -336,6 +337,7 @@ static int create_device(void) {
         g_vk.has_xfb = snx_vk_extensions_has(&e, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         g_vk.has_border_color = snx_vk_extensions_has(&e, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         has_shader_clock = snx_vk_extensions_has(&e, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+        has_descriptor_buffer = snx_vk_extensions_has(&e, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
         has_reconvergence = snx_vk_extensions_has(&e, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
         g_vk.has_feedback = snx_vk_extensions_has(&e, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
         has_feedback_dynamic = snx_vk_extensions_has(&e, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
@@ -418,6 +420,7 @@ static int create_device(void) {
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT qdesc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT qloop = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT};
     VkPhysicalDeviceAttachmentFeedbackLoopDynamicStateFeaturesEXT qloop_dyn = {
@@ -445,6 +448,7 @@ static int create_device(void) {
     has_present_v2 = has_present_v2 == 3 && has_calibrated_khr;
     int robustness = has_pipeline_robustness && has_robustness2;
     void* const query[] = {&f2,
+                           has_descriptor_buffer ? &qdesc : NULL,
                            &q11,
                            &q12,
                            g_vk.has_divisor ? &fdiv : NULL,
@@ -494,6 +498,22 @@ static int create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &cp2);
         g_vk.border_color_max = cbp.maxCustomBorderColorSamplers;
     }
+    if (has_descriptor_buffer && qdesc.descriptorBuffer && q12.bufferDeviceAddress) {
+        g_vk.descriptor_props = (VkPhysicalDeviceDescriptorBufferPropertiesEXT){
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 desc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                             .pNext = &g_vk.descriptor_props};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &desc);
+        g_vk.has_descriptor_buffers = g_vk.descriptor_props.combinedImageSamplerDescriptorSingleArray &&
+            g_vk.descriptor_props.maxSamplerDescriptorBufferRange >= (64ull << 20) &&
+            g_vk.descriptor_props.maxResourceDescriptorBufferRange >= (64ull << 20) &&
+            g_vk.descriptor_props.samplerDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
+            g_vk.descriptor_props.resourceDescriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20)) &&
+            g_vk.descriptor_props.descriptorBufferAddressSpaceSize >= (VK_FRAMES * (64ull << 20));
+    }
+    LOG("vulkan: graphics descriptor buffers %s\n", g_vk.has_descriptor_buffers
+        ? (g_settings.descriptor_buffers ? "supported, enabled" : "supported, disabled") : "unavailable, using sets");
+    g_vk.has_descriptor_buffers = g_vk.has_descriptor_buffers && g_settings.descriptor_buffers;
     /* FFmpeg's decoder makes views of its two plane pictures */
     VkPhysicalDeviceVulkan11Features f11 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -509,6 +529,7 @@ static int create_device(void) {
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
                                             .samplerFilterMinmax = q12.samplerFilterMinmax,
                                             .timelineSemaphore = VK_TRUE,
+                                            .bufferDeviceAddress = g_vk.has_descriptor_buffers,
                                             .shaderFloat16 = q12.shaderFloat16,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
                                             .shaderOutputLayer = q12.shaderOutputLayer,
@@ -527,6 +548,13 @@ static int create_device(void) {
                                             /* KIL demotes the lane; S2R queries its helper status */
                                             .shaderDemoteToHelperInvocation = VK_TRUE};
     void* chain = &f13;
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT fdesc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+        .pNext = chain, .descriptorBuffer = VK_TRUE};
+    if (g_vk.has_descriptor_buffers) {
+        chain = &fdesc;
+        ext[next++] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
+    }
     if (g_vk.has_divisor) {
         fdiv = (VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT){
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
@@ -709,6 +737,7 @@ static int create_device(void) {
                                   .vulkanApiVersion = VK_API_VERSION_1_3,
                                   .pVulkanFunctions = &vf,
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+    if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
     vk_uma_init();
     {

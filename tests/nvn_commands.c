@@ -396,6 +396,35 @@ int main(void) {
         check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb6) == 0 && untouched(0x1a000, 0x1a100, 0),
               "and writes and counts nothing");
     }
+    /* Barriers retain the driver's command-memory cost even when resource consumers supply their ordering.
+       Copies must preserve that cost and the shader invalidation bits. */
+    for (int bits = 0; bits < 256; bits++) {
+        nvn_CommandBufferAddCommandMemory(&cpu, cb, 1, 0x4000, 0x1000);
+        nvn_CommandBufferBeginRecording(&cpu, cb);
+        nvn_CommandBufferDrawArrays(&cpu, cb, 4, 0, 3);
+        u64 used = nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb);
+        nvn_CommandBufferBarrier(&cpu, cb, bits);
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb) == used + 12,
+              "barriers retain the driver's counted command bytes");
+        nvn_CommandBufferDrawArrays(&cpu, cb, 4, 3, 3);
+        h = nvn_CommandBufferEndRecording(&cpu, cb);
+        walk(h, &a);
+        check(a.n == 3 && a.op[0] == OP_DRAW && a.op[2] == OP_DRAW,
+              "barriers preserve the surrounding draws");
+        check(a.op[1] == OP_BARRIER && snx_ld_le32(GP(a.at[1] + 8)) == (u32)bits,
+              "shader invalidation stays between its producer and consumer");
+        nvn_CommandBufferAddCommandMemory(&cpu, cb2, 1, 0x8000, 0x1000);
+        nvn_CommandBufferBeginRecording(&cpu, cb2);
+        gw64(handles, h);
+        nvn_CommandBufferCopyCommands(&cpu, cb2, 1, handles);
+        h2 = nvn_CommandBufferEndRecording(&cpu, cb2);
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb2) ==
+                  nvn_CommandBufferGetCommandMemoryUsed(&cpu, cb),
+              "copying barriers preserves command-memory accounting");
+        walk(h2, &b);
+        check(b.n == a.n && !memcmp(a.op, b.op, (size_t)a.n * sizeof a.op[0]),
+              "copying commands preserves the barrier stream");
+    }
     if (failures) return 1;
     puts("nvn_commands: ok");
     return 0;

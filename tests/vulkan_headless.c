@@ -7,6 +7,7 @@
 #include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -1433,6 +1434,8 @@ static int check_rt_overlap(void) {
 #include "vulkan_msaa.inc"
 #include "vulkan_targetless_stores.inc"
 
+#include "vulkan_descriptor_bench.inc"
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = HEAP_BASE;
@@ -1440,8 +1443,16 @@ int main(int argc, char** argv) {
     char *root = snx_temp_dir(NULL), *shot, *ppm;
     CHECK(root);
     CHECK(!snx_startup_options(argc, argv));
+    u32 benchmark_sets = 0, benchmark_count = 16, benchmark_images = 0;
     for (int i = 1; i < argc; i++) { /* --vk_validation=1 as the runtime takes it: the Khronos validation layer */
         if (!strcmp(argv[i], "--vk_validation=1")) g_settings.vulkan_validation_layer = 1;
+        if (!strcmp(argv[i], "--vk_descriptors=0")) g_settings.descriptor_buffers = 0;
+        if (!strcmp(argv[i], "--vk_descriptors=1")) g_settings.descriptor_buffers = 1;
+        if (!strcmp(argv[i], "--vk_record=0")) g_settings.vulkan_recording_thread = 0;
+        if (!strcmp(argv[i], "--vk_record=1")) g_settings.vulkan_recording_thread = 1;
+        if (!strncmp(argv[i], "--bench-descriptors=", 20)) benchmark_sets = (u32)strtoul(argv[i] + 20, NULL, 10);
+        if (!strncmp(argv[i], "--descriptor-images=", 20)) benchmark_images = (u32)strtoul(argv[i] + 20, NULL, 10);
+        if (!strncmp(argv[i], "--descriptor-count=", 19)) benchmark_count = (u32)strtoul(argv[i] + 19, NULL, 10);
         if (!strcmp(argv[i], "--vk_memory=2")) g_settings.guest_memory = 2; /* guest memory read in place */
     }
     snprintf(g_exedir, 1024, "%s/", root);
@@ -1453,6 +1464,18 @@ int main(int argc, char** argv) {
     g_settings.vulkan_video_decode = 1; /* a Vulkan Video decode queue where the device has one (lavapipe has none) */
     video_init("Headless Vulkan fixture", "");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    if (g_settings.descriptor_buffers && !g_vk.has_descriptor_buffers) {
+        puts("SKIP descriptor-buffer checks: the device does not support this path");
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return 77;
+    }
+    if (benchmark_sets) {
+        int result = bench_descriptors(benchmark_sets, benchmark_count, benchmark_images);
+        CHECK(!snx_remove_tree(root));
+        free(root); free(shot); free(ppm);
+        return result;
+    }
     if (getenv("SNX_TEST_MSAA_ONLY")) { /* the multisample checks alone */
         CHECK(!check_multisample_shader_gate());
         CHECK(!check_msaa());

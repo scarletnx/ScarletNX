@@ -11,6 +11,64 @@ the examples name its folders on Linux, and `--data DIR` keeps a run's files in 
 games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ```
 
+## Measure descriptor submission
+
+`VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors=1`). It writes descriptor tables into
+memory owned by each frame, then binds offsets. Image encodings are cached within that frame. It avoids graphics descriptor-set allocation and updates. Compute
+keeps separate pools so its queue can retire work independently. Unsupported devices keep the descriptor-set path.
+The path uses buffer device addresses and waits for a frame's fence and holds before reusing its descriptor memory.
+It does not require `VK_EXT_descriptor_heap`, which is a different extension.
+
+```sh
+cmake --preset default -B build -DSNX_TEST_VULKAN=ON
+cmake --build build --target snx-test-vulkan
+python3 tools/bench_gpu_descriptors.py --out /local/scratch/descriptor-search
+```
+
+This Python benchmark first runs exact renderer checks for descriptor sets and descriptor buffers, each with and
+without the Vulkan recording thread. It then measures shuffled serial rounds with 8 and 32 buffer descriptors per
+table, both alone and with 8 image descriptors. Each batch primes both frame slots before timing. The result includes the recording thread's work. The
+benchmark rejects unsupported paths, failed rendering checks and malformed timings. `winner.json` ranks the measured
+configurations. This is a CPU submission benchmark, not a prediction of game FPS. All data is synthetic.
+
+## Search for faster GPU settings
+
+`tools/tune_gpu.py` tests execution strategies and then tries combinations around the fastest candidates.
+It searches descriptor sets versus descriptor buffers, Vulkan recording, guest thread scheduling and buffer memory paths. It searches compiler worker counts
+when the logs show compilation. Resolution, shadows, filtering and effects stay fixed. Async pipelines stay off,
+so a candidate cannot win by skipping draws. It does not edit source code or apply settings.
+
+```sh
+python3 tools/tune_gpu.py GAME --script '15000:1,25000:1' --out /local/scratch/gpu-search --reset-save
+python3 tools/tune_gpu.py GAME --state SLOT --warmup 20 --seconds 60 --out /local/scratch/gpu-search
+```
+
+Use a quiet scene with a fixed camera and no combat. Use the input script that reaches it. The default run lasts 90 seconds and measures after
+55 seconds. Keep at least 20 seconds after warmup. A state must restore gameplay and present frames. A successful
+state-load message alone does not qualify a run. Python 3.10 or later and Pillow are required.
+
+The first run warms caches. Screening tries up to 12 configurations. Two finalists and the baseline then get two
+fresh runs each, in shuffled order. `--trials`, `--finalists` and `--confirm` set those budgets. `--plan` prints the
+initial candidates without starting a game. `--base key=value` sets the starting configuration, such as
+`--base nvn_direct=1`. The search disables frame limits and VSync to measure throughput. It also disables diagnostic
+GPU profiling and buffer counters during timing. Do not build or run another game during the search.
+
+The score combines mean presentation time with excess time in frames over 50 ms. Lower is better. Boot and loading
+frames before warmup do not count. A candidate must finish, present frames in the measured window, and produce a
+nonblank screenshot at the reference resolution. It must beat baseline in every confirmation round, by more than
+the larger of 3 percent or the measured noise margin. A failed confirmation disqualifies it.
+
+`results.json` holds every result and rejection. `winner.json` gives the fastest confirmed configuration, its launch
+command and screenshots. The image check screens for large differences. It cannot prove correct rendering. Inspect
+the finalist screenshots before applying the recommendation. `--reference IMAGE` supplies a known-good scene image,
+and `--image-error` adjusts the normalized pixel-error limit for small animation changes. Do not relax it to accept
+different camera views. A changed view changes the workload and cannot establish an optimization win. If nothing beats the
+baseline consistently, the recommendation keeps the baseline.
+
+With `--reset-save`, the standard `GAME_data/save` folder is copied into the output directory before the search,
+restored before each run, and restored on normal exit or interruption. The backup remains in `original-save` for
+recovery after a machine failure. Without that option, the game can update its saves normally. Keep the output local.
+
 ## Rebuild / checks
 
 ```sh

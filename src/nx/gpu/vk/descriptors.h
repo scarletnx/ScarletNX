@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#ifndef SNX_VK_DESCRIPTORS_H
+#define SNX_VK_DESCRIPTORS_H
+#include "nx/gpu/vk/vk.h"
+/* Graphics descriptor buffers. Compute keeps its independently retired descriptor pools. */
+void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* bindings, u32 count);
+VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes);
+void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets);
+void vk_descriptors_reset(u32 slot);
+void vk_descriptors_stats(void);
+VkResult vk_buffer_create(VmaAllocator allocator, const VkBufferCreateInfo* info,
+                           const VmaAllocationCreateInfo* allocation, VkBuffer* buffer,
+                           VmaAllocation* memory, VmaAllocationInfo* details);
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address);
+void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
+                                         const VkDeviceSize* offsets);
+#endif

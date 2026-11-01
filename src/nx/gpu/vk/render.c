@@ -19,6 +19,8 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/internal_spv.h"
@@ -69,12 +71,51 @@ static void rp_record(void) {
     }
 }
 
-void vk_render_end(void) {
+/* the passes ended since the last stats, by the call site that ended them (a site is its file's literal and a line),
+   under the GPU thread as vk_render_end_at is */
+#define PASS_SITES 64
+static struct {
+    const char* file;
+    int line;
+    u64 n;
+} g_pass_ends[PASS_SITES];
+static void pass_end_count(const char* file, int line) {
+    for (u32 i = 0; i < PASS_SITES; i++) {
+        if (!g_pass_ends[i].file) {
+            g_pass_ends[i].file = file;
+            g_pass_ends[i].line = line;
+        }
+        if (g_pass_ends[i].file == file && g_pass_ends[i].line == line) {
+            g_pass_ends[i].n++;
+            return;
+        }
+    }
+}
+void vk_pass_ends_log(void) {
+    u64 total = 0;
+    for (u32 i = 0; i < PASS_SITES && g_pass_ends[i].file; i++) total += g_pass_ends[i].n;
+    if (!total) return;
+    for (u32 k = 0; k < 8; k++) {
+        u32 best = PASS_SITES;
+        for (u32 i = 0; i < PASS_SITES && g_pass_ends[i].file; i++)
+            if (g_pass_ends[i].n && (best == PASS_SITES || g_pass_ends[i].n > g_pass_ends[best].n)) best = i;
+        if (best == PASS_SITES) break;
+        const char* f = strrchr(g_pass_ends[best].file, '/');
+        LOG("vulkan:   %llu passes (%.0f%%) ended at %s:%d\n", (unsigned long long)g_pass_ends[best].n,
+            100.0 * (double)g_pass_ends[best].n / (double)total, f ? f + 1 : g_pass_ends[best].file,
+            g_pass_ends[best].line);
+        g_pass_ends[best].n = 0;
+    }
+    for (u32 i = 0; i < PASS_SITES && g_pass_ends[i].file; i++) g_pass_ends[i].n = 0;
+}
+
+void vk_render_end_at(const char* file, int line) {
     if (!g_rp.open) return;
     if (g_rp.clears) rp_record(); /* clears with nothing drawn after them still clear */
     g_rp.open = 0;
     if (!g_rp.begun) return; /* nothing was recorded in it: its load and store would change nothing */
     g_rp.begun = 0;
+    pass_end_count(file, line);
     VkCommandBuffer cb = vk_cmd();
     vk_query_pass_end(cb); /* a query begun in the pass ends in it */
     rec_CmdEndRendering(cb);
@@ -283,7 +324,7 @@ static int xfb_counters(void) {
                               .usage = VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &g_xfb.buf, &g_xfb.mem, NULL))) return 0;
     vk_mem_track(g_xfb.mem);
     return 1;
 }
@@ -1704,51 +1745,38 @@ static void draw_storage_read(const DsState* ds, VkDrawStorage* draw, VkSh* vs, 
 /* A stage's descriptor set by its contents: the same writes (buffers, offsets, ranges, views, samplers, layouts) in
    the same layout reuse the set made for them earlier in the frame, which still holds them (its pool is reset when the
    frame slot comes round again, and what it names is destroyed no earlier: vk_defer_*). One game allocated and wrote
-   13,400 sets a frame, two a draw, much of it the same textures again. Two independent 64-bit hashes stand for the
+   13,400 sets a frame, two a draw, much of it the same textures again. A 128-bit content hash stands for the
    contents */
 u64 g_vk_dset_new, g_vk_dset_reused;
-static u64 dset_mix(u64 h, u64 v, u64 m) {
-    h = (h ^ v) * m;
-    return h ^ (h >> 29);
-}
+typedef struct {
+    u64 h1, h2, frame;
+    VkDescriptorSet set;
+} DescSetEntry;
 static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites* d) {
-    static struct {
-        u64 h1, h2, frame;
-        VkDescriptorSet set;
-    } cache[1u << 14];
-    const u64 m1 = 0x9E3779B97F4A7C15ull, m2 = 0xC2B2AE3D27D4EB4Full;
-    u64 h1 = dset_mix(0x243F6A8885A308D3ull, (u64)(uintptr_t)layout, m1),
-        h2 = dset_mix(0x13198A2E03707344ull, (u64)(uintptr_t)layout, m2);
-    for (u32 i = 0; i < d->n; i++) {
-        const VkWriteDescriptorSet* w = &d->w[i];
-        u64 head = (u64)w->dstBinding | (u64)w->descriptorType << 20 | (u64)w->descriptorCount << 40 |
-                   (u64)w->dstArrayElement << 56;
-        h1 = dset_mix(h1, head, m1);
-        h2 = dset_mix(h2, head, m2);
-        for (u32 j = 0; j < w->descriptorCount; j++) {
-            u64 a, b, c;
-            if (w->pBufferInfo) {
-                a = (u64)(uintptr_t)w->pBufferInfo[j].buffer, b = w->pBufferInfo[j].offset, c = w->pBufferInfo[j].range;
-            } else if (w->pImageInfo) {
-                a = (u64)(uintptr_t)w->pImageInfo[j].imageView, b = (u64)(uintptr_t)w->pImageInfo[j].sampler;
-                c = (u64)w->pImageInfo[j].imageLayout;
-            } else {
-                a = (u64)(uintptr_t)(w->pTexelBufferView ? w->pTexelBufferView[j] : VK_NULL_HANDLE), b = c = 0;
-            }
-            h1 = dset_mix(dset_mix(dset_mix(h1, a, m1), b, m1), c, m1);
-            h2 = dset_mix(dset_mix(dset_mix(h2, a, m2), b, m2), c, m2);
+    /* Two ways share one cache line on 64-bit hosts. A collision need not discard a live descriptor set.
+       Both ways remain scoped to the frame whose pools and resources keep the sets alive. */
+    static DescSetEntry cache[1u << 14][2];
+    /* Two indexed image arrays and otherwise at most one element per write. Serialize only initialized fields,
+       then hash them with the SIMD dispatcher instead of two serial multiply chains for every descriptor. */
+    u64 key[VK_DESCRIPTOR_KEY_WORDS(SNX_VKB_END, SNX_VKB_END + 2 * SNX_TEX_ARRAY)];
+    size_t words = vk_descriptor_key(key, layout, d->w, d->n);
+    u64 hash[2];
+    vk_hash128(key, words * sizeof *key, hash);
+    u64 frame = vk_frame_id() + 1;
+    DescSetEntry* bucket = cache[hash[0] >> 50];
+    for (u32 i = 0; i < 2; i++)
+        if (bucket[i].frame == frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+            g_vk_dset_reused++;
+            return bucket[i].set;
         }
-    }
-    u64 frame = vk_frame_id() + 1; /* 0 for an unused slot */
-    typeof(cache[0])* e = &cache[h1 >> 50];
-    if (e->frame == frame && e->h1 == h1 && e->h2 == h2) {
-        g_vk_dset_reused++;
-        return e->set;
-    }
-    VkDescriptorSet set = vk_rec_new_set(layout, d->n, d->w); /* made on the recording thread, before it is bound */
+    DescSetEntry* e = bucket[0].frame != frame ? &bucket[0]
+                      : bucket[1].frame != frame ? &bucket[1]
+                                                : &bucket[hash[1] >> 63];
+    VkDescriptorSet set = g_vk.has_descriptor_buffers ? vk_descriptors_write(layout, d->n, d->w)
+                                                       : vk_rec_new_set(layout, d->n, d->w);
     if (!set) return VK_NULL_HANDLE;
     g_vk_dset_new++;
-    *e = (typeof(cache[0])){h1, h2, frame, set};
+    *e = (DescSetEntry){hash[0], hash[1], frame, set};
     return set;
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
@@ -2624,7 +2652,7 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
         VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkBuffer b;
         VmaAllocation m;
-        if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
+        if (!VK_OK(vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL))) return 0;
         vk_mem_track(m);
         vk_render_end(); /* dispatches happen outside rendering passes */
         VkCommandBuffer cb = vk_cmd();
@@ -3246,12 +3274,12 @@ retry:
     if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset)) {
         g_dyn.sets[0] = vset;
         g_dyn.sets[1] = fs ? fset : VK_NULL_HANDLE;
-        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, fs ? 2 : 1, sets, 0, NULL);
+        vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets);
     }
     for (b = 0; b < 3; b++)
         if (bset[b] && (fresh || g_dyn.sets[2 + b] != bset[b])) {
             g_dyn.sets[2 + b] = bset[b];
-            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (u32)b + 2, 1, &bset[b], 0, NULL);
+            vk_descriptors_bind(cb, layout, (u32)b + 2, 1, &bset[b]);
         }
     if (k->nbind)
         rec_CmdBindVertexBuffers2(cb, 0, k->nbind, vbuf, voff, vsize, g_vk.has_dynamic_stride ? pl->stride : NULL);
