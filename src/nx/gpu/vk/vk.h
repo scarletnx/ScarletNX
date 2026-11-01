@@ -1086,7 +1086,8 @@ extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the 
      VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
-   vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
+   vertex stage, textures and render target outputs for the fragment stage. dc_funcs and unfed, the fragment stage's,
+   key the vertex stage's unsigned and signed textures (its first 32). rt_int keys the primitives of the
    tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
    enables, and SNX_SH_NOT_LAST (the stages before rasterization). xfb: what transform feedback captures of the last stage before
    rasterization's outputs (ShaderInfo.xfb), NULL for none. ds: the draw state whose programs key a fragment program
