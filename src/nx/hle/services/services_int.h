@@ -95,6 +95,7 @@ SvcObj* new_nfp(void);
 SvcObj* new_nfc(void);
 SvcObj* new_caps(void);
 SvcObj* new_bcat(void);
+SvcObj* new_nim(void);
 SvcObj* new_aoc(void);
 SvcObj* new_irs(void);
 SvcObj* new_mii(void);
