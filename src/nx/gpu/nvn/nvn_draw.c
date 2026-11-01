@@ -1006,7 +1006,8 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             memcpy(&bits, GP(payload), 4);
             if (!g_renderer->method_barrier) return 1;
             if (bits & NVN_BARRIER_INVALIDATE_SHADER_BIT) g_renderer->method_barrier(5);
-            /* Resource consumers supply the dependencies for the other flags. */
+            if (bits & (NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT))
+                g_renderer->method_barrier(0);
             return 1;
         }
         case OP_CLEAR_TEX: clear_texture(d, payload); return 1;

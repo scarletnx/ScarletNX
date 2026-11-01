@@ -826,7 +826,8 @@ setting Descriptor buffers
     startup
     words Sets|Buffers
     help 1 = graphics descriptors use addressable Vulkan buffers when supported, with no descriptor-set allocations.
-    help Compute keeps its own descriptor pools. 0 = descriptor sets for graphics too
+    help Compute keeps its own descriptor pools. It also skips the guest's fragment barriers, which the tracking
+    help of targets and buffers orders. 0 = descriptor sets for graphics too, and every fragment barrier
 setting Vulkan recording thread
     key vk_record
     int 0 1
