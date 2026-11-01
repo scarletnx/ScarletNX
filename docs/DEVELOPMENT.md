@@ -50,7 +50,7 @@ state-load message alone does not qualify a run. Python 3.10 or later and Pillow
 The first run warms caches. Screening tries up to 12 configurations. Two finalists and the baseline then get two
 fresh runs each, in shuffled order. `--trials`, `--finalists` and `--confirm` set those budgets. `--plan` prints the
 initial candidates without starting a game. `--base key=value` sets the starting configuration, such as
-`--base nvn_direct=1`. The search disables frame limits and VSync to measure throughput. It also disables diagnostic
+`--base vk_record=0`. The search disables frame limits and VSync to measure throughput. It also disables diagnostic
 GPU profiling and buffer counters during timing. Do not build or run another game during the search.
 
 The score combines mean presentation time with excess time in frames over 50 ms. Lower is better. Boot and loading
@@ -173,10 +173,9 @@ beside it:
   and draws that write a render target starting in that GPU address range, with its size, vertex or index count and
   shader addresses. A color clear lists every bound target in the range. Write the address with `0x`; without a size
   the range is one byte. It finds what produced a wrong intermediate target.
-- `--nvn_trace=1`: logs each NVN function the game resolves (`nvn: NAME -> ADDRESS`), the number of GPFIFO
-  submissions (by any thread) during each queue call, and at exit the call count of every function used
-  (`nvn-used:`). Calls by direct branch are counted only in a game recompiled with `--hook-direct-calls`.
-  [NVN_HLE.md](NVN_HLE.md) has what the traces have shown.
+- The log names each NVN function the game resolves that the runtime does not implement (`nvn: the game resolved
+  NAME, which nvn doesn't implement`), and the game stops with its name when it calls one. [NVN_HLE.md](NVN_HLE.md)
+  has what the SDK does.
 
 ## Profiling
 

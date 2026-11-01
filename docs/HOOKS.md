@@ -21,7 +21,7 @@ Every call to a hooked function goes through its slot in the dispatch table, `g_
 
 The recompiler routes only the symbols of the route list (`src/nx/loader/hook_routes.c`): each symbol that
 `hooks.hook` and `gpu/nvn/nvn.hook` name in any version, and the `route` lines of the functions the runtime wraps with
-code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_direct.c`). `hookgen --routes` generates
+code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_loader.c`). `hookgen --routes` generates
 the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every function
 that a module exports, but some games export nearly all of their main executable: 88% to 98% of its functions in
 three games, so that 51% to 64% of all their direct calls became indirect calls (`tools/hook_census.py`). On one of
@@ -33,8 +33,9 @@ again. The frame time did not change there, because the GPU thread set it.
 Each module carries the list it was recompiled with (`snx_routes()`, `SnxRoutes` in `module_abi.h`): the hash of the
 list and the hash of each symbol. `hook_install` logs the module's list. When it installs a hook whose symbol the
 module's list doesn't name, it warns that the hook sees only the calls through the PLT and function pointers, and
-that a recompile gives it the direct calls too. `nvn_direct` does the same for `nvnBootstrapLoader`. A module made
-before the list has no `snx_routes`, and routes every function it exports, so it works with this runtime unchanged.
+that a recompile gives it the direct calls too. The NVN loader (`nvn_loader.c`) does the same for
+`nvnBootstrapLoader`. A module made before the list has no `snx_routes`, and routes every function it exports, so it
+works with this runtime unchanged.
 The list doesn't change `SNX_ABI`: a hook's handler keeps the guest's data as its function does, so a direct call
 that runs the function's own code is still correct, only not accelerated.
 
@@ -98,9 +99,8 @@ typedef void (*PFNNVNTEXTUREWRITETEXELSSTRIDEDPROC)(const NVNtexture* t, const N
 ```
 
 `gpu/nvn/nvn.hook` is thus the one prototype of each NVN function the runtime implements: `nvn.h` keeps only the
-types of the callbacks and the resolvers, which no hook declares, and `tools/nvn_verify_kinds.py` and
-`tools/nvn_hash.py` read the prototypes from `nvn.hook` (`tools/hook_spec.py`). Each type has the guest's size,
-whatever the host:
+types of the callbacks and the resolvers, which no hook declares, and `tools/nvn_hash.py` reads the prototypes from
+`nvn.hook` (`tools/hook_spec.py`). Each type has the guest's size, whatever the host:
 
 - An integer is the `<stdint.h>` type of its size (`int32_t`, `int64_t`), and `bool` a `uint8_t` (NVN's
   `NVNboolean`), never a host type that changes with the host: `long` is 32 bits on Windows, and a `size_t` or a
@@ -138,14 +138,14 @@ hook lock(addr m) -> u32 = os_lock_old uses nn::os::MutexType
   255) and logs it once per module (`hooks: module sdk, SDK 20.5.22`). In the games looked at so far only the `sdk`
   module carries one: `main`, `rtld` and the `subsdk` modules have none, so their version is unknown.
 - `nvn` is the NVN API version (`major.minor`, packed `major << 16 | minor`), for the NVN functions the runtime
-  implements under `nvn_direct` (`gpu/nvn/nvn.hook`). It is the game's own driver's: at the game's first
+  implements (`gpu/nvn/nvn.hook`). It is the game's own driver's: at the game's first
   `nvnBootstrapLoader` call, before it has any NVN function, the driver's lookup finds `nvnDeviceGetInteger` by name
   and its switch's answers for the API's major and minor version are read from its code (`gpu/nvn/nvn_driver.c`).
   Each NVN function the game then resolves takes the declaration that holds for that version, and one declared only
   for other versions stops the game with its name and the version when it is called
-  (`tests/nvn_versions.c`). `nvn_direct=2` (auto) takes the game's NVN calls only for the versions
-  `nvn_api_described` holds (`gpu/nvn/nvn_driver.c`: 53.5, 53.13, 53.105, 53.209, 53.311 to 53.314 and 55.8 to 55.15),
-  and leaves the others to the driver.
+  (`tests/nvn_versions.c`). The log says whether the version is one `nvn_api_described` holds
+  (`gpu/nvn/nvn_driver.c`: 53.5, 53.13, 53.105, 53.209, 53.311 to 53.314 and 55.8 to 55.15). The runtime takes the
+  game's NVN calls for every version.
 - A hook is matched per module, against the version of the module that exports its function. An unknown version
   (0) matches only unversioned hooks: a hook that reads the guest's structs never guesses their layout.
 - One symbol may be declared several times, each with its own handler, for versions of one key that don't overlap.

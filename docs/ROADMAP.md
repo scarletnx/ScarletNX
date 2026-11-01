@@ -14,8 +14,9 @@ Implemented: Clang/CMake, Linux/Windows CI, SDL3/Vulkan, shader caches, componen
 - **Diagnostics:** stricter warnings, shader vector-boundary tests at R254/RZ. Import thread-dump
   reader and Maxwell instruction scanner.
 - **Audio:** `audren` splitters, voice biquads, delay/reverb/biquad effects. Validate hwopus playback.
-- **GPU:** per-channel scheduling so a blocked channel cannot stall its fence producer.
-  90-degree framebuffer rotation, attachment feedback. Check the BCn fallback (decoded on the GPU) on a Mali device.
+- **GPU:** the NVN functions games call that the loader does not implement yet (the game stops and names each).
+  Homebrew that writes its own GPU command buffers draws nothing. 90-degree framebuffer rotation, attachment
+  feedback. Check the BCn fallback (decoded on the GPU) on a Mali device.
 - **CPU:** more SIMD/FP throughput with exact result bits and FPSR. Stateful helpers already implement NaN
   propagation, default NaNs and directed rounding, with guarded host fast paths. Thread suspension at WFE.
   32-bit games run (A32 and Thumb, `src/nx/runtime/arm.c`), checked only with the synthetic program
@@ -30,7 +31,7 @@ Commands: [development](DEVELOPMENT.md).
 
 ## Design
 
-The GPU is emulated by decoding the Maxwell command buffers NVN writes. NVN already writes a draw as one short macro
-call, so handling NVN's API calls directly would save little. Faster rendering will come from running known macros
-natively and from cheaper work per draw, with the Maxwell decoder kept as the base. `--nvn_trace=1` lists the NVN
-functions a game calls. The [NVN reference](NVN_HLE.md) records what an earlier investigation into handling NVN directly found.
+The runtime runs the game's NVN calls itself, and that is the only GPU path. The loader (`src/nx/gpu/nvn/nvn_loader.c`)
+takes every NVN function a game resolves, so the game's NVN driver never writes command memory. A queue's recordings
+replay on the GPU thread into the Vulkan renderer. The emulated Maxwell path (the GPFIFO decoder, the engines and the
+macro engine) is gone, and `SUBMIT_GPFIFO` draws nothing. The [NVN reference](NVN_HLE.md) records what the SDK does.

@@ -12,7 +12,7 @@
   * [Videodec/VIC channels](#videodecvic-channels)
 
 ScarletNX compiles AArch64 code into native modules through LLVM IR.
-The CPU implementation is shared by Horizon HLE/Maxwell and CPU-only Linux AArch64 ABI runtimes.
+The CPU implementation is shared by the Horizon HLE runtime and the CPU-only Linux AArch64 ABI runtimes.
 Source map: [CLAUDE.md](../CLAUDE.md).
 
 ## Runtime boundaries
@@ -20,7 +20,7 @@ Source map: [CLAUDE.md](../CLAUDE.md).
 | Source / CMake target | Ownership |
 | --- | --- |
 | `src/common/` / `scarletnx-common` | AArch64 CPU state, instruction semantics, code discovery/emission, native module execution, runtime callback interface, host utilities |
-| `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, Maxwell and graphics/media backends, Switch frontend/tooling |
+| `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, NVN and graphics/media backends, Switch frontend/tooling |
 | `src/gnuabi/` / `scarletnx-gnuabi` | Linux syscall/errno/structure translation, ELF loading, isolated VFS, Linux process/memory/signal/futex compatibility |
 
 The experimental `src/3ds/` / `scarletnx-3ds` target supplies board profiles,
@@ -248,7 +248,7 @@ covers hooks in code the game maps itself (NROs), which only the JIT runs.
 | `runtime/` | Module loading, INI, clock, `RtAPI`, crashes; `settings.txt`, every setting (`tools/settingsgen` generates `snx_settings.h`, `g_settings` and the tables the runtime, the launcher and the recompiler read them with) |
 | `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
-| `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vulkan renderer |
+| `gpu/` and `gpu/nvn/` | Guest memory as the GPU sees it, the GPU thread, NVN (loader, objects, command buffers, replay), shaders, Vulkan renderer |
 | `gpu/video/` | host1x, NVDEC H.264 and VP9 decoding through FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit, the in-game menu, the shader loading screen |
 
@@ -272,18 +272,21 @@ service the runtime doesn't have gets sm's stand-in object, which answers every 
 
 ### GPU submit/present
 
-1. NVN command buffers -> `/dev/nvhost-gpu` GPFIFO ioctl -> `hle/services/nvdrv.c` -> `gpu_submit` (`gpu/gpu.c`).
-2. Copy entries to GPU queue. `nv.submit_lk` orders fence promises and cross-channel submits. A submission's fence
-   is the stream's first wait on the GPU thread, whoever increments it, and the ioctl returns at once, as nvgpu's does.
-3. GPU-thread dispatch: 3D, MME, compute, 2D, DMA, inline-to-memory. Draws -> `g_renderer` (`gpu/renderer.h`).
-   Shaders: Maxwell SASS -> SPIR-V (`gpu/shader/`). Each channel's jobs run in order. A stream that waits (a semaphore
-   acquire, a syncpoint wait, its fence) parks its channel (`gpu_park`), even inside a macro, and the thread runs the
-   other channels' jobs until the wait is met or times out. A release from another stream or a syncpoint increment
-   wakes it, and a release the CPU writes is polled every 0.5 ms while nothing else can run.
+1. The game resolves its NVN functions through `nvnBootstrapLoader` and `nvnDeviceGetProcAddress`. The loader
+   (`gpu/nvn/nvn_loader.c`) puts the runtime's handler in each one's dispatch slot (`gpu/nvn/nvn.hook`), so the game's
+   NVN driver never runs past its own name lookup. A game without `nvnBootstrapLoader` draws nothing.
+2. Command buffer calls write records into the game's command memory (`gpu/nvn/nvn_cmd.c`). A queue submission
+   promises its fences and queues the replay on the GPU thread (`gpu_call`), and returns at once.
+3. The GPU thread replays the records in order (`gpu/nvn/nvn_replay.c`): NVN's state makes the renderer's draw state
+   (`gpu/draw_state.h`), and the draws, clears, dispatches and copies go to `g_renderer` (`gpu/renderer.h`). Shaders:
+   Maxwell SASS -> SPIR-V (`gpu/shader/`).
 4. Vk `stream_incr` lands compute writes in guest memory before incrementing the syncpoint.
-5. vi waits on the fences no submission promised (a host1x engine's, the CPU's), then queues present (`gpu_call`)
-   after the jobs of the channels that promised the others. Other channels' jobs don't hold it. The GPU thread checks
-   the remaining fences. `present_buffer` uses the matching RT and vi's crop, or converts guest memory.
+5. A window present queues its texture after the queue's work. vi's own present path (a program that uses vi with its
+   own buffers) waits for its fences on the calling thread, then queues the present (`gpu_call`).
+   `present_buffer` uses the matching RT and the crop, or converts guest memory.
+
+`/dev/nvhost-gpu`'s `SUBMIT_GPFIFO` draws nothing: there is no Maxwell command decoder. It logs one warning and
+reaches the submission's fence at once, so a program that writes its own command buffers does not wait forever.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
