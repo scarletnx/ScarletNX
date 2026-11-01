@@ -258,6 +258,36 @@ draws' counts (the shadow reads zeros from its shadow pools), virtual pool mappi
 compute dispatches, clears and copies (only draws are paired), and a game whose driver uses another NVN API version
 than the ones nvn_direct describes.
 
+## 32-bit games
+
+A 32-bit game's NVN driver is A32 code, and the game's code runs as blocks in a table by guest address
+(`nx/runtime/arm.c`). Each call ends its block, so nvn_direct takes a function by putting a block of its own in the
+function's slot (`arm_slot`). That block is the function's A32 adapter (`hookgen --a32`, `docs/HOOKS.md`), which calls
+the same handler as the 64-bit adapter. `nvnBootstrapLoader` and the `nvnDeviceGetProcAddress` it returns are wrapped
+as for a 64-bit game. The driver's own lookup runs on the game's thread through `arm_run`, which runs blocks until the
+call returns. The game's command buffer memory callback runs the same way.
+
+What differs from a 64-bit game:
+
+- A pointer, a `size_t` and a `ptrdiff_t` are 4 bytes. The spec types NVN's sizes and offsets as `usize` and `isize`
+  (`gpu/nvn/nvn.hook`). One driver's code gave each of them, by which registers and stack words each function reads:
+  - A u64 takes an even pair of registers, and a word takes one, so the arguments after it move.
+  - `SetStride(b, stride)` reads r1, and `BindVertexBuffer` reads the u64 address in r2 and r3 and the size on the
+    stack. `MultiDraw*IndirectCount` reads its stride at stack word 12 or 28, not 16 or 32.
+  - Memory sizes, offsets and strides come back in r0 alone. Buffer and texture addresses come back in r0 and r1.
+- An array of pointers (`SetRenderTargets`, `WindowBuilderSetTextures`), `NVNshaderData`'s control pointer and
+  `NVNmappingRequest`'s pool pointer are read as words (`nvn_gptr`). The structs keep the offsets they have in a
+  64-bit game, because the u64 that follows each pointer is 8-aligned.
+- The driver's `nvnDeviceGetInteger` answers come from its A32 switch (`nvn_driver_info32`): a bound
+  (`cmp rN, #max`), the value r0 holds at the jump, and a table of words relative to an `add rT, pc, #imm`
+  (`ldr rX, [rI, rT]; add pc, rX, rT`), or of addresses after an `ldr pc, [pc, rI, lsl #2]`.
+- nvn_verify doesn't run a 32-bit driver.
+
+The 32-bit game looked at (SDK NVN 0.12.16) answers API 52.32. Its writers fit the header's sizes except the
+sampler's, as in later SDKs. The game keeps each object at least as far from the next live one of its type as nvn_direct's
+layout needs: buffers 0x30 apart, memory pools 0x118, programs 0x100, samplers 0x78 and textures in wrappers mostly
+0x2a8. It ran from boot to a race on nvn_direct, at 60 frames a second in the menus.
+
 ## Observing NVN calls
 
 `tools/nvn_coverage.py` builds a local index of public declarations, runtime handlers and possible Vulkan call

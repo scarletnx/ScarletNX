@@ -64,4 +64,6 @@ def kind(t, types):
     if '*' in t:
         return 'addr'
     what = types.get(t)
+    if t in ('usize', 'isize'):  # a size_t and a ptrdiff_t: 8 bytes in a 64-bit guest, as a u64 and an i64
+        return 'u64' if t == 'usize' else 'i64'
     return 'addr' if what == 'pointer' else 'i32' if what == 'enum' else t

@@ -17,6 +17,7 @@
 #ifndef SNX_HLE_HOOK_H
 #define SNX_HLE_HOOK_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/cpu/arm/arm.h"
 #include "common/utilities/endian.h"
 #include "nx/hle/hook/verify.h"
 #include <stddef.h>
@@ -167,5 +168,51 @@ static inline void hook_set_f64(CPU* c, f64 f) {
     memcpy(&bits, &f, sizeof bits);
     memset(&c->v[0], 0, sizeof c->v[0]);
     SNX_VSET_D(c->v[0], 0, bits);
+}
+
+/* The adapters for a 32-bit program (hookgen --a32), blocks of its code table that run a hooked function's handler.
+   The handler takes the CPU of the thread whose 32-bit registers arm is (nx/runtime/arm.c), for its guest memory and
+   the kernel's waits */
+CPU* hook_a32_cpu(SnxArmCPU* arm);
+/* the word and the double word at byte off of the caller's stack arguments, which start at sp */
+static inline u32 hook_a32_word(const SnxArmCPU* arm, int off) {
+    return snx_ld_le32(arm->mem + (u32)(arm->r[13] + (u32)off));
+}
+static inline u64 hook_a32_dword(const SnxArmCPU* arm, int off) {
+    return (u64)hook_a32_word(arm, off) | (u64)hook_a32_word(arm, off + 4) << 32;
+}
+static inline f32 hook_a32_bits_f32(u32 bits) {
+    f32 f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+static inline f64 hook_a32_bits_f64(u64 bits) {
+    f64 f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+/* sN is half of d(N / 2): the low half for an even N */
+static inline f32 hook_a32_s(const SnxArmCPU* arm, int n) {
+    return hook_a32_bits_f32((u32)(arm->d[n / 2] >> (n & 1 ? 32 : 0)));
+}
+static inline f64 hook_a32_d(const SnxArmCPU* arm, int n) { return hook_a32_bits_f64(arm->d[n]); }
+static inline f32 hook_a32_f32_at(const SnxArmCPU* arm, int off) { return hook_a32_bits_f32(hook_a32_word(arm, off)); }
+static inline f64 hook_a32_f64_at(const SnxArmCPU* arm, int off) { return hook_a32_bits_f64(hook_a32_dword(arm, off)); }
+static inline void hook_a32_set_r01(SnxArmCPU* arm, u64 v) {
+    arm->r[0] = (u32)v;
+    arm->r[1] = (u32)(v >> 32);
+}
+/* a write to s0 leaves s1, the rest of d0, as a VMOV to s0 would */
+static inline void hook_a32_set_s0(SnxArmCPU* arm, f32 f) {
+    u32 bits;
+    memcpy(&bits, &f, sizeof bits);
+    arm->d[0] = (arm->d[0] & 0xFFFFFFFF00000000ull) | bits;
+}
+static inline void hook_a32_set_d0(SnxArmCPU* arm, f64 f) { memcpy(&arm->d[0], &f, sizeof f); }
+/* bx lr: to lr, in Thumb state when its bit 0 is set */
+static inline void hook_a32_return(SnxArmCPU* arm) {
+    u32 lr = arm->r[14];
+    arm->cpsr = (arm->cpsr & ~SNX_ARM_T) | (lr & 1 ? SNX_ARM_T : 0);
+    arm->r[15] = lr & ~1u;
 }
 #endif

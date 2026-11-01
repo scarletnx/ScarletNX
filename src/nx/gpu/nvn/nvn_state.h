@@ -17,6 +17,7 @@
 #include "nx/gpu/nvn/nvn_queue.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_verify.h"
+#include "nx/memory/mem.h"
 
 typedef struct {
     NvnDirectState direct;
@@ -35,4 +36,15 @@ typedef struct {
 } NvnThread;
 extern _Thread_local NvnThread t_nvn;
 void nvn_init(void);
+
+/* A guest pointer, size_t or ptrdiff_t that the game keeps in memory at at: 4 bytes in a 32-bit game, 8 in a 64-bit
+   one. nvn_ptr_bytes is its size, the stride of an array of them */
+static inline u64 nvn_ptr_bytes(void) { return g_nvn.direct.a32 ? 4 : 8; }
+static inline u64 nvn_gptr(u64 at) { return g_nvn.direct.a32 ? gr32(at) : gr64(at); }
+static inline void nvn_gw_isize(u64 at, i64 v) {
+    if (g_nvn.direct.a32)
+        gw32(at, (u32)v);
+    else
+        gw64(at, (u64)v);
+}
 #endif

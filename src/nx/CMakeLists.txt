@@ -78,7 +78,7 @@ snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_verify.c gpu/nvn/nvn_state.c
               gpu/shipped_pass.c)
 # the NVN functions nvn_direct implements: their adapters and table, generated from gpu/nvn/nvn.hook
-snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook)
+snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
 # mme_jit.c compiles the macros mme_hle.c has no implementation for with the LLVM backend
 target_link_libraries(snx_gpu PRIVATE snx_llvm)
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")

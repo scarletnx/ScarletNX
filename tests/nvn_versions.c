@@ -51,6 +51,40 @@ static void driver(i32 major, i32 minor) {
     put(0x100, 0x97FFFFC0); /* bl 0x0 */
     put(0x104, 0xD65F03C0); /* ret */
 }
+/* a 32-bit program's driver, in A32: nvnDeviceGetInteger calls the switch, which sets r0 to the default before it
+   jumps through a table of words relative to the ADR that names it. Item 0 keeps that default, item 1 sets r0, item 2
+   reads the device's state, item 3 keeps the default again */
+static void driver32(u32 major, u32 minor) {
+    memset(image, 0, sizeof image);
+    put(0x00, 0xE92D4010);         /* push {r4, lr} */
+    put(0x04, 0xEB000005);         /* bl 0x20 */
+    put(0x08, 0xE8BD8010);         /* pop {r4, pc} */
+    put(0x20, 0xE92D4070);         /* push {r4, r5, r6, lr} */
+    put(0x24, 0xE24DD008);         /* sub sp, sp, #8 */
+    put(0x28, 0xE1A05000);         /* mov r5, r0 */
+    put(0x2C, 0xE3A00000);         /* mov r0, #0 */
+    put(0x30, 0xEB000012);         /* bl 0x80: r0 is unknown after it */
+    put(0x34, 0xE3550003);         /* cmp r5, #3 */
+    put(0x38, 0x8A00000E);         /* bhi 0x78 */
+    put(0x3C, 0xE1A01105);         /* lsl r1, r5, #2 */
+    put(0x40, 0xE28F2008);         /* add r2, pc, #8: the table, 0x50 */
+    put(0x44, 0xE3A00000 | major); /* mov r0, #major */
+    put(0x48, 0xE7911002);         /* ldr r1, [r1, r2] */
+    put(0x4C, 0xE081F002);         /* add pc, r1, r2 */
+    put(0x50, 0x14);               /* item 0: 0x64 */
+    put(0x54, 0x10);               /* item 1: 0x60 */
+    put(0x58, 0x1C);               /* item 2: 0x6C */
+    put(0x5C, 0x14);               /* item 3: 0x64 */
+    put(0x60, 0xE3A00000 | minor); /* mov r0, #minor */
+    put(0x64, 0xE28DD008);         /* add sp, sp, #8 */
+    put(0x68, 0xE8BD8070);         /* pop {r4, r5, r6, pc} */
+    put(0x6C, 0xE5940060);         /* ldr r0, [r4, #0x60] */
+    put(0x70, 0xEAFFFFFB);         /* b 0x64 */
+    put(0x78, 0xE59D0004);         /* ldr r0, [sp, #4] */
+    put(0x7C, 0xEAFFFFF8);         /* b 0x64 */
+    put(0x80, 0xE12FFF1E);         /* bx lr */
+}
+
 /* the API version nvn_direct reads from the driver at func, 0 when it can't */
 static u32 api(u64 func) {
     i32 major, minor;
@@ -91,6 +125,15 @@ int main(void) {
     assert(!strcmp(text, "55.8"));
     driver(53, 209);
     assert(api(0x100) == (53u << 16 | 209));
+    /* a 32-bit driver's: its default, its constant, not the state it reads or past its bound */
+    driver32(52, 32);
+    assert(nvn_driver_info32(image, 0, sizeof image, 0, 0, &v) && v == 52);
+    assert(nvn_driver_info32(image, 0, sizeof image, 0, 1, &v) && v == 32);
+    assert(nvn_driver_info32(image, 0, sizeof image, 0, 3, &v) && v == 52);
+    assert(!nvn_driver_info32(image, 0, sizeof image, 0, 2, &v) &&
+           !nvn_driver_info32(image, 0, sizeof image, 0, 4, &v));
+    assert(!nvn_driver_info32(image, 0, 0x48, 0, 1, &v)); /* the table cut off */
+    driver(55, 8);
     /* code that isn't the switch, or a switch cut off by the end of the image: unknown */
     assert(api(0x30) == 0 && nvn_driver_info(image, 0, 0x20, 0, 0, &v) == 0);
     /* out of range for the key */
