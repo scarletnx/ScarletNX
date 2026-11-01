@@ -64,6 +64,15 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 
   Examples are the CPU decoders of ASTC, ETC2 and BCn, the `*_ref.c` engine references and the NVN decoders. Put
   their declarations in a header beside them, never in a runtime header. Tests include it as `"support/name.h"`.
+- **Settings, not environment variables, in `src/`.** An option of a program in `src/` is a setting in
+  `src/nx/runtime/settings.txt`. The NX runtime reads it from the `.ini` file of the game or from `--key=value`. The
+  3DS and Vita drivers read it from `--key=value`. A driver with no settings table (`scarletnx-gnuabi`) takes a
+  command-line option. Do not read an option with `getenv`.
+
+  The code in `src/` reads only the variables of the system, of SDL and of the package. These variables are `HOME`,
+  `USERPROFILE`, `APPDATA`, `XDG_*`, `PATH`, `TMPDIR`, `LANG`, `APPIMAGE`, `APPDIR`, `SSL_CERT_FILE`, `SSL_CERT_DIR`
+  and `SDL_GAMECONTROLLERCONFIG_FILE`. The code in `tests/` can use all environment variables. The ctest
+  `runtime_architecture` fails on a `getenv` of a different variable in `src/`.
 - Ask the user only about real decisions. When the next step is obvious, do it.
 
 ## Environment
