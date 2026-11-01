@@ -217,8 +217,8 @@ That is the step after imports, and it is the one that removes the per-submit co
 
 ### Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)
 
-Each scene is the benchmark save and script of one game, `-H --fps_limit=0 --vsync=0 --nvn_direct=2`, with
-`vk_gpu_profile=1` for the queue's times. The machine ran other jobs (load 4 to 16), so a single frame rate moves by
+Each scene is the benchmark save and script of one game, `-H --fps_limit=0 --vsync=0`, with NVN's calls run by the
+runtime, and `vk_gpu_profile=1` for the queue's times. The machine ran other jobs (load 4 to 16), so a single frame rate moves by
 several frames a second from run to run.
 
 Where the time goes in the copy path, measured before the branch moved to a newer base: a present's time, the GPU's

@@ -90,7 +90,7 @@ The launcher action is the same build the driver already supports:
 scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2
 ```
 
-Add `--hook-direct-calls` when the cache was written with `nvn_trace` on:
+Add `--hook-direct-calls` when the cache was written from a module recompiled with it:
 
 ```sh
 scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls

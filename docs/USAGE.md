@@ -309,8 +309,8 @@ Remaining examples: POSIX.
   (0, no limit, by default) also holds the folder to N GB after each recompile, the units reused longest ago removed
   first. A cache folder that cannot be made stops the recompile, saying why.
   `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
-  `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so
-  `nvn_trace=1` also counts calls made by direct branch. The game runs slower, so use it only for investigating.
+  `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
+  runtime's NVN handlers also take calls made by direct branch.
 - **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
   Replace cached RomFS after asset changes; preserve `<id>_data/save/`.
 
@@ -646,7 +646,6 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `fpsr_flags` | `1` | `1` keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises them, which costs every floating-point or saturating operation a test of its result. `0` keeps only the results exact; a game that never reads FPSR (few do) runs floating-point and saturating code faster. The next recompile and the JIT's next run take it |
 | `gdb_jit` | `0` | `1`, with the GDB stub (`-S` or `-s`), hands the code the JIT compiles to GDB ([GDB](#gdb-linux)). GDB stops the game for each compile while it is attached, and each compile's object stays in memory for the run |
 | `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
-| `nvn_trace` | `0` | `1` logs each NVN function the game resolves and, at exit, how often each was called ([DEVELOPMENT.md](DEVELOPMENT.md)). The game runs slower |
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
 | `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
@@ -654,7 +653,6 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vk_record` | `1` | `0` records Vulkan commands on the GPU thread instead of a thread of their own |
 | `compute` | `1` | `0` skips every compute shader dispatch |
 | `vk_max_allocation_mb`, `vk_budget_mb` | `0`, `0` | A smaller cap on each Vulkan allocation and on the GPU memory the caches keep, in MiB, for testing. `0` is the device's |
-| `mme_hle`, `mme_jit`, `mme_verify` | `1`, `1`, `0` | The GPU macros run natively, compiled, and checked against the interpreter. `0`, `0` interprets them all |
 | `renderdoc`, `renderdoc_frames` | empty | RenderDoc captures to that path's stem of the presents listed (`500,800`, or `45s` for the first after 45 seconds) |
 
 A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
