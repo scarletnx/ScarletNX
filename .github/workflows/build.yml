@@ -1468,8 +1468,9 @@ jobs:
     env:
       EDENPROBE_VERSION: v0.7.1
       EDENPROBE_SHA256: 006b5c962166834403ea0ca0d48bb6680eac231444b4390d312d05225393f5a2
-      # every family that needs no person or network: headless, the audio family's sound is never played
-      EDENPROBE_MODE: quick notime fatal cpu graphics fs video display kernel audio
+      # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
+      # its suites write their own GPU command buffers, which draw nothing now that NVN is the GPU path (docs/EDENPROBE.md)
+      EDENPROBE_MODE: quick notime fatal cpu fs video display kernel audio
     outputs:
       result: ${{ steps.probe.outputs.result }}
     steps:

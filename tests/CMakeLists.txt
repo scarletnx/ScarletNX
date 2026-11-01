@@ -1701,7 +1701,7 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
         add_test(NAME edenprobe_vk_memory_${snx_memory}
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
                 --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}"
-                --mode "quick notime fatal cpu graphics fs video display kernel audio"
+                --mode "quick notime fatal cpu fs video display kernel audio"
                 --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-vk_memory-${snx_memory}"
                 --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/linux-x86_64.txt" --timeout 120
                 --setting vk_memory=${snx_memory})

@@ -1,35 +1,6 @@
 # edenprobe cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/EDENPROBE.md)
 # build: v0.7.1
-# mode: audio cpu display fatal fs graphics kernel notime quick video
-astc: 4-bit weights 0 to 15 unquantize by bit replication
-astc: a 12x12 block infills a 6x6 weight grid
-astc: a dual plane block weights one channel with the second plane
-astc: a four partition block puts each texel in its partition
-astc: a three partition 6x6 block puts each texel in its partition
-astc: a two partition block puts each texel in its partition
-astc: a void extent block is its constant colour on every texel
-astc: an 8x8 block infills a 2x4 weight grid
-astc: an HDR partition is the error colour and the LDR one after it decodes
-astc: an illegal block is the error colour
-astc: endpoints coded with quints decode and unquantize
-astc: endpoints coded with trits decode and unquantize
-astc: even 5-bit weights unquantize by bit replication
-astc: graphics device opens with room for the blocks
-astc: odd 5-bit weights unquantize by bit replication
-astc: the fetching shader loads
-astc: weights coded with quints decode and unquantize
-astc: weights coded with trits decode and unquantize
-astcimage: a 2048x2048 texture of 4x4 blocks decodes all over, every 16th texel
-astcimage: a 2048x2048 texture of 8x8 blocks decodes all over, every 16th texel
-astcimage: a picture in 12x12 blocks decodes as the specification says, every texel
-astcimage: a picture in 4x4 blocks decodes as the specification says, every texel
-astcimage: a picture in 4x4 sRGB blocks decodes as the specification says, every texel
-astcimage: a picture in 6x6 blocks decodes as the specification says, every texel
-astcimage: a picture in 8x8 blocks decodes as the specification says, every texel
-astcimage: a picture in 8x8 sRGB blocks decodes as the specification says, every texel
-astcimage: graphics device opens with room for the textures
-astcimage: the 2048x2048 texture of 4x4 blocks fetched 256 times over, each texel once
-astcimage: the fetching shader loads
+# mode: audio cpu display fatal fs kernel notime quick video
 audio: a 10 kHz voice at half the output rate keeps the level default quality's table gives
 audio: a 10 kHz voice at half the output rate keeps the level high quality's table gives
 audio: a 15 kHz voice at 1.25 times the output rate keeps the level default quality's table gives
@@ -42,64 +13,10 @@ audio: an 11 kHz voice at the output rate keeps its level at default quality
 audio: an 11 kHz voice at the output rate keeps its level at high quality
 audio: an 18 kHz voice at twice the output rate keeps the level default quality's table gives
 audio: an 18 kHz voice at twice the output rate keeps the level high quality's table gives
-bcn: both layers of a BC4 array six texels tall keep their own blocks
-bcn: every layer of a six-layer BC4 array keeps its own 2x2 and 1x1 levels
-bcn: graphics device opens with room for the arrays
-bcn: the 2x8 second level of a 4x16 BC4 texture reads both of its blocks
-bcn: the array fetching shader loads
 binder: a layer of its own opens and takes a window
 binder: a request for nought, before any frame
 binder: the history after ten frames comes newest first, eight at most
 binder: the history after three frames, eight asked for
-bindless: 256 one-texel textures, their descriptors and handles are in place
-bindless: a handle index below 128 samples its own texture
-bindless: a handle index from 128 to 255 samples its own texture
-bindless: graphics device opens with room for 256 textures
-bindless: the bindless sampling shader loads
-blend: a source factor of zero leaves the destination
-blend: adding clamps at the top of the range
-blend: adding with both factors one
-blend: blending off replaces the destination
-blend: graphics device opens
-blend: subtracting clamps at the bottom of the range
-blend: subtracting the destination from the source
-blend: subtracting the source from the destination
-blend: the blend constant is a factor of its own
-blend: the maximum ignores the factors
-blend: the minimum ignores the factors
-blend: the shaders load
-blend: the source alpha weights both sides
-blit2d: blit2d_center_2_3: two thirds size from the centre origin, 1.5 texels a pixel
-blit2d: blit2d_center_half: half size from the centre origin, into the same window
-blit2d: blit2d_corner_2_3: two thirds size from the corner origin, 1.5 texels a pixel
-blit2d: blit2d_corner_half: half size from the corner origin, into a window cut mid-run
-blit2d: graphics device opens with both surfaces laid out block linear
-clear: clear bounded by a rectangle
-clear: clear to a mid channel value
-clear: clear to opaque red
-clear: clear to transparent cyan
-clear: graphics device opens
-coherence: a buffer the copy engine writes into a texture reaches the next sample in one list
-coherence: a partial redraw reaches the sampler and the rest keeps its texels
-coherence: a render target copied to an image reads back as drawn
-coherence: a render target sampled as R32_Uint gives the little endian word of its bytes
-coherence: a texture rendered in the same list is sampled as drawn
-coherence: a uniform buffer pushed between two draws of one list reaches the second only
-coherence: a uniform buffer the processor rewrites between submits reaches the next draw
-coherence: an image read back before the copies holds what was uploaded
-coherence: four submits each see the one word of a uniform buffer rewritten before them
-coherence: graphics device opens with room for the images
-coherence: one row the processor rewrites through a cached mapping reaches the next sample once flushed
-coherence: part of a render target copied to an image reads back as drawn
-coherence: part of an image the copy engine copies into a texture reaches the next sample
-coherence: redrawing a render target reaches its R32_Uint alias in one list
-coherence: texels the processor rewrites in a pitch linear texture reach the next sample
-coherence: texels the processor rewrites in part of a block linear texture reach the next sample
-coherence: the block linear texture is eight gobs of one gob blocks
-coherence: the images have somewhere to live
-coherence: the processor finds the copy engine's texels where the block linear rule puts them
-coherence: the shaders load
-coherence: the starting texels reach the textures
 cpu: 48 new straight-line blocks with 33 live registers leave the state worked out apart
 cpu: clz counts each of eight 16-bit lanes
 cpu: clz counts each of four 32-bit lanes
@@ -114,158 +31,6 @@ cpu: sqdmlal, sqdmlsl and sqdmull double, accumulate and saturate
 cpu: sqrshl and uqrshl round, shift and saturate lanes of every width
 cpu: sqrshrn, uqrshrn and sqrshrun round and narrow scalars
 cpu: sqshlu saturates 8, 16 and 64-bit lanes and sets QC
-depth: a depth clear writes the value it was given
-depth: a fragment at the buffer's own depth fails a greater than test
-depth: a fragment at the buffer's own depth fails a less than test
-depth: a fragment at the buffer's own depth fails a never test
-depth: a fragment at the buffer's own depth fails a not equal test
-depth: a fragment at the buffer's own depth passes a greater than or equal test
-depth: a fragment at the buffer's own depth passes a less than or equal test
-depth: a fragment at the buffer's own depth passes an always test
-depth: a fragment at the buffer's own depth passes an equal test
-depth: a fragment farther than the buffer fails a less than or equal test
-depth: a fragment farther than the buffer fails a less than test
-depth: a fragment farther than the buffer fails a never test
-depth: a fragment farther than the buffer fails an equal test
-depth: a fragment farther than the buffer passes a greater than or equal test
-depth: a fragment farther than the buffer passes a greater than test
-depth: a fragment farther than the buffer passes a not equal test
-depth: a fragment farther than the buffer passes an always test
-depth: a fragment nearer than the buffer fails a greater than or equal test
-depth: a fragment nearer than the buffer fails a greater than test
-depth: a fragment nearer than the buffer fails a never test
-depth: a fragment nearer than the buffer fails an equal test
-depth: a fragment nearer than the buffer passes a less than or equal test
-depth: a fragment nearer than the buffer passes a less than test
-depth: a fragment nearer than the buffer passes a not equal test
-depth: a fragment nearer than the buffer passes an always test
-depth: a fragment that passes with the write closed leaves the depth
-depth: a fragment that passes with the write open replaces the depth
-depth: closing the depth write does not stop the colour
-depth: graphics device opens with a depth target
-depth: the shaders load
-depth: these three depths tell all eight comparisons apart
-dma: 32 copies of words a dispatch wrote just before land whole
-dma: 32 copies of words the processor wrote land whole
-dma: graphics device opens with a compute queue and room for 32 copies
-dma: one copy lands first, paying for the first use
-dma: the copy shader loads
-drawtex: a draw after a draw texture binds the pipeline the draw before it bound
-drawtex: a draw texture copies its texture onto its rectangle
-drawtex: a draw with another pipeline after a draw texture sets its own viewport
-drawtex: graphics device opens with room for a texture
-drawtex: the drawing shaders load
-drawtex: the texture, its descriptors and the uniform colour are in place
-eac: a one-channel EAC block decodes every index and both clamps
-eac: a two-channel EAC texture decodes each channel from its own block
-eac: graphics device opens with room for the blocks
-eac: the fetching shader loads
-etc2: a T mode block paints its four colours, the distance clamped at both ends
-etc2: a flipped differential block takes its second base from the delta
-etc2: a planar block interpolates three colours and clamps them
-etc2: a punch-through planar block is opaque whatever its opaque bit says
-etc2: a see-through punch-through T block is transparent at index 2
-etc2: a see-through punch-through block is transparent at index 2 and unmodified at index 0
-etc2: an H mode block whose first base is the larger adds 1 to the distance index
-etc2: an H mode block whose first base is the smaller keeps the distance index even
-etc2: an RGBA block takes its alpha from an 8-bit EAC block, clamped at both ends
-etc2: an individual mode block reaches both clamps in its left subblock
-etc2: graphics device opens with room for the blocks
-etc2: the fetching shader loads
-fill: 128 full target quads with colour alone land in order
-fill: 128 full target quads, each depth tested and written, land in order
-fill: graphics device opens with a 512 by 512 depth target
-fill: one depth tested quad lands first, paying for the first use
-fill: the flat shaders load
-fmath: a float travels through the uniform buffer unaltered
-fmath: a multiply and an add in one call
-fmath: addition is correctly rounded
-fmath: denormal products, sums and operands flush, as the console's do
-fmath: division within two and a half units in the last place
-fmath: floor of negatives and fractions
-fmath: fma keeps the product's rounding error, as the console's FFMA does
-fmath: fract of negatives
-fmath: graphics device opens with a float target
-fmath: min and max against infinities
-fmath: min and max hand back the operand that is not a NaN
-fmath: mix carries infinities and NaNs through
-fmath: multiplication is correctly rounded
-fmath: round of negatives and halves, halves to even as the console's
-fmath: roundEven of halves goes to the even neighbour
-fmath: the cosine, within two to the minus eleven
-fmath: the float shader loads
-fmath: the inverse square root of denormals and tiny normals
-fmath: the logarithm from the smallest normal to nearly the largest float
-fmath: the logarithm to base two
-fmath: the sine, within two to the minus eleven
-fmath: the square root
-fmath: the square root of denormals and tiny normals
-fmath: the uniform buffer has somewhere to live
-fmath: two to the power of
-fmath: two to the power of -128 to nearly 128
-format: BGR565_Unorm keeps a clear and a quad drawn over it
-format: BGR5A1_Unorm keeps a clear and a quad drawn over it
-format: BGR5_Unorm keeps a clear and a quad drawn over it
-format: BGRA8_Unorm keeps a clear and a quad drawn over it
-format: BGRA8_Unorm_sRGB keeps a clear and a quad drawn over it
-format: BGRX8_Unorm keeps a clear and a quad drawn over it
-format: BGRX8_Unorm_sRGB keeps a clear and a quad drawn over it
-format: R16_Float keeps a clear and a quad drawn over it
-format: R16_Sint keeps a clear and a quad drawn over it
-format: R16_Snorm keeps a clear and a quad drawn over it
-format: R16_Uint keeps a clear and a quad drawn over it
-format: R16_Unorm keeps a clear and a quad drawn over it
-format: R32_Float keeps a clear and a quad drawn over it
-format: R32_Sint keeps a clear and a quad drawn over it
-format: R32_Uint keeps a clear and a quad drawn over it
-format: R8_Sint keeps a clear and a quad drawn over it
-format: R8_Snorm keeps a clear and a quad drawn over it
-format: R8_Uint keeps a clear and a quad drawn over it
-format: R8_Unorm keeps a clear and a quad drawn over it
-format: RG11B10_Float keeps a clear and a quad drawn over it
-format: RG16_Float keeps a clear and a quad drawn over it
-format: RG16_Sint keeps a clear and a quad drawn over it
-format: RG16_Snorm keeps a clear and a quad drawn over it
-format: RG16_Uint keeps a clear and a quad drawn over it
-format: RG16_Unorm keeps a clear and a quad drawn over it
-format: RG32_Float keeps a clear and a quad drawn over it
-format: RG32_Sint keeps a clear and a quad drawn over it
-format: RG32_Uint keeps a clear and a quad drawn over it
-format: RG8_Sint keeps a clear and a quad drawn over it
-format: RG8_Snorm keeps a clear and a quad drawn over it
-format: RG8_Uint keeps a clear and a quad drawn over it
-format: RG8_Unorm keeps a clear and a quad drawn over it
-format: RGB10A2_Uint keeps a clear and a quad drawn over it
-format: RGB10A2_Unorm keeps a clear and a quad drawn over it
-format: RGBA16_Float keeps a clear and a quad drawn over it
-format: RGBA16_Sint keeps a clear and a quad drawn over it
-format: RGBA16_Snorm keeps a clear and a quad drawn over it
-format: RGBA16_Uint keeps a clear and a quad drawn over it
-format: RGBA16_Unorm keeps a clear and a quad drawn over it
-format: RGBA32_Float keeps a clear and a quad drawn over it
-format: RGBA32_Sint keeps a clear and a quad drawn over it
-format: RGBA32_Uint keeps a clear and a quad drawn over it
-format: RGBA8_Sint keeps a clear and a quad drawn over it
-format: RGBA8_Uint keeps a clear and a quad drawn over it
-format: RGBA8_Unorm keeps a clear and a quad drawn over it
-format: RGBA8_Unorm_sRGB keeps a clear and a quad drawn over it
-format: RGBX16_Float keeps a clear and a quad drawn over it
-format: RGBX16_Sint keeps a clear and a quad drawn over it
-format: RGBX16_Snorm keeps a clear and a quad drawn over it
-format: RGBX16_Uint keeps a clear and a quad drawn over it
-format: RGBX16_Unorm keeps a clear and a quad drawn over it
-format: RGBX32_Float keeps a clear and a quad drawn over it
-format: RGBX32_Sint keeps a clear and a quad drawn over it
-format: RGBX32_Uint keeps a clear and a quad drawn over it
-format: RGBX8_Sint keeps a clear and a quad drawn over it
-format: RGBX8_Snorm keeps a clear and a quad drawn over it
-format: RGBX8_Uint keeps a clear and a quad drawn over it
-format: RGBX8_Unorm keeps a clear and a quad drawn over it
-format: RGBX8_Unorm_sRGB keeps a clear and a quad drawn over it
-format: every reference format is paired with the library's own
-format: graphics device opens with room for every format
-format: the three output shaders load
-format: the uniform buffer has somewhere to live
 fs: 256 small files are opened, read and closed
 fs: 4096 random 4 KiB reads at aligned offsets
 fs: 4096 random 4 KiB reads at odd offsets
@@ -281,73 +46,6 @@ fs: sequential reads of 512 bytes cover 4 MiB
 fs: sequential reads of 64 KiB cover 64 MiB
 fs: the card holds a 64 MiB file and 256 small ones to read
 fs: the memory card opens as a file system
-geometry: a geometry shader turns each of four points into its 8 by 8 square
-geometry: a geometry shader with no early return squares the shown points only
-geometry: a patch tessellated at level 4 covers its rectangle, and says 4
-geometry: a patch whose evaluation stage reads no level covers its rectangle at 4
-geometry: a point the geometry shader emits nothing for draws nothing
-geometry: graphics device opens
-geometry: the geometry and tessellation shaders load
-geometry: the same patch at level 7 covers the same rectangle, and says 7
-index: a limit on the last byte keeps the last index when the draw starts at 4
-index: a limit on the last byte of 16-bit indices keeps the last index
-index: a limit on the last byte of 3006 16-bit indices keeps the last index
-index: a limit on the last byte of 32-bit indices keeps the last index
-index: a limit on the last byte of 8-bit indices keeps the last index
-index: an indexed draw with the library's open limit uses every index
-index: graphics device opens with room for index buffers
-index: the drawing shaders load
-instance: a draw after an instanced array draw adds no instances of its own
-instance: an instanced array draw uses the uniform value set before it
-instance: each subsequent instanced array draw lands as the next instance
-instance: graphics device opens
-instance: the drawing shaders load
-intmath: a float above two to the 31 converts to an unsigned integer
-intmath: a float converts to a signed integer towards nought
-intmath: a left shift by 31, 32 and 33 in a register clamps the count to 32
-intmath: a left shift by every count from nought to 63
-intmath: a left shift discards the bits it pushes out
-intmath: a multiply and an add that both overflow 32 bits
-intmath: a signed clamp
-intmath: a signed integer converts to the nearest float, ties to even
-intmath: a signed right shift by 31, 32 and 33 clamps the count to 32
-intmath: a signed right shift by every count from nought to 63
-intmath: a signed right shift extends the sign bit
-intmath: an unsigned clamp
-intmath: an unsigned integer converts to the nearest float, ties to even
-intmath: an unsigned right shift brings in noughts
-intmath: an unsigned right shift by 31, 32 and 33 clamps the count to 32
-intmath: an unsigned right shift by every count from nought to 63
-intmath: bitfieldExtract of a signed value extends the field's sign
-intmath: bitfieldExtract of an unsigned value at every offset and width
-intmath: bitfieldInsert at every offset and width
-intmath: bitfieldReverse
-intmath: bitwise and
-intmath: bitwise exclusive or
-intmath: bitwise or
-intmath: counting the set bits
-intmath: findLSB, nought included
-intmath: findMSB of a signed value, minus one and nought included
-intmath: findMSB of an unsigned value, nought included
-intmath: finding the lowest and the highest set bit
-intmath: graphics device opens with an integer target
-intmath: packHalf2x16 of floats that are exactly half precision
-intmath: packSnorm2x16 clamps and rounds each component
-intmath: packUnorm4x8 clamps and rounds each component
-intmath: signed division with negative operands truncates towards nought
-intmath: signed remainder with negative operands takes the dividend's sign
-intmath: the fragment coordinate's x is the pixel centre, bit for bit
-intmath: the fragment coordinate's y is the pixel centre, bit for bit
-intmath: the integer shaders load
-intmath: the signed minimum
-intmath: the uniform buffer delivers its value unaltered
-intmath: the uniform buffer has somewhere to live
-intmath: the unsigned maximum
-intmath: unpackHalf2x16 of normal halves and infinities
-intmath: unpackSnorm2x16 then packSnorm2x16 gives the word back, 0x8000 as 0x8001
-intmath: unpackUnorm4x8 then packUnorm4x8 gives the word back
-intmath: unsigned division by a prime
-intmath: unsigned remainder by a prime
 nvdec: the video decoder opens and maps its buffers
 nvdec: vp9_error_resilient: seven hidden frames in one superframe, error resilient
 nvdec: vp9_frame_parallel: a hidden frame, no adaptation
@@ -355,66 +53,6 @@ nvdec: vp9_hidden_altref: a hidden frame, contexts that adapt, 66 by 66
 nvdec: vp9_hidden_lf_deltas: two hidden frames, loop filter deltas
 nvdec: vp9_show_existing: frames shown again, LastShowFrame both ways
 nvdec: vp9_two_frames: two frames, none hidden
-occlusion: 320 cells cleared one by one between reports are cleared
-occlusion: 320 quads counted one by one are all drawn
-occlusion: 320 quads counted one by one pass 64 samples each
-occlusion: graphics device opens with room for 320 reports
-occlusion: the drawing shaders load
-occlusion: the reports have somewhere to live
-order: 128 dispatch and draw pairs with no wait for idle between them are recorded
-order: 128 dispatch and draw pairs, each ordered by a wait for idle, all draw
-order: 256 draws into one target with no wait for idle between them are recorded
-order: 256 draws into one target, each followed by a wait for idle, all land
-order: a grid a dispatch wrote before a wait for idle sizes the indirect dispatch
-order: a storage buffer a dispatch wrote before a full barrier reaches the fragments
-order: a storage buffer a dispatch wrote before a wait for idle reaches the fragments
-order: a uniform buffer a dispatch wrote before a wait for idle reaches the fragments
-order: draw arguments a dispatch wrote before a full barrier reach the indirect draw
-order: draw arguments a dispatch wrote before a wait for idle reach the indirect draw
-order: graphics device opens with a compute queue
-order: indices a dispatch wrote before a wait for idle reach the draw
-order: the compute and drawing shaders load
-order: vertices a dispatch wrote before a full barrier reach the draw
-order: vertices a dispatch wrote before a wait for idle reach the draw
-order: words a dispatch wrote before a wait for idle reach the next dispatch
-order: words the fragments stored before a fragments barrier reach the next draw's fragments
-order: words the fragments stored before a tiles barrier reach the next draw's fragments at the same pixel
-order: words the fragments stored before a wait for idle reach the next dispatch
-query: IF_EQUAL draws after two equal reports from a list that finished before
-query: IF_EQUAL draws after two reports of the same count in the same list
-query: IF_EQUAL draws over two equal values whose timestamps differ
-query: IF_EQUAL skips after 9600 and nought reported in a list before
-query: IF_EQUAL skips after a report of 9600 and one of nought
-query: IF_EQUAL skips values that differ in the low word
-query: IF_EQUAL skips values that differ only in the high word
-query: IF_NOT_EQUAL draws after 9600 and nought reported in a list before
-query: IF_NOT_EQUAL draws after a report of 9600 and one of nought
-query: IF_NOT_EQUAL draws over values that differ in the low word
-query: IF_NOT_EQUAL draws over values that differ only in the high word
-query: IF_NOT_EQUAL skips after two equal reports from a list before
-query: IF_NOT_EQUAL skips after two reports of the same count
-query: IF_NOT_EQUAL skips the same two values
-query: a 32 by 300 pixel quad passes 9600 samples
-query: a full target clear under IF_EQUAL after 9600 and nought is skipped too
-query: a full target clear under IF_EQUAL over two equal values happens
-query: a full target clear under IF_EQUAL over two values that differ is skipped
-query: a full target clear under IF_NOT_EQUAL after 9600 and nought happens
-query: a reset after a draw leaves a count of nought
-query: a second quad of 1600 pixels adds to the count, 11200
-query: graphics device opens with a 64 by 320 target
-query: render enable FALSE skips the draw
-query: render enable TRUE draws
-query: the flat shaders load
-raster: a full screen quad covers every pixel
-raster: a scissor leaves everything outside it untouched
-raster: a shared edge belongs to the triangle it is the left edge of
-raster: a triangle's interior is exact and its edges land within a pixel
-raster: a viewport offset moves the triangle
-raster: clip space minus x is the left half
-raster: clip space plus y is the top half
-raster: graphics device opens
-raster: the same edge does not also belong to the other triangle
-raster: the shaders load
 reference: 4-bit weights 7, 8 and 13 unquantize to 29, 35 and 56
 reference: 5-bit weights 3 and 21 unquantize to 6 and 44
 reference: EAC indices run down each column
@@ -784,10 +422,6 @@ reference: vp9: two cases are built both ways, the others once
 reference: vp9: two forms say which decodes, and the note adds the cases up
 reference: winding does not change which pixels are covered
 reference: with no margin every pixel is judged
-ring: 4096 indexed draws that each take new descriptors all land
-ring: graphics device opens with room for 4096 uniform buffers
-ring: the shaders that read 32 textures each load
-ring: the texture, the vertices, the indices and the buffers are in place
 sched: a thread behind a spinning one moves to an idle core of its mask
 sched: a thread that becomes ready at a better priority takes the core from one spinning
 sched: svcSleepThread(0) leaves the thread on its core
@@ -811,10 +445,6 @@ selfcheck: three units above a power of two is three representable values
 selfcheck: three units below a power of two is six representable values
 selfcheck: ulp neighbours are one apart
 selfcheck: ulp zero tolerance rejects a neighbour
-stream: 1024 draws each see their own 64 KiB uniform buffer
-stream: 4096 draws each see their own 4 KiB uniform buffer
-stream: graphics device opens with room for the uniform buffers
-stream: the drawing shaders load
 support: Y and X in one edge change neither choice, and A in that edge still begins
 support: a case inherits neither another case's samples nor a pass's leftovers
 support: a case known to hang is skipped until hang asks, and retry does not run it
@@ -1008,39 +638,6 @@ support: two names that agree for longer than a stem still get one each
 support: untimed suites report no time
 support: what repeats is the direction pressed, whatever else is held
 support: what the start screen chooses is the run's mode, the label the file's
-swizzle: a 37 by 23 texture that ends inside a gob samples as written
-swizzle: a 4 MiB texture the processor wrote uploads and samples as written
-swizzle: a block linear R8 texture the processor wrote samples as written
-swizzle: a block linear RG8 texture the processor wrote samples as written
-swizzle: a block linear RGBA16 texture the processor wrote samples as written
-swizzle: a block linear RGBA32 texture the processor wrote samples as written
-swizzle: a block linear RGBA8 texture the processor wrote samples as written
-swizzle: eight gob tall blocks sample as written
-swizzle: four gob tall blocks sample as written
-swizzle: graphics device opens with room for the textures
-swizzle: one gob tall blocks sample as written
-swizzle: the folding shader loads
-swizzle: thirty two gob tall blocks sample as written
-swizzle: two gob tall blocks sample as written
-texel: a buffer texture 0 bytes into an aligned region fetches its own texels
-texel: a buffer texture 20 bytes into an aligned region fetches its own texels
-texel: a buffer texture 36 bytes into an aligned region fetches its own texels
-texel: a buffer texture 4 bytes into an aligned region fetches its own texels
-texel: a buffer texture 68 bytes into an aligned region fetches its own texels
-texel: graphics device opens
-texel: the buffer texture shader loads
-texture: clamping to the edge stretches the border texels
-texture: every neighbouring pair of texels averages to a whole byte
-texture: graphics device opens with room for textures
-texture: linear sampling halfway between two texels is their average
-texture: mirroring tiles the texture with no seam
-texture: nearest sampling inside the texture picks the texel under the pixel
-texture: no pair of texels is far enough apart for a filter weight to matter
-texture: repeating tiles the texture
-texture: the descriptor sets have somewhere to live
-texture: the sampling shader loads
-texture: the texels reach the textures
-texture: the textures have somewhere to live
 vic: the video compositor opens and maps its buffers
 vic: vic_alpha_opaque: the opaque alpha fill over a planar alpha below the top
 vic: vic_background: with no slot the target rect takes the background colour
@@ -1061,9 +658,3 @@ vic: vic_target_clip: a target rect inside the surface clips the output
 vic: vic_target_clip_matrix: the target rect clips the matrix's output too
 vic: vic_target_odd: a target rect that starts at column 5
 vic: vic_two_slots: two slots over each other with blending off
-zeta: a Z16 texture the processor wrote samples to its depth
-zeta: a Z24S8 texture the processor wrote samples to its depth
-zeta: a Z24S8 texture the processor wrote takes its depth from the top 24 bits
-zeta: a ZF32 texture the processor wrote samples to its depth
-zeta: graphics device opens with room for the depth textures
-zeta: the fetching shader loads

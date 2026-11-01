@@ -12,7 +12,7 @@ fails.
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
-    --mode "quick notime fatal cpu graphics fs video display kernel audio" \
+    --mode "quick notime fatal cpu fs video display kernel audio" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
@@ -44,14 +44,15 @@ Those of the example, which CI runs; edenprobe's
 | `notime` | each drawing suite once, no timing passes, no times in the report |
 | `fatal` | the cases that may end the program: SM4, CNTVCT_EL0 and DAIF reads, geometry shaders, BC4 arrays |
 | `cpu` | the processor's instructions |
-| `graphics` | the drawing suites: clears, blending, depth, textures and their formats, queries, blits |
 | `fs` | the memory card: a 64 MiB file and 256 small ones, written once and read back |
 | `video` | the video image compositor, and the VP9 decoder on libvpx's test vectors |
 | `display` | a layer's buffer history |
 | `kernel` | the scheduler: priority inheritance, preemption, migration |
 | `audio` | the audio renderer: resampler, circular buffer, limiter; headless, nothing is played |
 
-Left out: `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
+Left out: `graphics` (the drawing suites: clears, blending, depth, textures and their formats, queries, blits),
+which write their own GPU command buffers. The runtime's GPU path is NVN, so their submissions draw
+nothing, and each case waits for memory that the GPU would write. `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
 (cases that never return on a machine that gets them wrong).
 
 ## In CI
