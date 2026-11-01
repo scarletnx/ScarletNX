@@ -117,6 +117,8 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
         if (width == 2 && spv[at + 1] == 32 && !g_vk.feat.shaderClipDistance)
             return "shaderClipDistance is unavailable";
         if (width == 2 && spv[at + 1] == 35 && !g_vk.feat.sampleRateShading) return "sampleRateShading is unavailable";
+        if (width == 2 && spv[at + 1] == 55 && !g_vk.feat.shaderStorageImageReadWithoutFormat)
+            return "shaderStorageImageReadWithoutFormat is unavailable";
         if (width == 2 && spv[at + 1] == 4427 && !g_vk.has_shader_draw_parameters)
             return "shaderDrawParameters is unavailable";
         if (width == 2 && spv[at + 1] == 5055 && !g_shader_clock_scopes) return "shaderClock is unavailable";

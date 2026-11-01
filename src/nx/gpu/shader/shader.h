@@ -79,7 +79,7 @@ typedef struct {
     u32 gbuf_wmask; /* global buffers the program writes */
     struct {
         u32 cbuf_off;
-        u8 type, bindless, bl_cbuf, kind; /* kind: 0 float store, 1 R32ui load/atomic, 2 unsigned store, 3 signed store */
+        u8 type, bindless, bl_cbuf, kind; /* kind: 1 raw R32ui load/atomic; formatted: 0 float, 2 uint, 3 sint */
     } img[8];
     int nimg; /* storage images stored to or used atomically */
     /* FS key: textures of integer formats and their signed ones. rt_int_mask and rt_sint_mask are FS's integer

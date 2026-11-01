@@ -1021,6 +1021,39 @@ static u64 unguarded(u64 w, u32 d, u32 a, u32 handle) {
            (u64)handle << 39;
 }
 
+/* A compute program's formatted load from a buffer surface, SULD.P.R on dimension 1 through the handle MOV R5,
+   c[0x2][0x128], as one game's lighting reads its tiles: the header's format converts it, so the texel buffer is
+   read with the number type the program is keyed on (as a 2D surface's) and declared without a format. A raw
+   SULD.D.32 stays an R32UI read */
+static void buffer_formatted_loads(void) {
+    const u64 load[] = {0x4c98078804a70005ull, 0xeb00028200170202ull};
+    const u64 raw[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
+    /* unkeyed (a bindless header taken as integer), keyed float, keyed signed */
+    const u32 rt_mask[3] = {0, 1u << 8, 0}, rt_signed[3] = {0, 0, 1u << 8};
+    const u8 kinds[3] = {2, 0, 3};
+    for (int i = 0; i < 3; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate_with_rt_masks(load, 2, ST_CS, &info, &words, 1, rt_mask[i], rt_signed[i]);
+        check_translated(code, &info, "a formatted buffer surface load translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && info.img[0].kind == kinds[i] &&
+                      has_storage_image_dim(code, words, 5) && has_storage_image_format(code, words, 0) &&
+                      count_opcode(code, words, 98, 0xffffffffu) == 1 && count_opcode(code, words, 17, 55) == 1,
+                  "a formatted buffer surface load reads a texel buffer of its keyed type without a format");
+        free(code);
+    }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(raw, 2, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a raw buffer surface load translates");
+    if (code)
+        check(info.nimg == 1 && info.img[0].kind == 1 && has_storage_image_format(code, words, 33) &&
+                  count_opcode(code, words, 17, 55) == 0,
+              "a raw buffer surface load stays an R32UI read");
+    free(code);
+}
+
 static void volume_surface_atomics(void) {
     const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull,
                                0xeb50020a00070008ull, 0xeb50020a01170008ull};
@@ -3265,6 +3298,7 @@ int main(int argc, char** argv) {
     scaled_texel_fetch();
     txd_grad();
     fragment_storage_images();
+    buffer_formatted_loads();
     volume_surface_atomics();
     draw_buffer_surfaces();
     layered_surface_loads();
