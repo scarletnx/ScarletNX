@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -133,27 +134,34 @@ static struct {
     u32 head, tail;
     u32 n;
     u64 bytes;
-} g_own;
+    /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
+       advance writes. A writable reuse still needs ordering against intervening readers. */
+    struct {
+        u64 writes, visible, submit, work;
+        u64 barriers, read_reuses, counted_work;
+        int reused_write;
+    } order;
+} g_buffer;
 static void own_link(u32 i) {
     Vb* e = &g_vb[i];
     e->own_next = 0;
-    e->own_prev = g_own.tail;
+    e->own_prev = g_buffer.tail;
     if (e->own_prev)
         g_vb[e->own_prev].own_next = i;
     else
-        g_own.head = i;
-    g_own.tail = i;
+        g_buffer.head = i;
+    g_buffer.tail = i;
 }
 static void own_unlink(u32 i) {
     Vb* e = &g_vb[i];
     if (e->own_prev)
         g_vb[e->own_prev].own_next = e->own_next;
     else
-        g_own.head = e->own_next;
+        g_buffer.head = e->own_next;
     if (e->own_next)
         g_vb[e->own_next].own_prev = e->own_prev;
     else
-        g_own.tail = e->own_prev;
+        g_buffer.tail = e->own_prev;
 }
 /* Optional copy telemetry. Counters are updated under vk_lock. */
 static u64 g_copy_stage, g_copy_owned, g_copy_uncached, g_copy_zero, g_copy_calls, g_copy_peak, g_read_bound;
@@ -226,6 +234,7 @@ static void copy_note(u64 gva, u64 len) {
 
 typedef struct GfxOut {
     u64 addr, frame, frame_id; /* the submit that recorded it, and its frame (whose staging holds buf) */
+    u64 written; /* buffer-write generation, including an in-place reuse prepared for the next recorded work */
     u32 size;
     VkBuffer buf;
     u64 off;
@@ -367,6 +376,7 @@ static _Thread_local struct {
 } t_buffer;
 
 void vk_buf_writable_abort(void) {
+    g_buffer.order.reused_write = 0;
     while (g_prep) {
         GfxOut* o = g_prep;
         g_prep = o->next;
@@ -375,8 +385,15 @@ void vk_buf_writable_abort(void) {
     g_prep_tail = NULL;
 }
 void vk_buf_writable_commit(void) {
+    /* Reusing an output writes its existing buffer without adding another pending result. Count that write
+       too, but only after the draw or dispatch was recorded. An abandoned setup must not invent writes. */
+    if (g_prep || g_buffer.order.reused_write) g_buffer.order.writes++;
+    g_buffer.order.reused_write = 0;
     if (!g_prep) return;
-    for (GfxOut* o = g_prep; o; o = o->next) out_pages(o, 1);
+    for (GfxOut* o = g_prep; o; o = o->next) {
+        o->written = g_buffer.order.writes;
+        out_pages(o, 1);
+    }
     if (g_out_tail)
         g_out_tail->next = g_prep;
     else
@@ -1078,16 +1095,36 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
     if (count == 1 && gva >= match->addr && gva + len <= match->addr + match->size &&
         !((match->off + (gva - match->addr)) & (align - 1)) &&
         (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
-        /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
-           either may read it next (a dispatch on the graphics queue binds like a draw) */
-        static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
-        if (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches) {
+        /* The barrier makes all earlier buffer writes visible to later graphics and compute consumers.
+           Keep that visibility across read-only draws instead of ending a pass for each consumer. A writable
+           binding must also wait for reads since the last barrier, so retain the per-work check for it. */
+        u64 work = g_vk_drawn + g_vk_dispatches;
+        int new_write = match->written > g_buffer.order.visible;
+        /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
+           this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
+           An aborted setup can leave a future stamp, which only causes an extra barrier, never a missing one. */
+        if (g_buffer.order.submit != vk_submit_number() ||
+            ((writable || new_write) &&
+             (g_buffer.order.work != work || g_buffer.order.visible != g_buffer.order.writes))) {
             vk_render_end();
             copy_barrier(out_stages(), out_access(),
                          VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-            barrier_frame = vk_submit_number();
-            barrier_work = g_vk_drawn + g_vk_dispatches;
+            g_buffer.order.submit = vk_submit_number();
+            g_buffer.order.work = work;
+            g_buffer.order.visible = g_buffer.order.writes;
+            if (copy_stats_on()) {
+                g_buffer.order.barriers++;
+                g_buffer.order.counted_work = work;
+            }
+        } else if (!writable && copy_stats_on() && g_buffer.order.counted_work != work) {
+            /* Count omitted barriers once per consumer, excluding bindings the old per-work check skipped too. */
+            g_buffer.order.read_reuses++;
+            g_buffer.order.counted_work = work;
+        }
+        if (writable) {
+            match->written = g_buffer.order.writes + 1;
+            g_buffer.order.reused_write = 1;
         }
         *buf = match->buf;
         *off = match->off + (gva - match->addr);
@@ -1940,8 +1977,8 @@ static void drop_own(u32 i) {
     if (e->own) {
         vk_defer_buffer(e->buf, e->mem);
         own_unlink(i);
-        g_own.n--;
-        g_own.bytes -= e->len;
+        g_buffer.n--;
+        g_buffer.bytes -= e->len;
     }
     e->own = 0;
     e->buf = VK_NULL_HANDLE;
@@ -2061,7 +2098,7 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkBuffer b;
     VmaAllocation m;
-    if (vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
+    if (vk_buffer_create(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
     vk_mem_track(m);
     if (copy_stats_on()) g_copy_owned += len;
     vk_render_end(); /* copies happen outside rendering passes */
@@ -2076,8 +2113,8 @@ static int make_own_(u32 i, VkBuffer sb, u64 so) {
     e->off = 0;
     e->used = g_vk_present;
     own_link(i);
-    g_own.n++;
-    g_own.bytes += len;
+    g_buffer.n++;
+    g_buffer.bytes += len;
     return 1;
 }
 
@@ -2424,8 +2461,8 @@ int vk_buf_get_strict(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 
 u64 vk_buf_reclaim(u32 before, u64 want) {
     u64 freed = 0;
-    while (g_own.head && freed < want && (i32)(g_vb[g_own.head].used - before) < 0) {
-        u32 i = g_own.head;
+    while (g_buffer.head && freed < want && (i32)(g_vb[g_buffer.head].used - before) < 0) {
+        u32 i = g_buffer.head;
         freed += g_vb[i].len;
         drop_own(i); /* the entry stays: its range is copied into a buffer again when next read */
         vk_defer_bytes(g_vb[i].len);
@@ -2433,8 +2470,8 @@ u64 vk_buf_reclaim(u32 before, u64 want) {
     return freed;
 }
 void vk_buf_stats(u32* count, u64* bytes) {
-    *count = g_own.n;
-    *bytes = g_own.bytes;
+    *count = g_buffer.n;
+    *bytes = g_buffer.bytes;
 }
 
 /* buffers not read for twenty seconds, and in 120 presents, go */
@@ -2448,6 +2485,9 @@ void vk_buf_frame(void) {
             (unsigned long long)g_read_bound, (unsigned long long)g_wb_outputs, (unsigned long long)g_wb_bytes,
             (unsigned long long)g_wb_waits, (unsigned long long)(g_wb_wait_ns / 1000000),
             (unsigned long long)g_wb_reuses);
+        LOG("vulkan: buffer dependencies: %llu barriers, %llu consumer barriers avoided\n",
+            (unsigned long long)g_buffer.order.barriers, (unsigned long long)g_buffer.order.read_reuses);
+        g_buffer.order.barriers = g_buffer.order.read_reuses = 0;
         stage_report();
         vk_stage_report();
         LOG("vulkan: buffer waits: draw=%llu/%llums read=%llu/%llums write=%llu/%llums signal=%llu/%llums syncwait=%llu/%llums map=%llu/%llums draw_landed=old_frame:%llu changed:%llu composed=%llu+%llu\n",

@@ -13,6 +13,7 @@
 #include <string.h>
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/ftz_probe_spv.h"
 
 #define PROBE_N 8 /* the shader's invocations (ftz_probe.comp) */
@@ -87,7 +88,7 @@ int vk_ftz_native(void) {
                                                  .pName = "main"},
                                        .layout = playout};
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &pci, NULL, &pipeline))) goto out;
-    if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation))) goto out;
+    if (!VK_OK(vk_buffer_create(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation))) goto out;
     words = allocation.pMappedData;
     for (int i = 0; i < PROBE_N; i++)
         for (int k = 0; k < 3; k++) words[k * PROBE_N + i] = g_probe[i][k];

@@ -243,6 +243,7 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                                        VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    if (g_vk.has_descriptor_buffers) bci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     VkMemoryRequirements req;
     const VkPhysicalDeviceMemoryProperties* mp;
     u64 t0 = plat_ns();
@@ -266,8 +267,10 @@ static int imp_make(Imp* m, u64 cpu, u64 size) {
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                             .pHostPointer = host};
+    VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                        .pNext = &imp, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                               .pNext = &imp,
+                               .pNext = g_vk.has_descriptor_buffers ? (const void*)&flags : (const void*)&imp,
                                .allocationSize = size,
                                .memoryTypeIndex = type};
     if (type == ~0u || req.size > size ||
