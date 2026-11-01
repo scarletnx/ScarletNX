@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The NVN functions the runtime implements under nvn_direct (gpu/nvn/nvn_direct.c), for tools/hookgen with
+# The NVN functions the runtime implements under nvn (gpu/nvn/nvn_loader.c), for tools/hookgen with
 # --prefix nvn: hooks.hook's grammar, each function by the name the game resolves it by (nvnBootstrapLoader and
 # nvnDeviceGetProcAddress), with its arguments and result in the types of src/nx/gpu/nvn/nvn.h (an NVNboolean is a
 # bool, an int an i32, a size_t a usize and a ptrdiff_t an isize, which a 32-bit game passes in 4 bytes). This file is the one prototype of
@@ -13,7 +13,7 @@
 # window).
 include "nx/gpu/nvn/nvn.h"
 
-# The resolvers, which nvn_direct.c wraps with C of its own: the recompiler calls them through their
+# The resolvers, which nvn_loader.c wraps with C of its own: the recompiler calls them through their
 # dispatch slots, as it calls a hooked function (hookgen's route lines)
 route nvnBootstrapLoader
 route nvnDeviceGetProcAddress

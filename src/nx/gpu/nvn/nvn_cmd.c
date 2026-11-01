@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Ported from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/hle_nvn.c */
-/* nvn_direct's command buffers: the game's NVN commands recorded into the command memory it adds, in nxnative's
+/* nvn's command buffers: the game's NVN commands recorded into the command memory it adds, in nxnative's
    record format (gpu/nvn/nvn_obj.h), for the queue to submit.
 
    Memory, as NVN hands it out: the game adds command memory (AddCommandMemory, a pool and a range) and records into
@@ -52,7 +52,7 @@
    NVN call may clobber */
 static void guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
     u64 lr = c->x[30], pc = fn;
-    if (g_nvn.direct.a32) { /* a 32-bit game's callback: AAPCS32, each argument in a word, and back to lr */
+    if (g_nvn.loader.a32) { /* a 32-bit game's callback: AAPCS32, each argument in a word, and back to lr */
         SnxArmCPU* a = arm_cpu(c);
         u32 lr32 = a->r[14];
         a->r[0] = (u32)a0;
@@ -75,7 +75,7 @@ static void guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
 }
 
 /* the return address of the NVN call that c runs: its call site */
-static u64 nvn_caller(CPU* c) { return g_nvn.direct.a32 ? arm_cpu(c)->r[14] : c->x[30]; }
+static u64 nvn_caller(CPU* c) { return g_nvn.loader.a32 ? arm_cpu(c)->r[14] : c->x[30]; }
 
 /* a record's header: its op, its size, and the driver's bytes for its command (which a copy of it counts again) */
 static void put_hdr(u64 at, u32 op, u32 size, u32 cost) {
@@ -130,7 +130,7 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at) {
         u64 size = want > SPILL_SEGMENT / 2 ? (want * 2 + 0xffff) & ~0xffffull : SPILL_SEGMENT, was = st->total;
         if (st->ns == NVN_SPILL_SEGS)
             fatal("nvn: command records past the game's command memory need more than the %u segments of the "
-                  "runtime's own memory nvn_direct holds (%llu KiB)",
+                  "runtime's own memory nvn holds (%llu KiB)",
                   NVN_SPILL_SEGS, (unsigned long long)(st->total >> 10));
         st->s[k].at = kmem_alloc(size, MS_KERNEL, PERM_RW);
         st->s[k].size = size;
@@ -146,7 +146,7 @@ static u32 spill_cut(u64 cb, u64 anchor, u32 need, u64* at) {
     else if (st->slots < NVN_SPILL_PIECES)
         slot = ++st->slots;
     else
-        fatal("nvn: more than %u pieces of the runtime's memory carry command records at once, which nvn_direct holds",
+        fatal("nvn: more than %u pieces of the runtime's memory carry command records at once, which nvn holds",
               NVN_SPILL_PIECES);
     b = (u32)(anchor >> 12) % NVN_SPILL_BUCKETS;
     st->p[slot].anchor = anchor;
@@ -521,7 +521,7 @@ void nvn_CommandBufferCopyCommands(CPU* c, u64 cb, i32 n, u64 handles) {
             memcpy(&h, GP(p), sizeof h);
             op = NVN_REC_OP(h.op);
             if (op >= OP_COUNT_ || h.size < 8 || (h.size & 7))
-                fatal("nvn: nvnCommandBufferCopyCommands of a record at %llx with op %u and size %u, which nvn_direct "
+                fatal("nvn: nvnCommandBufferCopyCommands of a record at %llx with op %u and size %u, which nvn "
                       "never writes",
                       (unsigned long long)p, op, h.size);
             if (op == OP_END) break;

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    Ported from nxnative (MIT), Copyright (c) 2026 seedds: dm/gfx/nvn/hle_nvn.c */
-/* nvn_direct's NVN objects: the device, memory pools, buffers, descriptor pools, textures and views, samplers,
+/* nvn's NVN objects: the device, memory pools, buffers, descriptor pools, textures and views, samplers,
    programs, syncs and the state objects, with their builders. Each keeps its state in place in the game's object
    (gpu/nvn/nvn_obj.h), and nothing here records commands or touches the GPU: what NVN only stores, it stores, and
    what it computes (a texture's storage size, a handle) it computes as the driver does.
@@ -10,7 +10,7 @@
    table (its API version is the SDK's, 55.8 in one game) rather than nxnative's 55.15 */
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_replay.h"
-#include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
@@ -210,12 +210,12 @@ void nvn_device_driver(u64 func) {
     RoAfter r = {0};
     u64 lo = g_code_lo, hi;
     /* a 32-bit game's driver is A32 code, in the block table's range */
-    int (*info)(const u8*, u64, u64, u64, u32, i32*) = g_nvn.direct.a32 ? nvn_driver_info32 : nvn_driver_info;
+    int (*info)(const u8*, u64, u64, u64, u32, i32*) = g_nvn.loader.a32 ? nvn_driver_info32 : nvn_driver_info;
     if (__atomic_load_n(&g_nvn.object.driver, __ATOMIC_ACQUIRE)) return; /* resolved again: read once */
-    if (g_nvn.direct.a32 && !arm_code_range(&lo, &hi)) return;
+    if (g_nvn.loader.a32 && !arm_code_range(&lo, &hi)) return;
     r.func = func;
     loader_segments(ro_after, &r);
-    hi = r.end ? r.end : g_nvn.direct.a32 ? hi : g_code_hi;
+    hi = r.end ? r.end : g_nvn.loader.a32 ? hi : g_code_hi;
     u32 i, n = 0;
     memcpy(g_nvn.object.info, device_info, sizeof device_info);
     for (i = 0; i < NVN_DEVICE_INFO_ITEMS; i++) n += (u32)info(g_mem, lo, hi, func, i, &g_nvn.object.info[i]);
@@ -553,7 +553,7 @@ void nvn_BufferInvalidateMappedRange(CPU* c, u64 buf, i64 offset, u64 size) {
 static int desc_pool_init(u64 dp, u64 pool, i64 offset, i32 count, const char* kind) {
     NvnDescPool o = {0};
     if (offset < 0 || (u64)offset > 0xffffffffull) {
-        LOG("nvn: a %s pool at offset %llx of its memory pool, which nvn_direct keeps in 32 bits\n", kind,
+        LOG("nvn: a %s pool at offset %llx of its memory pool, which nvn keeps in 32 bits\n", kind,
             (unsigned long long)offset);
         return 0;
     }
@@ -630,7 +630,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     }
     memcpy(&tex, GP(t), sizeof tex);
     if (v) memcpy(&view, GP(v), sizeof view);
-    if (!nvn_tic_encode(&tex, v ? &view : NULL, image, g_nvn.direct.api, tic))
+    if (!nvn_tic_encode(&tex, v ? &view : NULL, image, g_nvn.loader.api, tic))
         LOG_LIMIT(8, "nvn: a texture of format %#x, which has no texture descriptor: an empty one at %d\n",
                   v && (view.set & NVN_VIEW_FORMAT) ? view.format : tex.d.format, id);
     memcpy(GP(slot), tic, sizeof tic);
@@ -731,7 +731,7 @@ i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
 static u64 zcull_size(const NvnTexDesc* d) {
     NvnTexStorage st;
     nvn_tex_storage(d, &st);
-    if (d->format == NVN_FORMAT_STENCIL8 && g_nvn.direct.api && g_nvn.direct.api < (53u << 16 | 209))
+    if (d->format == NVN_FORMAT_STENCIL8 && g_nvn.loader.api && g_nvn.loader.api < (53u << 16 | 209))
         return nvn_tex_zcull(d);
     return st.zcull;
 }
@@ -829,7 +829,7 @@ u64 nvn_TextureBuilderGetStorageSize(CPU* c, u64 b) {
     NvnTexStorage st;
     (void)c;
     nvn_tex_storage(&TB(b)->d, &st);
-    if (!st.size) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn_direct doesn't know\n",
+    if (!st.size) LOG_LIMIT(8, "nvn: the storage size of a texture of format %#x, which nvn doesn't know\n",
                             TB(b)->d.format);
     return st.size;
 }
@@ -1113,7 +1113,7 @@ void nvn_TextureGetNvRmSurfaceNVX(CPU* c, u64 t, u64 unused, u64 surface) {
     const NvnTexture* o = CT(t);
     u64 color = 0, size = 0, flags = 0;
     u32 width = o->d.width, height = o->d.height, layout, pitch, kind, block_h = 0;
-    int v55_15 = g_nvn.direct.api >= (55u << 16 | 15);
+    int v55_15 = g_nvn.loader.api >= (55u << 16 | 15);
     (void)c;
     (void)unused;
     for (size_t i = 0; i < sizeof colors / sizeof *colors; i++)
@@ -1538,7 +1538,7 @@ static void xfb_of(u64 control, u64 serial) {
     }
     pm_lock(&g_nvn.object.xfb_lock);
     if (g_nvn.object.nxfb == NVN_XFB_MAX)
-        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn_direct holds", NVN_XFB_MAX);
+        fatal("nvn: more than %u programs that capture transform feedback, the layouts nvn holds", NVN_XFB_MAX);
     g_nvn.object.xfb[g_nvn.object.nxfb++] = e;
     pm_unlock(&g_nvn.object.xfb_lock);
 }
@@ -1652,7 +1652,7 @@ static u64 nvrm_sync_run(CPU* c, GuestFn fn, u64 at, u64 a1, u64 a2, u8 sync[NVR
     u64 sp = c->x[31], tmp = (sp - NVRM_SYNC) & ~15ull, r;
     memcpy(GP(tmp), sync, NVRM_SYNC); /* guest memory: every byte the driver reads */
     c->x[31] = tmp;
-    r = nvn_direct_run_driver(c, fn, at, tmp, a1, a2);
+    r = nvn_loader_run_driver(c, fn, at, tmp, a1, a2);
     c->x[31] = sp;
     memcpy(sync, GP(tmp), NVRM_SYNC);
     return r;
@@ -1662,7 +1662,7 @@ int nvn_SyncGetNvRmSyncNVX(CPU* c, u64 s, u64 nvrm) {
     const NvnSync* o = NVN_OBJ(const NvnSync, s);
     u8 sync[NVRM_SYNC] = {0};
     u32 n = 0;
-    if (!g_nvn.direct.nvrm_get) fatal("nvn: nvnSyncGetNvRmSyncNVX was called before the game resolved it");
+    if (!g_nvn.loader.nvrm_get) fatal("nvn: nvnSyncGetNvRmSyncNVX was called before the game resolved it");
     if (__atomic_load_n(&o->fenced, __ATOMIC_ACQUIRE)) {
         if (o->syncpt) {
             snx_st_le32(sync + 0x10, o->syncpt);
@@ -1677,7 +1677,7 @@ int nvn_SyncGetNvRmSyncNVX(CPU* c, u64 s, u64 nvrm) {
     }
     snx_st_le32(sync + 0x08, n ? 5 : 0);
     snx_st_le32(sync + 0x0c, n);
-    return (int)(nvrm_sync_run(c, g_nvn.direct.nvrm_get, g_nvn.direct.nvrm_get_at, nvrm, 0, sync) & 1);
+    return (int)(nvrm_sync_run(c, g_nvn.loader.nvrm_get, g_nvn.loader.nvrm_get_at, nvrm, 0, sync) & 1);
 }
 /* a sync of the NvRm fences the game's library gives (a decoder's), which the runtime's sync waits for by its first:
    one syncpoint, as the queues' fences have */
@@ -1686,8 +1686,8 @@ int nvn_SyncInitializeFromNvRmSyncNVX(CPU* c, u64 s, u64 d, u64 nvrm) {
     NvnSync o = {0};
     u32 n, i;
     int ok;
-    if (!g_nvn.direct.nvrm_init) fatal("nvn: nvnSyncInitializeFromNvRmSyncNVX was called before the game resolved it");
-    ok = (int)(nvrm_sync_run(c, g_nvn.direct.nvrm_init, g_nvn.direct.nvrm_init_at, d, nvrm, sync) & 1);
+    if (!g_nvn.loader.nvrm_init) fatal("nvn: nvnSyncInitializeFromNvRmSyncNVX was called before the game resolved it");
+    ok = (int)(nvrm_sync_run(c, g_nvn.loader.nvrm_init, g_nvn.loader.nvrm_init_at, d, nvrm, sync) & 1);
     n = snx_ld_le32(sync + 0x0c);
     o.magic = NVN_MAGIC('S', 'Y', 'N', 'C');
     if (ok && snx_ld_le32(sync + 0x08) == 5 && n) {
@@ -1989,7 +1989,7 @@ void nvn_VertexAttribStateSetFormat(CPU* c, u64 s, i32 format, i64 offset) {
     u64 w = ld32(s);
     (void)c;
     if (offset < 0 || offset >= (1 << 19))
-        LOG_LIMIT(8, "nvn: a vertex attribute at offset %lld, past the 19 bits nvn_direct keeps\n", (long long)offset);
+        LOG_LIMIT(8, "nvn: a vertex attribute at offset %lld, past the 19 bits nvn keeps\n", (long long)offset);
     w = nvn_set_field(w, NVN_VA_FORMAT, (u64)format);
     w = nvn_set_field(w, NVN_VA_OFFSET, (u64)offset);
     st32(s, (u32)w);

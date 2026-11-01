@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's command buffers (gpu/nvn/nvn_cmd.c): the game's NVN commands recorded into its command memory. The
+/* nvn's command buffers (gpu/nvn/nvn_cmd.c): the game's NVN commands recorded into its command memory. The
    functions are the NVN functions' (gpu/nvn/nvn.hook.h); here is the file's state, and what the pools tell it */
 #ifndef SNX_NVN_CMD_H
 #define SNX_NVN_CMD_H
@@ -42,7 +42,7 @@ typedef struct {
 
 /* the game finalizes the pool of [memory, memory + size): the runtime's pieces of recordings there come back */
 void nvn_cmd_memory_back(u64 memory, u64 size);
-/* what the runtime's record memory knows of address p, for the message of a record nvn_direct never writes: the
+/* what the runtime's record memory knows of address p, for the message of a record nvn never writes: the
    segment it is in, how far it is cut, and the pieces in use there, into out (n bytes); empty when p isn't in one */
 void nvn_cmd_describe(u64 p, char* out, size_t n);
 /* whether p is in the piece of the runtime's memory a command buffer is cutting now: its records past the ones written

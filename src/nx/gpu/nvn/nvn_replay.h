@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's replay of a queue's submissions on the GPU thread (gpu/nvn/nvn_replay.c) */
+/* nvn's replay of a queue's submissions on the GPU thread (gpu/nvn/nvn_replay.c) */
 #ifndef SNX_NVN_REPLAY_H
 #define SNX_NVN_REPLAY_H
 #include "nx/gpu/nvn/nvn_obj.h"

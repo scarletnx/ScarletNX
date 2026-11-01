@@ -4,7 +4,7 @@
    in its own layout (kind at 0x08, fence count at 0x0c, fences {syncpoint, value} from 0x10, 0x40 bytes). The driver's
    code is a stub that sees the sync nvn_object.c built in guest memory */
 #include "nx/gpu/nvn/nvn_object.h"
-#include "nx/gpu/nvn/nvn_direct.h"
+#include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -35,7 +35,7 @@ static struct {
     u8 out[0x40];
 } drv;
 
-u64 nvn_direct_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
+u64 nvn_loader_run_driver(CPU* c, GuestFn fn, u64 at, u64 a0, u64 a1, u64 a2) {
     drv.calls++;
     drv.fn = fn;
     drv.at = at;
@@ -217,10 +217,10 @@ static void setup(void) {
     memset(&drv, 0, sizeof drv);
     memset(&cpu, 0, sizeof cpu);
     cpu.x[31] = CPU_SP;
-    g_nvn.direct.nvrm_get = GetFn;
-    g_nvn.direct.nvrm_init = InitFn;
-    g_nvn.direct.nvrm_get_at = 0x1234;
-    g_nvn.direct.nvrm_init_at = 0x5678;
+    g_nvn.loader.nvrm_get = GetFn;
+    g_nvn.loader.nvrm_init = InitFn;
+    g_nvn.loader.nvrm_get_at = 0x1234;
+    g_nvn.loader.nvrm_init_at = 0x5678;
 }
 
 static void sync_make(u32 fenced, u32 syncpt, u32 value, u32 shown) {

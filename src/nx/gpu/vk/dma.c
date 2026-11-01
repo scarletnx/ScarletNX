@@ -2,11 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* The DMA copy engine on the GPU (NVN's copies, gpu/nvn/nvn_copy.c, hand a launch over), its destination kept there
    (docs/GPU_OWNERSHIP.md). The destination's span is copied as it is now (guest bytes, what the GPU holds of them,
-   render targets drawn over them) into a buffer of its own; the source's span is staged the same way. Block linear sides are taken apart into rows (blocklinear.comp) and the lines go between
-   rows: copied, or remapped component by component (texconv.comp), exactly a line's bytes each, so what surrounds
-   them keeps its bytes. The destination's rows go back into its layout, and the buffer is published over its span.
-   Under vk_lock, in the frame's command buffer: the semaphore after the copy is the renderer's queued release, which
-   comes after it */
+   render targets drawn over them) into a buffer of its own; the source's span is staged the same way. Block linear
+   sides are taken apart into rows (blocklinear.comp) and the lines go between rows: copied, or remapped component by
+   component (texconv.comp), exactly a line's bytes each, so what surrounds them keeps its bytes. The destination's rows
+   go back into its layout, and the buffer is published over its span. Under vk_lock, in the frame's command buffer: the
+   semaphore after the copy is the renderer's queued release, which comes after it */
 #include <stdlib.h>
 #include <string.h>
 #include "nx/gpu/vk/vk.h"

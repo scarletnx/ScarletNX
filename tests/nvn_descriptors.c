@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's TIC and TSC encoders (gpu/nvn/nvn_tic.c) read back through the decoders the renderer makes its textures
+/* nvn's TIC and TSC encoders (gpu/nvn/nvn_tic.c) read back through the decoders the renderer makes its textures
    and samplers from (gpu/texture/descriptor.h): every NVN texture format two games initialize, the targets, views,
    linear and buffer textures, and the sampler state. The format word is held to a table of the hardware's own format
    codes, written out here from the Maxwell texture formats (envytools), with their texel blocks and component types,

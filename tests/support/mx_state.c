@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The 3D engine's registers as the neutral draw state, for the tests (mx_state.h). Register numbers are method / 4
-   (NVIDIA open-gpu-doc classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the hardware's from 1 and
-   OpenGL's enumerants, both in Vulkan's order */
+   (NVIDIA open-gpu-doc classes/3d/clb197.h). Compare functions and stencil operations come in two encodings, the
+   hardware's from 1 and OpenGL's enumerants, both in Vulkan's order */
 #include "mx_state.h"
 #include <string.h>
 #include "kepler_compute_regs.h"

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nvn_direct's draws: a queue's rendering state, which its replayed records set, as the renderer's draw state
+/* nvn's draws: a queue's rendering state, which its replayed records set, as the renderer's draw state
    (gpu/nvn/nvn_draw.c) */
 #ifndef SNX_NVN_DRAW_H
 #define SNX_NVN_DRAW_H

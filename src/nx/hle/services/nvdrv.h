@@ -28,7 +28,7 @@ void nv_ioctl_abandon(u32 fd);
    outputs 0) for a dead handle */
 int nvmap_get(u32 h, u64* addr, u32* size);
 u64 nvmap_addr_by_id(u32 id); /* 0 when no live handle has that id */
-/* A handle the runtime makes for guest memory the game gave a front end (nvn_direct's memory pools), as the game's NVN
+/* A handle the runtime makes for guest memory the game gave a front end (nvn's memory pools), as the game's NVN
    driver makes one for each pool: created and allocated at once, with one reference, its number its id. 0 when the
    memory isn't page aligned, is past 4 GiB or no number is left. drop gives its reference back, as FREE does */
 u32 nvmap_handle_new(u64 addr, u64 size);
@@ -42,7 +42,7 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu);
 /* Points the pages of [gva, gva + size) at guest memory from cpu on, the renderer told (its mapping bracket): what
    nvhost-as-gpu's MapBufferEx does, and a test without the ioctls */
 void gmmu_map(u64 gva, u64 cpu, u64 size);
-/* GPU address space for a front end that maps guest memory itself (nvn_direct's memory pools), from the allocator and
+/* GPU address space for a front end that maps guest memory itself (nvn's memory pools), from the allocator and
    page table nvhost-as-gpu uses: alloc reserves size bytes at the alignment (a power of two, 0 for the allocator's
    64 KiB) and returns their GPU address, 0 when the space is full; map points page-aligned [gva, gva + size) at guest
    memory from cpu on; unmap clears those pages; free clears them and gives the addresses back */
