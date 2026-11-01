@@ -193,17 +193,31 @@ static void draw_with(u32 origin, u32 depth_mode) {
     nvn_draw_device(origin, depth_mode);
     check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
 }
+/* the drivers of NVN 53.105 on flip for a lower left origin alone, the 53.13 one for one of it and near = -w */
 static void test_sprite_origin(void) {
     static const struct {
-        u32 origin, depth_mode, window;
+        u32 api, origin, depth_mode, window;
         const char* what;
     } cases[] = {
-        {NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y, "upper left, near = -w"},
-        {NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, 0, "lower left, near = -w"},
-        {NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0, "upper left, near = 0"},
-        {NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y, "lower left, near = 0"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, 0,
+         "55.15 upper left, near = -w"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
+         "55.15 lower left, near = -w"},
+        {53u << 16 | 105, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
+         "53.105 lower left, near = -w"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0,
+         "55.15 upper left, near = 0"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y,
+         "55.15 lower left, near = 0"},
+        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
+         "53.13 upper left, near = -w"},
+        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0,
+         "53.13 upper left, near = 0"},
+        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y,
+         "53.13 lower left, near = 0"},
     };
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
+        g_nvn.direct.api = cases[i].api;
         draw_with(cases[i].origin, cases[i].depth_mode);
         check(d.ds.dyn.window_origin == cases[i].window, "%s window_origin: expected %#x, found %#x", cases[i].what,
               cases[i].window, d.ds.dyn.window_origin);
