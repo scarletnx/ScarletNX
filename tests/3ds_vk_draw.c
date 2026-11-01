@@ -11,6 +11,7 @@
 #include "3ds/gpu/transfer.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,7 @@
 #define H 64
 
 static int failures;
+static bool uber_pass; /* the draws use the uber shader (shaders/uber.frag) instead of the generated ones */
 static uint32_t seed = 0x3d5u;
 static uint32_t next(void) {
     seed = seed * 1664525u + 1013904223u;
@@ -194,8 +196,8 @@ static void compare(const Scene* s, const unsigned char* sw, const unsigned char
     }
     /* edges: a pixel's worth of the target's outline and the triangles' */
     bool ok = off <= W * H / 25 && depth_off <= W * H / 25;
-    printf("%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n", s->name, off,
-           tolerance, worst, depth_off, ok ? "ok" : "FAIL");
+    printf("%s%-24s %4u pixels off by more than %u (largest %u), %4u depth or stencil values off: %s\n",
+           uber_pass ? "uber: " : "", s->name, off, tolerance, worst, depth_off, ok ? "ok" : "FAIL");
     if (!ok) ++failures;
 }
 
@@ -251,15 +253,7 @@ static void array_draw(Scene* s) {
     put(&s->list, SNX_PICA_TRIGGER_DRAW, 1);
 }
 
-int main(void) {
-    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
-    char why[256];
-    if (!m) return 1;
-    if (!snx_ctr_vk_init(m, why, sizeof why)) {
-        printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
-        snx_ctr_memory_free(m);
-        return 77;
-    }
+static void scenes(SnxCtrMemory* m) {
     static const char* const color_names[5] = {"colour RGBA8", "colour RGB8", "colour RGB5A1", "colour RGB565",
                                                "colour RGBA4"};
     for (unsigned f = 0; f < 5; ++f) { /* vertex colours into each colour format */
@@ -420,7 +414,7 @@ int main(void) {
         run(m, s);
         free(s);
     }
-    {
+    if (!uber_pass) { /* the uber shader has no lighting: a lit surface shows its vertex colour */
         Scene* s = scene("lighting, one light", 0, 0xff);
         put(&s->list, 0x140 + 2, 1023u << 20 | 512u << 10 | 1023u);
         put(&s->list, 0x140 + 3, 100u << 20 | 50u << 10 | 20u);
@@ -433,6 +427,24 @@ int main(void) {
         array_draw(s);
         run(m, s);
         free(s);
+    }
+}
+
+int main(void) {
+    SnxCtrMemory* m = snx_ctr_memory_new(SNX_CTR_OLD);
+    char why[256];
+    if (!m) return 1;
+    if (!snx_ctr_vk_init(m, why, sizeof why)) {
+        printf("no Vulkan device (%s): GPU draw checks skipped\n", why);
+        snx_ctr_memory_free(m);
+        return 77;
+    }
+    g_settings.ctr_async_pipelines = 0; /* every draw waits for its own shaders */
+    scenes(m);
+    if (snx_ctr_vk()->shader_object) { /* the same scenes drawn with the uber shader */
+        g_settings.ctr_async_pipelines = 2;
+        uber_pass = true;
+        scenes(m);
     }
     snx_ctr_vk_free();
     snx_ctr_memory_free(m);

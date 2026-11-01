@@ -32,6 +32,8 @@ foreach(shader fill display_transfer texture_copy present texture color depth y2
     snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/${shader}.comp NAME snx_ctr_${shader}_spv
                    HEADER 3ds/gpu/vk/shaders/${shader}_spv.h)
 endforeach()
+# the texture environment as one fragment shader, for a draw whose exact shader is still being built
+snx_glsl_spirv(snx_ctr_gpu SOURCE gpu/vk/shaders/uber.frag NAME snx_ctr_uber_spv HEADER 3ds/gpu/vk/shaders/uber_spv.h)
 # the PICA's software renderer, ported from Azahar's: the CPU reference the GPU's draws are tested against, which the
 # runtime does not draw with
 add_library(snx_ctr_gpu_reference STATIC gpu/shader.c gpu/draw.c gpu/raster.c gpu/lighting.c gpu/texture.c)

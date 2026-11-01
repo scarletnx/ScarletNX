@@ -12,13 +12,17 @@
 #include "3ds/gpu/vk/shaders/color_spv.h"
 #include "3ds/gpu/vk/shaders/depth_spv.h"
 #include "3ds/gpu/vk/shaders/texture_spv.h"
+#include "3ds/gpu/vk/shaders/uber_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/utilities/bits.h"
+#include "snx_settings.h"
+#include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define RING_SIZE (32u << 20) /* the uploads, a part for each submission slot: uniforms, LUTs, default and immediate
                                  vertices */
@@ -114,9 +118,9 @@ typedef struct {
 /* what picks a pipeline besides its shaders: plain data, zeroed before it is filled */
 typedef struct {
     uint32_t vs, fs; /* indices into the shader caches */
-    uint32_t blend, logic, depth_color, stencil, stencil_op;
-    uint8_t blend_on, color_mask, depth_write, stencil_on;
-    uint8_t topology, cull, depth, pad;
+    uint32_t blend, logic;
+    uint8_t blend_on, color_mask;
+    uint8_t topology, cull, depth, pad; /* depth: the target has a depth attachment */
     uint16_t binding_mask, pad2;
     uint32_t stride[13];
     struct {
@@ -124,23 +128,65 @@ typedef struct {
         uint16_t offset;
     } attribute[16];
 } PipeKey;
+/* the depth and stencil state of a draw, set on the command buffer (dynamic state), so a pipeline does not depend on
+   it: depth_color is the OM_DEPTH_COLOR bits 0x1071 (test, function, write), stencil and stencil_op the registers'
+   masked words */
+typedef struct {
+    uint32_t depth_color, stencil, stencil_op;
+    uint8_t depth, depth_write, stencil_on;
+} DepthState;
+/* what a fragment shader of fsgen.c is replaced by while it is built (shaders/uber.frag): the texture environment's
+   stages and switches, as push constants */
+typedef struct {
+    uint32_t sources[6], modifiers[6], ops[6], scales[6], flags, borders;
+} UberPush;
+static bool uber_init(void);
+static void uber_free(VkDevice d);
+static double now_ms(void);
+static VkShaderEXT shader_object(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words,
+                                 size_t count);
+static bool pipe_worker_start(void);
+typedef struct PipeJob PipeJob;
+static void pipe_job_queue(PipeJob* j);
 
+/* what the worker thread builds: a pipeline (its key and shader modules are copied, so the worker reads nothing the
+   draws change), or a fragment shader object from the SPIR-V in words; done, pipeline and object are under
+   pipe_worker.lock */
+typedef struct PipeJob {
+    PipeKey key;
+    VkShaderModule vs, fs;
+    size_t number;
+    VkPipeline pipeline;
+    uint32_t* words;
+    size_t word_count;
+    VkShaderEXT object;
+    bool done;
+    struct PipeJob* next;
+} PipeJob;
 typedef struct {
     uint64_t hash;
     SnxCtrVsConfig config;
     VkShaderModule module;
+    VkShaderEXT object; /* with shader objects */
+    uint32_t* words;    /* with them, the SPIR-V is kept for the draws that go through a pipeline (ensure_modules) */
+    size_t word_count;
     const char* why;
 } VsShader;
 typedef struct {
     uint64_t hash;
     SnxCtrFsConfig config;
     VkShaderModule module;
+    VkShaderEXT object;
+    uint32_t* words;
+    size_t word_count;
+    PipeJob* job; /* the object's build, until it is collected */
     const char* why;
 } FsShader;
 typedef struct {
     uint64_t hash;
     PipeKey key;
     VkPipeline pipeline;
+    PipeJob* job; /* while the worker has not been collected from */
 } Pipe;
 
 typedef struct {
@@ -357,10 +403,17 @@ static bool made(void) {
     si.pBindings = set1;
     if (vkCreateDescriptorSetLayout(v->device, &si, NULL, &g.set1) != VK_SUCCESS) return false;
     VkDescriptorSetLayout sets[2] = {g.set0, g.set1};
+    VkPushConstantRange uber_range = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UberPush)};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .setLayoutCount = 2,
-                                     .pSetLayouts = sets};
+                                     .pSetLayouts = sets,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &uber_range};
     if (vkCreatePipelineLayout(v->device, &li, NULL, &g.layout) != VK_SUCCESS) return false;
+    if (v->shader_object && !uber_init()) {
+        fprintf(stderr, "3ds gpu: the uber shader cannot be made: a draw waits for its exact shaders\n");
+        uber_free(v->device);
+    }
     if (!buffer_new(RING_SIZE,
                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -943,13 +996,19 @@ static bool grow(void** items, size_t* capacity, size_t count, size_t size) {
     *capacity = n;
     return true;
 }
+/* milliseconds on the host clock: a draw that builds something new is timed, so a stall can be told from its cause */
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
+}
 static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, c, sizeof *c);
     for (size_t i = 0; i < g.vs_count; ++i)
         if (g.vs[i].hash == h && !memcmp(&g.vs[i].config, c, sizeof *c)) {
             *index = (uint32_t)i;
             *why = g.vs[i].why;
-            return g.vs[i].module != VK_NULL_HANDLE;
+            return g.vs[i].module != VK_NULL_HANDLE || g.vs[i].object != VK_NULL_HANDLE;
         }
     if (!grow((void**)&g.vs, &g.vs_capacity, g.vs_count, sizeof *g.vs)) {
         *why = "the host is out of memory";
@@ -961,12 +1020,21 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     memcpy(&s->config, c, sizeof *c); /* its padding too: lookups memcmp it */
     uint32_t* words;
     size_t count;
-    if (snx_ctr_vs_spirv(&p->vs, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why))
-        s->module = module(words, count, &s->why);
-    if (!s->module) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
+    double began = now_ms();
+    if (snx_ctr_vs_spirv(&p->vs, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
+        if (snx_ctr_vk()->shader_object) {
+            s->object = shader_object(VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, words, count);
+            if (!s->object) s->why = "the device refuses a shader object";
+            s->words = words;
+            s->word_count = count;
+        } else
+            s->module = module(words, count, &s->why);
+    }
+    if (now_ms() - began > 2.0) fprintf(stderr, "3ds gpu: vertex shader %zu built in %.1f ms\n", g.vs_count, now_ms() - began);
+    if (!s->module && !s->object) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
     *index = (uint32_t)g.vs_count++;
     *why = s->why;
-    return s->module != VK_NULL_HANDLE;
+    return s->module != VK_NULL_HANDLE || s->object != VK_NULL_HANDLE;
 }
 static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why) {
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, c, sizeof *c);
@@ -974,7 +1042,7 @@ static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why
         if (g.fs[i].hash == h && !memcmp(&g.fs[i].config, c, sizeof *c)) {
             *index = (uint32_t)i;
             *why = g.fs[i].why;
-            return g.fs[i].module != VK_NULL_HANDLE;
+            return g.fs[i].module != VK_NULL_HANDLE || g.fs[i].job != NULL || g.fs[i].object != VK_NULL_HANDLE;
         }
     if (!grow((void**)&g.fs, &g.fs_capacity, g.fs_count, sizeof *g.fs)) {
         *why = "the host is out of memory";
@@ -986,11 +1054,47 @@ static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why
     memcpy(&s->config, c, sizeof *c); /* its padding too: lookups memcmp it */
     uint32_t* words;
     size_t count;
+    double began = now_ms();
     snx_ctr_fs_spirv(c, snx_ctr_vk()->preserve_infnan, &words, &count);
-    s->module = module(words, count, &s->why);
+    if (snx_ctr_vk()->shader_object && g_settings.ctr_async_pipelines && pipe_worker_start()) {
+        /* the object is built on a worker thread; the draw uses the uber shader meanwhile */
+        PipeJob* j = (PipeJob*)calloc(1, sizeof *j);
+        if (j && (j->words = (uint32_t*)malloc(count * 4))) {
+            memcpy(j->words, words, count * 4);
+            j->word_count = count;
+            s->job = j;
+            pipe_job_queue(j);
+        } else {
+            free(j);
+            s->object = shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, words, count);
+        }
+        s->words = words;
+        s->word_count = count;
+    } else if (snx_ctr_vk()->shader_object) {
+        s->object = shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, words, count);
+        s->words = words;
+        s->word_count = count;
+    } else
+        s->module = module(words, count, &s->why);
+    if (now_ms() - began > 2.0) fprintf(stderr, "3ds gpu: fragment shader %zu generated in %.1f ms\n", g.fs_count, now_ms() - began);
     *index = (uint32_t)g.fs_count++;
     *why = s->why;
-    return s->module != VK_NULL_HANDLE;
+    return s->module != VK_NULL_HANDLE || s->job != NULL || s->object != VK_NULL_HANDLE;
+}
+/* The modules of a draw that goes through a pipeline though the device has shader objects (a logic op, which they
+   cannot do dynamically here), made from the SPIR-V kept */
+static bool ensure_modules(const PipeKey* k) {
+    uint32_t* words[2] = {g.vs[k->vs].words, g.fs[k->fs].words};
+    size_t counts[2] = {g.vs[k->vs].word_count, g.fs[k->fs].word_count};
+    VkShaderModule* modules[2] = {&g.vs[k->vs].module, &g.fs[k->fs].module};
+    for (unsigned i = 0; i < 2; ++i) {
+        if (*modules[i]) continue;
+        VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                       .codeSize = counts[i] * 4,
+                                       .pCode = words[i]};
+        if (!words[i] || vkCreateShaderModule(device(), &mi, NULL, modules[i]) != VK_SUCCESS) return false;
+    }
+    return true;
 }
 
 static VkFormat attribute_format(unsigned code) {
@@ -1038,69 +1142,60 @@ static const VkLogicOp logic_op[16] = {
     VK_LOGIC_OP_NAND,   VK_LOGIC_OP_OR,          VK_LOGIC_OP_NOR,         VK_LOGIC_OP_XOR,
     VK_LOGIC_OP_EQUIVALENT, VK_LOGIC_OP_AND_INVERTED, VK_LOGIC_OP_OR_REVERSE, VK_LOGIC_OP_OR_INVERTED};
 
-static VkPipeline make_pipeline(const PipeKey* k) {
-    SnxCtrVk* v = snx_ctr_vk();
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = g.vs[k->vs].module,
-         .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = g.fs[k->fs].module,
-         .pName = "main"}};
+/* the state of a pipeline's parts, filled in place (it points into itself) */
+typedef struct {
     VkVertexInputBindingDescription bindings[13];
     VkVertexInputAttributeDescription attributes[16];
+    VkPipelineVertexInputStateCreateInfo vertex;
+    VkPipelineInputAssemblyStateCreateInfo assembly;
+    VkPipelineViewportStateCreateInfo viewport;
+    VkPipelineRasterizationStateCreateInfo raster;
+    VkPipelineMultisampleStateCreateInfo multisample;
+    VkPipelineDepthStencilStateCreateInfo depth;
+    VkPipelineColorBlendAttachmentState attachment;
+    VkPipelineColorBlendStateCreateInfo blend;
+    VkDynamicState dynamic_states[11];
+    VkPipelineDynamicStateCreateInfo dynamic;
+    VkFormat color_format;
+    VkPipelineRenderingCreateInfo rendering;
+} PipeState;
+static void pipe_state(const PipeKey* k, PipeState* st) {
+    SnxCtrVk* v = snx_ctr_vk();
     uint32_t binding_count = 0;
     for (uint32_t b = 0; b < 13; ++b)
         if (k->binding_mask >> b & 1)
-            bindings[binding_count++] = (VkVertexInputBindingDescription){b, k->stride[b], VK_VERTEX_INPUT_RATE_VERTEX};
+            st->bindings[binding_count++] = (VkVertexInputBindingDescription){b, k->stride[b], VK_VERTEX_INPUT_RATE_VERTEX};
     for (uint32_t i = 0; i < 16; ++i)
-        attributes[i] = (VkVertexInputAttributeDescription){i, k->attribute[i].binding,
-                                                            attribute_format(k->attribute[i].format),
-                                                            k->attribute[i].offset};
-    VkPipelineVertexInputStateCreateInfo vertex = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                                   .vertexBindingDescriptionCount = binding_count,
-                                                   .pVertexBindingDescriptions = bindings,
-                                                   .vertexAttributeDescriptionCount = 16,
-                                                   .pVertexAttributeDescriptions = attributes};
+        st->attributes[i] = (VkVertexInputAttributeDescription){i, k->attribute[i].binding,
+                                                                attribute_format(k->attribute[i].format),
+                                                                k->attribute[i].offset};
+    st->vertex = (VkPipelineVertexInputStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                        .vertexBindingDescriptionCount = binding_count,
+                                                        .pVertexBindingDescriptions = st->bindings,
+                                                        .vertexAttributeDescriptionCount = 16,
+                                                        .pVertexAttributeDescriptions = st->attributes};
     static const VkPrimitiveTopology topologies[4] = {
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,
         VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
-    VkPipelineInputAssemblyStateCreateInfo assembly = {
+    st->assembly = (VkPipelineInputAssemblyStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = topologies[k->topology & 3]};
-    VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                                                  .viewportCount = 1,
-                                                  .scissorCount = 1};
+    st->viewport = (VkPipelineViewportStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                                       .viewportCount = 1,
+                                                       .scissorCount = 1};
     /* the image's y is the PICA's window y, which grows upwards: its counter-clockwise is Vulkan's clockwise.
        KeepClockWise (1) and KeepCounterClockWise (2) keep those; 0 and 3 keep both */
-    VkPipelineRasterizationStateCreateInfo raster = {
+    st->raster = (VkPipelineRasterizationStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = k->cull == 1 || k->cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE,
         .frontFace = k->cull == 1 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE,
         .lineWidth = 1.0f};
-    VkPipelineMultisampleStateCreateInfo multisample = {
+    st->multisample = (VkPipelineMultisampleStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    /* depth writes need the test on: a write without a test is a test that always passes */
-    bool depth_test = k->depth && ((k->depth_color & 1) || k->depth_write);
-    VkStencilOpState stencil = {stencil_op[k->stencil_op & 7],
-                                stencil_op[k->stencil_op >> 8 & 7],
-                                stencil_op[k->stencil_op >> 4 & 7],
-                                compare_op[k->stencil >> 4 & 7],
-                                k->stencil >> 24 & 0xff,
-                                k->depth_write ? k->stencil >> 8 & 0xff : 0,
-                                k->stencil >> 16 & 0xff};
-    VkPipelineDepthStencilStateCreateInfo depth = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = depth_test,
-        .depthWriteEnable = k->depth && k->depth_write && (k->depth_color >> 12 & 1),
-        .depthCompareOp = k->depth_color & 1 ? compare_op[k->depth_color >> 4 & 7] : VK_COMPARE_OP_ALWAYS,
-        .stencilTestEnable = k->depth && k->stencil_on,
-        .front = stencil,
-        .back = stencil};
-    VkPipelineColorBlendAttachmentState attachment = {
+    /* the values are the draw's (set_depth_state); the pipeline only has the state dynamic */
+    st->depth = (VkPipelineDepthStencilStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    st->attachment = (VkPipelineColorBlendAttachmentState){
         .blendEnable = k->blend_on,
         .srcColorBlendFactor = blend_factor(k->blend >> 16 & 15),
         .dstColorBlendFactor = blend_factor(k->blend >> 20 & 15),
@@ -1109,40 +1204,113 @@ static VkPipeline make_pipeline(const PipeKey* k) {
         .dstAlphaBlendFactor = blend_factor(k->blend >> 28 & 15),
         .alphaBlendOp = blend_op(k->blend >> 8 & 7),
         .colorWriteMask = k->color_mask};
-    VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                 .logicOpEnable = !k->blend_on && v->logic_op &&
-                                                                  (k->logic & 15) != 3,
-                                                 .logicOp = logic_op[k->logic & 15],
-                                                 .attachmentCount = 1,
-                                                 .pAttachments = &attachment};
-    VkDynamicState dynamic_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                        VK_DYNAMIC_STATE_BLEND_CONSTANTS};
-    VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                .dynamicStateCount = 3,
-                                                .pDynamicStates = dynamic_states};
-    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                               .colorAttachmentCount = 1,
-                                               .pColorAttachmentFormats = &color_format,
-                                               .depthAttachmentFormat =
-                                                   k->depth ? g.depth_format : VK_FORMAT_UNDEFINED,
-                                               .stencilAttachmentFormat =
-                                                   k->depth ? g.depth_format : VK_FORMAT_UNDEFINED};
+    st->blend = (VkPipelineColorBlendStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                      .logicOpEnable = !k->blend_on && v->logic_op &&
+                                                                       (k->logic & 15) != 3,
+                                                      .logicOp = logic_op[k->logic & 15],
+                                                      .attachmentCount = 1,
+                                                      .pAttachments = &st->attachment};
+    const VkDynamicState dynamic_states[11] = {
+        VK_DYNAMIC_STATE_VIEWPORT,           VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_BLEND_CONSTANTS,    VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+        VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+        VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+        VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+        VK_DYNAMIC_STATE_STENCIL_REFERENCE};
+    memcpy(st->dynamic_states, dynamic_states, sizeof dynamic_states);
+    st->dynamic = (VkPipelineDynamicStateCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                     .dynamicStateCount = 11,
+                                                     .pDynamicStates = st->dynamic_states};
+    st->color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    st->rendering = (VkPipelineRenderingCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                                    .colorAttachmentCount = 1,
+                                                    .pColorAttachmentFormats = &st->color_format,
+                                                    .depthAttachmentFormat = k->depth ? g.depth_format : VK_FORMAT_UNDEFINED,
+                                                    .stencilAttachmentFormat = k->depth ? g.depth_format : VK_FORMAT_UNDEFINED};
+}
+/* The state a pipeline would hold, on the recording, for a draw with shader objects: they have none of their own, and
+   a draw needs every piece of it set. The values are those pipe_state gives a pipeline. */
+static void set_object_state(VkCommandBuffer cb, const PipeKey* k) {
+    uint32_t binding_count = 0;
+    VkVertexInputBindingDescription2EXT bindings[13];
+    VkVertexInputAttributeDescription2EXT attributes[16];
+    for (uint32_t b = 0; b < 13; ++b)
+        if (k->binding_mask >> b & 1)
+            bindings[binding_count++] = (VkVertexInputBindingDescription2EXT){
+                VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT, NULL, b, k->stride[b],
+                VK_VERTEX_INPUT_RATE_VERTEX, 1};
+    for (uint32_t i = 0; i < 16; ++i)
+        attributes[i] = (VkVertexInputAttributeDescription2EXT){
+            VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT, NULL, i, k->attribute[i].binding,
+            attribute_format(k->attribute[i].format), k->attribute[i].offset};
+    vkCmdSetVertexInputEXT(cb, binding_count, bindings, 16, attributes);
+    static const VkPrimitiveTopology topologies[4] = {
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,
+        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    vkCmdSetPrimitiveTopology(cb, topologies[k->topology & 3]);
+    vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+    vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+    vkCmdSetPolygonModeEXT(cb, VK_POLYGON_MODE_FILL);
+    vkCmdSetCullMode(cb, k->cull == 1 || k->cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+    vkCmdSetFrontFace(cb, k->cull == 1 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
+    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
+    vkCmdSetDepthClampEnableEXT(cb, VK_FALSE);
+    vkCmdSetDepthBoundsTestEnable(cb, VK_FALSE);
+    vkCmdSetRasterizationSamplesEXT(cb, VK_SAMPLE_COUNT_1_BIT);
+    const VkSampleMask mask = 0xffffffffu;
+    vkCmdSetSampleMaskEXT(cb, VK_SAMPLE_COUNT_1_BIT, &mask);
+    vkCmdSetAlphaToCoverageEnableEXT(cb, VK_FALSE);
+    vkCmdSetLogicOpEnableEXT(cb, VK_FALSE); /* a logic op is a pipeline's */
+    VkBool32 blend = k->blend_on;
+    vkCmdSetColorBlendEnableEXT(cb, 0, 1, &blend);
+    VkColorBlendEquationEXT equation = {blend_factor(k->blend >> 16 & 15), blend_factor(k->blend >> 20 & 15),
+                                        blend_op(k->blend & 7),            blend_factor(k->blend >> 24 & 15),
+                                        blend_factor(k->blend >> 28 & 15), blend_op(k->blend >> 8 & 7)};
+    vkCmdSetColorBlendEquationEXT(cb, 0, 1, &equation);
+    VkColorComponentFlags write_mask = k->color_mask;
+    vkCmdSetColorWriteMaskEXT(cb, 0, 1, &write_mask);
+}
+/* the depth and stencil state of a draw, on the recording */
+static void set_depth_state(VkCommandBuffer cb, const DepthState* d) {
+    bool test = d->depth && ((d->depth_color & 1) || d->depth_write);
+    vkCmdSetDepthTestEnable(cb, test);
+    vkCmdSetDepthWriteEnable(cb, d->depth && d->depth_write && (d->depth_color >> 12 & 1));
+    vkCmdSetDepthCompareOp(cb, d->depth_color & 1 ? compare_op[d->depth_color >> 4 & 7] : VK_COMPARE_OP_ALWAYS);
+    vkCmdSetStencilTestEnable(cb, d->depth && d->stencil_on);
+    vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_op[d->stencil_op & 7], stencil_op[d->stencil_op >> 8 & 7],
+                      stencil_op[d->stencil_op >> 4 & 7], compare_op[d->stencil >> 4 & 7]);
+    vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->stencil >> 24 & 0xff);
+    vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->depth_write ? d->stencil >> 8 & 0xff : 0);
+    vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, d->stencil >> 16 & 0xff);
+}
+static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs) {
+    SnxCtrVk* v = snx_ctr_vk();
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = vs,
+         .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = fs,
+         .pName = "main"}};
+    PipeState st;
+    pipe_state(k, &st);
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                       .pNext = &rendering,
+                                       .pNext = &st.rendering,
                                        .stageCount = 2,
                                        .pStages = stages,
-                                       .pVertexInputState = &vertex,
-                                       .pInputAssemblyState = &assembly,
-                                       .pViewportState = &viewport,
-                                       .pRasterizationState = &raster,
-                                       .pMultisampleState = &multisample,
-                                       .pDepthStencilState = &depth,
-                                       .pColorBlendState = &blend,
-                                       .pDynamicState = &dynamic,
+                                       .pVertexInputState = &st.vertex,
+                                       .pInputAssemblyState = &st.assembly,
+                                       .pViewportState = &st.viewport,
+                                       .pRasterizationState = &st.raster,
+                                       .pMultisampleState = &st.multisample,
+                                       .pDepthStencilState = &st.depth,
+                                       .pColorBlendState = &st.blend,
+                                       .pDynamicState = &st.dynamic,
                                        .layout = g.layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkResult made = vkCreateGraphicsPipelines(v->device, VK_NULL_HANDLE, 1, &pi, NULL, &pipeline);
+    VkResult made = vkCreateGraphicsPipelines(v->device, v->pipeline_cache, 1, &pi, NULL, &pipeline);
     if (made != VK_SUCCESS) {
         fprintf(stderr, "3ds gpu: vkCreateGraphicsPipelines failed with VkResult %d (depth %u, topology %u, blend %u)\n", (int)made,
                 (unsigned)k->depth, (unsigned)k->topology, (unsigned)k->blend_on);
@@ -1150,17 +1318,232 @@ static VkPipeline make_pipeline(const PipeKey* k) {
     }
     return pipeline;
 }
-static VkPipeline pipeline(const PipeKey* k) {
+/* ---- the uber shader, as a fragment shader object ---- */
+static VkShaderEXT g_uber;
+static VkShaderEXT shader_object(VkShaderStageFlagBits stage, VkShaderStageFlags next, const uint32_t* words,
+                                 size_t count) {
+    SnxCtrVk* v = snx_ctr_vk();
+    VkDescriptorSetLayout sets[2] = {g.set0, g.set1};
+    VkPushConstantRange range = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(UberPush)};
+    VkShaderCreateInfoEXT ci = {.sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+                                .stage = stage,
+                                .nextStage = next,
+                                .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+                                .codeSize = count * 4,
+                                .pCode = words,
+                                .pName = "main",
+                                .setLayoutCount = 2,
+                                .pSetLayouts = sets,
+                                .pushConstantRangeCount = 1,
+                                .pPushConstantRanges = &range};
+    VkShaderEXT object = VK_NULL_HANDLE;
+    if (vkCreateShadersEXT(v->device, 1, &ci, NULL, &object) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return object;
+}
+static bool uber_init(void) {
+    if (!snx_ctr_vk()->shader_object) return false;
+    g_uber = shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, snx_ctr_uber_spv, (size_t)snx_ctr_uber_spv_size / 4);
+    return g_uber != VK_NULL_HANDLE;
+}
+static void uber_free(VkDevice d) {
+    if (g_uber) vkDestroyShaderEXT(d, g_uber, NULL);
+    g_uber = VK_NULL_HANDLE;
+}
+/* Whether the uber shader draws the config: its texture 0 is a 2D, projected or disabled one (a cube or shadow
+   texture needs another sampler type), and the draw is not a shadow pass or gas */
+static bool uber_draws(const SnxCtrFsConfig* c) {
+    return g_uber && !c->shadow_rendering && c->fog_mode != 7 &&
+           (c->texture0_type == SNX_CTR_FS_TEX_2D || c->texture0_type == SNX_CTR_FS_TEX_PROJECTION ||
+            c->texture0_type == SNX_CTR_FS_TEX_DISABLED);
+}
+static void uber_push(const SnxCtrFsConfig* c, UberPush* p) {
+    memcpy(p->sources, c->tev_sources, sizeof p->sources);
+    memcpy(p->modifiers, c->tev_modifiers, sizeof p->modifiers);
+    memcpy(p->ops, c->tev_ops, sizeof p->ops);
+    memcpy(p->scales, c->tev_scales, sizeof p->scales);
+    p->flags = (uint32_t)(c->alpha_test_func & 7) | (uint32_t)(c->texture0_type & 7) << 3 |
+               (uint32_t)(c->texture2_use_coord1 & 1) << 6 | (uint32_t)c->combiner_buffer_input << 8 |
+               (uint32_t)(c->depthmap_enable & 1) << 16 | (uint32_t)(c->scissor_mode > 3 ? 1 : c->scissor_mode & 3) << 17 |
+               (uint32_t)(c->lighting.enable & 1) << 19;
+    p->borders = 0;
+    for (unsigned i = 0; i < 3; ++i) p->borders |= (uint32_t)(c->border_s[i] & 1) << i | (uint32_t)(c->border_t[i] & 1) << (3 + i);
+}
+static VkPipeline build_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs, size_t number) {
+    double began = now_ms();
+    VkPipeline made = make_pipeline(k, vs, fs);
+    double took = now_ms() - began;
+    if (took > 2.0) fprintf(stderr, "3ds gpu: pipeline %zu built in %.1f ms\n", number, took);
+    return made;
+}
+/* The worker threads that build the pipelines the draws asked for, in parallel (the driver compiles on each). Building one takes the driver
+   from a few ms to over a hundred; on the draw's thread that is a stall of several frames. */
+#define PIPE_THREADS_MAX 4
+static struct {
+    SDL_Thread* threads[PIPE_THREADS_MAX];
+    unsigned thread_count;
+    SDL_Mutex* lock;
+    SDL_Condition *wake, *finished;
+    PipeJob *head, *tail;
+    bool quit;
+} pipe_worker;
+static int pipe_work(void* arg) {
+    (void)arg;
+    SDL_LockMutex(pipe_worker.lock);
+    for (;;) {
+        while (!pipe_worker.head && !pipe_worker.quit) SDL_WaitCondition(pipe_worker.wake, pipe_worker.lock);
+        PipeJob* j = pipe_worker.head;
+        if (!j || pipe_worker.quit) break;
+        pipe_worker.head = j->next;
+        if (!pipe_worker.head) pipe_worker.tail = NULL;
+        SDL_UnlockMutex(pipe_worker.lock);
+        VkPipeline made = VK_NULL_HANDLE;
+        VkShaderEXT object = VK_NULL_HANDLE;
+        if (j->words) {
+            double began = now_ms();
+            object = shader_object(VK_SHADER_STAGE_FRAGMENT_BIT, 0, j->words, j->word_count);
+            double took = now_ms() - began;
+            if (took > 2.0) fprintf(stderr, "3ds gpu: fragment shader object built in %.1f ms\n", took);
+            free(j->words);
+            j->words = NULL;
+        } else
+            made = build_pipeline(&j->key, j->vs, j->fs, j->number);
+        SDL_LockMutex(pipe_worker.lock);
+        j->pipeline = made;
+        j->object = object;
+        j->done = true;
+        SDL_BroadcastCondition(pipe_worker.finished);
+    }
+    SDL_UnlockMutex(pipe_worker.lock);
+    return 0;
+}
+static bool pipe_worker_start(void) {
+    if (pipe_worker.thread_count) return true;
+    pipe_worker.lock = SDL_CreateMutex();
+    pipe_worker.wake = SDL_CreateCondition();
+    pipe_worker.finished = SDL_CreateCondition();
+    int cpus = SDL_GetNumLogicalCPUCores();
+    unsigned want = cpus > 4 ? (unsigned)(cpus - 2) : 2; /* the game's own threads keep the rest */
+    if (want > PIPE_THREADS_MAX) want = PIPE_THREADS_MAX;
+    if (pipe_worker.lock && pipe_worker.wake && pipe_worker.finished)
+        while (pipe_worker.thread_count < want &&
+               (pipe_worker.threads[pipe_worker.thread_count] = SDL_CreateThread(pipe_work, "3ds pipelines", NULL)))
+            pipe_worker.thread_count++;
+    if (pipe_worker.thread_count) return true;
+    if (pipe_worker.finished) SDL_DestroyCondition(pipe_worker.finished);
+    if (pipe_worker.wake) SDL_DestroyCondition(pipe_worker.wake);
+    if (pipe_worker.lock) SDL_DestroyMutex(pipe_worker.lock);
+    memset(&pipe_worker, 0, sizeof pipe_worker);
+    return false;
+}
+/* stops the worker, whatever it has not started left unbuilt (its jobs are freed with their pipes) */
+static void pipe_worker_stop(void) {
+    if (!pipe_worker.thread_count) return;
+    SDL_LockMutex(pipe_worker.lock);
+    pipe_worker.quit = true;
+    SDL_BroadcastCondition(pipe_worker.wake);
+    SDL_UnlockMutex(pipe_worker.lock);
+    for (unsigned i = 0; i < pipe_worker.thread_count; ++i) SDL_WaitThread(pipe_worker.threads[i], NULL);
+    SDL_DestroyCondition(pipe_worker.finished);
+    SDL_DestroyCondition(pipe_worker.wake);
+    SDL_DestroyMutex(pipe_worker.lock);
+    memset(&pipe_worker, 0, sizeof pipe_worker);
+}
+/* a job to the worker (pipe_worker_start made it) */
+static void pipe_job_queue(PipeJob* j) {
+    SDL_LockMutex(pipe_worker.lock);
+    if (pipe_worker.tail) pipe_worker.tail->next = j;
+    else pipe_worker.head = j;
+    pipe_worker.tail = j;
+    SDL_SignalCondition(pipe_worker.wake);
+    SDL_UnlockMutex(pipe_worker.lock);
+}
+/* The fragment shader object of a config: its own once built, else (when the uber shader draws the config) the
+   uber shader, else NULL with *pending set. Waits up to wait_ms for a build. */
+static VkShaderEXT fs_object(FsShader* f, const SnxCtrFsConfig* c, bool* pending, bool* uber) {
+    *pending = *uber = false;
+    if (g_settings.ctr_async_pipelines == 2 && uber_draws(c)) { /* the uber shader only, for tests */
+        *uber = true;
+        return g_uber;
+    }
+    if (f->job) {
+        double until = now_ms() + 1.0;
+        SDL_LockMutex(pipe_worker.lock);
+        while (!f->job->done) {
+            double left = until - now_ms();
+            if (left <= 0) break;
+            SDL_WaitConditionTimeout(pipe_worker.finished, pipe_worker.lock, (int32_t)(left + 0.999));
+        }
+        bool done = f->job->done;
+        VkShaderEXT object = f->job->object;
+        SDL_UnlockMutex(pipe_worker.lock);
+        if (done) {
+            free(f->job);
+            f->job = NULL;
+            f->object = object;
+            if (!object) f->why = "the device refuses a shader object";
+        }
+    }
+    if (f->object) return f->object;
+    if (!f->job) return VK_NULL_HANDLE; /* refused */
+    if (!uber_draws(c)) {
+        *pending = true;
+        return VK_NULL_HANDLE;
+    }
+    *uber = true;
+    return g_uber;
+}
+/* The pipe's pipeline when its job is done (the job is then freed), else NULL with *pending set, after waiting up to
+   wait_ms for it. */
+static VkPipeline pipe_collect(Pipe* e, bool* pending, double wait_ms) {
+    double until = now_ms() + wait_ms;
+    SDL_LockMutex(pipe_worker.lock);
+    while (!e->job->done) {
+        double left = until - now_ms();
+        if (left <= 0) break;
+        SDL_WaitConditionTimeout(pipe_worker.finished, pipe_worker.lock, (int32_t)(left + 0.999));
+    }
+    bool done = e->job->done;
+    VkPipeline made = e->job->pipeline;
+    SDL_UnlockMutex(pipe_worker.lock);
+    if (!done) {
+        *pending = true;
+        return VK_NULL_HANDLE;
+    }
+    free(e->job);
+    e->job = NULL;
+    e->pipeline = made;
+    return made;
+}
+/* The key's pipeline. With the worker, a new one is queued and *pending says it is not ready: the draw is skipped
+   until it is (a build that a few ms finish is waited for). */
+static VkPipeline pipeline(const PipeKey* k, bool* pending) {
+    *pending = false;
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
     for (size_t i = 0; i < g.pipe_count; ++i)
-        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) return g.pipes[i].pipeline;
+        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k))
+            return g.pipes[i].job ? pipe_collect(&g.pipes[i], pending, 0) : g.pipes[i].pipeline;
     if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) return VK_NULL_HANDLE;
-    VkPipeline made_pipeline = make_pipeline(k);
-    if (!made_pipeline) return VK_NULL_HANDLE;
-    g.pipes[g.pipe_count].hash = h;
-    g.pipes[g.pipe_count].key = *k;
-    g.pipes[g.pipe_count++].pipeline = made_pipeline;
-    return made_pipeline;
+    VkShaderModule vs = g.vs[k->vs].module, fs = g.fs[k->fs].module;
+    Pipe* e = &g.pipes[g.pipe_count];
+    *e = (Pipe){.hash = h, .key = *k};
+    if (g_settings.ctr_async_pipelines && pipe_worker_start()) {
+        PipeJob* j = (PipeJob*)calloc(1, sizeof *j);
+        if (j) {
+            j->key = *k;
+            j->vs = vs;
+            j->fs = fs;
+            j->number = g.pipe_count;
+            e->job = j;
+            g.pipe_count++;
+            pipe_job_queue(j);
+            return pipe_collect(e, pending, 2.0);
+        }
+    }
+    VkPipeline made = build_pipeline(k, vs, fs, g.pipe_count);
+    if (!made) return VK_NULL_HANDLE;
+    e->pipeline = made;
+    g.pipe_count++;
+    return made;
 }
 
 /* ---- draws ---- */
@@ -1436,16 +1819,33 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     k.blend = k.blend_on ? r[OM_BLEND] : 0;
     k.logic = k.blend_on ? 0 : r[OM_LOGIC] & 15;
     k.color_mask = (uint8_t)(r[FB_COLOR_WRITE] & 15 ? om >> 8 & 15 : 0);
-    k.depth_write = (uint8_t)((r[FB_DEPTH_WRITE] & 3) != 0);
     k.depth = depth;
-    k.depth_color = depth ? om & 0x1071 : 0; /* test, function, write */
-    k.stencil_on = (uint8_t)(depth && (r[OM_STENCIL] & 1) && key.depth_format == 3);
-    k.stencil = k.stencil_on ? r[OM_STENCIL] & 0xffffff71u : 0;
-    k.stencil_op = k.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
+    DepthState ds = {0};
+    ds.depth = depth;
+    ds.depth_write = (uint8_t)((r[FB_DEPTH_WRITE] & 3) != 0);
+    ds.depth_color = depth ? om & 0x1071 : 0; /* test, function, write */
+    ds.stencil_on = (uint8_t)(depth && (r[OM_STENCIL] & 1) && key.depth_format == 3);
+    ds.stencil = ds.stencil_on ? r[OM_STENCIL] & 0xffffff71u : 0;
+    ds.stencil_op = ds.stencil_on ? r[OM_STENCIL_OP] & 0x777 : 0;
     k.topology = (uint8_t)(r[SNX_PICA_TOPOLOGY] >> 8 & 3);
     k.cull = (uint8_t)(r[CULL_MODE] & 3);
-    VkPipeline pipe = pipeline(&k);
-    if (!pipe) return stop(p, "the device refuses a draw's pipeline");
+    bool pending = false, uber = false;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VkShaderEXT shaders[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    /* shader objects draw without pipelines, but not with a logic op: the device cannot set it dynamically */
+    bool objects = snx_ctr_vk()->shader_object &&
+                   !(!k.blend_on && snx_ctr_vk()->logic_op && (k.logic & 15) != 3);
+    if (objects) {
+        shaders[0] = g.vs[k.vs].object;
+        shaders[1] = fs_object(&g.fs[k.fs], &fs, &pending, &uber);
+        if (pending) return SNX_CTR_PICA_OK; /* the worker is still building it */
+        if (!shaders[0] || !shaders[1]) return stop(p, "the device refuses a draw's shader object");
+    } else {
+        if (snx_ctr_vk()->shader_object && !ensure_modules(&k)) return stop(p, "the device refuses a shader module");
+        pipe = pipeline(&k, &pending);
+        if (pending) return SNX_CTR_PICA_OK; /* the worker is still building it */
+        if (!pipe) return stop(p, "the device refuses a draw's pipeline");
+    }
     /* the vertices: an index buffer, the loaders' bindings, or the immediate vertices */
     uint32_t count = immediate ? (uint32_t)g.immediate_count : r[NUM_VERTICES];
     uint32_t index_pa = 0;
@@ -1508,9 +1908,23 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     VkRect2D scissor = {{0, 0}, {key.width, key.height}};
     float constants[4];
     for (unsigned c = 0; c < 4; ++c) constants[c] = (float)(r[OM_BLEND_CONST] >> (c * 8) & 0xff) / 255.0f;
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    vkCmdSetViewport(cb, 0, 1, &viewport);
-    vkCmdSetScissor(cb, 0, 1, &scissor);
+    if (objects) {
+        static const VkShaderStageFlagBits stages[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+        vkCmdBindShadersEXT(cb, 2, stages, shaders);
+        set_object_state(cb, &k);
+        vkCmdSetViewportWithCount(cb, 1, &viewport);
+        vkCmdSetScissorWithCount(cb, 1, &scissor);
+    } else {
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        vkCmdSetViewport(cb, 0, 1, &viewport);
+        vkCmdSetScissor(cb, 0, 1, &scissor);
+    }
+    set_depth_state(cb, &ds);
+    if (uber) {
+        UberPush push;
+        uber_push(&fs, &push);
+        vkCmdPushConstants(cb, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
+    }
     vkCmdSetBlendConstants(cb, constants);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 2, sets, 0, NULL);
     for (uint32_t b = 0; b < 13; ++b)
@@ -1530,7 +1944,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
         drop_textures(t->key.color_pa, color_span(&t->key));
         set_color(t, t->color_valid, true);
     }
-    if (depth && k.depth_write && ((om >> 12 & 1) || k.stencil_on) && !t->depth_dirty) {
+    if (depth && ds.depth_write && ((om >> 12 & 1) || ds.stencil_on) && !t->depth_dirty) {
         drop_textures(t->key.depth_pa, depth_span(&t->key));
         set_depth(t, t->depth_valid, true);
     }
@@ -1595,8 +2009,10 @@ void snx_ctr_vk_render_free(void) {
         memset(&g, 0, sizeof g);
         return;
     }
+    pipe_worker_stop();
     VkDevice d = device();
     vkDeviceWaitIdle(d);
+    fprintf(stderr, "3ds gpu: %zu pipelines, %zu vertex and %zu fragment shaders\n", g.pipe_count, g.vs_count, g.fs_count);
     for (unsigned s = 0; s < SNX_CTR_VK_SLOTS; ++s) {
         for (size_t i = 0; i < g.view_count[s]; ++i) vkDestroyBufferView(d, g.views[s][i], NULL);
         free(g.views[s]);
@@ -1607,9 +2023,25 @@ void snx_ctr_vk_render_free(void) {
     free(g.pages);
     for (unsigned i = 0; i < g.texture_count; ++i) image_free(&g.textures[i].image);
     for (unsigned i = 0; i < g.target_count; ++i) target_free(&g.targets[i]);
-    for (size_t i = 0; i < g.pipe_count; ++i) vkDestroyPipeline(d, g.pipes[i].pipeline, NULL);
-    for (size_t i = 0; i < g.vs_count; ++i)
+    uber_free(d);
+    for (size_t i = 0; i < g.pipe_count; ++i) {
+        PipeJob* j = g.pipes[i].job;
+        vkDestroyPipeline(d, j ? j->pipeline : g.pipes[i].pipeline, NULL);
+        free(j);
+    }
+    for (size_t i = 0; i < g.vs_count; ++i) {
         if (g.vs[i].module) vkDestroyShaderModule(d, g.vs[i].module, NULL);
+        if (g.vs[i].object) vkDestroyShaderEXT(d, g.vs[i].object, NULL);
+        free(g.vs[i].words);
+    }
+    for (size_t i = 0; i < g.fs_count; ++i) {
+        PipeJob* j = g.fs[i].job;
+        VkShaderEXT object = j ? j->object : g.fs[i].object;
+        if (object) vkDestroyShaderEXT(d, object, NULL);
+        if (j) free(j->words);
+        free(j);
+        free(g.fs[i].words);
+    }
     for (size_t i = 0; i < g.fs_count; ++i)
         if (g.fs[i].module) vkDestroyShaderModule(d, g.fs[i].module, NULL);
     for (unsigned i = 0; i < g.sampler_count; ++i) vkDestroySampler(d, g.samplers[i].sampler, NULL);

@@ -892,6 +892,16 @@ setting CTR GPU trace
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
+setting CTR async pipelines
+    key ctr_async_pipelines
+    int 0 2
+    default 1
+    words Off|On|Uber shader only
+    help 1 = a draw whose shaders are new waits up to 1 ms for worker threads to build them, and then draws with
+    help the uber shader (a texture environment as one shader, without lighting, fog and the procedural texture)
+    help or, where that cannot draw it or the device has no shader objects, is skipped until they are ready (no
+    help frame stalls, an object can look plainer or be missing for a few frames);
+    help 0 = the draw waits for the build, however long it takes; 2 = every draw uses the uber shader (for tests)
 setting CTR run-time compile trace
     key ctr_jit_trace
     int 0 1

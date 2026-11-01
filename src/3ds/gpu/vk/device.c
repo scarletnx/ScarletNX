@@ -2,7 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static struct {
@@ -35,7 +37,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     SnxCtrVk* v = user;
     SnxVkExtensions list;
     if (!snx_vk_device_extensions(phys, &list)) return false;
-    const char* extensions[4];
+    const char* extensions[10];
     uint32_t n = 0;
     bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
@@ -45,17 +47,64 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     }
     bool index8 = snx_vk_extensions_has(&list, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
+    bool objects = snx_vk_extensions_has(&list, VK_EXT_SHADER_OBJECT_EXTENSION_NAME) &&
+                   snx_vk_extensions_has(&list, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME) &&
+                   snx_vk_extensions_has(&list, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
     snx_vk_extensions_free(&list);
     if (!ok) return false;
     VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT};
+    VkPhysicalDeviceShaderObjectFeaturesEXT object_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT dynamic3_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT input_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT};
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features v12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    void* const query[] = {&features, &v12, &v13, index8 ? &index_features : NULL};
+    void* const query[] = {&features,
+                           &v12,
+                           &v13,
+                           index8 ? &index_features : NULL,
+                           objects ? &object_features : NULL,
+                           objects ? &dynamic3_features : NULL,
+                           objects ? &input_features : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(phys, &features);
     if (!v12.storageBuffer8BitAccess || !v13.dynamicRendering) return false;
+    /* shader objects, with every piece of state a draw with them must set (the draw's state is then all dynamic) */
+    objects = objects && object_features.shaderObject &&
+              dynamic3_features.extendedDynamicState3PolygonMode &&
+              dynamic3_features.extendedDynamicState3RasterizationSamples &&
+              dynamic3_features.extendedDynamicState3SampleMask &&
+              dynamic3_features.extendedDynamicState3AlphaToCoverageEnable &&
+              dynamic3_features.extendedDynamicState3DepthClampEnable &&
+              dynamic3_features.extendedDynamicState3LogicOpEnable &&
+              dynamic3_features.extendedDynamicState3ColorBlendEnable &&
+              dynamic3_features.extendedDynamicState3ColorBlendEquation &&
+              dynamic3_features.extendedDynamicState3ColorWriteMask && input_features.vertexInputDynamicState;
+    if (objects) {
+        extensions[n++] = VK_EXT_SHADER_OBJECT_EXTENSION_NAME;
+        extensions[n++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+        extensions[n++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    }
+    VkPhysicalDeviceShaderObjectFeaturesEXT want_object = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT, .shaderObject = VK_TRUE};
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT want_dynamic3 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+        .extendedDynamicState3PolygonMode = VK_TRUE,
+        .extendedDynamicState3RasterizationSamples = VK_TRUE,
+        .extendedDynamicState3SampleMask = VK_TRUE,
+        .extendedDynamicState3AlphaToCoverageEnable = VK_TRUE,
+        .extendedDynamicState3DepthClampEnable = VK_TRUE,
+        .extendedDynamicState3LogicOpEnable = VK_TRUE,
+        .extendedDynamicState3ColorBlendEnable = VK_TRUE,
+        .extendedDynamicState3ColorBlendEquation = VK_TRUE,
+        .extendedDynamicState3ColorWriteMask = VK_TRUE};
+    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT want_input = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT,
+        .vertexInputDynamicState = VK_TRUE};
     /* what the 3DS uses of them, nothing more */
     VkPhysicalDeviceIndexTypeUint8FeaturesEXT want_index = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT,
@@ -73,12 +122,19 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     want.features.fragmentStoresAndAtomics = features.features.fragmentStoresAndAtomics;
     want.features.shaderClipDistance = features.features.shaderClipDistance;
     want.features.shaderInt16 = features.features.shaderInt16;
-    void* const enable[] = {&want, &want12, &want13, index8 ? &want_index : NULL};
+    void* const enable[] = {&want,
+                            &want12,
+                            &want13,
+                            index8 ? &want_index : NULL,
+                            objects ? &want_object : NULL,
+                            objects ? &want_dynamic3 : NULL,
+                            objects ? &want_input : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
     if (snx_vk_device_create(phys, family, &want, extensions, n, &v->device) != VK_SUCCESS) return false;
     v->phys = phys;
     v->family = family;
     v->index8 = index8 && index_features.indexTypeUint8;
+    v->shader_object = objects;
     v->logic_op = features.features.logicOp;
     v->clip_distance = features.features.shaderClipDistance;
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
@@ -148,6 +204,28 @@ static bool import_ram(SnxCtrVk* v, SnxCtrMemory* memory, char* error, size_t er
     }
     return true;
 }
+static char* g_cache_file;
+void snx_ctr_vk_cache_file(const char* path) {
+    free(g_cache_file);
+    g_cache_file = path ? snx_strdup(path) : NULL;
+}
+/* the driver checks the data's header against its device and ignores a cache that is not its own */
+static void cache_make(SnxCtrVk* v) {
+    size_t size = 0;
+    unsigned char* data = g_cache_file ? snx_read_file(g_cache_file, &size) : NULL;
+    VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+                                    .initialDataSize = data ? size : 0,
+                                    .pInitialData = data};
+    if (vkCreatePipelineCache(v->device, &ci, NULL, &v->pipeline_cache) != VK_SUCCESS) v->pipeline_cache = VK_NULL_HANDLE;
+    free(data);
+}
+static void cache_save(SnxCtrVk* v) {
+    size_t size = 0;
+    if (!v->pipeline_cache || !g_cache_file || vkGetPipelineCacheData(v->device, v->pipeline_cache, &size, NULL) != VK_SUCCESS || !size) return;
+    void* data = malloc(size);
+    if (data && vkGetPipelineCacheData(v->device, v->pipeline_cache, &size, data) == VK_SUCCESS) (void)snx_write_file(g_cache_file, data, size);
+    free(data);
+}
 bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
     SnxCtrVk* v = &g_device.vk;
     if (g_device.up) return true;
@@ -188,6 +266,7 @@ bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
     v->ring.close = snx_ctr_vk_render_close;
     v->ring.retire = snx_ctr_vk_render_retire;
     g_device.up = 1;
+    cache_make(v);
     if (!import_ram(v, memory, error, error_size)) {
         snx_ctr_vk_free();
         return false;
@@ -202,6 +281,8 @@ void snx_ctr_vk_free(void) {
     if (v->device) {
         snx_ctr_vk_render_free();
         vkDeviceWaitIdle(v->device);
+        cache_save(v);
+        if (v->pipeline_cache) vkDestroyPipelineCache(v->device, v->pipeline_cache, NULL);
         if (v->memory) { /* nothing is the GPU's any more: every page the CPU's, untrapped */
             snx_ctr_track_handler(v->memory, NULL, NULL);
             for (unsigned i = 0; i < v->ram_count; ++i)

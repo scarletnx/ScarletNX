@@ -31,6 +31,8 @@ typedef struct {
     VkPhysicalDeviceMemoryProperties memory_properties;
     bool index8, logic_op; /* VK_EXT_index_type_uint8; the logicOp feature */
     bool clip_distance;    /* shaderClipDistance */
+    VkPipelineCache pipeline_cache; /* the pipelines' cache, kept in the file snx_ctr_vk_cache_file names */
+    bool shader_object; /* VK_EXT_shader_object with the dynamic state it draws with: no pipelines */
     bool preserve_infnan;  /* shaderSignedZeroInfNanPreserveFloat32: the generated shaders keep infinities and NaNs */
     SnxCtrVkRam ram[8];
     unsigned ram_count;
@@ -45,6 +47,9 @@ SnxCtrVk* snx_ctr_vk(void);
    the reason in error, when the host has no Vulkan device that can: Vulkan 1.2, 8-bit storage buffers and
    VK_EXT_external_memory_host */
 bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size);
+/* The file the pipeline cache is read from when the device is made, and written to when it is freed (copied; call
+   before snx_ctr_vk_init). Without one the driver's own cache is all there is. */
+void snx_ctr_vk_cache_file(const char* path);
 void snx_ctr_vk_free(void);
 /* the open command buffer, begun if none was (in a slot free again, which may wait for its submission) */
 VkCommandBuffer snx_ctr_vk_commands(void);

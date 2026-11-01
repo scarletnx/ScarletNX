@@ -10,6 +10,7 @@
 #include "3ds/runtime/internal.h"
 #include "common/utilities/endian.h"
 #include "3ds/gpu/present.h"
+#include "3ds/gpu/vk/vk.h"
 #include "common/utilities/build_info.h"
 #include "3ds/audio/output.h"
 #include "3ds/input/input.h"
@@ -197,6 +198,9 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     char id[17];
     snprintf(id, sizeof id, "%016llX", (unsigned long long)process->title_id);
     printf("Game: %s (%s) - %s\n", process->title[0] ? process->title : id, id, snx_build_info());
+    char* pipelines = snx_path_join(directory, "pipelines.cache");
+    snx_ctr_vk_cache_file(pipelines);
+    free(pipelines);
     if (!snx_ctr_present_init(process->memory, frames))
         printf("No Vulkan device: no frames will be drawn, shown or saved\n");
     else
