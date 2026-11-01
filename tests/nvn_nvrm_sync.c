@@ -153,10 +153,11 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     (void)level;
     *tile_h = *tile_d = 0;
 }
-int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 out[8]) {
+int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {
     (void)t;
     (void)v;
     (void)image;
+    (void)api;
     memset(out, 0, 8 * sizeof *out);
     return 0;
 }
