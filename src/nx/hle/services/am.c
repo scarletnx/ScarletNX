@@ -32,6 +32,12 @@
 #define AM_OUT_OF_MEMORY   RC(128, 600)
 #define AM_OUT_OF_HANDLES  0xD201 /* the kernel's OutOfHandles, which the console answers for a session it can't give */
 
+/* A command of the Switch 2 display session that nothing above declares yet (am.swipc lists the ones its SDK sends,
+   with the words each asks for): the default stub answers UnknownCommandId unless the setting says otherwise, and a
+   title that gets one for its window's commands never acquires a buffer to present. Nothing is shown here, so the
+   empty success the fallback gives is what these answer until each one is known */
+static int vi2_fallback(SvcObj* self, IpcCtx* c) { return quiet_ok(self, c); }
+
 /* nn::am::AppletMessage */
 #define AM_MSG_FOCUS_STATE_CHANGED      15
 #define AM_MSG_PERFORMANCE_MODE_CHANGED 31

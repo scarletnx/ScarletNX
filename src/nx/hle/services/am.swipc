@@ -327,6 +327,7 @@ interface nn::am::service::IGraphicsSystemSession {
 #   212  (u64 0xcb20728)                            : that object alone
 #   251  (u64 0xcb20728, "default")                 : that object with a name
 #   261  ("default", u32 0)                         : a name and a selector
+@fallback(vi2_fallback)
 interface nn::am::service::IVi2Session {
     [1] Unknown1() -> u32 one;
     [3] GetDisplayCount() -> u32 count;
