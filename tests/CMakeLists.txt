@@ -1229,6 +1229,9 @@ add_test(NAME result_macros COMMAND snx-test-result-macros)
 
 # generated and checked in (the controls' atlas, their shaders): their sources must still make them
 if(Python3_Interpreter_FOUND)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME cpu_scheduling_probe COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_cpu_scheduling_test.py")
+    endif()
     add_test(NAME nvn_coverage COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nvn_coverage.py")
     add_test(NAME gpu_tuner COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tune_gpu_test.py")
     add_test(NAME gpu_descriptor_benchmark COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/bench_gpu_descriptors_test.py")
@@ -2099,7 +2102,7 @@ add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 # gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
 # inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)
 if(UNIX)
-    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
+    add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/scheduling.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
@@ -2142,7 +2145,7 @@ if(UNIX)
     add_executable(snx-test-kernel-wait kernel_wait.c)
     snx_test_target(snx-test-kernel-wait 11)
         add_test(NAME kernel_wait COMMAND snx-test-kernel-wait)
-    add_executable(snx-test-kernel-cores kernel_cores.c)
+    add_executable(snx-test-kernel-cores kernel_cores.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/scheduling.c")
     snx_test_target(snx-test-kernel-cores 11)
         add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)
     # g_hle holds no pointer and nothing of the host's, so a save state writes it as it is (hle_flat.c)
@@ -2158,6 +2161,10 @@ if(UNIX)
     endif()
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(snx-test-host-scheduling host_scheduling.c)
+    snx_test_target(snx-test-host-scheduling 11)
+    add_test(NAME host_scheduling COMMAND snx-test-host-scheduling)
+    set_tests_properties(host_scheduling PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(snx-test-plat-cpus plat_cpus.c)
     snx_test_target(snx-test-plat-cpus 11)
     target_link_libraries(snx-test-plat-cpus PRIVATE SDL3::SDL3) # plat_posix.c's threads end SDL's per-thread state

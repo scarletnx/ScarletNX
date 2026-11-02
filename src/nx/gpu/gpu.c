@@ -23,6 +23,7 @@
    one of the data words a header owes, and each data word is a method call. Methods below 0x40 go to the puller
    (Eden's Puller: semaphores, syncpoints, binding a class to a subchannel), the others to the engine of the class
    bound to the call's subchannel (engines.c, compute.c, fermi2d.c, dma.c). */
+#include "nx/runtime/platform/scheduling.h"
 #include "nx/runtime/state_fns.h"
 #include "nx/runtime/state_io.h"
 #include <stdlib.h>
@@ -1037,6 +1038,7 @@ void gpu_report_stall(void) {
 static void gpu_thread(void* arg) {
     (void)arg;
     t_gpu = 1;
+    snx_thread_performance(SNX_WORK_GPU);
     SNX_THREAD_NAME("GPU");
     pm_lock(&g_qlk);
     for (;;) {

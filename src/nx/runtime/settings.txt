@@ -576,6 +576,17 @@ setting Log level
     int 0 2
     default 1
     help The log's detail, 0 to 2: 2 logs everything, which slows the game down
+setting CPU scheduling
+    key cpu_scheduling
+    int 0 2
+    default 2
+    startup
+    words Host_default|Performance|Aggressive
+    help Guest, GPU and recording threads request native performance controls. Linux requests maximum utilization clamping.
+    help Aggressive also requests 100 microsecond fair scheduling slices and the best nice value already permitted.
+    help FreeBSD requests its highest normal per-thread priority through rtprio_thread and keeps native timesharing.
+    help This can increase power use and context switches. Kernel support and host limits determine what applies.
+    help The log reports accepted controls. Guest core, priority and affinity rules stay active.
 setting Emulated cores
     key emulated_cores
     int 0 1

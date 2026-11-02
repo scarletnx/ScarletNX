@@ -84,7 +84,7 @@ snx_ship_walk(gpu/shipped_pass.c)
 
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-set(platform runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
+set(platform runtime/platform/scheduling.c runtime/platform/plat.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c
              runtime/platform/backend/gamepad.c runtime/platform/tracy.c
              runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/stats.c runtime/platform/touch.c
@@ -273,7 +273,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
-        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/memory.c gpu/vk/record.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
+        gpu/vk/cmd.c gpu/vk/descriptors.c gpu/vk/memory.c gpu/vk/record.c runtime/platform/scheduling.c gpu/vk/vma.cpp ${snx_astc_plat} "${volk_SOURCE_DIR}/volk.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/astc_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c"
         "${PROJECT_BINARY_DIR}/generated/spirv/texconv_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/bc7_spv.c"
         "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp")

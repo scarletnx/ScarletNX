@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* guest threads (each on a host thread of its own), the thread table, process exit, and the four cores the threads
    take turns on */
+#include "nx/runtime/platform/scheduling.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/kernel/kernel_int.h"
 #include <errno.h>
@@ -436,6 +437,7 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
    returning to the LR crt0 saved, comes back here with the pc where the guest goes on. Only 0, the entry's own return
    address, means the entry function returned */
 static void thread_run(KThread* t, u64 pc) {
+    snx_thread_performance(SNX_WORK_GUEST);
     core_enter(t);
     snx_fpcr_apply(&t->cpu);
     if (g_arm_mod)

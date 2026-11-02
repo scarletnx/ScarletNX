@@ -11,6 +11,7 @@
    else has to happen after the queued commands are recorded and submitted waits for the ring to drain
    (vk_rec_sync): a new command buffer from the frame's pool, a device wait. Waits on the graphics timeline need
    none, as a timeline value can be waited for before its submission. */
+#include "nx/runtime/platform/scheduling.h"
 #include <stdlib.h>
 #include <string.h>
 #include "common/utilities/common.h"
@@ -49,6 +50,7 @@ static PCond g_cv;
 static void rec_thread(void* arg) {
     u64 tail = 0;
     (void)arg;
+    snx_thread_performance(SNX_WORK_RECORD);
     SNX_THREAD_NAME("Vulkan recorder");
     (void)g_pad0;
     (void)g_pad1;
