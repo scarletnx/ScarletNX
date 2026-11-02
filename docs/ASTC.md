@@ -226,6 +226,10 @@ separate SPIRV-Tools is needed.
 - `astc_decode` (ctest) checks the CPU decoder on void-extent blocks (the color in both decode modes, the
   reserved bits, HDR void extents and empty extents), and on edenprobe's illegal block and HDR partition block
   against its reference decoder's texels.
+- `astc_blocks` (ctest) holds the CPU decoder to single blocks from rEden's decoder tests, texel for texel: an
+  illegal block at each error exit, HDR partitions, color data cut short inside a trit or quint group under every
+  value of the unallocated bits, the color value limits, void extents with their bounds in and out of order, and
+  astcenc's blocks.
 - `astc_glsl` (ctest, no GPU) runs `astc_decode.glsl` on the CPU through `tests/glsl/glsl.hpp`, compiled as C++, and
   compares it byte for byte with the CPU decoder: all 14 footprints in both decode modes, random blocks through all
   2048 block modes, sizes that are not a multiple of the footprint, strips of several slices, and all 7 tile
