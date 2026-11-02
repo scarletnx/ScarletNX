@@ -12,6 +12,8 @@
 #include "nx/gpu/gpu.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/nce/nce.h"
+#include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <errno.h>
@@ -666,9 +668,9 @@ static u64 largest_hole(void) { return UINT64_MAX; }
 #endif
 /* The largest of these the system gives is the guest's address space: the console's 128 GiB where it can, else a
    smaller layout (an iOS app without the extended virtual addressing entitlement, a process RLIMIT_AS holds to less) */
+static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
+                            12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
 static u8* reserve_tiers(void) {
-    static const u64 tiers[] = {128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB, 16 * GIB,
-                                12 * GIB,  8 * GIB,  7 * GIB,  6 * GIB,  5 * GIB};
     u64 hole = largest_hole();
     size_t i;
     for (i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
@@ -689,8 +691,34 @@ static u8* reserve_tiers(void) {
     return NULL;
 }
 
+/* NCE (runtime/nce/nce.h): the guest's code runs on the host's CPU, so the guest's addresses are the host's. The
+   address space is reserved where it lies, from the code region's base (each layout of a 64-bit game has it there),
+   and g_mem stays 0. Nothing in the host's process lies there on a host with 39 bits of address space or more: an
+   executable that is position independent, and the libraries, lie far above it */
+#define IDENTITY_LO 0x8000000ull
+static int g_mem_identity;
+static int reserve_identity(void) {
+#if SNX_NCE_HOST
+    for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i)
+        if (plat_vm_reserve_at(IDENTITY_LO, tiers[i] - IDENTITY_LO)) {
+            g_as_size = tiers[i];
+            if (tiers[i] < AS_MAX) layout_for(tiers[i]);
+            g_mem_identity = 1;
+            LOG("memory: %llu GiB of address space reserved at the guest's own addresses, for NCE\n",
+                (unsigned long long)(tiers[i] >> 30));
+            return 1;
+        }
+    WARN("memory: the guest's addresses are taken in the host's process (%s), so its code cannot run natively\n",
+         strerror(errno));
+#endif
+    return 0;
+}
+int mem_identity(void) { return g_mem_identity; }
+int mem_reserved(void) { return g_mem || g_mem_identity; }
+
 void mem_reserve(void) {
-    if (g_mem) return;
+    if (mem_reserved()) return;
+    if (nce_wanted() && reserve_identity()) return;
     g_mem = reserve_tiers();
     if (!g_mem) fatal("Could not reserve even 5 GiB of address space for the game's memory");
     if (g_as_size < AS_MAX)
@@ -702,7 +730,12 @@ void mem_init(void) {
     pm_lock_announce(&g_mem_lk, "guest memory"); /* every thread's reads and writes of the game's memory */
     g_host_page = plat_vm_page();
     mem_reserve();
-    plat_vm_track(g_mem, g_as_size); /* the settings are read by now, which mem_reserve may have run before */
+    /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
+       addresses, from the code region's base */
+    if (g_mem_identity)
+        plat_vm_track((u8*)(uintptr_t)IDENTITY_LO, g_as_size - IDENTITY_LO);
+    else
+        plat_vm_track(g_mem, g_as_size);
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);

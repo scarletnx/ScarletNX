@@ -11,6 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
+#include "nx/runtime/nce/nce.h"
 
 /* ============================================================ the cores */
 /* The cores' state is g_hle.thread's core_* (kernel_int.h has how they are ordered and locked).
@@ -44,7 +45,9 @@ static void core_flag_nl(int k) {
                 (g_hle.thread.core_wait[k] && core_idle_nl(o) >= 0)
             ? 1u
             : 0u;
-    if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) != v) __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&o->cpu.poll, __ATOMIC_RELAXED) == v) return;
+    __atomic_store_n(&o->cpu.poll, v, __ATOMIC_RELAXED);
+    if (v) nce_kick(o); /* native code reads no poll: it is stopped */
 }
 static void core_rebest_nl(int k) {
     KThread* w;
@@ -463,6 +466,8 @@ static void thread_run(KThread* t, u64 pc) {
     snx_fpcr_apply(&t->cpu);
     if (g_arm_mod)
         arm_thread_run(t);
+    else if (nce_on())
+        nce_thread_run(t, pc); /* the code runs natively until the entry function returns */
     else
         do snx_lookup(&t->cpu, pc)(&t->cpu, pc);
         while ((pc = t->cpu.pc) != 0);
@@ -670,7 +675,10 @@ int kernel_hold(int timeout_ms) {
     for (k = 0; k < NCORES; k++) core_flag_nl(k);
     if (!g_settings.emulated_cores) { /* no thread holds a core: each one running game code is asked itself */
         pm_lock(&g_host.kernel.pool_lk);
-        FOR_LIVE_THREADS(t) __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+        FOR_LIVE_THREADS(t) {
+            __atomic_store_n(&t->cpu.poll, 1u, __ATOMIC_RELAXED);
+            nce_kick(t);
+        }
         pm_unlock(&g_host.kernel.pool_lk);
     }
     pm_unlock(&g_host.thread.core_lk);

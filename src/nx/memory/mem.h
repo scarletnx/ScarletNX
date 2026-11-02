@@ -97,6 +97,10 @@ void mem_layout36(void);
    each refused one said: before the game's code takes a share of a small one. mem_init finds it kept, and sets its
    written-page tracking up once the settings are read (plat_vm_track) */
 void mem_reserve(void);
+/* whether mem_reserve reserved the guest's address space: g_mem, or the guest's own addresses (mem_identity) */
+int mem_reserved(void);
+/* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
+int mem_identity(void);
 void mem_init(void);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0, MEM_BADSTATE when it isn't free, MEM_NOMEM */
 int mem_unmap(u64 addr, u64 size);

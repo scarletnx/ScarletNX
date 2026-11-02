@@ -8,6 +8,8 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
+#include "nx/loader/codegen_view.h"
+#include "nx/runtime/nce/nce_patch.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
@@ -370,6 +372,58 @@ static int copy_data(const SnxProgram* p, const char* dir, int quiet, int tmpfs)
 }
 /* the played mods' patches (common/utilities/patches.h) written over each NSO module of program they are made for,
    every one said: 0, else nonzero with the patch that could not be applied said */
+/* NCE (the setting nce, on an AArch64 Linux host): the game's code runs natively on the host's CPU, so the module
+   holds no code made ahead of time (as --jit-only). The analysis finds here the words that the runtime patches
+   (nce_patch.h), with the FDEs and the symbols of the modules. Each module then moves up to leave a pool for the stubs
+   of its sites after it, which the branches of its sites reach. The pools and the sites go in <base>.nce, which the
+   runtime reads. A recompile without NCE removes that file, because its addresses are of another layout */
+#define NCE_GUARD 0x1000ull
+#define NCE_CODE_END 0x2000000000ull
+static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
+    SnxCodegen cg;
+    NceSites sites;
+    NceRange* pools;
+    SnxU64* old;
+    SnxU64 cursor;
+    char* path = snx_format("%s.nce", base);
+    int r = 0;
+    if (!p->module_count) {
+        free(path);
+        return snx_error("NCE: the program has no modules");
+    }
+    if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet)) {
+        free(path);
+        return snx_error("NCE: the analysis of the game's code failed");
+    }
+    nce_find_sites(&cg, &sites);
+    snx_codegen_free(&cg);
+    pools = (NceRange*)snx_alloc(p->module_count * sizeof *pools);
+    old = (SnxU64*)snx_alloc(p->module_count * sizeof *old);
+    cursor = p->modules[0].base;
+    for (size_t i = 0; i < p->module_count && !r; i++) {
+        SnxModuleImage* m = &p->modules[i];
+        SnxU64 end = (m->base + m->size + 0xFFFu) & ~0xFFFull;
+        old[i] = m->base;
+        pools[i].size = nce_pool_size(&sites, m->base, m->base + m->size);
+        pools[i].addr = cursor + (end - m->base);
+        m->base = cursor;
+        cursor = pools[i].addr + pools[i].size + NCE_GUARD;
+        if (cursor > NCE_CODE_END) r = snx_error("NCE: the modules and their pools exceed the code region");
+    }
+    /* the last module first: a module moves up past the old place of the next, never past its new place */
+    for (size_t i = p->module_count; i-- > 0 && !r;)
+        nce_sites_move(&sites, old[i], old[i] + p->modules[i].size, p->modules[i].base - old[i]);
+    if (!r && nce_file_write(path, pools, p->module_count, &sites)) r = snx_error("cannot write %s", path);
+    if (!r && !quiet)
+        printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions\n",
+               sites.count, sites.proven, sites.data, sites.outside);
+    nce_sites_free(&sites);
+    free(pools);
+    free(old);
+    free(path);
+    return r;
+}
+
 static int patch_modules(SnxProgram* program, const char* mods, const char* off, int quiet) {
     char error[1024], **patches;
     size_t count = snx_mods_patches(mods, off, &patches), i, j;
@@ -687,6 +741,18 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     if (ios && !program.npdm.is64) {
         snx_error("--target ios: 32-bit games are not supported yet");
         goto done;
+    }
+    {
+        char* stale = snx_format("%s.nce", base);
+        int nce = 0;
+#if defined(__aarch64__) && defined(__linux__)
+        nce = !ios && program.npdm.is64 && g_settings.nce;
+#endif
+        if (nce) gen.interp_only = 1;
+        i = nce ? nce_prepare(&program, base, compile.quiet) : snx_is_file(stale) && remove(stale) ? -1 : 0;
+        if (i && !nce) snx_error("cannot remove %s, which is of an NCE recompile", stale);
+        free(stale);
+        if (i) goto done;
     }
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {

@@ -35,7 +35,7 @@ endfunction()
 
 snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/hints.c runtime/clock.c runtime/pause.c runtime/state.c runtime/state_fns.c runtime/state_file.c runtime/crash.c runtime/options.c runtime/deprecated_env.c
               runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c
-              runtime/cheats.c)
+              runtime/cheats.c runtime/nce/nce.c runtime/nce/nce_host.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4 snx_zstd snx_build_info)
 target_link_libraries(snx_core PUBLIC snx_settings_runtime) # the game's .ini's tables (cmake/settings.cmake)
 if(APPLE)
