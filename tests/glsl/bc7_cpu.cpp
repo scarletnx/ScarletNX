@@ -25,6 +25,29 @@ extern "C" uint32_t bc7_weight_cpu(uint32_t bits, uint32_t index) {
     return e.Weight(index);
 }
 
+extern "C" int bc7_least_squares_cpu(const uint32_t texels[16], const uint8_t index[16], uint32_t bits,
+                                     uint32_t subsets, uint32_t partition, uint32_t subset, uint32_t ends[2]) {
+    bc7_shader::Encoder e;
+    e.sh_ns = subsets;
+    e.sh_part = partition;
+    e.sh_ib = bits;
+    e.fit_lo = 0u;
+    e.fit_hi = 0u;
+    for (uint32_t k = 0; k < 16; k++) {
+        e.px[k] = texels[k];
+        if (k < 8)
+            e.fit_lo |= uint32_t(index[k]) << (k * 4);
+        else
+            e.fit_hi |= uint32_t(index[k]) << ((k - 8) * 4);
+    }
+    const int det = e.Fit(subset);
+    if (det <= 0) return 0;
+    ends[0] = ends[1] = 0;
+    for (uint32_t side = 0; side < 2; side++)
+        for (uint32_t c = 0; c < 4; c++) ends[side] |= uint32_t(e.Solve(subset, c, side, det)) << (c * 8);
+    return 1;
+}
+
 extern "C" uint32_t bc7_partition3_cpu(uint32_t partition) { return bc7_shader::Encoder().P3[partition]; }
 
 extern "C" void bc7_encode_cpu(const uint8_t* rgba, uint32_t w, uint32_t h, uint32_t depth, uint8_t* out) {
