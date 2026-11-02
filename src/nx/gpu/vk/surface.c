@@ -1776,6 +1776,16 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     SNX_ZONE_VALUE(z, *bytes);
     *img = VK_NULL_HANDLE;
     *mem = VK_NULL_HANDLE;
+    /* more than the whole heap: never made, and the caches aren't emptied for it (a header's garbage size) */
+    const VkPhysicalDeviceMemoryProperties* mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    u64 heap = mp->memoryHeaps[vk_mem_heap()].size;
+    if (*bytes > heap) {
+        LOG_LIMIT(4, "vulkan: a %ux%ux%u image of %u layers takes %llu MB, more than the GPU's %llu MB (not made)\n",
+                  ii->extent.width, ii->extent.height, ii->extent.depth, ii->arrayLayers,
+                  (unsigned long long)(*bytes >> 20), (unsigned long long)(heap >> 20));
+        return 0;
+    }
     /* one as big found no memory this present: neither will this one (what was freed meanwhile is released when the
        frame is done). Its draws go without it until the next present */
     if (g_oom == g_vk_present + 1 && *bytes >= g_oom_bytes) return 0;
