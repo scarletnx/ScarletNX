@@ -7,6 +7,8 @@
 #include <stdarg.h>
 
 void log_crash_mode(void) {}
+/* nce.c, whose NCE no game here is of: the crash handler gives it the signal's context */
+void nce_crash_context(const void* context) { (void)context; }
 void pm_wait_note(const void* m, const void* at, int cond) {
     (void)m;
     (void)at;
