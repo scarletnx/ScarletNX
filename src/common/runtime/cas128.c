@@ -12,11 +12,12 @@
 #include <unistd.h>
 #endif
 
-/* a 16-byte compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer */
+/* a 16-byte compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer, may_alias as p's halves are
+   uint64_t, and 16-byte aligned as STXP's pair is (s390x's is 8-byte aligned, and its CDSG then a libatomic call) */
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 snx_cas_u128;
+__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_cas_u128;
 
 /* The host's instruction: amocas.q on RISC-V, LL.D and SC.Q on LoongArch, cmpxchg16b (this file is built with -mcx16,
    src/common/CMakeLists.txt: the attribute alone was inlined into a libatomic call), LDAXP/STLXP and lqarx/stqcx.

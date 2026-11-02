@@ -27,12 +27,13 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1) {
     return c->rt->cas128(p, o0, o1, n0, n1);
 }
 #else
-/* guest memory, may_alias as cpu.h's snx_guest_u64. A 16-byte compare-and-swap has no ISO C form: it takes the
-   compiler's 128-bit integer */
+/* guest memory, may_alias as cpu.h's snx_guest_u64, and 16-byte aligned as STXP's pair is (Arm faults on a pair that
+   isn't): s390x's __int128 is 8-byte aligned, and its compare-and-swap of 16 (CDSG) then a libatomic call. A 16-byte
+   compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer */
 #if !defined(__SIZEOF_INT128__)
 #error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
 #endif
-__extension__ typedef unsigned __int128 __attribute__((may_alias)) snx_u128;
+__extension__ typedef unsigned __int128 __attribute__((may_alias, aligned(16))) snx_u128;
 #if defined(__x86_64__)
 __attribute__((target("cx16")))
 #endif

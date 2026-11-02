@@ -34,6 +34,8 @@ int main(void) {
     arch = "mips64el";
 #elif defined(__mips64)
     arch = "mips64";
+#elif defined(__s390x__)
+    arch = "s390x";
 #else
     arch = NULL;
 #endif
