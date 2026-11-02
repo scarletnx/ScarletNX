@@ -82,8 +82,11 @@ target_link_libraries(snx_android_program PUBLIC snx_android_bridge)
 
 file(GLOB_RECURSE snx_android_java CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/framework/*.java")
 set(CMAKE_JAVA_COMPILE_FLAGS --release 21 -encoding UTF-8 -Xlint:-options -nowarn)
-add_jar(snx_android_framework SOURCES ${snx_android_java} OUTPUT_NAME scarletnx-android-framework
-        OUTPUT_DIR "${PROJECT_BINARY_DIR}")
+# META-INF/services names the offline name resolver (snx.android.net.OfflineResolver) to the JDK
+add_jar(snx_android_framework SOURCES ${snx_android_java}
+        RESOURCES NAMESPACE "META-INF/services"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/framework/META-INF/services/java.net.spi.InetAddressResolverProvider"
+        OUTPUT_NAME scarletnx-android-framework OUTPUT_DIR "${PROJECT_BINARY_DIR}")
 add_dependencies(snx_android_program snx_android_framework)
 
 # the font the framework draws with, beside the jar (the host names the folder in snx.android.fonts)
