@@ -2299,12 +2299,15 @@ if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cm
     snx_test_target(snx-test-platform-posix 11)
     target_link_libraries(snx-test-platform-posix PRIVATE SDL3::SDL3 ${CMAKE_DL_LIBS})
     add_test(NAME platform_posix COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}")
-    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler
-    add_test(NAME platform_posix_signal_ww COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}"
-                                                   --write_tracking=1)
-    # none: the scan says so, and the caches compare contents
-    add_test(NAME platform_posix_no_tracking COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}"
-                                                     --write_tracking=2)
+    # the written-page tracking macOS, FreeBSD, Android and older Linux have: protection and the fault handler; and
+    # none: the scan says so, and the caches compare contents. Each in a folder of its own, as ctest may run them at
+    # once and each writes and replaces the same files
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww"
+         "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking")
+    add_test(NAME platform_posix_signal_ww
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_signal_ww" --write_tracking=1)
+    add_test(NAME platform_posix_no_tracking
+             COMMAND snx-test-platform-posix "${CMAKE_CURRENT_BINARY_DIR}/platform_posix_no_tracking" --write_tracking=2)
 endif()
 if(WIN32 AND TARGET SDL3::SDL3)
     # the write watch of the reservation, the kernel's writes included (platform/plat_win32.c)
