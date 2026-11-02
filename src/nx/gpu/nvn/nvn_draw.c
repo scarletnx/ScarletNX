@@ -68,6 +68,18 @@ static void keep(void* kept, const void* made, size_t n, u64* gen) {
     new_gen(gen);
 }
 
+/* bytes [p, p + n) of inl written: the renderer's copy takes that span at the next draw. One draw after another
+   with only its base vertex changed compared and copied all 20 KB of the five stages' blocks: a twentieth of one
+   game's GPU thread */
+static void inl_wrote(NvnDraw* d, const u8* p, u32 n) {
+    const u8* base = (const u8*)&d->inl;
+    d->dirty |= D_INLINE;
+    if (p < base || p >= base + sizeof d->inl) return; /* compute's blocks */
+    u32 lo = (u32)(p - base), hi = lo + n;
+    if (lo < d->inl_lo) d->inl_lo = lo;
+    if (hi > d->inl_hi) d->inl_hi = hi;
+}
+
 void nvn_draw_free(NvnDraw* d) {
     if (d->own.pred && g_renderer->render_predicate_drop) g_renderer->render_predicate_drop(d->own.pred);
     if (d->samples && g_renderer->samples_enable) g_renderer->samples_enable(d->ds.owner, 0);
@@ -126,6 +138,8 @@ void nvn_draw_init(NvnDraw* d, u32 owner) {
     d->dx.tex_bank = 2;
     for (s = 0; s < 8; s++) snx_st_le32(d->dx.bank2 + 4 * (u32)s, (u32)s);
     d->dirty = ~0u;
+    d->inl_lo = 0;
+    d->inl_hi = sizeof d->inl;
 }
 
 /* ---- conversions of NVN's enumerants */
@@ -502,11 +516,13 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     int s;
     for (s = 0; s < DS_GFX_STAGES; s++) {
         u8* c0 = d->inl.bank0[s];
-        if (snx_ld_le32(c0 + C0_BASE_VERTEX) != (u32)base_vertex ||
-            snx_ld_le32(c0 + C0_BASE_INSTANCE) != base_instance) {
+        if (snx_ld_le32(c0 + C0_BASE_VERTEX) != (u32)base_vertex) {
             snx_st_le32(c0 + C0_BASE_VERTEX, (u32)base_vertex);
+            inl_wrote(d, c0 + C0_BASE_VERTEX, 4);
+        }
+        if (snx_ld_le32(c0 + C0_BASE_INSTANCE) != base_instance) {
             snx_st_le32(c0 + C0_BASE_INSTANCE, base_instance);
-            d->dirty |= D_INLINE;
+            inl_wrote(d, c0 + C0_BASE_INSTANCE, 4);
         }
     }
     if (d->ds.dyn.depth_word != base_instance) d->dirty |= D_DYNAMIC;
@@ -518,7 +534,15 @@ static void sync(NvnDraw* d, i32 base_vertex, u32 base_instance) {
     if (d->dirty & D_VIEWPORTS) make_viewports(d);
     if (d->dirty & D_VBUF) make_vertex_buffers(d);
     if (d->dirty & D_BIND) keep(&d->ds.bind, &d->bind, sizeof d->bind, &d->ds.gen[DS_BIND]);
-    if (d->dirty & D_INLINE) keep(&d->ds.inl, &d->inl, sizeof d->inl, &d->ds.gen[DS_INLINE]);
+    if ((d->dirty & D_INLINE) && d->inl_lo < d->inl_hi) {
+        u8 *kept = (u8*)&d->ds.inl + d->inl_lo, *made = (u8*)&d->inl + d->inl_lo;
+        if (memcmp(kept, made, d->inl_hi - d->inl_lo)) {
+            memcpy(kept, made, d->inl_hi - d->inl_lo);
+            new_gen(&d->ds.gen[DS_INLINE]);
+        }
+    }
+    d->inl_lo = sizeof d->inl;
+    d->inl_hi = 0;
     d->dirty = 0;
 }
 /* An indirect draw's arguments stay in guest memory, which the GPU reads when it draws (DrawCall.indirect): NVN's
@@ -603,7 +627,7 @@ static void put64(NvnDraw* d, u8* block, u32 size, u32 off, u64 v) {
         return;
     }
     snx_st_le64(block + off, v);
-    d->dirty |= D_INLINE;
+    inl_wrote(d, block + off, 8);
 }
 static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
     int s = gfx_stage(r->stage);
@@ -641,6 +665,7 @@ static void bind_buffer(NvnDraw* d, u32 op, const NvnPBindBuf* r) {
         }
         put64(d, d->inl.bank0[s], DS_INLINE_BANK0, base + 16 * (u32)r->index, r->address);
         snx_st_le32(d->inl.bank0[s] + base + 16 * (u32)r->index + 8, (u32)r->size);
+        inl_wrote(d, d->inl.bank0[s] + base + 16 * (u32)r->index + 8, 4);
     }
 }
 static void bind_handles(NvnDraw* d, u32 op, u64 payload) {
