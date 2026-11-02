@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch and MIPS64 relocatable objects: parsing, symbol resolution,
-   relocation and the AArch64 and PowerPC64 veneers for link_elf.c and code_loader.c */
+/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x relocatable objects: parsing, symbol
+   resolution, relocation and the AArch64 and PowerPC64 veneers for link_elf.c and code_loader.c */
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L /* snprintf */
 #include "common/cpu/recompiler/llvm/elf_object.h"
@@ -66,13 +66,14 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
         o->eh->e_ident[EI_CLASS] != ELFCLASS64 || o->eh->e_ident[EI_DATA] != snx_elf_host_data() ||
         o->eh->e_type != ET_REL ||
         (o->eh->e_machine != EM_X86_64 && o->eh->e_machine != EM_AARCH64 && o->eh->e_machine != EM_PPC64 &&
-         o->eh->e_machine != EM_RISCV && o->eh->e_machine != EM_LOONGARCH && o->eh->e_machine != EM_MIPS) ||
+         o->eh->e_machine != EM_RISCV && o->eh->e_machine != EM_LOONGARCH && o->eh->e_machine != EM_MIPS &&
+         o->eh->e_machine != EM_S390) ||
         o->eh->e_shentsize != sizeof(Elf64_Shdr) ||
         o->eh->e_shoff + (uint64_t)o->eh->e_shnum * sizeof(Elf64_Shdr) > input->size)
         return snx_link_fail(
             error, error_size,
-            "%s: not an x86-64, AArch64, PowerPC64, RISC-V, LoongArch or MIPS64 ELF relocatable object in this "
-            "host's byte order%s",
+            "%s: not an x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 or s390x ELF relocatable object in "
+            "this host's byte order%s",
             input->name, "");
     unsigned object_abi = o->eh->e_machine == EM_PPC64 ? snx_elf_ppc_abi(o->eh->e_flags)
                           : o->eh->e_machine == EM_RISCV || o->eh->e_machine == EM_LOONGARCH ? o->eh->e_flags
@@ -199,6 +200,7 @@ int snx_elf_got_relocation(unsigned machine, unsigned type) {
     /* RISC-V's low half names the AUIPC's label, not the symbol: the slot is its HI20's */
     if (machine == EM_RISCV) return type == SNX_RV_GOT_HI20;
     if (machine == EM_LOONGARCH) return type == SNX_LA_GOT_PC_HI20 || type == SNX_LA_GOT_PC_LO12;
+    if (machine == EM_S390) return type == SNX_390_GOTENT;
     if (machine == EM_MIPS)
         return type == SNX_MIPS_CALL16 || type == SNX_MIPS_GOT_DISP || type == SNX_MIPS_GOT_HI16 ||
                type == SNX_MIPS_GOT_LO16 || type == SNX_MIPS_CALL_HI16 || type == SNX_MIPS_CALL_LO16;
@@ -209,12 +211,12 @@ int snx_elf_mips_page_relocation(unsigned machine, unsigned type) {
     return machine == EM_MIPS && type == SNX_MIPS_GOT_PAGE;
 }
 
-/* RISC-V's AUIPC and JALR pair reaches 2 GiB, LoongArch's PCADDU18I and JIRL 128 GiB, the whole of any module, and
-   MIPS64 calls through its GOT: none of them gets veneers */
+/* RISC-V's AUIPC and JALR pair reaches 2 GiB, LoongArch's PCADDU18I and JIRL 128 GiB and s390x's brasl 4 GiB, the
+   whole of any module, and MIPS64 calls through its GOT: none of them gets veneers */
 int snx_elf_call_relocation(unsigned machine, unsigned type) {
     if (machine == EM_PPC64) return type == SNX_PPC_REL24;
     if (machine == EM_AARCH64) return type == SNX_A64_CALL26 || type == SNX_A64_JUMP26;
-    if (machine == EM_RISCV || machine == EM_LOONGARCH || machine == EM_MIPS) return 0;
+    if (machine == EM_RISCV || machine == EM_LOONGARCH || machine == EM_MIPS || machine == EM_S390) return 0;
     return type == R_X86_64_PLT32;
 }
 
@@ -223,6 +225,7 @@ int snx_elf_absolute_relocation(unsigned machine, unsigned type) {
     if (machine == EM_RISCV) return type == SNX_RV_64;
     if (machine == EM_LOONGARCH) return type == SNX_LA_64;
     if (machine == EM_MIPS) return type == SNX_MIPS_64;
+    if (machine == EM_S390) return type == SNX_390_64;
     return type == (machine == EM_AARCH64 ? (unsigned)SNX_A64_ABS64 : (unsigned)R_X86_64_64);
 }
 
@@ -232,6 +235,7 @@ unsigned snx_elf_relative_type(unsigned machine) {
            : machine == EM_RISCV     ? (unsigned)SNX_RV_RELATIVE
            : machine == EM_LOONGARCH ? (unsigned)SNX_LA_RELATIVE
            : machine == EM_MIPS      ? (unsigned)SNX_MIPS_RELATIVE
+           : machine == EM_S390      ? (unsigned)SNX_390_RELATIVE
                                      : (unsigned)R_X86_64_RELATIVE;
 }
 
@@ -382,6 +386,14 @@ static size_t field_size(unsigned machine, unsigned type) {
             case SNX_MIPS_64:
             case SNX_MIPS_GPREL32_64: return 8;
             default: return 4; /* an instruction, whose low halfword is the immediate */
+        }
+    if (machine == EM_S390) switch (type) {
+            case SNX_390_NONE: return 0;
+            case SNX_390_64:
+            case SNX_390_PC64: return 8;
+            case SNX_390_PC16DBL:
+            case SNX_390_PLT16DBL: return 2;
+            default: return 4;
         }
     switch (type) {
         case R_X86_64_64:
@@ -794,6 +806,39 @@ static int relocate_mips(unsigned char* p, unsigned type, uint64_t S, int64_t A,
     }
 }
 
+/* ---- s390x, big-endian as its objects are: a DBL field counts halfwords from P, the place of the field itself ---- */
+
+/* the halfwords from P to target into a field of bits */
+static int s390_dbl(unsigned char* p, uint64_t displacement, unsigned bits) {
+    if (displacement & 1) return SNX_LINK_MISALIGNED;
+    if (!fits(displacement, bits + 1)) return SNX_LINK_RANGE;
+    if (bits == 16)
+        host16(p, (uint16_t)(displacement >> 1));
+    else
+        host32(p, (uint32_t)(displacement >> 1));
+    return 0;
+}
+
+/* s390x's, as its ELF ABI supplement computes them: S + A, its distance from P, or its GOT slot's (GOTENT) */
+static int relocate_s390(unsigned char* p, unsigned type, uint64_t S, int64_t A, uint64_t P, uint64_t slot) {
+    uint64_t value = S + (uint64_t)A;
+    switch (type) {
+        case SNX_390_NONE: return 0;
+        case SNX_390_64: host64(p, value); return 0;
+        case SNX_390_PC64: host64(p, value - P); return 0;
+        case SNX_390_PC32:
+            if (!fits32(value - P)) return SNX_LINK_RANGE;
+            host32(p, (uint32_t)(value - P));
+            return 0;
+        case SNX_390_PC16DBL:
+        case SNX_390_PLT16DBL: return s390_dbl(p, value - P, 16);
+        case SNX_390_PC32DBL:
+        case SNX_390_PLT32DBL: return s390_dbl(p, value - P, 32);
+        case SNX_390_GOTENT: return s390_dbl(p, slot + (uint64_t)A - P, 32);
+        default: return SNX_LINK_UNSUPPORTED;
+    }
+}
+
 int snx_elf_relocate(unsigned machine, unsigned char* p, size_t room, unsigned type, uint64_t S, int64_t A, uint64_t P,
                      uint64_t got, uint64_t slot) {
     if (field_size(machine, type) > room) return SNX_LINK_OUTSIDE;
@@ -802,6 +847,7 @@ int snx_elf_relocate(unsigned machine, unsigned char* p, size_t room, unsigned t
     if (machine == EM_RISCV) return relocate_rv(p, type, S, A, P, slot);
     if (machine == EM_LOONGARCH) return relocate_la(p, type, S, A, P, slot);
     if (machine == EM_MIPS) return relocate_mips(p, type, S, A, P, got, slot);
+    if (machine == EM_S390) return relocate_s390(p, type, S, A, P, slot);
     return relocate_x86(p, type, S, A, P, got, slot);
 }
 

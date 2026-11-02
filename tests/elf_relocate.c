@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__mips64)
+#if defined(__mips64) || defined(__s390x__)
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
@@ -450,6 +450,52 @@ static void mips_relocations(void) {
               snx_elf_symbol(EM_X86_64, ELF64_R_INFO(7ull, 9u)) == 7 &&
               snx_elf_info(EM_RISCV, 7, 9) == ELF64_R_INFO(7ull, 9u),
           "r_info of the other machines, ELF64_R_TYPE and ELF64_R_SYM");
+}
+
+/* s390x's fields, big-endian on its host as its objects are and in the host's order here: a DBL field counts
+   halfwords from P, the field's own place (larl's and brasl's immediate, 2 bytes into the instruction) */
+static void s390x_relocations(void) {
+    unsigned char p[8];
+    uint64_t d;
+    memset(p, 0, sizeof(p));
+    check(!snx_elf_relocate(EM_S390, p, 4, SNX_390_PC32DBL, 0x2000, 2, 0x1002, 0, 0) && host32(p) == 0x800,
+          "s390x PC32DBL");
+    check(!snx_elf_relocate(EM_S390, p, 4, SNX_390_PLT32DBL, 0x1000, 2, 0x3002, 0, 0) && host32(p) == 0xFFFFF000u,
+          "s390x PLT32DBL backwards");
+    check(snx_elf_relocate(EM_S390, p, 4, SNX_390_PC32DBL, 0x2001, 2, 0x1002, 0, 0) == SNX_LINK_MISALIGNED,
+          "s390x PC32DBL to an odd address");
+    check(!snx_elf_relocate(EM_S390, p, 4, SNX_390_PLT32DBL, 0x1002 + 0xFFFFFFFEull, 0, 0x1002, 0, 0) &&
+              host32(p) == 0x7FFFFFFFu &&
+              snx_elf_relocate(EM_S390, p, 4, SNX_390_PLT32DBL, 0x1002 + 0x100000000ull, 0, 0x1002, 0, 0) ==
+                  SNX_LINK_RANGE,
+          "s390x PLT32DBL at 4 GiB");
+    set16(p, 0);
+    check(!snx_elf_relocate(EM_S390, p, 2, SNX_390_PC16DBL, 0x1102, 0, 0x1002, 0, 0) && host16(p) == 0x80 &&
+              snx_elf_relocate(EM_S390, p, 2, SNX_390_PC16DBL, 0x11002, 0, 0x1002, 0, 0) == SNX_LINK_RANGE,
+          "s390x PC16DBL, and at 64 KiB");
+    check(!snx_elf_relocate(EM_S390, p, 4, SNX_390_GOTENT, 0x9999, 2, 0x1002, 0, 0x5000) && host32(p) == 0x2000,
+          "s390x GOTENT, the slot's halfwords from P");
+    check(!snx_elf_relocate(EM_S390, p, 8, SNX_390_64, 0x1122334455667788ull, 8, 0, 0, 0) &&
+              !memcmp(p, &(uint64_t){0x1122334455667790ull}, 8),
+          "s390x 64");
+    check(!snx_elf_relocate(EM_S390, p, 8, SNX_390_PC64, 0x1000, 0, 0x3000, 0, 0) &&
+              !memcmp(p, &(uint64_t){(uint64_t)-0x2000}, 8),
+          "s390x PC64 backwards");
+    memset(p, 0xAA, sizeof(p));
+    check(!snx_elf_relocate(EM_S390, p, 4, SNX_390_PC32, 0x1000, 0, 0x2000, 0, 0) && host32(p) == 0xFFFFF000u &&
+              p[4] == 0xAA,
+          "s390x PC32 backwards, 4 bytes");
+    d = 0x80000000u;
+    check(snx_elf_relocate(EM_S390, p, 4, SNX_390_PC32, 0x1000 + d, 0, 0x1000, 0, 0) == SNX_LINK_RANGE,
+          "s390x PC32 at 2 GiB");
+    check(snx_elf_relocate(EM_S390, p, 2, SNX_390_PC32DBL, 0x2000, 2, 0x1002, 0, 0) == SNX_LINK_OUTSIDE &&
+              snx_elf_relocate(EM_S390, p, 4, 4 /* R_390_32 */, 0x2000, 0, 0, 0, 0) == SNX_LINK_UNSUPPORTED &&
+              !snx_elf_relocate(EM_S390, p, 0, SNX_390_NONE, 0, 0, 0, 0, 0),
+          "s390x field past its section, 32-bit address refused, NONE");
+    check(snx_elf_got_relocation(EM_S390, SNX_390_GOTENT) && !snx_elf_got_relocation(EM_S390, SNX_390_PC32DBL) &&
+              snx_elf_absolute_relocation(EM_S390, SNX_390_64) && !snx_elf_call_relocation(EM_S390, SNX_390_PLT32DBL) &&
+              snx_elf_relative_type(EM_S390) == SNX_390_RELATIVE,
+          "s390x relocation classes");
 }
 
 /* ---- the LLVM backend's AArch64 objects ---- */
@@ -1212,9 +1258,17 @@ static int other_objects(const char* triple, unsigned machine, const char* what)
     return 0;
 }
 
+#if defined(__mips64) || defined(__s390x__)
+/* ---- modules made, linked and run on a host whose objects only the AOT linker takes (code_loader.h), from the
+   recompiler's objects for this host alone: MIPS64's (+xgot, MIPS64r2 and its tail calls) and s390x's (z13), ir.c ----
+   */
 #if defined(__mips64)
-/* ---- MIPS64 modules, made, linked and run on a MIPS64 host: its objects are the recompiler's for this host only
-   (+xgot, MIPS64r2 and its tail calls, ir.c) ---- */
+#define HOST_EM   EM_MIPS
+#define HOST_NAME "MIPS64"
+#else
+#define HOST_EM   EM_S390
+#define HOST_NAME "s390x"
+#endif
 
 /* a dynamic tag's value in a linked module, and whether it has the tag */
 static int dynamic_tag(const unsigned char* module, int64_t tag, uint64_t* value) {
@@ -1251,7 +1305,7 @@ static size_t object_relocations(const unsigned char* object, unsigned type) {
         if (sh[i].sh_type == SHT_RELA) {
             const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(object + sh[i].sh_offset);
             for (size_t k = 0; k < sh[i].sh_size / sizeof(Elf64_Rela); ++k)
-                n += snx_elf_type(EM_MIPS, r[k].r_info) == type;
+                n += snx_elf_type(HOST_EM, r[k].r_info) == type;
         }
     return n;
 }
@@ -1259,7 +1313,7 @@ static size_t object_relocations(const unsigned char* object, unsigned type) {
 /* caller() = ext_fn(ext_data + 1) + 1; pick(x) one of six operations on ext_data by x, a jump table; tail_direct(x)
    and tail_pointer(x) are musttail calls of ext_fn, declared with default visibility, and of ext_pointer's function;
    third() = ext_table[2] */
-static int mips_caller_object(unsigned char** data, size_t* size) {
+static int host_caller_object(unsigned char** data, size_t* size) {
     char error[1024];
     SnxIr* ir = snx_ir_new("caller", '2', error, sizeof(error));
     if (!ir) return snx_error("%s", error);
@@ -1320,7 +1374,7 @@ static int mips_caller_object(unsigned char** data, size_t* size) {
 }
 
 /* ext_data = 41, ext_fn(x) = 3x, and ext_pointer = ext_fn, an address in data */
-static int mips_definitions_object(unsigned char** data, size_t* size) {
+static int host_definitions_object(unsigned char** data, size_t* size) {
     char error[1024];
     SnxIr* ir = snx_ir_new("definitions", '2', error, sizeof(error));
     if (!ir) return snx_error("%s", error);
@@ -1337,8 +1391,8 @@ static int mips_definitions_object(unsigned char** data, size_t* size) {
     return 0;
 }
 
-/* ext_table = {5, 6, 7}, an object of data alone, whose e_flags have no noreorder as the others' do */
-static int mips_table_object(unsigned char** data, size_t* size) {
+/* ext_table = {5, 6, 7}, an object of data alone (whose e_flags on MIPS64 have no noreorder, as the code's do) */
+static int host_table_object(unsigned char** data, size_t* size) {
     char error[1024];
     SnxIr* ir = snx_ir_new("table", '0', error, sizeof(error));
     if (!ir) return snx_error("%s", error);
@@ -1351,12 +1405,13 @@ static int mips_table_object(unsigned char** data, size_t* size) {
     return 0;
 }
 
-/* The module the three objects link into: its header repeats the code's, its GOT is the one glibc's MIPS loader relocates
-   (DT_PLTGOT and DT_MIPS_LOCAL_GOTNO its slots, no dynamic symbol with a slot), its only dynamic relocations are
-   REL32 with 64 (no DT_RELACOUNT, which glibc's MIPS loader would skip), and loaded with dlopen its code runs: gp from
-   each function's address, calls and loads through 32-bit GOT offsets, the jump table through a GOT_PAGE and gp, the
-   musttail calls as jumps, and a load from the object of data */
-static int mips_module(void) {
+/* The module the three objects link into, loaded with dlopen as library.c's load_image does: its code runs (calls
+   and loads through the GOT, the jump table, the musttail calls as jumps, a load from the object of data), and its
+   header and dynamic section are what the system's loader takes. MIPS64: the objects' e_flags but noreorder, the GOT
+   glibc's MIPS loader relocates itself (DT_PLTGOT and DT_MIPS_LOCAL_GOTNO its slots, no dynamic symbol with a slot),
+   and its only dynamic relocations REL32 with 64, without DT_RELACOUNT, which glibc's MIPS loader would skip. s390x:
+   calls (PLT32DBL) and GOT slots (GOTENT) relative to the code, and every dynamic relocation R_390_RELATIVE */
+static int host_module(void) {
     typedef int64_t (*Unary)(int64_t);
     char error[1024];
     const char* exports[5] = {"caller", "pick", "tail_direct", "tail_pointer", "third"};
@@ -1364,10 +1419,11 @@ static int mips_module(void) {
     size_t caller_size, defs_size, table_size, relatives = 0, others = 0;
     SnxLinkInput inputs[3];
     SnxLinkOutput linked;
-    uint64_t got = 0, local = 0, gotsym = 0, symtabno = 0, count = 0;
-    if (mips_caller_object(&caller_data, &caller_size) || mips_definitions_object(&defs_data, &defs_size) ||
-        mips_table_object(&table_data, &table_size))
+    uint64_t count = 0;
+    if (host_caller_object(&caller_data, &caller_size) || host_definitions_object(&defs_data, &defs_size) ||
+        host_table_object(&table_data, &table_size))
         return 1;
+#if defined(__mips64)
     check(!(((const Elf64_Ehdr*)(const void*)table_data)->e_flags & SNX_EF_MIPS_NOREORDER) &&
               (((const Elf64_Ehdr*)(const void*)caller_data)->e_flags & SNX_EF_MIPS_NOREORDER),
           "MIPS64 objects: noreorder on the code's e_flags, not on the data's");
@@ -1376,6 +1432,10 @@ static int mips_module(void) {
               object_relocations(caller_data, SNX_MIPS_GOT_PAGE) &&
               object_relocations(caller_data, SNX_MIPS_GPREL32_64) && !object_relocations(caller_data, SNX_MIPS_CALL16),
           "MIPS64 caller object: 32-bit GOT offsets, gp from its address and a jump table");
+#else
+    check(object_relocations(caller_data, SNX_390_PLT32DBL) && object_relocations(caller_data, SNX_390_GOTENT),
+          "s390x caller object: calls and GOT slots relative to the code");
+#endif
     inputs[0].data = caller_data;
     inputs[0].size = caller_size;
     inputs[0].name = "caller";
@@ -1386,48 +1446,59 @@ static int mips_module(void) {
     inputs[2].size = table_size;
     inputs[2].name = "table";
     if (snx_link(inputs, 3, exports, 5, "caller.so", &linked, error, sizeof(error)))
-        return snx_error("MIPS64 link: %s", error);
+        return snx_error(HOST_NAME " link: %s", error);
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)(const void*)linked.data;
+    const Elf64_Shdr *got_section = section_named(linked.data, ".got"), *dynsym = section_named(linked.data, ".dynsym"),
+                     *rela = section_named(linked.data, ".rela.dyn");
+    for (size_t k = 0; rela && k < rela->sh_size / sizeof(Elf64_Rela); ++k) {
+        const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + rela->sh_offset) + k;
+        snx_elf_type(HOST_EM, r->r_info) == snx_elf_relative_type(HOST_EM) && !snx_elf_symbol(HOST_EM, r->r_info)
+            ? ++relatives
+            : ++others;
+    }
+#if defined(__mips64)
+    uint64_t got = 0, local = 0, gotsym = 0, symtabno = 0;
     check(eh->e_machine == EM_MIPS && eh->e_type == ET_DYN &&
               eh->e_flags == ((const Elf64_Ehdr*)(const void*)caller_data)->e_flags,
           "MIPS64 module header, the objects' e_flags");
-    const Elf64_Shdr *got_section = section_named(linked.data, ".got"), *dynsym = section_named(linked.data, ".dynsym"),
-                     *rela = section_named(linked.data, ".rela.dyn");
     check(got_section && dynsym && rela && dynamic_tag(linked.data, DT_PLTGOT, &got) && got == got_section->sh_addr &&
               dynamic_tag(linked.data, 0x7000000a, &local) && local == got_section->sh_size / 8 &&
               dynamic_tag(linked.data, 0x70000013, &gotsym) && dynamic_tag(linked.data, 0x70000011, &symtabno) &&
               gotsym == symtabno && symtabno == dynsym->sh_size / sizeof(Elf64_Sym) &&
               !dynamic_tag(linked.data, 0x6ffffff9, &count),
           "MIPS64 module's GOT tags: every slot local, no DT_RELACOUNT");
-    for (size_t k = 0; rela && k < rela->sh_size / sizeof(Elf64_Rela); ++k) {
-        const Elf64_Rela* r = (const Elf64_Rela*)(const void*)(linked.data + rela->sh_offset) + k;
-        snx_elf_type(EM_MIPS, r->r_info) == SNX_MIPS_RELATIVE && !snx_elf_symbol(EM_MIPS, r->r_info) ? ++relatives
-                                                                                                     : ++others;
-    }
     check(relatives == 1 && !others, "MIPS64 module's dynamic relocation, ext_pointer's REL32 with 64");
+#else
+    const Elf64_Shdr* hash = section_named(linked.data, ".hash");
+    check(eh->e_machine == EM_S390 && eh->e_type == ET_DYN && !eh->e_flags && got_section && dynsym && hash &&
+              hash->sh_entsize == 8 && hash->sh_size == 8 * (2 + 5 + dynsym->sh_size / sizeof(Elf64_Sym)),
+          "s390x module header, and its .hash of 64-bit words (glibc's Elf_Symndx there)");
+    check(rela && relatives >= 2 && !others && dynamic_tag(linked.data, 0x6ffffff9, &count) && count == relatives,
+          "s390x module's dynamic relocations, every one R_390_RELATIVE and counted");
+#endif
     /* loaded and run by the system's loader, as library.c's load_image does */
     char path[4096];
     const char* tmp = getenv("TMPDIR");
-    snprintf(path, sizeof path, "%s/snx-mips64-module-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+    snprintf(path, sizeof path, "%s/snx-host-module-XXXXXX", tmp && *tmp ? tmp : "/tmp");
     int fd = mkstemp(path);
     if (fd < 0 || write(fd, linked.data, linked.size) != (ssize_t)linked.size)
         return snx_error("%s: cannot write", path);
     close(fd);
     void* module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     unlink(path);
-    if (!module) return snx_error("MIPS64 module: dlopen: %s", dlerror());
+    if (!module) return snx_error(HOST_NAME " module: dlopen: %s", dlerror());
     Unary pick = (Unary)(uintptr_t)dlsym(module, "pick");
     Unary direct = (Unary)(uintptr_t)dlsym(module, "tail_direct");
     Unary through = (Unary)(uintptr_t)dlsym(module, "tail_pointer");
     int64_t (*caller)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "caller");
     int64_t (*third)(void) = (int64_t (*)(void))(uintptr_t)dlsym(module, "third");
-    check(caller && caller() == 127, "MIPS64 module's call through its GOT: ext_fn(ext_data + 1) + 1");
+    check(caller && caller() == 127, HOST_NAME " module's call through its GOT: ext_fn(ext_data + 1) + 1");
     check(pick && pick(0) == 141 && pick(1) == 123 && pick(2) == 34 && pick(3) == (41 ^ 0xFF) && pick(4) == 656 &&
               pick(5) == 20 && pick(6) == 0,
-          "MIPS64 module's jump table");
-    check(direct && direct(5) == 15, "MIPS64 module's musttail call of a declared function");
-    check(through && through(7) == 21, "MIPS64 module's musttail call through a pointer");
-    check(third && third() == 7, "MIPS64 module's load from the object of data");
+          HOST_NAME " module's jump table");
+    check(direct && direct(5) == 15, HOST_NAME " module's musttail call of a declared function");
+    check(through && through(7) == 21, HOST_NAME " module's musttail call through a pointer");
+    check(third && third() == 7, HOST_NAME " module's load from the object of data");
     dlclose(module);
     free(linked.data);
     free(caller_data);
@@ -1446,6 +1517,7 @@ int main(void) {
     riscv_relocations();
     loongarch_relocations();
     mips_relocations();
+    s390x_relocations();
     need_too_large();
     if (llvm_objects()) ++failures;
 #ifndef __APPLE__ /* AOT modules, which macOS doesn't link as ELF (link_elf.c) */
@@ -1453,8 +1525,8 @@ int main(void) {
     if (other_objects("riscv64-unknown-linux-gnu", EM_RISCV, "RISC-V") ||
         other_objects("loongarch64-unknown-linux-gnu", EM_LOONGARCH, "LoongArch"))
         ++failures;
-#if defined(__mips64)
-    if (mips_module()) ++failures;
+#if defined(__mips64) || defined(__s390x__)
+    if (host_module()) ++failures;
 #endif
 #endif
     if (failures) {
