@@ -2,8 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* The Eden room of ldn=room (room.c): the room= address and its port, users/online.ini's room_password (a file others
    may read refused, any other key or a section refused, none at all an empty password), what stops the game before
-   any connection (ldn=room without room=), and airplane mode, which keeps the console out of the room */
+   any connection (ldn=room without room=), airplane mode, which keeps the console out of the room, and a room that
+   refuses the console */
 #include "nx/hle/services/network/network.h"
+#include "fake_room.h"
 #include <setjmp.h>
 #include <stdarg.h>
 #ifndef _WIN32
@@ -126,6 +128,31 @@ static void stops(void) {
     g_opt_ldn = SNX_OPT_LDN_LAN;
 }
 
+/* refused by the room (fake_room.h takes "secret" alone): the stop names the user by number, never by nickname, which
+   players attach to public reports with the log. A portable folder keeps the player's own users/online.ini out */
+static void refused(void) {
+    FakeRoom* f = fake_room_start();
+    snx_remove_tree("room_service_app");
+    CHECK(snx_mkdirs("room_service_app/" SNX_PORTABLE_DIR) == 0);
+    snprintf(g_exedir, sizeof g_exedir, "room_service_app/" SNX_PORTABLE_DIR);
+    snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "127.0.0.1:%u", fake_room_port(f));
+    g_user_count = 1;
+    strcpy(g_users[0].nickname, "Wanda Maximoff");
+    g_opt_ldn = SNX_OPT_LDN_ROOM;
+    g_stop[0] = 0;
+    if (!setjmp(g_stopped)) {
+        network_room_init();
+        CHECK(!"a room that refused the password started");
+    }
+    CHECK(strstr(g_stop, "as user 1: the room's password is another") && network_room() == NULL);
+    if (strstr(g_stop, "Wanda")) fprintf(stderr, "room_service: the nickname in the stop: %s\n", g_stop);
+    CHECK(!strstr(g_stop, "Wanda"));
+    g_opt_ldn = SNX_OPT_LDN_LAN;
+    g_exedir[0] = 0;
+    fake_room_stop(f);
+    snx_remove_tree("room_service_app");
+}
+
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
@@ -134,6 +161,7 @@ int main(void) {
     addresses();
     passwords();
     stops();
+    refused();
     printf("room_service: %u checks passed\n", checks);
     return 0;
 }

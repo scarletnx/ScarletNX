@@ -5,7 +5,10 @@
    2022 yuzu Emulator Project, GPL-2.0-or-later; Copyright 2026 Eden Emulator Project, GPL-3.0-or-later) */
 /* A member of an Eden room (net_room.h). The join runs on the caller's thread; from then on the member's thread owns
    ENet: it sends what the calls queued, services the connection, hands ldn's messages to the handler and the
-   datagrams to the sockets. The lock order is the member's, then a socket's */
+   datagrams to the sockets. The lock order is the member's, then a socket's.
+
+   The log names a member by its address in the room, never by its nickname, and a chat message by its size, never
+   its text: players attach the log to public reports, and both can name them */
 #include "common/network/net_room.h"
 #include "common/network/net_internal.h"
 #include "common/utilities/endian.h"
@@ -837,9 +840,23 @@ static void room_information(SnxRoom* r, const uint8_t* msg, size_t size) {
     r->nmembers = n;
     snx_unlock(&r->lk);
 }
-static void status_message(const uint8_t* msg, size_t size) {
-    static const char* const what[] = {"?", "joined", "left", "was kicked", "was banned", "is unbanned"};
+/* the room's address of the member named nickname, by the room's information: 0 when that lists no such member */
+static int member_ip(SnxRoom* r, const char* nickname, uint8_t ip[4]) {
+    int found = 0;
+    snx_lock(&r->lk);
+    for (int i = 0; i < r->nmembers && !found; i++)
+        if (!strcmp(r->members[i].nickname, nickname)) {
+            memcpy(ip, r->members[i].ip, 4);
+            found = 1;
+        }
+    snx_unlock(&r->lk);
+    return found;
+}
+/* Eden says who joins before its information lists them, and who leaves before it stops listing them */
+static void status_message(SnxRoom* r, const uint8_t* msg, size_t size) {
+    static const char* const what[] = {"joined", "left", "was kicked", "was banned"}; /* IdMemberJoin on */
     char nickname[64];
+    uint8_t ip[4];
     In in;
     in.p = msg;
     in.n = size;
@@ -847,21 +864,33 @@ static void status_message(const uint8_t* msg, size_t size) {
     in.bad = 0;
     uint8_t type = get8(&in);
     get_text(&in, nickname, sizeof nickname);
-    if (!in.bad) snx_net_log("room: %s %s", nickname, type < 6 ? what[type] : "did something unknown");
+    if (in.bad) return;
+    if (type == 5) /* IdAddressUnbanned: the nickname is the username or address */
+        snx_net_log("room: a username or address is unbanned");
+    else if (type < 1 || type > 4)
+        snx_net_log("room: a member's status %u, which Eden doesn't send", type);
+    else if (member_ip(r, nickname, ip))
+        snx_net_log("room: the member at %u.%u.%u.%u %s", ip[0], ip[1], ip[2], ip[3], what[type - 1]);
+    else
+        snx_net_log("room: a member %s", what[type - 1]);
 }
-static void chat_message(const uint8_t* msg, size_t size) {
-    char nickname[64], username[64], text[512];
+static void chat_message(SnxRoom* r, const uint8_t* msg, size_t size) {
+    char nickname[64];
+    uint8_t ip[4];
+    size_t n;
     In in;
     in.p = msg;
     in.n = size;
     in.at = 1;
     in.bad = 0;
     get_text(&in, nickname, sizeof nickname);
-    get_text(&in, username, sizeof username);
-    get_text(&in, text, sizeof text);
-    for (size_t i = 0; text[i]; i++)
-        if ((unsigned char)text[i] < 0x20) text[i] = ' '; /* one line in the log */
-    if (!in.bad) snx_net_log("room: %s says: %s", nickname, text);
+    get_bytes(&in, &n); /* the username */
+    get_bytes(&in, &n); /* the text */
+    if (in.bad) return;
+    if (member_ip(r, nickname, ip))
+        snx_net_log("room: a chat message of %zu bytes from the member at %u.%u.%u.%u", n, ip[0], ip[1], ip[2], ip[3]);
+    else
+        snx_net_log("room: a chat message of %zu bytes from a member the room's information doesn't list", n);
 }
 /* one message from the room. In the join, the answer to it: SNX_ROOM_IN for a success, a SNX_ROOM_* refusal, or -1
    for anything else */
@@ -883,8 +912,8 @@ static int room_message(SnxRoom* r, const uint8_t* msg, size_t size, int joining
             room_information(r, msg, size);
             if (!joining) call_ldn(r, NULL);
             return -1;
-        case ID_STATUS_MESSAGE: status_message(msg, size); return -1;
-        case ID_CHAT_MESSAGE: chat_message(msg, size); return -1;
+        case ID_STATUS_MESSAGE: status_message(r, msg, size); return -1;
+        case ID_CHAT_MESSAGE: chat_message(r, msg, size); return -1;
         case ID_JOIN_SUCCESS:
         case ID_JOIN_SUCCESS_AS_MOD:
             if (!joining || size < 5) return -1;
@@ -1094,8 +1123,8 @@ int snx_room_join(SnxRoom** out, const char* host, uint16_t port, const char* ni
     }
     r->state = SNX_ROOM_IN;
     r->refs = 1;
-    snx_net_log("room: joined %s:%u as %s, at %u.%u.%u.%u, %d member%s", host, port, nickname, r->fake_ip[0],
-                r->fake_ip[1], r->fake_ip[2], r->fake_ip[3], r->nmembers, r->nmembers == 1 ? "" : "s");
+    snx_net_log("room: joined %s:%u, at %u.%u.%u.%u, %d member%s", host, port, r->fake_ip[0], r->fake_ip[1],
+                r->fake_ip[2], r->fake_ip[3], r->nmembers, r->nmembers == 1 ? "" : "s");
     e = snx_net_thread(room_thread, r);
     if (e) {
         *why = SNX_ROOM_LOCAL;
