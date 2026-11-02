@@ -743,6 +743,18 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
+    /* a 3DS game's run gets its own table's picks only: a Display setting picked for a Switch game is not one */
+    {
+        static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                  "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
+                                  "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t";
+        assert(!gui_settings_read(&s, ctr));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "ctr_separate_windows", "1") &&
+               gui_settings_set(&s, "ctr_top_resolution", "2"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[0], "--ctr_separate_windows=1") &&
+               !strcmp(options[1], "--ctr_top_resolution=2"));
+        gui_settings_free(&s);
+    }
     puts("GUI settings: the runtime's list, picks and a run's options passed");
     return 0;
 }

@@ -4,6 +4,7 @@
 #define SNX_CTR_VK_RENDER_H
 #include "3ds/gpu/pica.h"
 #include <stdbool.h>
+#include <volk.h>
 /* The PICA200's draws on the GPU (render.c): the vertex program and the fragment pipeline as generated shaders
    (vsgen.c, fsgen.c), the output merger as the pipeline's fixed state, drawn into images of the render targets the
    guest has in memory. What the GPU makes stays on it, and guest memory catches up only when someone reads it:
@@ -24,6 +25,11 @@ SnxCtrPicaResult snx_ctr_vk_vertices_end(SnxCtrPica* pica, SnxCtrMemory* memory)
    makes what was kept of that memory stale (targets, textures), and the memory the GPU's until the open recording's
    submission is done */
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write);
+/* The dirty colour target kept over the shown framebuffer [pa, pa + width*height*4): its image (GENERAL), the scale
+   its 3D rendering used and the framebuffer's flip. format is transfer.h's colour format, which the target must have.
+   A target at the console's scale is not one. False when no such target is kept. */
+bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, VkImageView* view,
+                             unsigned* scale, unsigned* flip);
 /* write tracking's handler (snx_ctr_track_handler), which the device installs: an owned page's targets stored and
    its GPU writes waited for, a watched page's textures and targets dropped */
 void snx_ctr_vk_track(void* context, uint32_t pa, SnxCtrTrackLevel level);

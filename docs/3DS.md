@@ -454,10 +454,14 @@ Presentation is **Vulkan only** (volk, with no linked Vulkan library):
 the device converts the guest framebuffers to RGBA8 and shows the landscape-
 rotated screens live in an SDL3 Vulkan window through a real swapchain, the top
 screen above the bottom one as on the console, the bottom one centred under it.
-The pair keeps its shape in a window of any size. Bounded
-PPM snapshots land in `<output>/frames` in every mode. Without a display the
-window path is unavailable and frames are only recorded; without a Vulkan
-device the presenter reports unavailability and no frame is fabricated.
+The pair keeps its shape in a window of any size. The 3DS display's Separate
+screens setting gives each screen a window of its own instead, which fills with
+that screen. Top screen resolution and Bottom screen resolution scale the 3D
+rendering of that screen, 1 to 16 times the console's 400x240 and 320x240, and
+the window scales the larger image to its size. Bounded PPM snapshots land in
+`<output>/frames` in every mode. Without a display the window path is
+unavailable and frames are only recorded; without a Vulkan device the presenter
+reports unavailability and no frame is fabricated.
 
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the

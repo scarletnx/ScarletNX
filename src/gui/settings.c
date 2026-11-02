@@ -468,15 +468,20 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     argv[0] = s->values[i].option;
     return 1;
 }
-size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
-    size_t n = 0;
+/* argv's --key=value for each setting picked whose key starts with prefix (all of them without one) */
+static size_t picked_options(GuiSettings* s, const char** argv, const char* prefix) {
+    size_t n = 0, length = prefix ? strlen(prefix) : 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
         const char* value = picked(s, i);
-        if (!value) continue;
+        if (!value || !s->values[i].key || (prefix && strncmp(s->values[i].key, prefix, length))) continue;
         snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", s->values[i].key, value);
         argv[n++] = s->values[i].option;
     }
+    return n;
+}
+size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
+    size_t n = picked_options(s, argv, NULL);
     if (launch && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     if (launch && gui_settings_extract(s)) argv[n++] = gui_settings_extract(s);
     if (launch && own_on(s, "gdbstub")) {
@@ -485,4 +490,7 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char** argv) {
     }
     if (launch && own_on(s, "tracy_capture")) argv[n++] = "--tracy-capture";
     return n;
+}
+size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) {
+    return picked_options(s, argv, "ctr_"); /* the 3DS driver's tables only */
 }

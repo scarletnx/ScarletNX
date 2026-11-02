@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "snx_settings.h"
+#include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -39,7 +41,7 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     uint32_t n = 0;
     bool ok = snx_vk_extensions_has(&list, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     extensions[n++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-    if (v->host.surface) {
+    if (v->host.surface || v->second_surface) {
         ok = ok && snx_vk_extensions_has(&list, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         extensions[n++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
@@ -47,6 +49,11 @@ static bool make_device(VkPhysicalDevice phys, uint32_t family, void* user) {
     if (index8) extensions[n++] = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
     snx_vk_extensions_free(&list);
     if (!ok) return false;
+    if (v->second_surface) { /* the same queue presents to both windows */
+        VkBool32 presents = VK_FALSE;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(phys, family, v->second_surface, &presents) != VK_SUCCESS || !presents)
+            return false;
+    }
     VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_EXT};
     VkPhysicalDeviceVulkan13Features v13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -155,8 +162,27 @@ bool snx_ctr_vk_init(SnxCtrMemory* memory, char* error, size_t error_size) {
     /* a window first: a display server and a Vulkan surface make it the output; without one frames go to the frame
        dumps only */
     if (!snx_vk_window_open("scarletnx-ctr", "ScarletNX 3DS", 600, 720, &v->host, error, error_size)) return false;
+    /* another window for the bottom screen when the screens are apart, on this instance */
+    if (g_settings.ctr_separate_screens && v->host.window) {
+        v->second = SDL_CreateWindow("ScarletNX 3DS (Bottom)", 640, 480, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+        if (!v->second || !SDL_Vulkan_CreateSurface(v->second, v->host.instance.instance, NULL, &v->second_surface)) {
+            if (v->second) SDL_DestroyWindow(v->second);
+            v->second = NULL;
+            v->second_surface = VK_NULL_HANDLE;
+        }
+    }
     const VkQueueFlags queue = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-    if (!snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v)) {
+    bool made =
+        snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
+    if (!made && v->second) { /* no device presents to both windows: one window again */
+        vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+        SDL_DestroyWindow(v->second);
+        v->second = NULL;
+        v->second_surface = VK_NULL_HANDLE;
+        made =
+            snx_vk_first_device(v->host.instance.instance, VK_API_VERSION_1_3, queue, v->host.surface, make_device, v);
+    }
+    if (!made) {
         snprintf(error, error_size,
                  "no Vulkan 1.3 device with 8-bit storage buffers, dynamic rendering and VK_EXT_external_memory_host");
         snx_ctr_vk_free();
@@ -214,6 +240,8 @@ void snx_ctr_vk_free(void) {
         snx_vk_ring_free(&v->ring);
         vkDestroyDevice(v->device, NULL);
     }
+    if (v->second_surface) vkDestroySurfaceKHR(v->host.instance.instance, v->second_surface, NULL);
+    if (v->second) SDL_DestroyWindow(v->second);
     snx_vk_window_close(&v->host);
     memset(v, 0, sizeof *v);
     g_device.up = 0;

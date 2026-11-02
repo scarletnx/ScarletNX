@@ -22,7 +22,9 @@ typedef struct {
     uint32_t base, size; /* the physical range it holds */
 } SnxCtrVkRam;
 typedef struct {
-    SnxVkWindow host; /* the window (none headless), the instance and the surface */
+    SnxVkWindow host;   /* the window (none headless), the instance and the surface */
+    SDL_Window* second; /* the bottom screen's window when the screens are apart; NULL otherwise */
+    VkSurfaceKHR second_surface;
     VkPhysicalDevice phys;
     VkDevice device;
     VkQueue queue;

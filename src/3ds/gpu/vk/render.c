@@ -16,6 +16,7 @@
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "snx_settings.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,7 +75,7 @@ typedef struct {
 
 typedef struct {
     uint32_t color_pa, depth_pa, width, height;
-    uint8_t color_format, depth_format, flip, pad; /* color in transfer.h's order; depth 0 D16, 2 D24, 3 D24S8 */
+    uint8_t color_format, depth_format, flip, scale; /* color in transfer.h's order; depth 0 D16, 2 D24, 3 D24S8 */
 } TargetKey;
 /* A render target kept: its images hold memory's contents when valid, and newer ones when dirty (drawn into since they
    were loaded or stored), whose memory is the GPU's until they are stored */
@@ -326,8 +327,8 @@ static bool made(void) {
     SnxCtrVk* v = snx_ctr_vk();
     if (!v) return false;
     g.failed = true;
-    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 24, &g.color) ||
-        !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 28, &g.depth) ||
+    if (!snx_ctr_vk_compute(snx_ctr_color_spv, snx_ctr_color_spv_size / 4, 1, 1, 28, &g.color) ||
+        !snx_ctr_vk_compute(snx_ctr_depth_spv, snx_ctr_depth_spv_size / 4, 3, 0, 32, &g.depth) ||
         !snx_ctr_vk_compute(snx_ctr_texture_spv, snx_ctr_texture_spv_size / 4, 1, 1, 20, &g.texture))
         return false;
     if (depth_usable(VK_FORMAT_D24_UNORM_S8_UINT))
@@ -467,6 +468,21 @@ static uint64_t color_span(const TargetKey* k) {
 }
 static uint64_t depth_span(const TargetKey* k) {
     return k->depth_format == NO_DEPTH ? 0 : (uint64_t)k->width * k->height * depth_bytes(k->depth_format);
+}
+/* The 3DS draws a screen's framebuffer into one 240x400 or 240x320 target: the top screen is 400 rows, the bottom
+   320. Its 3D rendering is scaled by the setting of that screen, as far as the device's largest image takes. */
+static uint8_t target_scale(const TargetKey* k) {
+    unsigned scale = 1;
+    if (k->height == 400)
+        scale = (unsigned)g_settings.ctr_top_resolution;
+    else if (k->height == 320)
+        scale = (unsigned)g_settings.ctr_bottom_resolution;
+    if (scale < 1) scale = 1;
+    if (scale > 16) scale = 16;
+    const uint32_t largest = snx_ctr_vk()->properties.limits.maxImageDimension2D;
+    if (k->width && scale > largest / k->width) scale = largest / k->width;
+    if (k->height && scale > largest / k->height) scale = largest / k->height;
+    return (uint8_t)(scale ? scale : 1);
 }
 /* the state of the RAM page holding pa, NULL outside RAM (the pages made at the first use) */
 static PageState* page_state(uint32_t pa) {
@@ -608,29 +624,33 @@ static void end_rendering(void) {
 static bool target_move(Target* t, bool store, bool color, bool depth) {
     const TargetKey* k = &t->key;
     VkCommandBuffer cb = snx_ctr_vk_commands();
-    VkDeviceSize pixels = (VkDeviceSize)k->width * k->height;
+    uint32_t width = k->width * k->scale, height = k->height * k->scale;
+    VkDeviceSize pixels = (VkDeviceSize)width * height;
     SnxCtrVkWindow w[3];
     uint32_t inside;
     if (store) end_rendering(); /* its barrier and dispatch cannot be recorded inside a target's pass */
     snx_ctr_vk_barrier(cb);
     if (color && snx_ctr_vk_window(k->color_pa, color_span(k), &w[0], &inside)) {
-        uint32_t push[6] = {inside, k->width, k->height, k->color_format, k->flip, store};
-        if (!dispatch(&g.color, w, 1, t->color.view, push, sizeof push, k->width, k->height)) return false;
+        uint32_t push[7] = {inside, k->width, k->height, k->color_format, k->flip, store, k->scale};
+        if (!dispatch(&g.color, w, 1, t->color.view, push, sizeof push, store ? k->width : width,
+                      store ? k->height : height))
+            return false;
         gpu_uses(k->color_pa, color_span(k), store);
     }
     if (depth && k->depth_format != NO_DEPTH && snx_ctr_vk_window(k->depth_pa, depth_span(k), &w[0], &inside)) {
         VkBufferImageCopy copies[2] = {
-            {0, k->width, k->height, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0}, {k->width, k->height, 1}},
-            {t->stencil_at, k->width, k->height, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, {0, 0, 0},
-             {k->width, k->height, 1}}};
+            {0, width, height, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0}, {width, height, 1}},
+            {t->stencil_at, width, height, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}};
         w[1] = (SnxCtrVkWindow){t->scratch, 0, pixels * 4};
         w[2] = (SnxCtrVkWindow){t->scratch, t->stencil_at, (pixels + 3) / 4 * 4};
-        uint32_t push[7] = {inside, k->width, k->height, k->depth_format, k->flip, store, g.depth_float};
+        uint32_t push[8] = {inside, k->width, k->height, k->depth_format, k->flip, store, g.depth_float, k->scale};
         if (store) {
             vkCmdCopyImageToBuffer(cb, t->depth.image, VK_IMAGE_LAYOUT_GENERAL, t->scratch, 2, copies);
             snx_ctr_vk_barrier(cb);
         }
-        if (!dispatch(&g.depth, w, 3, VK_NULL_HANDLE, push, sizeof push, k->width, k->height)) return false;
+        if (!dispatch(&g.depth, w, 3, VK_NULL_HANDLE, push, sizeof push, store ? k->width : width,
+                      store ? k->height : height))
+            return false;
         if (!store) {
             snx_ctr_vk_barrier(cb);
             vkCmdCopyBufferToImage(cb, t->scratch, t->depth.image, VK_IMAGE_LAYOUT_GENERAL, 2, copies);
@@ -733,7 +753,7 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width, k->height)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale)) return NULL;
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -766,6 +786,26 @@ static SnxCtrPicaResult target_open(const TargetKey* k) {
     g.open = (unsigned)(t - g.targets);
     g.opened = true;
     return SNX_CTR_PICA_OK;
+}
+/* A dirty colour target kept over the shown framebuffer: the presenter draws from its image, at the render scale,
+   instead of decoding the framebuffer the target has not stored yet. format is transfer.h's colour format, which the
+   target must have; a target at the console's scale is not used, because its image holds the draws' unquantised
+   colours. Null when no such target is kept. */
+bool snx_ctr_vk_target_image(uint32_t pa, unsigned width, unsigned height, unsigned format, VkImageView* view,
+                             unsigned* scale, unsigned* flip) {
+    if (!g.made) return false;
+    for (unsigned i = 0; i < g.target_count; ++i) {
+        Target* t = &g.targets[i];
+        if (t->key.color_pa == pa && t->key.width == width && t->key.height == height &&
+            t->key.color_format == format && t->key.scale > 1 && (t->color_dirty || t->color_valid) && t->color.view) {
+            *view = t->color.view;
+            *scale = t->key.scale;
+            *flip = t->key.flip;
+            t->used = snx_ctr_vk_serial();
+            return true;
+        }
+    }
+    return false;
 }
 void snx_ctr_vk_sync(uint32_t pa, uint32_t size, bool write) {
     if (!size || !snx_ctr_vk()) return;
@@ -1244,14 +1284,20 @@ static SnxCtrPicaResult stop(SnxCtrPica* p, const char* why) {
 }
 /* the uploads of a draw: the uniform blocks and LUTs (the last ones again when they hold the same), the default
    attributes; the descriptor sets that point at them */
-static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* fs, VkDescriptorSet sets[2],
-                                    VkDeviceSize* defaults) {
+static SnxCtrPicaResult descriptors(const SnxCtrPica* p, const SnxCtrFsConfig* fs, unsigned scale,
+                                    VkDescriptorSet sets[2], VkDeviceSize* defaults) {
     SnxCtrVsPica vs_pica;
     SnxCtrVsData vs_data;
     SnxCtrFsUniforms* fs_data = (SnxCtrFsUniforms*)malloc(sizeof *fs_data);
     if (!fs_data) return SNX_CTR_PICA_UNSUPPORTED;
     snx_ctr_vs_uniforms(p, &vs_pica, &vs_data);
     snx_ctr_fs_uniforms(p, fs_data);
+    /* FragCoord is the scaled image's: the PICA's scissor and framebuffer scale move with it */
+    fs_data->framebuffer_scale = (int32_t)scale;
+    fs_data->scissor_x1 *= (int32_t)scale;
+    fs_data->scissor_y1 *= (int32_t)scale;
+    fs_data->scissor_x2 *= (int32_t)scale;
+    fs_data->scissor_y2 *= (int32_t)scale;
     bool ok = true;
     if (!g.vs_uploaded || memcmp(&vs_pica, &g.vs_pica, sizeof vs_pica) || memcmp(&vs_data, &g.vs_data, sizeof vs_data)) {
         VkDeviceSize pica_at, data_at;
@@ -1389,6 +1435,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     if (!key.width || key.color_format == 0xff ||
         !snx_ctr_vk_window(key.color_pa, pixels * color_bytes(key.color_format), &probe, &inside))
         return SNX_CTR_PICA_OK;
+    key.scale = target_scale(&key);
     if (key.depth_format == 1 || !key.depth_pa ||
         !snx_ctr_vk_window(key.depth_pa, pixels * depth_bytes(key.depth_format), &probe, &inside)) {
         key.depth_format = NO_DEPTH;
@@ -1472,7 +1519,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
     if (result != SNX_CTR_PICA_OK) return result;
     VkDescriptorSet sets[2];
     VkDeviceSize defaults;
-    result = descriptors(p, &fs, sets, &defaults);
+    result = descriptors(p, &fs, key.scale, sets, &defaults);
     if (result != SNX_CTR_PICA_OK) return result;
     if (immediate) {
         if (!upload(g.immediate, g.immediate_count * sizeof *g.immediate, &offsets[0])) return AGAIN;
@@ -1492,7 +1539,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
         VkRenderingAttachmentInfo ds = color;
         ds.imageView = t->depth.view;
         VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                              .renderArea = {{0, 0}, {t->key.width, t->key.height}},
+                              .renderArea = {{0, 0}, {t->key.width * t->key.scale, t->key.height * t->key.scale}},
                               .layerCount = 1,
                               .colorAttachmentCount = 1,
                               .pColorAttachments = &color,
@@ -1502,8 +1549,10 @@ static SnxCtrPicaResult record(SnxCtrPica* p, bool immediate, bool indexed) {
         g.rendering = true;
     }
     int32_t cx = (int32_t)(r[VIEWPORT_CORNER] << 22) >> 22, cy = (int32_t)(r[VIEWPORT_CORNER] << 6) >> 22;
-    VkViewport viewport = {(float)cx, (float)cy, 2.0f * half_x, 2.0f * half_y, 0.0f, 1.0f};
-    VkRect2D scissor = {{0, 0}, {key.width, key.height}};
+    float scale = (float)key.scale;
+    VkViewport viewport = {(float)cx * scale, (float)cy * scale, 2.0f * half_x * scale, 2.0f * half_y * scale, 0.0f,
+                           1.0f};
+    VkRect2D scissor = {{0, 0}, {key.width * key.scale, key.height * key.scale}};
     float constants[4];
     for (unsigned c = 0; c < 4; ++c) constants[c] = (float)(r[OM_BLEND_CONST] >> (c * 8) & 0xff) / 255.0f;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);

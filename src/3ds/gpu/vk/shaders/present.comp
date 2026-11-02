@@ -3,7 +3,8 @@
 // A shown framebuffer, read where the guest has it, decoded and turned to the console's landscape screen: the
 // framebuffer is 240-pixel portrait rows, its row x the screen's column x and its pixel width - 1 - y the screen's
 // row y. The frame goes to the window's image, and, when asked, its RGBA pixels in the framebuffer's own order to a
-// buffer the host reads (frame dumps, the tests' hashes).
+// buffer the host reads (frame dumps, the tests' hashes). A render target the GPU has not stored holds the frame at
+// its render scale instead: source is that image, and the host's readback stays at the framebuffer's own size.
 #version 450
 #extension GL_EXT_shader_8bit_storage : require
 #extension GL_GOOGLE_include_directive : require
@@ -11,17 +12,34 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(std430, set = 0, binding = 0) readonly buffer In { uint8_t SRC[]; };
 layout(std430, set = 0, binding = 1) writeonly buffer Out { uint8_t DST[]; };
 layout(set = 0, binding = 2, rgba8) uniform writeonly image2D frame;
+layout(set = 0, binding = 3, rgba8) uniform readonly image2D source;
 layout(push_constant) uniform Present {
     uint offset, format, pitch, width, height, readback; // width: the framebuffer's row (240), height its rows
+    uint from_target, flip, scale;
 };
 #include "pixel.glsl"
 void main() {
     uint column = gl_GlobalInvocationID.x, row = gl_GlobalInvocationID.y; // the framebuffer's pixel, row
-    if (column >= width || row >= height) return;
-    uvec4 c = decode(format, offset + row * pitch + column * pixel_bytes(format));
-    imageStore(frame, ivec2(int(row), int(width - 1u - column)), vec4(c) / 255.0);
-    if (readback != 0u) {
-        uint at = (row * width + column) * 4u;
-        DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b), DST[at + 3u] = uint8_t(c.a);
+    uint s = scale != 0u ? scale : 1u;
+    if (from_target != 0u) {
+        uint image_width = width * s, image_height = height * s;
+        if (column >= image_width || row >= image_height) return;
+        uvec4 c = uvec4(round(imageLoad(source, ivec2(int(column), int(row))) * 255.0));
+        uint x = flip != 0u ? row : image_height - 1u - row, y = image_width - 1u - column;
+        imageStore(frame, ivec2(int(x), int(y)), vec4(c) / 255.0);
+        if (readback != 0u && column % s == 0u && row % s == 0u) {
+            uint at = ((row / s) * width + column / s) * 4u;
+            DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b),
+            DST[at + 3u] = uint8_t(c.a);
+        }
+    } else {
+        if (column >= width || row >= height) return;
+        uvec4 c = decode(format, offset + row * pitch + column * pixel_bytes(format));
+        imageStore(frame, ivec2(int(row), int(width - 1u - column)), vec4(c) / 255.0);
+        if (readback != 0u) {
+            uint at = (row * width + column) * 4u;
+            DST[at] = uint8_t(c.r), DST[at + 1u] = uint8_t(c.g), DST[at + 2u] = uint8_t(c.b),
+            DST[at + 3u] = uint8_t(c.a);
+        }
     }
 }
