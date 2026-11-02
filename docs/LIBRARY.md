@@ -117,8 +117,11 @@ encoding needing a feature the target lacks is an undefined instruction, as on t
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every
 feature the decoder knows, so discovery follows their branches, but the backend has
-code only for the Cortex-A57's instructions so far: the others stay undefined
-instructions until it has.
+code only for the Cortex-A57's instructions, the load/store, floating-point and AdvSIMD
+extensions, and pointer authentication so far: the others stay undefined instructions
+until it has. Pointer authentication runs as with the address keys off: `PAC*` and
+`AUT*` leave the pointer as it is, the combined branches and loads use it unchecked,
+and `PACGA` gives a keyed value that stays the same in a run ([Switch 2](SWITCH2.md)).
 
 `snx_recompile` recompiles the bytes of one buffer as they will be found at a guest
 address (both multiples of 4), and loads the result: on Linux from an anonymous memory

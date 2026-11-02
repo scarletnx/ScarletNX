@@ -726,10 +726,10 @@ static int llvm_descriptor(SnxIr* ir, const SnxCodegen* codegen, char* error, si
 
 /* ---- the module cache ----
    A linked module is a function of the code it was made from, the addresses it sits at, where it may be entered (the
-   leaders), the optimization level, the decoding (the decoder's tables and the guest's A64 features), the contract with
-   the runtime (SNX_ABI) and the CPU it was made for (the backend
-   and rtlib.c use every extension the host has). Two 64-bit FNV-1a hashes of all that, with different offsets, name
-   it in the cache folder */
+   leaders), the optimization level, the decoding (the decoder's tables and the guest's A64 features), what the
+   emitters make of each word (SNX_IR_EMIT_VERSION), the contract with the runtime (SNX_ABI) and the CPU it was made
+   for (the backend and rtlib.c use every extension the host has). Two 64-bit FNV-1a hashes of all that, with different
+   offsets, name it in the cache folder */
 typedef struct {
     uint64_t a, b;
 } CacheKey;
@@ -752,6 +752,7 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
     key_u64(&k, SNX_ABI);
     key_u64(&k, (uint64_t)(unsigned char)r->opt);
     key_u64(&k, snx_a64_decoder_hash()); /* what each word decodes to: the decoder and the guest's features */
+    key_u64(&k, SNX_IR_EMIT_VERSION);    /* and what the emitters make of it */
     key_u64(&k, r->features);
     key_u64(&k, (uint64_t)codegen->hook_direct_calls);
     char* cpu = LLVMGetHostCPUName();

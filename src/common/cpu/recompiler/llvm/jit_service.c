@@ -610,10 +610,10 @@ static int hash_runs(const SnxCodeImage* images, size_t image_count, const unsig
     return 0;
 }
 
-/* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
-   runtime library, the host CPU and its features (the code is compiled for them), the -O level, hooked direct calls,
-   direct SVCs, SLP vectorization, FPSR flag exactness, volatile guest accesses, the guest's A64 features and the
-   decoder */
+/* What the objects depend on beyond the code: the ABI, the IR object version, the emitters' version, the host target
+   triple, LLVM, the runtime library, the host CPU and its features (the code is compiled for them), the -O level,
+   hooked direct calls, direct SVCs, SLP vectorization, FPSR flag exactness, volatile guest accesses, the guest's A64
+   features and the decoder */
 static char* cache_key(const SnxJitService* s) {
     return snx_jit_cache_key(s->config.opt, s->config.hook_direct_calls, s->config.direct_svc, s->config.features);
 }

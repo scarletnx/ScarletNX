@@ -284,9 +284,10 @@ static LLVMValueRef flow_operand(SnxIr* ir, const SnxA64Insn* insn) { return snx
 
 /* What word does to the flow for a guest with these features, insn its decode. ir_ldst.c, ir_fpu.c and ir_vec.c
    implement their ops for every feature the decode allows (the LSE and RCpc atomics, FEAT_FP16's halves, FEAT_JSCVT,
-   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions); ir_int.c implements the Switch's instructions, so one of its ops that
-   needs another feature is UNDEF until it does, as is an op no emitter has (the coverage report lists them): as a
-   word no row matches */
+   FEAT_FRINTTS, BFCVT, the AdvSIMD extensions); ir_int.c implements the Switch's instructions and pointer
+   authentication (FEAT_PAuth, the Switch 2's), so one of its ops that needs another feature is UNDEF until it does, as
+   is an op no emitter has (the coverage report lists them): as a word no row matches */
+#define IR_INT_FEATURES (SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_PAUTH)
 static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     snx_a64_decode_word(word, features, insn);
     switch (insn->flow) {
@@ -297,7 +298,7 @@ static SnxA64Flow decode(SnxU32 word, SnxU64 features, SnxA64Insn* insn) {
     }
     if (snx_ir_ldst_handles(insn->op) || snx_ir_fpu_handles(insn->op) || snx_ir_vec_handles(insn->op))
         return insn->flow;
-    if (snx_ir_int_handles(insn->op) && !(insn->feature & ~(SnxU64)SNX_A64_TARGET_SWITCH)) return insn->flow;
+    if (snx_ir_int_handles(insn->op) && !(insn->feature & ~(SnxU64)IR_INT_FEATURES)) return insn->flow;
     return SNX_A64_FLOW_UNDEF;
 }
 

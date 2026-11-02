@@ -19,7 +19,8 @@ static void stamp(const char* text) {
 
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder, *line, kept[64];
-    SnxGameMade made, full = {'3', 1, 812345, 1003210}, jit = {'0', 0, 0, 4096};
+    SnxGameMade made, full = {'3', 1, 812345, 1003210, 0}, jit = {'0', 0, 0, 4096, 0},
+                      switch2 = {'2', 1, 100, 200, 1};
     assert(root);
     folder = snx_path_join(root, "Game");
     assert(folder && !snx_mkdirs(folder));
@@ -51,7 +52,21 @@ int main(void) {
     free(line);
     assert(snx_game_stamp_is(g_base, "14 mods 0123456789abcdef") && !snx_game_stamp_is(g_base, "14"));
     assert(snx_game_made_read(g_base, &made) && made.opt == '3' && made.aot == 1 && made.found == 812345 &&
-           made.code == 1003210);
+           made.code == 1003210 && !made.switch2);
+    snx_state_stamp(g_base, kept, sizeof kept);
+    assert(!strcmp(kept, "14 mods 0123456789abcdef"));
+
+    /* a Switch 2 game's: the made line ends with it, and the stamp the comparisons read stays the same */
+    line = snx_game_made_line(&switch2);
+    assert(!strcmp(line, "\nmade opt=2 aot=1 found=100 code=200 switch2\n"));
+    {
+        char* text = snx_format("14 mods 0123456789abcdef%s", line);
+        stamp(text);
+        free(text);
+    }
+    free(line);
+    assert(snx_game_stamp_is(g_base, "14 mods 0123456789abcdef"));
+    assert(snx_game_made_read(g_base, &made) && made.opt == '2' && made.code == 200 && made.switch2);
     snx_state_stamp(g_base, kept, sizeof kept);
     assert(!strcmp(kept, "14 mods 0123456789abcdef"));
 

@@ -8941,19 +8941,19 @@ int main(int argc, char** argv) {
             { /* how a game's code was made, as the side panel says it: its -O and the share of the code made ahead of
                  time from its stamp's made line, JIT only, and ? for what a stamp from before it does not say */
                 char line[128];
-                SnxGameMade m = {0, -1, 0, 0};
+                SnxGameMade m = {0, -1, 0, 0, 0};
                 made_text(&m, line, sizeof line);
                 assert(!strcmp(line, "Made with: ?"));
-                m = (SnxGameMade){'3', 1, 812345, 1003210};
+                m = (SnxGameMade){'3', 1, 812345, 1003210, 0};
                 made_text(&m, line, sizeof line);
                 assert(!strcmp(line, "Made with: O3, AOT 80%"));
-                m = (SnxGameMade){'2', 1, 1, 1000};
+                m = (SnxGameMade){'2', 1, 1, 1000, 0};
                 made_text(&m, line, sizeof line);
                 assert(!strcmp(line, "Made with: O2, AOT <1%"));
-                m = (SnxGameMade){'2', 1, 0, 0}; /* a 32-bit game's */
+                m = (SnxGameMade){'2', 1, 0, 0, 0}; /* a 32-bit game's */
                 made_text(&m, line, sizeof line);
                 assert(!strcmp(line, "Made with: O2, AOT ?"));
-                m = (SnxGameMade){'0', 0, 0, 4096};
+                m = (SnxGameMade){'0', 0, 0, 4096, 0};
                 made_text(&m, line, sizeof line);
                 assert(!strcmp(line, "Made with: O0, JIT only"));
             }

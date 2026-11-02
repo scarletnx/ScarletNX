@@ -32,11 +32,11 @@ typedef struct {
 } SnxJitCacheRecord;
 
 /* What the objects depend on beyond the code: the ABI, the IR object version,
-   the host target triple, LLVM, the runtime library, the host CPU and its
-   features, the -O level, hooked direct calls, direct SVCs, SLP vectorization,
-   FPSR flag exactness, volatile guest accesses, the guest's A64 features (0: the
-   Switch's) and the decoder's tables. The profile run and the AOT build must
-   pass the same. */
+   the emitters' version (SNX_IR_EMIT_VERSION), the host target triple, LLVM,
+   the runtime library, the host CPU and its features, the -O level, hooked
+   direct calls, direct SVCs, SLP vectorization, FPSR flag exactness, volatile
+   guest accesses, the guest's A64 features (0: the Switch's) and the decoder's
+   tables. The profile run and the AOT build must pass the same. */
 char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 features);
 
 /* Opens and validates the whole file: a wrong key, a corrupt record, or a

@@ -17,6 +17,8 @@ typedef LLVMValueRef V;
 #define SWITCH_CTR_EL0   0x8444C004u /* 64-byte cache lines */
 #define SWITCH_DCZID_EL0 4u          /* DC ZVA zeroes 64 bytes */
 #define SWITCH_CNTFRQ    19200000u
+/* the Switch 2's counter: its SDK builds 31.25 MHz into its tick conversions and never reads CNTFRQ_EL0 */
+#define SWITCH2_CNTFRQ 31250000u
 
 /* ---- operands ---- */
 
@@ -467,7 +469,8 @@ static V read_sysreg(SnxIr* ir, SnxU32 key) {
         case SYSREG(3, 13, 0, 3): return ir_cpu_load(ir, ir->t_i64, offsetof(CPU, tpidrro)); /* TPIDRRO_EL0 */
         case SYSREG(3, 0, 0, 1): return ir_i64(ir, SWITCH_CTR_EL0);                          /* SCTLR_EL1.UCT */
         case SYSREG(3, 0, 0, 7): return ir_i64(ir, SWITCH_DCZID_EL0);
-        case SYSREG(3, 14, 0, 0): return ir_i64(ir, SWITCH_CNTFRQ);
+        case SYSREG(3, 14, 0, 0):
+            return ir_i64(ir, ir->guest_features == SNX_A64_TARGET_SWITCH2 ? SWITCH2_CNTFRQ : SWITCH_CNTFRQ);
         case SYSREG(3, 14, 0, 1): /* CNTPCT_EL0, the SDK's system tick */
         case SYSREG(3, 14, 0, 2): /* CNTVCT_EL0 */
             return mrs_helper(ir, key);
@@ -531,6 +534,43 @@ static void sys(SnxIr* ir, const SnxA64Args* a, SnxU32 word, SnxU64 pc) {
     undef(ir, pc, word);
 }
 #undef SYSREG
+
+/* ---- pointer authentication (FEAT_PAuth) ----
+   As with the address keys off (SCTLR_EL1.EnIA, EnIB, EnDA and EnDB clear), which is how eden-ns2 runs Switch 2 programs:
+   the Arm ARM's AddPAC and Auth give the pointer back unchanged when the key is off, so PAC* and AUT* leave their
+   register as it is, and the combined branches and returns go to the register (snx_ir_int_operand). The guest signs
+   and checks with the same identity, so every pointer it signed is the one it gets back */
+
+/* XPACI, XPACD and XPACLRI: the Arm ARM's Strip with TBI off, bit 55 over the bits above the address. 48 bits is the
+   widest address without FEAT_LVA. A Horizon process's 39-bit addresses have zeroes from bit 39 up, as every pointer
+   does that PAC* here signed, so the narrower field of the console strips them alike */
+static void xpac(SnxIr* ir, unsigned rd) {
+    const SnxU64 address = ones(48);
+    V x = ir_rx(ir, rd);
+    V bit55 = LLVMBuildAShr(B, LLVMBuildShl(B, x, ir_i64(ir, 8), ""), ir_i64(ir, 63), "");
+    set_reg(ir, rd,
+            LLVMBuildOr(B, LLVMBuildAnd(B, x, ir_i64(ir, address), ""), LLVMBuildAnd(B, bit55, ir_i64(ir, ~address), ""),
+                        ""));
+}
+
+/* MurmurHash3's 64-bit finalizer (Austin Appleby, public domain) */
+static V fmix64(SnxIr* ir, V h) {
+    h = LLVMBuildXor(B, h, LLVMBuildLShr(B, h, ir_i64(ir, 33), ""), "");
+    h = LLVMBuildMul(B, h, ir_i64(ir, 0xFF51AFD7ED558CCDull), "");
+    h = LLVMBuildXor(B, h, LLVMBuildLShr(B, h, ir_i64(ir, 33), ""), "");
+    h = LLVMBuildMul(B, h, ir_i64(ir, 0xC4CEB9FE1A85EC53ull), "");
+    return LLVMBuildXor(B, h, LLVMBuildLShr(B, h, ir_i64(ir, 33), ""), "");
+}
+/* PACGA Xd, Xn, Xm|SP: the generic key's PAC of Xn with the modifier in the upper half, zero in the lower. No enable
+   bit turns it off. EL0 cannot read the key, and the Switch 2 SDK compares a PACGA only with another one of the same
+   run (it signs a saved context's registers and checks them when it restores it), so a keyed function that gives one
+   value for one input serves as the key's QARMA: two rounds of fmix64 under a fixed key */
+#define PACGA_KEY 0x5C4E1E7A11D2B3F9ull
+static void pacga(SnxIr* ir, const SnxA64Args* a) {
+    V h = fmix64(ir, LLVMBuildXor(B, ir_x(ir, (unsigned)a->rm), ir_i64(ir, PACGA_KEY), ""));
+    h = fmix64(ir, LLVMBuildXor(B, h, ir_rx(ir, (unsigned)a->rn), ""));
+    set_reg(ir, (unsigned)a->rd, LLVMBuildAnd(B, h, ir_i64(ir, 0xFFFFFFFF00000000ull), ""));
+}
 
 /* ---- the entry points ---- */
 
@@ -612,7 +652,36 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_CLREX:
         case SNX_A64_OP_DSB_DMB:
         case SNX_A64_OP_ISB:
-        case SNX_A64_OP_SYS: return 1;
+        case SNX_A64_OP_SYS:
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_PACIA1716:
+        case SNX_A64_OP_PACIB1716:
+        case SNX_A64_OP_AUTIA1716:
+        case SNX_A64_OP_AUTIB1716:
+        case SNX_A64_OP_PACIAZ:
+        case SNX_A64_OP_PACIASP:
+        case SNX_A64_OP_PACIBZ:
+        case SNX_A64_OP_PACIBSP:
+        case SNX_A64_OP_AUTIAZ:
+        case SNX_A64_OP_AUTIASP:
+        case SNX_A64_OP_AUTIBZ:
+        case SNX_A64_OP_AUTIBSP:
+        case SNX_A64_OP_PACIA:
+        case SNX_A64_OP_PACIB:
+        case SNX_A64_OP_PACDA:
+        case SNX_A64_OP_PACDB:
+        case SNX_A64_OP_AUTIA:
+        case SNX_A64_OP_AUTIB:
+        case SNX_A64_OP_AUTDA:
+        case SNX_A64_OP_AUTDB:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD:
+        case SNX_A64_OP_PACGA:
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRAZ:
+        case SNX_A64_OP_RETA:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BLRA: return 1;
         default: return 0;
     }
 }
@@ -701,7 +770,12 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
         case SNX_A64_OP_DSB_DMB: barrier(ir, (unsigned)a->types); break;
         case SNX_A64_OP_ISB: ir_fence(ir); break;
         case SNX_A64_OP_SYS: sys(ir, a, word, pc); break;
-        default: break; /* NOP and WFI (SCTLR_EL1.nTWI: no trap), the prefetches; the flow ops have no body */
+        case SNX_A64_OP_XPACLRI: xpac(ir, 30); break;
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD: xpac(ir, (unsigned)a->rd); break;
+        case SNX_A64_OP_PACGA: pacga(ir, a); break;
+        default: break; /* NOP and WFI (SCTLR_EL1.nTWI: no trap), the prefetches, PAC* and AUT* with the keys off; the
+                           flow ops have no body */
     }
 }
 
@@ -718,7 +792,12 @@ LLVMValueRef snx_ir_int_operand(SnxIr* ir, const SnxA64Insn* insn) {
         }
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
-        case SNX_A64_OP_RET: return ir_rx(ir, (unsigned)a->rn);
+        case SNX_A64_OP_RET:
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRAZ:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BLRA: return ir_rx(ir, (unsigned)a->rn);
+        case SNX_A64_OP_RETA: return ir_rx(ir, 30);
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK: return ir_i32(ir, (SnxU32)a->imm & 0xFFFFu);
         default: return NULL;

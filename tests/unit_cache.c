@@ -314,9 +314,9 @@ static void keys(void) {
     if (!a) return;
     CHECK(!snx_unit_cache_key(a, triple, cpu, features, "IR", 2, key) && strlen(key) == 64);
     /* the key's bytes pinned (each field's length, 8 bytes little-endian, then the field): "snx-unit-cache",
-       SNX_IR_OBJECT_VERSION 4 as 8 bytes, the LLVM, the -O letter, 1 for a tuning and its text, the triple, the CPU,
+       SNX_IR_OBJECT_VERSION 5 as 8 bytes, the LLVM, the -O letter, 1 for a tuning and its text, the triple, the CPU,
        the features and the bitcode. Bumping SNX_IR_OBJECT_VERSION changes it */
-    CHECK(!strcmp(key, "be1bf7ecc1f036eaaa79c6dd0c3fb5db21cd7753e8c08a9837c62d7393791a87"));
+    CHECK(!strcmp(key, "9884655056a48f25f7dab19d23e801aa4ddd506a0e2515b9a49de1ec8e5ba8d8"));
     /* each field of the unit's own */
     CHECK(!snx_unit_cache_key(a, "aarch64-unknown-linux-gnu", cpu, features, "IR", 2, k2) && strcmp(key, k2));
     CHECK(!snx_unit_cache_key(a, triple, "znver3", features, "IR", 2, k2) && strcmp(key, k2));

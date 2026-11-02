@@ -101,6 +101,17 @@ static void ldst_imm(SnxIr* ir, const SnxA64Args* a, int vector, int store) {
     if (a->w) ir_set_x(ir, rn, a->p ? LLVMBuildAdd(B, base, ir_i64(ir, offset), "") : address);
 }
 
+/* LDRAA and LDRAB (trans_LDRA): a doubleword at Xn|SP plus the offset (signed, scaled by 8 in the decode), the
+   address written back to Xn|SP after the load when w. With the keys off (ir_int.c) Xn is not authenticated */
+static void ldra(SnxIr* ir, const SnxA64Args* a) {
+    SnxA64Args doubleword = *a;
+    doubleword.p = 0;
+    doubleword.sz = 3;
+    doubleword.sign = 0;
+    doubleword.ext = 0;
+    ldst_imm(ir, &doubleword, 0, 0);
+}
+
 /* the register offset: Xn + Rm extended by option (UXTW, LSL, SXTW, SXTX) and shifted by the size when s
    (op_addr_ldst_pre, ext_and_shift_reg) */
 static void ldst_reg(SnxIr* ir, const SnxA64Args* a, int vector, int store) {
@@ -454,6 +465,7 @@ static void store_tag_pair(SnxIr* ir, const SnxA64Args* a) {
 int snx_ir_ldst_handles(SnxA64Op op) {
     switch (op) {
         case SNX_A64_OP_STR_i:
+        case SNX_A64_OP_LDRA:
         case SNX_A64_OP_LDR_i:
         case SNX_A64_OP_STR_v_i:
         case SNX_A64_OP_LDR_v_i:
@@ -508,6 +520,7 @@ void snx_ir_ldst(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
     switch (insn->op) {
         case SNX_A64_OP_STR_i: ldst_imm(ir, a, 0, 1); break;
         case SNX_A64_OP_LDR_i: ldst_imm(ir, a, 0, 0); break;
+        case SNX_A64_OP_LDRA: ldra(ir, a); break;
         case SNX_A64_OP_STR_v_i: ldst_imm(ir, a, 1, 1); break;
         case SNX_A64_OP_LDR_v_i: ldst_imm(ir, a, 1, 0); break;
         case SNX_A64_OP_STR: ldst_reg(ir, a, 0, 1); break;

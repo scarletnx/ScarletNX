@@ -169,8 +169,8 @@ int snx_game_stamp_is(const char* base, const char* expected) {
     return same;
 }
 char* snx_game_made_line(const SnxGameMade* made) {
-    return snx_format("\nmade opt=%c aot=%d found=%llu code=%llu\n", made->opt ? made->opt : '?', made->aot,
-                      made->found, made->code);
+    return snx_format("\nmade opt=%c aot=%d found=%llu code=%llu%s\n", made->opt ? made->opt : '?', made->aot,
+                      made->found, made->code, made->switch2 ? " switch2" : "");
 }
 size_t snx_game_stamp_size(const char* text, size_t size) {
     for (size_t i = size; i-- > 0;)
@@ -181,7 +181,7 @@ int snx_game_made_read(const char* base, SnxGameMade* made) {
     char* stamp = snx_format("%s.abi", base);
     size_t size = 0;
     unsigned char* text = snx_read_file(stamp, &size);
-    SnxGameMade got = {0, -1, 0, 0};
+    SnxGameMade got = {0, -1, 0, 0, 0};
     char opt = 0;
     int n = 0;
     *made = got;
@@ -192,6 +192,7 @@ int snx_game_made_read(const char* base, SnxGameMade* made) {
          sscanf((const char*)text + at, "\nmade opt=%c aot=%d found=%llu code=%llu%n", &opt, &got.aot, &got.found,
                 &got.code, &n) == 4 &&
          n > 0 && opt && strchr("0123sz", opt) && (got.aot == 0 || got.aot == 1) && got.found <= got.code;
+    if (ok) got.switch2 = !strncmp((const char*)text + at + n, " switch2", 8);
     free(text);
     if (!ok) return 0;
     got.opt = opt;

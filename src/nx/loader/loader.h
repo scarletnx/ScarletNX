@@ -8,6 +8,7 @@
 
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/image.h"
+#include "nx/loader/hw.h"
 #include <stddef.h>
 
 /* Where the first module goes: a 64-bit process's code region, and a 32-bit one's (mem.h's AS32_CODE_BASE). Each
@@ -64,6 +65,7 @@ typedef struct {
     SnxU32 stack;
     unsigned prio, core, aspace;
     int is64;
+    SnxHw hw; /* the console it is built for (hw.h) */
     char name[17];
 } SnxNpdm;
 

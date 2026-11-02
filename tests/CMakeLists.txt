@@ -605,6 +605,14 @@ snx_test_target(snx-test-crc32-helper 11)
 target_link_libraries(snx-test-crc32-helper PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME crc32_helper COMMAND snx-test-crc32-helper)
 
+# pointer authentication as the switch2 target runs it (the keys off), each console's CNTFRQ_EL0, and the Switch's
+# target without it, through the LLVM steps: QEMU's user mode runs with the keys on, so the differential cannot
+add_executable(snx-test-llvm-pauth llvm_pauth.c llvm_steps.c)
+snx_test_target(snx-test-llvm-pauth 11)
+target_link_libraries(snx-test-llvm-pauth PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+snx_a64dec(snx-test-llvm-pauth)
+add_test(NAME llvm_pauth COMMAND snx-test-llvm-pauth)
+
 # the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict C99, against docs/NVN_HLE.md's fields,
 # and the NVN functions' types that hookgen makes of gpu/nvn/nvn.hook, against prototypes in NVN's types
 add_executable(snx-test-nvn-header nvn_header.c)

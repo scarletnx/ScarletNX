@@ -14170,7 +14170,7 @@ static void aot_clear_focus(App* app) {
     app->aot_checked = 0;
     app->aot_match = 0;
     memset(&app->aot_info, 0, sizeof app->aot_info);
-    app->made = (SnxGameMade){0, -1, 0, 0};
+    app->made = (SnxGameMade){0, -1, 0, 0, 0};
     app->made_here = true;
 }
 static bool made_here(const char* program);

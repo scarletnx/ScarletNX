@@ -941,6 +941,7 @@ int snx_parse_npdm(const unsigned char* data, size_t size, SnxNpdm* npdm, char* 
     memcpy(npdm->name, data + 0x20, 16);
     npdm->name[16] = 0;
     npdm->title_id = rd64(data + aci + 0x10);
+    npdm->hw = snx_npdm_hw(data, size);
     return 0;
 }
 

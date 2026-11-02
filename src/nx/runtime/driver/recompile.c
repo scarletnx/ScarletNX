@@ -742,7 +742,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     {
         /* what the launcher says the game was made with: the AArch64 analysis's instructions of the modules' code (a
            32-bit game's blocks are counted otherwise: 0, unknown) */
-        SnxGameMade made = {compile.opt[0], !gen.interp_only, found, 0};
+        SnxGameMade made = {compile.opt[0], !gen.interp_only, found, 0, program.npdm.hw == SNX_HW_SWITCH2};
         char *stamp = snx_format("%s.abi", base), *version = snx_game_stamp(mods_stamp), *line, *text;
         size_t m;
         for (m = 0; program.npdm.is64 && m < program.module_count; ++m) made.code += program.modules[m].text_size / 4;

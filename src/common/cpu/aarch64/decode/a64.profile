@@ -38,6 +38,9 @@ feature EL1
 
 # The Switch's Cortex-A57: Armv8.0 with the CRC32 and Cryptographic Extensions
 target switch v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256
+# The Switch 2's Cortex-A78C (its TRM, B2.79 and B2.80): Armv8.2-A with the CRC32 and Cryptographic Extensions, LDAPR
+# and LDAPUR (RCpc, RCpc2), the dot product, FlagM, SSBS and pointer authentication
+target switch2 v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_RDM FEAT_LOR FEAT_PAN FEAT_UAO FEAT_RAS FEAT_FP16 FEAT_DotProd FEAT_LRCPC FEAT_LRCPC2 FEAT_FlagM FEAT_SSBS FEAT_PAuth
 # every feature the decoder knows
 target max *
 

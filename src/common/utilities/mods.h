@@ -45,11 +45,13 @@ int snx_game_stamp_is(const char* base, const char* expected);
 /* how the recompile made a game, the made line after the stamp in its <name>.abi ("\nmade opt=2 aot=1 found=N
    code=N"), which the stamp is not compared by: the -O, whether it made code ahead of time (0: --jit-only, the JIT
    compiles it all), and of the instructions in the modules' code those its analysis found and made ahead of time.
-   Unknown, from a stamp an older version wrote: opt 0, aot -1, code 0 */
+   switch2: the code is the Switch 2's (" switch2" ends the line), the runtime refuses it for a Switch program and the
+   other way round. Unknown, from a stamp an older version wrote: opt 0, aot -1, code 0, switch2 0 */
 typedef struct {
     char opt;
     int aot;
     unsigned long long found, code;
+    int switch2;
 } SnxGameMade;
 /* made as the line the stamp ends with, its "\n" first, owned */
 char* snx_game_made_line(const SnxGameMade* made);
