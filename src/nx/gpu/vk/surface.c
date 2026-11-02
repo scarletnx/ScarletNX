@@ -809,7 +809,7 @@ static void flush_note_landed(u64 gva, u64 from, u64 to) {
 }
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
-static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
+static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
     u32 gh = guest_h(s);
     u64 gva = s->gva, row = (u64)guest_w(s) * s->f.bpp, slice = row * gh;
     u64 sz = rt_bytes(s), gw0 = gpu_mem_generation();
@@ -852,7 +852,11 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
         free(current_copy);
         s->mem_wgen = wgen; /* avoid flushing this target again when writeback checks overlapping targets */
         vk_write_changed(gva, dst, original, (u32)sz);
-        free(tmp);
+        if (keep) { /* the image's bytes as this landing leaves them, for a later draw's write-back */
+            *keep = tmp;
+            *keep_size = sz;
+        } else
+            free(tmp);
     } else if (kept) { /* the runs between the CPU's */
         u64 at = 0;
         for (u32 i = 0; i <= kept; i++) {
@@ -947,7 +951,7 @@ static void surf_flush(Surf* s, const u8* original) {
     VkCommandBuffer cb = vk_cmd();
     if (!flush_record(cb, s, buf, 0)) return;
     flush_wait(cb);
-    flush_land(s, p, original, s->wgen);
+    flush_land(s, p, original, s->wgen, NULL, NULL);
 }
 u64 vk_surf_flush_size(const Surf* s) { return flush_bytes(s); }
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
@@ -965,9 +969,10 @@ void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
 }
-void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
+void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
+    if (keep) *keep = NULL;
     vk_result_begin();
-    flush_land(s, p, original, wgen);
+    flush_land(s, p, original, wgen, original ? keep : NULL, keep_size);
     vk_result_end();
 }
 void vk_surf_flush(Surf* s, const u8* original) {
