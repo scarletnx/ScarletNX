@@ -537,7 +537,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
             char cs_why[256];
             u64 cs_skipped = vk_cs_skipped(cs_why, sizeof cs_why);
             LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped%s; "
-                "%llu finishes (%llu ms); %llu reads past queued releases; %llu descriptor sets written, %llu reused; "
+                "%llu finishes (%llu ms); %llu reads past queued releases (%llu samples counts written on the GPU); "
+                "%llu descriptor sets written, %llu reused; "
                 "%llu draws kept the last one's shaders and pipeline (%llu checked)\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches,
@@ -545,6 +546,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                 (unsigned long long)cs_skipped, cs_why, (unsigned long long)g_vk_finishes,
                 (unsigned long long)(g_vk_finish_ns / 1000000),
                 (unsigned long long)__atomic_load_n(&g_vk_release_forwards, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&g_vk_counts_on_gpu, __ATOMIC_RELAXED),
                 (unsigned long long)g_vk_dset_new, (unsigned long long)g_vk_dset_reused,
                 (unsigned long long)g_vk_draw_kept, (unsigned long long)g_vk_draw_checked);
             {

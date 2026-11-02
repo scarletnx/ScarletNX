@@ -34,6 +34,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/query_compare_spv.h"
+#include "nx/gpu/vk/query_count_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
 
@@ -633,6 +634,141 @@ int vk_query_pred_compare(u64 a, u32* slot) {
     g_pref[at] = 1;
     g_pnext = at + 1;
     *slot = at;
+    return 1;
+}
+
+/* ------------------------------------------------------------ counts read before their reports are performed */
+/* A draw reading a samples-passed report's count before the report was performed (one game's constant buffer holds
+   one) waited for the GPU to run everything recorded until then, 4 to 6 ms of each of that game's frames. The count is
+   written where the draw reads it instead, by query_count.comp from the counts of the report's segments, after the
+   copies the report recorded (vk_query_flush), as Eden's query cache writes its reports' values into its buffers on
+   the GPU (SyncValues, 4dc69c06). Not when the targets are scaled: vk_query_value rounds the count to the guest's size
+   on the CPU */
+u64 g_vk_counts_on_gpu;
+static VkDescriptorSetLayout g_kds;
+static VkPipelineLayout g_klayout;
+static VkPipeline g_kpipe;
+static int g_kfailed;
+static int count_init(void) {
+    if (g_kpipe) return 1;
+    if (g_kfailed || !g_qpool) return 0;
+    g_kfailed = 1; /* until everything below is made */
+    VkDescriptorSetLayoutBinding b[3];
+    for (u32 i = 0; i < 3; i++)
+        b[i] =
+            (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo di = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &di, NULL, &g_kds))) return 0;
+    VkPushConstantRange push = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(u32)};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                     .setLayoutCount = 1,
+                                     .pSetLayouts = &g_kds,
+                                     .pushConstantRangeCount = 1,
+                                     .pPushConstantRanges = &push};
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &li, NULL, &g_klayout))) return 0;
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                   .codeSize = query_count_spv_size,
+                                   .pCode = query_count_spv};
+    VkShaderModule m;
+    if (!VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m))) return 0;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                .module = m,
+                                                .pName = "main"},
+                                      .layout = g_klayout};
+    int ok = VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &g_kpipe));
+    vkDestroyShaderModule(g_vk.dev, m, NULL);
+    if (!ok) {
+        g_kpipe = VK_NULL_HANDLE;
+        return 0;
+    }
+    g_kfailed = 0;
+    return 1;
+}
+/* the segments of report r its sum still needs, from *from, and the part vk_query_value already added (*sum): 0 when
+   they can't be read on the GPU (the epoch outgrew the ring, or its copies aren't recorded) */
+static int count_range(const SamplesCount* r, u64* from, u64* sum) {
+    const QCounter* c = &g_qc[r->counter % QCH];
+    if (!c->used || !c->started || c->bad || r->end > g_q.copied) return 0;
+    *from = r->first;
+    *sum = 0;
+    if (c->sum_first == r->first) { /* the reports performed summed the epoch's segments up to sum_end */
+        if (c->sum_end > r->end) return 0;
+        if (c->sum_end > *from) *from = c->sum_end;
+        *sum = c->sum;
+    }
+    return r->end - *from <= QN;
+}
+int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n) {
+    u64 align = g_vk.props.limits.minStorageBufferOffsetAlignment, base, end = 0, size, joff, from, sum, s;
+    u32 words = n, k, at;
+    VkBuffer jobs;
+    if (!n) return 1;
+    if (g_vk_scale != 1.0f || !count_init()) return 0;
+    for (k = 0; k < n; k++) {
+        const SamplesCount* r = &counts[k];
+        if (!count_range(r, &from, &sum)) return 0;
+        words += 5;
+        for (s = from; s < r->end; s++) words += g_qown[s % QN] == r->counter % QCH + 1;
+        if (r->at + r->len > end) end = r->at + r->len;
+    }
+    size = (u64)words * sizeof(u32);
+    u32* w = (u32*)vk_stage(size, vk_stage_align(), &jobs, &joff);
+    VkDescriptorSet set = w ? vk_desc_alloc(g_kds) : VK_NULL_HANDLE;
+    if (!set) return 0;
+    base = align ? off / align * align : off; /* a storage binding's offset is a multiple of the device's alignment */
+    for (k = 0, at = n; k < n; k++) {
+        const SamplesCount* r = &counts[k];
+        u32 segs = 0;
+        count_range(r, &from, &sum);
+        for (s = from; s < r->end; s++)
+            if (g_qown[s % QN] == r->counter % QCH + 1) w[at + 5 + segs++] = (u32)(s % QN);
+        w[k] = at;
+        w[at] = (u32)sum;
+        w[at + 1] = (u32)(sum >> 32);
+        w[at + 2] = (u32)((off - base + r->at) / 4);
+        w[at + 3] = r->len / 4;
+        w[at + 4] = segs;
+        at += 5 + segs;
+    }
+    snx_le32_array(w, words); /* the shader reads them little-endian */
+    VkDescriptorBufferInfo bufs[3] = {{g_qbuf, 0, VK_WHOLE_SIZE}, {jobs, joff, size}, {buf, base, off - base + end}};
+    VkWriteDescriptorSet wr[3];
+    for (k = 0; k < 3; k++)
+        wr[k] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = k,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       .pBufferInfo = &bufs[k]};
+    vkUpdateDescriptorSets(g_vk.dev, 3, wr, 0, NULL);
+    VkCommandBuffer cb = vk_cmd();
+    vk_render_end(); /* a dispatch is outside a rendering pass */
+    /* the counts' copies before the shader reads them; its writes before whatever reads the buffer, and its reads of
+       the counts before a copy reuses their slots. The jobs and the buffer's other bytes are host writes, made visible
+       by the submit */
+    VkMemoryBarrier2 before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                               .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT},
+                     after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                              .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                              .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                              .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                              .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo d = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &before};
+    rec_CmdPipelineBarrier2(cb, &d);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_kpipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_klayout, 0, 1, &set, 0, NULL);
+    rec_CmdPushConstants(cb, g_klayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof n, &n);
+    rec_CmdDispatch(cb, (n + 63) / 64, 1, 1);
+    d.pMemoryBarriers = &after;
+    rec_CmdPipelineBarrier2(cb, &d);
+    __atomic_add_fetch(&g_vk_counts_on_gpu, n, __ATOMIC_RELAXED);
     return 1;
 }
 

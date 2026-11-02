@@ -1,0 +1,39 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The counts of samples-passed reports not performed yet, written where a draw reads them (vk/query.c
+   vk_query_counts): an invocation per report, adding its segments' counts to the part of its sum already known, in
+   64 bits as two words with their carry, and writing the low word, or both, as the report's structure size says.
+   CMake compiles it into SPIR-V at build time (cmake/glsl.cmake). */
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+/* each segment's count, at its slot of the query ring (query.c's g_qbuf) */
+layout(std430, set = 0, binding = 0) readonly buffer Counts {
+    uvec2 counts[];
+};
+/* jobs[i] is where report i starts: the sum known so far (low and high words), the word it is written at, its words
+   (1 or 2), its number of segments, then their slots */
+layout(std430, set = 0, binding = 1) readonly buffer Jobs {
+    uint jobs[];
+};
+layout(std430, set = 0, binding = 2) buffer Dst {
+    uint dst[];
+};
+layout(push_constant) uniform Params {
+    uint nreports;
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= nreports) return;
+    uint at = jobs[i];
+    uint lo = jobs[at], hi = jobs[at + 1u], word = jobs[at + 2u], words = jobs[at + 3u], n = jobs[at + 4u];
+    for (uint k = 0u; k < n; k++) {
+        uvec2 c = counts[jobs[at + 5u + k]];
+        uint s = lo + c.x;
+        hi += c.y + (s < lo ? 1u : 0u);
+        lo = s;
+    }
+    dst[word] = lo;
+    if (words == 2u) dst[word + 1u] = hi;
+}
