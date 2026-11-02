@@ -1679,6 +1679,81 @@ static int check_sparse_tiles(void) {
     CHECK(!failed);
     return 0;
 }
+/* A copy into a sparse texture short of whole tiles across, through NVN as a game's CopyBufferToTexture is: RGBA8
+   320x256, tiles of 128x128 (8 GOBs across, 3 tiles a row in memory), tiles (1, 1) and (2, 1) mapped and zero, a
+   128x64 region at (192, 160) across both from a buffer. The image the header gives has the buffer's texels there and
+   zeros elsewhere, and a target of the texture is as wide as its rows of whole tiles: 384 texels */
+static int check_sparse_copy(void) {
+    const u64 gva = 0x340000000ull, buf = 0x341000000ull, cpu = HEAP_BASE + 0xE80000, snap = cpu + 0x30000,
+              rec = cpu + 0x30100;
+    const u32 x0 = 192, y0 = 160, w = 128, h = 64;
+    NvnTexture tex = {0};
+    NvnTexLayout lay;
+    NvnPCopyB2T r = {0};
+    DsSurf target;
+    int depth;
+    u32 msaa, tic[8], bad = 0, first[2] = {0}, have = 0, want = 0;
+    i64 stride[2] = {0, 0};
+    VkBuffer buffer;
+    tex.magic = NVN_MAGIC('T', 'E', 'X', 0);
+    tex.d.target = NVN_TEXTURE_TARGET_2D;
+    tex.d.format = NVN_FORMAT_RGBA8;
+    tex.d.levels = 1;
+    tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    tex.d.width = 320, tex.d.height = 256, tex.d.depth = 1;
+    tex.gpu = gva;
+    nvn_tex_layout(&tex.d, &lay);
+    CHECK(lay.tile_w == 3 && lay.size == 6 * SV_TILE);
+    CHECK(mem_map(cpu, 4 * SV_TILE, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(cpu), 0, 2 * SV_TILE);
+    for (u32 i = 0; i < w * h; i++) {
+        u32 v = 0x80000000u | i;
+        memcpy(GP(cpu + 2 * SV_TILE) + i * 4, &v, 4);
+    }
+    gmmu_map(gva + 4 * SV_TILE, cpu, 2 * SV_TILE);
+    gmmu_map(buf, cpu + 2 * SV_TILE, SV_TILE);
+    memcpy(GP(snap), &tex, NVN_TEX_SNAP);
+    CHECK(nvn_draw_surface(snap, NULL, &target, &depth, &msaa));
+    if (target.width != 384) {
+        fprintf(stderr, "sparse copy: a target of the texture is %u texels wide, its rows of whole tiles 384\n",
+                target.width);
+        return 1;
+    }
+    r.buffer = buf;
+    r.texture = snap;
+    r.r = (NVNcopyRegion){(int)x0, (int)y0, 0, (int)w, (int)h, 1};
+    memcpy(GP(rec), &r, sizeof r);
+    CHECK(nvn_copy_record(OP_COPY_B2T, rec, sizeof r, stride));
+    CHECK(nvn_tic_encode(&tex, NULL, 0, 0, tic));
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {320, 256, 1}};
+    u8* image = t ? vk_readback_buffer(320 * 256 * 4, &buffer) : NULL;
+    if (image) {
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+    }
+    vk_unlock();
+    CHECK(t && image);
+    for (u32 y = 0; y < 256; y++)
+        for (u32 x = 0; x < 320; x++) {
+            u32 in = 0, v = x - x0 < w && y - y0 < h ? 0x80000000u | ((y - y0) * w + (x - x0)) : 0;
+            memcpy(&in, image + ((u64)y * 320 + x) * 4, 4);
+            if (in != v && !bad++) first[0] = x, first[1] = y, have = in, want = v;
+        }
+    if (bad) {
+        fprintf(stderr,
+                "sparse copy: %u of %u texels aren't the copy's or zero, the first (%u, %u): %08x, not %08x; tiles %u "
+                "GOBs across (the header's %u)\n",
+                bad, 320u * 256u, first[0], first[1], have, want, 1u << lay.tile_w, 1u << ((tic[3] >> 10) & 7));
+        return 1;
+    }
+    puts("sparse copy: a copy into a sparse texture short of whole tiles lands in its tiles, a target of it as wide");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -2203,6 +2278,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_volume());
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
+    CHECK(!check_sparse_copy());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());

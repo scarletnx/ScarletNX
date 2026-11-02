@@ -66,6 +66,12 @@ static void sparse_tiles(int format, u32 bw, u32 bpb, const u32 tb[3], u32 nx, u
           lay.tile_w, tile_w);
     CHECK(lay.size == (u64)nx * ny * nz << 16, "format %#x %dD %ux%ux%u: storage %llx, %u tiles", format, is3d ? 3 : 2,
           d.width, d.height, d.depth, (unsigned long long)lay.size, nx * ny * nz);
+    /* a target or a copy of it is as wide in memory, and a volume's second slab of tiles starts after a whole one */
+    CHECK(nvn_tex_level_gobs(&d, 0) == gobs_x, "format %#x %dD %ux%ux%u: %u GOBs across, %u in whole tiles", format,
+          is3d ? 3 : 2, d.width, d.height, d.depth, nvn_tex_level_gobs(&d, 0), gobs_x);
+    CHECK(!is3d || nvn_tex_slice_offset(&d, 0, tz) == (u64)nx * ny << 16,
+          "format %#x 3D %ux%ux%u: slice %u at %llx, page %u", format, d.width, d.height, d.depth, tz,
+          (unsigned long long)nvn_tex_slice_offset(&d, 0, tz), nx * ny);
     rows = ((ny * tb[1] + 7) / 8 + (1u << lay.tile_h) - 1) >> lay.tile_h;
     for (z = 0; z < nz; z++)
         for (y = 0; y < ny; y++)
