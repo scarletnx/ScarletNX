@@ -23,6 +23,8 @@
 #include "nx/gpu/vk/descriptor_key.h"
 #include "nx/gpu/texture/texconv_modes.glsl"
 #include "nx/gpu/vk/pending_pages.h"
+#include "nx/gpu/vk/quad_indices.h"
+#include "nx/memory/own.h"
 #include "nx/gpu/vk/internal_spv.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -2781,6 +2783,32 @@ static int quad_indices(u32 nq, VkBuffer* buf, u64* off) {
     *off = 0;
     return 1;
 }
+/* An indexed draw's nq quads as triangles made here, into the staging ring, where the CPU has the indices: the draw's
+   inline ones, or the guest's in one run of guest memory with no pending result over it and no part the GPU holds
+   (reading those would wait for the GPU). The GPU's conversion is a dispatch, outside the rendering pass, so each such
+   draw ended its pass: 235 a frame in one game's scene. 0 when the CPU hasn't them, or they're past QUAD_CPU_BYTES:
+   the GPU makes them then */
+#define QUAD_CPU_BYTES 16384
+static int quad_indices_cpu(const DrawCall* dc, int inline_indices, u64 ia, u32 isz, u32 first, u32 nq, VkBuffer* buf,
+                            u64* off) {
+    u32 esz = inline_indices ? 4 : isz; /* inline indices are host words */
+    u64 len = (u64)nq * 4 * esz, gva = ia + (u64)first * isz, cpu = 0;
+    u8 in[QUAD_CPU_BYTES];
+    OwnRange held;
+    if (!nq || len > sizeof in) return 0;
+    if (inline_indices)
+        for (u32 j = 0; j < 4 * nq; j++) snx_st_le32(in + 4 * (size_t)j, dc->inline_indices[first + j]);
+    else {
+        if (vk_buf_pending(gva, len) || vk_compute_pending(gva, len) || gmmu_run(gva, len, &cpu) < len ||
+            own_lookup(cpu, len, &held, 1))
+            return 0;
+        gmem_read_raw(gva, in, len);
+    }
+    u8* out = vk_stage((u64)nq * 24, vk_stage_align(), buf, off);
+    if (!out) return 0;
+    snx_quad_indices(in, esz, nq, out);
+    return 1;
+}
 /* n elements of mode (with remap and the restart index restart, as texconv_modes.glsl says) made from count indices of
    isz bytes from index first, the guest's at ia or the draw's inline ones, into out_bytes of the output ring: *buf
    and *off, which the draw binds */
@@ -3199,8 +3227,9 @@ retry:
         }
     } else if (topology == 7) { /* quads -> two triangles each */
         u32 nq = count / 4;
-        int made = indexed ? index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, 0, nq,
-                                           (u64)nq * 24, &ibuf, &ioff)
+        int made = indexed ? quad_indices_cpu(dc, indexed == 3, ia, isz, first, nq, &ibuf, &ioff) ||
+                                 index_convert(dc, indexed == 3, ia, isz, first, count, TC_INDEX_QUADS, isz, 0, nq,
+                                               (u64)nq * 24, &ibuf, &ioff)
                            : quad_indices(nq, &ibuf, &ioff);
         if (!made) {
             draw_images_discard(&images);
