@@ -3,11 +3,12 @@
 # Android apps
 
 `scarletnx-android` runs Android apps on a desktop. (ScarletNX's own Android app, where the menu and the Switch
-runtime run on a phone, is [ANDROID](ANDROID.md).) The target is the API of Android 16 (API level 36).
+runtime run on a phone, is [ANDROID](../ANDROID.md).) The target is the API of Android 16 (API level 36).
 
 ## Index
 
 * [Design](#design)
+* [Interfaces](INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
 * [The DEX translator](#the-dex-translator)
 * [Status](#status)
 
@@ -21,8 +22,11 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
 - **The framework.** `android.*` is ScarletNX's own, a minimal subset that grows with the apps it runs. It is not
   AOSP's framework. Its native side is C, the HLE of the userland libraries: libhwui's display lists drawn with
   Vulkan, libandroidfw's resources, binder services in the process, SQLite.
+- **Interfaces.** [INTERFACES](INTERFACES.md) lists each layer an app reaches, from DEX bytecode to the kernel,
+  and what the runtime does with it: high-level emulation (HLE), a heavy abstraction onto one host facility, or a
+  real implementation where an app subclasses or reads the code itself.
 - **Native code.** An APK's native libraries are AArch64 code for bionic. They are to be recompiled as the GNU ABI
-  runtime does ([GNUABI](GNUABI.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
+  runtime does ([GNUABI](../GNUABI.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
   as the NVN hooks of the Switch runtime do. All drawing goes through Vulkan.
 
 ## The DEX translator
