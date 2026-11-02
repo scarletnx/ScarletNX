@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / 'scripts' / 'cross-llvm-config.sh'
-QEMUS = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64', 'mips64el', 'mips64')
+QEMUS = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64', 'mips64el', 'mips64', 's390x')
 CASES = [  # e_machine, EI_DATA (1 little-endian, 2 big-endian), EI_CLASS (2 64-bit), the qemu expected (None: refused)
     (21, 1, 2, 'ppc64le'),
     (21, 2, 2, 'ppc64'),
@@ -23,6 +23,7 @@ CASES = [  # e_machine, EI_DATA (1 little-endian, 2 big-endian), EI_CLASS (2 64-
     (8, 1, 2, 'mips64el'),
     (8, 2, 2, 'mips64'),
     (8, 2, 1, None),  # 32-bit MIPS, the same e_machine
+    (22, 2, 2, 's390x'),
     (62, 1, 2, None),
 ]
 

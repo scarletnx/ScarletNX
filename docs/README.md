@@ -24,6 +24,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [PowerPC64](./PPC64.md): building, running a game under qemu, and big-endian hosts
 - [RISC-V and LoongArch](./RISCV-LOONGARCH.md): building, and what differs from the other hosts
 - [MIPS64](./MIPS64.md): mips64 and mips64el, built from their presets, and what differs from the other hosts
+- [s390x](./S390X.md): IBM Z, built from its preset, and what differs from the other hosts
 
 ## Other systems
 
