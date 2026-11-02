@@ -48,14 +48,19 @@ int main(void) {
 
     assert(snx_keybind_parse("ctrl+u", &b));
     assert(matches(&b, SDLK_U, SDL_KMOD_CTRL));
-    assert(matches(&b, SDLK_U, SDL_KMOD_CTRL | SDL_KMOD_CAPS)); /* lock keys don't count */
+    assert(matches(&b, SDLK_U, SDL_KMOD_LCTRL)); /* an event has the side that is down */
+    assert(matches(&b, SDLK_U, SDL_KMOD_RCTRL));
+    assert(matches(&b, SDLK_U, SDL_KMOD_LCTRL | SDL_KMOD_CAPS)); /* lock keys don't count */
     assert(!matches(&b, SDLK_U, SDL_KMOD_NONE));
-    assert(!matches(&b, SDLK_U, SDL_KMOD_CTRL | SDL_KMOD_SHIFT));
-    assert(!matches(&b, SDLK_Y, SDL_KMOD_CTRL));
+    assert(!matches(&b, SDLK_U, SDL_KMOD_LCTRL | SDL_KMOD_LSHIFT));
+    assert(!matches(&b, SDLK_Y, SDL_KMOD_LCTRL));
 
     assert(snx_keybind_parse("f13", &b));
     assert(matches(&b, SDLK_F13, SDL_KMOD_NONE));
-    assert(!matches(&b, SDLK_F13, SDL_KMOD_SHIFT));
+    assert(!matches(&b, SDLK_F13, SDL_KMOD_LSHIFT));
+    assert(snx_keybind_parse("shift+f13", &b));
+    assert(matches(&b, SDLK_F13, SDL_KMOD_LSHIFT));
+    assert(matches(&b, SDLK_F13, SDL_KMOD_RSHIFT));
 
     /* the launcher's capture: the event's text, and that it parses back */
     names(SDLK_U, SDL_KMOD_CTRL, 1, "ctrl+u");
@@ -70,11 +75,13 @@ int main(void) {
         char out[128];
         assert(snx_keybind_name(&repeat, out, sizeof out) == 0);
     }
-    assert(snx_keybind_parse("ctrl+shift+u", &b) && matches(&b, SDLK_U, SDL_KMOD_CTRL | SDL_KMOD_SHIFT));
-    { /* what the launcher captured is what the runtime matches */
-        SDL_KeyboardEvent e = {.type = SDL_EVENT_KEY_DOWN, .key = SDLK_T, .mod = SDL_KMOD_CTRL};
+    assert(snx_keybind_parse("ctrl+shift+u", &b) &&
+           matches(&b, SDLK_U, SDL_KMOD_LCTRL | SDL_KMOD_RSHIFT));
+    { /* what the launcher captured is what the runtime matches, with the left Ctrl a real event has */
+        SDL_KeyboardEvent e = {.type = SDL_EVENT_KEY_DOWN, .key = SDLK_T, .mod = SDL_KMOD_LCTRL};
         char out[128];
         assert(snx_keybind_name(&e, out, sizeof out) == 1);
+        assert(!strcmp(out, "ctrl+t"));
         assert(snx_keybind_parse(out, &b));
         assert(snx_keybind_match(&b, &e));
     }
