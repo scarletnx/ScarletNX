@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/vertex_input.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/upscale.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 
@@ -859,7 +860,9 @@ int vk_window_release(void) {
         plat_sleep_ns(10000000);
     }
     vk_rec_sync();
+    if (g_vk.dev) vk_finish();
     device_wait_idle(); /* a lost device answers at once */
+    vk_upscale_release();
     pm_lock(&g_vk.sc_lock);
     if (g_vk.swapchain) swapchain_retire();
     pm_unlock(&g_vk.sc_lock);
