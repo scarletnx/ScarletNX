@@ -191,6 +191,7 @@ void vk_mem_untrack(VmaAllocation a);
 #else
 static inline void vk_mem_track(VmaAllocation a) { (void)a; }
 static inline void vk_mem_untrack(VmaAllocation a) { (void)a; }
+#endif
 /* uma.c: the device's memory model, and guest memory that the GPU reads in place (vk_memory) */
 int vk_uma_choose(int has_import, int has_placed); /* before the device is made: 1 to enable external_memory_host */
 void vk_uma_init(void);                            /* after it */
@@ -201,7 +202,6 @@ void vk_uma_frame(void);
 void vk_uma_forget_all(void);
 void vk_uma_quiesce(u64 cpu, u64 size); /* before a trap or a remap there (size ~0: all): its in-place readers run */
 
-#endif
 /* The caches of textures, render targets and buffers are kept within the driver's budget for the heap images go to
    (VK_EXT_memory_budget through VMA; vk_budget_mb lowers it, for testing): past it the driver pages memory out,
    which took 160 ms frames and then the device in one game. Ages are kept in presents, and measured in time as well
