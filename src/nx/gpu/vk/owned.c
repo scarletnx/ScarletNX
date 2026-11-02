@@ -468,6 +468,18 @@ void vk_guest_peek(u64 gva, void* dst, u64 size) {
     }
 }
 
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    OwnRange r[2];
+    u64 cpu = 0;
+    if (!size || !__atomic_load_n(&g_own_any, __ATOMIC_ACQUIRE)) return 0;
+    gmem_need(gva, size);
+    if (gmmu_run(gva, size, &cpu) != size || own_lookup(cpu, size, r, 2) != 1 || r[0].addr != cpu || r[0].size != size)
+        return 0;
+    *tag =
+        __atomic_load_n(&((const VkOwnRes*)r[0].res)->serial, __ATOMIC_ACQUIRE) * 0x9E3779B97F4A7C15ull ^ r[0].res_off;
+    return 1;
+}
+
 void vk_all_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

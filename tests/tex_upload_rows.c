@@ -51,7 +51,18 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     (void)buf, (void)at;
     gmem_read(gva, host, size);
 }
-void vk_guest_peek(u64 gva, void* dst, u64 size) { gmem_read(gva, dst, size); }
+static u32 g_peeks;
+void vk_guest_peek(u64 gva, void* dst, u64 size) {
+    g_peeks++;
+    gmem_read(gva, dst, size);
+}
+/* one GPU-owned range over every range asked, with this identity, while g_whole_tag isn't 0 */
+static u64 g_whole_tag;
+int vk_guest_owned_whole(u64 gva, u64 size, u64* tag) {
+    (void)gva, (void)size;
+    *tag = g_whole_tag;
+    return g_whole_tag != 0;
+}
 /* a texture with holes in its mapping (a virtual pool's, mapped a tile at a time): the runs g_map lists are what the
    GPU's page table maps, guest's bytes at the same offset (GP(cpu) is guest + cpu), and no texture is one host run */
 u8* g_mem = guest;
@@ -701,6 +712,14 @@ int main(void) {
         guest[0x20000 + 4096 + 100] ^= 0x5A;
         CHECK(mem_hash(at, size) != owned);
         guest[0x20000 + 4096 + 100] ^= 0x5A;
+        /* held whole by one GPU-owned range: its owner's identity, with no piece peeked; the same identity the same
+           hash, another one another */
+        g_whole_tag = 0x1234, g_peeks = 0;
+        u64 whole = mem_hash(at, size);
+        CHECK(g_peeks == 0 && whole != owned && mem_hash(at, size) == whole);
+        g_whole_tag = 0x1235;
+        CHECK(mem_hash(at, size) != whole && g_peeks == 0);
+        g_whole_tag = 0;
         g_own_any = 0;
     }
     /* A clean scan does not advance the write clock. Its cached texture must
