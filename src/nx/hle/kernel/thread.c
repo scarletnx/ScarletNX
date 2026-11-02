@@ -410,6 +410,8 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t = (KThread*)POOL_TAKE(g_hle.thread.threads, g_hle.thread.thread_next, "threads");
     t->o.type = KO_THREAD;
     pm_unlock(&g_host.kernel.pool_lk);
+    /* a slot's earlier thread may have ended inside an SVC, as a save state's load ends them where they stopped */
+    __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
     kobj_set_name(&t->o, "thread");
     t->prio = t->base_prio = prio;
     t->core = t->ideal_core = core;

@@ -101,6 +101,15 @@ void prio_set_base_nl(KThread* t, int prio) {
     t->base_prio = prio;
     prio_restore_nl(t);
 }
+/* How a thread waiting on a mutex came to it (g_host.thread.mwait_how): it found the mutex held (LOCK), held by a thread
+   the kernel had handed it to and that had yet to run (LATE), or a condition variable's signal moved it here
+   (SIGNALED). The kernel's hand-off makes a thread the owner (g_host.thread.handed) until it leaves its SVC */
+enum { MWAIT_LOCK, MWAIT_LATE, MWAIT_SIGNALED };
+static u8* mwait_how(const KThread* t) { return &g_host.thread.mwait_how[kt_ix(t) - 1]; }
+static void handed_nl(const KThread* t) { __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 1, __ATOMIC_RELAXED); }
+void sync_owner_runs(const KThread* t) {
+    if (t) __atomic_store_n(&g_host.thread.handed[kt_ix(t) - 1], 0, __ATOMIC_RELAXED);
+}
 /* t waits for owner to hand over the mutex at t->wait_addr */
 static void mutex_wait_nl(KThread* owner, KThread* t) {
     t->wait_kind = 2;
@@ -118,11 +127,27 @@ static void mutex_unwait_nl(KThread* t) {
     if (owner) prio_restore_nl(owner);
     kobj_unref(owner ? &owner->o : NULL);
 }
+/* The waiter the mutex at addr goes to: the best priority, the earliest among equals, except that one a condition
+   variable's signal moved here goes ahead of those that came while the mutex was handed to a thread that had yet to
+   run. The console runs a thread at once when it is handed a mutex; here its host thread first takes the host's time to
+   wake, or waits for its core, and a thread that comes for the mutex in that time (back from a service request, served
+   on its own host thread) would on the console have come after that owner's turn and the turns that follow it, behind
+   the waiters they signal. A pool that wakes one waiter only when it gets back its first free item (the SDK's session
+   pools) otherwise loses that wake: the late thread takes the mutex first, sees the item there and wakes nobody */
+static KThread* mutex_best_nl(u64 addr) {
+    KThread *b = NULL, *w;
+    for (w = kt_at(g_hle.sync.mwait); w; w = kt_at(w->next_waiter))
+        if (w->wait_addr == addr &&
+            (!b || w->prio < b->prio ||
+             (w->prio == b->prio && *mwait_how(b) == MWAIT_LATE && *mwait_how(w) == MWAIT_SIGNALED)))
+            b = w;
+    return b;
+}
 /* Eden's KThread::RemoveWaiterByKey: the next owner of the mutex at addr, out of its waiters, and the waiters left
    (*more) wait for it now, so their priorities go with them. NULL when nobody waits. The console looks among the
    calling thread's waiters, the mutex's owner in a game that uses it correctly: here the waiters name their owner */
 static KThread* mutex_next_nl(u64 addr, int* more) {
-    KThread* n = list_best(g_hle.sync.mwait, 0, addr);
+    KThread* n = mutex_best_nl(addr);
     KThread* old;
     KThread* w;
     *more = 0;
@@ -141,6 +166,7 @@ static KThread* mutex_next_nl(u64 addr, int* more) {
     if (old) prio_restore_nl(old);
     prio_restore_nl(n);
     kobj_unref(old ? &old->o : NULL);
+    handed_nl(n);
     return n;
 }
 /* the word that hands the mutex to n: its tag, with the waiters bit while others still wait */
@@ -168,6 +194,8 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
     t->wait_tag = tag;
     t->wait_svc = WAIT_SVC_LOCK;
     mutex_wait_nl((KThread*)o, t);
+    *mwait_how(t) =
+        __atomic_load_n(&g_host.thread.handed[kt_ix((KThread*)o) - 1], __ATOMIC_RELAXED) ? MWAIT_LATE : MWAIT_LOCK;
     sleep_nl(t, -1); /* until it is handed the mutex: nothing cancels this wait */
     r = (u32)t->wait_result;
     klock_unlock();
@@ -197,13 +225,15 @@ static void cv_take_mutex_nl(KThread* w) {
         nv = old ? old | HANDLE_WAIT : w->wait_tag;
     while (!word_cas(p, &old, nv, 1));
     if (!old) {
+        handed_nl(w);
         wake(w, 0);
         return;
     }
     o = h_get_nl(old & ~HANDLE_WAIT);
-    if (o && o->type == KO_THREAD)
+    if (o && o->type == KO_THREAD) {
         mutex_wait_nl((KThread*)o, w);
-    else
+        *mwait_how(w) = MWAIT_SIGNALED;
+    } else
         wake(w, R_BADSTATE); /* the mutex names no thread */
 }
 /* the end of a condition variable's wait, woken or timed out (woke 0): timed out waiting for the signal, or after it
