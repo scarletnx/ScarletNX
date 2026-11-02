@@ -60,7 +60,13 @@ const SnxNotice snx_notices[SNX_NOTICES] = {
      SNX_NOTICE_ALL},
     {SNX_TR_NOOP("Environment variables"), SNX_TR_NOOP("SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"),
      SNX_TR_NOOP("settings and the drivers' options; a variable still set works, and the run says so"),
-     "Environment variable", SNX_NOTICE_ALL}};
+     "Environment variable", SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("Fullscreen and Show controls"), SNX_TR_NOOP("Off, On, or each game's .ini, shown as Off [default]"),
+     SNX_TR_NOOP("Off or On, given to every run: Off on a computer, On on a phone"), "`fullscreen=.ini`",
+     SNX_NOTICE_ALL},
+    {SNX_TR_NOOP("A setting's default"), SNX_TR_NOOP("a value of its own, [default], beside the same value picked"),
+     SNX_TR_NOOP("[default] on that value, which no run is given: the game's .ini keeps it"),
+     "`<key>=.ini` for any other setting", SNX_NOTICE_ALL}};
 int snx_notice_here(int notice) {
     int systems = snx_notices[notice].systems;
 #if defined(__ANDROID__)
