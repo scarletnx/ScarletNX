@@ -129,6 +129,32 @@ static void check_formats(void) {
     }
 }
 
+/* the render target format each NVN format takes, from the encoder's table: the 3D engine's color format, or its
+   depth format with depth set (Eden's RenderTargetFormat and DepthFormat), 0 for a format no target takes */
+static void check_rt_formats(void) {
+    static const struct {
+        u16 nvn;
+        u8 rt, depth;
+    } rt[] = {
+        {0x25, 0xD5, 0}, /* RGBA8: A8B8G8R8_UNORM */
+        {0x38, 0xD6, 0}, /* RGBA8_SRGB: A8B8G8R8_SRGB */
+        {0x9A, 0xCF, 0}, /* BGRA8: A8R8G8B8_UNORM */
+        {0x29, 0xCA, 0}, /* RGBA16F: R16G16B16A16_FLOAT */
+        {0x3F, 0xE0, 0}, /* R11G11B10F: B10G11R11_FLOAT */
+        {0x32, 0x13, 1}, /* DEPTH16: Z16_UNORM */
+        {0x34, 0x0A, 1}, /* DEPTH32F: Z32_FLOAT */
+        {0x35, 0x14, 1}, /* DEPTH24_STENCIL8: Z24_UNORM_S8_UINT */
+        {0x36, 0x19, 1}, /* DEPTH32F_STENCIL8: Z32_FLOAT_X24S8_UINT */
+        {0x22, 0x00, 0}, /* RGB32F: sampled, never a target */
+    };
+    unsigned i;
+    for (i = 0; i < sizeof rt / sizeof *rt; i++) {
+        int depth = -1;
+        check(nvn_rt_format(rt[i].nvn, &depth) == rt[i].rt && depth == rt[i].depth, "the render target format",
+              rt[i].nvn);
+    }
+}
+
 static void check_targets(void) {
     u32 tic[8];
     TicFields d;
@@ -309,6 +335,7 @@ static void check_samplers(void) {
 
 int main(void) {
     check_formats();
+    check_rt_formats();
     check_targets();
     check_depth();
     check_samplers();
