@@ -24,6 +24,9 @@
 		[button]"Load GBA ROM" {
 			icon = gamepad
 		}
+		[button]"Load Android APK/XAPK" {
+			icon = package-plus
+		}
 		[button]"Install Keys" {
 			icon = key-round
 		}
