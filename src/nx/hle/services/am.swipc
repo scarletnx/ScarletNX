@@ -267,7 +267,9 @@ interface nn::am::service::ITransferStorageAccessor {
 # answers. A command nothing declares answers success with zeros, as the console's geometry and memory stack aren't
 # emulated (Eden's Switch 2 work answers them the same way until each one is needed), except 1402, which hands out the
 # NVIDIA driver's session a copy handle to it, as its Switch 2 OpenNvsrvSession does with nvdrv's own devices, and 202
-# and 204, which open the syncpoint session nn::syncpt::sdk::InitializeEx boots with
+# and 204, which open the syncpoint session nn::syncpt::sdk::InitializeEx boots with. The ones from 900 up, which a
+# title reaches once it is past its title screen, log the words they send so each can be given a real answer
+@fallback(gsv_unknown)
 interface nn::am::service::IGraphicsSystemSession {
     # The sizes a title sizes its window and its image pool from: the block-linear surface of the display's own frame
     # buffer, which is what Eden's Switch 2 CalculateRequirements answers a title's window with

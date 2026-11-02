@@ -37,6 +37,21 @@
    title that gets one for its window's commands never acquires a buffer to present. Nothing is shown here, so the
    empty success the fallback gives is what these answer until each one is known */
 static int vi2_fallback(SvcObj* self, IpcCtx* c) { return quiet_ok(self, c); }
+/* the graphics system commands a Send 2 SDK sends that nothing above declares yet: their words, so the ones a title
+   needs a real answer for can be told apart from the ones a zeroed reply serves. A title got as far as the opening
+   movie and then made a request on handle 0, which the zeroed reply for one of them is what leaves it with */
+static int gsv_unknown(SvcObj* self, IpcCtx* c) {
+    if (c->cmd >= 900) {
+        u32 n = c->raw_size / 4, i, at = 0;
+        char buf[512];
+        buf[0] = 0;
+        for (i = 0; i < n && i < 16; i++)
+            at += snprintf(buf + at, sizeof buf - (size_t)at, "%08x ", snx_ld_le32(c->raw + i * 4));
+        LOG("gsv: cmd %u raw %u: %s (A %d B %d X %d W %d copy %d move %d)\n", c->cmd, n, buf, c->na, c->nb, c->nx, c->nw,
+            c->ncopy, c->nout_move);
+    }
+    return quiet_ok(self, c);
+}
 
 /* nn::am::AppletMessage */
 #define AM_MSG_FOCUS_STATE_CHANGED      15

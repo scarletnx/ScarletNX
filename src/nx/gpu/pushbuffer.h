@@ -91,7 +91,8 @@ enum {
     PULLER_SEMAPHORE_OP_RELEASE = 0x2,        /* write the payload (Eden's WriteLong) */
     PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL = 0x4, /* wait until it reaches the payload, a wrapping compare */
     PULLER_SEMAPHORE_OP_ACQUIRE_MASK = 0x8,   /* wait until it ANDs with the payload to non-zero (ACQ_AND) */
-    PULLER_SEMAPHORE_OP_REDUCTION = 0x10      /* an atomic operation on it (cla16f's REDUCTION) */
+    /* an atomic operation on the semaphore, which writes the payload a title's driver names (cla16f's REDUCTION) */
+    PULLER_SEMAPHORE_OP_REDUCTION = 0x10
 };
 /* SEMAPHORED's RELEASE_SIZE, bit 24: 1 writes the payload's 4 bytes, 0 the 16 byte report (payload, 0, timestamp) */
 #define PULLER_SEMAPHORE_RELEASE_SIZE_4BYTE (1u << 24)

@@ -843,6 +843,12 @@ static int nn_socket_sf_IClient_DuplicateSocket(SvcObj* self, i32 fd, u64 reserv
     WITH_SOCKET(fd);
     return reply(fd_add(b, s, d.flags, d.exempt), ret, bsd_errno);
 }
+static int nn_socket_sf_IClient_RegisterSocketLibrary(SvcObj* self, u64 arg, u64 pid, i32* ret, u32* bsd_errno) {
+    (void)self, (void)arg, (void)pid;
+    *ret = 0; /* success: the socket library's own registration, which nothing here keeps */
+    *bsd_errno = 0;
+    R_SUCCEED();
+}
 static int nn_socket_sf_IClient_EventFd(SvcObj* self, u64 initval, u32 flags, i32* ret, u32* bsd_errno) {
     SnxSocket* s;
     int r = snx_socket_eventfd(&s, initval, flags & BSD_EFD_SEMAPHORE);

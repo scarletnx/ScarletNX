@@ -557,13 +557,33 @@ static int engine_of(u32 cls) {
 int gpu_class_known(u32 cls) { return engine_of(cls) != ENG_NONE; }
 /* Eden's ProcessSemaphoreTriggerMethod: the operation SEMAPHORED names on the semaphore at the address the puller's
    SEMAPHOREA/B hold, with SEMAPHOREC's payload. A release goes through the renderer, after the work before it */
+static int gpu_ampere_classes_on(void);
+/* a Switch 2 title's semaphore acquire, looked at once: the console's hardware answers these from the
+   value that is there when the method is read, and a title's driver signals its work with releases that
+   reach a wait of them much later than that. Holding the GPU thread on one stalled a title's frames for
+   seconds at a time (its presentation thread then held the mutex its main thread wanted), so the stream
+   goes on (Eden's Switch 2 work checks its Ampere semaphores once and goes on the same way) */
+static int sem_met(u64 a, u32 payload, int geq) {
+    u32 cur = gmem_r32(a);
+    return geq ? (i32)(cur - payload) >= 0 : cur == payload;
+}
 static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
     u64 a = ((u64)(ch->puller[PULLER_SEMAPHORE_ADDRESS_HIGH] & PULLER_SEMAPHORE_ADDRESS_HIGH_MASK) << 32) |
             ch->puller[PULLER_SEMAPHORE_ADDRESS_LOW];
     u32 payload = ch->puller[PULLER_SEMAPHORE_SEQUENCE_PAYLOAD];
     switch (v & PULLER_SEMAPHORE_OP_MASK) {
-        case PULLER_SEMAPHORE_OP_ACQUIRE_EQUAL: gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 0); break;
-        case PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL: gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 1); break;
+        case PULLER_SEMAPHORE_OP_ACQUIRE_EQUAL:
+            if (!gpu_ampere_classes_on())
+                gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 0);
+            else
+                (void)sem_met(a, payload, 0);
+            break;
+        case PULLER_SEMAPHORE_OP_ACQUIRE_GEQUAL:
+            if (!gpu_ampere_classes_on())
+                gpu_park(ch, GPU_PARK_SEMAPHORE, a, payload, 1);
+            else
+                (void)sem_met(a, payload, 1);
+            break;
         case PULLER_SEMAPHORE_OP_RELEASE: {
             u64 mirror = sem_mirror(a); /* where the title polls this release, when it lands in a second page */
             if (v & PULLER_SEMAPHORE_RELEASE_SIZE_4BYTE) {
@@ -581,9 +601,21 @@ static void process_semaphore_trigger(GpuChannel* ch, u32 v) {
             }
             break;
         }
-        case PULLER_SEMAPHORE_OP_ACQUIRE_MASK:
         case PULLER_SEMAPHORE_OP_REDUCTION:
-            /* ACQ_AND and REDUCTION aren't performed: the stream goes on as if they were */
+            /* an atomic operation on the semaphore, which a title's driver uses to advance the
+               counter its own streams then wait on: the payload is written through the release,
+               so a wait for a value it reached is met. Without it a title's queues never move (its
+               acquires time out and its frames never complete) */
+            {
+                u64 mirror = sem_mirror(a); /* where the title polls this, when it lands in a second page */
+                u8 rel[4];
+                snx_st_le32(rel, payload);
+                gpu_release_write(a, rel, sizeof rel);
+                if (mirror) gpu_release_write(mirror, rel, sizeof rel);
+            }
+            break;
+        case PULLER_SEMAPHORE_OP_ACQUIRE_MASK:
+            /* ACQ_AND isn't performed: the stream goes on as if it were */
             WARN_LIMIT(4, "gpu: semaphore operation %x at %llx is not performed\n", v & PULLER_SEMAPHORE_OP_MASK,
                        (unsigned long long)a);
             break;
@@ -607,7 +639,8 @@ static void ampere_semaphore(GpuChannel* ch, u32 v) {
             if (mirror) gpu_release_write(mirror, rel, sizeof rel);
             return;
         }
-        default: return; /* 0 equals, 2 reaches, 3 reaches signed, 4 ands to non-zero, 5 ands to zero: look, and go on */
+        /* 0 equals, 2 reaches, 3 reaches signed, 4 ands to non-zero, 5 ands to zero: look, and go on */
+        default: return;
     }
 }
 /* Eden's ProcessFenceActionMethod: SYNCPOINTB increments its syncpoint after the work before it, or waits for it to
@@ -623,7 +656,6 @@ static void process_fence_action(GpuChannel* ch, u32 v) {
     gpu_park(ch, GPU_PARK_SYNCPOINT, id, ch->puller[PULLER_SYNCPOINT_PAYLOAD], 1);
     if (ch->park && g_renderer->before_syncwait) g_renderer->before_syncwait();
 }
-static int gpu_ampere_classes_on(void);
 /* the class a subchannel is bound to, as Eden's ProcessBindMethod reads it: a Switch 2 title binds its Ampere 3D and
    compute classes (C797 and C7C0), which run on the Maxwell engines' own, as the fork's Switch 2 work has them. Its
    copy class (C7B5) stays as it is, the copy engine's method layout being the one this class already answers */

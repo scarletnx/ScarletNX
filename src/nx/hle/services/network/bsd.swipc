@@ -65,6 +65,11 @@ interface nn::socket::sf::IClient is bsd:u, bsd:a, bsd:s {
     # SDK 8 sends the pid slot alone, SDK 13 a u8 before it: declared as the shorter, which both send at least
     @stub [32] RegisterResourceStatisticsName(buffer<u8, 0x21> name, pid) -> (i32 ret, u32 bsd_errno);
     [33] RegisterClientShared(nn::socket::sf::LibraryConfigData config, pid, u64 work_buffer_size) -> u32 bsd_errno;
+    # SDK 18 and later: the socket library's own registration, which a system session sends before it sets its
+    # sockets' events up. Answering the socket pair a command starts with (ret, errno) with success: the EOPNOTSUPP
+    # the generic stub gives for it sends an SDK that calls it into an abort. The request is this SDK's own two
+    # words and the pid a socket command starts with
+    [36] RegisterSocketLibrary(u64 arg, pid) -> (i32 ret, u32 bsd_errno);
 }
 
 # the interface configuration, which the system's own services use: nothing a game changes
