@@ -471,6 +471,11 @@ if(TARGET hactool_internals)
         add_test(NAME filesystem_dump_none COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-none)
         add_test(NAME filesystem_dump_gone COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-gone)
         add_test(NAME filesystem_dump_keys COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-keys)
+        add_test(NAME filesystem_dump_cut COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-cut)
+        add_test(NAME filesystem_dump_romfs_cut
+                 COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-romfs-cut)
+        add_test(NAME filesystem_dump_romfs_zeros
+                 COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-romfs-zeros)
         add_test(NAME filesystem_dump_update COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> dump-update)
         add_test(NAME filesystem_mods_image COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> mods-image)
         add_test(NAME filesystem_dump_update_extracted
