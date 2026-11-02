@@ -613,6 +613,10 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
+/* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
+   (the queue frees it) */
+void vk_gfx_image_record(Surf* s, u8* original, u32 size);
+int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 int vk_gfx_image_pending(u64 gva, u64 size);
 void vk_gfx_image_land(void);
