@@ -45,20 +45,25 @@ static u64 bl_page(u32 xb, u32 y, u32 z, u32 gobs_x, u32 rows, unsigned th, unsi
     return ((block << (th + td)) + gob) * 512 >> 16;
 }
 /* A sparse texture of nx by ny by nz tiles of format (a block of bpb bytes, bw texels across and down; 3D when nz,
-   else 2D), whose tile has the standard shape tb (blocks across, down and deep): the tile nvn answers is that one, the
-   storage is the tiles' pages, and the corners of every tile are in its own page, the tiles across, then down, then
-   deep, where the game maps it */
-static void sparse_tiles(int format, u32 bw, u32 bpb, const u32 tb[3], u32 nx, u32 ny, u32 nz) {
+   else 2D), cut blocks short of the last tile across, whose tile has the standard shape tb (blocks across, down and
+   deep): the tile nvn answers is that one, the layout's tile width is the tile's GOBs across, the storage is the
+   tiles' pages, and the corners of every tile are in its own page, the tiles across (a row of them whole where the
+   texture ends inside its last one), then down, then deep, where the game maps it */
+static void sparse_tiles(int format, u32 bw, u32 bpb, const u32 tb[3], u32 nx, u32 ny, u32 nz, u32 cut) {
     int is3d = nz != 0;
-    u32 tile[3] = {0, 0, 0}, tz = is3d ? tb[2] : 1, gobs_x = nx * tb[0] * bpb / 64, rows, x, y, z, c;
-    NvnTexDesc d = desc(is3d ? NVN_TEXTURE_TARGET_3D : NVN_TEXTURE_TARGET_2D, format, nx * tb[0] * bw, ny * tb[1] * bw,
+    u32 tile[3] = {0, 0, 0}, tz = is3d ? tb[2] : 1, gobs_x = nx * tb[0] * bpb / 64, across = nx * tb[0] - cut;
+    u32 tile_w = 0, rows, x, y, z, c;
+    NvnTexDesc d = desc(is3d ? NVN_TEXTURE_TARGET_3D : NVN_TEXTURE_TARGET_2D, format, across * bw, ny * tb[1] * bw,
                         is3d ? nz * tb[2] : 1, 1, 0, NVN_TEXTURE_FLAGS_SPARSE);
     NvnTexLayout lay;
     if (!is3d) nz = 1;
+    while ((64u << tile_w) < tb[0] * bpb) tile_w++;
     CHECK(nvn_tex_sparse_tile(&d, tile) && tile[0] == tb[0] && tile[1] == tb[1] && tile[2] == tz,
           "format %#x %dD: tile %ux%ux%u, the standard %ux%ux%u", format, is3d ? 3 : 2, tile[0], tile[1], tile[2],
           tb[0], tb[1], tz);
     nvn_tex_layout(&d, &lay);
+    CHECK(lay.tile_w == tile_w, "format %#x %dD: tile width %u GOBs (log2), the tile's %u", format, is3d ? 3 : 2,
+          lay.tile_w, tile_w);
     CHECK(lay.size == (u64)nx * ny * nz << 16, "format %#x %dD %ux%ux%u: storage %llx, %u tiles", format, is3d ? 3 : 2,
           d.width, d.height, d.depth, (unsigned long long)lay.size, nx * ny * nz);
     rows = ((ny * tb[1] + 7) / 8 + (1u << lay.tile_h) - 1) >> lay.tile_h;
@@ -68,8 +73,9 @@ static void sparse_tiles(int format, u32 bw, u32 bpb, const u32 tb[3], u32 nx, u
                 for (c = 0; c < 8; c++) { /* the tile's corner blocks: first or last across, down and deep */
                     u32 bx = x * tb[0] + (c & 1 ? tb[0] - 1 : 0), by = y * tb[1] + (c & 2 ? tb[1] - 1 : 0);
                     u32 bz = z * tz + (c & 4 ? tz - 1 : 0);
-                    u64 page = bl_page(bx * bpb, by, bz, gobs_x, rows, lay.tile_h, lay.tile_d);
-                    u64 want = ((u64)z * ny + y) * nx + x;
+                    u64 page, want = ((u64)z * ny + y) * nx + x;
+                    if (bx >= across) bx = across - 1;
+                    page = bl_page(bx * bpb, by, bz, gobs_x, rows, lay.tile_h, lay.tile_d);
                     CHECK(
                         page == want,
                         "format %#x %dD %ux%ux%u, blocks %u high and %u deep: block (%u, %u, %u) of tile (%u, %u, %u) "
@@ -209,7 +215,8 @@ int main(void) {
                   (unsigned long long)a.size, (unsigned long long)b.size);
         }
     }
-    { /* sparse textures: every block size's standard tile, 2D and 3D, then one game's 1664x448x1344 BC1 volume */
+    { /* sparse textures: every block size's standard tile, 2D and 3D, whole tiles across and half a tile short of
+         them, then one game's 1664x448x1344 BC1 volume */
         static const struct {
             int format;
             u32 bw, bpb, t2[3], t3[3];
@@ -222,10 +229,12 @@ int main(void) {
                   {NVN_FORMAT_BPTC_UFLOAT, 4, 16, {64, 64, 1}, {16, 16, 16}}};
         size_t i;
         for (i = 0; i < sizeof sp / sizeof sp[0]; i++) {
-            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t2, 3, 2, 0);
-            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t3, 3, 2, 2);
+            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t2, 3, 2, 0, 0);
+            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t3, 3, 2, 2, 0);
+            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t2, 3, 2, 0, sp[i].t2[0] / 2);
+            sparse_tiles(sp[i].format, sp[i].bw, sp[i].bpb, sp[i].t3, 3, 2, 2, sp[i].t3[0] / 2);
         }
-        sparse_tiles(NVN_FORMAT_RGBA_DXT1, 4, 8, sp[5].t3, 13, 7, 84);
+        sparse_tiles(NVN_FORMAT_RGBA_DXT1, 4, 8, sp[5].t3, 13, 7, 84, 0);
     }
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
