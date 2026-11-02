@@ -94,6 +94,10 @@ typedef struct {
        order */
     u64 tex_dc_color_mask;
     u32 tex_dc_color_funcs;
+    /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
+       at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
+       renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
+    u64 tex_own_pixel_mask;
     u32 out_mask; /* generic outputs 0-31 written (all of them after an attribute store at a register's offset) */
     /* FS key: generic inputs the last stage before rasterization doesn't write. They read 0, 0, 0, 1 as yuzu reads
        them (GPL-2.0-or-later, shader_recompiler emit_spirv_context_get_set.cpp): Vulkan leaves an unfed input

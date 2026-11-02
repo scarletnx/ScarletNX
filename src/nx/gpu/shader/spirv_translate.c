@@ -2090,6 +2090,37 @@ static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
     return direct_reaching_def_same(insn, n, index, reg, NULL, 0);
 }
 
+/* reg at index holds the fragment's own column (addr 0x70) or row (0x74): the integer part of gl_FragCoord's x or y,
+   F2I.FLOOR or .TRUNC of IPA's pass-through read of the position */
+static int direct_frag_coord(const u64* insn, u32 n, u32 index, u32 reg, u32 addr, int depth) {
+    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0) return 0;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_frag_coord(insn, n, (u32)j, B(w, 20, 8), addr, depth + 1);
+    /* F32 source, no negate or absolute value, rounding down or toward zero */
+    if (op != O_F2I_R || B(w, 10, 2) != 2 || B(w, 45, 1) || B(w, 49, 1) || (B(w, 39, 2) != 1 && B(w, 39, 2) != 3))
+        return 0;
+    int k = direct_reaching_def(insn, n, (u32)j, B(w, 20, 8));
+    if (k < 0) return 0;
+    u64 v = insn[k];
+    /* not indexed, not multiplied by 1/w, not saturated */
+    return decode(v)->id == O_IPA && !B(v, 38, 1) && B(v, 30, 8) * 4 == addr && B(v, 54, 2) != 1 && !B(v, 51, 1);
+}
+/* the texel fetch at index reads the fragment's own pixel of a 2D texture: level 0, no offset, single sample */
+static int direct_own_pixel_fetch(const u64* insn, u32 n, u32 index) {
+    u64 w = insn[index];
+    int op = decode(w)->id;
+    u32 a = B(w, 8, 8), b = B(w, 20, 8);
+    if (op == O_TLDS) /* encoding 2: 2D, level zero, x in Ra and y in Rb */
+        return B(w, 53, 4) == 2 && direct_frag_coord(insn, n, index, a, 0x70, 0) &&
+               direct_frag_coord(insn, n, index, b, 0x74, 0);
+    if (op == O_TLD) /* 2D, not an array, no level (bit 55), offset (35) or sample (50): x in Ra, y in Ra + 1 */
+        return B(w, 28, 3) == 2 && !B(w, 55, 1) && !B(w, 35, 1) && !B(w, 50, 1) && a < 254 &&
+               direct_frag_coord(insn, n, index, a, 0x70, 0) && direct_frag_coord(insn, n, index, a + 1, 0x74, 0);
+    return 0;
+}
+
 static int direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
     int j = depth > 6 ? -1 : direct_reaching_def(insn, n, index, reg);
     u64 w;
@@ -3604,6 +3635,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 cbuf_max[18] = {0};
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
+    u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     ShaderInfo image_info = {0};
     int needs_fragcoord = 0;
     int needs_frontface = 0;
@@ -4165,6 +4197,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 textures[slot].array = (u8)array;
                 texture_count++;
             }
+            tex_read |= 1ull << slot;
+            tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if (b < 255) used[b] = 1;
@@ -4188,9 +4222,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0, bindless,
-                                      bank, handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
+                                                  bindless, bank, handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            if (op->id == O_TLD ? !direct_own_pixel_fetch(insn, n, i) : 1) tex_elsewhere |= 1ull << read_slot;
             u32 coordinate_count = (type == 0 ? 1u : type == 1 ? 2u : 3u) + (u32)array;
             for (u32 k = 0; k < coordinate_count; k++)
                 if (a + k < 255) used[a + k] = 1;
@@ -4281,6 +4317,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     textures[slot].bl_cbuf = (u8)bank;
                     texture_count++;
                 }
+                tex_read |= 1ull << slot;
+                tex_elsewhere |= 1ull << slot;
             }
         }
         if (half_arithmetic(op->id)) {
@@ -4374,6 +4412,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 textures[slot].flags = (u8)(multisample ? 2 : 0);
                 texture_count++;
             }
+            tex_read |= 1ull << slot;
+            if (!direct_own_pixel_fetch(insn, n, i)) tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if ((enc == 4 || enc == 5 || enc == 6 || enc == 7 || enc == 12) && a + 1 < 255) used[a + 1] = 1;
@@ -4412,9 +4452,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                      handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             if (a < 255) used[a] = 1;
             if ((type != 0 || array) && a + 1 < 255) used[a + 1] = 1;
             if ((type >= 2 || array) && a + 2 < 255) used[a + 2] = 1;
@@ -4461,9 +4503,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 bindless ? direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, a, stage, &ldc);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank, handle_count,
-                                      bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             u32 coord = a + (u32)bindless, aoffi = B(insn[i], 35, 1);
             for (u32 k = 0; k < count + (array || aoffi); k++)
                 if (a + k + (u32)bindless < 255) used[coord + k] = 1;
@@ -4513,9 +4557,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
             u32 shadow = B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                      handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             if (a < 255) used[a] = 1;
             if (op->id == O_TLD4S) {
                 if (b < 255) used[b] = 1;
@@ -8666,6 +8712,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
+    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere : 0;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
     next.ngbuf = ngbuf;
