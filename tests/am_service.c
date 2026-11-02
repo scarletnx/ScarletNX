@@ -658,13 +658,13 @@ static void test_swkbd(void) {
     g_settings.keyboard_text[0] = 0;
     CHECK(box_shows == shows);
     /* a run nobody is at the screen of, without that text: the game's own initial text, and no box */
-    g_settings.seconds = 60;
+    g_test_unattended = 1;
     shows = box_shows;
     out = swkbd(0, 0, 1, "Ann");
     CHECK(box_shows == shows && get32(((StorageData*)out->data)->d) == 0 &&
           !strcmp((char*)((StorageData*)out->data)->d + 4, "Ann"));
     svcobj_unref(out);
-    g_settings.seconds = 0;
+    g_test_unattended = 0;
     CHECK(box_shows == shows);
 }
 /* the other applets' outputs: the controller applet's players against the game's minimum, a web applet's return
