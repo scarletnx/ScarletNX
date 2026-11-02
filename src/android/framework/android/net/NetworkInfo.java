@@ -11,6 +11,13 @@ public class NetworkInfo implements android.os.Parcelable {
     public boolean isAvailable() { return true; }
     public boolean isRoaming() { return false; }
     public int getType() { return ConnectivityManager.TYPE_ETHERNET; }
+    public int getSubtype() { return 0; }
+    public String getSubtypeName() { return ""; }
+    public String getExtraInfo() { return null; }
+    public boolean isFailover() { return false; }
+    public DetailedState getDetailedState() { return DetailedState.CONNECTED; }
+    public enum DetailedState { IDLE, SCANNING, CONNECTING, AUTHENTICATING, OBTAINING_IPADDR, CONNECTED, SUSPENDED,
+        DISCONNECTING, DISCONNECTED, FAILED, BLOCKED, VERIFYING_POOR_LINK, CAPTIVE_PORTAL_CHECK }
     public String getTypeName() { return "ETHERNET"; }
     public State getState() { return State.CONNECTED; }
     @Override public int describeContents() { return 0; }

@@ -6,6 +6,7 @@
 #define _GNU_SOURCE
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
+#include "android/bridge/hle_assets.h"
 #include "android/bridge/hle_impl.h"
 #include <dirent.h>
 #include <errno.h>
@@ -282,6 +283,69 @@ static void g_epoll_wait(CPU* c, void* data) {
     X(0) = (uint64_t)(int64_t)n;
 }
 
+/* ---- the network: ScarletNX's Network setting. Offline, only loopback and local sockets reach anything, as the
+   Switch runtime's bsd service has it ---- */
+
+static bool online;
+void hle_set_network(bool on) {
+    online = on;
+}
+
+/* an address the app may reach offline: loopback, a local (AF_UNIX) socket, or none given */
+static bool reachable(const void* address) {
+    if (online || !address) return true;
+    const struct sockaddr* a = address;
+    if (a->sa_family == AF_UNIX) return true;
+    if (a->sa_family == AF_INET) {
+        struct sockaddr_in in;
+        memcpy(&in, address, sizeof in);
+        return (ntohl(in.sin_addr.s_addr) >> 24) == 127;
+    }
+    if (a->sa_family == AF_INET6) {
+        struct sockaddr_in6 in6;
+        memcpy(&in6, address, sizeof in6);
+        return IN6_IS_ADDR_LOOPBACK(&in6.sin6_addr);
+    }
+    return false;
+}
+static bool local_name(const char* name) {
+    return !name || !strcmp(name, "localhost") || !strncmp(name, "127.", 4) || !strcmp(name, "::1");
+}
+static void g_connect(CPU* c, void* data) {
+    (void)data;
+    if (!reachable(PTR(1))) {
+        fail_errno(c, ENETUNREACH);
+        return;
+    }
+    X(0) = (uint64_t)(int64_t)connect((int)X(0), PTR(1), (socklen_t)X(2));
+}
+static void g_sendto(CPU* c, void* data) {
+    (void)data;
+    if (!reachable(PTR(4))) {
+        fail_errno(c, ENETUNREACH);
+        return;
+    }
+    X(0) = (uint64_t)(int64_t)sendto((int)X(0), PTR(1), X(2), (int)X(3), PTR(4), (socklen_t)X(5));
+}
+static void g_sendmsg(CPU* c, void* data) {
+    (void)data;
+    const struct msghdr* m = PTR(1);
+    if (m && !reachable(m->msg_name)) {
+        fail_errno(c, ENETUNREACH);
+        return;
+    }
+    X(0) = (uint64_t)(int64_t)sendmsg((int)X(0), m, (int)X(2));
+}
+static void g_gethostbyname(CPU* c, void* data) {
+    (void)data;
+    if (!local_name(STR(0))) {
+        h_errno = HOST_NOT_FOUND;
+        X(0) = 0;
+        return;
+    }
+    X(0) = (uint64_t)(uintptr_t)gethostbyname(STR(0));
+}
+
 /* ---- addrinfo: bionic's has ai_canonname before ai_addr, glibc's after ---- */
 
 typedef struct GuestAddrinfo {
@@ -317,7 +381,8 @@ static void g_getaddrinfo(CPU* c, void* data) {
         hints.ai_socktype = h->socktype;
         hints.ai_protocol = h->protocol;
     }
-    int r = getaddrinfo(STR(0), STR(1), h ? &hints : NULL, &result);
+    /* offline, a name that isn't this machine's doesn't resolve: no DNS server is asked */
+    int r = local_name(STR(0)) || online ? getaddrinfo(STR(0), STR(1), h ? &hints : NULL, &result) : EAI_AGAIN;
     GuestAddrinfo* out = r ? NULL : to_guest(result);
     if (result) freeaddrinfo(result);
     memcpy(PTR(3), &out, sizeof out);
@@ -561,11 +626,15 @@ const HleSymbol hle_posix[] = {
     {"epoll_ctl", g_epoll_ctl, NULL},
     {"epoll_wait", g_epoll_wait, NULL},
     P(poll), P(select),
-    P(socket), P(socketpair), P(bind), P(connect), P(listen), P(accept), P(shutdown), P(send), P(sendto),
-    P(sendmsg), P(recv), P(recvfrom), P(recvmsg), P(getsockname), P(getpeername), P(getsockopt), P(setsockopt),
+    P(socket), P(socketpair), P(bind), P(listen), P(accept), P(shutdown), P(send), P(recv),
+    {"connect", g_connect, NULL},
+    {"sendto", g_sendto, NULL},
+    {"sendmsg", g_sendmsg, NULL},
+    {"gethostbyname", g_gethostbyname, NULL},
+    P(recvfrom), P(recvmsg), P(getsockname), P(getpeername), P(getsockopt), P(setsockopt),
     {"getaddrinfo", g_getaddrinfo, NULL},
     {"freeaddrinfo", g_freeaddrinfo, NULL},
-    P(getnameinfo), P(gethostbyname), P(gethostname), P(inet_addr), P(inet_aton), P(inet_ntoa), P(inet_ntop),
+    P(getnameinfo), P(gethostname), P(inet_addr), P(inet_aton), P(inet_ntoa), P(inet_ntop),
     P(inet_pton), P(if_nametoindex),
     P(clock), P(clock_getres), P(clock_gettime), P(gettimeofday), P(time), P(nanosleep), P(usleep), P(sleep),
     P(gmtime), P(gmtime_r), P(localtime), P(localtime_r), P(mktime), P(strftime), P(strftime_l), P(tzset), P(alarm),
