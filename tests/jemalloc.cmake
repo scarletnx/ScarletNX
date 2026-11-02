@@ -64,6 +64,22 @@ if(PRELOAD)
                             "with \"${rc}\" (a timeout of 30 s is malloc's first call waiting on itself): ${err}")
     endif()
 endif()
+# With ZONE (macOS), a library inserted into the program that prints at exit the name of the zone a new allocation
+# comes from: jemalloc's once its zone is the default one, which the statistics above do not tell
+if(ZONE)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env "DYLD_INSERT_LIBRARIES=${ZONE}" "${PROGRAM}" --help
+                    OUTPUT_QUIET ERROR_VARIABLE err RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "${PROGRAM} --help with ${ZONE} inserted exited with ${rc}: ${err}")
+    endif()
+    if(NOT err MATCHES "snx-jemalloc-zone: ([^\n]*)")
+        message(FATAL_ERROR "${ZONE} inserted into ${PROGRAM} printed no zone (dyld did not insert it?): ${err}")
+    endif()
+    if(NOT CMAKE_MATCH_1 STREQUAL "jemalloc_zone")
+        message(FATAL_ERROR "${PROGRAM}'s new allocations come from the zone ${CMAKE_MATCH_1}, not jemalloc_zone: "
+                            "jemalloc's zone is not the default one")
+    endif()
+endif()
 if(VERSION)
     message(STATUS "${PROGRAM}: jemalloc ${VERSION} is its malloc")
 else()

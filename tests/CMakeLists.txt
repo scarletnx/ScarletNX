@@ -1809,6 +1809,10 @@ if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
         set(snx_jemalloc_conf JE_MALLOC_CONF)
         set(snx_jemalloc_nm "")
         set(snx_jemalloc_preload "")
+        # inserted into the program, it names the zone a new allocation comes from, which must be jemalloc's. A dylib:
+        # dyld inserts no bundle
+        add_library(snx-test-jemalloc-zone SHARED jemalloc_zone.c)
+        set(snx_jemalloc_zone "$<TARGET_FILE:snx-test-jemalloc-zone>")
     else()
         set(snx_jemalloc_conf MALLOC_CONF)
         set(snx_jemalloc_nm "${CMAKE_NM}")
@@ -1816,10 +1820,12 @@ if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
         add_library(snx-test-jemalloc-preload MODULE jemalloc_preload.c)
         target_link_libraries(snx-test-jemalloc-preload PRIVATE ${CMAKE_DL_LIBS})
         set(snx_jemalloc_preload "$<TARGET_FILE:snx-test-jemalloc-preload>")
+        set(snx_jemalloc_zone "")
     endif()
     add_test(NAME jemalloc COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:scarletnx>"
         "-DVERSION=${snx_jemalloc_version}" "-DCONF=${snx_jemalloc_conf}" "-DNM=${snx_jemalloc_nm}"
-        "-DPRELOAD=${snx_jemalloc_preload}" -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
+        "-DPRELOAD=${snx_jemalloc_preload}" "-DZONE=${snx_jemalloc_zone}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc.cmake")
 elseif(SNX_JEMALLOC AND ANDROID)
     # Android's program, the driver's executable (src/nx), runs on a device only: what it exports is read here
     list(JOIN SNX_JEMALLOC_EXPORTS "," snx_jemalloc_names)
