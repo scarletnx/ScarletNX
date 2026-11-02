@@ -853,10 +853,12 @@ typedef struct {
     Surf* t;
 } TexRes;
 /* What a texture handle resolved to, kept while nothing it came from can have changed: the pools' addresses, the
-   surface table (g_vk_surf_epoch), the CPU's writes the stream can see (vk_ww_epoch), the results pending over guest
-   memory (none was added: g_pend_any.adds) and the GPU's writes to the two headers. A draw resolved each of its
-   textures again, reading both headers and finding the texture by them: a tenth of the GPU thread in one game, for
-   the same few hundred handles every draw. A kept texture is still checked against its memory
+   surface table at the texture's address (vk_surf_epoch_at: tex_from_tic looks nowhere else, and a texture's drawn
+   targets are taken in by vk_tex_recheck at every hit), the CPU's writes the stream can see (vk_ww_epoch), the
+   results pending over guest memory (none was added: g_pend_any.adds) and the GPU's writes to the two headers. With
+   the whole table's epoch, a texture made anywhere dropped them all: 8% of one game's lookups. A draw resolved each
+   of its textures again, reading both headers and finding the texture by them: a tenth of the GPU thread in one
+   game, for the same few hundred handles every draw. A kept texture is still checked against its memory
    (vk_tex_recheck). A render target read whole as the texture is kept too (rt): its Surf stays the target while the
    surface table doesn't change, and a hit does what tex_from_tic does for it each draw, the read check
    (vk_rt_note_read) and whether its contents are defined. Those were a twentieth of the GPU thread in one game,
@@ -865,12 +867,13 @@ typedef struct {
 typedef struct {
     const DsState* ds;
     u64 tic_base, tsc_base, gw, adds;
+    u64 t_gva; /* t's address when kept: its bucket of the surface table tells whether t is still there */
     u32 handle, surf_epoch, ww_epoch;
     u32 tic[8], tsc[8];
     Surf* t;
     int rt; /* t is the render target itself, read whole */
 } TexMemo;
-#define TEX_MEMO 1024
+#define TEX_MEMO 4096
 static TexMemo g_tex_memo[TEX_MEMO];
 static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     const DsBindings* b = &ds->bind;
@@ -881,7 +884,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
     }
     u64 tic_base = b->tex_pool, tsc_base = b->smp_pool;
     u64 tic_at = tic_base + (handle & 0xFFFFF) * 32ull, tsc_at = tsc_base + ((handle >> 20) & 0xFFF) * 32ull;
-    TexMemo* m = &g_tex_memo[(handle * 0x9E3779B1u) >> 22];
+    TexMemo* m = &g_tex_memo[(handle * 0x9E3779B1u) >> 20];
     u64 gw = gpu_mem_generation();
     x->handle = handle;
     x->have = 1;
@@ -905,7 +908,7 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         return;
     }
     if (m->t && m->ds == ds && m->handle == handle && m->tic_base == tic_base && m->tsc_base == tsc_base &&
-        m->surf_epoch == g_vk_surf_epoch && m->ww_epoch == vk_ww_epoch() && !g_gfx_img_any &&
+        m->surf_epoch == vk_surf_epoch_at(m->t_gva) && m->ww_epoch == vk_ww_epoch() && !g_gfx_img_any &&
         m->adds == __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED) &&
         (m->gw == gw || (!gpu_mem_dirty_since(m->gw, tic_at, 32) && !gpu_mem_dirty_since(m->gw, tsc_at, 32)))) {
         m->gw = gw;
@@ -937,7 +940,8 @@ static void tex_resolve(const DsState* ds, u32 handle, TexRes* x) {
         m->tsc_base = tsc_base;
         m->gw = gpu_mem_generation();
         m->adds = __atomic_load_n(&g_pend_any.adds, __ATOMIC_RELAXED);
-        m->surf_epoch = g_vk_surf_epoch;
+        m->t_gva = x->t->gva;
+        m->surf_epoch = vk_surf_epoch_at(x->t->gva);
         m->ww_epoch = vk_ww_epoch();
         memcpy(m->tic, x->tic, sizeof m->tic);
         memcpy(m->tsc, x->tsc, sizeof m->tsc);
@@ -1209,16 +1213,27 @@ VkSampler vk_tex_bind_sampler(const u32* tsc, const u32* tic, const ShTex* st, i
 }
 
 /* a constant buffer's bytes for this draw, reused while the guest can't have changed them. An inline block (in) is
-   staged once a frame while its generation holds */
+   staged once a frame while its generation holds. A buffer in guest memory is kept by its address as well as by its
+   stage and slot: what vk_buf_get_strict gives for it depends on nothing else. One game binds another buffer to the
+   same slot in most draws, and those missed the slot's entry in 37% of the lookups */
+typedef struct {
+    u64 a, gw, frame, cs_adds, gfx_adds;
+    u32 sz, epoch;
+    VkBuffer buf;
+    u64 off;
+    const u8* in; /* or the inline block staged, of generation gen */
+    u64 gen;
+} CbEntry;
+/* e holds a's bytes, sz of them at least, for this draw: checked as it is cached, and with adds, with no compute or
+   graphics result added since (none can cover it, and only a write of its memory leaves the copy stale) */
+static int cb_kept(const CbEntry* e, u64 a, u32 sz, int adds) {
+    return a && e->a == a && e->epoch == g_vk_epoch && e->frame == vk_submit_number() && e->sz >= sz &&
+           (!adds || (e->cs_adds == vk_compute_adds() && e->gfx_adds == vk_buf_adds())) &&
+           !gpu_mem_dirty_since(e->gw, a, sz);
+}
 static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
-    static struct {
-        u64 a, gw, frame, cs_adds, gfx_adds;
-        u32 sz, epoch;
-        VkBuffer buf;
-        u64 off;
-        const u8* in; /* or the inline block staged, of generation gen */
-        u64 gen;
-    } c[5][18];
+    static CbEntry c[5][18];
+    static CbEntry by_addr[1024];
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
     if (in.bytes) {
         if (c[stage][i].in == in.bytes && c[stage][i].gen == ds->gen[DS_INLINE] &&
@@ -1242,42 +1257,39 @@ static int cb_get(const DsState* ds, int stage, int i, u32 sz, VkBuffer* buf, u6
         return 1;
     }
     u64 a = ds->bind.cb_addr[stage][i];
-    int pending;
-    /* checked as it is cached, with no compute or graphics result added since: none can cover it, and only a write of
-       its memory leaves the copy stale. The pending checks were the most of cb_get's time in one game */
-    if (a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch && c[stage][i].frame == vk_submit_number() &&
-        c[stage][i].sz >= sz && c[stage][i].cs_adds == vk_compute_adds() && c[stage][i].gfx_adds == vk_buf_adds() &&
-        !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
-        *buf = c[stage][i].buf;
-        *off = c[stage][i].off;
+    CbEntry* e = &c[stage][i];
+    CbEntry* x = &by_addr[(u32)((a >> 8) * 0x9E3779B97F4A7C15ull >> 54)];
+    /* The pending checks were the most of cb_get's time in one game: an entry is taken first while no result was
+       added since it was made */
+    if (cb_kept(e, a, sz, 1) || (cb_kept(x, a, sz, 1) && (*e = *x, 1))) {
+        *buf = e->buf;
+        *off = e->off;
         return 1;
     }
     /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    pending = g_gfx_any && a && vk_buf_pending(a, sz);
-    if (!pending && a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch &&
-        c[stage][i].frame == vk_submit_number() && c[stage][i].sz >= sz &&
-        !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
-        *buf = c[stage][i].buf;
-        *off = c[stage][i].off;
+    int pending = g_gfx_any && a && vk_buf_pending(a, sz);
+    if (!pending && (cb_kept(e, a, sz, 0) || (cb_kept(x, a, sz, 0) && (*e = *x, 1)))) {
+        *buf = e->buf;
+        *off = e->off;
         return 1;
     }
     if (!(a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
     if (pending) {
-        c[stage][i].a = 0;
+        e->a = 0;
         return 1;
     }
-    c[stage][i].a = a;
-    c[stage][i].in = NULL;
-    c[stage][i].cs_adds = vk_compute_adds();
-    c[stage][i].gfx_adds = vk_buf_adds();
-    c[stage][i].gw = gpu_mem_generation();
-    c[stage][i].frame = vk_submit_number();
-    c[stage][i].sz = sz;
-    c[stage][i].epoch = g_vk_epoch;
-    c[stage][i].buf = *buf;
-    c[stage][i].off = *off;
+    *e = (CbEntry){.a = a,
+                   .cs_adds = vk_compute_adds(),
+                   .gfx_adds = vk_buf_adds(),
+                   .gw = gpu_mem_generation(),
+                   .frame = vk_submit_number(),
+                   .sz = sz,
+                   .epoch = g_vk_epoch,
+                   .buf = *buf,
+                   .off = *off};
+    if (a) *x = *e;
     return 1;
 }
 

@@ -109,6 +109,14 @@ void vk_surf_stats(int kind, u32* count, u64* bytes, u32* parked) {
 }
 static _Thread_local int g_rt_flushing;
 static u32 hkey(u64 a) { return (u32)((a >> 8) ^ (a >> 20)) & (SURFH - 1); }
+u32 g_vk_surf_epoch;
+static u32 g_surf_bucket_epoch[SURFH];
+u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
+/* a change of the surface table at gva: of its own bucket (a parked target's high bit leaves it in the same one) */
+static void surf_changed(u64 gva) {
+    g_vk_surf_epoch++;
+    g_surf_bucket_epoch[hkey(gva)]++;
+}
 
 /* bytes of a block-linear surface of w_bytes x h, block height 2^bh GOBs (shrunk for small surfaces, as the
    hardware does) */
@@ -260,7 +268,7 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     u32 k = hkey(gva);
     s->next = g_surfh[k];
     g_surfh[k] = s;
-    g_vk_surf_epoch++;
+    surf_changed(gva);
     if (is_rt) lru_add(s, VK_LRU_RT);
     return s;
 }
@@ -289,12 +297,11 @@ VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
 }
 
 Surf* vk_surf_first(u64 gva) { return g_surfh[hkey(gva)]; }
-u32 g_vk_surf_epoch;
 void vk_surf_add(Surf* s) {
     u32 k = hkey(s->gva);
     s->next = g_surfh[k];
     g_surfh[k] = s;
-    g_vk_surf_epoch++;
+    surf_changed(s->gva);
     lru_add(s, VK_LRU_TEX);
 }
 
@@ -1205,13 +1212,13 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             rtx_del(gva);
             s->gva = gva | 1ull << 63;
             g_parked++;
-            g_vk_surf_epoch++;
+            surf_changed(gva);
         }
     if (parked) {
         parked->gva = gva;
         rtx_add(parked);
         g_parked--;
-        g_vk_surf_epoch++;
+        surf_changed(gva);
         rt_pages(parked, 1);
         vk_rt_note_read(parked);
         rt_take_pixels(parked, cur, cur_fresh);
@@ -1494,7 +1501,7 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them) */
 static void surf_free(Surf* s) {
-    g_vk_surf_epoch++;
+    surf_changed(s->gva);
     if (s->lru) {
         g_held[lru_kind(s)].n--;
         g_held[lru_kind(s)].bytes -= s->bytes;
