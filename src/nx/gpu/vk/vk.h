@@ -665,6 +665,7 @@ void vk_rt_reload(u64 gva);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
 extern u32 g_vk_surf_epoch;
+u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
 Surf* vk_surf_first(u64 gva);
 void vk_surf_add(Surf* s); /* a texture, into the table and the textures' recency list */
 /* s used now: last_used is this present, and it moves to the recent end of its list */
