@@ -393,6 +393,12 @@ void video_init(const char* title, const char* addons) {
         free(driver);
     }
 #endif
+    {
+        SnxKeybind key;
+        if (!snx_keybind_parse(g_settings.upscaler_cycle_key, &key))
+            WARN("video: upscaler_key '%s' is not a key: use ctrl+u, alt+u, shift+f13 or f13\n",
+                 g_settings.upscaler_cycle_key);
+    }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
