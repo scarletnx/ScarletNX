@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The menu's Settings: the launcher's own rows and the recompiler's (settings.txt's launcher sections: gdbstub, Extract
-   to tmpfs, Extract dump, the optimization level, the AOT threads and the LLVM Internals page), then every
-   setting of the game's .ini as the runtime lists them (scarletnx --settings, its tables), each a row of the form
-   (editor.h), named and its values worded as the game's menu shows them. A setting is the .ini's,
-   passed to no run, until one is picked. The picks are kept in a file, an .ini of the game's sections and keys, and go
-   to every run as --key=value. A run takes a setting from what that run picks, then from the game's own file of picks
-   (to come: today there is only the global one, every game's), then from the global file, and last from the game's
-   .ini */
+   to tmpfs, Extract dump, the optimization level, the AOT threads and the LLVM Internals page), then every setting of
+   the game's .ini as the runtime lists them (scarletnx --settings, its tables), each a row of the form (editor.h),
+   named and its values worded as the game's menu shows them. A setting is the .ini's, passed to no run, while it is at
+   its default: a word row's value is one of its words, the default's marked [default]; one whose default has no word
+   (an empty one) has the .ini's as a word of its own, shown [default]. The picks are kept in a file, an .ini of the
+   game's sections and keys, and go to every run as --key=value. A run takes a setting from what that run picks, then
+   from the game's own file of picks (to come: today there is only the global one, every game's), then from the global
+   file, and last from the game's .ini */
 #ifndef SNX_GUI_SETTINGS_H
 #define SNX_GUI_SETTINGS_H
 #include <stddef.h>
@@ -18,7 +19,7 @@
 enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
 #define GUI_SETTING_TEXT 192 /* a typed value's room: gamepad_map's whole map (pad_map.h) is 165 at most */
 typedef struct {
-    int word;                           /* a word row's: the word, 0 the .ini's (an always row's: its first) */
+    int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
     char text[GUI_SETTING_TEXT];        /* a typed row's: empty, the .ini's. A page's and an All's: the value shown */
     char start[GUI_SETTING_TEXT];       /* the value the menu starts with, which a file of picks leaves out */
     char option[GUI_SETTING_TEXT + 72]; /* a run's --key=value; a page's row: the section it is in */
@@ -27,7 +28,8 @@ typedef struct {
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
     int kind;             /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
-    int always;           /* passed to every run, one of its words (gui_settings_always): no .ini's */
+    int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
+    int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
@@ -51,9 +53,11 @@ void gui_settings_mark(GuiSettings* settings);
    .ini's, which it no longer has. Its [default] marks the value it starts with (gui_settings_mark), which Del and a
    reset put back. 1 when it did, 0 for no such row or a value not of its words */
 int gui_settings_always(GuiSettings* settings, const char* key, const char* value);
-/* the picks of a file of them, global or a game's: each key's row set, the others left as they are. An always row's
-   .ini, which older versions wrote, is read as the value it starts with: said in old ("fullscreen=.ini is no longer a
-   value of Fullscreen: fullscreen=0 now", "; " between, cut where it ends). How many, 0 for none */
+/* the picks of a file of them, global or a game's: each key's row set, the others left as they are. What older
+   versions wrote that a plain row reads otherwise is said in old ("; " between, cut where it ends): its .ini, read as
+   the value it starts with ("fullscreen=.ini is no longer a value of Fullscreen: fullscreen=0 now"), and its default
+   picked, which a run was given over the game's .ini and is now no pick ("docked=1 is the default of TV mode: no run
+   is given it over the game's .ini"). How many, 0 for none */
 int gui_settings_load(GuiSettings* settings, const char* path, char* old, size_t size);
 /* the rows that are not at their start in path, by section; with the launcher's rows alone (the runtime listed none),
    the keys path holds that no row has after them, as they were, and nonzero for a path it cannot read. 0, else
@@ -73,8 +77,8 @@ int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */
 void gui_settings_sync(GuiSettings* settings);
 /* row's value as the Settings show it: a pick as it is, a row not picked its default and [default] ("Off
-   [default]", "[default]" for an empty one), an All's [default] while none of its rows is picked; an always row's
-   word, [default] after the one it starts with */
+   [default]", "[default]" for an empty one), an All's word its rows share or Mixed, [default] after it or alone
+   while none of its rows is picked; an always row's word, [default] after the one it starts with */
 void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t size);
 /* the Debug section's settings not at their default for a run of the game whose .ini is at ini (NULL: none read): a
    row's pick, else the file's value, else its default; then gdbstub when the launcher's row is on. With picks 0 the

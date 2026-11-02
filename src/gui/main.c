@@ -7045,7 +7045,7 @@ static GuiSettings* settings_of(App* app) {
     gui_settings_always(&app->settings, "controls", "0");
 #endif
     gui_settings_mark(&app->settings);
-    /* an older version's fullscreen=.ini, which passed nothing: the launcher's choice, written so and said once */
+    /* what older versions wrote that the rows read otherwise (a .ini, a default picked): written without, said once */
     if (gui_settings_load(&app->settings, app->settings_file, old, sizeof old)) {
         write_settings(app);
         gui_log("%s: %s", app->settings_file, old);

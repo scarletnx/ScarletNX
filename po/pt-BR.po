@@ -4712,6 +4712,11 @@ msgid "%s=.ini is no longer a value of %s: %s=%s now"
 msgstr "%s=.ini não é mais um valor de %s: agora %s=%s"
 
 #: src/gui/settings.c
+#, c-format
+msgid "%s=%s is the default of %s: no run is given it over the game's .ini"
+msgstr "%s=%s é o padrão de %s: nenhuma execução o recebe acima do .ini do jogo"
+
+#: src/gui/settings.c
 msgid "Mixed"
 msgstr "Misto"
 
