@@ -45,6 +45,8 @@
 #define SNX_ARCH "mips64el"
 #elif defined(__mips64)
 #define SNX_ARCH "mips64"
+#elif defined(__s390x__)
+#define SNX_ARCH "s390x"
 #elif defined(__alpha__)
 #define SNX_ARCH "alpha"
 #else
