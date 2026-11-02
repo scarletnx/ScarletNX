@@ -52,6 +52,8 @@ enum { SNX_IPC_BAD_REQUEST, SNX_IPC_UNDECLARED, SNX_IPC_UNKNOWN, SNX_IPC_UNKNOWN
 enum {
     SNX_GAP_SHADER,
     SNX_GAP_COMPUTE,
+    SNX_GAP_SHIPPED, /* a program in the game's files, which the pass before the game couldn't translate; a draw that
+                        uses it translates it again, with its constant buffers, and says so as SNX_GAP_SHADER */
     SNX_GAP_CLASS,
     SNX_GAP_TEXTURE,
     SNX_GAP_TARGET,

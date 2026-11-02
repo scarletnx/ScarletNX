@@ -708,13 +708,13 @@ static int gap_line(SnxLogScan* s, Span line) {
     switch (line.p[0]) {
         case 'v': { /* "vulkan: shader <hash> (stage <n>) not translated: <why>", "vulkan: compute <hash> ...", and a
                        program the game ships, "vulkan: <stage> <hash> not translated: <why>" (shipped_stage_name) */
-            static const char* const shaders[] = {
-                "shader ",   "vertex ",   "paired vertex ",          "tessellation control ",
-                "geometry ", "fragment ", "tessellation evaluation "};
+            static const char* const shipped[] = {"vertex ",   "paired vertex ", "tessellation control ",
+                                                  "geometry ", "fragment ",      "tessellation evaluation "};
             if (!take_lit(&rest, "vulkan: ")) return 0;
             if ((at = find(rest, " not translated: ")) >= 0) {
-                for (size_t k = 0; k < sizeof shaders / sizeof *shaders; ++k)
-                    if (starts(rest, shaders[k])) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
+                if (starts(rest, "shader ")) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
+                for (size_t k = 0; k < sizeof shipped / sizeof *shipped; ++k)
+                    if (starts(rest, shipped[k])) return gap(s, SNX_GAP_SHIPPED, skip(rest, (size_t)at + 17));
                 if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
                 return 0;
             }
@@ -1390,12 +1390,19 @@ static void json_list(Buf* b, const SnxLogScan* s, const unsigned* items, int n)
 }
 
 /* a gap's kind and the area it is in, by kind (SNX_GAP_*) */
-static const char* const gap_kinds[] = {"shader",        "compute shader",
-                                        "class",         "texture format",
-                                        "target format", "depth format",
-                                        "gpu",           "macro",
-                                        "macro compile", "mme",
-                                        "svc",           "cpu"};
+static const char* const gap_kinds[] = {"shader",
+                                        "compute shader",
+                                        "shipped shader",
+                                        "class",
+                                        "texture format",
+                                        "target format",
+                                        "depth format",
+                                        "gpu",
+                                        "macro",
+                                        "macro compile",
+                                        "mme",
+                                        "svc",
+                                        "cpu"};
 /* 0 the GPU, 1 the macros, 2 the CPU */
 static int gap_area(int kind) { return kind <= SNX_GAP_GPU ? 0 : kind <= SNX_GAP_MME ? 1 : 2; }
 /* the JIT compiled or queued guest code the recompiler missed, in this run or earlier ones */
@@ -1577,6 +1584,7 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
 /* A gap in the summary: what goes before its text and after it, by kind */
 static const char* const gap_before[] = {"shader not translated: ",
                                          "compute shader not translated: ",
+                                         "a program in the game's files not translated before it ran: ",
                                          "methods of class ",
                                          "texture format ",
                                          "render target format ",
@@ -1588,6 +1596,7 @@ static const char* const gap_before[] = {"shader not translated: ",
                                          "",
                                          ""};
 static const char* const gap_after[] = {"",
+                                        "",
                                         "",
                                         ", which no engine runs",
                                         ", which the runtime doesn't map (not drawn)",
@@ -1801,7 +1810,7 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
                 if (s->gaps[i].count > 1) {
                     put(&b, " (");
                     put_num(&b, s->gaps[i].count);
-                    put(&b, kind == SNX_GAP_SHADER || kind == SNX_GAP_COMPUTE ? " shaders)" : "x)");
+                    put(&b, kind <= SNX_GAP_SHIPPED ? " shaders)" : "x)");
                 }
                 put(&b, "\n");
             }

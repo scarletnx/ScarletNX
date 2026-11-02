@@ -339,8 +339,9 @@ def main():
     check(
         missed
         == {
-            ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 3,
-            ('gpu', 'shader', 'a jump table in a constant buffer'): 2,
+            ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 2,
+            ('gpu', 'shipped shader', 'a jump table in a constant buffer'): 2,
+            ('gpu', 'shipped shader', 'TEXS encoding 3, fp32 1'): 1,
             ('gpu', 'compute shader', 'global memory base R4 not tracked at 1a0: no write before'): 1,
             ('gpu', 'class', 'b1c0'): 2,
             ('gpu', 'texture format', '3f'): 1,
@@ -369,7 +370,8 @@ def main():
     md = run(['-', '--format', 'markdown'], MISSED.encode())
     for want in (
         '**What else the runtime missed:**',
-        '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (3 shaders)',
+        '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (2 shaders)',
+        "  - a program in the game's files not translated before it ran: `a jump table in a constant buffer` (2 shaders)",
         '  - methods of class `b1c0`, which no engine runs (2x)',
         "  - texture format `3f`, which the runtime doesn't map (not drawn)",
         "  - render target format `c4`, which the runtime doesn't map (drawn as RGBA8)",
@@ -389,7 +391,7 @@ def main():
     )
     kinds = [g['kind'] for g in crowded['missed']]
     check(
-        len(kinds) == 64 and kinds.count('texture format') == 2 and kinds.count('shader') == 62,
+        len(kinds) == 64 and kinds.count('texture format') == 2 and kinds.count('shipped shader') == 62,
         f'a full table of shaders keeps room for a texture format: {kinds.count("texture format")}',
     )
     native = scan(HEADER + '[ 4.00] mme: 1000000 macro calls, 1000000 native, 0 compiled and 0 interpreted\n')
