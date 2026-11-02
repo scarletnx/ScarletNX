@@ -124,8 +124,9 @@ int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
    stub_ok, as it answers a command the interface doesn't declare. The test drives these, and a command reaching
    here that isn't one of them is a gap nobody declared */
 static int stub_allowed(SvcObj* o, u32 cmd) {
-    return (!strcmp(o->name, "nn::mii::detail::IDatabaseService") && cmd == 1) ||
-           (!strcmp(o->name, "nn::prepo::detail::ipc::IPrepoService") && cmd >= 10100 && cmd <= 10107);
+    return (!strcmp(o->name, "nn::mii::detail::IDatabaseService") && (cmd == 0 || cmd == 1)) ||
+           (!strcmp(o->name, "nn::prepo::detail::ipc::IPrepoService") && cmd >= 10100 && cmd <= 10400) ||
+           (!strcmp(o->name, "nn::nim::detail::IShopServiceAccessServerInterface") && cmd == 4);
 }
 int stub_ok(SvcObj* o, IpcCtx* c) {
     if (!stub_allowed(o, c->cmd)) {

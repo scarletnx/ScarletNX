@@ -108,7 +108,9 @@ int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
    stub_ok, as it answers a command the interface doesn't declare. The test drives one of them, and a command
    reaching here that isn't one of them is a gap nobody declared */
 static int stub_allowed(SvcObj* o, u32 cmd) {
-    return !strcmp(o->name, "nn::account::IAccountServiceForApplication") && cmd == 160;
+    return (!strcmp(o->name, "nn::account::IAccountServiceForApplication") && (cmd == 6 || cmd == 160)) ||
+           (!strcmp(o->name, "nn::account::detail::IAsyncContext") && cmd == 1) ||
+           (!strcmp(o->name, "nn::account::profile::IProfile") && cmd >= 20 && cmd <= 30);
 }
 int stub_ok(SvcObj* o, IpcCtx* c) {
     if (!stub_allowed(o, c->cmd)) {
