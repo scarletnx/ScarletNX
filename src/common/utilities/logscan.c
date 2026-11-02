@@ -519,6 +519,43 @@ static int frontend_header(SnxLogScan* s, Span rest) {
     return 1;
 }
 
+/* what ipc_line and ctr_ipc_line read: kind's iface and cmd counted again, or added */
+static void ipc_add(SnxLogScan* s, int kind, Span iface, unsigned cmd) {
+    for (int k = 0; k < s->nipc; k++) {
+        const char* name = snx_logscan_text(s, s->ipc[k].iface);
+        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
+            !memcmp(name, iface.p, iface.n)) {
+            s->ipc[k].count++;
+            return;
+        }
+    }
+    if (s->nipc < SNX_LOGSCAN_IPC) {
+        s->ipc[s->nipc].kind = kind;
+        s->ipc[s->nipc].iface = add(s, iface);
+        s->ipc[s->nipc].command = cmd;
+        s->ipc[s->nipc].count = 1;
+        s->nipc++;
+    }
+}
+
+/* a frontend's error that ends its run, as the 3DS's, the Vita's and the GBA's runtimes write it on stderr:
+   "scarletnx-<frontend>: <what>". The 3DS's stop (3ds/aot/run.c) is cut after its pc ("unsupported guest operation or
+   missing static entry: pc=0x0013be3c"): the counts after it differ from run to run */
+static int frontend_error(SnxLogScan* s, Span line) {
+    Span rest = line;
+    size_t n = 0;
+    if (!take_lit(&rest, "scarletnx-")) return 0;
+    while (n < rest.n && n < 8 && (snx_is_lower(rest.p[n]) || snx_is_digit(rest.p[n]))) n++; /* 3ds, vita, agb */
+    if (!n || n >= rest.n || !starts(skip(rest, n), ": ")) return 0;
+    rest = skip(rest, n + 2);
+    long at = find(rest, ": pc=0x");
+    if (at > 0 && rest.n >= (size_t)at + 15) rest.n = (size_t)at + 15;
+    if (!rest.n) return 0;
+    s->outcome = SNX_LOG_FATAL;
+    s->fatal = add(s, rest);
+    return 1;
+}
+
 static int ipc_line(SnxLogScan* s, Span line) {
     static const char* const kinds[] = {"[bad request] ", "[undeclared] ", "[unknown] "};
     Span rest = line, iface;
@@ -545,21 +582,27 @@ static int ipc_line(SnxLogScan* s, Span line) {
     size_t d = dec_run(rest);
     if (!d || d > 9) return 0;
     for (unsigned i = 0; i < d; i++) cmd = cmd * 10 + (unsigned)(rest.p[i] - '0');
-    for (int k = 0; k < s->nipc; k++) {
-        const char* name = snx_logscan_text(s, s->ipc[k].iface);
-        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
-            !memcmp(name, iface.p, iface.n)) {
-            s->ipc[k].count++;
-            return 1;
-        }
-    }
-    if (s->nipc < SNX_LOGSCAN_IPC) {
-        s->ipc[s->nipc].kind = kind;
-        s->ipc[s->nipc].iface = add(s, iface);
-        s->ipc[s->nipc].command = cmd;
-        s->ipc[s->nipc].count = 1;
-        s->nipc++;
-    }
+    ipc_add(s, kind, iface, cmd);
+    return 1;
+}
+
+/* the 3DS's service calls the runtime has no model of (3ds/ipc/ipc.c, services/system.c): "stub answered <service>
+   command 0x<n> (header ...)" and "<service> command 0x<n> (header ...) answered success", which it answers without
+   doing what they ask, as the Switch's undeclared ones; "<service> command 0x<n> has a form the runtime does not take:
+   ...", a bad request. rest is what follows "3ds ipc: " */
+static int ctr_ipc_line(SnxLogScan* s, Span rest) {
+    int kind = take_lit(&rest, "stub answered ") ? SNX_IPC_UNDECLARED : -1;
+    long at = find(rest, " command 0x");
+    unsigned cmd = 0;
+    if (at <= 0) return 0;
+    Span iface = span(rest.p, (size_t)at), after = skip(rest, (size_t)at + 11);
+    size_t d = 0;
+    while (d < after.n && d < 8 && snx_is_hex(after.p[d])) cmd = cmd << 4 | (unsigned)snx_hex_value(after.p[d++]);
+    if (!d) return 0;
+    if (kind < 0 && find(after, " answered success") >= 0) kind = SNX_IPC_UNDECLARED;
+    if (kind < 0 && find(after, " has a form the runtime does not take") >= 0) kind = SNX_IPC_BAD_REQUEST;
+    if (kind < 0) return 0;
+    ipc_add(s, kind, iface, cmd);
     return 1;
 }
 
@@ -1116,6 +1159,10 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
                 s->system = add(s, rest);
                 return;
             }
+            if (!s->outcome && frontend_error(s, line)) return;
+            break;
+        case '3': /* the 3DS's service calls */
+            if (take_lit(&rest, "3ds ipc: ") && ctr_ipc_line(s, rest)) return;
             break;
         case 'g':
             if (!s->title_id && take_lit(&rest, "game: ") && hex_run(rest) == 16 &&
@@ -1192,8 +1239,9 @@ static int from_ring(SnxLogScan* s, char (*raw)[SNX_LOGSCAN_RAW], const unsigned
 void snx_logscan_end(SnxLogScan* s) {
     SnxLogScan* run = s->run;
     s->run = NULL;
+    /* the run's texts are in s's pool, which may have moved since the run's scan was kept: each read through s */
     if (run && run->title_id &&
-        (!s->title_id || strcmp(snx_logscan_text(run, run->title_id), snx_logscan_text(s, s->title_id)))) {
+        (!s->title_id || strcmp(snx_logscan_text(s, run->title_id), snx_logscan_text(s, s->title_id)))) {
         char* pool = s->pool; /* the game log is another game's: the run's scan, its texts in the pool */
         size_t cap = s->cap, used = s->used;
         *s = *run;
