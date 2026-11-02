@@ -161,6 +161,11 @@ void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, 
     (void)level;
     *tile_h = *tile_d = 0;
 }
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]) {
+    (void)d;
+    tile[0] = tile[1] = tile[2] = 0;
+    return 0;
+}
 int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {
     (void)t;
     (void)v;

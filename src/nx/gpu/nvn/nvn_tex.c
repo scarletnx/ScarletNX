@@ -4,7 +4,8 @@
    (zlib, source/dk_image.cpp), Copyright (C) 2018-2020 fincs */
 /* NVN texture storage: one GOB is 64 bytes by 8 rows (512 bytes), the block height (in GOBs) is picked from the
    height in blocks times 1.5, and the levels follow each other at block alignment. A packaged texture's 8 layout
-   bytes (SetPackagedTextureLayout) give the block height in byte 0 (log2), which then wins */
+   bytes (SetPackagedTextureLayout) give the block height in byte 0 (log2), which then wins; a sparse texture's blocks
+   are as high and deep as its 64 KiB tile */
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/draw_state.h"
 
@@ -140,6 +141,27 @@ static int sparse_of(const NvnTexDesc* d) {
     return (d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) &&
            d->target != NVN_TEXTURE_TARGET_BUFFER;
 }
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]) {
+    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
+    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
+    Fmt t = fmt_of(d->format);
+    int is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    unsigned k = 0;
+    while (k < 5 && (1u << k) != t.bpb) k++;
+    if (!(d->flags & NVN_TEXTURE_FLAGS_SPARSE) || (d->flags & NVN_TEX_LINEAR) || k == 5 ||
+        !(is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
+          d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY))
+        return 0;
+    tile[0] = is3d ? tile3d[k][0] : tile2d[k][0];
+    tile[1] = is3d ? tile3d[k][1] : tile2d[k][1];
+    tile[2] = is3d ? tile3d[k][2] : 1;
+    return 1;
+}
+static unsigned log2u(u32 v) {
+    unsigned s = 0;
+    while (v > 1) v >>= 1, s++;
+    return s;
+}
 /* the offset of a level from its layer's start */
 static u64 level_offset(const NvnTexDesc* d, unsigned level, unsigned dpl, u32 w, u32 h, u32 z, unsigned tile_h,
                         unsigned tile_d, Fmt t) {
@@ -166,7 +188,7 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
     Fmt t = fmt_of(d->format);
     unsigned dpl, tile_h = 0, tile_d = 0, levels;
     int layered, pkg_h = d->bits & NVN_TEX_BLOCK_H;
-    u32 w, h, z, sx, sy;
+    u32 w, h, z, sx, sy, tile[3];
     u64 ls;
     shape(d, &dpl, &layered, &w, &h, &z);
     samples_xy(d->samples, &sx, &sy);
@@ -190,8 +212,13 @@ void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o) {
         o->layer_size = o->size = (u64)stride * blk(h, t.bh);
         return;
     }
-    /* MINIMAL_LAYOUT: blocks of one GOB, as the game's driver describes such a texture */
-    if (dpl == 2)
+    /* a sparse texture (but a packaged 2D one, whose bytes are in its own layout) has blocks as high and deep as its
+       tile: then a 64 KiB page of the layout is one tile, which the game maps at the offset the tile's place gives.
+       MINIMAL_LAYOUT: blocks of one GOB, as the game's driver describes such a texture */
+    if (!(dpl == 2 && pkg_h) && nvn_tex_sparse_tile(d, tile)) {
+        tile_h = log2u(tile[1] / 8);
+        tile_d = log2u(tile[2]);
+    } else if (dpl == 2)
         tile_h = pkg_h                                         ? (unsigned)pkg_h - 1
                  : d->flags & NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT ? 0
                                                                : pick_tile(blk(h * sy, t.bh) * 3 / 16);

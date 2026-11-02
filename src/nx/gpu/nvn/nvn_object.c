@@ -1060,21 +1060,17 @@ i32 nvn_TextureGetRawStorageClass(CPU* c, u64 t) {
     return raw_storage_class(&CT(t)->d);
 }
 /* A sparse texture's tile: the texels of one 64 KiB page of its block-linear layout, as the game's driver answers
-   (a 2D tile of 1, 2, 4, 8 or 16 bytes a block is 256x256, 256x128, 128x128, 128x64 or 64x64 blocks, a 3D one
-   64x32x32, 32x32x32, 32x32x16, 32x16x16 or 16x16x16), and the levels at least a tile in each dimension, before the
-   mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
+   (nvn_tex_sparse_tile's shape in blocks, times the block's texels), and the levels at least a tile in each
+   dimension, before the mip tail. A texture that isn't sparse, or a target or format that can't be, has all zeros */
 static void sparse_tile_layout(const NvnTexDesc* d, u64 out) {
-    static const u16 tile2d[5][2] = {{256, 256}, {256, 128}, {128, 128}, {128, 64}, {64, 64}};
-    static const u16 tile3d[5][3] = {{64, 32, 32}, {32, 32, 32}, {32, 32, 16}, {32, 16, 16}, {16, 16, 16}};
-    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, b = nvn_fmt_bpb(d->format, &bw, &bh), k = 0, level;
+    i32 v[4] = {0, 0, 0, 0}, bw = 1, bh = 1, level;
+    u32 tile[3];
     int is3d = d->target == NVN_TEXTURE_TARGET_3D;
-    while (k < 5 && (1 << k) != b) k++;
-    if ((d->flags & NVN_TEXTURE_FLAGS_SPARSE) && !(d->flags & NVN_TEX_LINEAR) && k < 5 &&
-        (is3d || d->target == NVN_TEXTURE_TARGET_2D || d->target == NVN_TEXTURE_TARGET_2D_ARRAY ||
-         d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)) {
-        v[1] = (is3d ? tile3d[k][0] : tile2d[k][0]) * bw;
-        v[2] = (is3d ? tile3d[k][1] : tile2d[k][1]) * bh;
-        v[3] = is3d ? tile3d[k][2] : 1;
+    if (nvn_tex_sparse_tile(d, tile)) {
+        nvn_fmt_bpb(d->format, &bw, &bh);
+        v[1] = (i32)tile[0] * bw;
+        v[2] = (i32)tile[1] * bh;
+        v[3] = (i32)tile[2];
         for (level = 0; level < (i32)d->levels; level++) {
             u32 w = d->width >> level, h = d->height >> level, z = is3d ? d->depth >> level : 1;
             if (w < (u32)v[1] || h < (u32)v[2] || z < (u32)v[3]) break;

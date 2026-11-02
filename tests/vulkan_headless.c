@@ -16,6 +16,8 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/video/vic.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -1459,6 +1461,94 @@ static int check_sparse_volume(void) {
     puts("sparse volume: a tile mapped, written by the CPU or by DMA shows in the next frame");
     return 0;
 }
+/* A sparse volume as a game makes one through NVN (nvn_tex_layout, nvn_tic_encode): 3 tiles across, 2 down and 2
+   deep, three of them mapped at the offsets the game gives them, the tiles across, then down, then deep, each page
+   holding one block's bytes over and over. Every block of the image in a mapped tile's brick is that block and every
+   other one is zeros: each 64 KiB page is one tile. BC1 and BC6H, as one game's light volumes, and RGBA8, which every
+   device samples in 3D */
+typedef struct {
+    const char* name;
+    int format;
+    u32 eb, bw;   /* bytes of a texel or block, and its texels across and down */
+    VkFormat vk;  /* what the device has to sample it as, or the check is skipped */
+    u64 gva, cpu; /* the volume, and the pages of its mapped tiles */
+} StCase;
+static int sparse_tiles(const StCase* c) {
+    static const u32 mapped[3] = {1, 5, 10}; /* tiles (1, 0, 0), (2, 1, 0) and (1, 1, 1) */
+    NvnTexture tex = {0};
+    NvnTexLayout lay;
+    u32 tile[3] = {0}, tic[8], first[4] = {0}, bad = 0;
+    VkBuffer buffer;
+    tex.d.target = NVN_TEXTURE_TARGET_3D;
+    tex.d.format = (u16)c->format;
+    tex.d.levels = 1;
+    tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    CHECK(nvn_tex_sparse_tile(&tex.d, tile));
+    tex.d.width = 3 * tile[0] * c->bw, tex.d.height = 2 * tile[1] * c->bw, tex.d.depth = 2 * tile[2];
+    tex.gpu = c->gva;
+    nvn_tex_layout(&tex.d, &lay);
+    CHECK(lay.size == 12 * SV_TILE);
+    CHECK(nvn_tic_encode(&tex, NULL, 0, 0, tic));
+    if (vk_tic_format_3d(tic[0], 0).vk != c->vk) {
+        printf("sparse tiles %s: the GPU has no such 3D images, skipped\n", c->name);
+        return 0;
+    }
+    CHECK(mem_map(c->cpu, 3 * SV_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 k = 0; k < 3; k++) {
+        for (u32 i = 0; i < SV_TILE; i++) GP(c->cpu + k * SV_TILE)[i] = (u8)(0x31 * (k + 1) + i % c->eb * 7);
+        gmmu_map(c->gva + mapped[k] * SV_TILE, c->cpu + k * SV_TILE, SV_TILE);
+    }
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {tex.d.width, tex.d.height, tex.d.depth}};
+    u8* image = t ? vk_readback_buffer(lay.size, &buffer) : NULL;
+    if (image) {
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+    }
+    vk_unlock();
+    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && image);
+    const u32 across = 3 * tile[0], down = 2 * tile[1], deep = 2 * tile[2];
+    for (u32 z = 0; z < deep; z++)
+        for (u32 y = 0; y < down; y++)
+            for (u32 x = 0; x < across; x++) {
+                u32 n = ((z / tile[2]) * 2 + y / tile[1]) * 3 + x / tile[0], k = 0;
+                while (k < 3 && mapped[k] != n) k++;
+                const u8* in = image + (((u64)z * down + y) * across + x) * c->eb;
+                for (u32 i = 0; i < c->eb; i++)
+                    if (in[i] != (k < 3 ? (u8)(0x31 * (k + 1) + i * 7) : 0)) {
+                        if (!bad++) first[0] = x, first[1] = y, first[2] = z, first[3] = n;
+                        break;
+                    }
+            }
+    if (bad) {
+        fprintf(stderr,
+                "sparse tiles %s: %u of %u blocks aren't their tile's, the first (%u, %u, %u) of tile %u, which is %s; "
+                "blocks %u GOBs high and %u deep\n",
+                c->name, bad, across * down * deep, first[0], first[1], first[2], first[3],
+                first[3] == 1 || first[3] == 5 || first[3] == 10 ? "mapped" : "a hole", 1u << lay.tile_h,
+                1u << lay.tile_d);
+        return 1;
+    }
+    printf("sparse tiles %s: each of the 3 mapped tiles fills its %ux%ux%u brick, the holes are zeros\n", c->name,
+           tile[0] * c->bw, tile[1] * c->bw, tile[2]);
+    return 0;
+}
+static int check_sparse_tiles(void) {
+    const StCase cases[] = {
+        {"BC1", NVN_FORMAT_RGBA_DXT1, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x2C0000000ull, HEAP_BASE + 0xD00000},
+        {"BC6H", NVN_FORMAT_BPTC_UFLOAT, 16, 4, VK_FORMAT_BC6H_UFLOAT_BLOCK, 0x2D0000000ull, HEAP_BASE + 0xD40000},
+        {"RGBA8", NVN_FORMAT_RGBA8, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x2E0000000ull, HEAP_BASE + 0xD80000},
+    };
+    int failed = 0;
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) failed |= sparse_tiles(&cases[i]);
+    CHECK(!failed);
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -1981,6 +2071,7 @@ int main(int argc, char** argv) {
     CHECK(!check_dma());
     CHECK(!check_dma_texture());
     CHECK(!check_sparse_volume());
+    CHECK(!check_sparse_tiles());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
