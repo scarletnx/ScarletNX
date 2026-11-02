@@ -3,7 +3,10 @@
 /* NCE's machine layer (nce_host.h): the outcall, the runs of native code, and the signals that stop and resume the
    guest's code. AArch64 Linux only */
 #if defined(__aarch64__) && defined(__linux__) && !defined(__ANDROID__)
-#define _GNU_SOURCE
+/* Command line often defines (ppc64be linux) */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #endif
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
