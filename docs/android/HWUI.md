@@ -11,6 +11,7 @@ a byte format (`snx.android.hwui.DisplayList`), and `src/android/hwui/render.c` 
 * [Recording](#recording)
 * [The format](#the-format)
 * [The renderer](#the-renderer)
+* [Bitmaps](#bitmaps)
 * [What is missing](#what-is-missing)
 
 ## Recording
@@ -84,10 +85,30 @@ The GPU draws with 4x MSAA where the device has it, and resolves to the window's
 (`DISPLAY` and `WAYLAND_DISPLAY` unset), it draws into an image of its own. `SNX_ANDROID_SHOT=FILE.ppm` saves frame
 `SNX_ANDROID_SHOT_FRAME` (60 when not given). This is the one readback, for tests.
 
+## Bitmaps
+
+A `Bitmap` is a GPU image, as a hardware bitmap is on Android. The CPU never draws its pixels:
+
+- A `Canvas` on a bitmap records into the bitmap's own display list. Each frame takes what was recorded since the
+  last one (`Frame` flattens it as a node's list) and draws it into the bitmap's image before the frame's own draws.
+  Compose caches its vector icons this way. The image has a multisampled image of its own that keeps what was
+  drawn, so that the next drawing goes over it with the same 4x MSAA. When the image holds more than the
+  multisampled one (after an upload), a draw copies it over first.
+- Pixels that the app sets (`setPixels`, `eraseColor`, `copyPixelsFromBuffer`) go up whole, premultiplied, before
+  the bitmap is drawn again.
+- `createBitmap` of a part, a matrix or a scale, and `copy`, draw the source bitmap into the new one through a
+  `Canvas`.
+- `DRAW_BITMAP` draws the image's source rectangle onto the destination with the paint's alpha. A color filter of
+  `SrcIn` (or `SrcAtop`) gives the filter's color where the bitmap is, as an icon's tint does, and one of `Modulate`
+  multiplies the texels.
+- A Bitmap that the app lets go (its `Cleaner` runs) frees its images at the next frame.
+
+`getPixel` and the other reads see only the pixels the app set, not what a canvas drew: a readback is the last
+resort, for an app that reads them.
+
 ## What is missing
 
-- Bitmaps: decoded images, and bitmaps that a `Canvas` draws into (Compose caches its vector icons in them). These
-  are to be GPU images, with a bitmap's canvas drawn on the GPU.
+- Image decoders (`BitmapFactory`, `ImageDecoder`) for the APK's PNG and WebP resources.
 - Gradients and bitmap shaders draw as one color, the average of their colors.
 - Clips to a rounded outline or a path clip to their bounds. A clip of difference does not clip.
 - Layers (`saveLayer`, a node's layer) multiply their alpha into what they hold, with no offscreen image.

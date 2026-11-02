@@ -17,6 +17,9 @@ import snx.android.hwui.DisplayList;
 public final class Frame {
     private final DisplayList.Writer w = new DisplayList.Writer();
     private final ArrayList<Bitmap> bitmaps = new ArrayList<>();
+    /** For each bitmap: the operations drawn into it since the last frame (null for none), and its pixels to upload */
+    private final ArrayList<byte[]> drawings = new ArrayList<>();
+    private final ArrayList<int[]> uploads = new ArrayList<>();
     private int nodes;
     public final int width, height;
 
@@ -61,7 +64,7 @@ public final class Frame {
         } else {
             w.u8(0);
         }
-        for (Bitmap b : list.bitmaps()) if (!bitmaps.contains(b)) bitmaps.add(b);
+        for (Bitmap b : list.bitmaps()) bitmap(b);
         int segments = list.segmentCount();
         for (int i = 0; i < segments; ++i) {
             byte[] s = list.segment(i);
@@ -70,6 +73,47 @@ public final class Frame {
         }
         w.u8(DisplayList.NODE_END);
     }
+
+    /**
+     * A bitmap the frame draws, after the bitmaps that its own drawing draws: its pixels to upload, and what canvases
+     * drew into it, flattened as a node's list is, for the renderer to draw into its image first.
+     */
+    private void bitmap(Bitmap b) {
+        if (bitmaps.contains(b)) return;
+        DisplayList d = b.drawingOrNull();
+        byte[] ops = null;
+        if (d != null && !d.isEmpty()) {
+            d.finish();
+            for (Bitmap inner : d.bitmaps()) bitmap(inner);
+            Frame f = new Frame(b.getWidth(), b.getHeight());
+            f.list(d);
+            for (int i = 0; i < f.bitmaps.size(); ++i) {
+                if (bitmaps.contains(f.bitmaps.get(i))) continue;
+                bitmaps.add(f.bitmaps.get(i));
+                drawings.add(f.drawings.get(i));
+                uploads.add(f.uploads.get(i));
+            }
+            ops = java.util.Arrays.copyOf(f.w.array(), f.w.size());
+            d.clear();
+        }
+        bitmaps.add(b);
+        drawings.add(ops);
+        uploads.add(b.takePixels());
+    }
+
+    /** A list's segments and its children, without a node of its own */
+    private void list(DisplayList list) {
+        for (Bitmap b : list.bitmaps()) bitmap(b);
+        int segments = list.segmentCount();
+        for (int i = 0; i < segments; ++i) {
+            byte[] s = list.segment(i);
+            w.bytes(s, 0, s.length);
+            if (i < list.childCount()) node(list.child(i));
+        }
+    }
+
+    public java.util.List<byte[]> drawings() { return drawings; }
+    public java.util.List<int[]> uploads() { return uploads; }
 
     private void path(Path p) {
         w.u8(p.getFillType().ordinal());
