@@ -9,6 +9,7 @@
    layout below is the binary contract that SNX_ABI versions. */
 #ifndef SNX_CPU_H
 #define SNX_CPU_H
+#include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -48,10 +49,13 @@ typedef double f64;
   14: code the guest patches at run time. IC IVAU calls RtAPI.code_changed, and each AOT function first reads its
       byte in SnxModule.stale, which the runtime sets when a line it was compiled from changed: the function then
       runs its entry through dispatch, where the runtime compiles the code there now.
-  15: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
+  15: calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold.
+  16: a store-exclusive whose range is covered by the monitor that armed it. A narrow store-exclusive after a wide
       load-exclusive stores (and returns 0), where every build before made it fail and return 1, so a game's retry
-      loop never ended: both the generated code and the interpreter's helper emit the new comparison. */
-#define SNX_ABI 15
+      loop never ended: both the generated code and the interpreter's helper emit the new comparison.
+  17: the FP helpers take FPCR by value and return their result with the FPSR flags they raised instead of writing
+      the CPU structure, and generated functions normalize the host FP environment they use (snx_fp_env). */
+#define SNX_ABI 17
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -130,9 +134,9 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
    host (ppc64) swaps what it reads and writes as numbers, as the IR emitters' ir_rd and ir_wr do ---- */
 #define MP(a) (M + (u64)(a))
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-#define SNX_GUEST16(v) __builtin_bswap16(v)
-#define SNX_GUEST32(v) __builtin_bswap32(v)
-#define SNX_GUEST64(v) __builtin_bswap64(v)
+#define SNX_GUEST16(v) snx_bswap16(v)
+#define SNX_GUEST32(v) snx_bswap32(v)
+#define SNX_GUEST64(v) snx_bswap64(v)
 #else
 #define SNX_GUEST16(v) (v)
 #define SNX_GUEST32(v) (v)
@@ -151,9 +155,9 @@ typedef char snx_check_cpu_tail[sizeof(void*) != 8 || (offsetof(CPU, disp) == 85
 
 /* ---- indirect calls: the function compiled for a pc, or the runtime JIT for one discovery missed ---- */
 /* A slot goes from NULL to a function while other threads read it (the runtime JIT publishes with release ordering,
-   gpu/nvn_trace.c installs wrappers): a relaxed load, which costs a plain one, makes that no data race. The code and
-   data behind a published address were written before the release store, and reaching them depends on the loaded
-   address, which orders them on every host the backends target */
+   gpu/nvn/nvn_loader.c installs NVN's handlers): a relaxed load, which costs a plain one, makes that no data race.
+   The code and data behind a published address were written before the release store, and reaching them depends on
+   the loaded address, which orders them on every host the backends target */
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc);
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc) {
     u64 offset = pc - c->code_lo;
@@ -277,14 +281,14 @@ SNX_INLINE u64 ext64(u64 x, u32 opt, u32 sh) {
 }
 
 /* ---- bit counts and reversals ---- */
-SNX_INLINE u32 clz64(u64 x) { return x ? (u32)__builtin_clzll(x) : 64; }
-SNX_INLINE u32 clz32(u32 x) { return x ? (u32)__builtin_clz(x) : 32; }
+SNX_INLINE u32 clz64(u64 x) { return snx_clz64(x); }
+SNX_INLINE u32 clz32(u32 x) { return snx_clz32(x); }
 /* FreeBSD defines these */
 #ifndef bswap32
-SNX_INLINE u32 bswap32(u32 x) { return __builtin_bswap32(x); }
+SNX_INLINE u32 bswap32(u32 x) { return snx_bswap32(x); }
 #endif
 #ifndef bswap64
-SNX_INLINE u64 bswap64(u64 x) { return __builtin_bswap64(x); }
+SNX_INLINE u64 bswap64(u64 x) { return snx_bswap64(x); }
 #endif
 /* CLS: the leading bits equal to the sign bit, the sign bit itself not counted */
 SNX_INLINE u32 cls64(u64 x) { return clz64(x ^ (u64)((i64)x >> 1)) - 1; }
@@ -365,29 +369,158 @@ SNX_INLINE u64 bfm_(u64 dst, u64 src, u32 immr, u32 imms, u32 ds) {
 
 /* ---- floating point (helpers/fp.c) ----
    Raw IEEE encodings in and out, with integer arithmetic only: no host floating point, libm or host rounding
-   state, so results don't depend on the host. Only c->fpcr is read and only c->fpsr written (its cumulative flags,
-   never cleared), so exceptions never reach process-global state. Widths: 16 (FEAT_FP16's halves, under FPCR.FZ16
-   and never FPCR.AHP, which only snx_fp_convert's halves take), 32 and 64. Rounding modes: 0 ties to even,
-   1 toward +inf, 2 toward -inf, 3 toward zero, 4 ties away, 5 to odd (FCVTXN). Integer widths are 32 or 64, with
-   0 <= fbits <= the integer width.
+   state, so results don't depend on the host. Only the guest's FPCR is read and only its FPSR's cumulative flags
+   (never cleared) are raised, so exceptions never reach process-global state. Widths: 16 (FEAT_FP16's halves,
+   under FPCR.FZ16 and never FPCR.AHP, which only snx_fp_convert's halves take), 32 and 64. Rounding modes: 0 ties
+   to even, 1 toward +inf, 2 toward -inf, 3 toward zero, 4 ties away, 5 to odd (FCVTXN). Integer widths are 32 or
+   64, with 0 <= fbits <= the integer width.
    Generated code passes the operation numbers below as literals: they are ABI. */
 enum { SNX_FP_ADD, SNX_FP_SUB, SNX_FP_MUL, SNX_FP_DIV, SNX_FP_MULX, SNX_FP_ABD, SNX_FP_RECPS, SNX_FP_RSQRTS };
 enum { SNX_FP_SQRT, SNX_FP_RECPE, SNX_FP_RSQRTE, SNX_FP_RECPX };
 typedef char snx_check_fp_ops[SNX_FP_MUL == 2 && SNX_FP_RSQRTS == 7 && SNX_FP_SQRT == 0 && SNX_FP_RECPX == 3 ? 1 : -1];
-u64 snx_fp_binary(CPU* c, u64 a, u64 b, int width, int op);
-u64 snx_fp_fma(CPU* c, u64 add, u64 a, u64 b, int width); /* add + a * b, rounded once */
-u64 snx_fp_unary(CPU* c, u64 bits, int width, int op);
-u64 snx_fp_convert(CPU* c, u64 bits, int src_width, int dst_width, int rm);
-u64 snx_fp_to_int(CPU* c, u64 bits, int fp_width, int int_width, int uns, int fbits, int rm);
-u64 snx_fp_from_int(CPU* c, u64 bits, int int_width, int fp_width, int uns, int fbits);
-u32 snx_fp_compare(CPU* c, u64 a, u64 b, int width, int signal); /* the NZCV nibble of FCMP (signal: FCMPE) */
-u64 snx_fp_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric);
-u64 snx_fp_round(CPU* c, u64 bits, int width, int rm, int exact); /* FRINT*; exact: FRINTX's inexact flag */
-u64 snx_fp_round_int(CPU* c, u64 bits, int width, int rm, int intsize); /* FRINT32*, FRINT64* (intsize 32, 64) */
-u64 snx_fp_jcvt(CPU* c, u64 bits); /* FJCVTZS: the W result, and Z in bit 32 */
-u64 snx_fp_bfcvt(CPU* c, u64 bits); /* BFCVT: a single's bfloat16 */
+
+/* An FP helper's reply: `value` is the result (an encoding, an integer, or the NZCV nibble of a compare), `flags`
+   the FPSR bits the operation raised. Each helper takes the guest's FPCR by value and touches no memory at all,
+   so the caller publishes the flags itself: an FP instruction's one write of guest state is then the caller's own,
+   which the optimizer sees, and nothing of the CPU structure is unknown behind a helper call. */
+typedef struct SnxFpReply {
+    u64 value;
+    u32 flags;
+} SnxFpReply;
+
+/* what a helper reads of the guest's FP state: a copy of FPCR, and FPSR's flags as they were raised so far */
+typedef struct SnxFpEnv {
+    u32 fpcr, fpsr;
+} SnxFpEnv;
+
+SnxFpReply snx_fp_binary(u64 a, u64 b, int width, int op, u32 fpcr);
+SnxFpReply snx_fp_fma(u64 add, u64 a, u64 b, int width, u32 fpcr); /* add + a * b, rounded once */
+SnxFpReply snx_fp_unary(u64 bits, int width, int op, u32 fpcr);
+SnxFpReply snx_fp_convert(u64 bits, int src_width, int dst_width, int rm, u32 fpcr);
+SnxFpReply snx_fp_to_int(u64 bits, int fp_width, int int_width, int uns, int fbits, int rm, u32 fpcr);
+SnxFpReply snx_fp_from_int(u64 bits, int int_width, int fp_width, int uns, int fbits, u32 fpcr);
+SnxFpReply snx_fp_compare(u64 a, u64 b, int width, int signal, u32 fpcr); /* the NZCV nibble of FCMP (signal: FCMPE) */
+SnxFpReply snx_fp_minmax(u64 a, u64 b, int width, int minimum, int numeric, u32 fpcr);
+SnxFpReply snx_fp_round(u64 bits, int width, int rm, int exact, u32 fpcr); /* FRINT*; exact: FRINTX's inexact flag */
+SnxFpReply snx_fp_round_int(u64 bits, int width, int rm, int intsize, u32 fpcr); /* FRINT32*, FRINT64*: 32 or 64 */
+SnxFpReply snx_fp_jcvt(u64 bits, u32 fpcr);  /* FJCVTZS: the W result, and Z in bit 32 */
+SnxFpReply snx_fp_bfcvt(u64 bits, u32 fpcr); /* BFCVT: a single's bfloat16 */
+
+/* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code emits itself
+   (ir_fp.h's ir_fp_call), for the witnesses and oracles that drive the helpers directly. */
+static inline u64 snx_fp_binary_c(CPU* c, u64 a, u64 b, int width, int op) {
+    SnxFpReply r = snx_fp_binary(a, b, width, op, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_fma_c(CPU* c, u64 add, u64 a, u64 b, int width) {
+    SnxFpReply r = snx_fp_fma(add, a, b, width, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_unary_c(CPU* c, u64 bits, int width, int op) {
+    SnxFpReply r = snx_fp_unary(bits, width, op, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_convert_c(CPU* c, u64 bits, int src_width, int dst_width, int rm) {
+    SnxFpReply r = snx_fp_convert(bits, src_width, dst_width, rm, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_to_int_c(CPU* c, u64 bits, int fp_width, int int_width, int uns, int fbits, int rm) {
+    SnxFpReply r = snx_fp_to_int(bits, fp_width, int_width, uns, fbits, rm, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_from_int_c(CPU* c, u64 bits, int int_width, int fp_width, int uns, int fbits) {
+    SnxFpReply r = snx_fp_from_int(bits, int_width, fp_width, uns, fbits, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u32 snx_fp_compare_c(CPU* c, u64 a, u64 b, int width, int signal) {
+    SnxFpReply r = snx_fp_compare(a, b, width, signal, c->fpcr);
+    c->fpsr |= r.flags;
+    return (u32)r.value;
+}
+static inline u64 snx_fp_minmax_c(CPU* c, u64 a, u64 b, int width, int minimum, int numeric) {
+    SnxFpReply r = snx_fp_minmax(a, b, width, minimum, numeric, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_round_c(CPU* c, u64 bits, int width, int rm, int exact) {
+    SnxFpReply r = snx_fp_round(bits, width, rm, exact, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_round_int_c(CPU* c, u64 bits, int width, int rm, int intsize) {
+    SnxFpReply r = snx_fp_round_int(bits, width, rm, intsize, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_jcvt_c(CPU* c, u64 bits) {
+    SnxFpReply r = snx_fp_jcvt(bits, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_bfcvt_c(CPU* c, u64 bits) {
+    SnxFpReply r = snx_fp_bfcvt(bits, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+
+/* The host thread's FP environment must be the IEEE default for the FP fast paths (ir_fpu.c, ir_vec_fp.c): they use
+   the host's arithmetic, so a thread with flush-to-zero or another rounding mode set gives other results. New host
+   threads start there, but generated code shares its thread with whatever the runtime calls, so each generated
+   function normalizes the environment on entry. It writes the control word only when it has drifted. */
+void snx_fp_env(void);
 u32 urecpe32(u32 x);
 u32 ursqrte32(u32 x);
+/* The same operations with the host's IEEE arithmetic first (helpers/fp_host.c), for the operands it gives the
+   results and flags above for (NaNs, infinities, denormals, a single's tiny or inexact result), else the above's:
+   the emitters' slow paths. They read the host thread's FP environment, take the above's unless it is IEEE's default
+   (round to nearest, no flush to zero), and may raise the host's own exception flags. Like the above they take FPCR
+   by value and touch no memory; snx_fp_host_binary also takes FPSR, because a double's product or quotient is only
+   cheap to take when IXC is already set, and its reply's flags are FPSR after the operation */
+SnxFpReply snx_fp_host_binary(u64 a, u64 b, int width, int op, u32 fpcr, u32 fpsr);
+SnxFpReply snx_fp_host_fma(u64 add, u64 a, u64 b, int width, u32 fpcr);
+SnxFpReply snx_fp_host_unary(u64 bits, int width, int op, u32 fpcr);
+SnxFpReply snx_fp_host_compare(u64 a, u64 b, int width, int signal, u32 fpcr);
+SnxFpReply snx_fp_host_minmax(u64 a, u64 b, int width, int minimum, int numeric, u32 fpcr);
+/* a vector's lanes through one of them in one call: desc's nibbles the helper (0 binary, 1 fma x + y * z, 2 unary,
+   3 minmax), the width in bytes, the lane count, the operation and minmax's numeric. It touches only the memory of
+   its pointers, and returns FPSR after the lanes (fpsr in, for snx_fp_host_binary's lanes) */
+u32 snx_fp_host_lanes(void* out, const void* x, const void* y, const void* z, u32 desc, u32 fpcr, u32 fpsr);
+
+/* the same against a CPU structure, for the tests that drive them directly */
+static inline u64 snx_fp_host_binary_c(CPU* c, u64 a, u64 b, int width, int op) {
+    SnxFpReply r = snx_fp_host_binary(a, b, width, op, c->fpcr, c->fpsr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_host_fma_c(CPU* c, u64 add, u64 a, u64 b, int width) {
+    SnxFpReply r = snx_fp_host_fma(add, a, b, width, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u64 snx_fp_host_unary_c(CPU* c, u64 bits, int width, int op) {
+    SnxFpReply r = snx_fp_host_unary(bits, width, op, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline u32 snx_fp_host_compare_c(CPU* c, u64 a, u64 b, int width, int signal) {
+    SnxFpReply r = snx_fp_host_compare(a, b, width, signal, c->fpcr);
+    c->fpsr |= r.flags;
+    return (u32)r.value;
+}
+static inline u64 snx_fp_host_minmax_c(CPU* c, u64 a, u64 b, int width, int minimum, int numeric) {
+    SnxFpReply r = snx_fp_host_minmax(a, b, width, minimum, numeric, c->fpcr);
+    c->fpsr |= r.flags;
+    return r.value;
+}
+static inline void snx_fp_host_lanes_c(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    c->fpsr |= snx_fp_host_lanes(out, x, y, z, desc, c->fpcr, c->fpsr);
+}
 
 /* ---- AdvSIMD helpers out of line (helpers/crypto.c, helpers/vector.c) ---- */
 void v_aes(V128* d, const V128* k, int dec);         /* AESE (dec 0), AESD (1): d = round(d ^ k) */
@@ -441,10 +574,10 @@ u32 snx_cas128(CPU* c, u64* p, u64 o0, u64 o1, u64 n0, u64 n1);
 /* ABI 3 made these and snx_cas128 atomic, so modules from before are refused */
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 /* the T's byte-swapped, as one access (T of 1, 2, 4 or 8 bytes) */
-#define SNX_GUEST_T(T, v)                                                                                             \
-    ((T)(sizeof(T) == 2   ? __builtin_bswap16((u16)(v))                                                              \
-         : sizeof(T) == 4 ? __builtin_bswap32((u32)(v))                                                              \
-         : sizeof(T) == 8 ? __builtin_bswap64((u64)(v))                                                              \
+#define SNX_GUEST_T(T, v)                                                                                              \
+    ((T)(sizeof(T) == 2   ? snx_bswap16((u16)(v))                                                                      \
+         : sizeof(T) == 4 ? snx_bswap32((u32)(v))                                                                      \
+         : sizeof(T) == 8 ? snx_bswap64((u64)(v))                                                                      \
                           : (v)))
 #define LDACQ(T, a)    SNX_GUEST_T(T, __atomic_load_n((snx_guest_##T*)MP(a), __ATOMIC_SEQ_CST))
 #else

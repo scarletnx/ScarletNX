@@ -155,15 +155,23 @@ uint bc1_pixel(uint e, uint idx, bool three, uint i) {
     int r1 = bc_expand(e1 >> 11, 5u), g1 = bc_expand((e1 >> 5) & 63u, 6u), b1 = bc_expand(e1 & 31u, 5u);
     if (k == 0u) return tc_rgba(r0, g0, b0, 255u);
     if (k == 1u) return tc_rgba(r1, g1, b1, 255u);
+    int rq0 = int(e0 >> 11), bq0 = int(e0 & 31u), rq1 = int(e1 >> 11), bq1 = int(e1 & 31u), d = g1 - g0;
     if (e0 > e1 || !three) {
-        int wa = k == 2u ? 2 : 1, wb = 3 - wa;
-        return tc_rgba((wa * r0 + wb * r1 + 1) / 3, (wa * g0 + wb * g1 + 1) / 3, (wa * b0 + wb * b1 + 1) / 3, 255u);
+        if (k == 2u)
+            return tc_rgba((2 * rq0 + rq1) * 22 / 8, (256 * g0 + d / 4 + 128 + d * 80) / 256, (2 * bq0 + bq1) * 22 / 8,
+                           255u);
+        return tc_rgba((rq0 + 2 * rq1) * 22 / 8, (256 * g1 - d / 4 + 128 - d * 80) / 256, (bq0 + 2 * bq1) * 22 / 8,
+                       255u);
     }
     if (k == 3u) return 0u;
-    return tc_rgba((r0 + r1 + 1) / 2, (g0 + g1 + 1) / 2, (b0 + b1 + 1) / 2, 255u);
+    return tc_rgba((rq0 + rq1) * 33 / 8, (256 * g0 + d / 4 + 128 + d * 128) / 256, (bq0 + bq1) * 33 / 8, 255u);
 }
-/* pixel i of a BC4 block hi:lo as 16 bit unorm or (sn) snorm: the interpolant's exact value (x / d of the endpoints,
-   sevenths or fifths) rounded to nearest */
+/* NVIDIA's BC4 weights of the second endpoint for indices 2 to 7 (tests/support/bcn.c): eight values, then six, in
+   257ths unsigned and 258ths signed */
+const int BC4_W[24] = {36, 72, 113, 144, 185, 221, 48, 96, 161, 209, 0, 0,
+                      36, 72, 114, 144, 186, 222, 48, 96, 162, 210, 0, 0};
+/* pixel i of a BC4 block hi:lo as 16 bit unorm or (sn) snorm, as NVIDIA's GPUs decode it: unsigned, the weights'
+   sum exactly; signed, rounded to nearest */
 uint bc4_value(uint hi, uint lo, bool sn, uint i) {
     int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u);
     if (sn) {
@@ -174,27 +182,28 @@ uint bc4_value(uint hi, uint lo, bool sn, uint i) {
     int x, d = 1;
     if (k < 2u) {
         x = k == 0u ? a0 : a1;
-    } else if (a0 > a1) {
-        x = int(8u - k) * a0 + int(k - 1u) * a1;
-        d = 7;
-    } else if (k < 6u) {
-        x = int(6u - k) * a0 + int(k - 1u) * a1;
-        d = 5;
-    } else {
+    } else if (a0 <= a1 && k >= 6u) {
         x = k == 6u ? (sn ? -127 : 0) : (sn ? 127 : 255);
+    } else {
+        int w = BC4_W[(sn ? 12u : 0u) + (a0 > a1 ? 0u : 6u) + k - 2u];
+        d = sn ? 258 : 257;
+        x = (d - w) * a0 + w * a1;
     }
     if (!sn) return uint((x * 257 + d / 2) / d);
     int m = x < 0 ? -x : x, v = (m * 32767 + 127 * d / 2) / (127 * d);
     return uint(x < 0 ? -v : v) & 0xFFFFu;
 }
-/* pixel i's 8 bit alpha of a BC3 alpha block hi:lo, rounded to nearest */
+/* NVIDIA's BC3 alpha weights in 2048ths by the steps from the nearer endpoint: eight values, then six */
+const int BC3_W[8] = {0, 289, 578, 892, 0, 385, 770, 0};
+/* pixel i's 8 bit alpha of a BC3 alpha block hi:lo, as NVIDIA's GPUs decode it */
 uint bc3_alpha(uint hi, uint lo, uint i) {
-    int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u);
-    uint k = tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i);
-    if (k < 2u) return uint(k == 0u ? a0 : a1);
-    if (a0 > a1) return uint((int(8u - k) * a0 + int(k - 1u) * a1 + 3) / 7);
-    if (k < 6u) return uint((int(6u - k) * a0 + int(k - 1u) * a1 + 2) / 5);
-    return k == 6u ? 0u : 255u;
+    int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u), n = a0 > a1 ? 7 : 5;
+    int k = int(tc_bits(hi, lo, 18u + 3u * i, 16u + 3u * i));
+    if (k < 2) return uint(k == 0 ? a0 : a1);
+    if (n == 5 && k >= 6) return k == 6 ? 0u : 255u;
+    int t = n == 7 ? 0 : 4; /* the sum is never negative */
+    if (2 * (k - 1) < n) return uint((2048 * a0 + 1024 + BC3_W[t + k - 1] * (a1 - a0)) / 2048);
+    return uint((2048 * a1 + 1024 + BC3_W[t + n + 1 - k] * (a0 - a1)) / 2048);
 }
 
 /* BPTC's tables (tests/support/bcn.c's, packed): the subset bit of each pixel of the two subset partitions, 16 bits each; the
@@ -550,9 +559,60 @@ uint tc_remap_byte(uint ob, uint in_line, uint old) {
     return old;
 }
 
+/* TC_INDEX_QUADS: index j of the input, of remap bytes (in_bias a multiple of 4), or j itself with remap 0 */
+uint tc_index(uint j) {
+    uint w = in_bias >> 2;
+    if (remap == 1u) return tc_src_byte(in_bias + j);
+    if (remap == 2u) return (src[w + (j >> 1)] >> (16u * (j & 1u))) & 0xFFFFu;
+    if (remap == 4u) return src[w + j];
+    return j;
+}
+
 void main() {
     uint u = gl_GlobalInvocationID.x;
     if (u >= units) return;
+    if (mode >= TC_INDEX_WIDEN8 && mode <= TC_RESTRIDE) {
+        uint e = gl_GlobalInvocationID.y * units + u, w = in_bias >> 2;
+        if (e >= line_out) return;
+        if (mode == TC_RESTRIDE) {
+            /* the window's two words funneled, (w1 << 1) << (31 - s) being 0 for an aligned one (s 0); the second word
+               is read only while it holds stream bytes, which diverges at the stream's end alone */
+            uint v = e / out_pitch, b = v * in_pitch + 4u * (e - v * out_pitch), r = 0u;
+            if (b < const_a) {
+                uint a = in_bias + b, i = a >> 2, s = 8u * (a & 3u);
+                r = src[i] >> s;
+                if (4u * i + 4u < in_bias + const_a) r |= (src[i + 1u] << 1u) << (31u - s);
+                if (const_a - b < 4u) r &= (1u << (8u * (const_a - b))) - 1u;
+            }
+            dst[out_bias + e] = r;
+        } else if (mode == TC_INDEX_QUADS) {
+            uint o = out_bias + 6u * e, v0 = tc_index(4u * e), v2 = tc_index(4u * e + 2u);
+            dst[o] = v0;
+            dst[o + 1u] = tc_index(4u * e + 1u);
+            dst[o + 2u] = v2;
+            dst[o + 3u] = v0;
+            dst[o + 4u] = v2;
+            dst[o + 5u] = tc_index(4u * e + 3u);
+        } else if (mode == TC_INDEX_RESTART32) {
+            uint v = src[w + e];
+            dst[out_bias + e] = v == const_a ? 0xFFFFFFFFu : v;
+        } else {
+            uint lo, hi;
+            if (mode == TC_INDEX_WIDEN8) {
+                lo = tc_src_byte(in_bias + 2u * e);
+                hi = tc_src_byte(in_bias + 2u * e + 1u);
+            } else {
+                lo = src[w + e] & 0xFFFFu;
+                hi = src[w + e] >> 16;
+            }
+            if (mode == TC_INDEX_RESTART16 || remap != 0u) { /* branches on uniform values only, then selects */
+                lo = lo == const_a ? 0xFFFFu : lo;
+                hi = hi == const_a ? 0xFFFFu : hi;
+            }
+            dst[out_bias + e] = lo | (hi << 16);
+        }
+        return;
+    }
     if (mode == TC_BLIT) {
         uint line = gl_GlobalInvocationID.y, at = out_bias + line * out_pitch + u, w = dst[at], r = 0u;
         uint row = in_bias + src[const_b + line] * in_pitch;

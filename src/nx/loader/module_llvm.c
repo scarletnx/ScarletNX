@@ -3,11 +3,14 @@
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_variants.h"
 #include "common/cpu/recompiler/codegen.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/codegen_view.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/llvm/objects_pack.h"
 #include "nx/loader/module_abi.h"
+#include "nx/loader/hook_routes.h"
+#include "common/utilities/bits.h"
 #include "nx/loader/unit_cache.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "snx_settings.h"
@@ -26,16 +29,20 @@ typedef struct {
     unsigned char* object;
     size_t size;
     int reused; /* the object came from the unit cache */
+    SnxIrStats stats;
     /* a pack's unit the unit cache holds whole: its key, which the pack's write reads the object back by (object NULL
        until then). Empty for one in memory */
     char key[65];
 } Unit;
+
+#define NO_RANK ((size_t)-1)
 
 typedef struct {
     SnxCodegen* codegen;
     const SnxLlvmBuild* build;
     SnxUnitCache* cache; /* NULL: every unit compiled */
     Unit* units;
+    size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
     int failed;
     char error[1024];
@@ -101,7 +108,8 @@ static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, s
                          : snx_ir_new(name, build->opt, error, error_size);
 }
 
-/* one chunk of functions, as module.c's code_NNN.c */
+/* one chunk of functions, as module.c's code_NNN.c. A function of the --layout order gets its own code section, which
+   the linker places by its rank: the function's code is the same, only where it goes changes */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     char name[32];
@@ -113,7 +121,15 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     if (!ir) return -1;
     snx_ir_tune(ir, q->build->tuning);
     snx_ir_stale_checks(ir);
-    for (i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    for (i = u->first; i < u->last; ++i) {
+        snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+        if (q->rank && q->rank[i] != NO_RANK) {
+            char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
+            sprintf(section, SNX_LINK_HOT_TEXT "%lu", (unsigned long)q->rank[i]);
+            LLVMSetSection(snx_ir_guest_function(ir, q->codegen->functions[i].start), section);
+        }
+    }
+    u->stats = ir->stats;
     rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name);
     if (rc) snprintf(error, error_size, "cannot save the IR of %s", name);
     if (!rc && q->cache)
@@ -164,6 +180,20 @@ static void worker(Queue* q) {
             /* every unit: a line every few seconds or minutes, whichever the machine manages */
             sprintf(name, "code_%03lu", (unsigned long)i);
             snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
+            const SnxIrStats* s = &q->units[i].stats;
+            if (s->enabled)
+                printf("  IR stats %s: %llu functions (%llu promoted), %llu calls (%llu FP, %llu vector, "
+                       "%llu guest, %llu indirect), %llu sync stores (%llu at calls, %llu bytes), "
+                       "%llu reloads (%llu bytes), %llu lookups, %llu polls, %llu stale checks, "
+                       "%llu return checks\n", name, (unsigned long long)s->functions,
+                       (unsigned long long)s->promoted_functions, (unsigned long long)s->call_sites,
+                       (unsigned long long)s->fp_calls, (unsigned long long)s->vector_calls,
+                       (unsigned long long)s->guest_calls, (unsigned long long)s->indirect_calls,
+                       (unsigned long long)s->sync_stores, (unsigned long long)s->call_stores,
+                       (unsigned long long)s->store_bytes, (unsigned long long)s->sync_reloads,
+                       (unsigned long long)s->reload_bytes, (unsigned long long)s->lookups,
+                       (unsigned long long)s->polls, (unsigned long long)s->stale_checks,
+                       (unsigned long long)s->return_checks);
         }
         unlock(q);
         free(label);
@@ -195,11 +225,11 @@ static void run(Queue* q, unsigned jobs) {
     threads = snx_alloc(jobs * sizeof(*threads));
     for (i = 1; i < jobs; ++i) {
 #ifdef _WIN32
-        HANDLE h = CreateThread(NULL, 0, thread_main, q, 0, NULL);
+        HANDLE h = snx_compile_thread(thread_main, q);
         if (!h) break;
         threads[created++] = h;
 #else
-        if (pthread_create(&threads[created], NULL, thread_main, q)) break;
+        if (snx_compile_thread(&threads[created], thread_main, q)) break;
         ++created;
 #endif
     }
@@ -463,6 +493,44 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     return 0;
 }
 
+/* SNX_EXPORT const SnxRoutes* snx_routes(void): the route list the module's calls were compiled with (module_abi.h),
+   for hook_install to say which hook of the runtime's the module calls directly */
+static int emit_routes(SnxIr* ir, int all, char* error, size_t error_size) {
+    size_t count = snx_hook_route_count();
+    SnxU64* hashes = (SnxU64*)snx_alloc((count ? count : 1) * sizeof(*hashes));
+    LLVMValueRef* values = (LLVMValueRef*)snx_alloc((count ? count : 1) * sizeof(*values));
+    for (size_t i = 0; i < count; ++i) hashes[i] = snx_hook_route_hash(snx_hook_route_name(i));
+    qsort(hashes, count, sizeof(*hashes), snx_compare_u64);
+    for (size_t i = 0; i < count; ++i) values[i] = ir_i64(ir, hashes[i]);
+    LLVMValueRef names = global(ir, LLVMArrayType(ir->t_i64, (unsigned)count), "ROUTE_NAMES",
+                                LLVMConstArray(ir->t_i64, values, (unsigned)count), 1);
+    free(values);
+    free(hashes);
+    LLVMTypeRef fields[6] = {ir->t_i32, ir->t_i32, ir->t_i64, ir->t_ptr, ir->t_i32, ir->t_i32};
+    LLVMTypeRef type = LLVMStructTypeInContext(ir->ctx, fields, 6, 0);
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(ir->mod);
+    if (LLVMABISizeOfType(layout, type) != sizeof(SnxRoutes) ||
+        LLVMOffsetOfElement(layout, type, 2) != offsetof(SnxRoutes, list) ||
+        LLVMOffsetOfElement(layout, type, 3) != offsetof(SnxRoutes, names) ||
+        LLVMOffsetOfElement(layout, type, 4) != offsetof(SnxRoutes, all)) {
+        snprintf(error, error_size, "SnxRoutes layout differs between the recompiler and the LLVM target");
+        return -1;
+    }
+    LLVMValueRef f[6] = {ir_i32(ir, SNX_ROUTES_VERSION),
+                         ir_i32(ir, (SnxU32)count),
+                         ir_i64(ir, snx_hook_route_list_hash()),
+                         names,
+                         ir_i32(ir, all != 0),
+                         ir_i32(ir, 0)};
+    LLVMValueRef routes = global(ir, type, "ROUTES", LLVMConstStructInContext(ir->ctx, f, 6, 0), 1);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, "snx_routes", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+    LLVMBuildRet(ir->b, routes);
+    return 0;
+}
+
 unsigned snx_module_abi(void) { return SNX_ABI; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
@@ -494,7 +562,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
-    const char* exports[2];
+    const char* exports[3];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1;
@@ -540,6 +608,27 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     }
     q.codegen = &codegen;
     q.build = build;
+    if (build->layout_count) {
+#if defined(_WIN32) || defined(__APPLE__)
+        int elf = 0;
+#else
+        int elf = !build->triple;
+#endif
+        size_t placed = 0;
+        if (!elf)
+            fprintf(stderr, "--layout: only an ELF module for this host takes an order: the code keeps its own\n");
+        else if (codegen.function_count) {
+            q.rank = (size_t*)snx_alloc(codegen.function_count * sizeof(*q.rank));
+            for (i = 0; i < codegen.function_count; ++i) q.rank[i] = NO_RANK;
+            for (i = 0; i < build->layout_count; ++i) {
+                const SnxFunction* f = snx_codegen_function(&codegen, build->layout[i]);
+                if (f && q.rank[f - codegen.functions] == NO_RANK) q.rank[f - codegen.functions] = placed++;
+            }
+        }
+        if (elf && !options->quiet)
+            printf("layout: %lu functions first, in the order of %lu addresses\n", (unsigned long)placed,
+                   (unsigned long)build->layout_count);
+    }
     if (build->unit_cache) {
         char llvm[128];
         SnxUnitIdentity identity;
@@ -575,6 +664,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         goto done;
     }
     if (build->wrappers) *build->wrappers = wrapped;
+    if (emit_routes(ir, options->hook_direct_calls, error, sizeof(error))) {
+        snx_error("LLVM backend: %s", error);
+        goto done;
+    }
     if (cache_count &&
         snx_module_variants_emit(ir, cache, &variant_count, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
@@ -622,6 +715,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         inputs[n++].name = record->name;
     }
     exports[0] = "snx_module";
+    exports[export_count++] = "snx_routes";
     if (variant_count) exports[export_count++] = "snx_variants";
     tmp = snx_format("%s.tmp", build->output);
     if (build->triple) {
@@ -665,6 +759,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
 done:
     for (i = 0; i < q.count; ++i) free(q.units[i].object);
     free(q.units);
+    free(q.rank);
     free(inputs);
     free(module_object);
     free(rtlib_object);

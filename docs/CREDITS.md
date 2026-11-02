@@ -10,23 +10,33 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | FFmpeg | LGPL-2.1-or-later |
 | libvpx's VP9 test vectors (the WebM project's test data, downloaded for the `nvdec_vp9_*` tests, not shipped) | BSD-3-Clause |
 | jsmolka's gba-tests (test ROMs, downloaded for the `agb_gba_*` tests, not shipped) | MIT |
-| hactool / cJSON / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / MIT / Unicode license |
+| hactool / ConvertUTF (`src/nx/runtime/driver/hactool`, with ScarletNX's changes) | ISC / Unicode license |
+| yyjson (the MCP server's JSON and the GPU driver packages' meta.json) | MIT |
 | LibHac storage code, ported into hactool (`src/nx/runtime/driver/hactool/storage.c`) | MIT |
+| NVN's types and function prototypes (`src/nx/gpu/nvn/nvn.h`), h1k421's reconstruction, as [nxnative](https://github.com/seedds/nxnative) carries it | MIT (in the file) |
+| nvn's NVN objects and command records (`src/nx/gpu/nvn/nvn_obj.h`, `nvn_object.c`, `nvn_cmd.c`, `nvn_queue.c`), ported from [nxnative](https://github.com/seedds/nxnative)'s `dm/gfx/nvn/hle_nvn.c` and `nvn_obj.h`, Copyright (c) 2026 seedds | MIT |
+| The layout of NVN's driver constant buffers that nvn's draws fill (`src/nx/gpu/nvn/nvn_draw.c`), as nxnative's `dm/gfx/nvn/nvn_mtl.m` measured it, Copyright (c) 2026 seedds | MIT |
+| NVN texture storage layout (`src/nx/gpu/nvn/nvn_tex.c`), ported from nxnative's `dm/gfx/nvn/nvn_tex.c` (MIT, seedds), whose algorithm is [deko3d](https://github.com/devkitPro/deko3d)'s `source/dk_image.cpp`, Copyright (C) 2018-2020 fincs | MIT / zlib |
+| NVN's texture and sampler descriptors (`src/nx/gpu/nvn/nvn_tic.c`), ported from [deko3d](https://github.com/devkitPro/deko3d)'s `source/maxwell/tic_generate.cpp`, `tsc_generate.cpp` and `format_traits.inc`, Copyright (C) 2018-2020 fincs (notice in the file) | zlib |
 | OpenSSL | Apache 2.0 |
+| libcurl (the launcher's downloads, `cmake/curl.cmake`) | curl license (MIT-like) |
+| Mozilla's root certificates, curl's extract of them (`cmake/cacert.cmake`, which the launcher's HTTPS trusts) | MPL-2.0 |
 | jemalloc (the `scarletnx` program's malloc, with `SNX_JEMALLOC`) | BSD-2-Clause |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |
 | yuzu's controller button glyphs (`font_nintendo_extended.cpp`, as Eden carries it) | GPL-2.0-or-later |
 | The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the Mii data, country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them | GPL-2.0-or-later |
 | Montserrat and GNU Unifont 10.0.05, the glyphs of the 3DS shared font's stand-in | OFL-1.1 ([text](../dist/licenses/Montserrat/OFL.txt)) / GPL-2.0-or-later with the GNU font embedding exception |
 | LZ4 (the library, `lib/`) | BSD-2-Clause |
-| xxHash 0.8.3 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
+| xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
 | SDL3 | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
 | ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
-| miniz 3.1.2 (the zip of the launcher's Share Log, `src/gui/logzip.c`) | MIT |
+| miniz 3.1.2 (the zip around the launcher's Share Log, `src/gui/logzip.c`) | MIT |
+| libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments) | MIT |
+| libadrenotools / liblinkernsbypass (the GPU drivers a player adds on Android arm64, `cmake/adrenotools.cmake`) | BSD-2-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
@@ -45,6 +55,8 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/spirv_translate.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
 | `src/nx/runtime/driver/hactool/storage.c` and `storage.h` (the storages added to hactool) | LibHac, as Ryubing maintains it | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
+| `src/3ds/services/ldr.c` and `ldr.h` (ldr:ro), `cro.c` and `cro.h` (the CRO format, its relocations, imports and exports) | Azahar (Citra) at `a4b335e`: `src/core/hle/service/ldr_ro/ldr_ro.cpp` and `ldr_ro.h`, `cro_helper.cpp` and `cro_helper.h`; original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
+| `src/3ds/services/font.c` (APT's shared font: the LZ11 decompression, the CFNT relocation and the address it is relocated to) | Azahar (Citra) at `a4b335e` (`core/hle/service/apt/apt.cpp`, `core/hle/service/apt/bcfnt/bcfnt.cpp`) | GPL-2.0-or-later |
 | `src/vita/hle/gxm.c` (sceGxm's state and its calls' semantics), `src/vita/gpu/usse.c` and `usse_constants.inc` (the USSE shader translator), `src/vita/gpu/gxp.h` (the GXP program layout), `src/vita/gpu/texture.h` (SceGxmTexture's words), `src/vita/gpu/swizzle.glsl` and `tests/glsl/vita_swizzle_glsl.cpp` (the swizzled and tiled texture layouts), `texture_levels` in `src/vita/gpu/render.c` (where a texture's mipmaps lie), `src/vita/hle/audiodec.c` and `videodec.c` (the decoders' structures and their ATRAC9 configuration word), `src/vita/hle/trophy.c` (the trophy calls' error codes and unlock rules) | Vita3K (`modules/SceGxm/`, `shader/`, `gxm/`, `renderer/src/texture/format.cpp`, `modules/SceAudiodec/`, `modules/SceVideodec/`, `modules/SceNpTrophy/SceNpTrophy.cpp`) | GPL-2.0-or-later |
 | `src/vita/hle/ngs.c` (SceNgs's voices, players, patches and master buss, the voice states and the parameter blocks) | Vita3K (`modules/SceNgsUser/SceNgs.cpp`, `ngs/`) | GPL-2.0-or-later |
 | `hevag_decode` and `hevag_coefficients` in `src/vita/hle/ngs.c` (HE-ADPCM) | Vita3K (`codec/src/pcm.cpp`), after vgmstream's HEVAG decoder | GPL-2.0-or-later, vgmstream's ISC-style license |
@@ -54,8 +66,8 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/common/cpu/aarch64/decode/a64.decode` (the A64 encodings, unmodified, from commit `a19f59a`, which `tools/a64dec` generates the decoder from; [README](../src/common/cpu/aarch64/decode/README.md)) | QEMU's `target/arm/tcg/a64.decode` | LGPL-2.1-or-later |
 | `src/common/cpu/aarch64/` (`cpu.h`, `cpu_helpers.c` and `helpers/`, the generated code's FP, SIMD, integer and crypto helpers) | QEMU's `target/arm/` and its softfloat, with the SoftFloat-2a notice | LGPL-2.1-or-later, SoftFloat-2a, BSD |
 | `src/common/cpu/aarch64/helpers/vector.c` (the SM4 S-box, GB/T 32907-2016's table) | OpenSSL's `crypto/sm4/sm4.c` | Apache 2.0 |
-| `src/nx/gpu/gpu.c`, `gpu.h`, `pushbuffer.h` and `src/nx/gpu/maxwell/` (the DMA pusher and puller, the 3D, macro, DMA, 2D, inline-to-memory and compute engines, and their register layouts in the `*_regs.h` headers), with the DMA and 2D engines' CPU references in `tests/support/dma_ref.c` and `fermi2d_ref.c` | Eden and yuzu (`video_core/dma_pusher.cpp`, `engines/`: `puller.cpp`, `engine_upload.cpp`, `maxwell_3d.cpp`, `draw_manager.cpp`, `maxwell_dma.cpp`, `fermi_2d.cpp`, `kepler_compute.cpp`, `kepler_memory.cpp`, `sw_blitter/`) | GPL-3.0-or-later, GPL-2.0-or-later |
-| `src/nx/gpu/texture/blocklinear.c`, `blocklinear.h` and `src/nx/gpu/maxwell/gob.h` (the GOB and block geometry) | Eden and yuzu (`video_core/textures/decoders.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/gpu/gpu.c` (the block linear offset), the register layouts of the 3D and compute engines in `tests/support/maxwell_3d_regs.h` and `kepler_compute_regs.h` with their translation in `tests/support/mx_state.c`, and the DMA and 2D engines' CPU references in `tests/support/dma_ref.c` and `fermi2d_ref.c` | Eden and yuzu (`video_core/textures/decoders.cpp`, `engines/`: `maxwell_3d.h`, `kepler_compute.h`, `maxwell_dma.cpp`, `sw_blitter/`) | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/gpu/texture/blocklinear.c` and `blocklinear.h` (the GOB and block geometry) | Eden and yuzu (`video_core/textures/decoders.cpp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/vk/compute.c` (`res_bind`, `res_publish`: compute storage buffers bound where the GPU holds them and marked as the GPU's when written) and `src/nx/gpu/vk/buffer.c` (`buf_get_owned`: draws read the GPU's bytes on the GPU) | Citron Neo's buffer cache (`video_core/buffer_cache/buffer_cache.h`: `BindHostComputeStorageBuffers`, `MarkWrittenBuffer`, `SynchronizeBuffer`), the model only, on ScarletNX's own GPU ownership | GPL-3.0-or-later |
 | `src/nx/gpu/shader/` (`shader.c`, `decode.c`, and `maxwell_opcodes.def`, the encodings `tools/shaderdec` generates the decoder from) | Eden and yuzu (`shader_recompiler/frontend/maxwell/`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/nx/gpu/video/` (`host1x.c`, `nvdec.c`, `vic.c` and their register layouts in `host1x_regs.h`, `nvdec_regs.h` and `vic_regs.h`) and `tests/support/vic_ref.c` | Eden and yuzu (`video_core/host1x/`: `control.cpp`, `nvdec.cpp`, `vic.cpp`, `codecs/h264.cpp`, `codecs/decoder.cpp`, `ffmpeg.cpp`; `video_core/cdma_pusher.cpp`; the nvdrv host1x devices), with Skyline's host1x control (GPL-3.0-or-later) and Ryujinx's CDMA pusher as Eden carries them | GPL-3.0-or-later, GPL-2.0-or-later, MIT |
@@ -71,6 +83,7 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/nx/gpu/texture/astc.comp` (the ASTC decoder shader, compiled into `astc_spv.h`) | Eden and yuzu (`astc_decoder.comp`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `tests/support/astc.c` and `astc.h` (the CPU ASTC decoder the tests check the shader against) | Eden and yuzu (`textures/astc.cpp`), with the University of North Carolina at Chapel Hill's FasTC decoder in it | GPL-3.0-or-later, GPL-2.0-or-later, Apache 2.0 |
 | `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
+| `src/common/utilities/gpu_driver.c`, `src/gui/gpu_driver.c`, `src/gui/gpu_driver_fetch.c` and `src/nx/runtime/platform/gpu_driver_load.c` (GPU driver packages: meta.json's fields and size, the zip checked before it is unpacked, the devices that load one, libadrenotools' call; Freedreno Settings' presets; Download Driver's repositories, their releases and the recommendation by Adreno model) | Eden and yuzu (`src/android/app/src/main/java/org/yuzu/yuzu_emu/utils/GpuDriverHelper.kt`, `GpuDriverMetadata.kt`, `NativeFreedrenoConfig.kt`, `fragments/DriverFetcherFragment.kt`, `jni/native.cpp`'s `InitializeGpuDriver` and `SupportsCustomDriver`), the model only | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/gui/i18n.c` (`snx_mo_lookup`, the reader of the menu's catalogs; notice in [`src/gui/MUSL-NOTICE.txt`](../src/gui/MUSL-NOTICE.txt)) | musl (`src/locale/__mo_lookup.c`) | MIT |
 | `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
 

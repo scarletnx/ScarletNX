@@ -275,6 +275,8 @@ int snx_lock_file(const char* path, intptr_t* lock);
 void snx_unlock_file(intptr_t lock);
 /* f to offset from its start, past 2 GiB too (fseek takes a long, 32 bits on Windows); 0, or nonzero */
 int snx_seek(FILE* f, SnxU64 offset);
+/* f's offset from its start, past 2 GiB too; signed, so that -1 can report an error */
+int64_t snx_tell(FILE* f);
 
 /* The game's name in a control.nacp: American English's, else the first language's that has one, in UTF-8 without
    control characters. 1 when it has one, else 0 and "" */

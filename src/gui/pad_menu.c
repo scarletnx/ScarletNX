@@ -31,8 +31,9 @@ bool gui_pad_key(int control, const int labels[4], SDL_Keycode* key, SDL_Keymod*
             *mod = SDL_KMOD_LSHIFT;
             return true;
         case SNX_PAD_RB: *key = SDLK_TAB; return true;
-        case SNX_PAD_LS: *key = SDLK_M; return true; /* Games' mods folder */
-        case SNX_PAD_RS: *key = SDLK_B; return true; /* and its AOT pack */
+        case SNX_PAD_LS: *key = SDLK_M; return true;          /* Games' mods folder */
+        case SNX_PAD_RS: *key = SDLK_B; return true;          /* and its AOT pack */
+        case GUI_PAD_RIGHT_STICK: *key = SDLK_L; return true; /* and its Play */
         case SNX_PAD_START: *key = SDLK_F5; return true;
 #ifdef SDL_PLATFORM_ANDROID
         /* a controller's Back key is SDL's BACK while a pad is open, and Android's back once it is not */
@@ -152,6 +153,14 @@ bool gui_pads_event(GuiPads* p, const SDL_Event* e, Uint64 now_ms, SDL_Event* ke
                     /* both sides looked at: the one let go first, so a flick across lets the other press */
                     bool pressed = axis_control(p, p->pads[i], less, a->value < -GUI_PAD_STICK, now_ms, key);
                     return axis_control(p, p->pads[i], more, a->value > GUI_PAD_STICK, now_ms, key) || pressed;
+                }
+                case SDL_GAMEPAD_AXIS_RIGHTX:
+                case SDL_GAMEPAD_AXIS_RIGHTY: { /* any way of either axis: a press as it goes past, one until both are back */
+                    SDL_GamepadAxis other =
+                        a->axis == SDL_GAMEPAD_AXIS_RIGHTX ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_RIGHTX;
+                    bool on = SDL_abs(a->value) > GUI_PAD_STICK ||
+                              SDL_abs(SDL_GetGamepadAxis(p->pads[i], other)) > GUI_PAD_STICK;
+                    return axis_control(p, p->pads[i], GUI_PAD_RIGHT_STICK, on, now_ms, key);
                 }
                 default: return false;
             }

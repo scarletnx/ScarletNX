@@ -15,7 +15,7 @@ behavior.
 * [Public PDF references and profile selection](#public-pdf-references-and-profile-selection)
   * [Not available on the base Cortex-A57](#not-available-on-the-base-cortex-a57)
 * [Corrections made in this follow-up](#corrections-made-in-this-follow-up)
-* [Remaining base-instruction failures](#remaining-base-instruction-failures)
+* [Historical FP findings and current implementation](#historical-fp-findings-and-current-implementation)
   * [FP arithmetic, fused operations and square root](#fp-arithmetic-fused-operations-and-square-root)
   * [FP/integer and FP-format conversions](#fpinteger-and-fp-format-conversions)
   * [Estimates and refinement](#estimates-and-refinement)
@@ -25,9 +25,10 @@ behavior.
 ## Verdict and scope
 
 **ScarletNX is not a fully conforming Cortex-A57 CPU implementation.** The
-application recompiler implements most A64 instruction families, but remaining
-FP arithmetic/conversion/estimate failures and the intentionally virtualized
-machine/system behavior prevent that claim. Passing samples are not a proof
+application recompiler implements most A64 instruction families, but the intentionally virtualized
+machine/system behavior and memory-model limitations prevent that claim. The FP counterexamples below record
+an older audit; current stateful helpers and guarded fast paths supersede those implementations, and
+`tests/llvm_qemu_expected.txt` has no expected FP mismatch group. Passing samples are not a proof
 for every operand or encoding.
 
 This audit targets the **base Cortex-A57 A64 ISA**, not later ARMv8 revisions,
@@ -131,11 +132,12 @@ backend's modules, 12 added `RtAPI.cas128`, which `snx_cas128` takes the CPU for
 `snx_variants()` table, which the runtime reads as optional). Rebuild the runtime and regenerate game modules; stale
 AOT code must not retain the old decoder/operation semantics.
 
-## Remaining base-instruction failures
+## Historical FP findings and current implementation
 
-These are open defects, not expected-success waivers. The audit exits nonzero
-when it finds them. Both generated AOT steps and the generated interpreter are
-checked; neither is used as the reference for the other.
+The following findings describe the older audit at `e7c4210`, not the current implementation. They are retained
+as regression examples. Current AOT and JIT emitters use raw-bit, stateful helpers in `helpers/fp.c` and
+`helpers/fp_arithmetic.c`; host operations run only behind guards that preserve guest results and flags.
+The QEMU differential test is the independent reference. This does not certify every operand or encoding.
 
 ### FP arithmetic, fused operations and square root
 
@@ -165,7 +167,7 @@ Concrete captured examples with FPCR=0 and initial FPSR=0:
 ### FP/integer and FP-format conversions
 
 FCVT[NAMPZ][SU], SCVTF/UCVTF, their fixed-point forms, vector conversion/narrowing
-forms and half/single/double FCVT still have counterexamples. Legacy helpers
+forms and half/single/double FCVT had counterexamples in that audit. Its legacy helpers
 lack CPU state, so they cannot correctly implement all required input flushing,
 rounding, invalid/inexact reporting, DN and AHP behavior. The earlier FRINT
 repair does not automatically repair conversions using other helpers.
@@ -182,14 +184,15 @@ Examples:
 
 ### Estimates and refinement
 
-FRECPE, FRSQRTE, FRECPX, FRECPS and FRSQRTS require further correction of NaNs,
+The older FRECPE, FRSQRTE, FRECPX, FRECPS and FRSQRTS paths required correction of NaNs,
 exceptions, flushing and extreme-value behavior. For example, reciprocal
 estimate of zero must report divide-by-zero, not merely return infinity.
 The dedicated `5ea1d820` FRECPE control sweep reports 2,176 differing executions
 out of 3,072 AOT/interpreter comparisons.
 
-A suitable next implementation step is a common raw-bit/stateful FP backend
-shared by both emitters, not per-game fixes or masking differing status bits.
+The raw-bit/stateful backend now implements these semantics, including the guest's estimate algorithm. The
+vector FRSQRTE fast path has directed table-bin and mixed-lane tests in `tests/llvm_rsqrte.c`. Exactness tests
+remain necessary when extending any fast path; no title-specific workaround or masked result comparison replaces them.
 
 ## System and memory-model limitations
 

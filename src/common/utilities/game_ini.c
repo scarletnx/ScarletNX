@@ -94,6 +94,46 @@ done:
     free(out);
     return rc;
 }
+int snx_ini_has(const char* path, const char* key) {
+    size_t size = 0;
+    char* text = (char*)snx_read_file(path, &size);
+    const char *line, *end, *next;
+    int found = 0;
+    for (line = text; line && line < text + size && !found; line = next) {
+        end = (const char*)memchr(line, '\n', (size_t)(text + size - line));
+        next = end ? end + 1 : text + size;
+        found = key_line(line, end ? end : next, key);
+    }
+    free(text);
+    return found;
+}
+int snx_ini_drop(const char* path, const char* key) {
+    size_t size = 0, n = 0;
+    char *text = (char*)snx_read_file(path, &size), *out, *tmp;
+    const char *line, *end, *next;
+    int dropped = 0, rc = 0;
+    if (!text) return snx_path_exists(path) ? snx_error("cannot read %s to take %s= out of it", path, key) : 0;
+    out = (char*)snx_alloc(size + 1);
+    for (line = text; line < text + size; line = next) {
+        end = (const char*)memchr(line, '\n', (size_t)(text + size - line));
+        next = end ? end + 1 : text + size;
+        if (key_line(line, end ? end : next, key)) {
+            dropped = 1;
+            continue;
+        }
+        memcpy(out + n, line, (size_t)(next - line));
+        n += (size_t)(next - line);
+    }
+    tmp = snx_format("%s.tmp", path);
+    if (dropped && (snx_write_file(tmp, out, n) || snx_replace(tmp, path))) {
+        snx_remove_tree(tmp);
+        rc = snx_error("cannot take %s= out of %s", key, path);
+    }
+    free(tmp);
+    free(out);
+    free(text);
+    return rc;
+}
 char* snx_game_source(const char* folder, const char* name, int* recorded) {
     char *ini = snx_game_ini(folder, name), *source = snx_ini_value(ini, "source"), path[SNX_PATH_SIZE];
     free(ini);

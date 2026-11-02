@@ -14,9 +14,14 @@ target_compile_options(snx_arm_rt PRIVATE -Wall -Wextra -Werror=missing-prototyp
 if(SNX_TEST_SANITIZERS)
     target_compile_options(snx_arm_rt PRIVATE -fno-sanitize=address,undefined)
 endif()
-add_library(snx_arm_llvm STATIC a32.c thumb_decode.c vector_decode.c profile.c llvm.c successors.c)
+# the decoders and the profile rules, which need no LLVM: a runtime that executes a word itself links these alone
+add_library(snx_arm_decode STATIC a32.c thumb_decode.c vector_decode.c profile.c)
+set_target_properties(snx_arm_decode PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(snx_arm_decode PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+add_library(snx_arm_llvm STATIC llvm.c successors.c)
 set_target_properties(snx_arm_llvm PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_include_directories(snx_arm_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_arm_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_directories(snx_arm_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
-target_link_libraries(snx_arm_llvm PUBLIC ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads snx_arm_rt)
+target_link_libraries(snx_arm_llvm PUBLIC ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads snx_arm_rt
+                      snx_arm_decode)

@@ -39,6 +39,8 @@ const char* backend_pressed(void);
    own folder (g_exedir), which snx_menu_dir walks up from to the data folder; on Android the data folder in the
    app's files (src/gui/android.c), wherever the game is */
 char* backend_launcher_folder(void);
+/* the refresh period of the display the window is on, in ns: 0 when headless or the display doesn't say. Any thread */
+u64 backend_display_refresh_ns(void);
 /* changes whenever the surface comes back, so the renderer knows to make a new Vulkan surface */
 u32 backend_window_generation(void);
 /* The software keyboard's box over the game (overlay.h), from any thread: 0 shown, in place of one that shows, or -1
@@ -54,11 +56,13 @@ void win_fatal_box(const char* msg);
    hosts (a repeated identical typedef is valid), so callers need no Vulkan header */
 typedef struct VkInstance_T* VkInstance;
 typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
-void* backend_vk_loader(void); /* the address of vkGetInstanceProcAddr */
+void* backend_vk_loader(void); /* the address of vkGetInstanceProcAddr: gpu_driver's package's, else SDL's loader's */
 /* the Vulkan driver the program's own folders carry, where there is one (an Apple app's MoltenVK, or the copy beside a
-   game's runtime): the address of vkGetInstanceProcAddr, NULL where the system's loader serves. A headless run loads
-   it here, as a window's run has SDL load it */
+   game's runtime), or the package gpu_driver names (gpu_driver_load.h): the address of vkGetInstanceProcAddr, NULL
+   where the system's loader serves. A headless run loads it here, as a window's run has SDL load it */
 void* backend_vk_driver(void);
+/* after vkCreateInstance: the run ends when the GPU driver it asked for (gpu_driver_load.h) is not the one running */
+void backend_vk_check(void);
 const char* const* backend_vk_extensions(u32* n); /* the instance extensions the window needs */
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface);
 

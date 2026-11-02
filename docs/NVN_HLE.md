@@ -2,19 +2,29 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # NVN reference
 
-Switch games draw through NVN, NVIDIA's graphics API, which runs as guest code. It writes Maxwell pushbuffers,
-submits them through nvdrv, and the GPU thread decodes them (`src/nx/gpu/gpu.c`, `maxwell/`) before calling the Vulkan
-renderer (`vk/`). This page records what an investigation into handling NVN directly found about the SDK, and what it
-decided. Facts marked as observations come from one or two titles and are not rules for every SDK version.
+Switch games draw through NVN, NVIDIA's graphics API, which runs as guest code. On the console it writes Maxwell
+pushbuffers and submits them through nvdrv. ScarletNX runs the game's NVN calls itself (`src/nx/gpu/nvn/`): the loader
+(`nvn_loader.c`) takes every NVN function the game resolves, the queue replays its recordings on the GPU thread
+(`nvn_replay.c`), and the renderer (`vk/`) draws them. The game's NVN driver never runs past its own name lookup, and
+the runtime has no Maxwell command decoder. This page records what the SDK does, as the investigation found it. Facts
+marked as observations come from one or two titles and are not rules for every SDK version.
 
 Titles referred to: Catherine: Full Body (USA v2.0, "Catherine"), Tears of the Kingdom (v1.0.0, "TotK"), Super Mario
 Odyssey ("Odyssey") and Pokémon Scarlet ("Scarlet").
 
 ## Status and direction
 
-**The Maxwell decoder renders, and any faster path builds on it: the MME is what to replace (below).** NVN command memory already
-is a Maxwell pushbuffer, so a second front end that reinterprets NVN calls would decode the same words twice. A
-disassembly study of the command-buffer functions found how little each call writes:
+**NVN is the only GPU path.** The loader takes the game's NVN functions at `nvnBootstrapLoader` and the
+`nvnDeviceGetProcAddress` it returns: each name's dispatch slot holds the runtime's handler (`gpu/nvn/nvn.hook`), so
+no driver code past its lookup runs, and the driver never sets `nvnPrivate0`, which would send the game's inlined NVN
+code to write command memory itself. A game's first NVN call reads its NVN API version, and the log says whether the
+runtime has measured layouts for it. The runtime runs the calls either way.
+
+An earlier tree decoded the Maxwell pushbuffers that the game's driver wrote (a GPFIFO decoder, the 3D, compute, 2D,
+copy and inline-to-memory engines, and the macro engine with native macros and an LLVM compiler of macros). That path
+is gone. `SUBMIT_GPFIFO` on `/dev/nvhost-gpu` now draws nothing: it logs one warning and reaches the submission's fence
+at once, so a program that writes its own command buffers (homebrew) does not wait forever. A disassembly study of the
+command-buffer functions found how little each call writes on the console:
 
 | Call | Words written |
 | --- | --- |
@@ -22,26 +32,14 @@ disassembly study of the command-buffer functions found how little each call wri
 | `nvnCommandBufferDrawElements` | 6: header `0xa0050e38`, then mode, index address high and low, index type, count |
 | `nvnCommandBufferBindTexture` | 4 or 5 (Catherine): an IMMD macro call `0x80000e0e \| table[stage] << 16` (a per-stage value from an SDK table), `0x8000068b` when the command buffer's byte `+0x6c` is set, then `0x200208e3`, `id*8 + 0x20`, handle |
 
-Replacing command-buffer calls with host code therefore saves almost no guest CPU time. The hot path worth replacing
-is the MME. A native implementation of a known macro would be chosen by a hash of the macro's uploaded code (slot
-numbers are assigned by the SDK's macro upload, so a slot number alone identifies nothing), and an unknown hash keeps
-the interpreter. `maxwell/mme.c` hashes a macro's code from its start to the end of the upload batch that wrote it
-(NVN uploads each macro on its own), with Eden's hash, so Eden's table of macro hashes names the same code, and
-`maxwell/mme_hle.c` has native versions of the ten macros TotK runs most (its slots 7, 8, 9, 12, 16, 27, 30, 35, 37
-and 38), of every macro in Eden's table, and of the busiest ones Catherine and Super Mario Odyssey interpret. They send
-the same methods as the interpreter.
-`tests/mme_hle.c` checks each against the interpreter running a macro written in the test. A macro's parameters are
-pushbuffer words the GPU thread fetched before the call (`gpu.c`), so the indirect draws read their records and count
-as the interpreter does: Eden's indirect path (the rasterizer drawing from the buffer's GPU address, with the shaders'
-constant buffer reads of the base vertex, base instance and draw index replaced) has no counterpart here yet.
-`mme_verify=1` (the `[Debug]` setting, or `--mme_verify=1`) runs both for every call of a known
-macro and logs where they differ, `mme_hle=0` interprets everything, and the log names each macro's hash when it
-is first called and counts native and interpreted calls every million. `nvn_control.c` decodes the arguments of two
-macros and `nvn_command_gap.c` classifies what methods write, both checked against packets captured in their tests.
+`tests/support/nvn_control.c` decodes the arguments of two macros and `nvn_command_gap.c` classifies what methods
+write, both checked against packets captured in their tests.
 
-### Why semantic replay was abandoned
+### Why the first replay was abandoned
 
-The investigation built about 14,000 lines of opt-in probes: a recorder of NVN calls, a replay of those calls on the
+This section is history: it describes a replay that ran beside the Maxwell decoder, after the driver had written the
+command memory. The loader avoids its problems, because it takes each NVN function before the driver can write
+anything. The investigation built about 14,000 lines of opt-in probes: a recorder of NVN calls, a replay of those calls on the
 GPU thread, a second Vulkan renderer with its own image cache, and pixel comparisons against the Maxwell path. It
 reached byte-exact intermediate targets in all four titles, but the approach could not become a renderer:
 
@@ -63,48 +61,180 @@ reached byte-exact intermediate targets in all four titles, but the approach cou
 
 ### GPU compatibility coverage
 
-Shader instruction invalidation reaches the Vulkan shader address caches from the 3D engine's `0x87` and `0x369`
-methods and the compute engine's `0x87` and `0x5a6` methods. Bit 0 advances a shader generation independent of the
-memory epoch. The next lookup reloads code, while content-addressed modules remain reusable. This does not expire
-texture caches or force a host wait. Repeated invalidations flush any held draw before advancing the generation.
-The method encodings are documented in NVIDIA's public [3D class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/3d/clb197.h)
+NVN's shader barriers reach the Vulkan shader address caches as the renderer's `method_barrier` kind 5 (shader
+instruction invalidate). It advances a shader generation independent of the memory epoch. The next lookup reloads
+code, while content-addressed modules remain reusable. This does not expire texture caches or force a host wait.
+Repeated invalidations flush any held draw before advancing the generation. The Maxwell method encodings these come
+from are documented in NVIDIA's public [3D class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/3d/clb197.h)
 and [compute class](https://github.com/NVIDIA/open-gpu-doc/blob/master/classes/compute/clb1c0.h) headers.
 
 | File | What it is | Built into |
 | --- | --- | --- |
-| `src/nx/gpu/nvn_trace.c` | `nvn_trace=1` inventory of resolved and called NVN functions | the runtime |
 | `tests/support/nvn_control.c` | decoders for the 12-word macro 38 indexed draw and the macro 12 program bind | `tests/nvn_control.c` |
 | `tests/support/nvn_command_gap.c` | classifier of Maxwell method write effects in a span of command words | `tests/nvn_command_gap.c` |
+| `tests/support/mx_state.c` | the 3D and compute engines' registers as the renderer's draw state, for the Vulkan tests that describe draws by register values | `tests/vulkan_headless.c` |
 
 Every `SNX_NVN_*` variable is gone: these are `[Debug]` settings now. `gpu_trace_target=address[:bytes]` (`vk/render.c`) logs the clears and
 draws that write a render target starting in that range, and replaced the older GPU trace variables.
 
+## Measured against the game's driver
+
+An earlier tree had a verify mode, which ran the game's own NVN driver beside the runtime's handlers on shadow
+objects, decoded its pushbuffer, and compared each draw. It went with the Maxwell decoder. What it measured stays
+below and in the comments that cite it.
+
+### Texture storage answers
+
+Games place textures in their pools by `nvnTextureBuilderGetStorageSize`, `GetStorageAlignment`, `GetStorageClass`
+and `GetZCullStorageSize`. `nvn_tex_storage` (`gpu/nvn/nvn_tex.c`) answers them with the rules read from two
+drivers' code (NVN 12.3 and 55.15, the same rules):
+
+- The kind (the class is 0x100 with it): 0 for a buffer or a linear texture. A depth or stencil format has a depth
+  kind. A COMPRESSIBLE color format of one-texel blocks and 4 bytes or more has a compression kind. Else 0xfe.
+- The alignment: 0x80 for LINEAR_RENDER_TARGET, 0x20 for LINEAR, a buffer's element size, else 0x200. Every kind but 0
+  and 0xfe takes the big page, 64 KiB, and its size is rounded up to it.
+- The ZCull area: 0 for a format without depth bits (stencil only counts with ZCULL_SUPPORT_STENCIL). Else 0x20 bytes
+  for each 32x32 tile of each layer, plus 0xE0 of headers (nvdrv's ZCULL_GET_INFO answer).
+- A multisampled or rectangle texture has one level, whatever the builder says.
+
+The layout (`nvn_tex_layout`) stays the texture's extent, which `tests/nvn_tex_storage.c` keeps inside the answered
+size over targets, formats, sizes, levels, samples and flags. The verify mode's storage sweep ran the driver's
+getters and nvn's on the same 7,986 builder states at the game's first query: sizes, alignments and ZCull areas
+agreed.
+The compression kinds agree too, over the swept formats: a compression kind has one value for no multisampling and one
+more at 2, 4 and 8 samples (depth: the base kind plus 0, 1, 2, 3; color: a table by element size). The 8-sample
+kinds and the formats outside the sweep are extrapolated from that pattern.
+
+### What the first runs found (one game, SDK NVN 55.15)
+
+With the driver beside nvn, the game ran through its title and save load. The results the driver answered
+otherwise, which the game sizes its memory by:
+
+| Call | nvn | Driver |
+| --- | --- | --- |
+| `nvnQueueBuilderGetQueueMemorySize` (defaults, compute memory set) | 0x100000 | 0x109000 |
+| `nvnTextureBuilderGetStorageClass` | 0 | 0x100, 0x1fe |
+| `nvnTextureBuilderGetStorageSize` | 0x200, 0x18000 | 0x10000, 0x20000 |
+| `nvnTextureBuilderGetStorageAlignment` | 0x200 | 0x10000 |
+| `nvnTextureBuilderGetZCullStorageSize` | 0x100, 0x200, 0x2c00 | 0x460, 0x860, 0xafe0 |
+| `nvnDeviceGetTextureHandle` | 0x10300107 | 0x110300107 (bit 32 set) |
+| TIC word 6 of registered textures | 0 | 0x03000000 |
+
+The texture rows are fixed (above). The queue memory size is fixed too (`nvn_queue.c`): the driver's
+`QueueInitialize` fails with less. Its rule (`sdk`'s `GetQueueMemorySize` of NVN 55.15) adds to the command and control
+sizes (defaults 0x10000 and 0x4000) an area of its own, rounded up to 4 KiB:
+
+- the fragment interlock buffer, unless the queue flags have `NO_FRAGMENT_INTERLOCK`: 1 KiB for each GPC and 4 bytes
+  for each warp of each SM, rounded up to 0x100;
+- 0x7B00 bytes of the driver's own (0x9400 with `ENABLE_SEPARATE_SAMPLER_TEXTURE_SUPPORT` on the device);
+- the ZCULL context, unless the flags have `NO_ZCULL`: the area and the context size each rounded up to 4 KiB;
+- the compute memory (default 0x40000), in whole blocks of 0x800 bytes (0xD00 with separate samplers).
+
+The six device words the rule reads are nvdrv's answers, which the driver keeps in its device: 1 GPC
+(`num_gpc`), 2 SMs (`NUM_VSMS`), 0x80 warps (`sm_arch_warp_count`), the ZCULL context size 1 (`ZCULL_GET_CTX_SIZE`)
+and its 4 KiB alignment, and the device flags.
+
+## 32-bit games
+
+A 32-bit game's NVN driver is A32 code, and the game's code runs as blocks in a table by guest address
+(`nx/runtime/arm.c`). Each call ends its block, so nvn takes a function by putting a block of its own in the
+function's slot (`arm_slot`). That block is the function's A32 adapter (`hookgen --a32`, `docs/HOOKS.md`), which calls
+the same handler as the 64-bit adapter. `nvnBootstrapLoader` and the `nvnDeviceGetProcAddress` it returns are wrapped
+as for a 64-bit game. The driver's own lookup runs on the game's thread through `arm_run`, which runs blocks until the
+call returns. The game's command buffer memory callback runs the same way.
+
+What differs from a 64-bit game:
+
+- A pointer, a `size_t` and a `ptrdiff_t` are 4 bytes. The spec types NVN's sizes and offsets as `usize` and `isize`
+  (`gpu/nvn/nvn.hook`). One driver's code gave each of them, by which registers and stack words each function reads:
+  - A u64 takes an even pair of registers, and a word takes one, so the arguments after it move.
+  - `SetStride(b, stride)` reads r1, and `BindVertexBuffer` reads the u64 address in r2 and r3 and the size on the
+    stack. `MultiDraw*IndirectCount` reads its stride at stack word 12 or 28, not 16 or 32.
+  - Memory sizes, offsets and strides come back in r0 alone. Buffer and texture addresses come back in r0 and r1.
+- An array of pointers (`SetRenderTargets`, `WindowBuilderSetTextures`), `NVNshaderData`'s control pointer and
+  `NVNmappingRequest`'s pool pointer are read as words (`nvn_gptr`). The structs keep the offsets they have in a
+  64-bit game, because the u64 that follows each pointer is 8-aligned.
+- The driver's `nvnDeviceGetInteger` answers come from its A32 switch (`nvn_driver_info32`): a bound
+  (`cmp rN, #max`), the value r0 holds at the jump, and a table of words relative to an `add rT, pc, #imm`
+  (`ldr rX, [rI, rT]; add pc, rX, rT`), or of addresses after an `ldr pc, [pc, rI, lsl #2]`.
+
+The 32-bit game looked at (SDK NVN 0.12.16) answers API 52.32. Its writers fit the header's sizes except the
+sampler's, as in later SDKs. The game keeps each object at least as far from the next live one of its type as nvn's
+layout needs: buffers 0x30 apart, memory pools 0x118, programs 0x100, samplers 0x78 and textures in wrappers mostly
+0x2a8. It ran from boot to a race on nvn, at 60 frames a second in the menus.
+
+## A recording written over while it is submitted
+
+One game records a small list each frame into the same command memory on one thread, after it waits for the last
+frame's fences, and submits it on another. At loads the submitting thread can still hold the last frame's handle, at
+the same address, when the recording thread has begun the next frame's list there. The console's GPU then runs the
+commands that the two left there. nvn read its handle's first record, now a JUMP to the piece of the runtime's
+memory that the new recording was still cut from, and then bytes not written yet: `a command record ... has op 0 and
+size 0`, in about one run in five. An event ring showed the order. The fences signal in order, and no
+`AddCommandMemory` comes between the two, so nothing the game calls can wait for the replay there.
+
+So a walk ends a recording at a JUMP into a piece that a command buffer is still cut from (`nvn_cmd_unfinished`): past
+the records written so far there is nothing final to run. The stop message names the segment of the runtime's memory,
+how far it is cut, and the pieces in use there (`nvn_cmd_describe`).
+
+## Control memory, counted as the driver writes it
+
+nvn keeps no control entries of its own, but it counts the bytes the game's driver would write there
+(`nvn_cmd.c`'s `ctl_count`), so `GetControlMemoryUsed`, `GetControlMemoryFree` and `GetControlMemorySize` answer as
+the driver does. Before, `Used` was 0, and one game gave several command buffers the same control memory while it still
+called the recordings made there. The counts, from one NVN 55 driver's code:
+
+| Entry | Bytes |
+| --- | --- |
+| a recording's start mark (`BeginRecording`) | 0x10 |
+| its end mark (`EndRecording`) | 8 |
+| a range of the commands since the last entry, in an open block / opening one | 0x18 / 0x20 |
+| a compute-stage texture, sampler or image bind; a dispatch | 0x10 (and the range before it, closing the block) |
+| a compute-stage uniform or storage buffer bind | 0x18 |
+| a call | a range entry per callee (0x18, or 0x20 opening a block) |
+| a copy | the range of the commands it copies |
+| a recording still open when the game adds control memory | 0x10, the link to the new memory |
+
+The driver keeps the last 0x10 bytes of the memory for that link. When the entries don't fit, it calls the memory
+callback with event 1 and 0x100 bytes at least, and stops the game if there is still no room: nvn counts nothing
+more then. It merges a range with the one before it when the two touch, which nvn doesn't model, so its count can be
+higher. A call also copies the callee's other entries (its compute binds), which nvn doesn't count: the handles of
+recordings in the runtime's memory are used again once their pieces come back, so a count kept by handle went to the
+wrong recording (a recording that calls the one before it at the same handle counted 0x18 more each frame, and one
+game's 0x200 bytes of control memory ran out).
+
+The pieces of the runtime's memory that carry a recording's records are anchored in both memories: where the
+recording starts in command memory and in control memory. A look at either memory over the anchor gives them back. A
+recording that counted no command bytes (calls, compute binds) is all control entries on the console, so only a look
+at the control memory gives it back. One game hands the command memory such a recording starts in to another command
+buffer while it still calls the recording. Before, the pieces of a recording of calls alone came back only when the
+command memory wrapped round, and one game's records grew to 64 MiB of the runtime's memory in a minute.
+
 ## Observing NVN calls
 
-The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. With
-`nvn_trace=1`, `nvn_trace.c` replaces that function's entry in the recompiler's dispatch table `g_disp`, then the
-entry of the `nvnDeviceGetProcAddress` pointer it returns, then the entry of every address either of them resolves. The
-wrappers count calls and always call the original, so rendering is unchanged.
+`tools/nvn_coverage.py` builds a local index of public declarations, runtime handlers and possible Vulkan call
+paths. It retains signatures, names and locations, with no implementation bodies. Give it `--reference HEADER`,
+`--out REPORT.json` and `--cache CACHE.json` outside the checkout. `--jobs N` selects the worker processes and
+defaults to the available CPU count. Unchanged files reuse their cached index. Repeated `--log LOG` arguments
+distinguish resolved functions from unimplemented functions actually called.
 
-| Log line | Meaning |
-| --- | --- |
-| `nvn: NAME -> ADDRESS` | a name resolved through either loader |
-| `nvn-submit: queue=... count=... lists=... first=...` | an `nvnQueueSubmitCommands` call and its first list handle |
-| `nvn-nvnQueue...: GPFIFO submissions during call=N` | GPFIFO submissions, by any thread, while one queue call ran (`SubmitCommands`, `Flush`, `FenceSync`, `PresentTexture`, `WaitSync`) |
-| `nvn-used: NAME COUNT` | at exit, the calls to each address that was called |
-| `nvn: N resolved addresses, M called` | at exit, the totals |
+The index is lexical. A path to Vulkan does not establish equivalent rendering, and command recording defers its
+work to replay. `--contracts FILE.json --emit-bindings PROPOSAL.hook` can generate hook declarations from a JSON
+list of reviewed declarations. It checks the public ABI against an existing C handler, rejecting missing handlers,
+ambiguous definitions and incompatible arguments or results. It does not generate implementation bodies or modify
+the runtime. Hookgen supplies the actual register adapters after the declarations are reviewed and installed.
 
-Limits:
+API 53.312's measured object footprints fit the runtime's layouts, and format 15 control sections render through
+the loader. So do the object sizes and alignments of 53.5, 53.13, 53.105 and 53.311 to 53.314 (measured against their
+games' drivers); the drivers before 53.209 give a STENCIL8 texture a ZCull save area without its zcull flag, as for depth. Its sampler writer reaches 0x60 bytes, beyond the public header's 0x30 reserved bytes, so the header's
+size alone is not a safe bound for a shadow driver's writes. The command buffer's command and control size queries
+report the last ranges the game supplied. Runtime lending does not enlarge the advertised guest capacity, and the
+control range stays free because direct recording needs no driver control bookkeeping.
 
-- The wrappers see calls through `g_disp`, which is how NVN function pointers are called. A statically resolved
-  branch calls its generated C function directly and is only seen in a module recompiled with
-  `--hook-direct-calls`. Counts are lower bounds otherwise.
-- Names that fold to one address share a counter, labeled with the first name resolved there.
-- Functions the game inlines are never seen (see the TotK example above).
-- A title that resolves NVN some other way than `nvnBootstrapLoader` needs another discovery path.
-
-Boot samples resolve about 470 (Catherine) and 530 (TotK) names and call about a third of them. The frequently called
-shared functions are buffer-address and texture-handle lookups, texture binds, blend and vertex state, and
+The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. An earlier
+tree had a trace (`nvn_trace=1`) that wrapped the resolvers and counted the calls to each function they resolved.
+Its boot samples resolved about 470 (Catherine) and 530 (TotK) names and called about a third of them. The frequently
+called shared functions are buffer-address and texture-handle lookups, texture binds, blend and vertex state, and
 command-buffer operations. Counts vary between runs with the same frame limit.
 
 ## Queue and submission observations
@@ -265,6 +395,7 @@ Method numbers are 3D engine (subchannel 0) word offsets, and macro calls are me
 | 30 | `0xe3c` | instanced indexed draw, TotK's busiest macro: topology, index count, instance count (masked by `0xd1b`), first index, base vertex, base instance |
 | 35 | `0xe46` | writes scratch `0xd38`-`0xd39`, then `0x0d8`-`0x0d9`, from two arguments and scratch `0xd3a` |
 | 28 | `0xe38` | `DrawElements` (mode, index address high and low, index type, count) |
+| 26, 29 | `0xe34`, `0xe3a` | `DrawArraysIndirect` and `DrawElementsIndirect` of NVN 55.15 (one game): after macro 16 with `0x190` (bank 0 + `0x640`), the mode and the record, which the driver splices into the pushbuffer from its GPU address. A capture of the Maxwell path showed the record's base instance at bank 0 + `0x644`. nvn's indirect draws give the vertex program BaseVertex and BaseInstance there (`DrawCall.params`) |
 | 38 | `0xe4c` | the 12-word indexed draw in TotK secondary lists: IMMD `0xe20` (value `0x190`, the base vertex word), index type, index address, then six arguments. Packet word 10 (the fifth argument) is the base vertex |
 
 Slot numbers are TotK's and those written by the studied functions. Another title's upload can number them
@@ -346,9 +477,9 @@ Pitfalls:
 - Two uncovered images both read back as zero and compare equal. Check coverage before calling a comparison a match.
 - A probe that submits or finishes the queue changes what it measures. A readback after a draw once masked a missing
   descriptor, and a queue finish advanced the frame so that draws were skipped and the result looked better.
-- Bounded logs answer "maybe" when they wrap. The Maxwell write log (`maxwell3d.c`, 1,024 entries) answered "assume
-  dirty" for any range over 1 MiB once constant buffer updates wrapped it, every frame, and the probes treated that
-  as a real write. Writes are kept per page now (`gpu/maxwell/write_pages.c`), but a write of the same data still
+- Bounded logs answer "maybe" when they wrap. The old Maxwell write log (1,024 entries) answered "assume dirty" for
+  any range over 1 MiB once constant buffer updates wrapped it, every frame, and the probes treated that as a real
+  write. Writes are kept per page now (`gpu/writes.c`, `gpu/write_pages.c`), but a write of the same data still
   counts as a write.
 - A zero texture handle (Scarlet binds many) may be an unused slot or a shader-visible null descriptor. Decide from
   the shader's texture use, not from the bind.

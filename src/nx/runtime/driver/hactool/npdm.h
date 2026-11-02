@@ -4,7 +4,6 @@
 #include "types.h"
 #include "utils.h"
 #include "settings.h"
-#include "cJSON.h"
 
 #define MAGIC_META 0x4154454D
 #define MAGIC_ACID 0x44494341
@@ -136,17 +135,9 @@ static inline npdm_aci0_t *npdm_get_aci0(npdm_t *npdm) {
 
 void npdm_process(npdm_t *npdm, hactool_ctx_t *tool_ctx);
 void npdm_print(npdm_t *npdm, hactool_ctx_t *tool_ctx);
-void npdm_save(npdm_t *npdm, hactool_ctx_t *tool_ctx);
 
 const char *npdm_get_proc_category(int process_category);
 void kac_print(const uint32_t *descriptors, uint32_t num_descriptors);
-char *npdm_get_json(npdm_t *npdm);
-
-void cJSON_AddU8ToObject(cJSON *obj, const char *name, uint8_t val);
-void cJSON_AddU16ToObject(cJSON *obj, const char *name, uint16_t val);
-void cJSON_AddU32ToObject(cJSON *obj, const char *name, uint32_t val);
-void cJSON_AddU64ToObject(cJSON *obj, const char *name, uint64_t val);
-cJSON *kac_get_json(const uint32_t *descriptors, uint32_t num_descriptors);
 
 
 #endif

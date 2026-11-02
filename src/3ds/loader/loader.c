@@ -65,8 +65,8 @@ bool ctr_hash_matches(CtrReader* r, CtrSpan span, const unsigned char expected[3
            (!memcmp(hash, expected, 32) || ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "archive SHA-256 mismatch"));
 }
 static bool budget(CtrReader* r, uint64_t bytes) {
-    if (bytes > CTR_OUTPUT_LIMIT - r->output_bytes || r->entries >= 100000)
-        return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "extraction exceeds 1 GiB / 100000-entry limit");
+    if (bytes > SNX_CTR_MAX_CONTENT - r->output_bytes || r->entries >= 100000)
+        return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "extraction exceeds 4 GiB / 100000-entry limit");
     r->output_bytes += bytes;
     r->entries++;
     return true;

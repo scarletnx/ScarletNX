@@ -58,6 +58,7 @@ typedef enum {
     GUI_ASK_CACHE,  /* a game's shader cache and code cache deleted (its box's Clean Cache) */
     GUI_ASK_CLOSE,  /* the window closed while a run goes: it ends with the menu */
     GUI_ASK_MADE,   /* a dump, package or ROM a game was made from already: play the game, or recompile it */
+    GUI_ASK_DRIVER, /* a GPU driver package removed (Settings > App > GPU Drivers) */
     GUI_ASK_ERROR   /* a failure of the system's, said whole (main.c's say_failure): OK alone, which closes it */
 } GuiAsk;
 typedef struct {

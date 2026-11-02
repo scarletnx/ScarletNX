@@ -1,0 +1,2 @@
+family a
+hook f(addr p out[n], u64 n) = h

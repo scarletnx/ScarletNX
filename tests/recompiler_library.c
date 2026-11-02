@@ -9,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <pthread.h>
+#include <time.h>
+#endif
 
 static int failures;
 static void check(int ok, const char* what) {
@@ -267,6 +271,73 @@ static void invalidation_fallback(CPU* cpu, uint64_t pc) {
     (void)pc;
 }
 
+
+#ifndef _WIN32
+/* A spin on memory another thread writes (spin: mov x8,#SPIN_FLAG; ldr w1,[x8]; cbz w1,spin; ret), with nothing to
+   poll for: the loop must load the word on every pass, so it ends soon after the other thread's store. Its only call
+   is rt->poll on the poll's cold path, and a guest load isn't volatile, so without the poll's compiler barrier LLVM's
+   GVN moves the load of an address the loop builds from constants onto that path (an address in a register the loop
+   doesn't write is reloaded after the call, which keeps its load), and the loop spins on CPU.poll alone. The writer
+   flags the CPU after 2 s, so that such a loop ends too, and the check fails */
+#define SPIN      0x3000u
+#define SPIN_FLAG 0x9000u
+static const uint32_t spin_words[] = {0xd2920008, 0xb9400101, 0x34ffffc1, 0xd65f03c0};
+typedef struct {
+    uint8_t* mem;
+    CPU* cpu;
+    int done, flagged;
+} Spin;
+static void nap(long ms) {
+    struct timespec t;
+    t.tv_sec = ms / 1000;
+    t.tv_nsec = (ms % 1000) * 1000000L;
+    while (nanosleep(&t, &t)) {
+    }
+}
+static void* spin_writer(void* arg) {
+    Spin* s = (Spin*)arg;
+    long ms;
+    nap(50);
+    __atomic_store_n((uint32_t*)(s->mem + SPIN_FLAG), 1u, __ATOMIC_RELEASE);
+    for (ms = 0; ms < 2000 && !__atomic_load_n(&s->done, __ATOMIC_ACQUIRE); ms += 10) nap(10);
+    if (!__atomic_load_n(&s->done, __ATOMIC_ACQUIRE)) {
+        s->flagged = 1;
+        __atomic_store_n(&s->cpu->poll, 1u, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+static void spin64(struct snx_recompiler* r, uint8_t* mem) {
+    struct snx_recompiled* m;
+    Seen seen = {0};
+    RtAPI rt;
+    CPU cpu = {0};
+    Spin s;
+    pthread_t writer;
+    place(mem, SPIN, spin_words, sizeof(spin_words) / sizeof(spin_words[0]));
+    m = snx_recompile(r, SPIN, mem + SPIN, sizeof(spin_words));
+    check(m != NULL, "spin: a module");
+    if (!m) return;
+    snx_runtime_defaults(&rt);
+    rt.svc = svc64;
+    rt.undef = undef64;
+    rt.brk = brk64;
+    cpu.mem = mem;
+    cpu.rt = &rt;
+    cpu.thread = &seen;
+    check(snx_recompiled_bind(m, &cpu) == 0, "spin: bind");
+    cpu.x[30] = STOP;
+    s.mem = mem;
+    s.cpu = &cpu;
+    s.done = s.flagged = 0;
+    check(pthread_create(&writer, NULL, spin_writer, &s) == 0, "spin: the writer thread");
+    snx_recompiled_run(m, &cpu, SPIN, STOP);
+    __atomic_store_n(&s.done, 1, __ATOMIC_RELEASE);
+    pthread_join(writer, NULL);
+    check(!s.flagged && cpu.x[1] == 1, "spin: a loop sees another thread's store without being polled");
+    snx_recompiled_free(m);
+}
+#endif
+
 static void invalidate64(struct snx_recompiler* r, uint8_t* mem) {
     const uint64_t helper = CODE64 + 11 * 4;
     struct snx_recompiled* module;
@@ -379,6 +450,9 @@ int main(int argc, char** argv) {
         snx_recompiler_set_jobs(r, 2);
         run64(r, "llvm", mem, keep_ir);
         invalidate64(r, mem);
+#ifndef _WIN32
+        spin64(r, mem);
+#endif
         jit_cache(r, mem, cache);
         run32(r, mem);
         snx_recompiler_free(r);

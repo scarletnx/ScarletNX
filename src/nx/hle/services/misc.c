@@ -5,7 +5,7 @@
    bcat/bcat_result.h, bcat/backend/backend.cpp, bcat/delivery_cache_file_service.cpp,
    aoc/purchase_event_manager.cpp, src/core/file_sys/common_funcs.h, mii/mii_result.h, mii/types/store_data.cpp,
    mii/types/char_info.h, mii/types/char_info.cpp, mii/types/core_data.h, mii/types/core_data.cpp, mii/mii.cpp,
-   mii/mii_manager.cpp,
+   mii/mii_manager.cpp, nim/nim.cpp,
    ptm/psm.cpp, lm/lm.cpp, audio/errors.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
    SPDX-FileCopyrightText: Copyright 2018, 2019, 2020, 2022, 2023 yuzu Emulator Project (GPL-2.0-or-later)
@@ -14,7 +14,7 @@
    src/Ryujinx.HLE/HOS/Services/Mii/Helper.cs and Types/StoreData.cs:
    SPDX-FileCopyrightText: Ryujinx Team and Contributors (MIT) */
 /* The smaller services: apm, lm, pctl, friend, ns, prepo, caps, ectx, psm, fatal, csrng, spl, mm, nfp, nfc, bcat,
-   aoc, irs, mii, btm and audin, each as a console offline, with no NFC device or microphone, and the add-on
+   nim, aoc, irs, mii, btm and audin, each as a console offline, with no NFC device or microphone, and the add-on
    content the data folder holds */
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
@@ -156,6 +156,24 @@ static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerEventToRequest
 static int nn_pctl_detail_ipc_IParentalControlService_GetUnlinkedEvent(SvcObj* self, u32* event) {
     (void)self;
     return new_event(event, "pctl unlinked", 0);
+}
+/* the play timer's display as nobody configured it: NotConfigured in its first byte. Zeros read as TimesUp, and a
+   game that believes it stops the person playing */
+#define SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED 7
+static int pctl_play_timer(nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    memset(info->v, 0, sizeof info->v);
+    info->v[0] = SNX_PCTL_PLAY_TIMER_NOT_CONFIGURED;
+    return 0;
+}
+static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerRemainingTimeDisplayInfo(
+    SvcObj* self, nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    (void)self;
+    return pctl_play_timer(info);
+}
+static int nn_pctl_detail_ipc_IParentalControlService_Unknown1460(SvcObj* self, u8 unknown,
+                                                                  nn_pctl_PlayTimerRemainingTimeDisplayInfo* info) {
+    (void)self, (void)unknown;
+    return pctl_play_timer(info);
 }
 
 /* ============================================================ friend */
@@ -730,6 +748,19 @@ static int nn_bcat_detail_ipc_IDeliveryCacheFileService_Open(SvcObj* self, const
 static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event) {
     (void)self;
     return new_event(event, "bcat storage update", 0);
+}
+
+/* ============================================================ nim:eca: the shop, never reached */
+static int nn_nim_detail_IShopServiceAccessServerInterface_CreateServerInterface(SvcObj* self, u64 pid, u64 size,
+                                                                                 u32 transfer_memory, SvcObj** server) {
+    (void)self, (void)pid, (void)size, (void)transfer_memory;
+    *server = nn_nim_detail_IShopServiceAccessServer_new();
+    R_SUCCEED();
+}
+static int nn_nim_detail_IShopServiceAccessServer_CreateAccessorInterface(SvcObj* self, u8 type, SvcObj** accessor) {
+    (void)self, (void)type;
+    *accessor = nn_nim_detail_IShopServiceAccessor_new();
+    R_SUCCEED();
 }
 
 /* ============================================================ aoc:u: the add-on content in system/archives */
@@ -1383,6 +1414,7 @@ SvcObj* new_nfp(void) { return nn_nfp_detail_IUserManager_new(); }
 SvcObj* new_nfc(void) { return nn_nfc_detail_IUserManager_new(); }
 SvcObj* new_caps(void) { return nn_capsrv_sf_IAlbumApplicationService_new(); }
 SvcObj* new_bcat(void) { return nn_bcat_detail_ipc_IServiceCreator_new(); }
+SvcObj* new_nim(void) { return nn_nim_detail_IShopServiceAccessServerInterface_new(); }
 SvcObj* new_aoc(void) { return nn_aocsrv_detail_IAddOnContentManager_new(); }
 SvcObj* new_irs(void) { return nn_irsensor_IIrSensorServer_new(); }
 SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(); }

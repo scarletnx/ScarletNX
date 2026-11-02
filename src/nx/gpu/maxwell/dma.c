@@ -95,6 +95,7 @@ typedef struct {
     u64 job, src, len, gen;
     u32 launch;
     u8* data;
+    u64 id; /* nonzero: data is the renderer's (Renderer.snap_alloc), which the GPU reads in place; else malloc's */
 } DmaSnap;
 typedef struct {
     DmaSnap e[SNAP_RING];
@@ -107,19 +108,27 @@ static struct {
     u64 bytes;
     PMutex lk;
 } g_dma = {{NULL}, 0, PMUTEX_INIT};
+/* a copy's memory let go of */
+static void snap_release(u8* data, u64 id) {
+    if (id)
+        g_renderer->snap_free(id);
+    else
+        free(data);
+}
 static void snap_drop(DmaSnapRing* q) { /* the oldest, the lock held */
     DmaSnap* e = &q->e[q->tail++ % SNAP_RING];
     g_dma.bytes -= e->len;
-    free(e->data);
+    snap_release(e->data, e->id);
     e->data = NULL;
+    e->id = 0;
 }
 static int dma_linear_source(const DmaOp* o) { return !o->fill && !o->src.bl && o->width && o->lines; }
 void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v) {
     DmaOp o;
     DmaSnapRing* q;
     DmaSnap* e;
-    u64 len, gen;
-    u8* data;
+    u64 len, gen, id = 0;
+    u8* data = NULL;
     if (channel >= SNAP_CHANNELS) return;
     dma_decode_launch(r, v, &o);
     if (!dma_linear_source(&o)) return;
@@ -134,7 +143,9 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     g_dma.bytes += len;
     pm_unlock(&g_dma.lk);
     gen = gpu_mem_generation(); /* before the read: a GPU write after it shows */
-    data = (u8*)malloc((size_t)len);
+    /* read once, into memory the GPU reads in place where the renderer has it: the copy reads it from there */
+    if (g_renderer_up && g_renderer->snap_alloc) data = g_renderer->snap_alloc(len, &id);
+    if (!data) data = (u8*)malloc((size_t)len);
     if (data) gmem_read_raw(o.src.addr, data, len);
     pm_lock(&g_dma.lk);
     if (!data) {
@@ -149,10 +160,11 @@ void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u3
     e->len = len;
     e->gen = gen;
     e->data = data;
+    e->id = id;
     pm_unlock(&g_dma.lk);
 }
 /* the copy of launch (job, launch) when there is one for this source, taken over by the caller; older ones go */
-static u8* snap_take(u32 channel, u64 job, u32 launch, u64 src, u64 len, u64* gen) {
+static u8* snap_take(u32 channel, u64 job, u32 launch, u64 src, u64 len, u64* gen, u64* id) {
     DmaSnapRing* q;
     u8* data = NULL;
     if (channel >= SNAP_CHANNELS) return NULL;
@@ -174,7 +186,9 @@ static u8* snap_take(u32 channel, u64 job, u32 launch, u64 src, u64 len, u64* ge
             }
             data = e->data;
             *gen = e->gen;
+            *id = e->id;
             e->data = NULL;
+            e->id = 0;
             g_dma.bytes -= e->len;
             q->tail++;
         }
@@ -204,16 +218,19 @@ void dma_snap_reset(u32 channel) {
 
 /* ------------------------------------------------------------ the launch */
 /* The copy, on the GPU, its destination kept there (vk/dma.c); a render target over the destination takes the new
-   bytes. from: the source's bytes as read at submission, or NULL */
-static void dma_copy(const DmaOp* o, const u8* from) {
+   bytes. from: the source's bytes as read at submission, or NULL; id: nonzero when they are the renderer's, which the
+   copy takes over (malloc's stay the caller's) */
+static void dma_copy(const DmaOp* o, u8* from, u64 id) {
     DmaOp op = *o;
     u64 in_bytes = o->fill ? 0 : (u64)o->line_in * o->lines, out_bytes = (u64)o->line_out * o->lines;
     if (in_bytes > DMA_MAX_BYTES || out_bytes > DMA_MAX_BYTES) {
         WARN_LIMIT(4, "gpu: a DMA copy of %u lines of %u elements is over %u MiB: nothing is copied\n", o->lines,
                    o->width, DMA_MAX_BYTES >> 20);
+        if (id) snap_release(from, id);
         return;
     }
     op.snap = from;
+    op.snap_id = id;
     if (!g_renderer_up || !g_renderer->dma_copy) {
         WARN_LIMIT(4, "gpu: a DMA copy before the renderer started, skipped\n");
         return;
@@ -225,19 +242,21 @@ static void dma_copy(const DmaOp* o, const u8* from) {
    the GPU hasn't written the source since, else guest memory's */
 static void dma_launch_copy(GpuChannel* ch, const DmaOp* o, u32 launch) {
     u8* snap = NULL;
+    u64 id = 0;
     if (dma_linear_source(o)) {
         u64 gen = 0, len = dma_pitch_span(&o->src, o->lines, o->line_in);
-        snap = snap_take(ch->id, ch->dma_job_id, launch, o->src.addr, len, &gen);
+        snap = snap_take(ch->id, ch->dma_job_id, launch, o->src.addr, len, &gen, &id);
         if (snap) {
             gmem_need(o->src.addr, len); /* pending GPU results over the source land, and count as writes */
             if (gpu_mem_dirty_since(gen, o->src.addr, len)) {
-                free(snap);
+                snap_release(snap, id);
                 snap = NULL;
+                id = 0;
             }
         }
     }
-    dma_copy(o, snap);
-    free(snap);
+    dma_copy(o, snap, id);
+    if (!id) free(snap);
 }
 /* The completion semaphore after the copy (Eden's MaxwellDMA::ReleaseSemaphore): one word, the payload, or four,
    the payload, 0 and the 64-bit timestamp, written through the release path */

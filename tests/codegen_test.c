@@ -275,7 +275,11 @@ static const SnxU32 g_words[] = {
     0x4E22CC20UL, /* FMLA V0.4S,V1.4S,V2.4S: QNaN addend with inf*0, fused overflow cancelled; FPSR's NZCV, QC kept. */
     0x6E20D400UL, /* FADDP V0.4S,V0.4S,V0.4S: tie to even, SNaN priority, the destination its own source. */
     0x6E61D820UL, /* UCVTF V0.2D,V1.2D: lanes that fit, 0 is +0 under round toward minus infinity. */
-    0x6E21D820UL  /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x6E21D820UL, /* UCVTF V0.4S,V1.4S: the same for singles. */
+    0x7EA1D820UL, /* FRSQRTE S0,S1: an even exponent's estimate, the upper lanes cleared. */
+    0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under FZ: the estimates of normals, the smallest normal's of 2^126. */
+    0x6E218820UL, /* FRINTA V0.4S,V1.4S: ties away from zero, a tie's neighbours, -0.5 to -1. */
+    0x1E664020UL  /* FRINTA D0,D1: the half's predecessor rounds to +0. */
 };
 #define WORDS (sizeof(g_words) / sizeof(g_words[0]))
 
@@ -501,6 +505,26 @@ static void setup(unsigned i, CPU* c, unsigned char* memory) {
             SNX_VSET_S(c->v[1], 2, 0xFFFFFF);
             SNX_VSET_S(c->v[1], 3, 0x800000);
             break;
+        /* FRSQRTE and FRECPE's fast paths, which must not depend on the host's rounding mode */
+        case 51:
+            SNX_VSET_S(c->v[0], 2, 0x12345678);
+            SNX_VSET_S(c->v[1], 0, 0x40800001);
+            break;
+        case 52:
+            c->fpcr = 0x1000000;
+            SNX_VSET_S(c->v[1], 0, 0x3FC00000);
+            SNX_VSET_S(c->v[1], 1, 0xC2F6E979);
+            SNX_VSET_S(c->v[1], 2, 0x00800000);
+            SNX_VSET_S(c->v[1], 3, 0x7E7FFFFF);
+            break;
+        /* FRINTA's, the same */
+        case 53:
+            SNX_VSET_S(c->v[1], 0, 0xC0200000);
+            SNX_VSET_S(c->v[1], 1, 0x3EFFFFFF);
+            SNX_VSET_S(c->v[1], 2, 0x4AFFFFFF);
+            SNX_VSET_S(c->v[1], 3, 0xBF000000);
+            break;
+        case 54: SNX_VSET_D(c->v[1], 0, 0x3FDFFFFFFFFFFFFFULL); break;
         default: break;
     }
 }
@@ -604,6 +628,14 @@ static int verify(unsigned i, const CPU* c, const unsigned char* memory) {
         case 50:
             ok = SNX_VD(c->v[0], 0) == 0x3F80000000000000ULL && SNX_VD(c->v[0], 1) == 0x4B0000004B7FFFFFULL && !c->fpsr;
             break;
+        case 51: ok = SNX_VD(c->v[0], 0) == 0x3EFF8000ULL && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
+        case 52:
+            ok = SNX_VD(c->v[0], 0) == 0xBC0500003F2A8000ULL && SNX_VD(c->v[0], 1) == 0x008000007E7F8000ULL && !c->fpsr;
+            break;
+        case 53:
+            ok = SNX_VD(c->v[0], 0) == 0x00000000C0400000ULL && SNX_VD(c->v[0], 1) == 0xBF8000004B000000ULL && !c->fpsr;
+            break;
+        case 54: ok = !SNX_VD(c->v[0], 0) && !SNX_VD(c->v[0], 1) && !c->fpsr; break;
         default: break;
     }
     return ok;
@@ -666,7 +698,8 @@ static void semantics_test(void) {
 }
 
 /* A loop of generated code runs with CPU.poll set: its backward branch calls rt->poll, the runtime's chance to take
-   the core from a thread that makes no SVC, and the loop still runs to its end; without the flag it never polls */
+   the core from a thread that makes no SVC, then calls the function again at the loop's head (its entry mismatch and
+   dispatch block), and the loop still runs to its end with the registers it had; without the flag it never polls */
 static void on_poll(CPU* c) {
     ++g_polls;
     __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED);
@@ -684,12 +717,14 @@ static int run_loop(GuestFn f, u64 count, u32 flag) {
     c.poll = flag;
     g_polls = 0;
     f(&c, SNX_CODE_BASE);
-    return c.x[0] == 0 && c.pc == 0x2000 ? g_polls : -1;
+    return c.x[0] == 0 && c.x[1] == count && c.pc == 0x2000 ? g_polls : -1;
 }
 
 static void poll_test(void) {
-    static const SnxU32 words[] = {0xF1000400UL,  /* SUBS X0,X0,#1 */
-                                   0x54FFFFE1UL,  /* B.NE back to it */
+    static const SnxU32 words[] = {0xD2800001UL,  /* MOV X1,#0 */
+                                   0x91000421UL,  /* ADD X1,X1,#1: the loop's head, not the function's start */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
                                    0xD65F03C0UL}; /* RET */
     unsigned char image[sizeof(words)];
     SnxProgram program;
@@ -730,6 +765,67 @@ static void poll_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* the allocas left in fn (the registers' slots, until ir_clean_function makes them SSA values), or with named the blocks
+   and instructions that keep a name (whose order in the bitcode SROA's names leave different from run to run) */
+static int left_over(LLVMValueRef fn, int named) {
+    int count = 0;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        size_t length = 0;
+        (void)LLVMGetValueName2(LLVMBasicBlockAsValue(bb), &length);
+        count += named && length;
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            length = 0;
+            (void)LLVMGetValueName2(inst, &length);
+            if (named ? length != 0 : LLVMIsAAllocaInst(inst) != NULL) ++count;
+        }
+    }
+    return count;
+}
+
+/* A function comes out of snx_ir_emit at O2 cleaned: its registers' slots SSA values, and no local name in it. The loop's
+   head is not its start, so it has a dispatch block and a poll */
+static void clean_test(void) {
+    static const SnxU32 words[] = {0xD2800062UL,  /* MOV X2,#3 */
+                                   0x91000421UL,  /* ADD X1,X1,#1, the loop's head */
+                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
+                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
+                                   0x8B020021UL,  /* ADD X1,X1,X2 */
+                                   0xD65F03C0UL}; /* RET */
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxFde range;
+    const SnxFunction* function;
+    LlvmSteps steps;
+    char error[1024];
+    size_t i, index;
+    int left;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    range.start = 0;
+    range.size = sizeof(image);
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the counting loop");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(function != NULL && function->leader_count > 1, "the counting loop is one function, entered by dispatch");
+    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
+        index = llvm_steps_add_function(&steps, &codegen, function);
+        left = left_over(steps.fns[index], 0);
+        if (left) fprintf(stderr, "clean: %d allocas left in the emitted function\n", left);
+        check(left == 0, "the function is emitted with its registers' slots made SSA values");
+        left = left_over(steps.fns[index], 1);
+        if (left) fprintf(stderr, "clean: %d named blocks and instructions in the emitted function\n", left);
+        check(left == 0, "the emitted function keeps no local name, its bitcode the same in every run");
+        llvm_steps_end(&steps);
+    } else if (function) {
+        fprintf(stderr, "%s\n", error);
+        check(0, "start the counting loop's module");
+    }
+    snx_codegen_free(&codegen);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -738,6 +834,7 @@ int main(void) {
     large_range_test();
     semantics_test();
     poll_test();
+    clean_test();
     printf("Native codegen: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

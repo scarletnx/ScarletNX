@@ -3,11 +3,11 @@
 #ifndef SNX_CTR_FONT_H
 #define SNX_CTR_FONT_H
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
-/* The shared font block of APT:GetSharedFont, in block (size bytes, which the caller zeroed): the status header, then
-   the font from the system archive's level 3 image (cbf_std.bcfnt.lz) decompressed, its offsets made absolute for a
-   block that lies at address. False when the archive has no such file or the font is malformed */
-bool snx_ctr_shared_font_build(const unsigned char* archive, size_t archive_size, unsigned char* block, size_t size,
-                               uint32_t address);
+struct SnxCtrProcess;
+/* APT's shared font, as GetSharedFont hands it over: the stand-in system title's RomFS
+   (cmake/ctr_system_archives.cmake, cbf_std.bcfnt.lz) loaded once into a shared memory block of the process, its CFNT
+   pointers relocated for the address it is mapped at, and a handle to that block. The first call loads it, every call
+   adds a handle. False when the stand-in is malformed or the block cannot be made. */
+bool snx_ctr_font_shared(struct SnxCtrProcess* p, uint32_t* address, uint32_t* handle);
 #endif

@@ -20,7 +20,7 @@ void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
         __atomic_store_n(&t->overflow, gen, __ATOMIC_RELEASE);
         return;
     }
-    for (p = a >> 12, e = (a + size - 1) >> 12; p <= e; p++) {
+    for (p = a >> 12, e = (a + size - 1) >> 12; p <= e;) {
         WritePageLeaf** slot = &t->leaf[(p >> 12) & 0xFFFF];
         WritePageLeaf* l = p >> 28 ? NULL : __atomic_load_n(slot, __ATOMIC_ACQUIRE);
         if (!l && !(p >> 28) && (l = calloc(1, sizeof(WritePageLeaf)))) __atomic_store_n(slot, l, __ATOMIC_RELEASE);
@@ -28,8 +28,23 @@ void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
             __atomic_store_n(&t->overflow, gen, __ATOMIC_RELEASE);
             return;
         }
-        __atomic_store_n(&l->gen[p & (LEAF_PAGES - 1)], gen, __ATOMIC_RELAXED);
-        __atomic_store_n(&l->group_max[(p & (LEAF_PAGES - 1)) / GROUP_PAGES], gen, __ATOMIC_RELEASE);
+        if (p == e) {
+            __atomic_store_n(&l->gen[p & (LEAF_PAGES - 1)], gen, __ATOMIC_RELAXED);
+            __atomic_store_n(&l->group_max[(p & (LEAF_PAGES - 1)) / GROUP_PAGES], gen, __ATOMIC_RELEASE);
+            __atomic_store_n(&l->max, gen, __ATOMIC_RELEASE);
+            return;
+        }
+        /* A range often spans many pages in the same leaf. Keep the leaf once, write each page, then publish each
+           group's newest once and the leaf's newest once. Readers still acquire the summaries before the pages;
+           the caller publishes the completed generation only after all its ranges have been stamped. */
+        u64 end = (p | (LEAF_PAGES - 1)) < e ? p | (LEAF_PAGES - 1) : e;
+        while (p <= end) {
+            u64 group_end = (p | (GROUP_PAGES - 1)) < end ? p | (GROUP_PAGES - 1) : end;
+            u64 group = (p & (LEAF_PAGES - 1)) / GROUP_PAGES;
+            for (; p <= group_end; p++)
+                __atomic_store_n(&l->gen[p & (LEAF_PAGES - 1)], gen, __ATOMIC_RELAXED);
+            __atomic_store_n(&l->group_max[group], gen, __ATOMIC_RELEASE);
+        }
         __atomic_store_n(&l->max, gen, __ATOMIC_RELEASE);
     }
 }

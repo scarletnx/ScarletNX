@@ -1,0 +1,2 @@
+family a
+hook f(addr p out[q], addr q in[4]) = h pure

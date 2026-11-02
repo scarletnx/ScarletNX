@@ -8,6 +8,7 @@
    little-endian host each is a memcpy or nothing, so the code compiled from them is what a plain memcpy gave. Some
    wire formats are big-endian (the network room, DNS, the shared fonts' header), hence the _be forms. */
 
+#include "common/utilities/bits.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -18,9 +19,9 @@
 #endif
 
 #if SNX_HOST_BE
-#define SNX_LE16(v) __builtin_bswap16(v)
-#define SNX_LE32(v) __builtin_bswap32(v)
-#define SNX_LE64(v) __builtin_bswap64(v)
+#define SNX_LE16(v) snx_bswap16(v)
+#define SNX_LE32(v) snx_bswap32(v)
+#define SNX_LE64(v) snx_bswap64(v)
 #define SNX_BE16(v) ((uint16_t)(v))
 #define SNX_BE32(v) ((uint32_t)(v))
 #define SNX_BE64(v) ((uint64_t)(v))
@@ -28,9 +29,9 @@
 #define SNX_LE16(v) ((uint16_t)(v))
 #define SNX_LE32(v) ((uint32_t)(v))
 #define SNX_LE64(v) ((uint64_t)(v))
-#define SNX_BE16(v) __builtin_bswap16(v)
-#define SNX_BE32(v) __builtin_bswap32(v)
-#define SNX_BE64(v) __builtin_bswap64(v)
+#define SNX_BE16(v) snx_bswap16(v)
+#define SNX_BE32(v) snx_bswap32(v)
+#define SNX_BE64(v) snx_bswap64(v)
 #endif
 
 /* a value between the host's order and little-endian (the same conversion both ways) */

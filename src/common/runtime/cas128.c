@@ -12,6 +12,10 @@
 #include <unistd.h>
 #endif
 
+/* a 16-byte compare-and-swap has no ISO C form: it takes the compiler's 128-bit integer */
+#if !defined(__SIZEOF_INT128__)
+#error "STXP's 16-byte compare-and-swap needs the compiler's 128-bit integer, which this compiler has not"
+#endif
 __extension__ typedef unsigned __int128 snx_cas_u128;
 
 /* The host's instruction: amocas.q on RISC-V, LL.D and SC.Q on LoongArch, cmpxchg16b (this file is built with -mcx16,

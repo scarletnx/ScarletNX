@@ -241,6 +241,14 @@ static SnxCtrWindowLayout window_layout(void) {
    mouse */
 static void touch_event(const SDL_Event* event) {
     SDL_Window* window = snx_ctr_vk()->host.window;
+    /* only this window's events: another window's press, drag and release change nothing */
+    if (event->type != SDL_EVENT_MOUSE_MOTION && event->type != SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        event->type != SDL_EVENT_MOUSE_BUTTON_UP && event->type != SDL_EVENT_WINDOW_FOCUS_LOST)
+        return;
+    SDL_WindowID from = event->type == SDL_EVENT_MOUSE_MOTION ? event->motion.windowID
+                        : event->type == SDL_EVENT_WINDOW_FOCUS_LOST ? event->window.windowID
+                                                                      : event->button.windowID;
+    if (window && from != SDL_GetWindowID(window)) return;
     bool pointer = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP ||
                    event->type == SDL_EVENT_MOUSE_MOTION;
     if (pointer) {
@@ -254,7 +262,7 @@ static void touch_event(const SDL_Event* event) {
     if (release) {
         g_present.touching = 0;
         snx_ctr_input_touch(false, 0, 0);
-    } else if ((press || drag) && window) {
+    } else if ((press || drag) && window && g_present.frames[1].width) { /* no bottom screen drawn yet: nothing to touch */
         /* the event's point is in the window's units, the swapchain image in pixels */
         float density = SDL_GetWindowPixelDensity(window);
         float x = press ? event->button.x : event->motion.x, y = press ? event->button.y : event->motion.y;
@@ -266,6 +274,8 @@ static void touch_event(const SDL_Event* event) {
     }
 }
 static void pump(void) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    SDL_Window* window = v ? v->host.window : NULL;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) g_present.closed = 1;
@@ -360,6 +370,8 @@ static void show_screens(VkCommandBuffer cb, VkImage target) {
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, canvas, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    /* the blits below overwrite the clear's pixels: their writes must wait for it */
+    image_barrier(cb, canvas, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     snx_ctr_vk_barrier(cb); /* what the transfers made at the resolution scale */
     for (unsigned i = 0; i < 2; ++i) {
         Frame* f = &g_present.frames[i];
@@ -470,7 +482,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
     g_present.post_ready = g_settings.ctr_anti_aliasing == 1 && g_present.windowed && post_images();
     VkCommandBuffer cb = snx_ctr_vk_commands();
     unsigned slot = snx_ctr_vk_slot(); /* the open recording's, whose semaphores it takes */
-    snx_ctr_vk_barrier(cb); /* after what the GPU wrote to the framebuffer */
+    snx_ctr_vk_compute_barrier(cb);    /* after what the GPU wrote to the framebuffer */
     image_barrier(cb, f->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); /* the shader writes all of it */
     f->layout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorSet set = snx_ctr_vk_set(g_present.decode.set);

@@ -65,12 +65,12 @@ enum {
    x86 fields are only ever set when the target is x86-64 and the arm ones when it is AArch64, so an emitter gated
    on them is gated on the architecture */
 typedef struct {
-    int x86;                                          /* x86-64 target: x86 intrinsics are available at all */
-    int sse42, crc32, pclmul, aes, sha_ni, gfni, fma; /* x86 extensions */
-    int avx2, avx512bw, avx512vl, avx512bitalg;
-    int aarch64;           /* AArch64 target: AArch64 intrinsics are available at all */
-    int arm_aes, arm_sha2; /* AArch64 crypto extensions (PMULL comes with AES) */
-    int arm_crc;           /* AArch64 CRC32 extension */
+    unsigned x86 : 1; /* x86-64 target: x86 intrinsics are available at all */
+    unsigned sse42 : 1, crc32 : 1, pclmul : 1, aes : 1, sha_ni : 1, gfni : 1, fma : 1, f16c : 1; /* x86 extensions */
+    unsigned avx2 : 1, avx512bw : 1, avx512vl : 1, avx512bitalg : 1;
+    unsigned aarch64 : 1;                /* AArch64 target: AArch64 intrinsics are available at all */
+    unsigned arm_aes : 1, arm_sha2 : 1; /* AArch64 crypto extensions (PMULL comes with AES) */
+    unsigned arm_crc : 1;                /* AArch64 CRC32 extension */
 } SnxIrFeatures;
 extern SnxIrFeatures snx_ir_host;
 
@@ -81,6 +81,14 @@ typedef struct {
     LLVMBasicBlockRef block;
     uint32_t valid;
 } SnxIrRegisterCache;
+
+/* Low scalar lanes in guest numeric order. A write to any vector register, an unknown call or a new block drops
+   the snapshots. No architectural store is removed, and this does not cache guest memory. */
+typedef struct {
+    LLVMValueRef low[32][4];
+    LLVMBasicBlockRef block;
+    uint32_t valid[4];
+} SnxIrVectorCache;
 
 /* SSA flags are a per-block forwarding table, not a second CPU state.
    Every write still commits to the architectural structure immediately. When all four come from a compare (SUBS,
@@ -98,19 +106,36 @@ typedef struct {
 /* Block-local LLVM SSA snapshots, never guest architectural state. */
 typedef struct {
     SnxIrRegisterCache registers;
+    SnxIrVectorCache vectors;
     SnxIrFlags flags;
 } SnxIrBlockState;
 
+/* what ir_clean_function runs over each function as it is emitted, and what llvm_batch=ipo runs over a unit after it
+   in place of default<O?>: the inliner, and a cleanup of what it inlined */
+#define SNX_IR_CLEAN_PASSES "sroa,early-cse,instcombine<no-verify-fixpoint>,simplifycfg"
+#define SNX_IR_IPO_PASSES                                                                                              \
+    "cgscc(inline),globaldce,function(instcombine<no-verify-fixpoint>,simplifycfg),function(sink,simplifycfg)"
+
 /* the AOT recompile's LLVM settings (nx/runtime/settings_llvm.h): the pipeline run in place of default<O?>, NULL for
-   that one, and what is set on the pass builder's options and on the target machine, NULL for nothing. Without one
-   (the runtime JIT's, the recompiler library's) LLVM keeps its own */
+   that one, the passes each function runs as it is emitted, NULL for none, and what is set on the pass builder's
+   options and on the target machine, NULL for nothing. Without one (the runtime JIT's, the recompiler library's)
+   LLVM keeps its own, and each function runs SNX_IR_CLEAN_PASSES */
 typedef struct SnxIrTuning {
     const char* pipeline;
+    const char* clean;
     void (*builder)(LLVMPassBuilderOptionsRef options);
     void (*machine)(LLVMTargetMachineRef machine);
     /* every value the three above are made from, as text: what the unit cache keys objects with (unit_cache.c) */
     const char* text;
 } SnxIrTuning;
+
+/* Compile-time IR statistics. Counts describe emitted IR before LLVM's machine optimizations, not dynamic work. */
+typedef struct {
+    unsigned enabled : 1; /* the setting ir_stats (snx_ir_diagnostics) */
+    SnxU64 functions, promoted_functions, call_sites, fp_calls, vector_calls, guest_calls, indirect_calls;
+    SnxU64 sync_stores, sync_reloads, call_stores, store_bytes, reload_bytes;
+    SnxU64 lookups, polls, stale_checks, return_checks;
+} SnxIrStats;
 
 typedef struct SnxIr {
     LLVMContextRef ctx;
@@ -121,6 +146,9 @@ typedef struct SnxIr {
     int promote; /* ir_promote_registers at this level (O1 and above): at O0 SROA and mem2reg leave its slots on
                     the stack */
     const SnxIrFeatures* features;
+    SnxIrStats stats;
+    SnxU64 dump_pc, dump_instruction_pc;
+    unsigned dump_function : 1, dump_active : 1; /* the setting ir_dump_pc's host diagnostics, never generated code */
     LLVMTypeRef t_void, t_i1, t_i8, t_i16, t_i32, t_i64, t_i128, t_ptr, t_guest;
     /* the function being emitted: its CPU* and the guest memory base (u8* const M=c->mem) */
     LLVMValueRef fn, c, M;
@@ -153,6 +181,7 @@ typedef struct SnxIr {
 } SnxIr;
 
 void ir_state_invalidate(SnxIr* ir);
+void ir_vectors_invalidate(SnxIr* ir);
 void ir_registers_invalidate(SnxIr* ir);
 void ir_flags_invalidate(SnxIr* ir);
 LLVMValueRef ir_flag_read(SnxIr* ir, unsigned index);
@@ -176,6 +205,9 @@ int snx_ir_slp(void);
    any module is made; the caches' keys carry it */
 void snx_ir_fpsr_flags(int exact);
 int snx_ir_fpsr_exact(void);
+/* the settings ir_stats (each code unit's static IR counts in a recompile's log) and ir_dump_pc (hex: the function
+   there printed, its IR before and after the promotion), for the SnxIr made after */
+void snx_ir_diagnostics(int stats, const char* dump_pc);
 /* Whether the guest's loads and stores are volatile (the setting volatile_memory, off by default): on, LLVM keeps
    each where the guest has it (ir_state.c's ir_rd). Once per process, before any module is made; the caches' keys
    carry it */
@@ -201,7 +233,7 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
    unit cache's key holds it (unit_cache.c), so a change there that changes the object of the same IR bumps it */
-#define SNX_IR_OBJECT_VERSION 3
+#define SNX_IR_OBJECT_VERSION 4
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
    caller's */
@@ -225,6 +257,10 @@ LLVMValueRef snx_ir_static_step(SnxIr* ir, SnxU32 word, SnxU64 pc, SnxU64 featur
 /* the emitted function's accesses to the registers in the CPU structure onto locals, which the CPU structure gets
    back around every call and return (ir_promote.c). snx_ir_emit runs it at O1 and above */
 void ir_promote_registers(SnxIr* ir, LLVMValueRef fn);
+/* the promoted function's slots made SSA values and what that leaves trivial removed, as it is emitted (ir.c) */
+void ir_clean_function(SnxIr* ir, LLVMValueRef fn);
+/* Accumulates one emitted function's call counts when stats.enabled is set. */
+void ir_stats_function(SnxIr* ir, LLVMValueRef fn);
 /* Starts a function body: entry block, c and M */
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function);
 
@@ -314,6 +350,9 @@ LLVMValueRef ir_intrinsic(SnxIr* ir, const char* name, LLVMTypeRef type, LLVMVal
 /* memory effects of a declared function: none (pure), or only memory reached through its pointer arguments */
 void ir_pure(SnxIr* ir, LLVMValueRef function);
 void ir_argmem(SnxIr* ir, LLVMValueRef function);
+/* memory(none) alone: a call whose effect is invisible to this module but which must not be deleted, unlike
+   ir_pure's, whose willreturn lets LLVM remove it when its result goes unused (snx_fp_env) */
+void ir_no_memory(SnxIr* ir, LLVMValueRef function);
 /* a helper that takes c but touches none of its registers (X, SP, NZCV, V), only FPCR, FPSR or the exclusive
    monitor: ir_promote_registers needs the CPU structure to hold none of them around its calls */
 void ir_noregs(SnxIr* ir, LLVMValueRef function);

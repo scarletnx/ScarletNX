@@ -8,7 +8,8 @@
    NULL, which the runtime treats as the end of the game.
 
    Compile threads of the service take the queued pcs in batches. A batch finds the functions at all of its pcs and
-   those they call (snx_codegen_discover, one budget for the batch), emits them into one LLVM module (snx_ir_emit, as
+   those they call (snx_codegen_discover, one budget for the batch, each branch graph bounded separately), emits them
+   into one LLVM module (snx_ir_emit, as
    the AOT build does), loads its object into the code arena (code_loader.c, packed after the code already there) and
    publishes every leader of every function into the dispatch table, where later lookups find it without a miss. The
    compile threads are host threads: none is a guest thread or holds a guest core, so a compile never delays another
@@ -36,8 +37,12 @@
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/aarch64/cpu.h"
 
-/* instructions a batch discovers beyond the functions at its pcs (snx_codegen_discover's budget) */
+/* instructions a batch discovers beyond the regions at its pcs (snx_codegen_discover's budget) */
 #define SNX_JIT_BUDGET  20000
+/* A live miss must not pull a huge branch graph into one LLVM function before it can resume. */
+#define SNX_JIT_REGION_INSTRUCTIONS 4096
+#define SNX_JIT_OVERFLOW_INSTRUCTIONS 64
+#define SNX_JIT_LIVE_BUDGET 64
 /* pcs a batch takes from the misses' queue; a warm batch takes an eighth of it. LLVM's fixed cost per module
    (context, pass pipeline, code generator, load) is shared by the batch, and a start-up burst of misses goes through
    in a few batches instead of thousands of compiles */
@@ -70,7 +75,7 @@ typedef struct {
     const u64* aot_addresses;
     const GuestFn* aot_functions;
     size_t aot_count;
-    /* every call through CPU.disp, as the AOT module's --hook-direct-calls (gpu/nvn_trace.c wraps slots) */
+    /* every call through CPU.disp, as the AOT module's --hook-direct-calls (gpu/nvn/nvn_loader.c takes slots) */
     int hook_direct_calls;
     /* SVC #imm through RtAPI.svcs, as the AOT module's (SnxCodegen.direct_svc): the runtime must give RtAPI.svcs */
     int direct_svc;
@@ -78,6 +83,8 @@ typedef struct {
     SnxU64 features;
     size_t budget;    /* 0: SNX_JIT_BUDGET */
     size_t batch;     /* 0: SNX_JIT_BATCH */
+    size_t region_instructions; /* 0: adaptive REGION/OVERFLOW limits above; SIZE_MAX: previous unbounded discovery */
+    size_t live_budget; /* 0: SNX_JIT_LIVE_BUDGET, SIZE_MAX: use budget for live misses too */
     unsigned threads; /* compile threads, 0: by the host's CPUs (jit_service.c), at most SNX_JIT_THREADS */
     char opt;         /* the -O letter, 0: '0' */
     /* after each batch, on its compile thread, outside every lock of the service (NULL: none) */

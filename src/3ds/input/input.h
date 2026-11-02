@@ -56,14 +56,15 @@ typedef struct {
    screen. True when the point is on the screen, false when it is not (px and py are the nearest pixel then, 0 and 0
    with no picture) */
 bool snx_ctr_touch_locate(const SnxCtrWindowLayout* layout, double x, double y, unsigned* px, unsigned* py);
-/* The touch screen pressed at the bottom screen's pixel (x, y), or let go. Any thread: the window's pump sets it and
-   hid's update reads it */
-void snx_ctr_input_touch(bool down, unsigned x, unsigned y);
 union SDL_Event;
 /* The gamepads and the script: from now on scripted presses count their time */
 void snx_ctr_input_init(void);
 /* An event of the presenter's window pump: a gamepad connected or gone */
 void snx_ctr_input_event(const union SDL_Event* event);
+/* The presenter's pointer: a press on the touch screen at x and y in its pixels, or a release */
+void snx_ctr_input_touch(bool pressed, uint32_t x, uint32_t y);
+/* Whether the touch screen is pressed */
+bool snx_ctr_input_touched(void);
 /* What the player holds now */
 void snx_ctr_input_read(SnxCtrInput* input);
 void snx_ctr_input_free(void);

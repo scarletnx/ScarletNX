@@ -22,6 +22,13 @@ typedef struct {
 
 /* each kernel: main at 0x80 loops x19 times and returns through x30 = 0; x3 points at scratch memory */
 static const Kernel kernels[] = {
+    {"rsqrte", "main:\n fmov v1.4s, #1.5\nloop:\n frsqrte v1.4s, v1.4s\n"
+               " frsqrte v1.4s, v1.4s\n frsqrte v1.4s, v1.4s\n frsqrte v1.4s, v1.4s\n"
+               " subs x19, x19, #1\n b.ne loop\n str q1, [x3]\n ret\n"},
+    {"rsqrte-mixed", "main:\n fmov v1.4s, #1.5\n mov v1.s[2], wzr\nloop:\n"
+                     " frsqrte v0.4s, v1.4s\n eor v3.16b, v3.16b, v0.16b\n"
+                     " frsqrte v0.4s, v1.4s\n eor v3.16b, v3.16b, v0.16b\n"
+                     " subs x19, x19, #1\n b.ne loop\n str q3, [x3]\n ret\n"},
     {"integer", "main:\n mov x1, #0\n mov x2, #1\nloop:\n add x1, x1, x2\n eor x2, x2, x1, lsl #3\n"
                 " and x4, x1, #0xff00ff00ff00ff00\n orr x5, x4, #0x3\n adds x6, x5, x2\n csel x7, x6, x1, mi\n"
                 " ubfx x8, x7, #5, #17\n madd x1, x8, x2, x1\n str x1, [x3, #8]\n ldr x9, [x3, #8]\n"

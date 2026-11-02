@@ -3,6 +3,7 @@
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ini_lines.c utilities/game_ini.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
+    utilities/gpu_driver.c
     utilities/spirv_emit.c utilities/script.c memory/host.c
     cpu/aarch64/a64_decoder.c cpu/recompiler/codegen.c cpu/recompiler/variants.c runtime/cas128.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
@@ -15,6 +16,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set_source_files_properties(runtime/cas128.c PROPERTIES COMPILE_OPTIONS -mcx16)
 endif()
 target_link_libraries(scarletnx-common PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(scarletnx-common PRIVATE snx_yyjson) # the GPU driver packages' meta.json (utilities/gpu_driver.c)
 # the menus' icons, beside the VGA font (utilities/font.c): the launcher's font and the game menu's atlas draw them
 include("${PROJECT_SOURCE_DIR}/cmake/gui_icons.cmake")
 target_sources(scarletnx-common PRIVATE "${snx_gui_icons_c}")
@@ -58,6 +60,14 @@ set_target_properties(scarletnx-filesystem PROPERTIES C_STANDARD 11 C_STANDARD_R
 target_compile_definitions(scarletnx-filesystem PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 target_compile_options(scarletnx-filesystem PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(scarletnx-filesystem PUBLIC Threads::Threads)
+
+# The launcher's HTTPS client (network/https.h) through libcurl, trusting Mozilla's roots compiled in: where the build
+# has OpenSSL, which libcurl's TLS is (cmake/dependencies.cmake)
+if(TARGET CURL::libcurl)
+    add_library(snx_https STATIC network/https.c)
+    target_compile_options(snx_https PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+    target_link_libraries(snx_https PRIVATE CURL::libcurl snx_cacert)
+endif()
 
 # The emulated network stack (network/net.h), shared by nx's bsd and sfdnsres and the GNU ABI's socket syscalls. A
 # library of its own so the C99 tools don't link Winsock

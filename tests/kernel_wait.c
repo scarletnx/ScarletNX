@@ -37,15 +37,22 @@ u64 guest_ns(void) { return g_now; } /* the waits' deadlines: no pause here */
 /* a save state's load, which nothing here does */
 const SnxArmModule* g_arm_mod;
 void kthread_retire_check(PMutex* held) { (void)held; }
-void pc_broadcast(PCond* c) { (void)c; }
+/* thread.c's waits on a thread's word */
+u32 kt_seq(const KThread* t) {
+    (void)t;
+    return 0;
+}
+void kt_notify_later(KThread* t) { (void)t; }
+void klock_unlock(void) {}
 /* what another thread does while the caller waits, and what the caller's wait looked like then */
 static void (*g_during)(KThread* t);
 static char g_seen_name[24];
 static u64 g_seen_tid;
 static int g_waits;
-int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
-    (void)c;
-    (void)m;
+void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns) {
+    (void)t;
+    (void)seq;
+    (void)held;
     g_waits++;
     memcpy(g_seen_name, g_self.wait_name, sizeof g_seen_name);
     g_seen_tid = g_self.wait_tid;
@@ -57,7 +64,6 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
         g_now += (u64)timeout_ns;
     else
         fatal("kernel_wait.c: a wait with no deadline and nothing to end it\n");
-    return 0;
 }
 
 static unsigned checks, failures;

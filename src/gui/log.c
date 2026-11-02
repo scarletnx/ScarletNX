@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/log.h"
 #include "common/utilities/common.h"
+#include "common/utilities/logscan.h"
 #include <errno.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -117,4 +118,36 @@ void gui_log(const char* format, ...) {
 void gui_log_fatal(const char* text) {
     gui_log("%s", text);
     log_to(SNX_ERROR_LOG, text);
+}
+int gui_log_game_end(const char* path, char* what, size_t size, char* lines, size_t lines_size) {
+    SnxLogScan scan;
+    char why[256];
+    size_t n = 0;
+    int outcome;
+    FILE* f = snx_fopen(path, "rb");
+    if (lines_size) lines[0] = 0;
+    if (!f) {
+        snprintf(what, size, "%s did not open: %s", path, snx_os_error(why, sizeof why));
+        return -1;
+    }
+    if (snx_logscan_file(&scan, f)) {
+        snx_logscan_free(&scan);
+        fclose(f);
+        snprintf(what, size, "%s could not be read whole", path);
+        return -1;
+    }
+    fclose(f);
+    outcome = scan.outcome;
+    if (scan.fatal)
+        snprintf(what, size, "%s", snx_logscan_text(&scan, scan.fatal));
+    else if (scan.signal)
+        snprintf(what, size, "%s (signal %s)", snx_logscan_outcome_name(outcome), snx_logscan_text(&scan, scan.signal));
+    else
+        snprintf(what, size, "%s", snx_logscan_outcome_name(outcome));
+    for (int i = 0; i < scan.ntail && n < lines_size; ++i) {
+        int w = snprintf(lines + n, lines_size - n, "%s\n", snx_logscan_text(&scan, scan.tail[i]));
+        n = w < 0 ? lines_size : n + (size_t)w;
+    }
+    snx_logscan_free(&scan);
+    return outcome;
 }

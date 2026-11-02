@@ -7,6 +7,7 @@
 #define SNX_RECOMPILER_LLVM_IR_FP_H
 
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
 
@@ -30,6 +31,76 @@ static inline LLVMValueRef ixc_set(SnxIr* ir) {
     return LLVMBuildICmp(ir->b, LLVMIntNE, LLVMBuildAnd(ir->b, fpsr(ir), ir_i32(ir, FPSR_IXC), ""), ir_i32(ir, 0),
                          "");
 }
+static inline void ir_fp_raise_ixc(SnxIr* ir, LLVMValueRef inexact) {
+    LLVMValueRef bit = LLVMBuildShl(ir->b, LLVMBuildZExt(ir->b, inexact, ir->t_i32, ""), ir_i32(ir, 4), "");
+    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), bit, ""), offsetof(CPU, fpsr));
+}
+
+/* x86-64 Windows returns a 16-byte structure through memory, the caller passing where as a hidden first argument
+   (sret), and Clang compiles the helpers so there: an LLVM structure would come back in RAX and RDX. The code runs
+   where it is built, so the host's architecture is the target's */
+static inline int ir_fp_reply_in_memory(SnxIr* ir) {
+#ifdef __x86_64__
+    return ir->windows;
+#else
+    return 0;
+#endif
+}
+
+/* One call of an FP helper (cpu.h), shared by ir_fpu.c's scalar path and ir_vec_fp.c's lanes so both declare it
+   the same way: the operands, then the guest's FPCR by value. The reply is {value, flags}: the value is the result
+   (an encoding, an integer, or a compare's NZCV nibble), zero-extended to i64, and "flags" the FPSR bits the
+   operation raised, which are ORed into FPSR here. The
+   helper reads and writes no memory, so it is no site for ir_promote_registers (nothing of the CPU structure is
+   unknown behind it) and LLVM may share the FPCR load and the calls themselves. Where the reply comes back
+   through memory it lands in a local, which keeps the call out of ir_promote_registers too. */
+static inline LLVMValueRef ir_fp_reply_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count,
+                                            int with_fpsr) {
+    LLVMTypeRef params[9], fields[2] = {ir->t_i64, ir->t_i32};
+    LLVMValueRef args[9];
+    unsigned n = count;
+    for (unsigned i = 0; i < count; ++i) {
+        args[i] = operands[i];
+        params[i] = LLVMTypeOf(operands[i]);
+    }
+    args[n] = fpcr(ir);
+    params[n++] = ir->t_i32;
+    if (with_fpsr) {
+        args[n] = fpsr(ir);
+        params[n++] = ir->t_i32;
+    }
+    LLVMTypeRef reply = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
+    LLVMValueRef call;
+    if (ir_fp_reply_in_memory(ir)) {
+        LLVMTypeRef with[10] = {ir->t_ptr};
+        LLVMValueRef pass[10] = {ir_local(ir, reply)};
+        for (unsigned i = 0; i < n; ++i) {
+            with[i + 1] = params[i];
+            pass[i + 1] = args[i];
+        }
+        LLVMValueRef function = ir_extern(ir, name, ir->t_void, with, n + 1);
+        LLVMAttributeRef sret = LLVMCreateTypeAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("sret", 4), reply);
+        LLVMAddAttributeAtIndex(function, 1, sret);
+        ir_argmem(ir, function);
+        LLVMValueRef made =
+            LLVMBuildCall2(ir->b, LLVMFunctionType(ir->t_void, with, n + 1, 0), function, pass, n + 1, "");
+        LLVMAddCallSiteAttribute(made, 1, sret);
+        call = LLVMBuildLoad2(ir->b, reply, pass[0], "");
+    } else {
+        LLVMValueRef function = ir_extern(ir, name, reply, params, n);
+        ir_pure(ir, function);
+        call = LLVMBuildCall2(ir->b, LLVMFunctionType(reply, params, n, 0), function, args, n, "");
+    }
+    ir_cpu_store(ir, LLVMBuildOr(ir->b, fpsr(ir), LLVMBuildExtractValue(ir->b, call, 1, ""), ""), offsetof(CPU, fpsr));
+    return LLVMBuildExtractValue(ir->b, call, 0, "");
+}
+static inline LLVMValueRef ir_fp_call(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
+    return ir_fp_reply_call(ir, name, operands, count, 0);
+}
+/* snx_fp_host_binary, which also takes FPSR (cpu.h) and replies with FPSR after it */
+static inline LLVMValueRef ir_fp_call_fpsr(SnxIr* ir, const char* name, LLVMValueRef* operands, unsigned count) {
+    return ir_fp_reply_call(ir, name, operands, count, 1);
+}
 static inline LLVMValueRef both(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildAnd(ir->b, a, b, ""); }
 static inline LLVMValueRef either(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) { return LLVMBuildOr(ir->b, a, b, ""); }
 
@@ -40,6 +111,32 @@ static inline int host_round(SnxIr* ir) {
     return (ir->features->x86 && ir->features->sse42) || ir->features->aarch64;
 }
 
+/* the constant v as a float like f (a scalar or a vector) */
+static inline LLVMValueRef fp_like(LLVMValueRef f, double v) {
+    LLVMTypeRef type = LLVMTypeOf(f);
+    if (LLVMGetTypeKind(type) != LLVMVectorTypeKind) return LLVMConstReal(type, v);
+    LLVMValueRef k = LLVMConstReal(LLVMGetElementType(type), v), all[16];
+    unsigned lanes = LLVMGetVectorSize(type);
+    for (unsigned i = 0; i < lanes; ++i) all[i] = k;
+    return LLVMConstVector(all, lanes);
+}
+/* f (a float or a vector of them, neither a NaN) rounded to an integral value in rm (0-4: FPRounding's TIEEVEN,
+   POSINF, NEGINF, ZERO, TIEAWAY) by the host_round rounding instructions. x86 has none for ties away from zero
+   (LLVM's llvm.round there adds the half's predecessor, whose sum the host's rounding mode rounds): the truncation,
+   one more away from zero where the fraction it dropped is a half or more. Exact in every host rounding mode: the
+   fraction f - trunc(f) is f's own low bits, and trunc(f) + 1 or - 1 is taken only where a fraction was dropped,
+   so below 2^24 (2^53) */
+static inline LLVMValueRef host_rint(SnxIr* ir, LLVMValueRef f, unsigned rm) {
+    static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
+    LLVMTypeRef type = LLVMTypeOf(f);
+    if (rm != 4 || ir->features->aarch64) return ir_intrinsic(ir, names[rm], type, &f, 1);
+    LLVMValueRef t = ir_intrinsic(ir, "llvm.trunc", type, &f, 1), dropped = LLVMBuildFSub(ir->b, f, t, ""), step[2];
+    dropped = ir_intrinsic(ir, "llvm.fabs", type, &dropped, 1);
+    step[0] = fp_like(f, 1.0);
+    step[1] = f;
+    LLVMValueRef away = LLVMBuildFAdd(ir->b, t, ir_intrinsic(ir, "llvm.copysign", type, step, 2), "");
+    return LLVMBuildSelect(ir->b, LLVMBuildFCmp(ir->b, LLVMRealOGE, dropped, fp_like(f, 0.5), ""), away, t, "");
+}
 /* an encoding (or a vector of them) as the helpers' u64 operand */
 static inline LLVMValueRef u64_of(SnxIr* ir, LLVMValueRef bits) { return ir_cast(ir, bits, ir->t_i64, 0); }
 static inline SnxU64 sign_mask(unsigned width) { return (SnxU64)1 << (width - 1); }
@@ -49,6 +146,83 @@ static inline LLVMValueRef fma3(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, LLVMV
 }
 static inline LLVMValueRef float_ne(SnxIr* ir, LLVMValueRef a, LLVMValueRef b) {
     return LLVMBuildFCmp(ir->b, LLVMRealUNE, a, b, "");
+}
+
+/* Fixed Arm rounding modes, or 5 for FPCR.RMode. A dynamic mode executes only its selected intrinsic. */
+static inline LLVMValueRef ir_fp_round_value(SnxIr* ir, LLVMValueRef value, unsigned mode) {
+    static const char* const names[] = {"llvm.roundeven", "llvm.ceil", "llvm.floor", "llvm.trunc", "llvm.round"};
+    if (mode < 5) return ir_intrinsic(ir, names[mode], LLVMTypeOf(value), &value, 1);
+    LLVMBasicBlockRef blocks[4], join = ir_block(ir, "fp_round_join");
+    for (unsigned i = 0; i < 4; ++i) blocks[i] = ir_block(ir, "fp_round_mode");
+    LLVMValueRef select = LLVMBuildSwitch(ir->b, fpcr_rmode(ir), blocks[3], 3), results[4];
+    for (unsigned i = 0; i < 3; ++i) LLVMAddCase(select, ir_i32(ir, i), blocks[i]);
+    for (unsigned i = 0; i < 4; ++i) {
+        LLVMPositionBuilderAtEnd(ir->b, blocks[i]);
+        results[i] = ir_intrinsic(ir, names[i], LLVMTypeOf(value), &value, 1);
+        LLVMBuildBr(ir->b, join);
+    }
+    LLVMPositionBuilderAtEnd(ir->b, join);
+    LLVMValueRef result = LLVMBuildPhi(ir->b, LLVMTypeOf(value), "");
+    LLVMAddIncoming(result, results, blocks, 4);
+    return result;
+}
+
+/* Knuth TwoSum's error term, with the rounded sum already available. No reassociation or contraction is allowed. */
+static inline LLVMValueRef ir_fp_sum_error(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, LLVMValueRef sum) {
+    LLVMValueRef z = LLVMBuildFSub(ir->b, sum, a, "");
+    LLVMValueRef da = LLVMBuildFSub(ir->b, a, LLVMBuildFSub(ir->b, sum, z, ""), "");
+    return LLVMBuildFAdd(ir->b, da, LLVMBuildFSub(ir->b, b, z, ""), "");
+}
+
+/* Conservatively keep intermediate doubles away from underflow and infinity. Zero is exact here. */
+static inline LLVMValueRef ir_fp_residual_safe(SnxIr* ir, LLVMValueRef value) {
+    LLVMTypeRef bits = LLVMGetTypeKind(LLVMTypeOf(value)) == LLVMVectorTypeKind ?
+        LLVMVectorType(ir->t_i64, LLVMGetVectorSize(LLVMTypeOf(value))) : ir->t_i64;
+    LLVMValueRef raw = LLVMBuildBitCast(ir->b, value, bits, "");
+    LLVMValueRef magnitude = LLVMBuildAnd(ir->b, raw, ir_vec_k(ir, bits, 0x7fffffffffffffffull), "");
+    LLVMValueRef normal = both(ir,
+        LLVMBuildICmp(ir->b, LLVMIntUGE, magnitude, ir_vec_k(ir, bits, 0x03f0000000000000ull), ""),
+        LLVMBuildICmp(ir->b, LLVMIntULT, magnitude, ir_vec_k(ir, bits, 0x7ff0000000000000ull), ""));
+    return either(ir, normal, LLVMBuildICmp(ir->b, LLVMIntEQ, magnitude, LLVMConstNull(bits), ""));
+}
+
+/* Exact FMA inexactness, evaluated only with IXC clear and after the result/operand guards.
+   f32 products fit exactly in f64. For f64 use the ErrFma expansion of Boldo/Muller, with tighter range guards:
+   https://perso.ens-lyon.fr/jean-michel.muller/correct_fma_err.pdf
+   Rejected intermediates go to the existing helper; no approximation is used for FPSR. */
+static inline LLVMValueRef ir_fp_fma_error(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, LLVMValueRef add,
+                                          LLVMValueRef result, unsigned width, LLVMValueRef* valid) {
+    LLVMTypeRef type = LLVMGetTypeKind(LLVMTypeOf(a)) == LLVMVectorTypeKind ?
+        LLVMVectorType(LLVMDoubleTypeInContext(ir->ctx), LLVMGetVectorSize(LLVMTypeOf(a))) :
+        LLVMDoubleTypeInContext(ir->ctx);
+    if (width == 32) {
+        a = LLVMBuildFPExt(ir->b, a, type, "");
+        b = LLVMBuildFPExt(ir->b, b, type, "");
+        add = LLVMBuildFPExt(ir->b, add, type, "");
+        result = LLVMBuildFPExt(ir->b, result, type, "");
+    }
+    LLVMValueRef zero = LLVMConstNull(type), product = LLVMBuildFMul(ir->b, a, b, "");
+    if (width == 32) {
+        LLVMValueRef sum = LLVMBuildFAdd(ir->b, product, add, "");
+        LLVMValueRef error = ir_fp_sum_error(ir, product, add, sum);
+        LLVMValueRef inexact = either(ir, float_ne(ir, sum, result), float_ne(ir, error, zero));
+        *valid = LLVMConstAllOnes(LLVMTypeOf(inexact));
+        return inexact;
+    }
+    LLVMValueRef product_error = fma3(ir, a, b, LLVMBuildFNeg(ir->b, product, ""));
+    LLVMValueRef alpha = LLVMBuildFAdd(ir->b, add, product_error, "");
+    LLVMValueRef alpha_error = ir_fp_sum_error(ir, add, product_error, alpha);
+    LLVMValueRef beta = LLVMBuildFAdd(ir->b, product, alpha, "");
+    LLVMValueRef beta_error = ir_fp_sum_error(ir, product, alpha, beta);
+    LLVMValueRef gamma = LLVMBuildFAdd(ir->b, LLVMBuildFSub(ir->b, beta, result, ""), beta_error, "");
+    LLVMValueRef hi = LLVMBuildFAdd(ir->b, gamma, alpha_error, "");
+    LLVMValueRef lo = ir_fp_sum_error(ir, gamma, alpha_error, hi);
+    LLVMValueRef zero_product = either(ir, LLVMBuildFCmp(ir->b, LLVMRealOEQ, a, zero, ""),
+                                       LLVMBuildFCmp(ir->b, LLVMRealOEQ, b, zero, ""));
+    LLVMValueRef product_nonzero = LLVMBuildFCmp(ir->b, LLVMRealONE, product, zero, "");
+    *valid = both(ir, either(ir, zero_product, both(ir, product_nonzero, ir_fp_residual_safe(ir, product))),
+                  both(ir, ir_fp_residual_safe(ir, alpha), ir_fp_residual_safe(ir, beta)));
+    return either(ir, float_ne(ir, hi, zero), float_ne(ir, lo, zero));
 }
 
 #endif

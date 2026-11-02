@@ -87,6 +87,7 @@ typedef struct {
             void* node;        /* FsNode*, retained for the file's lifetime */
         } file;
         struct {
+            /* physical: a service block's FCRAM pages (font, GSP, HID); 0 for a block the application made */
             uint32_t physical, size, permissions;
             /* a block the application made with CreateMemoryBlock: its own range at address (heap-backed, Locked
                while the block lives, physical 0) or a new zeroed one (address 0); permissions are then its own and
@@ -241,8 +242,7 @@ struct SnxCtrProcess {
     uint32_t apt_lock;         /* manager-owned object index; independent of client sessions */
     uint32_t srv_notification; /* srv:'s notification semaphore (retained), made at the first EnableNotification */
     uint32_t apt_phase, apt_notification, apt_parameter;
-    uint32_t apt_font, apt_font_address; /* the shared font block: its CTR_OBJ_SHARED object, 0 before the first GetSharedFont, and its address */
-    uint32_t ro_crs, ro_crs_buffer, ro_crs_size; /* ldr:ro: the static module (CRS) at its address, the game's buffer it is mapped from, and its size; 0 before Initialize */
+    uint32_t apt_font;       /* the shared font's block (services/font.c), made at the first GetSharedFont */
     uint32_t apt_preloaded[4]; /* the library applets the game preloaded (PreloadLibraryApplet), 0 for a free slot */
     struct { /* the one parameter an applet has sent the game, the next ReceiveParameter and GlanceParameter answer; 0 for none */
         uint32_t signal, sender, size, object;
@@ -262,6 +262,17 @@ struct SnxCtrProcess {
     uint64_t archive_sequence;
     uint32_t fs_priority; /* fs:USER's SetPriority, UINT32_MAX until one */
     SnxCtrGsp gsp;
+    /* ldr:ro's static module (services/ldr.c): where Initialize mapped the CRS and the buffer it was mapped from, 0
+       until it did */
+    uint32_t ldr_crs, ldr_crs_size, ldr_buffer;
+    /* the loaded CROs, in a list of their own because the guest can rewrite the headers that would also link them */
+    struct SnxCtrLdrModule* ldr_modules;
+    size_t ldr_count, ldr_capacity;
+    /* the open transaction that journals the writes of one ldr:ro command (services/cro.c), NULL between commands */
+    struct SnxCtrCroTransaction* cro_transaction;
+    /* one bit per 128 bytes of the static text (aot/dispatch.c): set where an AOT block may hold a word a CRO's
+       relocation rewrote, and allocated by the first such rewrite */
+    uint32_t* aot_stale;
     SnxCtrDspService dsp;
     struct SnxCtrUds* uds;
     SnxCtrY2rService y2r;
@@ -289,9 +300,17 @@ struct SnxCtrProcess {
        when it cannot be. stale drops the one compiled before, whose code changed */
     SnxArmBlock (*compile)(void* compiler, uint32_t pc, bool thumb, bool stale);
     void* compiler;
+    /* the blocks compiled so far dropped (aot/jit.c), when the driver sets it: a CRO loaded or unloaded at an address
+       would otherwise run the blocks a previous occupant left there. NULL in a build without the run-time compiler */
+    void (*flush)(void* compiler);
+    /* set by flush, and run by the dispatcher before its next block */
+    void (*reclaim)(void* compiler);
     unsigned char physical_owner[];
 };
 CtrThread* snx_ctr_thread(SnxCtrProcess* p);
+/* The static text in [address, address + size) was rewritten: the AOT blocks that can hold any of it stop being used.
+   False when the bit map cannot be allocated. */
+bool snx_ctr_aot_mark_stale(SnxCtrProcess* p, uint32_t address, uint32_t size);
 uint32_t snx_ctr_thread_create(SnxCtrProcess* p, const uint32_t* registers, uint32_t* out);
 /* snx_ctr_schedule's answer: no thread will ever run again, a thread runs now, or the host slept to a vblank or an
    audio frame that woke nobody (the caller can look at its window, then schedule again) */
@@ -330,13 +349,16 @@ void snx_ctr_shared_page_time(SnxCtrProcess* p);
 /* HLE shared pages live past the application pool but inside board FCRAM;
    each call reserves the next page-aligned block, or returns 0. */
 uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size);
+/* The old linear heap address of the FCRAM page at `physical`; 0 below FCRAM, as for a block with no pages */
+uint32_t snx_ctr_linear_address(uint32_t physical);
 uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t name_address, uint32_t* out);
 SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* transport_result);
 /* SVC helpers use only RAM transactions, never MMIO or a flat pointer. */
 /* ldr:ro's mappings of a library (kernel.c) */
-uint32_t snx_ctr_alias_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
-uint32_t snx_ctr_alias_unmap(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
-uint32_t snx_ctr_alias_trim(SnxCtrProcess* p, uint32_t target, uint32_t keep);
 uint32_t snx_ctr_kernel_memory(SnxCtrProcess* p, uint32_t operation, uint32_t va, uint32_t source, uint32_t size,
                                uint32_t permissions, uint32_t* output);
+/* Loader aliases use private heap or data backing, and the loader registers their lifetime before it returns. */
+bool snx_ctr_kernel_loader_map(SnxCtrProcess* p, uint32_t target, uint32_t source, uint32_t size);
+/* Private read-write application data, possibly unaligned, with no outstanding alias or service owner. */
+bool snx_ctr_kernel_private(SnxCtrProcess* p, uint32_t address, uint32_t size);
 #endif

@@ -46,7 +46,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - A gamepad drives the menu as the keys do (`src/gui/pad_menu.c`): the D-pad and the left stick are the arrows, the
   button labelled A (or Cross) is Enter, B (or Circle) ESC, X (or Square) Del and Y (or Triangle) R, wherever the pad
   has them (a Switch pad's A is east, its X north), LB and RB are Shift+Tab and Tab, LT and RT are PgUp and PgDn, L3
-  and R3 are M and B (Games' mods and AOT pack), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
+  and R3 are M and B (Games' mods and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
+  back), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
   the focused game's save states, as S does, and in that box it deletes one, as Del does. A held arrow or
   page repeats. A press on the pad hides the mouse's cursor and the foot names the pad's buttons, a PlayStation pad's
   by their shapes; a key or the mouse moving past a few pixels shows the keyboard's again, and so do a click and a
@@ -148,10 +149,34 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
     launcher's `scarletnx-console-<date>.log` and `scarletnx-error.log`), **Caches** (the recompile's
     `units/`, the shader caches, the dumps' icons, and Extractions by default) and **Extractions**;
   - **Dumps Library**: its **Main**, the data folder's `dumps/` (with its subfolders, going with the data folder), then its
-    **Extra** folders, whose dumps Games lists, and **Add a folder**;
+    **Extra** folders, whose dumps Games lists, and **Add a folder**. Main's box, or Del on it, has **Remove from
+    Library**, which asks first: Games no longer lists it and ScarletNX no longer makes it as it starts, its files kept;
+    its row then says `not listed`, greyed, and **Add to Library** puts it back;
   - **Recompiled Library**: its **Main**, `recompiled/`, where recompiled games go, then its **Extra** folders, whose games
-    ready to run Games lists too, and **Add a folder**;
+    ready to run Games lists too, and **Add a folder**. Main's box has **Remove from Library** too, asked first: its
+    games stay where they are, unlisted, and a new game of any load goes to an Extra, asked among several, a run
+    refused with none; **Add to Library** puts it back;
   - **Reset to Defaults**, last, which asks first.
+
+  **GPU Drivers** lists the Vulkan driver packages added (a zip of a `meta.json` and the driver's libraries, as
+  Turnip's releases are, in libadrenotools' format) and picks the one every game runs with: **System driver**, the
+  system's own, its GPU, Vulkan version and driver version said, then a row a package, then **Add Driver**, the
+  system's file picker. A package is checked whole before anything is written (its `meta.json`, its files at the
+  zip's top, its library an arm64 one, its `minApi` at most the device's API level) and unpacked into a folder of
+  `gpu_drivers/` of the user's data folder named after the zip; a refusal says what is wrong, with the value. A
+  package's box has **Use** and **Remove** (Del removes too), which asks first; one added is picked where packages
+  load. **Download Driver** lists, from GitHub, the releases of the driver repositories Eden's driver fetcher lists
+  (Mr. Purple Turnip, GameHub Adreno 8xx, KIMCHI Turnip, Weab-Chan Freedreno, Whitebelyash Turnip), fetched as it
+  opens, with the GPU and the driver Eden recommends for it; a repository that failed says why, and Enter fetches the
+  lists again. A release's box lists its downloads with their sizes, a GPU maker's own drivers (every GameHub one, and
+  one named Qualcomm) marked *proprietary, no license*; the one picked is downloaded, its progress in the note, and
+  added as Add Driver adds a zip. They load on Android 9 or newer, arm64, with an Adreno GPU (`/dev/kgsl-3d0`): the page's first line says
+  what this device is and, anywhere else, why games there use the system driver, and Use is refused there with that
+  line. A game whose package does not load stops, saying why. **Freedreno Settings** sets Mesa's Freedreno and Turnip
+  variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
+  first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
+  **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.
+  A name is capitals, digits and `_` starting `TU_`, `FD_` or `IR3_`. A game's box has both for that game alone.
 
   A row with nothing to do now is greyed, still there, and Enter on it says why: Clean Old Settings with nothing to
   clean, Move Old Files with nothing left, App's Reset to Defaults with every setting at its default, Folders' with
@@ -240,7 +265,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `ui_scale`, said once; `auto`, `0.25`, `0.5` and `0.75` of older versions read as that number and written again so,
   said once), `recompile_background` (`full`, the default, or `gentle`; a word it does not know named
   with the one kept, `recompile_background = slow (it keeps full)`), `dumps_subfolders` (`on`, the default: dumps/'s
-  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it) and `language` (`auto`, `en` or a
+  subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
+  dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
+  default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of
+`gpu_drivers/`; left out, the system's driver), `freedreno_env` (Freedreno Settings', `NAME=value` with a `;` between
+two; left out, none) and `language` (`auto`, `en` or a
   language's BCP 47
   tag, as `pt-BR` or `zh-Hans-CN`), and once one
   is picked `[folders]` with Folders' `data`, `recompiled`, `work`, `state` (Logs) and `cache` (Caches) (a full path,
@@ -435,6 +464,11 @@ cannot be read is named and the others still listed.
   first (Tab), the tips say it is ready, and Enter then plays it. One a game was made from already, in `recompiled/` or
   a recompiled folder of the Library, asks first, naming the game and its folder: **Play**, in focus, plays it,
   **Recompile** recompiles it where it is, as R does, and Back does neither.
+- **L** (on Android a tap on *Play* at the foot, on a pad the right stick) plays the game in focus, recent or on the
+  page, as Enter does, but a game with updates, DLCs, mods or cheats beside it plays as its box's **Play** does, with
+  the ones the box keeps for it (its `.ini`'s `addons=`, `mods_off=` and `cheats_off=`), without showing the box or
+  writing them. The queue of compiles and the question of a game made already come as they do for Enter. On a heading,
+  or the row that shows every recent game, it says there is no game to play.
 - **R** (on Android a tap on *Recompile* at the foot) recompiles the game in focus, recent or on the page, whichever
   console's, where it is, or makes its dump or package again: its driver's `-r` (`scarletnx -r`, `scarletnx-3ds -r`,
   `scarletnx-vita -r`, `scarletnx-agb -r`). It plays nothing, and goes in the queue of compiles, which runs them one
@@ -448,8 +482,11 @@ cannot be read is named and the others still listed.
   too, whose **Add Mod** and **Add Cheats** copy a folder or a `.txt` the system's picker gives into the game's mods
   and cheats, **Open Folder** lists the game's folders to open (its dump's, its own, saves, settings, logs, caches; one
   not there greyed), **Save States** opens the box of its save states that S opens (greyed for a dump, which has
-  none; on a phone the way to them, with a tap on *Save states* at the foot) and **Clean Cache** deletes its shader
-  and code caches, asked first ([USAGE](USAGE.md#mods)). On
+  none; on a phone the way to them, with a tap on *Save states* at the foot), **Clean Cache** deletes its shader
+  and code caches, asked first ([USAGE](USAGE.md#mods)), and **GPU Driver** and **Freedreno Settings** open
+  Settings > App's pages for that game alone: GPU Driver's first row, **Global**, follows the launcher's pick, the
+  game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); Freedreno Settings with none of its
+  own takes the launcher's. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
   colour, `Needs Recompile` when Play compiles it first.

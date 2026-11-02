@@ -1463,6 +1463,82 @@ static void view_box(App* app, const char* temporary) {
         free(deep);
         free(sub);
     }
+    { /* dumps/ off the Library: Remove from Library asks first, then Games no longer lists its dumps, its row says
+         not listed, greyed, app.ini keeps it and a start makes it no more; Add to Library puts it back, made again */
+        int row = folder_row_of(app, GUI_ROW_DUMPS, -1);
+        char* kept;
+        size_t size;
+        UiRowInfo info = {0};
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 3 && !strcmp(pick_label(app, 2), "Remove from Library"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, dumps) &&
+               strstr(app->ask_line, "no longer makes as it starts"));
+        key(app, SDLK_ESCAPE); /* Back: nothing changes */
+        assert(!app->confirm.shown && !app->dumps_off);
+        key(app, SDLK_DELETE); /* Del asks the same */
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->dumps_off && !games_lists(app, "beta dump.nsp"));
+        assert(!strcmp(app->app_form.folder[row], "not listed") &&
+               strstr(app->editor.note, "removed from the library"));
+        assert(form_row_off(app, &app->editor, row));
+        assert(form_row_info(app, &app->editor, (size_t)row, form_labels(&app->editor), 0, &info) &&
+               (info.attr & UI_ATTR_OFF));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = off\n"));
+        free(kept);
+        assert(!snx_remove_tree(dumps)); /* a start leaves it unmade */
+        dumps_make(app);
+        assert(!snx_is_dir(dumps));
+        app->editor.row = row; /* its box: Add to Library alone */
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->dumps_off && snx_is_dir(dumps) && strstr(app->editor.note, "is in the Dumps Library again"));
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "dumps_main = on\n"));
+        free(kept);
+        leave_editor(app);
+    }
+    { /* the Recompiled Library's Main off it the same way: the fourth choice of its box, asked first; Games no longer
+         lists its games, its row says not listed, greyed, app.ini keeps it; Add to Library puts it back */
+        int row = folder_row_of(app, GUI_ROW_PLACE, GUI_PLACE_GAMES), i;
+        size_t before = 0, after = 0, size;
+        char* kept;
+        list_games(app);
+        for (i = 0; i < (int)app->games.count; ++i)
+            before += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        open_folders(app, row);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 4 && !strcmp(pick_label(app, 3), "Remove from Library"));
+        for (i = 0; i < 3; ++i) key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_FOLDER && strstr(app->ask_line, app->games_dir) &&
+               strstr(app->ask_line, "new games go to an Extra of it"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && app->recompiled_off && !strcmp(app->app_form.folder[row], "not listed"));
+        assert(strstr(app->editor.note, "new games go to an Extra") && form_row_off(app, &app->editor, row));
+        for (i = 0; i < (int)app->games.count; ++i)
+            after += app->games.paths[i] && snx_path_within(app->games.paths[i], app->games_dir);
+        assert(before && !after); /* none of its games listed */
+        kept = (char*)snx_read_file(app->app_file, &size);
+        assert(kept && strstr(kept, "recompiled_main = off\n"));
+        free(kept);
+        app->editor.row = row;
+        key(app, SDLK_RETURN);
+        assert(app->picks_shown && app->picks.count == 1 && !strcmp(pick_label(app, 0), "Add to Library"));
+        key(app, SDLK_RETURN);
+        assert(!app->recompiled_off && strstr(app->editor.note, "is in the Recompiled Library again"));
+        leave_editor(app);
+    }
     app->recent = was_recent;
     app->recent_file = was_recent_file;
     app->folder_count = was_folders;
@@ -1953,8 +2029,9 @@ static void add_mod(App* app, const char* temporary) {
          *file = snx_path_join(root, "x");
     char *to = snx_path_join(mods, "Better Fonts"), *to_first = snx_path_join(mods, "A first"), want[2048];
     const char* cloud = "content://com.example.cloud.documents/tree/abc%3Amods";
-    static const int tail[] = {ROW_ADD_MOD, ROW_MODS_FOLDER, ROW_ADD_CHEATS, ROW_CHEATS_FOLDER, ROW_OPEN_FOLDER,
-                               ROW_STATES,  ROW_CLEAN_CACHE, ROW_SAVE,       ROW_PLAY};
+    static const int tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
+                               ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
+                               ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
     size_t index = 0;
     int i, nx, ny;
     while (index < app->games.count &&
@@ -2414,6 +2491,305 @@ static void add_cheats(App* app, const char* temporary) {
     free(data);
     free(cheats);
     free(root);
+}
+/* a GPU driver package's zip, as released: meta.json, an arm64 library (its ELF header) and its folder name's file */
+static char* driver_zip(const char* temporary, const char* name) {
+    mz_zip_archive z = {0};
+    void* zip = NULL;
+    size_t size = 0;
+    unsigned char lib[64] = {0};
+    const char* meta = "{\"name\": \"Turnip test\", \"vendor\": \"Mesa\", \"driverVersion\": \"Vulkan 1.4.335\", "
+                       "\"minApi\": 28, \"libraryName\": \"libvulkan_freedreno.so\"}";
+    char* path = snx_path_join(temporary, name);
+    memcpy(lib, "\177ELF\2\1\1", 7);
+    lib[18] = 183;
+    assert(mz_zip_writer_init_heap(&z, 0, 0));
+    assert(mz_zip_writer_add_mem(&z, "meta.json", meta, strlen(meta), MZ_BEST_SPEED));
+    assert(mz_zip_writer_add_mem(&z, "libvulkan_freedreno.so", lib, sizeof lib, MZ_BEST_SPEED));
+    assert(mz_zip_writer_finalize_heap_archive(&z, &zip, &size));
+    mz_zip_writer_end(&z);
+    assert(!snx_write_file(path, zip, size));
+    mz_free(zip);
+    return path;
+}
+/* Settings > App > GPU Drivers away from Android: its rows, this device said, a package added from its zip but not
+   picked (packages do not load here), its box's Use refused saying why, Remove asked first; then Freedreno Settings:
+   a preset applied, a variable Freedreno does not read refused, and Save keeping them in app.ini */
+static void gpu_drivers(App* app, const char* temporary) {
+    char *dir = snx_path_join(temporary, "gpu_drivers"), *zip = driver_zip(temporary, "Turnip_v32.zip"), *kept;
+    char *bad = snx_path_join(temporary, "not a package.zip"), *package;
+    size_t size;
+    int x, y;
+    free(app->drivers_dir);
+    app->drivers_dir = dir;
+    app->gpu_driver[0] = app->freedreno[0] = 0;
+    drivers_load(app);
+    app->editor.row = GUI_APP_DRIVERS;
+    render(app);
+    key(app, SDLK_RETURN);
+    /* System driver, picked, and Add Driver; this device's line, which says packages do not load here */
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->editor.row);
+    assert(!strcmp(app->drivers_form.value[0], "(*)") && strstr(app->editor.note, "This device: ") &&
+           strstr(app->editor.note, "custom drivers load on Android 9 (API 28) or newer"));
+    render(app); /* drawn: its rows, the System driver's mark, Add Driver's icon */
+    /* a file that is no zip: refused, said by its name; a package's: added, not picked here */
+    assert(!snx_write_file(bad, "not a zip", 9));
+    driver_picked(app, bad, NULL, false);
+    assert(strstr(app->editor.note, "Not added: not a package.zip is not a zip (") && !app->packages_count);
+    driver_picked(app, zip, NULL, false);
+    assert(app->packages_count == 1 && !strcmp(app->packages[0].id, "Turnip_v32") && !app->gpu_driver[0]);
+    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/Turnip_v32. This device: "));
+    assert(gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[1], "( )"));
+    package = snx_path_join(dir, "Turnip_v32/libvulkan_freedreno.so");
+    assert(snx_is_file(package));
+    /* its box: Use refused here, saying this device; Remove asked first, then the folder gone */
+    app->editor.row = 1;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_DRIVER && app->picks.count == 2);
+    render(app);
+    assert(find_text(app, "Use", yellow, 1, &x, &y));
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && !app->gpu_driver[0] && strstr(app->editor.note, "Not picked: This device: "));
+    key(app, SDLK_DELETE);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DRIVER &&
+           !strcmp(app->ask_line, "Remove the driver Turnip test? Games set to it will not start until another is "
+                                  "picked."));
+    key(app, SDLK_RIGHT); /* Remove, past Cancel */
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+    assert(!snx_path_exists(package) && !app->packages_count &&
+           !strcmp(app->editor.note, "Removed gpu_drivers/Turnip_v32"));
+    free(package);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_DRIVERS &&
+           !strcmp(app->app_form.drivers, "System driver"));
+    /* Freedreno Settings: Eden's presets first, Debug - CPU Memory applied; LD_PRELOAD refused; Save kept */
+    app->editor.row = GUI_APP_FREEDRENO;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 4 + 1);
+    render(app);
+    key(app, SDLK_RETURN); /* the first preset */
+    assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "TU_DEBUG") &&
+           !strcmp(app->fd_vars[0].value, "sysmem") &&
+           !strcmp(app->editor.note, "Preset 'Debug - CPU Memory' applied") && app->editor.dirty);
+    snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "LD_PRELOAD");
+    snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "/x.so");
+    freedreno_action(app, 9 + app->fd_count + 2, false); /* Add Variable */
+    assert(app->fd_count == 1 && strstr(app->editor.note, "\"LD_PRELOAD\" is not one of Freedreno's variables"));
+    snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "FD_RD_DUMP");
+    snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "enable");
+    freedreno_action(app, 9 + app->fd_count + 2, false);
+    assert(app->fd_count == 2 && !strcmp(app->editor.note, "Variable FD_RD_DUMP added") && !app->fd_form.name[0]);
+    app->editor.row = gui_editor_rows(&app->editor) - 1; /* Save */
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->freedreno, "TU_DEBUG=sysmem;FD_RD_DUMP=enable") &&
+           !strcmp(app->editor.note, "Freedreno configuration saved") && !app->editor.dirty);
+    kept = (char*)snx_read_file(app->app_file, &size);
+    assert(kept && strstr(kept, "freedreno_env = TU_DEBUG=sysmem;FD_RD_DUMP=enable\n") && !strstr(kept, "gpu_driver"));
+    free(kept);
+    app->editor.row = 9; /* TU_DEBUG's row: Del takes it out */
+    key(app, SDLK_DELETE);
+    assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "FD_RD_DUMP"));
+    app->editor.row = 9 + app->fd_count + 3; /* Clear All, then Save */
+    key(app, SDLK_RETURN);
+    assert(!app->fd_count && !strcmp(app->editor.note, "All Freedreno variables cleared"));
+    app->editor.row = gui_editor_rows(&app->editor) - 1;
+    key(app, SDLK_RETURN);
+    assert(!app->freedreno[0]);
+    kept = (char*)snx_read_file(app->app_file, &size);
+    assert(kept && !strstr(kept, "freedreno_env"));
+    free(kept);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_FREEDRENO &&
+           !strcmp(app->app_form.freedreno, "None"));
+    free(zip);
+    free(bad);
+}
+/* Download Driver's network, the test's own: each repository's releases (one failing as GitHub's rate limit does),
+   and the package a release's asset is */
+static struct {
+    char* zip; /* the package's bytes */
+    size_t zip_size;
+} g_fake_net;
+static int fake_get(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size) {
+    const char* body = "[]";
+    memset(out, 0, sizeof *out);
+    snprintf(out->url, sizeof out->url, "%s", url);
+    out->status = 200;
+    if (strstr(url, "/repos/MrPurple666/purple-turnip/releases"))
+        body = "[{\"tag_name\": \"T30\", \"name\": \"Turnip T30\", \"prerelease\": false, \"body\": \"Notes\","
+               " \"published_at\": \"2026-08-17T12:38:01Z\", \"assets\": [{\"name\": \"turnip.zip\", \"size\": 300,"
+               " \"browser_download_url\": \"https://example.invalid/turnip.zip\"}, {\"name\": \"gone.zip\","
+               " \"size\": 300, \"browser_download_url\": \"https://example.invalid/gone.zip\"}]},"
+               " {\"tag_name\": \"T29\", \"name\": \"Turnip T29\", \"prerelease\": false, \"assets\": []},"
+               " {\"tag_name\": \"vturnip_mrpurple_T23\", \"name\": \"Turnip T23\", \"prerelease\": false,"
+               " \"assets\": []},"
+               " {\"tag_name\": \"T20\", \"name\": \"Turnip T20\", \"prerelease\": false, \"assets\": []}]";
+    else if (strstr(url, "/repos/crueter/GameHub-8Elite-Drivers/releases"))
+        body = "[{\"tag_name\": \"842.8\", \"name\": \"842.8\", \"prerelease\": false, \"body\": \"\","
+               " \"published_at\": \"2025-10-27T00:00:00Z\", \"assets\": [{\"name\": \"adreno-driver-842.8.zip\","
+               " \"size\": 13235821, \"browser_download_url\": \"https://example.invalid/blob.zip\"}]}]";
+    else if (strstr(url, "/repos/K11MCH1/")) {
+        out->status = 403;
+        body = "{\"message\": \"API rate limit exceeded\"}";
+    } else if (!strcmp(url, "https://example.invalid/turnip.zip")) {
+        out->body = (char*)malloc(g_fake_net.zip_size + 1);
+        memcpy(out->body, g_fake_net.zip, g_fake_net.zip_size);
+        out->size = g_fake_net.zip_size;
+        if (o && o->progress) o->progress(o->user, out->size, out->size);
+        return 0;
+    } else if (!strcmp(url, "https://example.invalid/gone.zip")) { /* redirected to a CDN's long link, not there */
+        memset(out->url, 'a', 2000);
+        out->status = 404;
+        body = "Not Found";
+    } else if (!strcmp(url, "https://example.invalid/blob.zip")) {
+        snprintf(why, size, "GET %s: the answer stopped coming, 0 bytes in", url);
+        return -1;
+    }
+    out->body = snx_strdup(body);
+    out->size = strlen(body);
+    return 0;
+}
+/* the events the threads push, taken until busy is false, 10 s at most */
+static void pump_until(App* app, const bool* busy) {
+    Uint64 end = SDL_GetTicks() + 10000;
+    SDL_Event e;
+    while (*busy && SDL_GetTicks() < end) {
+        while (SDL_PollEvent(&e)) event(app, &e);
+        SDL_Delay(1);
+    }
+    assert(!*busy);
+}
+/* GPU Drivers > Download Driver against the test's network: the lists fetched as the page opens, one repository's
+   failure said, a GPU maker's own marked in its release's box, a download failing said, and a package downloaded,
+   added and, as nothing loads here, not picked */
+static void download_driver(App* app, const char* temporary) {
+    char* zip = driver_zip(temporary, "turnip.zip");
+    size_t i;
+    int row = -1, blob = -1;
+    g_fake_net.zip = (char*)snx_read_file(zip, &g_fake_net.zip_size);
+    assert(g_fake_net.zip);
+    app->https_get = fake_get;
+    open_drivers(app, NULL, NULL, 0);
+    assert(app->form == GUI_FORM_DRIVERS && gui_editor_rows(&app->editor) == 3 && !app->packages_count);
+    snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", "Adreno (TM) 740"); /* Eden recommends Mr. Purple T23 */
+    app->editor.row = 1; /* Download Driver */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FETCH);
+    pump_until(app, &app->fetching);
+    assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 4);
+    assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
+           strstr(app->fetch_error[2], "API rate limit exceeded"));
+    assert(app->fetch_state[4] == GUI_FETCH_LISTED && !app->fetch_lists[4].count);
+    assert(strstr(app->editor.note, "GPU: ") && strstr(app->editor.note, "Recommended: "));
+    render(app); /* as Folders: a box a repository, its title over its rows */
+    assert(grouped_entries(app) == gui_editor_rows(&app->editor) + GUI_DRIVER_REPOS);
+    for (i = 0; i < (size_t)gui_editor_rows(&app->editor); ++i) {
+        int group;
+        assert(grouped_entry_row(app, grouped_entry(app, (int)i), &group) == (int)i && group == app->fetch_repo[i]);
+        if (app->fetch_release[i] == 0 && app->fetch_repo[i] == 0) row = (int)i;
+        if (app->fetch_release[i] >= 0 && app->fetch_repo[i] == 1) blob = (int)i;
+        if (app->fetch_repo[i] == 2) /* the failed one: a row that fetches again, its failure its help */
+            assert(app->fetch_release[i] < 0 && !strcmp(app->fetch_label[i], "Fetch Again") &&
+                   !strcmp(app->fetch_form.value[i], "Failed") && strstr(app->fetch_about[i], "HTTP 403"));
+        if (app->fetch_repo[i] == 4) assert(!strcmp(app->fetch_label[i], "No releases"));
+    }
+    {
+        int group;
+        assert(grouped_entry_row(app, 0, &group) < 0 && !group); /* the first entry the first title */
+    }
+    assert(row >= 0 && blob >= 0 && strstr(app->fetch_title[0], ": 4 releases") &&
+           !strcmp(app->fetch_form.value[row], "Latest") && app->fetch_label[row][0] != ' ');
+    /* folded as Eden's fetcher: the latest, the recommended, More; More opens every release, Less folds them again */
+    assert(row == 0 && app->fetch_release[1] == 2 && !strcmp(app->fetch_form.value[1], "Recommended") &&
+           app->fetch_release[2] == GUI_FETCH_MORE && !strcmp(app->fetch_label[2], "More (2)") &&
+           app->fetch_repo[3] == 1);
+    app->editor.row = 2;
+    key(app, SDLK_RETURN);
+    assert(app->fetch_open[0] && app->editor.row == 2 && app->fetch_release[2] == 2 &&
+           !strcmp(app->fetch_form.value[2], "Recommended") && app->fetch_release[4] == GUI_FETCH_LESS &&
+           !strcmp(app->fetch_label[4], "Less"));
+    render(app);
+    app->editor.row = 4;
+    key(app, SDLK_RETURN);
+    assert(!app->fetch_open[0] && app->editor.row == 2 && app->fetch_release[2] == GUI_FETCH_MORE);
+    /* the GPU maker's own, marked; its download failing, said */
+    app->editor.row = blob;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_ASSET && app->picks.count == 1 &&
+           strstr(pick_label(app, 0), "adreno-driver-842.8.zip, ") &&
+           strstr(pick_label(app, 0), "(proprietary, no license)"));
+    render(app);
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(!strcmp(
+        app->editor.note + strlen(app->editor.note) -
+            strlen("Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"),
+        "Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"));
+    /* an asset that is not there: said with its own link, not the one it was redirected to */
+    app->editor.row = row;
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && app->picks.count == 2 && strstr(pick_label(app, 1), "gone.zip, "));
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(strstr(app->editor.note, "Not downloaded: GET https://example.invalid/gone.zip: HTTP 404") &&
+           !strstr(app->editor.note, "aaaa"));
+    /* a package's: downloaded and added, GPU Drivers showing it, not picked here */
+    key(app, SDLK_RETURN);
+    assert(app->picks_shown && !app->picks.focus && strstr(pick_label(app, 0), "turnip.zip, ") &&
+           !strstr(pick_label(app, 0), "proprietary"));
+    key(app, SDLK_RETURN);
+    pump_until(app, &app->downloading);
+    assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "turnip") &&
+           !app->gpu_driver[0]);
+    assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. This device: "));
+    app->editor.row = 1;
+    app->driver_off = 0;
+    change_answer(app, GUI_ASK_DRIVER, true); /* back to none, for what follows */
+    assert(!app->packages_count);
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_APP);
+    for (i = 0; i < GUI_DRIVER_REPOS; ++i) gui_driver_releases_free(&app->fetch_lists[i]);
+    free(g_fake_net.zip);
+    free(zip);
+    app->https_get = NULL;
+}
+/* a game's box's GPU Driver: Global and the launcher's first, then the game's own pick kept in its .ini (System
+   driver, gpu_driver= with nothing), Global again taking the key out; its Freedreno Settings start with none of its
+   own; and each run's option, the game's own when it has one */
+static void game_gpu_driver(App* app) {
+    char *game = snx_strdup(app->addons_game), *ini = game_ini_of(game), *option;
+    int row;
+    for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_GPU_DRIVER; ++row) {}
+    assert(row < addons_rows(app) && !strcmp(app->addons_driver, "GPU Driver: Global (System driver)"));
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    assert(!app->addons_shown && app->editing && app->form == GUI_FORM_DRIVERS && app->drivers_game &&
+           gui_editor_rows(&app->editor) == 4 && !strcmp(app->drivers_form.value[0], "(*)"));
+    assert(strstr(app->editor.note, ": its own GPU driver. This device: "));
+    app->editor.row = 1; /* System driver, its own */
+    key(app, SDLK_RETURN);
+    assert(snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[1], "(*)") &&
+           strstr(app->editor.note, ": GPU driver System driver"));
+    option = gui_run_option("gpu_driver", ini, "Turnip_v32");
+    assert(!option); /* its own pick: the run reads it */
+    app->editor.row = 0;
+    key(app, SDLK_RETURN);
+    assert(!snx_ini_has(ini, "gpu_driver") && !strcmp(app->drivers_form.value[0], "(*)"));
+    option = gui_run_option("gpu_driver", ini, "Turnip_v32");
+    assert(option && !strcmp(option, "--gpu_driver=Turnip_v32"));
+    free(option);
+    key(app, SDLK_ESCAPE); /* back to its box */
+    assert(!app->editing && app->addons_shown && !strcmp(app->addons_game, game));
+    for (row = 0; row < addons_rows(app) && addons_row(app, row) != ROW_FREEDRENO; ++row) {}
+    app->addons_focus = row;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && strstr(app->editor.note, ": none of its own"));
+    key(app, SDLK_ESCAPE);
+    assert(app->addons_shown);
+    free(ini);
+    free(game);
 }
 #ifdef SNX_XDG
 /* the message an answer from a picker's own thread leaves, waited for up to 5 seconds */
@@ -3779,12 +4155,12 @@ int main(int argc, char** argv) {
     assert(app.form == GUI_FORM_SETTINGS);
     key(&app, SDLK_RETURN);
     /* a group's settings on the right, a row each with its help in the tips; the group named over them */
-    /* gdbstub, Extract to tmpfs, Extract dump, Optimization level, AOT threads, Unit size, Unit cache limit, the
-       LLVM Internals page and Tracy capture, whose row a launcher without SNX_TRACY does not list */
+    /* gdbstub, Extract to tmpfs, Extract dump, Optimization level, LLVM batch, AOT threads, Unit size, Unit cache
+       limit, the LLVM Internals page and Tracy capture, whose row a launcher without SNX_TRACY does not list */
     int tracy = 0;
     for (int i = 0; i < app.settings.own; i++)
         if (!strcmp(app.settings.values[i].key, "tracy_capture")) tracy = 1;
-    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 8 + tracy);
+    assert(app.form == GUI_FORM_GROUP && app.group == 1 && app.editor.count == 9 + tracy);
     render(&app);
     shows(&app, "Launch", normal);
     shows_half(&app, "Enables gdbstub", normal); /* in the tips */
@@ -4012,7 +4388,10 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
-    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 11);
+    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 13);
+    gpu_drivers(&app, temporary); /* GPU Drivers and Freedreno Settings, then back to the App's first row */
+    download_driver(&app, temporary);
+    app.editor.row = GUI_APP_THEME;
     {
         char first[64], line[1024];
         snprintf(first, sizeof first, "%s", app.theme.name);
@@ -4384,9 +4763,9 @@ int main(int argc, char** argv) {
         snprintf(id, sizeof id, "%s", app.theme.id);
         assert(strcmp(id, first_id));
         snprintf(expected, sizeof expected,
-                 APP_INI_HEAD
-                 "theme = %s\nui_scale = 1\nlanguage = auto\n"
-                 "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+                 APP_INI_HEAD "theme = %s\nui_scale = 1\nlanguage = auto\n"
+                              "animations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                              "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
                  id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4431,7 +4810,8 @@ int main(int argc, char** argv) {
             expected, sizeof expected,
             APP_INI_HEAD
             "theme = %s\nui_scale = 2\n"
-            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
+            "language = auto\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+            "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
             first_id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
@@ -4499,12 +4879,12 @@ int main(int argc, char** argv) {
         assert(app.language == 1 && snx_tr_language() == 0 && !strcmp(app.app_form.language, "English"));
         key(&app, SDLK_RETURN); /* Enter goes round too */
         assert(app.language == 2 && snx_tr_language() == 1 && !strcmp(app.app_form.language, "Test\303\252s"));
-        snprintf(
-            expected, sizeof expected,
-            APP_INI_HEAD
-            "theme = %s\nui_scale = 2\n"
-            "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n" GAMES_DEFAULTS,
-            app.theme.id);
+        snprintf(expected, sizeof expected,
+                 APP_INI_HEAD
+                 "theme = %s\nui_scale = 2\n"
+                 "language = xx\nanimations = 0\nside_box = auto\nrecompile_background = full\ndumps_subfolders = on\n"
+                 "dumps_main = on\nrecompiled_main = on\n" GAMES_DEFAULTS,
+                 app.theme.id);
         kept = (char*)snx_read_file(app.app_file, &size);
         assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
         free(kept);
@@ -4994,6 +5374,26 @@ int main(int argc, char** argv) {
         snprintf(said, sizeof said, "Not used from %s: dumps_subfolders = some (it keeps off)", app.app_file);
         assert(app.dumps_shallow && strstr(app.message, said));
         app.dumps_shallow = false;
+        free(text);
+        /* dumps_main: on its default, off kept, another word said with the one in use */
+        assert(strstr(kept, "dumps_main = on\n") && !app.dumps_off);
+        text = snx_format("%sdumps_main = off\ndumps_main = gone\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: dumps_main = gone (it keeps off)", app.app_file);
+        assert(app.dumps_off && strstr(app.message, said));
+        app.dumps_off = false;
+        free(text);
+        /* recompiled_main: the same */
+        assert(strstr(kept, "recompiled_main = on\n") && !app.recompiled_off);
+        text = snx_format("%srecompiled_main = off\nrecompiled_main = 2\n", kept);
+        assert(!snx_write_file(app.app_file, text, strlen(text)));
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(said, sizeof said, "Not used from %s: recompiled_main = 2 (it keeps off)", app.app_file);
+        assert(app.recompiled_off && strstr(app.message, said));
+        app.recompiled_off = false;
         free(text);
         text = snx_format(APP_INI_HEAD "theme = %s\nside_box = auto\n", app.theme.id);
         assert(!snx_write_file(app.app_file, text, strlen(text)));
@@ -6347,6 +6747,34 @@ int main(int argc, char** argv) {
         argv_got = ran(&app, 0);
         assert(has_arg(argv_got, "-r", dump) && !has_arg(argv_got, "--outdir", NULL));
         free(argv_got);
+        /* the Main off the library: a new game goes to its one Extra at once, asked among two (the Extras alone), and
+           with none the run is refused, saying how to have one */
+        app.recompiled_off = true;
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && !launched(&app) &&
+               strstr(app.message, "Main is off and no Extra of it can take a game: Add to Library on its Main"));
+        while (app.confirm.shown) key(&app, SDLK_RETURN);
+        app.message[0] = 0;
+        folder_keep(&app, extra, GUI_LIBRARY_RECOMPILED, false);
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.dests_shown && launched(&app));
+        argv_got = ran(&app, 0);
+        assert(has_arg(argv_got, "-r", dump) && has_arg(argv_got, "--outdir", extra));
+        free(argv_got);
+        {
+            char *second = snx_path_join(temporary, "recompiled extra 2"), text[700];
+            assert(!snx_mkdirs(second));
+            folder_keep(&app, second, GUI_LIBRARY_RECOMPILED, false);
+            launch(&app, snx_strdup(dump), false);
+            assert(app.dests_shown && app.dests.count == 2 && !launched(&app));
+            assert(!strstr(choice_text(&app, GUI_CHOICES_DESTS, 0, text, sizeof text), "default"));
+            key(&app, SDLK_ESCAPE);
+            free(app.folders[--app.folder_count]);
+            assert(!snx_remove_tree(second));
+            free(second);
+        }
+        free(app.folders[--app.folder_count]);
+        app.recompiled_off = false;
         driver_will(NULL, 0, NULL);
         app.animations_off = still;
         free(got);
@@ -6937,7 +7365,7 @@ int main(int argc, char** argv) {
         GuiRecent kept;
         gui_recent_load(&kept, recent_file);
         assert(kept.count == 1 && kept.game[0].driver == GUI_3DS && !kept.game[0].prepared);
-        open_recent(&app, 0);
+        open_recent(&app, 0, false);
         compiled_by(&app, "scarletnx-3ds", cia, 3);
         /* a CIA in games/ is one of Games', which compiles it with the 3DS driver */
         go_tab(&app, GUI_TAB_GAMES);
@@ -7891,8 +8319,9 @@ int main(int argc, char** argv) {
                 app.aot_match = 1;
                 assert(strstr(screen_said(&app, true, said, sizeof said), "B: AOT pack."));
                 /* Games' every key at once, the most parts a foot puts together: each in F1's box, none left out */
-                assert(strstr(said, "R: recompile.") && strstr(said, "M: mods.") && strstr(said, "P: folders.") &&
-                       strstr(said, "V: view.") && strstr(said, "ESC: back.") && strstr(said, "Tab: screen."));
+                assert(strstr(said, "L: play.") && strstr(said, "R: recompile.") && strstr(said, "M: mods.") &&
+                       strstr(said, "P: folders.") && strstr(said, "V: view.") && strstr(said, "ESC: back.") &&
+                       strstr(said, "Tab: screen."));
 #ifndef SDL_PLATFORM_ANDROID
                 assert(strstr(said, "S: save states."));
 #endif
@@ -7974,6 +8403,7 @@ int main(int argc, char** argv) {
                 add_cheats(&app, temporary);
                 key(&app, SDLK_M);
                 assert(app.addons_shown && !app.mods_count && !app.cheats_count);
+                game_gpu_driver(&app);
                 key(&app, SDLK_ESCAPE);
                 assert(!app.addons_shown && !app.menu.running && app.menu.view == GUI_LOAD_GAMES);
                 { /* and on its row of the recent games: the same box, named as the run named it */
@@ -8221,14 +8651,16 @@ int main(int argc, char** argv) {
                 8);
             key(&app, SDLK_RETURN);
             /* rows: Update 1.2.0, Update 1.0.0, No update, DLC 1, A mod, B mod, 60 FPS, Infinite HP, Speed x2|x4, Add
-               Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, Save, Play */
+               Mod, Open Mods Folder, Add Cheats, Open Cheats Folder, Open Folder, Save States, Clean Cache, GPU Driver,
+               Freedreno Settings, Save, Play */
             assert(app.addons_shown && !app.menu.running && app.addons.count == 3 && app.mods_count == 2 &&
-                   app.cheats_count == 3 && addons_rows(&app) == 18);
+                   app.cheats_count == 3 && addons_rows(&app) == 20);
             assert(addons_row(&app, 9) == ROW_ADD_MOD && addons_row(&app, 10) == ROW_MODS_FOLDER &&
                    addons_row(&app, 11) == ROW_ADD_CHEATS && addons_row(&app, 12) == ROW_CHEATS_FOLDER &&
                    addons_row(&app, 13) == ROW_OPEN_FOLDER && addons_row(&app, 14) == ROW_STATES &&
-                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_SAVE &&
-                   addons_row(&app, 17) == ROW_PLAY);
+                   addons_row(&app, 15) == ROW_CLEAN_CACHE && addons_row(&app, 16) == ROW_GPU_DRIVER &&
+                   addons_row(&app, 17) == ROW_FREEDRENO && addons_row(&app, 18) == ROW_SAVE &&
+                   addons_row(&app, 19) == ROW_PLAY);
             build_ids(&app, dirs);
             assert(!app.addons_checked[0] && !app.addons_checked[1] && app.addons_checked[2]);
             assert(app.mods_on[0] && !app.mods_on[1] && !strcmp(app.mods[0], "A mod"));
@@ -8317,8 +8749,9 @@ int main(int argc, char** argv) {
             assert(!app.cheats_on[0] && app.cheats_on[1] && app.addons_focus == 8 &&
                    !strcmp(app.message,
                            "\"Speed x2|x4\" always runs: a | in its name, which cheats_off= puts between two"));
-            for (i = 0; i < 8; i++) key(&app, SDLK_DOWN); /* past Open Folder, Save States and Clean Cache */
-            assert(app.addons_focus == 16);
+            /* past Open Folder, Save States, Clean Cache, GPU Driver and Freedreno Settings */
+            for (i = 0; i < 10; i++) key(&app, SDLK_DOWN);
+            assert(app.addons_focus == 18);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && strstr(app.message, "kept"));
             checked = snx_ini_value(ini, "addons");
@@ -8344,6 +8777,126 @@ int main(int argc, char** argv) {
             }
             finish(&app, 0);
             leave_run(&app);
+            /* L, the foot's L clicked, a finger's Play tapped and a pad's right stick (its key, as pad_menu.c gives
+               it): the game played as the box's Play row plays it, from the update the box keeps (the older, which is
+               not the first listed) with its DLC, mods and cheats, the box not shown and nothing written (addons= keeps
+               a DLC not there, which a save would drop); Enter still opens the box. A recent row of the game's own
+               program plays the update kept too, where Enter plays that program. The foot says Play before Recompile
+               on a game, a pad's foot its right stick, and not on a heading or on the row that shows every recent
+               game, where L says why it plays nothing */
+            {
+                static const char* const how[3] = {"key", "L", "Play"};
+                char said[1024], *was, *now, *dump, *ran = snx_absolute(older);
+                size_t size = 0, h;
+                GuiRecent recent = app.recent;
+                bool all;
+                int k;
+                assert(ran && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001,0100ABCD12341002"));
+                was = (char*)snx_read_file(ini, &size);
+                assert(was);
+                go_tab(&app, GUI_TAB_GAMES);
+                focus_game(&app, "0100ABCD12340000");
+                assert(strstr(shown_keys(&app, said, sizeof said), "L: play.") && strstr(said, "R: recompile.") &&
+                       strstr(said, "L: play.") < strstr(said, "R: recompile."));
+                app.pad_driven = true;
+                assert(strstr(shown_keys(&app, said, sizeof said), "Right stick: play.") &&
+                       strstr(said, "Right stick: play.") < strstr(said, "Y: recompile."));
+                k = hint_pick("Right stick", 3, true);
+                assert(k >= 0 && hint_keys[k].key == SDLK_L);
+                app.pad_driven = false;
+                key(&app, SDLK_RETURN);
+                assert(app.addons_shown && !app.menu.running);
+                key(&app, SDLK_ESCAPE);
+                assert(!app.addons_shown && !app.menu.running);
+                for (k = 0; k < 4; k++) {
+                    go_tab(&app, GUI_TAB_GAMES);
+                    focus_game(&app, "0100ABCD12340000");
+                    if (k == 3) {
+                        SDL_Event e = {0};
+                        SDL_Keymod mod;
+                        bool repeats;
+                        static const int labels[4] = {SNX_PAD_LABEL_A, SNX_PAD_LABEL_B, SNX_PAD_LABEL_X,
+                                                      SNX_PAD_LABEL_Y};
+                        e.type = SDL_EVENT_KEY_DOWN;
+                        e.key.which = GUI_PAD_KEYBOARD;
+                        assert(gui_pad_key(GUI_PAD_RIGHT_STICK, labels, &e.key.key, &mod, &repeats));
+                        event(&app, &e);
+                    } else if (k)
+                        assert(hint_press(&app, how[k], 0));
+                    else
+                        key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && app.native && !app.recompile);
+                    assert(!strcmp(app.file, ran));
+                    finish(&app, 0);
+                    leave_run(&app);
+                }
+                go_tab(&app, GUI_TAB_GAMES);
+                {
+                    char* own = snx_absolute(base);
+                    assert(own && !gui_recent_add(&app.recent, own, GUI_SWITCH, true));
+                    recent_changed(&app);
+                    app.browser.page = 0;
+                    app.browser.selected = 0; /* the newest recent row: the game's own program */
+                    assert(strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                    key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && !strcmp(app.file, ran));
+                    finish(&app, 0);
+                    leave_run(&app);
+                    free(own);
+                }
+                now = (char*)snx_read_file(ini, &size);
+                assert(now && !strcmp(now, was));
+                free(now);
+                free(was);
+                { /* No update kept: the game's own program */
+                    char* own = snx_absolute(base);
+                    assert(own && !snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                    go_tab(&app, GUI_TAB_GAMES);
+                    focus_game(&app, "0100ABCD12340000");
+                    key(&app, SDLK_L);
+                    assert(!app.addons_shown && app.menu.running && !strcmp(app.file, own));
+                    finish(&app, 0);
+                    leave_run(&app);
+                    free(own);
+                }
+                go_tab(&app, GUI_TAB_GAMES);
+                dump = snx_path_join(app.games_dir, "play heading.cia"); /* a package beside games: their headings */
+                assert(dump && !snx_write_file(dump, "fixture", 7));
+                list_games(&app);
+                layout(&app);
+                for (h = 0; h < app.games.count && !gui_games_heading(&app.games, h); ++h) {}
+                assert(h < app.games.count);
+                app.browser.page = h / app.browser.page_size;
+                app.browser.selected = app.browser.head + h % app.browser.page_size;
+                assert(!strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !app.addons_shown && !strcmp(app.message, "No game in focus to play."));
+                assert(!remove(dump));
+                free(dump);
+                list_games(&app);
+                for (k = 0; k <= GUI_RECENT_SHOWN; k++) { /* more recent games than show: the row that shows them, */
+                    char* name = snx_format("%s/recent %d", app.games_dir, k);
+                    assert(name &&
+                           !gui_recent_add(&app.recent, name, k < GUI_RECENT_SHOWN ? GUI_SWITCH : GUI_LINUX, true));
+                    free(name);
+                }
+                all = app.recent_all;
+                app.recent_all = false;
+                recent_changed(&app);
+                assert(recent_shown(&app) == GUI_RECENT_SHOWN && app.browser.head == GUI_RECENT_SHOWN + 1);
+                app.browser.page = 0;
+                app.browser.selected = 0; /* and the newest a Linux program's, which plays as Enter plays it */
+                assert(strstr(shown_keys(&app, said, sizeof said), "L: play.") && !strstr(said, "R: recompile."));
+                app.browser.selected = GUI_RECENT_SHOWN;
+                assert(!strstr(shown_keys(&app, said, sizeof said), "L: play."));
+                app.message[0] = 0;
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !strcmp(app.message, "No game in focus to play."));
+                app.recent = recent;
+                app.recent_all = all;
+                recent_changed(&app);
+                free(ran);
+            }
             /* R: No update picked, the game's own program recompiled, the DLC kept */
             go_tab(&app, GUI_TAB_GAMES);
             focus_game(&app, "0100ABCD12340000");
@@ -8352,8 +8905,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_DOWN);
             key(&app, SDLK_DOWN);
             key(&app, SDLK_RETURN);
-            for (i = 0; i < 15; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
-            assert(app.addons_focus == 17);
+            for (i = 0; i < 17; i++) key(&app, SDLK_DOWN); /* Recompile, the last row */
+            assert(app.addons_focus == 19);
             key(&app, SDLK_RETURN);
             assert(!app.addons_shown && !app.menu.running && !app.recompile && gui_queue_running(&app.queue) == 0);
             {
@@ -8364,6 +8917,25 @@ int main(int argc, char** argv) {
             checked = snx_ini_value(ini, "addons");
             assert(checked && !strcmp(checked, "0100ABCD12341001"));
             free(checked);
+            /* L on the recent row of the game's own program while it compiles: its compile shows, as Enter shows it,
+               though the update kept is another program of the folder being compiled */
+            {
+                char* own = snx_absolute(base);
+                GuiRecent recent = app.recent;
+                assert(own && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                go_tab(&app, GUI_TAB_GAMES);
+                assert(!gui_recent_add(&app.recent, own, GUI_SWITCH, true));
+                recent_changed(&app);
+                app.browser.page = 0;
+                app.browser.selected = 0;
+                key(&app, SDLK_L);
+                assert(!app.menu.running && !app.addons_shown && app.menu.view == GUI_LOAD_RECOMPILE &&
+                       gui_queue_running(&app.queue) == 0);
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                app.recent = recent;
+                recent_changed(&app);
+                free(own);
+            }
             job_done(&app, 0);
             launcher(&app, false);
             { /* how a game's code was made, as the side panel says it: its -O and the share of the code made ahead of

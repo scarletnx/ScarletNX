@@ -92,18 +92,18 @@ void snx_tracy_lock_lock(SnxTracyLock* l);
 void snx_tracy_lock_unlock(SnxTracyLock* l);
 void snx_tracy_lock_try(SnxTracyLock* l, int acquired);
 #else
-#define SNX_ZONE(ctx, name)      int ctx __attribute__((unused)) = 0
-#define SNX_ZONE_C(ctx, name, color) int ctx __attribute__((unused)) = 0
+#define SNX_ZONE(ctx, name)                [[maybe_unused]] int ctx = 0
+#define SNX_ZONE_C(ctx, name, color)       [[maybe_unused]] int ctx = 0
 #define SNX_ZONE_TEXT(ctx, ...)  ((void)0)
 #define SNX_ZONE_VALUE(ctx, value) ((void)0)
-#define SNX_ZONE_T(ctx, name, ...) int ctx __attribute__((unused)) = 0
-#define SNX_ZONE_V(ctx, name, value) int ctx __attribute__((unused)) = 0
-#define SNX_ZONE_TV(ctx, name, value, ...) int ctx __attribute__((unused)) = 0
+#define SNX_ZONE_T(ctx, name, ...)         [[maybe_unused]] int ctx = 0
+#define SNX_ZONE_V(ctx, name, value)       [[maybe_unused]] int ctx = 0
+#define SNX_ZONE_TV(ctx, name, value, ...) [[maybe_unused]] int ctx = 0
 #define SNX_ZONE_END(ctx)        ((void)0)
 #define SNX_MEM_ALLOC(ptr, size, pool) ((void)0)
 #define SNX_MEM_FREE(ptr, pool) ((void)0)
 #define SNX_FRAME_MARK()        ((void)0)
-#define SNX_FRAME_SCOPED(ctx, name) int ctx __attribute__((unused)) = 0
+#define SNX_FRAME_SCOPED(ctx, name)        [[maybe_unused]] int ctx = 0
 #define SNX_PLOT(name, value)   ((void)0)
 #define SNX_THREAD_NAME(name)   ((void)0)
 static inline int snx_tracy_gpu_context(int ctx, int64_t gpu_time, float period, int calibrated,

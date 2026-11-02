@@ -10,7 +10,8 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
-#include "nx/gpu/nvn_trace.h"
+#include "nx/gpu/nvn/nvn_loader.h"
+#include "nx/hle/hook/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
@@ -130,10 +131,9 @@ static GuestFn variant_resolve(SnxU64 pc) {
     SnxU64 h1, h2;
     GuestFn result = NULL;
     size_t i;
-    if (!g_variants || !g_jit_images || !g_variant_leaders) {
-        __atomic_add_fetch(&g_jit_misses, 1, __ATOMIC_RELAXED);
-        return NULL;
-    }
+    /* Without a usable pack there is no lookup to count. A global atomic here serialized guest threads even when
+       every call went straight to an already compiled JIT function. Hits and misses count actual pack lookups. */
+    if (!g_variants || !g_jit_images || !g_variant_leaders) return NULL;
     images.modules = g_jit_images;
     images.module_count = g_mod->nmods;
     images.synthetic = g_jit_synthetic;
@@ -221,10 +221,12 @@ void jit_init(void) {
     config.aot_addresses = g_mod->entry_addr;
     config.aot_functions = g_mod->entry_fn;
     config.aot_count = g_mod->nentries;
-    /* with nvn_trace, wrappers sit in dispatch slots, which only calls through the table see */
-    config.hook_direct_calls = nvn_trace_active();
+    /* with NVN taken, its handlers sit in dispatch slots, which only calls through the table see */
+    config.hook_direct_calls = nvn_loader_active();
     config.direct_svc = 1; /* g_rtapi's svcs, as the AOT module calls them */
     config.threads = (unsigned)g_settings.jit_threads;
+    config.region_instructions = (size_t)g_settings.jit_region_size;
+    config.live_budget = (size_t)g_settings.jit_live_budget;
     config.report = jit_log;
     snprintf(g_jit_cache, sizeof(g_jit_cache), "%s%s.jitcache", g_cachedir, g_exename);
     config.cache_path = g_jit_cache;
@@ -404,6 +406,7 @@ void jit_code_invalidate(u64 addr, u64 size) {
         image->text_size = 0;
     }
     pm_unlock(&g_jit_synthetic_lock);
+    hook_restore(addr, size); /* the invalidation emptied the hooks' slots in the range too */
 }
 
 /* The AOT functions in the order of the lowest guest address each was compiled from (SnxModule.fn_lo), and the

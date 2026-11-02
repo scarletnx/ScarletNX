@@ -440,23 +440,33 @@ static int64_t icmp_recv(SnxSocket* s, void* data, size_t size, int flags, SnxSo
                 SnxSockAddr src;
                 if (snx_net_addr_from_host((struct sockaddr*)&ss, sl, &src)) memset(&src, 0, sizeof src);
                 src.port = 0;
-                if (s->type == SNX_SOCK_RAW && n >= 8 && msg[0] == echo_reply(s)) {
-                    /* the kernel put the socket's identifier in the echo: the raw socket's guest wants its own */
-                    uint16_t seq = snx_ld_be16(msg + 6);
+                if (n >= 8 && msg[0] == echo_reply(s)) {
+                    /* an echo of this socket's, by its sequence: macOS hands a datagram ICMP socket every echo reply
+                       of the system's, another program's too, which goes (taken off the queue when peeked) */
+                    uint16_t seq = snx_ld_be16(msg + 6), id = 0;
+                    int ours = 0;
                     snx_lock(&m->lock);
                     unsigned count = m->ring_next < ID_RING ? m->ring_next : ID_RING;
-                    for (unsigned k = 0; k < count; k++) {
+                    for (unsigned k = 0; k < count && !ours; k++) {
                         unsigned i = (m->ring_next - 1 - k) % ID_RING;
                         if (m->seq_ring[i] == seq) {
-                            snx_st_be16(msg + 4, m->id_ring[i]);
-                            break;
+                            id = m->id_ring[i];
+                            ours = 1;
                         }
                     }
                     snx_unlock(&m->lock);
-                    if (!is_v6(s)) {
-                        msg[2] = msg[3] = 0;
-                        uint16_t c = snx_net_checksum(msg, n, 0);
-                        snx_st_be16(msg + 2, c);
+                    if (!ours) {
+                        if (flags & SNX_MSG_PEEK) (void)recvfrom(s->fd, (char*)buf, sizeof buf, 0, NULL, NULL);
+                        continue;
+                    }
+                    /* the kernel put the socket's identifier in the echo: the raw socket's guest wants its own */
+                    if (s->type == SNX_SOCK_RAW) {
+                        snx_st_be16(msg + 4, id);
+                        if (!is_v6(s)) {
+                            msg[2] = msg[3] = 0;
+                            uint16_t c = snx_net_checksum(msg, n, 0);
+                            snx_st_be16(msg + 2, c);
+                        }
                     }
                 }
                 if (from) *from = src;

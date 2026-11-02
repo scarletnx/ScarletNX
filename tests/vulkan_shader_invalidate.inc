@@ -24,16 +24,31 @@ static VkSh *invalidate_fragment(GpuChannel *channel, u64 address)
 	VkSh *shader;
 
 	vk_lock();
-	shader = vk_shader_get(channel, address, 0, ST_FS, 0, 0, 0, 0,
+	channel->r3d_dirty = ~0u; /* the registers were set directly */
+	mx_draw_state_sync(channel); /* the state as the draw reads it */
+	shader = vk_shader_get(&channel->ds, address, 0, ST_FS, 0, 0, 0, 0,
 			       0, 0, 0, 0, NULL);
 	vk_unlock();
 	return shader;
 }
 
+/* a launch as the compute engine hands it to the renderer */
+static void invalidate_dispatch(GpuChannel *channel, const u32 *qmd, u64 code)
+{
+	DispatchState d;
+
+	mx_dispatch_state(qmd, channel->rcomp, code, &d);
+	vk_dispatch(&d);
+}
+
 static void invalidate_draw(GpuChannel *channel)
 {
+	DrawCall call = {4, 0, 0, 3, 0, 0, 1}; /* a triangle list of 3 vertices */
+
 	vk_lock();
-	vk_render_draw(channel, 0, 4, 0, 3, 0, 0, 1);
+	channel->r3d_dirty = ~0u; /* the registers were set directly */
+	mx_draw_state_sync(channel);
+	vk_render_draw(&channel->ds, &call, &channel->owner);
 	vk_unlock();
 }
 
@@ -155,7 +170,7 @@ static int check_shader_invalidation(void)
 	qmd[19] = 1 | 1u << 16;
 	dispatches = g_vk_dispatches;
 	vk_lock();
-	vk_dispatch(channel, qmd, address + 0x20000);
+	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 1);
 	epoch = g_vk_epoch;
@@ -170,7 +185,7 @@ static int check_shader_invalidation(void)
 	CHECK(g_vk.shader_generation == generation + 1);
 	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
 	vk_lock();
-	vk_dispatch(channel, qmd, address + 0x20000);
+	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 1);
 	CHECK(g_vk_epoch == epoch && g_vk_finishes == finishes);
@@ -179,11 +194,29 @@ static int check_shader_invalidation(void)
 	CHECK(invalidate_write_code(address + 0x20000, code, 64));
 	compute_method(channel, 0x5a6, 1, 1);
 	vk_lock();
-	vk_dispatch(channel, qmd, address + 0x20000);
+	invalidate_dispatch(channel, qmd, address + 0x20000);
 	vk_compute_land();
 	vk_unlock();
 	CHECK(g_vk_dispatches == dispatches + 2);
-	puts("shader invalidation: graphics and compute replacement and module reuse checked");
+	/* the same launch with its grid in guest memory, which the GPU reads (DispatchState.indirect): on the graphics
+	   queue, its grid copied into bank 0's dispatch size there */
+	{
+		DispatchState d;
+		u8 grid[12];
+
+		snx_st_le32(grid, 1);
+		snx_st_le32(grid + 4, 1);
+		snx_st_le32(grid + 8, 1);
+		CHECK(!gmem_write(address + 0x1f000, grid, sizeof grid));
+		mx_dispatch_state(qmd, channel->rcomp, address + 0x20000, &d);
+		d.indirect = address + 0x1f000;
+		vk_lock();
+		vk_dispatch(&d);
+		vk_finish();
+		vk_unlock();
+		CHECK(g_vk_dispatches == dispatches + 3);
+	}
+	puts("shader invalidation: graphics and compute replacement, module reuse and an indirect dispatch checked");
 	free(channel);
 	return 0;
 }

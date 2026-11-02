@@ -1,0 +1,2 @@
+family f
+@version(gpu >= 1.0) hook f() = h

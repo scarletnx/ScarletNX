@@ -151,7 +151,12 @@ u64* hints_copy(size_t* count) {
     return NULL;
 }
 
-int nvn_trace_active(void) { return 0; }
+int nvn_loader_active(void) { return 0; }
+/* no hooks here: nothing goes back in a slot */
+void hook_restore(u64 addr, u64 size) {
+    (void)addr;
+    (void)size;
+}
 
 static int word(void* user, SnxU64 address, SnxU32* out) {
     (void)user;
@@ -173,7 +178,7 @@ void logf_(int lvl, const char* fmt, ...) {
     (void)fmt;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
     static const SnxU32 words[] = {0x91000400u, 0xD65F03C0u};  /* add x0, x0, #1; ret */
     static const SnxU32 words2[] = {0x91000800u, 0xD65F03C0u}; /* add x0, x0, #2; ret */
     GuestFn fn;
@@ -229,6 +234,13 @@ int main(void) {
 
     jit_init();
     CHECK(g_jit_started == 1);
+    if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {
+        g_variants = NULL;
+        for (u64 i = 0; i < 20000000; i++)
+            if (jit_resolve(JIT_PC) != test_jit_fn) return 1;
+        puts("runtime_variants: no-pack replay ok");
+        return 0;
+    }
     CHECK(g_invalidate == jit_code_invalidate);
     CHECK(g_disp[(START - CODE_LO) / 4] == NULL);
     fn = jit_wait(START);
@@ -278,6 +290,11 @@ int main(void) {
     CHECK(g_jit_added == 1);
     CHECK(g_jit_removed == 1);
     CHECK(g_jit_invalidated > 0);
+    const SnxVariants* pack = g_variants;
+    g_variants = NULL;
+    CHECK(jit_resolve(JIT_PC) == test_jit_fn);
+    CHECK(jit_wait(JIT_PC) == test_jit_fn);
+    g_variants = pack;
     jit_report();
 
     if (failures) {

@@ -1,0 +1,44 @@
+#version 450
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* A packed depth and stencil target's pixels in the guest's layout (vk/depth_pack.c), as texconv.comp unpacks them on
+   upload: an invocation per pixel, its depth (the depth aspect's word: a float, or a 24-bit unorm in the low bits) and
+   stencil (the stencil aspect's byte) laid out as the target's format has a pixel in memory. CMake compiles it into
+   SPIR-V at build time (cmake/glsl.cmake). */
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Depth {
+    uint depth[];
+};
+/* the stencil aspect's bytes, four a word */
+layout(std430, set = 0, binding = 1) readonly buffer Stencil {
+    uint stencil[];
+};
+layout(std430, set = 0, binding = 2) buffer Packed {
+    uint words[];
+};
+layout(push_constant) uniform Params {
+    uint width;
+    uint height;
+    uint mode;        /* DP_* below */
+    uint depth_float; /* the depth aspect holds floats: a 24-bit format kept as D32_SFLOAT_S8_UINT */
+};
+#define DP_Z32F_S8 0u /* 8 bytes: the float depth, then the stencil byte */
+#define DP_S8_Z24  1u /* the stencil in the low 8 bits, the depth the top 24 */
+#define DP_Z24_S8  2u /* the depth in the low 24 bits, the stencil the top 8 */
+#define DP_Z24_X8  3u /* the depth in the low 24 bits */
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= width || p.y >= height) return;
+    uint i = p.y * width + p.x;
+    uint d = depth[i];
+    uint s = (stencil[i >> 2] >> ((i & 3u) * 8u)) & 0xFFu;
+    if (mode == DP_Z32F_S8) {
+        words[i * 2u] = d;
+        words[i * 2u + 1u] = s;
+        return;
+    }
+    uint z = depth_float != 0u ? uint(clamp(uintBitsToFloat(d), 0.0, 1.0) * 16777215.0 + 0.5) : d & 0xFFFFFFu;
+    words[i] = mode == DP_S8_Z24 ? (z << 8) | s : mode == DP_Z24_S8 ? z | (s << 24) : z;
+}

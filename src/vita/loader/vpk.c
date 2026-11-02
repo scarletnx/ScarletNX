@@ -4,6 +4,7 @@
 #include "vita/loader/inflate.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include <libdeflate.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,18 +25,6 @@ typedef struct {
     uint32_t directory_size, count;
 } Zip;
 
-static uint32_t crc32_of(const unsigned char* data, size_t size) {
-    static uint32_t table[256];
-    if (!table[1])
-        for (uint32_t i = 0; i < 256; ++i) {
-            uint32_t c = i;
-            for (unsigned k = 0; k < 8; ++k) c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1;
-            table[i] = c;
-        }
-    uint32_t crc = 0xffffffffu;
-    for (size_t i = 0; i < size; ++i) crc = table[(crc ^ data[i]) & 255] ^ (crc >> 8);
-    return crc ^ 0xffffffffu;
-}
 static bool read_at(FILE* f, uint64_t offset, void* out, size_t size) {
     return !snx_seek(f, offset) && fread(out, 1, size, f) == size;
 }
@@ -128,7 +117,7 @@ static unsigned char* zip_read(Zip* z, const Member* m, char* error, size_t erro
     else if (ok)
         ok = vita_inflate(packed, m->packed, out, m->size);
     free(packed);
-    if (ok && crc32_of(out, m->size) != m->crc) ok = false;
+    if (ok && libdeflate_crc32(0, out, m->size) != m->crc) ok = false;
     if (!ok) {
         snprintf(error, error_size, "%s: cannot read or decompress it, or its CRC doesn't match", m->name);
         free(out);
@@ -213,7 +202,8 @@ char* vita_sfo_string(const unsigned char* sfo, size_t size, const char* key) {
     if (keys > size || data > size || count > (size - 20) / 16) return NULL;
     for (uint32_t i = 0; i < count; ++i) {
         const unsigned char* e = sfo + 20 + i * 16;
-        uint32_t name = keys + snx_ld_le16(e), format = snx_ld_le16(e + 2), length = snx_ld_le32(e + 4), at = data + snx_ld_le32(e + 12);
+        uint32_t name = keys + snx_ld_le16(e), format = snx_ld_le16(e + 2), length = snx_ld_le32(e + 4),
+                 at = data + snx_ld_le32(e + 12);
         if (name >= size || memchr(sfo + name, 0, size - name) == NULL || strcmp((const char*)sfo + name, key))
             continue;
         if (format != 0x0204 || at > size || length > size - at || !length) return NULL;

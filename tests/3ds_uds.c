@@ -8,29 +8,17 @@
 #include "common/network/net_internal.h"
 #include "fake_room.h"
 #include "snx_settings.h"
+#include "support/3ds_guest.h"
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define COMMAND (SNX_CTR_INITIAL_TLS + 0x80)
 #define BUFFER  0x300000u
 #define NET     0x300900u
 #define DATA    0x300b00u
-static uint32_t get(SnxCtrProcess* p, uint32_t va) {
-    uint8_t b[4];
-    assert(snx_ctr_read_ram(p->space, va, b, 4) == SNX_CTR_MEM_OK);
-    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-}
-static void put(SnxCtrProcess* p, uint32_t va, uint32_t v) {
-    uint8_t b[4];
-    for (unsigned i = 0; i < 4; i++) b[i] = (uint8_t)(v >> (8 * i));
-    assert(snx_ctr_write_ram(p->space, va, b, 4) == SNX_CTR_MEM_OK);
-}
 static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, unsigned count) {
-    uint8_t zero[256] = {0};
-    assert(snx_ctr_write_ram(p->space, COMMAND, zero, 256) == SNX_CTR_MEM_OK);
-    for (unsigned i = 0; i < count; i++) put(p, COMMAND + 4 * i, words[i]);
+    ctr_request(p, words, count);
     uint32_t result = 0;
     int64_t before = snx_net_now_us();
     SnxCtrSvcResult state = snx_ctr_ipc_send(p, handle, &result);
@@ -45,7 +33,7 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == snx_ctr_handle_object(p, worker));
         uint32_t worker_tls = p->cpu.state.cpu.tpidruro + 0x80;
-        put(p, worker_tls, 0xfeedface);
+        ctr_put(p, worker_tls, 0xfeedface);
         int64_t deadline = snx_net_now_us() + 6000000;
         while (p->objects[caller].data.thread.wake_ns && snx_net_now_us() < deadline) {
             assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
@@ -54,15 +42,15 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
         assert(!p->objects[caller].data.thread.wake_ns);
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == caller);
-        assert(get(p, worker_tls) == 0xfeedface);
+        assert(ctr_word(p, worker_tls) == 0xfeedface);
         p->objects[snx_ctr_handle_object(p, worker)].data.thread.dead = 1;
         assert(!snx_ctr_handle_close(p, worker));
-        assert(get(p, COMMAND) == 0x1e0040);
+        assert(ctr_word(p, CTR_COMMAND) == 0x1e0040);
     } else
         assert(state == SNX_CTR_SVC_RETURN);
     assert(!result);
-    if (get(p, COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], get(p, COMMAND + 4));
-    assert(!get(p, COMMAND + 4));
+    if (ctr_word(p, CTR_COMMAND + 4)) fprintf(stderr, "command %08x -> %08x\n", words[0], ctr_word(p, CTR_COMMAND + 4));
+    assert(!ctr_word(p, CTR_COMMAND + 4));
 }
 static void env(const char* key, const char* value) {
 #ifdef _WIN32
@@ -91,8 +79,8 @@ static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
     init[14] = shared;
     env("SNX_3DS_NICKNAME", nickname);
     request(p, *handle, init, 15);
-    assert(get(p, COMMAND) == 0x1b0042);
-    assert(get(p, COMMAND + 12));
+    assert(ctr_word(p, CTR_COMMAND) == 0x1b0042);
+    assert(ctr_word(p, CTR_COMMAND + 12));
     return p;
 }
 typedef struct {
@@ -112,7 +100,7 @@ static void pump(void* context) {
 static void bind_channel(SnxCtrProcess* p, uint32_t h) {
     uint32_t bind[] = {0x120100, 1, 8192, 7, 65535};
     request(p, h, bind, 5);
-    assert(get(p, COMMAND + 12));
+    assert(ctr_word(p, CTR_COMMAND + 12));
 }
 static void send_data(SnxCtrProcess* p, uint32_t h, unsigned dest, const char* text) {
     unsigned size = (unsigned)strlen(text) + 1;
@@ -125,16 +113,16 @@ static void receive_data(SnxCtrProcess* p, uint32_t h, unsigned source, const ch
         snx_ctr_uds_poll(p);
         snx_net_sleep_us(1000);
     }
-    put(p, COMMAND + 256, 256 << 14 | 2);
-    put(p, COMMAND + 260, BUFFER);
+    ctr_put(p, CTR_COMMAND + 256, 256 << 14 | 2);
+    ctr_put(p, CTR_COMMAND + 260, BUFFER);
     uint32_t pull[] = {0x1400c0, 1, 64, 4096};
     request(p, h, pull, 4);
-    assert(get(p, COMMAND + 8) == strlen(text) + 1 && get(p, COMMAND + 12) == source);
+    assert(ctr_word(p, CTR_COMMAND + 8) == strlen(text) + 1 && ctr_word(p, CTR_COMMAND + 12) == source);
     char actual[256];
     assert(snx_ctr_read_ram(p->space, BUFFER, actual, strlen(text) + 1) == SNX_CTR_MEM_OK);
     assert(!strcmp(actual, text));
     request(p, h, pull, 4);
-    assert(!get(p, COMMAND + 8));
+    assert(!ctr_word(p, CTR_COMMAND + 8));
 }
 /* A room member speaking the public wire format lets us reject, close or ignore
    a join without production-only test hooks or game assets. */
@@ -185,26 +173,26 @@ static void join_failures(void) {
         int64_t end = snx_net_now_us() + 2000000;
         do {
             request(p, handle, scan, 21);
-            if (get(p, BUFFER + 8)) break;
+            if (ctr_word(p, BUFFER + 8)) break;
             snx_net_sleep_us(1000);
         } while (snx_net_now_us() < end);
-        assert(get(p, BUFFER + 8) == 1);
+        assert(ctr_word(p, BUFFER + 8) == 1);
         assert(snx_ctr_write_ram(p->space, NET, state + 16, 264) == SNX_CTR_MEM_OK);
         assert(snx_ctr_write_ram(p->space, DATA, "wrong-pass", 10) == SNX_CTR_MEM_OK);
         uint32_t join[] = {0x1e0084, 1, 10, 264 << 14 | 1 << 10 | 2, NET, 10 << 14 | 2, DATA};
         if (!scenario) { /* Legacy ConnectNetwork has the same asynchronous reply. */
-            put(p, COMMAND, 0x90442);
+            ctr_put(p, CTR_COMMAND, 0x90442);
             for (unsigned i = 0; i < 15; ++i) {
                 uint32_t word = (uint32_t)state[16 + 4 * i] | (uint32_t)state[17 + 4 * i] << 8 |
                                 (uint32_t)state[18 + 4 * i] << 16 | (uint32_t)state[19 + 4 * i] << 24;
-                put(p, COMMAND + 4 + 4 * i, word);
+                ctr_put(p, CTR_COMMAND + 4 + 4 * i, word);
             }
-            put(p, COMMAND + 64, 1);
-            put(p, COMMAND + 68, 10);
-            put(p, COMMAND + 72, 10 << 14 | 2);
-            put(p, COMMAND + 76, DATA);
+            ctr_put(p, CTR_COMMAND + 64, 1);
+            ctr_put(p, CTR_COMMAND + 68, 10);
+            ctr_put(p, CTR_COMMAND + 72, 10 << 14 | 2);
+            ctr_put(p, CTR_COMMAND + 76, DATA);
         } else {
-            for (unsigned i = 0; i < 7; ++i) put(p, COMMAND + 4 * i, join[i]);
+            for (unsigned i = 0; i < 7; ++i) ctr_put(p, CTR_COMMAND + 4 * i, join[i]);
         }
         uint32_t result, caller = p->current_thread;
         uint32_t refs = p->objects[caller].refs;
@@ -225,7 +213,7 @@ static void join_failures(void) {
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == snx_ctr_handle_object(p, worker));
         uint32_t worker_tls = p->cpu.state.cpu.tpidruro + 0x80;
-        put(p, worker_tls, 0xfeedface);
+        ctr_put(p, worker_tls, 0xfeedface);
         assert(p->gsp.vblank_count && p->dsp.next_frame_ns > snx_ctr_now_ns());
         if (scenario == 1) { /* CLOSE before SYNC: own node ID is still zero. */
             uint8_t incoming[2048];
@@ -261,13 +249,13 @@ static void join_failures(void) {
             snx_net_sleep_us(1000);
         }
         assert(p->objects[caller].refs == refs);
-        assert(get(p, worker_tls) == 0xfeedface);
+        assert(ctr_word(p, worker_tls) == 0xfeedface);
         if (scenario == 4)
-            assert(get(p, COMMAND) == join[0]);
+            assert(ctr_word(p, CTR_COMMAND) == join[0]);
         else {
             assert(!p->objects[caller].data.thread.wake_ns);
-            assert(get(p, COMMAND) == (scenario ? 0x1e0040u : 0x90040u));
-            assert(get(p, COMMAND + 4) == 0xc8a113f8u);
+            assert(ctr_word(p, CTR_COMMAND) == (scenario ? 0x1e0040u : 0x90040u));
+            assert(ctr_word(p, CTR_COMMAND + 4) == 0xc8a113f8u);
             if (!scenario) assert(snx_net_now_us() - start >= 4900000);
         }
         snx_ctr_process_free(p);
@@ -358,12 +346,12 @@ int main(int argc, char** argv) {
         request(client, client_h, scanning, 21);
         assert(snx_net_now_us() - before < 100000); /* never host-sleep for 300 ms */
         assert(snx_ctr_thread(client)->wake_ns > snx_ctr_now_ns());
-        if (get(client, BUFFER + 8)) break;
+        if (ctr_word(client, BUFFER + 8)) break;
         snx_net_sleep_us(20000);
     }
-    assert(get(client, BUFFER + 8) == 1);
+    assert(ctr_word(client, BUFFER + 8) == 1);
     uint8_t beacon[2048];
-    unsigned bytes = get(client, BUFFER + 4);
+    unsigned bytes = ctr_word(client, BUFFER + 4);
     assert(bytes <= sizeof beacon);
     assert(snx_ctr_read_ram(client->space, BUFFER, beacon, bytes) == SNX_CTR_MEM_OK);
     memcpy(network, beacon + 20, 6);
@@ -406,9 +394,9 @@ int main(int argc, char** argv) {
            snx_ctr_uds_rtt_ns(client) / 1000000.0);
     uint32_t status[] = {0xb0000};
     request(host, host_h, status, 1);
-    assert(get(host, COMMAND + 8) == 6);
+    assert(ctr_word(host, CTR_COMMAND + 8) == 6);
     request(client, client_h, status, 1);
-    assert(get(client, COMMAND + 8) == 9);
+    assert(ctr_word(client, CTR_COMMAND + 8) == 9);
     uint32_t attributes[] = {0x70080, 2, 1};
     request(host, host_h, attributes, 3);
     send_data(host, host_h, 2, "hello-client");
@@ -431,19 +419,19 @@ int main(int argc, char** argv) {
         snx_ctr_uds_poll(host);
         snx_net_sleep_us(1000);
     }
-    put(client, COMMAND + 256, 256 << 14 | 2);
-    put(client, COMMAND + 260, BUFFER);
+    ctr_put(client, CTR_COMMAND + 256, 256 << 14 | 2);
+    ctr_put(client, CTR_COMMAND + 260, BUFFER);
     uint32_t burst_pull[] = {0x1400c0, 1, 64, 256};
     for (unsigned i = 0; i < 96; ++i) {
         char expected[8], actual[128];
         snprintf(expected, sizeof expected, "%06u:", i);
         request(client, client_h, burst_pull, 4);
-        assert(get(client, COMMAND + 8) == 128 && get(client, COMMAND + 12) == 1);
+        assert(ctr_word(client, CTR_COMMAND + 8) == 128 && ctr_word(client, CTR_COMMAND + 12) == 1);
         assert(snx_ctr_read_ram(client->space, BUFFER, actual, sizeof actual) == SNX_CTR_MEM_OK);
         assert(!memcmp(actual, expected, 7) && actual[127] == 0);
     }
     request(client, client_h, burst_pull, 4);
-    assert(!get(client, COMMAND + 8));
+    assert(!ctr_word(client, CTR_COMMAND + 8));
     SnxCtrIpc bad = {.process = client};
     bad.in[0] = 0x170182;
     bad.in[2] = 1;
@@ -470,11 +458,11 @@ int main(int argc, char** argv) {
     do {
         snx_ctr_uds_poll(host);
         request(host, host_h, status, 1);
-        assert(get(host, COMMAND + 8) == 6);
-        if ((get(host, COMMAND + 52) & 255) == 1) break;
+        assert(ctr_word(host, CTR_COMMAND + 8) == 6);
+        if ((ctr_word(host, CTR_COMMAND + 52) & 255) == 1) break;
         snx_net_sleep_us(1000);
     } while (snx_net_now_us() < disconnect_deadline);
-    assert((get(host, COMMAND + 52) & 255) == 1);
+    assert((ctr_word(host, CTR_COMMAND + 52) & 255) == 1);
     /* The scanning caller sleeps while another guest thread remains runnable. */
     uint32_t worker = 0;
     const uint32_t worker_registers[5] = {0x30, 0x100000, 0, SNX_CTR_STACK_TOP - 0x1000, 0xfffffffe};

@@ -31,7 +31,8 @@ enum {
     LDN_ACCESS_POINT_OPENED = 2,
     LDN_ACCESS_POINT_CREATED = 3,
     LDN_STATION_OPENED = 4,
-    LDN_STATION_CONNECTED = 5
+    LDN_STATION_CONNECTED = 5,
+    LDN_ERROR = 6
 };
 #define LDN_ADVERTISE_DATA_TOO_LARGE RC(203, 10)
 #define LDN_DISABLED                 RC(203, 22)
@@ -164,7 +165,7 @@ static int nn_ldn_detail_IUserServiceCreator_CreateClientProcessMonitor(SvcObj* 
 static int nn_ldn_detail_IUserLocalCommunicationService_GetState(SvcObj* self, u32* state) {
     Ldn* d = self->data;
     pm_lock(&d->lk);
-    *state = d->state;
+    *state = d->state == LDN_NONE && d->refused ? (u32)LDN_ERROR : d->state;
     pm_unlock(&d->lk);
     R_SUCCEED();
 }
@@ -173,21 +174,29 @@ static int nn_ldn_detail_IUserLocalCommunicationService_AttachStateChangeEvent(S
     *event = ev_handle(d->ev);
     R_SUCCEED();
 }
+/* an Initialize refused: GetState says Error until one is taken, as Eden and Ryujinx answer */
+static u32 refuse(Ldn* d, u32 rc) {
+    pm_lock(&d->lk);
+    d->refused = 1;
+    pm_unlock(&d->lk);
+    return rc;
+}
 static int nn_ldn_detail_IUserLocalCommunicationService_Initialize(SvcObj* self, u64 pid) {
     Ldn* d = self->data;
     int r = 0;
     (void)pid;
     if (g_opt_ldn == SNX_OPT_LDN_OFF) {
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which ldn=off disables\n");
-        R_THROW(LDN_DISABLED);
+        R_THROW(refuse(d, LDN_DISABLED));
     }
     if (g_settings.airplane_mode) {
         WARN_LIMIT(1, "ldn: the game asked for local wireless, which airplane_mode=1 turns off\n");
-        R_THROW(LDN_AIRPLANE_MODE_ENABLED);
+        R_THROW(refuse(d, LDN_AIRPLANE_MODE_ENABLED));
     }
     pm_lock(&d->lk);
     if (d->state == LDN_NONE) {
         r = ldn_open(d);
+        d->refused = (u8)(r != 0);
         if (r) {
             WARN("ldn: no address for this console: %s (errno %d)\n",
                  g_opt_ldn == SNX_OPT_LDN_ROOM && r == -SNX_EBUSY ? "another of the game's ldn:u is in the room already"

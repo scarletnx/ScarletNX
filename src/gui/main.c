@@ -5,6 +5,10 @@
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
 #endif
+#ifdef SNX_GUI_VULKAN
+#include <SDL3/SDL_vulkan.h>
+#include <vulkan/vulkan.h> /* GPU Drivers' System driver row: the system's, asked (vk_system_ask) */
+#endif
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
@@ -17,6 +21,9 @@
 #include "gui/browser.h"
 #include "gui/editor.h"
 #include "common/utilities/font.h"
+#include "common/network/https.h"
+#include "gui/gpu_driver.h"
+#include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
 #include "gui/i18n.h"
 #include "gui/icons.h"
@@ -90,7 +97,10 @@ enum {
     GUI_FORM_FOLDERS,
     GUI_FORM_THEME,
     GUI_FORM_PAD,
-    GUI_FORM_USERS
+    GUI_FORM_USERS,
+    GUI_FORM_DRIVERS,   /* Settings > App > GPU Drivers, or a game's own GPU driver */
+    GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
+    GUI_FORM_FETCH      /* GPU Drivers > Download Driver */
 };
 /* Settings > User's values: who the games play as, then each user's nickname as it is typed */
 typedef struct {
@@ -111,7 +121,7 @@ typedef enum {
     GUI_CHOICES_PICKS
 } GuiChoicesOf;
 /* whose few choices the picks box shows (picks_open) */
-typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER } GuiPicksOf;
+typedef enum { GUI_PICKS_SHARE, GUI_PICKS_FOLDER, GUI_PICKS_DRIVER, GUI_PICKS_ASSET } GuiPicksOf;
 /* the lists whose first row App's firsts keeps between frames: Choices' a GuiChoicesOf each, then the others */
 enum {
     GUI_LIST_USERS = GUI_CHOICES_PICKS + 1,
@@ -217,8 +227,33 @@ typedef struct {
 /* the App screen's values, as its rows show them, and Folders' (what each row's folder is, past its path) */
 typedef struct {
     char theme[64], text[64], language[64], animations[16], side[16], background[16], places[48], moves[32];
+    char drivers[64], freedreno[32];
     char folder[GUI_FOLDER_ROWS][64];
 } GuiAppForm;
+/* GPU Drivers' values: each row's mark, (*) on the pick */
+#define GUI_DRIVERS_SHOWN 64 /* the packages the page lists; its note says how many more there are */
+#define GUI_DRIVER_ROWS   (GUI_DRIVERS_SHOWN + 4) /* Global, System driver, the packages, Download Driver, Add Driver */
+typedef struct {
+    char value[GUI_DRIVER_ROWS][8];
+} GuiDriversForm;
+/* Freedreno Settings' values: the name and value typed, and each variable's value as its row shows it */
+#define GUI_FREEDRENO_PRESETS 16
+#define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + SNX_FREEDRENO_MAX + 4)
+typedef struct {
+    char name[48], value[192];
+    char shown[GUI_FREEDRENO_ROWS][200];
+} GuiFreedrenoForm;
+/* Download Driver's values: a repository's state, a release's Latest or Prerelease */
+#define GUI_FETCH_ROWS (GUI_DRIVER_REPOS * 31) /* a repository's 30 releases, as many as GitHub lists, and Less */
+/* a Download Driver row that is no release (fetch_release): its repository's state, More, Less */
+enum { GUI_FETCH_STATE = -1, GUI_FETCH_MORE = -2, GUI_FETCH_LESS = -3 };
+#define GUI_FETCH_ASSETS 16                      /* the downloads of a release its box lists */
+enum { GUI_FETCH_NONE, GUI_FETCH_LOADING, GUI_FETCH_LISTED, GUI_FETCH_FAILED };
+typedef struct {
+    char value[GUI_FETCH_ROWS][24];
+} GuiFetchForm;
+/* the launcher's HTTPS GET (common/network/https.h), a test's own in its place */
+typedef int (*GuiHttpsGet)(const char* url, const SnxHttpsOptions* o, SnxHttpsResponse* out, char* why, size_t size);
 /* the head's measures: the row of tabs (its height and the tabs' width), the title's height and width (0: none), the
    user's box (0: none), a cell of the text */
 typedef struct {
@@ -508,6 +543,53 @@ typedef struct App {
     GuiFrame frame; /* what place_screen measured of the screen it lays out */
     GuiUsersForm users_form;
     GuiThemeKey users_keys[SNX_USERS_MAX + 1]; /* Current user, then a row a user */
+    /* Settings > App > GPU Drivers (gui/gpu_driver.h): the packages of drivers_dir, the launcher's pick for every game
+       (app.ini's gpu_driver, "" the system's) and its Freedreno variables (freedreno_env); its page's rows and
+       Freedreno Settings', for the launcher's picks or, with drivers_game (a game's program, drivers_title its name),
+       that game's own */
+    char* drivers_dir;
+    GuiGpuDriver* packages;
+    size_t packages_count;
+    char gpu_driver[128];
+    char freedreno[SNX_FREEDRENO_TEXT];
+    char* drivers_game;
+    char* drivers_title;
+    GuiDriversForm drivers_form;
+    GuiThemeKey drivers_keys[GUI_DRIVER_ROWS];
+    char drivers_label[GUI_DRIVER_ROWS][300];
+    char drivers_about[GUI_DRIVER_ROWS][700];
+    int drivers_base;     /* the first package's row */
+    int driver_off;       /* the package GUI_ASK_DRIVER asks about, its index in drivers */
+    Uint32 driver_picked; /* Add Driver's picker's answer */
+    SDL_DialogFileFilter driver_filter;
+    char vk_system[300];     /* the system's Vulkan driver as System driver's row says it, asked once */
+    char addons_driver[400]; /* the game box's GPU Driver row: the game's pick, or Global and the launcher's */
+    SnxFreedrenoVar fd_vars[SNX_FREEDRENO_MAX]; /* Freedreno Settings' variables as the page edits them */
+    int fd_count;
+    GuiFreedrenoForm fd_form;
+    GuiThemeKey fd_keys[GUI_FREEDRENO_ROWS];
+    char fd_about[GUI_FREEDRENO_ROWS][300];
+    /* GPU Drivers > Download Driver: each repository's releases and its state, the page's rows (what repository and
+       release each is), a release's downloads in the picks box, the download going and what it said last */
+    GuiHttpsGet https_get; /* NULL in a build without OpenSSL */
+    Uint32 fetch_event;    /* the threads' answers (fetch_answer) */
+    bool fetching, downloading;
+    GuiDriverReleases fetch_lists[GUI_DRIVER_REPOS];
+    int fetch_state[GUI_DRIVER_REPOS];
+    char fetch_error[GUI_DRIVER_REPOS][700];
+    GuiFetchForm fetch_form;
+    GuiThemeKey fetch_keys[GUI_FETCH_ROWS];
+    char fetch_label[GUI_FETCH_ROWS][180];
+    char fetch_title[GUI_DRIVER_REPOS][240]; /* each repository's box's head */
+    bool fetch_open[GUI_DRIVER_REPOS];       /* its box every release, not its latest and recommended alone */
+    char fetch_about[GUI_FETCH_ROWS][900];
+    int fetch_repo[GUI_FETCH_ROWS], fetch_release[GUI_FETCH_ROWS];
+    char asset_labels[GUI_FETCH_ASSETS][240];
+    const char* asset_picks[GUI_FETCH_ASSETS + 1];
+    char download_name[160], download_said[400];
+    char vk_gpu[256]; /* the system's GPU, as Vulkan names it (vk_system_ask): Download Driver's recommendation */
+    char* run_driver; /* the run's --gpu_driver= and --freedreno_env= (gui_run_option), until the next run */
+    char* run_freedreno;
     char users_label[SNX_USERS_MAX][32];
     int language;        /* Settings > App's Language: 0 Auto (the system's), else snx_gui_languages' index + 1 */
     char* games_key;     /* [folders] games = as app.ini had it, recompiled = before it was named so: written again */
@@ -536,6 +618,9 @@ typedef struct App {
     char* folders[GUI_FOLDERS_MAX]; /* the player's game folders, listed after recompiled/ and dumps/ */
     bool folders_deep[GUI_FOLDERS_MAX];   /* each with its subfolders' games too */
     bool dumps_shallow; /* dumps/ of the data folder without its subfolders' games: app.ini's dumps_subfolders = off */
+    bool dumps_off;     /* dumps/ of the data folder off the Dumps Library, neither listed nor made: dumps_main = off */
+    bool recompiled_off; /* the Recompiled Library's Main off it, not listed, new games going to an Extra:
+                            app.ini's recompiled_main = off */
     int folders_library[GUI_FOLDERS_MAX]; /* each one's GUI_LIBRARY_* */
     int adding;                           /* the library Add a folder adds to, -1: the one its games say */
     int asked_holds;                      /* folder_asked's libraries, 1 << GUI_LIBRARY_* */
@@ -628,8 +713,14 @@ typedef struct App {
     bool telling;            /* the notification shows a run, the menu's or a recompile of the queue */
     const char* told_result; /* how the last of them ended, English (snx_tr's), for the one left once none runs */
     bool playing; /* a game started here plays in the game activity, the menu behind it until it shows again */
+    bool played;  /* that activity ended: how the game's run did is read once the menu shows (game_end) */
+    SDL_Time played_at; /* when it started: a game log older than that is another run's */
 #endif
 } App;
+static const char* pick_name(const App* app, const char* id);
+static void open_drivers(App* app, const char* game, const char* title, int row);
+static void open_freedreno(App* app, const char* game, const char* title);
+static char* game_ini_of(const char* program);
 
 /* the menu's item i: a row of ui.txt's Entries, in model.h's order (a negative size if not); its text shown
    translated */
@@ -663,6 +754,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #endif
 #define SAY_GAMES_GRID SAY_GAMES /* a finger's are the list's */
 /* Games' focused row, each when it can be done there (games_said) */
+#define SAY_GAMES_PLAY   SNX_TR_KEYS("Play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("Recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("Mods.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("AOT pack.")
@@ -723,6 +815,15 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #else
 #define SAY_USERS SNX_TR_KEYS("Tap: rename.")
 #endif
+#ifdef SDL_PLATFORM_ANDROID
+#define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove. Back.")
+#define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again. Back.")
+#define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save. Back.")
+#else
+#define SAY_DRIVERS   SNX_TR_KEYS("Tap: use, add or remove.")
+#define SAY_FETCH     SNX_TR_KEYS("Tap: downloads, or fetch again.")
+#define SAY_FREEDRENO SNX_TR_KEYS("Tap: apply, type, remove or save.")
+#endif
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
 #define SAY_QUEUE_MOVE   SNX_TR_KEYS("Tap: select.")
 #define SAY_QUEUE_TAB    SNX_TR_KEYS("Games.")
@@ -737,6 +838,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES        SNX_TR_KEYS("Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: scroll. F5: refresh.")
 #define SAY_GAMES_GRID   SNX_TR_KEYS("Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh.")
 /* Games' focused row, each when it can be done there (games_said) */
+#define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("M: mods.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("B: AOT pack.")
@@ -765,6 +867,9 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_RESET            SNX_TR_KEYS("Enter: reset.")
 #define SAY_PAD              SNX_TR_KEYS("Arrows/pad: move, change. Enter/A: select. Del: default. ESC: back.")
 #define SAY_USERS            SNX_TR_KEYS("Up/Down: user. Left/Right: current user. Enter: rename. ESC: back.")
+#define SAY_DRIVERS          SNX_TR_KEYS("Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back.")
+#define SAY_FETCH            SNX_TR_KEYS("Up/Down: row. Enter: downloads, or fetch again. ESC: back.")
+#define SAY_FREEDRENO        SNX_TR_KEYS("Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back.")
 /* the Compile tab's, each when it can be done there (queue_said); then its panel's line once the one in focus ended */
 #define SAY_QUEUE_MOVE       SNX_TR_KEYS("Up/Down: queue.")
 #define SAY_QUEUE_TAB        SNX_TR_KEYS("Tab: games.")
@@ -779,6 +884,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
    pad's and a Switch one's name them, a PlayStation pad's shapes in their place (gui_pad_keys_named) */
 #define SAY_PAD_MENU             SNX_TR_KEYS("D-pad: move. A: select. Start: refresh. B: back.")
 #define SAY_PAD_GAMES            SNX_TR_KEYS("D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back.")
+#define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
@@ -799,6 +905,9 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_ADD              SNX_TR_KEYS("A: add.")
 #define SAY_PAD_RESET            SNX_TR_KEYS("A: reset.")
 #define SAY_PAD_USERS            SNX_TR_KEYS("D-pad: user, current user. A: rename. B: back.")
+#define SAY_PAD_DRIVERS          SNX_TR_KEYS("D-pad: row. A: use, add or remove. X: remove. B: back.")
+#define SAY_PAD_FETCH            SNX_TR_KEYS("D-pad: row. A: downloads, or fetch again. B: back.")
+#define SAY_PAD_FREEDRENO        SNX_TR_KEYS("D-pad: row. A: apply, type, remove or save. X: remove. B: back.")
 #define SAY_PAD_TAB              SNX_TR_KEYS("LB/RB: screen.")
 #define SAY_PAD_QUEUE_MOVE       SNX_TR_KEYS("D-pad: queue.")
 #define SAY_PAD_QUEUE_TAB        SNX_TR_KEYS("RB: games.")
@@ -1186,7 +1295,7 @@ static void games_defaults(App* app, bool ios) {
 /* Settings > App's picks and Games' options written to app_file: 0, else nonzero, said by the caller */
 static int app_write(App* app) {
     char *text, *dir, *staged;
-    size_t size = 256 + 32 * GUI_OPTIONS;
+    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40;
     int n, failed, i;
     if (!app->app_file || app->look_only) return 0;
     for (i = 0; i < GUI_PLACES; ++i) size += 16 + (app->place[i] ? strlen(app->place[i]) : 0);
@@ -1200,6 +1309,11 @@ static int app_write(App* app) {
     n += snprintf(text + n, size - (size_t)n, "side_box = %s\n", side_words[app->side_box]);
     n += snprintf(text + n, size - (size_t)n, "recompile_background = %s\n", background_words[app->background_gentle]);
     n += snprintf(text + n, size - (size_t)n, "dumps_subfolders = %s\n", app->dumps_shallow ? "off" : "on");
+    n += snprintf(text + n, size - (size_t)n, "dumps_main = %s\n", app->dumps_off ? "off" : "on");
+    n += snprintf(text + n, size - (size_t)n, "recompiled_main = %s\n", app->recompiled_off ? "off" : "on");
+    /* GPU Drivers' and Freedreno Settings' picks, once there are: none is the system's driver, no variable */
+    if (app->gpu_driver[0]) n += snprintf(text + n, size - (size_t)n, "gpu_driver = %s\n", app->gpu_driver);
+    if (app->freedreno[0]) n += snprintf(text + n, size - (size_t)n, "freedreno_env = %s\n", app->freedreno);
     for (i = 0; i < GUI_OPTIONS; ++i)
         n += snprintf(text + n, size - (size_t)n, "%s = %s\n", option_keys[i].key,
                       option_keys[i].words[app->options[i]]);
@@ -1268,11 +1382,14 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     int scale = app->menu.text_size, language = app->language, n = 0, count = 0, moved = 0;
     int options[GUI_OPTIONS];
     bool still = app->animations_off, gentle = app->background_gentle, kept, scale_read = false;
-    bool shallow = app->dumps_shallow;
+    bool shallow = app->dumps_shallow, main_off = app->dumps_off, games_off = app->recompiled_off;
     int side = app->side_box;
+    char driver[sizeof app->gpu_driver], freedreno[sizeof app->freedreno];
     SnxIni ini;
     if (size) bad[0] = 0;
     if (renamed_size) renamed[0] = 0;
+    snprintf(driver, sizeof driver, "%s", app->gpu_driver);
+    snprintf(freedreno, sizeof freedreno, "%s", app->freedreno);
     if (!text) return 0;
     /* the options' words first, on a copy (a read cuts the text): a word it does not know is then said with the one
        the file leaves in use */
@@ -1351,6 +1468,29 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
                 shallow = !strcmp(value, "off");
                 continue;
             }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "dumps_main")) {
+            if (!strcmp(value, "on") || !strcmp(value, "off")) {
+                main_off = !strcmp(value, "off");
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "recompiled_main")) {
+            if (!strcmp(value, "on") || !strcmp(value, "off")) {
+                games_off = !strcmp(value, "off");
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "gpu_driver")) {
+            if (!*value || (snx_gpu_driver_id_valid(value) && strlen(value) < sizeof driver)) {
+                snprintf(driver, sizeof driver, "%s", value);
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "freedreno_env")) {
+            SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
+            char why[300];
+            if (strlen(value) < sizeof freedreno &&
+                snx_freedreno_parse(value, vars, SNX_FREEDRENO_MAX, why, sizeof why) >= 0) {
+                snprintf(freedreno, sizeof freedreno, "%s", value);
+                continue;
+            }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "language")) {
             int found = snx_tr_find(value);
             if (!strcmp(value, "auto") || found >= 0) {
@@ -1373,6 +1513,14 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), background_words[kept]);
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_subfolders"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), shallow ? "off" : "on");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "dumps_main"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), main_off ? "off" : "on");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "recompiled_main"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), games_off ? "off" : "on");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "gpu_driver"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), driver[0] ? driver : "\"\"");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "freedreno_env"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), freedreno[0] ? freedreno : "\"\"");
         if (n >= (int)size) n = (int)size - 1;
     }
     free(text);
@@ -1388,6 +1536,10 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     }
     if (apply) app->animations_off = still;
     if (apply) app->dumps_shallow = shallow;
+    if (apply) app->dumps_off = main_off;
+    if (apply) app->recompiled_off = games_off;
+    if (apply) snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", driver);
+    if (apply) snprintf(app->freedreno, sizeof app->freedreno, "%s", freedreno);
     if (apply) app->background_gentle = gentle;
     if (apply && side != app->side_box) {
         app->side_box = side;
@@ -2067,7 +2219,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_MOVE:
         case GUI_ASK_MADE:
         case GUI_ASK_STATE:
-        case GUI_ASK_CACHE: return app->ask_line;
+        case GUI_ASK_CACHE:
+        case GUI_ASK_DRIVER: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -2477,6 +2630,7 @@ static const char* const ask_choices[][2] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Exit")},
                                              {SNX_TR_NOOP("Play"), SNX_TR_NOOP("Recompile")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Remove")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -2585,7 +2739,7 @@ static int splash_shown(App* app) {
 #define SAY_MENU_KEYS SNX_TR_KEYS("Arrows/mouse: move. Space/Enter/click: select. F5: refresh. ESC: exit.")
 #endif
 /* the keys the foot of the screen shown says, Tab's after them: what it draws, and what a click on one presses */
-#define GUI_SAID_PARTS 9 /* the most sentences of keys one screen's foot puts together (screen_said) */
+#define GUI_SAID_PARTS 10 /* the most sentences of keys one screen's foot puts together (screen_said) */
 /* part after the screen's others while parts has room, so one more than GUI_SAID_PARTS holds is left out of the foot
    (the test of Games' every key shows it), never written past them */
 static void said_add(const char** parts, int* n, const char* part) {
@@ -2673,13 +2827,16 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
 #endif
     } else if (pad) {
         if (app->editing)
-            keys = app->editor.picking              ? SAY_PAD_PICKER
-                   : app->form == GUI_FORM_THEME    ? SAY_PAD_EDITOR
-                   : app->form == GUI_FORM_SETTINGS ? SAY_PAD_GROUPS
-                   : app->form == GUI_FORM_APP      ? SAY_PAD_APP
-                   : app->form == GUI_FORM_FOLDERS  ? SAY_PAD_FOLDERS
-                   : app->form == GUI_FORM_USERS    ? SAY_PAD_USERS
-                                                    : SAY_PAD_SETTINGS;
+            keys = app->editor.picking               ? SAY_PAD_PICKER
+                   : app->form == GUI_FORM_THEME     ? SAY_PAD_EDITOR
+                   : app->form == GUI_FORM_SETTINGS  ? SAY_PAD_GROUPS
+                   : app->form == GUI_FORM_APP       ? SAY_PAD_APP
+                   : app->form == GUI_FORM_FOLDERS   ? SAY_PAD_FOLDERS
+                   : app->form == GUI_FORM_USERS     ? SAY_PAD_USERS
+                   : app->form == GUI_FORM_DRIVERS   ? SAY_PAD_DRIVERS
+                   : app->form == GUI_FORM_FETCH     ? SAY_PAD_FETCH
+                   : app->form == GUI_FORM_FREEDRENO ? SAY_PAD_FREEDRENO
+                                                     : SAY_PAD_SETTINGS;
         else
             keys = app->menu.view == GUI_LOAD_GAMES ? SAY_PAD_GAMES
                    : pick_screen(app)               ? SAY_PAD_KEYS_HOW
@@ -2692,14 +2849,17 @@ static const char* screen_said(const App* app, bool help, char* out, size_t size
         said_add(parts, &n, SAY_PAD_TAB);
     } else {
         if (app->editing)
-            keys = app->form == GUI_FORM_PAD        ? SAY_PAD
-                   : app->editor.picking            ? SAY_PICKER
-                   : app->form == GUI_FORM_THEME    ? SAY_EDITOR
-                   : app->form == GUI_FORM_SETTINGS ? SAY_GROUPS
-                   : app->form == GUI_FORM_APP      ? SAY_APP
-                   : app->form == GUI_FORM_FOLDERS  ? SAY_FOLDERS
-                   : app->form == GUI_FORM_USERS    ? SAY_USERS
-                                                    : SAY_SETTINGS;
+            keys = app->form == GUI_FORM_PAD         ? SAY_PAD
+                   : app->editor.picking             ? SAY_PICKER
+                   : app->form == GUI_FORM_THEME     ? SAY_EDITOR
+                   : app->form == GUI_FORM_SETTINGS  ? SAY_GROUPS
+                   : app->form == GUI_FORM_APP       ? SAY_APP
+                   : app->form == GUI_FORM_FOLDERS   ? SAY_FOLDERS
+                   : app->form == GUI_FORM_USERS     ? SAY_USERS
+                   : app->form == GUI_FORM_DRIVERS   ? SAY_DRIVERS
+                   : app->form == GUI_FORM_FETCH     ? SAY_FETCH
+                   : app->form == GUI_FORM_FREEDRENO ? SAY_FREEDRENO
+                                                     : SAY_SETTINGS;
         else if (app->menu.view == GUI_LOAD_GAMES)
             keys = games_grid(app) ? SAY_GAMES_GRID : SAY_GAMES;
         else if (pick_screen(app))
@@ -3941,13 +4101,16 @@ enum {
     ROW_ADD_CHEATS = -7,
     ROW_OPEN_FOLDER = -8,
     ROW_CLEAN_CACHE = -9,
-    ROW_STATES = -10
+    ROW_STATES = -10,
+    ROW_GPU_DRIVER = -11,
+    ROW_FREEDRENO = -12
 };
 /* the rows after the cheats: Add Mod and Add Cheats, each with its folder's Open after it, Open Folder (the game's other
-   folders), Save States (S's box, the way a finger has to it), Clean Cache, Save and Play; on every system, a phone's
-   Files app showing the folders */
-static const int addons_tail[] = {ROW_ADD_MOD, ROW_MODS_FOLDER, ROW_ADD_CHEATS, ROW_CHEATS_FOLDER, ROW_OPEN_FOLDER,
-                                  ROW_STATES,  ROW_CLEAN_CACHE, ROW_SAVE,       ROW_PLAY};
+   folders), Save States (S's box, the way a finger has to it), Clean Cache, its own GPU Driver and Freedreno Settings
+   (their pages), Save and Play; on every system, a phone's Files app showing the folders */
+static const int addons_tail[] = {ROW_ADD_MOD,     ROW_MODS_FOLDER, ROW_ADD_CHEATS,  ROW_CHEATS_FOLDER,
+                                  ROW_OPEN_FOLDER, ROW_STATES,      ROW_CLEAN_CACHE, ROW_GPU_DRIVER,
+                                  ROW_FREEDRENO,   ROW_SAVE,        ROW_PLAY};
 #define ADDONS_TAIL ((int)SDL_arraysize(addons_tail))
 /* the box's rows; on Open Folder's page, a folder of the game's each */
 static int addons_rows(const App* app) {
@@ -4163,6 +4326,16 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     text = snx_ini_value(ini, "cheats_off");
     for (i = 0; i < app->cheats_count; ++i) app->cheats_on[i] = !snx_cheat_off(text, app->cheats[i]);
     free(text);
+    if (snx_ini_has(ini, "gpu_driver")) { /* its own pick, else Global's */
+        text = snx_ini_value(ini, "gpu_driver");
+        snprintf(app->addons_driver, sizeof app->addons_driver, snx_tr("GPU Driver: %s"),
+                 pick_name(app, text ? text : ""));
+        free(text);
+    } else {
+        char global[300];
+        snprintf(global, sizeof global, snx_tr("Global (%s)"), pick_name(app, app->gpu_driver));
+        snprintf(app->addons_driver, sizeof app->addons_driver, snx_tr("GPU Driver: %s"), global);
+    }
     free(ini);
     free(folder);
     free(name);
@@ -4178,6 +4351,8 @@ static unsigned addons_icon(const App* app, int row) {
     return item == ROW_ADD_MOD                                                               ? GUI_ICON_PACKAGE_PLUS
            : item == ROW_MODS_FOLDER || item == ROW_CHEATS_FOLDER || item == ROW_OPEN_FOLDER ? GUI_ICON_FOLDER_OPEN
            : item == ROW_CLEAN_CACHE                                                         ? GUI_ICON_ERASER
+           : item == ROW_GPU_DRIVER                                                          ? GUI_ICON_CPU
+           : item == ROW_FREEDRENO                                                           ? GUI_ICON_SETTINGS
            : item == ROW_ADD_CHEATS                                                          ? GUI_ICON_FILE_PLUS
            : item == ROW_SAVE || item == ROW_STATES                                          ? GUI_ICON_SAVE
            : item == ROW_PLAY && app->addons_recompile                                       ? GUI_ICON_HAMMER
@@ -4224,6 +4399,10 @@ static void addons_label(const App* app, int row, char* label, size_t size) {
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Clean Cache"));
     else if (item == ROW_STATES)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Save States"));
+    else if (item == ROW_GPU_DRIVER)
+        snprintf(label, size, "%s%s", app->theme.marker, app->addons_driver);
+    else if (item == ROW_FREEDRENO)
+        snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Freedreno Settings"));
     else if (item == ROW_SAVE)
         snprintf(label, size, "%s%s", app->theme.marker, snx_tr("Save"));
     else
@@ -4283,9 +4462,18 @@ static void render_addons(App* app) {
     over_box(app, d.box, title);
     ui_addons_draw(app, d.rects, app->scale, d.lists);
 }
-/* what is picked kept as the game's addons=, mods_off= and cheats_off=: 1, else 0 with app->message saying why. The
-   picked
-   update's program, absolute and owned, in *program when it is not NULL (NULL with no update picked) */
+/* the picked update's program, absolute and owned; NULL with no update picked */
+static char* addons_program(const App* app) {
+    char* program = NULL;
+    for (size_t i = 0; i < app->addons.count; ++i)
+        if (app->addons_checked[i] && addon_kind(app, i) == SNX_ADDON_UPDATE) {
+            free(program);
+            program = snx_absolute(app->addons.paths[i]);
+        }
+    return program;
+}
+/* what is picked kept as the game's addons=, mods_off= and cheats_off=: 1, else 0 with app->message saying why. Once
+   kept, the picked update's program in *program when it is not NULL (addons_program) */
 static int addons_save(App* app, char** program) {
     char *folder, *name, *ini, *text, *off = snx_strdup(""), *cheats_off = snx_strdup("");
     SnxAddon* list = (SnxAddon*)calloc(app->addons.count + 1, sizeof *list);
@@ -4294,10 +4482,7 @@ static int addons_save(App* app, char** program) {
     if (program) *program = NULL;
     addons_where(app, &folder, &name);
     for (i = 0; list && i < app->addons.count; ++i)
-        if (app->addons_checked[i]) {
-            snprintf(list[count++].entry, sizeof list->entry, "%s", addon_entry(app, i));
-            if (program && addon_kind(app, i) == SNX_ADDON_UPDATE) *program = snx_absolute(app->addons.paths[i]);
-        }
+        if (app->addons_checked[i]) snprintf(list[count++].entry, sizeof list->entry, "%s", addon_entry(app, i));
     for (i = 0; i < app->mods_count; ++i)
         if (!app->mods_on[i]) {
             char* more = snx_format("%s%s%s", off, off[0] ? "/" : "", app->mods[i]);
@@ -4317,7 +4502,8 @@ static int addons_save(App* app, char** program) {
     if (!saved) {
         snprintf(app->message, sizeof app->message, snx_tr("Not saved: %s could not be written"), ini);
         say_failure(app, app->message);
-    }
+    } else if (program)
+        *program = addons_program(app);
     free(off);
     free(cheats_off);
     free(text);
@@ -4656,17 +4842,29 @@ static void addons_picked(App* app, const char* picked, const char* error, bool 
 }
 static void launch(App* app, char* absolute, bool prepared);
 static void states_open(App* app, const char* game, const char* title);
+/* the box closed and its game played (or recompiled, in the box R opened) through the driver from program, owned: the
+   picked update's (addons_program), else with NULL the game's own. A mod's exefs/ changes the program, which the driver
+   recompiles before it plays */
+static void addons_play(App* app, char* program) {
+    int selected = app->menu.selected;
+    bool recompile = app->recompile;
+    if (!program) program = snx_absolute(app->addons_game);
+    app->recompile = app->addons_recompile;
+    addons_close(app);
+    app->menu.selected = GUI_SWITCH;
+    launch(app, program, true);
+    if (!app->menu.running) app->menu.selected = selected;
+    app->recompile = recompile;
+}
 /* row pressed: an update picked (the others not: one runs at a time), No update, a DLC's, a mod's or a cheat's box
    checked or not; Add Mod or Add Cheats, the picker, whose folder or file goes into the mods or cheats folder (mod_add,
    cheats_add); Open Mods Folder or Open Cheats Folder, the folder opened; Open Folder, its page of the game's other
    folders, one opened as it is pressed there; Clean Cache, the caches' deletion asked; Save, the picks kept and the box
-   closed; or Play, the picks kept and the game played (or recompiled) through the driver, from the picked update's
-   program. A mod's exefs/ changes the program, which the driver recompiles before it plays */
+   closed; or Play, the picks kept and the game played (addons_play) */
 static void addons_press(App* app, int row) {
-    int item, selected = app->menu.selected;
+    int item;
     size_t i;
     char* path;
-    bool recompile = app->recompile;
     if (app->addons_folders_shown) {
         addons_folder_press(app, row);
         return;
@@ -4678,6 +4876,22 @@ static void addons_press(App* app, int row) {
     }
     if (item == ROW_CLEAN_CACHE) {
         caches_ask(app);
+        return;
+    }
+    if (item == ROW_GPU_DRIVER ||
+        item == ROW_FREEDRENO) { /* the box goes, its page taking the screen; back to it after */
+        char *game = snx_strdup(app->addons_game), *title = snx_strdup(app->addons_title);
+        addons_close(app);
+        if (!states_kept(game))
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%s is a dump: its recompiled game keeps its own GPU driver and Freedreno variables"),
+                     title);
+        else if (item == ROW_GPU_DRIVER)
+            open_drivers(app, game, title, 0);
+        else
+            open_freedreno(app, game, title);
+        free(game);
+        free(title);
         return;
     }
     if (item == ROW_STATES) { /* the box goes, since it would take the keys from the states' */
@@ -4733,13 +4947,7 @@ static void addons_press(App* app, int row) {
         addons_close(app);
         return;
     }
-    if (!path) path = snx_absolute(app->addons_game);
-    app->recompile = app->addons_recompile;
-    addons_close(app);
-    app->menu.selected = GUI_SWITCH;
-    launch(app, path, true);
-    if (!app->menu.running) app->menu.selected = selected;
-    app->recompile = recompile;
+    addons_play(app, path);
 }
 /* a key on the box: Up and Down move, Select presses the row, Back closes it, nothing kept */
 static void addons_key(App* app, GuiKey key) {
@@ -5197,6 +5405,12 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
     } else if (app->form == GUI_FORM_FOLDERS)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FOLDERS"));
+    else if (app->form == GUI_FORM_DRIVERS)
+        snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS"));
+    else if (app->form == GUI_FORM_FETCH)
+        snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
+    else if (app->form == GUI_FORM_FREEDRENO)
+        snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
     else
         snprintf(out, size, "%s", snx_tr(SAY_SETTINGS_TITLE));
     return out;
@@ -6325,8 +6539,9 @@ static void draw_games(App* app) {
             snprintf(line, sizeof line, snx_tr("%zu game(s)"), games_listed(app)); /* one page, which scrolls */
             y += wrap_in(app, r, r.x, y, line, 0, soft) * cell_h(app);
         }
-        y += wrap_in(app, r, r.x, y, app->games_dir ? app->games_dir : "recompiled/", 1, soft) * cell_h(app);
-        if (dumps_on(app)) { /* Dumps off: the games made alone */
+        if (!app->recompiled_off) /* off the Recompiled Library: not listed */
+            y += wrap_in(app, r, r.x, y, app->games_dir ? app->games_dir : "recompiled/", 1, soft) * cell_h(app);
+        if (dumps_on(app) && !app->dumps_off) { /* Dumps off, or dumps/ off the Library: not listed */
             char* dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
             y += wrap_in(app, r, r.x, y, dumps ? dumps : "dumps/", 1, soft) * cell_h(app);
             free(dumps);
@@ -6977,6 +7192,14 @@ static const GuiThemeKey app_keys[] = {
     {"", SNX_TR_NOOP("Folders"), GUI_KEY_ACTION, offsetof(GuiAppForm, places), sizeof(((GuiAppForm*)0)->places), NULL,
      0, SNX_TR_NOOP("The data and the extractions, and the libraries Games lists: recompiled games and dumps"), 0, 0, 0,
      0, NULL},
+    {"", SNX_TR_NOOP("GPU Drivers"), GUI_KEY_ACTION, offsetof(GuiAppForm, drivers), sizeof(((GuiAppForm*)0)->drivers),
+     NULL, 0,
+     SNX_TR_NOOP("Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"), 0,
+     0, 0, 0, NULL},
+    {"", SNX_TR_NOOP("Freedreno Settings"), GUI_KEY_ACTION, offsetof(GuiAppForm, freedreno),
+     sizeof(((GuiAppForm*)0)->freedreno), NULL, 0,
+     SNX_TR_NOOP("Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"), 0, 0,
+     0, 0, NULL},
     {"", SNX_TR_NOOP("Clean Old Settings"), GUI_KEY_ACTION, 0, 0, NULL, 0,
      SNX_TR_NOOP("Removes the settings this version no longer reads. Asks first"), 0, 0, 0, 0, NULL},
     {"", SNX_TR_NOOP("Move Old Files"), GUI_KEY_ACTION, offsetof(GuiAppForm, moves), sizeof(((GuiAppForm*)0)->moves),
@@ -6992,6 +7215,8 @@ enum {
     GUI_APP_BACKGROUND,
     GUI_APP_EDITOR,
     GUI_APP_PLACES,
+    GUI_APP_DRIVERS,
+    GUI_APP_FREEDRENO,
     GUI_APP_CLEAN,
     GUI_APP_MOVE,
     GUI_APP_RESET,
@@ -7040,6 +7265,16 @@ static void app_values(App* app) {
         snprintf(f->places, sizeof f->places, snx_tr("Defaults, %d Extra(s)"), app->folder_count);
     else
         snprintf(f->places, sizeof f->places, "%s", snx_tr("Defaults"));
+    snprintf(f->drivers, sizeof f->drivers, "%s", pick_name(app, app->gpu_driver));
+    {
+        SnxFreedrenoVar vars[SNX_FREEDRENO_MAX];
+        char why[300];
+        int set = snx_freedreno_parse(app->freedreno, vars, SNX_FREEDRENO_MAX, why, sizeof why);
+        if (set > 0)
+            snprintf(f->freedreno, sizeof f->freedreno, snx_tr("%d set"), set);
+        else
+            snprintf(f->freedreno, sizeof f->freedreno, "%s", snx_tr("None"));
+    }
     if (app->lefts) /* as the menu last looked: when it opened, or App did */
         snprintf(f->moves, sizeof f->moves, snx_tr("%d left"), app->lefts);
     else
@@ -7158,8 +7393,8 @@ static void open_folders(App* app, int row);
 static int folder_row_of(const App* app, int kind, int at);
 /* the dumps library's Main row: dumps/ of the data folder, which goes with it */
 static const char dumps_row[] = SNX_TR_NOOP("Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too "
-                                            "while it says + subfolders. It stays on the list");
-/* whether path is dumps/ of the data folder, which the Library always lists */
+                                            "with + subfolders. Remove from Library takes it off, its files kept");
+/* whether path is dumps/ of the data folder, the Dumps Library's Main row */
 static bool is_dumps_dir(const App* app, const char* path) {
     char* dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
     bool same = dumps && path && snx_same_file(dumps, path);
@@ -7180,8 +7415,10 @@ static void folder_add(App* app, const char* path, int library, bool deep) {
              (library == GUI_LIBRARY_RECOMPILED && app->games_dir && !strcmp(absolute, app->games_dir)) ||
              (library == GUI_LIBRARY_DUMPS && is_dumps_dir(app, absolute)))
         snprintf(note, sizeof note,
-                 library == GUI_LIBRARY_DUMPS ? snx_tr("Already in the dumps library: %s")
-                                              : snx_tr("Already in the recompiled library: %s"),
+                 library == GUI_LIBRARY_DUMPS && app->dumps_off && is_dumps_dir(app, absolute)
+                     ? snx_tr("%s is the dumps library's Main row, taken off it: its Add to Library puts it back")
+                 : library == GUI_LIBRARY_DUMPS ? snx_tr("Already in the dumps library: %s")
+                                                : snx_tr("Already in the recompiled library: %s"),
                  absolute);
     else if (app->folder_count == GUI_FOLDERS_MAX)
         snprintf(note, sizeof note, snx_tr("At most %d folders"), GUI_FOLDERS_MAX);
@@ -7203,8 +7440,47 @@ static void folder_add(App* app, const char* path, int library, bool deep) {
     else
         snprintf(app->message, sizeof app->message, snx_tr("Folders: %s"), note);
 }
+/* a library's Main off it, or on it again (made then where it is not): the data folder's dumps/ for the Dumps
+   Library, recompiled/ for the Recompiled Library. app.ini keeps it, Games lists again, and the Folders row's note
+   says what changed */
+static void library_main_switch(App* app, int library, bool off) {
+    bool dumps_lib = library == GUI_LIBRARY_DUMPS;
+    char note[sizeof app->editor.note], *path = dumps_lib
+                                                    ? (app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL)
+                                                    : (app->games_dir ? snx_strdup(app->games_dir) : NULL);
+    const char* shown = path ? path : dumps_lib ? "dumps/" : "recompiled/";
+    int row = dumps_lib ? folder_row_of(app, GUI_ROW_DUMPS, -1) : folder_row_of(app, GUI_ROW_PLACE, GUI_PLACE_GAMES);
+    bool made = off || !path || snx_is_dir(path) || !snx_mkdirs(path);
+    *(dumps_lib ? &app->dumps_off : &app->recompiled_off) = off;
+    if (app_save(app))
+        snprintf(note, sizeof note, "%s", app->editor.note);
+    else if (off && dumps_lib)
+        snprintf(note, sizeof note, snx_tr("%s removed from the library. Its games stay in the folder"), shown);
+    else if (off)
+        snprintf(note, sizeof note,
+                 snx_tr("%s removed from the library. Its games stay in the folder; new games go to an Extra"), shown);
+    else if (!made)
+        snprintf(note, sizeof note,
+                 dumps_lib ? snx_tr("%s is in the Dumps Library again, but could not be made")
+                           : snx_tr("%s is in the Recompiled Library again, but could not be made"),
+                 shown);
+    else
+        snprintf(note, sizeof note,
+                 dumps_lib ? snx_tr("%s is in the Dumps Library again: Games lists its games")
+                           : snx_tr("%s is in the Recompiled Library again: Games lists its games"),
+                 shown);
+    free(path);
+    list_games(app);
+    open_folders(app, row);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
+}
 static void folder_remove(App* app, int folder) {
-    char note[sizeof app->editor.note], *path = app->folders[folder];
+    char note[sizeof app->editor.note], *path;
+    if (folder < 0) { /* a library's Main: -1 the Dumps Library's, -2 the Recompiled Library's */
+        library_main_switch(app, folder == -1 ? GUI_LIBRARY_DUMPS : GUI_LIBRARY_RECOMPILED, true);
+        return;
+    }
+    path = app->folders[folder];
     int row = folder_row_of(app, GUI_ROW_FOLDER, folder); /* the row after it takes its place */
     memmove(app->folders + folder, app->folders + folder + 1, (size_t)(app->folder_count - folder - 1) * sizeof(char*));
     memmove(app->folders_deep + folder, app->folders_deep + folder + 1,
@@ -7222,12 +7498,25 @@ static void folder_remove(App* app, int folder) {
 }
 /* a game folder taken off the Library asked about first (GUI_ASK_FOLDER): only the list changes */
 static void folder_off_ask(App* app, int folder) {
+    char* dumps = folder == -1 && app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
     app->folder_off = folder;
-    snprintf(app->ask_line, sizeof app->ask_line,
-             app->folders_library[folder] == GUI_LIBRARY_RECOMPILED
-                 ? snx_tr("Remove %s from the Recompiled Library? Its games stay in the folder.")
-                 : snx_tr("Remove %s from the Dumps Library? Its games stay in the folder."),
-             app->folders[folder]);
+    if (folder == -1) /* dumps/ of the data folder, which the launcher makes at each start until then */
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer "
+                        "makes as it starts."),
+                 dumps ? dumps : "dumps/");
+    else if (folder == -2) /* the Recompiled Library's Main, where new games went */
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 snx_tr("Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to "
+                        "an Extra of it."),
+                 app->games_dir ? app->games_dir : "recompiled/");
+    else
+        snprintf(app->ask_line, sizeof app->ask_line,
+                 app->folders_library[folder] == GUI_LIBRARY_RECOMPILED
+                     ? snx_tr("Remove %s from the Recompiled Library? Its games stay in the folder.")
+                     : snx_tr("Remove %s from the Dumps Library? Its games stay in the folder."),
+                 app->folders[folder]);
+    free(dumps);
     gui_confirm_open(&app->confirm, GUI_ASK_FOLDER, false);
 }
 /* path into each library holds names, with its subfolders (deep) or not */
@@ -7393,6 +7682,16 @@ static char* place_default(const App* app, int place) {
     free(work);
     return cache;
 }
+/* where dumps go to be listed, the data folder's dumps/: made as the menu opens, so the player finds it, unless it is
+   off the Library; one that cannot be made is said, once */
+static void dumps_make(App* app) {
+    char* dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
+    if (dumps && !app->look_only && !app->dumps_off && !snx_is_dir(dumps) && snx_mkdirs(dumps)) {
+        snprintf(app->message, sizeof app->message, snx_tr("Could not make %s"), dumps);
+        say_failure(app, app->message);
+    }
+    free(dumps);
+}
 static void places_apply(App* app) {
     const char* data = app->place[GUI_PLACE_DATA] ? app->place[GUI_PLACE_DATA] : app->home_dir;
     char* copy;
@@ -7405,14 +7704,7 @@ static void places_apply(App* app) {
         app->place[GUI_PLACE_GAMES] ? snx_strdup(app->place[GUI_PLACE_GAMES]) : place_default(app, GUI_PLACE_GAMES);
     free(app->themes_dirs[0]);
     app->themes_dirs[0] = snx_path_join(app->data_dir, "themes");
-    { /* where dumps go to be listed: made here, so the player finds it; one that cannot be made is said here, once */
-        char* dumps = snx_path_join(app->data_dir, "dumps");
-        if (dumps && !app->look_only && !snx_is_dir(dumps) && snx_mkdirs(dumps)) {
-            snprintf(app->message, sizeof app->message, snx_tr("Could not make %s"), dumps);
-            say_failure(app, app->message);
-        }
-        free(dumps);
-    }
+    dumps_make(app);
     free(app->work_dir);
     app->work_dir =
         app->place[GUI_PLACE_WORK] ? snx_strdup(app->place[GUI_PLACE_WORK]) : place_default(app, GUI_PLACE_WORK);
@@ -7532,9 +7824,19 @@ static bool games_game_focus(const App* app, bool* mods) {
     *mods = !gui_is_dump(app->games.names[index]) && app->games_drivers[index] == GUI_SWITCH;
     return true;
 }
-/* Games' keys the focused row takes, in parts, when it does something there: R on a game, M on a made Switch one */
+/* Games' focused row one that plays, as Enter plays it: a recent run's (a Linux program's too) or a listed game's; a
+   heading, the row that shows every recent game and a page's empty rows not */
+static bool games_play_focus(const App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    if (row < head) return (int)row < recent_shown(app);
+    return index < app->games.count && !gui_games_heading(&app->games, index);
+}
+/* Games' keys the focused row takes, in parts, when it does something there: Play on a game that plays, R on a game,
+   M on a made Switch one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
+    if (games_play_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_PLAY : SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
@@ -7599,10 +7901,11 @@ static void open_folders(App* app, int row) {
             k->about = app->place_about[at];
             gui_size_text(left, sizeof left, path ? free_space(path) : 0);
             snprintf(value, size, "%s",
-                     why                                        ? unfit_text(why)
-                     : app->place[at] && outside_app(app, path) ? snx_tr("outside the app")
-                     : app->place[at]                           ? snx_tr("custom")
-                                                                : snx_tr("default"));
+                     at == GUI_PLACE_GAMES && app->recompiled_off ? snx_tr("not listed")
+                     : why                                        ? unfit_text(why)
+                     : app->place[at] && outside_app(app, path)   ? snx_tr("outside the app")
+                     : app->place[at]                             ? snx_tr("custom")
+                                                                  : snx_tr("default"));
             snprintf(app->place_about[at], sizeof app->place_about[at], snx_tr("%s, %s free"), snx_tr(place_holds[at]),
                      left);
             snprintf(app->place_line[at], sizeof app->place_line[at], "%s%s%s", path ? path : snx_tr("(none)"),
@@ -7618,10 +7921,11 @@ static void open_folders(App* app, int row) {
             k->key = kind == GUI_ROW_DUMPS ? SNX_TR_NOOP("Main") : SNX_TR_NOOP("Extra");
             k->about = kind == GUI_ROW_DUMPS ? dumps_row : extra_row;
             snprintf(value, size, "%s",
-                     !path || !snx_is_dir(path) ? snx_tr("not found")
-                     : kind == GUI_ROW_DUMPS    ? (app->dumps_shallow ? "" : snx_tr("+ subfolders"))
-                     : app->folders_deep[at]    ? snx_tr("+ subfolders")
-                                                : "");
+                     kind == GUI_ROW_DUMPS && app->dumps_off ? snx_tr("not listed")
+                     : !path || !snx_is_dir(path)            ? snx_tr("not found")
+                     : kind == GUI_ROW_DUMPS                 ? (app->dumps_shallow ? "" : snx_tr("+ subfolders"))
+                     : app->folders_deep[at]                 ? snx_tr("+ subfolders")
+                                                             : "");
         }
     }
     gui_editor_form(&app->editor, app->folder_keys, rows, &app->app_form, SNX_TR_NOOP("Reset to Defaults"));
@@ -7812,7 +8116,9 @@ static void places_reset(App* app) {
 static bool places_fit(const App* app, char* out, size_t size) {
     int i;
     for (i = 0; i < GUI_PLACES; ++i) {
-        const char* why = app->place[i] ? snx_folder_unfit(app->place[i], i == GUI_PLACE_GAMES) : NULL;
+        const char* why = app->place[i] && !(i == GUI_PLACE_GAMES && app->recompiled_off)
+                              ? snx_folder_unfit(app->place[i], i == GUI_PLACE_GAMES)
+                              : NULL;
         if (why) {
             snprintf(out, size, snx_tr("%s folder %s %s. Settings > App > Folders picks another."),
                      snx_tr(place_labels[i]), app->place[i], unfit_text(why));
@@ -8073,13 +8379,15 @@ static void folders_from_games(App* app) {
 static void picks_open_row(App* app, int row);
 /* Select (with del, Del) on a row of Folders: a folder's box, to open it or, as the row allows, change it, put back its
    default or take it off the library (picks_open_row; dumps/ and Settings say what they are too); Del on a place asks
-   before its default, on an Extra before it is taken off; Add a folder opens the picker for its library */
+   before its default, on an Extra or dumps/ before it is taken off; Add a folder opens the picker for its library */
 static void folder_select(App* app, int row, bool del) {
     int at, group, kind = folder_row(app, row, &at, &group);
     if (kind == GUI_ROW_PLACE && del)
         place_default_ask(app, at);
     else if (kind == GUI_ROW_FOLDER && del)
         folder_off_ask(app, at);
+    else if (kind == GUI_ROW_DUMPS && del && !app->dumps_off)
+        folder_off_ask(app, -1);
     else if ((kind == GUI_ROW_DUMPS || kind == GUI_ROW_CONFIG) && !del) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s",
                  snx_tr(kind == GUI_ROW_DUMPS ? dumps_row : config_row));
@@ -8199,6 +8507,893 @@ static void open_users(App* app, int g, int row) {
     app->view_count = 0;
     app->editing = true;
 }
+/* ---- Settings > App > GPU Drivers and Freedreno Settings (gui/gpu_driver.h), the launcher's picks for every game,
+   and a game's own (its box's GPU Driver and Freedreno Settings rows), each page as Eden's driver manager and Freedreno
+   settings have it ---- */
+/* the game's .ini the pages' game (drivers_game, its program) reads, owned; NULL for the launcher's picks */
+static char* game_ini_of(const char* program) {
+    char *folder, *ini;
+    const char* leaf;
+    if (!program) return NULL;
+    folder = snx_dirname(program);
+    if (!folder) return NULL;
+    for (leaf = folder + strlen(folder); leaf > folder && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
+    ini = snx_game_ini(folder, leaf);
+    free(folder);
+    return ini;
+}
+/* a package as rows and notes name it: its meta.json's name, else its folder's */
+static const char* package_name(const GuiGpuDriver* d) { return d->meta.name[0] ? d->meta.name : d->id; }
+/* what a pick (gpu_driver's value) is called: System driver for "", a package's name, its folder's when it is gone */
+static const char* pick_name(const App* app, const char* id) {
+    if (!id[0]) return snx_tr("System driver");
+    for (size_t i = 0; i < app->packages_count; ++i)
+        if (!strcmp(app->packages[i].id, id)) return package_name(&app->packages[i]);
+    return id;
+}
+static void drivers_load(App* app) {
+    free(app->packages);
+    app->packages = gui_gpu_drivers_list(app->drivers_dir, &app->packages_count);
+}
+/* the system's Vulkan driver, as GPU Drivers' System driver row says it: asked once, an instance and no device */
+static void vk_system_ask(App* app) {
+#ifdef SNX_GUI_VULKAN
+    PFN_vkGetInstanceProcAddr gipa;
+    PFN_vkCreateInstance create;
+    PFN_vkEnumeratePhysicalDevices list;
+    PFN_vkGetPhysicalDeviceProperties props;
+    PFN_vkDestroyInstance destroy;
+    VkApplicationInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "ScarletNX", .apiVersion = VK_API_VERSION_1_1};
+    VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &ai};
+    VkInstance instance = VK_NULL_HANDLE;
+    VkPhysicalDevice devices[4];
+    VkPhysicalDeviceProperties p;
+    uint32_t n = 4;
+    VkResult r;
+    if (app->vk_system[0]) return;
+    if (!SDL_Vulkan_LoadLibrary(NULL)) {
+        snprintf(app->vk_system, sizeof app->vk_system, snx_tr("No Vulkan loader: %s"), SDL_GetError());
+        return;
+    }
+    gipa = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    create = gipa ? (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance") : NULL;
+    r = create ? create(&ci, NULL, &instance) : VK_ERROR_INITIALIZATION_FAILED;
+    if (r != VK_SUCCESS) {
+        snprintf(app->vk_system, sizeof app->vk_system, snx_tr("Vulkan did not start: VkResult %d"), (int)r);
+        SDL_Vulkan_UnloadLibrary();
+        return;
+    }
+    list = (PFN_vkEnumeratePhysicalDevices)gipa(instance, "vkEnumeratePhysicalDevices");
+    props = (PFN_vkGetPhysicalDeviceProperties)gipa(instance, "vkGetPhysicalDeviceProperties");
+    destroy = (PFN_vkDestroyInstance)gipa(instance, "vkDestroyInstance");
+    if (!list || !props || list(instance, &n, devices) < 0 || !n)
+        snprintf(app->vk_system, sizeof app->vk_system, "%s", snx_tr("Vulkan lists no GPU"));
+    else {
+        props(devices[0], &p);
+        snprintf(app->vk_gpu, sizeof app->vk_gpu, "%s", p.deviceName);
+        snprintf(app->vk_system, sizeof app->vk_system, snx_tr("%s, Vulkan %u.%u.%u, driver %08x"), p.deviceName,
+                 VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
+                 VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion);
+    }
+    if (destroy) destroy(instance, NULL);
+    SDL_Vulkan_UnloadLibrary();
+#else
+    snprintf(app->vk_system, sizeof app->vk_system, "%s", snx_tr("This build of the launcher reads no Vulkan driver"));
+#endif
+}
+/* a row of a page: an action, its value (when it has one) at at of the page's form */
+static GuiThemeKey page_row(const char* label, size_t at, size_t size, const char* about) {
+    GuiThemeKey k = {"", label, GUI_KEY_ACTION, at, size, NULL, 0, about, 0, 0, 0, 0, NULL};
+    return k;
+}
+/* GPU Drivers' rows: for a game Global first, then System driver, a package each and Add Driver; the pick marked
+   (*). The pick: the launcher's (app.ini's gpu_driver), or the game's .ini's gpu_driver= (none: Global). How many */
+static int drivers_fill(App* app) {
+    GuiDriversForm* f = &app->drivers_form;
+    char *ini = game_ini_of(app->drivers_game), *own = NULL;
+    const char* picked = app->gpu_driver;
+    size_t i, shown = SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN);
+    int r = 0;
+    memset(f, 0, sizeof *f);
+    if (ini) {
+        own = snx_ini_has(ini, "gpu_driver") ? snx_ini_value(ini, "gpu_driver") : NULL;
+        picked = snx_ini_has(ini, "gpu_driver") ? (own ? own : "") : NULL;
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], snx_tr("Global (%s)"),
+                 pick_name(app, app->gpu_driver));
+        snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+                 snx_tr("The GPU driver Settings > App > GPU Drivers picks for every game"));
+        snprintf(f->value[r], sizeof f->value[r], "%s", picked ? "( )" : "(*)");
+        app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                        sizeof f->value[0], app->drivers_about[r]);
+        ++r;
+    }
+    snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("System driver"));
+    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], snx_tr("The system's own: %s"), app->vk_system);
+    snprintf(f->value[r], sizeof f->value[r], "%s", picked && !picked[0] ? "(*)" : "( )");
+    app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                    sizeof f->value[0], app->drivers_about[r]);
+    app->drivers_base = ++r;
+    for (i = 0; i < shown; ++i, ++r) {
+        const GuiGpuDriver* d = &app->packages[i];
+        snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", package_name(d));
+        if (d->error[0])
+            snprintf(app->drivers_about[r], sizeof app->drivers_about[r], snx_tr("%s/%s does not read: %s"),
+                     SNX_GPU_DRIVERS_DIR, d->id, d->error);
+        else
+            snprintf(app->drivers_about[r], sizeof app->drivers_about[r],
+                     snx_tr("%s, %s, by %s, package %s, Android API %d or newer, in %s/%s. %s"),
+                     d->meta.driver_version[0] ? d->meta.driver_version : snx_tr("no driverVersion"),
+                     d->meta.vendor[0] ? d->meta.vendor : snx_tr("no vendor"),
+                     d->meta.author[0] ? d->meta.author : snx_tr("no author"),
+                     d->meta.package_version[0] ? d->meta.package_version : "?", d->meta.min_api, SNX_GPU_DRIVERS_DIR,
+                     d->id, d->meta.description);
+        snprintf(f->value[r], sizeof f->value[r], "%s", picked && !strcmp(picked, d->id) ? "(*)" : "( )");
+        app->drivers_keys[r] = page_row(app->drivers_label[r], offsetof(GuiDriversForm, value) + r * sizeof f->value[0],
+                                        sizeof f->value[0], app->drivers_about[r]);
+    }
+    snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Download Driver"));
+    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+             snx_tr("The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and "
+                    "added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"));
+    app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    ++r;
+    snprintf(app->drivers_label[r], sizeof app->drivers_label[r], "%s", snx_tr("Add Driver"));
+    snprintf(app->drivers_about[r], sizeof app->drivers_about[r], "%s",
+             snx_tr("A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases "
+                    "are: unpacked into gpu_drivers/ of the user's data folder"));
+    app->drivers_keys[r] = page_row(app->drivers_label[r], 0, 0, app->drivers_about[r]);
+    free(own);
+    free(ini);
+    return r + 1;
+}
+/* the package row r is, its index in drivers, else -1 */
+static int driver_of(const App* app, int r) {
+    int i = r - app->drivers_base;
+    return i >= 0 && i < (int)SDL_min(app->packages_count, (size_t)GUI_DRIVERS_SHOWN) ? i : -1;
+}
+/* the page's note: this device's line (snx_gpu_driver_loads), whose game, the packages not listed */
+static void drivers_note(App* app) {
+    SnxGpuDriverHost host;
+    char loads[512];
+    size_t n;
+    snx_gpu_driver_host(&host);
+    snx_gpu_driver_loads(&host, loads, sizeof loads);
+    if (app->drivers_game)
+        n = (size_t)snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: its own GPU driver. %s"),
+                             app->drivers_title, loads);
+    else
+        n = (size_t)snprintf(app->editor.note, sizeof app->editor.note, "%s", loads);
+    if (app->packages_count > GUI_DRIVERS_SHOWN && n < sizeof app->editor.note)
+        snprintf(app->editor.note + n, sizeof app->editor.note - n, snx_tr(" %zu more packages are not listed."),
+                 app->packages_count - GUI_DRIVERS_SHOWN);
+}
+/* the page's rows made again, its note as it was: what the last press did */
+static void drivers_show(App* app, int row) {
+    char note[sizeof app->editor.note];
+    int n = drivers_fill(app);
+    snprintf(note, sizeof note, "%s", app->editor.note);
+    gui_editor_form(&app->editor, app->drivers_keys, n, &app->drivers_form, NULL);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(row, 0, n - 1);
+    app->form = GUI_FORM_DRIVERS;
+    app->editing = true;
+}
+/* GPU Drivers for the launcher's pick (game NULL), or for game's own (its program, title its name) */
+static void open_drivers(App* app, const char* game, const char* title, int row) {
+    free(app->drivers_game);
+    free(app->drivers_title);
+    app->drivers_game = game ? snx_strdup(game) : NULL;
+    app->drivers_title = title ? snx_strdup(title) : NULL;
+    drivers_load(app);
+    vk_system_ask(app);
+    drivers_show(app, row);
+    drivers_note(app);
+}
+/* row r taken as the pick: Global (a game's), System driver or a package, kept at once, as Eden keeps it; a package
+   that does not read, or a device where packages do not load, refused with why */
+static void driver_use(App* app, int r) {
+    char *ini = game_ini_of(app->drivers_game), loads[512];
+    const char* id = NULL; /* NULL: Global */
+    int global = ini && r == 0, i = driver_of(app, r), failed;
+    SnxGpuDriverHost host;
+    if (!global) id = i >= 0 ? app->packages[i].id : "";
+    if (i >= 0 && app->packages[i].error[0]) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not picked: %s/%s does not read: %s"),
+                 SNX_GPU_DRIVERS_DIR, app->packages[i].id, app->packages[i].error);
+        free(ini);
+        return;
+    }
+    snx_gpu_driver_host(&host);
+    if (i >= 0 && !snx_gpu_driver_loads(&host, loads, sizeof loads)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not picked: %s"), loads);
+        free(ini);
+        return;
+    }
+    if (!ini) {
+        snprintf(app->gpu_driver, sizeof app->gpu_driver, "%s", id);
+        failed = app_save(app);
+        if (!failed)
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("GPU driver for every game: %s"),
+                     pick_name(app, id));
+    } else {
+        failed = global ? snx_ini_drop(ini, "gpu_driver") : snx_ini_record(ini, "gpu_driver", id);
+        if (failed)
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not kept: %s could not be written"), ini);
+        else if (global)
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: the GPU driver for every game (%s)"),
+                     app->drivers_title, pick_name(app, app->gpu_driver));
+        else
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: GPU driver %s"), app->drivers_title,
+                     pick_name(app, id));
+    }
+    free(ini);
+    drivers_show(app, r);
+}
+/* Del on a package, or its box's Remove: its removal asked first (GUI_ASK_DRIVER) */
+static void driver_remove_ask(App* app, int r) {
+    int i = driver_of(app, r);
+    if (i < 0) return;
+    app->driver_off = i;
+    snprintf(app->ask_line, sizeof app->ask_line,
+             snx_tr("Remove the driver %s? Games set to it will not start until another is picked."),
+             package_name(&app->packages[i]));
+    gui_confirm_open(&app->confirm, GUI_ASK_DRIVER, false);
+}
+/* the removal taken: the folder gone; the launcher's pick of it back to the System driver, said */
+static void driver_remove(App* app) {
+    char said[600], id[sizeof app->packages[0].id];
+    size_t n;
+    int row = app->editor.row;
+    if (app->driver_off < 0 || (size_t)app->driver_off >= app->packages_count) return;
+    snprintf(id, sizeof id, "%s", app->packages[app->driver_off].id);
+    gui_gpu_driver_remove(app->drivers_dir, id, said, sizeof said);
+    n = (size_t)snprintf(app->editor.note, sizeof app->editor.note, "%s", said);
+    if (!strcmp(app->gpu_driver, id)) {
+        app->gpu_driver[0] = 0;
+        if (!app_save(app) && n < sizeof app->editor.note)
+            snprintf(app->editor.note + n, sizeof app->editor.note - n, "%s",
+                     snx_tr("; the GPU driver for every game is the System driver now"));
+    }
+    drivers_load(app);
+    drivers_show(app, row);
+}
+static void SDLCALL folder_picked(void* userdata, const char* const* files, int filter);
+/* Add Driver: the system's file picker, for a .zip; its answer an app->driver_picked event (driver_picked) */
+static void driver_pick(App* app) {
+    char why[512] = "";
+    bool opened = true;
+    app->driver_filter.name = snx_tr("Driver package");
+    app->driver_filter.pattern = "zip";
+    if (!app->driver_picked) app->driver_picked = SDL_RegisterEvents(1);
+    if (!app->driver_picked) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Add Driver: the file picker could not open: %s"),
+                 SDL_GetError());
+        return;
+    }
+#ifdef SDL_PLATFORM_IOS
+    opened = gui_apple_pick(app->window, 0, folder_picked, &app->driver_picked, why, sizeof why) != 0;
+#else
+    SDL_ShowOpenFileDialog(folder_picked, &app->driver_picked, app->window, &app->driver_filter, 1, NULL, false);
+#endif
+    if (!opened)
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Add Driver: the file picker could not open: %s"),
+                 why);
+}
+/* the picker's answer: the zip added (gui_gpu_driver_add) and, where packages load, picked as Eden picks one added;
+   none picked, or why the picker could not open, said */
+static void driver_take(App* app, const void* zip, size_t size, const char* name);
+static void driver_picked(App* app, const char* picked, const char* error, bool failed) {
+    SDL_IOStream* io;
+    Sint64 size;
+    void* zip = NULL;
+    char* path = NULL;
+    bool here = app->editing && app->form == GUI_FORM_DRIVERS; /* the page still open, else the menu's message */
+    if (failed || !picked) {
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 failed ? snx_tr("Add Driver: the file picker could not open: %s") : "%s",
+                 failed ? (error ? error : snx_tr("no reason given")) : snx_tr("No file was picked."));
+        if (!here) snprintf(app->message, sizeof app->message, "%s", app->editor.note);
+        return;
+    }
+    path = gui_document_path(picked);
+#ifdef SDL_PLATFORM_ANDROID
+    if (!path) path = gui_android_document_file(picked); /* a download by number: the file under it, for its name */
+#endif
+    io = SDL_IOFromFile(picked, "rb");
+    size = io ? SDL_GetIOSize(io) : -1;
+    if (io && size >= 0 && (unsigned long long)size <= GUI_GPU_DRIVER_MAX) {
+        zip = SDL_malloc((size_t)size + 1);
+        if (zip && SDL_ReadIO(io, zip, (size_t)size) != (size_t)size) {
+            SDL_free(zip);
+            zip = NULL;
+        }
+    }
+    if (!zip) {
+        if (size > 0 && (unsigned long long)size > GUI_GPU_DRIVER_MAX)
+            snprintf(app->editor.note, sizeof app->editor.note,
+                     snx_tr("Not added: %s is %lld bytes, over the %llu a driver takes"), path ? path : picked,
+                     (long long)size, GUI_GPU_DRIVER_MAX);
+        else
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not added: %s does not read: %s"),
+                     path ? path : picked, SDL_GetError());
+        if (io) SDL_CloseIO(io);
+        free(path);
+        if (!here) snprintf(app->message, sizeof app->message, "%s", app->editor.note);
+        return;
+    }
+    SDL_CloseIO(io);
+    driver_take(app, zip, (size_t)size, path ? path : picked);
+    SDL_free(zip);
+    free(path);
+}
+/* a package's zip, of size bytes, named name (its file's path or name), added (gui_gpu_driver_add) and, where packages
+   load, picked as Eden picks one added, said on GPU Drivers; the page left meanwhile, on the menu */
+static void driver_take(App* app, const void* zip, size_t size, const char* name) {
+    char id[100], said[700], loads[512];
+    size_t n;
+    int added, i;
+    SnxGpuDriverHost host;
+    bool here = app->editing && app->form == GUI_FORM_DRIVERS;
+    snx_gpu_driver_host(&host);
+    added = gui_gpu_driver_add(zip, size, name, app->drivers_dir, !strcmp(host.system, "Android") ? host.api : 0, id,
+                               sizeof id, said, sizeof said);
+    drivers_load(app);
+    if (!here) { /* the page was left while the picker or the download went: added all the same, said on the menu */
+        snprintf(app->message, sizeof app->message, "%s", said);
+        return;
+    }
+    drivers_show(app, app->editor.row);
+    for (i = 0; added != GUI_DRIVER_REFUSED && i < (int)app->packages_count && strcmp(app->packages[i].id, id); ++i) {}
+    if (added == GUI_DRIVER_ADDED && i < (int)app->packages_count && snx_gpu_driver_loads(&host, loads, sizeof loads))
+        driver_use(app, app->drivers_base + i);
+    else if (added == GUI_DRIVER_ADDED && i < (int)app->packages_count)
+        app->editor.row = app->drivers_base + i;
+    n = strlen(said);
+    if (added == GUI_DRIVER_ADDED && !snx_gpu_driver_loads(&host, loads, sizeof loads))
+        snprintf(said + n, sizeof said - n, ". %s", loads);
+    else if (added == GUI_DRIVER_ADDED)
+        snprintf(said + n, sizeof said - n, ". %s", app->editor.note);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", said);
+}
+/* Select on a GPU Drivers row: a package's box (Use, Remove), System driver or Global used, Add Driver's picker */
+static void picks_open(App* app, GuiPicksOf of);
+static void open_fetch(App* app);
+static void driver_select(App* app, int r) {
+    if (r == gui_editor_rows(&app->editor) - 1)
+        driver_pick(app);
+    else if (r == gui_editor_rows(&app->editor) - 2)
+        open_fetch(app);
+    else if (driver_of(app, r) >= 0) {
+        app->pick_row = r;
+        picks_open(app, GUI_PICKS_DRIVER);
+    } else
+        driver_use(app, r);
+}
+
+/* ---- GPU Drivers > Download Driver: the releases of Eden's driver repositories (gui/gpu_driver_fetch.h), fetched
+   from GitHub as the page opens, as Eden's driver fetcher fetches them; a release's asset picked is downloaded and
+   added as Add Driver adds a zip ---- */
+enum { GUI_FETCH_EVENT_LIST, GUI_FETCH_EVENT_PROGRESS, GUI_FETCH_EVENT_DONE };
+/* the fetch thread's answer for a repository, or the download's, an event's data1 the main thread frees */
+typedef struct {
+    int repo;
+    int failed;
+    SnxHttpsResponse r;
+    char why[700];
+    char name[160]; /* a download's asset */
+} GuiFetchAnswer;
+/* a thread's: what it gets, through the launcher's client (a test's own in its place), the event its answers come as */
+typedef struct {
+    GuiHttpsGet get;
+    Uint32 event;
+    char url[600];
+    char name[160];
+    unsigned long long said; /* the bytes the last progress event said */
+} GuiFetchJob;
+static void fetch_push(Uint32 event, int code, void* data) {
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = event;
+    e.user.code = code;
+    e.user.data1 = data;
+    if (!SDL_PushEvent(&e)) free(data); /* the queue is full or SDL is going: the answer is lost with it */
+}
+/* the five repositories' releases, one after the other: GitHub's rate limit counts each request */
+static int SDLCALL fetch_run(void* data) {
+    GuiFetchJob* job = (GuiFetchJob*)data;
+    for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+        SnxHttpsOptions o = {"application/vnd.github+json", 30, 8ull << 20, 0, NULL, NULL};
+        char url[300];
+        if (!a) continue;
+        a->repo = i;
+        snprintf(url, sizeof url, "https://api.github.com/repos/%s/releases", gui_driver_repos[i].path);
+        a->failed = job->get(url, &o, &a->r, a->why, sizeof a->why) != 0;
+        if (!a->failed && a->r.status != 200) {
+            snprintf(a->why, sizeof a->why, snx_tr("GET %s: HTTP %d, %.200s"), url, a->r.status, a->r.body);
+            a->failed = 1;
+        }
+        fetch_push(job->event, GUI_FETCH_EVENT_LIST, a);
+    }
+    free(job);
+    return 0;
+}
+static int fetch_progress(void* user, unsigned long long got, unsigned long long total) {
+    GuiFetchJob* job = (GuiFetchJob*)user;
+    if (got - job->said >= (256u << 10) || (total && got == total)) { /* a quarter MB apart: the note keeps up */
+        unsigned long long* both = (unsigned long long*)malloc(2 * sizeof *both);
+        job->said = got;
+        if (both) {
+            both[0] = got;
+            both[1] = total;
+            fetch_push(job->event, GUI_FETCH_EVENT_PROGRESS, both);
+        }
+    }
+    return 0;
+}
+static int SDLCALL download_run(void* data) {
+    GuiFetchJob* job = (GuiFetchJob*)data;
+    GuiFetchAnswer* a = (GuiFetchAnswer*)calloc(1, sizeof *a);
+    SnxHttpsOptions o = {NULL, 600, GUI_GPU_DRIVER_MAX, 0, fetch_progress, job};
+    if (a) {
+        snprintf(a->name, sizeof a->name, "%s", job->name);
+        a->failed = job->get(job->url, &o, &a->r, a->why, sizeof a->why) != 0;
+        if (!a->failed && a->r.status != 200) {
+            /* the asset's link, not the CDN's signed one it led to: that one runs past 1500 bytes */
+            snprintf(a->why, sizeof a->why, snx_tr("GET %s: HTTP %d"), job->url, a->r.status);
+            a->failed = 1;
+        }
+        fetch_push(job->event, GUI_FETCH_EVENT_DONE, a);
+    }
+    free(job);
+    return 0;
+}
+/* a thread for run with job, detached: 0 when it could not start, said in the note */
+static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
+    SDL_Thread* t;
+    if (!app->fetch_event) app->fetch_event = SDL_RegisterEvents(1);
+    job->event = app->fetch_event;
+    job->get = app->https_get;
+    t = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
+    if (!t) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Download Driver: no thread: %s"), SDL_GetError());
+        free(job);
+        return 0;
+    }
+    SDL_DetachThread(t);
+    return 1;
+}
+/* row r of the page, a label, a value and the help the bar shows, of repository repo and release (or GUI_FETCH_*) */
+static void fetch_row(App* app, int r, const char* label, const char* value, const char* about, int repo, int release) {
+    char* c;
+    snprintf(app->fetch_label[r], sizeof app->fetch_label[r], "%s", label);
+    snprintf(app->fetch_form.value[r], sizeof app->fetch_form.value[r], "%s", value);
+    snprintf(app->fetch_about[r], sizeof app->fetch_about[r], "%s", about);
+    for (c = app->fetch_about[r]; *c; ++c)
+        if (*c == '\r' || *c == '\n' || *c == '\t') *c = ' ';
+    app->fetch_keys[r] =
+        page_row(app->fetch_label[r], offsetof(GuiFetchForm, value) + (size_t)r * sizeof app->fetch_form.value[0],
+                 sizeof app->fetch_form.value[0], app->fetch_about[r]);
+    app->fetch_repo[r] = repo;
+    app->fetch_release[r] = release;
+}
+/* a release's row: its title, Latest, Recommended (Eden's pick for this GPU) or Prerelease, its date and notes */
+static void fetch_release_row(App* app, int r, int repo, int k, int recommended) {
+    const GuiDriverRelease* rel = &app->fetch_lists[repo].releases[k];
+    char about[900];
+    snprintf(about, sizeof about, snx_tr("%s, %zu downloads. %s"), rel->published[0] ? rel->published : rel->tag,
+             rel->count, rel->body);
+    fetch_row(app, r, rel->title,
+              rel->latest && k == recommended ? snx_tr("Latest, Recommended")
+              : k == recommended              ? snx_tr("Recommended")
+              : rel->latest                   ? snx_tr("Latest")
+              : rel->prerelease               ? snx_tr("Prerelease")
+                                              : "",
+              about, repo, k);
+}
+/* the page's rows, as Eden's fetcher folds each repository: its latest and the release Eden recommends for this GPU,
+   then More, which opens every release (Less closing them again); else one row saying its list loads, failed (Select
+   fetches it again) or has none. Its title over them (fetch_entries) */
+static int fetch_fill(App* app) {
+    int r = 0, model = gui_adreno_model(app->vk_gpu);
+    memset(&app->fetch_form, 0, sizeof app->fetch_form);
+    for (int i = 0; i < GUI_DRIVER_REPOS && r + 3 <= GUI_FETCH_ROWS; ++i) {
+        const GuiDriverReleases* list = &app->fetch_lists[i];
+        int listed = app->fetch_state[i] == GUI_FETCH_LISTED, failed = app->fetch_state[i] == GUI_FETCH_FAILED;
+        int recommended = listed ? gui_driver_recommended_release(model, i, list) : -1, latest = -1, shown = 0;
+        char more[64];
+        if (listed)
+            snprintf(app->fetch_title[i], sizeof app->fetch_title[i],
+                     list->count == 1 ? snx_tr("%s: %zu release") : snx_tr("%s: %zu releases"),
+                     gui_driver_repos[i].name, list->count);
+        else
+            snprintf(app->fetch_title[i], sizeof app->fetch_title[i], "%s", gui_driver_repos[i].name);
+        if (!listed || !list->count) {
+            fetch_row(app, r++,
+                      listed   ? snx_tr("No releases")
+                      : failed ? snx_tr("Fetch Again")
+                               : snx_tr("Loading..."),
+                      failed ? snx_tr("Failed") : "", failed ? app->fetch_error[i] : gui_driver_repos[i].path, i,
+                      GUI_FETCH_STATE);
+            continue;
+        }
+        if (app->fetch_open[i]) {
+            for (int k = 0; k < (int)list->count && r < GUI_FETCH_ROWS - 1; ++k)
+                fetch_release_row(app, r++, i, k, recommended);
+            fetch_row(app, r++, snx_tr("Less"), "", snx_tr("Only its latest and the recommended release"), i,
+                      GUI_FETCH_LESS);
+            continue;
+        }
+        for (int k = 0; k < (int)list->count && latest < 0; ++k)
+            if (list->releases[k].latest) latest = k;
+        if (latest < 0) latest = 0; /* every release a prerelease: the first */
+        fetch_release_row(app, r++, i, latest, recommended);
+        ++shown;
+        if (recommended >= 0 && recommended != latest) {
+            fetch_release_row(app, r++, i, recommended, recommended);
+            ++shown;
+        }
+        if ((int)list->count > shown) {
+            snprintf(more, sizeof more, snx_tr("More (%zu)"), list->count - (size_t)shown);
+            fetch_row(app, r++, more, "", gui_driver_repos[i].path, i, GUI_FETCH_MORE);
+        }
+    }
+    return r;
+}
+/* Download Driver's screen, as Folders': each repository's title over its rows, a box each (grouped_frames). The
+   list's entries, row r's, and entry e's row (-1 a title, its repository in *group) */
+static int fetch_entries(const App* app) {
+    int rows = gui_editor_rows(&app->editor);
+    return rows ? rows + app->fetch_repo[rows - 1] + 1 : 0;
+}
+static int fetch_entry(const App* app, int r) { return r + app->fetch_repo[r] + 1; }
+static int fetch_entry_row(const App* app, int e, int* group) {
+    int r, rows = gui_editor_rows(&app->editor);
+    *group = -1;
+    for (r = 0; r < rows; ++r) {
+        *group = app->fetch_repo[r];
+        if (fetch_entry(app, r) == e) return r;
+        if (fetch_entry(app, r) - 1 == e && (!r || app->fetch_repo[r - 1] != app->fetch_repo[r])) return -1;
+    }
+    return -1;
+}
+/* a screen of groups, a box each, their titles among its rows' entries: Folders and Download Driver. The entries, row
+   r's, entry e's row (-1 a title or Folders' blank, its group in *group) and how many groups there are */
+static bool form_grouped(const App* app) { return app->form == GUI_FORM_FOLDERS || app->form == GUI_FORM_FETCH; }
+static int grouped_entries(const App* app) {
+    return app->form == GUI_FORM_FETCH ? fetch_entries(app) : folder_entries(app);
+}
+static int grouped_entry(const App* app, int r) {
+    return app->form == GUI_FORM_FETCH ? fetch_entry(app, r) : folder_entry(app, r);
+}
+static int grouped_entry_row(const App* app, int e, int* group) {
+    return app->form == GUI_FORM_FETCH ? fetch_entry_row(app, e, group) : folder_entry_row(app, e, group);
+}
+static int grouped_groups(const App* app) {
+    return app->form == GUI_FORM_FETCH ? GUI_DRIVER_REPOS : GUI_FOLDER_GROUPS + 1;
+}
+/* the page's note: the GPU and the driver Eden recommends for it, then what the last answer or press did */
+static void fetch_head(App* app, char* out, size_t size) {
+    int model = gui_adreno_model(app->vk_gpu);
+    snprintf(out, size, snx_tr("GPU: %s. Recommended: %s."), app->vk_gpu[0] ? app->vk_gpu : snx_tr("not known"),
+             snx_tr(gui_driver_recommended(model)));
+}
+static void fetch_show(App* app, int row, const char* said) {
+    int n = fetch_fill(app);
+    char head[400];
+    gui_editor_form(&app->editor, app->fetch_keys, n, &app->fetch_form, NULL);
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(row, 0, n - 1);
+    app->form = GUI_FORM_FETCH;
+    app->editing = true;
+    fetch_head(app, head, sizeof head);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s%s%s", head, said && said[0] ? " " : "", said ? said : "");
+}
+/* Download Driver: the releases fetched again, every repository's, while none is being fetched */
+static void open_fetch(App* app) {
+    GuiFetchJob* job;
+#ifdef SNX_GUI_HTTPS
+    snx_https_init(); /* libcurl's global setup, here on the main thread before any thread */
+#endif
+    if (!app->https_get) {
+        fetch_show(app, 0,
+                   snx_tr("This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded "
+                          "by hand"));
+        return;
+    }
+    if (!app->fetching) {
+        for (int i = 0; i < GUI_DRIVER_REPOS; ++i) {
+            gui_driver_releases_free(&app->fetch_lists[i]);
+            app->fetch_state[i] = GUI_FETCH_LOADING;
+            app->fetch_error[i][0] = 0;
+        }
+        job = (GuiFetchJob*)calloc(1, sizeof *job);
+        app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
+    }
+    fetch_show(app, 0, app->downloading ? app->download_said : "");
+}
+/* a release's assets in the picks box (GUI_PICKS_ASSET), each with its size, a GPU maker's own marked */
+static void fetch_assets(App* app, int row) {
+    const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[row]];
+    const GuiDriverRelease* rel = &list->releases[app->fetch_release[row]];
+    size_t i, n = SDL_min(rel->count, (size_t)GUI_FETCH_ASSETS);
+    if (!n) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s has no download"), rel->title);
+        return;
+    }
+    for (i = 0; i < n; ++i) {
+        const GuiDriverAsset* a = &gui_driver_assets(list)[rel->first + i];
+        char size[32];
+        gui_size_text(size, sizeof size, a->size);
+        if (a->proprietary)
+            snprintf(app->asset_labels[i], sizeof app->asset_labels[i], snx_tr("%s, %s (proprietary, no license)"),
+                     a->name, size);
+        else
+            snprintf(app->asset_labels[i], sizeof app->asset_labels[i], "%s, %s", a->name, size);
+        app->asset_picks[i] = app->asset_labels[i];
+    }
+    app->asset_picks[n] = NULL;
+    app->pick_row = row;
+    picks_open(app, GUI_PICKS_ASSET);
+}
+/* asset i of the release in the box downloaded, one at a time */
+static void fetch_download(App* app, int i) {
+    const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[app->pick_row]];
+    const GuiDriverRelease* rel = &list->releases[app->fetch_release[app->pick_row]];
+    const GuiDriverAsset* a = &gui_driver_assets(list)[rel->first + (size_t)i];
+    GuiFetchJob* job;
+    if (app->downloading) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s downloads already: one at a time"),
+                 app->download_name);
+        return;
+    }
+    job = (GuiFetchJob*)calloc(1, sizeof *job);
+    if (!job) return;
+    snprintf(job->url, sizeof job->url, "%s", a->url);
+    snprintf(job->name, sizeof job->name, "%s", a->name);
+    snprintf(app->download_name, sizeof app->download_name, "%s", a->name);
+    snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s..."), a->name);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s", app->download_said);
+    app->downloading = fetch_start(app, download_run, "driver download", job);
+}
+/* Select on a row: a release's box of its downloads, More opening its repository's releases and Less closing them (the
+   focus on its More), a repository that failed fetched again */
+static void fetch_select(App* app, int row) {
+    int repo, kind;
+    if (row < 0 || row >= gui_editor_rows(&app->editor)) return;
+    repo = app->fetch_repo[row];
+    kind = app->fetch_release[row];
+    if (kind >= 0)
+        fetch_assets(app, row);
+    else if (kind == GUI_FETCH_MORE || kind == GUI_FETCH_LESS) {
+        app->fetch_open[repo] = kind == GUI_FETCH_MORE;
+        fetch_show(app, row, app->downloading ? app->download_said : "");
+        for (row = 0; kind == GUI_FETCH_LESS && row < gui_editor_rows(&app->editor); ++row)
+            if (app->fetch_repo[row] == repo && app->fetch_release[row] == GUI_FETCH_MORE) app->editor.row = row;
+    } else if (app->fetch_state[repo] == GUI_FETCH_FAILED && !app->fetching)
+        open_fetch(app);
+}
+/* an answer of the threads: a repository's releases listed, a download's progress, its zip added (driver_take) */
+static void fetch_answer(App* app, int code, void* data) {
+    bool here = app->editing && app->form == GUI_FORM_FETCH;
+    if (code == GUI_FETCH_EVENT_PROGRESS) {
+        const unsigned long long* both = (const unsigned long long*)data;
+        char got[32], total[32];
+        gui_size_text(got, sizeof got, both[0]);
+        gui_size_text(total, sizeof total, both[1]);
+        if (both[1])
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s: %s of %s (%d%%)"),
+                     app->download_name, got, total, (int)(both[0] * 100 / both[1]));
+        else
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s: %s"), app->download_name,
+                     got);
+        if (here) fetch_show(app, app->editor.row, app->download_said);
+    } else if (code == GUI_FETCH_EVENT_LIST) {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)data;
+        int i = a->repo;
+        if (!a->failed && gui_driver_releases_parse(a->r.body, a->r.size, &gui_driver_repos[i], &app->fetch_lists[i],
+                                                    app->fetch_error[i], sizeof app->fetch_error[i]))
+            app->fetch_state[i] = GUI_FETCH_LISTED;
+        else {
+            if (a->failed) snprintf(app->fetch_error[i], sizeof app->fetch_error[i], "%s", a->why);
+            app->fetch_state[i] = GUI_FETCH_FAILED;
+            gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
+        }
+        if (i == GUI_DRIVER_REPOS - 1) app->fetching = false;
+        free(a->r.body);
+        if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
+    } else {
+        GuiFetchAnswer* a = (GuiFetchAnswer*)data;
+        app->downloading = false;
+        if (a->failed) {
+            snprintf(app->download_said, sizeof app->download_said, snx_tr("Not downloaded: %s"), a->why);
+            gui_log("Download Driver: %s", a->why);
+            if (here)
+                fetch_show(app, app->editor.row, app->download_said);
+            else
+                snprintf(app->message, sizeof app->message, "%s", app->download_said);
+        } else {
+            app->download_said[0] = 0;
+            /* on GPU Drivers, whose rows show it added and picked; the page left, on the menu */
+            if (here) drivers_show(app, 0);
+            driver_take(app, a->r.body, a->r.size, a->name);
+        }
+        free(a->r.body);
+    }
+    free(data);
+}
+
+/* Freedreno Settings' rows: Eden's presets, a row a variable set (a press removes it, as Eden's delete does),
+   Variable Name and Variable Value typed, Add Variable, Clear All, then Save. How many before Save */
+static int freedreno_fill(App* app) {
+    GuiFreedrenoForm* f = &app->fd_form;
+    int r = 0, i;
+    for (i = 0; gui_freedreno_presets[i].name && r < GUI_FREEDRENO_PRESETS; ++i, ++r) {
+        snprintf(app->fd_about[r], sizeof app->fd_about[r], snx_tr("%s: %s"), snx_tr(gui_freedreno_presets[i].about),
+                 gui_freedreno_presets[i].variables[0] ? gui_freedreno_presets[i].variables
+                                                       : snx_tr("every variable cleared"));
+        app->fd_keys[r] = page_row(snx_tr(gui_freedreno_presets[i].name), 0, 0, app->fd_about[r]);
+    }
+    for (i = 0; i < app->fd_count; ++i, ++r) {
+        snprintf(f->shown[r], sizeof f->shown[r], "%s", app->fd_vars[i].value[0] ? app->fd_vars[i].value : "\"\"");
+        snprintf(app->fd_about[r], sizeof app->fd_about[r], snx_tr("%s=%s. A press removes it"), app->fd_vars[i].name,
+                 app->fd_vars[i].value);
+        app->fd_keys[r] =
+            page_row(app->fd_vars[i].name, offsetof(GuiFreedrenoForm, shown) + (size_t)r * sizeof f->shown[0],
+                     sizeof f->shown[0], app->fd_about[r]);
+    }
+    app->fd_keys[r++] = (GuiThemeKey){"",
+                                      SNX_TR_NOOP("Variable Name (e.g., TU_DEBUG)"),
+                                      GUI_KEY_TEXT,
+                                      offsetof(GuiFreedrenoForm, name),
+                                      sizeof f->name,
+                                      NULL,
+                                      0,
+                                      SNX_TR_NOOP("Capitals, digits and _, starting TU_, FD_ or IR3_"),
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      NULL};
+    app->fd_keys[r++] = (GuiThemeKey){"",
+                                      SNX_TR_NOOP("Variable Value"),
+                                      GUI_KEY_TEXT,
+                                      offsetof(GuiFreedrenoForm, value),
+                                      sizeof f->value,
+                                      NULL,
+                                      0,
+                                      SNX_TR_NOOP("Its value, without ;"),
+                                      0,
+                                      0,
+                                      0,
+                                      0,
+                                      NULL};
+    app->fd_keys[r++] = page_row(SNX_TR_NOOP("Add Variable"), 0, 0, SNX_TR_NOOP("The name and value typed above, set"));
+    app->fd_keys[r++] = page_row(SNX_TR_NOOP("Clear All"), 0, 0, SNX_TR_NOOP("Every variable taken out"));
+    return r;
+}
+static void freedreno_show(App* app, int row) {
+    int n = freedreno_fill(app);
+    gui_editor_form(&app->editor, app->fd_keys, n, &app->fd_form, SNX_TR_NOOP("Save"));
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(row, 0, gui_editor_rows(&app->editor) - 1);
+    app->form = GUI_FORM_FREEDRENO;
+    app->editing = true;
+}
+/* Freedreno Settings for the launcher (game NULL), or for game's own: its .ini's freedreno_env (none: the launcher's,
+   which a run takes then, as Eden's per-game file falls back to its global one) */
+static void open_freedreno(App* app, const char* game, const char* title) {
+    char *ini, *text, why[300];
+    free(app->drivers_game);
+    free(app->drivers_title);
+    app->drivers_game = game ? snx_strdup(game) : NULL;
+    app->drivers_title = title ? snx_strdup(title) : NULL;
+    ini = game_ini_of(game);
+    text = ini ? snx_ini_value(ini, "freedreno_env") : NULL;
+    memset(&app->fd_form, 0, sizeof app->fd_form);
+    app->fd_count = snx_freedreno_parse(ini ? (text ? text : "") : app->freedreno, app->fd_vars, SNX_FREEDRENO_MAX, why,
+                                        sizeof why);
+    freedreno_show(app, 0);
+    if (app->fd_count < 0) { /* a hand-written value it cannot read: none shown, said, the next Save replacing it */
+        app->fd_count = 0;
+        freedreno_show(app, 0);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("freedreno_env does not read: %s"), why);
+    } else if (game)
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 text ? snx_tr("%s: its own Freedreno variables") : snx_tr("%s: none of its own, the launcher's go"),
+                 title);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/"
+                        "freedreno.html). Save keeps them"));
+    free(text);
+    free(ini);
+}
+/* a Freedreno Settings row pressed: a preset applied in the place of the variables, a variable removed, the one typed
+   added, every one cleared; Save keeps them, the launcher's in app.ini, a game's in its .ini (none: the launcher's) */
+static void freedreno_action(App* app, int r, bool save) {
+    GuiFreedrenoForm* f = &app->fd_form;
+    int presets = 0, vars, i;
+    char why[300], text[SNX_FREEDRENO_TEXT];
+    while (gui_freedreno_presets[presets].name) ++presets;
+    vars = presets;
+    if (save) {
+        char* ini = game_ini_of(app->drivers_game);
+        int failed;
+        if (!snx_freedreno_text(app->fd_vars, app->fd_count, text, sizeof text)) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not saved: the variables take over %d bytes"),
+                     SNX_FREEDRENO_TEXT - 1);
+            free(ini);
+            return;
+        }
+        if (!ini) {
+            snprintf(app->freedreno, sizeof app->freedreno, "%s", text);
+            failed = app_save(app);
+        } else
+            failed = app->fd_count ? snx_ini_record(ini, "freedreno_env", text) : snx_ini_drop(ini, "freedreno_env");
+        if (failed && ini)
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not saved: %s could not be written"), ini);
+        else if (!failed) {
+            snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Freedreno configuration saved"));
+            app->editor.dirty = false;
+        }
+        free(ini);
+        return;
+    }
+    if (r < presets) {
+        int n =
+            snx_freedreno_parse(gui_freedreno_presets[r].variables, app->fd_vars, SNX_FREEDRENO_MAX, why, sizeof why);
+        app->fd_count = n < 0 ? 0 : n;
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Preset '%s' applied"),
+                 snx_tr(gui_freedreno_presets[r].name));
+    } else if (r < vars + app->fd_count) {
+        i = r - vars;
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"), app->fd_vars[i].name);
+        memmove(&app->fd_vars[i], &app->fd_vars[i + 1], (size_t)(app->fd_count - i - 1) * sizeof app->fd_vars[0]);
+        --app->fd_count;
+    } else if (r == vars + app->fd_count + 2) { /* Add Variable */
+        SnxFreedrenoVar add[SNX_FREEDRENO_MAX];
+        if (!f->name[0]) {
+            snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Variable name cannot be empty"));
+            return;
+        }
+        if (strchr(f->value, ';')) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s's value \"%s\" has a ;, which ends it"),
+                     f->name, f->value);
+            return;
+        }
+        if (!snx_freedreno_text(app->fd_vars, app->fd_count, text, sizeof text) ||
+            strlen(text) + strlen(f->name) + strlen(f->value) + 2 >= sizeof text) {
+            snprintf(app->editor.note, sizeof app->editor.note,
+                     snx_tr("Not added: the variables take %d bytes at most"), SNX_FREEDRENO_TEXT - 1);
+            return;
+        }
+        snprintf(text + strlen(text), sizeof text - strlen(text), "%s%s=%s", text[0] ? ";" : "", f->name, f->value);
+        i = snx_freedreno_parse(text, add, SNX_FREEDRENO_MAX, why, sizeof why);
+        if (i < 0) {
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not added: %s"), why);
+            return;
+        }
+        memcpy(app->fd_vars, add, sizeof add);
+        app->fd_count = i;
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s added"), f->name);
+        f->name[0] = f->value[0] = 0;
+    } else if (r == vars + app->fd_count + 3) { /* Clear All */
+        app->fd_count = 0;
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("All Freedreno variables cleared"));
+    } else
+        return; /* the typed rows: the editor's */
+    app->editor.dirty = true;
+    {
+        char note[sizeof app->editor.note];
+        snprintf(note, sizeof note, "%s", app->editor.note);
+        freedreno_show(app, r);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", note);
+        app->editor.dirty = true;
+    }
+}
 /* Current user a step either way, round the users, kept as Settings' user */
 static void plays_as_step(App* app, int step) {
     char value[16];
@@ -8293,6 +9488,21 @@ static void leave_form(App* app) {
         app->folders_from_menu = false; /* the menu again */
     else if (form == GUI_FORM_FOLDERS)
         open_app(app, GUI_APP_PLACES);
+    else if ((form == GUI_FORM_DRIVERS || form == GUI_FORM_FREEDRENO) && app->drivers_game) { /* back to its box */
+        char *game = app->drivers_game, *title = app->drivers_title;
+        app->drivers_game = app->drivers_title = NULL;
+        addons_open(app, game, title, true);
+        free(game);
+        free(title);
+    } else if (form == GUI_FORM_FETCH) { /* GPU Drivers again, on Download Driver */
+        drivers_load(app);
+        drivers_show(app, 0);
+        app->editor.row = gui_editor_rows(&app->editor) - 2;
+        drivers_note(app);
+    } else if (form == GUI_FORM_DRIVERS)
+        open_app(app, GUI_APP_DRIVERS);
+    else if (form == GUI_FORM_FREEDRENO)
+        open_app(app, GUI_APP_FREEDRENO);
     else if (form == GUI_FORM_THEME && app->theme_from_app) {
         app->theme_from_app = false;
         open_app(app, GUI_APP_EDITOR);
@@ -8556,6 +9766,12 @@ static void app_action(App* app, int row, int step) {
         return;
     } else if (row == GUI_APP_PLACES && !step) {
         open_folders(app, 0);
+        return;
+    } else if (row == GUI_APP_DRIVERS) {
+        if (!step) open_drivers(app, NULL, NULL, 0);
+        return;
+    } else if (row == GUI_APP_FREEDRENO) {
+        if (!step) open_freedreno(app, NULL, NULL);
         return;
     } else if (row == GUI_APP_CLEAN) {
         if (!step && !queue_waits(app, SNX_TR_NOOP("Clean Old Settings"))) clean_row(app);
@@ -9155,6 +10371,24 @@ static void editor_key(App* app, GuiKey key) {
         else if (app->editor.dirty && app->editor.row)
             users_commit(app);
     }
+    if (app->form == GUI_FORM_FETCH) { /* a release's downloads, or the lists fetched again */
+        if (what == GUI_EDITOR_ACTION && !app->editor.step) fetch_select(app, app->editor.row);
+        if (what != GUI_EDITOR_LEAVE) return;
+    }
+    if (app->form == GUI_FORM_DRIVERS) { /* a row used, a package's box, or Add Driver's picker */
+        if (what == GUI_EDITOR_ACTION && !app->editor.step) driver_select(app, app->editor.row);
+        if (what != GUI_EDITOR_LEAVE) return;
+    }
+    if (app->form == GUI_FORM_FREEDRENO) { /* a preset, a variable, Add Variable or Clear All pressed; Save */
+        if (what == GUI_EDITOR_ACTION && !app->editor.step)
+            freedreno_action(app, app->editor.row, false);
+        else if (what == GUI_EDITOR_SAVE)
+            freedreno_action(app, app->editor.row, true);
+        if (what != GUI_EDITOR_LEAVE) {
+            typed_keyboard(app); /* Variable Name's and Variable Value's dialog */
+            return;
+        }
+    }
     if (what == GUI_EDITOR_SAVE && app->form == GUI_FORM_THEME) save_editor(app);
     keep_settings(app);
     if (what == GUI_EDITOR_LEAVE) {
@@ -9186,6 +10420,20 @@ static void editor_input(App* app, const SDL_Event* e) {
         gui_settings_reset(&app->settings, setting_of(app, app->editor.row));
         app->editor.dirty = true;
         keep_settings(app);
+        return;
+    }
+    /* GPU Drivers: Del removes a package, asked first; Freedreno Settings: a variable */
+    if (app->form == GUI_FORM_DRIVERS && !app->editor.typing &&
+        (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        driver_remove_ask(app, app->editor.row);
+        return;
+    }
+    if (app->form == GUI_FORM_FREEDRENO && !app->editor.typing &&
+        (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        int presets = 0;
+        while (gui_freedreno_presets[presets].name) ++presets;
+        if (app->editor.row >= presets && app->editor.row < presets + app->fd_count)
+            freedreno_action(app, app->editor.row, false);
         return;
     }
     /* Folders: Del puts a place back to its default or takes an Extra off, Ctrl+V gives the row the folder pasted */
@@ -9305,7 +10553,7 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     int theme = app->form == GUI_FORM_THEME, g;
     place_screen(app, &f->place, shown_keys(app, keys, sizeof keys),
                  GUI_SHOWS_TABS | GUI_SHOWS_SIDE | (theme ? GUI_SHOWS_WIDE : 0));
-    if (app->form == GUI_FORM_FOLDERS) { /* the whole screen, as a load's: its boxes the groups, none beside them */
+    if (form_grouped(app)) { /* the whole screen, as a load's: its boxes the groups, none beside them */
         int top = f->place.list.y,
             bottom = SDL_max(f->place.list.y + f->place.list.h,
                              SDL_max(f->place.side.y + f->place.side.h, f->place.status.y + f->place.status.h));
@@ -9316,8 +10564,8 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         f->place.side = f->place.list; /* no side box: the open group's rows the whole column, the groups out */
         f->place.list = gui_rect(f->place.list.x, f->place.list.y, 0, 0);
     }
-    app->form_beside = !theme && app->form != GUI_FORM_FOLDERS && f->place.list.w && f->place.list.h &&
-                       f->place.side.w && f->place.side.h;
+    app->form_beside =
+        !theme && !form_grouped(app) && f->place.list.w && f->place.list.h && f->place.side.w && f->place.side.h;
     { /* the note whole, a half step under the text's letters */
         int s = app->scale, w = inner(app, f->place.side).w, line, half = text_half(app);
         rows = note ? wrap_rows(app, note, w / cell_w(app), 0) : 1;
@@ -9326,7 +10574,7 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         f->info = gui_rect(f->place.side.x, f->place.side.y + f->place.side.h - rows * line - 4 * s, f->place.side.w,
                            rows * line + 2 * s);
     }
-    top = f->place.side.y + (app->form == GUI_FORM_FOLDERS ? 2 * app->scale : head_h(app) + 4 * app->scale);
+    top = f->place.side.y + (form_grouped(app) ? 2 * app->scale : head_h(app) + 4 * app->scale);
     ui_form_list_layout(f->place.list, app->scale, f->left);
     ui_form_side_layout(gui_rect(f->place.side.x + cell_w(app), top, f->place.side.w - 2 * cell_w(app),
                                  f->info.y - top - 2 * app->scale),
@@ -9353,9 +10601,9 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
                                              ui_form_side_row(f->right, app->scale, UI_FORM_SIDE_ROWS, 0).y;
         return;
     }
-    count = app->form == GUI_FORM_FOLDERS ? folder_entries(app) : gui_editor_rows(&app->editor);
+    count = form_grouped(app) ? grouped_entries(app) : gui_editor_rows(&app->editor);
     f->right_lists[UI_FORM_SIDE_ROWS].focus =
-        (size_t)(app->form == GUI_FORM_FOLDERS ? folder_entry(app, app->editor.row) : app->editor.row);
+        (size_t)(form_grouped(app) ? grouped_entry(app, app->editor.row) : app->editor.row);
     list_follow(app, GUI_LIST_FORM_SIDE, ui_form_side_follow, ui_form_side_row, f->right, UI_FORM_SIDE_ROWS,
                 (size_t)count, &f->right_lists[UI_FORM_SIDE_ROWS]);
 }
@@ -9432,12 +10680,17 @@ static int clean_left(App* app) {
     return app->clean_found;
 }
 /* a row of App or Folders with nothing to do now, greyed, whose Enter says why (#614): nothing to clean or move, every
-   setting at its default, no folder picked */
+   setting at its default, no folder picked, a library's Main off it */
 static bool form_row_off(App* app, const GuiEditor* e, int r) {
     int picked = 0;
     if (e->keys == app_keys)
         return (r == GUI_APP_MOVE && !app->lefts) || (r == GUI_APP_CLEAN && !clean_left(app)) ||
                (r == GUI_APP_RESET && app->settings.keys && !gui_settings_changed(&app->settings));
+    if (app->form == GUI_FORM_FOLDERS && e == &app->editor && r < folder_rows(app)) { /* a Main off its library */
+        int at, group, kind = folder_row(app, r, &at, &group);
+        return (kind == GUI_ROW_DUMPS && app->dumps_off) ||
+               (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES && app->recompiled_off);
+    }
     if (app->form != GUI_FORM_FOLDERS || e != &app->editor || r != folder_rows(app)) return false;
     for (int i = 0; i < GUI_PLACES; ++i) picked += app->place[i] != NULL;
     return !picked;
@@ -9448,12 +10701,18 @@ static unsigned form_icon(const App* app, const GuiEditor* e, int r) {
     const GuiThemeKey* k = gui_editor_key_of(e, r);
     int at, group;
     if (e->keys == app_keys)
-        return r == GUI_APP_EDITOR   ? GUI_ICON_PAINTBRUSH
-               : r == GUI_APP_PLACES ? GUI_ICON_FOLDER
-               : r == GUI_APP_CLEAN  ? GUI_ICON_ERASER
-               : r == GUI_APP_MOVE   ? GUI_ICON_FOLDER_INPUT
-               : r == GUI_APP_RESET  ? GUI_ICON_ROTATE_CCW
-                                     : GUI_ICON_NONE;
+        return r == GUI_APP_EDITOR      ? GUI_ICON_PAINTBRUSH
+               : r == GUI_APP_PLACES    ? GUI_ICON_FOLDER
+               : r == GUI_APP_DRIVERS   ? GUI_ICON_CPU
+               : r == GUI_APP_FREEDRENO ? GUI_ICON_SETTINGS
+               : r == GUI_APP_CLEAN     ? GUI_ICON_ERASER
+               : r == GUI_APP_MOVE      ? GUI_ICON_FOLDER_INPUT
+               : r == GUI_APP_RESET     ? GUI_ICON_ROTATE_CCW
+                                        : GUI_ICON_NONE;
+    if (e->keys == app->drivers_keys)
+        return r == gui_editor_rows(e) - 1   ? GUI_ICON_PACKAGE_PLUS
+               : r == gui_editor_rows(e) - 2 ? GUI_ICON_HARD_DRIVE_DOWNLOAD
+                                             : GUI_ICON_NONE;
     if (e->keys == app->folder_keys)
         return !k                                               ? GUI_ICON_ROTATE_CCW /* Reset to Defaults */
                : folder_row(app, r, &at, &group) == GUI_ROW_ADD ? GUI_ICON_FOLDER_PLUS
@@ -9511,23 +10770,24 @@ bool ui_form_side_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* 
     const GuiEditor* e;
     int r, group;
     if (app->form == GUI_FORM_THEME) return false;
-    if (app->form != GUI_FORM_FOLDERS) {
+    if (!form_grouped(app)) {
         e = form_rows(app, &peek);
         return form_row_info(app, e, row, form_labels(e), width, info);
     }
-    if (row >= (size_t)folder_entries(app)) return false;
-    if ((r = folder_entry_row(app, (int)row, &group)) < 0 &&
+    if (row >= (size_t)grouped_entries(app)) return false;
+    if ((r = grouped_entry_row(app, (int)row, &group)) < 0 && app->form == GUI_FORM_FOLDERS &&
         group > GUI_FOLDER_GROUPS) { /* the blank before Defaults */
         info->label = "";
         info->attr = UI_ATTR_LABEL;
         return true;
     }
     if (r < 0) { /* a group's title, over its rows */
-        info->label = snx_tr(group_titles[group]);
+        info->label = app->form == GUI_FORM_FETCH ? app->fetch_title[group] : snx_tr(group_titles[group]);
         info->attr = UI_ATTR_TITLE;
         return true;
     }
-    return form_row_info(app, &app->editor, (size_t)r, folder_labels(app), width, info);
+    return form_row_info(app, &app->editor, (size_t)r,
+                         app->form == GUI_FORM_FETCH ? form_labels(&app->editor) : folder_labels(app), width, info);
 }
 /* what the bar says of the focused row: the note of the last key, else the row's help */
 static const char* form_about(const App* app, SDL_Color* color) {
@@ -9571,10 +10831,10 @@ static void form_swatches(App* app, const GuiFormBoxes* f) {
     }
     if (l->shift) ui_clip(app, NULL);
 }
-/* Folders' groups, a box each as far as it shows: from its title down to its last row shown, half a cell wider
-   either side, Defaults' too, the right one at the rows' end beside a scroll bar; with the rows as they scroll, inside
-   the list; drawn under them */
-static void folder_frames(App* app, const GuiFormBoxes* f) {
+/* a grouped screen's groups (form_grouped), a box each as far as it shows: from its title down to its last row shown,
+   half a cell wider either side, Folders' Defaults too, the right one at the rows' end beside a scroll bar; with the rows
+   as they scroll, inside the list; drawn under them */
+static void grouped_frames(App* app, const GuiFormBoxes* f) {
     const UiList* l = &f->right_lists[UI_FORM_SIDE_ROWS];
     size_t i, shown = ui_form_side_shown(f->right, app->scale, UI_FORM_SIDE_ROWS), n = shown + (l->shift > 0);
     int g, group, cw = cell_w(app), bw = ui_bar_width(app, l->count, shown);
@@ -9582,10 +10842,10 @@ static void folder_frames(App* app, const GuiFormBoxes* f) {
     inside.x -= cw / 2;
     inside.w += cw;
     if (l->shift) ui_clip(app, &inside);
-    for (g = 0; g <= GUI_FOLDER_GROUPS; ++g) {
+    for (g = 0; g < grouped_groups(app); ++g) {
         GuiRect a = {0}, z = {0}, box;
-        for (i = 0; i < n && l->first + i < (size_t)folder_entries(app); ++i) {
-            folder_entry_row(app, (int)(l->first + i), &group);
+        for (i = 0; i < n && l->first + i < (size_t)grouped_entries(app); ++i) {
+            grouped_entry_row(app, (int)(l->first + i), &group);
             if (group != g) continue;
             z = row_drawn(app, ui_form_side_row, ui_form_side_shown, f->right, UI_FORM_SIDE_ROWS, l, i);
             if (!a.h) a = z;
@@ -9726,8 +10986,8 @@ static void draw_form(App* app) {
         wrap_in(app, gui_rect(p.x, y, p.w, f.place.side.y + f.place.side.h - y), p.x, y, line, 1, rgb(app->theme.soft));
     } else {
         int g = app->form == GUI_FORM_SETTINGS ? app->editor.row : app->group;
-        if (app->form == GUI_FORM_FOLDERS) /* its groups' titles are in its rows */
-            folder_frames(app, &f);
+        if (form_grouped(app)) /* its groups' titles are in its rows */
+            grouped_frames(app, &f);
         else
             pane(app, f.place.side,
                  app->form == GUI_FORM_GROUP && app->page >= 0 ? snx_tr(app->settings.keys[app->page].key)
@@ -9873,11 +11133,11 @@ void ui_form_list_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
     open_group(app, r);
 }
 /* FormSide's row under the pointer: where the keys move in its rows, the focus on it as it goes over it and a click on
-   the focused one selecting it; on the groups a click opens the focused group, on that row. Folders' groups' titles
-   take nothing */
+   the focused one selecting it; on the groups a click opens the focused group, on that row. A grouped screen's
+   titles take nothing */
 void ui_form_side_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
     int r = (int)row, group;
-    if (app->form == GUI_FORM_FOLDERS && (r = folder_entry_row(app, r, &group)) < 0) return;
+    if (form_grouped(app) && (r = grouped_entry_row(app, r, &group)) < 0) return;
     if (!(hit & UI_HIT_CLICK)) {
         if (app->form != GUI_FORM_SETTINGS) app->editor.row = r;
         return;
@@ -10750,13 +12010,14 @@ static void setup_panes(App* app, GuiRect r) {
             break;
         case SNX_SETUP_FOLDERS:
             snx_home_short(app->games_dir ? app->games_dir : "recompiled/", shown, sizeof shown);
-            SETUP_LINE("%s%s%s", m, setup_pad(pad, sizeof pad, folder_names[0], setup_cols(folder_names, 2, 2)), shown);
+            SETUP_LINE("%s%s%s%s", m, setup_pad(pad, sizeof pad, folder_names[0], setup_cols(folder_names, 2, 2)),
+                       shown, app->recompiled_off ? snx_tr(" (not listed)") : "");
             /* the data folder's dumps/, always listed, then the player's folders of games or dumps */
             path = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
             snx_home_short(path ? path : "dumps/", shown, sizeof shown);
             free(path);
             SETUP_LINE("%s%s%s%s", m, setup_pad(pad, sizeof pad, folder_names[1], setup_cols(folder_names, 2, 2)),
-                       shown, snx_tr(" + subfolders"));
+                       shown, app->dumps_off ? snx_tr(" (not listed)") : snx_tr(" + subfolders"));
             for (i = 0; i < app->folder_count; ++i) { /* each under its library's name */
                 snx_home_short(app->folders[i], shown, sizeof shown);
                 SETUP_LINE(
@@ -10983,16 +12244,54 @@ static void leave_run(App* app) {
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
 static int play(App* app, const char* game) {
     GuiSettings* s = settings_of(app);
-    char* option = snx_format("--game=%s", game);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 3) * sizeof(*argv));
+    char *option = snx_format("--game=%s", game), *ini = game_ini_of(game);
+    /* the launcher's GPU driver and Freedreno variables, where the game has none of its own */
+    char *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
+         *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 5) * sizeof(*argv));
+    size_t n;
     int ok;
     argv[0] = option;
-    argv[1 + gui_settings_options(s, 0, argv + 1)] = NULL;
+    n = 1 + gui_settings_options(s, 0, argv + 1);
+    if (driver) argv[n++] = driver;
+    if (freedreno) argv[n++] = freedreno;
+    argv[n] = NULL;
+    SDL_GetCurrentTime(&app->played_at);
     ok = gui_android_play(argv, app->message, sizeof(app->message));
     if (ok) app->playing = true; /* the queue's recompile goes gently until the menu shows again */
     free(argv);
     free(option);
+    free(driver);
+    free(freedreno);
+    free(ini);
     return ok;
+}
+static char* newest_log(const App* app);
+/* the game activity has ended: a failure its log shows (a crash, an error) stays on the run's screen, as a game that
+   fails on a computer does, with Share Log blinking. The game's own error screen shows no crash */
+static void game_end(App* app) {
+    char *log = newest_log(app), what[1024], lines[4096];
+    SDL_PathInfo info;
+    int end = -1;
+    if (!log)
+        snprintf(what, sizeof what, "%s", snx_tr("the game wrote no log"));
+    else if (!SDL_GetPathInfo(log, &info) || info.modify_time < app->played_at)
+        snprintf(what, sizeof what, snx_tr("the game wrote no log since it started; the newest is %s"), log);
+    else
+        end = gui_log_game_end(log, what, sizeof what, lines, sizeof lines);
+    if (end == SNX_LOG_NONE) {
+        free(log);
+        return;
+    }
+    gui_steps_reset(&app->steps); /* the steps that made it ready ended well: under the failure they read as its end */
+    gui_console_init(&app->console, app->cols - 2, app->rows - 8);
+    if (end > 0) gui_console_feed(&app->console, lines, strlen(lines));
+    snprintf(app->message, sizeof app->message, snx_tr("The game stopped: %s"), what);
+    gui_log("%s", app->message);
+    app->finished = app->abnormal_exit = app->log_due = true;
+    app->menu.view = GUI_LOAD_NONE;
+    layout(app);
+    free(log);
 }
 /* the game a run of the driver made ready: the one it ran, when it was a game already, else in its folder of games/,
    where the driver names it, as it cannot open it; whether it opened */
@@ -11050,11 +12349,20 @@ static void tell(App* app) {
 static int play(App* app, const char* game) {
     GuiSettings* s = settings_of(app);
     char* option = snx_format("--game=%s", game);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 4) * sizeof(*argv));
+    char *ini = game_ini_of(game), *driver = gui_run_option("gpu_driver", ini, app->gpu_driver),
+         *freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 6) * sizeof(*argv));
+    size_t n;
     argv[0] = "scarletnx";
     argv[1] = option;
-    argv[2 + gui_settings_options(s, 0, argv + 2)] = NULL;
+    n = 2 + gui_settings_options(s, 0, argv + 2);
+    if (driver) argv[n++] = driver;
+    if (freedreno) argv[n++] = freedreno;
+    argv[n] = NULL;
     gui_apple_play(argv);
+    free(driver);
+    free(freedreno);
+    free(ini);
     app->menu.quit = true;
     free(argv);
     free(option);
@@ -11466,6 +12774,8 @@ static void change_answer(App* app, GuiAsk ask, bool taken) {
         state_delete(app);
     else if (ask == GUI_ASK_CACHE)
         caches_delete(app);
+    else if (ask == GUI_ASK_DRIVER)
+        driver_remove(app);
 }
 /* the functions an AOT pack used, from the driver's line, -1 when it printed none */
 static int aot_built(const GuiSteps* steps) {
@@ -11560,6 +12870,10 @@ static void pump(App* app) {
         app->play_later = false;
         if (ready(app)) leave_run(app);
     }
+    if (app->played && !app->hidden) {
+        app->played = false;
+        game_end(app);
+    }
 #endif
 #ifdef SDL_PLATFORM_ANDROID
     tell(app);
@@ -11609,11 +12923,12 @@ static void pump(App* app) {
         }
     }
 }
-/* ---- Recompile: the recompiled library's folders a dump's game can go in, its Main first, then each Extra that can
-   take one (snx_folder_unfit); asked when there are more than one, the game going in the one taken ---- */
+/* ---- Recompile: the recompiled library's folders a dump's game can go in, its Main first (unless it is off the
+   library), then each Extra that can take one (snx_folder_unfit); asked when there are more than one, the game going
+   in the one taken ---- */
 static int dest_dirs(const App* app, const char** dirs) {
     int i, n = 0;
-    if (app->games_dir) dirs[n++] = app->games_dir;
+    if (app->games_dir && !app->recompiled_off) dirs[n++] = app->games_dir;
     for (i = 0; i < app->folder_count; ++i)
         if (app->folders_library[i] == GUI_LIBRARY_RECOMPILED && !snx_folder_unfit(app->folders[i], true))
             dirs[n++] = app->folders[i];
@@ -11651,7 +12966,7 @@ static const char* dest_label(App* app, int i, char* out, size_t size) {
     gui_path_fit(home, room, out, SDL_min(size, 300));
     gui_size_text(left, sizeof left, free_space(dirs[i]));
     snprintf(out + strlen(out), size - strlen(out),
-             i                             ? snx_tr("  %s free")
+             dirs[i] != app->games_dir     ? snx_tr("  %s free") /* an Extra, which is first with the Main off */
              : app->place[GUI_PLACE_GAMES] ? snx_tr("  custom, %s free")
                                            : snx_tr("  default, %s free"),
              left);
@@ -11714,14 +13029,26 @@ static const char* const extra_picks[] = {SNX_TR_NOOP("Open Folder"), SNX_TR_NOO
 static const char* const open_picks[] = {SNX_TR_NOOP("Open Folder"), NULL};
 /* a dumps library row's: its subfolders' games listed or not, (*) or ( ) before it as they are */
 #define SAY_SUBFOLDERS SNX_TR_NOOP("Subfolders")
-static const char* const dumps_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_SUBFOLDERS, NULL};
+static const char* const dumps_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_SUBFOLDERS,
+                                          SNX_TR_NOOP("Remove from Library"), NULL};
+/* a library's Main off it */
+static const char* const main_off_picks[] = {SNX_TR_NOOP("Add to Library"), NULL};
+/* the Recompiled Library's Main: a place, which can come off the library too */
+static const char* const recompiled_picks[] = {SNX_TR_NOOP("Open Folder"), SNX_TR_NOOP("Change Folder"),
+                                               SNX_TR_NOOP("Reset to Default"), SNX_TR_NOOP("Remove from Library"),
+                                               NULL};
 static const char* const dumps_extra_picks[] = {SNX_TR_NOOP("Open Folder"), SAY_SUBFOLDERS,
                                                 SNX_TR_NOOP("Remove from Library"), NULL};
+/* a GPU Drivers package's */
+static const char* const driver_picks[] = {SNX_TR_NOOP("Use"), SNX_TR_NOOP("Remove"), NULL};
 static const char* const* picks_list(const App* app) {
     int at, group, kind;
     if (app->picks_of == GUI_PICKS_SHARE) return share_picks;
+    if (app->picks_of == GUI_PICKS_DRIVER) return driver_picks;
+    if (app->picks_of == GUI_PICKS_ASSET) return app->asset_picks;
     kind = folder_row(app, app->pick_row, &at, &group);
-    if (kind == GUI_ROW_DUMPS) return dumps_picks;
+    if (kind == GUI_ROW_DUMPS) return app->dumps_off ? main_off_picks : dumps_picks;
+    if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES) return app->recompiled_off ? main_off_picks : recompiled_picks;
     if (kind == GUI_ROW_FOLDER && app->folders_library[at] == GUI_LIBRARY_DUMPS) return dumps_extra_picks;
     return kind == GUI_ROW_PLACE ? place_picks : kind == GUI_ROW_FOLDER ? extra_picks : open_picks;
 }
@@ -11730,6 +13057,7 @@ static const char* pick_label(App* app, int i) {
     int n = 0, at, group;
     while (picks[n]) ++n;
     if (i < 0 || i >= n) return NULL;
+    if (app->picks_of == GUI_PICKS_ASSET) return picks[i]; /* an asset's name, as it is */
     if (strcmp(picks[i], SAY_SUBFOLDERS)) return snx_tr(picks[i]);
     snprintf(
         app->pick_text, sizeof app->pick_text, "%s %s",
@@ -11753,7 +13081,22 @@ static void picks_open_row(App* app, int row) {
 static void picks_question(App* app, char* out, size_t size, const char** tab) {
     char home[512];
     const char* path;
-    *tab = app->picks_of == GUI_PICKS_SHARE ? snx_tr("Share Log") : snx_tr("Folders");
+    *tab = app->picks_of == GUI_PICKS_SHARE    ? snx_tr("Share Log")
+           : app->picks_of == GUI_PICKS_DRIVER ? snx_tr("GPU Drivers")
+           : app->picks_of == GUI_PICKS_ASSET  ? snx_tr("Download Driver")
+                                               : snx_tr("Folders");
+    if (app->picks_of == GUI_PICKS_ASSET) {
+        const GuiDriverReleases* list = &app->fetch_lists[app->fetch_repo[app->pick_row]];
+        snprintf(out, size, "%s: %s", gui_driver_repos[app->fetch_repo[app->pick_row]].name,
+                 list->releases[app->fetch_release[app->pick_row]].title);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_DRIVER) {
+        int i = driver_of(app, app->pick_row);
+        snprintf(out, size, "%s %s", i >= 0 ? package_name(&app->packages[i]) : "",
+                 i >= 0 ? app->packages[i].meta.driver_version : "");
+        return;
+    }
     if (app->picks_of == GUI_PICKS_SHARE) {
         snprintf(out, size, "%s", snx_tr("How to share the logs?"));
         return;
@@ -11810,6 +13153,17 @@ static void pick_take(App* app, int i) {
     int at, group, kind = folder_row(app, app->pick_row, &at, &group);
     app->picks_shown = false;
     if (i < 0) return;
+    if (app->picks_of == GUI_PICKS_ASSET) { /* the asset downloaded */
+        fetch_download(app, i);
+        return;
+    }
+    if (app->picks_of == GUI_PICKS_DRIVER) { /* Use or Remove */
+        if (i == 0)
+            driver_use(app, app->pick_row);
+        else
+            driver_remove_ask(app, app->pick_row);
+        return;
+    }
     if (app->picks_of == GUI_PICKS_SHARE) {
         char* logs = i < 2 ? NULL : logs_folder(app); /* the launcher's logs and the games' */
         if (i < 2)
@@ -11819,7 +13173,11 @@ static void pick_take(App* app, int i) {
         else
             snprintf(app->message, sizeof app->message, "%s", logs_none());
         free(logs);
-    } else if (i == 0) {
+    } else if (kind == GUI_ROW_DUMPS && app->dumps_off)
+        library_main_switch(app, GUI_LIBRARY_DUMPS, false);
+    else if (kind == GUI_ROW_PLACE && at == GUI_PLACE_GAMES && app->recompiled_off)
+        library_main_switch(app, GUI_LIBRARY_RECOMPILED, false);
+    else if (i == 0) {
         const char* path = folder_row_path(app, app->pick_row);
         if (path)
             show_folder(app, path);
@@ -11829,15 +13187,17 @@ static void pick_take(App* app, int i) {
     } else if (kind == GUI_ROW_PLACE && i == 1) {
         app->place_row = at;
         open_folder_picker(app);
-    } else if (kind == GUI_ROW_PLACE)
+    } else if (kind == GUI_ROW_PLACE && i == 3) /* the Recompiled Library's Main's Remove from Library */
+        folder_off_ask(app, -2);
+    else if (kind == GUI_ROW_PLACE)
         place_default_ask(app, at);
     else if (!strcmp(picks_list(app)[i], SAY_SUBFOLDERS)) { /* the box stays, its mark as it is now */
         int row = app->pick_row;
         subfolders_switch(app, kind, at);
         picks_open_row(app, row);
         app->picks.focus = i;
-    } else if (kind == GUI_ROW_FOLDER)
-        folder_off_ask(app, at);
+    } else if (kind == GUI_ROW_FOLDER || kind == GUI_ROW_DUMPS)
+        folder_off_ask(app, kind == GUI_ROW_DUMPS ? -1 : at);
 }
 static void picks_key(App* app, GuiKey key) {
     switch (gui_choice_key(&app->picks, key)) {
@@ -11981,6 +13341,27 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(game_option);
         return;
     }
+    /* the Recompiled Library's Main off: a new game of any load goes to its Extra, asked among several; with none that
+       can take it the run is refused, saying how to have one */
+    if (folders && app->recompiled_off && !prepared && !app->dest_out && !made_from(app, absolute)) {
+        const char* dirs[GUI_FOLDERS_MAX + 1];
+        int n = dest_dirs(app, dirs);
+        if (n != 1) {
+            if (n)
+                dests_open(app, absolute, prepared);
+            else {
+                snprintf(app->message, sizeof app->message, "%s",
+                         snx_tr("The Recompiled Library's Main is off and no Extra of it can take a game: Add to "
+                                "Library on its Main, or add a folder to it, in Settings > App > Folders"));
+                say_failure(app, app->message);
+                free(absolute);
+            }
+            free(driver);
+            free(game_option);
+            return;
+        }
+        app->dest_out = snx_strdup(dirs[0]);
+    }
     /* a dump made into the folder the player picks, when the recompiled library has more than one that can take it; one
        made already is recompiled where it is */
     if (app->menu.selected == GUI_SWITCH && !prepared && !app->dest_out && !made_from(app, absolute)) {
@@ -12007,7 +13388,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     /* the driver, the file, the settings, --repo and its folder, the picked games and extraction folders, NULL */
     GuiSettings* s = settings_of(app);
-    const char** argv = (const char**)snx_alloc((size_t)(s->count + 17) * sizeof(*argv));
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 19) * sizeof(*argv));
     char* out = NULL; /* a dump's extraction in the picked extractions folder */
     size_t n = 1;
     argv[0] = direct ? absolute : driver;
@@ -12030,6 +13411,17 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
     /* the 3DS driver's play settings: key map, speed, layout, resolution scale, anti-aliasing */
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_play(s, argv + n);
+    /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
+    if (app->menu.selected == GUI_SWITCH && !make) {
+        char* ini = game_ini_of(absolute);
+        free(app->run_driver);
+        free(app->run_freedreno);
+        app->run_driver = gui_run_option("gpu_driver", ini, app->gpu_driver);
+        app->run_freedreno = gui_run_option("freedreno_env", ini, app->freedreno);
+        if (app->run_driver) argv[n++] = app->run_driver;
+        if (app->run_freedreno) argv[n++] = app->run_freedreno;
+        free(ini);
+    }
     /* Play from a save state: the runtime loads it before the game's first frame */
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
@@ -12563,8 +13955,11 @@ static void queue_key(App* app, GuiKey key) {
         free(game);
     }
 }
-/* the recent game shown at row shown, run as the menu would: its driver, the options the menu has now */
-static void open_recent(App* app, int shown) {
+/* the recent game shown at row shown, run as the menu would: its driver, the options the menu has now. With play (Games'
+   Play key), a Switch game with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it
+   (addons_play), the box not shown and its picks not written; one the queue compiles shows its compile, as launch
+   shows it for its path */
+static void open_recent(App* app, int shown, bool play) {
     int index = recent_index(app, shown);
     GuiRecentGame game = app->recent.game[index];
     if (!snx_is_file(game.path)) {
@@ -12573,6 +13968,13 @@ static void open_recent(App* app, int shown) {
         gui_recent_remove(&app->recent, index);
         recent_changed(app);
         return;
+    }
+    if (play && game.driver == GUI_SWITCH && gui_queue_find(&app->queue, game.path) < 0) {
+        addons_open(app, game.path, game.name, false);
+        if (app->addons_shown) {
+            addons_play(app, addons_program(app));
+            return;
+        }
     }
     int item = app->menu.selected;
     app->menu.selected = game.driver;
@@ -12611,8 +14013,10 @@ static int row_driver(const GuiGames* games, size_t i) {
     int named = named_driver(games->names[i]);
     return named >= 0 ? named : program_driver(games->paths[i]);
 }
-/* a game of Games' page, at index of the list, played by its row's driver (row_driver) */
-static void open_game(App* app, size_t index) {
+/* a game of Games' page, at index of the list, played by its row's driver (row_driver). With play (Games' Play key),
+   one with updates, DLCs, mods or cheats beside it plays as its box's Play row plays it (addons_play), the box not
+   shown and its picks not written */
+static void open_game(App* app, size_t index, bool play) {
     int item = app->menu.selected;
     if (gui_games_heading(&app->games, index)) return;               /* a group's heading runs nothing */
     if (gui_queue_find(&app->queue, app->games.paths[index]) >= 0) { /* it cannot play yet: its recompile shows */
@@ -12625,6 +14029,10 @@ static void open_game(App* app, size_t index) {
     }
     if (app->games.addons[index]) { /* its updates and DLCs: which one runs is asked first */
         addons_open(app, app->games.paths[index], app->games.shown[index], false);
+        if (app->addons_shown && play) {
+            addons_play(app, addons_program(app));
+            return;
+        }
         if (app->addons_shown) return;
     }
     const char* name = app->games.names[index];
@@ -12646,11 +14054,22 @@ static void recompile_focus(App* app) {
     else {
         app->recompile = true;
         if (recent)
-            open_recent(app, (int)row);
+            open_recent(app, (int)row, false);
         else
-            open_game(app, index);
+            open_game(app, index, false);
         app->recompile = false;
     }
+}
+/* L on Games, the foot's Play: the focused game played as Enter plays it, but one with updates, DLCs, mods or cheats
+   beside it as its box's Play row plays it, the box not shown (open_game, open_recent); else why not */
+static void play_focus(App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    if (!games_play_focus(app))
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus to play."));
+    else if (row < head)
+        open_recent(app, (int)row, true);
+    else
+        open_game(app, app->browser.page * app->browser.page_size + row - head, true);
 }
 /* the focused prepared Switch game: its program path, and the folder and name the runtime's cache is under */
 typedef struct {
@@ -13355,14 +14774,15 @@ static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     char *dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL, *old;
     gui_games_free(games);
     message[0] = 0;
-    if (!gui_games_add(games, app->games_dir, GUI_GAMES_RUN | GUI_GAMES_CIA, error, sizeof error))
+    if (!app->recompiled_off &&
+        !gui_games_add(games, app->games_dir, GUI_GAMES_RUN | GUI_GAMES_CIA, error, sizeof error))
         snprintf(message, size, "%s", error);
     old = games_old(app);
     if (old && !gui_games_add(games, old, kinds, error, sizeof error) && !message[0])
         snprintf(message, size, "%s", error);
     free(old);
     /* Dumps off: the dumps' folders not read, and the dumps and CIAs the others hold left out of the groups */
-    if (dumps_on(app) && dumps && snx_is_dir(dumps) && /* none: places_apply said it could not be made */
+    if (dumps_on(app) && !app->dumps_off && dumps && snx_is_dir(dumps) && /* none: places_apply could not make it */
         !gui_games_add_deep(games, dumps, GUI_GAMES_DUMP | GUI_GAMES_CIA, app->dumps_shallow ? 0 : GUI_FOLDER_DEPTH,
                             error, sizeof error) &&
         !message[0])
@@ -13426,13 +14846,13 @@ static uint64_t stamp_dirs(char* const* dirs, const int* depths, int count, cons
    subfolders, theirs too), dumps/ and an older version's games/; how many */
 static int watch_dirs(const App* app, char** dirs, int* depths) {
     int i, n = 0;
-    dirs[n] = app->games_dir ? snx_strdup(app->games_dir) : NULL;
+    dirs[n] = app->games_dir && !app->recompiled_off ? snx_strdup(app->games_dir) : NULL;
     depths[n++] = 0;
     for (i = 0; i < app->folder_count; ++i) {
         dirs[n] = snx_strdup(app->folders[i]);
         depths[n++] = app->folders_deep[i] ? GUI_FOLDER_DEPTH : 0;
     }
-    dirs[n] = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
+    dirs[n] = app->data_dir && !app->dumps_off ? snx_path_join(app->data_dir, "dumps") : NULL;
     depths[n++] = app->dumps_shallow ? 0 : GUI_FOLDER_DEPTH;
     dirs[n] = games_old(app);
     depths[n++] = 0;
@@ -13673,7 +15093,7 @@ static void menu_key(App* app, GuiKey key) {
             app->menu.view = GUI_LOAD_NONE;
             app->message[0] = 0;
         } else if (action == GUI_BROWSER_HEAD && (int)row < recent_shown(app))
-            open_recent(app, (int)row);
+            open_recent(app, (int)row, false);
         else if (action ==
                  GUI_BROWSER_HEAD) { /* ...show more: every recent game, the focus on the first that was hidden */
             app->recent_all = true;
@@ -13681,7 +15101,7 @@ static void menu_key(App* app, GuiKey key) {
             layout(app);
         } else if (action == GUI_BROWSER_OPEN) {
             size_t index = app->browser.page * app->browser.page_size + row - app->browser.head;
-            if (index < app->games.count) open_game(app, index);
+            if (index < app->games.count) open_game(app, index, false);
         }
         return;
     }
@@ -13758,7 +15178,8 @@ static void ask_key(App* app, GuiKey key) {
     else if (ask == GUI_ASK_MADE)
         made_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN || ask == GUI_ASK_RESET || ask == GUI_ASK_PLACES || ask == GUI_ASK_PLACE ||
-             ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE)
+             ask == GUI_ASK_FOLDER || ask == GUI_ASK_MOVE || ask == GUI_ASK_STATE || ask == GUI_ASK_CACHE ||
+             ask == GUI_ASK_DRIVER)
         change_answer(app, ask, second);
     else if (ask == GUI_ASK_CLOSE && second) { /* the run ends with the menu, the queue's recompile too */
         if (app->menu.running) abort_run(app);
@@ -13943,6 +15364,7 @@ static const struct {
                  {SNX_TR_KEY("Start"), SDLK_F5, 0, true},
                  {SNX_TR_KEY("L3"), SDLK_M, 0, true},
                  {SNX_TR_KEY("R3"), SDLK_B, 0, true},
+                 {SNX_TR_KEY("Right stick"), SDLK_L, 0, true},
                  {SNX_TR_KEY("ESC"), SDLK_ESCAPE, 0, false},
                  {SNX_TR_KEY("Back"), SDLK_AC_BACK, 0, false},
                  {SNX_TR_KEY("Tab"), SDLK_TAB, 0, false},
@@ -13961,6 +15383,8 @@ static const struct {
                  {SNX_TR_KEY("Del"), SDLK_DELETE, 0, false},
                  {SNX_TR_KEY("Take out"), SDLK_DELETE, 0, false}, /* a finger's, on the Compile tab */
                  {SNX_TR_KEY("Games"), SDLK_TAB, 0, false},
+                 {SNX_TR_KEY("L"), SDLK_L, 0, false},
+                 {SNX_TR_KEY("Play"), SDLK_L, 0, false},
                  {SNX_TR_KEY("R"), SDLK_R, 0, false},
                  {SNX_TR_KEY("Recompile"), SDLK_R, 0, false},
                  {SNX_TR_KEY("B"), SDLK_B, 0, false},
@@ -14410,7 +15834,10 @@ static void touch(App* app, float x, float y) {
 static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     App* app = (App*)data;
     if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) app->hidden = true;
-    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) app->hidden = app->playing = false; /* the game, if any, behind */
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) { /* the game, if any, behind */
+        app->played = app->playing;
+        app->hidden = app->playing = false;
+    }
     return true;
 }
 #endif
@@ -14451,7 +15878,7 @@ static void refresh(App* app) {
         char gone[sizeof app->editor.note];
         size_t n = 0;
         char* dumps = app->data_dir ? snx_path_join(app->data_dir, "dumps") : NULL;
-        int missing = !(dumps && snx_is_dir(dumps));
+        int missing = !app->dumps_off && !(dumps && snx_is_dir(dumps));
         for (int i = 0; i < app->folder_count; ++i) missing += !snx_is_dir(app->folders[i]);
         free(dumps);
         space_start(app);
@@ -14724,6 +16151,18 @@ static void event_take(App* app, const SDL_Event* e) {
         SDL_free(e->user.data2);
         return;
     }
+    /* Download Driver's threads: a repository's releases, a download's progress and its end */
+    if (app->fetch_event && e->type == app->fetch_event) {
+        fetch_answer(app, e->user.code, e->user.data1);
+        return;
+    }
+    /* Add Driver's picker's answer: a zip, none, or why it could not open */
+    if (app->driver_picked && e->type == app->driver_picked) {
+        driver_picked(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
+        return;
+    }
     /* the folder picker's answer: a folder, none, or why it could not open */
     if (app->picked_folder && e->type == app->picked_folder) {
         char* error = (char*)e->user.data2;
@@ -14913,6 +16352,12 @@ static void event_take(App* app, const SDL_Event* e) {
     }
     if (e->key.key == SDLK_DELETE && !e->key.repeat && app->menu.view == GUI_LOAD_RECOMPILE && !app->finished) {
         queue_take_out(app);
+        return;
+    }
+    if (e->key.key == SDLK_L && !e->key.repeat && !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) &&
+        app->menu.view == GUI_LOAD_GAMES && !app->finished) {
+        layout(app); /* the page a resize in the same poll gave */
+        play_focus(app);
         return;
     }
     if (e->key.key == SDLK_R && !e->key.repeat && !(e->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) &&
@@ -15108,6 +16553,8 @@ static void forget(App* app) {
     app->run_locked = false;
     free(app->self);
     free(app->drivers);
+    free(app->drivers_dir);
+    free(app->packages);
     free(app->file);
     free(app->data_dir);
     free(app->home_dir);
@@ -15177,6 +16624,12 @@ static void open_files(App* app) {
         folders_load(app);
         app_load(app);
     }
+    free(app->drivers_dir);
+    app->drivers_dir = snx_gpu_drivers_dir(); /* GPU Drivers' packages, which its rows and the App's name */
+#ifdef SNX_GUI_HTTPS
+    app->https_get = snx_https_get;
+#endif
+    drivers_load(app);
     if (!app->look_only)
         gui_log("%s starts, its data folder %s", snx_build_info(), app->data_dir ? app->data_dir : "(none)");
     if (prefs) run_log_follow(app);  /* in the Logs folder app.ini picked */

@@ -39,5 +39,5 @@ this machine's `mkdwarfs`, as the target's compresses many times slower under qe
   core has it; elsewhere it swaps the halves under a lock of the address's stripe, each a 64-bit compare-and-swap, and
   undoes the first when the second finds another value. Callers of it see the 16 bytes change at once; a plain store
   to one half between its two swaps is not refused, as a real exclusive monitor would refuse it.
-- **No runtime JIT.** The JIT's loader (`code_loader.c`) loads x86-64 and AArch64 objects only, so, as on PowerPC64,
-  only the code the recompiler found runs.
+- **No runtime JIT on these two hosts.** The loader's native targets are x86-64, AArch64 and PowerPC64.
+  RISC-V and LoongArch still run only the code the AOT recompiler found.

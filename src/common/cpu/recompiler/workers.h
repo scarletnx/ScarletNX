@@ -5,6 +5,7 @@
 #ifndef SNX_RECOMPILER_WORKERS_H
 #define SNX_RECOMPILER_WORKERS_H
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include <llvm-c/Core.h>
 #include <stdlib.h>
@@ -87,11 +88,11 @@ static inline void snx_run_workers(unsigned jobs, void (*worker)(void* arg), voi
 #endif
     for (unsigned i = 1; threads && i < jobs; ++i) {
 #ifdef _WIN32
-        HANDLE h = CreateThread(NULL, 0, snx_workers_main, &w, 0, NULL);
+        HANDLE h = snx_compile_thread(snx_workers_main, &w);
         if (!h) break;
         threads[created++] = h;
 #else
-        if (pthread_create(&threads[created], NULL, snx_workers_main, &w)) break;
+        if (snx_compile_thread(&threads[created], snx_workers_main, &w)) break;
         ++created;
 #endif
     }

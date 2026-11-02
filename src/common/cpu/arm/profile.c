@@ -3,9 +3,8 @@
 #include "common/cpu/arm/arm.h"
 #include "common/cpu/arm/simd.h"
 
-/* VFPv2 recognition. Emission supports scalar mode only and rejects short
-   vectors/enabled exceptions before arithmetic. Never silently execute NEON,
-   D16..D31, VFPv3 immediates or fused operations. */
+/* VFPv2 recognition. Emission stops a short vector (a compare or a conversion is scalar) or an enabled exception
+   (SNX_ARM_BACKEND_UNSUPPORTED). Never silently execute NEON, D16..D31, VFPv3 immediates or fused operations. */
 static int vfp2(uint32_t w) {
     SnxArmVector v;
     if ((w >> 28) == 15 || !snx_arm_vector_decode(w, &v) || (v.flags & AV_SIMD)) return 0;

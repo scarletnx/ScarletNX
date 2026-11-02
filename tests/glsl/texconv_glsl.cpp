@@ -6,7 +6,8 @@
 // four texels an invocation owns, and random ETC2 and EAC blocks of every kind (with the T, H and planar modes made
 // often) against tests/support/etc2.c and random BC1 to BC7 blocks of every kind (every BC6H and BC7 mode
 // made often) against tests/support/bcn.c, in images whose sides aren't multiples of 4, and vi's pixel formats
-// against present.c's former CPU conversion, and the 2D blit's half floats against tests/support/half.c.
+// against present.c's former CPU conversion, the 2D blit's half floats against tests/support/half.c, and vertex
+// streams restrided as render.c's CPU copy did.
 // tests/astc_vulkan.c runs the SPIR-V build of the same file on a Vulkan device.
 #include <cstdio>
 #include <cstdlib>
@@ -268,6 +269,119 @@ static void dma_remaps() {
     }
 }
 
+// the 3D engine's index buffers Vulkan can't read (vk/render.c's index_convert) against render.c's CPU conversions
+// before they moved to the GPU: quads from 8, 16 and 32-bit indices and from vertex numbers, 8-bit indices widened
+// with and without their restart index, 16 and 32-bit restart indices made all ones; odd counts, inputs and outputs
+// that start past the bound offset, and more elements than a row of units (gl_GlobalInvocationID.y counts rows; 0: n)
+static void index_case(uint32_t mode, uint32_t remap, uint32_t count, uint32_t units) {
+    uint32_t isz = mode == 34 ? 1 : mode == 35 ? 2 : mode == 36 ? 4 : remap ? remap : 4, in_bias = 4 * (random_word() % 4);
+    uint32_t n = mode == 37 ? count / 4 : mode == 36 ? count : (count + 1) / 2, out_bias = random_word() % 5;
+    std::vector<uint8_t> inb(in_bias + (count * isz + 3) / 4 * 4);
+    for (auto& b : inb) b = (uint8_t)(random_word() % 6 == 0 ? 0xFF : random_word() % 12); // restart indices often
+    uint32_t ri = mode == 37 ? 0 : inb[in_bias] | (isz > 1 ? 0xFFu << 8 : 0) | (isz > 2 ? 0xFFFF0000u : 0);
+    if (mode == 34 && random_word() % 3 == 0) ri = 0xFF;
+    if (isz > 1 && mode != 37) // the restart index somewhere in the buffer
+        std::memcpy(&inb[in_bias + isz * (random_word() % count)], &ri, isz);
+    std::vector<uint32_t> want(out_bias + (mode == 37 ? 6 * n : n), 0xDEADBEEFu);
+    const uint8_t* ib = &inb[in_bias];
+    for (uint32_t j = 0; j < count; j++) {
+        uint32_t v = mode == 37 && !remap ? j : le_bytes(ib + j * isz, isz);
+        if (mode == 37) {
+            if (j / 4 >= n) continue;
+            static const uint32_t at[4][2] = {{0, 3}, {1, 1}, {2, 4}, {5, 5}}; // where each corner goes: 0 1 2 0 2 3
+            want[out_bias + 6 * (j / 4) + at[j & 3][0]] = v;
+            want[out_bias + 6 * (j / 4) + at[j & 3][1]] = v;
+        } else if (mode == 36)
+            want[out_bias + j] = v == ri ? 0xFFFFFFFFu : v;
+        else {
+            uint32_t w = (mode == 34 ? remap && v == (ri & 0xFF) : v == (ri & 0xFFFF)) ? 0xFFFFu : v;
+            uint32_t& d = want[out_bias + j / 2];
+            d = j & 1 ? (d & 0xFFFFu) | w << 16 : w;
+        }
+    }
+    std::vector<glsl::leuint> in(inb.size() / 4), out(want.size(), 0xDEADBEEFu);
+    std::memcpy(in.data(), inb.data(), inb.size());
+    if (!units) units = n; // one row
+    uint32_t rows = (n + units - 1) / units;
+    glsl::dispatch<Conv>(glsl::uvec3((units + 63) / 64, rows, 1), glsl::uvec3(64, 1, 1), [&](Conv& c) {
+        c.mode = mode;
+        c.units = units;
+        c.rows = rows;
+        c.in_bias = in_bias;
+        c.out_bias = out_bias;
+        c.remap = remap;
+        c.const_a = mode == 34 ? ri & 0xFF : mode == 35 ? ri & 0xFFFF : ri;
+        c.line_out = n;
+        c.src = in.data();
+        c.dst = out.data();
+    });
+    for (uint32_t i = 0; i < want.size(); i++) {
+        // an odd count's last pair has a high half that no index is drawn from: only its low half counts
+        uint32_t mask = mode != 36 && mode != 37 && count % 2 && i == want.size() - 1 ? 0xFFFFu : ~0u;
+        CHECK(((uint32_t)out[i] & mask) == (want[i] & mask), "index mode %u remap %u count %u word %u: %08x, not %08x",
+              mode, remap, count, i, (uint32_t)out[i], want[i]);
+    }
+}
+static void index_buffers() {
+    for (int i = 0; i < 300; i++) {
+        uint32_t count = 1 + random_word() % 300, units = random_word() % 2 ? 0 : 1 + random_word() % 70;
+        index_case(34, random_word() % 2, count, units);
+        index_case(35, 0, count, units);
+        index_case(36, 0, count, units);
+        if (count >= 4) {
+            static const uint32_t sizes[4] = {0, 1, 2, 4};
+            index_case(37, sizes[random_word() % 4], count, units);
+        }
+    }
+}
+
+// vertex streams with strides Vulkan can't read (vk/render.c's restride) against render.c's CPU copy before it moved
+// to the GPU: each vertex's out_stride bytes from its start in the stream, past its stride into the next vertex, and 0
+// past the stream; streams that start at any byte of a word, strides of every remainder, and more words than a row of
+// units. The input holds only the words the stream touches (an ASan build catches a read past them: the shader's bound
+// check on the second word changes no byte, the mask after it clears what that word would bring)
+static void restride_case(uint32_t gstride, uint32_t len, uint32_t lead, uint32_t units) {
+    uint32_t stride = (gstride + 3) & ~3u, nv = (len + gstride - 1) / gstride, n = nv * stride / 4;
+    uint32_t out_bias = random_word() % 5, words = (lead + len + 3) / 4;
+    std::vector<uint8_t> inb(4 * words);
+    for (auto& b : inb) b = (uint8_t)random_word();
+    std::vector<uint8_t> want(4 * (out_bias + n), 0xA5);
+    for (uint32_t i = 0; i < nv; i++) {
+        uint32_t at = i * gstride, m = len - at < stride ? len - at : stride;
+        std::memcpy(&want[4 * out_bias + i * stride], &inb[lead + at], m);
+        std::memset(&want[4 * out_bias + i * stride + m], 0, stride - m);
+    }
+    std::vector<glsl::leuint> in(words), out(want.size() / 4, 0xA5A5A5A5u);
+    std::memcpy(in.data(), inb.data(), inb.size());
+    if (!units) units = n;
+    uint32_t rows = (n + units - 1) / units;
+    glsl::dispatch<Conv>(glsl::uvec3((units + 63) / 64, rows, 1), glsl::uvec3(64, 1, 1), [&](Conv& c) {
+        c.mode = 38;
+        c.units = units;
+        c.rows = rows;
+        c.in_pitch = gstride;
+        c.out_pitch = stride / 4;
+        c.in_bias = lead;
+        c.out_bias = out_bias;
+        c.const_a = len;
+        c.line_out = n;
+        c.src = in.data();
+        c.dst = out.data();
+    });
+    for (uint32_t i = 0; i < out.size(); i++) {
+        uint32_t w = (uint32_t)want[4 * i] | (uint32_t)want[4 * i + 1] << 8 | (uint32_t)want[4 * i + 2] << 16 |
+                     (uint32_t)want[4 * i + 3] << 24;
+        CHECK((uint32_t)out[i] == w, "restride stride %u len %u lead %u word %u: %08x, not %08x", gstride, len, lead, i,
+              (uint32_t)out[i], w);
+    }
+}
+static void restrides() {
+    restride_case(69, 69 * 100, 0, 0);
+    for (int i = 0; i < 400; i++) {
+        uint32_t gstride = 1 + random_word() % 140, len = 1 + random_word() % 3000;
+        restride_case(gstride, len, random_word() % 8, random_word() % 2 ? 0 : 1 + random_word() % 70);
+    }
+}
 static void depth_float() {
     Conv c;
     for (uint32_t z = 0; z < 1u << 24; z++) {
@@ -430,6 +544,8 @@ int main() {
     vi_frames();
     nv12_uv();
     dma_remaps();
+    index_buffers();
+    restrides();
     depth_float();
     halves();
     rgb32f();

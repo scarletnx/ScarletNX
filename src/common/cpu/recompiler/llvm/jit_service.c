@@ -5,6 +5,7 @@
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
@@ -390,7 +391,10 @@ static int known(void* user, SnxU64 address) {
     return result;
 }
 
-/* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there */
+/* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there, or
+   when its dispatch slot holds something else: a hook of the runtime's (nx/hle/hook/hook.c) took its place, which
+   only a call through the slot reaches. A unit of the cache that calls it directly is refused at its load, and
+   compiled again */
 static SnxU64 direct(void* user, SnxU64 target) {
     const SnxJitService* s = (const SnxJitService*)user;
     size_t lo = 0, hi = s->config.aot_count;
@@ -403,7 +407,12 @@ static SnxU64 direct(void* user, SnxU64 target) {
     }
     if (lo == s->config.aot_count || s->config.aot_addresses[lo] != target) return 0;
     /* a function the runtime found stale (its code changed: SNX_ABI 14) leaves the table while the JIT runs */
-    return (SnxU64)(size_t)__atomic_load_n(&s->config.aot_functions[lo], __ATOMIC_ACQUIRE);
+    GuestFn function = __atomic_load_n(&s->config.aot_functions[lo], __ATOMIC_ACQUIRE);
+    /* and a hooked one is called through its slot, which holds the hook (SNX_ABI 15) */
+    if (function && s->config.dispatch && target >= s->config.code_lo && target < s->config.code_hi &&
+        __atomic_load_n(&s->config.dispatch[(target - s->config.code_lo) >> 2], __ATOMIC_RELAXED) != function)
+        return 0;
+    return (SnxU64)(size_t)function;
 }
 
 /* the loader's resolver: snx_aot_<target>, the AOT module's function for target (ir_codegen.c's call) */
@@ -1055,8 +1064,17 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     /* memory changing after the code is read makes this batch's code stale: the publish skips it */
     SnxU64 epoch = s->epoch;
     unlock(&s->lock);
-    int rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, s->config.budget,
-                                           s->config.features)
+    size_t region_limit = s->config.region_instructions, overflow_limit = 0;
+    if (!region_limit) {
+        region_limit = SNX_JIT_REGION_INSTRUCTIONS;
+        overflow_limit = SNX_JIT_OVERFLOW_INSTRUCTIONS;
+    }
+    if (region_limit == SIZE_MAX) region_limit = 0;
+    size_t budget = s->config.budget;
+    size_t live = s->config.live_budget ? s->config.live_budget : SNX_JIT_LIVE_BUDGET;
+    if (queue == LIVE && budget > live) budget = live;
+    int rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, budget,
+                                           s->config.features, region_limit, overflow_limit)
                     : -1;
     if (!images) codegen = (SnxCodegen){0};
     int discovered = !rc;
@@ -1250,7 +1268,7 @@ static DWORD WINAPI worker_main(LPVOID s) {
     return 0;
 }
 static int thread_start(JitThread* t, SnxJitService* s) {
-    *t = CreateThread(NULL, 0, worker_main, s, 0, NULL);
+    *t = snx_compile_thread(worker_main, s);
     return *t ? 0 : -1;
 }
 static void thread_join(JitThread t) {
@@ -1263,7 +1281,7 @@ static void* worker_main(void* s) {
     return NULL;
 }
 static int thread_start(JitThread* t, SnxJitService* s) {
-    int failed = pthread_create(t, NULL, worker_main, s);
+    int failed = snx_compile_thread(t, worker_main, s);
     if (failed) errno = failed; /* the reason, for what the caller says */
     return failed ? -1 : 0;
 }

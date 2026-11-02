@@ -105,6 +105,7 @@ typedef struct Ldn {
     u32 ev;
     u32 state;
     i16 reason;
+    u8 refused; /* the last Initialize found no wireless to give: GetState says Error, as Eden and Ryujinx do */
     u8 ip[4], mask[4];
 } Ldn;
 #define LDN_MAX 8 /* IUserLocalCommunicationServices: a game makes one for its local play */

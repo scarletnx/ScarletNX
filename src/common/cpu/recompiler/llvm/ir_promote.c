@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The guest's registers as locals of the whole function. The emitters read and write X0-X30 and SP, NZCV and V0-V31
    in the CPU structure, and a call that takes c can read or change any of them, so LLVM keeps each in memory across
-   every loop that has one, even a call it never makes (the poll on each backward branch, an FP helper's slow path).
+   every loop that has one, even a call it never makes (an FP helper's slow path). The poll on a backward branch is
+   not in the loop: it leaves the function (ir_codegen.c's poll).
    Once the function is emitted, ir_promote_registers moves those accesses onto a stack slot per register, which
    SROA and mem2reg make SSA values. It runs at O1 and above: at O0 those passes do not run, so the slots and the
    copies at every site stay, which costs call-heavy code and grows the JIT's arena. Two passes over the function's
@@ -16,6 +17,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -138,8 +140,19 @@ static int pointer_uses(SnxIr* ir, Scan* s, LLVMValueRef pointer, size_t offset)
     return 0;
 }
 
-/* what a call can see of the registers in the CPU structure: NONE for an intrinsic or a function that touches no
-   memory (ir_pure), ENV for a helper that uses only FPCR, FPSR and the exclusive monitor (ir_noregs), ALL else */
+/* every pointer the call is given is a local of the function (ir_local's allocas) */
+static int locals_only(LLVMValueRef call) {
+    unsigned n = LLVMGetNumArgOperands(call);
+    for (unsigned i = 0; i < n; ++i) {
+        LLVMValueRef arg = LLVMGetOperand(call, i);
+        if (LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMPointerTypeKind && !LLVMIsAAllocaInst(arg)) return 0;
+    }
+    return 1;
+}
+/* what a call can see of the registers in the CPU structure: NONE for an intrinsic, a function that touches no
+   memory (ir_pure), or one that touches only its arguments' memory (ir_argmem, the argument bits of "memory") given
+   locals alone (snx_fp_host_lanes); ENV for a helper that uses only FPCR, FPSR and the exclusive monitor
+   (ir_noregs); ALL else */
 enum { NONE, ENV, ALL };
 static int call_site(LLVMValueRef call) {
     LLVMValueRef callee = LLVMGetCalledValue(call);
@@ -149,6 +162,7 @@ static int call_site(LLVMValueRef call) {
         memory = LLVMGetEnumAttributeAtIndex(callee, LLVMAttributeFunctionIndex,
                                              LLVMGetEnumAttributeKindForName("memory", 6));
         if (memory && LLVMGetEnumAttributeValue(memory) == 0) return NONE;
+        if (memory && !(LLVMGetEnumAttributeValue(memory) & ~3ull) && locals_only(call)) return NONE;
         if (LLVMGetStringAttributeAtIndex(callee, LLVMAttributeFunctionIndex, "snx-noregs", 10)) return ENV;
     }
     return ALL;
@@ -496,6 +510,8 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
         local[slot] = NULL;
         if (!s.used[slot]) continue;
         local[slot] = LLVMBuildAlloca(b, slot_type(ir, slot), "");
+        if (ir->dump_active)
+            fprintf(stderr, "IR promote slot %u cpu-offset %zu bytes %u\n", slot, slot_offset(slot), slot_size(slot));
         LLVMSetAlignment(local[slot], slot_size(slot) > 8 ? 16 : slot_size(slot));
     }
     for (unsigned slot = 0; slot < SLOTS; ++slot)
@@ -516,15 +532,29 @@ void ir_promote_registers(SnxIr* ir, LLVMValueRef fn) {
             LLVMSetAlignment(a->inst, a->delta & -a->delta);
     }
     /* the dirty registers into the CPU structure before each site, the live ones back after a call */
+    if (ir->stats.enabled) ++ir->stats.promoted_functions;
     for (i = 0; i < nsites; ++i) {
         LLVMValueRef site = sites[i].inst;
         LLVMPositionBuilderBefore(b, site);
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (local[slot] && set_has(&sites[i].dirty, slot)) copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+            if (local[slot] && set_has(&sites[i].dirty, slot)) {
+                copy(ir, b, slot, local[slot], cpu_pointer(ir, b, slot), 1);
+                if (ir->stats.enabled) {
+                    ++ir->stats.sync_stores;
+                    ir->stats.store_bytes += slot_size(slot);
+                    if (LLVMIsACallInst(site)) ++ir->stats.call_stores;
+                }
+            }
         if (!returns(site)) continue;
         LLVMPositionBuilderBefore(b, LLVMGetNextInstruction(site));
         for (unsigned slot = 0; slot < SLOTS; ++slot)
-            if (local[slot] && set_has(&sites[i].reload, slot)) copy(ir, b, slot, cpu_pointer(ir, b, slot), local[slot], 0);
+            if (local[slot] && set_has(&sites[i].reload, slot)) {
+                copy(ir, b, slot, cpu_pointer(ir, b, slot), local[slot], 0);
+                if (ir->stats.enabled) {
+                    ++ir->stats.sync_reloads;
+                    ir->stats.reload_bytes += slot_size(slot);
+                }
+            }
     }
     LLVMDisposeBuilder(b);
 done:

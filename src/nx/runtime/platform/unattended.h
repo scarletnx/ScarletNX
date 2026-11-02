@@ -30,7 +30,7 @@ int unattended_periodic_shot(char* path, size_t n);
 int unattended_done(void); /* 1 once the frame count or the time is reached */
 /* Ends the run: prints the frame count, the last image's hash and its size (w and h 0 when not known) on stderr, saves
    what a clean exit saves, and exits with 0 */
-__attribute__((noreturn)) void unattended_exit(u64 hash, int w, int h);
+_Noreturn void unattended_exit(u64 hash, int w, int h);
 
 /* Stick directions held like keys, bits 40 to 47 of k (left, up, right, down of the left stick, then of the right),
    as full deflections in st = {lx, ly, rx, ry}; opposite directions cancel */

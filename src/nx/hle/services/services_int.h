@@ -68,6 +68,8 @@ SvcObj* new_time_user(void); /* time:u, an application's: no write */
 
 /* ---- acc.c */
 SvcObj* new_acc(void);
+SvcObj* new_acc_system(void); /* acc:u1 */
+SvcObj* new_acc_admin(void);  /* acc:su */
 
 /* ---- ldr.c: ldr:ro and ro:1 */
 SvcObj* new_ldr(void);
@@ -95,6 +97,7 @@ SvcObj* new_nfp(void);
 SvcObj* new_nfc(void);
 SvcObj* new_caps(void);
 SvcObj* new_bcat(void);
+SvcObj* new_nim(void);
 SvcObj* new_aoc(void);
 SvcObj* new_irs(void);
 SvcObj* new_mii(void);
@@ -136,6 +139,11 @@ typedef struct {
     } pic;
     AccUser users[ACC_USERS];
     u32 user_next;
+    /* StoreOpenContext ran: the open user is kept for the program ExecuteProgram starts next */
+    int context_stored;
+    /* the id token an account server issued for the title at EnsureIdTokenCacheAsync, which LoadIdTokenCache
+       answers: none here, where there is no account server */
+    char token[4096];
 } HleAcc;
 /* acc's host side: the picture's lock (hle.h's g_host) */
 typedef struct {

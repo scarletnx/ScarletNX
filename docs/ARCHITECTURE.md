@@ -12,7 +12,7 @@
   * [Videodec/VIC channels](#videodecvic-channels)
 
 ScarletNX compiles AArch64 code into native modules through LLVM IR.
-The CPU implementation is shared by Horizon HLE/Maxwell and CPU-only Linux AArch64 ABI runtimes.
+The CPU implementation is shared by the Horizon HLE runtime and the CPU-only Linux AArch64 ABI runtimes.
 Source map: [CLAUDE.md](../CLAUDE.md).
 
 ## Runtime boundaries
@@ -20,7 +20,7 @@ Source map: [CLAUDE.md](../CLAUDE.md).
 | Source / CMake target | Ownership |
 | --- | --- |
 | `src/common/` / `scarletnx-common` | AArch64 CPU state, instruction semantics, code discovery/emission, native module execution, runtime callback interface, host utilities |
-| `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, Maxwell and graphics/media backends, Switch frontend/tooling |
+| `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, NVN and graphics/media backends, Switch frontend/tooling |
 | `src/gnuabi/` / `scarletnx-gnuabi` | Linux syscall/errno/structure translation, ELF loading, isolated VFS, Linux process/memory/signal/futex compatibility |
 
 The experimental `src/3ds/` / `scarletnx-3ds` target supplies board profiles,
@@ -126,12 +126,21 @@ the game's image read from that image.
   forms. `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
   `tests/llvm_module.c` a whole program against the end state QEMU gives it, `tests/llvm_bench.c` times it on
   assembly kernels.
+- `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
+  (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
+  as lld's `CallGraphSort.cpp`) and writes their guest addresses. `module_llvm.c` gives each listed function a code
+  section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
+  No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
-  does, so a loop without SVCs gives its core to a waiting thread of higher priority.
+  does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
+  leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the
+  target's label. The call is not in the loop, so `ir_promote.c` reloads no register after it inside the loop.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
-  registers) and guest accesses are volatile (each happens, as on the hardware); logical immediates and SIMD
+  registers). Guest accesses are unaligned, and volatile only when `volatile_memory` is enabled (off by default).
+  Logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result is
-  provably the soft-float helper's, flags included (`ir_fp_fast`); the AdvSIMD and crypto encodings are inline instead
+  provably the soft-float helper's, flags included (`fast_binary`, `fast_sqrt` and `fast_fma` in `ir_fpu.c`);
+  the AdvSIMD and crypto encodings are inline instead
   of `snx_simd`, AES as S-box lookups where the host has no AES-NI. Build == host == target: the
   generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection), and the runtime library's
   helpers are portable C that LLVM compiles for each module's CPU; nothing is detected at run time. The emitters'
@@ -185,6 +194,11 @@ too for an addition the games should get though older modules would run without 
 change to the recompiler's own output for the same contract leaves it alone, and every game keeps its old code until
 it is recompiled (`-r`, or R in Games).
 
+The module's `snx_routes()` table (`SnxRoutes`, with its own `SNX_ROUTES_VERSION`) is read as optional and left
+`SNX_ABI` alone: it names the symbols whose calls the module sends through their dispatch slots
+([Hooks](HOOKS.md#how-a-call-reaches-a-hook)). A module without it sends the calls to every function it exports through
+their slots, which every hook also works with.
+
 A bump costs little. The recompile it starts takes each code unit's object from the unit cache
 (`src/nx/loader/unit_cache.c`), which keys it on the unit's IR, not on `SNX_ABI`: a bump that leaves the IR alone
 reuses every unit, and one that changes it (a field moved) compiles them again, as it must. For a game of 255 units
@@ -206,7 +220,9 @@ function's arguments, or a field added into a struct's tail padding: for those t
 | 12 | `RtAPI.cas128`, and `snx_cas128` takes the CPU |
 | 13 | the AOT module's `snx_variants()` table, read as optional |
 | 14 | `RtAPI.code_changed` for IC IVAU, and `SnxModule`'s function table with the byte each AOT function checks first |
-| 15 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
+| 15 | calls to an exported function go through its dispatch slot, which a hook of the runtime's may hold |
+| 16 | `stx`'s result for a store-exclusive whose range the armed monitor covers |
+| 17 | the FP helpers take FPCR by value and return their result with the FPSR flags they raised, and generated functions call `snx_fp_env` on entry |
 
 #### Code the game patches
 
@@ -233,7 +249,7 @@ covers hooks in code the game maps itself (NROs), which only the JIT runs.
 | `runtime/` | Module loading, INI, clock, `RtAPI`, crashes; `settings.txt`, every setting (`tools/settingsgen` generates `snx_settings.h`, `g_settings` and the tables the runtime, the launcher and the recompiler read them with) |
 | `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
-| `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vulkan renderer |
+| `gpu/` and `gpu/nvn/` | Guest memory as the GPU sees it, the GPU thread, NVN (loader, objects, command buffers, replay), shaders, Vulkan renderer |
 | `gpu/video/` | host1x, NVDEC H.264 and VP9 decoding through FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit, the in-game menu, the shader loading screen |
 
@@ -257,18 +273,21 @@ service the runtime doesn't have gets sm's stand-in object, which answers every 
 
 ### GPU submit/present
 
-1. NVN command buffers -> `/dev/nvhost-gpu` GPFIFO ioctl -> `hle/services/nvdrv.c` -> `gpu_submit` (`gpu/gpu.c`).
-2. Copy entries to GPU queue. `nv.submit_lk` orders fence promises and cross-channel submits. A submission's fence
-   is the stream's first wait on the GPU thread, whoever increments it, and the ioctl returns at once, as nvgpu's does.
-3. GPU-thread dispatch: 3D, MME, compute, 2D, DMA, inline-to-memory. Draws -> `g_renderer` (`gpu/renderer.h`).
-   Shaders: Maxwell SASS -> SPIR-V (`gpu/shader/`). Each channel's jobs run in order. A stream that waits (a semaphore
-   acquire, a syncpoint wait, its fence) parks its channel (`gpu_park`), even inside a macro, and the thread runs the
-   other channels' jobs until the wait is met or times out. A release from another stream or a syncpoint increment
-   wakes it, and a release the CPU writes is polled every 0.5 ms while nothing else can run.
+1. The game resolves its NVN functions through `nvnBootstrapLoader` and `nvnDeviceGetProcAddress`. The loader
+   (`gpu/nvn/nvn_loader.c`) puts the runtime's handler in each one's dispatch slot (`gpu/nvn/nvn.hook`), so the game's
+   NVN driver never runs past its own name lookup. A game without `nvnBootstrapLoader` draws nothing.
+2. Command buffer calls write records into the game's command memory (`gpu/nvn/nvn_cmd.c`). A queue submission
+   promises its fences and queues the replay on the GPU thread (`gpu_call`), and returns at once.
+3. The GPU thread replays the records in order (`gpu/nvn/nvn_replay.c`): NVN's state makes the renderer's draw state
+   (`gpu/draw_state.h`), and the draws, clears, dispatches and copies go to `g_renderer` (`gpu/renderer.h`). Shaders:
+   Maxwell SASS -> SPIR-V (`gpu/shader/`).
 4. Vk `stream_incr` lands compute writes in guest memory before incrementing the syncpoint.
-5. vi waits on the fences no submission promised (a host1x engine's, the CPU's), then queues present (`gpu_call`)
-   after the jobs of the channels that promised the others. Other channels' jobs don't hold it. The GPU thread checks
-   the remaining fences. `present_buffer` uses the matching RT and vi's crop, or converts guest memory.
+5. A window present queues its texture after the queue's work. vi's own present path (a program that uses vi with its
+   own buffers) waits for its fences on the calling thread, then queues the present (`gpu_call`).
+   `present_buffer` uses the matching RT and the crop, or converts guest memory.
+
+`/dev/nvhost-gpu`'s `SUBMIT_GPFIFO` draws nothing: there is no Maxwell command decoder. It logs one warning and
+reaches the submission's fence at once, so a program that writes its own command buffers does not wait forever.
 
 The shader programs a game ships are translated at startup, on the renderer's shader file thread rather than the GPU
 thread, into `<id>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
@@ -285,7 +304,11 @@ the build, so a new build or driver reads only the files that hold programs agai
   graphics queue otherwise.
 
 Invalidation: host write tracking + `mem_unmap` -> `gpu_mem_changed`. Vk treats zeroed unmap/heap-return ranges
-as written at the next cache check.
+as written at the next cache check. Write tracking (`plat_ww_scan`) is userfaultfd's asynchronous write protection
+with `PAGEMAP_SCAN` on Linux 6.7 and later, and the reservation's write watch on Windows. Every other POSIX host
+(macOS, FreeBSD, Android, older Linux; `SNX_WW=signal` on any Linux) protects the pages a scan reported and takes the
+first write to each in the fault handler, which opens the page again. A system call can't fault into the handler, so
+the runtime opens what the kernel will write before the call (`plat_ww_open`, next to `own_acquire`).
 
 `Renderer.save`: optional pipeline-cache persistence every 300 frontend ticks (~5s) + exit, concurrent with execution.
 Exit skips renderer teardown and guest-thread joins.

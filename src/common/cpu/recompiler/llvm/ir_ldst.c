@@ -7,8 +7,9 @@
 /* The loads and stores as LLVM IR, keyed on the generated decoder's ops and arguments: the general and FP/SIMD
    register forms of every addressing mode, the pairs, literals, exclusives, load-acquire and store-release, the
    AdvSIMD structure loads and stores, the LSE and RCpc atomics, and the memory-tagging loads and stores as
-   FEAT_MTE has them (instructions only: no allocation tags are stored, so a tag reads as 0). Guest memory is reached through ir.c's accessors
-   (c->mem plus the guest address, volatile and unaligned; seq_cst host atomics for the ordered and atomic accesses),
+   FEAT_MTE has them (instructions only: no allocation tags are stored, so a tag reads as 0). Guest memory uses ir_state.c's accessors
+   (c->mem plus the guest address, unaligned and volatile only with volatile_memory enabled;
+   seq_cst host atomics for the ordered and atomic accesses),
    so a page the GPU owns (memory/own.c) traps on the host access as it does for every other one. The exclusives keep
    cpu.h's value-based monitor through its ldx/stx/ldxp/stxp helpers. */
 #include "common/cpu/recompiler/llvm/ir_ldst.h"
@@ -42,6 +43,7 @@ static V vreg(SnxIr* ir, unsigned n) {
 }
 /* Vn = a 16-byte vector of any lane type */
 static void set_vreg(SnxIr* ir, unsigned n, V value) {
+    ir_vectors_invalidate(ir);
     V store = LLVMBuildStore(B, value, ir_cpu(ir, ir_off_v(n)));
     LLVMSetAlignment(store, 8);
     ir_tag_cpu(ir, store);
@@ -52,14 +54,6 @@ static V shuffle(SnxIr* ir, V a, V b, const unsigned* mask, unsigned n) {
     V m[64];
     for (unsigned i = 0; i < n; ++i) m[i] = ir_i32(ir, mask[i]);
     return LLVMBuildShuffleVector(B, a, b, LLVMConstVector(m, n), "");
-}
-
-/* the low n bytes of a <16 x i8> */
-static V low_bytes(SnxIr* ir, V v, unsigned n) {
-    unsigned mask[16];
-    if (n == 16) return v;
-    for (unsigned i = 0; i < n; ++i) mask[i] = i;
-    return shuffle(ir, v, v, mask, n);
 }
 
 /* <16 x i8> of the count bytes of v (<total x i8>) from first, the rest zero (do_fp_ld's clear_vec_high) */
@@ -83,8 +77,12 @@ static void gpr_access(SnxIr* ir, V address, unsigned rt, unsigned sz, int sign,
 /* the same for the FP/SIMD registers: the low 1 << sz bytes of Vt, a load clearing the rest (do_fp_ld, do_fp_st) */
 static void fp_access(SnxIr* ir, V address, unsigned rt, unsigned sz, int store) {
     unsigned n = 1u << sz;
-    if (store)
-        ir_wr_bytes(ir, address, low_bytes(ir, vreg(ir, rt), n));
+    if (store && sz < 4)
+        /* A scalar store needs only its lane, not a whole V register and a byte shuffle. Keep the access width,
+           unaligned guest access and endian conversion of ir_wr; this also avoids vector temporaries at O0. */
+        ir_wr(ir, address, 8u << sz, ir_ve(ir, rt, sz, 0));
+    else if (store)
+        ir_wr_bytes(ir, address, vreg(ir, rt));
     else
         set_vreg(ir, rt, widen_bytes(ir, ir_rd_bytes(ir, address, n), n, 0, n));
 }

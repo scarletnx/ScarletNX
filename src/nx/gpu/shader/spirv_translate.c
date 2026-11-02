@@ -3,6 +3,7 @@
    Geometry invocation information follows Citron's emit_spirv_context_get_set.cpp:
    SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project */
 /* Direct Maxwell to SPIR-V translation. Unsupported instructions reject the entire module. */
+#include "common/utilities/bits.h"
 #include "common/utilities/spirv_emit.h"
 #include "nx/gpu/shader/translator.h"
 #include <assert.h>
@@ -40,6 +41,9 @@ typedef struct {
     u32 pred[7];
     u32 cc_c, cc_o, cc_z, cc_s;
     u32 cbuf[18], cbuf_pointer[18];
+    /* a vertex program's reads of NVN's draw parameters in bank 0 (shader.h SH_CB0_): the push block and pointer type
+       whose z says which come from BaseVertex and BaseInstance, and those inputs. 0 when it reads neither */
+    u32 dp_push, dp_push_pointer, dp_base_vertex, dp_base_instance;
     /* constant buffer words read in the block being written, by bank and offset (a cache: a word that collides is
        read again), and their bitcast to a float, 0 until made. A draw's constant buffers don't change under it */
     struct {
@@ -70,6 +74,7 @@ int g_shader_output_layer = 1;
 int g_shader_viewport_index = 3;
 int g_shader_geometry = 1;
 int g_shader_float16 = 1;
+int g_shader_draw_parameters = 1;
 int g_shader_quad = 1;
 int g_shader_tessellation = 1;
 int g_shader_clock_scopes;
@@ -192,7 +197,7 @@ static u32 texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 com
    7 ALWAYS), or -1 for a slot that samples a depth texture */
 static int dc_color_func(const ShaderInfo* si, int slot) {
     if (!(si->tex_dc_color_mask >> slot & 1)) return -1;
-    u32 index = (u32)__builtin_popcountll(si->tex_dc_color_mask & ((1ull << slot) - 1));
+    u32 index = (u32)snx_popcount64(si->tex_dc_color_mask & ((1ull << slot) - 1));
     return index < SH_DC_COLOR_MAX ? (int)(si->tex_dc_color_funcs >> (3 * index) & 7) : 3;
 }
 /* 1.0 when reference <func> texel passes, as a compare sampler returns (GL's order: the reference on the left) */
@@ -1011,6 +1016,23 @@ static void scaled_coords(DirectCtx* c, u32 push, int slot, int size, u32 i32_ty
     }
 }
 
+/* The fragment's y (a[0x74]) in a lower-left window (WINDOW_ORIGIN bit 0, pushed as the uvec4's z) counts up from the
+   bottom of the surface clip, its height the w, as the viewport and the scissor measure it there: the guest's GL driver
+   leaves its own gl_FragCoord transform the identity for the window it draws lower left */
+static u32 frag_y_origin(DirectCtx* c, u32 push, u32 y) {
+    u32 one = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
+    u32 pointer = spv_emit_type_pointer(&c->emit, 9, c->u32_type); /* PushConstant */
+    u32 lower_left = spv_emit_push_component_f32(&c->emit, pointer, push, one,
+                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 2), c->u32_type);
+    u32 height = spv_emit_push_component_f32(&c->emit, pointer, push, one,
+                                             spv_emit_constant_u32(&c->emit, c->u32_type, 3), c->u32_type);
+    u32 up = spv_emit_fadd(&c->emit, c->f32_type, spv_emit_convert_u_to_f(&c->emit, c->f32_type, height),
+                           spv_emit_fnegate(&c->emit, c->f32_type, y));
+    spv_emit_no_contraction(&c->emit, up);
+    return spv_emit_select(&c->emit, c->f32_type, spv_emit_i_not_equal(&c->emit, c->bool_type, lower_left, c->zero), up,
+                           y);
+}
+
 static void vertex_depth_fix(DirectCtx* c, u32 position, u32 push, u32 push_pointer, u32 vec4_type) {
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, 1);
@@ -1108,8 +1130,23 @@ static u32 cbuf_entry(DirectCtx* c, u64 w) {
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, (off >> 2) & 3);
     c->cbuf_seen[at].key = key;
     c->cbuf_seen[at].block = c->emit.block;
-    c->cbuf_seen[at].word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element,
-                                                       component, c->u32_type);
+    u32 word = spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
+                                          c->u32_type);
+    if (c->dp_push && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE)) {
+        /* an indirect draw's base vertex or instance: its record's, which the GPU has, where the push says so */
+        int vertex = off == SH_CB0_BASE_VERTEX;
+        u32 flags = spv_emit_bitcast(&c->emit, c->u32_type,
+                                     spv_emit_push_component_f32(&c->emit, c->dp_push_pointer, c->dp_push, c->zero,
+                                                                 spv_emit_constant_u32(&c->emit, c->u32_type, 2),
+                                                                 c->f32_type));
+        u32 bit = spv_emit_constant_u32(&c->emit, c->u32_type,
+                                        vertex ? SH_PUSH_GPU_BASE_VERTEX : SH_PUSH_GPU_BASE_INSTANCE);
+        u32 on = spv_emit_i_not_equal(&c->emit, c->bool_type, spv_emit_bitwise_and_u32(&c->emit, c->u32_type, flags, bit),
+                                      c->zero);
+        u32 gpu = spv_emit_load(&c->emit, c->u32_type, vertex ? c->dp_base_vertex : c->dp_base_instance);
+        word = spv_emit_select(&c->emit, c->u32_type, on, gpu, word);
+    }
+    c->cbuf_seen[at].word = word;
     c->cbuf_seen[at].as_float = 0;
     return at;
 }
@@ -1851,6 +1888,147 @@ static int direct_guard_implied(const u64* insn, u32 n, u32 def, u32 use) {
     return direct_guard_under(insn, def, floor, B(insn[def], 16, 4), known, value, 0) == 1;
 }
 
+/* Whether a write under a predicate is followed, before the predicate changes or other flow, by a branch under
+   want (that predicate or its complement) to where control doesn't reach use: under the same predicate the write's
+   lanes all leave, so its value never arrives at use; under the complement the lanes that skipped it leave, so every
+   lane that goes on to use made it */
+static int direct_guard_branch(const u64* insn, u32 n, u32 def, u32 use, u32 want) {
+    u32 guard = B(insn[def], 16, 4);
+    if ((guard & 7) == 7) return 0;
+    for (u32 m = def + 1; m < use; m++) {
+        const Op* op;
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        if (!IDX_OK(m)) continue;
+        op = decode(insn[m]);
+        if (!op || direct_pred_writes(insn[m], op->id) >> (guard & 7) & 1) return 0;
+        if (op->id == O_BRA && B(insn[m], 16, 4) == want && B(insn[m], 0, 5) == 15) {
+            count = direct_flow_targets(insn, n, m, targets, elsewhere);
+            if (count <= 0) return 0;
+            for (int t = 0; t < count; t++)
+                if (elsewhere[t] || direct_can_reach(insn, n, targets[t], use) != 0) return 0;
+            return 1;
+        }
+        if (op->id == O_BRA || op->id == O_BRX || op->id == O_JMP || op->id == O_CAL || op->id == O_RET ||
+            op->id == O_SYNC || op->id == O_BRK || op->id == O_CONT || op->id == O_EXIT || op->id == O_KIL)
+            return 0;
+    }
+    return 0;
+}
+
+/* The writes of reg that reach use, as bits of defs (bit 63: the value entering the program), from the reaching
+   definitions over the program's flow: an unpredicated write replaces what reached it, a predicated one adds to it.
+   0 when the flow isn't known (JMP, BRK, CONT, a target elsewhere) or reg has more than 63 writes */
+static u64 direct_reaching_writes(const u64* insn, u32 n, u32 use, u32 reg, u32* defs, u32* ndefs) {
+    u64* in;
+    u64 reach;
+    int changed = 1;
+    *ndefs = 0;
+    if (n > DIRECT_WORDS_MAX || use >= n) return 0;
+    for (u32 k = 11; k < n; k++) {
+        const Op* op;
+        if (!IDX_OK(k)) continue;
+        op = decode(insn[k]);
+        if (!op) return 0;
+        if (!shader_writes_reg(insn[k], op->id, reg)) continue;
+        if (*ndefs == 63) return 0;
+        defs[(*ndefs)++] = k;
+    }
+    in = calloc(n + 1, sizeof *in);
+    if (!in) return 0;
+    in[11] = 1ull << 63;
+    while (changed) {
+        changed = 0;
+        for (u32 k = 11, d = 0; k < n; k++) {
+            const Op* op;
+            u32 targets[64];
+            u8 elsewhere[64];
+            int count, fall = 1;
+            u64 out = in[k];
+            if (!IDX_OK(k)) {
+                changed |= (in[k + 1] | out) != in[k + 1];
+                in[k + 1] |= out;
+                continue;
+            }
+            op = decode(insn[k]);
+            while (d < *ndefs && defs[d] < k) d++;
+            if (d < *ndefs && defs[d] == k) out = (B(insn[k], 16, 4) == 7 ? 0 : out) | 1ull << d;
+            switch (op->id) {
+                case O_EXIT: fall = !flow_always(insn[k]); break;
+                case O_KIL:
+                case O_RET:
+                case O_PRET:
+                case O_PEXIT:
+                case O_BRX: fall = 0; break;
+                case O_BRK:
+                case O_CONT:
+                case O_JMP: free(in); return 0;
+                case O_BRA: fall = !flow_always(insn[k]); break;
+                default: break;
+            }
+            count = direct_flow_targets(insn, n, k, targets, elsewhere);
+            /* an SSY carries no values to its target: each SYNC takes its own there, to the target of the innermost
+               SSY still open (the nearest before it whose target is past it); a predicated one lets the others on */
+            if (op->id == O_SSY) count = 0;
+            if (op->id == O_SYNC) {
+                count = -1;
+                for (u32 m = k; m-- > 11 && count < 0;) {
+                    if (!IDX_OK(m) || decode(insn[m])->id != O_SSY || bra_target(insn[m], m) <= k) continue;
+                    targets[0] = bra_target(insn[m], m);
+                    elsewhere[0] = 0;
+                    count = 1;
+                }
+                fall = !flow_always(insn[k]);
+            }
+            if (count < 0 || (op->id == O_BRX && !count)) {
+                free(in);
+                return 0;
+            }
+            for (int t = 0; t < count; t++) {
+                if (elsewhere[t] || targets[t] >= n) {
+                    free(in);
+                    return 0;
+                }
+                changed |= (in[targets[t]] | out) != in[targets[t]];
+                in[targets[t]] |= out;
+            }
+            if (fall && k + 1 < n) {
+                changed |= (in[k + 1] | out) != in[k + 1];
+                in[k + 1] |= out;
+            }
+        }
+    }
+    reach = in[use];
+    free(in);
+    return reach;
+}
+
+/* Whether def's value reaches use however the lanes went: every write of reg that reaches use defines what def does
+   (same), but a predicated one whose lanes all leave by a branch under the same predicate; and no lane arrives
+   without one, or one of them is made by every lane that reaches use (unpredicated, or a branch under the complement
+   takes away the lanes that skipped it) and dominates use. A handle written on each side of a branch, or under each
+   side of a predicate rewritten before the use, is so one handle */
+static int direct_all_defs_same(const u64* insn, u32 n, u32 def, u32 use, u32 reg,
+                                int (*same)(const u64*, u32, u32, u32, int), int depth) {
+    u32 defs[63], ndefs;
+    u64 reach;
+    int covered;
+    if (depth > 6) return 0;
+    reach = direct_reaching_writes(insn, n, use, reg, defs, &ndefs);
+    if (!reach) return 0;
+    covered = !(reach >> 63 & 1);
+    for (u32 d = 0; d < ndefs; d++) {
+        u32 k = defs[d], guard = B(insn[k], 16, 4);
+        if (!(reach >> d & 1)) continue;
+        if (guard != 7 && direct_guard_branch(insn, n, k, use, guard)) continue;
+        if (B(insn[k], 0, 8) != reg || (k != def && !same(insn, n, def, k, depth + 1))) return 0;
+        if (!covered && k < use && (guard == 7 || direct_guard_branch(insn, n, k, use, guard ^ 8)))
+            covered = direct_def_dominates(insn, n, k, use, reg, same, depth);
+    }
+    return covered;
+}
+
 /* The instruction that last wrote reg before index, as its first destination, or -1. In index's basic block, a
    write under a predicate reaches only an instruction under the same one, with that predicate not written between
    them (others may be): the compiler loads a handle and uses it under the guard of one side of a branch it made
@@ -1894,13 +2072,15 @@ static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
         /* A write in an earlier block that control never carries to index isn't the value there: the block's branch
            jumped past the use. */
         if (j < block_start && direct_can_reach(insn, n, j + 1, index) == 0) continue;
+        /* A write under the complement of index's guard, the predicate kept since, runs in none of index's lanes */
+        if ((guard & 7) != 7 && B(insn[j], 16, 4) == (guard ^ 8) && !crossed && !(pred_written >> (guard & 7) & 1))
+            continue;
         /* A write that reaches reg from a lower destination leaves no single source. */
         if (B(insn[j], 0, 8) != reg) return -1;
-        if (B(insn[j], 16, 4) != 7 &&
-            (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
-            !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index))
-            return -1;
-        if (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)) return -1;
+        if ((B(insn[j], 16, 4) != 7 && (crossed || B(insn[j], 16, 4) != guard || (pred_written >> (guard & 7) & 1)) &&
+             !direct_same_guard(insn, block_start, j, index) && !direct_guard_implied(insn, n, j, index)) ||
+            (crossed && !direct_def_dominates(insn, n, j, index, reg, same, depth)))
+            return same && direct_all_defs_same(insn, n, j, index, reg, same, depth) ? (int)j : -1;
         return (int)j;
     }
     return -1;
@@ -1908,6 +2088,37 @@ static int direct_reaching_def_same(const u64* insn, u32 n, u32 index, u32 reg,
 
 static int direct_reaching_def(const u64* insn, u32 n, u32 index, u32 reg) {
     return direct_reaching_def_same(insn, n, index, reg, NULL, 0);
+}
+
+/* reg at index holds the fragment's own column (addr 0x70) or row (0x74): the integer part of gl_FragCoord's x or y,
+   F2I.FLOOR or .TRUNC of IPA's pass-through read of the position */
+static int direct_frag_coord(const u64* insn, u32 n, u32 index, u32 reg, u32 addr, int depth) {
+    int j = depth > 4 ? -1 : direct_reaching_def(insn, n, index, reg);
+    if (j < 0) return 0;
+    u64 w = insn[j];
+    int op = decode(w)->id;
+    if (op == O_MOV_R) return direct_frag_coord(insn, n, (u32)j, B(w, 20, 8), addr, depth + 1);
+    /* F32 source, no negate or absolute value, rounding down or toward zero */
+    if (op != O_F2I_R || B(w, 10, 2) != 2 || B(w, 45, 1) || B(w, 49, 1) || (B(w, 39, 2) != 1 && B(w, 39, 2) != 3))
+        return 0;
+    int k = direct_reaching_def(insn, n, (u32)j, B(w, 20, 8));
+    if (k < 0) return 0;
+    u64 v = insn[k];
+    /* not indexed, not multiplied by 1/w, not saturated */
+    return decode(v)->id == O_IPA && !B(v, 38, 1) && B(v, 30, 8) * 4 == addr && B(v, 54, 2) != 1 && !B(v, 51, 1);
+}
+/* the texel fetch at index reads the fragment's own pixel of a 2D texture: level 0, no offset, single sample */
+static int direct_own_pixel_fetch(const u64* insn, u32 n, u32 index) {
+    u64 w = insn[index];
+    int op = decode(w)->id;
+    u32 a = B(w, 8, 8), b = B(w, 20, 8);
+    if (op == O_TLDS) /* encoding 2: 2D, level zero, x in Ra and y in Rb */
+        return B(w, 53, 4) == 2 && direct_frag_coord(insn, n, index, a, 0x70, 0) &&
+               direct_frag_coord(insn, n, index, b, 0x74, 0);
+    if (op == O_TLD) /* 2D, not an array, no level (bit 55), offset (35) or sample (50): x in Ra, y in Ra + 1 */
+        return B(w, 28, 3) == 2 && !B(w, 55, 1) && !B(w, 35, 1) && !B(w, 50, 1) && a < 254 &&
+               direct_frag_coord(insn, n, index, a, 0x70, 0) && direct_frag_coord(insn, n, index, a + 1, 0x74, 0);
+    return 0;
 }
 
 static int direct_track_const(const u64* insn, u32 n, u32 index, u32 reg, u32* value, int depth) {
@@ -1998,10 +2209,17 @@ static int direct_handle_definition(const u64* insn, u32 n, u32 j, u32* bank, u3
     rhs = B(w, 20, 8);
     if (lhs == 255) return direct_track_image_handle_pair(insn, n, (u32)j, rhs, bank, off, bank2, off2, depth + 1);
     if (rhs == 255) return direct_track_image_handle_pair(insn, n, (u32)j, lhs, bank, off, bank2, off2, depth + 1);
-    return direct_track_image_handle(insn, n, (u32)j, lhs, bank, off, depth + 1) &&
-                   direct_track_image_handle(insn, n, (u32)j, rhs, bank2, off2, depth + 1)
-               ? 2
-               : 0;
+    /* both halves read, or one read and the other a constant (a sampler's from a MOV32I), kept as itself */
+    for (int k = 0; k < 2; k++) {
+        u32 half = k ? rhs : lhs, other = k ? lhs : rhs, value;
+        if (!direct_track_image_handle(insn, n, (u32)j, half, bank, off, depth + 1)) continue;
+        if (direct_track_image_handle(insn, n, (u32)j, other, bank2, off2, depth + 1)) return 2;
+        if (!direct_track_const(insn, n, (u32)j, other, &value, depth + 1)) return 0;
+        *bank2 = SH_HANDLE_IMM;
+        *off2 = value;
+        return 2;
+    }
+    return 0;
 }
 
 /* Whether the write of reg at b defines the same handle as the one at a: a loop that rewrites reg with the same
@@ -2670,12 +2888,11 @@ static int supported(u64 w, int op) {
         /* every type up to 3D (a fetch can't address a cube), multisample only on 2D and 2D arrays */
         case O_TLD:
         case O_TLD_B: return !B(w, 54, 1) && B(w, 28, 3) <= 4 && (!B(w, 50, 1) || B(w, 28, 3) == 2 || B(w, 28, 3) == 3);
-        /* Formatted and raw 32-bit loads from 2D, array and volume surfaces;
-           buffer loads use storage texel buffers. */
+        /* Formatted and raw 32-bit loads from buffer, 2D, array and volume surfaces; buffer loads use storage texel
+           buffers. */
         case O_SULD:
-            return ((B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5) &&
-                    (!B(w, 52, 1) || B(w, 20, 4) == 4)) ||
-                   (B(w, 33, 3) == 1 && B(w, 52, 1) && B(w, 20, 4) == 4);
+            return (B(w, 33, 3) == 1 || B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 5) &&
+                   (!B(w, 52, 1) || B(w, 20, 4) == 4);
         /* stores and atomics also reach 2D array surfaces (4), the layer in the coordinates' third register; stores
            reach 3D surfaces (5) too, z in that register */
         case O_SUST:
@@ -3418,6 +3635,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     u32 cbuf_max[18] = {0};
     ShTex textures[SH_MAXTEX] = {0};
     int texture_count = 0;
+    u64 tex_read = 0, tex_elsewhere = 0; /* slots read, and of them read elsewhere than the fragment's own pixel */
     ShaderInfo image_info = {0};
     int needs_fragcoord = 0;
     int needs_frontface = 0;
@@ -3425,8 +3643,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     int needs_demote = 0;
     int needs_image_query = 0, needs_derivatives = 0, needs_clock = 0;
     int needs_instance = 0;
+    int needs_draw_params = 0; /* a vertex program reads NVN's draw parameters (shader.h SH_CB0_) */
     int needs_local_id = 0, needs_group_id = 0;
-    int needs_scale = 0, needs_texel_scale = 0;
+    int needs_scale = 0, needs_texel_scale = 0, needs_frag_y = 0;
     int needs_glsl = 0, needs_f16 = 0, needs_f64 = 0, needs_i64 = 0;
     int has_flow = 0, has_calls = 0, has_barrier = 0, converge;
     u32 wait_label = 0;
@@ -3919,6 +4138,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (idx >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[idx] = 1;
             if ((off | 15u) + 1 > cbuf_max[idx]) cbuf_max[idx] = (off | 15u) + 1;
+            if (stage == ST_VS && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE))
+                needs_draw_params = 1;
         }
         if (op->id == O_LOP3_C || op->id == O_IMNMX_C || op->id == O_XMAD_CR || op->id == O_XMAD_RC ||
             op->id == O_BFE_C || op->id == O_IADD3_C || op->id == O_LEA_LC || op->id == O_LEA_HC || op->id == O_F2I_C ||
@@ -3937,6 +4158,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (idx >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[idx] = 1;
             if ((off | 15u) + 1 > cbuf_max[idx]) cbuf_max[idx] = (off | 15u) + 1;
+            if (stage == ST_VS && idx == 0 && (off == SH_CB0_BASE_VERTEX || off == SH_CB0_BASE_INSTANCE))
+                needs_draw_params = 1;
         }
         if (op->id == O_OUT_R && b < 255) used[b] = 1;
         if (op->id == O_FSETP_R || op->id == O_FSETP_C || op->id == O_FSETP_I) {
@@ -3974,6 +4197,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 textures[slot].array = (u8)array;
                 texture_count++;
             }
+            tex_read |= 1ull << slot;
+            tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if (b < 255) used[b] = 1;
@@ -3997,9 +4222,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, b, stage, &ldc);
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             int type = ty >> 1, array = ty & 1, multisample = (int)B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0, bindless,
-                                      bank, handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, multisample ? 2 : 0,
+                                                  bindless, bank, handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            if (op->id == O_TLD ? !direct_own_pixel_fetch(insn, n, i) : 1) tex_elsewhere |= 1ull << read_slot;
             u32 coordinate_count = (type == 0 ? 1u : type == 1 ? 2u : 3u) + (u32)array;
             for (u32 k = 0; k < coordinate_count; k++)
                 if (a + k < 255) used[a + k] = 1;
@@ -4019,10 +4246,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             int dim = (int)B(insn[i], 33, 3), buffer = dim == 1;
             u32 bank, off, handle;
             int bindless;
-            if (buffer && stage != ST_CS) return direct_reject(si, "buffer surface outside compute");
             /* a fragment program's 2D loads are texel fetches, as a compute program's are: render.c binds the raw
                view their slot asks for. A vertex program stores and reduces through images as a fragment one does
-               (one game filters a texture so, a vertex for each texel, with no compute at all) */
+               (one game filters a texture so, a vertex for each texel, with no compute at all). Buffer surfaces
+               too: a base pass writes its texture feedback into one */
             if (stage != ST_CS && stage != ST_FS && (stage != ST_VS || op->id == O_SULD))
                 return direct_reject(si, "surface operation outside supported stage");
             bank = 0;
@@ -4051,14 +4278,15 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             /* buffer loads read the storage texel buffer: a sampled 1D image of a buffer is one row of at most
                16384 texels, and the dispatch's own stores and atomics wouldn't reach it */
             if (op->id != O_SULD || buffer) {
-                int r32ui = op->id != O_SUST;
+                /* raw loads and atomics see R32UI; formatted loads and stores see the header's format */
+                int r32ui = op->id != O_SUST && (op->id != O_SULD || raw);
                 int type = dim; /* 1, 3, 4 or 5: the forms supported() takes here */
                 int slot = direct_image_slot(&image_info, off, bindless, bank, r32ui, type);
                 if (slot == image_info.nimg) {
                     if (slot >= 8) return direct_reject(si, "storage image descriptor count");
                     int different_format = !!(si->rt_int_mask & (1u << (8 + slot)));
                     int kind = r32ui ? 1 : (bindless != different_format ? 2 : 0);
-                    if (!r32ui && !buffer && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
+                    if (!r32ui && (si->rt_sint_mask & (1u << (8 + slot)))) kind = 3;
                     image_info.img[slot].cbuf_off = off;
                     image_info.img[slot].type = (u8)type;
                     image_info.img[slot].bindless = (u8)bindless;
@@ -4089,6 +4317,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     textures[slot].bl_cbuf = (u8)bank;
                     texture_count++;
                 }
+                tex_read |= 1ull << slot;
+                tex_elsewhere |= 1ull << slot;
             }
         }
         if (half_arithmetic(op->id)) {
@@ -4182,6 +4412,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 textures[slot].flags = (u8)(multisample ? 2 : 0);
                 texture_count++;
             }
+            tex_read |= 1ull << slot;
+            if (!direct_own_pixel_fetch(insn, n, i)) tex_elsewhere |= 1ull << slot;
             if (!B(insn[i], 59, 1)) needs_glsl = 1;
             if (a < 255) used[a] = 1;
             if ((enc == 4 || enc == 5 || enc == 6 || enc == 7 || enc == 12) && a + 1 < 255) used[a + 1] = 1;
@@ -4220,9 +4452,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             int type = B(insn[i], 28, 3) >> 1;
             int array = B(insn[i], 28, 1), shadow = B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                      handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             if (a < 255) used[a] = 1;
             if ((type != 0 || array) && a + 1 < 255) used[a + 1] = 1;
             if ((type >= 2 || array) && a + 2 < 255) used[a + 2] = 1;
@@ -4269,9 +4503,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 bindless ? direct_track_image_handle_pair(insn, n, i, a, &bank, &off, &bank2, &off2, 0) : 0;
             if (bindless && !handle_count) return direct_reject(si, "untracked texture handle");
             if (handle_count == 1) indexed = direct_indexed_handle(insn, n, i, a, stage, &ldc);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank, handle_count,
-                                      bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, 0, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             u32 coord = a + (u32)bindless, aoffi = B(insn[i], 35, 1);
             for (u32 k = 0; k < count + (array || aoffi); k++)
                 if (a + k + (u32)bindless < 255) used[coord + k] = 1;
@@ -4321,9 +4557,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 ty = op->id == O_TLD4S ? 2 : B(insn[i], 28, 3);
             u32 type = ty >> 1, array = ty & 1;
             u32 shadow = B(insn[i], 50, 1);
-            if (direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
-                                      handle_count, bank2, off2, indexed, ldc) < 0)
-                return direct_reject(si, "texture descriptor count");
+            int read_slot = direct_add_typed_slot(textures, &texture_count, off, type, array, shadow, 0, bindless, bank,
+                                                  handle_count, bank2, off2, indexed, ldc);
+            if (read_slot < 0) return direct_reject(si, "texture descriptor count");
+            tex_read |= 1ull << read_slot;
+            tex_elsewhere |= 1ull << read_slot;
             if (a < 255) used[a] = 1;
             if (op->id == O_TLD4S) {
                 if (b < 255) used[b] = 1;
@@ -4387,6 +4625,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             } else
                 needs_fragcoord = 1;
             if (addr == 0x70 || addr == 0x74) needs_scale = 1;
+            if (addr == 0x74) needs_frag_y = 1;
             if (B(insn[i], 54, 2) == 1 && b < 255) used[b] = 1;
         }
         if (op->id == O_EXIT && flow_always(insn[i])) has_exit = 1;
@@ -4643,6 +4882,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (needs_f64) spv_emit_float64_capability(&c->emit);
     if (needs_clock) spv_emit_shader_clock_extension(&c->emit);
     if (needs_i64) spv_emit_capability(&c->emit, 11); /* Int64 */
+    if ((needs_instance || needs_draw_params) && g_shader_draw_parameters && stage == ST_VS)
+        spv_emit_draw_parameters_capability(&c->emit);
     if (needs_subgroup || converge) spv_emit_subgroup_capabilities(&c->emit);
     if (needs_quad) spv_emit_subgroup_quad_capability(&c->emit);
     c->quad = needs_quad;
@@ -4721,8 +4962,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         depth_output = spv_emit_frag_depth_output(&c->emit, c->f32_type);
         interfaces[count++] = depth_output;
     }
-    /* Render targets are single-sampled. Only guest SampleMask bit 0 covers the host sample; masks containing only
-       higher bits discard it. PIXLD.COVMASK likewise reports the host's single-sample coverage. */
+    /* The guest's SampleMask output is the host's: a render target has the guest's samples (vk/msaa.c), bit i
+       sample i, and a single-sampled one only bit 0. PIXLD.COVMASK likewise reports the host's coverage */
     u32 sample_mask_output = 0; /* SampleMask, an array of one word */
     if (stage == ST_FS && (sph[19] & 1u)) {
         sample_mask_output = spv_emit_interface_variable(&c->emit, 3, c->u32_type, c->u32_type, 1, 20, 0, 0);
@@ -4905,7 +5146,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         point_coord = spv_emit_interface_variable(&c->emit, 1, vec2, c->u32_type, 0, 16, 0, 0);
         interfaces[count++] = point_coord;
     }
-    u32 instance_index = 0, vertex_index = 0;
+    u32 instance_index = 0, vertex_index = 0, base_instance = 0;
     u32 local_input = 0, group_input = 0;
     if (needs_local_id) {
         local_input = spv_emit_builtin_input_vec3(&c->emit, vec3_u32, 27);
@@ -4925,6 +5166,19 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         vertex_index = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 42);
         interfaces[count++] = instance_index;
         interfaces[count++] = vertex_index;
+        if (g_shader_draw_parameters && stage == ST_VS) {
+            base_instance = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4425); /* BaseInstance */
+            interfaces[count++] = base_instance;
+        }
+    }
+    u32 base_vertex = 0;
+    if (needs_draw_params && g_shader_draw_parameters && stage == ST_VS) {
+        if (!base_instance) {
+            base_instance = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4425); /* BaseInstance */
+            interfaces[count++] = base_instance;
+        }
+        base_vertex = spv_emit_builtin_input_u32(&c->emit, c->u32_type, 4424); /* BaseVertex */
+        interfaces[count++] = base_vertex;
     }
     if (needs_fragcoord) {
         fragcoord = spv_emit_fragcoord_input(&c->emit, vec4);
@@ -5022,11 +5276,18 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         interfaces[count++] = shared_array;
     }
     u32 push = 0, push_pointer = 0;
-    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale)) || depth_fix || needs_instance) {
-        /* the fragment stage's uvec4: its scaled textures (scaled_coords) */
+    if ((stage == ST_FS && ((target & 15) || needs_point_coord || needs_texel_scale || needs_frag_y)) || depth_fix ||
+        needs_instance || base_vertex) {
+        /* the fragment stage's uvec4: its scaled textures (scaled_coords) and the window's origin (frag_y_origin) */
         push = spv_emit_push_vec4(&c->emit, vec4, c->f32_type, stage == ST_FS ? 16 : 0,
-                                  stage == ST_FS && needs_texel_scale ? vec4_u32 : 0, &push_pointer);
+                                  stage == ST_FS && (needs_texel_scale || needs_frag_y) ? vec4_u32 : 0, &push_pointer);
         interfaces[count++] = push;
+    }
+    if (base_vertex) {
+        c->dp_push = push;
+        c->dp_push_pointer = push_pointer;
+        c->dp_base_vertex = base_vertex;
+        c->dp_base_instance = base_instance;
     }
     spv_emit_entry_str(&c->emit, (SpvShaderStage)stage, fn, "main", interfaces, count); /* ST_ is SPIR-V's model */
     if (xfb_on) {
@@ -5547,6 +5808,11 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                         u32 base_bits =
                             spv_emit_push_component_f32(&c->emit, push_pointer, push, c->zero, c->zero, c->f32_type);
                         u32 base = spv_emit_bitcast(&c->emit, c->u32_type, base_bits);
+                        /* with draw parameters the push holds what the draw's first instance adds to the base
+                           instance (render.c), which BaseInstance gives */
+                        if (base_instance)
+                            base = spv_emit_isub_u32(&c->emit, c->u32_type,
+                                                     spv_emit_load(&c->emit, c->u32_type, base_instance), base);
                         instance = spv_emit_isub_u32(&c->emit, c->u32_type, instance, base);
                     } else
                         instance = spv_emit_load(&c->emit, c->u32_type, vertex_index);
@@ -7381,6 +7647,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     value = spv_emit_fmul(&c->emit, c->f32_type, value, scale);
                     spv_emit_no_contraction(&c->emit, value);
                 }
+                if (addr == 0x74) value = frag_y_origin(c, push, value);
             } else if (interpolation == 2) {
                 /* The hardware interpolates attr/w for a perspective input, and the shader multiplies by w
                    (IPA.MUL with the reciprocal of a[0x7c]). Vulkan's input is attr itself: times the
@@ -7726,13 +7993,28 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                                                              reg_read_as(c, a + 2, i32_type))
                                    : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
             }
-            u32 mask = op == O_SULD && B(w, 52, 1) ? 1u : B(w, 20, 4), source = d;
+            int raw = op == O_SULD && B(w, 52, 1);
+            u32 mask = raw ? 1u : B(w, 20, 4), source = d;
             if (op != O_SULD || buffer) {
-                int slot = direct_image_slot(&image_info, off, bindless, bank, op != O_SUST, dim);
+                int slot =
+                    direct_image_slot(&image_info, off, bindless, bank, op != O_SUST && (op != O_SULD || raw), dim);
                 int kind = image_info.img[slot].kind;
-                if (op == O_SULD) {
+                if (op == O_SULD && kind == 1) {
                     u32 texel = spv_emit_image_read(&c->emit, vec4_u32, c->image_type[slot], c->image[slot], coord);
                     reg_write(c, d, spv_emit_vec4_extract(&c->emit, c->u32_type, texel, 0));
+                } else if (op == O_SULD) { /* formatted: the view's format converts each component, as a load does */
+                    u32 scalar = kind == 3 ? i32_type : kind == 2 ? c->u32_type : c->f32_type, target = d;
+                    spv_emit_capability(&c->emit, SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT);
+                    u32 texel = spv_emit_image_read(&c->emit,
+                                                    kind == 3   ? vec4_i32
+                                                    : kind == 2 ? vec4_u32
+                                                                : vec4,
+                                                    c->image_type[slot], c->image[slot], coord);
+                    for (u32 q = 0; q < 4; q++)
+                        if (mask & (1u << q)) {
+                            reg_write_as(c, target, spv_emit_vec4_extract(&c->emit, scalar, texel, q), scalar);
+                            if (target < 255) target++;
+                        }
                 } else if (kind == 1) {
                     u32 opcode;
                     if (op == O_SURED) {
@@ -8430,6 +8712,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
+    next.tex_own_pixel_mask = stage == ST_FS ? tex_read & ~tex_elsewhere : 0;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
     next.ngbuf = ngbuf;

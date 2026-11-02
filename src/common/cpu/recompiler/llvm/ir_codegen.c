@@ -39,12 +39,23 @@ LLVMValueRef snx_ir_guest_function(SnxIr* ir, SnxU64 address) {
     return function;
 }
 
+/* The host FP environment the fast paths assume (cpu.h's snx_fp_env): this thread's control word must be the IEEE
+   default, and entering any generated function is the one point every guest instruction passes. The call is
+   memory(none) but not willreturn, so ir_promote_registers makes no site of it and LLVM may not delete it */
+static void fp_env(SnxIr* ir) {
+    LLVMValueRef function = ir_extern(ir, "snx_fp_env", ir->t_void, NULL, 0);
+    ir_no_memory(ir, function);
+    LLVMBuildCall2(B, LLVMGlobalGetValueType(function), function, NULL, 0, "");
+}
+
 void snx_ir_begin(SnxIr* ir, LLVMValueRef function) {
     ir_state_invalidate(ir);
+    ir->dump_active = 0;
     ir->fn = function;
     LLVMPositionBuilderAtEnd(B, LLVMAppendBasicBlockInContext(ir->ctx, function, "entry"));
     ir->c = LLVMGetParam(function, 0);
     ir->M = ir_cpu_load(ir, ir->t_ptr, ir_off_mem());
+    fp_env(ir);
 }
 
 /* code after a return in the C is unreachable until the next label: give it a block of its own */
@@ -63,6 +74,7 @@ static void must_tail(SnxIr* ir, LLVMValueRef site) {
 
 /* CALLDYN(t): snx_lookup(c,t)(c,t) */
 static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
+    if (ir->stats.enabled) ++ir->stats.lookups;
     LLVMValueRef args[2];
     args[0] = ir->c;
     args[1] = target;
@@ -71,8 +83,9 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     return LLVMBuildCall2(B, ir->t_guest, function, args, 2, "");
 }
 
-/* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
-   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return. The runtime JIT also calls the AOT module's
+/* call(): F_target(c,target) when the target is a recompiled function the module doesn't route (snx_codegen_routed: a
+   hook names its symbol) and direct calls aren't hooked (--hook-direct-calls), CALLDYN(target) otherwise, so a hook in
+   a routed function's slot sees every call to it; tail: then return. The runtime JIT also calls the AOT module's
    functions directly (ir->direct says which have one, jit_service.c), through snx_aot_<target>: a symbol its loader
    resolves at each load, so the object holds no host address and a later run can load it again (the JIT's cache) */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
@@ -80,9 +93,10 @@ static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) 
     char name[40];
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
-    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
+    int through_slot = codegen->hook_direct_calls || snx_codegen_routed(codegen, target);
+    if (!through_slot && snx_codegen_function(codegen, target))
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
-    else if (!codegen->hook_direct_calls && ir->direct && ir->direct(ir->direct_user, target) != 0) {
+    else if (!through_slot && ir->direct && ir->direct(ir->direct_user, target) != 0) {
         sprintf(name, "snx_aot_%llx", (unsigned long long)target);
         aot = LLVMGetNamedFunction(ir->mod, name);
         if (!aot) aot = LLVMAddFunction(ir->mod, name, ir->t_guest);
@@ -105,21 +119,46 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ [c->pc=resume;] c->rt->poll(c); } (codegen.c): a loop
-   that makes no SVC can still be taken off its core, for a waiter of higher priority */
+/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->rt->poll(c); } (codegen.c): a loop that makes no SVC
+   can still be taken off its core, for a waiter of higher priority.
+   On a backward branch (resume, its target) the poll then leaves the function: { c->pc=resume; c->rt->poll(c);
+   F_start(c,resume); return; }. The call of the function itself goes to the target's label through the entry mismatch
+   and D_, with the registers that the poll's site stored. A poll that returned into the loop was a call in every loop
+   that can change every register: ir_promote.c reloaded each live register after it, and the reloads met the loop's
+   own values in PHIs at the loop's head and after the poll. In large functions those PHIs outnumbered the register's
+   accesses, so the register stayed in the CPU structure in the whole function, its loops too. Not CALLDYN(resume):
+   for a loop at the function's start, that runs whatever hook holds the start's dispatch slot. The function's address
+   goes through an empty asm, which LLVM can't see through: LLVM turns a direct call of the function itself (tail
+   recursion) into a branch back to its entry, which made each function with a loop one loop through its entry, and
+   one game's code units then took several times as long to compile, until the compile ran out of memory.
+   The dispatch block's poll (resume NULL) returns: the block already joins every way into the function.
+   The compiler barrier after the flag's load (a single-thread fence: no instruction on any host) keeps every guest
+   load of the loop in it. Guest loads aren't volatile (ir_state.c's ir_rd), so without it LLVM sees no write in the
+   loop, or only the cold path's, and moves the load of an address the loop builds from constants (ADRP, MOV) out of
+   the loop or onto that path: a spin on memory another thread writes then spins on the poll flag alone, and sees the
+   store only when a waiter of higher priority flags its core, or never without emulated cores
+   (tests/recompiler_library.c) */
 static void poll(SnxIr* ir, const SnxU64* resume) {
+    if (ir->stats.enabled) ++ir->stats.polls;
     LLVMBasicBlockRef yes = ir_block(ir, "poll"), no = ir_block(ir, "run");
     LLVMValueRef flag = LLVMBuildLoad2(B, ir->t_i32, ir_cpu(ir, ir_off_poll()), ""), args[1];
     LLVMTypeRef param = ir->t_ptr;
     LLVMSetOrdering(flag, LLVMAtomicOrderingMonotonic);
     LLVMSetAlignment(flag, 4);
     ir_tag_cpu(ir, flag);
+    LLVMBuildFence(B, LLVMAtomicOrderingAcquire, 1, "");
     ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, flag, ir_i32(ir, 0), ""), yes, no));
     LLVMPositionBuilderAtEnd(B, yes);
     if (resume) ir_set_pc(ir, ir_i64(ir, *resume));
     args[0] = ir->c;
     ir_rt_call(ir, ir_rt_poll(), ir->t_void, &param, args, 1);
-    LLVMBuildBr(B, no);
+    if (resume) {
+        LLVMTypeRef same = LLVMFunctionType(ir->t_ptr, &param, 1, 0);
+        LLVMValueRef hide = LLVMGetInlineAsm(same, "", 0, "=r,0", 4, 0, 0, LLVMInlineAsmDialectATT, 0);
+        LLVMValueRef self = LLVMBuildCall2(B, same, hide, &ir->fn, 1, ""), again[2] = {ir->c, ir_i64(ir, *resume)};
+        must_tail(ir, LLVMBuildCall2(B, ir->t_guest, self, again, 2, ""));
+    } else
+        LLVMBuildBr(B, no);
     LLVMPositionBuilderAtEnd(B, no);
 }
 
@@ -147,12 +186,14 @@ static LLVMValueRef stale_flag(SnxIr* ir) {
    MountRom hook loads the plugins that patch its caller). The callers return as for any other pc, and the thread's
    loop runs pc+4 through dispatch, compiled from the code there now, as the console's CPU fetches it */
 static void check_return(SnxIr* ir, SnxU64 next) {
+    if (ir->stats.enabled) ++ir->stats.return_checks;
     LLVMBasicBlockRef leave = ir_block(ir, "leave"), stay = ir_block(ir, "stay");
     ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, ir_pc(ir), ir_i64(ir, next), ""), leave, stay));
     LLVMPositionBuilderAtEnd(B, leave);
     ret(ir);
     LLVMPositionBuilderAtEnd(B, stay);
     if (ir->stale) {
+        if (ir->stats.enabled) ++ir->stats.stale_checks;
         LLVMBasicBlockRef gone = ir_block(ir, "stale_return"), live = ir_block(ir, "live_return");
         ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), gone, live));
         LLVMPositionBuilderAtEnd(B, gone);
@@ -230,6 +271,7 @@ void snx_ir_stale_checks(SnxIr* ir) {
    this function was compiled from (RtAPI.code_changed), and the runtime has taken its entries out of dispatch, where
    a lookup of e compiles the code there now */
 static void stale_check(SnxIr* ir, LLVMValueRef e) {
+    if (ir->stats.enabled) ++ir->stats.stale_checks;
     LLVMBasicBlockRef stale = ir_block(ir, "stale"), live = ir_block(ir, "live");
     ir_unlikely(ir, LLVMBuildCondBr(B, stale_flag(ir), stale, live));
     LLVMPositionBuilderAtEnd(B, stale);
@@ -270,6 +312,13 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     LLVMBasicBlockRef* labels = (LLVMBasicBlockRef*)calloc(function->count ? function->count : 1, sizeof(*labels));
     ir->guest_features = snx_a64_features(codegen->features);
     snx_ir_begin(ir, fn);
+    ir->dump_active = ir->dump_function && function->start == ir->dump_pc;
+    if (ir->dump_active) {
+        fprintf(stderr, "IR function %llx leaders:", (unsigned long long)function->start);
+        for (size_t i = 0; i < function->count; ++i)
+            if (function->leaders[i]) fprintf(stderr, " %llx", (unsigned long long)snx_function_address(function, i));
+        fputc('\n', stderr);
+    }
     LLVMValueRef e = LLVMGetParam(fn, 1);
     if (ir->stale) {
         ir->stale_index = (size_t)(function - codegen->functions);
@@ -304,6 +353,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         open_block(ir);
         word = 0;
         (void)snx_codegen_word(codegen, address, &word);
+        if (ir->dump_active) ir->dump_instruction_pc = address;
         flow = decode(word, codegen->features, &insn);
         if (flow == SNX_A64_FLOW_UNDEF) {
             ir_set_pc(ir, ir_i64(ir, address));
@@ -392,7 +442,20 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     }
     /* At O0 LLVM runs no SROA or mem2reg, so the locals promotion makes stay stack slots and its site copies remain:
        call-heavy code regresses and the JIT's batch arena grows. O1 and above only (ir_promote.c) */
+    if (ir->dump_active) {
+        char* text = LLVMPrintValueToString(fn);
+        fprintf(stderr, "IR before promotion:\n%s\n", text);
+        LLVMDisposeMessage(text);
+    }
     if (ir->promote) ir_promote_registers(ir, fn);
+    if (ir->dump_active) {
+        char* text = LLVMPrintValueToString(fn);
+        fprintf(stderr, "IR after promotion:\n%s\n", text);
+        LLVMDisposeMessage(text);
+    }
+    ir_stats_function(ir, fn);
+    if (ir->promote) ir_clean_function(ir, fn);
+    ir->dump_active = 0;
     free(labels);
 }
 

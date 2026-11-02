@@ -6,7 +6,9 @@
 static void targetless_draw(GpuChannel* channel, int* drawn, int* skipped) {
     u64 recorded = g_vk_drawn, dropped = g_vk_skipped;
     vk_lock();
-    vk_render_draw(channel, 0, 4, 0, 3, 0, 0, 1);
+    mx_draw_state_sync(channel);
+    DrawCall call = {.topology = 4, .count = 3, .instances = 1};
+    vk_render_draw(&channel->ds, &call, &channel->owner);
     vk_render_end();
     vk_unlock();
     *drawn = g_vk_drawn == recorded + 1;
@@ -74,8 +76,8 @@ static int check_targetless_stores(void) {
         r[0x204 + i * 0x10] = 0; /* no format: nothing is written there */
     }
     r[0x54e] = 0; /* depth off */
-    channel->cbind[4][0] = cbuf;
-    channel->cbind_size[4][0] = 0x1000;
+    channel->ds.bind.cb_addr[4][0] = cbuf;
+    channel->ds.bind.cb_size[4][0] = 0x1000;
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
     u8 word[4];
@@ -89,7 +91,38 @@ static int check_targetless_stores(void) {
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
     CHECK(!drawn && skipped);
-    puts("targetless draws: a fragment program's store runs, a program with no store is skipped");
+    /* A store into a buffer image, as a base pass writes its texture feedback: SUST.P on dimension 1 through header 0
+       of the pool (R32_UINT, 8 texels), its handle in c[0][0x120]. Only texel 2 changes */
+    const u64 pool = address + 0x6000, texels = address + 0x6100;
+    const u64 buffer_store[] = {storage_mov(15, 2),      /* MOV32I R15, 2: the texel */
+                                storage_mov(24, 0x5eed), /* MOV32I R24, 0x5eed */
+                                0x4c9807800487001cull,   /* MOV R28, c[0][0x120] */
+                                0xeb200e0200f70f18ull,   /* SUST.P.RGBA [R15], R24, R28 */
+                                0xe30000000007000full};
+    const u32 uint_word = 0x0f | 4u << 7 | 4u << 10 | 4u << 13 | 4u << 16;
+    const u32 header[8] = {uint_word, (u32)texels, (u32)(texels >> 32), 0, 7u | 6u << 23, 0, 0, 0};
+    u32 before[8];
+    u8 after[32];
+    for (u32 i = 0; i < 8; i++) before[i] = 0xdead0000u | i;
+    CHECK(!storage_write_words(pool, header, 8));
+    CHECK(!storage_write_words(cbuf + 0x120, (const u32[1]){0}, 1));
+    CHECK(!storage_write_words(texels, before, 8));
+    CHECK(mesh_program(address + 0x1000, buffer_store, 5, 1));
+    maxwell3d_method(channel, 0x369, 1, 1);
+    r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
+    channel->r3d_dirty = ~0u;
+    targetless_draw(channel, &drawn, &skipped);
+    CHECK(!gmem_read(texels, after, sizeof after));
+    int same = 1;
+    for (u32 i = 0; i < 8; i++) same &= snx_ld_le32(after + 4 * i) == (i == 2 ? 0x5eed : before[i]);
+    if (!drawn || skipped || !same)
+        fprintf(stderr,
+                "buffer image store: drawn %d, skipped %d, texel 2 holds %08x, expected 00005eed; texel 3 %08x, "
+                "expected %08x\n",
+                drawn, skipped, snx_ld_le32(after + 8), snx_ld_le32(after + 12), before[3]);
+    CHECK(drawn && !skipped && same);
+    puts("targetless draws: a fragment program's store runs, into memory or a buffer image; a program with no store is "
+         "skipped");
     free(channel);
     return 0;
 }

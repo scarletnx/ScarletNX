@@ -344,6 +344,28 @@ static int sprite_t_selects_flipped_on_true(const u32* code, size_t words) {
     return 0;
 }
 
+/* the fragment's y read as the pushed clip height less it (FNegate, then FAdd with a ConvertUToF) when the pushed
+   lower-left word isn't zero (INotEqual feeding the Select whose true side that is), as it is otherwise */
+static int frag_y_selects_clip_less_y(const u32* code, size_t words) {
+    u32 negated = 0, height = 0, up = 0, lower_left = 0;
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return 0;
+        u32 op = code[i] & 0xffff;
+        if (op == 127 && width == 4) negated = code[i + 2];
+        if (op == 112 && width == 4) height = code[i + 2];
+        if (op == 129 && width == 5 && negated && height &&
+            ((code[i + 3] == height && code[i + 4] == negated) || (code[i + 3] == negated && code[i + 4] == height)))
+            up = code[i + 2];
+        if (op == 171 && width == 5) lower_left = code[i + 2];
+        if (op == 169 && width == 6 && up && lower_left && code[i + 3] == lower_left && code[i + 4] == up &&
+            code[i + 5] != up)
+            return 1;
+        i += width;
+    }
+    return 0;
+}
+
 static int clock_pair_extracts_both_words(const u32* code, size_t words) {
     u32 clock = 0;
     for (size_t i = 5; i < words;) {
@@ -999,6 +1021,138 @@ static u64 unguarded(u64 w, u32 d, u32 a, u32 handle) {
            (u64)handle << 39;
 }
 
+/* A compute program's formatted load from a buffer surface, SULD.P.R on dimension 1 through the handle MOV R5,
+   c[0x2][0x128], as one game's lighting reads its tiles: the header's format converts it, so the texel buffer is
+   read with the number type the program is keyed on (as a 2D surface's) and declared without a format. A raw
+   SULD.D.32 stays an R32UI read */
+static void buffer_formatted_loads(void) {
+    const u64 load[] = {0x4c98078804a70005ull, 0xeb00028200170202ull};
+    const u64 raw[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
+    /* unkeyed (a bindless header taken as integer), keyed float, keyed signed */
+    const u32 rt_mask[3] = {0, 1u << 8, 0}, rt_signed[3] = {0, 0, 1u << 8};
+    const u8 kinds[3] = {2, 0, 3};
+    for (int i = 0; i < 3; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate_with_rt_masks(load, 2, ST_CS, &info, &words, 1, rt_mask[i], rt_signed[i]);
+        check_translated(code, &info, "a formatted buffer surface load translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && info.img[0].kind == kinds[i] &&
+                      has_storage_image_dim(code, words, 5) && has_storage_image_format(code, words, 0) &&
+                      count_opcode(code, words, 98, 0xffffffffu) == 1 && count_opcode(code, words, 17, 55) == 1,
+                  "a formatted buffer surface load reads a texel buffer of its keyed type without a format");
+        free(code);
+    }
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(raw, 2, ST_CS, &info, &words, 1);
+    check_translated(code, &info, "a raw buffer surface load translates");
+    if (code)
+        check(info.nimg == 1 && info.img[0].kind == 1 && has_storage_image_format(code, words, 33) &&
+                  count_opcode(code, words, 17, 55) == 0,
+              "a raw buffer surface load stays an R32UI read");
+    free(code);
+}
+
+/* A bindless handle whose sampler half is a constant, as one game's fragment program builds it: the texture half
+   from MOV R2, c[0x2][0x380], ORed with MOV32I R1, 0x3f000000 (sampler 0x3f0). The constant is kept as the second
+   half (SH_HANDLE_IMM), in either operand */
+static void immediate_sampler_handle(void) {
+    for (int swap = 0; swap < 2; swap++) {
+        const u64 ops[] = {
+            0x4c9807880e070002ull, /* MOV R2, c[0x2][0x380] */
+            0x0103f0000007f001ull, /* MOV32I R1, 0x3f000000 */
+            0x5c4000000007000aull | (swap ? 1ull : 2ull) << 8 | (swap ? 2ull : 1ull) << 20 |
+                1ull << 41,                                                      /* LOP.OR R10 */
+            0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (10ull << 20), /* TEX.B R8, [R0], R10 */
+        };
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(ops, 4, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a handle with a constant sampler half translates");
+        if (code)
+            check(info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 &&
+                      info.tex[0].cbuf_off == 0x380 / 4 && info.tex[0].bl2 && info.tex[0].bl2_cbuf == SH_HANDLE_IMM &&
+                      info.tex[0].bl2_off == 0x3f000000u,
+                  "a handle with a constant sampler half keeps the read and the constant");
+        free(code);
+    }
+}
+
+/* Handles written under each side of a predicate, as one game's fragment and compute programs write them. The
+   instruction i lies at word 11 + i + i / 3 (guest_program), which the branch offsets count from */
+static void guarded_handle_merges(void) {
+    const u64 tex_b = 0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20);
+    const u64 load = 0x4c98078800070006ull, other_load = 0x4c98078800170006ull; /* MOV R6, c[2][0] / c[2][4] */
+    const u64 under_p0 = ~(0xfull << 16), not_p0 = 8ull << 16, fsetp_p0 = 0x4bb1838c30f7ff07ull;
+    const u64 fmul_r6 = FMUL_KEEP | 6, fmul_r5 = FMUL_KEEP | 5, sync = 0xf0f800000007000full;
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code;
+    /* a write under P0 runs in none of the lanes of a use under !P0, P0 kept since: the handle loaded under !P0
+       reaches it, unless P0 changes between or the write is under !P0 too */
+    const u64 complement[] = {(load & under_p0) | not_p0, fmul_r6 & under_p0, (tex_b & under_p0) | not_p0};
+    code = translate(complement, 3, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "a write under the use's complement guard leaves the handle");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle under the use's own guard is the one bound");
+    free(code);
+    const u64 same_guard[] = {(load & under_p0) | not_p0, (fmul_r6 & under_p0) | not_p0, (tex_b & under_p0) | not_p0};
+    code = translate(same_guard, 3, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a write under the use's own guard replaces the handle");
+    free(code);
+    const u64 rewritten[] = {(load & under_p0) | not_p0, fmul_r6 & under_p0, fsetp_p0, (tex_b & under_p0) | not_p0};
+    code = translate(rewritten, 4, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a complement write counts again once P0 changes");
+    free(code);
+    /* the handle under !P0; under P0 something else, whose lanes leave by @P0 BRA (word 13) to the EXIT (word 20);
+       P0 rewritten, the same handle loaded under it, P0 rewritten again, then the sample under P0 */
+    const u64 leave = 0xe24000000000000full | (48ull << 20);
+    const u64 both_sides[] = {
+        (load & under_p0) | not_p0, fmul_r6 & under_p0, leave, fsetp_p0, load & under_p0, fsetp_p0, tex_b & under_p0};
+    code = translate(both_sides, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "one handle written under each side of a rewritten predicate reaches the sample");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle written under each side is the one bound");
+    free(code);
+    u64 variant[7];
+    memcpy(variant, both_sides, sizeof variant);
+    variant[4] = other_load & under_p0;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "different handles under each side stay refused");
+    free(code);
+    memcpy(variant, both_sides, sizeof variant);
+    variant[2] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle",
+                  "the other side's value reaches the sample without the branch");
+    free(code);
+    memcpy(variant, both_sides, sizeof variant);
+    variant[0] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "lanes that load no handle reach the sample");
+    free(code);
+    /* if and else between an SSY (word 11, to the sample at word 19) and their SYNCs: @!P0 BRA (word 12) to the else
+       side (word 16), each side loading the handle */
+    const u64 ssy = 0xe290000000000000ull | (56ull << 20), to_else = 0xe24000000008000full | (24ull << 20);
+    const u64 if_else[] = {ssy, to_else, load, sync, load, sync, tex_b};
+    code = translate(if_else, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "one handle loaded on each side of an SSY's branch reaches its reconvergence point");
+    check(code && info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the handle loaded on each side is the one bound");
+    free(code);
+    memcpy(variant, if_else, sizeof variant);
+    variant[2] = other_load;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "different handles on each side of an SSY stay refused");
+    free(code);
+    memcpy(variant, if_else, sizeof variant);
+    variant[2] = fmul_r5;
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a side that loads no handle reaches the sample");
+    free(code);
+}
+
 static void volume_surface_atomics(void) {
     const u64 operations[] = {0xea40020a00870009ull, 0xea48020a20870009ull,
                                0xeb50020a00070008ull, 0xeb50020a01170008ull};
@@ -1027,6 +1181,47 @@ static void volume_surface_atomics(void) {
         u32* code = translate(instructions, 2, ST_CS, &info, &words, 1);
         check_refused(code, &info, i == 3 ? "SURED" : "SUATOM",
                       "unimplemented 3D atomic widths, clamp and wrap modes remain rejected");
+        free(code);
+    }
+}
+
+/* A fragment program storing into a buffer surface, as a base pass writes its texture feedback: SUST.P.RGBA on
+   dimension 1, the handle MOV R28, c[0x2][0x120]. Vertex programs store through it too; their loads and the
+   geometry stage stay refused, as for other surfaces */
+static void draw_buffer_surfaces(void) {
+    const u64 store[] = {0x4c9807880487001cull, unguarded(0xeb200e0200f00f18ull, 24, 15, 28)};
+    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as Ender Magnolia's compute loads it */
+    const u64 load[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
+    const int stages[] = {ST_FS, ST_VS};
+    for (int i = 0; i < 2; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(store, 2, stages[i], &info, &words, 1);
+        check_translated(code, &info, "a draw's buffer surface store translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && has_storage_image_dim(code, words, 5) &&
+                      count_opcode(code, words, 99, 0xffffffffu) == 1,
+                  "a draw's buffer surface store writes one texel buffer");
+        free(code);
+    }
+    {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(load, 2, ST_FS, &info, &words, 1);
+        check_translated(code, &info, "a fragment program's buffer surface load translates");
+        if (code)
+            check(info.nimg == 1 && info.img[0].type == 1 && count_opcode(code, words, 98, 0xffffffffu) == 1,
+                  "a fragment program's buffer surface load reads the texel buffer");
+        free(code);
+    }
+    const u64* refused[] = {load, store};
+    const int refused_stages[] = {ST_VS, ST_GS};
+    for (int i = 0; i < 2; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(refused[i], 2, refused_stages[i], &info, &words, 1);
+        check_refused(code, &info, "surface operation outside supported stage",
+                      "vertex buffer surface loads and geometry stores stay refused");
         free(code);
     }
 }
@@ -1887,6 +2082,21 @@ static void fragment_queries(void) {
     if (code)
         check(sprite_t_selects_flipped_on_true(code, words),
               "point sprite T selects the flipped value for the flip condition");
+    free(code);
+    /* the fragment's y counts up from the surface clip's bottom in a lower-left window, both pushed; x stays */
+    static const u64 position[] = {
+        0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
+        0xe003ff874ff7ff01ull, /* IPA R1, a[0x74] */
+    };
+    code = translate(&position[1], 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "IPA reads the fragment's y");
+    if (code)
+        check(frag_y_selects_clip_less_y(code, words),
+              "the fragment's y is the clip height less it when the window is lower left");
+    free(code);
+    code = translate(position, 1, ST_FS, &info, &words, 0);
+    check_translated(code, &info, "IPA reads the fragment's x");
+    if (code) check(!frag_y_selects_clip_less_y(code, words), "the fragment's x keeps its value in any window");
     free(code);
 }
 
@@ -2763,14 +2973,28 @@ static void audit_shader_regressions(void) {
     free(code);
     g_shader_texture_arrays = 0;
     const u64 instance = 0xefd800000007ff00ull | (0x2f8ull << 20);
+    /* without draw parameters the instance ID is InstanceIndex less the guest's base instance, pushed; with them
+       InstanceIndex less BaseInstance plus what the draw's first instance adds to the guest's base (a 3D engine draw
+       that continues an earlier one's instances), so an indirect draw's base instance can come from the GPU */
+    g_shader_draw_parameters = 0;
     code = translate(&instance, 1, ST_VS, &info, &words, 1);
     check_translated(code, &info, "instance attribute translates with original guest base");
     if (code) {
         check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 0,
-              "instance uses InstanceIndex and never Vulkan BaseInstance");
-        check(count_opcode(code, words, 130, 0xffffffffu) > 0,
+              "instance without draw parameters uses InstanceIndex and not BaseInstance");
+        check(count_opcode(code, words, 130, 0xffffffffu) == 1,
               "instance subtracts the original guest base");
         save_fixture(audit_paths[1], code, words);
+    }
+    free(code);
+    g_shader_draw_parameters = 1;
+    code = translate(&instance, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "instance attribute translates with draw parameters");
+    if (code) {
+        check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 1,
+              "instance with draw parameters uses InstanceIndex and BaseInstance");
+        check(count_opcode(code, words, 130, 0xffffffffu) == 2,
+              "instance subtracts BaseInstance less the pushed offset");
     }
     free(code);
     const u64 tlds = 0xD244012030570A02ull;
@@ -2990,6 +3214,53 @@ static u32 quad_operand(const u32* code, size_t words, u32 opcode) {
     return found;
 }
 
+/* ShaderInfo.tex_own_pixel_mask: a slot every read of which fetches the fragment's own pixel, TLDS 2D.LZ or TLD.LZ at
+   F2I.TRUNC of IPA's a[0x70] and a[0x74], is one a draw may sample in place while rendering to it. A fetch one row
+   off, a filtered TEXS, or both kinds of read of one slot leave it out: those read other pixels, which the draw
+   itself may have written already */
+#define OWN_TEXS(encoding, a, b)                                                                                       \
+    (0xd000000000000000ull | 1ull << 59 | (u64)(encoding) << 53 | 0x10ull << 36 | 0xffull << 28 | (u64)(b) << 20 |     \
+     7ull << 16 | (u64)(a) << 8)
+static void feedback_own_pixel(void) {
+    const u64 ipa_x = 0xe003ff870ff7ff00ull;                /* IPA R0, a[0x70] */
+    const u64 ipa_y = 0xe003ff874ff7ff01ull;                /* IPA R1, a[0x74] */
+    const u64 f2i_x = F2I, f2i_y = F2I | 1ull << 20 | 1ull; /* F2I.TRUNC R0, R0 and R1, R1 */
+    const u64 tlds = OWN_TEXS(2, 0, 1) | 1ull << 57;        /* TLDS 2D.LZ R0, R0, R1 */
+    const u64 tld = 0xdc00000000000004ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 | 0xffull << 20 |
+                    7ull << 16;                  /* TLD.LZ R4, R0 on a 2D texture */
+    const u64 texs = OWN_TEXS(2, 0, 1);          /* TEXS 2D.LZ R0, R0, R1 */
+    const u64 row_below = 0x1c00000000170101ull; /* IADD32I R1, R1, 1 */
+    const u64 own_tlds[] = {ipa_x, ipa_y, f2i_x, f2i_y, tlds};
+    const u64 own_tld[] = {ipa_x, ipa_y, f2i_x, f2i_y, tld};
+    const u64 shifted[] = {ipa_x, ipa_y, f2i_x, f2i_y, row_below, tlds};
+    const u64 sampled[] = {ipa_x, ipa_y, texs};
+    const u64 both[] = {ipa_x, ipa_y, f2i_x, f2i_y, tlds, texs};
+    struct {
+        const u64* instructions;
+        int count;
+        u64 own;
+        const char* what;
+    } cases[] = {{own_tlds, 5, 1, "TLDS at gl_FragCoord's integer x and y reads the fragment's own pixel"},
+                 {own_tld, 5, 1, "TLD at gl_FragCoord's integer x and y reads the fragment's own pixel"},
+                 {shifted, 6, 0, "TLDS a row below gl_FragCoord reads another pixel"},
+                 {sampled, 3, 0, "TEXS at gl_FragCoord reads through the sampler, not the own pixel"},
+                 {both, 6, 0, "a slot read by TLDS at its own pixel and by TEXS reads another pixel"}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(cases[i].instructions, cases[i].count, ST_FS, &info, &words, 0);
+        check_translated(code, &info, cases[i].what);
+        if (code) {
+            if (info.ntex != 1 || info.tex_own_pixel_mask != cases[i].own)
+                fprintf(stderr, "  %d slots, own pixel mask %#llx, expected %#llx\n", info.ntex,
+                        (unsigned long long)info.tex_own_pixel_mask, (unsigned long long)cases[i].own);
+            check(info.ntex == 1 && info.tex_own_pixel_mask == cases[i].own, cases[i].what);
+        }
+        free(code);
+    }
+}
+#undef OWN_TEXS
+
 /* A fragment program's SHFL within its quad (mask 0x1c03) from a lane known when translated is a quad operation:
    the quad's helper lanes, which a triangle's edge leaves out, take part in it, as the console's lanes do in SHFL. One
    game's edge pass read its upper left lane so and drew blue lines along every edge. Other SHFL stay shuffles */
@@ -3173,7 +3444,11 @@ int main(int argc, char** argv) {
     scaled_texel_fetch();
     txd_grad();
     fragment_storage_images();
+    buffer_formatted_loads();
+    immediate_sampler_handle();
+    guarded_handle_merges();
     volume_surface_atomics();
+    draw_buffer_surfaces();
     layered_surface_loads();
     transform_feedback();
     nro_shader_modes();
@@ -3195,6 +3470,7 @@ int main(int argc, char** argv) {
     fswzadd_forms();
     shfl_quad_forms();
     shfl_predicate();
+    feedback_own_pixel();
     for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
     return failures ? 1 : 0;
 }

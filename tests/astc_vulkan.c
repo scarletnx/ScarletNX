@@ -49,7 +49,10 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r != VK_SUCCESS) fatal("%s:%d: %s = %d\n", file, line, what, r);
     return 1;
 }
-void vk_render_end(void) {}
+void vk_render_end_at(const char* file, int line) {
+    (void)file;
+    (void)line;
+}
 /* The standalone upload test has no guest buffer cache to flush or retire. */
 void vk_buf_frame_done(u64 frame) { (void)frame; }
 void vk_gfx_image_frame_done(u64 sub) { (void)sub; }
@@ -81,10 +84,26 @@ VkPipeline vk_pipeline_now(VkPipeline h, int* pending) {
 }
 /* cmd.c reads the frame's GPU timestamps for gpuprof.c, which isn't here */
 void vk_gpuprof_frame_done(u32 slot) { (void)slot; }
+void vk_gpuprof_cb_begin(VkCommandBuffer cb) { (void)cb; }
+void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
+    (void)cb;
+    (void)why;
+    (void)value;
+}
+void vk_gpuprof_waited(u64 value, int kind) {
+    (void)value;
+    (void)kind;
+}
+/* record.c's presents tell display.c they were made, which isn't here (nor are presents) */
+void vk_display_made(u64 id, VkResult r) {
+    (void)id;
+    (void)r;
+}
 /* cmd.c's waits note themselves for gpu.c's stall report, which isn't here */
-void gpu_wait_note(const char* what, u64 value) {
+int gpu_wait_note(const char* what, u64 value) {
     (void)what;
     (void)value;
+    return 0;
 }
 /* plat_posix.c's crash handler, which the test never installs */
 void log_crash_mode(void) {}
@@ -688,10 +707,12 @@ static float half_float(u16 h) {
     return h & 0x8000 ? -v : v;
 }
 /* where the device samples BCn: its own decoding of random blocks of every kind, blitted into RGBA32F, against
-   bcn.c's. BC6H's halves and BC7's bytes are exact by the specification; BC1 to BC5 leave the interpolants' precision
-   to the device, so they may differ by two steps (llvmpipe divides BC3's alpha by 5 as x * 51 >> 8: 918 / 5 is 183.6,
-   which bcn.c rounds to 184, and llvmpipe gives 182). This tells a reference drifted from what GPUs decode, which
-   the comparison of texconv with the reference can't */
+   bcn.c's. BC6H's halves and BC7's bytes are exact by the specification. BC1 to BC5 leave the interpolants' precision
+   to the device. An NVIDIA GPU decodes as the Switch's does, bcn_decode_image's values: its bytes and unsigned 16 bit
+   values are exact, its signed ones within a step. Another GPU is held to the exact values rounded
+   (bcn_decode_image_spec), within two steps (llvmpipe divides BC3's alpha by 5 as x * 51 >> 8: 918 / 5 is 183.6,
+   which rounds to 184, and llvmpipe gives 182). This tells a reference drifted from what GPUs decode, which the
+   comparison of texconv with the reference can't */
 static void bc_native_case(void) {
     static const VkFormat formats[10] = {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_BC2_UNORM_BLOCK,
                                          VK_FORMAT_BC3_UNORM_BLOCK,      VK_FORMAT_BC4_UNORM_BLOCK,
@@ -756,12 +777,19 @@ static void bc_native_case(void) {
         vk_finish();
         vk_readback_ready();
         u8* want = malloc((size_t)w * h * pb);
-        bcn_decode_image(blocks, w, h, kind, want);
+        int nv = g_vk.props.vendorID == 0x10DE;
+        (nv ? bcn_decode_image : bcn_decode_image_spec)(blocks, w, h, kind, want);
         /* RGBA8 (BC1 to BC3, BC7), one or two 16 bit channels (BC4, BC5), or halves */
         int sn = kind == BCN_BC4_SNORM || kind == BCN_BC5_SNORM, ch = pb == 2 ? 1 : 2;
         int hdr = kind == BCN_BC6H_UF || kind == BCN_BC6H_SF, bytes = kind <= BCN_BC3 || kind == BCN_BC7;
-        /* BC7's bytes within half a step, as the device's unorm to float conversion may round q / 255 otherwise */
-        float step = hdr ? 0 : kind == BCN_BC7 ? 0.5f / 255 : sn ? 2.0f / 127 : 2.0f / 255, worst = 0;
+        /* exact bytes within half a step, as the device's unorm to float conversion may round q / 255 otherwise */
+        float step = 2.0f / (sn ? 127 : 255), worst = 0;
+        if (hdr)
+            step = 0;
+        else if (bytes && (nv || kind == BCN_BC7))
+            step = 0.5f / 255;
+        else if (nv)
+            step = sn ? 1.5f / 32767 : 0.5f / 65535;
         u32 differ = 0;
         for (u32 i = 0; i < w * h; i++)
             for (int c = 0; c < 4; c++) {

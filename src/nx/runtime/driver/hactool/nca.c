@@ -1420,8 +1420,10 @@ void nca_save_section_file(nca_section_ctx_t *ctx, uint64_t ofs, uint64_t total_
         return;
     }
 
-    uint64_t read_size = 0x400000; /* 4 MB buffer. */
-    unsigned char *buf = malloc(read_size);
+    /* ScarletNX: the file's size up to 4 MB. A RomFS is thousands of small files, and Windows' heap hands out 4 MB as
+       fresh pages each time, 1024 of them faulted in by the fill below. */
+    uint64_t read_size = total_size < 0x400000 ? total_size : 0x400000;
+    unsigned char *buf = malloc(read_size ? read_size : 1);
     if (buf == NULL) {
         fprintf(stderr, "Failed to allocate file-save buffer!\n");
         exit(EXIT_FAILURE);

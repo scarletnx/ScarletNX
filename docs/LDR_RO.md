@@ -36,8 +36,9 @@ client expects to receive untouched. The caller's BSS backing is preserved, not 
 NRO code is compiled by the runtime JIT. When LoadNro maps an NRO, its text joins
 the JIT's images (`jit_code_added` in `src/nx/runtime/guest_jit.c`, `snx_jit_add_image` in
 `src/common/cpu/recompiler/llvm/jit_service.c`). Its pcs lie outside `CPU.disp`, so a call into it misses in
-`snx_lookup` and reaches `RtAPI.miss`. There `snx_jit_resolve` reads the JIT's own table for that image without a lock:
-once a function is compiled, a call costs the miss and that load. The first call to a function waits for its compile,
+`snx_lookup` and reaches `RtAPI.miss`. Resolution first checks any compatible AOT variants through `variant_resolve`,
+then `snx_jit_resolve` reads the JIT's own table for that image without a lock. A resolved call therefore includes
+the miss path and applicable variant lookup as well as the JIT-table load. The first call to a function waits for its compile,
 as for any code the AOT module lacks. JIT code for the NRO
 calls the module's functions directly and other code through the dispatch. UnloadNro, and the end of the session,
 remove the image before unmapping its memory: `snx_jit_remove_image` waits for the compiles reading it and forgets

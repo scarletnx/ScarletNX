@@ -11,13 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the PowerPC64 CPU the runtime library is built for (cmake/cross.cmake), and a module for another host's */
-#ifdef SNX_PPC64_LLVM_CPU
-#define SNX_PPC_CPU SNX_PPC64_LLVM_CPU
-#else
-#define SNX_PPC_CPU "pwr8"
-#endif
-
 /* ---- setup ---- */
 
 SnxIrFeatures snx_ir_host;
@@ -25,8 +18,11 @@ SnxIrFeatures snx_ir_host;
 static struct {
     int slp_off;
     int domain_off; /* snx_ir_init's, of X86DomainReassignment */
+    int region_budget; /* snx_ir_init's, of the greedy allocator's growRegion */
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
+    int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
+    SnxU64 dump_pc;
 } g_ir;
 static const SnxIrFeatures generic_features;
 
@@ -52,6 +48,12 @@ int snx_ir_slp(void) { return !g_ir.slp_off; }
 void snx_ir_fpsr_flags(int exact) { g_ir.fpsr_loose = !exact; }
 int snx_ir_fpsr_exact(void) { return !g_ir.fpsr_loose; }
 void snx_ir_volatile_memory(int on) { g_ir.volatile_memory = on != 0; }
+void snx_ir_diagnostics(int stats, const char* dump_pc) {
+    char* end = NULL;
+    g_ir.stats = stats != 0;
+    g_ir.dump_pc = dump_pc && *dump_pc ? strtoull(dump_pc, &end, 16) : 0;
+    g_ir.dump = end && end != dump_pc && !*end;
+}
 int snx_ir_volatile(void) { return g_ir.volatile_memory; }
 int snx_ir_init(char* error, size_t error_size) {
     /* the asm parser for the runtime library's inline assembly (rtlib.c's divq, cpu.h's compiler barrier) */
@@ -81,6 +83,13 @@ int snx_ir_init(char* error, size_t error_size) {
         LLVMParseCommandLineOptions(2, off, NULL);
         g_ir.domain_off = 1;
     }
+    if (!g_ir.region_budget) {
+        /* the greedy allocator's growRegion, at LLVM's budget of 10000, did not end on a 4310-block function with a
+           cold helper call at each of its 714 vector FP sites; at 2000 that function takes 4 s, and its whole unit 76 s */
+        static const char* const budget[] = {"scarletnx", "-grow-region-complexity-budget=2000"};
+        LLVMParseCommandLineOptions(2, budget, NULL);
+        g_ir.region_budget = 1;
+    }
     if (x86 && !snx_ir_host.x86) {
         char* f = LLVMGetHostCPUFeatures();
         snx_ir_host.sse42 = has_feature(f, "sse4.2");
@@ -90,6 +99,7 @@ int snx_ir_init(char* error, size_t error_size) {
         snx_ir_host.sha_ni = has_feature(f, "sha");
         snx_ir_host.gfni = has_feature(f, "gfni");
         snx_ir_host.fma = has_feature(f, "fma");
+        snx_ir_host.f16c = has_feature(f, "f16c");
         snx_ir_host.avx2 = has_feature(f, "avx2");
         snx_ir_host.avx512bw = has_feature(f, "avx512bw");
         snx_ir_host.avx512vl = has_feature(f, "avx512vl");
@@ -164,6 +174,9 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
     SnxIr* ir = (SnxIr*)calloc(1, sizeof(*ir));
     if (!ir) return NULL;
     ir->promote = opt != '0';
+    ir->stats.enabled = g_ir.stats;
+    ir->dump_pc = g_ir.dump_pc;
+    ir->dump_function = g_ir.dump;
     char* triple = target_triple ? LLVMCreateMessage(target_triple) : host_triple(jit);
     if (LLVMGetTargetFromTriple(triple, &target, &message)) {
         snprintf(error, error_size, "LLVM target %s: %s", triple, message ? message : "unavailable");
@@ -183,15 +196,8 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
         cpu = LLVMCreateMessage("x86-64");
         features = LLVMCreateMessage("+cx16");
     } else {
-        cpu = LLVMCreateMessage(ppc ? SNX_PPC_CPU : "generic");
+        cpu = LLVMCreateMessage("generic");
         features = LLVMCreateMessage("");
-    }
-    /* The CPU cmake/cross.cmake builds the runtime library for at least (POWER8 unless the build names an older
-       big-endian machine), whose modules then call RtAPI.cas128 for the 16-byte compare-and-swap. The host's name is
-       "generic" where /proc/cpuinfo has no POWER line, as under qemu-user */
-    if (ppc && (!strcmp(cpu, "generic") || !strcmp(cpu, "ppc64") || !strcmp(cpu, "ppc64le") || !*cpu)) {
-        LLVMDisposeMessage(cpu);
-        cpu = LLVMCreateMessage(SNX_PPC_CPU);
     }
     /* RISC-V and LoongArch: rv64gc and LA64 with double floats at least, as the runtime is built, so a module's float
        ABI (lp64d) is the runtime's whatever the host reports (qemu-user may report nothing), and no linker relaxation:
@@ -414,6 +420,36 @@ static void size_attributes(LLVMModuleRef module, char opt) {
         LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ctx, optsize, 0));
         if (opt == 'z')
             LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ctx, minsize, 0));
+    }
+}
+
+/* Each function as it is emitted: the unit's pipeline then starts from about half the instructions, and the unit never
+   holds them all at once. The passes LLVM Internals turn off are cut out of it (llvm_tuning.c) */
+void ir_clean_function(SnxIr* ir, LLVMValueRef fn) {
+    const char* passes = ir->tuning ? ir->tuning->clean : SNX_IR_CLEAN_PASSES;
+    if (!passes) return;
+    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+    if (ir->tuning && ir->tuning->builder) ir->tuning->builder(options);
+    LLVMErrorRef failure = LLVMRunPassesOnFunction(fn, passes, ir->tm, options);
+    LLVMDisposePassBuilderOptions(options);
+    if (failure) {
+        char* message = LLVMGetErrorMessage(failure);
+        fprintf(stderr, "LLVM passes on %s as it is emitted: %s; its unit's pipeline takes it as emitted\n",
+                LLVMGetValueName(fn), message);
+        LLVMDisposeErrorMessage(message);
+    }
+    /* the unit cache keys the bitcode, and a function's names go into it in the order of its symbol table, which the
+       names SROA made and numbered (in an order that changes from run to run) leave different: no name stays */
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef block = LLVMBasicBlockAsValue(bb);
+        size_t length = 0;
+        (void)LLVMGetValueName2(block, &length);
+        if (length) LLVMSetValueName2(block, "", 0);
+        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
+            length = 0;
+            (void)LLVMGetValueName2(inst, &length);
+            if (length) LLVMSetValueName2(inst, "", 0);
+        }
     }
 }
 

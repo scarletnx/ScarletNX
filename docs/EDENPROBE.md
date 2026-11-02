@@ -12,7 +12,7 @@ fails.
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro edenprobe.nro --out /tmp/edenprobe \
-    --mode "quick notime fatal cpu graphics fs video display kernel audio" \
+    --mode "quick notime fatal cpu fs video display kernel audio" \
     [--baseline tests/edenprobe/linux-x86_64.txt]
 ```
 
@@ -23,6 +23,14 @@ another way that did. A launch that ends before the summary, crashed
 or killed after `--timeout` seconds (600) without a new line in the report, is followed by another, which goes on after
 the case it ended inside, reported as `crashed`. The baseline is lavapipe's: a GPU passes other cases, so on one the
 run says what differs rather than what regressed.
+
+`--setting KEY=VALUE` gives each launch that runtime setting as `--KEY=VALUE`, for example `vk_memory=2` to read guest
+buffers in place, the default on an integrated GPU, where a driver can still refuse the imports and copy. Lavapipe,
+which CI runs on, copies by default: its GPU is the CPU, which can't read pages the runtime traps. To run lavapipe
+without installing it, point `VK_DRIVER_FILES` at its ICD file.
+
+With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
+`edenprobe_vk_memory_2` (in place) against the baseline.
 
 ## The mode words
 
@@ -36,14 +44,15 @@ Those of the example, which CI runs; edenprobe's
 | `notime` | each drawing suite once, no timing passes, no times in the report |
 | `fatal` | the cases that may end the program: SM4, CNTVCT_EL0 and DAIF reads, geometry shaders, BC4 arrays |
 | `cpu` | the processor's instructions |
-| `graphics` | the drawing suites: clears, blending, depth, textures and their formats, queries, blits |
 | `fs` | the memory card: a 64 MiB file and 256 small ones, written once and read back |
 | `video` | the video image compositor, and the VP9 decoder on libvpx's test vectors |
 | `display` | a layer's buffer history |
 | `kernel` | the scheduler: priority inheritance, preemption, migration |
 | `audio` | the audio renderer: resampler, circular buffer, limiter; headless, nothing is played |
 
-Left out: `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
+Left out: `graphics` (the drawing suites: clears, blending, depth, textures and their formats, queries, blits),
+which write their own GPU command buffers. The runtime's GPU path is NVN, so their submissions draw
+nothing, and each case waits for memory that the GPU would write. `net` (servers the runner does not have), `pad` and `listen` (a person), `stress` (256 MiB lists), `hang`
 (cases that never return on a machine that gets them wrong).
 
 ## In CI

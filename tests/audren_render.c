@@ -3,6 +3,7 @@
 /* The audio renderer's DSP offline: updates written field by field as edenprobe's audio family writes them
    (revision 4, 48 kHz, 240 samples a frame), frames rendered, and what the aux, the circular buffer sinks and the
    voices' counters show. Levels are one bin of a Fourier transform over a frame of whole periods */
+#include "common/utilities/bits.h"
 #include "nx/hle/services/audren_dsp.c"
 #include "nx/hle/hle.c"
 #include <math.h>
@@ -432,8 +433,8 @@ static void ref_delay(int nch, const i16* const* in, i16* const* out, int n, int
 
 /* Eden's FixedPoint<50, 14>, as the reverb's expected values use it */
 static i64 tq(float f) { return (i64)(f * 16384.0f); }
-static i64 tmul(i64 a, i64 b) { return (i64)(((__int128)a * b) >> 14); }
-static i64 tdiv(i64 a, i64 b) { return (i64)(((__int128)a * 16384) / b); }
+static i64 tmul(i64 a, i64 b) { return snx_mul_shr_s64(a, b, 14); }
+static i64 tdiv(i64 a, i64 b) { return snx_div_shl_s64(a, 14, b); }
 static i32 tint(i64 q) { return (i32)((q + ((q & 0x3FFF) >> 1)) >> 14); }
 static i16 tsat(i32 v) { return (i16)(v > 32767 ? 32767 : v < -32768 ? -32768 : v); }
 
@@ -1131,6 +1132,51 @@ static void update_voice_rev14(void) {
     audren_state_free(state);
 }
 
+/* before REV7 entry i of the mix section is mix i (Eden's UpdateMixes): an older game leaves the mix id 0, and taken
+   as the mix every entry wrote mix 0, the last an unused submix, so the final mix was off and the device got nothing */
+static void update_mix_by_position(void) {
+    enum { voices = 128, effects = 68, sinks = 2, pools = effects + voices * 4, entries = 3 };
+    const u32 rev = ('R' << 0) | ('E' << 8) | ('V' << 16) | ((u32)('0' + 3) << 24), reply = 21456;
+    u32 params[13] = {48000, 240, 216, entries - 1, voices, sinks, effects}; /* two submixes: mixes 0 to 2 */
+    u32 h[16] = {rev,           0x10,           pools * 0x20,    voices * 0x170,
+                 voices * 0x70, effects * 0xC0, entries * 0x930, sinks * 0x140};
+    u32 size = 0x40 + h[1] + h[2] + h[3] + h[4] + h[5] + h[6] + h[7];
+    ARState* state = audren_state_new((const u8*)params);
+    u8 *input = calloc(1, size + reply), *mixes;
+    CHECK(state != NULL && input != NULL, "no state or buffers for revision 3 mixes");
+    if (!state || !input) {
+        free(input);
+        audren_state_free(state);
+        return;
+    }
+    h[15] = size;
+    put_header(input, h);
+    mixes = input + 0x40 + h[1] + h[2] + h[4] + h[3] + h[5];
+    wf(mixes, 0, 1.0f); /* entry 0, the final mix: two buffers; every entry's mix id stays 0 */
+    w32(mixes, 8, 2);
+    w8(mixes, 0xC, 1);
+    wf(mixes + 0x930, 0, 0.5f); /* entry 1, a submix of four buffers; entry 2, an unused submix, stays zero */
+    w32(mixes + 0x930, 8, 4);
+    w8(mixes + 0x930, 0xC, 1);
+    CHECK(audren_state_update(state, input, size, input + size, reply) == 0, "revision 3 mix update refused");
+    CHECK(state->mix[0].in_use && state->mix[0].buffers == 2 && state->mix[0].volume == 1.0f,
+          "the final mix: in use %u, %u buffers, volume %.2f", state->mix[0].in_use, state->mix[0].buffers,
+          state->mix[0].volume);
+    CHECK(state->mix[1].in_use && state->mix[1].buffers == 4 && state->mix[1].volume == 0.5f,
+          "entry 1 did not reach mix 1: in use %u, %u buffers", state->mix[1].in_use, state->mix[1].buffers);
+    CHECK(!state->mix[2].in_use, "the unused entry 2 left mix 2 in use");
+    free(input);
+    audren_state_free(state);
+}
+
+/* the first update's line says the revision's number: the magic's fourth byte is '0' plus it, so 51 for revision 3 */
+static void revision_number(void) {
+    const u32 rev3 = ('R' << 0) | ('E' << 8) | ('V' << 16) | ((u32)('0' + 3) << 24);
+    const u32 rev11 = ('R' << 0) | ('E' << 8) | ('V' << 16) | ((u32)('0' + 11) << 24);
+    CHECK(audren_revision(rev3) == 3 && audren_revision(rev11) == 11, "revisions %d and %d", audren_revision(rev3),
+          audren_revision(rev11));
+}
+
 void pm_init(PMutex* m) { (void)m; }
 
 int main(void) {
@@ -1143,6 +1189,8 @@ int main(void) {
     update_voice_v2();
     update_voice_rev14();
     update_mix_dirty_only();
+    update_mix_by_position();
+    revision_number();
 
     /* the resampler at a ratio of one: an 11 kHz voice keeps its level at default quality as at high */
     for (u8 q = 0; q < 2; q++) {

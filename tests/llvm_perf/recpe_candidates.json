@@ -1,0 +1,142 @@
+{
+  "SPDX-License-Identifier": "GPL-3.0-or-later",
+  "copyright": "2026 the ScarletNX contributors",
+  "item": "I8",
+  "scope": "Float32 vector reciprocal estimates on the current host, O0/O2. Run from repository root with no games or builds running. The reference disables inline emitter features, keeping the same target machine and helper library.",
+  "candidates": [
+    {
+      "name": "lane-helpers",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "--target",
+        "snx-test-llvm-recpe"
+      ],
+      "check": [
+        "build/tests/snx-test-llvm-recpe"
+      ],
+      "bench": {
+        "normal-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "normal",
+          "0",
+          "--reference"
+        ],
+        "mixed-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "mixed",
+          "0",
+          "--reference"
+        ],
+        "underflow-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "underflow",
+          "0",
+          "--reference"
+        ],
+        "all-exceptional-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "all-exceptional",
+          "0",
+          "--reference"
+        ],
+        "normal-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "normal",
+          "2",
+          "--reference"
+        ],
+        "mixed-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "mixed",
+          "2",
+          "--reference"
+        ],
+        "underflow-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "underflow",
+          "2",
+          "--reference"
+        ],
+        "all-exceptional-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "all-exceptional",
+          "2",
+          "--reference"
+        ]
+      }
+    },
+    {
+      "name": "integer-vector",
+      "build": [
+        "cmake",
+        "--build",
+        "build",
+        "--target",
+        "snx-test-llvm-recpe"
+      ],
+      "check": [
+        "build/tests/snx-test-llvm-recpe"
+      ],
+      "bench": {
+        "normal-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "normal",
+          "0"
+        ],
+        "mixed-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "mixed",
+          "0"
+        ],
+        "underflow-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "underflow",
+          "0"
+        ],
+        "all-exceptional-o0": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "all-exceptional",
+          "0"
+        ],
+        "normal-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "normal",
+          "2"
+        ],
+        "mixed-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "mixed",
+          "2"
+        ],
+        "underflow-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "underflow",
+          "2"
+        ],
+        "all-exceptional-o2": [
+          "build/tests/snx-test-llvm-recpe",
+          "--bench",
+          "all-exceptional",
+          "2"
+        ]
+      }
+    }
+  ]
+}

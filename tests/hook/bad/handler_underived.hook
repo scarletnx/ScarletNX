@@ -1,0 +1,2 @@
+family f
+hook memcpy(void* dst, const void* src, u64 size) -> void*

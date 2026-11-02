@@ -103,6 +103,8 @@ int main(void) {
     /* L3 and R3: Games' mods folder and AOT pack, once a press */
     assert(gui_pad_key(SNX_PAD_LS, XBOX, &code, &mod, &repeats) && code == SDLK_M && !repeats);
     assert(gui_pad_key(SNX_PAD_RS, XBOX, &code, &mod, &repeats) && code == SDLK_B && !repeats);
+    /* the right stick pushed: Games' Play, once */
+    assert(gui_pad_key(GUI_PAD_RIGHT_STICK, XBOX, &code, &mod, &repeats) && code == SDLK_L && !mod && !repeats);
     assert(!gui_pad_key(-1, XBOX, &code, &mod, &repeats));
 
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0"); /* the machine's pads through HIDAPI left out, as few as can be */
@@ -153,6 +155,25 @@ int main(void) {
     assert(pump(&p, 3000, &key) == 1 && key.key.key == SDLK_DOWN);
     SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_LEFTY, 0);
     assert(pump(&p, 3000, &key) == 0 && !gui_pads_repeat(&p, 9000, &key));
+    /* the right stick, any way past the left one's: L once, held or turned to the other axis; again once it was back */
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTX, GUI_PAD_STICK);
+    assert(pump(&p, 3500, &key) == 0);
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTX, GUI_PAD_STICK + 1);
+    assert(pump(&p, 3500, &key) == 1 && key.key.key == SDLK_L && !key.key.repeat);
+    assert(!gui_pads_repeat(&p, 3500 + GUI_PAD_DELAY_MS, &key));
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTY, -32768);
+    assert(pump(&p, 3500, &key) == 0);
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTX, 0); /* Y still pushed: the same push */
+    assert(pump(&p, 3500, &key) == 0);
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTX, 32767);
+    assert(pump(&p, 3500, &key) == 0);
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTX, 0);
+    SDL_SetJoystickVirtualAxis(jx, SDL_GAMEPAD_AXIS_RIGHTY, 0);
+    assert(pump(&p, 3500, &key) == 0);
+    SDL_SetJoystickVirtualAxis(jp, SDL_GAMEPAD_AXIS_RIGHTY, 32767);
+    assert(pump(&p, 3500, &key) == 1 && key.key.key == SDLK_L);
+    SDL_SetJoystickVirtualAxis(jp, SDL_GAMEPAD_AXIS_RIGHTY, 0);
+    assert(pump(&p, 3500, &key) == 0 && !gui_pads_repeat(&p, 9000, &key));
     /* a trigger past its way is the page down, held as a button */
     SDL_SetJoystickVirtualAxis(jp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 32767);
     assert(pump(&p, 4000, &key) == 1 && key.key.key == SDLK_PAGEDOWN);

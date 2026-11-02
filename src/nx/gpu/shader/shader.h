@@ -24,11 +24,12 @@ typedef struct {
     u8 bindless;
     u8 bl_cbuf;  /* bindless: the constant buffer holding the handle */
     u8 bl2;      /* the handle is two reads ORed: the texture's and the sampler's */
-    u8 bl2_cbuf; /* the second read's constant buffer */
+    u8 bl2_cbuf; /* the second read's constant buffer, or SH_HANDLE_IMM: bl2_off is the second half itself */
     u8 flags;    /* bit 0 raw integer surface load, bit 1 multisample fetch, bit 2 SNX_TEX_INDEXED; bits 4-7 the
                     indexed table's stride shift */
     u32 bl2_off; /* the second read's offset, in words */
 } ShTex;
+#define SH_HANDLE_IMM 255 /* ShTex.bl2_cbuf of a handle's half that is a constant (the sampler's, from a MOV32I) */
 /* whether two indexed slots read the same handle table the same way */
 static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
@@ -79,7 +80,7 @@ typedef struct {
     u32 gbuf_wmask; /* global buffers the program writes */
     struct {
         u32 cbuf_off;
-        u8 type, bindless, bl_cbuf, kind; /* kind: 0 float store, 1 R32ui load/atomic, 2 unsigned store, 3 signed store */
+        u8 type, bindless, bl_cbuf, kind; /* kind: 1 raw R32ui load/atomic; formatted: 0 float, 2 uint, 3 sint */
     } img[8];
     int nimg; /* storage images stored to or used atomically */
     /* FS key: textures of integer formats and their signed ones. rt_int_mask and rt_sint_mask are FS's integer
@@ -93,6 +94,10 @@ typedef struct {
        order */
     u64 tex_dc_color_mask;
     u32 tex_dc_color_funcs;
+    /* FS: texture slots every read of which is a texel fetch at the fragment's own pixel (TLD or TLDS of a 2D texture
+       at gl_FragCoord's integer x and y, level 0, no offset): the only ones a draw may sample in place while it
+       renders to them (vk/render.c), each fragment reading what earlier draws left at its pixel */
+    u64 tex_own_pixel_mask;
     u32 out_mask; /* generic outputs 0-31 written (all of them after an attribute store at a register's offset) */
     /* FS key: generic inputs the last stage before rasterization doesn't write. They read 0, 0, 0, 1 as yuzu reads
        them (GPL-2.0-or-later, shader_recompiler emit_spirv_context_get_set.cpp): Vulkan leaves an unfed input
@@ -114,7 +119,7 @@ typedef struct {
 #define SNX_VKB_RS       (SNX_VKB_IMG + 8)         /* fragment: 1 / the resolution scale (SNX_RS) */
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
-#define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 storage texel buffers, surface access to buffer images (compute) */
+#define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_TEXARRAY (SNX_VKB_IMGBUF + 8)      /* up to SNX_TEX_ARRAY distinct indexed handles */
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)    /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)    /* their depth views */
@@ -138,6 +143,18 @@ extern int g_shader_viewport_index;
 extern int g_shader_geometry;
 /* shaderFloat16, which fp16 texture results need. 1 offline */
 extern int g_shader_float16;
+/* shaderDrawParameters: a vertex program's instance ID is InstanceIndex less BaseInstance, which an indirect draw's
+   arguments set on the GPU. 1 offline */
+extern int g_shader_draw_parameters;
+/* NVN's draw parameters: its driver writes each draw's base vertex and base instance into constant buffer 0 at these
+   offsets, which vertex programs read (an instanced program adds the base instance to its instance ID). An indirect
+   draw's are in its record, on the GPU: with draw parameters, a vertex program's reads of these words take
+   BaseVertex and BaseInstance where the push constant's z has SH_PUSH_GPU_BASE_VERTEX and SH_PUSH_GPU_BASE_INSTANCE
+   set (render.c) */
+#define SH_CB0_BASE_VERTEX 0x640u
+#define SH_CB0_BASE_INSTANCE 0x644u
+#define SH_PUSH_GPU_BASE_VERTEX 1u
+#define SH_PUSH_GPU_BASE_INSTANCE 2u
 /* quad operations in fragment programs (the subgroup's QUAD bit): SHFL within a quad reads its helper lanes. 1 offline */
 extern int g_shader_quad;
 /* the Tessellation capability, which also gives a fragment program PrimitiveId without Geometry */

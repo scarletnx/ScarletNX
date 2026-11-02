@@ -20,8 +20,7 @@
 #include <unistd.h>
 #endif
 
-__thread FILE* tls_log_redirect;
-__thread void* tls_thread;
+_Thread_local PlatTls t_plat;
 
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096
@@ -46,12 +45,12 @@ static int g_log_cuts;       /* the cuts made; one that failed stops them */
 static long g_log_head = -1; /* the run's start a cut keeps, from the first: the line saying what went comes after it */
 static int g_log_full;       /* log_max in MiB from the first cut until log_full_take, atomic */
 /* written by every line, apart from the flag every line reads */
-static int g_mid_line __attribute__((aligned(64))); /* the last text written did not end its line, atomic */
-static int g_crashing __attribute__((aligned(64))); /* log_crash_mode was called, atomic */
+static _Alignas(64) int g_mid_line; /* the last text written did not end its line, atomic */
+static _Alignas(64) int g_crashing; /* log_crash_mode was called, atomic */
 
 void log_crash_mode(void) {
     __atomic_store_n(&g_crashing, 1, __ATOMIC_SEQ_CST);
-    tls_log_redirect = NULL;
+    t_plat.log_redirect = NULL;
 }
 
 static size_t log_compose(char* out, size_t cap, const char* text);
@@ -278,8 +277,8 @@ void logf_(int lvl, const char* fmt, ...) {
     if (w < 0) return;
     /* a cut line still ends with its newline, so the next one starts on its own */
     if ((size_t)w >= sizeof text) text[sizeof text - 2] = '\n';
-    if (tls_log_redirect) {
-        fputs(text, tls_log_redirect);
+    if (t_plat.log_redirect) {
+        fputs(text, t_plat.log_redirect);
         return;
     }
     if (__atomic_load_n(&g_crashing, __ATOMIC_SEQ_CST)) {
@@ -324,7 +323,7 @@ void fatal(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    tls_log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
+    t_plat.log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
     logf_(0, "FATAL: %s\n", msg);
 #if !defined(_WIN32)
     /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */

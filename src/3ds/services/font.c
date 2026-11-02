@@ -1,113 +1,199 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
-   The shared font block APT:GetSharedFont hands out: Azahar's service/apt/apt.cpp LoadSharedFont and
-   bcfnt/bcfnt.cpp RelocateSharedFont (GPL-2.0-or-later, revision in docs/3DS.md). */
+   Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
+   Copyright 2016 Citra Emulator Project
+   APT's shared font, the block GetSharedFont passes to the application. Ported from Azahar (GPL-2.0-or-later) at
+   azahar-emu/azahar a4b335e: core/hle/service/apt/apt.cpp (LoadSharedFont, DecompressLZ11, and the relocation address
+   in GetSharedFont) and core/hle/service/apt/bcfnt/bcfnt.cpp (RelocateSharedFont). The font is the shared font
+   system title's stand-in (cmake/ctr_system_archives.cmake), a RomFS holding cbf_std.bcfnt.lz: LZ11-compressed CFNT.
+   The block is an 0x80-byte header (status, region, decompressed size) and then the font, its magic changed CFNT ->
+   CFNU and its CFNT pointers relocated to the block's address. Only the standard font has a stand-in, so the region
+   is always JPN's, where Azahar picks the font by the CFG region. */
 #include "3ds/services/font.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/services/archives.h"
 #include "3ds/services/romfs.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include <stdlib.h>
 #include <string.h>
-#define START 0x80u /* the font follows a header of 0x20 words */
-/* LZ11 (the 0x11 header, a 24-bit size or 0 and a 32-bit one): the length of the output, or 0 for a stream that ends
-   short or does not fit */
-static size_t lz11(const unsigned char* in, size_t in_size, unsigned char* out, size_t out_size) {
-    if (in_size < 4 || in[0] != 0x11) return 0;
-    uint64_t size = snx_ld_le32(in) >> 8;
-    size_t at = 4;
-    if (!size) {
-        if (in_size < 8) return 0;
-        size = snx_ld_le32(in + 4);
-        at = 8;
-    }
-    if (size > out_size) return 0;
-    size_t n = 0;
-    for (unsigned flags = 0, left = 0; n < size;) {
-        if (!left) {
-            if (at >= in_size) return 0;
-            flags = in[at++];
-            left = 8;
+
+#define FONT_FILE "cbf_std.bcfnt.lz"
+
+enum {
+    BLOCK_STATUS = 0,
+    BLOCK_REGION = 4,
+    BLOCK_SIZE = 8,
+    BLOCK_FONT = 0x80, /* the CFNT starts here */
+    STATUS_LOADED = 2,
+    REGION_JPN = 1,
+    LZ11_TAG = 0x11,
+    /* the CFNT header: its own size (u16) and its section count (u32) */
+    CFNT_HEADER_SIZE = 6,
+    CFNT_SECTIONS = 0x10,
+    CFNT_MIN_SIZE = 0x14,
+    /* a section: its magic, its size (u32, the 8-byte header included), then its payload */
+    SECTION_SIZE = 4,
+    SECTION_PAYLOAD = 8,
+    /* FINF's pointers name payloads, 8 bytes past the start of the section that each one lies in */
+    FINF_TGLP = 0x10,
+    FINF_CWDH = 0x14,
+    FINF_CMAP = 0x18,
+    FINF_SIZE = 0x1c,
+    /* a CMAP or CWDH link names the payload of the next section of its chain, or is 0 at the end */
+    CMAP_NEXT = 0x10,
+    CMAP_SIZE = 0x14,
+    CWDH_NEXT = 0x0c,
+    CWDH_SIZE = 0x10,
+    TGLP_SHEETS = 0x1c,
+    TGLP_SIZE = 0x20
+};
+
+/* LZ11, as the 3DS carries it: 0x11, the decompressed size in three bytes, then flag bytes whose bits take a literal
+   (0) or a back reference (1) with 2, 3 or 4 bytes of length and distance. It fills `want` bytes of `out`. */
+static bool lz11(const unsigned char* src, uint32_t size, unsigned char* out, uint32_t want) {
+    uint32_t at = 4, used = 0;
+    while (used < want) {
+        if (at >= size) return false;
+        uint32_t flags = src[at++];
+        for (uint32_t mask = 0x80; mask && used < want; mask >>= 1) {
+            if (at >= size) return false;
+            if (!(flags & mask)) {
+                out[used++] = src[at++];
+                continue;
+            }
+            uint32_t lead = src[at++], kind = lead >> 4, length, distance;
+            if (size - at < (kind == 0 ? 2u : kind == 1 ? 3u : 1u)) return false;
+            if (kind == 0) {
+                length = ((lead & 15u) << 4 | src[at] >> 4) + 0x11;
+                distance = ((src[at] & 15u) << 8 | src[at + 1]) + 1;
+                at += 2;
+            } else if (kind == 1) {
+                length = ((lead & 15u) << 12 | (uint32_t)src[at] << 4 | src[at + 1] >> 4) + 0x111;
+                distance = ((src[at + 1] & 15u) << 8 | src[at + 2]) + 1;
+                at += 3;
+            } else {
+                length = kind + 1;
+                distance = ((lead & 15u) << 8 | src[at]) + 1;
+                at += 1;
+            }
+            if (distance > used || length > want - used) return false;
+            for (uint32_t i = 0; i < length; ++i) out[used + i] = out[used - distance + i];
+            used += length;
         }
-        bool copy = flags & 0x80;
-        flags <<= 1;
-        --left;
-        if (!copy) {
-            if (at >= in_size) return 0;
-            out[n++] = in[at++];
-            continue;
-        }
-        if (at >= in_size) return 0;
-        unsigned kind = in[at] >> 4, length, extra = kind > 1 ? 1 : kind ? 3 : 2;
-        if (in_size - at < extra + 1u) return 0;
-        const unsigned char* b = in + at;
-        if (kind > 1)
-            length = kind + 1;
-        else if (kind)
-            length = (((unsigned)(b[0] & 0xf) << 12) | (unsigned)b[1] << 4 | b[2] >> 4) + 0x111;
-        else
-            length = (((unsigned)(b[0] & 0xf) << 4) | b[1] >> 4) + 0x11;
-        uint32_t back = (((uint32_t)(b[extra - 1] & 0xf) << 8) | b[extra]) + 1;
-        at += extra + 1;
-        if (back > n || length > size - n) return 0;
-        for (unsigned i = 0; i < length; ++i, ++n) out[n] = out[n - back];
-    }
-    return n;
-}
-static uint32_t word(const unsigned char* b, size_t at) { return snx_ld_le32(b + at); }
-static void add(unsigned char* b, size_t at, uint32_t delta) { snx_st_le32(b + at, word(b, at) + delta); }
-/* The font's section offsets are absolute addresses once the block lies at its address: the stored ones are those of
-   the address it was built for, which the sections' own positions tell. The block is the CFNT at START: its header,
-   then the FINF, TGLP, CWDH and CMAP sections, each an 8-byte header (magic, size) and a body */
-static bool relocate(unsigned char* b, size_t size, uint32_t address) {
-    if (size < START + 0x14 || memcmp(b + START, "CFNU", 4)) return false;
-    uint32_t blocks = word(b, START + 0x10), end = (uint32_t)size;
-    size_t first = START + (size_t)snx_ld_le16(b + START + 6);
-    uint32_t cmap = 0, cwdh = 0, tglp = 0, assumed[3] = {0, 0, 0}; /* the stored offsets less their section header */
-    size_t at = first;
-    for (uint32_t i = 0; i < blocks; ++i) {
-        if (at + 8 > end) return false;
-        if (!memcmp(b + at, "FINF", 4)) {
-            if (at + 28 > end) return false;
-            assumed[0] = word(b, at + 24) - 8; /* CMAP */
-            assumed[1] = word(b, at + 20) - 8; /* CWDH */
-            assumed[2] = word(b, at + 16) - 8; /* TGLP */
-        } else if (!cmap && !memcmp(b + at, "CMAP", 4))
-            cmap = (uint32_t)at;
-        else if (!cwdh && !memcmp(b + at, "CWDH", 4))
-            cwdh = (uint32_t)at;
-        else if (!tglp && !memcmp(b + at, "TGLP", 4))
-            tglp = (uint32_t)at;
-        uint32_t length = word(b, at + 4);
-        if (!length || length > end - at) return false;
-        at += length;
-    }
-    uint32_t base = assumed[0] - cmap;
-    if (base != assumed[1] - cwdh || base != assumed[2] - tglp) return false;
-    uint32_t delta = address - base;
-    at = first;
-    for (uint32_t i = 0; i < blocks; ++i) {
-        if (!memcmp(b + at, "FINF", 4)) {
-            add(b, at + 16, delta);
-            add(b, at + 20, delta);
-            add(b, at + 24, delta);
-        } else if (!memcmp(b + at, "CMAP", 4)) {
-            if (word(b, at + 16)) add(b, at + 16, delta);
-        } else if (!memcmp(b + at, "CWDH", 4)) {
-            if (word(b, at + 12)) add(b, at + 12, delta);
-        } else if (!memcmp(b + at, "TGLP", 4))
-            add(b, at + 28, delta);
-        at += word(b, at + 4);
     }
     return true;
 }
-bool snx_ctr_shared_font_build(const unsigned char* archive, size_t archive_size, unsigned char* block, size_t size,
-                               uint32_t address) {
-    uint64_t offset, length;
-    if (!snx_ctr_romfs_image_file(archive, archive_size, "cbf_std.bcfnt.lz", &offset, &length)) return false;
-    size_t decompressed = size > START ? lz11(archive + offset, (size_t)length, block + START, size - START) : 0;
-    if (!decompressed) return false;
-    memset(block, 0, START);
-    snx_st_le32(block, 2); /* successfully loaded */
-    snx_st_le32(block + 4, 1); /* the region: Japan, Europe and America */
-    snx_st_le32(block + 8, (uint32_t)decompressed);
-    block[START + 3] = 'U'; /* the magic goes from CFNT to CFNU */
-    return relocate(block, START + decompressed, address);
+static void move_pointer(unsigned char* field, uint32_t delta) { snx_st_le32(field, snx_ld_le32(field) + delta); }
+/* The first pass of Azahar's RelocateSharedFont, over the `size` bytes of block that hold the font: it finds the base
+   the file was built for from the sections' real offsets, and checks each section against the block, so a corrupt font
+   fails here and relocate never reads or writes outside it. */
+static bool scan(const unsigned char* block, uint32_t size, uint32_t* base) {
+    if (size < BLOCK_FONT + CFNT_MIN_SIZE || memcmp(block + BLOCK_FONT, "CFNT", 4)) return false;
+    const unsigned char* cfnt = block + BLOCK_FONT;
+    uint32_t at = BLOCK_FONT + snx_ld_le16(cfnt + CFNT_HEADER_SIZE), blocks = snx_ld_le32(cfnt + CFNT_SECTIONS);
+    uint32_t first_cmap = 0, first_cwdh = 0, first_tglp = 0, finf_cmap = 0, finf_cwdh = 0, finf_tglp = 0;
+    for (uint32_t i = 0; i < blocks; ++i) {
+        if (at > size || size - at < SECTION_PAYLOAD) return false;
+        const unsigned char* section = block + at;
+        uint32_t bytes = snx_ld_le32(section + SECTION_SIZE);
+        if (bytes < SECTION_PAYLOAD || bytes > size - at) return false;
+        if (!memcmp(section, "FINF", 4)) {
+            if (bytes < FINF_SIZE) return false;
+            finf_tglp = snx_ld_le32(section + FINF_TGLP) - SECTION_PAYLOAD;
+            finf_cwdh = snx_ld_le32(section + FINF_CWDH) - SECTION_PAYLOAD;
+            finf_cmap = snx_ld_le32(section + FINF_CMAP) - SECTION_PAYLOAD;
+        } else if (!memcmp(section, "CMAP", 4)) {
+            if (bytes < CMAP_SIZE) return false;
+            if (!first_cmap) first_cmap = at;
+        } else if (!memcmp(section, "CWDH", 4)) {
+            if (bytes < CWDH_SIZE) return false;
+            if (!first_cwdh) first_cwdh = at;
+        } else if (!memcmp(section, "TGLP", 4)) {
+            if (bytes < TGLP_SIZE) return false;
+            if (!first_tglp) first_tglp = at;
+        }
+        at += bytes;
+    }
+    *base = finf_cmap - first_cmap;
+    return first_cmap && first_cwdh && first_tglp && *base == finf_cwdh - first_cwdh && *base == finf_tglp - first_tglp;
+}
+/* The second pass: every pointer (FINF's three, the CMAP and CWDH next links when set, TGLP's sheet data) moves by
+   `delta`, the new address minus the base scan found. */
+static void relocate(unsigned char* block, uint32_t delta) {
+    const unsigned char* cfnt = block + BLOCK_FONT;
+    uint32_t at = BLOCK_FONT + snx_ld_le16(cfnt + CFNT_HEADER_SIZE), blocks = snx_ld_le32(cfnt + CFNT_SECTIONS);
+    for (uint32_t i = 0; i < blocks; ++i) {
+        unsigned char* section = block + at;
+        if (!memcmp(section, "FINF", 4)) {
+            move_pointer(section + FINF_TGLP, delta);
+            move_pointer(section + FINF_CWDH, delta);
+            move_pointer(section + FINF_CMAP, delta);
+        } else if (!memcmp(section, "CMAP", 4)) {
+            if (snx_ld_le32(section + CMAP_NEXT)) move_pointer(section + CMAP_NEXT, delta);
+        } else if (!memcmp(section, "CWDH", 4)) {
+            if (snx_ld_le32(section + CWDH_NEXT)) move_pointer(section + CWDH_NEXT, delta);
+        } else if (!memcmp(section, "TGLP", 4)) {
+            move_pointer(section + TGLP_SHEETS, delta);
+        }
+        at += snx_ld_le32(section + SECTION_SIZE);
+    }
+}
+/* The first GetSharedFont: the stand-in decompressed straight into the block, relocated for the address the block is
+   mapped at, and written to its pages. That address is the linear heap address of the pages, as Azahar relocates the
+   font (apt.cpp, GetSharedFont). The pages are handed out in order, so the address depends on what was reserved before
+   this call: with only the main thread's TLS page reserved, the block lies at 0x18001000 on an Old 3DS and at
+   0x1bc01000 on a New 3DS. The stand-in's block is 0x2fe000 bytes, so it ends below 0x1c000000 on both. The steps that
+   can fail come before the pages are reserved. */
+static bool load(SnxCtrProcess* p, uint32_t* handle) {
+    uint64_t at = 0, bytes = 0;
+    if (!snx_ctr_romfs_file(snx_ctr_shared_font, snx_ctr_shared_font_size, FONT_FILE, &at, &bytes) || bytes < 4 ||
+        bytes > UINT32_MAX || snx_ctr_shared_font[at] != LZ11_TAG)
+        return false;
+    const unsigned char* file = snx_ctr_shared_font + at;
+    uint32_t file_size = (uint32_t)bytes;
+    uint32_t font_size = snx_ld_le32(file) >> 8, used = BLOCK_FONT + font_size;
+    uint32_t size = (uint32_t)snx_align_up(used, 4096);
+    unsigned char* block = calloc(1, size);
+    if (!block) return false;
+    uint32_t base = 0, served = 0;
+    if (!lz11(file, file_size, block + BLOCK_FONT, font_size) || !scan(block, used, &base) ||
+        snx_ctr_object_create(p, CTR_OBJ_SHARED, &served)) {
+        free(block);
+        return false;
+    }
+    uint32_t physical = snx_ctr_shared_pages(p, size);
+    if (!physical) {
+        free(block);
+        (void)snx_ctr_handle_close(p, served);
+        return false;
+    }
+    relocate(block, snx_ctr_linear_address(physical) - base);
+    memcpy(block + BLOCK_FONT, "CFNU", 4); /* CFNT -> CFNU, as APT serves it */
+    snx_st_le32(block + BLOCK_STATUS, STATUS_LOADED);
+    snx_st_le32(block + BLOCK_REGION, REGION_JPN);
+    snx_st_le32(block + BLOCK_SIZE, font_size);
+    /* the range lies in FCRAM, which snx_ctr_shared_pages checked, and device() accepts a range inside one region */
+    (void)snx_ctr_phys_write(p->memory, physical, block, size);
+    free(block);
+    uint32_t id = snx_ctr_handle_object(p, served);
+    CtrObject* object = &p->objects[id];
+    object->data.shared.physical = physical;
+    object->data.shared.size = size;
+    object->data.shared.permissions = SNX_CTR_READ; /* GetSharedFont is called to read it */
+    ++object->refs;                                 /* APT keeps the block while the process lives */
+    p->apt_font = id;
+    *handle = served;
+    return true;
+}
+bool snx_ctr_font_shared(SnxCtrProcess* p, uint32_t* address, uint32_t* handle) {
+    *address = 0;
+    *handle = 0;
+    if (!p->apt_font) {
+        if (!load(p, handle)) return false;
+    } else if (snx_ctr_handle_add(p, p->apt_font, handle)) {
+        return false;
+    }
+    *address = snx_ctr_linear_address(p->objects[p->apt_font].data.shared.physical);
+    return true;
 }

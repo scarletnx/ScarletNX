@@ -18,6 +18,7 @@
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/fatal_screen.h"
+#include "nx/runtime/platform/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
@@ -225,6 +226,19 @@ int backend_ini(const char* k, const char* v) {
 static void wsize_set(int w, int h) {
     if (w > 0 && h > 0) __atomic_store_n(&g_wsize, (u64)(u32)w | (u64)(u32)h << 32, __ATOMIC_RELAXED);
 }
+/* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
+   to another display, read by the renderer's threads */
+static u64 g_refresh_ns;
+static void refresh_set(void) {
+    const SDL_DisplayMode* m = g_win ? SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(g_win)) : NULL;
+    u64 ns = 0;
+    if (m && m->refresh_rate_numerator > 0 && m->refresh_rate_denominator > 0)
+        ns = (u64)1000000000u * (u64)m->refresh_rate_denominator / (u64)m->refresh_rate_numerator;
+    else if (m && m->refresh_rate > 0)
+        ns = (u64)(1e9 / m->refresh_rate);
+    __atomic_store_n(&g_refresh_ns, ns, __ATOMIC_RELAXED);
+}
+u64 backend_display_refresh_ns(void) { return g_opt_headless ? 0 : __atomic_load_n(&g_refresh_ns, __ATOMIC_RELAXED); }
 /* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
    on the main thread with the size, read by the renderer on its own */
 static u64 g_wsafe;
@@ -334,11 +348,17 @@ static void buzzer_open(void) {
 #endif
 }
 
+/* the renderer's start failed: what it says of why, with its values, else the log has it */
+static void renderer_failed(const char* what) {
+    const char* why = g_renderer->start_failure ? g_renderer->start_failure() : "";
+    if (why && why[0]) fatal("%s: %s.", what, why);
+    fatal("%s (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.", what);
+}
 void video_init(const char* title, const char* addons) {
     if (g_opt_headless) {
         /* No SDL video subsystem: this also works without DISPLAY, WAYLAND_DISPLAY or a seat. */
         unattended_start();
-        if (!g_renderer->start()) fatal("Headless Vulkan could not start (see the log). Vulkan 1.3 is required.");
+        if (!g_renderer->start()) renderer_failed("Headless Vulkan could not start");
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
         return;
     }
@@ -391,8 +411,8 @@ void video_init(const char* title, const char* addons) {
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
     wsize_set(w, h);
     wsafe_set();
-    if (!g_renderer->start())
-        fatal("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.");
+    refresh_set();
+    if (!g_renderer->start()) renderer_failed("Vulkan could not start");
     LOG("renderer: Vulkan\n");
     /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
     if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
@@ -402,8 +422,13 @@ void video_init(const char* title, const char* addons) {
 #endif
 }
 
-void* backend_vk_loader(void) { return (void*)SDL_Vulkan_GetVkGetInstanceProcAddr(); }
+void* backend_vk_loader(void) {
+    void* own = gpu_driver_open();
+    return own ? own : (void*)SDL_Vulkan_GetVkGetInstanceProcAddr();
+}
 void* backend_vk_driver(void) {
+    void* own = gpu_driver_open();
+    if (own) return own;
 #ifdef __APPLE__
     /* The library the program's folders carry (snx_vulkan_driver), for a run with no window: SDL's own search of the
        bundle needs its video subsystem, and a game's runtime copy is outside the bundle. It stays loaded for the run,
@@ -429,7 +454,16 @@ const char* const* backend_vk_extensions(u32* n) {
     *n = c;
     return e;
 }
+void backend_vk_check(void) { gpu_driver_check(); }
 int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
+#ifdef SDL_PLATFORM_ANDROID
+    /* a package's instance: SDL would ask the system's loader for its surface */
+    if (gpu_driver_custom())
+        return gpu_driver_surface(
+            instance,
+            SDL_GetPointerProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL),
+            surface);
+#endif
     if (SDL_Vulkan_CreateSurface(g_win, instance, NULL, surface)) return 1;
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
@@ -1311,6 +1345,8 @@ void video_poll(void) {
                 wsafe_set();
                 break;
             case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
+            case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+            case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refresh_set(); break;
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
                 overlay_set_display_scale(SDL_GetWindowDisplayScale(g_win));
                 break;

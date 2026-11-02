@@ -283,6 +283,233 @@ msgstr ""
 msgid "Saved in %s"
 msgstr ""
 
+#: src/gui/gpu_driver.c
+msgid "Debug - CPU Memory"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Use CPU memory (slower but more stable)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No UBWC"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable UBWC compression for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Debug - No Binning"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Disable binning optimization"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - Renderpass"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream data for debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture - First 100 Frames"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Capture command stream for first 100 frames only"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Shader Debug"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable IR3 shader compiler debugging"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "GPU Hang Trace"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Trace GPU progress for debugging hangs"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Dev - UBWC Flag Hint"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Enable TP UBWC flag hint for development"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Performance - Default"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "Clear all debug options for performance"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s is not a zip (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's entry %u does not read (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s is %s; a driver's files are at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a folder"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "not a file at the zip's top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s unpacks to %llu bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no meta.json at its top"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json is %llu bytes, over the %d a driver's takes"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's meta.json does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s has no %s, the library its meta.json names"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s needs Android API %d; this device has API %d"
+msgstr ""
+
+#: src/gui/gpu_driver.c src/gui/main.c
+#, c-format
+msgid "Not added: %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Already added: %s (%s/%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s/%s holds %s %s already; remove it first"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "a package whose meta.json does not read,"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: no memory for %s's paths"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be made (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s does not unpack (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s's %s %s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not be written (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not added: %s could not become %s (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Added %s (%s), in %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c src/gui/main.c
+msgid "no driverVersion"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Removed %s/%s"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is no driver's folder name"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s is not there"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+#, c-format
+msgid "Not removed: %s could not be deleted (%s)"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "GitHub says of %s: %s"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "%s's releases are not GitHub's list of them (%zu bytes)"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+#, c-format
+msgid "no memory for %s's %zu releases and %zu assets"
+msgstr ""
+
+#: src/gui/gpu_driver_fetch.c
+msgid "Unsupported"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -305,6 +532,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Tap: open. Drag: scroll. Refresh."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Play."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -466,6 +699,42 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Tap: use, add or remove. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: downloads, or fetch again. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save. Back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: use, add or remove."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: downloads, or fetch again."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Tap: apply, type, remove or save."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: select."
 msgstr ""
 
@@ -517,6 +786,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Arrows: select. Enter/Space: open. PgUp/PgDown: scroll. F5: refresh."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L: play."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -666,6 +941,24 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Up/Down: row. Enter: use, add or remove. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: downloads, or fetch again. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Up/Down: row. Enter: apply, type, remove or save. Del: remove. ESC: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Up/Down: queue."
 msgstr ""
 
@@ -717,6 +1010,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: select. A: open. LT/RT: scroll. Start: refresh. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Right stick: play."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -831,6 +1130,24 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "D-pad: user, current user. A: rename. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: use, add or remove. X: remove. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: downloads, or fetch again. B: back."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "D-pad: row. A: apply, type, remove or save. X: remove. B: back."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1231,7 +1548,9 @@ msgstr ""
 msgid "Delete"
 msgstr ""
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
+#, snx-key
 msgid "Play"
 msgstr ""
 
@@ -1384,6 +1703,16 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "GPU Driver: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Global (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Mod %s"
 msgstr ""
 
@@ -1422,6 +1751,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Save States"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno Settings"
 msgstr ""
 
 #: src/gui/main.c
@@ -1471,11 +1804,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not added: cannot make %s: %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "Not added: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -1576,6 +1904,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is a dump: its recompiled game keeps its own GPU driver and Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s is a dump: its recompiled game keeps the save states"
 msgstr ""
 
@@ -1665,6 +1998,18 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FOLDERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
 msgstr ""
 
 #: src/gui/main.c
@@ -2049,6 +2394,18 @@ msgid "The data and the extractions, and the libraries Games lists: recompiled g
 msgstr ""
 
 #: src/gui/main.c
+msgid "GPU Drivers"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan drivers for Adreno GPUs on Android, Turnip among them: add, remove, and the one games use"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip variables every game starts with (TU_DEBUG...), and their presets"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Clean Old Settings"
 msgstr ""
 
@@ -2103,6 +2460,15 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%d set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "None"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%d left"
 msgstr ""
 
@@ -2133,7 +2499,7 @@ msgid "%s: each folder of an older version's lines is in a library now: %s"
 msgstr ""
 
 #: src/gui/main.c
-msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too while it says + subfolders. It stays on the list"
+msgid "Dumps put here are listed (.nsp, .xci and .nro), its subfolders' too with + subfolders. Remove from Library takes it off, its files kept"
 msgstr ""
 
 #: src/gui/main.c
@@ -2143,6 +2509,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "(none)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is the dumps library's Main row, taken off it: its Add to Library puts it back"
 msgstr ""
 
 #: src/gui/main.c
@@ -2184,6 +2555,41 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s removed from the library. Its games stay in the folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s removed from the library. Its games stay in the folder; new games go to an Extra"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again, but could not be made"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Dumps Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is in the Recompiled Library again: Games lists its games"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Dumps Library? Its games stay in the folder, which ScarletNX no longer makes as it starts."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove %s from the Recompiled Library? Its games stay in the folder, and new games go to an Extra of it."
 msgstr ""
 
 #: src/gui/main.c
@@ -2287,6 +2693,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Main"
+msgstr ""
+
+#: src/gui/main.c
+msgid "not listed"
 msgstr ""
 
 #: src/gui/main.c
@@ -2439,6 +2849,378 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Its nickname, as the games and Eden rooms show it: 4 to 20 of A-Z a-z 0-9 space . _ -"
+msgstr ""
+
+#: src/gui/main.c
+msgid "System driver"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No Vulkan loader: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Vulkan did not start: VkResult %d"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Vulkan lists no GPU"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, Vulkan %u.%u.%u, driver %08x"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher reads no Vulkan driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The GPU driver Settings > App > GPU Drivers picks for every game"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The system's own: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s, by %s, package %s, Android API %d or newer, in %s/%s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no vendor"
+msgstr ""
+
+#: src/gui/main.c
+msgid "no author"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Download Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The releases of the driver repositories Eden lists, from GitHub: one picked is downloaded and added as Add Driver adds a zip. A GPU maker's own drivers are marked proprietary, no license"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A driver package's zip, a meta.json and the driver's libraries at its top as Turnip's releases are: unpacked into gpu_drivers/ of the user's data folder"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own GPU driver. %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " %zu more packages are not listed."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s/%s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not picked: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU driver for every game: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not kept: %s could not be written"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: the GPU driver for every game (%s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: GPU driver %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Remove the driver %s? Games set to it will not start until another is picked."
+msgstr ""
+
+#: src/gui/main.c
+msgid "; the GPU driver for every game is the System driver now"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Driver package"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Add Driver: the file picker could not open: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No file was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s is %lld bytes, over the %llu a driver takes"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: %s does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d, %.200s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GET %s: HTTP %d"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Download Driver: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %zu downloads. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest, Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Recommended"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Latest"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Prerelease"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu release"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %zu releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No releases"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Fetch Again"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Loading..."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Failed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Less"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Only its latest and the recommended release"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "More (%zu)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "GPU: %s. Recommended: %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "not known"
+msgstr ""
+
+#: src/gui/main.c
+msgid "This build of the launcher has no HTTPS client: Add Driver takes a zip downloaded by hand"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no download"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s, %s (proprietary, no license)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s downloads already: one at a time"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s..."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s of %s (%d%%)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Downloading %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not downloaded: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "every variable cleared"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s=%s. A press removes it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Name (e.g., TU_DEBUG)"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Capitals, digits and _, starting TU_, FD_ or IR3_"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable Value"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Its value, without ;"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Add Variable"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The name and value typed above, set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Clear All"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Every variable taken out"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "freedreno_env does not read: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: its own Freedreno variables"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: none of its own, the launcher's go"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Mesa's Freedreno and Turnip read these as a game starts (docs.mesa3d.org/drivers/freedreno.html). Save keeps them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not saved: the variables take over %d bytes"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Freedreno configuration saved"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Preset '%s' applied"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s removed"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Variable name cannot be empty"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s's value \"%s\" has a ;, which ends it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not added: the variables take %d bytes at most"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Variable %s added"
+msgstr ""
+
+#: src/gui/main.c
+msgid "All Freedreno variables cleared"
 msgstr ""
 
 #: src/gui/main.c
@@ -2943,6 +3725,10 @@ msgid "beside the program, made then"
 msgstr ""
 
 #: src/gui/main.c
+msgid " (not listed)"
+msgstr ""
+
+#: src/gui/main.c
 msgid " + subfolders"
 msgstr ""
 
@@ -2984,6 +3770,20 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Nothing to keep: no file of the menu's"
+msgstr ""
+
+#: src/gui/main.c
+msgid "the game wrote no log"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the game wrote no log since it started; the newest is %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "The game stopped: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -3103,10 +3903,6 @@ msgid "The run ended with status %d."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Failed"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Ready"
 msgstr ""
 
@@ -3159,6 +3955,14 @@ msgid "Subfolders"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Add to Library"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Use"
+msgstr ""
+
+#: src/gui/main.c
 msgid "How to share the logs?"
 msgstr ""
 
@@ -3193,6 +3997,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "the selected driver"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The Recompiled Library's Main is off and no Extra of it can take a game: Add to Library on its Main, or add a folder to it, in Settings > App > Folders"
 msgstr ""
 
 #: src/gui/main.c
@@ -3325,6 +4133,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "R recompiles games: a Linux program runs as it is."
+msgstr ""
+
+#: src/gui/main.c
+msgid "No game in focus to play."
 msgstr ""
 
 #: src/gui/main.c
@@ -3558,6 +4370,12 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "Right stick"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "ESC"
 msgstr ""
 
@@ -3648,6 +4466,12 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "L"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "R"
 msgstr ""
 
@@ -3733,10 +4557,6 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Refresh"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No file was picked."
 msgstr ""
 
 #: src/gui/main.c
@@ -4491,6 +5311,14 @@ msgstr ""
 
 #: src/nx/runtime/settings.txt
 msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "LLVM batch"
+msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

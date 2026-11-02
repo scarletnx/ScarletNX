@@ -178,6 +178,62 @@ static unsigned long elf_hash(const char* name) {
     return h;
 }
 
+/* a hot section (SNX_LINK_HOT_TEXT) and its rank */
+typedef struct {
+    unsigned long long rank;
+    SnxElfPlace place;
+} Ranked;
+static int by_rank(const void* a, const void* b) {
+    const Ranked* x = (const Ranked*)a;
+    const Ranked* y = (const Ranked*)b;
+    if (x->rank != y->rank) return x->rank < y->rank ? -1 : 1;
+    if (x->place.object != y->place.object) return x->place.object < y->place.object ? -1 : 1;
+    return (x->place.section > y->place.section) - (x->place.section < y->place.section);
+}
+
+/* the code's order for snx_elf_layout: the hot sections by their ranks, then the others in object and section order.
+   *order stays NULL (object order) without hot sections, or when an object has veneers. 0, or -1 */
+static int text_order(Link* l, SnxElfPlace** order) {
+    size_t hot = 0, total = 0, n = 0, prefix = strlen(SNX_LINK_HOT_TEXT);
+    Ranked* ranked;
+    *order = NULL;
+    for (size_t i = 0; i < l->nobjs; ++i) {
+        const SnxElfObject* o = &l->objs[i];
+        if (o->veneers) return 0;
+        for (size_t j = 0; j < o->eh->e_shnum; ++j)
+            if (o->kind[j] == SNX_ELF_TEXT) {
+                ++total;
+                hot += !strncmp(snx_elf_section_name(o, j), SNX_LINK_HOT_TEXT, prefix);
+            }
+    }
+    if (!hot) return 0;
+    ranked = (Ranked*)malloc(hot * sizeof(*ranked));
+    *order = (SnxElfPlace*)malloc(total * sizeof(**order));
+    if (!ranked || !*order) {
+        free(ranked);
+        return fail(l, "out of memory%s%s", "", "");
+    }
+    for (size_t i = 0; i < l->nobjs; ++i)
+        for (size_t j = 0; j < l->objs[i].eh->e_shnum; ++j) {
+            const char* name = snx_elf_section_name(&l->objs[i], j);
+            if (l->objs[i].kind[j] != SNX_ELF_TEXT || strncmp(name, SNX_LINK_HOT_TEXT, prefix)) continue;
+            ranked[n].rank = strtoull(name + prefix, NULL, 10);
+            ranked[n].place.object = i;
+            ranked[n++].place.section = j;
+        }
+    qsort(ranked, hot, sizeof(*ranked), by_rank);
+    for (n = 0; n < hot; ++n) (*order)[n] = ranked[n].place;
+    free(ranked);
+    for (size_t i = 0; i < l->nobjs; ++i)
+        for (size_t j = 0; j < l->objs[i].eh->e_shnum; ++j)
+            if (l->objs[i].kind[j] == SNX_ELF_TEXT &&
+                strncmp(snx_elf_section_name(&l->objs[i], j), SNX_LINK_HOT_TEXT, prefix)) {
+                (*order)[n].object = i;
+                (*order)[n++].section = j;
+            }
+    return 0;
+}
+
 /* the output's section headers, for tools: debuggers and objdump find the code and the symbols */
 enum {
     S_NULL,
@@ -211,6 +267,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     size_t nsyms = export_count + 1, ndyn = 0;
     int rc = -1;
     Elf64_Dyn dyn[16];
+    SnxElfPlace* text = NULL;
     (void)soname;
     *output = (SnxLinkOutput){0};
     l.error = error;
@@ -223,8 +280,10 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
         if (snx_elf_parse(&l.objs[i], &inputs[i], &l.machine, &l.abi, error, error_size)) goto done;
     l.relative = snx_elf_relative_type(l.machine);
     l.page = l.machine == EM_X86_64 ? 0x1000 : 0x10000;
-    if (snx_elf_collect_globals(l.objs, count, NULL, &l.globals, error, error_size) || scan_relocations(&l)) goto done;
-    snx_elf_layout(l.objs, count, l.kind_size, l.kind_align);
+    if (snx_elf_collect_globals(l.objs, count, NULL, &l.globals, error, error_size) || scan_relocations(&l) ||
+        text_order(&l, &text))
+        goto done;
+    snx_elf_layout(l.objs, count, text, l.kind_size, l.kind_align);
     /* dynamic symbol names */
     snx_link_append(&dynstr, "", 1);
     for (size_t i = 0; i < export_count; ++i) snx_link_append(&dynstr, exports[i], strlen(exports[i]) + 1);
@@ -564,6 +623,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
 done:
     for (size_t i = 0; l.objs && i < count; ++i) snx_elf_free(&l.objs[i]);
     free(l.objs);
+    free(text);
     free(export_address);
     snx_link_names_free(&l.globals);
     snx_link_names_free(&l.got);

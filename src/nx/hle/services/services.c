@@ -61,6 +61,8 @@ void svc_core_init(void) {
     nn_timesrv_detail_service_IStaticService_register(new_time);
     svc_register("time:u", new_time_user);
     nn_account_IAccountServiceForApplication_register(new_acc);
+    nn_account_IAccountServiceForSystemService_register(new_acc_system);
+    nn_account_IAccountServiceForAdministrator_register(new_acc_admin);
     /* one interface, two kinds of session (ldr.c) */
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
@@ -94,6 +96,7 @@ void svc_core_init(void) {
     nn_nfp_detail_IUserManager_register(new_nfp);
     nn_nfc_detail_IUserManager_register(new_nfc);
     nn_bcat_detail_ipc_IServiceCreator_register(new_bcat);
+    nn_nim_detail_IShopServiceAccessServerInterface_register(new_nim);
     nn_aocsrv_detail_IAddOnContentManager_register(new_aoc);
     nn_irsensor_IIrSensorServer_register(new_irs);
     nn_mii_detail_IStaticService_register(new_mii);

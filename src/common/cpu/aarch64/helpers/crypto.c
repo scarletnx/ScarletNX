@@ -7,6 +7,7 @@
    games by arm/crypto_helpers.c under other names. The guard keeps a second inclusion in the same unit out. */
 #ifndef SNX_HELPERS_CRYPTO_C
 #define SNX_HELPERS_CRYPTO_C
+#include "common/utilities/bits.h"
 /* The Cortex-A57's crypto extension: AESE/AESD/AESMC/AESIMC, SHA-1, SHA-256 and the 64-bit PMULL, on the vector
    registers in plain C. */
 
@@ -191,25 +192,27 @@ void v_sha256(CPU* c, u32 op, u32 d, u32 n, u32 m) {
 /* PMULL/PMULL2 of 64-bit lanes: the carry-less product of the low (or high) doublewords, 128 bits. With x split into
    two 32-bit halves and y into four classes (one bit in four), each 8-by-16-bit product's output bit counts at most 8
    pairs, so a class's counts fit in four bits and no carry reaches the next position of that class; the classes and
-   halves are XORed back. 32 multiplies, no data-dependent branches */
+   halves are XORed back. 32 multiplies (64 by 64 to 128 bits, bits.h's), no data-dependent branches */
 void v_pmull(V128* d, const V128* a, const V128* b, int hi) {
-    __extension__ typedef unsigned __int128 u128;
     static const u64 m = 0x1111111111111111ULL;
-    u64 x = SNX_VD(*a, hi ? 1 : 0), y = SNX_VD(*b, hi ? 1 : 0);
-    u128 r = 0;
+    u64 x = SNX_VD(*a, hi ? 1 : 0), y = SNX_VD(*b, hi ? 1 : 0), r_lo = 0, r_hi = 0;
     for (int h = 0; h < 2; ++h) {
-        u64 half = h ? x >> 32 : x & 0xFFFFFFFFULL;
-        u128 part = 0;
+        u64 half = h ? x >> 32 : x & 0xFFFFFFFFULL, part_lo = 0, part_hi = 0;
         for (int c = 0; c < 4; ++c) {
-            u128 z = 0;
-            for (int i = 0; i < 4; ++i) z ^= (u128)(half & (m << i)) * (y & (m << ((c - i) & 3)));
-            z &= (u128)(m << c) | ((u128)(m << c) << 64);
-            part |= z;
+            u64 z_lo = 0, z_hi = 0;
+            for (int i = 0; i < 4; ++i) {
+                u64 p_hi, p_lo = snx_mul_wide(half & (m << i), y & (m << ((c - i) & 3)), &p_hi);
+                z_lo ^= p_lo;
+                z_hi ^= p_hi;
+            }
+            part_lo |= z_lo & (m << c);
+            part_hi |= z_hi & (m << c);
         }
-        r ^= h ? part << 32 : part;
+        r_lo ^= h ? part_lo << 32 : part_lo;
+        r_hi ^= h ? part_hi << 32 | part_lo >> 32 : part_hi;
     }
-    SNX_VSET_D(*d, 0, (u64)r);
-    SNX_VSET_D(*d, 1, (u64)(r >> 64));
+    SNX_VSET_D(*d, 0, r_lo);
+    SNX_VSET_D(*d, 1, r_hi);
 }
 
 #endif

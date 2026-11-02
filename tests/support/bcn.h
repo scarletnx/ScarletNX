@@ -21,8 +21,10 @@ enum {
 
 /* a w x h image of 4x4 blocks of kind (rows of whole blocks, row after row) to pixels, little-endian as the GPU reads
    them: RGBA8 for BC1 to BC3 and BC7, R16 and R16G16 (unorm or snorm as the kind says) for BC4 and BC5, RGBA16F with
-   alpha 1.0 for BC6H */
+   alpha 1.0 for BC6H. BC1 to BC5's interpolants are those of NVIDIA's GPUs, the Switch's among them (bcn.c) */
 void bcn_decode_image(const u8* src, u32 w, u32 h, int kind, u8* dst);
+/* the same with BC1 to BC5's interpolants exact and rounded to nearest, as the specification's other GPUs come near */
+void bcn_decode_image_spec(const u8* src, u32 w, u32 h, int kind, u8* dst);
 /* the bytes of one block of kind, and of one output pixel */
 u32 bcn_block_bytes(int kind);
 u32 bcn_pixel_bytes(int kind);
