@@ -7013,11 +7013,13 @@ static void settings_forget(App* app) {
     app->view_count = 0;
 }
 char* (*snx_menu_settings)(void) = NULL;
+static void write_settings(App* app);
 /* the Settings' rows: the runtime's list after the launcher's own, read the first time from the runtime the menu is
    built into, else from the program that runs Switch inputs */
 static GuiSettings* settings_of(App* app) {
     char* driver = NULL;
-    char* list;
+    char *list, old[sizeof app->message];
+    size_t m;
     if (app->settings.keys) return &app->settings;
     if (snx_menu_settings) /* this program's own: every section at once, with no program to ask */
         list = snx_menu_settings();
@@ -7033,17 +7035,23 @@ static GuiSettings* settings_of(App* app) {
     gui_settings_read(&app->settings, list ? list : "");
     free(list);
     free(driver);
-    /* the launcher's own choices win over the game's .ini, as its items did: a phone plays on the whole screen, its
-       pad shown */
+    /* the launcher's own choices win over the game's .ini, as its items did: Off or On to every run, a phone's on the
+       whole screen, its pad shown */
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
-    gui_settings_set(&app->settings, "fullscreen", "1");
-    gui_settings_set(&app->settings, "controls", "1");
+    gui_settings_always(&app->settings, "fullscreen", "1");
+    gui_settings_always(&app->settings, "controls", "1");
 #else
-    gui_settings_set(&app->settings, "fullscreen", "0");
-    gui_settings_set(&app->settings, "controls", "0");
+    gui_settings_always(&app->settings, "fullscreen", "0");
+    gui_settings_always(&app->settings, "controls", "0");
 #endif
     gui_settings_mark(&app->settings);
-    gui_settings_load(&app->settings, app->settings_file);
+    /* an older version's fullscreen=.ini, which passed nothing: the launcher's choice, written so and said once */
+    if (gui_settings_load(&app->settings, app->settings_file, old, sizeof old)) {
+        write_settings(app);
+        gui_log("%s: %s", app->settings_file, old);
+        m = strlen(app->message);
+        snprintf(app->message + m, sizeof app->message - m, "%s%s: %s", m ? " " : "", app->settings_file, old);
+    }
     return &app->settings;
 }
 /* ---- the theme editor's preview: the menu or a run in the theme being edited ---- */
@@ -10568,8 +10576,10 @@ static const char* form_note(const App* app) {
                                      : snx_tr("Data, Logs, Caches, Extractions and the recompiled library's Main");
     }
     if (app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_GROUP) return NULL;
-    return app->settings.count > app->settings.own ? snx_tr("For the next runs. [default]: as the game's .ini says")
-                                                   : snx_tr("The runtime listed no settings");
+    if (app->settings.count <= app->settings.own) return snx_tr("The runtime listed no settings");
+    if (app->form == GUI_FORM_GROUP && app->settings.values[setting_of(app, app->editor.row)].always)
+        return snx_tr("For the next runs, over the game's .ini"); /* Fullscreen and Show controls: both values passed */
+    return snx_tr("For the next runs. [default]: as the game's .ini says");
 }
 /* the right box's rows: on the groups, the focused group's, to see before opening it, made in peek; else the
    editor's */

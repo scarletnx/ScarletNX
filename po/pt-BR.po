@@ -3337,12 +3337,16 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "Dados, Logs, Caches, Extrações e a Principal da biblioteca de recompilados"
 
 #: src/gui/main.c
-msgid "For the next runs. [default]: as the game's .ini says"
-msgstr "Para as próximas execuções. [padrão]: como diz o .ini do jogo"
-
-#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "O runtime não listou nenhum ajuste"
+
+#: src/gui/main.c
+msgid "For the next runs, over the game's .ini"
+msgstr "Para as próximas execuções, acima do .ini do jogo"
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
+msgstr "Para as próximas execuções. [padrão]: como diz o .ini do jogo"
 
 #: src/gui/main.c src/gui/settings.c
 msgid "[default]"
@@ -4701,6 +4705,11 @@ msgstr "Uma página própria, como no menu do jogo"
 #: src/gui/settings.c
 msgid "Every row of this page at once"
 msgstr "Todas as linhas desta página de uma vez"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
+msgstr "%s=.ini não é mais um valor de %s: agora %s=%s"
 
 #: src/gui/settings.c
 msgid "Mixed"

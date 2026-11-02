@@ -144,12 +144,17 @@ void gui_settings_free(GuiSettings* s) {
     free(s->keys);
     memset(s, 0, sizeof *s);
 }
+static int find(const GuiSettings* s, const char* key) {
+    int i;
+    for (i = 0; i < s->count && (s->values[i].kind || strcmp(s->values[i].key, key)); ++i) {}
+    return i;
+}
 /* row i's value as a file of picks keeps it: a word row's value (.ini for none), a typed row's text */
 static const char* kept(const GuiSettings* s, int i) {
     const GuiSetting* v = &s->values[i];
     if (s->keys[i].type == GUI_KEY_ACTION) return "";
     if (s->keys[i].type == GUI_KEY_TEXT) return v->text;
-    return v->values && v->word ? v->values[v->word] : s->keys[i].words[v->word];
+    return v->values && (v->word || v->always) ? v->values[v->word] : s->keys[i].words[v->word];
 }
 /* row i set to value, a value of its words or a text: 1 when it did */
 static int set(GuiSettings* s, int i, const char* value) {
@@ -157,11 +162,12 @@ static int set(GuiSettings* s, int i, const char* value) {
     int w;
     if (s->keys[i].type != GUI_KEY_WORD || !v->values) return gui_theme_set(s->values, &s->keys[i], value);
     for (w = 0; s->keys[i].words[w]; ++w)
-        if (!strcmp(value, w ? v->values[w] : s->keys[i].words[0])) {
+        if (!strcmp(value, w || v->always ? v->values[w] : s->keys[i].words[0])) {
             v->word = w;
             return 1;
         }
-    if (v->def && *v->def && !strcmp(value, v->def)) { /* the default no word has (off, the launcher's): no pick */
+    /* the default no word has (off, the launcher's): no pick, which an always row does not have */
+    if (!v->always && v->def && *v->def && !strcmp(value, v->def)) {
         v->word = 0;
         return 1;
     }
@@ -171,20 +177,42 @@ void gui_settings_mark(GuiSettings* s) {
     int i;
     for (i = 0; i < s->count; ++i) snprintf(s->values[i].start, sizeof s->values[i].start, "%s", kept(s, i));
 }
-void gui_settings_load(GuiSettings* s, const char* path) {
-    size_t size;
-    char *text = path ? (char*)snx_read_file(path, &size) : NULL, *key, *value;
+int gui_settings_always(GuiSettings* s, const char* key, const char* value) {
+    int i = find(s, key), w;
+    GuiSetting* v = i >= s->own && i < s->count ? &s->values[i] : NULL; /* the runtime's: a run's option */
+    if (!v || s->keys[i].type != GUI_KEY_WORD || !v->values) return 0;
+    if (!v->always) { /* value one of its words; then they and its values start past the .ini's, the first */
+        for (w = 1; s->keys[i].words[w] && strcmp(value, v->values[w]); ++w) {}
+        if (!s->keys[i].words[w]) return 0;
+        ++s->keys[i].words;
+        ++v->values;
+        v->always = 1;
+    }
+    return set(s, i, value);
+}
+int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) {
+    size_t bytes, n = 0;
+    char *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
+    int count = 0, i;
     SnxIni ini;
-    if (!text) return;
+    if (size) old[0] = 0;
+    if (!text) return 0;
     snx_ini_start(&ini, text); /* a key names one row whatever its section, as in the game's .ini */
-    while (snx_ini_next(&ini, &key, &value)) gui_settings_set(s, key, value);
+    while (snx_ini_next(&ini, &key, &value)) {
+        i = find(s, key);
+        if (i < s->count && s->values[i].always && !strcmp(value, ".ini")) { /* passed nothing: not a value now */
+            set(s, i, s->values[i].start);
+            if (n < size) n += (size_t)snprintf(old + n, size - n, "%s", count ? "; " : "");
+            if (n < size)
+                n += (size_t)snprintf(old + n, size - n, snx_tr("%s=.ini is no longer a value of %s: %s=%s now"), key,
+                                      snx_tr(s->keys[i].key), key, s->values[i].start);
+            ++count;
+        } else
+            gui_settings_set(s, key, value);
+    }
     free(text);
     gui_settings_sync(s);
-}
-static int find(const GuiSettings* s, const char* key) {
-    int i;
-    for (i = 0; i < s->count && (s->values[i].kind || strcmp(s->values[i].key, key)); ++i) {}
-    return i;
+    return count;
 }
 int gui_settings_save(const GuiSettings* s, const char* path) {
     size_t room = 256 + (size_t)s->count * 200, at = 0, size = 0, lines = 1; /* a row's section, key, value: < 200 */
@@ -256,10 +284,10 @@ int gui_settings_changed(const GuiSettings* s) {
         n += strcmp(kept(s, i), s->values[i].start) != 0; /* an action's, a page's or an All's is always "" */
     return n;
 }
-/* row i's pick, NULL for the .ini's (the launcher's: off) */
+/* row i's pick, NULL for the .ini's (the launcher's: off); an always row's word, its first too */
 static const char* picked(const GuiSettings* s, int i) {
     const GuiSetting* v = &s->values[i];
-    if (s->keys[i].type == GUI_KEY_WORD) return v->word ? kept(s, i) : NULL;
+    if (s->keys[i].type == GUI_KEY_WORD) return v->word || v->always ? kept(s, i) : NULL;
     return s->keys[i].type == GUI_KEY_TEXT && v->text[0] ? v->text : NULL;
 }
 int gui_settings_set(GuiSettings* s, const char* key, const char* value) {
@@ -320,7 +348,11 @@ void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
     const GuiSetting* v = &s->values[row];
     if (v->kind == GUI_SETTING_ALL)
         snprintf(out, size, "%s", strcmp(v->text, ".ini") ? v->text : snx_tr("[default]"));
-    else if (!v->fallback || picked(s, row))
+    else if (v->always) { /* both its words go to a run: [default] marks the one it starts with */
+        int start = !strcmp(kept(s, row), v->start);
+        gui_theme_get(s->values, &s->keys[row], out, size);
+        if (start) snprintf(out + strlen(out), size - strlen(out), " %s", snx_tr("[default]"));
+    } else if (!v->fallback || picked(s, row))
         gui_theme_get(s->values, &s->keys[row], out, size);
     else
         snprintf(out, size, "%s%s%s", v->fallback, v->fallback[0] ? " " : "", snx_tr("[default]"));

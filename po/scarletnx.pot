@@ -3334,11 +3334,15 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr ""
 
 #: src/gui/main.c
-msgid "For the next runs. [default]: as the game's .ini says"
+msgid "The runtime listed no settings"
 msgstr ""
 
 #: src/gui/main.c
-msgid "The runtime listed no settings"
+msgid "For the next runs, over the game's .ini"
+msgstr ""
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
 msgstr ""
 
 #: src/gui/main.c src/gui/settings.c
@@ -4697,6 +4701,11 @@ msgstr ""
 
 #: src/gui/settings.c
 msgid "Every row of this page at once"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
 msgstr ""
 
 #: src/gui/settings.c

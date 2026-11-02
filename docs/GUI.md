@@ -227,8 +227,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's
-  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. The launcher's own choices start picked: `fullscreen` 0, `controls` 0 (on Android 1,
-  and `fullscreen` puts the launcher itself on the whole screen too).
+  `.ini`. Del puts a setting back to its default, and App's **Reset to Defaults** every one. **Fullscreen** and
+  **Show controls** are the launcher's own choices, Off or On, passed to every run over the `.ini`; `[default]` marks
+  the one the launcher starts with: Off on a computer, On on a phone, where Fullscreen puts the launcher itself on the
+  whole screen too.
   **gdbstub** passes `-S` and `-s`, the
   runtime's stub on port 1234 waiting for the debugger at startup (UNIX only), and **Extract to tmpfs**
   passes `--tmpfs`: a dump's extraction goes to `/tmp/scarletnx/work/<title ID>` (`$TMPDIR` when set, the
