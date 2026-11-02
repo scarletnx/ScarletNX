@@ -25,6 +25,7 @@ struct NvnDraw {
     u8 discard, depth_clamp, restart, render_off;
     u8 provoking_last, conservative, dilate; /* SetProvokingVertexMode's last vertex, conservative rasterization */
     u8 sample_shading;                       /* the bound fragment program's SetSampleShading mode */
+    u8 flip;                                 /* the window origin's flip, taken as the queue was initialized */
     float line_width;
     u8 samples; /* the samples-passed counter was reset: the renderer counts it */
     u32 restart_index;
@@ -51,7 +52,8 @@ typedef struct {
     u32 origin, depth_mode;
 } NvnDrawState;
 
-/* a queue's state d, all zero: NVN's defaults, its draws owner as renderer.h numbers it */
+/* a queue's state d, all zero: NVN's defaults, its draws owner as renderer.h numbers it, and the window origin's flip
+   of the device's origin now (the queue's initialization) */
 void nvn_draw_init(NvnDraw* d, u32 owner);
 /* Release renderer predicate and counter state on the GPU thread after the queue's last replay. */
 void nvn_draw_free(NvnDraw* d);
