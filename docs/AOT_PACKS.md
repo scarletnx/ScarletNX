@@ -1,5 +1,14 @@
 # AOT packs from the runtime JIT cache
 
+## Index
+
+* [The optimization rule](#the-optimization-rule)
+* [Before building](#before-building)
+* [Build from the launcher](#build-from-the-launcher)
+* [Build from the command line](#build-from-the-command-line)
+* [What the pack contains](#what-the-pack-contains)
+* [Troubleshooting](#troubleshooting)
+
 ScarletNX runs a Switch game with one runtime. A recompiled game module is the default code path (AOT); when
 the game reaches a function the module does not have, the runtime compiles that function with the JIT, runs it,
 and returns to the AOT caller. The JIT is always present. The interpreter is not a fallback.

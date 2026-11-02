@@ -1,5 +1,17 @@
 # ASTC compute uploads
 
+## Index
+
+* [The shader](#the-shader)
+  * [Written for the machine](#written-for-the-machine)
+  * [Interface](#interface)
+  * [Where it differs from Eden](#where-it-differs-from-eden)
+* [The upload path](#the-upload-path)
+* [Encoded again as BC7](#encoded-again-as-bc7)
+* [Textures bigger than one allocation](#textures-bigger-than-one-allocation)
+* [Building the shader](#building-the-shader)
+* [Tests](#tests)
+
 ASTC textures are decoded on the GPU by a compute shader, `src/nx/gpu/texture/astc.comp` with its body in
 `astc_decode.glsl`. It is a GLSL port of Eden's `src/video_core/host_shaders/astc_decoder.comp` (GPL-3.0-or-later, with yuzu's GPL-2.0-or-later parts). The
 CPU decoder in `tests/support/astc.c` is a C port of Eden's `src/video_core/textures/astc.cpp`, which

@@ -1,5 +1,17 @@
 # The AGB board
 
+## Index
+
+* [Playing](#playing)
+* [Status](#status)
+* [The display device](#the-display-device)
+* [The sound hardware](#the-sound-hardware)
+* [The memory map](#the-memory-map)
+* [The HLE BIOS](#the-hle-bios)
+* [The recompiled ROM](#the-recompiled-rom)
+* [The ROM header](#the-rom-header)
+* [Tests](#tests)
+
 `scarletnx-agb` is the Game Boy Advance system type. It loads a GBA ROM image
 (`.gba`) onto an emulated AGB board, the codename of the console's hardware, and
 runs it with the same static recompiler the other system types use. The board

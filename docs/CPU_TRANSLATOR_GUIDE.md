@@ -2,11 +2,23 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Working on the CPU implementation plan
 
+## Index
+
+* [The job](#the-job)
+* [What you need](#what-you-need)
+* [Get the code and build it](#get-the-code-and-build-it)
+* [What to read, in order](#what-to-read-in-order)
+* [Where the translator lives](#where-the-translator-lives)
+* [Rules that apply to this work](#rules-that-apply-to-this-work)
+* [How to hand work back](#how-to-hand-work-back)
+* [Definition of done](#definition-of-done)
+* [Questions](#questions)
+
 This guide is for whoever implements the [CPU implementation plan](CPU_TRANSLATOR_PLAN.md). The plan
 says what to build. This guide says how to work in this repository: what to set up and what to read, which project
 rules apply, and how each item is proven and handed back.
 
-The plan and this guide were checked against the code at commit `05324b57` on `main` (2026-10-29). If the code has
+The plan and this guide were checked against the code at commit `05324b57` on `main`. If the code has
 moved since, check an item's "Now" against the current code before you start it.
 
 ## The job

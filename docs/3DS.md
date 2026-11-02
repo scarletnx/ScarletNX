@@ -12,12 +12,14 @@
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
+  * [Gaps the F0/F1 audit left to later phases](#gaps-the-f0f1-audit-left-to-later-phases)
 * [Staged roadmap (stages 2–6, superseded by the parity roadmap)](#staged-roadmap-stages-26-superseded-by-the-parity-roadmap)
   * [2. CIA extraction, memory controller and static execution](#2-cia-extraction-memory-controller-and-static-execution)
   * [3. Basic HLE OS and a SwIPC-derived generator](#3-basic-hle-os-and-a-swipc-derived-generator)
   * [4. Audio DSP](#4-audio-dsp)
   * [5. Video graphics](#5-video-graphics)
   * [6. HID and remaining peripherals](#6-hid-and-remaining-peripherals)
+  * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
 
 ## Status: stage 1 + stage 2a + stages 2b1–2b4 + initial 3a/3b/FS
 
@@ -91,7 +93,7 @@ recompile (`-r`) seeds discovery with, so it is static from then on. A
 commercial title's 7 MiB of text compiles to about 340000 blocks in about six
 and a half minutes on six cores (the chunks compile in parallel).
 
-Since 2026-10-21 a commercial title, decrypted this way, runs its startup
+A commercial title, decrypted this way, runs its startup
 (cfg, FS with its save data, APT, and the system services the runtime answers
 generically), creates its save data and stops at its first prompt for the A
 button, drawn through the PICA renderer. Input is the next gap.
@@ -171,7 +173,7 @@ block compiled at run time. A run ended by `--seconds` (or a stop) reports each
 thread's core, priority, pc, what it waits on (whose event it is) and the return
 addresses on its stack, how long the process sat idle, and its most frequent SVCs.
 
-Since 2026-10-16, SuperTux runs past `main` and its RomFS reads. It draws its title and loading
+SuperTux runs past `main` and its RomFS reads. It draws its title and loading
 screens through a software port of Azahar's PICA pipeline (command processor,
 shader interpreter, rasterizer, texturing, combiners, lighting) and plays its
 title music through a port of Azahar's HLE DSP. A run of about 2 billion native

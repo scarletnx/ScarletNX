@@ -2,6 +2,14 @@
 <!-- SPDX-FileCopyrightText: Copyright 2026 ScarletNX contributors -->
 # Shader corrections, batch 001
 
+## Index
+
+* [Corrections](#corrections)
+* [Annotation errata discovered during implementation](#annotation-errata-discovered-during-implementation)
+* [Executed evidence](#executed-evidence)
+* [Deliberately unresolved](#deliberately-unresolved)
+* [Reference source and licensing](#reference-source-and-licensing)
+
 This is a bounded corrective patch, not an implementation of every finding in
 `instructions.md`. Eden is authoritative for this batch.
 
