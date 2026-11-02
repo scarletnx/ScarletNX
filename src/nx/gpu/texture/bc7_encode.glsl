@@ -10,14 +10,16 @@
    64 partitions each with a line of its own (3-bit weights and 6-bit ends, or 2-bit and 7-bit), for an edge between
    two colours, and mode 2, three subsets, for three colours meeting. Any other block takes mode 7, two subsets with
    alpha. The partitions tried are the two of 64 (the one of 64 with three subsets) whose subsets spread least
-   around their means, a pass each.
+   around their means, a pass each. Last, every block takes modes 4 and 5, one subset whose colour and alpha are
+   lines of their own with weights of their own (ASTC's second plane), in each of the four rotations: alpha apart,
+   or red, green or blue apart in alpha's place.
 
    A subset's line starts from its bounding box, each channel turned to run with the widest one (the sign of their
    covariance), pulled in by a sixteenth from each end and tried as it is too; then a least squares fit to the
    weights chosen, twice. The ends' p-bits are tried in each combination the mode allows, but a subset whose every
-   alpha is 255 (or 0) keeps that alpha exactly. Each texel takes the best of the three weights around its
-   projection. Integer arithmetic only, so the tests run this file on the CPU (tests/glsl/glsl.hpp) and get the
-   GPU's bytes. */
+   alpha is 255 (or 0) keeps that alpha exactly; modes 4 and 5 have no p-bits and hold 255 and 0 at any precision.
+   Each texel takes the best of the three weights around its projection. Integer arithmetic only, so the tests run
+   this file on the CPU (tests/glsl/glsl.hpp) and get the GPU's bytes. */
 
 /* BC7's partitions: two subsets (a bit a texel, the texel's subset), three subsets (two bits a texel); and the
    anchors, the texel of each subset after the first whose weight drops its top bit (two: bits 0 to 3; three: the
@@ -60,6 +62,15 @@ uint sh_cb;
 uint sh_alpha;
 uint sh_pk;
 uint sh_ib;
+/* the channels the shape's lines weigh, a bit each (red the lowest): all four, but modes 4 and 5 fit their colour
+   (7) and their alpha (8) apart */
+uint sh_mask;
+
+/* modes 4 and 5 are tried unless this is 0: tests/glsl/bc7_glsl.cpp builds the encoder without them as well, to
+   measure what they add */
+#ifndef SNX_BC7_MODES_4_5
+#define SNX_BC7_MODES_4_5 1
+#endif
 
 /* the weights the last Eval chose for its subset's texels, a nibble a texel (texels 0 to 7, then 8 to 15), nought
    for the other texels */
@@ -74,7 +85,9 @@ uint fit_s1;
 uint fit_lo;
 uint fit_hi;
 
-/* the shape's subsets as fitted, and the best block so far: mode, partition, each subset's stored ends, weights */
+/* the shape's subsets as fitted, and the best block so far: mode, partition, each subset's stored ends, weights;
+   for modes 4 and 5 the rotation, the index selection bit, the colour's weights in best_lo and best_hi and the
+   alpha's in best_lo2 and best_hi2 */
 uint cand_s0[3];
 uint cand_s1[3];
 uint best_mode;
@@ -84,6 +97,10 @@ uint best_s1[3];
 uint best_lo;
 uint best_hi;
 uint best_err;
+uint best_rot;
+uint best_isb;
+uint best_lo2;
+uint best_hi2;
 
 uint Ch(uint word, uint c) {
     return (word >> (c * 8u)) & 0xFFu;
@@ -163,19 +180,23 @@ uint QuantWord(int r, int g, int b, int a, uint p) {
 uint TexelError(uint p, uint q0, uint q1, uint w) {
     uint e = 0u;
     for (uint c = 0u; c < 4u; c++) {
+        if (((sh_mask >> c) & 1u) == 0u) continue;
         const int v = int(((64u - w) * Ch(q0, c) + w * Ch(q1, c) + 32u) >> 6u) - int(Ch(p, c));
         e += uint(v * v);
     }
     return e;
 }
 
+/* channel c of q1 less q0's, nought for a channel the shape does not weigh */
+int Step(uint q0, uint q1, uint c) { return ((sh_mask >> c) & 1u) != 0u ? int(Ch(q1, c)) - int(Ch(q0, c)) : 0; }
+
 /* subset s's squared error with decoded ends q0 and q1, each of its texels at its best weight, which go to cur_lo
    and cur_hi */
 uint Eval(uint s, uint q0, uint q1) {
-    const int dr = int(Ch(q1, 0u)) - int(Ch(q0, 0u));
-    const int dg = int(Ch(q1, 1u)) - int(Ch(q0, 1u));
-    const int db = int(Ch(q1, 2u)) - int(Ch(q0, 2u));
-    const int da = int(Ch(q1, 3u)) - int(Ch(q0, 3u));
+    const int dr = Step(q0, q1, 0u);
+    const int dg = Step(q0, q1, 1u);
+    const int db = Step(q0, q1, 2u);
+    const int da = Step(q0, q1, 3u);
     const int dd = dr * dr + dg * dg + db * db + da * da;
     const uint top = (1u << sh_ib) - 1u;
     uint err = 0u;
@@ -277,8 +298,9 @@ int Fit(uint s) {
 
 /* channel c's end (side 0 or 1) of subset s's fit whose determinant det is positive, rounded and held to 0 to 255:
    from the sums of the values (V) and of each by its weight (WV), e0 = (V W2 - W WV) / det and e1 = e0 + 64 (n WV -
-   W V) / det. A channel of one value gets that value at both ends */
+   W V) / det. A channel of one value gets that value at both ends; one the shape does not weigh, nought */
 int Solve(uint s, uint c, uint side, int det) {
+    if (((sh_mask >> c) & 1u) == 0u) return 0;
     int v = 0, wv = 0;
     for (uint k = 0u; k < 16u; k++) {
         if (SubsetOf(k) != s) continue;
@@ -294,7 +316,8 @@ int Solve(uint s, uint c, uint side, int det) {
 
 /* fits subset s of the shape: fit_err and the rest */
 void FitSubset(uint s) {
-    /* the bounding box, the channel the subset spans most, and each channel's sign against it */
+    /* the bounding box, the channel the shape weighs that the subset spans most, and each channel's sign against
+       it */
     int lo0 = 255, lo1 = 255, lo2 = 255, lo3 = 255, hi0 = 0, hi1 = 0, hi2 = 0, hi3 = 0;
     int s0 = 0, s1 = 0, s2 = 0, s3 = 0, n = 0;
     for (uint k = 0u; k < 16u; k++) {
@@ -315,16 +338,16 @@ void FitSubset(uint s) {
         n++;
     }
     uint wide = 0u;
-    int span = hi0 - lo0;
-    if (hi1 - lo1 > span) {
+    int span = (sh_mask & 1u) != 0u ? hi0 - lo0 : -1;
+    if ((sh_mask & 2u) != 0u && hi1 - lo1 > span) {
         wide = 1u;
         span = hi1 - lo1;
     }
-    if (hi2 - lo2 > span) {
+    if ((sh_mask & 4u) != 0u && hi2 - lo2 > span) {
         wide = 2u;
         span = hi2 - lo2;
     }
-    if (hi3 - lo3 > span) wide = 3u;
+    if ((sh_mask & 8u) != 0u && hi3 - lo3 > span) wide = 3u;
     const int sw = wide == 0u ? s0 : wide == 1u ? s1 : wide == 2u ? s2 : s3;
     /* covariances with the widest channel, n times each value against n times the mean: under 2^28 */
     int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
@@ -363,6 +386,7 @@ void TryShape(uint mode, uint ns, uint part, uint cb, uint alpha, uint pk, uint 
     sh_alpha = alpha;
     sh_pk = pk;
     sh_ib = ib;
+    sh_mask = 15u;
     uint err = 0u, lo = 0u, hi = 0u;
     for (uint s = 0u; s < ns; s++) {
         FitSubset(s);
@@ -382,6 +406,54 @@ void TryShape(uint mode, uint ns, uint part, uint cb, uint alpha, uint pk, uint 
         best_s0[s] = cand_s0[s];
         best_s1[s] = cand_s1[s];
     }
+}
+
+/* swaps each texel's alpha with red (rot 1), green (2) or blue (3), as the decoder of modes 4 and 5 does after
+   interpolating: a second swap undoes the first */
+void Rotate(uint rot) {
+    if (rot == 0u) return;
+    const uint sh = (rot - 1u) * 8u;
+    for (uint k = 0u; k < 16u; k++) {
+        const uint p = px[k];
+        px[k] = (p & ~(0xFF000000u | (0xFFu << sh))) | ((p >> 24u) << sh) | (((p >> sh) & 0xFFu) << 24u);
+    }
+}
+
+/* mode 4 or 5 in rotation rot, kept as best_ when its error is the least so far: the colour's line (red, green and
+   blue, mode 4's 5 bits or mode 5's 7) fitted first, then the alpha's (6 bits or 8) unless the colour's error already
+   passes the best. Mode 5's weights are 2-bit; mode 4 gives one of the two 3-bit weights, the colour when isb is 1 */
+void TryDual(uint mode, uint rot, uint isb) {
+    Rotate(rot);
+    sh_ns = 1u;
+    sh_part = 0u;
+    sh_pk = 0u;
+    sh_mask = 7u;
+    sh_alpha = 0u;
+    sh_cb = mode == 4u ? 5u : 7u;
+    sh_ib = mode == 4u && isb != 0u ? 3u : 2u;
+    FitSubset(0u);
+    const uint err = fit_err, s0 = fit_s0, s1 = fit_s1, lo = fit_lo, hi = fit_hi;
+    if (err < best_err) {
+        sh_mask = 8u;
+        sh_alpha = 1u;
+        sh_cb = mode == 4u ? 6u : 8u;
+        sh_ib = mode == 4u && isb == 0u ? 3u : 2u;
+        FitSubset(0u);
+        if (err + fit_err < best_err) {
+            best_err = err + fit_err;
+            best_mode = mode;
+            best_part = 0u;
+            best_rot = rot;
+            best_isb = isb;
+            best_s0[0] = (s0 & 0xFFFFFFu) | (fit_s0 & 0xFF000000u);
+            best_s1[0] = (s1 & 0xFFFFFFu) | (fit_s1 & 0xFF000000u);
+            best_lo = lo;
+            best_hi = hi;
+            best_lo2 = fit_lo;
+            best_hi2 = fit_hi;
+        }
+    }
+    Rotate(rot);
 }
 
 /* how far partition part's subsets spread around their means: each subset's sum of squared distances, from its
@@ -478,6 +550,58 @@ uvec4 Pack() {
     return blk;
 }
 
+/* the block of mode 4 or 5 that best_ holds. Texel 0's weight has its top bit nought in each of its two sets: where it
+   is set, that set's ends swap (the colour's or the alpha's alone) and its weights turn round */
+uvec4 PackDual() {
+    const uint mode = best_mode;
+    const uint cb = mode == 4u ? 5u : 7u, ab = mode == 4u ? 6u : 8u;
+    const uint ctop = mode == 4u && best_isb != 0u ? 7u : 3u, atop = mode == 4u && best_isb == 0u ? 7u : 3u;
+    uint e0 = best_s0[0], e1 = best_s1[0], clo = best_lo, chi = best_hi, alo = best_lo2, ahi = best_hi2;
+    if ((clo & 15u) > ctop / 2u) {
+        const uint t = e0;
+        e0 = (e1 & 0xFFFFFFu) | (e0 & 0xFF000000u);
+        e1 = (t & 0xFFFFFFu) | (e1 & 0xFF000000u);
+        clo = ctop * 0x11111111u - clo;
+        chi = ctop * 0x11111111u - chi;
+    }
+    if ((alo & 15u) > atop / 2u) {
+        const uint t = e0;
+        e0 = (e0 & 0xFFFFFFu) | (e1 & 0xFF000000u);
+        e1 = (e1 & 0xFFFFFFu) | (t & 0xFF000000u);
+        alo = atop * 0x11111111u - alo;
+        ahi = atop * 0x11111111u - ahi;
+    }
+    blk = uvec4(0u);
+    Put(mode, 1u, 1u);
+    uint pos = mode + 1u;
+    Put(pos, best_rot, 2u);
+    pos += 2u;
+    if (mode == 4u) {
+        Put(pos, best_isb, 1u);
+        pos++;
+    }
+    /* red of both ends, then green, blue and alpha */
+    for (uint c = 0u; c < 4u; c++) {
+        const uint bits = c < 3u ? cb : ab;
+        Put(pos, Ch(e0, c), bits);
+        Put(pos + bits, Ch(e1, c), bits);
+        pos += bits * 2u;
+    }
+    /* the 2-bit weights first (the colour's, but in mode 4 with isb 1), then the others, texel 0's a bit shorter */
+    const bool colour_first = mode == 5u || best_isb == 0u;
+    for (uint set = 0u; set < 2u; set++) {
+        const bool colour = (set == 0u) == colour_first;
+        const uint lo = colour ? clo : alo, hi = colour ? chi : ahi, top = colour ? ctop : atop;
+        const uint ib = top == 7u ? 3u : 2u;
+        for (uint k = 0u; k < 16u; k++) {
+            const uint bits = k == 0u ? ib - 1u : ib;
+            Put(pos, Index(lo, hi, k), bits);
+            pos += bits;
+        }
+    }
+    return blk;
+}
+
 uvec4 Encode() {
     opaque = true;
     for (uint k = 0u; k < 16u; k++) opaque = opaque && Ch(px[k], 3u) == 255u;
@@ -522,7 +646,15 @@ uvec4 Encode() {
             TryShape(7u, 2u, first, 5u, 1u, 2u, 2u);
             TryShape(7u, 2u, second, 5u, 1u, 2u, 2u);
         }
+#if SNX_BC7_MODES_4_5
+        for (uint rot = 0u; rot < 4u; rot++) {
+            TryDual(5u, rot, 0u);
+            TryDual(4u, rot, 0u);
+            TryDual(4u, rot, 1u);
+        }
+#endif
     }
+    if (best_mode == 4u || best_mode == 5u) return PackDual();
     /* the best's shape again, for Pack */
     sh_ns = best_mode == 6u ? 1u : best_mode == 2u ? 3u : 2u;
     sh_part = best_part;
