@@ -4,6 +4,7 @@
 #include "android/dex/translate.h"
 #include "android/res/asset_jni.h"
 #include "android/db/sqlite_jni.h"
+#include "android/bridge/native.h"
 #include "android/hwui/render.h"
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
@@ -29,6 +30,7 @@ static const char usage[] =
     "\n"
     "  --translate=DIR   Translate every class of the APK ahead of time into DIR, a .class file for each, and stop\n"
     "  -J OPTION         An option for the JVM (-J-Xmx2g)\n"
+    "  --native-test LIB [SYMBOL...]  Load an AArch64 library through the native bridge and call each function\n"
     "\n"
     "JAVA_HOME names the JDK (21 or later) to run on; without it, the one the build found.\n";
 
@@ -269,6 +271,12 @@ int snx_android_main(int argc, char** argv) {
     size_t option_count = 0;
     if (!options) return 1;
     for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--native-test") && i + 1 < argc) {
+            /* a library and the functions to call, through the native bridge */
+            int status = android_native_test(argv[i + 1], (const char* const*)argv + i + 2, (unsigned)(argc - i - 2));
+            free(options);
+            return status;
+        }
         if (!strncmp(argv[i], "--translate=", 12))
             translate = argv[i] + 12;
         else if (!strcmp(argv[i], "-J") && i + 1 < argc)
