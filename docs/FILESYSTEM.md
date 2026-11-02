@@ -2,6 +2,12 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Filesystem
 
+## Index
+
+* [Paths](#paths)
+* [State + I/O](#state--io)
+* [Shared fonts](#shared-fonts)
+
 `src/nx/hle/filesystem/fs_tree.{c,h}` indexes `<Game>_data/` once, capturing its absolute base.
 Subsequent game-data lookup, metadata and enumeration use the tree; content I/O requires indexed nodes.
 No host rediscovery. External edits require restart.

@@ -1,5 +1,15 @@
 # Block linear surfaces and texture conversions on the GPU
 
+## Index
+
+* [Where it is used](#where-it-is-used)
+* [The shaders](#the-shaders)
+  * [One shader each, not one per direction or format](#one-shader-each-not-one-per-direction-or-format)
+* [Multisampled surfaces](#multisampled-surfaces)
+* [Batches and barriers](#batches-and-barriers)
+* [Strips](#strips)
+* [Tests](#tests)
+
 Guest memory holds most surfaces in the GPU's block linear layout. ScarletNX moves them between that layout and the
 linear rows Vulkan's buffer copies take on the GPU, and converts the formats the host can't sample as they are there
 too. The CPU only copies guest memory into staging, and staging into guest memory, as whole ranges. It never takes a

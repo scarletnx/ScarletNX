@@ -23,12 +23,12 @@ behave like x86. ScarletNX's hosts offer no such features, except the AArch64 ho
 architecture. The plan relies instead on what the recompiler can know ahead of time, such as the AArch64 calling
 standard and the executables' relocations, and on profiles of real runs.
 
-## Contents
+## Index
 
 * [The hosts](#the-hosts)
-* [OS cooperation and the Horizon boundary](#os-cooperation-and-the-horizon-boundary)
 * [What "as good as Rosetta 2" means](#what-as-good-as-rosetta-2-means)
   * [SIMD performance scenarios](#simd-performance-scenarios)
+* [OS cooperation and the Horizon boundary](#os-cooperation-and-the-horizon-boundary)
 * [Rosetta 2 part by part, applied to ScarletNX](#rosetta-2-part-by-part-applied-to-scarletnx)
   * [1. Translation ahead of time, and its cache](#1-translation-ahead-of-time-and-its-cache)
   * [2. Links between translated code: stubs and indirect branches](#2-links-between-translated-code-stubs-and-indirect-branches)

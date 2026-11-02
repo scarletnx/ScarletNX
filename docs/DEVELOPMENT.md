@@ -2,6 +2,17 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Development
 
+## Index
+
+* [Measure descriptor submission](#measure-descriptor-submission)
+* [Search for faster GPU settings](#search-for-faster-gpu-settings)
+* [Rebuild / checks](#rebuild--checks)
+* [Run / diagnose](#run--diagnose)
+* [Profiling](#profiling)
+* [Shaders](#shaders)
+* [SVCs](#svcs)
+* [Provenance](#provenance)
+
 [Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [agent rules](../CLAUDE.md) · [contributing](../CONTRIBUTING.md).
 Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env syntax.
 The build tree's drivers work in the user's data folder, as an installed copy does ([Folders](USAGE.md#folders));

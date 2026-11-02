@@ -37,7 +37,7 @@ recompiles on the phone, then the game opens.
   A game of *Games* goes through it too, recompiled first when another version of the app made it.
 - **Behind other apps** the driver keeps going: a notification shows the game, its step and a bar, and a tap on it
   returns to the menu. A run that ends there leaves a notification saying so, and its game opens once the menu shows.
-  The queue's recompiles (R, B: [GUI](GUI.md#the-recompile-tab)) go on the same way, the notification following the
+  The queue's recompiles (R, B: [GUI](GUI.md#the-compile-tab)) go on the same way, the notification following the
   one running once no run of the menu's does, and saying *Recompiled* or *Failed* at the end; while a game started
   from the menu plays, until the menu shows again, they go gently.
   The first run asks to show it (Android 13) and to lift the battery limit; on a phone whose maker adds its own limit

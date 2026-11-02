@@ -1,5 +1,21 @@
 # GPU-owned guest memory (design)
 
+## Index
+
+* [The trap model](#the-trap-model)
+* [Linux: userfaultfd, minor faults, the alias pool](#linux-userfaultfd-minor-faults-the-alias-pool)
+* [Windows, macOS](#windows-macos)
+* [The ownership map](#the-ownership-map)
+* [Memory that the CPU and the GPU share (UMA)](#memory-that-the-cpu-and-the-gpu-share-uma)
+  * [The memory model](#the-memory-model)
+  * [What the GPU reads in place](#what-the-gpu-reads-in-place)
+  * [What still copies, and why](#what-still-copies-and-why)
+  * [What keeps it correct](#what-keeps-it-correct)
+  * [Why imports and not placed maps (yet)](#why-imports-and-not-placed-maps-yet)
+  * [Measurements on a discrete GPU (RTX 2080, 246 MiB BAR)](#measurements-on-a-discrete-gpu-rtx-2080-246-mib-bar)
+  * [Testing on a Steam Deck (or any integrated GPU)](#testing-on-a-steam-deck-or-any-integrated-gpu)
+* [Phases](#phases)
+
 Status: phases 1 to 4 are done on Linux (below), inline-to-memory aside. The engines that worked in guest memory on
 the CPU (NVDEC output, VIC, the DMA copy engine, the 2D engine) run on the GPU, with no CPU fallback. Their
 results stay on the GPU: the guest memory they cover becomes GPU-owned. Every GPU consumer finds the data through

@@ -2,6 +2,15 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # PS Vita driver
 
+## Index
+
+* [How it fits together](#how-it-fits-together)
+* [The shader corpus](#the-shader-corpus)
+* [Code compiled at run time](#code-compiled-at-run-time)
+* [Checking the CPU backend](#checking-the-cpu-backend)
+* [Limits](#limits)
+* [Sources](#sources)
+
 `scarletnx-vita` runs a homebrew VPK the way the other drivers run their games. The VPK is extracted once into the
 data folder's `recompiled/<title ID>/` (`app/` holds the package, `ux0/` the writable storage), the eboot's code is
 compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it; its

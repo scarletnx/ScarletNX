@@ -1,5 +1,16 @@
 # Hooks
 
+## Index
+
+* [How a call reaches a hook](#how-a-call-reaches-a-hook)
+* [Declaring a hook](#declaring-a-hook)
+  * [Function types](#function-types)
+* [Versions](#versions)
+* [Struct layouts](#struct-layouts)
+* [Verify mode](#verify-mode)
+* [Checking a hook](#checking-a-hook)
+* [What the guest profile showed](#what-the-guest-profile-showed)
+
 A hook runs a function the game exports with a native handler of the runtime's instead of its recompiled code. The
 handlers are accelerators: each does what its function is known to do from reading the function's code, on the
 guest's own data as the function would leave it. They never copy or reference the SDK. A hook is installed when the

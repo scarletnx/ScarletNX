@@ -9,6 +9,7 @@
 * [Host pages larger than 4 KiB](#host-pages-larger-than-4-kib)
 * [What differs from the other hosts](#what-differs-from-the-other-hosts)
 * [Big-endian hosts](#big-endian-hosts)
+  * [The Switch runtime](#the-switch-runtime)
 * [The PowerPC 970 and POWER4](#the-powerpc-970-and-power4)
 
 ScarletNX builds for 64-bit PowerPC Linux from POWER8 on, and big-endian builds from the PowerPC 970 (the PowerMac
