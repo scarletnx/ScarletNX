@@ -158,6 +158,12 @@ THREEDS = (
     'No Vulkan device: no frames will be drawn, shown or saved\n'
 )
 VITA = 'Game: Some Vita Game - ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+# the GBA's: its title and console on the Switch's header line, its build, and its game code (agb/runtime/main.c)
+GBA = (
+    'ScarletNX - SOME GBA GAME (GBA)\n'
+    'build: ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+    'cartridge: bpee\n'
+)
 
 # the renderer's frame lines (gpu/vk/renderer.c): each frame over 50 ms, and every 600 presents the counts with the
 # frames over 50 ms since the last such line (two counted there, then one more after it)
@@ -381,12 +387,20 @@ def main():
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
     t3 = scan(THREEDS)
     check(
-        (t3['title'], t3['title_id'], t3['commit'], t3['branch']) == ('Some 3DS Game', '0004000000179400', 'd22bbab', 'main'),
-        f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['commit']}",
+        (t3['title'], t3['title_id'], t3['console'], t3['commit'], t3['branch'])
+        == ('Some 3DS Game', '0004000000179400', '3DS', 'd22bbab', 'main'),
+        f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['console']} {t3['commit']}",
     )
+    check('- **Console:** 3DS' in run(['-', '--format', 'markdown'], THREEDS.encode()), "the 3DS's console in markdown")
+    gb = scan(GBA)
+    check(
+        (gb['title'], gb['title_id'], gb['console'], gb['commit']) == ('SOME GBA GAME', 'BPEE', 'GBA', '1234abc'),
+        f"the GBA's header: {gb['title']} {gb['title_id']} {gb['console']} {gb['commit']}",
+    )
+    check(scan(SVC_BREAK)['console'] == 'Switch' and scan(LAUNCHER)['console'] == 'Switch', "the Switch's console")
     vi = scan(VITA)
     check(
-        (vi['title'], vi['title_id'], vi['commit']) == ('Some Vita Game', None, '1234abc'),
+        (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
         f"the Vita's header: {vi['title']} {vi['title_id']} {vi['commit']}",
     )
     lo = scan(LAUNCHER_OTHER)

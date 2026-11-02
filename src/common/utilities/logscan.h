@@ -65,6 +65,9 @@ enum {
 };
 /* where a crash report put the host pc */
 enum { SNX_PLACE_NONE, SNX_PLACE_GAME, SNX_PLACE_BLOCK, SNX_PLACE_RUNTIME, SNX_PLACE_LIBRARY };
+/* the console the game is of, by its runtime's header: the Switch's, the 3DS's and the Vita's ("Game: ..."), the
+   GBA's ("ScarletNX - <title> (GBA)") */
+enum { SNX_CONSOLE_NONE, SNX_CONSOLE_SWITCH, SNX_CONSOLE_3DS, SNX_CONSOLE_VITA, SNX_CONSOLE_GBA };
 
 /* Every text is an offset into the scan's pool, 0 for none (the pool's first byte is an empty string) */
 typedef struct {
@@ -91,6 +94,7 @@ typedef struct SnxLogScan {
     size_t used, cap;
     /* the header: the game log's lines, else the launcher's build line */
     unsigned title, title_id, game_version, build, branch, commit, system, gpu, vulkan, driver;
+    int console;                               /* SNX_CONSOLE_* */
     unsigned launcher_build, launcher_message; /* the Share Log file's; launcher_build 0 for a game log */
     long centiseconds;                         /* the last line's time, -1 without one */
     int outcome;
@@ -167,6 +171,8 @@ int snx_logscan_file(SnxLogScan* s, FILE* f);
 void snx_logscan_free(SnxLogScan* s);
 const char* snx_logscan_text(const SnxLogScan* s, unsigned at);
 const char* snx_logscan_outcome_name(int outcome);
+/* "Switch", "3DS", "Vita", "GBA"; NULL for SNX_CONSOLE_NONE */
+const char* snx_logscan_console_name(int console);
 const SnxLogSym* snx_logscan_function(const SnxLogScan* s);
 /* The summary as one JSON object (one line) or as markdown for an issue or the Share Log file, malloc'd, NULL out of
    memory. The markdown escapes everything the log said (no mentions, links, images or closed code blocks): heading is

@@ -460,9 +460,12 @@ static int marker(Span line, Marker* m) {
    output is kept while it is read, and stands for itself when its title ID is not the game log's */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
-/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut */
+/* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut, and the GBA's runtime with
+   " (GBA)" (agb/runtime/main.c), which is cut too: the console says it */
 static void header(SnxLogScan* s, Span title) {
     size_t i;
+    s->console = ends(title, " (GBA)") ? SNX_CONSOLE_GBA : SNX_CONSOLE_SWITCH;
+    if (s->console == SNX_CONSOLE_GBA) title.n -= 6;
     for (i = title.n; i > 2; i--)
         if (title.p[i - 1] == '(' && title.p[i - 2] == ' ') {
             Span path = skip(title, i);
@@ -510,6 +513,7 @@ static int frontend_header(SnxLogScan* s, Span rest) {
             title.n -= 19;
         }
     }
+    s->console = s->title_id ? SNX_CONSOLE_3DS : SNX_CONSOLE_VITA; /* the Vita's has no title ID */
     s->title = add(s, title);
     if (!s->build) build_line(s, skip(rest, (size_t)at + 3));
     return 1;
@@ -876,6 +880,11 @@ static void normalized(Buf* b, const char* text) {
 static const char* const outcome_names[] = {"no failure logged", "crash",      "svcBreak",
                                             "exception",         "brk",        "unsupported instruction",
                                             "thread stopped",    "host abort", "fatal"};
+const char* snx_logscan_console_name(int console) {
+    static const char* const names[] = {NULL, "Switch", "3DS", "Vita", "GBA"};
+    return console > 0 && console <= SNX_CONSOLE_GBA ? names[console] : NULL;
+}
+
 const char* snx_logscan_outcome_name(int outcome) {
     return outcome >= 0 && outcome <= SNX_LOG_FATAL ? outcome_names[outcome] : "?";
 }
@@ -1092,6 +1101,16 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
         case 'G':
             if (!s->title && take_lit(&rest, "Game: ") && frontend_header(s, rest)) return;
             break;
+        case 'c': /* the GBA's game code (agb/runtime/main.c), its title ID: "cartridge: <4 letters or digits>" */
+            if (s->console == SNX_CONSOLE_GBA && !s->title_id && take_lit(&rest, "cartridge: ") && rest.n == 4 &&
+                snx_is_alnum(rest.p[0]) && snx_is_alnum(rest.p[1]) && snx_is_alnum(rest.p[2]) &&
+                snx_is_alnum(rest.p[3])) {
+                char code[5] = {(char)snx_to_upper(rest.p[0]), (char)snx_to_upper(rest.p[1]),
+                                (char)snx_to_upper(rest.p[2]), (char)snx_to_upper(rest.p[3]), 0};
+                s->title_id = add_c(s, code);
+                return;
+            }
+            break;
         case 's': /* "system: <OS and version>, <CPU>, <n> threads, <n> GB RAM" (plat_system_info) */
             if (!s->system && take_lit(&rest, "system: ") && rest.n) {
                 s->system = add(s, rest);
@@ -1106,6 +1125,7 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
                 id[16] = 0;
                 s->title_id = add_c(s, id);
                 s->game_version = add(s, skip(rest, 26));
+                if (!s->console) s->console = SNX_CONSOLE_SWITCH;
                 return;
             }
             break;
@@ -1345,6 +1365,11 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
     put_num(&b, SNX_LOGSCAN_SCHEMA);
     json_field(&b, s, "title", s->title, 0);
     json_field(&b, s, "title_id", s->title_id, 0);
+    put(&b, ", \"console\": ");
+    if (s->console)
+        json_string(&b, snx_logscan_console_name(s->console));
+    else
+        put(&b, "null");
     json_field(&b, s, "game_version", s->game_version, 0);
     json_field(&b, s, "build", s->build, 0);
     json_field(&b, s, "commit", s->commit, 0);
@@ -1572,11 +1597,19 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
     if (s->title_id) {
         put(&b, " (");
         md_code(&b, snx_logscan_text(s, s->title_id));
-        put(&b, ", version ");
-        md_code(&b, snx_logscan_text(s, s->game_version));
+        if (s->game_version) {
+            put(&b, ", version ");
+            md_code(&b, snx_logscan_text(s, s->game_version));
+        }
         put(&b, ")");
     }
-    put(&b, "\n\n- **Build:** ");
+    put(&b, "\n\n");
+    if (s->console) {
+        put(&b, "- **Console:** ");
+        put(&b, snx_logscan_console_name(s->console));
+        put(&b, "\n");
+    }
+    put(&b, "- **Build:** ");
     if (s->build)
         md_code(&b, snx_logscan_text(s, s->build));
     else
