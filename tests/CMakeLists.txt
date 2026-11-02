@@ -1247,8 +1247,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME tracked_material
              COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tracked_material.py" "${PROJECT_SOURCE_DIR}")
     set_tests_properties(tracked_material_self_test tracked_material PROPERTIES SKIP_RETURN_CODE 77)
-    # the docs held to the checkout (scripts/check-docs.py): their links and anchors, the ## Index of each long one and
-    # docs/README.md linking every doc; then the checks on checkouts made to fail them
+    # the docs held to the checkout (scripts/check-docs.py): their links and anchors, the ## Index of each long one,
+    # docs/README.md linking every doc, and docs/SETTINGS.md's keys and defaults against src/nx/runtime/settings.txt;
+    # then the checks on checkouts made to fail them
     add_test(NAME docs_check COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-docs.py")
     add_test(NAME docs_check_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/docs_test.py")
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)

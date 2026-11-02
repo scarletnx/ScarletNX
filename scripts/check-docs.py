@@ -10,6 +10,10 @@
 - indexes: a document over 100 lines with 3 or more ## and ### sections has an ## Index of them, and any document's
   ## Index lists its sections as they are. --index writes them: an index where it stands, a new one under the title
 - the docs' own index: docs/README.md links every document of docs/
+- settings: each key of src/nx/runtime/settings.txt has a row in a table of docs/SETTINGS.md whose header is
+  | Key | Default |, and its Default cell says the key's default and the one each platform gives it (`0` (iOS `1`));
+  each key a row names is one settings.txt has. Several keys in a row take one default each, or one for them all,
+  and a name in parentheses in the Key cell is no key (`controls_<ID>` (ID one of `a`, `b`))
 
     scripts/check-docs.py [--root DIR] [--index]
 """
@@ -25,6 +29,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ('README.md', 'CONTRIBUTING.md', 'ROADMAP.md', 'docs')
 INDEX_LINES = 100  # a document longer than this carries an ## Index
 INDEX_SECTIONS = 3  # of at least this many sections
+SETTINGS = 'src/nx/runtime/settings.txt'
+SETTINGS_DOC = 'docs/SETTINGS.md'
+# settings.txt's default-if macros, by the platform a Default cell names
+PLATFORMS = {'SNX_IOS': 'iOS', '__ANDROID__': 'Android'}
+UNSET = object()  # an LLVM option's default: LLVM's own value
 
 FENCE = re.compile(r'^\s*(```|~~~)')
 HEADING = re.compile(r'^(#{1,6})\s+(.*?)\s*#*\s*$')
@@ -279,6 +288,216 @@ def check_docs_index(root, failures):
             failures.add('docs/README.md', 0, f'does not link {doc.relative_to(root / "docs").as_posix()}')
 
 
+# ---- settings ----
+class SettingsError(Exception):
+    def __init__(self, line, text):
+        super().__init__(f'{line}: {text}')
+        self.line, self.text = line, text
+
+
+def snake(name):
+    """tools/settingsgen's snake(): letters and digits lowercased, every other run an _, a camel-case word split where
+    its case changes (LoopVectorization, SLPVectorization: loop_vectorization, slp_vectorization)"""
+    out, gap = [], False
+    for i, c in enumerate(name):
+        if not c.isascii() or not c.isalnum():
+            gap = True
+            continue
+        if (
+            out
+            and c.isupper()
+            and i > 0
+            and (
+                name[i - 1].islower()
+                or name[i - 1].isdigit()
+                or (name[i - 1].isupper() and i + 1 < len(name) and name[i + 1].islower())
+            )
+        ):
+            gap = True
+        if gap and out:
+            out.append('_')
+        gap = False
+        out.append(c.lower())
+    s = ''.join(out)
+    return '_' + s if s[:1].isdigit() else s
+
+
+def settings_keys(path):
+    """{key: (line, {platform or None: default})} of settings.txt, its <N> and <ID> kept in the key. A text with no
+    default is empty; an LLVM pass (@lowercase) is on, 1, and an LLVM option (@CamelCase) LLVM's own until it is set"""
+    keys, current, table_kind = {}, None, None
+
+    def done():
+        if current is None:
+            return
+        line, key, llvm_id, default, ifs, kind = (
+            current['line'],
+            current['key'],
+            current['llvm'],
+            current['default'],
+            current['ifs'],
+            current['kind'],
+        )
+        if llvm_id is not None:
+            option = any(c.isupper() for c in llvm_id)
+            key = key or ('llvm_' if option else 'llvm_pass_') + snake(llvm_id)
+            if default is None:
+                default = UNSET if option else '1'
+        if key is None:
+            raise SettingsError(line, 'a setting with no key')
+        if default is None and kind == 'text':
+            default = ''
+        if default is None:
+            raise SettingsError(line, f'{key} has no default')
+        values = {None: default}
+        for macro, value in ifs:
+            if macro not in PLATFORMS:
+                raise SettingsError(
+                    line,
+                    f'{key}: default-if {macro} names no platform scripts/check-docs.py knows '
+                    f'({", ".join(sorted(PLATFORMS))})',
+                )
+            values[PLATFORMS[macro]] = value
+        keys[key] = (line, values)
+
+    for number, raw in enumerate(path.read_text(encoding='utf-8').split('\n'), 1):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        word, _, rest = line.partition(' ')
+        rest = rest.strip()
+        if word in ('table', 'section', 'include', 'list', 'repeat', 'end'):
+            done()
+            current = None
+            if word == 'table':
+                table_kind = rest.split()[1] if len(rest.split()) > 1 else 'runtime'
+            continue
+        if word == 'setting':
+            done()
+            llvm = rest[1:] if table_kind == 'llvm' and rest.startswith('@') else None
+            current = {'line': number, 'key': None, 'llvm': llvm, 'default': None, 'ifs': [], 'kind': None}
+            continue
+        if current is None:
+            continue
+        value = '' if rest == '""' else rest
+        if word == 'key':
+            current['key'] = rest
+        elif word in ('int', 'float', 'text'):
+            current['kind'] = word
+        elif word == 'default':
+            current['default'] = value
+        elif word == 'default-if':
+            macro, _, value = rest.partition(' ')
+            current['ifs'].append((macro, '' if value.strip() == '""' else value.strip()))
+    done()
+    return keys
+
+
+DEFAULT_ITEM = re.compile(
+    r'\s*(`[^`]*`|none|empty|LLVM\'s own)'
+    r'(?:\s*\(((?:\s*(?:' + '|'.join(sorted(PLATFORMS.values())) + r')\s+(?:`[^`]*`|none|empty),?)+)\))?\s*(?:,|$)'
+)
+PLATFORM_VALUE = re.compile(r'(' + '|'.join(sorted(PLATFORMS.values())) + r')\s+(`[^`]*`|none|empty)')
+
+
+def cell_value(word):
+    if word in ('none', 'empty'):
+        return ''
+    if word == "LLVM's own":
+        return UNSET
+    return word[1:-1]
+
+
+def defaults_of(cell):
+    """the defaults a Default cell gives, in order, each {platform or None: value}; None when it can't be read"""
+    out, at = [], 0
+    while at < len(cell):
+        m = DEFAULT_ITEM.match(cell, at)
+        if not m or m.end() == at:
+            return None
+        values = {None: cell_value(m.group(1))}
+        for p in PLATFORM_VALUE.finditer(m.group(2) or ''):
+            values[p.group(1)] = cell_value(p.group(2))
+        out.append(values)
+        at = m.end()
+    return out
+
+
+def shown(values):
+    def one(v):
+        return "LLVM's own" if v is UNSET else 'empty' if v == '' else f'`{v}`'
+
+    extra = ', '.join(f'{p} {one(v)}' for p, v in values.items() if p is not None)
+    return one(values[None]) + (f' ({extra})' if extra else '')
+
+
+def cells(line):
+    """the cells of a Markdown table row, split as GitHub does: at each | but an escaped one, \\|, inside code too"""
+    row = line.strip()
+    row = row[1:] if row.startswith('|') else row
+    row = row[:-1] if row.endswith('|') and not row.endswith('\\|') else row
+    return [cell.strip().replace('\\|', '|') for cell in re.split(r'(?<!\\)\|', row)]
+
+
+def check_settings(root, failures):
+    doc_path, settings_path = root / SETTINGS_DOC, root / SETTINGS
+    if not settings_path.is_file():
+        return
+    try:
+        keys = settings_keys(settings_path)
+    except SettingsError as error:
+        failures.add(SETTINGS, error.line, error.text)
+        return
+    if not doc_path.is_file():
+        failures.add(SETTINGS_DOC, 0, f'is not there: it has a row for each key of {SETTINGS}')
+        return
+    rows, in_table, fenced = {}, False, False
+    for number, line in enumerate(doc_path.read_text(encoding='utf-8').split('\n'), 1):
+        if FENCE.match(line):
+            fenced = not fenced
+        if fenced or not line.lstrip().startswith('|'):
+            in_table = False
+            continue
+        row = cells(line)
+        if not in_table:
+            in_table = len(row) >= 2 and row[0] == 'Key' and row[1] == 'Default'
+            continue
+        if set(''.join(row)) <= set('-: '):
+            continue  # the header's rule
+        names = re.findall(r'`([^`]+)`', re.sub(r'\([^)]*\)', '', row[0]))  # what a parenthesis says is no key
+        if not names:
+            failures.add(SETTINGS_DOC, number, f'a row with no `key` in its Key cell: {row[0]!r}')
+            continue
+        defaults = defaults_of(row[1]) if len(row) > 1 else None
+        if defaults is None or (len(defaults) != 1 and len(defaults) != len(names)):
+            failures.add(
+                SETTINGS_DOC,
+                number,
+                f'Default {row[1] if len(row) > 1 else ""!r} is not one default, or one for each of '
+                f"{', '.join(names)}, each `value`, none, empty or LLVM's own, with (iOS `value`) or (Android `value`)",
+            )
+            continue
+        for i, name in enumerate(names):
+            given = defaults[0] if len(defaults) == 1 else defaults[i]
+            if name in rows:
+                failures.add(SETTINGS_DOC, number, f'`{name}` has a row already, at line {rows[name]}')
+                continue
+            rows[name] = number
+            if name not in keys:
+                failures.add(SETTINGS_DOC, number, f'`{name}` is no key of {SETTINGS}')
+                continue
+            line_number, values = keys[name]
+            if given != values:
+                failures.add(
+                    SETTINGS_DOC,
+                    number,
+                    f'`{name}` says the default is {shown(given)}; {SETTINGS}:{line_number} makes it {shown(values)}',
+                )
+    for key, (line_number, values) in keys.items():
+        if key not in rows:
+            failures.add(SETTINGS, line_number, f'`{key}` (default {shown(values)}) has no row in {SETTINGS_DOC}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=ROOT, help="the checkout (default: this script's)")
@@ -290,12 +509,13 @@ def main():
     check_indexes(root, docs, failures, args.index)
     check_links(root, docs, failures)
     check_docs_index(root, failures)
+    check_settings(root, failures)
     for failure in failures:
         print(failure, file=sys.stderr)
     if failures:
         print(f'check-docs.py: {len(failures)} to fix', file=sys.stderr)
         return 1
-    print(f'check-docs.py: {len(docs)} documents, their links and indexes hold')
+    print(f'check-docs.py: {len(docs)} documents, their links, indexes and the settings they list hold')
     return 0
 
 

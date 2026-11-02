@@ -12,8 +12,8 @@ name: Pull request checks
 #   name as a word and the names of piracy sites. It reads every tracked file, documentation included, so it runs on
 #   every pull request, including those build.yml skips for touching only files no build or test reads
 # - docs: the documentation held to the checkout (scripts/check-docs.py): links and anchors that resolve, the ## Index
-#   of each long doc and docs/README.md linking every doc. It runs on every pull request for the same reason, as one
-#   that changes only docs skips build.yml
+#   of each long doc, docs/README.md linking every doc, and docs/SETTINGS.md saying each key and default settings.txt
+#   has. It runs on every pull request for the same reason, as one that changes only docs skips build.yml
 # As required checks of main the title and the assignees keep the merge button off.
 #
 # The title and the assignees run on pull_request_target, which takes this workflow and its scripts from the base

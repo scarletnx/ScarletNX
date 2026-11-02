@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/check-docs.py on checkouts of its own: the links, anchors and indexes it refuses, each named."""
+"""scripts/check-docs.py on checkouts of its own: the links, anchors, indexes and settings it refuses, each named."""
 
 import importlib.util
 import subprocess
@@ -38,8 +38,10 @@ class Checkout:
             cd.check_links(self.root, docs, failures)
         elif check == 'indexes':
             cd.check_indexes(self.root, docs, failures, False)
-        else:
+        elif check == 'docs index':
             cd.check_docs_index(self.root, failures)
+        else:
+            cd.check_settings(self.root, failures)
         return list(failures)
 
     def run(self, *args):
@@ -157,6 +159,117 @@ class DocsIndex(unittest.TestCase):
             self.assertEqual(
                 c.failures('docs index'),
                 ['docs/README.md: does not link USAGE.md', 'docs/README.md: does not link audit/one.md'],
+            )
+
+
+SETTINGS = """# a comment
+table g_game_ini
+setting Docked
+    key docked
+    int 0 1
+    default 1
+setting Fit
+    key memory_fit
+    int 0 1
+    default 0
+    default-if SNX_IOS 1
+setting Source
+    key source
+    text 64
+repeat 8
+setting Player rumble
+    key gamepad_p<N>_rumble
+    int -10 100
+    default -10
+end
+setting Place
+    key controls_<ID>
+    each controls
+    text 32
+setting Words
+    key mode
+    text 8
+    default a|b
+table g_llvm_ini llvm
+setting @loop-unroll
+    name Loop unrolling pass
+setting @InlinerThreshold
+    name Inliner threshold
+section Game: g_game_ini
+"""
+
+DOC = """# Settings
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `docked`, `memory_fit` | `1`, `0` (iOS `1`) | Two keys, a default each |
+| `source` | none | Empty text |
+| `gamepad_p<N>_rumble` (N from 1 to 8) | `-10` | Repeated |
+| `controls_<ID>` (ID one of `a`, `b`) | empty | Each |
+| `mode` | `a\\|b` | A pipe |
+| `llvm_pass_loop_unroll` | `1` | A pass |
+| `llvm_inliner_threshold` | LLVM's own | An option |
+"""
+
+
+class Settings(unittest.TestCase):
+    def checkout(self, doc=DOC, settings=SETTINGS):
+        index = '# Docs\n\n- [Settings](SETTINGS.md)\n'
+        return Checkout({'src/nx/runtime/settings.txt': settings, 'docs/SETTINGS.md': doc, 'docs/README.md': index})
+
+    def test_a_doc_that_says_what_the_code_does(self):
+        with self.checkout() as c:
+            self.assertEqual(c.failures('settings'), [])
+
+    def test_a_key_with_no_row(self):
+        with self.checkout(DOC.replace('| `source` | none | Empty text |\n', '')) as c:
+            self.assertEqual(
+                c.failures('settings'),
+                ['src/nx/runtime/settings.txt:12: `source` (default empty) has no row in docs/SETTINGS.md'],
+            )
+
+    def test_a_row_of_a_key_the_code_no_longer_has(self):
+        with self.checkout(DOC + '| `docked_old` | `1` | Renamed |\n') as c:
+            self.assertEqual(
+                c.failures('settings'),
+                ['docs/SETTINGS.md:12: `docked_old` is no key of src/nx/runtime/settings.txt'],
+            )
+
+    def test_a_default_the_code_does_not_have(self):
+        doc = DOC.replace('`1`, `0` (iOS `1`)', '`0`, `0`')
+        with self.checkout(doc) as c:
+            self.assertEqual(
+                c.failures('settings'),
+                [
+                    'docs/SETTINGS.md:5: `docked` says the default is `0`; src/nx/runtime/settings.txt:3 makes it `1`',
+                    'docs/SETTINGS.md:5: `memory_fit` says the default is `0`; '
+                    'src/nx/runtime/settings.txt:7 makes it `0` (iOS `1`)',
+                ],
+            )
+
+    def test_a_default_cell_it_cannot_read(self):
+        with self.checkout(DOC.replace('| `source` | none |', '| `source` | nothing |')) as c:
+            self.assertEqual(len(c.failures('settings')), 2)
+            self.assertTrue(c.failures('settings')[0].startswith("docs/SETTINGS.md:6: Default 'nothing' is not one"))
+
+    def test_a_platform_it_does_not_know(self):
+        with self.checkout(settings=SETTINGS.replace('default-if SNX_IOS 1', 'default-if SNX_PLAN9 1')) as c:
+            self.assertEqual(
+                c.failures('settings'),
+                [
+                    'src/nx/runtime/settings.txt:7: memory_fit: default-if SNX_PLAN9 names no platform '
+                    'scripts/check-docs.py knows (SNX_IOS, __ANDROID__)'
+                ],
+            )
+
+    def test_the_command_line_says_each_and_fails(self):
+        with self.checkout(DOC.replace('`-10`', '`0`')) as c:
+            run = c.run()
+            self.assertEqual(run.returncode, 1)
+            self.assertEqual(
+                run.stderr,
+                'docs/SETTINGS.md:7: `gamepad_p<N>_rumble` says the default is `0`; '
+                'src/nx/runtime/settings.txt:16 makes it `-10`\ncheck-docs.py: 1 to fix\n',
             )
 
 
