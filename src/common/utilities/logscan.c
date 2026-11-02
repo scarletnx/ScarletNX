@@ -455,8 +455,8 @@ static int marker(Span line, Marker* m) {
 /* ============================================================ the scan */
 /* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with snx_build_info's
    line, "ScarletNX <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
-   under "== the last run: <path> ==" and the newest game log under "== <path> ==". The game log's lines are scanned,
-   else the run's output when it had none. The newest game log can be another game's, one played before: the run's
+   under "== the last run: <path> ==" and the newest game log under "== <path> ==", which can come alone, without the
+   run's. The game log's lines are scanned, else the run's output when it had none. The newest game log can be another game's, one played before: the run's
    output is kept while it is read, and stands for itself when its title ID is not the game log's */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
@@ -1110,7 +1110,8 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
             if (section(line) && starts(line, "== the last run:")) {
                 s->phase = PHASE_RUN;
                 s->mark = s->used;
-            }
+            } else if (section(line) && !starts(line, "== summary ==")) /* a game log with no run before it */
+                s->phase = PHASE_GAME;
             return;
         case PHASE_RUN:
             if (section(line)) {
