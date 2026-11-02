@@ -27,6 +27,14 @@ static int granule_differs(const u8* res, const u8* org, u32 k, u32 w) {
     return a != b;
 }
 
+/* 0xFF in each byte of x that isn't zero, 0 in the others: each byte's low bit becomes the OR of its bits */
+static u64 nonzero_bytes(u64 x) {
+    x |= x >> 4;
+    x |= x >> 2;
+    x |= x >> 1;
+    return (x & 0x0101010101010101ull) * 0xFF;
+}
+
 void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkChangedRun run, void* user) {
     /* res and org are host copies: the shader's output read back into host-cached memory, and the bytes it started
        from, snapshotted when it was bound (buffer.c, compute.c, surface.c). Comparing them reads no guest page, so it
@@ -71,7 +79,31 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
                 }
             }
             /* the bytes the shader changed where guest memory still holds what it started from, in runs that
-               go on across granules */
+               go on across granules. A whole granule on one guest page is taken at once when all of its bytes or
+               none of them are (the shader's own outputs mostly change every byte: byte by byte, the merge was a
+               tenth of one game's GPU thread); a mixed one, or one across a page the GPU may hold, byte by byte */
+            if (w == 8 && ((addr + k) & 0xFFF) <= 0xFF8) {
+                u64 a, b, c;
+                memcpy(&a, res + k, 8);
+                memcpy(&b, org + k, 8);
+                memcpy(&c, cur + k, 8);
+                u64 take = nonzero_bytes(a ^ b) & ~nonzero_bytes(c ^ b);
+                if (!take) continue;
+                if (take == ~0ull) {
+                    if (we != k) { /* not where the pending run ends: it is written, and a new one starts */
+                        if (we != ws) {
+                            if (dst)
+                                memcpy(dst + ws, res + ws, we - ws);
+                            else
+                                gmem_write(addr + ws, res + ws, we - ws);
+                        }
+                        ws = k;
+                    }
+                    we = k + 8;
+                    changed = 1;
+                    continue;
+                }
+            }
             for (u32 b = k; b < k + w; b++) {
                 if (res[b] == org[b] || cur[b] != org[b]) continue;
                 if (we != b) { /* not where the pending run ends: it is written, and a new one starts */
