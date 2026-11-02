@@ -28,7 +28,7 @@ static void usage(FILE* out) {
         "Usage: scarletnx-3ds [OPTIONS] game\n"
         "       scarletnx-3ds [OPTIONS] --game=recompiled/<title ID>\n"
         "       <title ID> [OPTIONS]   (the game's copy of the runtime, in its folder)\n"
-        "       scarletnx-3ds [--model old|new] --board-info\n"
+        "       scarletnx-3ds [--model old|new|auto] --board-info\n"
         "  game            An application CIA, cartridge image or NCCH read where it lies, recompiled if needed,\n"
         "                  then played: a .cia, a .cci or .3ds cartridge image, or a .cxi, .app or .hbb NCCH. The\n"
         "                  game's folder is recompiled/<its title ID>, as a Switch game's: its module\n"
@@ -39,7 +39,7 @@ static void usage(FILE* out) {
         "                  Extract the game into its folder first and play from the extraction\n"
         "  -x, --extract   Extract only\n"
         "  -r, --recompile Recompile without playing\n"
-        "  --model old|new The console to model (default old)\n"
+        "  --model old|new|auto The console to model (default auto: the New 3DS for a title that asks for its features)\n"
         "  --keys FILE     The 3DS AES keys, in Azahar's aes_keys.txt format, to decrypt an encrypted game\n"
         "                  with (default ~/.3ds/aes_keys.txt)\n"
         "  --repo DIR      The data folder (default: a portable copy's folder, else the user's data\n"
@@ -360,8 +360,8 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
         if (!strcmp(key, "source") && *value) {
             free(*source);
             *source = snx_strdup(value);
-        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new")))
-            *model = !strcmp(value, "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
+        } else if (!strcmp(key, "model") && (!strcmp(value, "old") || !strcmp(value, "new") || !strcmp(value, "auto")))
+            *model = !strcmp(value, "old") ? SNX_CTR_OLD : !strcmp(value, "new") ? SNX_CTR_NEW : SNX_CTR_AUTO;
     free(text);
     free(path);
     return read;
@@ -369,7 +369,7 @@ static bool read_game_ini(const char* folder, char** source, SnxCtrModel* model)
 static bool write_game_ini(const char* folder, const char* source, SnxCtrModel model) {
     char *path = snx_ctr_game_file(folder, ".ini"), *full = snx_absolute(source);
     char* text =
-        full ? snx_format("source=%s\nmodel=%s\nsystem=3ds\n", full, model == SNX_CTR_OLD ? "old" : "new") : NULL;
+        full ? snx_format("source=%s\nmodel=%s\nsystem=3ds\n", full, model == SNX_CTR_OLD ? "old" : model == SNX_CTR_NEW ? "new" : "auto") : NULL;
     bool written = path && text && !snx_write_file(path, text, strlen(text));
     if (!written) {
         char why[256];
@@ -418,7 +418,7 @@ static char* own_game(const char* argv0) {
     return dir;
 }
 int snx_ctr_main(int argc, char** argv) {
-    SnxCtrModel model = SNX_CTR_OLD;
+    SnxCtrModel model = SNX_CTR_AUTO;
     const char *input = NULL, *output = NULL, *outdir = NULL, *repo = NULL, *keys = NULL, *game = NULL;
     bool info = false, positional = false, extract_only = false, recompile = false, budget_set = false;
     bool extract_container = false, model_set = false;
@@ -484,11 +484,11 @@ int snx_ctr_main(int argc, char** argv) {
                 return 2;
             }
         } else if (!positional && !strcmp(arg, "--model")) {
-            if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new"))) {
-                fputs("scarletnx-3ds: --model requires old or new\n", stderr);
+            if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new") && strcmp(argv[i], "auto"))) {
+                fputs("scarletnx-3ds: --model requires old, new or auto\n", stderr);
                 return 2;
             }
-            model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : SNX_CTR_NEW;
+            model = !strcmp(argv[i], "old") ? SNX_CTR_OLD : !strcmp(argv[i], "new") ? SNX_CTR_NEW : SNX_CTR_AUTO;
             model_set = true;
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS debug table (g_ctr_debug_ini, src/nx/runtime/settings.txt), --key=value; --script=
@@ -524,7 +524,7 @@ int snx_ctr_main(int argc, char** argv) {
         usage(stderr);
         return 2;
     }
-    if (!snx_ctr_board_init(&board, model)) {
+    if (!snx_ctr_board_init(&board, model == SNX_CTR_AUTO ? SNX_CTR_OLD : model)) {
         free(folder);
         return 1;
     }

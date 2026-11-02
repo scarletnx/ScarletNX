@@ -172,6 +172,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         result = 0;
         goto done;
     }
+    if (model == SNX_CTR_AUTO) model = image.new_features || image.new_mode ? SNX_CTR_NEW : SNX_CTR_OLD;
     process = snx_ctr_process_new(&image, model);
     if (!process) {
         snprintf(error, error_size, "cannot create checked ARM11 process mappings");

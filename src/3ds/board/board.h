@@ -8,7 +8,9 @@
 
 /* Board descriptions only: these are physical addresses, NOT process VAs or
    permission to dereference SnxArmCPU.mem. The memory controller owns mappings. */
-typedef enum { SNX_CTR_OLD, SNX_CTR_NEW } SnxCtrModel;
+/* SNX_CTR_AUTO is a choice, not a console: the run takes the New 3DS for a title whose ExHeader asks for its CPU speed,
+   L2 cache or extended memory, the Old 3DS for the rest (snx_ctr_model_for) */
+typedef enum { SNX_CTR_OLD, SNX_CTR_NEW, SNX_CTR_AUTO } SnxCtrModel;
 typedef enum { SNX_CTR_RAM, SNX_CTR_VRAM, SNX_CTR_DSP_RAM, SNX_CTR_MMIO } SnxCtrRegionKind;
 typedef struct {
     const char* name;

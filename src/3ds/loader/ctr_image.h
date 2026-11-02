@@ -17,6 +17,7 @@ typedef struct {
     /* the system modes (ExHeader 0x20D bits 0 to 3 and 0x20E bits 4 to 7): how much FCRAM the application gets on a New
        3DS (0: as its Old 3DS mode says) and on an Old 3DS */
     uint32_t new_mode, old_mode;
+    unsigned new_features; /* ExHeader 0x20C bits 0 and 1 (L2 cache, 804 MHz): what only a New 3DS has */
     /* the ARM11 kernel capability descriptors (ExHeader 0x370): the address mappings live here */
     uint32_t kernel_caps[28];
     unsigned char identity[32]; /* SHA-256(domain || full ExHeader || expanded .code) */
