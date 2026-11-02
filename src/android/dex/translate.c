@@ -2066,6 +2066,140 @@ static void write_failing_code(CfPool* pool, CfBuffer* out, const char* message,
     cf_free(&code);
 }
 
+static size_t next_param(const char** p);
+
+/* A native method's body: a call of the native bridge (snx.android.nativebridge.NativeBridge.invoke*), which runs
+   the app's AArch64 code for it. The key names the method ("Lpkg/Class;.name(signature)"), then the object (or the
+   class of a static method), the primitive parameters as their bits in a long[], and the references in an
+   Object[]. The result comes back as its bits, or as the reference (docs/android/NATIVE.md, "JNI") */
+static void write_native_stub(CfPool* pool, CfBuffer* out, const char* class_desc, const char* name, const char* desc,
+                              bool is_static) {
+    enum { LLOAD = 0x16, FLOAD = 0x17, DLOAD = 0x18, LASTORE = 0x50, L2I = 0x88, LRETURN = 0xad, FRETURN = 0xae,
+           DRETURN = 0xaf, ARETURN = 0xb0, T_LONG = 11 };
+    static const char bridge[] = "Lsnx/android/nativebridge/NativeBridge;";
+    CfBuffer code = {0};
+    size_t n = strlen(class_desc) + strlen(name) + strlen(desc) + 2;
+    char* key = malloc(n);
+    if (!key) return;
+    snprintf(key, n, "%s.%s%s", class_desc, name, desc);
+    cf_u1(&code, J_LDC_W);
+    cf_u2(&code, cf_string(pool, key));
+    free(key);
+    if (is_static) {
+        cf_u1(&code, J_LDC_W);
+        cf_u2(&code, cf_class_descriptor(pool, class_desc));
+    } else {
+        cf_u1(&code, J_ALOAD_0);
+    }
+    /* the parameters' kinds and slots */
+    unsigned slot = is_static ? 0 : 1, prims = 0, refs = 0;
+    const char* p = desc + 1;
+    size_t length;
+    while ((length = next_param(&p))) {
+        char t = p[-(long)length];
+        if (t == 'L' || t == '[') ++refs;
+        else ++prims;
+    }
+    cf_u1(&code, J_SIPUSH);
+    cf_u2(&code, prims);
+    cf_u1(&code, J_NEWARRAY);
+    cf_u1(&code, T_LONG);
+    unsigned k = 0;
+    p = desc + 1;
+    while ((length = next_param(&p))) {
+        char t = p[-(long)length];
+        bool wide = t == 'J' || t == 'D';
+        if (t != 'L' && t != '[') {
+            cf_u1(&code, J_DUP);
+            cf_u1(&code, J_SIPUSH);
+            cf_u2(&code, k++);
+            if (t == 'J') {
+                cf_u1(&code, LLOAD);
+                cf_u1(&code, slot);
+            } else if (t == 'D') {
+                cf_u1(&code, DLOAD);
+                cf_u1(&code, slot);
+                cf_u1(&code, J_INVOKESTATIC);
+                cf_u2(&code, cf_member(pool, CF_METHODREF, "Ljava/lang/Double;", "doubleToRawLongBits", "(D)J"));
+            } else if (t == 'F') {
+                cf_u1(&code, FLOAD);
+                cf_u1(&code, slot);
+                cf_u1(&code, J_INVOKESTATIC);
+                cf_u2(&code, cf_member(pool, CF_METHODREF, "Ljava/lang/Float;", "floatToRawIntBits", "(F)I"));
+                cf_u1(&code, J_I2L);
+            } else {
+                cf_u1(&code, J_ILOAD);
+                cf_u1(&code, slot);
+                cf_u1(&code, J_I2L);
+            }
+            cf_u1(&code, LASTORE);
+        }
+        slot += wide ? 2 : 1;
+    }
+    cf_u1(&code, J_SIPUSH);
+    cf_u2(&code, refs);
+    cf_u1(&code, J_ANEWARRAY);
+    cf_u2(&code, cf_class(pool, "java/lang/Object"));
+    k = 0;
+    slot = is_static ? 0 : 1;
+    p = desc + 1;
+    while ((length = next_param(&p))) {
+        char t = p[-(long)length];
+        if (t == 'L' || t == '[') {
+            cf_u1(&code, J_DUP);
+            cf_u1(&code, J_SIPUSH);
+            cf_u2(&code, k++);
+            cf_u1(&code, J_ALOAD);
+            cf_u1(&code, slot);
+            cf_u1(&code, J_AASTORE);
+        }
+        slot += t == 'J' || t == 'D' ? 2 : 1;
+    }
+    const char* ret = strchr(desc, ')') + 1;
+    const char* invoke = *ret == 'V' ? "invokeV" : *ret == 'L' || *ret == '[' ? "invokeL" : "invokeJ";
+    const char* invoke_desc = *ret == 'V'   ? "(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)V"
+                              : *ret == 'L' || *ret == '['
+                                  ? "(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)Ljava/lang/Object;"
+                                  : "(Ljava/lang/String;Ljava/lang/Object;[J[Ljava/lang/Object;)J";
+    cf_u1(&code, J_INVOKESTATIC);
+    cf_u2(&code, cf_member(pool, CF_METHODREF, bridge, invoke, invoke_desc));
+    switch (*ret) {
+    case 'V': cf_u1(&code, J_RETURN); break;
+    case 'L':
+    case '[':
+        cf_u1(&code, J_CHECKCAST);
+        cf_u2(&code, cf_class_descriptor(pool, ret));
+        cf_u1(&code, ARETURN);
+        break;
+    case 'J': cf_u1(&code, LRETURN); break;
+    case 'D':
+        cf_u1(&code, J_INVOKESTATIC);
+        cf_u2(&code, cf_member(pool, CF_METHODREF, "Ljava/lang/Double;", "longBitsToDouble", "(J)D"));
+        cf_u1(&code, DRETURN);
+        break;
+    case 'F':
+        cf_u1(&code, L2I);
+        cf_u1(&code, J_INVOKESTATIC);
+        cf_u2(&code, cf_member(pool, CF_METHODREF, "Ljava/lang/Float;", "intBitsToFloat", "(I)F"));
+        cf_u1(&code, FRETURN);
+        break;
+    default:
+        cf_u1(&code, L2I);
+        cf_u1(&code, J_IRETURN);
+        break;
+    }
+    cf_u2(out, 1);
+    cf_u2(out, cf_utf8(pool, "Code"));
+    cf_u4(out, 12 + (uint32_t)code.size);
+    cf_u2(out, 10); /* the stack: key, self, the array, its copy, an index and a wide value */
+    cf_u2(out, slot ? slot : 1);
+    cf_u4(out, (uint32_t)code.size);
+    cf_bytes(out, code.data, code.size);
+    cf_u2(out, 0);
+    cf_u2(out, 0);
+    cf_free(&code);
+}
+
 /* ---- the class ---- */
 
 bool dex_class_name(const Dex* dex, uint32_t index, char* out, size_t out_size) {
@@ -2342,10 +2476,19 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         m.is_ctor = !strcmp(name, "<init>");
         unsigned method_access = dm->access & 0x1ddfu;
         if (dm->access & 0x100) method_access |= dm->access & 0x20u; /* synchronized: only a native method's */
+        /* a native method gets a body that calls the native bridge */
+        bool native = (dm->access & 0x100) != 0;
+        if (native) method_access &= ~0x100u;
         cf_u2(&body, method_access);
         cf_u2(&body, cf_utf8(&pool, name));
         cf_u2(&body, cf_utf8(&pool, method_descriptor(&m, proto_idx)));
         size_t attributes_at = body.size;
+        if (native) {
+            write_native_stub(&pool, &body, class_desc, name, method_descriptor(&m, proto_idx), m.is_static);
+            method_attributes(&pool, &body, attributes_at, &annotations, dm->method_idx, proto_idx, name);
+            method_free(&m);
+            continue;
+        }
         if (!dm->code_off) {
             cf_u2(&body, 0);
             method_attributes(&pool, &body, attributes_at, &annotations, dm->method_idx, proto_idx, name);
