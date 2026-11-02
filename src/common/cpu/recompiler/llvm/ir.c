@@ -11,13 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the PowerPC64 CPU the runtime library is built for (cmake/cross.cmake), and a module for another host's */
-#ifdef SNX_PPC64_LLVM_CPU
-#define SNX_PPC_CPU SNX_PPC64_LLVM_CPU
-#else
-#define SNX_PPC_CPU "pwr8"
-#endif
-
 /* ---- setup ---- */
 
 SnxIrFeatures snx_ir_host;
@@ -203,15 +196,8 @@ static SnxIr* new_ir(const char* name, char opt, const char* target_triple, int 
         cpu = LLVMCreateMessage("x86-64");
         features = LLVMCreateMessage("+cx16");
     } else {
-        cpu = LLVMCreateMessage(ppc ? SNX_PPC_CPU : "generic");
+        cpu = LLVMCreateMessage("generic");
         features = LLVMCreateMessage("");
-    }
-    /* The CPU cmake/cross.cmake builds the runtime library for at least (POWER8 unless the build names an older
-       big-endian machine), whose modules then call RtAPI.cas128 for the 16-byte compare-and-swap. The host's name is
-       "generic" where /proc/cpuinfo has no POWER line, as under qemu-user */
-    if (ppc && (!strcmp(cpu, "generic") || !strcmp(cpu, "ppc64") || !strcmp(cpu, "ppc64le") || !*cpu)) {
-        LLVMDisposeMessage(cpu);
-        cpu = LLVMCreateMessage(SNX_PPC_CPU);
     }
     /* RISC-V and LoongArch: rv64gc and LA64 with double floats at least, as the runtime is built, so a module's float
        ABI (lp64d) is the runtime's whatever the host reports (qemu-user may report nothing), and no linker relaxation:
