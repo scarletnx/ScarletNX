@@ -8,8 +8,6 @@ runtime run on a phone, is [ANDROID](../ANDROID.md).) The target is the API of A
 ## Index
 
 * [Design](#design)
-* [Interfaces](INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
-* [HWUI](HWUI.md): the display lists and their Vulkan renderer
 * [Running an app](#running-an-app)
 * [The DEX translator](#the-dex-translator)
 * [Status](#status)

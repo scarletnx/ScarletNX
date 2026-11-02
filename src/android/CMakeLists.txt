@@ -61,6 +61,22 @@ if(NOT WIN32)
     target_link_libraries(snx_android_program PUBLIC Threads::Threads)
 endif()
 
+# The native bridge (bridge/, docs/android/NATIVE.md): the app's AArch64 libraries run through the recompiler library,
+# which another driver's tree may have configured already. cpu.h is written in the GNU dialect of C
+if(NOT TARGET scarletnx-recompiler)
+    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" android-llvm-backend)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler-library)
+endif()
+add_library(snx_android_bridge STATIC bridge/bridge.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
+                                      bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_dl.c bridge/hle_code.c
+                                      bridge/hle_sles.c bridge/hle_media.c)
+target_link_libraries(snx_android_bridge PUBLIC scarletnx-common scarletnx-recompiler)
+set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+target_compile_options(snx_android_bridge PRIVATE -Wall -Wextra -Werror -Werror=missing-prototypes
+                                                  -Werror=missing-variable-declarations)
+target_link_libraries(snx_android_program PUBLIC snx_android_bridge)
+
 file(GLOB_RECURSE snx_android_java CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/framework/*.java")
 set(CMAKE_JAVA_COMPILE_FLAGS --release 21 -encoding UTF-8 -Xlint:-options -nowarn)
 add_jar(snx_android_framework SOURCES ${snx_android_java} OUTPUT_NAME scarletnx-android-framework
