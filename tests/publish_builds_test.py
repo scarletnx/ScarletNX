@@ -8,7 +8,7 @@ replaced at each push and gone when it closes; a fork's only once the team label
 after its last push; and the writes to the nightly repository made with its own token. Each release's notes link every
 download with its size and say what changed: the changes since the last one, a pull request's commits and the main
 commit it stands on; a version's message, each download. No card is posted, a nightly's or a pull request's: those are
-ReiWimsy's (scarletnx/discord-bots). The fake GitHub and Discord are tests/fake_github.py's. Offline."""
+ReiWimsy's (scarletnx/wimsy-core). The fake GitHub and Discord are tests/fake_github.py's. Offline."""
 
 import json
 import os

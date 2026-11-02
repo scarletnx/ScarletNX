@@ -93,7 +93,7 @@ kept (this repository's `nightly` prerelease shows the latest's notes); each pul
 `pr-<number>`. The notes and the messages link each download with its size and list what changed (a pull request's
 commits). A fork's pull request is published once someone of the team labels it `publish builds`, after each
 push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
-[scarletnx/discord-bots](https://github.com/scarletnx/discord-bots), which asks GitHub what changed every 30 s: no job
+[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job
 of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
 `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.

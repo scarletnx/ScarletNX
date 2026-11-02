@@ -9,7 +9,7 @@ name: Publish builds
 # labels it "publish builds" after its last push. Nothing of a pull request runs here: the files are its Build run's
 # artifacts, and the checkout is main's. The secrets: NIGHTLY_TOKEN may write scarletnx/nightly's contents;
 # DISCORD_WEBHOOK_RELEASES is the releases channel's webhook (without it, nothing is posted there and the run says so).
-# The nightlies' and the pull requests' cards are ReiWimsy's (scarletnx/discord-bots), which sees the releases change
+# The nightlies' and the pull requests' cards are ReiWimsy's (scarletnx/wimsy-core), which sees the releases change
 on:
   workflow_run:
     workflows: [Build]
