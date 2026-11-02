@@ -10,6 +10,7 @@ runtime run on a phone, is [ANDROID](../ANDROID.md).) The target is the API of A
 * [Design](#design)
 * [Interfaces](INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
 * [HWUI](HWUI.md): the display lists and their Vulkan renderer
+* [Running an app](#running-an-app)
 * [The DEX translator](#the-dex-translator)
 * [Status](#status)
 
@@ -29,6 +30,34 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
 - **Native code.** An APK's native libraries are AArch64 code for bionic. They are to be recompiled as the GNU ABI
   runtime does ([GNUABI](../GNUABI.md)), with bionic, libandroid, EGL, GLES and Vulkan as hooks that the runtime answers,
   as the NVN hooks of the Switch runtime do. All drawing goes through Vulkan.
+
+## Running an app
+
+`build/scarletnx-android APP.apk` runs an app in a window, with the left mouse button as a finger and the keyboard
+as a hardware keyboard. The build puts the framework's jar and the font beside the program. `-J OPTION` gives the JVM
+an option, as these system properties:
+
+| Property | Meaning |
+| --- | --- |
+| `snx.android.width`, `snx.android.height`, `snx.android.dpi` | The display: 600 by 1066 pixels at 240 dpi when not given |
+| `snx.android.night` | `true` for the dark theme |
+| `snx.android.data` | The app's data folder: `android/<package>` in ScarletNX's data folder when not given |
+
+These environment variables run an app without a user, as the Switch runtime's `--script` and `--shot` do:
+
+| Variable | Meaning |
+| --- | --- |
+| `SNX_ANDROID_HEADLESS=1` | No renderer: the frames are recorded and counted only (`SNX_ANDROID_TRACE_FRAMES=1` logs them) |
+| `SNX_ANDROID_SHOT=FILE.ppm` | Save frames as binary PPM. `%ld` in the name is the frame's number |
+| `SNX_ANDROID_SHOT_FRAME=60,120` | The frames to save, 60 when not given |
+| `SNX_ANDROID_TAPS="60:300,672 90:..."` | A finger down at frame 60 at (300, 672) in pixels, and up 3 frames later |
+| `SNX_ANDROID_KEYS='120:2+3\n\|300:x'` | Text typed from frame 120 on, as key presses of a US keyboard (`\n` is Enter) |
+| `SNX_ANDROID_KEY_FRAMES=4` | The frames between scripted keys. An app gets a frame or more to take each key, as from a person |
+
+Without a display, the renderer draws into an image of its own, so the shots work on a machine with only a
+software Vulkan driver (lavapipe).
+
+`--translate=DIR APP.apk` writes every class of the app as a JVM class file into `DIR`, which `javap` reads.
 
 ## The DEX translator
 
@@ -74,5 +103,5 @@ make the whole class fail.
 
 The translator translates each class of the baseline app (3725 classes, about 19400 methods) in under a second. Each
 class whose dependencies outside the app exist passes HotSpot's verifier. The app runs to its main loop and draws
-its frames into display lists, which the Vulkan renderer draws ([HWUI](HWUI.md)): its first screen shows as on a
-phone, except for its bitmaps.
+its frames into display lists, which the Vulkan renderer draws ([HWUI](HWUI.md)). The baseline app works: a tap
+opens a new file, and typed lines show their results, with the file in its Room database.

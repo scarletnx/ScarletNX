@@ -124,8 +124,8 @@ void poly_close(Polyline* p) {
     end_contour(p, true);
 }
 
-void poly_path(Polyline* p, const uint8_t* verbs, uint32_t verb_count, const unsigned char* points, uint32_t point_count,
-               Affine m, float tolerance) {
+void poly_path(Polyline* p, const uint8_t* verbs, uint32_t verb_count, const unsigned char* points,
+               uint32_t point_count, Affine m, float tolerance) {
     uint32_t k = 0; /* the next float */
     Point start = {0, 0};
     for (uint32_t i = 0; i < verb_count; ++i) {

@@ -47,8 +47,8 @@ void poly_end(Polyline* p);
 /* Android's path verbs, as Path records them */
 enum { VERB_MOVE = 0, VERB_LINE = 1, VERB_QUAD = 2, VERB_CUBIC = 3, VERB_CLOSE = 4 };
 /* a recorded path (verbs, then x and y of each point, little-endian floats at points) flattened through m */
-void poly_path(Polyline* p, const uint8_t* verbs, uint32_t verb_count, const unsigned char* points, uint32_t point_count,
-               Affine m, float tolerance);
+void poly_path(Polyline* p, const uint8_t* verbs, uint32_t verb_count, const unsigned char* points,
+               uint32_t point_count, Affine m, float tolerance);
 
 /* triangles as a list of points, three for each */
 typedef struct {
