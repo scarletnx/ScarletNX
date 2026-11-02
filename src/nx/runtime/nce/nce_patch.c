@@ -322,11 +322,22 @@ static void put(Out* o, SnxU32 w) {
     o->at += 4;
 }
 
-/* the thread's CPU pointer into xt from the host's thread pointer */
+/* the thread's CPU pointer into xt from the host's thread pointer: at tls, or through the pointer there (indirect).
+   Three words either way */
 static void load_cpu(Out* o, const NceEnv* env, unsigned t) {
     put(o, mrs_tpidr(t));
+    if (env->indirect) {
+        put(o, ldr_x(t, t, (unsigned)env->tls));
+        put(o, ldr_x(t, t, 0));
+        return;
+    }
     put(o, add_hi(t, t, (unsigned)(env->tls >> 12)));
     put(o, ldr_x(t, t, (unsigned)(env->tls & 0xFFFu)));
+}
+
+/* whether load_cpu reaches tls: a multiple of 8, below 16 MiB (ADD #imm12, LSL #12 and LDR), or 32 KiB (LDR alone) */
+static int tls_reached(const NceEnv* env) {
+    return !(env->tls & 7) && env->tls < (env->indirect ? 1u << 15 : 1u << 24);
 }
 
 /* the call to the runtime: x16, x17 and x30 below the guest's sp, the outcall's code in x16, then a BLR to the
@@ -385,8 +396,7 @@ int nce_emit(NcePool* pools, size_t count, const NceEnv* env, const NceSite* sit
         *patch = site->word | 1u << 15; /* o0: LDXR to LDAXR, STXR to STLXR, the pairs alike */
         return 0;
     }
-    if (!size || env->tls >= 1u << 24 || (env->tls & 7) || !(p = pool_for(pools, count, size, site->addr)))
-        return -1;
+    if (!size || !tls_reached(env) || !(p = pool_for(pools, count, size, site->addr))) return -1;
     o.p = p->buf + p->used;
     o.at = p->addr + p->used;
     *patch = b_to(site->addr, o.at);
@@ -439,7 +449,7 @@ int nce_divert(NcePool* pools, size_t count, const NceEnv* env, SnxU64 entry, Sn
         target = entry + (imm << 2);
         moved = first >> 31 ? 3 : 2;
     }
-    if (env->tls >= 1u << 24 || !(p = pool_for(pools, count, size, entry))) return -1;
+    if (!tls_reached(env) || !(p = pool_for(pools, count, size, entry))) return -1;
     o.p = p->buf + p->used;
     o.at = p->addr + p->used;
     *patch = b_to(entry, o.at);

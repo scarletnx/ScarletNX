@@ -55,9 +55,12 @@ void nce_find_sites(const SnxCodegen* codegen, NceSites* out);
 void nce_sites_free(NceSites* sites);
 
 /* what the stubs need of the runtime. tls: the distance from the host's TPIDR_EL0 to the thread-local CPU pointer
-   (nce.c), below 16 MiB and a multiple of 8. outcall: the host address of nce_outcall */
+   (nce_host.c), below 16 MiB and a multiple of 8. With indirect, the word there holds a pointer to the thread's block,
+   whose first word is the CPU pointer: tls is then below 32 KiB, an LDR's reach (Android's TLS_SLOT_APP, nce_host.c).
+   outcall: the host address of nce_outcall */
 typedef struct {
     SnxU64 tls, outcall;
+    int indirect;
 } NceEnv;
 
 /* where stubs go: size bytes at buf, which the guest sees at addr. used grows, a multiple of 8 */
