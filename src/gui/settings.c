@@ -381,11 +381,26 @@ int gui_settings_debug(const GuiSettings* s, const char* ini, int picks, char* o
 }
 const char* gui_settings_tmpfs(const GuiSettings* s) { return own_on(s, "tmpfs") ? "--tmpfs" : NULL; }
 const char* gui_settings_extract(const GuiSettings* s) { return own_on(s, "extract") ? "--extract-container" : NULL; }
+/* the launcher's row i is one of the 3DS driver's play settings, which the Switch driver does not take */
+static int play_row(const GuiSettings* s, int i) {
+    return s->keys[i].section && !strcmp(s->keys[i].section, "3DS");
+}
+size_t gui_settings_play(GuiSettings* s, const char** argv) {
+    size_t n = 0;
+    int i;
+    for (i = 0; i < s->own; ++i) {
+        const char* value = s->values[i].kind || !play_row(s, i) ? NULL : picked(s, i);
+        if (!value) continue;
+        snprintf(s->values[i].option, sizeof s->values[i].option, "--%s=%s", s->values[i].key, value);
+        argv[n++] = s->values[i].option;
+    }
+    return n;
+}
 size_t gui_settings_recompile(GuiSettings* s, const char** argv) {
     size_t n = 0;
     int i;
     for (i = 0; i < s->own; ++i) {
-        const char* value = s->values[i].kind ? NULL : picked(s, i);
+        const char* value = s->values[i].kind || play_row(s, i) ? NULL : picked(s, i);
         const char* key = s->values[i].key;
         if (!value || !strcmp(key, "gdbstub") || !strcmp(key, "tmpfs") || !strcmp(key, "extract") ||
             !strcmp(key, "tracy_capture"))

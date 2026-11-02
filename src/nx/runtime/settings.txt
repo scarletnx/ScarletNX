@@ -1203,3 +1203,5 @@ setting @InlinerThreshold
     help (LLVMPassBuilderOptionsSetInlinerThreshold)
 
 section Launch: g_launch_ini, g_recompile_ini, g_llvm_ini/LLVM Internals    launcher
+
+section 3DS: g_ctr_ini    launcher

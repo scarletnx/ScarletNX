@@ -922,9 +922,9 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
     outs("},\n");
 }
 
-static void write_table(int t) {
+static void write_table(int t, const char* suffix) {
     int i, k, n = 0, first;
-    out("const IniOpt %s[] = {\n", tables[t].name);
+    out("%sconst IniOpt %s%s[] = {\n", *suffix ? "static " : "", tables[t].name, suffix);
     for (i = 0; i < nsettings; i = first) {
         const Setting* s = &settings[i];
         first = i + 1;
@@ -970,6 +970,22 @@ static void write_recompile_game(void) {
     outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};\n");
 }
 
+/* a launcher section's runtime table has a copy of its own here: the launcher lists it, and the runtime's tables are
+   not linked into it. A copy calls no set function */
+static void write_launch_copies(void) {
+    for (int i = 0; i < nsections; i++) {
+        if (!sections[i].launcher) continue;
+        for (int j = 0; j < sections[i].ntables; j++) {
+            int t = find_table(sections[i].table[j]);
+            if (tables[t].scope != S_RUNTIME) continue;
+            for (int k = 0; k < nsettings; k++)
+                if (settings[k].table == t && settings[k].set)
+                    fail(settings[k].line, "%s: a launcher section's runtime table has no set function", settings[k].name);
+            write_table(t, "_launch");
+        }
+    }
+}
+
 static void write_sections(const char* name, int launcher) {
     int i, j, n = 0;
     out("const IniSection %s[] = {\n", name);
@@ -979,7 +995,10 @@ static void write_sections(const char* name, int launcher) {
         outs("    {");
         out_string(s->name);
         out(", %d, {", !s->backend);
-        for (j = 0; j < 3; j++) out("%s%s", j ? ", " : "", j < s->ntables ? s->table[j] : "NULL");
+        for (j = 0; j < 3; j++) {
+            int copy = launcher && j < s->ntables && tables[find_table(s->table[j])].scope == S_RUNTIME;
+            out("%s%s%s", j ? ", " : "", j < s->ntables ? s->table[j] : "NULL", copy ? "_launch" : "");
+        }
         outs("}, {");
         for (j = 0; j < 3; j++) {
             if (j) outs(", ");
@@ -1035,7 +1054,7 @@ static void write_tables(const char* dir, int runtime) {
             char* file;
             if (tables[t].scope != S_RUNTIME) continue;
             table_head(1);
-            write_table(t);
+            write_table(t, "");
             file = table_file(tables[t].name);
             flush(dir, file);
             free(file);
@@ -1047,7 +1066,8 @@ static void write_tables(const char* dir, int runtime) {
     }
     table_head(0);
     for (t = 0; t < ntables; t++)
-        if (tables[t].scope != S_RUNTIME) write_table(t);
+        if (tables[t].scope != S_RUNTIME) write_table(t, "");
+    write_launch_copies();
     write_recompile_game();
     write_sections("g_launch_sections", 1);
     flush(dir, "settings_launch.c");

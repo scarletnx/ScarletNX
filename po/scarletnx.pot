@@ -4644,3 +4644,7 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "LLVM Internals"
 msgstr ""
+
+#: src/nx/runtime/settings.txt
+msgid "3DS"
+msgstr ""

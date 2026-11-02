@@ -87,6 +87,9 @@ const char* gui_settings_extract(const GuiSettings* settings);
    Internals), which the Switch driver takes for a run (which recompiles when it must) and for R's recompile. Their
    count */
 size_t gui_settings_recompile(GuiSettings* settings, const char** argv);
+/* argv's --key=value for each of the 3DS section's settings picked, which the 3DS driver takes for a run. Their
+   count */
+size_t gui_settings_play(GuiSettings* settings, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
 #endif

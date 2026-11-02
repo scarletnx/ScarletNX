@@ -118,6 +118,11 @@ int main(int argc, char** argv) {
            !strcmp(s.keys[opt + 4].key, "LLVM Internals"));
     assert(gui_settings_set(&s, "opt", ".ini") && gui_settings_set(&s, "aot_threads", "") &&
            !gui_settings_recompile(&s, options));
+    /* the 3DS driver's play settings: a group of their own, passed to the 3DS driver once picked and to no recompile */
+    assert(gui_settings_set(&s, "ctr_anti_aliasing", "1") && !gui_settings_recompile(&s, options));
+    assert(gui_settings_play(&s, options) == 1 && !strcmp(options[0], "--ctr_anti_aliasing=1"));
+    assert(gui_settings_set(&s, "ctr_anti_aliasing", ".ini") && !gui_settings_play(&s, options));
+    assert(gui_settings_set(&s, "opt", "z") && !gui_settings_play(&s, options) && gui_settings_set(&s, "opt", ".ini"));
     /* a game's setting alone, as R's recompile takes Debug's SLP vectorizer: once picked, and never a launcher's own */
     assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
     assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp_vectorizer=1"));

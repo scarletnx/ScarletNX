@@ -651,7 +651,8 @@ entries per LLVM module, compiled by a worker per host core.
 
 The play settings are keys of the game's `<title ID>.ini` (flat or under `[Game]`) and of the command line
 (`--key=value`, which also applies to that run only). They are the `g_ctr_ini` table of
-`src/nx/runtime/settings.txt`, and `--help` lists them.
+`src/nx/runtime/settings.txt`, and `--help` lists them. The launcher shows them in its Settings under 3DS and passes
+the ones that were picked to the 3DS driver as `--key=value` when it starts a game.
 
 | Key | Values | Does |
 | --- | --- | --- |

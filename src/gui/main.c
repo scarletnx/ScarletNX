@@ -12028,6 +12028,8 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (app->aot_hook) argv[n++] = "--hook-direct-calls";
     }
     if (app->menu.selected == GUI_SWITCH && !make) n += gui_settings_options(s, 1, argv + n);
+    /* the 3DS driver's play settings: key map, speed, layout, resolution scale, anti-aliasing */
+    if (app->menu.selected == GUI_3DS && !make) n += gui_settings_play(s, argv + n);
     /* Play from a save state: the runtime loads it before the game's first frame */
     if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
     /* Debug's SLP vectorizer, which R's recompile takes too: a run passes it with the game's settings */
