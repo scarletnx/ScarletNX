@@ -94,7 +94,7 @@ int vk_upscale_available(int filter) {
 }
 
 void vk_upscale_configure(int filter, int sharpness) {
-    g_up.configured = filter;
+    __atomic_store_n(&g_up.configured, filter, __ATOMIC_RELAXED);
     g_up.sharpness = sharpness < 0 ? 0 : sharpness > 100 ? 100 : sharpness;
     g_up.failed = 0;
     g_up.pipes_failed = 0;
@@ -103,8 +103,21 @@ void vk_upscale_configure(int filter, int sharpness) {
 
 int vk_upscale_filter_uses_sharpness(int filter) { return snx_upscale_uses_sharpness(filter); }
 
+int vk_upscale_cycle(void) {
+    /* FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR, None */
+    static const int order[] = {SNX_UPSCALE_FSR1, SNX_UPSCALE_BILINEAR, SNX_UPSCALE_NIS, SNX_UPSCALE_SGSR,
+                                SNX_UPSCALE_OFF};
+    int f = __atomic_load_n(&g_up.configured, __ATOMIC_RELAXED), i;
+    int n = (int)(sizeof order / sizeof order[0]);
+    int next;
+    for (i = 0; i < n && order[i] != f; ++i) {}
+    next = i == n ? order[0] : order[(i + 1) % n];
+    __atomic_store_n(&g_up.configured, next, __ATOMIC_RELAXED);
+    return next;
+}
+
 int vk_upscale_pick(u32 src_w, u32 src_h, u32 dst_w, u32 dst_h, u32 transform) {
-    int f = g_up.configured;
+    int f = __atomic_load_n(&g_up.configured, __ATOMIC_RELAXED);
     if (!src_w || !src_h || !dst_w || !dst_h) return -1;
     if (f == SNX_UPSCALE_OFF || f == SNX_UPSCALE_BILINEAR) return f;
     /* NIS samples the input itself and supports at most 2x each axis, and its coordinates have no flip: FSR 1's
