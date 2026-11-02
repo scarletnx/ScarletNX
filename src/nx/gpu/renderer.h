@@ -142,6 +142,9 @@ typedef struct Renderer {
     void (*stream_end)(void);
     void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     void (*report_stall)(void); /* the stall watchdog: what the renderer holds back. Any thread, unlocked */
+    /* what the renderer's memory holds, as text for the line of a low memory warning. Any thread, also one that never
+       calls Vulkan, unlocked */
+    void (*memory_text)(char* out, size_t size);
     /* a game pause (gpu_hold): everything recorded is submitted and done on the GPU, its results landed and every queued
        release performed, so nothing of the renderer's writes guest memory until the next job. The GPU thread, between
        jobs. NULL when the renderer has nothing in flight */
