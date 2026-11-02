@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/check-docs.py'
@@ -147,19 +147,36 @@ class Indexes(unittest.TestCase):
             )
 
 
+class WindowsOrder(type(Path())):
+    """a path of this system that sorts as a Windows path does, case folded"""
+
+    def __lt__(self, other):
+        return PureWindowsPath(self) < PureWindowsPath(other)
+
+
 class DocsIndex(unittest.TestCase):
+    FILES = {
+        'docs/README.md': '# Docs\n\n- [Build](./BUILD.md)\n',
+        'docs/BUILD.md': '# Build\n',
+        'docs/USAGE.md': '# Usage\n',
+        'docs/audit/one.md': '# One\n',
+    }
+    UNLINKED = ['docs/README.md: does not link USAGE.md', 'docs/README.md: does not link audit/one.md']
+
     def test_every_document_of_docs_is_linked(self):
-        files = {
-            'docs/README.md': '# Docs\n\n- [Build](./BUILD.md)\n',
-            'docs/BUILD.md': '# Build\n',
-            'docs/USAGE.md': '# Usage\n',
-            'docs/audit/one.md': '# One\n',
-        }
-        with Checkout(files) as c:
+        with Checkout(self.FILES) as c:
+            self.assertEqual(c.failures('docs index'), self.UNLINKED)
+
+    def test_the_same_order_on_windows(self):
+        with Checkout(self.FILES) as c:
+            root = WindowsOrder(c.root)
             self.assertEqual(
-                c.failures('docs index'),
-                ['docs/README.md: does not link USAGE.md', 'docs/README.md: does not link audit/one.md'],
+                [doc.relative_to(root).as_posix() for doc in cd.documents(root)],
+                ['docs/BUILD.md', 'docs/README.md', 'docs/USAGE.md', 'docs/audit/one.md'],
             )
+            failures = cd.Failures()
+            cd.check_docs_index(root, failures)
+            self.assertEqual(failures, self.UNLINKED)
 
 
 SETTINGS = """# a comment
