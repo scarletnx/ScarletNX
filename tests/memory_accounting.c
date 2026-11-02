@@ -7,6 +7,7 @@
 #include "nx/hle/hle.h"
 #include "nx/runtime/clock.h"
 #include "nx/gpu/gpu.h"
+#include "nx/runtime/nce/nce.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -53,6 +54,14 @@ u8* plat_vm_reserve(u64 size) {
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
 }
 void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
+/* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
+u8* plat_vm_reserve_at(u64 addr, u64 size) {
+    (void)addr, (void)size;
+    errno = ENOSYS;
+    return NULL;
+}
+/* nce.c, whose NCE no game here is of: mem.c's reservation asks it first */
+int nce_wanted(void) { return 0; }
 int plat_vm_commit(u8* p, u64 size) {
     if (mapping_begins) CHECK(mapping_depth == 1);
     commit_calls++;
