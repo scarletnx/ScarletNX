@@ -414,7 +414,8 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
     /* the last module first: a module moves up past the old place of the next, never past its new place */
     for (size_t i = p->module_count; i-- > 0 && !r;)
         nce_sites_move(&sites, old[i], old[i] + p->modules[i].size, p->modules[i].base - old[i]);
-    if (!r && nce_file_write(path, pools, p->module_count, &sites)) r = snx_error("cannot write %s", path);
+    if (!r && nce_file_write(path, p->modules[0].base, pools, p->module_count, &sites))
+        r = snx_error("cannot write %s", path);
     if (!r && !quiet)
         printf("NCE: %zu words to patch (%zu that the flow reaches), %zu kept as data, %zu outside the functions\n",
                sites.count, sites.proven, sites.data, sites.outside);

@@ -6,6 +6,7 @@
    the words that the runtime's outcall expects, and comes back to the next word. Words only: any host runs this */
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "nx/loader/codegen_view.h"
 #include "nx/runtime/nce/nce_patch.h"
@@ -25,6 +26,8 @@ static void check(int condition, const char* what) {
 
 #define BASE SNX_CODE_BASE
 #define AT(i) (BASE + (SnxU64)(i) * 4)
+/* where Android puts the guest's code under NCE: 64 GiB up (mem.c) */
+#define MOVED (64ull << 30)
 
 /* the synthetic text, one word each:
    f0, an FDE from word 0 to 18 that ends in a literal pool and a table:
@@ -335,15 +338,25 @@ static void trap_file_test(const NceSites* found, const char* dir) {
     nce_sites_move(&sites, AT(0), AT(20), 0x10000);
     check(sites.site[0].addr == AT(0) + 0x10000 && site_at(&sites, AT(21)), "the moves of the sites of one range only");
     snprintf(path, sizeof path, "%s/nce_patch_test.nce", dir);
-    check(!nce_file_write(path, ranges, 2, &sites), "the file is written");
-    check(!nce_file_read(path, &read_ranges, &count, &back), "the file is read");
-    check(count == 2 && read_ranges[1].addr == ranges[1].addr && read_ranges[0].size == ranges[0].size, "its pools");
+    check(!nce_file_write(path, BASE, ranges, 2, &sites), "the file is written");
+    {
+        size_t size = 0;
+        unsigned char* raw = snx_read_file(path, &size);
+        check(raw && size > 40 && raw[7] == 2 && snx_ld_le64(raw + 24) == ranges[0].addr - BASE &&
+                  snx_ld_le64(raw + 24 + 2 * 16) == sites.site[0].addr - BASE,
+              "version 2, each address from the first module's base");
+        free(raw);
+    }
+    /* read back as Android loads it: the first module moved up to the base its runtime picked (mem.c) */
+    check(!nce_file_read(path, BASE + MOVED, &read_ranges, &count, &back), "the file is read");
+    check(count == 2 && read_ranges[1].addr == ranges[1].addr + MOVED && read_ranges[0].size == ranges[0].size,
+          "its pools, moved with the base");
     check(back.count == sites.count && back.proven == sites.proven && back.unproven == sites.unproven, "its sites");
     for (size_t i = 0; i < back.count && i < sites.count; i++)
-        check(back.site[i].addr == sites.site[i].addr && back.site[i].word == sites.site[i].word &&
+        check(back.site[i].addr == sites.site[i].addr + MOVED && back.site[i].word == sites.site[i].word &&
                   back.site[i].kind == sites.site[i].kind && back.site[i].reg == sites.site[i].reg &&
                   back.site[i].imm == sites.site[i].imm && back.site[i].proven == sites.site[i].proven,
-              "each site as it was written");
+              "each site as it was written, moved with the base");
     free(read_ranges);
     nce_sites_free(&back);
     free(sites.site);
