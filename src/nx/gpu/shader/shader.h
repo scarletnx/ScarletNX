@@ -35,6 +35,14 @@ static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
     return a->bl_cbuf == b->bl_cbuf && a->cbuf_off == b->cbuf_off && a->flags == b->flags && a->type == b->type &&
            a->array == b->array && a->shadow == b->shadow;
 }
+/* Whether two indexed slots view their elements as the same kind of image, with the integer and signed integer
+   texture masks. Each kind has its own SPIR-V array, all of them on SNX_VKB_TEXARRAY (and the shadow kinds' also on
+   SNX_VKB_TEXDEPTH). An element is read only through the array of its own kind, so its view always matches the type
+   of the array that reads it. */
+static inline int shader_same_indexed_kind(const ShTex* tex, u64 int_mask, u64 sint_mask, int a, int b) {
+    return tex[a].type == tex[b].type && tex[a].array == tex[b].array && tex[a].shadow == tex[b].shadow &&
+           ((int_mask >> a) & 1) == ((int_mask >> b) & 1) && ((sint_mask >> a) & 1) == ((sint_mask >> b) & 1);
+}
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
    0x830, follow the address with the buffer's size (shader_gbuf_sized). A graphics program may also keep a bare
