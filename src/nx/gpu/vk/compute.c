@@ -755,8 +755,22 @@ int vk_buffer_image(const u32* tic, int kind, VkBufImg* out) {
     return 1;
 }
 
-/* Both the initial translation and format specialization use the same bounded program. */
-static void cs_read_code(u64 pa, u8* dst) {
+/* whether [pa, pa + len) of code is as it was when the write-tracking clock read wseen and the GPU's writes were at
+   generation gw, page by page: a window's pages need not follow each other in host memory. 0 when it can't tell */
+static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
+    gmem_need(pa, len); /* pending results over the code land first, as the write tracking then sees them */
+    if (gpu_mem_dirty_since(gw, pa, len)) return 0;
+    for (u64 a = pa, end = pa + len; a < end;) {
+        u64 n = 0x1000 - (a & 0xFFF);
+        if (n > end - a) n = end - a;
+        if (vk_written_since(gmem_host(a, n), n, wseen) != 0) return 0;
+        a += n;
+    }
+    return 1;
+}
+/* Both the initial translation and format specialization use the same bounded program. Returns the bytes of guest
+   memory it read from pa */
+static u32 cs_read_code(u64 pa, u8* dst) {
     u32 code_size = 0x10000;
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
@@ -776,6 +790,7 @@ static void cs_read_code(u64 pa, u8* dst) {
         vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
+    return code_size;
 }
 
 /* Storage buffers kept on the GPU (the model of Citron Neo's buffer cache, buffer_cache.h's
@@ -891,12 +906,17 @@ void vk_dispatch(const DispatchState* d) {
         g_cbn[i] = sz;
         gmem_read(d->cb_addr[i], g_cb[i], sz);
     }
-    /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does. */
+    /* Recheck code at a new submit or instruction invalidation, as vk_shader_get does: unchanged by write tracking
+       since it was read, or else by the hash of the window read again. Read and hashed at every submit and every
+       shader invalidation, the windows took 8% of one game's GPU thread, and another invalidated before most of its
+       dispatches */
     struct cs_fast {
         u64 addr;
         u64 shader_generation;
         u64 code_hash; /* of the code window cs_pipe translated */
+        u64 gw;        /* gpu_mem_generation() when the window was read */
         u32 epoch, lx, ly, lz, shm;
+        u32 wseen, code_len; /* vk_ww_now() then, and the bytes of the window */
         CsPipe* p;
     };
     static struct cs_fast fc[64];
@@ -905,10 +925,23 @@ void vk_dispatch(const DispatchState* d) {
     CsPipe* p = fe->p;
     int same = p && fe->addr == pa && fe->lx == lx && fe->ly == ly && fe->lz == lz && fe->shm == shm &&
                vk_cb_reads_hold(&p->cbr, cs_cb_read);
+    if (same && (fe->shader_generation != g_vk.shader_generation || fe->epoch != g_vk_epoch)) {
+        if (cs_code_unchanged(pa, fe->code_len, fe->gw, fe->wseen)) {
+            fe->shader_generation = g_vk.shader_generation;
+            fe->epoch = g_vk_epoch;
+            fe->wseen = vk_ww_now();
+            fe->gw = gpu_mem_generation();
+        }
+    }
     if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != g_vk_epoch) {
         static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
         CsKey unkeyed = {0};
-        cs_read_code(pa, code_buf);
+        u32 wseen = vk_ww_now();
+        u64 gw = gpu_mem_generation(); /* both before the bytes are read */
+        u32 code_len = cs_read_code(pa, code_buf), reach;
+        /* the program's own bytes, which its translation reaches: what follows it in the window can change freely */
+        vk_shader_hash(code_buf, sizeof code_buf, &reach, cs_cb_read);
+        if (reach > 80 && reach - 80 < code_len) code_len = reach - 80;
         /* same window and cbuf reads: same program, so skip vk_shader_hash's walk (5% of one game's GPU thread) */
         u64 h = vk_hash(code_buf, sizeof code_buf);
         if (!same || h != fe->code_hash) {
@@ -918,6 +951,9 @@ void vk_dispatch(const DispatchState* d) {
         fe->addr = pa;
         fe->shader_generation = g_vk.shader_generation;
         fe->epoch = g_vk_epoch;
+        fe->wseen = wseen;
+        fe->gw = gw;
+        fe->code_len = code_len;
         fe->lx = lx;
         fe->ly = ly;
         fe->lz = lz;
