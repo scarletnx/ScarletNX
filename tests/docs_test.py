@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+"""scripts/check-docs.py on checkouts of its own: the links, anchors and indexes it refuses, each named."""
+
+import importlib.util
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / 'scripts/check-docs.py'
+spec = importlib.util.spec_from_file_location('check_docs', SCRIPT)
+cd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cd)
+
+LONG = '\n'.join(f'Line {n}.' for n in range(cd.INDEX_LINES))
+
+
+class Checkout:
+    """a checkout in a temporary folder, its files given as {path: text}"""
+
+    def __init__(self, files):
+        self.folder = tempfile.TemporaryDirectory(prefix='snx-docs-test-')
+        self.root = Path(self.folder.name)
+        base = {'docs/README.md': '# Docs\n'}
+        base.update(files)
+        for name, text in base.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+
+    def failures(self, check):
+        failures = cd.Failures()
+        docs = cd.documents(self.root)
+        if check == 'links':
+            cd.check_links(self.root, docs, failures)
+        elif check == 'indexes':
+            cd.check_indexes(self.root, docs, failures, False)
+        else:
+            cd.check_docs_index(self.root, failures)
+        return list(failures)
+
+    def run(self, *args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), '--root', str(self.root), *args], capture_output=True, text=True
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.folder.cleanup()
+
+
+class Links(unittest.TestCase):
+    def test_a_file_that_is_not_there(self):
+        with Checkout({'README.md': '# X\n\nSee [build](docs/BUILD.md) and [usage](docs/USAGE.md).\n'}) as c:
+            (c.root / 'docs/BUILD.md').write_text('# Build\n')
+            self.assertEqual(c.failures('links'), ['README.md:3: docs/USAGE.md: docs/USAGE.md is not there'])
+
+    def test_an_anchor_no_heading_gives(self):
+        doc = '# A\n\n## Two words\n\n[here](#two-words) [there](B.md#nope) [gone](#two_words)\n'
+        with Checkout({'docs/A.md': doc, 'docs/B.md': '# B\n\n## Yes\n'}) as c:
+            self.assertEqual(
+                c.failures('links'),
+                [
+                    'docs/A.md:5: #two_words: this document has no heading or name with the anchor #two_words',
+                    'docs/A.md:5: B.md#nope: docs/B.md has no heading or name with the anchor #nope',
+                ],
+            )
+
+    def test_anchors_as_github_makes_them(self):
+        doc = (
+            '# A\n\n## Extract → AOT → run\n\n## Settings / input\n\n## Notes\n\n## Notes\n\n'
+            '### `gamepad_map` and *more*\n\n## [Linked](x.md) title\n\n<a name="kept"></a>\n\n'
+            '[a](#extract--aot--run) [b](#settings--input) [c](#notes-1) [d](#gamepad_map-and-more)\n'
+            '[e](#linked-title) [f](#kept) [g][ref]\n\n[ref]: #notes\n'
+        )
+        with Checkout({'docs/A.md': doc, 'docs/x.md': '# X\n'}) as c:
+            self.assertEqual(c.failures('links'), [])
+
+    def test_code_is_not_a_link(self):
+        doc = '# A\n\n`[x](missing.md)` and\n\n```md\n[y](missing.md)\n```\n'
+        with Checkout({'docs/A.md': doc}) as c:
+            self.assertEqual(c.failures('links'), [])
+
+    def test_html_targets_and_line_anchors(self):
+        doc = (
+            '# A\n\n<img src="../dist/logo.svg">\n<img src="../dist/gone.svg">\n'
+            '[ok](../src/a.c#L2) [past](../src/a.c#L2-L9) [word](../src/a.c#main) [web](https://example.org/x.md)\n'
+        )
+        with Checkout({'docs/A.md': doc, 'dist/logo.svg': '<svg/>', 'src/a.c': 'int a;\nint b;\n'}) as c:
+            self.assertEqual(
+                c.failures('links'),
+                [
+                    'docs/A.md:4: ../dist/gone.svg: ../dist/gone.svg is not there',
+                    'docs/A.md:5: ../src/a.c#L2-L9: line 9 is past the end of ../src/a.c (2 lines)',
+                    'docs/A.md:5: ../src/a.c#main: #main on a file that is not Markdown takes #L<n> alone',
+                ],
+            )
+
+    def test_a_link_text_broken_over_lines(self):
+        with Checkout({'docs/A.md': '# A\n\nThe [long\nname](B.md) here.\n'}) as c:
+            self.assertEqual(c.failures('links'), ['docs/A.md:4: B.md: B.md is not there'])
+
+
+class Indexes(unittest.TestCase):
+    def doc(self, index=''):
+        return f'# Long\n\n{index}Intro.\n\n## One\n\n### One a\n\n## Two\n\n## Three\n\n{LONG}\n'
+
+    def test_a_long_document_without_one(self):
+        with Checkout({'docs/LONG.md': self.doc(), 'docs/SHORT.md': '# Short\n\n## A\n\n## B\n\n## C\n'}) as c:
+            self.assertEqual(
+                c.failures('indexes'),
+                [
+                    'docs/LONG.md: over 100 lines with 3 or more sections and no ## Index: '
+                    'run scripts/check-docs.py --index'
+                ],
+            )
+
+    def test_index_writes_it_once_and_then_holds(self):
+        with Checkout({'docs/LONG.md': self.doc(), 'docs/README.md': '# Docs\n\n- [Long](LONG.md)\n'}) as c:
+            self.assertEqual(c.run('--index').returncode, 0)
+            text = (c.root / 'docs/LONG.md').read_text()
+            self.assertIn(
+                '# Long\n\n## Index\n\n* [One](#one)\n  * [One a](#one-a)\n* [Two](#two)\n* [Three](#three)\n\nIntro.',
+                text,
+            )
+            self.assertEqual(c.failures('indexes'), [])
+            c.run('--index')
+            self.assertEqual((c.root / 'docs/LONG.md').read_text(), text)
+
+    def test_a_stale_index_is_refused_and_made_again_where_it_stands(self):
+        stale = 'Before it.\n\n## Index\n\n* [One](#one)\n\n'
+        with Checkout({'docs/LONG.md': self.doc(stale)}) as c:
+            self.assertEqual(
+                c.failures('indexes'),
+                ['docs/LONG.md: ## Index does not list its sections as they are: run scripts/check-docs.py --index'],
+            )
+            c.run('--index')
+            self.assertIn(
+                'Before it.\n\n## Index\n\n* [One](#one)\n  * [One a](#one-a)\n', (c.root / 'docs/LONG.md').read_text()
+            )
+
+
+class DocsIndex(unittest.TestCase):
+    def test_every_document_of_docs_is_linked(self):
+        files = {
+            'docs/README.md': '# Docs\n\n- [Build](./BUILD.md)\n',
+            'docs/BUILD.md': '# Build\n',
+            'docs/USAGE.md': '# Usage\n',
+            'docs/audit/one.md': '# One\n',
+        }
+        with Checkout(files) as c:
+            self.assertEqual(
+                c.failures('docs index'),
+                ['docs/README.md: does not link USAGE.md', 'docs/README.md: does not link audit/one.md'],
+            )
+
+
+if __name__ == '__main__':
+    unittest.main()
