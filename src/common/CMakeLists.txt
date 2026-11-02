@@ -90,6 +90,12 @@ if(TARGET snx_enet)
     target_link_libraries(scarletnx-ldn PUBLIC scarletnx-net PRIVATE snx_enet snx_zstd)
 endif()
 
+# The zip reader (utilities/zip.h) of the Vita driver's VPKs and the Android driver's APKs
+if(TARGET snx_libdeflate)
+    add_library(snx_zip STATIC utilities/zip.c)
+    target_link_libraries(snx_zip PUBLIC scarletnx-common PRIVATE snx_libdeflate)
+    target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+endif()
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the device's choice, the submission ring, the swapchain and the SDL window (gpu/vk/). Each frontend compiles volk.c,
 # whose functions these call
