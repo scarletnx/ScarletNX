@@ -19,6 +19,12 @@ typedef struct {
 } NvnTexLayout;
 
 void nvn_tex_layout(const NvnTexDesc* d, NvnTexLayout* o);
+/* The 64 KiB tile of a sparse texture (SPARSE, block linear; 2D, 3D, an array or a cube; 1, 2, 4, 8 or 16 bytes a
+   block), in blocks across, down and deep: the standard shapes the game's driver answers, 2D 256x256, 256x128,
+   128x128, 128x64 and 64x64, 3D 64x32x32, 32x32x32, 32x32x16, 32x16x16 and 16x16x16 by those bytes. 0 for a texture
+   that has none. nvn_tex_layout lays such a texture out in blocks as high and deep as the tile, so that each 64 KiB
+   page holds one tile, the tiles across, then down, then deep */
+int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]);
 /* a level's offset from its layer's start */
 u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 /* the block height and depth level `level` is laid out with (log2 of the GOBs): they shrink with its rows and slices */
