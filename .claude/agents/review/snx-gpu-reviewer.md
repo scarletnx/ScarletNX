@@ -87,3 +87,10 @@ an edit. A wrong story becomes a fix that is worse than the bug that it was for.
   without a message.
 - host1x syncpoints at 150 and above wrote past the 128-entry table of NvRmStream into the game heap, on each video
   frame.
+- `nvn_cmd.c` moved command records into the control memory of their command list. One game adds the same control
+  memory for each command list of a frame, so the next list wrote over the records of the last. Put records only in
+  the command bytes that the list counted, or in the memory of the runtime.
+- `nvn_cmd.c` gave back a piece when another command list counted bytes over its anchor. The handle of the piece, a
+  JUMP at the anchor, still stayed there, and the game called it later. A small block that the runtime took again at
+  once then crashed the replay with "op 0 and size 0". A piece of a segment hid this, because a segment waits for all
+  of its pieces. Keep a piece while a handle can still reach it.
