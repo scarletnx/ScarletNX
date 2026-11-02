@@ -20,10 +20,13 @@ typedef struct {
 } NvnSpillSeg;
 /* a piece in use: where its recording starts in the game's command memory as the driver counts it (anchor) and in its
    control memory (canchor, 0 none), its segment, the order it was cut in, the next piece of its bucket by anchor (or
-   the next free slot) and by canchor, 0 for none (slots count from 1), and NVN_PIECE_NO_COMMAND */
+   the next free slot) and by canchor, 0 for none (slots count from 1), NVN_PIECE_NO_COMMAND, and the control memory
+   slot of the command buffer that cut it (NvnCmdBuf.ctl, 0 none), which the census names it by. mark: the target of
+   the JUMP its recording's handle is, at the aligned anchor (nvn_cmd.c's spill_link), 0 for none.
+   A piece moved into the small store has seg NVN_SPILL_SMALL plus its class, and at its block */
 typedef struct {
-    u64 anchor, canchor;
-    u32 seg, serial, next, cnext, flags, pad;
+    u64 anchor, canchor, mark, at;
+    u32 seg, serial, next, cnext, flags, ctl;
 } NvnSpillPiece;
 /* its recording counted no bytes of command memory: the driver keeps it all in control memory, so only a look at the
    control memory gives it back */
@@ -38,20 +41,29 @@ typedef struct {
     u32 seen_serial, block, pending, grow;
 } NvnCtl;
 #define NVN_CTL_SLOTS     4096
-#define NVN_SPILL_SEGS    4096 /* 256 MiB: a segment waits for the GPU thread, which runs seconds late at loads */
-#define NVN_SPILL_PIECES  65536
+#define NVN_SPILL_SEGS    4096   /* 256 MiB: a segment waits for the GPU thread, which runs seconds late at loads */
+#define NVN_SPILL_PIECES  262144 /* one game keeps over 23,000 short recordings in the runtime's memory at once */
+#define NVN_SPILL_SMALL   NVN_SPILL_SEGS /* NvnSpillPiece.seg of a block of the small store's first class */
+#define NVN_SMALL_CLASSES 5              /* blocks of 64 to 1024 bytes */
+/* A class of the small store (nvn_cmd.c's spill_compact): the rest of its last slab [slab, end), and the blocks given
+   back, oldest first, each holding the next one's address and the submissions made when it came back (its quiet) */
+typedef struct {
+    u64 slab, end, head, tail;
+} NvnSmallClass;
 #define NVN_SPILL_BUCKETS 4096 /* the pieces by the 4 KiB page of their anchor */
 /* the file's state, g_nvn.cmd (gpu/nvn/nvn_state.h), under the lock (the game's threads record into several command
    buffers at once): the segments (append only), the pieces' slots and their buckets, the pieces in use (np), the slots
-   ever taken and the first free one, the serial of the last piece cut, the segment the last cut came from, the bytes of
-   the kernel region taken, and the runtime's one empty recording */
+   ever taken and the first free one, the serial of the last piece cut, the segment the last cut came from, the
+   quarters of the slots in use the census has logged, the pieces in use at which spill_sweep looks next, the small
+   store's classes, the bytes of the kernel region taken, and the runtime's one empty recording */
 typedef struct {
     PMutex lock;
     NvnSpillSeg s[NVN_SPILL_SEGS];
     NvnSpillPiece p[NVN_SPILL_PIECES + 1];
     u32 bucket[NVN_SPILL_BUCKETS], cbucket[NVN_SPILL_BUCKETS];
     NvnCtl ctl[NVN_CTL_SLOTS];
-    u32 ns, np, slots, free, serial, hint;
+    u32 ns, np, slots, free, serial, hint, census, sweep;
+    NvnSmallClass small[NVN_SMALL_CLASSES];
     u64 total, empty;
 } NvnCmdState;
 

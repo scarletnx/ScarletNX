@@ -32,6 +32,11 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     g_lent += size;
     return at;
 }
+/* all of the guest memory is mapped */
+u64 mem_mapped_run(u64 addr, u64 size) {
+    (void)addr;
+    return size;
+}
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
 /* no GPU thread: each submission is read at once */
 u64 nvn_replay_submitted(void) { return 0; }
@@ -224,12 +229,14 @@ int main(void) {
     }
 
     /* Control memory, counted as the driver writes it: a recording's start (0x10) and end (8) marks, and a range entry
-       of its commands with its block (0x20). A recording of calls only counts no command bytes: the driver keeps it in
-       control memory, so another command buffer recording over its command memory leaves its pieces alone, and the
-       game giving the same control memory again and recording over it gives them back */
+       of its commands with its block (0x20). A recording of calls only, or of compute binds, counts no command bytes:
+       the driver keeps it in control memory, and the runtime in its own, as it can't keep records in control memory
+       (one game adds the same control memory for each recording of a frame). Another command buffer recording over
+       its command memory leaves its pieces alone, and the game giving the same control memory again and recording
+       over it gives them back */
     {
         const u64 cbc = 0x900, cbd = 0x9a0, ctl = 0x48000, callee = 0x4e0;
-        u64 hd, hc;
+        u64 hd, hc, hb, canchor;
         u32 before, i;
         int found = 0;
         nvn_CommandBufferInitialize(&cpu, cbc, 0);
@@ -246,7 +253,14 @@ int main(void) {
         nvn_CommandBufferCallCommands(&cpu, cbc, 1, callee);
         hc = nvn_CommandBufferEndRecording(&cpu, cbc);
         check(g_nvn.cmd.np > before, "the calls go to the runtime's memory");
-        /* another command buffer records over the command memory where the call-only recording started */
+        walk(hc, &a);
+        check(a.n == 1 && a.op[0] == OP_CALL && gr64(a.at[0] + 8) == hd, "the call-only recording walks");
+        canchor = ctl + nvn_CommandBufferGetControlMemoryUsed(&cpu, cbc);
+        nvn_CommandBufferBeginRecording(&cpu, cbc);
+        for (int k = 0; k < 4; k++) nvn_CommandBufferBindTexture(&cpu, cbc, 5, k, 0x10200102);
+        hb = nvn_CommandBufferEndRecording(&cpu, cbc);
+        check(g_nvn.cmd.np > before && (hb < ctl || hb >= ctl + 0x400), "compute binds go to the runtime's memory");
+        /* another command buffer records over the command memory where the compute binds started */
         nvn_CommandBufferInitialize(&cpu, cbd, 0);
         nvn_CommandBufferAddCommandMemory(&cpu, cbd, 1, 0x9000, 0x100);
         for (int k = 0; k < 2; k++) {
@@ -256,21 +270,113 @@ int main(void) {
         }
         for (i = 1; i <= g_nvn.cmd.slots; i++)
             if (g_nvn.cmd.p[i].anchor && (g_nvn.cmd.p[i].flags & NVN_PIECE_NO_COMMAND)) found = 1;
-        check(found, "the call-only recording's pieces stay, as it isn't in command memory");
-        walk(hc, &a);
-        check(a.n == 1 && a.op[0] == OP_CALL, "the call-only recording walks");
+        check(found, "the compute binds' pieces stay, as they aren't in command memory");
+        walk(hb, &a);
+        check(a.n == 4 && a.op[3] == OP_BIND_TEX1, "the compute binds walk");
         /* the game gives the same control memory again and records over it */
         nvn_CommandBufferAddCommandMemory(&cpu, cbc, 1, 0xc000, 0x1000);
         nvn_CommandBufferAddControlMemory(&cpu, cbc, ctl, 0x400);
-        for (int k = 0; k < 3; k++) {
+        for (int k = 0; k < 6; k++) {
             nvn_CommandBufferBeginRecording(&cpu, cbc);
             nvn_CommandBufferDrawArrays(&cpu, cbc, 4, k, 3);
             nvn_CommandBufferEndRecording(&cpu, cbc);
         }
         found = 0;
         for (i = 1; i <= g_nvn.cmd.slots; i++)
-            if (g_nvn.cmd.p[i].anchor && g_nvn.cmd.p[i].canchor == ctl + 0x38) found = 1;
+            if (g_nvn.cmd.p[i].anchor && g_nvn.cmd.p[i].canchor == canchor) found = 1;
         check(!found, "recorded over in control memory, its pieces come back");
+    }
+
+    /* A recording that starts in the runtime's memory moves into the command bytes it counted when they hold it: a
+       uniform buffer's record is 32 bytes against the driver's 20, and vertex attributes' 24 against its 68 */
+    {
+        const u64 cbe = 0xa40, attribs = 0x4f0;
+        u64 he;
+        u32 before = g_nvn.cmd.np;
+        gw64(attribs, 0x0000000100000002ull);
+        nvn_CommandBufferInitialize(&cpu, cbe, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbe, 1, 0xf000, 0x200);
+        nvn_CommandBufferBeginRecording(&cpu, cbe);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbe, 0, 1, 0x605640000ull, 0x100);
+        nvn_CommandBufferBindVertexAttribState(&cpu, cbe, 2, attribs);
+        he = nvn_CommandBufferEndRecording(&cpu, cbe);
+        check(he == 0xf000 + 0x10000 && g_nvn.cmd.np == before, "the binds move into their command bytes");
+        walk(he, &a);
+        check(a.n == 2 && a.op[0] == OP_BIND_UBO && a.op[1] == OP_BIND_VATTR, "the moved recording walks");
+        check(nvn_CommandBufferGetCommandMemoryUsed(&cpu, cbe) == 88, "as many bytes counted as before");
+    }
+
+    /* One game's short recordings: a call and a uniform buffer, 48 bytes of records for the 20 the driver counts. Such
+       a recording stays in the runtime's memory, in a block of the small store, not in a segment that recordings grow
+       in, and its handle is a JUMP there from where the driver's commands would be. The game builds it again in the
+       same range: the handle stays, and runs the new one. The last one's piece stays while a JUMP reaches it, and
+       comes back at the next look once the new one's JUMP took its place. The next such recording takes its block */
+    {
+        const u64 cbg = 0xb80, callee = 0x4f8;
+        u64 hg, hg2 = 0, block;
+        u32 before, i, slot = 0, k;
+        int in_segment = 0;
+        gw64(callee, h);
+        nvn_CommandBufferInitialize(&cpu, cbg, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0xfa00, 0x80);
+        before = g_nvn.cmd.np;
+        nvn_CommandBufferBeginRecording(&cpu, cbg);
+        nvn_CommandBufferCallCommands(&cpu, cbg, 1, callee);
+        nvn_CommandBufferBindUniformBuffer(&cpu, cbg, 0, 1, 0x605640000ull, 0x100);
+        hg = nvn_CommandBufferEndRecording(&cpu, cbg);
+        block = gr64(hg + 8);
+        check(hg == 0x1fa00 && NVN_REC_OP(gr32(hg)) == OP_JUMP, "the handle is a JUMP where the commands would be");
+        for (i = 1; i <= g_nvn.cmd.slots; i++)
+            if (g_nvn.cmd.p[i].anchor && g_nvn.cmd.p[i].at == block) slot = i;
+        for (k = 0; k < g_nvn.cmd.ns; k++)
+            if (block >= g_nvn.cmd.s[k].at && block < g_nvn.cmd.s[k].at + g_nvn.cmd.s[k].size) in_segment = 1;
+        check(g_nvn.cmd.np == before + 1 && slot && g_nvn.cmd.p[slot].seg == NVN_SPILL_SMALL && !in_segment &&
+                  g_nvn.cmd.p[slot].mark == block,
+              "a call and a bind take a 64-byte block of the small store");
+        walk(hg, &a);
+        check(a.n == 2 && a.op[0] == OP_CALL && a.op[1] == OP_BIND_UBO && gr64(a.at[0] + 8) == h,
+              "the recording walks from its block");
+        for (int n = 0; n < 2; n++) { /* the game records over it, and again */
+            nvn_CommandBufferAddCommandMemory(&cpu, cbg, 1, 0xfa00, 0x80);
+            if (n) g_nvn.cmd.sweep = 0; /* the next cut looks at the pieces */
+            nvn_CommandBufferBeginRecording(&cpu, cbg);
+            nvn_CommandBufferCallCommands(&cpu, cbg, 1, callee);
+            nvn_CommandBufferBindUniformBuffer(&cpu, cbg, 0, 2, 0x605640000ull, 0x100);
+            hg2 = nvn_CommandBufferEndRecording(&cpu, cbg);
+            check(hg2 == hg && g_nvn.cmd.np == before + 2,
+                  "the last recording's piece stays until a look finds the new JUMP in its place");
+        }
+        walk(hg, &a);
+        check(gr64(hg + 8) == block && a.n == 2 && gr32(a.at[1] + 8 + offsetof(NvnPBindBuf, index)) == 2,
+              "the handle runs the newest recording, from the block of the first");
+    }
+
+    /* A recording that starts and ends in the runtime's memory marks the command bytes it counted: four uniform
+       buffers count 80 bytes for 128 of records. Once the game writes over the mark, the recording is gone on the
+       console as well, and the next look at the pieces gives its pieces back */
+    {
+        const u64 cbf = 0xae0, mem = 0x10000 + 0xf800;
+        u32 before, i;
+        int found = 0;
+        nvn_CommandBufferInitialize(&cpu, cbf, 0);
+        nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0xf800, 0x100);
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        for (int k = 0; k < 4; k++) nvn_CommandBufferBindUniformBuffer(&cpu, cbf, 0, k, 0x605640000ull, 0x100);
+        nvn_CommandBufferEndRecording(&cpu, cbf);
+        before = g_nvn.cmd.np;
+        for (i = 1; i <= g_nvn.cmd.slots; i++)
+            if (g_nvn.cmd.p[i].anchor == mem && g_nvn.cmd.p[i].mark && g_nvn.cmd.p[i].mark == gr64(mem + 8)) found = 1;
+        check(found, "the recording's pieces keep the target of its handle's JUMP");
+        gw64(mem, 0); /* the game's object goes, and its memory takes other data */
+        g_nvn.cmd.sweep = 0;
+        nvn_CommandBufferAddCommandMemory(&cpu, cbf, 1, 0xf900, 0x100);
+        nvn_CommandBufferBeginRecording(&cpu, cbf);
+        for (int k = 0; k < 4; k++) nvn_CommandBufferBindUniformBuffer(&cpu, cbf, 0, k, 0x605640000ull, 0x100);
+        nvn_CommandBufferEndRecording(&cpu, cbf);
+        found = 0;
+        for (i = 1; i <= g_nvn.cmd.slots; i++)
+            if (g_nvn.cmd.p[i].anchor == mem) found = 1;
+        check(!found && g_nvn.cmd.np <= before, "the pieces of the recording written over come back");
     }
 
     /* a piece of the runtime's memory a recording is still cut from: records past those written aren't there yet, so a
@@ -396,7 +502,7 @@ int main(void) {
         nvn_CommandBufferBindColorState(&cpu, cb7, st);
         r1b = nvn_CommandBufferEndRecording(&cpu, cb7);
         walk(r1b, &a);
-        check(a.n == 1 && r1b != r1, "the new first recording");
+        check(a.n == 1 && r1b == r1, "the new first recording, which a handle of the last one runs");
         check(g_nvn.cmd.np == pieces,
               "writing over the first recording gives back its piece alone, the second's stays");
         nvn_CommandBufferInitialize(&cpu, cb8, 0); /* another command buffer takes the runtime's memory */
