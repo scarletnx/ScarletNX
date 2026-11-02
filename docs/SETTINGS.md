@@ -25,7 +25,7 @@ Settings show a group for each section ([GUI launcher](GUI.md)).
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked` (`Auto` follows the host's power while the game runs), `fullscreen`, `language`, `resolution`,
-`anisotropy`, `upscaler`, `upscaler_sharpness`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
+`anisotropy`, `upscaler`, `upscaler_sharpness`, `upscaler_mult`, `memory_gb`, `memory_fit`, `heap_max_mb`, `thread_stack_mb`, `map_limit_mb`, `map_limit_files`,
 `airplane_mode`, `ldn`, `room`, `pipeline_threads`, `prepare_shaders`, `compress_shader_cache`, `jit_threads`,
 `vertex_input_dynamic_state`, and
 the `[Debug]` settings other than `log`, `auto_stub_ipc` and `diag`.
@@ -68,7 +68,8 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
 | `frame_pacing` | `1` | With VSync and `fps_limit=game`: `0` paces the game's frames by a timer; `1` also has the next frame wait until the one before is on the display (`VK_KHR_present_wait` or `VK_GOOGLE_display_timing`), so frames don't queue for it; `2` also holds each frame of a game that asks for two refreshes or more a frame until its refresh, where the display can say when (`VK_EXT_present_timing` or `VK_GOOGLE_display_timing`). Where the display can't do one, the one before it |
 | `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
-| `upscaler` | `fsr1` | The spatial filter that grows the presented frame to the window. `fsr1` is AMD FSR 1 and the default on every device. `off` (`None`) blits the frame as it is, `bilinear` blits it softly, and `nis` and `sgsr` name NVIDIA NIS and Qualcomm SGSR as explicit choices. The filter runs only where the frame is smaller than the screen rectangle: at 1:1 or on a downscale the frame keeps the plain blit. A filter's output keeps the frame's aspect and letterbox, and the on-screen controls keep their own resolution |
+| `upscaler` | `fsr1` | The spatial filter that grows the presented frame to the window. `fsr1` is AMD FSR 1 and the default on every device. `off` (`None`) blits the frame as it is, `bilinear` blits it softly, and `nis` and `sgsr` name NVIDIA NIS and Qualcomm SGSR as explicit choices. A filter's output keeps the frame's aspect and letterbox, and the on-screen controls keep their own resolution |
+| `upscaler_mult` | `1` | The multiple of the screen rectangle the upscaler writes, `1` to `4`: `1` is its size, so the frame is upscaled to the display, and `2` is twice it, which the presenter downsamples. Each step costs four times the filter's memory |
 | `upscaler_sharpness` | `25` | The upscaler's sharpening, `0` the sharpest and `100` the softest. `None` and `Bilinear` leave it out |
 | `vulkan_video` | `0` | `1` decodes H.264 movies on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), where the GPU and its driver have an H.264 decode queue. Experimental and untested. `0` decodes them on the CPU, as VP9 movies always are |
 | `vertex_input_dynamic_state` | `auto` | How a draw gives the GPU its vertex layout. `auto` sets it as dynamic state (`VK_EXT_vertex_input_dynamic_state`) where the GPU's driver has the extension and its `vertexInputDynamicState` feature, but not on the drivers known to draw it wrong: NVIDIA's before 580.119.02 and Intel's Windows driver before 27.20.100.0 (of whose four numbers the driver gives the last two: below 100.0). `on` sets it as dynamic state wherever the driver has it, those too. `off` puts it in the pipeline: each layout a program is drawn with takes a pipeline of its own, where dynamic state has one serve them all. The log says which, with the device, its driver and version. `on` on a device without the extension says so and puts the layout in the pipeline; any value but `auto`, `on` and `off` stops the game, saying so. Pipelines kept for the next run (`.vkshaders`) are made again when the choice changes |
@@ -123,7 +124,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs. Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
+| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs. The launcher's row under Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
 
 ## Network
 

@@ -232,8 +232,8 @@ setting Upscaler
     startup
     words off=None|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR
     help The spatial filter the presented frame uses as the window grows it. AMD FSR 1 is the default and runs on
-    help every device. A frame at 1:1 or larger than the window keeps the plain blit. None blits the frame as it is.
-    help Bilinear blits it softly. NVIDIA NIS and Qualcomm SGSR are explicit choices
+    help every device. None blits the frame as it is. Bilinear blits it softly. NVIDIA NIS and Qualcomm SGSR are
+    help explicit choices
 setting Sharpness
     key upscaler_sharpness
     label Upscaler sharpness
@@ -241,6 +241,14 @@ setting Sharpness
     default 25
     startup
     help The upscaler's sharpening, 0 the sharpest and 100 the softest. None and Bilinear leave it out
+setting Upscaling target mult
+    key upscaler_mult
+    int 1 4
+    default 1
+    startup
+    words 1x|2x|3x|4x
+    help The multiple of the screen rectangle the upscaler writes: 1 = its size, so the frame is upscaled to the
+    help display, and 2 = twice it, which the presenter downsamples. Each step costs four times the filter's memory
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)
