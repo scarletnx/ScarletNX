@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/gpu/write_pages.h"
+#include "nx/gpu/maxwell/write_pages.h"
 #include <stdlib.h>
 
 #define LEAF_PAGES 4096u

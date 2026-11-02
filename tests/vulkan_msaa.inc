@@ -23,7 +23,7 @@ static const u8* ms_texel(const u8* p, int bl, u32 x, u32 y) {
 
 /* the target at gva of 4x4 pixels in the 2x2 sample layout, in block linear (one GOB high blocks) or pitch linear
    memory: registers in samples */
-static void ms_target(MxRegs* ch, u64 gva, int bl) {
+static void ms_target(GpuChannel* ch, u64 gva, int bl) {
     u32* r = ch->r3d;
     r[0x574] = DS_MSAA_2X2;
     r[0x487] = 1;
@@ -101,7 +101,7 @@ static void ms_pattern(u8* p) {
    with a Sample operand): four draws over a 4x4 single-sampled target, draw k writing sample k of each pixel, compared
    with the samples (rows of 32 bytes, the guest's layout of them). The texture header is entry 0 of the pool at base +
    0x1C000, its handle (0: header 0, sampler 0) in the fragment stage's constant buffer 2 at 0x40 */
-static int ms_fetch(MxRegs* ch, u64 base, const u32 tic[8], const u8* samples) {
+static int ms_fetch(GpuChannel* ch, u64 base, const u32 tic[8], const u8* samples) {
     u32* r = ch->r3d;
     const u64 pool = base + 0x1C000, samplers = pool + 0x100, cbuf = pool + 0x200, target = base + 0x1D000;
     u8 bytes[256] = {0}, pixels[64];
@@ -159,7 +159,7 @@ static int ms_fetch(MxRegs* ch, u64 base, const u32 tic[8], const u8* samples) {
 }
 
 /* base: where the programs and ms_fetch's tables are */
-static int ms_case(MxRegs* ch, u64 base, u64 target, u64 resolved, u64 loaded, int bl) {
+static int ms_case(GpuChannel* ch, u64 base, u64 target, u64 resolved, u64 loaded, int bl) {
     u32* r = ch->r3d;
     u8 samples[256], memory[512], pixels[64];
     /* the target: cleared blue, the triangle drawn */
@@ -186,7 +186,7 @@ static int ms_case(MxRegs* ch, u64 base, u64 target, u64 resolved, u64 loaded, i
     vk_unlock();
     CHECK(ms_samples_drawn(samples, 0, 0));
     /* written back in the guest's layout of the samples */
-    rt_flush(target);
+    g_renderer->rt_flush(target);
     CHECK(!gmem_read(target, memory, bl ? 512 : 256));
     CHECK(ms_samples_drawn(memory, bl, 1));
     /* resolved by the 2D engine's blit of the samples onto a 4x4 target's pixels: vkCmdResolveImage's average */
@@ -300,7 +300,7 @@ static int check_msaa(void) {
     const float corner[12] = {-1, -1, 1, -1, -1, 1, -1, -1, 3, -1, -1, 3}; /* and one over all of it */
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
     u32 validation = g_vk_validation_messages;
-    MxRegs* ch = calloc(1, sizeof *ch);
+    GpuChannel* ch = calloc(1, sizeof *ch);
     CHECK(ch);
     ch->id = 124;
     gmmu_map(address, cpu, 0x20000);
@@ -392,7 +392,7 @@ static int check_msaa(void) {
     vk_unlock();
     Surf* z = vk_rt_find(zeta);
     CHECK(z && z->f.depth && z->msaa == DS_MSAA_2X2 && z->w == 4 && vk_ms_moves(z));
-    rt_flush(zeta);
+    g_renderer->rt_flush(zeta);
     u8 depth[256];
     CHECK(!gmem_read(zeta, depth, sizeof depth));
     for (u32 i = 0; i < 256; i += 4) CHECK(snx_ld_le32(depth + i) == 0x3E800000u);

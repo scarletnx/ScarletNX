@@ -10,7 +10,7 @@ static u64 storage_mov(u32 reg, u32 value)
 /* These levels have at most four rows, BH=BD=0: one GOB row per slice. */
 static u64 storage_level_bytes(u32 row_bytes, u32 depth)
 {
-	return (u64)((row_bytes + GOB_SIZE_X - 1) / GOB_SIZE_X) * GOB_SIZE * depth;
+	return (u64)((row_bytes + MAXWELL_GOB_SIZE_X - 1) / MAXWELL_GOB_SIZE_X) * MAXWELL_GOB_SIZE * depth;
 }
 
 static int storage_write_words(u64 address, const u32 *words, u32 count)
@@ -49,7 +49,7 @@ static int storage_pixel(Surf *surface, u32 level, u32 layer, u32 z,
 /* Every store must preserve the rest of its mip chain and array layers, plus
  * surrounding memory that can contain vertex data or uniform buffers.
  */
-static int storage_image_case(MxRegs *channel, const u32 *qmd, u64 address,
+static int storage_image_case(GpuChannel *channel, const u32 *qmd, u64 address,
 			     u32 format_word, u32 components, u32 component_bytes,
 			     u32 id, u32 dim, int numeric, int bound, u32 mip_case)
 {
@@ -281,7 +281,7 @@ static int check_rt_same_layout(void)
  * 1 of an RGBA8_UNORM buffer (header 2), then SUST.P.RGBA of it into texel 0 of an RGBA32_FLOAT one (header 3), both
  * handles bindless and keyed float. The floats are 0, 128/255, 1 and 64/255; texel 1 of the second keeps its bytes.
  */
-static int buffer_formatted_load(MxRegs *channel, const u32 *qmd, u64 address)
+static int buffer_formatted_load(GpuChannel *channel, const u32 *qmd, u64 address)
 {
 	const u64 program = address + 0x7000, source = address + 0x66000, target = address + 0x67000;
 	const u32 unorm = 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16;
@@ -352,7 +352,7 @@ static int check_storage_image_formats(void)
 	};
 	const u64 address = 0x500000000ull;
 	const u64 cbuf = address + 0x20000, descriptors = address + 0x21000;
-	MxRegs *channel = calloc(1, sizeof(*channel));
+	GpuChannel *channel = calloc(1, sizeof(*channel));
 	u32 qmd[64] = {0};
 	u32 completed = 0;
 

@@ -12,7 +12,7 @@
 /* nvdrv's devices, as nvservices serves them to the game's NVIDIA libraries (NVN, NvRm): nvmap's handles to guest
    memory, the GPU's address space and its page table (read by the GPU thread and the renderer through
    gmmu_translate and gmmu_run), nvhost-ctrl's syncpoints and event slots, ctrl-gpu's description of the GM20B, the GPU
-   channels (whose GPFIFO submissions draw nothing: NVN is the GPU path), and the NVDEC and VIC fds that
+   channels (whose GPFIFO submissions go to gpu.c's queue, never run in the ioctl), and the NVDEC and VIC fds that
    gpu/video/host1x.c serves. Every syncpoint user, here and in host1x, takes its ids from syncpt_alloc. The ioctl
    numbers and argument layouts are in the device headers beside this file (nvdrv_*.h) */
 #include "nx/hle/hle.h"
@@ -164,7 +164,7 @@ static void gmmu_clip(u64 first) {
 /* ---- the page table again as runs, and their index by guest page, for gmmu_aliases. Mappings change a few times a
    frame at most, while the renderer asks, hundreds of thousands of times a frame, about GPU ranges where results it
    keeps per page may have been written through another GPU address: the index lets it record those once, at every
-   alias, when a result is made (vk/pending_pages.c, gpu/writes.c) instead of translating each range it asks
+   alias, when a result is made (vk/pending_pages.c, maxwell/maxwell3d.c) instead of translating each range it asks
    about. The runs follow the table's page numbers, which wrap at GMMU_PAGES as gmmu_l1_index drops the bits past
    them */
 static void grun_room(u32 more) {
@@ -614,10 +614,12 @@ static int syncpt_bump(u32 id, u32 n) {
 void syncpt_add(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
     nv_events_check();
+    gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_add_quiet(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
     t_hle.nvdrv.events_due = 1;
+    gpu_kick();
 }
 void syncpt_events(void) {
     if (!t_hle.nvdrv.events_due) return;
@@ -686,21 +688,41 @@ void syncpt_free(u32 id) {
     if (id >= SYNCPT_N) return;
     pm_lock(&g_host.nvdrv.sync_lk);
     g_hle.nvdrv.syncpt_used[id] = 0;
+    g_hle.nvdrv.syncpt_gpu[id] = 0;
     pm_unlock(&g_host.nvdrv.sync_lk);
 }
+/* whether a present can leave a fence to the GPU thread: a GPU channel's value that submissions already promised is
+   reached by that channel's jobs queued ahead of the present (a promise and its job are queued in one hold of
+   submit_lk, which the caller takes after this). Any other fence (a host1x engine's, one the CPU increments, or one
+   nothing promised yet) is waited for here, on the calling thread: a call on the GPU thread can't stand aside to wait
+   as a stream can (gpu_park) */
 #define NV_CALL_FENCES 4u             /* the fences a present carries at most (nv_gpu_call_after) */
 #define NS_PER_MS      ((i64)1000000)
 #define FENCE_WAIT_NS  (1000 * NS_PER_MS) /* how long a present waits for a fence on its own thread: 1 s */
-/* A call on the GPU thread can't stand aside to wait, so each fence is waited for here, on the calling thread. A GPU
-   channel's fences are reached already: its submissions draw nothing (gpu_submit_gpfifo) */
-void nv_gpu_call_after(u32 n, const u32* id, const u32* val, void (*fn)(void*), void* arg) {
+static int fence_on_gpu_thread(u32 id, u32 val) {
+    if (id == NV_FENCE_NO_SYNCPT) return 0;
+    pm_lock(&g_host.nvdrv.sync_lk);
+    int gpu = id < SYNCPT_N && g_hle.nvdrv.syncpt_gpu[id] && (i32)(val - g_hle.nvdrv.syncpt_max[id]) <= 0;
+    pm_unlock(&g_host.nvdrv.sync_lk);
+    if (gpu) return 1;
+    if (!syncpt_wait(id, val, FENCE_WAIT_NS))
+        WARN_LIMIT(
+            8,
+            "gpu: a present waited %u ms on its own thread for syncpoint %u to reach %u (it is at %u), and goes "
+            "on\n",
+            (unsigned)(FENCE_WAIT_NS / NS_PER_MS), id, val, syncpt_read(id));
+    return 0;
+}
+void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg) {
+    u32 chans[NV_CALL_FENCES], nchans = 0;
     for (u32 i = 0; i < n && i < NV_CALL_FENCES; i++)
-        if (id[i] != NV_FENCE_NO_SYNCPT && !syncpt_wait(id[i], val[i], FENCE_WAIT_NS))
-            WARN_LIMIT(8,
-                       "gpu: a present waited %u ms on its own thread for syncpoint %u to reach %u (it is at %u), and "
-                       "goes on\n",
-                       (unsigned)(FENCE_WAIT_NS / NS_PER_MS), id[i], val[i], syncpt_read(id[i]));
-    gpu_call(fn, arg);
+        if (fence_on_gpu_thread(id[i], val[i]))
+            chans[nchans++] = id[i]; /* a GPU channel's syncpoint id is the channel */
+        else
+            id[i] = NV_FENCE_NO_SYNCPT; /* done with here */
+    pm_lock(&g_host.nvdrv.submit_lk); /* after the submissions promising the fences left to the GPU thread */
+    gpu_call(fn, arg, chans, nchans);
+    pm_unlock(&g_host.nvdrv.submit_lk);
 }
 /* a GPU channel's syncpoint, allocated on first use. Two ioctls on the fd at once may both allocate: the one that
    stores it first under nv.lock wins, the other gives its id back (there are SYNCPT_N - SYNCPT_FIRST to hand out) */
@@ -710,12 +732,22 @@ static u32 gpu_channel_syncpt(NvFile* f) {
     pm_unlock(&g_host.nvdrv.lock);
     if (sp) return sp;
     u32 mine = syncpt_alloc();
+    pm_lock(&g_host.nvdrv.sync_lk); /* a GPU channel's before any ioctl can submit on it */
+    g_hle.nvdrv.syncpt_gpu[mine] = 1;
+    pm_unlock(&g_host.nvdrv.sync_lk);
     pm_lock(&g_host.nvdrv.lock);
     if (!f->syncpt) f->syncpt = mine;
     sp = f->syncpt;
     pm_unlock(&g_host.nvdrv.lock);
-    if (sp != mine) syncpt_free(mine);
+    if (sp != mine) syncpt_free(mine); /* clears its syncpt_gpu too */
     return sp;
+}
+/* on the GPU thread, after the jobs queued on the channel before its fd closed */
+static void gpu_channel_retire(void* p) {
+    u32 id = (u32)(uintptr_t)p;
+    gpu_release_retire(id);
+    gpu_channel_close(id);
+    syncpt_free(id);
 }
 
 static void nvev_lock(void) { pm_lock(&g_host.nvdrv.nvev_lk); }
@@ -1426,25 +1458,32 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
 }
 
 /* /dev/nvhost-gpu: a GPU channel. SUBMIT_GPFIFO has its entries after the header, SUBMIT_GPFIFO_EX (Ioctl2) in the
-   second input. The runtime has no Maxwell command decoder: NVN's calls are the GPU path (gpu/nvn/), and a program that
-   writes its own command buffers (homebrew) draws nothing. The submission's fence is reached at once, so the program
-   does not wait for it forever */
+   second input. The GPU thread runs them: the ioctl never waits */
 static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, u32 nextra) {
     u32 num = rd32(d, GPU_SUBMIT_NUM_ENTRIES), flags = rd32(d, GPU_SUBMIT_FLAGS);
-    u32 fval = rd32(d, GPU_SUBMIT_FENCE_VALUE);
+    u32 fid = rd32(d, GPU_SUBMIT_FENCE_ID), fval = rd32(d, GPU_SUBMIT_FENCE_VALUE);
     int ex = nv_ioctl_cmd(cmd) == NVHOST_GPU_SUBMIT_GPFIFO_EX;
     u32 room = ex ? (extra ? nextra / GPFIFO_ENTRY_BYTES : 0)
                   : (n > GPU_SUBMIT_HEADER_BYTES ? (n - GPU_SUBMIT_HEADER_BYTES) / GPFIFO_ENTRY_BYTES : 0);
-    u32 sp, incs = 0, promised;
-    if (num > room) WARN_LIMIT(8, "nvdrv: SUBMIT_GPFIFO of %u entries in a buffer of %u\n", num, room);
-    WARN_LIMIT(1, "nvdrv: a program submitted GPFIFO entries, which draw nothing: the runtime's GPU path is NVN\n");
-    /* the fence promises every increment: with increment_value the entries make fval of them themselves, and the host
-       adds its own after them (Ryujinx's SubmitGpfifo). All of them happen now */
-    if (flags & GPU_SUBMIT_FENCE_INCREMENT) incs = GPU_SUBMIT_HOST_INCREMENTS;
-    if (flags & GPU_SUBMIT_INCREMENT_VALUE) incs += fval;
+    const u8* entries = ex ? extra : d + GPU_SUBMIT_HEADER_BYTES;
+    u32 sp, host = 0, incs, wait_id = NV_FENCE_NO_SYNCPT, promised;
+    if (num > room) {
+        WARN_LIMIT(8, "nvdrv: SUBMIT_GPFIFO of %u entries in a buffer of %u\n", num, room);
+        num = room;
+    }
+    if ((flags & GPU_SUBMIT_FENCE_WAIT) && fid != NV_FENCE_NO_SYNCPT) wait_id = fid;
+    if (flags & GPU_SUBMIT_FENCE_INCREMENT) host = GPU_SUBMIT_HOST_INCREMENTS;
+    /* the fence promises every increment: with increment_value the entries make fval of them themselves, and the job
+       adds only the host's after them, as Ryujinx's SubmitGpfifo does. Adding fval there too ran the syncpoint ahead
+       of every later fence, so NVN's waits returned at once and a game's main thread spun on the semaphores behind
+       them */
+    incs = host + ((flags & GPU_SUBMIT_INCREMENT_VALUE) ? fval : 0);
     sp = gpu_channel_syncpt(f);
+    /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
+    pm_lock(&g_host.nvdrv.submit_lk);
     promised = syncpt_promise(sp, incs);
-    syncpt_add(sp, incs);
+    gpu_submit(entries, num, sp, host, wait_id, fval, promised);
+    pm_unlock(&g_host.nvdrv.submit_lk);
     wr32(d, GPU_SUBMIT_FENCE_ID, sp);
     wr32(d, GPU_SUBMIT_FENCE_VALUE, promised);
     return NV_RESULT_SUCCESS;
@@ -1525,7 +1564,8 @@ static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32
    now, the id could go to a new channel those jobs would then increment), an NVDEC or VIC channel with its decoder
    and syncpoints, and the fd's references to its events */
 static void nv_release(NvFile* old, NvEvent* slots) {
-    if (old->dev == DEV_GPU && old->syncpt) syncpt_free(old->syncpt);
+    if (old->dev == DEV_GPU && old->syncpt)
+        gpu_call(gpu_channel_retire, (void*)(uintptr_t)old->syncpt, &old->syncpt, 1);
     host1x_close(old->h1x);
     for (u32 k = 0; k < NV_CHANNEL_EVENTS; k++)
         if (old->ev[k]) kobj_unref(kobj_at(old->ev[k]));
@@ -1719,6 +1759,10 @@ void nv_init(void) {
     pm_init(&g_host.nvdrv.alias_lock);
     pm_init(&g_host.nvdrv.nvev_lk);
     pm_init(&g_host.nvdrv.sync_lk);
+    pm_init(&g_host.nvdrv.submit_lk);
     pc_init(&g_host.nvdrv.sync_cv);
     nns_nvdrv_INvDrvServices_register(new_nvdrv);
 }
+/* the functions a save state may hold of this file (state_fns.h) */
+STATE_FN_TABLE(g_nvdrv_state_fns,
+               STATE_FN("nvdrv", gpu_channel_retire));
