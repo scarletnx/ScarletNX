@@ -23,6 +23,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/nce/nce.h"
 
 VkState g_vk;
 VkSemaphore g_vk_csem;
@@ -107,8 +108,9 @@ int gpu_wait_note(const char* what, u64 value) {
     (void)value;
     return 0;
 }
-/* plat_posix.c's crash handler, which the test never installs */
+/* plat_posix.c's crash handler, which the test never installs, and the nce.c function it calls */
 void log_crash_mode(void) {}
+void nce_crash_context(const void* context) { (void)context; }
 void crash_report(void* host_pc, void* fault, int sig) {
     (void)host_pc;
     (void)fault;
