@@ -26,8 +26,9 @@ so, and code runs as Android's only where the app itself depends on that code's 
 | **Off** | A service that reports itself absent or disabled, which apps must already handle (accessibility, autofill, telephony) | A stub |
 
 An interface is HLE'd or abstracted unless the app can see the difference. Apps subclass `View` and `Activity`, so
-their logic is implemented; apps never see `system_server`, binder transactions, SurfaceFlinger or gralloc, so
-those collapse.
+their logic is implemented. Apps never see `system_server`, binder transactions, SurfaceFlinger or gralloc, so
+those collapse. Where a native library does the work (SQLite, HarfBuzz, libdeflate), the Java side is a thin
+wrapper over it through JNI, not a copy of the library in Java.
 
 ## The layers
 
@@ -37,23 +38,23 @@ those collapse.
 | ART internals apps touch (`dalvik.system.*`, hidden `VMRuntime` calls) | libart | Small Java shims | HLE | Planned, as apps reach them |
 | libcore (`java.*`, `javax.*`) | ART's OpenJDK fork | OpenJDK's `java.base` | Map | Works; Android-only members go to a remap table in the translator when an app reaches one |
 | Framework (`android.*`) | framework.jar | Our own subset, `src/android/framework/` | Implement where subclassed, else HLE or Off | In progress |
-| Process start (zygote, `ActivityThread`, `LoadedApk`) | zygote and `ActivityThread.main` | `snx.android.Main` reads the manifest and starts the components in order | Abstract | Manifest read; components next |
-| System services (`ActivityManager`, `PackageManager`, `WindowManager`, ...) in `system_server` | Binder IPC to another process | Plain objects in the process, called directly | HLE | Planned |
+| Process start (zygote, `ActivityThread`, `LoadedApk`) | zygote and `ActivityThread.main` | `snx.android.Main` reads the manifest and starts the components in `handleBindApplication`'s order | Abstract | Done: the factory, the Application, the providers, the launcher activity |
+| System services (`ActivityManager`, `PackageManager`, `WindowManager`, ...) in `system_server` | Binder IPC to another process | Plain objects in the process, called directly (`snx.android.app.SystemServices`) | HLE | The ones the baseline app asks for |
 | Binder (`android.os.Binder`, `Parcel`) | `/dev/binder`, libbinder | Local binders only; `Parcel` a Java byte buffer for the apps that marshal through it | HLE | Planned |
-| libandroid_runtime (the JNI of the framework) | C++ in the framework | Natives that the runtime registers (`android_jvm_register`) | HLE | XML parser done |
-| libandroidfw (resources, binary XML, assets) | `AssetManager2`, `ResXMLParser` | `src/android/res/` (C): binary XML, resource table, configuration match | HLE | Binary XML done; resource table next |
-| libhwui (`Canvas`, `RenderNode`, `HardwareRenderer`, `Paint`, `Path`) | Skia over Vulkan or GLES, a RenderThread | Display lists recorded natively, drawn with Vulkan by ScarletNX's renderer | HLE | Planned |
-| minikin (text measure and shaping) | minikin and HarfBuzz | HarfBuzz behind `Paint`'s and `MeasuredText`'s natives | HLE | Planned |
-| Fonts (`/system/fonts`, `fonts.xml`) | System font files | Fonts the build fetches, one family for `sans-serif` | Abstract | Planned |
+| libandroid_runtime (the JNI of the framework) | C++ in the framework | Natives that the runtime registers (`android_jvm_register`) | HLE | XML parser, assets, text, SQLite done |
+| libandroidfw (resources, binary XML, assets) | `AssetManager2`, `ResXMLParser` | `src/android/res/` (C): binary XML, resource table, configuration match | HLE | Done: binary XML, `resources.arsc`, themes, style resolution |
+| libhwui (`Canvas`, `RenderNode`, `HardwareRenderer`, `Paint`, `Path`) | Skia over Vulkan or GLES, a RenderThread | Display lists that the Java side records in a byte format, drawn with Vulkan by ScarletNX's renderer | HLE | Recording done; the renderer next |
+| minikin (text measure and shaping) | minikin and HarfBuzz | HarfBuzz behind `snx.android.hwui.Text` (`src/android/hwui/text.c`), which `Paint` and `Canvas` call | HLE | Shaping and metrics done |
+| Fonts (`/system/fonts`, `fonts.xml`) | System font files | Noto Sans JP (the subset the Switch runtime already uses), which the build copies beside the program into `android-fonts/` | Abstract | Done, one family for every typeface |
 | SurfaceFlinger, BufferQueue, gralloc, HWC | Composer process and buffer allocator | A window's surface is an SDL window's Vulkan swapchain | Abstract | Planned |
 | Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread | Abstract | Planned |
 | Native `Looper` (epoll) | libutils | The main `MessageQueue` waits on SDL's event queue, which other threads wake | HLE | Planned |
 | `Choreographer` vsync | `DisplayEventReceiver` from SurfaceFlinger | The swapchain's present pace | Abstract | Planned |
-| SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's own C library | HLE | Planned |
-| `SharedPreferences`, files, databases folders | `/data/data/<package>` | A folder of the app in the data folder | Abstract | Planned |
+| SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's amalgamation, a CPM package (`src/android/db/sqlite_jni.c`) | HLE | Done |
+| `SharedPreferences`, files, databases folders | `/data/data/<package>` | A folder of the app in the data folder (`snx.android.data`, or `android/<package>` in ScarletNX's data folder), with Android's XML format for preferences | Abstract | Done |
 | Settings provider (`Settings.Global`, `Secure`, `System`) | A content provider in `system_server` | A table of defaults | HLE | Planned |
 | Accessibility, autofill, content capture, input methods | Services in `system_server` | Managers that report the service is off; text input from the keyboard as key events | Off | Planned |
-| Connectivity, power, alarms, jobs (`JobScheduler`, `AlarmManager`) | `system_server` | Report a connected network and no power saving; jobs run on a thread of the process | HLE | Planned |
+| Connectivity, power, alarms, jobs (`JobScheduler`, `AlarmManager`) | `system_server` | Report a connected network and no power saving; jobs run on the main looper, a full battery on power is the sticky broadcast | HLE | Enough for WorkManager |
 | Telephony, location, sensors, camera, Bluetooth | HALs | Report none present | Off | Not needed yet |
 | Media codecs (`MediaCodec`, `ImageDecoder`) | codec2, libstagefright | FFmpeg and the image decoders the runtime has | HLE | Not needed yet |
 
@@ -68,7 +69,7 @@ Each package's plan, by how apps use it.
   each component and calls its callbacks in Android's order. `AppComponentFactory` is honored, because AndroidX
   installs one.
 - **`android.content`.** `Context` is implemented over a `ContextImpl` that maps the data folders onto the host.
-  `PackageManager` answers from the manifest, which `snx.android.Main` reads as `PackageParser` does.
+  `PackageManager` answers from the manifest, which `snx.android.app.Package` reads as `PackageParser` does.
   `ContentResolver` reaches the app's own providers directly; no other process exists. `Intent`,
   `ComponentName` and `IntentFilter` are plain data. A broadcast goes to the receivers of the process.
 - **`android.content.res`.** `Resources`, `Theme`, `TypedArray` and `AssetManager` are thin Java over the
@@ -87,7 +88,8 @@ Each package's plan, by how apps use it.
   `Bitmap` pixels live in host memory for the CPU of the app and are uploaded to Vulkan when drawn.
 - **`android.text`.** `Layout`, `StaticLayout`, `BoringLayout`, spans and `TextPaint` are implemented, with the
   measurement and line breaking natives HLE'd over HarfBuzz.
-- **`android.database`.** `Cursor`, `CursorWindow` and `SQLiteDatabase` are Java over SQLite's C library.
+- **`android.database`.** `Cursor` and `SQLiteDatabase` are Java over SQLite's C library. An error becomes the
+  exception that Android's JNI throws for its code.
 - **`android.util`, `android.icu`.** Plain Java. `android.icu` maps onto `java.text` and `java.util` where an
   app reaches it.
 - **Off.** `android.view.accessibility`, `android.view.autofill`, `android.view.contentcapture`,
@@ -123,6 +125,10 @@ framework classes, 1873 of their methods and 222 fields. 722 of the methods are 
 `android.graphics`, 184 in `android.content`, 144 in `android.os`, 131 in `android.app` and 114 in `android.text`.
 Many are behind checks of `Build.VERSION.SDK_INT` for older Android versions and never run on API 36, and the JVM
 resolves a member only when code first runs it, so the framework grows from what a run reaches, not from the list.
+
+A run now reaches the main loop: the Application, WorkManager and its database, the app's own worker, and
+Compose's first frames, which the runtime records and counts when it runs without a window
+(`SNX_ANDROID_HEADLESS=1`, `SNX_ANDROID_TRACE_FRAMES=1`).
 
 The app subclasses 34 framework classes (among them `Activity`, `View`, `ViewGroup`, `ContentProvider`,
 `BroadcastReceiver`, `Service`, `SQLiteOpenHelper`, `Canvas`, `RippleDrawable` and text spans) and implements 37

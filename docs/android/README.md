@@ -54,10 +54,17 @@ ART allows some things that the JVM verifier does not. The translator rewrites t
   it is never one of the class's own constructors.
 - R8 rebinds a member reference to the class that declares it. The JVM allows a protected member of a class in
   another package only on the current class or its subclasses. The receiver is cast to its own static type when the
-  dataflow knows it and it is a class of the app below the declaring class.
+  dataflow knows it and it is a class of the app (not an interface). ART verified that this type is assignable to
+  the declaring class, also when the chain between them goes through framework classes (an app's `ViewGroup` that
+  calls a `View` method).
 - `invoke-super` of a method of an interface that is not a direct superinterface becomes an `invokespecial` of the
   superclass's method. JVM resolution from the superclass finds the default method that it inherits.
 - `fill-array-data` becomes a call to `snx.dalvik.Runtime.fillArrayData` with the payload in string constants.
+
+DEX annotations become JVM attributes, so that reflection finds them: the runtime-visible ones become
+`RuntimeVisibleAnnotations` and `RuntimeVisibleParameterAnnotations`, `dalvik.annotation.Signature` becomes
+`Signature`, and `AnnotationDefault` becomes each element's `AnnotationDefault` (`src/android/dex/annotations.c`).
+The other system annotations (inner classes, enclosing methods, `throws`) are dropped.
 
 A method that the translator cannot translate gets a body that throws `VerifyError` with the reason. It does not
 make the whole class fail.
@@ -65,5 +72,5 @@ make the whole class fail.
 ## Status
 
 The translator translates each class of the baseline app (3725 classes, about 19400 methods) in under a second. Each
-class whose dependencies outside the app exist passes HotSpot's verifier. The JVM host, the framework and the
-renderer are next.
+class whose dependencies outside the app exist passes HotSpot's verifier. The app runs to its main loop and draws
+its frames into display lists. The Vulkan renderer of those display lists, the window and the input are next.

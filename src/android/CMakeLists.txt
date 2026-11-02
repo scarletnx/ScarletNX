@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The Android app driver (docs/ANDROID_APPS.md): an APK's DEX code translated to JVM classes, run by a JVM beside
+# The Android app driver (docs/android/README.md): an APK's DEX code translated to JVM classes, run by a JVM beside
 # ScarletNX's own android.* and the HLE of Android's userland, which scarletnx runs as scarletnx-android
 # (src/multicall).
 #
@@ -33,8 +33,9 @@ if(NOT EXISTS "${SNX_JAVA_HOME}/include/jni.h")
                         "SNX_JAVA_HOME to one, or SNX_BUILD_ANDROID=OFF")
 endif()
 
-add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c res/axml.c res/xml_jni.c)
-target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip ${CMAKE_DL_LIBS})
+add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c res/axml.c res/xml_jni.c res/arsc.c
+                                       res/asset_jni.c db/sqlite_jni.c hwui/text.c)
+target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sqlite snx_harfbuzz ${CMAKE_DL_LIBS})
 target_include_directories(snx_android_program SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 target_compile_definitions(snx_android_program PRIVATE SNX_JAVA_HOME="${SNX_JAVA_HOME}")
@@ -50,3 +51,11 @@ set(CMAKE_JAVA_COMPILE_FLAGS --release 21 -encoding UTF-8 -Xlint:-options -nowar
 add_jar(snx_android_framework SOURCES ${snx_android_java} OUTPUT_NAME scarletnx-android-framework
         OUTPUT_DIR "${PROJECT_BINARY_DIR}")
 add_dependencies(snx_android_program snx_android_framework)
+
+# the font the framework draws with, beside the jar (the host names the folder in snx.android.fonts)
+add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset.ttf"
+                   COMMAND "${CMAKE_COMMAND}" -E copy "${NotoSansJPSubset_SOURCE_DIR}/NotoSansJP-Subset.ttf"
+                           "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset.ttf"
+                   DEPENDS "${NotoSansJPSubset_SOURCE_DIR}/NotoSansJP-Subset.ttf")
+add_custom_target(snx_android_fonts DEPENDS "${PROJECT_BINARY_DIR}/android-fonts/NotoSansJP-Subset.ttf")
+add_dependencies(snx_android_program snx_android_fonts)

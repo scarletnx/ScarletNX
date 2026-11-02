@@ -396,6 +396,38 @@ add_library(snx_libdeflate STATIC
 target_include_directories(snx_libdeflate SYSTEM PUBLIC "${libdeflate_SOURCE_DIR}")
 snx_quiet(snx_libdeflate)
 
+# The Android app driver's text (src/android/hwui/), fetched only for a build with the driver: HarfBuzz (MIT) shapes
+# it and gives the glyphs' outlines and metrics, built from its one-file amalgamation without FreeType. Its default
+# family is the Noto Sans JP subset of the shared fonts (SIL OFL 1.1, above), which has Latin and the math signs too:
+# the same package, so a build with the Switch driver fetches it once
+if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+    CPMAddPackage(NAME harfbuzz VERSION 15.0.0
+                  URL https://github.com/harfbuzz/harfbuzz/releases/download/15.0.0/harfbuzz-15.0.0.tar.xz
+                  URL_HASH SHA256=968536e9abd782f07f7954044c0c4020199fcdd39b41d221ec42d2a3be4a44df
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_harfbuzz STATIC "${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc")
+    target_include_directories(snx_harfbuzz SYSTEM PUBLIC "${harfbuzz_SOURCE_DIR}/src")
+    set_target_properties(snx_harfbuzz PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    snx_quiet(snx_harfbuzz)
+    CPMAddPackage(NAME NotoSansJPSubset VERSION 2026
+                  URL https://raw.githubusercontent.com/scarletnx/ScarletNX/777f377013806bc4cdbbc0306eca6e7e9c835df2/dist/fonts/NotoSansJP-Subset.ttf
+                  URL_HASH SHA256=0941fc22edbe0b3b9e8306d4a2feae5e9c0fbd25942600564cc3edb69da88e62
+                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
+    # SQLite (public domain), the amalgamation, for android.database.sqlite (src/android/db/sqlite_jni.c). Its
+    # options are the ones of Android's own build that apps can see: the FTS3, FTS4 and FTS5 modules, no extension
+    # loading
+    CPMAddPackage(NAME sqlite VERSION 3.54.1
+                  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
+                  URL_HASH SHA256=0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+                  DOWNLOAD_ONLY YES)
+    add_library(snx_sqlite STATIC "${sqlite_SOURCE_DIR}/sqlite3.c")
+    target_include_directories(snx_sqlite SYSTEM PUBLIC "${sqlite_SOURCE_DIR}")
+    target_compile_definitions(snx_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_ENABLE_FTS3
+                               SQLITE_ENABLE_FTS3_BACKWARDS SQLITE_ENABLE_FTS4 SQLITE_ENABLE_FTS5
+                               SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=524288)
+    snx_quiet(snx_sqlite)
+endif()
+
 # miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
 # libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory
 # and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could

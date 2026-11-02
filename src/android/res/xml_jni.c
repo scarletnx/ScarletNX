@@ -23,6 +23,9 @@ static Block* block_of(jlong handle) {
 static AxmlParser* parser_of(jlong handle) {
     return &((State*)(intptr_t)handle)->parser;
 }
+const AxmlParser* android_xml_parser(jlong state) {
+    return state ? parser_of(state) : NULL;
+}
 static jint string_index(uint32_t index) {
     return index == AXML_NONE ? -1 : (jint)index;
 }

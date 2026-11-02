@@ -20,7 +20,7 @@ public final class XmlBlock implements AutoCloseable {
         strings = new String[nativeStringCount(handle)];
     }
 
-    String string(int index) {
+    public String string(int index) {
         if (index < 0 || index >= strings.length) return null;
         String s = strings[index];
         if (s == null) strings[index] = s = nativeGetString(handle, index);
@@ -42,10 +42,19 @@ public final class XmlBlock implements AutoCloseable {
         return android.util.TypedValue.coerceToString(type, data);
     }
 
-    final class Parser implements XmlResourceParser {
+    public final class Parser implements XmlResourceParser {
         private final XmlBlock block;
         private long state;
         private int event = START_DOCUMENT;
+
+        /** The native parse state, for the attribute retrieval of AssetManager. */
+        long state() {
+            return state;
+        }
+
+        XmlBlock block() {
+            return block;
+        }
 
         Parser(XmlBlock block) {
             this.block = block;
