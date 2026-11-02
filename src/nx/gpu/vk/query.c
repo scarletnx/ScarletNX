@@ -265,6 +265,24 @@ u64 vk_query_value(u32 ci, u64 first, u64 end) {
     return c->sum && !v ? 1 : v;
 }
 
+/* the same count, for a read of a report still queued (release.c's vk_release_read) once the copies of its segments
+   have run, out of order and changing nothing: vk_query_value keeps the order's running sum and waits */
+u64 vk_query_peek(u32 ci, u64 first, u64 end) {
+    const QCounter* c = &g_qc[ci % QCH];
+    u64 sum = 0, from = first;
+    vmaInvalidateAllocation(g_vk.vma, g_qmem, 0, VK_WHOLE_SIZE);
+    /* the reports performed summed the epoch up to sum_end, whose oldest segments' slots may be in use again */
+    if (first == c->sum_first && c->sum_end > first && c->sum_end <= end) {
+        sum = c->sum;
+        from = c->sum_end;
+    }
+    for (u64 s = from; s < end; s++)
+        if (g_qown[s % QN] == ci % QCH + 1) sum += snx_le64(g_qres[s % QN]);
+    double area = (double)g_vk_scale * (double)g_vk_scale;
+    u64 v = area == 1.0 ? sum : (u64)((double)sum / area + 0.5);
+    return sum && !v ? 1 : v;
+}
+
 /* ------------------------------------------------------------ render enable predicates */
 /* NVN's occlusion test is a render enable (3D 0x556) comparing a report's samples-passed count with a zero 16 bytes
    on: IF_NOT_EQUAL draws what passed samples, IF_EQUAL what didn't. When the count isn't known yet (its report is
