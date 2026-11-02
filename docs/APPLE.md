@@ -73,6 +73,11 @@ menu's driver:
   device, the system and the limits the app has, with the menu's own lines ([GUI](GUI.md)), and a fatal error, the
   menu's or a game's, is also written to `logs/scarletnx-error.log`. A phone shows no console, so these are what to read
   when a run fails; Share Log sends both.
+- **MetricKit.** The app subscribes to MetricKit at its start. Each payload that the system gives (a diagnostic
+  payload with crashes, hangs, CPU and disk write exceptions, or a metric payload with the counts of exits for memory)
+  goes as JSON to `logs/metrickit-<date>_<time>.json`, named by the end of the time that it covers. The console log
+  gets one line for each payload, with its file and what it holds. The payloads that the system gave before this start
+  are read again at each start, and a file that already holds one is not written again.
 
 The IPA is unsigned: AltStore, SideStore or a developer account signs it for the device (a Mac can too:
 [Installing from a Mac](#installing-from-a-mac)), with
