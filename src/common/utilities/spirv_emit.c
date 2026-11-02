@@ -147,7 +147,8 @@ void spv_emit_image_gather_extended_capability(SpvEmitter* e) {
 
 void spv_emit_entry_str(SpvEmitter* e, SpvShaderStage stage, uint32_t function, const char* name,
                         const uint32_t* interfaces, size_t interface_count) {
-    assert(stage >= SPV_STAGE_VERTEX && stage <= SPV_STAGE_COMPUTE);
+    assert((stage >= SPV_STAGE_VERTEX && stage <= SPV_STAGE_COMPUTE) || stage == SPV_STAGE_MESH ||
+           stage == SPV_STAGE_TASK);
     size_t n = string_words(name);
     assert(n <= UINT16_MAX - 3 && interface_count <= UINT16_MAX - 3 - n);
     instruction(&e->entry_points, SPV_OP_ENTRY_POINT, (uint32_t)(3 + n + interface_count));

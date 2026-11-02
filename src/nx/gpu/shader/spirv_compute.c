@@ -8,7 +8,7 @@ typedef struct {
     SpvEmitter e;
     u32 u, f, b, zero, yes, no, glsl;
     u32 reg[255], pred[7], carry;
-    u32 cb[18], cbptr[18], gb[16], gbptr;
+    u32 cb[18], cbptr[18], gb[SH_MAXGBUF], gbptr;
     u32 group, local;
 } CsDirect;
 
@@ -45,7 +45,7 @@ static int buffer_index(ShaderInfo* si, int tag) {
     u32 off = (u32)(tag - 1);
     for (int i = 0; i < si->ngbuf; i++)
         if (si->gbuf_cbuf_off[i] == off) return i;
-    if (si->ngbuf == 16) return -1;
+    if (si->ngbuf == SH_MAXGBUF) return -1;
     si->gbuf_cbuf_off[si->ngbuf] = off;
     return si->ngbuf++;
 }
@@ -241,7 +241,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
     c->zero = cu(c, 0);
     c->yes = spv_emit_constant_bool(&c->e, c->b, 1);
     c->no = spv_emit_constant_bool(&c->e, c->b, 0);
-    u32 interfaces[36], ninterface = 0;
+    u32 interfaces[18 + SH_MAXGBUF + 2], ninterface = 0;
     if (needs_group) interfaces[ninterface++] = c->group = spv_emit_builtin_input_vec3(&c->e, v3, 26);
     if (needs_local) interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, 27);
     for (u32 i = 0; i < 18; i++)
@@ -256,7 +256,7 @@ static u32* compute_to_spirv(const u8* code, const u64* words, u32 max_bytes, Sh
         u32 structure = spv_emit_type_struct_one(&c->e, arr);
         c->gbptr = spv_emit_type_storage_pointer(&c->e, c->u);
         for (int i = 0; i < meta.ngbuf; i++) {
-            c->gb[i] = spv_emit_storage_buffer(&c->e, structure, 0, 18 + (u32)i);
+            c->gb[i] = spv_emit_storage_buffer(&c->e, structure, 0, shader_vk_gbuf_binding((u32)i));
             interfaces[ninterface++] = c->gb[i];
         }
     }

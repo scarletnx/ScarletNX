@@ -65,7 +65,10 @@ typedef enum {
     SPV_STAGE_TESS_EVALUATION = 2,
     SPV_STAGE_GEOMETRY = 3,
     SPV_STAGE_FRAGMENT = 4,
-    SPV_STAGE_COMPUTE = 5
+    SPV_STAGE_COMPUTE = 5,
+    /* SPV_EXT_mesh_shader's execution models, above the specification's original set */
+    SPV_STAGE_MESH = 5365,
+    SPV_STAGE_TASK = 5364
 } SpvShaderStage;
 
 /* the opcodes, storage classes, decorations, built-ins, execution modes and capabilities, by the SPIR-V
@@ -346,6 +349,7 @@ typedef enum {
     SPV_GLSL_CROSS = 68,
     SPV_GLSL_NORMALIZE = 69,
     SPV_GLSL_REFLECT = 71,
+    SPV_GLSL_FIND_I_LSB = 73,
     SPV_GLSL_N_MIN = 79,
     SPV_GLSL_N_MAX = 80,
     SPV_GLSL_N_CLAMP = 81

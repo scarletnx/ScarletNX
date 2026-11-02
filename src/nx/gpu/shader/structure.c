@@ -183,8 +183,21 @@ static void place_tree(Cfg* g, u32 x) {
     g->depth--;
 }
 
-/* each block's last instruction decides how it ends: 0 when the translator's structured form can't take it */
+/* each block's last instruction decides how it ends: 0 when the translator's structured form can't take it. A leaf
+   call (shader_leaf_end) is an instruction without flow there, and its callee, which only calls reach, ends in a RET
+   that no walk from the entry meets */
 static int terminators(Cfg* g, const u32* pop_targets) {
+    u32 leaf_ret[16], nleaf = 0, memo[2] = {0, 0};
+    for (u32 i = 11; i < g->n; i++) {
+        const Op* op = IDX_OK(i) ? decode(g->insn[i]) : NULL;
+        u32 end = op && op->id == O_CAL ? shader_leaf_end(g->insn, g->n, i, memo) : 0, seen = 0;
+        if (op && op->id == O_CAL && !end) return 0;
+        for (u32 k = 0; k < nleaf; k++) seen |= leaf_ret[k] == end;
+        if (end && !seen) {
+            if (nleaf == 16) return 0;
+            leaf_ret[nleaf++] = end;
+        }
+    }
     for (u32 b = 0; b < g->nb; b++) {
         u32 end = b + 1 < g->nb ? g->start[b + 1] : g->n, last = g->start[b];
         for (u32 i = g->start[b]; i < end; i++)
@@ -195,7 +208,14 @@ static int terminators(Cfg* g, const u32* pop_targets) {
         const Op* op = decode(w);
         int id = op ? op->id : O_NONE;
         u32 target = NONE;
-        if (id == O_CAL || id == O_RET || id == O_PRET || id == O_PEXIT || id == O_JMP) return 0;
+        if (id == O_RET) {
+            int leaf = 0;
+            for (u32 k = 0; k < nleaf; k++) leaf |= leaf_ret[k] == last;
+            if (!leaf) return 0;
+            g->term[b] = TERM_EXIT;
+            continue;
+        }
+        if (id == O_PRET || id == O_PEXIT || id == O_JMP) return 0;
         if (id == O_BRX) {
             /* the translator's BRX gives the word its table entry names, which the switch takes: its distinct
                targets. One under a predicate would also go on to the next block */

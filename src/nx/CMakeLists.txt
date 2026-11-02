@@ -103,7 +103,7 @@ endif()
 snx_component(platform ${platform})
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
-                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c)
+                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c gpu/shader/ampere.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
@@ -192,6 +192,13 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-direct-regressions PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
+    add_executable(snx-test-ampere-shader "${PROJECT_SOURCE_DIR}/tests/ampere_shader.c")
+    snx_test_target(snx-test-ampere-shader 99)
+    target_link_libraries(snx-test-ampere-shader PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-ampere-shader PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME ampere_shader COMMAND snx-test-ampere-shader)
     add_test(NAME runtime_settings_list COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>
              -P "${PROJECT_SOURCE_DIR}/tests/settings_list.cmake")
     add_test(NAME runtime_unknown_option COMMAND "${CMAKE_COMMAND}" -DRUNTIME=$<TARGET_FILE:scarletnx>

@@ -12,6 +12,7 @@ extern "C" {
 enum { ST_VS = 0, ST_TCS = 1, ST_TES = 2, ST_GS = 3, ST_FS = 4, ST_CS = 5 };
 #define SH_MAXTEX         64 /* texture slots per program */
 #define SH_INDEXED_TABLES 10 /* indexed texture tables per program */
+#define SH_MAXGBUF        32 /* global memory bindings per program; the write mask is u32 */
 /* A 1D texture is bound as a 2D image, and a buffer texture longer than a row of one as rows of 2^SH_TEXEL_ROW_SHIFT
    texels (texture.c): a 1D texel fetch at x reads (x mod row, x / row) of it, which is (x, 0) for every texture that
    fits one row */
@@ -37,7 +38,8 @@ static inline int shader_same_indexed_table(const ShTex* a, const ShTex* b) {
 }
 /* A global buffer (ShaderInfo.gbuf_cbuf_off) is named by where its 64-bit address is: the constant buffer in bits 16-20,
    the byte offset in it in bits 0-15. NVN's storage buffer descriptors, in cbuf 0 from 0x110 to 0x410 (compute) or
-   0x830, follow the address with the buffer's size (shader_gbuf_sized). A graphics program may also keep a bare
+   0x830, follow the address with the buffer's size (shader_gbuf_sized). A native program's NVN2 descriptors lie
+   lower in cbuf 0, also {address, size} (ShaderInfo.gbuf_native). A graphics program may also keep a bare
    address in a constant buffer of its own, with nothing after it: one game's terrain vertex programs read their patch
    data through such an address in cbuf 6, as Eden tracks them when no NVN descriptor holds the base
    (global_memory_to_storage_buffer_pass.cpp's Track without the NVN bias). The renderer sizes those by the memory
@@ -58,7 +60,7 @@ typedef struct {
 typedef struct {
     int stage;
     u32 sph[20];      /* the shader program header, 80 bytes */
-    u32 cbuf_mask;    /* constant buffers read */
+    u32 cbuf_mask;    /* constant buffers read, including native root tables in bits 24..31 */
     u32 cbuf_max[18]; /* bytes read of each, so only those are bound */
     ShTex tex[SH_MAXTEX];
     int ntex;
@@ -71,7 +73,7 @@ typedef struct {
     /* FP32 arithmetic asking to flush denormals (FTZ/FMZ), and FP32 arithmetic that doesn't. Only flush in every
        FADD, FMUL and FFMA lets the module declare flushing, as Eden declares DenormFlushToZero */
     int fp32_flush, fp32_preserve;
-    u32 gbuf_cbuf_off[16]; /* the global buffers found, by where a constant buffer holds their address (SH_GBUF_*) */
+    u32 gbuf_cbuf_off[SH_MAXGBUF]; /* global buffers, by where a constant buffer holds their address (SH_GBUF_*) */
     int ngbuf;
     int unsupported; /* instructions or forms translation refused */
     char first_unsupported[96]; /* the longest: an untracked global memory base with its writer */
@@ -109,11 +111,34 @@ typedef struct {
     u32 early_fragment_tests;
     ShXfb xfb; /* key: transform feedback's capture of this program's outputs */
     int writes_viewport; /* the last vertex stage selects one of the 16 viewport/scissor pairs */
+    int writes_vprs; /* native per-primitive shading-rate table selector (attribute 0x5c) */
+    /* key: a native program, whose bare addresses in cbuf 0 at 16-byte steps are NVN2 storage descriptors: the word
+       after the address is the size when it is a nonzero multiple of 16 and the word after it is zero (vk_dispatch,
+       global_dynamic) */
+    int gbuf_native;
+    /* Native standalone mesh program in the vertex slot: SET_MESH_SHADER_A/B, then the six output-map words
+       (SPH 12..17) of its header-only per-primitive geometry stage. All zero for ordinary vertex programs.
+       The fragment key carries the corresponding per-primitive generic locations separately. */
+    u32 mesh[8];
+    u32 per_primitive_mask;
+    /* The vertex slot's program is the task of a task and mesh draw (the tessellation slot holds the mesh), and a
+       task program's payload is this mesh program's input region. */
+    u8 task;
+    u8 mesh_task;
 } ShaderInfo;
+/* the mask word that carries the flags above beside the mesh registers */
+#define SH_MESH_TASK   1u
+#define SH_MESH_TASKED 2u
+/* SPHv4 type 1's OMAP bits 423..559 name scalar attributes 0x5c..0x27c in order.
+   map holds header words 12..17, not the older SPHv3 output-map layout. */
+static inline int shader_mesh_omap_bit(const u32 map[6], u32 attribute) {
+    u32 bit = attribute + 16;
+    return (map[bit / 32] >> (bit % 32)) & 1;
+}
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs has room for */
 /* Each stage has a descriptor set (shader_vk_set), its bindings grouped by kind. */
 #define SNX_VKB_CB       0                         /* 18 constant buffers */
-#define SNX_VKB_SSBO     18                        /* 16 global memory buffers */
+#define SNX_VKB_SSBO     18                        /* the first 16 global memory buffers */
 #define SNX_VKB_TEX      34                        /* SH_MAXTEX combined image samplers */
 #define SNX_VKB_IMG      (SNX_VKB_TEX + SH_MAXTEX) /* 8 storage images (compute, vertex, fragment) */
 #define SNX_VKB_RS       (SNX_VKB_IMG + 8)         /* fragment: 1 / the resolution scale (SNX_RS) */
@@ -124,7 +149,18 @@ typedef struct {
 #define SNX_VKB_TEXFUNCS (SNX_VKB_TEXARRAY + 1)    /* their depth compare functions */
 #define SNX_VKB_TEXDEPTH (SNX_VKB_TEXFUNCS + 1)    /* their depth views */
 #define SNX_VKB_TEXMAP   (SNX_VKB_TEXDEPTH + 1)    /* table and element to compact descriptor index */
-#define SNX_VKB_END      (SNX_VKB_TEXMAP + 1)      /* one past the last binding */
+/* Keep the first 16 storage bindings and all texture/image bindings at their existing numbers. */
+#define SNX_VKB_SSBO_EXT (SNX_VKB_TEXMAP + 1)      /* global memory buffers 16-31 */
+#define SNX_VKB_ROOT     (SNX_VKB_SSBO_EXT + SH_MAXGBUF - 16) /* graphics: eight native root tables, one UBO */
+#define SNX_VKB_END      (SNX_VKB_ROOT + 1)
+static inline u32 shader_vk_gbuf_binding(u32 slot) {
+    return slot < 16 ? SNX_VKB_SSBO + slot : SNX_VKB_SSBO_EXT + slot - 16;
+}
+/* Graphics alias maps retain the first 16 bindings' three 16-word header arrays.
+   The next 16 bindings have a second header, so existing shaders keep identical indices. */
+static inline u32 shader_gbuf_map_index(u32 slot, u32 field) {
+    return (slot / 16) * 48 + field * 16 + slot % 16;
+}
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
@@ -175,6 +211,13 @@ int shader_vk_set(int stage);
 #define SH_FTZ_EMULATE 0
 #define SH_FTZ_MODE    1
 #define SH_FTZ_NATIVE  2
+/* can_subgroup is a capability mask. Existing 0/1 callers retain their meaning. A native warp barrier additionally
+   needs a physical 32-lane subgroup, not two emulated warps in a larger subgroup. */
+#define SH_SUBGROUP_OPERATIONS 1
+#define SH_SUBGROUP_32         2
+/* Internal native adapter: a BAR with reserved bit 32, never a hardware Maxwell instruction. Accepted only with
+   a native-version header, in compute or fragment, on a 32-lane subgroup. */
+#define SH_AMPERE_WARPSYNC 0xf0a81b8100070000ull
 /* Translates a program (code, readable up to max_bytes) to SPIR-V: malloc'd words, their count in word_count. NULL
    when the program uses something the translator can't express, with si->unsupported and the reason set. */
 u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count, int can_flush,

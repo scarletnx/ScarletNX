@@ -50,4 +50,11 @@ const char* shipped_stage_name(int stage);
    its stage (shipped_sph_stage's, SHIPPED_VERTEX_A included). Returns how many each took (returned 0 for) */
 typedef int (*ShippedEach)(void* ctx, const u8* sph, size_t avail, int stage);
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
+
+/* The Switch 2's native (SM70+) programs: a 128-byte header whose first word is an SPH of version 4, then 16-byte
+   instructions. Its containers (BFSHA, BNSH) put each header at a 256-byte boundary with no wrapper. The stage of
+   such a header (as shipped_sph_stage's, or -1), and each such program in d[0, n) to each, given its header */
+#define SHIPPED_NATIVE_HEADER 128u
+int shipped_native_stage(const u8* header);
+u32 shipped_native_programs(const u8* d, size_t n, ShippedEach each, void* ctx);
 #endif

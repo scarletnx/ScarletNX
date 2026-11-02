@@ -48,6 +48,12 @@ int flow_always(u64 w);
 /* each SYNC, BRK and CONT's target when the CRS stack can be followed at translation time: 1, or 0 when the stack
    has to be kept at run time */
 int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets);
+/* the RET of the leaf callee of the CAL at call, which the translator writes in place of the call, or 0 (shader.c).
+   memo: {0, 0} before a program's first call, kept between its calls */
+u32 shader_leaf_end(const u64* words, u32 count, u32 call, u32 memo[2]);
+/* a native program's lowered indirect branches (ampere.c) cut to the targets their jump tables name, in words, the
+   translator's copy (shader.c) */
+void shader_native_brx_prune(u64* words, u32 count);
 
 /* A program's control flow as structured constructs (structure.c), as a list of tokens in the order the translator
    writes them. Scopes are SPIR-V loop constructs: a block scope runs once and ends before the block it was opened
@@ -84,8 +90,8 @@ typedef struct {
     u32 ntokens, nscopes;
     int uses_flag; /* some break stores a pending exit */
 } ShStructure;
-/* The structure of a program without calls, unknown jump tables or a CRS stack kept at run time, from the translator's
-   block leaders (a byte a word) and its pops' targets: NULL when the graph is irreducible or the structured form
-   can't take it. One allocation, freed with free */
+/* The structure of a program without calls (other than leaf calls, shader_leaf_end), unknown jump tables or a CRS
+   stack kept at run time, from the translator's block leaders (a byte a word) and its pops' targets: NULL when the
+   graph is irreducible or the structured form can't take it. One allocation, freed with free */
 ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u32* pop_targets);
 #endif

@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CORPUS_VERSION 1u
+#define CORPUS_VERSION 7u /* 7: ShaderInfo.tex_own_pixel_mask from main beside the native fields */
 #define CORPUS_MAX     (1u << 20) /* the largest program window a file may claim */
 
 typedef struct {

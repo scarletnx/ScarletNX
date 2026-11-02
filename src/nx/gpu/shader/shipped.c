@@ -143,9 +143,10 @@ const char* shipped_stage_name(int stage) {
            : stage >= 0 && stage < (int)(sizeof names / sizeof *names) ? names[stage]
                                                                        : "?";
 }
-int shipped_sph_stage(const u8* sph) {
-    u32 w = le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
-    if (version != 3) return -1;
+/* the stage of an SPH's first word, of the version given (3 for Maxwell's, 4 for the Switch 2's native programs) */
+static int sph_stage(u32 w, u32 version) {
+    u32 type = w & 0x1Fu, shader = w >> 10 & 0xFu;
+    if ((w >> 5 & 0x1Fu) != version) return -1;
     if (type == 2) return shader == 5 ? ST_FS : -1;
     if (type != 1) return -1;
     /* type 0 a VertexA, as one game's runs showed: each of its programs of that type has a VertexB in a 256-byte slot
@@ -157,6 +158,7 @@ int shipped_sph_stage(const u8* sph) {
            : shader == 4 ? ST_GS
                          : -1;
 }
+int shipped_sph_stage(const u8* sph) { return sph_stage(le32(sph), 3); }
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     u32 handed = 0;
     if (n >= NVN_FILE_SPH + SPH_BYTES && le32(d) == NVN_FILE) { /* one program, after its control section */
@@ -171,6 +173,19 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
         int stage;
         if (le32(d + at) != NVN_WRAP || (stage = shipped_sph_stage(d + at + 0x30)) == -1) continue;
         if (each(ctx, d + at + 0x30, n - at - 0x30, stage)) return handed;
+        handed++;
+    }
+    return handed;
+}
+/* the Switch 2's NVN: a 128-byte header whose first word is an SPH's of version 4, then the SM70+ code. The shader
+   containers put each header at a 256-byte boundary with no wrapper before it */
+int shipped_native_stage(const u8* header) { return sph_stage(le32(header), 4); }
+u32 shipped_native_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
+    u32 handed = 0;
+    for (size_t at = 0; n > SHIPPED_NATIVE_HEADER && at < n - SHIPPED_NATIVE_HEADER; at += 0x100) {
+        int stage = shipped_native_stage(d + at);
+        if (stage == -1) continue;
+        if (each(ctx, d + at, n - at, stage)) return handed;
         handed++;
     }
     return handed;

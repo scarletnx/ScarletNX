@@ -11,7 +11,7 @@
 
 /* Instruction words are 64-bit. Words 0-9 hold the 80-byte SPH, word 10 is the first scheduling word, and every
    fourth word after it is another one (IDX_OK). */
-#define SH_SCAN_WORDS 16384 /* the length scan never looks further */
+#define SH_SCAN_WORDS 16384 /* ordinary Maxwell length limit, native headers allow the larger lowered extent */
 #define CRS_DEPTH     16    /* static resolution gives up on a deeper stack */
 
 int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
@@ -59,6 +59,65 @@ u32 bra_target(u64 w, u32 idx) {
 
 /* predicate PT, not negated, and flow condition T (15): the instruction always takes effect */
 int flow_always(u64 w) { return B(w, 16, 4) == 7 && B(w, 0, 5) == 15; }
+
+static int is_flow_op(int id) {
+    return id == O_BRA || id == O_BRX || id == O_JMP || id == O_CAL || id == O_PRET || id == O_RET || id == O_PEXIT ||
+           id == O_SSY || id == O_PBK || id == O_PCNT || id == O_SYNC || id == O_BRK || id == O_CONT || id == O_EXIT ||
+           id == O_KIL;
+}
+/* The callee of the CAL at call when it is a leaf, which the translator writes in place of each call to it: its RET,
+   or 0. A leaf starts after an instruction that always leaves (so only calls enter it), runs straight to a RET that
+   always returns, without other flow, and no branch, push or jump table of the program lands inside it. The Ampere
+   lowering makes one of these for every matrix multiply of a program (ampere.c's emit_hmma). Kept as a call, it made
+   the program's flow a dispatch loop around every block, which took 90 ms of a 100 ms frame in one game. memo keeps
+   the last callee's answer ({target, RET + 1}, zeros at first): the calls of a program share their callee */
+u32 shader_leaf_end(const u64* words, u32 count, u32 call, u32 memo[2]) {
+    u64 w = words[call];
+    const Op* op = decode(w);
+    u32 t, end = 0, i, guard = 0;
+    if (!op || op->id != O_CAL || !flow_always(w)) return 0;
+    t = bra_target(w, call);
+    if (t >= count || !IDX_OK(t) || t < 12) return 0;
+    if (memo[1] && memo[0] == t) return memo[1] - 1;
+    memo[0] = t;
+    memo[1] = 1; /* not a leaf, until found to be one */
+    /* the instruction before the callee always leaves: a BRA over it, an EXIT or a RET */
+    i = t - 1;
+    if (!IDX_OK(i)) i--;
+    op = decode(words[i]);
+    if (!op || !(op->id == O_BRA || op->id == O_EXIT || op->id == O_RET) || !flow_always(words[i])) return 0;
+    for (i = t; i < count && guard < 4096; i = next_code(i), guard++) {
+        op = decode(words[i]);
+        if (!op) return 0;
+        if (op->id == O_RET) {
+            if (!flow_always(words[i])) return 0;
+            end = i;
+            break;
+        }
+        if (is_flow_op(op->id)) return 0;
+    }
+    if (!end) return 0;
+    /* nothing else lands inside it */
+    for (i = 11; i < count; i = next_code(i)) {
+        u32 targets[64];
+        int n;
+        op = decode(words[i]);
+        if (!op) continue;
+        if (op->id == O_BRA || op->id == O_SSY || op->id == O_PBK || op->id == O_PCNT || op->id == O_PRET ||
+            op->id == O_PEXIT || op->id == O_CAL) {
+            u32 target = bra_target(words[i], i);
+            if (target > t && target <= end) return 0;
+            if (target == t && op->id != O_CAL) return 0;
+        } else if (op->id == O_BRX) {
+            n = shader_brx_targets(words, i, count, targets, 64);
+            if (n < 0) return 0;
+            while (n-- > 0)
+                if (targets[n] >= t && targets[n] <= end) return 0;
+        }
+    }
+    memo[1] = end + 1;
+    return end;
+}
 
 /* The nearest instruction before from in the code's order that writes reg, within limit instructions (0 for no
    limit), or -1. An undecodable word ends the search. */
@@ -313,6 +372,101 @@ int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int
     return n ? n : -1;
 }
 
+/* The Ampere lowering writes a native indirect branch (ampere.c, BRX 0x949) as a comparison with every native
+   instruction: for each, IADD32I.CC TEMP_A = a + k, where k is minus that instruction's offset from the BRX's base,
+   and a BRA.EQ to its start. Then an EXIT ends an invocation that matches none. Every instruction becomes a branch
+   target, so the CRS stack can't be followed and the program's flow becomes a dispatch loop: two such fragment
+   programs of one game took 260 ms a draw. The register comes from a jump table, a 32-bit LDC c[bank][reg + offset]
+   as shader_brx_targets reads one. Its entries (exactly the clamp's count when the clamp idiom bounds the index, else
+   up to the first entry that names no native instruction, at most 64) are read through g_shader_cb_read, which the
+   renderer records in the pipeline's key. Each comparison that no entry can match becomes a NOP, and the rest of the
+   chain stays as it is. Nothing is changed when the table can't be found or read. The load is found on a copy without
+   any chain's branches, which would otherwise land everywhere, its region included: like shader_brx_targets, it
+   takes a table's entries to lead to its own switch's cases. words is the translator's copy */
+typedef struct {
+    u32 start, end, run, reg;
+} BrxChain;
+static u32 chain_at(const u64* words, u32 count, u32 i, u32* reg, u32* end) {
+    u32 run = 0, j = i;
+    for (;;) {
+        const Op* add = j < count ? decode(words[j]) : NULL;
+        u32 bra = next_code(j);
+        const Op* br = bra < count ? decode(words[bra]) : NULL;
+        if (!add || add->id != O_IADD32I || B(words[j], 0, 8) != 248 || !B(words[j], 52, 1) ||
+            B(words[j], 16, 4) != 7 || (run && B(words[j], 8, 8) != *reg) || !br || br->id != O_BRA ||
+            B(words[bra], 0, 5) != 2 || B(words[bra], 16, 4) != 7)
+            break;
+        *reg = B(words[j], 8, 8);
+        run++;
+        j = next_code(bra);
+    }
+    *end = j;
+    return run;
+}
+void shader_native_brx_prune(u64* words, u32 count) {
+    BrxChain chains[64];
+    u32 nchains = 0;
+    if (!g_shader_cb_read) return;
+    for (u32 i = 11; i < count && nchains < 64; i = next_code(i)) {
+        u32 reg = 0, end = 0, run = chain_at(words, count, i, &reg, &end);
+        if (run < 8) continue;
+        chains[nchains++] = (BrxChain){i, end, run, reg};
+        i = end;
+    }
+    if (!nchains) return;
+    u64* bare = malloc((size_t)count * sizeof *bare);
+    if (!bare) return;
+    memcpy(bare, words, (size_t)count * sizeof *bare);
+    for (u32 c = 0; c < nchains; c++)
+        for (u32 p = 0, w = chains[c].start; p < chains[c].run; p++, w = next_code(next_code(w)))
+            bare[next_code(w)] = 0x50B0000000070F00ull; /* NOP */
+    for (u32 c = 0; c < nchains; c++) {
+        const BrxChain* ch = &chains[c];
+        u32 a = ch->reg, n = 0, values[64];
+        int at = find_writer(bare, ch->start, a, 0);
+        u64 load = at >= 0 ? bare[at] : 0;
+        if (at < 0 || decode(load)->id != O_LDC || B(load, 0, 8) != a || B(load, 16, 4) != 7 ||
+            B(load, 48, 3) != 4 || B(load, 44, 2) != 0 || !def_reaches(bare, count, (u32)at, ch->start, a))
+            continue;
+        int exact = clamped_entries(bare, count, (u32)at), ok = !exact || exact <= 64;
+        u32 bank = B(load, 36, 5);
+        i32 offset = sext(B(load, 20, 16), 16);
+        /* The compiler puts a switch in a reconvergence scope (BSSY, SSY here) that its cases end in: without the
+           clamp idiom, the table ends at the first entry that names no case there. The tables of other switches
+           follow in the same bank */
+        u32 scope_end = 0;
+        for (u32 j = ch->start; j-- > 11 && !scope_end;) {
+            const Op* op = IDX_OK(j) ? decode(words[j]) : NULL;
+            if (op && op->id == O_SSY && bra_target(words[j], j) >= ch->end) scope_end = bra_target(words[j], j);
+        }
+        for (u32 k = 0; ok && k < (exact ? (u32)exact : 64u); k++) {
+            long long addr = (long long)offset + 4LL * k;
+            u32 value = 0, match = 0;
+            if (addr < 0 || !g_shader_cb_read(bank, (u32)addr, &value)) {
+                ok = !exact && n;
+                break;
+            }
+            for (u32 p = 0, w = ch->start; p < ch->run && !match; p++, w = next_code(next_code(w))) {
+                u32 t = bra_target(words[next_code(w)], next_code(w));
+                match = value + B(words[w], 20, 32) == 0 && (exact || !scope_end || (t >= ch->end && t <= scope_end));
+            }
+            if (!match) {
+                ok = !exact && n;
+                break;
+            }
+            values[n++] = value;
+            if (!exact && n == 64) ok = 0; /* no end found: every comparison stays */
+        }
+        if (!ok) continue;
+        for (u32 p = 0, w = ch->start; p < ch->run; p++, w = next_code(next_code(w))) {
+            u32 live = 0;
+            for (u32 v = 0; v < n && !live; v++) live = values[v] + B(words[w], 20, 32) == 0;
+            if (!live) words[next_code(w)] = 0x50B0000000070F00ull; /* NOP */
+        }
+    }
+    free(bare);
+}
+
 /* The program's length in bytes (out_len) and a 64-bit FNV-1a hash of that many bytes. The scan follows every
    branch target forward and ends at an EXIT that always runs once no target lies past it, at an unconditional
    backward BRA past every target, or at an unconditional RET past every target when the program has calls. A jump
@@ -327,7 +481,8 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
     u32 n = max_bytes / 8, i, last = 10, furthest = 0, len;
     int resolved = 1, calls = 0;
     u64 h = 1469598103934665603ull;
-    if (n > SH_SCAN_WORDS) n = SH_SCAN_WORDS;
+    u32 limit = max_bytes >= 4 && (snx_ld_le32(code) >> 5 & 31) == 4 ? 65536u : SH_SCAN_WORDS;
+    if (n > limit) n = limit;
     words = shader_words(code, n * 8, &copy);
     if (!words) n = 0; /* no memory for the words (a big-endian host): the length is the header's */
     for (i = 11; i < n; i++) {
@@ -484,11 +639,12 @@ static int crs_block(CrsWalk* c, u32 b, u32* pop_targets) {
 /* The single CRS stack resolved at translation time: SSY, PBK and PCNT push a token and its target, and SYNC, BRK
    and CONT pop down to the nearest token of their kind (Eden's control_flow.cpp Stack). Walks the control flow from
    the entry with an empty stack and gives each pop its one target in pop_targets. Returns 0 when that can't be done
-   statically (calls, PEXIT, JMP, an unreadable jump table, a pop with no token, a block or pop reached with two
-   stacks, a deep stack, no memory): the translator then keeps the stack at run time. */
+   statically (calls other than to a leaf, PEXIT, JMP, an unreadable jump table, a pop with no token, a block or pop
+   reached with two stacks, a deep stack, no memory): the translator then keeps the stack at run time. A leaf call
+   (shader_leaf_end) leaves the stack as it was, like any instruction without flow */
 int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets) {
     CrsWalk* c;
-    u32 i, b, targets[64];
+    u32 i, b, targets[64], memo[2] = {0, 0};
     int ok = 1, k, n;
     size_t bytes;
     if (count < 12 || count > 65536 || !words || !pop_targets) return 0;
@@ -502,7 +658,7 @@ int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets) {
         const Op* op = decode(w);
         if (!op) continue;
         switch (op->id) {
-            case O_CAL:
+            case O_CAL: ok = shader_leaf_end(words, count, i, memo) != 0; break;
             case O_PRET:
             case O_PEXIT:
             case O_JMP: ok = 0; break;
