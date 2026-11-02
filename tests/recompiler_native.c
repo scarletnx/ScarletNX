@@ -210,6 +210,9 @@ int main(int argc, char** argv) {
         args[k++] = "2";
         args[k++] = "--chunk";
         args[k++] = "2";
+        /* the code made ahead of time, which an NCE recompile (nce=1, the default where the runtime runs NCE) has none
+           of */
+        args[k++] = "--nce=0";
         if (pass == 2) args[k++] = "--interp-only";
         if (pass == 5) args[k++] = "--keep-ir";
         args[k] = NULL;
