@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* RtAPI.cas128 (common/runtime/cas128.c): the host's 16-byte compare-and-swap, and the locked one the RISC-V and
-   LoongArch machines without it take. Both store only a pair that matches, leave it as it is otherwise (the locked
-   one puts back the half it swapped), and, under threads adding to a pair {n, ~n} through it, end on the sum with the
-   halves still of one pair */
+/* RtAPI.cas128 (common/runtime/cas128.c): the host's 16-byte compare-and-swap, and the locked one the RISC-V,
+   LoongArch and MIPS64 machines without it take. Both store only a pair that matches, leave it as it is otherwise (the
+   locked one puts back the half it swapped), and, under threads adding to a pair {n, ~n} through it, end on the sum
+   with the halves still of one pair */
 #include "common/runtime/interface.h"
 #include <assert.h>
 #include <stdio.h>

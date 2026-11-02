@@ -1750,6 +1750,8 @@ static void* context_pc(void* ctx) {
     return (void*)(uintptr_t)uc->uc_mcontext.pc;
 #elif defined(__linux__) && defined(__powerpc64__)
     return (void*)(uintptr_t)uc->uc_mcontext.gp_regs[32]; /* PT_NIP (asm/ptrace.h), glibc's and musl's alike */
+#elif defined(__linux__) && defined(__mips64)
+    return (void*)(uintptr_t)uc->uc_mcontext.pc; /* glibc's n64 mcontext_t, the kernel's sigcontext.sc_pc */
 #elif defined(__FreeBSD__) && defined(__x86_64__)
     return (void*)(uintptr_t)uc->uc_mcontext.mc_rip;
 #elif defined(__FreeBSD__) && defined(__aarch64__)

@@ -157,7 +157,7 @@ Normal builds link the driver into the runtime; `SNX_TOOLS_ONLY` builds the same
 Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches
 through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
 goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC (and NX's table of SVCs by number), UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
-miss, and the 16-byte compare-and-swap of STXP on RISC-V and LoongArch hosts; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code
+miss, and the 16-byte compare-and-swap of STXP on RISC-V, LoongArch and MIPS64 hosts; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code
 (`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`). There is no interpreter: a pc
 without code yet is queued in the live misses' queue and its thread waits for the compile off its guest core, and a pc
 the JIT can't compile (or a host where it can't start: Windows before 10 1803) ends the game with the reason. Compile

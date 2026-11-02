@@ -41,6 +41,10 @@
 #define SNX_ARCH "ppc64 (ELFv2)"
 #elif defined(__powerpc64__)
 #define SNX_ARCH "ppc64"
+#elif defined(__mips64) && defined(__MIPSEL__)
+#define SNX_ARCH "mips64el"
+#elif defined(__mips64)
+#define SNX_ARCH "mips64"
 #elif defined(__alpha__)
 #define SNX_ARCH "alpha"
 #else
