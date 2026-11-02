@@ -23,7 +23,7 @@ ScarletNX-<system>-<arch> (scripts/nightly-notes.py), an AppImage with the .zsyn
 
 Discord: a version's release gets a message on DISCORD_WEBHOOK_RELEASES's channel, each download linked with its size
 and the changes since the version before; without the webhook nothing is posted, and the run says so. The nightlies'
-and the pull requests' cards are ReiWimsy's (scarletnx/discord-bots), which sees their releases change. gh reads and
+and the pull requests' cards are ReiWimsy's (scarletnx/wimsy-core), which sees their releases change. gh reads and
 writes REPO with GH_TOKEN, and NIGHTLY with NIGHTLY_TOKEN. --dry-run reads and prints each write instead.
 .github/workflows/publish.yml runs this; tests/publish_builds_test.py runs it against a fake gh and a fake Discord.
 """
