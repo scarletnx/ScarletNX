@@ -281,7 +281,12 @@ Remaining examples: POSIX.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot_threads=N`) the threads
-  compiling (0 or none, one for each core). Every pass of LLVM's pipelines can be turned off for the game's code,
+  compiling (0 or none: the machine's cores with the last fifth left free, the physical cores where it says them,
+  else the logical ones, at most 85%, so a recompile does not make the computer stutter). The fifth is deliberate:
+  a large game's recompile runs for minutes, and a pass that took every core would keep the machine unusable that
+  long, while an LLVM pass gains little from a hyperthread. At most 85%, rounded down, leaves one whole core free on
+  any machine of four or more, and a fifth of a large one. Every pass of LLVM's
+  pipelines can be turned off for the game's code,
   `--llvm_pass_<pass>=0` (`--llvm_pass_instcombine=0`), and each option LLVM's C API sets on the pass builder and the
   target machine set, `--llvm_<option>=N` (`--llvm_inliner_threshold=50`). `scarletnx --settings=recompile` lists
   them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
