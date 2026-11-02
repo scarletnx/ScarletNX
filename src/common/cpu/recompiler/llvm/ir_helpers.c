@@ -485,7 +485,7 @@ static void build_stxp(SnxIr* ir, LLVMValueRef function) {
     LLVMPositionBuilderAtEnd(B, pair64);
     params[0] = params[1] = ir->t_ptr;
     params[2] = params[3] = params[4] = params[5] = ir->t_i64;
-    args[0] = ir->c; /* RISC-V and LoongArch reach the runtime's compare-and-swap through it (cpu.h) */
+    args[0] = ir->c; /* RISC-V, LoongArch and MIPS64 reach the runtime's compare-and-swap through it (cpu.h) */
     args[1] = ir_mp(ir, a);
     args[2] = ir_cpu_load(ir, ir->t_i64, offsetof(CPU, excl_val));
     args[3] = ir_cpu_load(ir, ir->t_i64, offsetof(CPU, excl_val2));
