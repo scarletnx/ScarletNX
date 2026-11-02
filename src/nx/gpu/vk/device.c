@@ -314,6 +314,8 @@ static int create_device(void) {
         free(q);
     }
     if (sparse_queue) WANT(sparseBinding);
+    /* and 3D textures with holes in their mapping given memory only where it is mapped (memory.c) */
+    if (sparse_queue) WANT(sparseResidencyImage3D);
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
     g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;

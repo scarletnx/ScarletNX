@@ -1754,6 +1754,164 @@ static int check_sparse_copy(void) {
     puts("sparse copy: a copy into a sparse texture short of whole tiles lands in its tiles, a target of it as wide");
     return 0;
 }
+/* A sparse volume of one game's light volumes' size, BC1 1664x448x1344 (477 MB, 13x7x84 tiles of 64 KiB), made
+   through NVN with 3 tiles mapped. Where the device keeps a 3D BC1 image's memory only where it is bound (sparse
+   residency, the rest reading as zeros) in bricks of the tile's 128x64x16 texels, the texture takes and loads those 3
+   tiles alone: each mapped tile's brick holds its texels, the bricks around them read as zeros. Its memory follows the
+   mapping: a tile mapped later takes 64 KiB more and shows in the next frame, an unmapped one gives its 64 KiB back
+   and reads as zeros again */
+#define RV_TILE 0x10000u
+enum { RV_X = 13, RV_Y = 7, RV_Z = 84 }; /* tiles across, down and deep */
+/* the bytes VMA has allocated in the heap images go to */
+static u64 rv_allocated(void) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, b);
+    return b[vk_mem_heap()].statistics.allocationBytes;
+}
+/* whether the device can keep a 3D BC1 image's memory only where it is bound, in bricks of a tile, the rest reading as
+   zeros */
+static int rv_device_can(void) {
+    VkPhysicalDeviceFeatures have;
+    VkSparseImageFormatProperties p[2];
+    u32 n = 2;
+    vkGetPhysicalDeviceFeatures(g_vk.phys, &have);
+    if (!g_vk.sparse || !have.sparseResidencyImage3D || !g_vk.props.sparseProperties.residencyNonResidentStrict)
+        return 0;
+    vkGetPhysicalDeviceSparseImageFormatProperties(
+        g_vk.phys, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_IMAGE_TYPE_3D, VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_IMAGE_TILING_OPTIMAL, &n, p);
+    return n && p[0].imageGranularity.width == 128 && p[0].imageGranularity.height == 64 &&
+           p[0].imageGranularity.depth == 16;
+}
+/* byte b of the page standing for tile k: every block differs from its neighbours and from zeros */
+static u8 rv_byte(u32 k, u32 b) {
+    u8 v = (u8)(((b >> 3) * 2654435761u >> 24) ^ (b & 7) * 29 ^ k * 53);
+    return (b & 7) ? v : (u8)(v | 0x80);
+}
+/* the bricks of tiles[0..n) read back from t's image, each against memory: page from[i] of the 4 at cpu for a mapped
+   tile, zeros for a hole (from[i] < 0). 0 when every block matches; else 1, said with the first that doesn't */
+static int rv_check(const char* when, Surf* t, const u32* tiles, const int* from, u32 n, u64 cpu) {
+    VkBufferImageCopy r[12];
+    VkBuffer buffer;
+    u8* image;
+    u32 bad = 0, first[4] = {0};
+    if (n > 12) return 1;
+    vk_lock();
+    image = vk_readback_buffer((u64)n * RV_TILE, &buffer);
+    if (image) {
+        for (u32 i = 0; i < n; i++) {
+            u32 x = tiles[i] % RV_X, y = tiles[i] / RV_X % RV_Y, z = tiles[i] / (RV_X * RV_Y);
+            r[i] = (VkBufferImageCopy){.bufferOffset = (u64)i * RV_TILE,
+                                       .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                       .imageOffset = {(i32)x * 128, (i32)y * 64, (i32)z * 16},
+                                       .imageExtent = {128, 64, 16}};
+        }
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, n, r);
+        vk_finish();
+        vk_readback_ready();
+    }
+    vk_unlock();
+    if (!image) return 1;
+    for (u32 i = 0; i < n; i++)
+        for (u32 bz = 0; bz < 16; bz++)
+            for (u32 by = 0; by < 16; by++)
+                for (u32 bx = 0; bx < 32; bx++) {
+                    u32 x = tiles[i] % RV_X * 32 + bx, y = tiles[i] / RV_X % RV_Y * 16 + by,
+                        z = tiles[i] / (RV_X * RV_Y) * 16 + bz;
+                    /* the block's place in the volume's layout: 52 GOBs a row, blocks 2 GOBs high and 16 deep */
+                    u64 o = bl_offset(x * 8, y, z, 1664 / 4 * 8, 448 / 4, 1, 4);
+                    const u8* in = image + (u64)i * RV_TILE + ((bz * 16 + by) * 32 + bx) * 8;
+                    u8 want[8] = {0};
+                    if (o / RV_TILE != tiles[i]) return 1; /* the tile is one page of the layout */
+                    if (from[i] >= 0)
+                        for (u32 k = 0; k < 8; k++) want[k] = GP(cpu + (u64)from[i] * RV_TILE)[(o + k) % RV_TILE];
+                    if (memcmp(in, want, 8) && !bad++) first[0] = i, first[1] = bx, first[2] = by, first[3] = bz;
+                }
+    if (bad)
+        fprintf(stderr,
+                "resident volume, %s: %u blocks differ from memory, the first block (%u, %u, %u) of tile %u (%s)\n",
+                when, bad, first[1], first[2], first[3], tiles[first[0]], from[first[0]] >= 0 ? "mapped" : "a hole");
+    return bad != 0;
+}
+static int check_resident_volume(void) {
+    const u64 gva = 0x800000000ull, cpu = HEAP_BASE + 0xF00000; /* past the sparse tiles and copy cases' pages */
+    /* tiles (0, 0, 0), (4, 3, 40) and (12, 6, 83) mapped from pages 0 to 2; (5, 3, 40) mapped later from page 3 */
+    const u32 tiles[11] = {0, 3683, 7643, 1, 13, 91, 3682, 3670, 3774, 7642, 3684};
+    const int from[11] = {0, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1};
+    NvnTexture tex = {0};
+    NvnTexLayout lay;
+    u32 tic[8];
+    u64 loads[4], bytes[4], took[4], at[4];
+    if (!rv_device_can()) {
+        puts("resident volume: the device can't keep a 3D BC1 image's memory only where it is bound in bricks of a "
+             "tile, skipped");
+        return 0;
+    }
+    tex.d.target = NVN_TEXTURE_TARGET_3D;
+    tex.d.format = NVN_FORMAT_RGBA_DXT1;
+    tex.d.levels = 1;
+    tex.d.flags = NVN_TEXTURE_FLAGS_SPARSE;
+    tex.d.width = 1664, tex.d.height = 448, tex.d.depth = 1344;
+    tex.gpu = gva;
+    nvn_tex_layout(&tex.d, &lay);
+    CHECK(lay.size == (u64)RV_X * RV_Y * RV_Z * RV_TILE);
+    CHECK(nvn_tic_encode(&tex, NULL, 0, 0, tic));
+    CHECK(mem_map(cpu, 4 * RV_TILE, MS_NORMAL, PERM_RW) == 0);
+    gmmu_space_unmap(gva, lay.size); /* the pool: nothing mapped but its tiles */
+    for (u32 k = 0; k < 4; k++)
+        for (u32 b = 0; b < RV_TILE; b++) GP(cpu + (u64)k * RV_TILE)[b] = rv_byte(k, b);
+    for (u32 k = 0; k < 3; k++) gmmu_map(gva + (u64)tiles[k] * RV_TILE, cpu + (u64)k * RV_TILE, RV_TILE);
+    took[0] = rv_allocated();
+    vk_tex_stats(&loads[0], &bytes[0]);
+    at[0] = plat_ns();
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    vk_unlock();
+    at[1] = plat_ns();
+    took[1] = rv_allocated();
+    vk_tex_stats(&loads[1], &bytes[1]);
+    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && t->w == 1664 && t->h == 448 && t->depth3d == 1344);
+    printf("resident volume: made in %.1f ms, its image %llu KiB, %llu KiB more allocated, %llu KiB loaded\n",
+           (double)(at[1] - at[0]) / 1e6, (unsigned long long)(t->bytes >> 10),
+           (unsigned long long)((took[1] - took[0]) >> 10), (unsigned long long)((bytes[1] - bytes[0]) >> 10));
+    CHECK(!rv_check("made", t, tiles, from, 11, cpu));
+    CHECK(t->bytes == 3 * RV_TILE && bytes[1] - bytes[0] == 3 * RV_TILE && took[1] - took[0] < (16ull << 20));
+    /* the game's MapVirtual: a tile mapped where it was a hole */
+    gmmu_map(gva + (u64)tiles[10] * RV_TILE, cpu + 3 * RV_TILE, RV_TILE);
+    at[2] = plat_ns();
+    CHECK(sv_frame(tic) == t);
+    at[3] = plat_ns();
+    took[2] = rv_allocated();
+    vk_tex_stats(&loads[2], &bytes[2]);
+    const u32 now_mapped[2] = {tiles[10], tiles[1]};
+    const int now_from[2] = {3, 1};
+    CHECK(!rv_check("a tile mapped", t, now_mapped, now_from, 2, cpu));
+    printf("resident volume: a tile mapped, the next frame's texture in %.1f ms, its image %llu KiB, %llu KiB more "
+           "allocated, %llu KiB loaded\n",
+           (double)(at[3] - at[2]) / 1e6, (unsigned long long)(t->bytes >> 10),
+           (unsigned long long)((took[2] - took[1]) >> 10), (unsigned long long)((bytes[2] - bytes[1]) >> 10));
+    CHECK(t->bytes == 4 * RV_TILE && took[2] - took[1] >= RV_TILE);
+    /* a tile unmapped: a hole again */
+    gmmu_space_unmap(gva, RV_TILE);
+    CHECK(sv_frame(tic) == t);
+    took[3] = rv_allocated();
+    vk_tex_stats(&loads[3], &bytes[3]);
+    const u32 unmapped[2] = {tiles[0], tiles[10]};
+    const int unmapped_from[2] = {-1, 3};
+    CHECK(!rv_check("a tile unmapped", t, unmapped, unmapped_from, 2, cpu));
+    printf("resident volume: a tile unmapped, its image %llu KiB, %lld KiB allocated since, %llu KiB loaded\n",
+           (unsigned long long)(t->bytes >> 10), (long long)((i64)(took[3] - took[2]) >> 10),
+           (unsigned long long)((bytes[3] - bytes[2]) >> 10));
+    CHECK(t->bytes == 3 * RV_TILE && took[3] - took[0] < (16ull << 20));
+    gmmu_space_unmap(gva, lay.size);
+    CHECK(mem_unmap(cpu, 4 * RV_TILE) == 0);
+    puts("resident volume: memory for the mapped tiles alone, their texels, zeros in the holes, bound and released as "
+         "tiles are mapped and unmapped");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -2279,6 +2437,7 @@ int main(int argc, char** argv) {
     CHECK(!check_sparse_view());
     CHECK(!check_sparse_tiles());
     CHECK(!check_sparse_copy());
+    CHECK(!check_resident_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
