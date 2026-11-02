@@ -116,9 +116,11 @@ decide what the decoder (`tools/a64dec`, from QEMU's `a64.decode`) accepts: an
 encoding needing a feature the target lacks is an undefined instruction, as on that
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every
-feature the decoder knows, so discovery follows their branches, but the backend has
-code only for the Cortex-A57's instructions so far: the others stay undefined
-instructions until it has.
+feature the decoder knows; `llvm_qemu_differential` checks the emitters against QEMU
+for it. `SNX_RECOMPILER_A64_ANDROID` is an Android phone's CPU, as the Android
+driver's native bridge runs it: Armv8.2 with the atomics, RDM, half precision, the
+dot product and LRCPC, without pointer authentication, so that the `PACIASP` and
+`AUTIASP` of the HINT space are NOPs, as on a phone without the feature.
 
 `snx_recompile` recompiles the bytes of one buffer as they will be found at a guest
 address (both multiples of 4), and loads the result: on Linux from an anonymous memory
