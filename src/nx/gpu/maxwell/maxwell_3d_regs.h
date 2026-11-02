@@ -75,6 +75,12 @@ enum {
     MAXWELL3D_INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI = 0x50A,
     MAXWELL3D_GLOBAL_BASE_VERTEX_INDEX = 0x50D,
     MAXWELL3D_GLOBAL_BASE_INSTANCE_INDEX = 0x50E,
+    /* C797's mesh control (bit 0), then the vertex count, primitive count, invocation count and shared memory words
+       of a mesh program, and the address of its init program (eden-ns2's MeshControl, MeshShaderA/B, MeshInitShader) */
+    MAXWELL3D_MESH_CONTROL = 0x453,
+    MAXWELL3D_MESH_SHADER_A = 0x454,
+    MAXWELL3D_MESH_SHADER_B = 0x455,
+    MAXWELL3D_MESH_INIT_SHADER = 0x456,
     MAXWELL3D_USER_CLIP_ENABLE = 0x544,
     MAXWELL3D_ZPASS_PIXEL_COUNT_ENABLE = 0x545,
     MAXWELL3D_POINT_SIZE = 0x546,

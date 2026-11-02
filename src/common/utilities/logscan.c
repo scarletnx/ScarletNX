@@ -642,6 +642,8 @@ static int gap_line(SnxLogScan* s, Span line) {
             return 0;
         case 'm':
             if (!take_lit(&rest, "mme: ")) return 0;
+            if (starts(rest, "TU104 channel ") && (at = find(rest, ": ")) > 0)
+                return gap(s, SNX_GAP_MME, skip(rest, (size_t)at + 2));
             if (take_lit(&rest, "macros are interpreted: ")) /* no compiler at all */
                 return gap_pair(s, SNX_GAP_MACRO_COMPILE, cstr("every macro"), rest);
             if (starts(rest, "macro ") && (at = find(rest, " (hash ")) > 0 && find(rest, ") is interpreted: ") > at) {

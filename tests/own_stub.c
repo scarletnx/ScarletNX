@@ -4,6 +4,7 @@
 #include <string.h>
 #include "nx/memory/own.h"
 #include "nx/memory/mem.h"
+#include "nx/runtime/platform/plat.h"
 
 int g_own_any;
 void own_acquire(u64 addr, u64 size) {

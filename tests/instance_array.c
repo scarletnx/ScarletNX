@@ -79,6 +79,10 @@ void mme_upload_ptr(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_upload(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_bind(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+void fatal(const char* fmt, ...) {
+    (void)fmt;
+    abort();
+}
 
 static GpuChannel ch;
 static int failures;

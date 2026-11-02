@@ -10,6 +10,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 u8* g_mem;
@@ -64,6 +65,10 @@ void mme_upload_ptr(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_upload(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void mme_bind(GpuChannel* ch, u32 v) { (void)ch, (void)v; }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+void fatal(const char* fmt, ...) {
+    (void)fmt;
+    abort();
+}
 
 static GpuChannel ch;
 

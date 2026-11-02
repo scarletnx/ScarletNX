@@ -94,8 +94,9 @@ typedef struct Renderer {
        block and shared memory, the constant buffers (guest memory or d's inline blocks: NVN's driver banks, the
        dispatch size at 0x200 of bank 0, the uniform buffer table from 0x210, storage buffers from 0x310 and texture
        handles in bank 2 with tex_bank 2), and the texture and sampler pools in guest memory. Storage buffers are read
-       through constant buffer 0 as a draw's are. Called on the GPU thread */
-    void (*dispatch)(const DispatchState* d);
+       through constant buffer 0 as a draw's are. Called on the GPU thread. 1 if recorded, 0 if refused (a native
+       launch then stops, as its releases would claim work that did not run) */
+    int (*dispatch)(const DispatchState* d);
     /* gmem_read and gmem_ptr land pending compute or graphics storage writes before reading memory */
     void (*cs_mem_need)(u64 a, u64 n);
     /* 0 when no pending result or queued release covers [a, a + n): a read needs none of the mem_need hooks */
@@ -107,6 +108,9 @@ typedef struct Renderer {
        happen later, in order with the other releases). data is guest bytes, its numbers little-endian already: the
        front end converted them. NULL: written now, after landing everything */
     void (*release_write)(u64 gva, const void* data, u32 len);
+    /* a reduction (gpu.h's GPU_RED_*) on the bytes (4 or 8) at gva, in order with the other releases, on the value the
+       releases before it leave there. NULL: done now, after landing everything */
+    void (*release_reduce)(u64 gva, u32 op, int is_signed, u32 bytes, u64 payload);
     /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
     void (*release_need)(u64 a, u64 n);
     /* the stream reads [a, a + n) as it stands after every release before it: 1 when it read guest memory with the

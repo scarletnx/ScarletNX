@@ -16,8 +16,14 @@ enum {
     KEPLER_COMPUTE_EXEC_UPLOAD = 0x6C, /* its launch */
     KEPLER_COMPUTE_DATA_UPLOAD = 0x6D, /* its data words */
     KEPLER_COMPUTE_INVALIDATE_SHADER_CACHES = 0x87, /* clb1c0.h NVB1C0_INVALIDATE_SHADER_CACHES (0x021C) */
+    KEPLER_COMPUTE_QMD_VIRTUALIZATION_CONTROL = 0xA7, /* clc7c0.h SEND_PCAS_ENABLE, bit 24 */
     KEPLER_COMPUTE_LAUNCH_DESC_LOC = 0xAD, /* the launch description's address, in 256 byte units */
     KEPLER_COMPUTE_LAUNCH = 0xAF,          /* run the launch the description describes */
+    KEPLER_COMPUTE_LAUNCH_PCAS2 = 0xB0, /* Ampere SEND_SIGNALING_PCAS2_B, action in bits 3:0 */
+    /* Ampere (clc7c0.h): SET_INLINE_QMD_ADDRESS_A and _B, the QMD's address >> 8 (upper word first), then the 64
+       words of LOAD_INLINE_QMD_DATA, whose last write stores the QMD there and can schedule it */
+    KEPLER_COMPUTE_INLINE_QMD_ADDRESS = 0xC6,
+    KEPLER_COMPUTE_INLINE_QMD_DATA = 0xC8,
     KEPLER_COMPUTE_TSC = 0x557,            /* the sampler pool: address high, low, limit */
     KEPLER_COMPUTE_TIC = 0x55D,            /* the texture pool: address high, low, limit */
     KEPLER_COMPUTE_CODE_LOC_HIGH = 0x582,  /* code_loc: the address programs start from, bits 39:32 in 7:0 */
@@ -52,14 +58,19 @@ enum {
 };
 
 /* the QMD's fields (Eden's LaunchParams BitFields), from its words */
-static inline u32 qmd_grid_dim_x(const u32* q) { return q[QMD_GRID_DIM_X] & 0x7FFFFFFFu; }
+static inline int qmd_v3(const u32* q) { return (q[QMD_BLOCK_DIM_X] & 0xFFu) == 0x30; }
+static inline u32 qmd_grid_dim_x(const u32* q) {
+    return qmd_v3(q) ? q[QMD_GRID_DIM_X] : q[QMD_GRID_DIM_X] & 0x7FFFFFFFu;
+}
 static inline u32 qmd_grid_dim_y(const u32* q) { return q[QMD_GRID_DIM_YZ] & 0xFFFFu; }
-static inline u32 qmd_grid_dim_z(const u32* q) { return q[QMD_GRID_DIM_YZ] >> 16; }
+static inline u32 qmd_grid_dim_z(const u32* q) {
+    return qmd_v3(q) ? q[0xE] & 0xFFFFu : q[QMD_GRID_DIM_YZ] >> 16;
+}
 static inline u32 qmd_block_dim_x(const u32* q) { return q[QMD_BLOCK_DIM_X] >> 16; }
 static inline u32 qmd_block_dim_y(const u32* q) { return q[QMD_BLOCK_DIM_YZ] & 0xFFFFu; }
 static inline u32 qmd_block_dim_z(const u32* q) { return q[QMD_BLOCK_DIM_YZ] >> 16; }
 static inline u32 qmd_shared_alloc(const u32* q) { return q[QMD_SHARED_ALLOC] & 0x3FFFFu; }
-static inline u32 qmd_program_start(const u32* q) { return q[QMD_PROGRAM_START]; }
+static inline u32 qmd_program_start(const u32* q) { return qmd_v3(q) ? 0 : q[QMD_PROGRAM_START]; }
 /* the constant buffers: NumConstBuffers of them, each enabled by its bit of const_buffer_enable_mask, with a
    ConstBufferConfig of two words (address low; address high 7:0 and size 31:15) */
 #define QMD_NUM_CONST_BUFFERS 8u
@@ -67,10 +78,11 @@ static inline u32 qmd_program_start(const u32* q) { return q[QMD_PROGRAM_START];
 #define MAX_CONST_BUFFER_BYTES 0x10000u /* Eden's Maxwell3D::Regs::MaxConstBufferSize, 64 KiB */
 static inline int qmd_const_buffer_enabled(const u32* q, u32 i) { return (q[QMD_CONST_BUFFER_ENABLE] >> i) & 1u; }
 static inline u64 qmd_const_buffer_address(const u32* q, u32 i) {
-    const u32* c = &q[QMD_CONST_BUFFER_CONFIG + i * QMD_CONST_BUFFER_CONFIG_WORDS];
-    return (u64)(c[1] & 0xFFu) << 32 | c[0];
+    const u32* c = &q[(qmd_v3(q) ? 0x20 : QMD_CONST_BUFFER_CONFIG) + i * QMD_CONST_BUFFER_CONFIG_WORDS];
+    return (u64)(c[1] & (qmd_v3(q) ? 0x1FFFFu : 0xFFu)) << 32 | c[0];
 }
 static inline u32 qmd_const_buffer_size(const u32* q, u32 i) {
+    if (qmd_v3(q)) return ((q[0x21 + i * QMD_CONST_BUFFER_CONFIG_WORDS] >> 19) & 0x1FFFu) << 4;
     return q[QMD_CONST_BUFFER_CONFIG + i * QMD_CONST_BUFFER_CONFIG_WORDS + 1] >> 15;
 }
 

@@ -359,6 +359,7 @@ static int keeps_draw(const u32* r, u32 m, u32 v) {
         case MAXWELL3D_INDEX_BUFFER16_SUBSEQUENT:
         case MAXWELL3D_INDEX_BUFFER8_SUBSEQUENT: return 1;
         case MAXWELL3D_WAIT_FOR_IDLE:
+        case 0x142: /* root-table loads advance even when consecutive data words are equal */
         case MAXWELL3D_LOAD_MME_INSTRUCTION_PTR:
         case MAXWELL3D_LOAD_MME_INSTRUCTION:
         case MAXWELL3D_LOAD_MME_START_ADDRESS_PTR:
@@ -455,6 +456,7 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
     [MAXWELL3D_LOAD_MME_INSTRUCTION] = G_ACTS, [MAXWELL3D_LOAD_MME_START_ADDRESS_PTR] = G_ACTS,
     [MAXWELL3D_LOAD_MME_START_ADDRESS] = G_ACTS, [MAXWELL3D_SHADOW_RAM_CONTROL] = G_ACTS,
     [MAXWELL3D_LAUNCH_DMA] = G_ACTS, [MAXWELL3D_INLINE_DATA] = G_ACTS, [MAXWELL3D_SYNC_INFO] = G_ACTS,
+    [0x141] = G_ACTS, [0x142] = G_ACTS, /* C797 root-table selector and auto-incrementing load */
     [XFB_START_OFFSET(0)] = G_ACTS | R3D_BIND, [XFB_START_OFFSET(1)] = G_ACTS | R3D_BIND,
     [XFB_START_OFFSET(2)] = G_ACTS | R3D_BIND, [XFB_START_OFFSET(3)] = G_ACTS | R3D_BIND,
     [MAXWELL3D_TRANSFORM_FEEDBACK_ENABLED] = G_ACTS | R3D_XFB,
@@ -478,6 +480,9 @@ static const u16 g_m3d_group[MAXWELL3D_MACRO_REGISTERS_START] = {
     [BIND_GROUP_CONFIG(3)] = G_ACTS, [BIND_GROUP_CONFIG(4)] = G_ACTS,
     /* the groups' plain registers */
     [MAXWELL3D_MANDATED_EARLY_Z] = R3D_SHADER, M3D_RANGE2(MAXWELL3D_PROGRAM_REGION, R3D_SHADER),
+    M3D_RANGE4(MAXWELL3D_MESH_CONTROL, R3D_SHADER),
+    /* NVC797's variable pixel rate: the table selection (byte 0x2CC) and the 16 tables (byte 0x2A00, 16 bytes each) */
+    [0xB3] = R3D_NATIVE, M3D_RANGE64(0xA80, R3D_NATIVE),
     M3D_RANGE64(MAXWELL3D_PIPELINES, R3D_SHADER), M3D_RANGE32(MAXWELL3D_PIPELINES + 0x40, R3D_SHADER),
     M3D_RANGE32(MAXWELL3D_VERTEX_ATTRIB_FORMAT, R3D_VATTR),
     M3D_RANGE32(MAXWELL3D_VERTEX_STREAM_INSTANCES, R3D_VFORMAT),
@@ -542,6 +547,7 @@ __attribute__((noinline)) static void plain_flushed(GpuChannel* ch, u32 m, u32 v
     if (ch->r3d[m] == v) return;
     ch->r3d_dirty |= g_m3d_group[m];
     ch->r3d[m] = v;
+    ampere_stream_written(ch, m);
 }
 /* the shadow RAM's part in a write of v to m: the value replayed, or tracked */
 static inline u32 shadow_ram(GpuChannel* ch, u32 m, u32 v) {
@@ -569,6 +575,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         }
         ch->r3d_dirty |= g_m3d_group[m];
         r[m] = v;
+        ampere_stream_written(ch, m);
     } else if (g_engines.deferred.ch && g_engines.deferred.ch != ch)
         plain_flushed(ch, m, v);
 }
@@ -622,6 +629,18 @@ static void method_acts(GpuChannel* ch, u32 m, u32 v, int last) {
     r[m] = v;
     if (gpu_channel_verify(ch) && verify_inert(m)) return;
     switch (m) { /* a new case, or a new one in keeps_draw, needs G_ACTS in its g_m3d_group too */
+        case 0x141:
+            if (gpu_native_graphics(ch)) ch->native_root_offset = v >> 8 & 255;
+            break;
+        case 0x142:
+            if (gpu_native_graphics(ch)) {
+                u32 offset = ch->native_root_offset;
+                if ((offset & 3) || offset >= 256) fatal("gpu: invalid native root-table upload offset %u\n", offset);
+                snx_st_le32(ch->native_roots[r[0x141] & 7] + offset, v);
+                ch->native_root_offset += 4;
+                ch->r3d_dirty |= R3D_NATIVE; /* the draw state's copy (DsNative.roots) */
+            }
+            break;
         case MAXWELL3D_WAIT_FOR_IDLE:
             /* The idle wait and the texture cache invalidation below order GPU work, which method_barrier gives
                Vulkan. Neither is anything the game sees, so pending shader results don't land here: whatever reads

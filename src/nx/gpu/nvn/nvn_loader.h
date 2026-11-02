@@ -35,7 +35,8 @@ typedef struct {
 
 /* The runtime runs the game's NVN calls itself, and the game's NVN driver doesn't run (gpu/nvn/nvn_loader.c). Init
    runs once the game's symbols and dispatch table are loaded, before any guest thread starts. A game without NVN
-   (nvnBootstrapLoader) draws nothing */
+   (nvnBootstrapLoader) draws nothing. A Switch 2 program keeps its own NVN (NVN2) driver, whose command streams the
+   GPU's front end decodes */
 void nvn_loader_init(void);
 /* 1 once nvn_loader_init took the game's NVN loader: the NVN functions the game resolves are the runtime's */
 int nvn_loader_active(void);

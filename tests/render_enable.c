@@ -12,9 +12,14 @@
 #include "nx/runtime/platform/plat.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------ what engines.c and maxwell3d.c reach outside themselves */
+void fatal(const char* fmt, ...) {
+    (void)fmt;
+    abort();
+}
 u8* g_mem;
 u64 g_draws;
 int g_renderer_up = 1;

@@ -5,23 +5,26 @@
    waits for; the waiting channel's later jobs, and the calls that name it, stay behind it while a call naming another
    channel doesn't; a release the CPU writes and a syncpoint incremented off the GPU thread end waits; a stream
    resumes in the middle of a method batch, of a job's entries, and of a macro; and a wait nothing ends times out. A
-   new channel's render enable override starts at USE_RENDER_ENABLE, as Eden's does.
+   new channel's render enable override starts at USE_RENDER_ENABLE. TU104 programs, stopped calls and queued TSG
+   identities survive a save-state round trip, including a TSG with no active channel.
    Each mark is a ClearBuffers value the stand-in renderer records; the platform's locks are pthreads */
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/renderer.h"
 #include "support/dma_ref.h"
-#include "nx/hle/hle.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/hle/hle.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/state_io.h"
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <time.h>
 
 /* ------------------------------------------------ what the files under test reach outside themselves */
@@ -31,6 +34,11 @@ u8* g_mem = (u8*)guest;
 Hle g_hle;
 _Atomic int g_cs_any, g_gfx_any, g_gfx_img_any;
 int g_renderer_up = 1;
+char g_exedir[1024];
+int plat_mkdir(const char* path) {
+    fatal("GPU test must not write shader captures: %s\n", path);
+    return -1;
+}
 u64 g_draws;
 /* GPU addresses are guest ones, 0 unmapped, but for two GPU pages mapped apart (0xA000 at 0x3000, 0xB000 at 0x5000):
    a pushbuffer across them isn't contiguous, and is copied */
@@ -62,27 +70,14 @@ void mem_query(u64 addr, MemBlock* out) {
     (void)addr;
 }
 u64 guest_ns(void) { return 0; }
-/* save states' function names, which nothing here takes */
+/* The TSG close callback can be queued while a native macro waits, and must survive a state load. */
+static void native_closed(void* arg) { mme_tu104_tsg_close((u64)(uintptr_t)arg); }
 const char* state_fn_name(StateFnPtr fn) {
-    (void)fn;
-    return NULL;
+    return fn == (StateFnPtr)native_closed ? "test.native_closed" : NULL;
 }
 StateFnPtr state_fn_find(const char* name) {
-    (void)name;
-    return NULL;
+    return !strcmp(name, "test.native_closed") ? (StateFnPtr)native_closed : NULL;
 }
-/* Keep compute reports and inline uploads identical to compute.c, using the
-   real shared report and upload handlers. */
-void query_get(GpuChannel* ch, u32* r, int base, u32 v);
-void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {
-    (void)last;
-    m &= 0xFFF;
-    ch->rcomp[m] = v;
-    if (m == 0x6C3) query_get(ch, ch->rcomp, 0x6C0, v);
-    if (m == 0x6C) i2m_launch(ch, ch->rcomp, 0x60);
-    if (m == 0x6D) i2m_data(ch, v);
-}
-void kepler_i2m_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 void fermi2d_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 
 static pthread_mutex_t seen_lk = PTHREAD_MUTEX_INITIALIZER;
@@ -255,7 +250,7 @@ static u64 mark(u32 m) {
 static void submit_wait(const u64* e, u32 n, u32 channel, u32 wait_id, u32 wait_val) {
     u8 ring[8 * 8];
     for (u32 i = 0; i < n && i < 8; i++) snx_st_le64(ring + 8 * i, e[i]);
-    gpu_submit(ring, n, channel, 0, wait_id, wait_val, 0);
+    gpu_submit(ring, n, channel, 0, wait_id, wait_val, 0, 0);
 }
 static void submit(const u64* e, u32 n, u32 channel) { submit_wait(e, n, channel, ~0u, 0); }
 static void submit1(u64 e, u32 channel) { submit(&e, 1, channel); }
@@ -313,6 +308,341 @@ static void expect(int ok, const char* what) {
     }
 }
 #define FAST 500000000ull /* a wait an event ends, well short of the 1 and 2 s timeouts */
+
+/* Four synthetic TU104 instructions: acquire a semaphore, then clear with the next parameter, then exit. */
+static const u32 native_acquire_code[] = {
+    0x30D40003, 0x18C005B0, 0x318C0300,
+    0x60A00007, 0x18C00001, 0x718C0300,
+    0x00740003, 0x18C0019D, 0x318C0301,
+    0x00000003, 0x18C00000, 0x318C0300
+};
+static void native_submit(u32 channel, int upload, u32 mark_value, u64 tsg) {
+    u32 words[32], n = 0;
+    words[n++] = inc(0, 1); words[n++] = CLASS_AMPERE_B;
+    if (upload) {
+        words[n++] = imm(0x45, 0);
+        words[n++] = (3u << 29) | (12u << 16) | 0x46;
+        memcpy(words + n, native_acquire_code, sizeof native_acquire_code); n += 12;
+        words[n++] = inc(0x47, 2); words[n++] = 0; words[n++] = 0;
+    }
+    words[n++] = inc(0xE00, 2); words[n++] = SEM + 80; words[n++] = mark_value;
+    u8 ring[8];
+    snx_st_le64(ring, push(words, n));
+    gpu_submit(ring, 1, channel, 0, ~0u, 0, 0, tsg);
+}
+static int state_put(void* ctx, const void* p, u64 n) { return fwrite(p, 1, (size_t)n, ctx) == n ? 0 : -1; }
+static int state_get(void* ctx, void* p, u64 n) { return fread(p, 1, (size_t)n, ctx) == n ? 0 : -1; }
+static void restore_state(StateIo* io) {
+    rewind(io->ctx);
+    GpuStaged* saved = gpu_state_parse(io);
+    expect(saved != NULL, "parse the native programs, queue and execution state");
+    if (saved) gpu_state_install(saved);
+}
+/* Locate fields in a valid stream, then corrupt one field at a time. This exercises the external state boundary. */
+static void malformed_native_states(StateIo* io, u32 channel) {
+    FILE* file = io->ctx;
+    long offsets[4] = {0};
+    u32 id = 0, present = 0, count = 0, kind = 1;
+    fseek(file, sizeof(u32) + 2 * sizeof(u64), SEEK_SET);
+    while (!io_get32(io, &id) && id) fseek(file, sizeof(MmeTu104Group), SEEK_CUR);
+    while (!io_get32(io, &id) && id) fseek(file, sizeof(u64) + 4 * sizeof(u32), SEEK_CUR);
+    while (!io_get32(io, &id) && id) {
+        GpuChannel* ch = g_gpu.chan[id - 1];
+        if (id == channel + 1) {
+            offsets[0] = ftell(file) + offsetof(GpuChannel, mme_nparams);
+            offsets[1] = ftell(file) + offsetof(GpuChannel, mme_index);
+        }
+        fseek(file, sizeof *ch, SEEK_CUR);
+        io_get32(io, &present);
+        if (present) {
+            if (id == channel + 1) offsets[2] = ftell(file) + offsetof(MmeTu104, program);
+            fseek(file, sizeof(MmeTu104), SEEK_CUR);
+        }
+        if (ch->i2m.inner_buffer) fseek(file, ch->i2m.write_offset, SEEK_CUR);
+        if (ch->inline_indices) fseek(file, (long)ch->inline_n * 4, SEEK_CUR);
+    }
+    io_get32(io, &count);
+    io_get32(io, &kind);
+    offsets[3] = ftell(file) + 2 * sizeof(u64) + 9 * sizeof(u32);
+    expect(count && !kind && offsets[0] && offsets[1] && offsets[2], "locate the native state and oldest job");
+    if (!count || kind || !offsets[0] || !offsets[1] || !offsets[2]) return;
+    const u32 bad[] = {0x10001, 0x80, 2, 0};
+    for (u32 i = 0; i < 4; ++i) {
+        u32 original = 0;
+        fseek(file, offsets[i], SEEK_SET);
+        io_get32(io, &original);
+        fseek(file, offsets[i], SEEK_SET);
+        io_put32(io, bad[i]);
+        rewind(file);
+        GpuStaged* staged = gpu_state_parse(io);
+        expect(staged == NULL, "reject an invalid collection index, program, or unstarted active macro");
+        gpu_state_staged_free(staged);
+        fseek(file, offsets[i], SEEK_SET);
+        io_put32(io, original);
+    }
+}
+static void native_state_roundtrip(void) {
+    forget_marks();
+    cpu_store(SEM + 80, 0);
+    native_submit(40, 1, 0x9AB, 900);
+    int held = gpu_hold(1000) == 0;
+    expect(held, "hold the native macro at its semaphore acquire");
+    if (!held) return;
+    expect(g_gpu.chan[40] && g_gpu.chan[40]->park && g_gpu.chan[40]->mme.running && !marks(),
+           "the native macro parks before its clear");
+    FILE* file = tmpfile();
+    expect(file != NULL, "create the GPU state stream");
+    if (!file) { gpu_release(); return; }
+    StateIo io = {.ctx = file, .put = state_put, .get = state_get};
+    expect(gpu_state_save(&io) == 0, "save the shared program and the paused native macro");
+    malformed_native_states(&io, 40);
+    restore_state(&io);
+    fclose(file);
+    gpu_release();
+    cpu_store(SEM + 80, 5);
+    gpu_kick();
+    wait_marks(1);
+    expect(marks_are((u32[]){0x9AB}, 1), "the restored native macro resumes and clears exactly once");
+    held = gpu_hold(1000) == 0;
+    expect(held, "hold before closing the native uploader");
+    if (!held) return;
+    gpu_channel_close(40);
+    file = tmpfile();
+    expect(file != NULL, "create the open TSG state stream");
+    if (file) {
+        io.ctx = file;
+        expect(gpu_state_save(&io) == 0, "save an open TSG without any channel reference");
+        restore_state(&io);
+        fclose(file);
+    }
+    gpu_release();
+    native_submit(41, 0, 0x9AC, 900);
+    wait_marks(2);
+    expect(marks_are((u32[]){0x9AB, 0x9AC}, 2), "a new channel uses the restored program after its uploader closed");
+}
+static void native_token_capture(void) {
+    forget_marks();
+    cpu_store(SEM + 80, 0);
+    native_submit(42, 1, 0xA01, 901);
+    /* A second TSG's synthetic program clears a constant, independent of the call's parameters. */
+    const u32 upload[] = {
+        inc(0, 1), CLASS_AMPERE_B, imm(0x45, 0),
+        (3u << 29) | (6u << 16) | 0x46,
+        0x00D4337B, 0x18C0019D, 0x318C0301,
+        0x00000003, 0x18C00000, 0x318C0300,
+        inc(0x47, 2), 0, 0
+    };
+    u8 ring[8];
+    snx_st_le64(ring, push(upload, sizeof upload / sizeof *upload));
+    gpu_submit(ring, 1, 43, 0, ~0u, 0, 0, 902);
+    native_submit(42, 0, 0, 902);
+    gpu_call_tsg(native_closed, (void*)(uintptr_t)901, 901);
+    int held = gpu_hold(1000) == 0;
+    expect(held, "a deferred TSG close does not block an unrelated hold");
+    if (!held) return;
+    /* Leave a hole before the live groups so the state must remap their indexes. */
+    gpu_channel_close(41);
+    native_closed((void*)(uintptr_t)900);
+    FILE* file = tmpfile();
+    expect(file != NULL, "create the queued-token state stream");
+    if (file) {
+        StateIo io = {.ctx = file, .put = state_put, .get = state_get};
+        expect(gpu_state_save(&io) == 0, "save two queued TSG identities and their close callback");
+        restore_state(&io);
+        fclose(file);
+    }
+    gpu_release();
+    cpu_store(SEM + 80, 5);
+    gpu_kick();
+    wait_marks(2);
+    expect(marks_are((u32[]){0xA01, 0xCDE}, 2), "each queued job uses its captured TSG program after restore");
+}
+static void native_compute_scan(void) {
+    forget_marks();
+    cpu_store(SEM + 80, 0);
+    cpu_store(0x9000, 0x11223344);
+    u32 words[48], n = 0;
+    words[n++] = inc(0, 1) | (1u << 13); words[n++] = CLASS_AMPERE_COMPUTE_B;
+    words[n++] = imm(0x45, 0) | (1u << 13);
+    words[n++] = (3u << 29) | (12u << 16) | (1u << 13) | 0x46;
+    memcpy(words + n, native_acquire_code, sizeof native_acquire_code); n += 12;
+    words[n++] = inc(0x47, 2) | (1u << 13); words[n++] = 0; words[n++] = 0;
+    words[n++] = inc(0xE00, 2) | (1u << 13); words[n++] = SEM + 80; words[n++] = 0;
+    const u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
+                        imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0xA10)};
+    memcpy(words + n, copy, sizeof copy); n += sizeof copy / sizeof *copy;
+    submit1(push(words, n), 44);
+    int held = gpu_hold(1000) == 0;
+    expect(held, "hold at a native compute macro acquire");
+    if (!held) return;
+    expect(g_gpu.chan[44]->park && !marks(), "compute waits before DMA");
+    cpu_store(0x9000, 0x55667788);
+    cpu_store(SEM + 80, 5);
+    gpu_release();
+    gpu_kick();
+    wait_marks(1);
+    expect(marks_are((u32[]){0xA10}, 1) && gmem_r32(0x9100) == 0x55667788,
+           "DMA reads CPU data produced after the native compute macro wait");
+}
+
+static void native_const_dma(void) {
+    /* Upload a held constant-buffer word, then read it back through data RAM or the parameter FIFO. */
+    static const u32 code[2][15] = {
+        {0x00D448D3, 0x18C00639, 0x318C0300, 0x00D40007, 0x18C00455, 0xF18C0300,
+         0x00340003, 0x18C0019D, 0x318C7B01, 0x00000003, 0x18C00000, 0x318C0300,
+         0x00000003, 0x18C00000, 0x318C0300},
+        {0x00D448D3, 0x18C00639, 0x318C0300, 0x00D40007, 0x18C00456, 0x318C0300,
+         0x00000007, 0x18C00400, 0x359C1F00, 0x00340003, 0x18C0019D, 0x31CC0301,
+         0x00000003, 0x18C00000, 0x318C0300}
+    };
+    for (u32 fifo = 0; fifo < 2; ++fifo) {
+        forget_marks();
+        cpu_store(0x9000, 0);
+        u32 words[40], n = 0;
+        words[n++] = inc(0, 1); words[n++] = CLASS_AMPERE_B;
+        words[n++] = imm(0x45, 0);
+        words[n++] = (3u << 29) | (15u << 16) | 0x46;
+        memcpy(words + n, code[fifo], sizeof code[fifo]); n += 15;
+        const u32 setup[] = {inc(0x47, 2), 0, 0, inc(0x8E0, 4), 16, 0, 0x9000, 0,
+                             inc(0x154, 3), 0, 0x9000, 0, inc(0xE00, 1), 0};
+        memcpy(words + n, setup, sizeof setup); n += sizeof setup / sizeof *setup;
+        submit1(push(words, n), 45 + fifo);
+        wait_marks(1);
+        expect(marks_are((u32[]){0x1234}, 1),
+               "macro DMA reads the constant-buffer word held earlier in the same call");
+    }
+}
+
+static void native_qmd_signal(u32 channel, u32 address, u32 action, u32 mark_value) {
+    const u32 words[] = {inc(0, 1) | (1u << 13), CLASS_AMPERE_COMPUTE_B,
+                         inc(0xAD, 1) | (1u << 13), address >> 8,
+                         imm(0xB0, action) | (1u << 13), imm(CLEAR, mark_value)};
+    submit1(push(words, sizeof words / sizeof *words), channel);
+}
+static void native_qmd_completion(void) {
+    forget_marks();
+    const u32 a = 0x9600, b = 0x9700, sem_a = SEM + 96, sem_b = SEM + 100;
+    u32 q[64] = {0};
+    q[4] = 2u << 14;
+    q[18] = 0x30;
+    q[24] = sem_b;
+    q[25] = 0x40800000; /* enabled, one word */
+    q[26] = 3;
+    snx_le32_array(q, 64);
+    gmem_write_raw(b, q, sizeof q);
+    snx_le32_array(q, 64);
+    q[4] = 1u << 14;
+    q[15] = b >> 8;
+    q[16] = 9; /* complete by decrementing the dependent QMD */
+    q[24] = sem_a;
+    q[26] = 2;
+    snx_le32_array(q, 64);
+    gmem_write_raw(a, q, sizeof q);
+    cpu_store(sem_a, 0);
+    cpu_store(sem_b, 0);
+    native_qmd_signal(48, b, 3, 0xB01);
+    native_qmd_signal(47, a, 7, 0xB02); /* decrement before its descriptor is scheduled */
+    native_qmd_signal(47, a, 3, 0xB03);
+    wait_marks(3);
+    expect(gmem_r32(sem_a) == 2 && !gmem_r32(sem_b),
+           "a QMD releases at zero dependencies, not when it is first scheduled");
+    int held = gpu_hold(1000) == 0;
+    expect(held, "hold the shared QMD counters for a state round trip");
+    if (!held) return;
+    FILE* file = tmpfile();
+    expect(file != NULL, "create the pending QMD state stream");
+    if (file) {
+        StateIo io = {.ctx = file, .put = state_put, .get = state_get};
+        expect(gpu_state_save(&io) == 0, "save the pending dependency and completed predecessor");
+        restore_state(&io);
+        fclose(file);
+    }
+    /* MME can patch a release after scheduling. The initial dependency count must not be reloaded with it. */
+    cpu_store(b + 26 * 4, 0xC3);
+    gpu_release();
+    forget_marks();
+    submit1(sem_then(sem_b, 0xC3, 1, 0xB04), 49);
+    native_qmd_signal(47, b, 7, 0xB05);
+    u64 took = wait_marks(2);
+    expect(gmem_r32(sem_b) == 0xC3 && took < FAST,
+           "another channel's QMD decrement releases the patched payload and ends a GPU acquire");
+    cpu_store(sem_b, 0);
+    native_qmd_signal(48, b, 2, 0xB06);
+    wait_marks(3);
+    expect(!gmem_r32(sem_b), "scheduling a completed cached QMD does not repeat its releases");
+}
+
+/* Inline descriptors can require a later scheduling PCAS. Neither a partial upload nor the completed copy may
+   release their semaphore before that command. The virtualization control can request an immediate schedule. */
+static void native_inline_qmd(void) {
+    const u32 address = 0x9800, semaphore = SEM + 104;
+    for (u32 force = 0; force < 2; ++force) {
+        forget_marks();
+        cpu_store(semaphore, 10);
+        u32 q[64] = {0};
+        q[4] = 1u << 12; /* REQUIRE_SCHEDULING_PCAS */
+        q[18] = 0x30;
+        q[24] = semaphore;
+        q[25] = 0x44800000; /* one-word ADD release */
+        q[26] = 3;
+        u32 first[40] = {inc(0, 1) | (1u << 13), CLASS_AMPERE_COMPUTE_B,
+                         inc(0xA7, 1) | (1u << 13), force << 24,
+                         inc(0xC6, 34) | (1u << 13), 0, address >> 8};
+        memcpy(first + 7, q, 32 * sizeof *q);
+        first[39] = imm(CLEAR, 0xC01);
+        submit1(push(first, 40), 50);
+        wait_marks(1);
+        expect(gmem_r32(semaphore) == 10, "a partial inline QMD cannot execute");
+        u32 last[34] = {inc(0xE8, 32) | (1u << 13)};
+        memcpy(last + 1, q + 32, 32 * sizeof *q);
+        last[33] = imm(CLEAR, 0xC02);
+        submit1(push(last, 34), 50);
+        wait_marks(2);
+        expect(gmem_r32(address + 4 * 26) == 3, "the complete inline QMD is stored in guest memory");
+        expect(gmem_r32(semaphore) == (force ? 13 : 10), "inline QMD honors the scheduling requirement");
+        if (!force) {
+            native_qmd_signal(50, address, 3, 0xC03);
+            wait_marks(3);
+            expect(gmem_r32(semaphore) == 13, "an explicit PCAS executes the copied inline ADD release");
+        }
+    }
+    /* A pending descriptor must not run on a replacement channel with the same id. */
+    forget_marks();
+    cpu_store(address + 4 * 4, 1u << 14);
+    native_qmd_signal(50, address, 3, 0xC04);
+    wait_marks(1);
+    int held = gpu_hold(1000) == 0;
+    expect(held, "hold the pending inline QMD before its owner closes");
+    if (!held) return;
+    gpu_channel_close(50);
+    gpu_release();
+    native_qmd_signal(50, address, 7, 0xC05);
+    wait_marks(2);
+    expect(gmem_r32(semaphore) == 13, "closing a QMD owner cancels its pending schedule");
+}
+
+/* OFFSET_MINUS_ONE encodes a count, not a raw decrement. A counter increment can also arrive before scheduling. */
+static void native_qmd_counts(void) {
+    forget_marks();
+    const u32 address = 0x9900, semaphore = SEM + 108;
+    u32 q[64] = {0};
+    q[4] = 1u << 14;
+    q[18] = 0x30;
+    q[24] = semaphore;
+    q[25] = 0x40800000;
+    q[26] = 0x1234;
+    snx_le32_array(q, 64);
+    gmem_write_raw(address, q, sizeof q);
+    cpu_store(semaphore, 0);
+    native_qmd_signal(51, address, 12 | (1u << 14), 0xC11); /* increment by two before scheduling */
+    native_qmd_signal(51, address, 3, 0xC12);
+    native_qmd_signal(52, address, 7 | (1u << 14), 0xC13); /* decrement by two, leaving one */
+    wait_marks(3);
+    expect(!gmem_r32(semaphore), "PCAS count fields and deferred increments keep the last dependency pending");
+    native_qmd_signal(52, address, 7, 0xC14);
+    wait_marks(4);
+    expect(gmem_r32(semaphore) == 0x1234, "the last cross-channel dependency executes the QMD release");
+}
 
 int main(void) {
     struct timespec ms20 = {0, 20000000};
@@ -659,6 +989,13 @@ int main(void) {
     submit1(push(t, 6), 27);
     took = wait_marks(1);
     expect(marks() == 1 && took >= 900000000ull && warned == 1, "a wait nothing ends times out after 1 s and warns");
+    native_state_roundtrip();
+    native_token_capture();
+    native_compute_scan();
+    native_const_dma();
+    native_qmd_completion();
+    native_inline_qmd();
+    native_qmd_counts();
 
     if (!failures) printf("gpu_park: ok\n");
     return failures != 0;

@@ -49,6 +49,11 @@ void gmem_w32(u64 gva, u32 v) {
     snx_st_le32(b, v);
     gmem_write(gva, b, 4);
 }
+/* engines.c's native root-table upload stops on an offset past its table */
+void fatal(const char* fmt, ...) {
+    (void)fmt;
+    abort();
+}
 u64 gmmu_translate(u64 gva) { return gva; }
 /* maxwell3d.c's runs of contiguous pages, from the translation above */
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {

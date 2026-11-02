@@ -2077,12 +2077,14 @@ snx_test_target(snx-test-audren-host 23)
 add_test(NAME audren_host COMMAND snx-test-audren-host)
 
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/ampere.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-render-enable 23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
 
 add_executable(snx-test-draw-state-groups draw_state_groups.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/ampere.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-state-groups 23)
@@ -2093,32 +2095,40 @@ snx_test_target(snx-test-clear-flags 23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)
 
 add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/ampere.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-instance-array 23)
 add_test(NAME instance_array COMMAND snx-test-instance-array)
 
 add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/ampere.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c")
 snx_test_target(snx-test-draw-texture 23)
 add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 
 # gpu.c's queue over the real puller, 3D engine and macros: a channel waiting on a semaphore, a syncpoint, a fence or
-# inside a macro lets the others run, and goes on where it stopped (its platform stand-ins are pthreads)
+# inside a macro lets the others run. Native programs, parked macros and TSG lifetimes also survive a state load.
 if(UNIX)
     add_executable(snx-test-gpu-park gpu_park.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gpu.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/ampere.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme_tu104.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/compute.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c"
         support/dma_ref.c own_stub.c)
     snx_test_target(snx-test-gpu-park 23)
-    target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
+    target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common snx_shader m) # capture uses native flow bounds
         add_test(NAME gpu_park COMMAND snx-test-gpu-park)
     set_tests_properties(gpu_park PROPERTIES TIMEOUT 30) # a deadlock in the queue would otherwise hang ctest
 endif()
 
+# The TU104 instruction format, dual ALUs, control flow, shared programs and resumable outputs.
+add_executable(snx-test-mme-tu104 mme_tu104.c)
+snx_test_target(snx-test-mme-tu104 23)
+add_test(NAME mme_tu104 COMMAND snx-test-mme-tu104)
 # the shader programs a game ships, found in containers built by the test (gpu/shader/shipped.c)
 add_executable(snx-test-shipped-shaders shipped_shaders.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c")
 snx_test_target(snx-test-shipped-shaders 99)

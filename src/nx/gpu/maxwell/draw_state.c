@@ -167,19 +167,37 @@ void mx_draw_viewports(const u32* r, DsViewports* v) {
     }
 }
 
-/* The program slots at 0x800 + 0x10 j (enable bit 0, then the offset from the code base 0x582/0x583) */
-void mx_draw_programs(const u32* r, DsPrograms* p) {
+/* The program slots at 0x800 + 0x10 j (enable bit 0, then the offset from the code base 0x582/0x583). A native class
+   (C797) gives each slot its whole address in words 5 and 6 (bits 39-32, then 31-0), and its MESH_CONTROL (0x453),
+   MESH_SHADER_A and _B (0x454, 0x455) */
+void mx_draw_programs(const u32* r, int native, DsPrograms* p) {
     u64 code = ((u64)r[0x582] << 32) | r[0x583];
     memset(p, 0, sizeof *p);
     for (u32 j = 0; j < DS_PROGRAM_SLOTS; j++) {
-        p->code[j] = code + r[0x801 + 0x10 * j];
-        p->on |= (r[0x800 + 0x10 * j] & 1) << j;
+        const u32* s = &r[0x800 + 0x10 * j];
+        p->code[j] = native ? ((u64)(s[5] & 0xFF) << 32) | s[6] : code + s[1];
+        p->on |= (s[0] & 1) << j;
     }
     p->clip_enable = r[0x544] & 0xFF; /* SetUserClipEnable */
     p->tess_params = r[0xC8];
     memcpy(p->gs_skip, &r[0x490], sizeof p->gs_skip);
     p->early_z = r[0x084] & 1; /* MANDATED_EARLY_Z */
     p->xfb_on = r[0x1D1] != 0;
+    p->native = (u8)(native != 0);
+    if (native && (r[MAXWELL3D_MESH_CONTROL] & 1)) {
+        p->mesh = 1;
+        p->mesh_shader[0] = r[MAXWELL3D_MESH_SHADER_A];
+        p->mesh_shader[1] = r[MAXWELL3D_MESH_SHADER_B];
+    }
+}
+
+/* A native class's variable pixel rate selection (0xB3) and tables (0xA80 + 4 t: the enable, then two words of rates),
+   and its root tables */
+void mx_draw_native(const u32* r, const u8 roots[8][256], DsNative* n) {
+    n->vprs_select = r[0xB3];
+    for (u32 t = 0; t < 16; t++)
+        for (u32 k = 0; k < 3; k++) n->vprs[t][k] = r[0xA80 + 4 * t + k];
+    memcpy(n->roots, roots, sizeof n->roots);
 }
 
 /* Attribute i's format at 0x458 + i: the stream in bits 0-4, constant bit 6, the offset in 7-20, the size code in
@@ -367,17 +385,25 @@ static int target_formats_differ(const DsTargets* t, const DsTargets* u) {
     return 0;
 }
 /* Brings ch's draw state up to its registers: the groups whose registers a method changed since the last time
-   (GpuChannel.r3d_dirty, which this takes), each with a new generation when its bytes changed */
+   (GpuChannel.r3d_dirty, which this takes), each with a new generation when its bytes changed. A class bind that makes
+   the channel native or not changes how its program and native registers read */
 void mx_draw_state_sync(GpuChannel* ch) {
     const u32* r = ch->r3d;
+    int native = gpu_native_graphics(ch);
+    if (native != ch->ds.prog.native) ch->r3d_dirty |= R3D_SHADER | R3D_NATIVE;
     u32 dirty = ch->r3d_dirty;
     DsState* ds = &ch->ds;
     if (!dirty) return;
     ch->r3d_dirty = 0;
     if (dirty & (R3D_SHADER | R3D_PIPEMISC | R3D_XFB)) {
         DsPrograms p;
-        mx_draw_programs(r, &p);
+        mx_draw_programs(r, native, &p);
         keep(&ds->prog, &p, sizeof p, &ds->gen[DS_PROGRAMS]);
+    }
+    if (dirty & R3D_NATIVE) {
+        DsNative n = {0};
+        if (native) mx_draw_native(r, ch->native_roots, &n);
+        keep(&ds->nat, &n, sizeof n, &ds->gen[DS_NATIVE]);
     }
     if (dirty & (R3D_VATTR | R3D_VFORMAT)) {
         DsVertexFormat f;
@@ -438,7 +464,10 @@ u32 mx_draw_state_stale(const GpuChannel* ch) {
     const DsState* ds = &ch->ds;
     DsState f; /* every group filled again */
     u32 stale = 0;
-    mx_draw_programs(r, &f.prog);
+    int native = gpu_native_graphics(ch);
+    mx_draw_programs(r, native, &f.prog);
+    f.nat = (DsNative){0};
+    if (native) mx_draw_native(r, ch->native_roots, &f.nat);
     mx_draw_vertex_format(r, &f.vfmt);
     mx_draw_blend(r, &f.blend);
     mx_draw_raster_key(r, &f.rkey);
@@ -461,6 +490,7 @@ u32 mx_draw_state_stale(const GpuChannel* ch) {
     stale |= (u32)(memcmp(&f.vbuf, &ds->vbuf, sizeof f.vbuf) != 0) << DS_VBUF;
     stale |= (u32)(memcmp(&f.index, &ds->index, sizeof f.index) != 0) << DS_INDEX;
     stale |= (u32)(memcmp(&f.bind, &ds->bind, sizeof f.bind) != 0) << DS_BIND;
+    stale |= (u32)(memcmp(&f.nat, &ds->nat, sizeof f.nat) != 0) << DS_NATIVE;
     return stale;
 }
 
@@ -505,4 +535,5 @@ void mx_dispatch_state(const u32* q, const u32* r, u64 code_loc, DispatchState* 
     d->smp_max = r[KEPLER_COMPUTE_TSC + 2];
     d->smp_mode = (q[QMD_LINKED_TSC] >> 30) & 1;
     d->tex_bank = kepler_compute_tex_cb_index(r);
+    d->native = (u32)qmd_v3(q);
 }

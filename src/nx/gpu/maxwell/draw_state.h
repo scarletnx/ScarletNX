@@ -16,8 +16,10 @@ u32 mx_draw_state_stale(const GpuChannel* ch);
 /* a draw's dynamic state and viewports from the registers r, in guest units */
 void mx_draw_dynamic(const u32* r, DsDynamic* d);
 void mx_draw_viewports(const u32* r, DsViewports* v);
-/* the groups a pipeline and its programs are keyed by, from the registers r */
-void mx_draw_programs(const u32* r, DsPrograms* p);
+/* the groups a pipeline and its programs are keyed by, from the registers r (native: a C797 class is bound) */
+void mx_draw_programs(const u32* r, int native, DsPrograms* p);
+/* a native class's own state: its rate tables from the registers r, and its root tables */
+void mx_draw_native(const u32* r, const u8 roots[8][256], DsNative* n);
 void mx_draw_vertex_format(const u32* r, DsVertexFormat* f);
 void mx_draw_blend(const u32* r, DsBlend* b);
 void mx_draw_raster_key(const u32* r, DsRasterKey* k);

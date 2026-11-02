@@ -54,7 +54,9 @@ enum {
     CLASS_MAXWELL_B = 0xB197,                 /* the 3D engine (engines.c) */
     CLASS_KEPLER_COMPUTE_B = 0xB1C0,          /* compute (compute.c) */
     CLASS_KEPLER_INLINE_TO_MEMORY_B = 0xA140, /* inline to memory (compute.c, gpu.c) */
-    CLASS_MAXWELL_DMA_COPY_A = 0xB0B5         /* the copy engine (dma.c) */
+    CLASS_MAXWELL_DMA_COPY_A = 0xB0B5,        /* the copy engine (dma.c) */
+    CLASS_AMPERE_B = 0xC797,
+    CLASS_AMPERE_COMPUTE_B = 0xC7C0
 };
 #define CLASS_ID_MASK 0xFFFFu /* BindObject's class, bits 15:0 (cla16f's NVA16F_SET_OBJECT_NVCLASS 15:0) */
 

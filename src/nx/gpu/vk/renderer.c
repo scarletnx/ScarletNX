@@ -225,12 +225,13 @@ static void vkr_rt_reload(u64 gva) {
     vk_rt_reload(gva);
     vk_unlock();
 }
-static void vkr_dispatch(const DispatchState* d) {
-    if (!g_settings.compute_dispatches) return;
+static int vkr_dispatch(const DispatchState* d) {
+    if (!g_settings.compute_dispatches) return 0;
     r3d_pending_flush(); /* a merged draw the front end is holding comes first */
     vk_lock();
     vk_dispatch(d);
     vk_unlock();
+    return 1;
 }
 /* Pending shader results land before the stream signals or waits. */
 static void vkr_before_syncwait(void) {

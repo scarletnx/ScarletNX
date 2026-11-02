@@ -147,7 +147,8 @@ static struct {
     u64 entries[8];
     u32 n, channel, incs, wait_id, wait_val, expect, submits, closed_channel, calls, call_chans[4], ncall_chans, kicks;
 } test_gpu;
-void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
+void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect, u64 tsg) {
+    (void)tsg;
     CHECK(n <= 8);
     memcpy(test_gpu.entries, entries, n * sizeof *test_gpu.entries);
     snx_le64_array(test_gpu.entries, n); /* the entries as nvdrv found them in guest memory, little-endian */

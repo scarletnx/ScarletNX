@@ -1482,7 +1482,7 @@ static u32 gpu_submit_gpfifo(NvFile* f, u32 cmd, u8* d, u32 n, const u8* extra, 
     /* the promise and the queueing in one hold, so promises reach the GPU thread in order */
     pm_lock(&g_host.nvdrv.submit_lk);
     promised = syncpt_promise(sp, incs);
-    gpu_submit(entries, num, sp, host, wait_id, fval, promised);
+    gpu_submit(entries, num, sp, host, wait_id, fval, promised, 0); /* no TSG yet */
     pm_unlock(&g_host.nvdrv.submit_lk);
     wr32(d, GPU_SUBMIT_FENCE_ID, sp);
     wr32(d, GPU_SUBMIT_FENCE_VALUE, promised);

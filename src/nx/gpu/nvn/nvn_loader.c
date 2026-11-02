@@ -22,6 +22,7 @@
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
 #include "nx/hle/hook/hook.h"
+#include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"
@@ -391,6 +392,12 @@ static void init32(void) {
 void nvn_loader_init(void) {
     u64 entry;
     GuestFn* slot;
+    /* A Switch 2 program's nvnBootstrapLoader is NVN2's: other layouts, commands and a native shader format, which
+       nobody has measured. Its driver runs and writes the native command streams the GPU's front end decodes */
+    if (g_hle.kernel.hw == SNX_HW_SWITCH2) {
+        LOG("nvn: a Switch 2 program: its own NVN driver runs, on the native command path\n");
+        return;
+    }
     if (g_arm_mod) {
         init32();
         return;

@@ -180,6 +180,9 @@ MISSED = HEADER.replace('[   0.', '[   0,') + (
     '[   2,70] mme: macro 5 at word 1a0, 30 words uploaded together, hash bcbf04909857a72f: interpreted\n'
     '[   2,71] mme: macro 6 at word 1c0, 12 words uploaded together, hash 00000000deadbeef: draw\n'
     '[   2,80] mme: macro 5 (hash bcbf04909857a72f) is interpreted: its code is not one the compiler can follow\n'
+    '[   2,81] mme: TU104 channel 20 at instruction 3: parameter FIFO underflow\n'
+    '[   2,82] mme: TU104 channel 21 at instruction 8: parameter FIFO underflow\n'
+    '[   2,83] mme: TU104 channel 20 completed 4 instructions with 2 parameters\n'
     '[   3,00] svc 7f (CallSecureMonitor): not implemented (x0=0 x1=0 x2=0), NotImplemented\n'
     '[   3,10] svc 7f (CallSecureMonitor): not implemented (x0=1 x1=0 x2=0), NotImplemented\n'
     '[   3,20] svcGetInfo 20 (sub-id 0): unknown, InvalidEnumValue\n'
@@ -291,6 +294,7 @@ def main():
             ('mme', 'macro', 'bcbf04909857a72f'): 1,
             ('mme', 'macro compile', 'bcbf04909857a72f: its code is not one the compiler can follow'): 1,
             ('mme', 'mme', 'macro operation 7 is unknown'): 1,
+            ('mme', 'mme', 'parameter FIFO underflow'): 2,
             ('cpu', 'svc', 'svc 7f (CallSecureMonitor)'): 2,
             ('cpu', 'cpu', 'svcGetInfo 20 (sub-id 0)'): 1,
         },

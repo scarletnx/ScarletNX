@@ -6,6 +6,7 @@
 #define SNX_GPU_H
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/gpu/pushbuffer.h"
+#include "nx/gpu/maxwell/mme_tu104.h"
 #include "nx/gpu/draw_state.h"
 
 /* The pushbuffer's decode state (Eden's DmaPusher::DmaState): the command header whose data words are still coming.
@@ -22,14 +23,14 @@ int pb_decode(PbState* b, u32 w, u32* sub, u32* m, u32* v, int* last);
 /* whether an engine here runs the class a subchannel binds */
 int gpu_class_known(u32 cls);
 
-/* The macro engine (mme.c) of a channel, kept between steps: a method a macro sends can make the stream wait
-   (gpu_park), and the macro goes on from here (mme_resume) once the wait ends */
+/* The state shared by the Maxwell and TU104 macro engines. A method can park the stream, and the selected
+   interpreter resumes here once the wait ends. TU104 keeps its registers and decoded outputs in MmeTu104. */
 typedef struct {
     u32 regs[8];     /* r0 reads as 0 */
-    u32 carry;       /* of the last add or subtract */
+    u32 carry;       /* add carry or subtract borrow, also TU104's high multiply word */
     u32 method;      /* where the next send goes */
     u32 incr;        /* how far the method moves after a send */
-    u32 pc;          /* the next instruction, a word index into the channel's macro memory */
+    u32 pc;          /* a Maxwell word index or a TU104 96-bit instruction index */
     u32 target;      /* where a taken branch goes once its delay slot has run */
     u32 np, next;    /* the parameters of the call (in the channel's mme_params) and the next one to fetch */
     u32 steps;       /* instructions run in this call, against a macro that never ends */
@@ -101,8 +102,10 @@ enum {
     R3D_INDEX = 1u << 11,    /* the index buffer 0x5F2-0x5F6, primitive restart 0x591-0x592 */
     R3D_BIND = 1u << 12,     /* the texture bank 0x982, the TIC and TSC pools 0x557-0x559 and 0x55D-0x55F, the
                                 sampler index mode 0x48D, the capture buffers 0xE0-0xFF and their layouts 0x1C0-0x1CF */
-    R3D_CBIND = 1u << 13     /* a constant buffer bound (3D 0x904 + 8 * stage, written into GpuChannel.ds by
+    R3D_CBIND = 1u << 13,    /* a constant buffer bound (3D 0x904 + 8 * stage, written into GpuChannel.ds by
                                 r3d_cb_bind), not a register's change */
+    R3D_NATIVE = 1u << 14    /* a native (C797) class's own state: the variable pixel rate selection 0xB3 and tables
+                                0xA80-0xABF, and the root tables (0x142 writes GpuChannel.native_roots) */
 };
 
 /* A GPU channel: an nvhost-gpu fd's state, named by its syncpoint id. It is made at the channel's first submission
@@ -138,10 +141,17 @@ typedef struct GpuChannel {
     int mme_collecting;
     u32 mme_index;
     GpuMme mme; /* the macro running, or one a wait stopped after the method that asked for it */
+    u64 tsg; /* the submission's TSG identity, 0 for an unbound channel */
+    MmeTu104* tu104; /* allocated only for a native macro engine */
     /* constant buffer data (3D 0x8E4-0x8F3) a batch is still sending: written to memory in one go */
     u64 cb_addr;
     u32 cb_n;
     u32 cb_words[256];
+    /* C797 root tables, visible as c[24]..c[31], uploaded through methods 0x141/0x142. The selector register names
+       the table. This offset advances on each load, independently of the last selector value. mx_draw_state_sync
+       gives them to the draw state (DsState.native) */
+    u8 native_roots[8][256];
+    u32 native_root_offset;
     int render_off; /* SetRenderEnable (3D 0x554-0x556) or its override (0x651) turned drawing off */
     /* the render enable's comparison made on the GPU (pred: its draws and clears run on it), and transform feedback's
        buffers whose write pointer was loaded (3D 0xE4 + 8 * i) since their last capture (xfb_reload) */
@@ -163,6 +173,11 @@ typedef struct GpuChannel {
     u64 park_addr; /* the semaphore's GPU address, or the syncpoint id */
     u64 park_end;  /* the plat_ns() past which the stream goes on anyway */
 } GpuChannel;
+static inline int gpu_native_graphics(const GpuChannel* ch) {
+    for (u32 i = 0; i < GPU_SUBCHANNELS; ++i)
+        if (ch->sub_class[i] == CLASS_AMPERE_B) return 1;
+    return 0;
+}
 /* A verify channel (gpu/nvn/nvn_verify.c): the game's NVN driver's stream, decoded into its registers on the GPU
    thread for nvn_verify_shadow_draw to compare, with no effect anywhere else (no draw, write, release, barrier or
    syncpoint). Its id, from GPU_VERIFY_ID, is no syncpoint's, and it is no channel of g_gpu's */
@@ -174,8 +189,23 @@ enum {
     GPU_PARK_SYNCPOINT,     /* the puller's syncpoint wait */
     GPU_PARK_FENCE          /* a submission's fence, waited for before its first entry */
 };
+/* QMD dependency state is shared across channels. Descriptors stay in guest memory: MME patches their releases
+   after scheduling them. Dependencies belong to the scheduler, not to the descriptor's initial counter. */
+enum { GPU_QMD_EMPTY, GPU_QMD_SCHEDULED, GPU_QMD_COMPLETE };
+typedef struct {
+    u64 addr;
+    u32 dependencies, deferred, status, channel;
+} GpuQmd;
+typedef struct {
+    GpuQmd* entries;
+    u32 count, capacity;
+} GpuQmdCache;
+GpuQmd* gpu_qmd_append(GpuQmdCache* cache);
 typedef struct {
     GpuChannel* chan[GPU_CHANNELS]; /* by syncpoint id */
+    MmeTu104Group** tu104; /* shared native program owners, including open TSGs with no active channel */
+    u32 tu104_capacity;
+    GpuQmdCache qmd;
     int nchan;
 } GpuState;
 extern GpuState g_gpu;
@@ -307,10 +337,31 @@ void gpu_signal_point(void);   /* the GPU is about to do something the game can 
 /* a semaphore or report payload the game can poll: it happens once everything before it in the stream is done. data is
    the bytes as guest memory gets them, so its numbers are little-endian already */
 void gpu_release_write(u64 gva, const void* data, u32 len);
+/* A semaphore reduction (clc7c0qmd.h's RELEASE_REDUCTION_OP): GPU_RED_ADD to GPU_RED_XOR on the bytes (4 or 8) at
+   gva, as a release in the stream's order. gpu_reduce is its value from the current one: MIN and MAX compare signed
+   when is_signed is set, INC counts up to payload and wraps to 0, DEC counts down from payload and wraps to it, as
+   CUDA's atomicInc and atomicDec do */
+enum { GPU_RED_ADD, GPU_RED_MIN, GPU_RED_MAX, GPU_RED_INC, GPU_RED_DEC, GPU_RED_AND, GPU_RED_OR, GPU_RED_XOR };
+static inline u64 gpu_reduce(u32 op, int is_signed, u32 bytes, u64 current, u64 payload) {
+    u64 mask = bytes == 8 ? ~0ull : 0xFFFFFFFFull, a = current & mask, b = payload & mask, sign = mask ^ (mask >> 1);
+    /* signed order is unsigned order with the sign bit flipped */
+    int less = is_signed ? (a ^ sign) < (b ^ sign) : a < b;
+    switch (op) {
+        case GPU_RED_ADD: return (a + b) & mask;
+        case GPU_RED_MIN: return less ? a : b;
+        case GPU_RED_MAX: return less ? b : a;
+        case GPU_RED_INC: return a >= b ? 0 : a + 1;
+        case GPU_RED_DEC: return !a || a > b ? b : a - 1;
+        case GPU_RED_AND: return a & b;
+        case GPU_RED_OR: return a | b;
+        default: return a ^ b; /* GPU_RED_XOR */
+    }
+}
+void gpu_release_reduce(u64 gva, u32 op, int is_signed, u32 bytes, u64 payload);
 
-/* the engines' methods (engines.c, compute.c, fermi2d.c, dma.c): m is the method, last marks a batch's last word */
+/* The engines' methods: m is the method, last ends a 3D batch, native selects the Ampere compute PCAS protocol. */
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last);
-void compute_method(GpuChannel* ch, u32 m, u32 v, int last);
+void compute_method(GpuChannel* ch, u32 m, u32 v, int native);
 void kepler_i2m_method(GpuChannel* ch, u32 m, u32 v);
 void fermi2d_method(GpuChannel* ch, u32 m, u32 v);
 void dma_method(GpuChannel* ch, u32 m, u32 v);
@@ -356,11 +407,14 @@ void gpu_init(void);
 /* queues GPFIFO entries for the GPU thread, which waits for the fence (wait_id ~0: none) as the stream's first
    method, runs them on channel (the channel's syncpoint id), then increments the syncpoint incs times, after which it
    should be at expect (the fence nvdrv promised). The entries are u64s at any alignment. A channel's jobs run in
-   order, and another channel's may run before them while they wait (gpu_park) */
-void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect);
+   order, and another channel's may run before them while they wait (gpu_park). tsg is a lifetime identity, not an fd:
+   already queued jobs keep their group when the fd closes or is reused */
+void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect, u64 tsg);
 /* calls fn(arg) on the GPU thread in order with the other calls, once the jobs queued before it on channels
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
+/* An independent resource close, after earlier jobs carrying tsg. It does not hold back unrelated calls. */
+void gpu_call_tsg(void (*fn)(void*), void* arg, u64 tsg);
 /* a verify channel with its id (from GPU_VERIFY_ID), reset as a new channel is, and freed; and a word of its stream,
    decoded at once: its 3D engine's methods only, the puller's binds, and the 3D engine's held constants and draw
    flushed before any other engine's method, as method_call does. On the GPU thread */
@@ -375,8 +429,8 @@ void gpu_channel_close(u32 channel);  /* nvdrv closed the channel: a new one wit
 void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
    or reach it (geq), before its next method. Met already, nothing waits. Otherwise the method that asked returns and
-   the stream stops after it (a macro after the method too, mme_resume), and the GPU thread goes on with other
-   channels until it's met */
+   the stream stops after it (a macro after the method too, mme_resume or mme_tu104_resume), and the GPU thread goes on
+   with other channels until the wait is met */
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq);
 /* something a parked channel may wait for changed (a syncpoint increment, on the GPU thread or off it): look again.
    Any thread */
@@ -412,7 +466,7 @@ u64 gpu_ticks(void); /* the GPU's timestamp: 614.4 MHz ticks of the guest clock 
    is sent before anything that could see it is missing (another method, another channel, the stream's end) */
 void r3d_pending_flush(void);
 int r3d_pending_on(void);
-/* mme.c: a macro a wait stopped (ch->mme.running) goes on, until it ends or waits again */
+/* mme.c: resume a parked Maxwell macro. The TU104 counterpart is mme_tu104_resume in mme_tu104.h. */
 void mme_resume(GpuChannel* ch);
 
 /* ---- maxwell3d.c: the 3D engine's side of the renderer */

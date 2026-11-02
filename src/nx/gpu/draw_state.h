@@ -125,7 +125,14 @@ typedef struct {
     u32 gs_skip[8];             /* the geometry passthrough's skip mask */
     u8 early_z;                 /* fragment tests run before the fragment program */
     u8 xfb_on;                  /* transform feedback asked for (its layout: the front end's) */
-    u8 pad[2];
+    /* a native (Switch 2) 3D class is bound: code[] are whole addresses (C797's per-slot address words), each program
+       after a 128-byte header */
+    u8 native;
+    /* native MESH_CONTROL bit 0: the vertex slot holds a mesh program, or a task when slot 3 (tessellation
+       evaluation) is on, which then holds the mesh program. The geometry slot only holds the header of the
+       per-primitive outputs */
+    u8 mesh;
+    u32 mesh_shader[2]; /* MESH_SHADER_A and _B, which key the mesh and task programs' translation */
 } DsPrograms;
 
 /* The vertex attributes and streams, struct of arrays. Formats are the 3D engine's codes (vk/'s attr_format) */
@@ -267,8 +274,16 @@ enum {
     DS_INLINE,
     DS_TARGET_FORMATS, /* a generation without a struct: DsTargets' count, formats, sRGB write and sample layout, which the pipeline
                           key reads where the rest of the targets change every pass */
+    DS_NATIVE,
     DS_GENS
 };
+
+/* What only a native (Switch 2) 3D class gives (DS_NATIVE): NVC797's variable pixel rate tables and its root tables */
+typedef struct {
+    u32 vprs_select; /* 0x2CC (register 0xB3): bits 0-1 which tables apply (2: the one in bits 4-7, 3: none) */
+    u32 vprs[16][3]; /* the 16 rate tables at 0x2A00 + 16 t: the enable (bit 0), then 8 and 8 rates of 4 bits */
+    u8 roots[8][256]; /* the root tables c[24] to c[31], uploaded with methods 0x141 and 0x142 */
+} DsNative;
 
 /* Where a constant buffer slot's bytes are (DsBindings.cb_inline) */
 enum { DS_CB_MEMORY, DS_CB_BANK0, DS_CB_BANK2 };
@@ -315,6 +330,7 @@ typedef struct {
     DsIndex index;
     DsBindings bind;
     DsInline inl; /* its front end gives gen[DS_INLINE] a new generation when it changes them */
+    DsNative nat; /* a native 3D class's, 0 for any other front end */
     /* each group's generation (DS_), a new one whenever its bytes change: from one counter for every owner, so two
        generations are equal only when they are the same state of the same owner */
     u64 gen[DS_GENS];
@@ -362,6 +378,9 @@ typedef struct {
     /* an indirect dispatch: the GPU reads the grid, three 32-bit counts, at this GPU address (grid is ignored), and
        puts them in the inline bank 0 at 0x200 too, where NVN's programs read the dispatch size. 0: grid */
     u64 indirect;
+    /* the program is native Switch 2 (SM 8.x) code, launched by a QMD 3.0: its code starts with the 128-byte program
+       header the lowering reads, and its storage buffers are NVN2 descriptors {address, size} in bank 0 */
+    u32 native;
 } DispatchState;
 /* slot's constant buffer of the dispatch d as an inline block */
 static inline DsCbBlock dx_cb_inline(const DispatchState* d, u32 slot) {

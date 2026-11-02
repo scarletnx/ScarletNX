@@ -21,6 +21,20 @@
 #define GPU_VA_UPPER_MASK 0xFFu
 static inline u64 gpu_packed_va(u32 upper, u32 lower) { return ((u64)(upper & GPU_VA_UPPER_MASK) << 32) | lower; }
 
+/* ampere.c: update a native stream's Maxwell limit after a size or address write.
+   Keep the method filter inline: unrelated writes stay on the plain-register fast path. */
+void ampere_stream_limit(GpuChannel* ch, u32 stream);
+static inline void ampere_stream_written(GpuChannel* ch, u32 m) {
+    u32 stream;
+    if (m >= 0x180 && m < 0x1C0)
+        stream = (m - 0x180) / 2;
+    else if (m >= 0x700 && m < 0x780 && ((m & 3) == 1 || (m & 3) == 2))
+        stream = (m - 0x700) / 4;
+    else
+        return;
+    if (gpu_native_graphics(ch)) ampere_stream_limit(ch, stream);
+}
+
 /* engines.c: a report semaphore operation (Eden's Maxwell3D::ProcessQueryGet; the query word v written to base + 3)
    of the 3D or compute engine, whose registers r hold the address (upper, lower) at base and base + 1 and the payload
    at base + 2 */

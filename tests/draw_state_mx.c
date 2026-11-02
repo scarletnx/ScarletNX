@@ -225,15 +225,29 @@ static void programs(void) {
     for (u32 j = 0; j < 8; j++) r[0x490 + j] = 0xA0 + j;
     r[0x084] = 3;
     r[0x1D1] = 5;
-    mx_draw_programs(r, &p);
+    mx_draw_programs(r, 0, &p);
     for (u32 j = 0; j < 6; j++) CHECK(p.code[j] == 0x1234560000ull + 0x100 * (j + 1));
     CHECK(p.on == ((1u << 0) | (1u << 4)));
     CHECK(p.clip_enable == 0xF3 && p.tess_params == 0x321 && p.early_z == 1 && p.xfb_on == 1);
     for (u32 j = 0; j < 8; j++) CHECK(p.gs_skip[j] == 0xA0 + j);
     r[0x084] = 2;
     r[0x1D1] = 0;
-    mx_draw_programs(r, &p);
-    CHECK(p.early_z == 0 && p.xfb_on == 0);
+    mx_draw_programs(r, 0, &p);
+    CHECK(p.early_z == 0 && p.xfb_on == 0 && !p.native && !p.mesh);
+    /* a native class: each slot's whole address in its words 5 (bits 39-32) and 6, not the code base plus word 1;
+       MESH_CONTROL bit 0 makes the vertex slot a mesh program, with MESH_SHADER_A and _B */
+    for (u32 j = 0; j < 6; j++) {
+        r[0x805 + 0x10 * j] = 0x1C0 | j;
+        r[0x806 + 0x10 * j] = 0x80000000u + 0x1000 * j;
+    }
+    r[0x453] = 1;
+    r[0x454] = 0x11;
+    r[0x455] = 0x22;
+    mx_draw_programs(r, 0, &p);
+    CHECK(p.code[1] == 0x1234560000ull + 0x200 && !p.mesh); /* a Maxwell class reads neither */
+    mx_draw_programs(r, 1, &p);
+    for (u32 j = 0; j < 6; j++) CHECK(p.code[j] == ((u64)(0xC0 | j) << 32 | (0x80000000u + 0x1000 * j)));
+    CHECK(p.native && p.mesh && p.mesh_shader[0] == 0x11 && p.mesh_shader[1] == 0x22);
 }
 
 /* attribute 0x458 + i: stream bits 0-4, constant 6, offset 7-20, size 21-26, type 27-29, BGRA 31; stream 0x700 + 4 s:
