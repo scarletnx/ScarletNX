@@ -8,6 +8,7 @@
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
 #include "android/runtime/app.h"
+#include "android/runtime/install.h"
 #include "android/runtime/jvm.h"
 #include "common/utilities/common.h"
 #include "common/utilities/zip.h"
@@ -23,7 +24,8 @@
 
 static const char usage[] =
     "Usage: scarletnx-android [options] APK\n"
-    "Runs an Android app: its DEX code translated to JVM classes, with ScarletNX's own Android framework.\n"
+    "Runs an Android app: its DEX code translated to JVM classes, with ScarletNX's own Android framework. APK is an\n"
+    "APK, or a bundle of a base APK and its splits (XAPK, APKS), which is installed into the data folder first.\n"
     "\n"
     "  --translate=DIR   Translate every class of the APK ahead of time into DIR, a .class file for each, and stop\n"
     "  -J OPTION         An option for the JVM (-J-Xmx2g)\n"
@@ -39,9 +41,15 @@ static void warn(void* context, const char* message) {
 }
 
 /* every class of every DEX file of the APK (classes.dex, classes2.dex and on) into folder */
-static int translate_apk(const char* apk, const char* folder) {
+static int translate_apk(const char* path, const char* folder) {
     char error[512];
-    SnxZip* zip = snx_zip_open(apk, error, sizeof error);
+    AndroidInstall install;
+    if (!android_install(path, &install, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        return 1;
+    }
+    SnxZip* zip = snx_zip_open(install.base, error, sizeof error);
+    android_install_free(&install);
     if (!zip) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         return 1;
@@ -191,9 +199,15 @@ static char* framework_jar(const char* argv0) {
 
 static int run_apk(const char* argv0, const char* apk, char** options, size_t option_count) {
     char error[1024];
-    if (!android_app_open(apk, error, sizeof error)) {
+    AndroidInstall install;
+    if (!android_install(apk, &install, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        return 1;
+    }
+    if (!android_app_open(&install, error, sizeof error)) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         android_app_close();
+        android_install_free(&install);
         return 1;
     }
     char* jar = framework_jar(argv0);
@@ -201,25 +215,31 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
         fprintf(stderr, "scarletnx-android: no framework jar at %s\n", jar ? jar : "(none)");
         free(jar);
         android_app_close();
+        android_install_free(&install);
         return 1;
     }
     /* the fonts beside the jar (the build copies them there); an option the user gives comes later and wins */
     char* folder = snx_dirname(jar);
     char* fonts = folder ? snx_path_join(folder, "android-fonts") : NULL;
     char* fonts_option = fonts ? snx_format("-Dsnx.android.fonts=%s", fonts) : NULL;
-    char** all = calloc(option_count + 1, sizeof *all);
+    /* the app's data folder, which the install made */
+    char* data_option = snx_format("-Dsnx.android.data=%s", install.data_dir);
+    char** all = calloc(option_count + 2, sizeof *all);
     free(folder);
     free(fonts);
-    if (!fonts_option || !all) {
+    if (!fonts_option || !data_option || !all) {
         free(fonts_option);
+        free(data_option);
         free(all);
         free(jar);
         android_app_close();
+        android_install_free(&install);
         return 1;
     }
     all[0] = fonts_option;
-    for (size_t i = 0; i < option_count; ++i) all[i + 1] = options[i];
-    Run run = {jar, all, option_count + 1, 1};
+    all[1] = data_option;
+    for (size_t i = 0; i < option_count; ++i) all[i + 2] = options[i];
+    Run run = {jar, all, option_count + 2, 1};
 #ifdef _WIN32
     HANDLE thread = CreateThread(NULL, 16u << 20, run_thread, &run, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (thread) {
@@ -236,8 +256,10 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
 #endif
     free(all);
     free(fonts_option);
+    free(data_option);
     free(jar);
     android_app_close();
+    android_install_free(&install);
     return run.status;
 }
 

@@ -34,14 +34,17 @@ The layer is thin. An app's code runs on a JVM, and the Android system under it 
 ## Running an app
 
 `build/scarletnx-android APP.apk` runs an app in a window, with the left mouse button as a finger and the keyboard
-as a hardware keyboard. The build puts the framework's jar and the font beside the program. `-J OPTION` gives the JVM
+as a hardware keyboard. `APP` can also be a bundle of a base APK and its splits (an XAPK or an APKS), which is
+installed first, as Android's package manager installs one: its APKs into `android/app/<package>/` of the data
+folder (`base.apk`, `split_<name>.apk`), with the native libraries of `arm64-v8a` in its `lib/arm64/`. A stamp keeps
+the bundle's path and size, so the next run starts at once. The app's own data is in `android/data/<package>/`. The build puts the framework's jar and the font beside the program. `-J OPTION` gives the JVM
 an option, as these system properties:
 
 | Property | Meaning |
 | --- | --- |
 | `snx.android.width`, `snx.android.height`, `snx.android.dpi` | The display: 600 by 1066 pixels at 240 dpi when not given |
 | `snx.android.night` | `true` for the dark theme |
-| `snx.android.data` | The app's data folder: `android/<package>` in ScarletNX's data folder when not given |
+| `snx.android.data` | The app's data folder: `android/data/<package>` in ScarletNX's data folder when not given |
 
 These environment variables run an app without a user, as the Switch runtime's `--script` and `--shot` do:
 

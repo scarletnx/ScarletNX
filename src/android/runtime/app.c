@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "android/runtime/app.h"
+#include "android/runtime/install.h"
 #include "android/dex/translate.h"
 #include "android/runtime/jvm.h"
 #include "common/utilities/zip.h"
@@ -11,8 +12,10 @@
 enum { MAX_DEX = 100 };
 
 static struct {
-    char* path;
-    SnxZip* zip; /* the Java side reads it one call at a time (Apk's synchronized methods) */
+    const AndroidInstall* install;
+    /* the base APK, then each split: the Java side reads them one call at a time (Apk's synchronized methods) */
+    SnxZip* zips[1 + ANDROID_MAX_SPLITS];
+    unsigned zip_count;
     Dex dexes[MAX_DEX];
     unsigned char* bytes[MAX_DEX];
     uint32_t dex_count;
@@ -24,16 +27,22 @@ static void warn(void* context, const char* message) {
     fprintf(stderr, "scarletnx-android: translation: %s\n", message);
 }
 
-bool android_app_open(const char* apk, char* error, size_t error_size) {
-    size_t n = strlen(apk) + 1;
-    app.path = malloc(n);
-    if (!app.path) {
-        snprintf(error, error_size, "out of memory");
-        return false;
+/* the APK of the app that holds a member, its index in *index */
+static SnxZip* find(const char* name, uint32_t* index) {
+    for (unsigned i = 0; i < app.zip_count; ++i)
+        if (snx_zip_find(app.zips[i], name, index)) return app.zips[i];
+    return NULL;
+}
+
+bool android_app_open(const AndroidInstall* install, char* error, size_t error_size) {
+    app.install = install;
+    for (unsigned i = 0; i <= install->split_count; ++i) {
+        const char* apk = i ? install->splits[i - 1] : install->base;
+        app.zips[i] = snx_zip_open(apk, error, error_size);
+        if (!app.zips[i]) return false;
+        app.zip_count = i + 1;
     }
-    memcpy(app.path, apk, n);
-    app.zip = snx_zip_open(apk, error, error_size);
-    if (!app.zip) return false;
+    const char* apk = install->base;
     for (unsigned i = 1; i <= MAX_DEX; ++i) {
         char name[32];
         if (i == 1)
@@ -41,9 +50,9 @@ bool android_app_open(const char* apk, char* error, size_t error_size) {
         else
             snprintf(name, sizeof name, "classes%u.dex", i);
         uint32_t index;
-        if (!snx_zip_find(app.zip, name, &index)) break;
+        if (!snx_zip_find(app.zips[0], name, &index)) break;
         size_t size;
-        unsigned char* bytes = snx_zip_read(app.zip, index, &size, error, error_size);
+        unsigned char* bytes = snx_zip_read(app.zips[0], index, &size, error, error_size);
         if (!bytes) return false;
         char why[256];
         if (!dex_open(&app.dexes[app.dex_count], bytes, size, why, sizeof why)) {
@@ -68,8 +77,7 @@ void android_app_close(void) {
         dex_close(&app.dexes[i]);
         free(app.bytes[i]);
     }
-    snx_zip_close(app.zip);
-    free(app.path);
+    for (unsigned i = 0; i < app.zip_count; ++i) snx_zip_close(app.zips[i]);
     memset(&app, 0, sizeof app);
 }
 
@@ -109,7 +117,30 @@ static jbyteArray JNICALL translate(JNIEnv* env, jclass unused, jstring name) {
 
 static jstring JNICALL apk_path(JNIEnv* env, jclass unused) {
     (void)unused;
-    return (*env)->NewStringUTF(env, app.path);
+    return (*env)->NewStringUTF(env, app.install->base);
+}
+static jobjectArray strings(JNIEnv* env, char* const* list, unsigned count) {
+    jclass string = (*env)->FindClass(env, "java/lang/String");
+    jobjectArray out = string ? (*env)->NewObjectArray(env, (jsize)count, string, NULL) : NULL;
+    for (unsigned i = 0; out && i < count; ++i) {
+        jstring s = (*env)->NewStringUTF(env, list[i]);
+        if (!s) return NULL;
+        (*env)->SetObjectArrayElement(env, out, (jsize)i, s);
+        (*env)->DeleteLocalRef(env, s);
+    }
+    return out;
+}
+static jobjectArray JNICALL split_paths(JNIEnv* env, jclass unused) {
+    (void)unused;
+    return strings(env, app.install->splits, app.install->split_count);
+}
+static jobjectArray JNICALL split_names(JNIEnv* env, jclass unused) {
+    (void)unused;
+    return strings(env, app.install->split_names, app.install->split_count);
+}
+static jstring JNICALL library_dir(JNIEnv* env, jclass unused) {
+    (void)unused;
+    return (*env)->NewStringUTF(env, app.install->library_dir);
 }
 static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
     (void)unused;
@@ -117,10 +148,11 @@ static jbyteArray JNICALL apk_read(JNIEnv* env, jclass unused, jstring name) {
     if (!text) return NULL;
     uint32_t index;
     jbyteArray result = NULL;
-    if (snx_zip_find(app.zip, text, &index)) {
+    SnxZip* zip = find(text, &index);
+    if (zip) {
         char error[512];
         size_t size;
-        unsigned char* data = snx_zip_read(app.zip, index, &size, error, sizeof error);
+        unsigned char* data = snx_zip_read(zip, index, &size, error, sizeof error);
         if (!data) {
             fprintf(stderr, "scarletnx-android: %s\n", error);
         } else {
@@ -136,14 +168,18 @@ static jobjectArray JNICALL apk_list(JNIEnv* env, jclass unused) {
     (void)unused;
     jclass string = (*env)->FindClass(env, "java/lang/String");
     if (!string) return NULL;
-    uint32_t count = snx_zip_count(app.zip);
+    /* the members of every APK of the app, the base's first */
+    uint32_t count = 0;
+    for (unsigned z = 0; z < app.zip_count; ++z) count += snx_zip_count(app.zips[z]);
     jobjectArray names = (*env)->NewObjectArray(env, (jsize)count, string, NULL);
-    for (uint32_t i = 0; names && i < count; ++i) {
-        jstring s = (*env)->NewStringUTF(env, snx_zip_name(app.zip, i));
-        if (!s) return NULL;
-        (*env)->SetObjectArrayElement(env, names, (jsize)i, s);
-        (*env)->DeleteLocalRef(env, s);
-    }
+    uint32_t at = 0;
+    for (unsigned z = 0; names && z < app.zip_count; ++z)
+        for (uint32_t i = 0; i < snx_zip_count(app.zips[z]); ++i) {
+            jstring s = (*env)->NewStringUTF(env, snx_zip_name(app.zips[z], i));
+            if (!s) return NULL;
+            (*env)->SetObjectArrayElement(env, names, (jsize)at++, s);
+            (*env)->DeleteLocalRef(env, s);
+        }
     return names;
 }
 
@@ -155,7 +191,10 @@ bool android_app_register(JNIEnv* env) {
         {(char*)"path", (char*)"()Ljava/lang/String;", (void*)apk_path},
         {(char*)"nativeRead", (char*)"(Ljava/lang/String;)[B", (void*)apk_read},
         {(char*)"nativeList", (char*)"()[Ljava/lang/String;", (void*)apk_list},
+        {(char*)"splitPaths", (char*)"()[Ljava/lang/String;", (void*)split_paths},
+        {(char*)"splitNames", (char*)"()[Ljava/lang/String;", (void*)split_names},
+        {(char*)"libraryDir", (char*)"()Ljava/lang/String;", (void*)library_dir},
     };
     return android_jvm_register(env, "snx/dalvik/AppClassLoader", loader, 1) &&
-           android_jvm_register(env, "snx/android/Apk", apk, 3);
+           android_jvm_register(env, "snx/android/Apk", apk, (int)(sizeof apk / sizeof *apk));
 }
