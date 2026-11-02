@@ -200,6 +200,14 @@ FATAL_ONLY = (
 """
 )
 
+# a Share Log of a game log alone, without the last run's output before it
+LAUNCHER_GAME_ONLY = (
+    'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)\n'
+    'Message: The game reached code at 0 that the recompiler missed\n'
+    '\n== D:\\games\\0100aaaabbbb0000\\0100aaaabbbb0000.log ==\n' + HEADER + FATAL_ONLY
+)
+
+
 # what the runtime missed, in its own formats: shaders (vk/pipeline.c, compute.c), the GPU's methods and operations
 # (gpu.c, maxwell/), the macros (maxwell/mme.c, mme_jit.c), SVCs (svc.c, svc_mem.c) and the JIT (guest_jit.c), with
 # the time stamp a comma locale writes
@@ -428,6 +436,11 @@ def main():
     check(
         (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),
         f"the Vita's header: {vi['title']} {vi['title_id']} {vi['commit']}",
+    )
+    go = scan(LAUNCHER_GAME_ONLY)
+    check(
+        go['title'] == 'Some Game' and go['outcome'] == scan(HEADER + FATAL_ONLY)['outcome'] and go['tail'],
+        f"a game log alone in a Share Log: {go['title']} {go['outcome']} {len(go['tail'])} last lines",
     )
     lo = scan(LAUNCHER_OTHER)
     check(
