@@ -57,6 +57,9 @@ endif()
 if(SNX_BUILD_AGB AND NOT (SNX_TOOLS_ONLY AND SNX_BUILD_NX))
     snx_multicall_driver(AGB snx_agb_program scarletnx-agb AGB_RUNTIME)
 endif()
+if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
+    snx_multicall_driver(ANDROID snx_android_program scarletnx-android "")
+endif()
 # the drivers' names, for Android's menu (src/gui), a library of its own that runs them through libscarletnx-run.so
 set(SNX_PROGRAM_DRIVERS "${snx_names}" PARENT_SCOPE)
 
