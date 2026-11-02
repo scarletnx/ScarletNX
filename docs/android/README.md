@@ -9,6 +9,7 @@ runtime run on a phone, is [ANDROID](../ANDROID.md).) The target is the API of A
 
 * [Design](#design)
 * [Interfaces](INTERFACES.md): each layer of Android an app reaches, and how far the runtime emulates it
+* [HWUI](HWUI.md): the display lists and their Vulkan renderer
 * [The DEX translator](#the-dex-translator)
 * [Status](#status)
 
@@ -73,4 +74,5 @@ make the whole class fail.
 
 The translator translates each class of the baseline app (3725 classes, about 19400 methods) in under a second. Each
 class whose dependencies outside the app exist passes HotSpot's verifier. The app runs to its main loop and draws
-its frames into display lists. The Vulkan renderer of those display lists, the window and the input are next.
+its frames into display lists, which the Vulkan renderer draws ([HWUI](HWUI.md)): its first screen shows as on a
+phone, except for its bitmaps.

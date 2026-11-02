@@ -208,7 +208,8 @@ if(SNX_JEMALLOC)
     include("${PROJECT_SOURCE_DIR}/cmake/jemalloc.cmake")
 endif()
 
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime)
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_3DS OR snx_vita_runtime OR
+   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.367
                   URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.367.tar.gz
                   URL_HASH SHA256=0df7d58b5df617e0a6a17dec521af459206719f9c7cb12d05d09275597c16f70
@@ -367,7 +368,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "^(FreeBSD|NetBSD)$")
 endif()
 option(SNX_SYSTEM_SDL3 "Use the system's SDL3 from find_package, not CPM's pinned source build"
        ${snx_sdl3_system_default})
-if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB)
+if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY) OR SNX_BUILD_GUI OR SNX_BUILD_3DS OR snx_vita_runtime OR SNX_BUILD_AGB OR
+   (SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY))
     if(SNX_SYSTEM_SDL3)
         find_package(SDL3 3.4.16 CONFIG QUIET)
         if(NOT SDL3_FOUND)

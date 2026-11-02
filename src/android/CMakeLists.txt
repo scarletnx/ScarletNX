@@ -34,8 +34,20 @@ if(NOT EXISTS "${SNX_JAVA_HOME}/include/jni.h")
 endif()
 
 add_library(snx_android_program STATIC runtime/main.c runtime/jvm.c runtime/app.c res/axml.c res/xml_jni.c res/arsc.c
-                                       res/asset_jni.c db/sqlite_jni.c hwui/text.c)
-target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sqlite snx_harfbuzz ${CMAKE_DL_LIBS})
+                                       res/asset_jni.c db/sqlite_jni.c hwui/text.c hwui/path.c
+                                       hwui/render.c "${volk_SOURCE_DIR}/volk.c")
+target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sqlite snx_harfbuzz snx_vk_common
+                      SDL3::SDL3 Vulkan::Headers ${CMAKE_DL_LIBS})
+if(NOT WIN32)
+    target_link_libraries(snx_android_program PUBLIC m)
+endif()
+target_compile_definitions(snx_android_program PRIVATE VK_NO_PROTOTYPES)
+set_source_files_properties("${volk_SOURCE_DIR}/volk.c" TARGET_DIRECTORY snx_android_program PROPERTIES
+                            COMPILE_OPTIONS "${snx_third_party_flags}")
+# the renderer's shaders (hwui/render.c), compiled at build time (cmake/glsl.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
+snx_glsl_spirv(snx_android_program SOURCE hwui/draw.vert NAME android_draw_vert_spv HEADER android/hwui/draw_vert_spv.h)
+snx_glsl_spirv(snx_android_program SOURCE hwui/draw.frag NAME android_draw_frag_spv HEADER android/hwui/draw_frag_spv.h)
 target_include_directories(snx_android_program SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 target_compile_definitions(snx_android_program PRIVATE SNX_JAVA_HOME="${SNX_JAVA_HOME}")
