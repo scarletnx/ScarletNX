@@ -442,7 +442,8 @@ int main(int argc, char** argv) {
         snx_recompiler_set_verbose(r, verbose);
         check(snx_recompiler_set_optimization(r, 'x') == -1 && snx_recompiler_error(r)[0], "a bad -O level is refused");
         check(snx_recompiler_set_optimization(r, '2') == 0, "-O2");
-        check(snx_recompiler_set_a64_target(r, 2) == -1 && snx_recompiler_error(r)[0],
+        check(snx_recompiler_set_a64_target(r, SNX_RECOMPILER_A64_ANDROID) == 0, "the android A64 target");
+        check(snx_recompiler_set_a64_target(r, 3) == -1 && snx_recompiler_error(r)[0],
               "an unknown A64 target is refused");
         check(snx_recompiler_set_a64_target(r, SNX_RECOMPILER_A64_MAX) == 0 &&
                   snx_recompiler_set_a64_target(r, SNX_RECOMPILER_A64_SWITCH) == 0,

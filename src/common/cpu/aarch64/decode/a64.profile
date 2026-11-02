@@ -38,6 +38,10 @@ feature EL1
 
 # The Switch's Cortex-A57: Armv8.0 with the CRC32 and Cryptographic Extensions
 target switch v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256
+# An Android phone's CPU as an app's libraries may assume one: Armv8.2 (Cortex-A55 and A75 on) with the atomics, RDM,
+# half precision, the dot product and LRCPC, and without pointer authentication. On a CPU without FEAT_PAuth the
+# PACIASP and AUTIASP of the HINT space are NOPs, as the libraries built for every arm64 phone expect
+target android v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_RDM FEAT_FP16 FEAT_DotProd FEAT_LRCPC
 # every feature the decoder knows
 target max *
 
