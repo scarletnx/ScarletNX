@@ -241,14 +241,6 @@ setting Sharpness
     default 25
     startup
     help The upscaler's sharpening, 0 the sharpest and 100 the softest. None and Bilinear leave it out
-setting Upscaler cycle key
-    key upscaler_key
-    label Upscaler cycle key
-    text 32
-    default ctrl+u
-    help The key that cycles the spatial upscaler while a game runs, as SDL's key names with modifiers: ctrl+u,
-    help alt+u, shift+f13, f13. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not
-    help change the .ini
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)
@@ -602,6 +594,15 @@ setting Player button map
     help Player N's map, as gamepad_map; empty = gamepad_map's
 end
 
+table g_hotkey_ini
+setting Upscaler cycle key
+    key upscaler_key
+    label Upscaler cycle key
+    text 64
+    default ctrl+u
+    help The key that cycles the spatial upscaler while a game runs. The launcher's row takes the next key you press,
+    help with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR
+    help and None, and does not change the .ini
 table g_network_ini
 setting Network
     key network
@@ -1253,6 +1254,7 @@ section 3DS: g_ctr_display_ini
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player    backend
+section Hotkeys: g_hotkey_ini
 section Network: g_network_ini
 section User: g_user_ini
 section Debug: g_debug_ini

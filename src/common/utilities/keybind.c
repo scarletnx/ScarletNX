@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/backend/keybind.h"
+#include "common/utilities/keybind.h"
 #include "common/utilities/ascii.h"
 #include <stdio.h>
 #include <string.h>
@@ -44,4 +44,28 @@ int snx_keybind_parse(const char* spec, SnxKeybind* out) {
 }
 int snx_keybind_match(const SnxKeybind* bind, const SDL_KeyboardEvent* e) {
     return bind->key == e->key && (e->mod & KEYBIND_MODS) == bind->mods;
+}
+static int modifier_key(SDL_Keycode key) {
+    return key == SDLK_LCTRL || key == SDLK_RCTRL || key == SDLK_LSHIFT || key == SDLK_RSHIFT || key == SDLK_LALT ||
+           key == SDLK_RALT || key == SDLK_LGUI || key == SDLK_RGUI;
+}
+int snx_keybind_name(const SDL_KeyboardEvent* e, char* out, size_t size) {
+    char name[64], text[128];
+    const char* key_name;
+    int at = 0;
+    if (e->repeat) return 0;
+    if (e->key == SDLK_ESCAPE) return -1;
+    if (modifier_key(e->key)) return 0;
+    key_name = SDL_GetKeyName(e->key);
+    if (!key_name || !*key_name || !SDL_strcasecmp(key_name, "unknown") || strchr(key_name, '+')) return 0;
+    snprintf(name, sizeof name, "%s", key_name);
+    SDL_strlwr(name);
+    if (e->mod & SDL_KMOD_CTRL) at += snprintf(text + at, sizeof text - at, "ctrl+");
+    if (e->mod & SDL_KMOD_SHIFT) at += snprintf(text + at, sizeof text - at, "shift+");
+    if (e->mod & SDL_KMOD_ALT) at += snprintf(text + at, sizeof text - at, "alt+");
+    if (e->mod & SDL_KMOD_GUI) at += snprintf(text + at, sizeof text - at, "gui+");
+    at += snprintf(text + at, sizeof text - at, "%s", name);
+    if (at < 0 || (size_t)at >= sizeof text || (size_t)at >= size) return 0;
+    snprintf(out, size, "%s", text);
+    return 1;
 }

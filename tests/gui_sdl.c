@@ -692,6 +692,33 @@ static bool picks_have(App* app, const char* line) {
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
    its A and B as its own swap says, else every player's; ESC comes back to the player's rows */
+/* Settings > Hotkeys: Enter on the cycle key waits, a modifier alone still waits, Ctrl+T is kept, and ESC keeps it */
+static void hotkey_capture(App* app) {
+    static const char list[] =
+        "Hotkeys\tupscaler_key\tctrl+u\ttext\t0\t0\tThe key that cycles the upscaler\tUpscaler cycle key\t\n";
+    int row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    key(app, SDLK_DOWN); /* past App, the launcher's own */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP);
+    row = row_of(app, setting_row(app, "upscaler_key"));
+    assert(row >= 0);
+    app->editor.row = row;
+    key(app, SDLK_RETURN);
+    assert(app->key_listen && strstr(app->editor.note, "Press the key"));
+    key_with(app, SDLK_LCTRL, SDL_KMOD_CTRL); /* a modifier alone waits */
+    assert(app->key_listen);
+    key_with(app, SDLK_T, SDL_KMOD_CTRL);
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "upscaler_key"), "ctrl+t"));
+    key(app, SDLK_RETURN);
+    assert(app->key_listen);
+    key(app, SDLK_ESCAPE); /* keeps the key it had */
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "upscaler_key"), "ctrl+t"));
+    settings_forget(app);
+}
 static void players_view(App* app) {
     static const char list[] =
         "Controllers\tgamepad_swap_ab\t0\tint\t0\t1\tSwap A/B\tSwap A/B\t0=Off|1=On\n"
@@ -13182,6 +13209,7 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    hotkey_capture(&app);
     icons_named();
     step_line();
     /* a row too long for its box with the labels' column gives the column up first, and is cut only past that: 1280x720

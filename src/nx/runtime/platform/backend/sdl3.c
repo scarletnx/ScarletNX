@@ -12,7 +12,7 @@
 #include "nx/hle/services/services.h" /* am_keyboard_answered: the keyboard's box's answer */
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/backend.h"
-#include "nx/runtime/platform/backend/keybind.h"
+#include "common/utilities/keybind.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
