@@ -19,7 +19,15 @@ public final class NativeBridge {
     }
 
     /** null when the library loaded (and its JNI_OnLoad ran), else dlerror's text. */
-    private static String nativeLoad(String path) {
-        return "dlopen failed: the native bridge cannot load " + new java.io.File(path).getName() + " yet";
-    }
+    private static String nativeLoad(String path) { return nativeLoad(path, snx.android.Apk.libraryDir()); }
+    private static native String nativeLoad(String path, String libraryDir);
+
+    /**
+     * A native method of the app, which the translator makes call these: its key ("Lpkg/Class;.name(signature)"),
+     * the object (or the class of a static method), its primitive parameters in order as their bits (a float's and a
+     * double's raw bits), and its references. The result's bits, or the reference.
+     */
+    public static native long invokeJ(String key, Object self, long[] prims, Object[] refs);
+    public static native Object invokeL(String key, Object self, long[] prims, Object[] refs);
+    public static native void invokeV(String key, Object self, long[] prims, Object[] refs);
 }

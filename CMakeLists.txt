@@ -61,8 +61,9 @@ option(SNX_BUILD_GNUABI "Build the CPU-only Linux AArch64 runtime" ON)
 option(SNX_BUILD_3DS "Build the 3DS driver: extraction, the ARM11 AOT compiler and the runtime" ON)
 option(SNX_BUILD_VITA "Build the PS Vita driver: VPK extraction, the AArch32 AOT compiler and the runtime" ON)
 option(SNX_BUILD_AGB "Build the Game Boy Advance AGB board runtime" ON)
-# the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none
-if(ANDROID OR IOS)
+# the Android app driver runs apps on a desktop's JVM: not in ScarletNX's own Android and iOS apps, which have none.
+# Its native bridge passes the guest's registers as an x86-64 or AArch64 host's (bridge/hle_libc.c)
+if(ANDROID OR IOS OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
     set(snx_android_default OFF)
 else()
     set(snx_android_default ON)

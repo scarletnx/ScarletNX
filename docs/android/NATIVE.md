@@ -137,11 +137,21 @@ nothing. An engine that tries GLES then takes Vulkan. GLES over Vulkan is a late
 - the imports that are objects: `__sF` and `stdin` to `stderr`, `_ctype_`, `environ`, getopt's and the time zone's,
   OpenSL ES's interface IDs (its engine reports that OpenSL ES is not there, for now) and libmediandk's format keys.
 
-All 24 libraries of the Unity game load and run their constructors. An import without an HLE yet is an export that
+- JNI: the guest's `JNIEnv` and `JavaVM` are tables of exports over the host JVM's functions, called through one
+  adapter (`hle_call`) that passes `x0` to `x5` and `v0` to `v7` as the host's integer and floating registers, which
+  AAPCS64 and the System V ABI fill in the same order. The calls with variable arguments read them by the signature
+  that `GetMethodID` recorded. `FindClass` falls back to the app's class loader, as Android's uses the loader of the
+  class that loaded the library. `RegisterNatives` records the guest's functions.
+- The translator gives each `native` method a body that calls `NativeBridge.invoke*` with its key, the object and its
+  parameters (primitives as bits in a `long[]`, references in an `Object[]`). The bridge finds the function by
+  `RegisterNatives` or by its JNI name, and passes the parameters as AAPCS64 does.
+
+All 24 libraries of the Unity game load and run their constructors. From Java, `System.loadLibrary` loads them and
+runs their `JNI_OnLoad`: the game's crash reporter initializes its native side. An import without an HLE yet is an export that
 says so once when called and returns 0.
 
 The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU without pointer authentication, and
 `getauxval(AT_HWCAP)` reports the same features.
 
-Next: JNI and the translator's native methods, signals, libandroid's window, looper, sensor and asset functions,
+Next: signals, libandroid's window, looper, sensor and asset functions,
 OpenSL ES and the media codecs, the EGL and GLES libraries that report no display, and the Vulkan pass-through.

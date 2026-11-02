@@ -31,6 +31,27 @@ void hle_pass(CPU* c, void* fn) {
     X(0) = ((Pass8)fn)(X(0), X(1), X(2), X(3), X(4), X(5), X(6), X(7));
 }
 
+#if !defined(__x86_64__) && !defined(__aarch64__)
+#error "hle_call passes the guest's registers as the host's: an x86-64 or AArch64 host"
+#endif
+typedef uint64_t (*CallInt)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, double, double, double, double,
+                            double, double, double, double);
+typedef double (*CallFloat)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, double, double, double, double,
+                            double, double, double, double);
+void hle_call(CPU* c, void* fn, char kind) {
+    double v[8];
+    for (int i = 0; i < 8; ++i) memcpy(&v[i], &c->v[i].d[0], sizeof v[i]);
+    if (kind == 'F' || kind == 'D') {
+        double r = ((CallFloat)fn)(X(0), X(1), X(2), X(3), X(4), X(5), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        memset(&c->v[0], 0, sizeof c->v[0]);
+        /* a float result is the register's low half: the double's bits carry it */
+        memcpy(&c->v[0].d[0], &r, sizeof r);
+        if (kind == 'F') memset(&c->v[0].b[4], 0, 4);
+        return;
+    }
+    X(0) = ((CallInt)fn)(X(0), X(1), X(2), X(3), X(4), X(5), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+}
+
 double hle_d(const CPU* c, unsigned n) {
     double v;
     memcpy(&v, &c->v[n].df[0], sizeof v);
