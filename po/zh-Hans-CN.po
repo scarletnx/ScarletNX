@@ -5302,6 +5302,30 @@ msgstr "为一次运行设置的 SNX_WW、SNX_HOST_PAGE、VITA_LOCKSTEP 等"
 msgid "settings and the drivers' options; a variable still set works, and the run says so"
 msgstr "设置和驱动程序的选项；仍设置的变量依然有效，运行时会提示"
 
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr "Fullscreen 和 Show controls"
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr "关、开或各游戏的 .ini，显示为 关 [默认]"
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr "关或开，用于每次运行：电脑上为关，手机上为开"
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr "设置的默认值"
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr "单独的一个值 [默认]，与选中的同一值并列"
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr "[默认] 标在该值上，任何运行都不会收到它：由游戏的 .ini 保持"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"

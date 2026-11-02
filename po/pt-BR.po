@@ -5302,6 +5302,30 @@ msgstr "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP e outras definidas para uma execuç
 msgid "settings and the drivers' options; a variable still set works, and the run says so"
 msgstr "configurações e as opções dos drivers; uma variável ainda definida funciona, e a execução avisa"
 
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr "Fullscreen e Show controls"
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr "Desligado, Ligado ou o .ini de cada jogo, mostrado como Desligado [padrão]"
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr "Desligado ou Ligado, passado a toda execução: Desligado num computador, Ligado num celular"
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr "O padrão de uma configuração"
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr "um valor à parte, [padrão], ao lado do mesmo valor escolhido"
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr "[padrão] nesse valor, que nenhuma execução recebe: o .ini do jogo o mantém"
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr "gdbstub"

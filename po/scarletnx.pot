@@ -5299,6 +5299,30 @@ msgstr ""
 msgid "settings and the drivers' options; a variable still set works, and the run says so"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "Fullscreen and Show controls"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "Off, On, or each game's .ini, shown as Off [default]"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "Off or On, given to every run: Off on a computer, On on a phone"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "A setting's default"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "a value of its own, [default], beside the same value picked"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "[default] on that value, which no run is given: the game's .ini keeps it"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""
