@@ -142,7 +142,7 @@ static void scan_test(NceSites* sites) {
 }
 
 static void stub_test(const NceSites* sites) {
-    static const NceEnv env = {0x1010, 0x7F0012345678ull}; /* tls past a page, to take the ADD */
+    static const NceEnv env = {0x1010, 0x7F0012345678ull, 0}; /* tls past a page, to take the ADD */
     Pool pool, far;
     SnxU32 patch;
     pool_init(&pool, BASE + 0x100000); /* after the module, as the runtime puts it */
@@ -216,8 +216,51 @@ static void stub_test(const NceSites* sites) {
     }
 }
 
+/* the indirect form (Android's TLS_SLOT_APP): the word at tls holds a pointer to the thread's block, whose first word
+   is the CPU pointer. The same three words, so the stubs keep their sizes; tls within an LDR's 32 KiB */
+static void indirect_test(const NceSites* sites) {
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 1};
+    NceEnv far = env;
+    Pool pool;
+    SnxU32 patch;
+    unsigned tested = 0;
+    pool_init(&pool, BASE + 0x100000);
+    for (size_t i = 0; i < sites->count; i++) {
+        const NceSite* s = &sites->site[i];
+        SnxU64 stub = pool.pool.addr + pool.pool.used, used = pool.pool.used;
+        SnxU32 t = s->reg, cpu;
+        if (s->kind != NCE_TPIDR && s->kind != NCE_TPIDRRO && s->kind != NCE_TPIDR_SET) continue;
+        check(!nce_emit(&pool.pool, 1, &env, s, &patch), "an indirect stub for each TLS site");
+        check(pool.pool.used - used == nce_stub_size((NceKind)s->kind), "an indirect stub of the direct one's size");
+        check(is_b(patch) && b_target(patch, s->addr) == stub, "the site branches to its indirect stub");
+        if (s->kind == NCE_TPIDR_SET) {
+            stub += 4; /* after the STR that keeps the scratch register */
+            t = 16;
+        }
+        cpu = s->kind == NCE_TPIDR_SET ? 0 : 1;
+        check(word(&pool, stub) == (0xD53BD040u | t), "the host's thread pointer");
+        check(word(&pool, stub + 4) == (0xF9400000u | (0x10u / 8) << 10 | t << 5 | t),
+              "the pointer in the word at tls");
+        check(word(&pool, stub + 8) == (0xF9400000u | t << 5 | t), "the CPU pointer, the block's first word");
+        if (cpu)
+            check(word(&pool, stub + 12) ==
+                      (0xF9400000u |
+                       (SnxU32)((s->kind == NCE_TPIDRRO ? offsetof(CPU, tpidrro) : offsetof(CPU, tpidr)) / 8) << 10 |
+                       t << 5 | t),
+                  "the CPU's register");
+        tested++;
+    }
+    check(tested == 3, "the three TLS sites of the synthetic module");
+    far.tls = 0x8000;
+    check(nce_emit(&pool.pool, 1, &far, &sites->site[1], &patch) == -1, "an indirect tls past an LDR's reach");
+    far.tls = 0x7FF8;
+    check(!nce_emit(&pool.pool, 1, &far, &sites->site[1], &patch), "an indirect tls at the LDR's last word");
+    far.tls = 0x14;
+    check(nce_emit(&pool.pool, 1, &far, &sites->site[1], &patch) == -1, "a tls that is not a multiple of 8");
+}
+
 static void divert_test(void) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0};
     static const struct {
         SnxU32 first;
         int ok;
@@ -269,7 +312,7 @@ static void divert_test(void) {
 
 /* the trap, the stub's way back, and the sites file of an NCE recompile with the moves of its modules */
 static void trap_file_test(const NceSites* found, const char* dir) {
-    static const NceEnv env = {0x10, 0x7F0012345678ull};
+    static const NceEnv env = {0x10, 0x7F0012345678ull, 0};
     static const NceRange ranges[2] = {{BASE + 0x100000, 0x41000}, {BASE + 0x200000, 0x1000}};
     char path[1024];
     Pool pool;
@@ -311,6 +354,7 @@ int main(int argc, char** argv) {
     NceSites sites;
     scan_test(&sites);
     stub_test(&sites);
+    indirect_test(&sites);
     trap_file_test(&sites, argc > 1 ? argv[1] : ".");
     nce_sites_free(&sites);
     divert_test();
