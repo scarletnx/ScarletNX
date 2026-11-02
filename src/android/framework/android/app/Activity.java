@@ -88,6 +88,7 @@ public class Activity extends ContextThemeWrapper
     public final Activity getParent() { return parent; }
     public WindowManager getWindowManager() { return windowManager; }
     public Window getWindow() { return window; }
+    public final boolean requestWindowFeature(int featureId) { return getWindow().requestFeature(featureId); }
     public android.window.OnBackInvokedDispatcher getOnBackInvokedDispatcher() { return window.getOnBackInvokedDispatcher(); }
     public ComponentName getComponentName() { return component; }
     public ComponentName getCallingActivity() { return null; }

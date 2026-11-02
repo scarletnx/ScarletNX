@@ -22,5 +22,15 @@ public class PackageItemInfo {
         return l != null ? l : name != null ? name : packageName;
     }
     public android.graphics.drawable.Drawable loadIcon(PackageManager pm) { return null; }
-    public android.content.res.XmlResourceParser loadXmlMetaData(PackageManager pm, String name) { return null; }
+    /** The XML resource a meta-data names (android:resource), or null when it names none */
+    public android.content.res.XmlResourceParser loadXmlMetaData(PackageManager pm, String name) {
+        if (metaData == null) return null;
+        int resid = metaData.getInt(name);
+        if (resid == 0) return null;
+        try {
+            return pm.getResourcesForApplication(packageName).getXml(resid);
+        } catch (PackageManager.NameNotFoundException | android.content.res.Resources.NotFoundException e) {
+            return null;
+        }
+    }
 }

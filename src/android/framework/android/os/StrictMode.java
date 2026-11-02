@@ -24,6 +24,10 @@ public final class StrictMode {
             public Builder detectDiskWrites() { return this; }
             public Builder permitDiskWrites() { return this; }
             public Builder detectCustomSlowCalls() { return this; }
+            public Builder permitCustomSlowCalls() { return this; }
+            public Builder detectResourceMismatches() { return this; }
+            public Builder detectUnbufferedIo() { return this; }
+            public Builder permitUnbufferedIo() { return this; }
             public Builder penaltyLog() { return this; }
             public Builder penaltyDeath() { return this; }
             public Builder penaltyDialog() { return this; }
@@ -39,6 +43,7 @@ public final class StrictMode {
             public Builder(VmPolicy policy) {}
             public Builder detectAll() { return this; }
             public Builder detectLeakedClosableObjects() { return this; }
+            public Builder permitUnsafeIntentLaunch() { return this; }
             public Builder penaltyLog() { return this; }
             public Builder penaltyDeath() { return this; }
             public VmPolicy build() { return new VmPolicy(); }

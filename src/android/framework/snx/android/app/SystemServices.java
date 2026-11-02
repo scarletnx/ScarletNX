@@ -29,6 +29,9 @@ final class SystemServices {
         Map.entry(Context.AUTOFILL_MANAGER_SERVICE, new Entry(android.view.autofill.AutofillManager.class, c -> new android.view.autofill.AutofillManager())),
         Map.entry(Context.CONTENT_CAPTURE_MANAGER_SERVICE, new Entry(android.view.contentcapture.ContentCaptureManager.class, c -> null)),
         Map.entry(Context.POWER_SERVICE, new Entry(android.os.PowerManager.class, c -> new android.os.PowerManager())),
+        Map.entry(Context.SHORTCUT_SERVICE, new Entry(android.content.pm.ShortcutManager.class, c -> new android.content.pm.ShortcutManager())),
+        Map.entry(Context.SENSOR_SERVICE, new Entry(android.hardware.SensorManager.class, c -> new android.hardware.SensorManager())),
+        Map.entry(Context.TELEPHONY_SERVICE, new Entry(android.telephony.TelephonyManager.class, c -> new android.telephony.TelephonyManager())),
         Map.entry(Context.USER_SERVICE, new Entry(android.os.UserManager.class, c -> new android.os.UserManager())),
         Map.entry(Context.JOB_SCHEDULER_SERVICE, new Entry(android.app.job.JobScheduler.class, c -> new android.app.job.JobScheduler.Local(c))));
 
