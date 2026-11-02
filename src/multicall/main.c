@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* scarletnx's main, the program's only one: every driver the build has is a library linked into it, run by the name
-   the program was started under (scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi, scarletnx-agb, scarletnx-switch:
-   links beside it on Linux and macOS), or by that name as its first argument (scarletnx scarletnx-3ds ..., how the
-   launcher runs them on Windows, which has no links). A game's copy runs its driver too: a GBA game's, whose .ini says
-   system=gba, and a 3DS or Vita game's, named after its title ID. Any other name is the Switch driver, which takes a
-   game's copy's name for the game it runs, or in a build without it the one driver there is. One program carries
-   LLVM, SDL and the code they share once */
+   the program was started under (scarletnx-3ds, scarletnx-vita, scarletnx-gnuabi, scarletnx-agb, scarletnx-android,
+   scarletnx-switch: links beside it on Linux and macOS), or by that name as its first argument (scarletnx
+   scarletnx-3ds ..., how the launcher runs them on Windows, which has no links). A game's copy runs its driver too:
+   a GBA game's, whose .ini says system=gba, and a 3DS or Vita game's, named after its title ID. Any other name is
+   the Switch driver, which takes a game's copy's name for the game it runs, or in a build without it the one driver
+   there is. One program carries LLVM, SDL and the code they share once */
 #ifdef SNX_MULTICALL_SWITCH
 #include "nx/runtime/entry.h"
 #endif
@@ -21,6 +21,9 @@
 #endif
 #ifdef SNX_MULTICALL_AGB
 #include "agb/runtime/main.h"
+#endif
+#ifdef SNX_MULTICALL_ANDROID
+#include "android/runtime/main.h"
 #endif
 #if defined(SNX_MULTICALL_GUI) && defined(_WIN32)
 #include "gui/gui.h"
@@ -58,6 +61,9 @@ static const Driver drivers[] = {
 #endif
 #ifdef SNX_MULTICALL_GNUABI
     {"scarletnx-gnuabi", snx_gnuabi_main, NULL},
+#endif
+#ifdef SNX_MULTICALL_ANDROID
+    {"scarletnx-android", snx_android_main, NULL},
 #endif
 #ifdef SNX_MULTICALL_SWITCH
     {"scarletnx-switch", snx_switch_main, NULL},
