@@ -330,27 +330,37 @@ int main(int argc, char** argv) {
     printf("SGSR: 160x90 -> 240x135\n");
     CHECK(!check_one_to_one(&src, SNX_UPSCALE_SGSR));
 
-    /* FSR 1 is the default, and a frame that does not grow keeps the plain blit */
+    /* FSR 1 is the default, at 1:1 and at a downscale too, and NIS above its 2x limit */
     vk_upscale_configure(SNX_UPSCALE_FSR1, 25);
     CHECK(vk_upscale_pick(0, 0, 1920, 1080, 0) == -1);
-    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_FSR1);
     CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_FSR1);
-    CHECK(vk_upscale_pick(1280, 720, 640, 360, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 640, 360, 0) == SNX_UPSCALE_FSR1);
     vk_upscale_configure(SNX_UPSCALE_OFF, 25);
     CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_OFF);
     vk_upscale_configure(SNX_UPSCALE_BILINEAR, 25);
     CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 0) == SNX_UPSCALE_BILINEAR);
     vk_upscale_configure(SNX_UPSCALE_FSR1, 25);
-    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_FSR1);
     vk_upscale_configure(SNX_UPSCALE_NIS, 25);
-    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 1280, 720, 0) == SNX_UPSCALE_NIS);
     CHECK(vk_upscale_pick(1280, 720, 2560, 1440, 0) == SNX_UPSCALE_NIS);
     CHECK(vk_upscale_pick(1280, 720, 2561, 1441, 0) == SNX_UPSCALE_FSR1);
     CHECK(vk_upscale_pick(1280, 720, 1920, 1080, 1) == SNX_UPSCALE_FSR1);
-    CHECK(vk_upscale_pick(1280, 720, 640, 360, 0) == SNX_UPSCALE_OFF);
+    CHECK(vk_upscale_pick(1280, 720, 640, 360, 0) == SNX_UPSCALE_FSR1);
     CHECK(!vk_upscale_filter_uses_sharpness(SNX_UPSCALE_OFF));
     CHECK(!vk_upscale_filter_uses_sharpness(SNX_UPSCALE_BILINEAR));
     CHECK(vk_upscale_filter_uses_sharpness(SNX_UPSCALE_FSR1));
+
+    /* the target: the screen rectangle times the multiplier, and never more than the largest image */
+    {
+        u32 tw = 0, th = 0;
+        CHECK(vk_upscale_target(1920, 1080, 1, 16384, &tw, &th) == 1 && tw == 1920 && th == 1080);
+        CHECK(vk_upscale_target(1920, 1080, 2, 16384, &tw, &th) == 2 && tw == 3840 && th == 2160);
+        CHECK(vk_upscale_target(1920, 1080, 4, 16384, &tw, &th) == 4 && tw == 7680 && th == 4320);
+        CHECK(vk_upscale_target(1920, 1080, 4, 4096, &tw, &th) == 2 && tw == 3840 && th == 2160);
+        CHECK(vk_upscale_target(1920, 1080, 0, 16384, &tw, &th) == 1 && tw == 1920 && th == 1080);
+    }
 
     /* the live cycle from the default: FSR 1, Bilinear, NIS, SGSR, None, and round */
     vk_upscale_configure(SNX_UPSCALE_FSR1, 25);

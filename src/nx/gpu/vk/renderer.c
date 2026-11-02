@@ -481,7 +481,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                     dw = (u32)((u64)ch * fw / fh);
                 }
                 i32 dx = (i32)(cx + (cw - dw) / 2), dy = (i32)(cy + (ch - dh) / 2);
-                int filter = vk_upscale_pick(g_last_w, g_last_h, dw, dh, transform);
+                /* the upscaler writes the screen rectangle times upscaler_mult, at most the device's largest image */
+                u32 uw, uh;
+                u32 mult = vk_upscale_target(dw, dh, (u32)g_settings.upscaling_target_mult,
+                                             g_vk.props.limits.maxImageDimension2D, &uw, &uh);
+                int filter = vk_upscale_pick(g_last_w, g_last_h, uw, uh, transform);
                 if (filter > SNX_UPSCALE_BILINEAR) {
                     VkComponentMapping identity = {0};
                     /* the filter works in the space the final blit leaves: sRGB frames are sampled through their
@@ -496,10 +500,11 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                     if (src_view)
                         done = vk_upscale_process(cb, src_view, src->sw, src->sh, g_last_x, g_last_y, g_last_w,
-                                                  g_last_h, transform, dw, dh, filter, g_settings.sharpness,
+                                                  g_last_h, transform, uw, uh, filter, g_settings.sharpness,
                                                   &up_img, &up_view);
                     if (done)
-                        present_blit(cb, up_img, 0, 0, dw, dh, sc, dx, dy, dw, dh, 0, VK_FILTER_NEAREST);
+                        present_blit(cb, up_img, 0, 0, uw, uh, sc, dx, dy, dw, dh, 0,
+                                     mult > 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
                     else { /* the filter could not run: the plain blit still shows the frame */
                         vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                                     VK_ACCESS_2_TRANSFER_READ_BIT);
