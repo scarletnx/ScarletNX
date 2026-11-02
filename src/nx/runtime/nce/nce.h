@@ -15,6 +15,7 @@
 #include "common/cpu/aarch64/cpu.h"
 
 struct KThread;
+struct SnxModule;
 
 /* whether the game is of an NCE recompile on a host that runs it natively: its .nce file is there. mem_reserve asks
    it first, before the settings are read */
@@ -34,6 +35,9 @@ void nce_slot_taken(u64 addr);
 /* code that the game mapped (an NRO of ldr:ro), with text_size bytes of text at base: under NCE, its words are
    patched as Eden patches them, each word of the encodings that the flow does not prove to be data */
 void nce_code_added(u64 base, u64 text_size);
+/* the game module's descriptor as the runtime uses it: m, or a copy whose guest addresses (each module's base, the
+   dispatch entries, the code range, the functions) moved up with the layout (mem_moved) */
+const struct SnxModule* nce_module(const struct SnxModule* m);
 /* the crash handler's signal context: the guest's registers into the crashing thread's CPU, when it ran guest code */
 void nce_crash_context(const void* context);
 #endif

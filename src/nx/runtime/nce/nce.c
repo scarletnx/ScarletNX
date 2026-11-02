@@ -43,6 +43,40 @@ static struct {
 
 int nce_on(void) { return g_nce.on; }
 
+const SnxModule* nce_module(const SnxModule* m) {
+    u64 by = mem_moved();
+    size_t mods = m->nmods * sizeof *m->mods, entries = m->nentries * sizeof *m->entry_addr,
+           fns = m->nfns * sizeof *m->fn_lo;
+    u8* block;
+    SnxModule* moved;
+    SnxModInfo* mi;
+    u64 *entry_addr, *fn_lo;
+    if (!by) return m;
+    /* one block: the descriptor, its modules, its entries' and its functions' addresses, each a multiple of 8 */
+    block = (u8*)snx_alloc(sizeof *moved + mods + entries + fns);
+    moved = (SnxModule*)(void*)block;
+    mi = (SnxModInfo*)(void*)(block + sizeof *moved);
+    entry_addr = (u64*)(void*)(block + sizeof *moved + mods);
+    fn_lo = (u64*)(void*)(block + sizeof *moved + mods + entries);
+    *moved = *m;
+    for (u32 i = 0; i < m->nmods; i++) {
+        mi[i] = m->mods[i];
+        mi[i].base += by;
+    }
+    for (u32 i = 0; i < m->nentries; i++) entry_addr[i] = m->entry_addr[i] + by;
+    for (u32 i = 0; i < m->nfns; i++) fn_lo[i] = m->fn_lo[i] + by;
+    moved->mods = mi;
+    moved->entry_addr = entry_addr;
+    moved->fn_lo = fn_lo;
+    if (moved->code_hi > moved->code_lo) {
+        moved->code_lo += by;
+        moved->code_hi += by;
+    }
+    LOG("nce: the game's modules moved %#llx up with the guest's addresses: the first at %#llx\n",
+        (unsigned long long)by, (unsigned long long)(m->nmods ? mi[0].base : 0));
+    return moved;
+}
+
 #if !SNX_NCE_HOST
 int nce_wanted(void) { return 0; }
 void nce_init(void) {}
