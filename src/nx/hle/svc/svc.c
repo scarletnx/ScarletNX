@@ -107,6 +107,7 @@ static void svc_leave(KThread* t) {
     }
     core_enter(t);
     core_preempt(t);
+    sync_owner_runs(t);
     __atomic_store_n(&t->in_svc, 0, __ATOMIC_SEQ_CST);
     if (pause_point(t, 2)) core_enter(t);
     if (kthread_hold_point(t, PARK_RUN)) core_enter(t);
