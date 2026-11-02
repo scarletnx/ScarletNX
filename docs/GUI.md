@@ -220,10 +220,13 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
   number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
-  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting not picked shows
-  the runtime's default and `[default]` (*Off [default]*):
-  the run takes the game's `.ini`'s, which starts as that; one picked goes to every
-  Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
+  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting's words are
+  its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
+  `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
+  that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
+  `[default]` is a value of its own, the same way. Another value, and a number typed even as its default (Current
+  user 1 over a game's `.ini` that has another), goes to every Switch run as `--key=value`, over the `.ini`
+  ([USAGE](USAGE.md)), and is kept for every game:
   what was changed, by the `.ini`'s sections and keys, in `settings.ini` of the config folder on
   Linux (`~/.config/scarletnx/`), else the data folder's `config/`. A run takes a setting from what that
   run picks, then from the game's own picks (to come), then from these, and last from the game's

@@ -1026,7 +1026,7 @@ static void button_map(App* app) {
         pad_start(app);
         snx_pad_screen_map(&app->pad, &shown);
         assert(app->pad.swap_ab && shown.bit[SNX_PAD_SOUTH] == 0 && shown.bit[SNX_PAD_EAST] == 1); /* A, B */
-        assert(gui_settings_set(&app->settings, "gamepad_swap_ab", ".ini"));
+        assert(gui_settings_set(&app->settings, "gamepad_swap_ab", "0")); /* its default: no pick */
         pad_start(app);
         assert(!app->pad.swap_ab);
     }
@@ -1083,7 +1083,7 @@ static void button_map(App* app) {
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_PAD && strstr(app->editor.note, "\"south:Q\" is not a control"));
     assert(!strcmp(SDL_GetHint(SDL_HINT_JOYSTICK_HIDAPI_COMBINE_JOY_CONS), "0"));
-    assert(gui_settings_set(&app->settings, "gamepad_joycon_pair", ".ini"));
+    assert(gui_settings_set(&app->settings, "gamepad_joycon_pair", "1")); /* its default: no pick */
     assert(app->pad.own.bit[SNX_PAD_SOUTH] == SNX_PAD_UNSET);
     render(app);
     {
@@ -12598,6 +12598,23 @@ int main(int argc, char** argv) {
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe " ICON_MONITOR " Display", rgb(app.theme.page),
                        rgb(app.theme.focus));
             text_px_is(&app, b.x - 2 * cw, item_text_y(&app, b), "  ", rgb(app.theme.focus), rgb(app.theme.page));
+        }
+        /* a game's setting goes round its values alone: the default's no pick, [default] on it, no third the .ini's
+           (settings.ini left as the runs below have it) */
+        {
+            char shown[96], *file = app.settings_file;
+            app.settings_file = NULL;
+            key(&app, SDLK_RIGHT);
+            gui_settings_shown(&app.settings, app.first, shown, sizeof shown);
+            assert(!strcmp(shown, "On") && setting_is(&app, "fullscreen", "1"));
+            key(&app, SDLK_RIGHT);
+            gui_settings_shown(&app.settings, app.first, shown, sizeof shown);
+            assert(!strcmp(shown, "Off [default]") && setting_is(&app, "fullscreen", NULL));
+            key(&app, SDLK_LEFT);
+            assert(setting_is(&app, "fullscreen", "1"));
+            key(&app, SDLK_LEFT);
+            assert(setting_is(&app, "fullscreen", NULL));
+            app.settings_file = file;
         }
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RETURN);
