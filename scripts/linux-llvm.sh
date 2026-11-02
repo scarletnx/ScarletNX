@@ -8,13 +8,14 @@
 #   scripts/linux-llvm.sh ARCH PREFIX [SOURCE] [-- cmake args]
 #
 # ARCH is the machine the runtime runs on: x86_64, aarch64, ppc64le, riscv64, loongarch64, ppc64 (big-endian ELFv2,
-# Arch POWER's), mips64 or mips64el (n64). Another than this machine's is cross-built with Clang against the system root
-# SNX_SYSROOT, for the same CPU baseline and ABI as the linux-*-cross presets build the runtime (cmake/cross.cmake),
-# and LLVM builds the tablegens it runs here in a tree of their own. SOURCE is an llvm-project folder or .tar.xz
-# (default: the release named by LLVM_VERSION, downloaded). Configure ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm
-# afterwards, and -DSNX_LLVM_CONFIG= with a cross preset, which names the system root's llvm-config.
+# Arch POWER's), mips64, mips64el (n64) or s390x. Another than this machine's is cross-built with Clang against the
+# system root SNX_SYSROOT, for the same CPU baseline and ABI as the linux-*-cross presets build the runtime
+# (cmake/cross.cmake), and LLVM builds the tablegens it runs here in a tree of their own. SOURCE is an llvm-project
+# folder or .tar.xz (default: the release named by LLVM_VERSION, downloaded). Configure ScarletNX with
+# -DLLVM_DIR=PREFIX/lib/cmake/llvm afterwards, and -DSNX_LLVM_CONFIG= with a cross preset, which names the system
+# root's llvm-config.
 set -eu
-[ $# -ge 2 ] || { sed -n '4,15p' "$0"; exit 2; }
+[ $# -ge 2 ] || { sed -n '4,16p' "$0"; exit 2; }
 arch=$1 prefix=$2
 shift 2
 source=
@@ -30,7 +31,9 @@ case $arch in
     loongarch64) target=LoongArch triple=loongarch64-linux-gnu flags=-march=la64v1.0 ;;
     mips64) target=Mips triple=mips64-unknown-linux-gnu flags=-march=mips64r2 ;;
     mips64el) target=Mips triple=mips64el-unknown-linux-gnu flags=-march=mips64r2 ;;
-    *) echo "ARCH must be x86_64, aarch64, ppc64le, ppc64, riscv64, loongarch64, mips64 or mips64el, not $arch" >&2
+    s390x) target=SystemZ triple=s390x-ibm-linux-gnu flags=-march=z13 ;;
+    *) echo "ARCH must be x86_64, aarch64, ppc64le, ppc64, riscv64, loongarch64, mips64, mips64el or s390x," \
+           "not $arch" >&2
        exit 2 ;;
 esac
 machine=$(uname -m)

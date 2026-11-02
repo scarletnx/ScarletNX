@@ -14,7 +14,9 @@
 #     so the configure checks (the libraries' among them) compile for the same CPU and ABI. RISC-V builds rv64gc and
 #     LoongArch LA64 v1.0, as the recompiler's modules are (ir.c), and both without linker relaxation: the runtime
 #     library is merged into each module with its functions' own target features, and the module's linker (link_elf.c)
-#     moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in either byte order.
+#     moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in either byte order, and s390x z13: before
+#     it LLVM makes the runtime library's 128-bit shifts calls to libgcc's __ashlti3 and __lshrti3, which a module
+#     links no library to have.
 #   - for a Linux cross build with Clang (the linux-*-cross presets): the target triple and the sysroot, which CMake
 #     passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the others don't get from the
 #     compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
@@ -37,6 +39,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips64|mips64el)$")
     # n64 is the ABI Clang takes for the mips64 triples; with -mabi=64 named it finds no GCC runtime in gnu-cross's
     # buildroots (-print-libgcc-file-name prints a bare libgcc.a)
     set(SNX_ARCH_FLAGS -march=mips64r2)
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "s390x")
+    set(SNX_ARCH_FLAGS -march=z13)
 endif()
 list(JOIN SNX_ARCH_FLAGS " " snx_arch_flags)
 string(APPEND CMAKE_C_FLAGS " ${snx_arch_flags}")

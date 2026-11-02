@@ -23,7 +23,7 @@ endif()
 # arm64 Macs have 16 KiB, the most a Mac has
 if(APPLE)
     set(snx_jemalloc_lg_page 14)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|riscv64)$")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|riscv64|s390x)$")
     set(snx_jemalloc_lg_page 12)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES
        "^(aarch64|arm64|ppc64|ppc64le|powerpc64|powerpc64le|loongarch64|mips64|mips64el)$")
