@@ -694,6 +694,7 @@ void vk_frame_hold(u64 frame_id) {
 }
 u32 vk_frame_slot(void) { return g_cur; }
 
+static u32 g_desc_pools; /* the pools that exist: the GPU, recording and compute threads make them */
 VkDescriptorPool vk_desc_pool_new(void) {
     /* a thousand sets of the stage layout (gpu/vk/pipeline.c), each with all its descriptors: a frame chains more
        pools when it needs them */
@@ -705,9 +706,10 @@ VkDescriptorPool vk_desc_pool_new(void) {
     ci.poolSizeCount = VK_POOL_TYPES;
     ci.pPoolSizes = sz;
     VkDescriptorPool p = VK_NULL_HANDLE;
-    VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &p));
+    if (VK_OK(vkCreateDescriptorPool(g_vk.dev, &ci, NULL, &p))) __atomic_add_fetch(&g_desc_pools, 1, __ATOMIC_RELAXED);
     return p;
 }
+u32 vk_desc_pools(void) { return __atomic_load_n(&g_desc_pools, __ATOMIC_RELAXED); }
 /* count sets of layout from the frame's pools into sets: count, or 1 when a pool can't hold that many, 0 on failure */
 static u32 desc_alloc_n(Frame* f, VkDescriptorSetLayout layout, VkDescriptorSet* sets, u32 count) {
     VkDescriptorSetLayout layouts[SPARE_SETS];
