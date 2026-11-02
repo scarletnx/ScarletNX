@@ -66,7 +66,8 @@ static void user_picture(u32* a, int w) {
     if (!u || !SNX_GUI_THEME_YORHA_PICTURE) return;
     jpeg = snx_users_picture(u, &size);
     if (snx_splash_picture(jpeg, size, SNX_UI_PICTURE, round, at, w * 4)) {
-        WARN("ui: %s's picture could not be drawn, Wimsy shows in the menu\n", u->nickname);
+        /* the user by number: a nickname can name the player, and players attach the log to public reports */
+        WARN("ui: user %d's picture could not be drawn, Wimsy shows in the menu\n", snx_users_selected_number());
         snx_splash_picture(NULL, 0, SNX_UI_PICTURE, round, at, w * 4);
     }
     for (y = 0; y < SNX_UI_PICTURE; ++y) /* ARGB to R G B A from the low byte, the alpha premultiplied as it was */

@@ -1490,8 +1490,8 @@ msgstr "O apelido, como os jogos e as salas do Eden mostram: Enter digita, 4 a 2
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d keeps %s: %s"
-msgstr "Usuário %d continua %s: %s"
+msgid "User %d's new nickname is not written: %s"
+msgstr "O novo apelido do usuário %d não foi gravado: %s"
 
 #: src/gui/main.c
 msgid "no users/ folder"

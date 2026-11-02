@@ -48,16 +48,30 @@ const unsigned char* snx_users_picture(const SnxUser* user, uint32_t* size) {
     return user->picture_size ? g_user_pictures + user->picture_at : NULL;
 }
 
+static int nickname_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' ||
+           c == '_' || c == '-';
+}
 int snx_users_nickname_valid(const char* nickname) {
     size_t n = strlen(nickname);
     if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX) return 0;
-    for (size_t i = 0; i < n; i++) {
-        char c = nickname[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' ||
-              c == '_' || c == '-'))
-            return 0;
-    }
+    for (size_t i = 0; i < n; i++)
+        if (!nickname_char(nickname[i])) return 0;
     return 1;
+}
+/* appended to why: what is wrong with nickname, its length or its first byte the rule refuses, never the nickname
+   itself: a game's stop carries why to the log, which players attach to public reports */
+static void nickname_refused(char* why, size_t why_size, const char* nickname) {
+    size_t at = strlen(why), n = strlen(nickname), i = 0;
+    if (n < SNX_USERS_NICKNAME_MIN || n > SNX_USERS_NICKNAME_MAX)
+        snprintf(why + at, why_size - at, "has %zu bytes: ", n);
+    else {
+        while (nickname_char(nickname[i])) i++;
+        snprintf(why + at, why_size - at, "has 0x%02x at byte %zu: ", (unsigned)(unsigned char)nickname[i], i + 1);
+    }
+    at = strlen(why);
+    snprintf(why + at, why_size - at, "Eden's rooms take %d to %d letters, digits, spaces, '.', '_' or '-'",
+             SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
 }
 
 /* the [userN] of section, 1 to 8, or 0 */
@@ -140,8 +154,8 @@ int snx_users_start(const char* dir, const uint64_t uid[2], const char* nickname
     char *old = snx_format("%s.old", path), *staged = snx_format("%s.new", path), *text = NULL, hex[33];
     int rc = -1;
     if (!snx_users_nickname_valid(nickname)) {
-        snprintf(why, why_size, "nickname %.40s is not %d to %d letters, digits, spaces, '.', '_' or '-'", nickname,
-                 SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
+        snprintf(why, why_size, "the nickname ");
+        nickname_refused(why, why_size, nickname);
         goto done;
     }
     if (!uid[0] && !uid[1]) {
@@ -185,8 +199,8 @@ int snx_users_rename(const char* dir, int number, const char* nickname, char* wh
     size_t size = 0, len, n, cut = 0, cut_end = 0, after = 0;
     int section = 0, rc = -1;
     if (!snx_users_nickname_valid(nickname)) {
-        snprintf(why, why_size, "nickname %.40s is not %d to %d letters, digits, spaces, '.', '_' or '-'", nickname,
-                 SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
+        snprintf(why, why_size, "the nickname ");
+        nickname_refused(why, why_size, nickname);
         goto done;
     }
     if (number < 1 || number > g_user_count) {
@@ -283,10 +297,8 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
                 u->uid[1] = uid[1];
             } else if (!strcmp(key, "nickname")) {
                 if (!snx_users_nickname_valid(value)) {
-                    snprintf(why, why_size,
-                             "%s: [user%d] nickname=%.40s is not %d to %d letters, digits, spaces, '.', '_' or '-', "
-                             "as Eden's rooms take it",
-                             path, n, value, SNX_USERS_NICKNAME_MIN, SNX_USERS_NICKNAME_MAX);
+                    snprintf(why, why_size, "%s: [user%d] nickname= ", path, n);
+                    nickname_refused(why, why_size, value);
                     goto done;
                 }
                 memcpy(u->nickname, value, strlen(value) + 1);

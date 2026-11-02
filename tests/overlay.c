@@ -15,6 +15,7 @@
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
 #include "common/utilities/users.h"
+#include "common/utilities/common.h"
 #include "gui/splash.h"
 #include "common/utilities/endian.h"
 /* the menu's page colour, its letters on the head's band, as R G B A bytes */
@@ -114,10 +115,14 @@ static int tap(int row, int col) {
     C = overlay_cols(SW, s);
     return overlay_tap((float)(px + col * 8 * s + 2), (float)(py + (3 + row) * 16 * s + 5), SW, SH);
 }
-/* ui.c's warning for a picture that does not draw */
+/* ui.c's warning for a picture that does not draw: the last one */
+static char warned[512];
 void logf_(int lvl, const char* fmt, ...) {
+    va_list ap;
     (void)lvl;
-    (void)fmt;
+    va_start(ap, fmt);
+    vsnprintf(warned, sizeof warned, fmt, ap);
+    va_end(ap);
 }
 static SnxUiQuad quads[2048];
 static SnxUiList list;
@@ -1064,8 +1069,34 @@ int main(void) {
         for (i = 0, pictures = 0; i < list.n; ++i) pictures += list.q[i].v == SNX_CONTROLS_ATLAS_HEIGHT;
         assert(!pictures && !shows("Player"));
     }
+    /* a picture that does not draw: Wimsy shows, and the warning names the user by number, never by nickname, which
+       players attach to public reports with the log */
+    {
+        static const unsigned char broken[] = {0xFF, 0xD8, 'n', 'o', 't', 0xFF, 0xD9}; /* a JPEG's ends alone */
+        static const char ini[] = "[user1]\nnickname=Wanda Maximoff\n";
+        const uint64_t first[2] = {SNX_USERS_FIRST_UID0, SNX_USERS_FIRST_UID1};
+        u32* sprites = calloc((size_t)SNX_CONTROLS_ATLAS_WIDTH * SNX_CONTROLS_ATLAS_HEIGHT, 4);
+        char why[256], uid[33], *jpg;
+        snx_remove_tree("overlay_users");
+        assert(sprites && !snx_mkdirs("overlay_users"));
+        assert(!snx_write_file("overlay_users/users.ini", ini, sizeof ini - 1));
+        snx_users_uid_text(first, uid);
+        jpg = snx_format("overlay_users/%s.jpg", uid);
+        assert(jpg && !snx_write_file(jpg, broken, sizeof broken));
+        assert(!snx_users_load("overlay_users", 1, why, sizeof why));
+        assert(!strcmp(snx_users_selected()->nickname, "Wanda Maximoff"));
+        warned[0] = 0;
+        ui_atlas_set(sprites, SNX_CONTROLS_ATLAS_WIDTH, SNX_CONTROLS_ATLAS_HEIGHT);
+        ui_atlas_done();
+        assert(!strcmp(warned, "ui: user 1's picture could not be drawn, Wimsy shows in the menu\n"));
+        free(jpg);
+        free(sprites);
+        assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why)); /* Player again */
+        snx_remove_tree("overlay_users");
+    }
     keyboard_box();
-    puts("overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user and the "
-         "keyboard's box passed");
+    puts(
+        "overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel, the atlas, the user, a picture "
+        "that does not draw and the keyboard's box passed");
     return 0;
 }

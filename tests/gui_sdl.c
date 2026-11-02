@@ -11165,6 +11165,22 @@ int main(int argc, char** argv) {
                 typed(&app, "Aogo");
                 key(&app, SDLK_RETURN);
                 assert(!strcmp(app.user_name, "Aogo"));
+                /* one that cannot be written: said by the user's number, never a nickname, for the note goes to the
+                   launcher's log too, which players attach to public reports; the row shows the one users.ini has */
+                {
+                    char* users_dir = app.users_dir;
+                    app.users_dir = NULL;
+                    key(&app, SDLK_RETURN);
+                    typed(&app, "x"); /* Aogox */
+                    key(&app, SDLK_RETURN);
+                    app.users_dir = users_dir;
+                    assert(!strcmp(app.editor.note, "User 1's new nickname is not written: no users/ folder"));
+                    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR &&
+                           !strcmp(app.error_line, app.editor.note));
+                    key(&app, SDLK_RETURN); /* OK */
+                    assert(!app.confirm.shown && !strcmp(app.users_form.nick[0], "Aogo") &&
+                           !strcmp(app.user_name, "Aogo"));
+                }
                 key(&app, SDLK_ESCAPE);
                 assert(app.form == GUI_FORM_SETTINGS && app.editor.row == g);
                 key(&app, SDLK_ESCAPE);

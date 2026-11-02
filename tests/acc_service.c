@@ -238,6 +238,17 @@ static void refused(const char* text, int selected, const char* why_has) {
     CHECK(strstr(why, why_has) != NULL);
     CHECK(g_user_count == 1 && !strcmp(g_users[0].nickname, "Player"));
 }
+/* a [user1] nickname the rule refuses, with why saying what is wrong with it but never the nickname: the game's stop
+   carries it to the log, which players attach to public reports */
+static void refused_nickname(const char* nickname, const char* why_has) {
+    char text[128], why[512];
+    snprintf(text, sizeof text, "[user1]\nnickname=%s\n", nickname);
+    put_ini(text);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == -1);
+    if (!strstr(why, why_has) || (nickname[0] && strstr(why, nickname))) fprintf(stderr, "why: %s\n", why);
+    CHECK(strstr(why, why_has) != NULL && !(nickname[0] && strstr(why, nickname)));
+    CHECK(g_user_count == 1 && !strcmp(g_users[0].nickname, "Player"));
+}
 static void uid_of(const char* text, nn_account_Uid* uid) {
     unsigned long long hi = 0, lo = 0;
     u64 v[2];
@@ -763,7 +774,8 @@ static void test_start(void) {
     char why[512], text[33], *before, *now, *old;
     gone("users.ini");
     gone("users.ini.old");
-    CHECK(snx_users_start(DIR, three, "Ada", why, sizeof why) == -1 && strstr(why, "nickname Ada is not 4 to 20"));
+    CHECK(snx_users_start(DIR, three, "Ada", why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 3 bytes: Eden's rooms take 4 to 20") && !strstr(why, "Ada"));
     CHECK(snx_users_start(DIR, zero, "Aogo", why, sizeof why) == -1 && strstr(why, "zero"));
     CHECK(!got("users.ini") && !got("users.ini.old") && !got("users.ini.new"));
     /* none before: the new one alone, read as user 1 of that uid */
@@ -810,7 +822,8 @@ static void test_rename(void) {
     free(now);
     CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !strcmp(g_users[0].nickname, "Aogo.55") &&
           !strcmp(g_users[1].nickname, "Xuji Two"));
-    CHECK(snx_users_rename(DIR, 2, "Ada", why, sizeof why) == -1 && strstr(why, "nickname Ada is not 4 to 20"));
+    CHECK(snx_users_rename(DIR, 2, "Ada/Bob", why, sizeof why) == -1 &&
+          strstr(why, "the nickname has 0x2f at byte 4: Eden's rooms take 4 to 20") && !strstr(why, "Ada"));
     CHECK(snx_users_rename(DIR, 3, "Afugo", why, sizeof why) == -1 && strstr(why, "there is no user 3: 2 users"));
     now = got("users.ini");
     CHECK(now && strstr(now, "nickname=Xuji Two\n")); /* as it was */
@@ -847,13 +860,14 @@ static void test_refused(void) {
             "[user3] has the uid of [user2]");
     refused("[user1]\n[user2]\nuid=00000000000000000000000000000000\nnickname=Xuji\n", 1, "nor zero");
     refused("[user1]\n[user2]\nuid=0123\nnickname=Xuji\n", 1, "not 32 hex digits");
-    /* a nickname a room wouldn't take: too long, too short, empty, a letter outside ASCII, a sign, a tab */
-    refused("[user1]\nnickname=" NICK20 "x\n", 1, "nickname=" NICK20 "x is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada\n", 1, "nickname=Ada is not 4 to 20 letters");
-    refused("[user1]\nnickname=\n", 1, "nickname= is not 4 to 20 letters");
-    refused("[user1]\nnickname=Jo\xc3\xa3o\n", 1, "is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada/Bob\n", 1, "is not 4 to 20 letters");
-    refused("[user1]\nnickname=Ada\tBob\n", 1, "is not 4 to 20 letters");
+    /* a nickname a room wouldn't take: too long, too short, empty, a letter outside ASCII, a sign, a tab; said by its
+       length or its first byte the rule refuses */
+    refused_nickname(NICK20 "x", "[user1] nickname= has 21 bytes: Eden's rooms take 4 to 20 letters, digits, spaces");
+    refused_nickname("Ada", "[user1] nickname= has 3 bytes: Eden's rooms take 4 to 20 letters");
+    refused_nickname("", "[user1] nickname= has 0 bytes: Eden's rooms take 4 to 20 letters");
+    refused_nickname("Jo\xc3\xa3o", "[user1] nickname= has 0xc3 at byte 3: Eden's rooms take 4 to 20 letters");
+    refused_nickname("Ada/Bob", "[user1] nickname= has 0x2f at byte 4");
+    refused_nickname("Ada\tBob", "[user1] nickname= has 0x09 at byte 4");
     refused("[user1]\npassword=hunter2\n", 1, "is not a setting: uid, nickname");
     refused("[user1]\n[user2]\nuid=" UID2 "\nnickname=Xuji\n", 3, "user=3");
     refused("nickname=Aogo\n[user1]\n", 1, "before [user1]");
