@@ -2,70 +2,101 @@
 // Copyright 2026 the ScarletNX contributors
 package snx.android;
 
-import android.content.res.XmlBlock;
-import android.content.res.XmlResourceParser;
-import org.xmlpull.v1.XmlPullParser;
+import snx.android.app.Activities;
+import snx.android.app.App;
+import snx.android.app.ContextImpl;
+import snx.android.app.Package;
+import snx.android.app.Providers;
 import snx.dalvik.AppClassLoader;
 
 /** Where the runtime starts the app: the manifest read, the app's classes loaded and its components started. */
 public final class Main {
-    static final String ANDROID = "http://schemas.android.com/apk/res/android";
-
     private Main() {}
 
-    /** The app's package name, its Application class (null for android.app.Application), its launcher activity. */
-    record Manifest(String pkg, String application, String launcher) {}
+    /** The app's process name: its package's. */
+    public static String processName() {
+        return Package.get().name();
+    }
+
+    /**
+     * The app's folder on the host, where its data, cache and storage folders are: snx.android.data, which the
+     * runtime sets, or android/PACKAGE in ScarletNX's data folder.
+     */
+    public static java.io.File dataRoot() {
+        String named = System.getProperty("snx.android.data");
+        java.io.File root = named != null ? new java.io.File(named)
+            : new java.io.File(System.getProperty("user.home"), ".local/share/scarletnx/android/" + Package.get().name());
+        root.mkdirs();
+        return root;
+    }
 
     /** A component's class name: one the manifest gives as ".Name" or "Name" is in the app's package. */
-    static String className(String pkg, String name) {
+    public static String className(String pkg, String name) {
         if (name == null) return null;
         if (name.startsWith(".")) return pkg + name;
         return name.indexOf('.') < 0 ? pkg + "." + name : name;
     }
 
-    static Manifest readManifest() throws Exception {
-        byte[] data = Apk.read("AndroidManifest.xml");
-        if (data == null) throw new IllegalStateException("the APK has no AndroidManifest.xml");
-        String pkg = null, application = null, launcher = null;
-        try (XmlBlock block = new XmlBlock(data); XmlResourceParser p = block.newParser()) {
-            String activity = null;
-            boolean main = false, launch = false;
-            for (int e = p.next(); e != XmlPullParser.END_DOCUMENT; e = p.next()) {
-                if (e == XmlPullParser.END_TAG) {
-                    String tag = p.getName();
-                    if ((tag.equals("activity") || tag.equals("activity-alias")) && launcher == null && main && launch)
-                        launcher = activity;
-                    continue;
-                }
-                if (e != XmlPullParser.START_TAG) continue;
-                switch (p.getName()) {
-                    case "manifest" -> pkg = p.getAttributeValue(null, "package");
-                    case "application" -> application = className(pkg, p.getAttributeValue(ANDROID, "name"));
-                    case "activity" -> {
-                        activity = className(pkg, p.getAttributeValue(ANDROID, "name"));
-                        main = launch = false;
-                    }
-                    case "activity-alias" -> {
-                        activity = className(pkg, p.getAttributeValue(ANDROID, "targetActivity"));
-                        main = launch = false;
-                    }
-                    case "action" -> main |= "android.intent.action.MAIN".equals(p.getAttributeValue(ANDROID, "name"));
-                    case "category" ->
-                        launch |= "android.intent.category.LAUNCHER".equals(p.getAttributeValue(ANDROID, "name"));
-                    default -> {}
-                }
-            }
-        }
-        return new Manifest(pkg, application, launcher);
+    private static int status;
+
+    /** The process's end, as the last activity's finish brings it: the main loop stops, main returns status. */
+    public static void exit(int code) {
+        status = code;
+        android.os.Looper.getMainLooper().quitSafely();
     }
 
+    /** The exit status that main left, for the host. */
+    public static int status() {
+        return status;
+    }
+
+    /**
+     * The boot, in the order of Android's ActivityThread.handleBindApplication and its launch of the first activity:
+     * the main looper, the resources and the manifest, the component factory and the Application, the content
+     * providers before Application.onCreate, then the launcher activity, and the main loop.
+     */
     public static void main(String[] args) throws Throwable {
-        Manifest manifest = readManifest();
-        System.out.println("package " + manifest.pkg() + ", application " + manifest.application() + ", launcher "
-            + manifest.launcher());
-        ClassLoader app = new AppClassLoader(Main.class.getClassLoader());
-        Class<?> activity = Class.forName(manifest.launcher(), false, app);
-        for (Class<?> c = activity; c != null; c = c.getSuperclass()) System.out.println("  " + c.getName());
-        activity.getDeclaredMethods(); // linked, so verified
+        // an exception that no thread catches ends the process, as RuntimeInit's handler does
+        Thread.setDefaultUncaughtExceptionHandler((thread, e) -> {
+            android.util.Log.e("AndroidRuntime", "FATAL EXCEPTION: " + thread.getName(), e);
+            Runtime.getRuntime().halt(1);
+        });
+        try {
+            boot();
+        } catch (Throwable e) {
+            Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), e);
+        }
+        // the app's threads end with the process, as on Android
+        System.exit(status);
+    }
+
+    private static void boot() throws Throwable {
+        android.os.Looper.prepareMainLooper();
+        android.content.res.Resources res = android.content.res.Resources.getSystem();
+        Package pkg = Package.get();
+        pkg.read(res);
+        String launcher = pkg.launcher();
+        android.util.Log.i("snx", "package " + pkg.name() + ", application " + pkg.application.className + ", launcher " + launcher);
+
+        ClassLoader loader = new AppClassLoader(Main.class.getClassLoader());
+        android.app.AppComponentFactory factory = android.app.AppComponentFactory.DEFAULT;
+        if (pkg.application.appComponentFactory != null)
+            factory = (android.app.AppComponentFactory) Class.forName(pkg.application.appComponentFactory, true, loader).getDeclaredConstructor().newInstance();
+        loader = factory.instantiateClassLoader(loader, pkg.application);
+        App.set(loader, factory, res);
+
+        String appClass = pkg.application.className != null ? pkg.application.className : "android.app.Application";
+        android.app.Application application = factory.instantiateApplication(loader, appClass);
+        ContextImpl base = new ContextImpl(res, false);
+        base.setTheme(pkg.application.theme);
+        application.attachContext(base);
+        base.setOuter(application);
+        App.setApplication(application);
+        Providers.install();
+        application.onCreate();
+
+        if (launcher == null) throw new IllegalStateException("the manifest has no launcher activity");
+        Activities.launchMain(launcher);
+        android.os.Looper.loop();
     }
 }

@@ -2,6 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "android/runtime/main.h"
 #include "android/dex/translate.h"
+#include "android/res/asset_jni.h"
+#include "android/db/sqlite_jni.h"
+#include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
 #include "android/runtime/app.h"
 #include "android/runtime/jvm.h"
@@ -139,7 +142,8 @@ static void run_app(Run* run) {
     }
     JNIEnv* env = jvm.env;
     run->status = 1;
-    if (!android_app_register(env) || !android_xml_register(env)) return;
+    if (!android_app_register(env) || !android_xml_register(env) || !android_assets_register(env) ||
+        !android_sqlite_register(env) || !android_text_register(env)) return;
     jclass main_class = (*env)->FindClass(env, "snx/android/Main");
     jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;
     jclass string = (*env)->FindClass(env, "java/lang/String");
@@ -197,7 +201,23 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
         android_app_close();
         return 1;
     }
-    Run run = {jar, options, option_count, 1};
+    /* the fonts beside the jar (the build copies them there); an option the user gives comes later and wins */
+    char* folder = snx_dirname(jar);
+    char* fonts = folder ? snx_path_join(folder, "android-fonts") : NULL;
+    char* fonts_option = fonts ? snx_format("-Dsnx.android.fonts=%s", fonts) : NULL;
+    char** all = calloc(option_count + 1, sizeof *all);
+    free(folder);
+    free(fonts);
+    if (!fonts_option || !all) {
+        free(fonts_option);
+        free(all);
+        free(jar);
+        android_app_close();
+        return 1;
+    }
+    all[0] = fonts_option;
+    for (size_t i = 0; i < option_count; ++i) all[i + 1] = options[i];
+    Run run = {jar, all, option_count + 1, 1};
 #ifdef _WIN32
     HANDLE thread = CreateThread(NULL, 16u << 20, run_thread, &run, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (thread) {
@@ -212,6 +232,8 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
     if (!pthread_create(&thread, &attr, run_thread, &run)) pthread_join(thread, NULL);
     pthread_attr_destroy(&attr);
 #endif
+    free(all);
+    free(fonts_option);
     free(jar);
     android_app_close();
     return run.status;
