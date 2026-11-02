@@ -7,8 +7,8 @@
 #
 #   scripts/linux-llvm.sh ARCH PREFIX [SOURCE] [-- cmake args]
 #
-# ARCH is the machine the runtime runs on, as uname -m names it: x86_64, aarch64, ppc64le, riscv64, loongarch64 or
-# ppc64 (big-endian ELFv2, Arch POWER's). Another than this machine's is cross-built with Clang against the system root
+# ARCH is the machine the runtime runs on: x86_64, aarch64, ppc64le, riscv64, loongarch64, ppc64 (big-endian ELFv2,
+# Arch POWER's), mips64 or mips64el (n64). Another than this machine's is cross-built with Clang against the system root
 # SNX_SYSROOT, for the same CPU baseline and ABI as the linux-*-cross presets build the runtime (cmake/cross.cmake),
 # and LLVM builds the tablegens it runs here in a tree of their own. SOURCE is an llvm-project folder or .tar.xz
 # (default: the release named by LLVM_VERSION, downloaded). Configure ScarletNX with -DLLVM_DIR=PREFIX/lib/cmake/llvm
@@ -28,9 +28,15 @@ case $arch in
     ppc64) target=PowerPC triple=powerpc64-unknown-linux-gnu flags="-mcpu=power8 -mabi=elfv2" ;;
     riscv64) target=RISCV triple=riscv64-linux-gnu flags=-march=rv64gc ;;
     loongarch64) target=LoongArch triple=loongarch64-linux-gnu flags=-march=la64v1.0 ;;
-    *) echo "ARCH must be x86_64, aarch64, ppc64le, ppc64, riscv64 or loongarch64, not $arch" >&2; exit 2 ;;
+    mips64) target=Mips triple=mips64-unknown-linux-gnu flags=-march=mips64r2 ;;
+    mips64el) target=Mips triple=mips64el-unknown-linux-gnu flags=-march=mips64r2 ;;
+    *) echo "ARCH must be x86_64, aarch64, ppc64le, ppc64, riscv64, loongarch64, mips64 or mips64el, not $arch" >&2
+       exit 2 ;;
 esac
-if [ "$arch" != "$(uname -m)" ]; then
+machine=$(uname -m)
+# uname -m names both MIPS64 byte orders mips64: the bytes 1, 0 read as the 16-bit 1 on a little-endian machine
+if [ "$machine" = mips64 ] && [ "$(printf '\001\000' | od -An -tu2 | tr -d ' ')" = 1 ]; then machine=mips64el; fi
+if [ "$arch" != "$machine" ]; then
     sysroot=${SNX_SYSROOT:?SNX_SYSROOT names the system root of $arch to cross-build against}
     # the tablegens run here: this machine's Clang builds them, without the target's flags
     set -- -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR="$arch" -DCMAKE_SYSROOT="$sysroot" \

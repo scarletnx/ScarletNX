@@ -62,6 +62,8 @@ elseif(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(snx_openssl_target linux64-riscv64)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "loongarch64")
         set(snx_openssl_target linux64-loongarch64)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips64|mips64el)$")
+        set(snx_openssl_target linux64-mips64) # n64, in the compiler's byte order
     else()
         message(FATAL_ERROR "OpenSSL's Linux cross build has no target for ${CMAKE_SYSTEM_PROCESSOR} "
                             "(cmake/openssl.cmake)")

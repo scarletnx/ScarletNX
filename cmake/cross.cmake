@@ -14,11 +14,13 @@
 #     so the configure checks (the libraries' among them) compile for the same CPU and ABI. RISC-V builds rv64gc and
 #     LoongArch LA64 v1.0, as the recompiler's modules are (ir.c), and both without linker relaxation: the runtime
 #     library is merged into each module with its functions' own target features, and the module's linker (link_elf.c)
-#     moves no code.
+#     moves no code. MIPS64 builds MIPS64 Release 2 with the n64 ABI, in either byte order.
 #   - for a Linux cross build with Clang (the linux-*-cross presets): the target triple and the sysroot, which CMake
 #     passes to its own compiles from CMAKE_C_COMPILER_TARGET and CMAKE_SYSROOT and the others don't get from the
-#     compiler's path. SNX_TARGET_LDFLAGS adds what their links need: LLD, as the build machine's ld only knows its
-#     own architecture.
+#     compiler's path, and the GCC toolchain whose runtime (crt files, libgcc, libstdc++) Clang links where it isn't
+#     in the sysroot (CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN: gnu-cross's buildroots, docs/MIPS64.md).
+#     SNX_TARGET_LDFLAGS adds what their links need: LLD, as the build machine's ld only knows its own architecture,
+#     or the target's GNU ld.
 # All are empty for the other hosts and builds.
 include_guard(GLOBAL)
 option(SNX_PPC64_ELFV2 "Build big-endian PowerPC64 glibc for ELFv2 (Arch POWER), not ELFv1 (Debian ports)" ON)
@@ -31,6 +33,10 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "riscv64")
     set(SNX_ARCH_FLAGS -march=rv64gc -mno-relax)
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "loongarch64")
     set(SNX_ARCH_FLAGS -march=la64v1.0 -mno-relax)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips64|mips64el)$")
+    # n64 is the ABI Clang takes for the mips64 triples; with -mabi=64 named it finds no GCC runtime in gnu-cross's
+    # buildroots (-print-libgcc-file-name prints a bare libgcc.a)
+    set(SNX_ARCH_FLAGS -march=mips64r2)
 endif()
 list(JOIN SNX_ARCH_FLAGS " " snx_arch_flags)
 string(APPEND CMAKE_C_FLAGS " ${snx_arch_flags}")
@@ -53,9 +59,15 @@ if(CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
     if(CMAKE_SYSROOT)
         list(APPEND SNX_TARGET_FLAGS --sysroot=${CMAKE_SYSROOT})
     endif()
+    if(CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN)
+        list(APPEND SNX_TARGET_FLAGS --gcc-toolchain=${CMAKE_C_COMPILER_EXTERNAL_TOOLCHAIN})
+    endif()
     # LLD links no ELFv1 object, the ABI of big-endian PowerPC64 glibc on Debian ports: GNU ld does
-    # (binutils-powerpc64-linux-gnu). Big-endian musl and Arch POWER's glibc are ELFv2, as LLD takes it
-    if(CMAKE_C_COMPILER_TARGET MATCHES "^(powerpc64|ppc64)-([a-z]+-)?linux-gnu$" AND NOT SNX_PPC64_ELFV2)
+    # (binutils-powerpc64-linux-gnu). Big-endian musl and Arch POWER's glibc are ELFv2, as LLD takes it. MIPS64 links
+    # with GNU ld too, the linux-mips64*-cross presets': gnu-cross's libgcc.a has absolute .eh_frame pointers (its
+    # 128-bit division, __divti3), which LLD refuses in a position-independent program and GNU ld makes relative
+    if((CMAKE_C_COMPILER_TARGET MATCHES "^(powerpc64|ppc64)-([a-z]+-)?linux-gnu$" AND NOT SNX_PPC64_ELFV2) OR
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(mips64|mips64el)$")
         set(SNX_TARGET_LDFLAGS -fuse-ld=bfd)
     else()
         set(SNX_TARGET_LDFLAGS -fuse-ld=lld)

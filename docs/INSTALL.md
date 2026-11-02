@@ -19,9 +19,10 @@ builds. The latest:
 | Windows x86-64 | [ScarletNX-windows-x86_64.zip](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-windows-x86_64.zip) | Run `bin\scarletnx.exe` |
 | Android, arm64 and x86_64 | [ScarletNX-android-universal.apk](https://github.com/scarletnx/nightly/releases/latest/download/ScarletNX-android-universal.apk) | [Android](ANDROID.md) |
 
-Games need a Vulkan 1.3 driver. macOS and iOS build in CI. An iPhone prepares and runs a game by itself, and no game
-runs on macOS yet: see [macOS and iOS](APPLE.md). To build ScarletNX yourself, see [Build](BUILD.md), whose
-[Install / AppImage](BUILD.md#install--appimage) installs a build.
+Games need a Vulkan 1.3 driver. MIPS64 has no download: it builds from its presets ([MIPS64](MIPS64.md)). macOS and iOS
+build in CI. An iPhone prepares and runs a game by itself, and no game runs on macOS yet: see [macOS and iOS](APPLE.md).
+To build ScarletNX yourself, see [Build](BUILD.md), whose [Install / AppImage](BUILD.md#install--appimage) installs a
+build.
 
 ## Keys and games
 
