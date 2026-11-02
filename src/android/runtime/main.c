@@ -2,17 +2,29 @@
    Copyright 2026 the ScarletNX contributors */
 #include "android/runtime/main.h"
 #include "android/dex/translate.h"
+#include "android/res/xml_jni.h"
+#include "android/runtime/app.h"
+#include "android/runtime/jvm.h"
 #include "common/utilities/common.h"
 #include "common/utilities/zip.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 static const char usage[] =
     "Usage: scarletnx-android [options] APK\n"
     "Runs an Android app: its DEX code translated to JVM classes, with ScarletNX's own Android framework.\n"
     "\n"
-    "  --translate=DIR   Translate every class of the APK ahead of time into DIR, a .class file for each, and stop\n";
+    "  --translate=DIR   Translate every class of the APK ahead of time into DIR, a .class file for each, and stop\n"
+    "  -J OPTION         An option for the JVM (-J-Xmx2g)\n"
+    "\n"
+    "JAVA_HOME names the JDK (21 or later) to run on; without it, the one the build found.\n";
 
 typedef struct {
     unsigned warnings;
@@ -108,26 +120,134 @@ static int translate_apk(const char* apk, const char* folder) {
     return failures ? 1 : 0;
 }
 
+/* the run on the JVM's own thread: HotSpot wants a thread other than the process's first, as the java launcher
+   gives it */
+typedef struct {
+    const char* framework;
+    char** options;
+    size_t option_count;
+    int status;
+} Run;
+static void run_app(Run* run) {
+    char error[1024];
+    AndroidJvm jvm;
+    if (!android_jvm_start(&jvm, run->framework, (const char* const*)run->options, run->option_count, error,
+                           sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        run->status = 1;
+        return;
+    }
+    JNIEnv* env = jvm.env;
+    run->status = 1;
+    if (!android_app_register(env) || !android_xml_register(env)) return;
+    jclass main_class = (*env)->FindClass(env, "snx/android/Main");
+    jmethodID main = main_class ? (*env)->GetStaticMethodID(env, main_class, "main", "([Ljava/lang/String;)V") : NULL;
+    jclass string = (*env)->FindClass(env, "java/lang/String");
+    jobjectArray args = string ? (*env)->NewObjectArray(env, 0, string, NULL) : NULL;
+    if (!main || !args) {
+        android_jvm_exception(env);
+        fprintf(stderr, "scarletnx-android: the framework (%s) has no snx.android.Main\n", run->framework);
+        return;
+    }
+    (*env)->CallStaticVoidMethod(env, main_class, main, args);
+    run->status = android_jvm_exception(env) ? 1 : 0;
+    /* the app's other threads keep the JVM until they end, as the java launcher's DestroyJavaVM waits */
+    (*jvm.vm)->DestroyJavaVM(jvm.vm);
+}
+#ifdef _WIN32
+static DWORD WINAPI run_thread(LPVOID run) {
+    run_app(run);
+    return 0;
+}
+#else
+static void* run_thread(void* run) {
+    run_app(run);
+    return NULL;
+}
+#endif
+
+/* the framework's jar: SNX_ANDROID_FRAMEWORK, or the one beside the program */
+static char* framework_jar(const char* argv0) {
+    const char* named = getenv("SNX_ANDROID_FRAMEWORK");
+    if (named && named[0]) {
+        size_t n = strlen(named) + 1;
+        char* copy = malloc(n);
+        if (copy) memcpy(copy, named, n);
+        return copy;
+    }
+    char* exe = snx_executable(argv0);
+    char* folder = exe ? snx_dirname(exe) : NULL;
+    char* jar = folder ? snx_path_join(folder, "scarletnx-android-framework.jar") : NULL;
+    free(folder);
+    free(exe);
+    return jar;
+}
+
+static int run_apk(const char* argv0, const char* apk, char** options, size_t option_count) {
+    char error[1024];
+    if (!android_app_open(apk, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-android: %s\n", error);
+        android_app_close();
+        return 1;
+    }
+    char* jar = framework_jar(argv0);
+    if (!jar || !snx_is_file(jar)) {
+        fprintf(stderr, "scarletnx-android: no framework jar at %s\n", jar ? jar : "(none)");
+        free(jar);
+        android_app_close();
+        return 1;
+    }
+    Run run = {jar, options, option_count, 1};
+#ifdef _WIN32
+    HANDLE thread = CreateThread(NULL, 16u << 20, run_thread, &run, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (thread) {
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+    }
+#else
+    pthread_attr_t attr;
+    pthread_t thread;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, (size_t)16 << 20);
+    if (!pthread_create(&thread, &attr, run_thread, &run)) pthread_join(thread, NULL);
+    pthread_attr_destroy(&attr);
+#endif
+    free(jar);
+    android_app_close();
+    return run.status;
+}
+
 int snx_android_main(int argc, char** argv) {
     const char *apk = NULL, *translate = NULL;
+    char** options = calloc((size_t)argc + 1, sizeof *options);
+    size_t option_count = 0;
+    if (!options) return 1;
     for (int i = 1; i < argc; ++i) {
         if (!strncmp(argv[i], "--translate=", 12))
             translate = argv[i] + 12;
+        else if (!strcmp(argv[i], "-J") && i + 1 < argc)
+            options[option_count++] = argv[++i];
+        else if (!strncmp(argv[i], "-J", 2) && argv[i][2])
+            options[option_count++] = argv[i] + 2;
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             fputs(usage, stdout);
+            free(options);
             return 0;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "scarletnx-android: unknown option %s\n%s", argv[i], usage);
+            free(options);
             return 2;
         } else {
             apk = argv[i];
         }
     }
+    int status;
     if (!apk) {
         fputs(usage, stderr);
-        return 2;
+        status = 2;
+    } else {
+        status = translate ? translate_apk(apk, translate) : run_apk(argv[0], apk, options, option_count);
     }
-    if (translate) return translate_apk(apk, translate);
-    fprintf(stderr, "scarletnx-android: running an app is not implemented yet; --translate=DIR translates it\n");
-    return 1;
+    free(options);
+    return status;
 }
