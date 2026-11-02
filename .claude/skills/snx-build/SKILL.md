@@ -60,6 +60,13 @@ The build also makes `snx-shaderc`. Check a translator change on a shader corpus
 corpus with `--shader_corpus=dir`. Then run `build/snx-shaderc dir --validate` (`spirv-val` must be on PATH). Use
 `--out` to save direct SPIR-V modules for disassembly or for a comparison between builds.
 
+`tools/switch1_check.py SCENE [--run]` does this comparison for a Switch 1 game, after a change to the shader
+translator, the renderer or the GPU engines. It records the corpus of the scene one time. Then it compares the SPIR-V
+of `snx-shaderc` of the merge base with `main` (built in a worktree with `SNX_DEPLOY` off) and of `build/`.
+
+With `--run`, the script also plays the scene and compares the skipped draws and dispatches with a reference run.
+The scenes are in `switch1_check.json` in the data folder, because they name games. `--help` gives the details.
+
 A corpus holds the shaders of the game. Keep it under `games/` or in the scratchpad, never in a tracked folder of the
 repo. `--vk_validation=1` turns on the Khronos validation layer if the layer is on the machine. On Arch, the user
 installs it from `vulkan-validation-layers`.
