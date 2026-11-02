@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nvn's constant banks and point sprite origin, which the game's driver's must match:
-   nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1, and the sprite origin and stencil faces of a
-   draw's dynamic state. The records go in through nvn_draw_record */
+   nvn_draw_init's bank 0 point size and bank 2 words, a program's bank 1, and the window and sprite origins, front face
+   and stencil faces of a draw's dynamic state. The records go in through nvn_draw_record */
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/renderer.h"
@@ -175,47 +175,61 @@ static void test_bind_program(void) {
     check(d.bind.cb_size[fs][1] == 0, "fragment bank 1 size (no data): expected 0, found %#x", d.bind.cb_size[fs][1]);
 }
 
-/* a draw's dynamic state, built by sync on the draw: the window origin the driver writes (the flip when one of a
-   lower left origin and near = -w is set but not both) and its sprite origin bit, set in all four */
+/* a draw's dynamic state, built by sync on the draw: the window origin the driver writes and its sprite origin bit */
 #define DRAW 0x2000u
-static void draw_with(u32 origin, u32 depth_mode) {
+#define POLY 0x2800u
+/* a queue initialized while the device's origin is at_init, the device then set to origin and depth_mode, a polygon
+   state of front face front and back culling bound, and a draw */
+static void draw_with(u32 at_init, u32 origin, u32 depth_mode, u32 front) {
     NvnPDraw r;
+    NvnPBindState st;
+    u32 poly = (u32)nvn_set_field(nvn_set_field(nvn_set_field(0, NVN_POLY_CULL, NVN_FACE_BACK), NVN_POLY_FRONT, front),
+                                  NVN_POLY_MODE, NVN_POLYGON_MODE_FILL);
     memset(&r, 0, sizeof r);
     r.count = 3;
     memcpy(g_mem + DRAW, &r, sizeof r);
+    memset(&st, 0, sizeof st);
+    st.kind = 4;
+    memcpy(st.bytes, &poly, sizeof poly);
+    memcpy(g_mem + POLY, &st, sizeof st);
+    nvn_draw_device(at_init, depth_mode);
     memset(&d, 0, sizeof d);
     nvn_draw_init(&d, 0);
     nvn_draw_device(origin, depth_mode);
+    check(nvn_draw_record(&d, OP_BIND_STATE, POLY, sizeof st) == 1, "OP_BIND_STATE was not taken");
     check(nvn_draw_record(&d, OP_DRAW, DRAW, sizeof r) == 1, "OP_DRAW was not taken");
 }
-/* the drivers of NVN 53.105 on flip for a lower left origin alone, the 53.13 one for one of it and near = -w */
-static void test_sprite_origin(void) {
+/* the driver writes the window origin register as it initializes the queue, the flip for the device's origin lower
+   left then (53.13's), and the polygon state's front face as it is: one game initializes its queue and then sets an
+   upper left origin, so it keeps the flip; another sets that origin first, so it has none. Neither the depth mode nor
+   the driver's version changes either */
+static void test_window_origin(void) {
     static const struct {
-        u32 api, origin, depth_mode, window;
+        u32 api, at_init, origin, depth_mode, front, window;
         const char* what;
     } cases[] = {
-        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, 0,
-         "55.15 upper left, near = -w"},
-        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
-         "55.15 lower left, near = -w"},
-        {53u << 16 | 105, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
-         "53.105 lower left, near = -w"},
-        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0,
-         "55.15 upper left, near = 0"},
-        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y,
-         "55.15 lower left, near = 0"},
-        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_MINUS_W, DS_ORIGIN_FLIP_Y,
-         "53.13 upper left, near = -w"},
-        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, 0,
-         "53.13 upper left, near = 0"},
-        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_DEPTH_MODE_NEAR_IS_ZERO, DS_ORIGIN_FLIP_Y,
-         "53.13 lower left, near = 0"},
+        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_MINUS_W, NVN_FRONT_FACE_CW, DS_ORIGIN_FLIP_Y, "53.13, upper left after the queue"},
+        {52u << 16 | 32, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_MINUS_W, NVN_FRONT_FACE_CCW, 0, "52.32, upper left before the queue"},
+        {53u << 16 | 13, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_MINUS_W, NVN_FRONT_FACE_CW, 0, "53.13, upper left before the queue"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_MINUS_W, NVN_FRONT_FACE_CCW, DS_ORIGIN_FLIP_Y, "55.15, lower left"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_ZERO, NVN_FRONT_FACE_CW, 0, "55.15, upper left, near = 0"},
+        {53u << 16 | 105, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_ZERO, NVN_FRONT_FACE_CCW, DS_ORIGIN_FLIP_Y, "53.105, lower left, near = 0"},
+        {55u << 16 | 15, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT,
+         NVN_DEPTH_MODE_NEAR_IS_MINUS_W, NVN_FRONT_FACE_CCW, 0, "55.15, lower left after the queue"},
     };
     for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) {
         g_nvn.loader.api = cases[i].api;
-        draw_with(cases[i].origin, cases[i].depth_mode);
+        draw_with(cases[i].at_init, cases[i].origin, cases[i].depth_mode, cases[i].front);
         check(d.ds.dyn.window_origin == cases[i].window, "%s window_origin: expected %#x, found %#x", cases[i].what,
               cases[i].window, d.ds.dyn.window_origin);
+        check(d.ds.dyn.front_cw == (cases[i].front == NVN_FRONT_FACE_CW), "%s front_cw: expected %d, found %u",
+              cases[i].what, cases[i].front == NVN_FRONT_FACE_CW, d.ds.dyn.front_cw);
         check(d.ds.dyn.sprite_origin == 1, "%s sprite_origin: expected 1, found %u", cases[i].what,
               d.ds.dyn.sprite_origin);
     }
@@ -267,7 +281,7 @@ int main(void) {
     nvn_init();
     test_init();
     test_bind_program();
-    test_sprite_origin();
+    test_window_origin();
     test_stencil_faces();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);
