@@ -49,6 +49,10 @@ void vk_query_pred_drop(u32);
 int vk_query_pred_compare(u64, u32*);
 int vk_render_predicate(u64 a, int equal, u32* pred);
 void vk_render_predicate_drop(u32 pred);
+typedef struct {
+    u32 counter, at, len;
+    u64 first, end;
+} SamplesCount; /* vk.h's */
 #include "nx/gpu/vk/release.c"
 typedef void (*VkChangedRun)(void* user, u32 from, u32 to); /* vk.h's, for writeback.c */
 #include "nx/gpu/vk/writeback.c"
@@ -459,6 +463,30 @@ int main(void) {
     assert(vk_release_read(0x10048, count, 4) == 1 && snx_ld_le32(count) == 101);
     assert(vk_release_read(0x10050, got, 1) == 0);
     assert(waited_graphics >= sgate && query_reads == reads_before && g_rhead - g_rtail == queued);
+    /* a draw's read with room for counts takes a samples-passed report whole in its range without waiting: the count
+       left out (zeros) for the GPU to write, where it is read and with its segments. One sticking out of the range, at
+       an unaligned offset, under a later payload, or with no room, is read as vk_release_read reads it: its submit
+       waited for and its count peeked (405, the stub's for segments 5 to 9) */
+    {
+        u8 cb[32];
+        SamplesCount counts[2];
+        u32 n = 9;
+        u64 forwards = g_vk_release_forwards, waited_now = waited_graphics;
+        memset(memory + 4096 + 0x80, 0xAB, 0x40);
+        vk_release_samples(0x10090, 16, 3, 5, 9, 0x1122334455667788ull);
+        assert(vk_release_read_counts(0x10080, cb, 32, counts, 2, &n) == 1 && n == 1);
+        assert(counts[0].counter == 3 && counts[0].at == 0x10 && counts[0].len == 8 && counts[0].first == 5 &&
+               counts[0].end == 9);
+        assert(cb[0] == 0xAB && cb[0x10] == 0 && cb[0x17] == 0 && cb[0x18] == 0x88 && cb[0x1F] == 0x11);
+        assert(g_vk_release_forwards == forwards + 1 && waited_graphics == waited_now && memory[4096 + 0x90] == 0xAB);
+        assert(vk_release_read_counts(0x10088, cb, 16, counts, 2, &n) == 1 && n == 0 && cb[8] == 0x95 && cb[9] == 1);
+        assert(vk_release_read_counts(0x1008E, cb, 32, counts, 2, &n) == 1 && n == 0 && cb[2] == 0x95 && cb[3] == 1);
+        assert(vk_release_read_counts(0x10080, cb, 32, counts, 0, &n) == 1 && n == 0 && cb[0x10] == 0x95);
+        value = 7;
+        vk_release_write(0x10094, &value, 1);
+        assert(vk_release_read_counts(0x10080, cb, 32, counts, 2, &n) == 1 && n == 0 && cb[0x10] == 0x95 &&
+               cb[0x14] == 7);
+    }
     vk_release_drain();
     assert(memory[4096 + 0x40] == 25 && memory[4096 + 0x41] == 23 && g_rhead == g_rtail);
     /* the render enable's comparison of a count not known yet with a zero 16 bytes on: a predicate for each queued

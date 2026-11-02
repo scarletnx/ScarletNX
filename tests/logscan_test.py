@@ -170,6 +170,9 @@ MISSED = HEADER.replace('[   0.', '[   0,') + (
     'earlier runs queued\n'
     '[   2,00] vulkan: shader 0123456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
     '[   2,10] vulkan: shader 1111456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
+    '[   2,11] vulkan: vertex 3333456789abcdef not translated: a jump table in a constant buffer\n'
+    '[   2,12] vulkan: paired vertex 4444456789abcdef not translated: a jump table in a constant buffer\n'
+    '[   2,13] vulkan: fragment 5555456789abcdef not translated: TEXS encoding 3, fp32 1\n'
     '[   2,20] vulkan: compute 2222456789abcdef not translated: global memory base R4 not tracked at 1a0: no write '
     'before\n'
     '[   2,30] gpu: method 100 for class b1c0 on subchannel 2: no engine here runs that class\n'
@@ -283,7 +286,8 @@ def main():
     check(
         missed
         == {
-            ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 2,
+            ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 3,
+            ('gpu', 'shader', 'a jump table in a constant buffer'): 2,
             ('gpu', 'compute shader', 'global memory base R4 not tracked at 1a0: no write before'): 1,
             ('gpu', 'class', 'b1c0'): 2,
             ('gpu', 'gpu', 'semaphore operation 3a400040 is unknown'): 1,
@@ -308,7 +312,7 @@ def main():
     md = run(['-', '--format', 'markdown'], MISSED.encode())
     for want in (
         '**What else the runtime missed:**',
-        '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (2 shaders)',
+        '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (3 shaders)',
         '  - methods of class `b1c0`, which no engine runs (2x)',
         '  - macro with no native form: `bcbf04909857a72f`',
         '  - interpreted most, by hash: `bcbf04909857a72f 100000`',

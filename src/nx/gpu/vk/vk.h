@@ -613,6 +613,12 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
+/* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
+   (the queue frees it), or over the bytes the write-back after leaves */
+void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after);
+/* the write-back a draw's writes to s go on from (its landed bytes become their original, NULL until then), 0: none */
+u64 vk_gfx_image_after(Surf* s, u32 size);
+int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 int vk_gfx_image_pending(u64 gva, u64 size);
 void vk_gfx_image_land(void);
@@ -623,6 +629,11 @@ int vk_gfx_image_in_flight(int unsubmitted);
 /* the submissions up to sub are done: the write-backs recorded in them land (cmd.c's landing, vk_lock) */
 void vk_gfx_image_frame_done(u64 sub);
 int vk_gfx_image_holds(const Surf* s); /* s has a storage result waiting to land in memory */
+/* depth_pack.c: a zeta format's packing of depth and stencil, -1 for one that doesn't pack; layer of the packed target
+   s (unscaled, single-sampled, in TRANSFER_SRC_OPTIMAL) into buf at at in the guest's layout, rows pitch bytes apart:
+   1, or 0 when it can't */
+int vk_depth_pack_mode(u32 zeta);
+int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u64 at, u32 pitch);
 u64 vk_surf_guest_size(const Surf* s);
 int vk_surf_can_writeback(const Surf* s);
 void vk_surf_flush(Surf* s, const u8* original); /* original preserves newer guest writes for storage images */
@@ -646,7 +657,8 @@ int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
-void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen);
+/* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
+void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size);
 void vk_tex_note_writeback(Surf* s);
 /* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
    byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
@@ -962,6 +974,15 @@ void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
+/* a samples-passed report a draw reads before it is performed: its count, len bytes (4 or 8) at byte at of what was
+   read, is counter's segments [first, end), written there on the GPU (vk_query_counts) */
+typedef struct {
+    u32 counter, at, len;
+    u64 first, end;
+} SamplesCount;
+/* vk_release_read's, with the samples-passed reports queued over the range that the GPU can write there left out of dst
+   (zeros) and listed in counts, at most max of them, *n set: no wait for those */
+int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 u32 vk_release_value(u32 id);
@@ -987,6 +1008,10 @@ int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
 u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, changing nothing */
+/* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
+   when they can't be counted on the GPU (the caller then reads the reports performed) */
+int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);
+extern u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote */
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1

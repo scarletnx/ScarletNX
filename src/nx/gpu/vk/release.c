@@ -474,10 +474,17 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
    holds while it takes releases from the queue and writes them, so a release is either still queued or in memory.
    Storage results still pending there may be newer than the releases (a release lands storage images and puts the
    compute batch aside before it is queued), so they are waited for instead. The queue is looked at first: almost no
-   read meets a release, and those go on at once */
-int vk_release_read(u64 gva, void* dst, u64 len) {
+   read meets a release, and those go on at once.
+   A samples-passed report's count is known once its submit is done. With room in counts (max), a report whole in the
+   range, its count 4-byte aligned and no release after it over the count, is read past with its count left out (zeros)
+   for the GPU to write where the read goes (vk_query_counts): no wait. Any other is read once its submit is done: a
+   render enable comparing two of them read them so, and landed every queued result on the GPU thread to get them (a
+   twentieth of one game's GPU thread) */
+static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n) {
     int r = 0;
-    u64 sgate = 0; /* the submit that the samples reports there count up to */
+    u64 sgate = 0, listed[4]; /* the submit the reports read here count up to; the queue numbers of those in counts */
+    *n = 0;
+    if (max > sizeof listed / sizeof *listed) max = sizeof listed / sizeof *listed;
     if (!len || vk_result_landing()) return len ? -1 : 0;
     vk_lock();
     if (!pend_hit(&g_rpages, gva, len)) {
@@ -491,11 +498,20 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
     for (u64 i = from; i < head && r >= 0; i++) {
         const Release* q = &g_rq[i % RQ_N];
         if (!release_overlaps(q, &range)) continue;
-        /* the same memory through another address: not known here. A samples report's count is known once its
-           submit is done: a render enable comparing two of them read them so, and landed every queued result on the
-           GPU thread to get them (a twentieth of one game's GPU thread) */
+        /* the same memory through another address: not known here */
         r = gva < q->gva + q->len && q->gva < gva + len && len <= 0x10000 ? 1 : -1;
-        if (r > 0 && q->samples && q->gate > sgate) sgate = q->gate;
+        if (r <= 0 || !q->samples) continue;
+        u32 bytes = q->len == 4 ? 4 : 8;
+        int gpu = *n < max && q->gva >= gva && q->gva + q->len <= gva + len && !((q->gva - gva) & 3);
+        for (u64 j = i + 1; j < head && gpu; j++) { /* a later payload over the count goes on top of it */
+            const Release* later = &g_rq[j % RQ_N];
+            if (later->gva && later->gva < q->gva + bytes && q->gva < later->gva + later->len) gpu = 0;
+        }
+        if (gpu) {
+            listed[*n] = i;
+            counts[(*n)++] = (SamplesCount){q->qch, (u32)(q->gva - gva), bytes, q->qfirst, q->qend};
+        } else if (q->gate > sgate)
+            sgate = q->gate;
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len))) r = -1;
@@ -523,7 +539,9 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
             hi = q->gva + q->len < gva + len ? q->gva + q->len : gva + len;
             u8 data[sizeof q->data];
             const u8* from_data = q->data;
-            if (q->samples) { /* the count as perform writes it, with the timestamp after it */
+            int gpu = 0;
+            for (u32 k = 0; k < *n; k++) gpu |= listed[k] == i;
+            if (q->samples && !gpu) { /* the count as perform writes it, with the timestamp after it */
                 u64 v = vk_query_peek(q->qch, q->qfirst, q->qend);
                 memcpy(data, q->data, sizeof data);
                 if (q->len == 4)
@@ -536,9 +554,17 @@ int vk_release_read(u64 gva, void* dst, u64 len) {
         }
         pm_unlock(&g_rlock);
         __atomic_add_fetch(&g_vk_release_forwards, 1, __ATOMIC_RELAXED);
-    }
+    } else
+        *n = 0;
     vk_unlock();
     return r;
+}
+int vk_release_read(u64 gva, void* dst, u64 len) {
+    u32 n;
+    return read_queued(gva, dst, len, NULL, 0, &n);
+}
+int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n) {
+    return read_queued(gva, dst, len, counts, max, n);
 }
 void vk_release_need(u64 gva, u64 len) {
     if (len && __atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) release_match(gva, len, 0, 0);

@@ -644,17 +644,23 @@ void vk_rt_reload(u64 gva) {
 }
 
 /* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
-   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) would need converting,
-   and a scaled one a depth blit; those stay on the GPU */
+   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) are packed on the GPU
+   (vk_depth_pack); a scaled or multisampled packed one would need a depth blit first and stays on the GPU */
 static int depth_copies_raw(const Surf* s) {
     return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM) && s->sw == s->w && s->sh == s->h &&
            (!s->msaa || vk_ms_moves(s));
+}
+static int depth_packs(const Surf* s) {
+    return !depth_copies_raw(s) && vk_depth_pack_mode(s->fkey & 0xFFFF) >= 0 && s->sw == s->w && s->sh == s->h &&
+           !s->msaa;
 }
 /* the bytes s's pixels take read back, or 0 when they don't go to memory: a format guest memory can't hold as it is, no
    pixels, or not drawn to since it was last written back or loaded (memory has it already, and a CPU write since then
    is newer than the target). A block linear target comes back in its guest layout, swizzled on the GPU */
 static u64 flush_bytes(const Surf* s) {
-    if (!s || (s->f.depth ? !depth_copies_raw(s) : !s->f.raw) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return 0;
+    if (!s || (s->f.depth ? !depth_copies_raw(s) && !depth_packs(s) : !s->f.raw) ||
+        s->layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        return 0;
     if (s->mem_wgen == s->wgen || !moves_scaled(s)) return 0;
     return s->bl ? rt_bytes(s) : (u64)guest_w(s) * s->f.bpp * guest_h(s) * s->layers;
 }
@@ -679,6 +685,10 @@ static void flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pi
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     for (u32 layer = 0; layer < s->layers; layer++) {
+        if (depth_packs(s)) { /* flush_bytes took it: it packs */
+            vk_depth_pack(cb, s, layer, buf, at + (u64)layer * slice, pitch);
+            continue;
+        }
         VkBufferImageCopy c = {
             .bufferOffset = at + (u64)layer * slice,
             .bufferRowLength = pitch / s->f.bpp,
@@ -809,7 +819,7 @@ static void flush_note_landed(u64 gva, u64 from, u64 to) {
 }
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
-static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
+static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
     u32 gh = guest_h(s);
     u64 gva = s->gva, row = (u64)guest_w(s) * s->f.bpp, slice = row * gh;
     u64 sz = rt_bytes(s), gw0 = gpu_mem_generation();
@@ -852,7 +862,11 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
         free(current_copy);
         s->mem_wgen = wgen; /* avoid flushing this target again when writeback checks overlapping targets */
         vk_write_changed(gva, dst, original, (u32)sz);
-        free(tmp);
+        if (keep) { /* the image's bytes as this landing leaves them, for a later draw's write-back */
+            *keep = tmp;
+            *keep_size = sz;
+        } else
+            free(tmp);
     } else if (kept) { /* the runs between the CPU's */
         u64 at = 0;
         for (u32 i = 0; i <= kept; i++) {
@@ -947,7 +961,7 @@ static void surf_flush(Surf* s, const u8* original) {
     VkCommandBuffer cb = vk_cmd();
     if (!flush_record(cb, s, buf, 0)) return;
     flush_wait(cb);
-    flush_land(s, p, original, s->wgen);
+    flush_land(s, p, original, s->wgen, NULL, NULL);
 }
 u64 vk_surf_flush_size(const Surf* s) { return flush_bytes(s); }
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
@@ -965,9 +979,10 @@ void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at) {
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     rec_CmdPipelineBarrier2(cb, &di);
 }
-void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
+void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
+    if (keep) *keep = NULL;
     vk_result_begin();
-    flush_land(s, p, original, wgen);
+    flush_land(s, p, original, wgen, original ? keep : NULL, keep_size);
     vk_result_end();
 }
 void vk_surf_flush(Surf* s, const u8* original) {
@@ -1784,8 +1799,11 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
                       double sdx, double sdy) {
     u32 fmt = st->fkey & 0xFFFF, tile = (d->linear ? 0x1000u : 0) | (d->bh << 4);
     Surf* dt;
+    /* one to one it is a copy, which every depth format takes: RADV blits no D32_SFLOAT_S8_UINT */
+    int same = sdx == 1.0 && sdy == 1.0;
     if (vk_rt_format(s->format).bpp != vk_zt_format(fmt).bpp || s->format != d->format || s->width != st->w ||
-        s->height < st->h || !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        s->height < st->h ||
+        (!same && !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)))
         return 0;
     vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
     dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
@@ -1807,15 +1825,29 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
-    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                         .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                         .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
-    b[1] = b[0];
-    b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-    rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     st->f.stencil ? 2 : 1, b, VK_FILTER_NEAREST);
+    if (same) { /* the region both sides hold */
+        u32 w = (u32)(x1 - x0 < X1 - dx ? x1 - x0 : X1 - dx), h = (u32)(y1 - y0 < Y1 - dy ? y1 - y0 : Y1 - dy);
+        VkImageCopy c = {
+            .srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0), 0, 0, 1},
+            .srcOffset = {x0, y0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0), 0, 0, 1},
+            .dstOffset = {dx, dy, 0},
+            .extent = {w, h, 1}};
+        rec_CmdCopyImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        X1 = dx + (i32)w;
+        Y1 = dy + (i32)h;
+    } else {
+        /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
+        VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                             .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
+                             .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                             .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
+        b[1] = b[0];
+        b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, st->f.stencil ? 2 : 1, b, VK_FILTER_NEAREST);
+    }
     vk_surf_wrote(dt);
     if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
         vk_rt_drawn_full(dt);
