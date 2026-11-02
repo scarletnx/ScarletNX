@@ -601,8 +601,23 @@ static int gap(SnxLogScan* s, int kind, Span what) {
         s->gaps[s->ngaps].what = at;
         s->gaps[s->ngaps].count = 1;
         s->ngaps++;
-    } else
+        return 1;
+    }
+    /* full: a kind with fewer entries takes the place of the least seen of the kind with the most, so a texture
+       format or an SVC that comes late is not lost behind many shaders' reasons */
+    int counts[SNX_GAP_CPU + 1] = {0}, most = kind, victim = -1;
+    for (k = 0; k < s->ngaps; k++) counts[s->gaps[k].kind]++;
+    for (k = 0; k <= SNX_GAP_CPU; k++)
+        if (counts[k] > counts[most]) most = k;
+    for (k = 0; most != kind && k < s->ngaps; k++)
+        if (s->gaps[k].kind == most && (victim < 0 || s->gaps[k].count <= s->gaps[victim].count)) victim = k;
+    if (victim < 0) {
         s->used = mark;
+        return 1;
+    }
+    s->gaps[victim].kind = kind;
+    s->gaps[victim].what = at;
+    s->gaps[victim].count = 1;
     return 1;
 }
 /* "<a>: <b>" as one gap, for a reason that goes with the macro it is about */
@@ -627,10 +642,22 @@ static int gap_line(SnxLogScan* s, Span line) {
             static const char* const shaders[] = {
                 "shader ",   "vertex ",   "paired vertex ",          "tessellation control ",
                 "geometry ", "fragment ", "tessellation evaluation "};
-            if (!take_lit(&rest, "vulkan: ") || (at = find(rest, " not translated: ")) < 0) return 0;
-            for (size_t k = 0; k < sizeof shaders / sizeof *shaders; ++k)
-                if (starts(rest, shaders[k])) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
-            if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
+            if (!take_lit(&rest, "vulkan: ")) return 0;
+            if ((at = find(rest, " not translated: ")) >= 0) {
+                for (size_t k = 0; k < sizeof shaders / sizeof *shaders; ++k)
+                    if (starts(rest, shaders[k])) return gap(s, SNX_GAP_SHADER, skip(rest, (size_t)at + 17));
+                if (starts(rest, "compute ")) return gap(s, SNX_GAP_COMPUTE, skip(rest, (size_t)at + 17));
+                return 0;
+            }
+            /* a format the runtime doesn't map (vk/format.c): "unsupported texture format <f>, header word 0 <w>
+               (not drawn)", "unsupported render target format <f>, drawn as RGBA8", "unsupported depth format <f>,
+               using D32F"; a texture or a draw texture it can't make (vk/texture.c, render.c): "... (not drawn)" */
+            if (take_lit(&rest, "unsupported texture format "))
+                return gap(s, SNX_GAP_TEXTURE, span(rest.p, hex_run(rest)));
+            if (take_lit(&rest, "unsupported render target format "))
+                return gap(s, SNX_GAP_TARGET, span(rest.p, hex_run(rest)));
+            if (take_lit(&rest, "unsupported depth format ")) return gap(s, SNX_GAP_DEPTH, span(rest.p, hex_run(rest)));
+            if (ends(rest, " (not drawn)")) return gap(s, SNX_GAP_GPU, span(rest.p, rest.n - 12));
             return 0;
         }
         case 'g':
@@ -1269,8 +1296,12 @@ static void json_list(Buf* b, const SnxLogScan* s, const unsigned* items, int n)
 }
 
 /* a gap's kind and the area it is in, by kind (SNX_GAP_*) */
-static const char* const gap_kinds[] = {
-    "shader", "compute shader", "class", "gpu", "macro", "macro compile", "mme", "svc", "cpu"};
+static const char* const gap_kinds[] = {"shader",        "compute shader",
+                                        "class",         "texture format",
+                                        "target format", "depth format",
+                                        "gpu",           "macro",
+                                        "macro compile", "mme",
+                                        "svc",           "cpu"};
 /* 0 the GPU, 1 the macros, 2 the CPU */
 static int gap_area(int kind) { return kind <= SNX_GAP_GPU ? 0 : kind <= SNX_GAP_MME ? 1 : 2; }
 /* the JIT compiled or queued guest code the recompiler missed, in this run or earlier ones */
@@ -1448,13 +1479,27 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
 static const char* const gap_before[] = {"shader not translated: ",
                                          "compute shader not translated: ",
                                          "methods of class ",
+                                         "texture format ",
+                                         "render target format ",
+                                         "depth format ",
                                          "",
                                          "macro with no native form: ",
                                          "macro not compiled: ",
                                          "",
                                          "",
                                          ""};
-static const char* const gap_after[] = {"", "", ", which no engine runs", "", "", "", "", " not implemented", ""};
+static const char* const gap_after[] = {"",
+                                        "",
+                                        ", which no engine runs",
+                                        ", which the runtime doesn't map (not drawn)",
+                                        ", which the runtime doesn't map (drawn as RGBA8)",
+                                        ", which the runtime doesn't map (drawn as D32F)",
+                                        "",
+                                        "",
+                                        "",
+                                        "",
+                                        " not implemented",
+                                        ""};
 
 /* Markdown of what a log says, which anyone can write: a summary a bot posts must not ping people, link, embed or close
    its own code blocks. GitHub links an issue reference (#N, GH-N, owner/repo#N), a URL or www. even escaped, but
