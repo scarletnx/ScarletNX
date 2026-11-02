@@ -82,7 +82,7 @@ typedef struct {
     unsigned what, count; /* count: the lines, for a shader the shaders */
 } SnxLogGap;
 
-typedef struct {
+typedef struct SnxLogScan {
     char* pool; /* the texts, each terminated, grown as the scan adds them */
     size_t used, cap;
     /* the header: the game log's lines, else the launcher's build line */
@@ -127,10 +127,12 @@ typedef struct {
     unsigned tail[SNX_LOGSCAN_TAIL]; /* the last lines that aren't dumps, from snx_logscan_end */
     int ntail;
     /* the scan's state between lines */
-    int phase;          /* a game log, or which section of the launcher's file the lines are in */
-    int report_left;    /* lines the failure's report may still take, 0 once it ended */
-    size_t mark;        /* the pool's size when the launcher's run section began */
-    unsigned long seen; /* lines read */
+    int phase;              /* a game log, or which section of the launcher's file the lines are in */
+    int report_left;        /* lines the failure's report may still take, 0 once it ended */
+    size_t mark;            /* the pool's size when the launcher's run section began */
+    struct SnxLogScan* run; /* the last run's scan while the game log after it is read, malloc'd; its texts stay in
+                               the pool */
+    unsigned long seen;     /* lines read */
     /* the newest lines as read, rings by seen and output_seen, made texts of the summary at the end */
     char tail_raw[SNX_LOGSCAN_TAIL][SNX_LOGSCAN_RAW];
     unsigned tail_len[SNX_LOGSCAN_TAIL];

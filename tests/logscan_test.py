@@ -10,6 +10,7 @@ paths shortened and the dumps left out, invalid UTF-8, long lines, the markdown'
     tests/logscan_test.py PROGRAM [ARGS...]   (build/snx-logscan, or build/scarletnx --scan-log)"""
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -136,6 +137,16 @@ LAUNCHER = (
     '  [undeclared] nn::audio::detail::IAudioDevice cmd 7 -> ok\n'
     '*** Crash (signal 11) at host pc=0x1 ***\n'
     '\n== C:\\Users\\someone\\state\\Some Game.log ==\n' + OLD_SVC_BREAK
+)
+
+# a Share Log whose newest game log is another game's, played before: the last run stands for itself
+LAUNCHER_OTHER = (
+    'ScarletNX main 9999fff (clang 23.1.3, Windows x86_64)\n'
+    'Message: \n'
+    '\n== the last run: C:\\Users\\someone\\run.log ==\n'
+    + re.sub(r'(?m)^\[ *[0-9.]+\] ?', '', SVC_BREAK).replace('0100aaaabbbb0000', '0100cccc00000000')
+    + '\n== C:\\Users\\someone\\state\\Other Game.log ==\n'
+    + HEADER.replace('Some Game', 'Other Game')
 )
 
 # the renderer's frame lines (gpu/vk/renderer.c): each frame over 50 ms, and every 600 presents the counts with the
@@ -330,6 +341,12 @@ def main():
         f"the launcher's build: {la['build']}",
     )
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
+    lo = scan(LAUNCHER_OTHER)
+    check(
+        lo['title'] == 'Some Game' and lo['title_id'] == '0100CCCC00000000' and lo['outcome'] == 'svcBreak',
+        f"another game's log does not stand for the run: {lo['title']} {lo['title_id']} {lo['outcome']}",
+    )
+    check(lo['signature'] == r['signature'], f"the run's own failure: {lo['signature']}")
     check(
         la['launcher']['message'] == 'The game stopped (svcBreak). See ~\\AppData\\x.log',
         f"the launcher's message, shortened: {la['launcher']['message']}",
