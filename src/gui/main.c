@@ -9402,8 +9402,9 @@ static void plays_as_step(App* app, int step) {
     gui_settings_set(&app->settings, "user", value);
     app->editor.dirty = true;
 }
-/* a nickname typed: users.ini written with it, the head's too; one the rule refuses or that cannot be written said, the
-   nickname as it was */
+/* a nickname typed: users.ini written with it, the head's too; one the rule refuses or that cannot be written said by
+   the user's number, the row showing the nickname users.ini has: the note reaches the launcher's log, which players
+   attach to public reports */
 static void users_commit(App* app) {
     int number = app->editor.row;
     char why[512], *nick;
@@ -9412,8 +9413,8 @@ static void users_commit(App* app) {
     nick = app->users_form.nick[number - 1];
     if (!strcmp(nick, g_users[number - 1].nickname)) return;
     if (!app->users_dir || snx_users_rename(app->users_dir, number, nick, why, sizeof why)) {
-        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d keeps %s: %s"), number,
-                 g_users[number - 1].nickname, app->users_dir ? why : snx_tr("no users/ folder"));
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d's new nickname is not written: %s"), number,
+                 app->users_dir ? why : snx_tr("no users/ folder"));
         say_failure(app, app->editor.note);
     } else {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("User %d is %s now"), number, nick);

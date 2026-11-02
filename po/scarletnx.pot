@@ -3225,7 +3225,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d keeps %s: %s"
+msgid "User %d's new nickname is not written: %s"
 msgstr ""
 
 #: src/gui/main.c

@@ -2080,8 +2080,8 @@ msgstr "%s 不是有效的昵称：%s"
 
 #: src/gui/main.c
 #, c-format
-msgid "User %d keeps %s: %s"
-msgstr "用户 %d 保持 %s：%s"
+msgid "User %d's new nickname is not written: %s"
+msgstr "用户 %d 的新昵称未写入：%s"
 
 #: src/gui/main.c
 msgid "no users/ folder"
