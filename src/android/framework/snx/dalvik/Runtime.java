@@ -7,6 +7,24 @@ public final class Runtime {
     private Runtime() {}
 
     /**
+     * System.loadLibrary and Runtime.loadLibrary, which the translator sends here: lib{name}.so of the app's native
+     * library folder, loaded by the native bridge (docs/android/NATIVE.md), never by HotSpot's loader.
+     */
+    public static void loadLibrary(String name) {
+        if (name == null) throw new NullPointerException("libName == null");
+        java.io.File file = new java.io.File(snx.android.Apk.libraryDir(), "lib" + name + ".so");
+        if (!file.isFile())
+            throw new UnsatisfiedLinkError("dlopen failed: library \"lib" + name + ".so\" not found");
+        load(file.getPath());
+    }
+    public static void load(String path) {
+        if (path == null) throw new NullPointerException("filename == null");
+        snx.android.nativebridge.NativeBridge.load(path);
+    }
+    public static void runtimeLoadLibrary(java.lang.Runtime runtime, String name) { loadLibrary(name); }
+    public static void runtimeLoad(java.lang.Runtime runtime, String path) { load(path); }
+
+    /**
      * fill-array-data: the payload's bytes, little-endian elements of width bytes, from element offset on. The
      * translator puts each byte in one char of a string constant.
      */
