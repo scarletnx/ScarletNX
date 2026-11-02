@@ -27,6 +27,7 @@ Started with no arguments, ScarletNX opens its [launcher](docs/GUI.md): **Instal
 - [Install](docs/INSTALL.md): the downloads for each system, keys, and the first start
 - [GUI launcher](docs/GUI.md): the menu, its settings, themes and languages
 - [Usage](docs/USAGE.md): extract, recompile and play from the command line; updates, mods, cheats, folders and users
+- [Settings](docs/SETTINGS.md): every key of a game's `.ini` and of the launcher, with its default
 - [Testing and reporting](docs/TESTING.md): how to test a build, and the form a report takes
 - [Build](docs/BUILD.md): prerequisites and builds on Linux, FreeBSD, macOS and Windows
 - [Development](docs/DEVELOPMENT.md): checks, diagnostics and profiling; [Contributing](CONTRIBUTING.md)
