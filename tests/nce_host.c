@@ -87,7 +87,8 @@ static _Alignas(16) u8 g_exit_stack[0x2000];
 static int g_exit_after;
 static void* exit_thread(void* p) {
     CPU* c = (CPU*)p;
-    nce_host_attach(c);
+    char why[240];
+    if (nce_host_attach(c, why, sizeof why)) return NULL;
     c->x[31] = (u64)(uintptr_t)(g_exit_stack + sizeof g_exit_stack);
     c->x[30] = 0;
     c->pc = (u64)(uintptr_t)g_guest + E_AT;
@@ -170,6 +171,26 @@ static void trapped(CPU* c, int sig) {
     c->pc += 4;
 }
 
+/* the indirect form (Android's TLS_SLOT_APP): a thread whose word another library holds refuses NCE, saying the value
+   it found, and takes it once the word is 0 */
+typedef struct {
+    int held, attach, freed;
+    char why[240];
+} Held;
+static void* held_thread(void* p) {
+    Held* h = (Held*)p;
+    void** word = (void**)(void*)((u8*)__builtin_thread_pointer() + g_env.tls);
+    char why[240];
+    CPU c;
+    memset(&c, 0, sizeof c);
+    *word = (void*)(uintptr_t)0x5A5A5A5A0ull;
+    h->held = nce_host_check(h->why, sizeof h->why);
+    h->attach = nce_host_attach(&c, why, sizeof why);
+    *word = NULL;
+    h->freed = nce_host_check(why, sizeof why);
+    return NULL;
+}
+
 typedef struct {
     int tid;
     volatile int done;
@@ -197,7 +218,7 @@ int main(void) {
     }
     config.lo = at(0);
     config.hi = at(GUEST_SIZE);
-    if (nce_host_init(&config, &g_env.tls, &g_env.outcall, why, sizeof why)) {
+    if (nce_host_init(&config, &g_env.tls, &g_env.indirect, &g_env.outcall, why, sizeof why)) {
         fprintf(stderr, "FAIL: nce_host_init: %s\n", why);
         return 1;
     }
@@ -223,7 +244,7 @@ int main(void) {
     check(!nce_trap(&g_pool, 1, &g_env, NCE_TRAP, &g_trap), "the trap");
     __builtin___clear_cache((char*)g_guest, (char*)g_guest + GUEST_SIZE);
 
-    nce_host_attach(&c);
+    check(!nce_host_attach(&c, why, sizeof why), "the main thread attaches");
     c.tpidrro = 0x1000;
     c.x[31] = at(GUEST_SIZE);
     c.fpcr = 1u << 24; /* FZ: the guest's, which the host's code doesn't run with */
@@ -266,7 +287,18 @@ int main(void) {
         pthread_join(th, NULL);
         check(!g_exit_after, "an outcall ends its host thread with pthread_exit");
     }
+    if (g_env.indirect) {
+        pthread_t th;
+        Held h;
+        memset(&h, 0, sizeof h);
+        pthread_create(&th, NULL, held_thread, &h);
+        pthread_join(th, NULL);
+        check(h.held == -1 && strstr(h.why, "0x5a5a5a5a0") != NULL, "a word another library holds, with its value");
+        check(h.attach == -1, "no thread attaches over another library's word");
+        check(h.freed == 0, "a word of 0 is free");
+    }
     if (failures) return 1;
-    puts("nce_host: ok");
+    printf("nce_host: ok (%s form, the CPU pointer %s TPIDR_EL0 + %llu)\n", g_env.indirect ? "indirect" : "direct",
+           g_env.indirect ? "through" : "at", (unsigned long long)g_env.tls);
     return 0;
 }

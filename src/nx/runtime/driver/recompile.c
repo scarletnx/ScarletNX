@@ -11,6 +11,9 @@
 #include "nx/loader/codegen_view.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
 #include "common/cpu/recompiler/llvm/ir.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
@@ -749,6 +752,18 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         int nce = 0;
 #if SNX_NCE_HOST /* where the runtime runs it: else its JIT would compile all of the code */
         nce = !ios && program.npdm.is64 && g_settings.nce;
+        if (nce) {
+            char why[240];
+#if defined(__ANDROID__)
+            int android = 1, api = android_get_device_api_level();
+#else
+            int android = 0, api = 0;
+#endif
+            if (nce_refused(why, sizeof why, program.npdm.aspace, android, api)) {
+                printf("NCE: nce=1, but %s: this recompile makes the code ahead of time (nce=0)\n", why);
+                nce = 0;
+            }
+        }
 #endif
         if (nce) gen.interp_only = 1;
         i = nce ? nce_prepare(&program, base, compile.quiet) : snx_is_file(stale) && remove(stale) ? -1 : 0;

@@ -262,6 +262,19 @@ static void indirect_test(const NceSites* sites) {
     check(nce_emit(&pool.pool, 1, &far, &sites->site[1], &patch) == -1, "a tls that is not a multiple of 8");
 }
 
+/* which games NCE takes on a host that has it (nce_refused): on Linux each 64-bit one; on Android from API 29 (Android
+   10), whose app owns TLS_SLOT_APP, and the 39-bit address space only, as the guest's addresses move above 64 GiB. The
+   reason says the values */
+static void refused_test(void) {
+    char why[240] = "";
+    check(!nce_refused(why, sizeof why, 3, 0, 0) && !nce_refused(why, sizeof why, 1, 0, 0), "Linux takes both spaces");
+    check(!nce_refused(why, sizeof why, 3, 1, NCE_ANDROID_API), "Android 10 takes a 39-bit game");
+    check(nce_refused(why, sizeof why, 3, 1, 28) == -1 && strstr(why, "level is 28") && strstr(why, "needs 29"),
+          "Android 9 does not, and says its level and the one needed");
+    check(nce_refused(why, sizeof why, 1, 1, 34) == -1 && strstr(why, "36-bit") && strstr(why, "64 GiB"),
+          "nor a 36-bit game on Android, which says why");
+}
+
 static void divert_test(void) {
     static const NceEnv env = {0x10, 0x7F0012345678ull, 0};
     static const struct {
@@ -371,6 +384,7 @@ int main(int argc, char** argv) {
     trap_file_test(&sites, argc > 1 ? argv[1] : ".");
     nce_sites_free(&sites);
     divert_test();
+    refused_test();
     if (failures) {
         fprintf(stderr, "%d failures\n", failures);
         return 1;

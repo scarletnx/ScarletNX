@@ -105,6 +105,14 @@ SnxU64 nce_pool_size(const NceSites* sites, SnxU64 lo, SnxU64 hi);
 /* the sites in [lo, hi) go up by delta: a module that the NCE recompile moves to make room for a pool */
 void nce_sites_move(NceSites* sites, SnxU64 lo, SnxU64 hi, SnxU64 delta);
 
+/* the oldest Android that NCE runs on: from API 29 (Android 10) the app owns bionic's TLS_SLOT_APP, the thread's word
+   that the stubs read (nce_host.c); before, it is errno's */
+#define NCE_ANDROID_API 29
+/* why NCE does not run a 64-bit game on a host that has it: 0 when it does, else -1 with the reason, its values, in
+   why. aspace: the NPDM's address space type (1: the 36-bit one, which has to lie below 64 GiB, 3: 39-bit). android:
+   the host is Android, at API level api, which moves the guest's addresses above 64 GiB (mem.c) */
+int nce_refused(char* why, size_t size, unsigned aspace, int android, int api);
+
 /* the file of an NCE recompile (<game>.nce, beside the module): the guest ranges of the pools, and the sites, each
    address kept as its distance from base, the first module's. The runtime reads them back from the base it loaded
    that module at, which Android moves up (mem.c) */
