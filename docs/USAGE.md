@@ -105,6 +105,24 @@ be used as a base game.
 .\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
 ```
 
+### Experimental CPU extensions
+
+`--cpu_extensions=1` enables LSE atomics, RCpc loads and the PAuth branch, return and signing instructions with the emulated system's
+instruction and data authentication controls disabled. Signing and authentication leave the pointers unchanged.
+Pointer stripping uses 39-bit virtual addresses with top-byte ignore disabled.
+It provides no pointer authentication protection, and does not implement a complete CPU or graphics profile for a
+newer console. Instructions outside the implemented set still stop with an unsupported-instruction error.
+The experimental graphics supervisor path currently supports startup requests only; its native GPU memory,
+worker and display layer operations are incomplete, so games that require them may still stop during graphics setup.
+
+Use the same value when recompiling and running. Changing it requires recompilation of existing ahead-of-time
+code. The default is 0, which keeps the Cortex-A57 instruction set. For example:
+
+```sh
+./build/scarletnx -r work/Game Game --cpu_extensions=1
+./build/scarletnx --game=/path/to/recompiled/Game --cpu_extensions=1
+```
+
 ### Updates and DLC
 
 An update or a DLC is recorded beside its game, in the game's folder, and checked in the game's list of updates and

@@ -602,6 +602,9 @@ static u32 svc_SetMemoryPermission(u64 address, u64 size, u32 perm) { return svc
 static u32 svc_SetMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
     return svc_set_mem_attr(address, size, mask, attr);
 }
+static u32 svc_SetGpuMemoryAttribute(u64 address, u64 size, u32 mask, u32 attr) {
+    return svc_set_gpu_mem_attr(address, size, mask, attr);
+}
 static u32 svc_MapMemory(u64 dst_address, u64 src_address, u64 size) {
     return svc_map_memory(dst_address, src_address, size);
 }

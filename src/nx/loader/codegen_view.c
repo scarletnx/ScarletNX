@@ -3,7 +3,7 @@
 #include "nx/loader/codegen_view.h"
 #include <stdlib.h>
 int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const SnxU64* hints, size_t hint_count,
-                           int quiet) {
+                           int quiet, SnxU64 features) {
     SnxCodeImage* views;
     size_t i;
     int result;
@@ -24,7 +24,7 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
         views[i].fde = m->fde;
         views[i].fde_count = m->fde_count;
     }
-    result = snx_codegen_analyze(codegen, views, program->module_count, hints, hint_count, quiet, 0); /* the Switch */
+    result = snx_codegen_analyze(codegen, views, program->module_count, hints, hint_count, quiet, features);
     free(views);
     return result;
 }

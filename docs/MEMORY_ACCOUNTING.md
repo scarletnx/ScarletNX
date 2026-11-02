@@ -38,6 +38,9 @@ implementation in ScarletNX, not a port of Atmosphere's GPL-2.0-only code.
   is not the same quantity as the slab usage returned by GetInfo 17.
 - Use application pool sizes of 3285, 4916 and 6964 MiB for the 4, 6 and 8 GiB
   layouts. The latter two are 417 MiB smaller than the previous extended settings.
+- The experimental `memory_gb=12` setting gives a 10 GiB application budget and extends a 39-bit process's heap
+  region to 12 GiB when the host has at least 32 GiB of virtual address space for the guest. This setting is for
+  diagnosis of newer applications. It does not implement their remote-memory or graphics services.
 - With `memory_fit=1` (iOS's default), the pool the game is told is at most what
   the host can still give the process as the game starts, plus what the process
   holds, less what the rest takes (the runtime then and 256 MiB for the graphics,

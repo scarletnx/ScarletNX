@@ -395,6 +395,53 @@ static int nn_audio_detail_IAudioOutManager_OpenAudioOutAuto(SvcObj* self, const
 
 SvcObj* new_audout(void) { return nn_audio_detail_IAudioOutManager_new(); }
 
+/* ============================================================ the native audio manager (aud:u) */
+/* The Switch 2 service that hands back the managers the older services serve: a native-ABI game's
+   GetAudioRendererWorkBufferSize reaches GetAudioRendererManager here, then calls GetWorkBufferSize on the returned
+   object. GetWorkBufferSize is stateless, so a fresh manager answers it exactly as audren:u would. */
+static int nn_audio_detail_INativeAudioManager_GetAudioInManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audin();
+    R_SUCCEED();
+}
+static int nn_audio_detail_INativeAudioManager_GetAudioOutManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audout();
+    R_SUCCEED();
+}
+static int nn_audio_detail_INativeAudioManager_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audren();
+    R_SUCCEED();
+}
+SvcObj* new_aud(void) { return nn_audio_detail_INativeAudioManager_new(); }
+
+/* ============================================================ audin: no microphone to open */
+static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_audio_AudioInParameter* params,
+                                                       u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
+                                                       u32* sample_rate, u32* channel_count, u32* sample_format,
+                                                       u32* state, SvcObj** in) {
+    (void)self, (void)params, (void)aruid, (void)process, (void)name, (void)name_out;
+    (void)sample_rate, (void)channel_count, (void)sample_format, (void)state, (void)in;
+    R_THROW(AUDIO_NOT_FOUND);
+}
+static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
+                                                           u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
+                                                           u32* sample_rate, u32* channel_count, u32* sample_format,
+                                                           u32* state, SvcObj** in) {
+    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
+                                                       channel_count, sample_format, state, in);
+}
+static int nn_audio_detail_IAudioInManager_OpenAudioInProtocolSpecified(
+    SvcObj* self, const nn_audio_AudioInProtocol* protocol, const nn_audio_AudioInParameter* params, u64 aruid,
+    u32 process, IpcBuf name, IpcBuf name_out, u32* sample_rate, u32* channel_count, u32* sample_format, u32* state,
+    SvcObj** in) {
+    (void)protocol;
+    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
+                                                       channel_count, sample_format, state, in);
+}
+SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
+
 /* ============================================================ the audio renderer */
 static int nn_audio_detail_IAudioRenderer_GetSampleRate(SvcObj* self, u32* sample_rate) {
     *sample_rate = ((AudRen*)self->data)->sample_rate;

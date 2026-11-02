@@ -72,6 +72,23 @@ u64 nvn_QueueBuilderGetDevice(CPU* c, u64 b) {
     (void)c;
     return QB(b)->device;
 }
+/* the Switch 2's primary queue (API 231+): a secondary queue's primary graphics queue */
+void nvn_QueueBuilderSetPrimaryQueue(CPU* c, u64 b, u64 primary) {
+    (void)c;
+    QB(b)->primary = primary;
+}
+/* the Switch 2's ray-tracing memory (API 231+): no ray tracing in the games the runtime runs yet */
+void nvn_QueueBuilderSetRayTracingMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c, (void)b, (void)size;
+}
+u64 nvn_QueueBuilderGetRayTracingMemorySize(CPU* c, u64 b) {
+    (void)c, (void)b;
+    return 0;
+}
+u64 nvn_QueueGetTotalRayTracingMemoryUsed(CPU* c, u64 q) {
+    (void)c, (void)q;
+    return 0;
+}
 /* the sizes, 32 bits as the game's driver keeps them, each marked as set */
 void nvn_QueueBuilderSetCommandMemorySize(CPU* c, u64 b, u64 size) {
     (void)c;
@@ -299,6 +316,13 @@ void nvn_WindowBuilderSetDefaults(CPU* c, u64 b) {
     (void)c;
     memset(GP(b), 0, sizeof(NvnWindowBuilder)); /* guest memory: every byte the game sees */
     WB(b)->interval = 1;
+    /* the Switch 2's builder: the driver's defaults, the color space 0 and the metadata of Rec. 709 primaries with
+       a D65 white point, 0.03 to 1000 nits, and content light levels of 200 and 60 (its rodata) */
+    if (g_nvn.loader.api >= 231u << 16) {
+        static const NvnWindowBuilderHdr hdr = {
+            0, {0.64f, 0.33f, 0.3f, 0.6f, 0.15f, 0.06f, 0.3127f, 0.329f, 0.03f, 1000.0f, 200.0f, 60.0f}};
+        *NVN_WB_HDR(b) = hdr;
+    }
 }
 /* the device and the native window: one each, which SDK 5's 0x2c bytes of builder have no room for. The runtime has
    one device (nvn_device), and the native window is the last one a builder named (NvnQueueState) */
@@ -386,6 +410,7 @@ int nvn_WindowInitialize(CPU* c, u64 w, u64 b) {
     o.native = __atomic_load_n(&g_nvn.queue.native_window, __ATOMIC_RELAXED);
     memcpy(o.texture, s->texture, sizeof o.texture);
     memcpy(GP(w), &o, sizeof o);
+    if (g_nvn.loader.api >= 231u << 16) *NVN_WIN_HDR(w) = *NVN_WB_HDR(b);
     LOG("nvn: window %llx: %d textures, first %dx%d format %#x, present interval %d\n", (unsigned long long)w,
         o.count, o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.width : 0,
         o.count && o.texture[0] ? (int)NVN_OBJ(NvnTexture, o.texture[0])->d.height : 0,
@@ -401,6 +426,68 @@ void nvn_WindowSetCrop(CPU* c, u64 w, i32 x, i32 y, i32 width, i32 height) {
     o->crop[1] = y;
     o->crop[2] = width;
     o->crop[3] = height;
+}
+/* The Switch 2's color space and HDR metadata (API 231), which the window keeps for its getters. The runtime presents
+   in SDR: a game that asks for another color space is logged */
+void nvn_WindowBuilderSetColorSpace(CPU* c, u64 b, i32 space) {
+    (void)c;
+    if (space) LOG_LIMIT(1, "nvn: a window of color space %d is presented in SDR\n", space);
+    NVN_WB_HDR(b)->color_space = space;
+}
+i32 nvn_WindowBuilderGetColorSpace(CPU* c, u64 b) {
+    (void)c;
+    return NVN_WB_HDR(b)->color_space;
+}
+static void hdr_display_set(f32* hdr, f32 rx, f32 ry, f32 gx, f32 gy, f32 bx, f32 by, f32 wx, f32 wy, f32 min,
+                            f32 max) {
+    const f32 v[10] = {rx, ry, gx, gy, bx, by, wx, wy, min, max};
+    memcpy(hdr, v, sizeof v);
+}
+/* the getters' ten pointers, in the order of the setter's values */
+static void hdr_display_get(const f32* hdr, u64 rx, u64 ry, u64 gx, u64 gy, u64 bx, u64 by, u64 wx, u64 wy, u64 min,
+                            u64 max) {
+    const u64 to[10] = {rx, ry, gx, gy, bx, by, wx, wy, min, max};
+    for (u32 i = 0; i < 10; i++) memcpy(GP(to[i]), &hdr[i], sizeof hdr[i]);
+}
+void nvn_WindowBuilderSetHdrDisplayMetadata(CPU* c, u64 b, f32 rx, f32 ry, f32 gx, f32 gy, f32 bx, f32 by, f32 wx,
+                                            f32 wy, f32 min, f32 max) {
+    (void)c;
+    hdr_display_set(NVN_WB_HDR(b)->hdr, rx, ry, gx, gy, bx, by, wx, wy, min, max);
+}
+void nvn_WindowBuilderGetHdrDisplayMetadata(CPU* c, u64 b, u64 rx, u64 ry, u64 gx, u64 gy, u64 bx, u64 by, u64 wx,
+                                            u64 wy, u64 min, u64 max) {
+    (void)c;
+    hdr_display_get(NVN_WB_HDR(b)->hdr, rx, ry, gx, gy, bx, by, wx, wy, min, max);
+}
+void nvn_WindowBuilderSetHdrContentMetadata(CPU* c, u64 b, f32 max_cll, f32 max_fall) {
+    (void)c;
+    NVN_WB_HDR(b)->hdr[10] = max_cll;
+    NVN_WB_HDR(b)->hdr[11] = max_fall;
+}
+void nvn_WindowBuilderGetHdrContentMetadata(CPU* c, u64 b, u64 max_cll, u64 max_fall) {
+    (void)c;
+    memcpy(GP(max_cll), &NVN_WB_HDR(b)->hdr[10], sizeof(f32));
+    memcpy(GP(max_fall), &NVN_WB_HDR(b)->hdr[11], sizeof(f32));
+}
+void nvn_WindowSetHdrDisplayMetadata(CPU* c, u64 w, f32 rx, f32 ry, f32 gx, f32 gy, f32 bx, f32 by, f32 wx, f32 wy,
+                                     f32 min, f32 max) {
+    (void)c;
+    hdr_display_set(NVN_WIN_HDR(w)->hdr, rx, ry, gx, gy, bx, by, wx, wy, min, max);
+}
+void nvn_WindowGetHdrDisplayMetadata(CPU* c, u64 w, u64 rx, u64 ry, u64 gx, u64 gy, u64 bx, u64 by, u64 wx, u64 wy,
+                                     u64 min, u64 max) {
+    (void)c;
+    hdr_display_get(NVN_WIN_HDR(w)->hdr, rx, ry, gx, gy, bx, by, wx, wy, min, max);
+}
+void nvn_WindowSetHdrContentMetadata(CPU* c, u64 w, f32 max_cll, f32 max_fall) {
+    (void)c;
+    NVN_WIN_HDR(w)->hdr[10] = max_cll;
+    NVN_WIN_HDR(w)->hdr[11] = max_fall;
+}
+void nvn_WindowGetHdrContentMetadata(CPU* c, u64 w, u64 max_cll, u64 max_fall) {
+    (void)c;
+    memcpy(GP(max_cll), &NVN_WIN_HDR(w)->hdr[10], sizeof(f32));
+    memcpy(GP(max_fall), &NVN_WIN_HDR(w)->hdr[11], sizeof(f32));
 }
 /* A frame's time on the display: the window's interval in refreshes (0: no wait), or what fps_limit says. With the
    game's own pace, where the renderer learns when frames are displayed (renderer.h display_wait: a display clock,

@@ -710,6 +710,7 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 /* the main loop's 60 Hz: the display's vsync */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
+    gsv_vsync_tick(); /* the Switch 2 VI2 session's groups */
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }

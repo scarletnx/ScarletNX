@@ -48,7 +48,7 @@ snx_component(kernel hle/hle.c hle/kernel/kernel.c hle/kernel/thread.c hle/kerne
 # the SVC dispatch, generated from hle/svc/hos.svc
 include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
 snx_svcgen(snx_kernel)
-snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
+snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/pl_font.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
               hle/hook/hook.c hle/hook/libc.c hle/hook/verify.c hle/hook/version.c)
@@ -63,7 +63,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
 snx_swipc(snx_hle FNS ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
           hle/services/types.swipc hle/services/sm.swipc hle/services/set.swipc hle/services/acc.swipc
           hle/services/audio.swipc hle/services/ldr.swipc hle/services/pl.swipc hle/services/time.swipc
-          hle/services/misc.swipc hle/services/am.swipc hle/services/hid.swipc
+          hle/services/misc.swipc hle/services/am.swipc hle/services/gsv.swipc hle/services/hid.swipc
           hle/services/vi.swipc hle/services/nvdrv.swipc hle/services/network/bsd.swipc
           hle/services/network/dns.swipc hle/services/network/nifm.swipc hle/services/network/ssl.swipc
           hle/services/network/ldn.swipc
@@ -74,7 +74,7 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL snx_splash)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/draw_state.c gpu/maxwell/draw_state.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c
+              gpu/nvn/nvn_loader.c gpu/nvn/nvn_object.c gpu/nvn/nvn_cmd.c gpu/nvn/nvn_queue.c gpu/nvn/nvn_dlss.c
               gpu/nvn/nvn_tex.c gpu/nvn/nvn_driver.c gpu/nvn/nvn_tic.c gpu/nvn/nvn_replay.c gpu/nvn/nvn_draw.c gpu/nvn/nvn_copy.c gpu/nvn/nvn_state.c
               gpu/shipped_pass.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
@@ -103,7 +103,8 @@ endif()
 snx_component(platform ${platform})
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
-                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c)
+                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
+                     gpu/shader/sm70_decode.c gpu/shader/sm70_translate.c)
 # the opcode enum and decoder, generated from gpu/shader/maxwell_opcodes.def
 include("${PROJECT_SOURCE_DIR}/cmake/shaderdec.cmake")
 snx_shaderdec(snx_shader)
@@ -223,6 +224,19 @@ endif()
 
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
 if(BUILD_TESTING AND SNX_TEST_VULKAN)
+    # the SM70+ translator on the device against the CPU reference (tests/support/sm70_ref.c), whose rounding modes
+    # come from fesetround: -frounding-math keeps the compiler from folding them away
+    add_executable(snx-test-shader-sm70-gpu "${PROJECT_SOURCE_DIR}/tests/shader_sm70_gpu.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/sm70_ref.c" "${volk_SOURCE_DIR}/volk.c")
+    target_include_directories(snx-test-shader-sm70-gpu PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+    target_link_libraries(snx-test-shader-sm70-gpu PRIVATE snx_nx_flags snx_shader ${CMAKE_DL_LIBS})
+    set_source_files_properties("${PROJECT_SOURCE_DIR}/tests/support/sm70_ref.c" PROPERTIES COMPILE_OPTIONS
+                                "-frounding-math")
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-sm70-gpu PRIVATE m)
+    endif()
+    add_test(NAME shader_sm70_gpu COMMAND snx-test-shader-sm70-gpu)
+    set_tests_properties(shader_sm70_gpu PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c"
         "${PROJECT_SOURCE_DIR}/tests/spirv_emitter_fixture.c" "${PROJECT_SOURCE_DIR}/tests/support/nvdec_ref.c"
         "${PROJECT_SOURCE_DIR}/tests/support/vic_ref.c" "${PROJECT_SOURCE_DIR}/tests/support/dma_ref.c"

@@ -123,6 +123,22 @@ void mem_layout36(void) {
     g_layout.kern_end = AS36;
 }
 
+void mem_layout_large_heap(void) {
+    u64 extra = 4 * GIB;
+    if (g_as_size < 32 * GIB || g_layout.heap_size != 8 * GIB ||
+        (g_as_size == AS_MAX ? g_layout.kern_end + extra > g_layout.end
+                             : g_layout.stack + g_layout.stack_size + extra > g_layout.kern))
+        return;
+    g_layout.heap_size += extra;
+    g_layout.stack += extra;
+    /* The full-size layout places the kernel region immediately after the stack. Smaller layouts keep it at the
+       high end of the reservation, with enough free space between them for this extension. */
+    if (g_as_size == AS_MAX) {
+        g_layout.kern += extra;
+        g_layout.kern_end += extra;
+    }
+}
+
 /* The 32-bit layouts (Eden's 32-bit entries in k_address_space_info.cpp): the code region from 2 MiB to 1 GiB, which
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */

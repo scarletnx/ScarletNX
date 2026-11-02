@@ -18,6 +18,8 @@
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
+#include "nx/gpu/gpu.h"
+#include "nx/gpu/shader/sm70.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
@@ -26,6 +28,8 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 u64 nvn_serial(void) { return __atomic_add_fetch(&g_nvn.object.serial, 1, __ATOMIC_RELAXED); }
 
@@ -437,6 +441,63 @@ int nvn_MemoryPoolMapVirtual(CPU* c, u64 p, i32 n, u64 requests) {
               (unsigned long long)o->size, (unsigned long long)o->gpu, n);
     return 1;
 }
+/* ---- the Switch 2's device command buffers and device messages (API 231), at the offsets of the game's driver */
+#define DCB(b) NVN_OBJ(NvnDeviceCommandBuffer, b)
+#define DMB(b) NVN_OBJ(NvnDeviceMessageBuffer, b)
+/* A uniform buffer's handle, as the game's driver makes it: the address in 16-byte units in the low bits, and the
+   size in 16-byte units, rounded up, from bit 45 */
+u64 nvn_DeviceGetUniformBufferHandle(CPU* c, u64 d, u64 address, u64 size) {
+    (void)c;
+    (void)d;
+    return ((0x1e0000000000ull + (size << 41)) & 0xffffe00000000000ull) | address >> 4;
+}
+void nvn_DeviceCommandBufferSetDefaults(CPU* c, u64 b) {
+    NvnDeviceCommandBuffer* o = DCB(b);
+    (void)c;
+    u64 d = o->device; /* the driver keeps the device */
+    *o = (NvnDeviceCommandBuffer){0};
+    o->device = d;
+}
+void nvn_DeviceCommandBufferSetDevice(CPU* c, u64 b, u64 d) {
+    (void)c;
+    DCB(b)->device = d;
+}
+void nvn_DeviceCommandBufferSetStorage(CPU* c, u64 b, u64 pool, i64 offset, u64 size) {
+    (void)c;
+    DCB(b)->memory = pool;
+    DCB(b)->offset = (u64)offset;
+    DCB(b)->size = size;
+}
+void nvn_DeviceCommandBufferSetCommandMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    DCB(b)->command_size = size;
+}
+void nvn_DeviceCommandBufferSetComputeMemorySize(CPU* c, u64 b, u64 size) {
+    (void)c;
+    DCB(b)->compute_size = size;
+}
+void nvn_DeviceMessageBufferSetDefaults(CPU* c, u64 b) {
+    NvnDeviceMessageBuffer* o = DMB(b);
+    (void)c;
+    u64 d = o->device;
+    *o = (NvnDeviceMessageBuffer){0};
+    o->device = d;
+}
+void nvn_DeviceMessageBufferSetDevice(CPU* c, u64 b, u64 d) {
+    (void)c;
+    DMB(b)->device = d;
+}
+void nvn_DeviceMessageBufferSetStorage(CPU* c, u64 b, u64 pool, i32 offset, i32 size) {
+    (void)c;
+    DMB(b)->pool = pool;
+    DMB(b)->offset = offset;
+    DMB(b)->size = size;
+}
+void nvn_DeviceMessageBufferEndMessages(CPU* c, u64 b) {
+    (void)c;
+    DMB(b)->begin = 0;
+    DMB(b)->end = 0;
+}
 u64 nvn_MemoryPoolGetBufferAddress(CPU* c, u64 p) {
     (void)c;
     return NVN_OBJ(NvnPool, p)->gpu;
@@ -716,7 +777,9 @@ void nvn_TextureBuilderSetPackagedTextureLayout(CPU* c, u64 b, u64 layout) {
     memset(o->layout, 0, sizeof o->layout); /* guest memory: every byte the game sees */
     if (!layout) return;
     memcpy(o->layout, GP(layout), sizeof o->layout);
-    o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | ((o->layout[0] + 1u) & NVN_TEX_BLOCK_H));
+    /* the block height's log2 is bits 0-3 of the first halfword, as the game's driver reads it (bits 4-7 and 8-11
+       are fields of their own, nonzero for some of a Switch 2 game's textures) */
+    o->d.bits |= (u8)(NVN_TEX_HAS_LAYOUT | (((o->layout[0] & 0xfu) + 1u) & NVN_TEX_BLOCK_H));
 }
 /* the storage class: 0x100 with the GMMU page kind, as the game's driver answers (gpu/nvn/nvn_tex.c nvn_tex_storage) */
 i32 nvn_TextureBuilderGetStorageClass(CPU* c, u64 b) {
@@ -1453,6 +1516,100 @@ void nvn_ProgramFinalize(CPU* c, u64 p) {
     (void)c;
     NVN_OBJ(NvnProgram, p)->magic = 0;
 }
+/* ---- the Switch 2's program builder (API 231+) ---- */
+#define PB(b) NVN_OBJ(NvnProgramBuilder, b)
+void nvn_ProgramBuilderSetDefaults(CPU* c, u64 b) {
+    (void)c;
+    memset(PB(b), 0, sizeof(NvnProgramBuilder));
+    PB(b)->max_callable = 2; /* the driver's defaults ({2,2} at 0x58) */
+    PB(b)->max_trace = 2;
+}
+void nvn_ProgramBuilderSetDevice(CPU* c, u64 b, u64 d) {
+    (void)c;
+    PB(b)->device = d;
+}
+u64 nvn_ProgramBuilderGetDevice(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->device;
+}
+void nvn_ProgramBuilderSetSampleShading(CPU* c, u64 b, i32 mode) {
+    (void)c;
+    PB(b)->sample_shading = (u32)mode;
+}
+i32 nvn_ProgramBuilderGetSampleShading(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->sample_shading;
+}
+void nvn_ProgramBuilderSetShaders(CPU* c, u64 b, i32 n, u64 sd) {
+    (void)c;
+    PB(b)->shader_count = (u32)n;
+    PB(b)->shaders = sd;
+}
+u64 nvn_ProgramBuilderGetShaders(CPU* c, u64 b) {
+    (void)c;
+    return PB(b)->shaders;
+}
+i32 nvn_ProgramBuilderGetShaderCount(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->shader_count;
+}
+void nvn_ProgramBuilderSetDebugDataHashes(CPU* c, u64 b, i32 n, u64 hashes) {
+    (void)c, (void)b, (void)n, (void)hashes;
+}
+u64 nvn_ProgramBuilderGetDebugDataHashes(CPU* c, u64 b) {
+    (void)c, (void)b;
+    return 0;
+}
+void nvn_ProgramBuilderSetRayTracingModules(CPU* c, u64 b, i32 n, u64 modules) {
+    (void)c;
+    PB(b)->rt_modules = (u32)n;
+    PB(b)->rt_module_ptr = modules;
+}
+void nvn_ProgramBuilderSetSubroutineLinkage(CPU* c, u64 b, i32 n, u64 maps) {
+    (void)c, (void)b, (void)n, (void)maps;
+}
+u64 nvn_ProgramBuilderGetSubroutineLinkage(CPU* c, u64 b) {
+    (void)c, (void)b;
+    return 0;
+}
+i32 nvn_ProgramBuilderGetSubroutineLinkageCount(CPU* c, u64 b) {
+    (void)c, (void)b;
+    return 0;
+}
+void nvn_ProgramBuilderSetMaxCallableRecursionDepth(CPU* c, u64 b, i32 depth) {
+    (void)c;
+    PB(b)->max_callable = (u32)depth;
+}
+i32 nvn_ProgramBuilderGetMaxCallableRecursionDepth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->max_callable;
+}
+void nvn_ProgramBuilderSetMaxTraceRecursionDepth(CPU* c, u64 b, i32 depth) {
+    (void)c;
+    PB(b)->max_trace = (u32)depth;
+}
+i32 nvn_ProgramBuilderGetMaxTraceRecursionDepth(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->max_trace;
+}
+void nvn_ProgramBuilderSetProgramRayTracingFlags(CPU* c, u64 b, i32 flags) {
+    (void)c;
+    PB(b)->rt_flags = (u32)flags;
+}
+i32 nvn_ProgramBuilderGetProgramRayTracingFlags(CPU* c, u64 b) {
+    (void)c;
+    return (i32)PB(b)->rt_flags;
+}
+/* a Switch 2 program's NVN stage (format 11), from word 0 of the header that starts a graphics program at its GPU
+   address data: compute when there is none */
+static u32 stage11(u64 data) {
+    static const u8 nvn_of[] = {NVN_SHADER_STAGE_VERTEX, NVN_SHADER_STAGE_TESS_CONTROL, NVN_SHADER_STAGE_TESS_EVALUATION,
+                                NVN_SHADER_STAGE_GEOMETRY, NVN_SHADER_STAGE_FRAGMENT}; /* by ST_VS to ST_FS */
+    u8 w[4];
+    gmem_read_code(data, w, sizeof w);
+    int s = sm70_sph_stage(snx_ld_le32(w));
+    return s < 0 ? NVN_SHADER_STAGE_COMPUTE : nvn_of[s];
+}
 /* A stage's control section, as the game's driver reads it (its accessor for the newest format, which one game's
    format 8 sections share): 0x00 the magic, 0x04 1, 0x08 the format, 0x700 the constants' offset in the code area,
    0x704 the code area's bytes, 0x708 the program's offset (past the driver's 0x30-byte wrapper in a graphics stage),
@@ -1463,6 +1620,25 @@ static int stage_of(NvnProgram* o, u64 data, u64 control) {
     u32 magic = gr32(control), one = gr32(control + 4), format = gr32(control + 8), cb = gr32(control + 0x700),
         size = gr32(control + 0x704), off = gr32(control + 0x708), stage = gr32(control + 0x714);
     NvnStage* st;
+    /* The Switch 2's format 11 (version 0xc9): its program is SM70+ code at data, with no wrapper. A graphics program
+       starts with its 128-byte header, whose word 0 gives the stage, and a compute program with its first
+       instruction. 0x38 is the code's bytes and 0x3c the constants' (bank 1), which start at 0x40, the code's bytes
+       rounded up to 256 (a jump table at c[1][0] shows it) */
+    if (magic == 0x98761234u && one == 0xc9 && format == 11) {
+        if (!data) return 0;
+        st = &o->st[stage11(data)];
+        st->data = data;
+        st->off = 0;
+        st->cb = (u16)(gr32(control + 0x40) >> 8);
+        st->cb_size = (u16)((gr32(control + 0x3c) + 0xff) >> 8);
+        /* a compute program's workgroup size, at 0x58-0x60 of its section (0 in the graphics ones) */
+        if (st == &o->st[NVN_SHADER_STAGE_COMPUTE]) {
+            o->block[0] = (u16)gr32(control + 0x58);
+            o->block[1] = (u16)gr32(control + 0x5c);
+            o->block[2] = (u16)gr32(control + 0x60);
+        }
+        return 1;
+    }
     /* a graphics stage's program follows the driver's 0x30-byte wrapper; an older SDK's compute program (format 14)
        starts its code area at 0, with no wrapper (its first words are a scheduling word, 0x001fc000e22007f0): its
        SetShaders failing, one game's effects system went on to read the program's interface table, which the
@@ -1519,6 +1695,9 @@ static void xfb_of(u64 control, u64 serial) {
                                    0xd0, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4,
                                    0xb5, 0xb6, 0xb7, 0xbf, 0x1a, 0x19, 0xe8, 0xff, 0x18, 0xff};
     const u8* c = GP(control);
+    /* the Switch 2's format 11 (version 0xc9) stores transform feedback differently: its 0x6ec byte is not the
+       capture flag, so treat it as not capturing (the old layout's reads would misread garbage) */
+    if (gr32(control + 4) == 0xc9 && gr32(control + 8) == 11) return;
     if (!c[0x6ec]) return;
     NvnXfbEntry e = {0};
     e.serial = serial;
@@ -1557,12 +1736,13 @@ static int set_shaders(u64 p, i32 n, u64 sd, u64 stride) {
     memset(o->block, 0, sizeof o->block);
     o->off_a = 0;
     for (i = 0; i < n; i++) {
+        u64 data = gr64(sd + stride * (u64)i);                         /* a GPU address, 64 bits in every game */
         u64 control = nvn_gptr(sd + stride * (u64)i + 8); /* a pointer: its word in a 32-bit game */
         u32 stage;
         i32 rank;
-        if (!stage_of(o, gr64(sd + stride * (u64)i), control)) return 0;
+        if (!stage_of(o, data, control)) return 0;
         /* geometry, else tessellation evaluation, else control, else vertex: the driver's order */
-        stage = gr32(control + 0x714);
+        stage = gr32(control + 4) == 0xc9 && gr32(control + 8) == 11 ? stage11(data) : gr32(control + 0x714);
         rank = stage == NVN_SHADER_STAGE_GEOMETRY          ? 3
                : stage == NVN_SHADER_STAGE_TESS_EVALUATION ? 2
                : stage == NVN_SHADER_STAGE_TESS_CONTROL    ? 1
@@ -1588,6 +1768,16 @@ int nvn_ProgramSetShaders(CPU* c, u64 p, i32 n, u64 sd) {
 int nvn_ProgramSetShadersExt(CPU* c, u64 p, i32 n, u64 sd) {
     (void)c;
     return set_shaders(p, n, sd, 0x18);
+}
+/* The Switch 2's program from a builder: its stages from the builder's shader data (NVNshaderData entries, which the
+   builder points to), with the builder's sample shading, as SetShaders takes them */
+int nvn_ProgramInitializeFromBuilder(CPU* c, u64 p, u64 b) {
+    NvnProgram* o = NVN_OBJ(NvnProgram, p);
+    (void)c;
+    memset(o, 0, sizeof *o); /* guest memory: every byte the game sees */
+    o->magic = NVN_MAGIC('P', 'R', 'O', 'G');
+    o->sample_shading = (u16)PB(b)->sample_shading;
+    return set_shaders(p, (i32)PB(b)->shader_count, PB(b)->shaders, sizeof(NVNshaderData));
 }
 
 /* the sample shading of the program's next SetShaders: NVN_SAMPLE_SHADING_* (0 as the program says, 1 every sample, 2
@@ -2183,6 +2373,17 @@ void nvn_MultisampleStateSetSampleLocationsGridEnable(CPU* c, u64 s, int on) {
 int nvn_MultisampleStateGetSampleLocationsGridEnable(CPU* c, u64 s) {
     (void)c;
     return (MS(s)->flags & NVN_MS_GRID) != 0;
+}
+/* the Switch 2's coverage truncation (API 231), bit 5 of the driver's first word: kept for the getter. The renderer
+   rasterizes without it */
+void nvn_MultisampleStateSetCoverageTruncationEnable(CPU* c, u64 s, int on) {
+    (void)c;
+    if (on) LOG_LIMIT(1, "nvn: coverage truncation is not drawn\n");
+    ms_flag(s, NVN_MS_COV_TRUNC, on);
+}
+int nvn_MultisampleStateGetCoverageTruncationEnable(CPU* c, u64 s) {
+    (void)c;
+    return (MS(s)->flags & NVN_MS_COV_TRUNC) != 0;
 }
 /* the pixels the sample locations cover, as the game's driver answers: 16 locations in all, so a 4x4 grid of pixels
    for one sample, 2x4 for two, 2x2 for four, 1x2 for eight and 1x1 for sixteen, by the larger of the samples and the

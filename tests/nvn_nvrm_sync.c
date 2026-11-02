@@ -99,6 +99,10 @@ u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)align;
     return 0;
 }
+void gmem_read_code(u64 gva, void* dst, u64 size) {
+    (void)gva;
+    memset(dst, 0, size);
+}
 void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
     (void)gva;
     (void)cpu;

@@ -27,7 +27,8 @@ enum {
     NVGPU_GPU_VSMS_MAPPING = 0x14,               /* with both direction bits set: 0xC0044714 */
     NVGPU_GPU_ZBC_GET_ACTIVE_SLOT_MASK = 0x14,   /* read only: GetActiveSlotMask */
     NVGPU_GPU_PMU_GET_GPU_LOAD = 0x15,           /* PmuGetGpuLoad */
-    NVGPU_GPU_GET_GPU_TIME = 0x1C                /* GetGpuTime */
+    NVGPU_GPU_GET_GPU_TIME = 0x1C,              /* GetGpuTime */
+    NVGPU_GPU_GET_ENGINE_INFO = 0x1F            /* Switch 2 engine inventory */
 };
 
 /* IoctlZcullGetCtxSize {out u32 size}: Eden's size 1 */

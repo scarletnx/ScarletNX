@@ -14,6 +14,9 @@ type nn::pdm::ApplicationPlayStatistics = bytes<0x18, 8>;
 
 interface nn::am::service::IApplicationProxyService is appletOE {
     [0] OpenApplicationProxy(pid, handle<copy, process> process) -> object<nn::am::service::IApplicationProxy> proxy;
+    # The newer protocol adds a u32 before the reserved PID slot (Switchbrew: OpenApplicationProxy2).
+    [10] OpenApplicationProxy2(u32 version, pid, handle<copy, process> process)
+        -> object<nn::am::service::IApplicationProxy> proxy;
 }
 # 350 opens a system application's proxy, an IApplicationProxy as appletOE's is. The other proxies are the system
 # applets'
@@ -31,6 +34,8 @@ interface nn::am::service::IApplicationProxy {
     [10] GetProcessWindingController() -> object<nn::am::service::IProcessWindingController> controller;
     [11] GetLibraryAppletCreator() -> object<nn::am::service::ILibraryAppletCreator> creator;
     [20] GetApplicationFunctions() -> object<nn::am::service::IApplicationFunctions> functions;
+    [60] GetGraphicsScalingParametersFunctions()
+        -> object<nn::am::service::IGraphicsScalingParametersFunctions> functions;
     [1000] GetDebugFunctions() -> object<nn::am::service::IDebugFunctions> functions;
 }
 
@@ -111,6 +116,7 @@ interface nn::am::service::ISelfController {
     @stub [100] SetAlbumImageTakenNotificationEnabled(b8 enabled);
     @stub [110] SetApplicationAlbumUserData(buffer<u8, 0x21> data);
     @stub [120] SaveCurrentScreenshot(i32 option);
+    [2000] GetGraphicsSupervisor() -> handle<copy, session> session;
 }
 
 interface nn::am::service::IWindowController {
@@ -134,6 +140,11 @@ interface nn::am::service::IDisplayController {
 interface nn::am::service::IProcessWindingController {
 }
 interface nn::am::service::IDebugFunctions {
+}
+
+interface nn::am::service::IGraphicsScalingParametersFunctions {
+    [10] GetGraphicsScalingParameters() -> (u32 graphics_scale, u32 screen_ratio_numerator, u32 screen_ratio_denominator);
+    [1050] SetGraphicsScaleChangedNotificationEnabled(b8 enabled);
 }
 
 interface nn::am::service::IApplicationFunctions {

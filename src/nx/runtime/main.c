@@ -960,6 +960,7 @@ int snx_main(int argc, char** argv) {
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
+    if (!g_arm_mod && g_settings.memory_gb >= 12) mem_layout_large_heap();
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
     free(keys);
     free(title_keys);

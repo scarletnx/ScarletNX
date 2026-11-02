@@ -54,6 +54,17 @@ hook nvnDeviceRegisterFastClearColor(NVNdevice* d, const f32* color, NVNformat f
 hook nvnDeviceRegisterFastClearDepth(NVNdevice* d, f32 depth) -> bool
 hook nvnDeviceSetDepthMode(NVNdevice* d, NVNdepthMode mode)
 hook nvnDeviceSetWindowOriginMode(NVNdevice* d, NVNwindowOriginMode mode)
+# the Switch 2's device command buffers and device messages (API 231)
+hook nvnDeviceGetUniformBufferHandle(NVNdevice* d, u64 address, u64 size) -> u64
+hook nvnDeviceCommandBufferSetDefaults(NVNdeviceCommandBuffer* b)
+hook nvnDeviceCommandBufferSetDevice(NVNdeviceCommandBuffer* b, NVNdevice* d)
+hook nvnDeviceCommandBufferSetStorage(NVNdeviceCommandBuffer* b, NVNmemoryPool* pool, i64 offset, u64 size)
+hook nvnDeviceCommandBufferSetCommandMemorySize(NVNdeviceCommandBuffer* b, u64 size)
+hook nvnDeviceCommandBufferSetComputeMemorySize(NVNdeviceCommandBuffer* b, u64 size)
+hook nvnDeviceMessageBufferSetDefaults(NVNdeviceMessageBuffer* b)
+hook nvnDeviceMessageBufferSetDevice(NVNdeviceMessageBuffer* b, NVNdevice* d)
+hook nvnDeviceMessageBufferSetStorage(NVNdeviceMessageBuffer* b, NVNmemoryPool* pool, i32 offset, i32 size)
+hook nvnDeviceMessageBufferEndMessages(NVNdeviceMessageBuffer* b)
 
 family memory_pool
 hook nvnMemoryPoolBuilderGetDevice(const NVNmemoryPoolBuilder* b) -> NVNdevice*
@@ -252,6 +263,28 @@ hook nvnProgramFinalize(NVNprogram* p)
 hook nvnProgramInitialize(NVNprogram* p, NVNdevice* d) -> bool
 hook nvnProgramSetShaders(NVNprogram* p, i32 n, const NVNshaderData* sd) -> bool
 hook nvnProgramSetShadersExt(NVNprogram* p, i32 n, const void* sd) -> bool
+# the Switch 2's program builder (API 231+): a program is built, then nvnProgramInitializeFromBuilder makes it
+hook nvnProgramBuilderSetDefaults(NVNprogramBuilder* b)
+hook nvnProgramBuilderSetDevice(NVNprogramBuilder* b, NVNdevice* d)
+hook nvnProgramBuilderGetDevice(const NVNprogramBuilder* b) -> NVNdevice*
+hook nvnProgramBuilderSetSampleShading(NVNprogramBuilder* b, i32 mode)
+hook nvnProgramBuilderGetSampleShading(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetShaders(NVNprogramBuilder* b, i32 n, const void* sd)
+hook nvnProgramBuilderGetShaders(const NVNprogramBuilder* b) -> const void*
+hook nvnProgramBuilderGetShaderCount(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetDebugDataHashes(NVNprogramBuilder* b, i32 n, const void* hashes)
+hook nvnProgramBuilderGetDebugDataHashes(const NVNprogramBuilder* b) -> const void*
+hook nvnProgramBuilderSetRayTracingModules(NVNprogramBuilder* b, i32 n, const void* modules)
+hook nvnProgramBuilderSetSubroutineLinkage(NVNprogramBuilder* b, i32 n, const void* maps)
+hook nvnProgramBuilderGetSubroutineLinkage(const NVNprogramBuilder* b) -> const void*
+hook nvnProgramBuilderGetSubroutineLinkageCount(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetMaxCallableRecursionDepth(NVNprogramBuilder* b, i32 depth)
+hook nvnProgramBuilderGetMaxCallableRecursionDepth(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetMaxTraceRecursionDepth(NVNprogramBuilder* b, i32 depth)
+hook nvnProgramBuilderGetMaxTraceRecursionDepth(const NVNprogramBuilder* b) -> i32
+hook nvnProgramBuilderSetProgramRayTracingFlags(NVNprogramBuilder* b, i32 flags)
+hook nvnProgramBuilderGetProgramRayTracingFlags(const NVNprogramBuilder* b) -> i32
+hook nvnProgramInitializeFromBuilder(NVNprogram* p, const NVNprogramBuilder* b) -> bool
 
 family sync
 hook nvnSyncCreateGLSync(const NVNsync* s, u64* gl_sync) -> i32
@@ -309,6 +342,11 @@ hook nvnQueueAcquireTexture(NVNqueue* q, NVNwindow* w, i32* index) -> NVNqueueAc
 hook nvnQueuePresentTexture(NVNqueue* q, NVNwindow* w, i32 index)
 hook nvnQueueSubmitCommands(NVNqueue* q, i32 n, const NVNcommandHandle* handles)
 hook nvnQueueWaitSync(NVNqueue* q, const NVNsync* sync) -> bool
+# the Switch 2's multi-queue and ray-tracing memory (API 231+): primary queue is stored, the rest are no-ops for now
+hook nvnQueueBuilderSetPrimaryQueue(NVNqueueBuilder* b, NVNqueue* primary)
+hook nvnQueueBuilderGetRayTracingMemorySize(const NVNqueueBuilder* b) -> u64
+hook nvnQueueBuilderSetRayTracingMemorySize(NVNqueueBuilder* b, u64 size)
+hook nvnQueueGetTotalRayTracingMemoryUsed(NVNqueue* q) -> u64
 
 family window
 hook nvnWindowBuilderGetDevice(const NVNwindowBuilder* b) -> NVNdevice*
@@ -330,6 +368,17 @@ hook nvnWindowBuilderSetNativeWindow(NVNwindowBuilder* b, NVNnativeWindow w)
 hook nvnWindowBuilderSetNumActiveTextures(NVNwindowBuilder* b, i32 n)
 hook nvnWindowBuilderSetPresentInterval(NVNwindowBuilder* b, i32 interval)
 hook nvnWindowBuilderSetTextures(NVNwindowBuilder* b, i32 n, NVNtexture* const* textures)
+# the Switch 2's color space and HDR metadata (API 231)
+hook nvnWindowBuilderSetColorSpace(NVNwindowBuilder* b, i32 space)
+hook nvnWindowBuilderGetColorSpace(const NVNwindowBuilder* b) -> i32
+hook nvnWindowBuilderSetHdrDisplayMetadata(NVNwindowBuilder* b, f32 rx, f32 ry, f32 gx, f32 gy, f32 bx, f32 by, f32 wx, f32 wy, f32 min, f32 max)
+hook nvnWindowBuilderGetHdrDisplayMetadata(const NVNwindowBuilder* b, f32* rx, f32* ry, f32* gx, f32* gy, f32* bx, f32* by, f32* wx, f32* wy, f32* min, f32* max)
+hook nvnWindowBuilderSetHdrContentMetadata(NVNwindowBuilder* b, f32 max_cll, f32 max_fall)
+hook nvnWindowBuilderGetHdrContentMetadata(const NVNwindowBuilder* b, f32* max_cll, f32* max_fall)
+hook nvnWindowSetHdrDisplayMetadata(NVNwindow* w, f32 rx, f32 ry, f32 gx, f32 gy, f32 bx, f32 by, f32 wx, f32 wy, f32 min, f32 max)
+hook nvnWindowGetHdrDisplayMetadata(const NVNwindow* w, f32* rx, f32* ry, f32* gx, f32* gy, f32* bx, f32* by, f32* wx, f32* wy, f32* min, f32* max)
+hook nvnWindowSetHdrContentMetadata(NVNwindow* w, f32 max_cll, f32 max_fall)
+hook nvnWindowGetHdrContentMetadata(const NVNwindow* w, f32* max_cll, f32* max_fall)
 hook nvnWindowFinalize(NVNwindow* w)
 hook nvnWindowInitialize(NVNwindow* w, const NVNwindowBuilder* b) -> bool
 hook nvnWindowSetCrop(NVNwindow* w, i32 x, i32 y, i32 width, i32 height)
@@ -371,6 +420,31 @@ hook nvnCommandBufferAddControlMemory(NVNcommandBuffer* cb, void* memory, usize 
 hook nvnCommandBufferBarrier(NVNcommandBuffer* cb, i32 bits)
 hook nvnCommandBufferBeginRecording(NVNcommandBuffer* cb)
 hook nvnCommandBufferBeginTransformFeedback(NVNcommandBuffer* cb, u64 control)
+hook nvnCommandBufferSetRecordingMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferSetComputeOverlapMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferBindShadingRateImage(NVNcommandBuffer* cb, const NVNtexture* t, const NVNtextureView* v)
+hook nvnCommandBufferShadingRateImagePalette(NVNcommandBuffer* cb, i32 viewport, i32 n, const i32* rates)
+hook nvnCommandBufferSetShadingRatePaletteMode(NVNcommandBuffer* cb, i32 mode)
+hook nvnCommandBufferSetGeometryProcessingMode(NVNcommandBuffer* cb, i32 mode)
+# the Switch 2's push constants: words of a root table, for the graphics or the compute stages
+hook nvnCommandBufferPushGraphicsConstants(NVNcommandBuffer* cb, i32 table, i32 offset, i32 bytes, const void* data)
+hook nvnCommandBufferPushComputeConstants(NVNcommandBuffer* cb, i32 table, i32 offset, i32 bytes, const void* data)
+# the Switch 2's mesh draws (API 231): skipped until the runtime has the mesh pipeline
+hook nvnCommandBufferDrawMeshTasks(NVNcommandBuffer* cb, i32 first, i32 count)
+hook nvnCommandBufferDrawMeshTasks3D(NVNcommandBuffer* cb, i32 x, i32 y, i32 z)
+hook nvnCommandBufferDrawMeshTasksIndirect(NVNcommandBuffer* cb, u64 ind)
+hook nvnCommandBufferDrawMeshTasks3DIndirect(NVNcommandBuffer* cb, u64 ind)
+hook nvnCommandBufferMultiDrawMeshTasksIndirect(NVNcommandBuffer* cb, u64 ind, i32 n, i64 stride)
+hook nvnCommandBufferMultiDrawMeshTasks3DIndirect(NVNcommandBuffer* cb, u64 ind, i32 n, i64 stride)
+hook nvnCommandBufferMultiDrawMeshTasksIndirectCount(NVNcommandBuffer* cb, u64 ind, u64 count, i32 max, i64 stride)
+hook nvnCommandBufferMultiDrawMeshTasks3DIndirectCount(NVNcommandBuffer* cb, u64 ind, u64 count, i32 max, i64 stride)
+# the Switch 2's debug groups and markers for graphics and compute: the same as the older ones
+hook nvnCommandBufferInsertDebugMarkerGraphics(NVNcommandBuffer* cb, u32 domain, const char* text) = nvn_CommandBufferInsertDebugMarkerDynamic
+hook nvnCommandBufferInsertDebugMarkerCompute(NVNcommandBuffer* cb, u32 domain, const char* text) = nvn_CommandBufferInsertDebugMarkerDynamic
+hook nvnCommandBufferPushDebugGroupGraphics(NVNcommandBuffer* cb, u32 domain, const char* text) = nvn_CommandBufferPushDebugGroup
+hook nvnCommandBufferPushDebugGroupCompute(NVNcommandBuffer* cb, u32 domain, const char* text) = nvn_CommandBufferPushDebugGroup
+hook nvnCommandBufferPopDebugGroupGraphics(NVNcommandBuffer* cb, u32 domain) = nvn_CommandBufferPopDebugGroupId
+hook nvnCommandBufferPopDebugGroupCompute(NVNcommandBuffer* cb, u32 domain) = nvn_CommandBufferPopDebugGroupId
 hook nvnCommandBufferBindBlendState(NVNcommandBuffer* cb, const NVNblendState* st)
 hook nvnCommandBufferBindChannelMaskState(NVNcommandBuffer* cb, const NVNchannelMaskState* st)
 hook nvnCommandBufferBindColorState(NVNcommandBuffer* cb, const NVNcolorState* st)
@@ -563,6 +637,8 @@ hook nvnMultisampleStateSetCoverageModulationMode(NVNmultisampleState* s, NVNcov
 hook nvnMultisampleStateSetCoverageToColorEnable(NVNmultisampleState* s, bool on)
 hook nvnMultisampleStateSetCoverageToColorOutput(NVNmultisampleState* s, i32 output)
 hook nvnMultisampleStateSetRasterSamples(NVNmultisampleState* s, i32 n)
+hook nvnMultisampleStateSetCoverageTruncationEnable(NVNmultisampleState* s, bool on)
+hook nvnMultisampleStateGetCoverageTruncationEnable(const NVNmultisampleState* s) -> bool
 hook nvnMultisampleStateSetSampleLocationsEnable(NVNmultisampleState* s, bool on)
 hook nvnMultisampleStateSetSampleLocationsGridEnable(NVNmultisampleState* s, bool on)
 hook nvnPolygonStateGetCullFace(const NVNpolygonState* s) -> NVNface
@@ -573,6 +649,59 @@ hook nvnVertexAttribStateGetFormat(const NVNvertexAttribState* s, NVNformat* for
 hook nvnVertexAttribStateGetStreamIndex(const NVNvertexAttribState* s) -> i32
 hook nvnVertexStreamStateGetDivisor(const NVNvertexStreamState* s) -> i32
 hook nvnVertexStreamStateGetStride(const NVNvertexStreamState* s) -> isize
+
+family dlss
+# the Switch 2's DLSS (API 231): the network builder and the parameters of an evaluation
+hook nvnDlssNetworkBuilderSetDefaults(NVNdlssNetworkBuilder* b)
+hook nvnDlssNetworkBuilderSetDevice(NVNdlssNetworkBuilder* b, NVNdevice* d)
+hook nvnDlssNetworkBuilderGetDevice(const NVNdlssNetworkBuilder* b) -> NVNdevice*
+hook nvnDlssNetworkBuilderSetFlags(NVNdlssNetworkBuilder* b, i32 flags)
+hook nvnDlssNetworkBuilderGetFlags(const NVNdlssNetworkBuilder* b) -> i32
+hook nvnDlssNetworkBuilderSetMethod(NVNdlssNetworkBuilder* b, i32 method)
+hook nvnDlssNetworkBuilderGetMethod(const NVNdlssNetworkBuilder* b) -> i32
+hook nvnDlssNetworkBuilderSetPreset(NVNdlssNetworkBuilder* b, i32 preset)
+hook nvnDlssNetworkBuilderGetPreset(const NVNdlssNetworkBuilder* b) -> i32
+hook nvnDlssNetworkBuilderSetOutputResolution(NVNdlssNetworkBuilder* b, i32 width, i32 height)
+hook nvnDlssNetworkBuilderGetOutputResolution(const NVNdlssNetworkBuilder* b, i32* width, i32* height)
+hook nvnDlssNetworkBuilderSetMaxEvaluationEntries(NVNdlssNetworkBuilder* b, i32 n)
+hook nvnDlssNetworkBuilderGetMaxEvaluationEntries(const NVNdlssNetworkBuilder* b) -> i32
+hook nvnDlssNetworkBuilderSetStorage(NVNdlssNetworkBuilder* b, void* memory, u64 size)
+hook nvnDlssNetworkBuilderGetMemory(const NVNdlssNetworkBuilder* b) -> void*
+hook nvnDlssNetworkBuilderGetMemorySize(const NVNdlssNetworkBuilder* b) -> u64
+hook nvnDlssNetworkBuilderSetTextureIDs(NVNdlssNetworkBuilder* b, addr pool, const void* ids)
+hook nvnDlssParametersSetDefaults(NVNdlssParameters* p)
+hook nvnDlssParametersSetInputColor(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetOutputColor(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetMotionVectors(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetDepth(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetBiasCurrentColorMask(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetExposureTexture(NVNdlssParameters* p, const NVNtexture* t, const NVNtextureView* v)
+hook nvnDlssParametersSetJitterOffset(NVNdlssParameters* p, f32 x, f32 y)
+hook nvnDlssParametersGetJitterOffset(const NVNdlssParameters* p, f32* x, f32* y)
+hook nvnDlssParametersSetMotionVectorScale(NVNdlssParameters* p, f32 x, f32 y)
+hook nvnDlssParametersGetMotionVectorScale(const NVNdlssParameters* p, f32* x, f32* y)
+hook nvnDlssParametersSetPreExposure(NVNdlssParameters* p, f32 v)
+hook nvnDlssParametersGetPreExposure(const NVNdlssParameters* p) -> f32
+hook nvnDlssParametersSetHistoryReset(NVNdlssParameters* p, bool reset)
+hook nvnDlssParametersGetHistoryReset(const NVNdlssParameters* p) -> bool
+hook nvnDlssParametersSetEvaluationIndex(NVNdlssParameters* p, i32 index)
+hook nvnDlssParametersGetEvaluationIndex(const NVNdlssParameters* p) -> i32
+hook nvnDlssParametersSetInputSubrectangleSize(NVNdlssParameters* p, i32 width, i32 height)
+hook nvnDlssParametersGetInputSubrectangleSize(const NVNdlssParameters* p, i32* width, i32* height)
+hook nvnDlssParametersSetInputColorSubrectangleBase(NVNdlssParameters* p, i32 x, i32 y)
+hook nvnDlssParametersGetInputColorSubrectangleBase(const NVNdlssParameters* p, i32* x, i32* y)
+hook nvnDlssParametersSetDepthSubrectangleBase(NVNdlssParameters* p, i32 x, i32 y)
+hook nvnDlssParametersGetDepthSubrectangleBase(const NVNdlssParameters* p, i32* x, i32* y)
+hook nvnDlssParametersSetMotionVectorSubrectangleBase(NVNdlssParameters* p, i32 x, i32 y)
+hook nvnDlssParametersGetMotionVectorSubrectangleBase(const NVNdlssParameters* p, i32* x, i32* y)
+hook nvnDlssParametersSetBiasCurrentColorSubrectangleBase(NVNdlssParameters* p, i32 x, i32 y)
+hook nvnDlssParametersGetBiasCurrentColorSubrectangleBase(const NVNdlssParameters* p, i32* x, i32* y)
+hook nvnDlssParametersSetOutputSubrectangleBase(NVNdlssParameters* p, i32 x, i32 y)
+hook nvnDlssParametersGetOutputSubrectangleBase(const NVNdlssParameters* p, i32* x, i32* y)
+hook nvnDlssParametersSetOverlayDebugLayer(NVNdlssParameters* p, i32 on)
+hook nvnDlssParametersSetOverlayFullScreen(NVNdlssParameters* p, i32 on)
+hook nvnDlssParametersSetOverlayShowNans(NVNdlssParameters* p, i32 on)
+hook nvnDlssParametersSetOverlayJitterDebug(NVNdlssParameters* p, i32 on)
 
 family debug
 hook nvnCommandBufferSetDebugLabel(NVNcommandBuffer* o, const char* label)

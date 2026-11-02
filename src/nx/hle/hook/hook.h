@@ -156,6 +156,21 @@ static inline f64 hook_f64(const CPU* c, int r) {
     memcpy(&f, &bits, sizeof f);
     return f;
 }
+/* an argument past x7 or v7: the 8-byte stack slot slot from the caller's sp, little-endian, a float in its low
+   bytes */
+static inline u64 hook_stack_u64(const CPU* c, int slot) { return snx_ld_le64(c->mem + c->x[31] + 8 * (u64)slot); }
+static inline f32 hook_stack_f32(const CPU* c, int slot) {
+    u32 bits = snx_ld_le32(c->mem + c->x[31] + 8 * (u64)slot);
+    f32 f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+static inline f64 hook_stack_f64(const CPU* c, int slot) {
+    u64 bits = hook_stack_u64(c, slot);
+    f64 f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
 /* a scalar write to s0 or d0 zeroes the rest of v0, as the instruction that writes it would */
 static inline void hook_set_f32(CPU* c, f32 f) {
     u32 bits;

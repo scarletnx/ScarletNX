@@ -854,7 +854,7 @@ snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
 # the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
 add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm70_decode.c")
 snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
@@ -872,7 +872,8 @@ add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
 add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm70_decode.c")
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
@@ -880,7 +881,7 @@ snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.ho
 add_test(NAME nvn_names COMMAND snx-test-nvn-names)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
-        stack_argument 2 "would be on the stack"
+        stack_buffer 2 "i is on the stack, which a buffer can't be"
         duplicate_symbol 4 "f is hooked on line 2 too"
         handler_mismatch 3 "h takes other arguments on line 2"
         argument_c 2 "'c' can't name an argument"
@@ -2351,6 +2352,19 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
+    # the SM70+ frontend (gpu/shader/sm70.h): the decoder on words made by NAK's encoding rules, the search for
+    # programs, and small translations, which spirv-val checks when it is on PATH
+    add_executable(snx-test-shader-sm70 shader_sm70.c)
+    snx_test_target(snx-test-shader-sm70 23)
+    target_link_libraries(snx-test-shader-sm70 PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-sm70 PRIVATE m)
+    endif()
+    if(SNX_SPIRV_VAL)
+        add_test(NAME shader_sm70 COMMAND snx-test-shader-sm70 "${CMAKE_CURRENT_BINARY_DIR}" "${SNX_SPIRV_VAL}")
+    else()
+        add_test(NAME shader_sm70 COMMAND snx-test-shader-sm70 "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")

@@ -608,8 +608,8 @@ SNX_INLINE u32 stx(CPU* c, u8* M, u64 a, u32 sz, u64 v) {
     u32 stored = 0;
     /* the size bits and a pair's flag, which a pair's load sets and its store names too: masked off on both sides,
        so a pair (0x13) covers a single (0x03) and a single inside a wider single succeeds */
-    u64 armed = 8ull << (c->excl_size & 3), this = 8ull << (sz & 3);
-    if (c->excl_on && c->excl_addr == a && this <= armed) {
+    u64 armed = 8ull << (c->excl_size & 3), requested = 8ull << (sz & 3);
+    if (c->excl_on && c->excl_addr == a && requested <= armed) {
         if (sz == 0)
             stored = snx_cas8((u8*)MP(a), (u8)c->excl_val, (u8)v);
         else if (sz == 1)

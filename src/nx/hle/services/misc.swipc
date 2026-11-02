@@ -421,32 +421,6 @@ interface nn::btm::IBtmUserCore {
     [33] AcquireBleMtuConfigEvent() -> (b8 success, handle<copy, event> event);
 }
 
-# ================================================================ audin:u: no microphones
-type nn::audio::AudioInParameter = struct {
-    u32 sample_rate;
-    u16 channel_count;
-    u16 reserved;
-};
-type nn::audio::AudioInProtocol = u32[2];
-interface nn::audio::detail::IAudioInManager is audin:u {
-    @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
-    [1] OpenAudioIn(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                    buffer<nn::audio::AudioDeviceName, 5> name, buffer<nn::audio::AudioDeviceName, 6> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [3] OpenAudioInAuto(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
-                        buffer<nn::audio::AudioDeviceName, 0x21> name, buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-    @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
-    [5] OpenAudioInProtocolSpecified(nn::audio::AudioInProtocol protocol, nn::audio::AudioInParameter params,
-                                     aruid aruid, handle<copy, process> process,
-                                     buffer<nn::audio::AudioDeviceName, 0x21> name,
-                                     buffer<nn::audio::AudioDeviceName, 0x22> name_out)
-        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
-}
-interface nn::audio::detail::IAudioIn {
-}
-
 # ================================================================ ngc:u and ngct:u: the profanity filter, with no word
 # lists, so nothing is found in a text and it comes back as it was sent. ngc:u takes the lists to look in (a
 # nn::ngc::ProfanityFilterPatternList) and the filter's options; ngct:u (9.0.0+) has one list

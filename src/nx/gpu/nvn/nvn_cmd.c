@@ -841,6 +841,83 @@ void nvn_CommandBufferSetControlMemoryCallbackEnabled(CPU* c, u64 cb, int on) {
     (void)c;
     if (t) t->grow = on != 0;
 }
+/* the Switch 2's recording mode (graphics/compute/copy/device): the runtime's records carry their own kind, so the
+   mode is not stored (the game's inlined NVN code, which would read it, stays off) */
+void nvn_CommandBufferSetRecordingMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    (void)mode;
+}
+/* the Switch 2's compute/copy overlap mode: same as SetRecordingMode, the runtime's records carry their own kind */
+void nvn_CommandBufferSetComputeOverlapMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    (void)mode;
+}
+/* the Switch 2's shading rate image, which lowers the fragment rate where it says. The runtime shades each pixel,
+   which gives the image of the full rate. A null texture unbinds it (the game's driver skips its methods) */
+void nvn_CommandBufferBindShadingRateImage(CPU* c, u64 cb, u64 t, u64 v) {
+    (void)c;
+    (void)cb;
+    (void)v;
+    if (t) LOG_LIMIT(1, "nvn: a shading rate image is shaded at the full rate\n");
+}
+/* the shading rates of a viewport's palette, and how the palette is read: the runtime shades at the full rate */
+void nvn_CommandBufferShadingRateImagePalette(CPU* c, u64 cb, i32 viewport, i32 n, u64 rates) {
+    (void)c;
+    (void)cb;
+    (void)viewport;
+    (void)n;
+    (void)rates;
+}
+void nvn_CommandBufferSetShadingRatePaletteMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    (void)mode;
+}
+/* the Switch 2's geometry processing mode, which the game's driver writes to method 0xe26 of the 3D engine (and 0 to
+   0xe3e). Mode 0 is the vertex pipeline, which the runtime draws with: the mesh pipeline has its own draws
+   (DrawMeshTasks*), which the runtime doesn't take yet */
+void nvn_CommandBufferSetGeometryProcessingMode(CPU* c, u64 cb, i32 mode) {
+    (void)c;
+    (void)cb;
+    if (mode) LOG_LIMIT(1, "nvn: geometry processing mode %d, and the runtime has the vertex pipeline only\n", mode);
+}
+/* The Switch 2's mesh draws: the runtime has no mesh pipeline yet (VK_EXT_mesh_shader, and a translator for the
+   Switch 2's shaders), so it skips them, as it skips a draw whose shaders it can't translate */
+static void mesh_skipped(const char* name) { LOG_LIMIT(1, "nvn: the game draws with mesh shaders (%s): skipped\n", name); }
+void nvn_CommandBufferDrawMeshTasks(CPU* c, u64 cb, i32 first, i32 count) {
+    (void)c, (void)cb, (void)first, (void)count;
+    mesh_skipped("DrawMeshTasks");
+}
+void nvn_CommandBufferDrawMeshTasks3D(CPU* c, u64 cb, i32 x, i32 y, i32 z) {
+    (void)c, (void)cb, (void)x, (void)y, (void)z;
+    mesh_skipped("DrawMeshTasks3D");
+}
+void nvn_CommandBufferDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind) {
+    (void)c, (void)cb, (void)ind;
+    mesh_skipped("DrawMeshTasksIndirect");
+}
+void nvn_CommandBufferDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind) {
+    (void)c, (void)cb, (void)ind;
+    mesh_skipped("DrawMeshTasks3DIndirect");
+}
+void nvn_CommandBufferMultiDrawMeshTasksIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
+    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
+    mesh_skipped("MultiDrawMeshTasksIndirect");
+}
+void nvn_CommandBufferMultiDrawMeshTasks3DIndirect(CPU* c, u64 cb, u64 ind, i32 n, i64 stride) {
+    (void)c, (void)cb, (void)ind, (void)n, (void)stride;
+    mesh_skipped("MultiDrawMeshTasks3DIndirect");
+}
+void nvn_CommandBufferMultiDrawMeshTasksIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
+    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
+    mesh_skipped("MultiDrawMeshTasksIndirectCount");
+}
+void nvn_CommandBufferMultiDrawMeshTasks3DIndirectCount(CPU* c, u64 cb, u64 ind, u64 count, i32 max, i64 stride) {
+    (void)c, (void)cb, (void)ind, (void)count, (void)max, (void)stride;
+    mesh_skipped("MultiDrawMeshTasks3DIndirectCount");
+}
 /* a recording starts with its first command, as in NVN */
 void nvn_CommandBufferBeginRecording(CPU* c, u64 cb) {
     NvnCmdBuf* o = CB(cb);
@@ -1002,6 +1079,23 @@ void nvn_CommandBufferUpdateUniformBuffer(CPU* c, u64 cb, u64 buffer, u64 buffer
     r->dst = buffer + (u64)offset;
     r->size = size;
     memcpy(GP(payload + sizeof *r), GP(data), (size_t)size);
+}
+/* The Switch 2's push constants: bytes (at most 256, in words) of a root table from word offset on, copied into the
+   record. The game's driver writes the table and the offset to method 0x141 of the 3D or compute engine, then the
+   words to 0x142, and nothing for fewer than 4 bytes. The offset's unit is taken as a word, as the methods load words
+   (not yet checked against a shader that reads one) */
+static void push_constants(CPU* c, u64 cb, int compute, i32 table, i32 offset, i32 bytes, u64 data) {
+    u32 words = (u32)(bytes < 0 ? 0 : bytes > 0x100 ? 0x100 : bytes) / 4;
+    if (!words) return;
+    u64 payload = rec(c, cb, OP_PUSH_CONSTANTS, sizeof(NvnPPush) + 4 * (size_t)words, 4 * (words + 2));
+    *NVN_OBJ(NvnPPush, payload) = (NvnPPush){(u8)compute, (u8)(table & 7), (u8)offset, (u8)(words - 1)};
+    memcpy(GP(payload + sizeof(NvnPPush)), GP(data), 4 * (size_t)words);
+}
+void nvn_CommandBufferPushGraphicsConstants(CPU* c, u64 cb, i32 table, i32 offset, i32 bytes, u64 data) {
+    push_constants(c, cb, 0, table, offset, bytes, data);
+}
+void nvn_CommandBufferPushComputeConstants(CPU* c, u64 cb, i32 table, i32 offset, i32 bytes, u64 data) {
+    push_constants(c, cb, 1, table, offset, bytes, data);
 }
 
 /* ============================================================ render targets, clears and fixed state */

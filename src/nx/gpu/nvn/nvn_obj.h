@@ -53,6 +53,7 @@ typedef struct {
     u32 memory_size;
     u8 set, pad[3];
     u64 device;
+    u64 primary; /* the Switch 2's primary queue (nvnQueueBuilderSetPrimaryQueue), 0 for none */
 } NvnQueueBuilder;
 #define NVN_QB_SET_COMMAND 0x01u
 #define NVN_QB_SET_COMPUTE 0x02u
@@ -207,6 +208,60 @@ typedef struct {
     u16 block[3], sample_shading;
 } NvnProgram;
 NVN_FITS(NvnProgram, 0x78);
+/* the Switch 2's program builder (API 231+): a program is built with this, then nvnProgramInitializeFromBuilder
+   turns it into a program. The shader list is the Switch 2 shader-data array (0x18-byte entries); its parsing is
+   deferred to the mesh-shader work */
+typedef struct {
+    u64 device;
+    u32 sample_shading;
+    u32 shader_count;
+    u64 shaders;
+    u32 rt_modules;
+    u64 rt_module_ptr;
+    u32 max_callable, max_trace;
+    u32 rt_flags;
+} NvnProgramBuilder;
+NVN_FITS(NvnProgramBuilder, 0x64);
+
+/* ---- the Switch 2's DLSS, device command buffers and device messages (API 231). The runtime keeps their state at
+   the offsets of the game's driver, as its setters and getters do */
+/* a {texture, view} pair */
+typedef struct {
+    u64 texture, view;
+} NvnTexturePair;
+typedef struct {
+    u64 device, pool; /* pool: SetTextureIDs's first argument */
+    u64 memory, memory_size;
+    i32 flags, method, preset, width, height, max_entries;
+    u8 ids[0x80]; /* SetTextureIDs's 128 bytes */
+    u64 last;     /* +0xb8, which SetDefaults clears */
+} NvnDlssNetworkBuilder;
+NVN_FITS(NvnDlssNetworkBuilder, 0xc0);
+/* base: the subrectangles' bases (x, y): input color, depth, motion vectors, bias, output. overlay: the debug
+   overlays (debug layer, full screen, show NaNs, jitter) */
+typedef struct {
+    NvnTexturePair input, output, motion, depth, bias;
+    f32 jitter[2], motion_scale[2], pre_exposure, pad;
+    NvnTexturePair exposure;
+    u8 history_reset, pad2[3];
+    i32 evaluation_index;
+    i32 input_size[2], base[5][2], overlay[4];
+    u64 last; /* +0xc0, which SetDefaults clears */
+} NvnDlssParameters;
+NVN_FITS(NvnDlssParameters, 0xc8);
+typedef struct {
+    u64 device;
+    u64 memory, offset, size; /* SetStorage's */
+    u64 command_size, compute_size;
+} NvnDeviceCommandBuffer;
+NVN_FITS(NvnDeviceCommandBuffer, 0x30);
+/* the messages' storage, and the begin and end the driver clears at EndMessages */
+typedef struct {
+    u64 device, pool;
+    i32 offset, size;
+    u64 begin, end;
+} NvnDeviceMessageBuffer;
+NVN_FITS(NvnDeviceMessageBuffer, 0x28);
 /* A fenced sync signals when the syncpoint reaches value (0: no syncpoint), the presents' syncpoint reaches shown (0:
    none; nvn_replay_shown_syncpt, a present on the display) and the pacer's clock (plat_ns) reaches ready: its queue's
    work before it replayed and done, and what the queue waited for before it (a window's texture comes free at the
@@ -245,6 +300,16 @@ typedef struct {
     i32 interval;
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window (nvn_queue.c keeps the last one) */
 NVN_FITS(NvnWindowBuilder, 0x2c);
+/* The Switch 2's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
+   API 231's handlers touch them, past the bytes of the older builder: hdr[0-9] the display's primaries (x, y of red,
+   green, blue, the white point) and its minimum and maximum luminance, hdr[10-11] the content's maximum and average
+   light levels */
+typedef struct {
+    i32 color_space; /* +0x24 in the driver's builder, inside NvnWindowBuilder: kept at +0x2c */
+    f32 hdr[12];     /* +0x30 */
+} NvnWindowBuilderHdr;
+#define NVN_WB_HDR(b) NVN_OBJ(NvnWindowBuilderHdr, (b) + 0x2c)
+NVN_FITS(NvnWindowBuilderHdr, 0x60 - 0x2c);
 /* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
    its last present's slot plus one period (0: at once); syncpt[i], value[i]: the point the replay reaches once texture
    i is off the display (0: none), the present after its own, or its own while none came yet (shown: those);
@@ -262,6 +327,9 @@ typedef struct {
     u64 native;           /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
+/* the Switch 2's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
+#define NVN_WIN_HDR(w) NVN_OBJ(NvnWindowBuilderHdr, (w) + 0x148)
+typedef char nvn_fits_NvnWindowHdr[sizeof(NvnWindowBuilderHdr) <= 0x180 - 0x148 ? 1 : -1];
 
 /* ---- command buffers ---- */
 /* cur: where the next record goes (a guest address). begin: the recording's first record, its handle; last: its last
@@ -345,6 +413,7 @@ typedef struct {
 #define NVN_MS_COV_TO_COLOR 0x02u
 #define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
 #define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
+#define NVN_MS_COV_TRUNC    0x10u /* the Switch 2's SetCoverageTruncationEnable */
 NVN_FITS(NvnMultisample, 0x18);
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
@@ -374,7 +443,7 @@ enum {
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
     OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
     OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
-    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_COUNT_
+    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_PUSH_CONSTANTS, OP_COUNT_
 };
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
@@ -547,6 +616,13 @@ typedef struct {
 typedef struct {
     u64 dst, size;
 } NvnPUpdateUB;
+/* OP_PUSH_CONSTANTS: the Switch 2's push constants, words of a root table (NVN_ROOT_TABLES of NVN_ROOT_WORDS each,
+   for graphics and for compute), then the words, copied at record time */
+#define NVN_ROOT_TABLES 8
+#define NVN_ROOT_WORDS  256
+typedef struct {
+    u8 compute, table, offset, words;
+} NvnPPush;
 typedef struct {
     u64 src, dst, size;
 } NvnPCopyB2B;

@@ -82,7 +82,10 @@ enum {
 /* MemoryPermission */
 enum { PERM_NONE = 0, PERM_R = 1, PERM_W = 2, PERM_RW = 3, PERM_X = 4, PERM_RX = 5, PERM_DONTCARE = 0x10000000 };
 /* MemoryAttribute: the bits svcSetMemoryAttribute names, and the set it may change (Uncached and PermissionLocked) */
-enum { MA_LOCKED = 1, MA_IPC_LOCKED = 2, MA_DEVICE_SHARED = 4, MA_UNCACHED = 8, MA_PERMISSION_LOCKED = 0x10 };
+enum {
+    MA_LOCKED = 1, MA_IPC_LOCKED = 2, MA_DEVICE_SHARED = 4, MA_UNCACHED = 8,
+    MA_PERMISSION_LOCKED = 0x10, MA_GPU_SHARABLE = 0x20, MA_GPU_SHARED = 0x40
+};
 #define MA_SET_MASK 0x18u
 /* what the calls below return besides 0 */
 enum { MEM_BADSTATE = -1, MEM_NOMEM = -2, MEM_LIMIT = -3 };
@@ -93,6 +96,9 @@ void mem_layout32(unsigned aspace);
 /* the console's 64 GiB layout for a 64-bit process of the pre-2.0 address space type (the NPDM's 1), where every
    guest address has to fit in 36 bits */
 void mem_layout36(void);
+/* Extend a 39-bit process's heap region for the experimental larger application budget. Call after the runtime's
+   address-space reservation and before the NPDM can select an older layout. */
+void mem_layout_large_heap(void);
 /* The guest's address space reserved now, the largest tier the system gives from the console's 128 GiB down to 5 GiB,
    each refused one said: before the game's code takes a share of a small one. mem_init finds it kept, and sets its
    written-page tracking up once the settings are read (plat_vm_track) */

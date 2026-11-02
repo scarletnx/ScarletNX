@@ -1317,32 +1317,6 @@ static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* succes
     return btm_event(success, event, "btm BLE MTU config");
 }
 
-/* ============================================================ audin: no microphone to open */
-#define AUDIO_NOT_FOUND RC(153, 1)
-static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_audio_AudioInParameter* params,
-                                                      u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                      u32* sample_rate, u32* channel_count, u32* sample_format,
-                                                      u32* state, SvcObj** in) {
-    (void)self, (void)params, (void)aruid, (void)process, (void)name, (void)name_out;
-    (void)sample_rate, (void)channel_count, (void)sample_format, (void)state, (void)in;
-    R_THROW(AUDIO_NOT_FOUND);
-}
-static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
-                                                          u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
-                                                          u32* sample_rate, u32* channel_count, u32* sample_format,
-                                                          u32* state, SvcObj** in) {
-    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
-                                                       channel_count, sample_format, state, in);
-}
-static int nn_audio_detail_IAudioInManager_OpenAudioInProtocolSpecified(
-    SvcObj* self, const nn_audio_AudioInProtocol* protocol, const nn_audio_AudioInParameter* params, u64 aruid,
-    u32 process, IpcBuf name, IpcBuf name_out, u32* sample_rate, u32* channel_count, u32* sample_format, u32* state,
-    SvcObj** in) {
-    (void)protocol;
-    return nn_audio_detail_IAudioInManager_OpenAudioIn(self, params, aruid, process, name, name_out, sample_rate,
-                                                       channel_count, sample_format, state, in);
-}
-
 /* ============================================================ ngc:u and ngct:u: no word lists */
 /* the lists' version: there are none here, and reden answers 1 for its own empty ones */
 #define NGC_CONTENT_VERSION 1u
@@ -1421,7 +1395,6 @@ SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(); }
 SvcObj* new_ectx(void) { return nn_err_context_IWriterForApplication_new(); }
 SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
-SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
 SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
 SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */

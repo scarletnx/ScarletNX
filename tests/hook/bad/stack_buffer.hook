@@ -1,0 +1,2 @@
+family f
+hook f(addr a, addr b, addr c3, addr d, addr e, addr f, addr g, addr h, addr i out[8]) = h pure

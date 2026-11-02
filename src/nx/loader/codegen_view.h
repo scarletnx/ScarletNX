@@ -5,5 +5,5 @@
 #include "nx/loader/loader.h"
 #include "common/cpu/recompiler/codegen.h"
 int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const SnxU64* hints, size_t hint_count,
-                           int quiet);
+                           int quiet, SnxU64 features);
 #endif

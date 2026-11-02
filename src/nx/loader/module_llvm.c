@@ -575,8 +575,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);
         goto done;
     }
+    SnxU64 features = g_settings.cpu_extensions ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
     if (options->jit_cache) {
-        char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, 0); /* the Switch */
+        char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, features);
         if (!key) {
             snx_error("LLVM backend: cannot make the JIT cache key");
             goto done;
@@ -590,9 +591,10 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         cache_count = snx_jit_cache_count(cache);
     }
     if (!options->interp_only &&
-        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
+        snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
         goto done;
     if (build->found) *build->found = codegen.instruction_count;
+    codegen.features = features;
     codegen.direct_svc = 1; /* the runtime's RtAPI.svcs (svc.c's g_svc64) */
     codegen.hook_direct_calls = options->hook_direct_calls;
     /* chunks of whole functions, as module.c splits the C */

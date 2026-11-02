@@ -119,5 +119,6 @@
 7d >0:0 1:1 CreateResourceLimit (stub)
 7e 0:0 1:1 2:2+3>0:0 SetResourceLimitLimitValue (stub)
 7f 0+1+2+3+4+5+6+7:0+1+2+3+4+5+6+7> CallSecureMonitor (stub)
+80 0:0 1:1 2:2 3:3>0:0 SetGpuMemoryAttribute
 90 0:0 1:1>0:0 MapInsecureMemory (stub)
 91 0:0 1:1>0:0 UnmapInsecureMemory (stub)

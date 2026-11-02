@@ -812,10 +812,47 @@ static void test_am_command_replies(void) {
     CHECK(nn_am_service_IApplicationFunctions_NotifyRunning(NULL, &running) == 0 && running == 1);
 }
 
+static void test_application_proxy(void) {
+    for (u32 command = 0; command <= 10; command += 10) {
+        SvcObj* service = new_appletoe();
+        u8 raw[16] = {0};
+        snx_st_le32(raw, command ? 2 : 0);
+        IpcCtx request = {0};
+        request.cmd = command;
+        request.raw = raw;
+        request.raw_size = command ? 16 : 8;
+        request.has_pid = 1;
+        request.pid = 0x50;
+        request.ncopy = 1;
+        request.copy_h[0] = H_CUR_PROC;
+        CHECK(service->dispatch(service, &request) == 0);
+        CHECK(request.nout_objs == 1 && request.out_objs[0] != NULL);
+        SvcObj* proxy = request.out_objs[0];
+        CHECK(!strcmp(proxy->name, "nn::am::service::IApplicationProxy"));
+        IpcCtx child = {0};
+        child.cmd = 1;
+        CHECK(proxy->dispatch(proxy, &child) == 0);
+        CHECK(child.nout_objs == 1 && child.out_objs[0] != NULL);
+        CHECK(!strcmp(child.out_objs[0]->name, "nn::am::service::ISelfController"));
+        IpcCtx graphics = {0};
+        graphics.cmd = 2000;
+        CHECK(child.out_objs[0]->dispatch(child.out_objs[0], &graphics) == 0);
+        CHECK(graphics.nout_copy == 1 && graphics.out_copy[0] == 0x456);
+        svcobj_unref(child.out_objs[0]);
+        svcobj_unref(proxy);
+        request.nout_objs = 0;
+        request.ncopy = 0;
+        CHECK(service->dispatch(service, &request) == RC(11, 420));
+        CHECK(request.nout_objs == 0);
+        svcobj_unref(service);
+    }
+}
+
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
     g_hle.kernel.title_id = 0x0100BF00112C0000ull; /* the title the test was written for */
+    test_application_proxy();
     test_mii_edit();
     test_audio_controller();
     test_user_channel();

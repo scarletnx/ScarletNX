@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include "nx/gpu/gpu.h"
 #include "nx/hle/kernel/ipc.h"
+#include "nx/memory/mem.h"
 #include "hle/services/nvdrv.swipc.inc"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
@@ -601,6 +602,7 @@ static u64 va_alloc(u64 size, u64 align) {
    host1x's IncrementGuest, syncpt_wait its WaitGuest */
 /* the syncpoint's value (ReadSyncpointMinValue); 0 for an id past the table */
 u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? __atomic_load_n(&g_hle.nvdrv.syncpt[id], __ATOMIC_SEQ_CST) : 0; }
+u64 g_sync_shim_cpu; /* the syncpoint shim's guest CPU page (GET_SYNC_RO_MAP), 0 until bound */
 /* the value moved and its waiters woken: 0 for no increment */
 static int syncpt_bump(u32 id, u32 n) {
     if (id >= SYNCPT_IDS || !n) return 0;
@@ -614,6 +616,7 @@ static int syncpt_bump(u32 id, u32 n) {
 void syncpt_add(u32 id, u32 n) {
     if (!syncpt_bump(id, n)) return;
     nv_events_check();
+    gsv_syncpt_changed(); /* the Ounce syncpoint supervisor's armed waits */
     gpu_kick(); /* a GPU channel's stream may wait for it */
 }
 void syncpt_add_quiet(u32 id, u32 n) {
@@ -625,6 +628,7 @@ void syncpt_events(void) {
     if (!t_hle.nvdrv.events_due) return;
     t_hle.nvdrv.events_due = 0;
     nv_events_check();
+    gsv_syncpt_changed(); /* the Switch 2 syncpoint supervisor's armed waits */
 }
 void syncpt_incr(u32 id) { syncpt_add(id, 1); }
 /* raises the promised maximum by n, from at least the current value: what a fence handed back now will reach */
@@ -678,6 +682,7 @@ u32 syncpt_alloc(void) {
             /* an id used before starts with nothing promised past its value */
             g_hle.nvdrv.syncpt_max[id] = g_hle.nvdrv.syncpt[id];
             pm_unlock(&g_host.nvdrv.sync_lk);
+            LOG("nvdrv: syncpt_alloc -> %u\n", id);
             return id;
         }
     pm_unlock(&g_host.nvdrv.sync_lk);
@@ -809,7 +814,7 @@ static void nv_events_check(void) {
    isn't open is nv_ioctl's). Layouts are Switchbrew's ("NV services") and Eden's, by field offset in the device
    headers. The handlers switch on the command byte alone, not its group: each device has one group but for a GPU
    channel's user data ('G' beside 'H'), and none of its commands collide */
-enum { DEV_NONE, DEV_NVMAP, DEV_AS, DEV_CTRL, DEV_CTRLGPU, DEV_GPU, DEV_NVDEC, DEV_VIC, DEV_OTHER };
+enum { DEV_NONE, DEV_NVMAP, DEV_AS, DEV_CTRL, DEV_CTRLGPU, DEV_GPU, DEV_NVDEC, DEV_VIC, DEV_OTHER, DEV_TSG };
 /* an ioctl's argument block is a copy of the guest's buffer, so its words are little-endian */
 static u32 rd32(const u8* d, u32 off) { return snx_ld_le32(d + off); }
 static u64 rd64(const u8* d, u32 off) { return snx_ld_le64(d + off); }
@@ -1133,32 +1138,43 @@ static u32 as_map_buffer(u8* d) {
          (unsigned long long)span, (unsigned long long)gva, (unsigned long long)cpu);
     return NV_RESULT_SUCCESS;
 }
-/* GET_VA_REGIONS: the small-page region below the big-page one, which starts where the allocator does. The layout is
-   Eden's default VM (nvdrv_as_gpu.h): small pages from big page size << VA_START_SHIFT to DEFAULT_VA_SPLIT, big pages
-   from there to DEFAULT_VA_RANGE (2^37). The big-page count is Eden's GetVARegions' too, its allocator's limit
-   ((range - split) >> big page bits) less its start (split >> big page bits) */
+/* GET_VA_REGIONS: report the address-space range and split chosen by ALLOC_AS_EX. */
 static void as_va_regions(u8* d, u8* extra, u32 nextra) {
     u32 bits = g_hle.nvdrv.big_page_bits;
-    u64 big = (u64)1 << bits, start = big << AS_VA_START_SHIFT, end = AS_DEFAULT_VA_RANGE;
+    u64 big = (u64)1 << bits, start = g_hle.nvdrv.as_range_start, end = g_hle.nvdrv.as_range_end;
+    u64 split = g_hle.nvdrv.as_range_split;
     u8 r[AS_VA_REGIONS * AS_VA_REGION_BYTES];
     u8 *small_pages = r, *big_pages = r + AS_VA_REGION_BYTES;
     memset(r, 0, sizeof r);
     wr64(small_pages, AS_VA_REGION_OFFSET, start);
     wr32(small_pages, AS_VA_REGION_PAGE_SIZE, AS_SMALL_PAGE_SIZE);
-    wr64(small_pages, AS_VA_REGION_PAGES, (VA_BASE - start) >> GMMU_PAGE_BITS);
-    wr64(big_pages, AS_VA_REGION_OFFSET, VA_BASE);
+    wr64(small_pages, AS_VA_REGION_PAGES, (split - start) >> GMMU_PAGE_BITS);
+    wr64(big_pages, AS_VA_REGION_OFFSET, split);
     wr32(big_pages, AS_VA_REGION_PAGE_SIZE, (u32)big);
-    wr64(big_pages, AS_VA_REGION_PAGES, ((end - VA_BASE) >> bits) - (VA_BASE >> bits));
+    wr64(big_pages, AS_VA_REGION_PAGES, (end - split) >> bits);
     wr32(d, AS_GET_VA_REGIONS_BUF_SIZE, sizeof r);
     memcpy(d + AS_GET_VA_REGIONS_REGIONS, r, sizeof r);
     copy_extra(extra, nextra, r, sizeof r);
 }
 /* ALLOC_AS_EX: the big page size, 64 KiB or 128 KiB, 0 meaning Eden's default; another size leaves it as it was */
 static u32 as_alloc_as_ex(const u8* d) {
+    u64 start = rd64(d, AS_ALLOC_AS_EX_VA_START), end = rd64(d, AS_ALLOC_AS_EX_VA_END);
+    u64 requested_split = rd64(d, AS_ALLOC_AS_EX_VA_SPLIT);
     u32 big = rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) ? rd32(d, AS_ALLOC_AS_EX_BIG_PAGE_SIZE) : AS_DEFAULT_BIG_PAGE_SIZE;
     if (big == 1u << AS_BIG_PAGE_BITS_64K) g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_64K;
     if (big == 1u << AS_BIG_PAGE_BITS_128K) g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_128K;
-    LOG("nvdrv: GPU address space with %u KB big pages\n", (1u << g_hle.nvdrv.big_page_bits) >> 10);
+    if (start && end > start && end <= VA_END) {
+        g_hle.nvdrv.as_range_start = start;
+        g_hle.nvdrv.as_range_end = end;
+        /* Switch 2's zero split exposes the entire requested range as 4 KiB pages. */
+        g_hle.nvdrv.as_range_split = requested_split > start && requested_split < end ? requested_split :
+                                     !requested_split ? end : VA_BASE;
+    } else if (!start && !end) {
+        g_hle.nvdrv.as_range_start = (u64)1 << (g_hle.nvdrv.big_page_bits + AS_VA_START_SHIFT);
+    }
+    LOG("nvdrv: GPU address space with %u KB big pages, range %llx..%llx\n",
+        (1u << g_hle.nvdrv.big_page_bits) >> 10, (unsigned long long)g_hle.nvdrv.as_range_start,
+        (unsigned long long)g_hle.nvdrv.as_range_end);
     return NV_RESULT_SUCCESS;
 }
 /* REMAP: entries of IoctlRemapEntry filling the argument, offsets and sizes in big pages. A bad entry is skipped and
@@ -1214,8 +1230,18 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVHOST_AS_GPU_FREE_SPACE: return as_free_space(d);
         case NVHOST_AS_GPU_UNMAP_BUFFER: return as_unmap_buffer(rd64(d, AS_UNMAP_BUFFER_OFFSET));
         case NVHOST_AS_GPU_MAP_BUFFER_EX: return as_map_buffer(d);
-        case NVHOST_AS_GPU_GET_VA_REGIONS: as_va_regions(d, extra, nextra); return NV_RESULT_SUCCESS;
+        case NVHOST_AS_GPU_GET_VA_REGIONS:
+            LOG("nvdrv: GET_VA_REGIONS second output %u bytes\n", nextra);
+            as_va_regions(d, extra, nextra);
+            return NV_RESULT_SUCCESS;
         case NVHOST_AS_GPU_ALLOC_AS_EX: return as_alloc_as_ex(d);
+        case NVHOST_AS_GPU_GET_SYNC_RO_MAP: { /* the syncpoint shim: 192 counters, 4 bytes each, the game polls */
+            /* The game maps this address through MAP_BUFFER_EX; gmmu_map records where so the shim can be fed. */
+            wr64(d, 0, 0x1000000ull);
+            wr32(d, 8, 4);
+            wr32(d, 12, 192);
+            return NV_RESULT_SUCCESS;
+        }
         case NVHOST_AS_GPU_REMAP: return as_remap(d, n);
         default: WARN_LIMIT(16, "nvdrv: nvhost-as-gpu ioctl %08x not implemented\n", cmd); return NV_RESULT_SUCCESS;
     }
@@ -1389,6 +1415,48 @@ static void gpu_characteristics(u8* c) {
 #undef PUT32
 #undef PUT64
 }
+/* Switch 2's 0xC0E04705 request returns Ampere characteristics in Ioctl3's second output. Its first 0x70 bytes
+   retain the older layout; the ioctl limits the inline output to 0xD0 bytes. */
+static void gpu_characteristics_s2(u8* c) {
+    memset(c, 0, 0xD0);
+    wr32(c, 0x00, 0x170);  /* arch */
+    wr32(c, 0x04, 0xE);    /* impl */
+    wr32(c, 0x08, 0xA1);   /* rev */
+    wr32(c, 0x0C, 1);     /* num_gpc */
+    wr64(c, 0x10, 0x100000);
+    wr32(c, 0x20, 6);     /* num_tpc_per_gpc */
+    wr32(c, 0x24, 0x20);  /* AXI */
+    wr32(c, 0x2C, 0x10000); /* compression_page_size */
+    wr32(c, 0x30, 0x15);  /* pde_coverage_bit_count */
+    wr32(c, 0x38, 1);     /* gpc_mask */
+    wr32(c, 0x3C, 0x808); /* sm_arch_sm_version */
+    wr32(c, 0x40, 0x806); /* sm_arch_spa_version */
+    wr32(c, 0x44, 0x60);  /* sm_arch_warp_count */
+    wr32(c, 0x48, 0x28);  /* gpu_va_bit_count */
+    wr64(c, 0x50, 0x935FAF1EDC0155ull);
+    wr32(c, 0x58, 0x902D); /* twod_class */
+    wr32(c, 0x5C, 0xC797); /* AMPERE_B */
+    wr32(c, 0x60, 0xC7C0); /* AMPERE_COMPUTE_B */
+    wr32(c, 0x64, 0xC76F); /* AMPERE_CHANNEL_GPFIFO_B */
+    wr32(c, 0x68, 0xA140); /* inline_to_memory_class */
+    wr32(c, 0x6C, 0xC7B5); /* AMPERE_DMA_COPY_B */
+    /* Seven u16 ioctl limits, beginning at 0x70. */
+    const u16 limits[8] = {0x1F, 0xF, 0x2B, 0x21, 0xD, 0xFFFF, 0xFFFF, 0xFFFF};
+    memcpy(c + 0x70, limits, sizeof limits);
+    wr32(c, 0x80, 0); /* max_fbps_count */
+    wr32(c, 0x84, 1); /* fbp_en_mask */
+    wr32(c, 0x88, 1); /* emc_en_mask */
+    wr32(c, 0x8C, 1); /* max_ltc_per_fbp */
+    wr32(c, 0x90, 4); /* max_lts_per_ltc */
+    wr32(c, 0x98, 1); /* max_gpc_count */
+    wr64(c, 0xA8, 0x6761313066ull); /* "ga10f" */
+    wr32(c, 0xB4, 2);
+    wr32(c, 0xB8, 0x40);
+    wr32(c, 0xBC, 3);
+    wr32(c, 0xC0, 7);
+    wr32(c, 0xC4, 1);
+    wr32(c, 0xC8, 1);
+}
 static_assert(sizeof(NvgpuGpuCharacteristics) == NVGPU_CHARACTERISTICS_BYTES, "the guest's IoctlGpuCharacteristics");
 static_assert(offsetof(NvgpuGpuCharacteristics, chipname) == 0x90, "the guest's IoctlGpuCharacteristics");
 /* ZCULL_GET_INFO's answer, Eden's ZCullGetInfo values: the GM20B's ZCULL alignment and region geometry */
@@ -1413,8 +1481,11 @@ static void ctrlgpu_zcull_info(u8* d) {
 #undef PUT32
 }
 static_assert(sizeof(NvgpuGpuZcullGetInfoArgs) == 40, "the guest's IoctlNvgpuGpuZcullGetInfoArgs");
-static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
+static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra, int s2) {
     static const u8 sms[NVGPU_NUM_SMS * 2] = {0, 0, 0, 1}; /* {gpc, tpc} of each SM */
+    /* Six TPCs with two SMs each; the Switch 2 query has a 24-byte inline output. */
+    static const u8 s2_sms[24] = {0, 0, 0, 0, 0, 1, 0, 1, 0, 2, 0, 2,
+                                  0, 3, 0, 3, 0, 4, 0, 4, 0, 5, 0, 5};
     (void)n;
     switch (nv_ioctl_cmd(cmd)) {
         case NVGPU_GPU_ZCULL_GET_CTX_SIZE:
@@ -1424,6 +1495,13 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVGPU_GPU_ZBC_SET_TABLE:
         case NVGPU_GPU_ZBC_QUERY_TABLE: return NV_RESULT_SUCCESS;
         case NVGPU_GPU_GET_CHARACTERISTICS: { /* the buffer address is left as it came */
+            if (nv_ioctl_length(cmd) == 0xE0) {
+                u8 c[0xD0];
+                gpu_characteristics_s2(c);
+                wr64(d, CTRL_GPU_CHARACTERISTICS_BUF_SIZE, sizeof c);
+                copy_extra(extra, nextra, c, sizeof c);
+                return NV_RESULT_SUCCESS;
+            }
             u8 c[NVGPU_CHARACTERISTICS_BYTES];
             gpu_characteristics(c);
             wr64(d, CTRL_GPU_CHARACTERISTICS_BUF_SIZE, sizeof c);
@@ -1432,10 +1510,15 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
             return NV_RESULT_SUCCESS;
         }
         case NVGPU_GPU_GET_TPC_MASKS:
-            wr32(d, CTRL_GPU_TPC_MASKS_MASK, NVGPU_TPC_MASK);
+            wr32(d, CTRL_GPU_TPC_MASKS_MASK, s2 ? 0x3F : NVGPU_TPC_MASK);
             if (nextra >= 4) copy_extra(extra, nextra, d + CTRL_GPU_TPC_MASKS_MASK, 4);
             return NV_RESULT_SUCCESS;
         case NVGPU_GPU_NUM_VSMS:
+            if (s2 && nv_ioctl_dir(cmd) == NV_IOCTL_DIR_RW) {
+                memcpy(d, s2_sms, n < sizeof s2_sms ? n : sizeof s2_sms);
+                copy_extra(extra, nextra, s2_sms, sizeof s2_sms);
+                return NV_RESULT_SUCCESS;
+            }
             wr32(d, CTRL_GPU_NUM_VSMS, NVGPU_NUM_SMS);
             wr32(d, CTRL_GPU_NUM_VSMS_RESERVED, 0);
             copy_extra(extra, nextra, sms, sizeof sms);
@@ -1453,6 +1536,18 @@ static u32 ioctl_ctrlgpu(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVGPU_GPU_GET_GPU_TIME: /* the system tick's timebase */
             wr64(d, CTRL_GPU_GPU_TIME, guest_ns());
             return NV_RESULT_SUCCESS;
+        case NVGPU_GPU_GET_ENGINE_INFO: {
+            /* nvgpu's engine IDs: graphics, graphics copy and asynchronous copy. */
+            u8 info[3 * 16] = {0};
+            for (u32 i = 0; i < 3; i++) {
+                wr32(info + i * 16, 0, i);
+                wr32(info + i * 16, 4, 0);
+                wr32(info + i * 16, 8, i);
+            }
+            wr32(d, 0, sizeof info);
+            copy_extra(extra, nextra, info, sizeof info);
+            return NV_RESULT_SUCCESS;
+        }
         default: WARN_LIMIT(16, "nvdrv: nvhost-ctrl-gpu ioctl %08x not implemented\n", cmd); return NV_RESULT_SUCCESS;
     }
 }
@@ -1499,6 +1594,18 @@ static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
         case NVHOST_GPU_SET_PRIORITY:
         case NVHOST_GPU_UNNAMED_17:
         case NVHOST_GPU_SET_TIMESLICE: return NV_RESULT_SUCCESS;
+        case NVHOST_GPU_OPEN:
+            f->s2 = 1;
+            return NV_RESULT_SUCCESS;
+        case NVHOST_GPU_GET_USER_SYNCPOINT: {
+            u32 sp = gpu_channel_syncpt(f);
+            f->s2 = 1;
+            /* The 16-byte form used by NVN has the GPU VA and syncpoint ID. */
+            if (n < 16) return NV_RESULT_BAD_PARAMETER;
+            wr64(d, 0, 0);
+            wr64(d, 8, sp);
+            return NV_RESULT_SUCCESS;
+        }
         case NVHOST_GPU_SUBMIT_GPFIFO:
         case NVHOST_GPU_SUBMIT_GPFIFO_EX: return gpu_submit_gpfifo(f, cmd, d, n, extra, nextra);
         case NVHOST_GPU_ALLOC_OBJ_CTX: /* the class names the object */
@@ -1525,13 +1632,50 @@ static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     }
 }
 
+/* Switch 2's native TSG groups GPU channel fds. The frontend schedules each fd in order already;
+   retain the binding so duplicate and invalid binds do not silently succeed. */
+static u32 ioctl_tsg(u32 fd, u32 cmd, const u8* d, u32 n) {
+    u32 channel_fd, subcontext = 0, result = NV_RESULT_SUCCESS;
+    if (cmd == 0xc0045408u) return n == 4 && rd32(d, 0) ? NV_RESULT_SUCCESS : NV_RESULT_BAD_PARAMETER;
+    if (cmd != 0xc0045401u && cmd != 0xc0045402u && cmd != 0xc018540bu)
+        return NV_RESULT_NOT_IMPLEMENTED;
+    if (n != (cmd == 0xc018540bu ? 24u : 4u)) return NV_RESULT_BAD_PARAMETER;
+    channel_fd = rd32(d, 0);
+    if (cmd == 0xc018540bu) {
+        subcontext = rd32(d, 4);
+        if (subcontext >= 64) return NV_RESULT_BAD_PARAMETER;
+        for (u32 i = 8; i < 24; i++)
+            if (d[i]) return NV_RESULT_BAD_PARAMETER;
+    }
+    pm_lock(&g_host.nvdrv.lock);
+    if (channel_fd >= NV_FDS || g_hle.nvdrv.nvf[channel_fd].dev != DEV_GPU ||
+        g_hle.nvdrv.nvf[channel_fd].closed)
+        result = NV_RESULT_BAD_PARAMETER;
+    else {
+        NvFile* channel = &g_hle.nvdrv.nvf[channel_fd];
+        if (cmd == 0xc0045402u) {
+            if (channel->tsg_fd != fd + 1) result = NV_RESULT_BAD_PARAMETER;
+            else channel->tsg_fd = channel->tsg_subcontext = 0;
+        } else if (channel->tsg_fd) {
+            result = NV_RESULT_INVALID_STATE;
+        } else {
+            channel->tsg_fd = fd + 1;
+            channel->tsg_subcontext = subcontext;
+            channel->s2 = 1;
+        }
+    }
+    pm_unlock(&g_host.nvdrv.lock);
+    return result;
+}
+
 static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32* error) {
     static const struct {
         const char* path;
         int dev;
     } devices[] = {{"/dev/nvmap", DEV_NVMAP},      {"/dev/nvhost-as-gpu", DEV_AS},
                    {"/dev/nvhost-ctrl", DEV_CTRL}, {"/dev/nvhost-ctrl-gpu", DEV_CTRLGPU},
-                   {"/dev/nvhost-gpu", DEV_GPU},   {"/dev/nvhost-nvdec", DEV_NVDEC},
+                   {"/dev/nvhost-gpu", DEV_GPU},   {"/dev/nvhost-tsg-gpu", DEV_TSG},
+                   {"/dev/nvhost-nvdec", DEV_NVDEC},
                    {"/dev/nvhost-vic", DEV_VIC}};
     char name[64]; /* longer than any device's path */
     int dev = DEV_OTHER; /* opens all the same; its ioctls warn */
@@ -1652,8 +1796,12 @@ static u32 nv_ioctl(u32 fd, u32 cmd, IpcBuf in, IpcBuf out, IpcBuf extra, int ex
             pm_unlock(&g_host.nvdrv.aslock);
             break;
         case DEV_CTRL: r = ioctl_ctrl(fd, cmd, d, (u32)n); break;
-        case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, d, (u32)n, x, nx); break;
+        case DEV_CTRLGPU:
+            if (cmd == 0xC0E04705u) f->s2 = 1;
+            r = ioctl_ctrlgpu(cmd, d, (u32)n, x, nx, f->s2);
+            break;
         case DEV_GPU: r = ioctl_gpu(f, cmd, d, (u32)n, x, nx); break;
+        case DEV_TSG: r = ioctl_tsg(fd, cmd, d, (u32)n); break;
         case DEV_NVDEC:
         case DEV_VIC: r = host1x_ioctl(f->h1x, cmd, d, (u32)n); break;
         default:
@@ -1696,6 +1844,11 @@ static int nns_nvdrv_INvDrvServices_Close(SvcObj* self, u32 fd, u32* error) {
     pm_lock(&g_host.nvdrv.lock);
     if (fd < NV_FDS && g_hle.nvdrv.nvf[fd].dev && !g_hle.nvdrv.nvf[fd].closed) {
         open = 1;
+        if (g_hle.nvdrv.nvf[fd].dev == DEV_TSG) {
+            for (u32 i = 1; i < NV_FDS; i++)
+                if (g_hle.nvdrv.nvf[i].dev == DEV_GPU && g_hle.nvdrv.nvf[i].tsg_fd == fd + 1)
+                    g_hle.nvdrv.nvf[i].tsg_fd = g_hle.nvdrv.nvf[i].tsg_subcontext = 0;
+        }
         if (g_hle.nvdrv.nvf[fd].users) { /* the last ioctl releases it */
             g_hle.nvdrv.nvf[fd].closed = 1;
         } else {
@@ -1754,6 +1907,9 @@ static SvcObj* new_nvdrv(void) { return nns_nvdrv_INvDrvServices_new(); }
 void nv_init(void) {
     g_hle.nvdrv.nvh_next = 1;
     g_hle.nvdrv.big_page_bits = AS_BIG_PAGE_BITS_64K; /* MemoryManager's default big_page_bits */
+    g_hle.nvdrv.as_range_start = (u64)1 << (AS_BIG_PAGE_BITS_64K + AS_VA_START_SHIFT);
+    g_hle.nvdrv.as_range_end = AS_DEFAULT_VA_RANGE;
+    g_hle.nvdrv.as_range_split = VA_BASE;
     pm_init(&g_host.nvdrv.lock);
     pm_init(&g_host.nvdrv.aslock);
     pm_init(&g_host.nvdrv.alias_lock);

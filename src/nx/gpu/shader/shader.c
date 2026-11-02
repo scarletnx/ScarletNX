@@ -15,6 +15,7 @@
 #define CRS_DEPTH     16    /* static resolution gives up on a deeper stack */
 
 int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+int g_shader_sm70;
 
 const u64* shader_words(const u8* code, u32 bytes, u64** copy) {
     u32 i, n = bytes / 8;

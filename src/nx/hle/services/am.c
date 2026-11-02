@@ -171,6 +171,11 @@ static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* s
     *proxy = am_proxy();
     R_SUCCEED();
 }
+static int nn_am_service_IApplicationProxyService_OpenApplicationProxy2(SvcObj* self, u32 version, u64 pid, u32 process,
+                                                                        SvcObj** proxy) {
+    (void)version;
+    return nn_am_service_IApplicationProxyService_OpenApplicationProxy(self, pid, process, proxy);
+}
 static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid,
                                                                                   u32 process, SvcObj** proxy) {
     (void)self, (void)pid, (void)process;
@@ -228,6 +233,27 @@ static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self,
 static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
     (void)self;
     *functions = nn_am_service_IDebugFunctions_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IApplicationProxy_GetGraphicsScalingParametersFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IGraphicsScalingParametersFunctions_new();
+    R_SUCCEED();
+}
+
+/* ============================================================ IGraphicsScalingParametersFunctions */
+static int nn_am_service_IGraphicsScalingParametersFunctions_GetGraphicsScalingParameters(
+    SvcObj* self, u32* graphics_scale, u32* screen_ratio_numerator, u32* screen_ratio_denominator) {
+    (void)self;
+    /* Eden's prototype policy: lowest SDK scale (10 maps to public scale 0), unit screen ratio */
+    *graphics_scale = 10;
+    *screen_ratio_numerator = 1;
+    *screen_ratio_denominator = 1;
+    R_SUCCEED();
+}
+static int nn_am_service_IGraphicsScalingParametersFunctions_SetGraphicsScaleChangedNotificationEnabled(SvcObj* self,
+                                                                                                         u8 enabled) {
+    (void)self, (void)enabled;
     R_SUCCEED();
 }
 
@@ -442,6 +468,12 @@ static int nn_am_service_ISelfController_Exit(SvcObj* self) {
 static int nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(SvcObj* self, u32* event) {
     (void)self;
     *event = ev_handle(g_hle.am.launchable_event);
+    R_SUCCEED();
+}
+static int nn_am_service_ISelfController_GetGraphicsSupervisor(SvcObj* self, u32* session) {
+    (void)self;
+    *session = session_new(new_gsv_session());
+    R_UNLESS(*session, 0xD201); /* OutOfHandles */
     R_SUCCEED();
 }
 static int nn_am_service_ISelfController_CreateManagedDisplayLayer(SvcObj* self, u64* layer_id) {

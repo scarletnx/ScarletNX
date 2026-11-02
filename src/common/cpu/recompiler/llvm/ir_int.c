@@ -601,6 +601,36 @@ int snx_ir_int_handles(SnxA64Op op) {
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
         case SNX_A64_OP_RET:
+        /* The supported PAuth execution model has SCTLR's EnIA/EnIB/EnDA/EnDB clear. Signing and
+           authentication leave pointers unchanged; authenticated branches still transfer control. */
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD:
+        case SNX_A64_OP_RETA:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRA:
+        case SNX_A64_OP_BLRAZ:
+        case SNX_A64_OP_PACIA1716:
+        case SNX_A64_OP_PACIB1716:
+        case SNX_A64_OP_AUTIA1716:
+        case SNX_A64_OP_AUTIB1716:
+        case SNX_A64_OP_PACIAZ:
+        case SNX_A64_OP_PACIASP:
+        case SNX_A64_OP_PACIBZ:
+        case SNX_A64_OP_PACIBSP:
+        case SNX_A64_OP_AUTIAZ:
+        case SNX_A64_OP_AUTIASP:
+        case SNX_A64_OP_AUTIBZ:
+        case SNX_A64_OP_AUTIBSP:
+        case SNX_A64_OP_PACIA:
+        case SNX_A64_OP_PACIB:
+        case SNX_A64_OP_PACDA:
+        case SNX_A64_OP_PACDB:
+        case SNX_A64_OP_AUTIA:
+        case SNX_A64_OP_AUTIB:
+        case SNX_A64_OP_AUTDA:
+        case SNX_A64_OP_AUTDB:
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK:
         case SNX_A64_OP_NOP:
@@ -621,6 +651,20 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
     const SnxA64Args* a = &insn->args;
     SnxA64Op op = insn->op;
     switch (op) {
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD: {
+            /* The extended HLE profile has 39-bit virtual addresses and no top-byte ignore. XPAC always
+               strips authentication bits, even with SCTLR authentication disabled. Bit 55 selects the
+               address range: restore that bit throughout [63:39], keeping the low address bits. */
+            unsigned rd = op == SNX_A64_OP_XPACLRI ? 30 : (unsigned)a->rd;
+            V pointer = ir_rx(ir, rd);
+            const SnxU64 low = (1ull << 39) - 1;
+            V upper = LLVMBuildSelect(B, nonzero(ir, LLVMBuildAnd(B, pointer, ir_i64(ir, 1ull << 55), "")),
+                                      ir_i64(ir, ~low), ir_i64(ir, 0), "");
+            set_reg(ir, rd, LLVMBuildOr(B, LLVMBuildAnd(B, pointer, ir_i64(ir, low), ""), upper, ""));
+            break;
+        }
         case SNX_A64_OP_ADR: set_reg(ir, (unsigned)a->rd, ir_i64(ir, pc + (SnxU64)(int64_t)a->imm)); break;
         case SNX_A64_OP_ADRP:
             set_reg(ir, (unsigned)a->rd, ir_i64(ir, (pc & ~0xFFFull) + ((SnxU64)(int64_t)a->imm << 12)));
@@ -718,7 +762,12 @@ LLVMValueRef snx_ir_int_operand(SnxIr* ir, const SnxA64Insn* insn) {
         }
         case SNX_A64_OP_BR:
         case SNX_A64_OP_BLR:
-        case SNX_A64_OP_RET: return ir_rx(ir, (unsigned)a->rn);
+        case SNX_A64_OP_RET:
+        case SNX_A64_OP_BRA:
+        case SNX_A64_OP_BRAZ:
+        case SNX_A64_OP_BLRA:
+        case SNX_A64_OP_BLRAZ: return ir_rx(ir, (unsigned)a->rn);
+        case SNX_A64_OP_RETA: return ir_rx(ir, 30);
         case SNX_A64_OP_SVC:
         case SNX_A64_OP_BRK: return ir_i32(ir, (SnxU32)a->imm & 0xFFFFu);
         default: return NULL;

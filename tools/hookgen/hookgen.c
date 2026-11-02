@@ -25,8 +25,9 @@
    unknown one. A type of the header is passed by value only when it is an enum (an int under AAPCS64, as an i32)
    or a pointer (typedef void* NVNnativeWindow, or a function pointer, as an addr). The language has no arrays: an
    array argument is a pointer to its first element. Under AAPCS64 an integer, bool, pointer or address takes the
-   next of x0-x7 and a float the next of v0-v7, so nine of one kind would need the stack, which no hook takes. The
-   result goes back in x0 or v0.
+   next of x0-x7 and a float the next of v0-v7. An argument past them takes the next 8-byte slot of the stack, from
+   the caller's sp, in the order of the arguments (a float in the low bytes of its slot). The result goes back in x0
+   or v0.
 
    A pointer is a guest address: the adapter reads it from its x register as a u64 and the handler takes it as one,
    so no handler can mistake it for a host pointer. The pointer types say what the function's argument is, for the
@@ -175,6 +176,7 @@ typedef struct {
     char name[MAX_NAME];
     char cname[MAX_NAME]; /* its C type, in the function type: const NVNtexture* const* */
     int reg;              /* its x or v register */
+    int stack;            /* its 8-byte slot on the stack past the registers, or -1 */
     /* under AAPCS32 (--a32): where it is, A32_CORE (r<at>), A32_PAIR (r<at> and r<at + 1>), A32_WORD or A32_DWORD
        (the caller's stack at byte at), A32_S (s<at>) or A32_D (d<at>) */
     int a32, a32_at;
@@ -627,6 +629,7 @@ static const char* parse_buffer(const char* p, Arg* a, int line) {
     }
     if (i > B_INOUT) fail(line, "expected in[...], out[...] or inout[...] after %s, not %s", a->name, mode);
     if (a->kind != T_ADDR) fail(line, "only an addr or a pointer argument is a buffer, not %s", a->name);
+    if (a->stack >= 0) fail(line, "%s is on the stack, which a buffer can't be", a->name);
     a->mode = i;
     a->len_arg = -1;
     a->len_mul = 1;
@@ -658,6 +661,7 @@ static void resolve_buffers(Hook* h, int line) {
         if ((h->args[j].kind < T_U8 || h->args[j].kind > T_I64) && h->args[j].kind != T_USIZE &&
             h->args[j].kind != T_ISIZE)
             fail(line, "%s's length %s is not an integer", a->name, a->len_name);
+        if (h->args[j].stack >= 0) fail(line, "%s's length %s is on the stack", a->name, a->len_name);
         a->len_arg = j;
     }
     if (h->nbufs && !h->pure) fail(line, "only a pure hook's buffers are checked: say pure, or drop the buffers");
@@ -718,7 +722,7 @@ static void assign_a32(Hook* h) {
 static void parse_hook(const char* p, int line, const Range* range) {
     Hook* h;
     char derived[MAX_NAME];
-    int x = 0, v = 0;
+    int x = 0, v = 0, nstack = 0;
     if (nhooks == MAX_HOOKS) fail(line, "more than %d hooks", MAX_HOOKS);
     if (!nfamilies) fail(line, "a hook comes after a family line, which names its family");
     h = &hooks[nhooks++];
@@ -738,7 +742,7 @@ static void parse_hook(const char* p, int line, const Range* range) {
         p = word(p, a->name, line, "argument's name");
         if (!is_identifier(a->name) || !strcmp(a->name, "c")) fail(line, "'%s' can't name an argument", a->name);
         a->reg = is_float(a->kind) ? v++ : x++;
-        if (x > NREGS || v > NREGS) fail(line, "an argument past x7 or v7 would be on the stack, which no hook reads");
+        a->stack = a->reg >= NREGS ? nstack++ : -1;
         p = skip_space(p);
         if (*p == '[')
             fail(line, "%s is an array, which the language doesn't take: write a pointer to its first element",
@@ -1155,6 +1159,15 @@ static void prototype(const Hook* h) {
 
 /* an argument as the handler takes it, from its register */
 static void argument(const Arg* a) {
+    if (a->stack >= 0) {
+        if (a->kind == T_F32 || a->kind == T_F64)
+            out("hook_stack_%s(c, %d)", a->kind == T_F32 ? "f32" : "f64", a->stack);
+        else if (a->kind == T_BOOL)
+            out("(hook_stack_u64(c, %d) & 0xFF) != 0", a->stack);
+        else
+            out("(%s)hook_stack_u64(c, %d)", kinds[a->kind].ctype, a->stack);
+        return;
+    }
     switch (a->kind) {
         case T_BOOL: out("(c->x[%d] & 0xFF) != 0", a->reg); break;
         case T_U64:

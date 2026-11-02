@@ -427,6 +427,13 @@ void kernel_dump_threads(void) {
         sym_name(lr, ls, sizeof ls);
         LOG("    lr=%llx %s pc=%llx %s sp=%llx\n", (unsigned long long)lr, ls, (unsigned long long)pc, ps,
             (unsigned long long)sp);
+        if (wide)
+            LOG("    regs x0=%llx x1=%llx x2=%llx x3=%llx x4=%llx x5=%llx x6=%llx x7=%llx x8=%llx\n",
+                (unsigned long long)t->cpu.x[0], (unsigned long long)t->cpu.x[1],
+                (unsigned long long)t->cpu.x[2], (unsigned long long)t->cpu.x[3],
+                (unsigned long long)t->cpu.x[4], (unsigned long long)t->cpu.x[5],
+                (unsigned long long)t->cpu.x[6], (unsigned long long)t->cpu.x[7],
+                (unsigned long long)t->cpu.x[8]);
         nf = frames(fp, wide, f, 10);
         for (k = 0; k < nf; k++) {
             sym_name(f[k], ls, sizeof ls);

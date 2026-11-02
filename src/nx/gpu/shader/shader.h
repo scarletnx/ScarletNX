@@ -192,6 +192,9 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+/* The programs are SM70+ (sm70.h), not Maxwell: a Switch 2 game's. nvn_direct sets it once, from the game's NVN API
+   version, before the game's first draw */
+extern int g_shader_sm70;
 /* the targets of the BRX at word index from its jump table, at most max_targets, or -1 */
 int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets);
 /* the program's hash, and its length in bytes in out_len */

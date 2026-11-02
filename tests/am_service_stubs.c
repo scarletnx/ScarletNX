@@ -7,6 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Tests exercise am's handle reply without running the kernel's session table. */
+u32 session_new(SvcObj* obj) {
+    svcobj_unref(obj);
+    return 0x456;
+}
+void out_move_h(IpcCtx* c, u32 handle) { c->out_move[c->nout_move++] = handle; }
+int ipc_unknown(SvcObj* obj, IpcCtx* c) {
+    (void)obj;
+    (void)c;
+    return RC(10, 221);
+}
+SvcObj* new_gsv_session(void) { return svcobj_new("nn::gsv::UserSession", ipc_unknown); }
+
 extern const u8* g_test_nacp;
 extern u64 g_test_nacp_size;
 const u8* g_test_nacp;

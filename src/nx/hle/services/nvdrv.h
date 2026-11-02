@@ -82,6 +82,12 @@ void syncpt_events(void);
 u32 syncpt_promise(u32 id, u32 n);
 /* 1 once id reaches thresh (across the 32-bit wrap), 0 when the time runs out. 0 looks once, negative waits for good */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
+/* gsv.c: the syncpoint supervisor's armed waits, signaled when a syncpoint moves (called from syncpt_add) */
+void gsv_syncpt_changed(void);
+/* gsv.c: the VI2 display session's vsync (called from vi_vsync_tick at 60 Hz) */
+void gsv_vsync_tick(void);
+/* the syncpoint shim's guest CPU page (GET_SYNC_RO_MAP), 0 until bound: the game reads syncpoint values there */
+extern u64 g_sync_shim_cpu;
 /* Runs fn(arg) on the GPU thread after the submissions that promised the fences (id[i], val[i]), i < n <= 4. A fence
    nothing queued has promised is waited for here instead, for at most 1 s, and its id[i] is set to ~0 */
 void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg);
@@ -177,6 +183,9 @@ typedef struct {
        the entry and its channel stay while an ioctl uses them, and Open doesn't hand the fd out again meanwhile */
     u32 users;
     int closed;
+    int s2; /* DEV_CTRLGPU: Switch 2 characteristics; DEV_GPU: native channel completion semantics */
+    u32 tsg_fd; /* DEV_GPU: 1 + the native timeslice-group fd, zero when unbound */
+    u32 tsg_subcontext; /* DEV_GPU: native subcontext within that group */
 } NvFile;
 /* a (device, ioctl) pair logged already */
 typedef struct {
@@ -201,6 +210,7 @@ typedef struct {
     u32 ngruns, capgruns;
     GAlias alias;
     u32 big_page_bits; /* 64K (AS_BIG_PAGE_BITS_64K) until ALLOC_AS_EX asks otherwise */
+    u64 as_range_start, as_range_end, as_range_split; /* ALLOC_AS_EX ranges reported by GET_VA_REGIONS */
     VaRange* vafree;
     u32 nvafree, capvafree;
     int va_ready; /* the free ranges hold the whole region at first (va_init) */

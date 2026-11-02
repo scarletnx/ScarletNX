@@ -22,6 +22,7 @@ enum {
     NVHOST_AS_GPU_MAP_BUFFER_EX = 0x06,  /* MapBufferEx */
     NVHOST_AS_GPU_GET_VA_REGIONS = 0x08, /* GetVARegions (Ioctl3 also writes the regions to its second output) */
     NVHOST_AS_GPU_ALLOC_AS_EX = 0x09,    /* AllocAsEx */
+    NVHOST_AS_GPU_GET_SYNC_RO_MAP = 0x0B, /* Switch 2 syncpoint read-only mapping descriptor */
     NVHOST_AS_GPU_REMAP = 0x14           /* Remap */
 };
 
@@ -54,8 +55,9 @@ enum {
 enum { AS_GET_VA_REGIONS_BUF_SIZE = 8, AS_GET_VA_REGIONS_REGIONS = 16 };
 enum { AS_VA_REGION_OFFSET = 0, AS_VA_REGION_PAGE_SIZE = 8, AS_VA_REGION_PAGES = 16, AS_VA_REGION_BYTES = 24 };
 #define AS_VA_REGIONS 2 /* the small-page region, then the big-page one */
-/* IoctlAllocAsEx {u32 flags, s32 as_fd, u32 big_page_size, u32 reserved, u64 va_range_start, end, split} */
-enum { AS_ALLOC_AS_EX_BIG_PAGE_SIZE = 8 };
+/* IoctlAllocAsEx {u32 big_page_size, s32 as_fd, u32 flags, u32 reserved, u64 va_range_start, end, split} */
+enum { AS_ALLOC_AS_EX_BIG_PAGE_SIZE = 0, AS_ALLOC_AS_EX_VA_START = 16, AS_ALLOC_AS_EX_VA_END = 24,
+       AS_ALLOC_AS_EX_VA_SPLIT = 32 };
 /* IoctlRemapEntry {u16 flags, u16 kind, u32 handle, u32 handle_offset_big_pages, u32 as_offset_big_pages,
    u32 big_pages}, an array filling the argument */
 enum {

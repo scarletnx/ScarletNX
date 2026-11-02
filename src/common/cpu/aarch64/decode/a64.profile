@@ -38,6 +38,9 @@ feature EL1
 
 # The Switch's Cortex-A57: Armv8.0 with the CRC32 and Cryptographic Extensions
 target switch v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256
+# Experimental HLE profile: LSE atomics, RCpc loads and PAuth instructions with SCTLR_EL1.EnIA/EnIB/EnDA/EnDB clear.
+# This is not a complete CPU profile for newer consoles.
+target switch_extended v8.0 FEAT_CRC32 FEAT_AES FEAT_PMULL FEAT_SHA1 FEAT_SHA256 FEAT_LSE FEAT_LRCPC FEAT_PAuth
 # every feature the decoder knows
 target max *
 

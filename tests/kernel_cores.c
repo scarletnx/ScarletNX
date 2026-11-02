@@ -695,6 +695,15 @@ int main(void) {
         CHECK(snx_kct_woken[1] == was[1] + 1 && snx_kct_woken[16] == was[16] + 1 && snx_kct_woken[17] == was[17] + 1,
               "the rest at the unlock");
     }
+    /* Switch 2's NPDM can permit six cores. Its last guest core gets its own share of host CPUs. */
+    host(twelve, 12);
+    g_hle.svcmem.core_mask = 0x3f;
+    reset();
+    a = thread(0, 44, 5, 1ull << 5);
+    core_enter(a);
+    CHECK(on_core(a) == 5 && moved_to("5 11", 1), "sixth guest core: on %d, host CPUs %s", on_core(a),
+          snx_kct_moved);
+    core_leave(a);
 
     printf("%u checks, %u failed\n", checks, failures);
     return failures != 0;

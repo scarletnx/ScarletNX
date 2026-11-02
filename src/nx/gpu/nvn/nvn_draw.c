@@ -1023,6 +1023,14 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             if (r->size && r->size <= (u64)size - sizeof *r) gmem_write(r->dst, GP(payload + sizeof *r), r->size);
             return 1;
         }
+        case OP_PUSH_CONSTANTS: { /* into the root table, cut at its end */
+            const NvnPPush* r = NVN_OBJ(const NvnPPush, payload);
+            u32 words = r->words + 1u, room = NVN_ROOT_WORDS - r->offset;
+            if (sizeof *r + 4 * (u64)words > (u64)size) return 1;
+            memcpy(&d->root[r->compute][r->table][r->offset], GP(payload + sizeof *r),
+                   4 * (size_t)(words < room ? words : room));
+            return 1;
+        }
         case OP_BARRIER: {
             i32 bits;
             memcpy(&bits, GP(payload), 4);

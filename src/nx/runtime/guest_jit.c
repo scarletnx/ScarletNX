@@ -212,6 +212,7 @@ void jit_init(void) {
     opt = g_settings.jit_optimization[0];
     if (!opt || !strchr("0123sz", opt)) opt = '0'; /* an empty or hand-edited .ini */
 #endif
+    config.features = g_settings.cpu_extensions ? SNX_A64_TARGET_SWITCH_EXTENDED : 0;
     config.opt = opt;
     config.images = g_jit_images;
     config.image_count = g_mod->nmods;

@@ -34,6 +34,7 @@ int pc_wait(PCond* c, PMutex* m, i64 timeout_ns) {
 }
 int kthread_wait(PCond* c, PMutex* m, i64 timeout_ns) { return pc_wait(c, m, timeout_ns); }
 void kthread_commit(void) {}
+void gsv_vsync_tick(void) {}
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;

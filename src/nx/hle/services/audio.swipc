@@ -26,6 +26,12 @@ type nn::audio::AudioOutParameter = struct {
     u16 channel_count;
     u16 reserved;
 };
+type nn::audio::AudioInParameter = struct {
+    u32 sample_rate;
+    u16 channel_count;
+    u16 reserved;
+};
+type nn::audio::AudioInProtocol = u32[2];
 # libnx's AudioOutBuffer: the next buffer, the samples' address, their capacity and size, and the offset into them
 type nn::audio::AudioOutBuffer = struct {
     u64 next;
@@ -60,6 +66,14 @@ type nn::codec::detail::HardwareOpusMultiStreamDecoderParameterInternalEx = stru
     u32 reserved;
     u8[0x100] channel_mappings;
 };
+
+# The Switch 2 native audio service (aud:u): a TIPC session that hands back the managers audren:u/audout:u/audin:u
+# serve, one per command. Native-ABI games reach the renderer manager this way, then its GetWorkBufferSize (cmd 1).
+interface nn::audio::detail::INativeAudioManager is aud:u {
+    [0] GetAudioInManager() -> object<nn::audio::detail::IAudioInManager> manager;
+    [1] GetAudioOutManager() -> object<nn::audio::detail::IAudioOutManager> manager;
+    [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager> manager;
+}
 
 interface nn::audio::detail::IAudioRendererManager is audren:u {
     [0] OpenAudioRenderer(nn::audio::detail::AudioRendererParameterInternal params, u64 work_buffer_size, aruid aruid,
@@ -138,6 +152,25 @@ interface nn::audio::detail::IAudioOut {
     [11] FlushAudioOutBuffers() -> b8 released;
     [12] SetAudioOutVolume(f32 volume);
     [13] GetAudioOutVolume() -> f32 volume;
+}
+
+interface nn::audio::detail::IAudioInManager is audin:u {
+    @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
+    [1] OpenAudioIn(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
+                    buffer<nn::audio::AudioDeviceName, 5> name, buffer<nn::audio::AudioDeviceName, 6> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
+    @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+    [3] OpenAudioInAuto(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
+                        buffer<nn::audio::AudioDeviceName, 0x21> name, buffer<nn::audio::AudioDeviceName, 0x22> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
+    @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+    [5] OpenAudioInProtocolSpecified(nn::audio::AudioInProtocol protocol, nn::audio::AudioInParameter params,
+                                     aruid aruid, handle<copy, process> process,
+                                     buffer<nn::audio::AudioDeviceName, 0x21> name,
+                                     buffer<nn::audio::AudioDeviceName, 0x22> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
+}
+interface nn::audio::detail::IAudioIn {
 }
 
 @fallback(quiet_ok)

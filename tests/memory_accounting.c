@@ -174,6 +174,17 @@ static void test_heap(void) {
     CHECK(used_memory() == 56 * MIB);
     CHECK(info(6) == 3285 * MIB && info(7) == 56 * MIB);
     CHECK(info(21) == info(6) && info(22) == info(7));
+    CHECK(info(33) == 0x1000);             /* guest page size, also on hosts with larger pages */
+    CHECK(info(29) == 0 && info(30) == 0); /* no remote address space */
+    CHECK(info(31) == 0 && info(32) == 0); /* no remote allocations */
+    static const u32 process_ids[] = {29, 30, 31, 32, 33};
+    for (size_t i = 0; i < sizeof process_ids / sizeof process_ids[0]; ++i) {
+        u32 id = process_ids[i];
+        u64 out = ~0ull;
+        CHECK(svc_get_info(id, H_CUR_PROC, 1, &out) == R_BADENUM);
+        CHECK(svc_get_info(id, 0, 0, &out) == R_BADHANDLE);
+        CHECK(svc_get_info(id, 0x1234, 0, &out) == R_BADHANDLE);
+    }
     CHECK(svc_set_heap_size(3200 * MIB) == 0); /* the reported startup failure */
     CHECK(g_heap_size == 3200 * MIB && used_memory() == 3256 * MIB);
     CHECK(state(HEAP_BASE) == MS_NORMAL);
@@ -202,6 +213,22 @@ static void test_heap(void) {
         CHECK(svc_set_heap_size(3200 * MIB) == 0);
         CHECK(svc_set_heap_size(0) == 0);
     }
+}
+static void test_large_heap(void) {
+    MemLayout saved = g_layout;
+    base_process();
+    g_settings.memory_gb = 12;
+    mem_layout_large_heap();
+    CHECK(g_layout.heap_size == 12ull << 30);
+    CHECK(g_layout.stack == saved.stack + (4ull << 30));
+    CHECK(g_layout.kern == saved.kern + (4ull << 30));
+    CHECK(mem_total() == 10ull << 30);
+    CHECK(info(5) == 12ull << 30 && info(6) == 10ull << 30);
+    CHECK(svc_set_heap_size(8500 * MIB) == 0);
+    CHECK(g_heap_size == 8500 * MIB && state(HEAP_BASE + 8499 * MIB) == MS_NORMAL);
+    CHECK(svc_set_heap_size(0) == 0);
+    CHECK(svc_set_heap_size(12ull << 30) == R_BADSIZE);
+    g_layout = saved;
 }
 /* a 32-bit process's GetInfo total is its heap region's size (2 GiB without an alias region), not the application
    pool's: a title that sets its heap to nearly the total it reads otherwise asks for 3.2 GiB and gets none */
@@ -412,6 +439,16 @@ static void test_map_memory(void) {
     CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == R_BADCOMBO);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_SHARABLE, MA_GPU_SHARABLE) == 0);
+    {
+        MemBlock b;
+        mem_query(src, &b);
+        CHECK((b.attr & MA_GPU_SHARABLE) != 0);
+    }
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_SHARABLE, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, 8, 8) == R_BADCOMBO);
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
     CHECK(mem_unmap(info, 0x1000) == 0);
     CHECK(svc_set_heap_size(0) == 0);
@@ -495,6 +532,7 @@ int main(void) {
         mapping_begins = mapping_ends = 0; /* test_mapping_boundary's, from the round before */
         mem_init();
         test_heap();
+        test_large_heap();
         test_heap32();
         test_fit();
         test_system_resource();
