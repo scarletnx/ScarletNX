@@ -429,6 +429,46 @@ static int check_depth_writeback(void) {
     free(ch);
     return 0;
 }
+/* A volume of more than 512 Mi texels whose bytes the GPU holds is a texture (a game's light volume, 1664x448x1344 of
+   BC1 in a pool mapped in pieces, read as zeros): BC1 1024x1024x513, 269 MB, mapped only at its start, comes with the
+   block memory has there */
+static int check_big_volume(void) {
+    const u64 gva = 0x200000000ull, cpu = HEAP_BASE + 0xB00000;
+    const u8 block[8] = {0x1F, 0x00, 0xE0, 0x07, 0x1B, 0x6C, 0xB1, 0xC6};
+    /* BC1, 3D, block linear with blocks 16 GOBs deep, as the game's header has it */
+    const u32 tic[8] = {
+        0x58D24924u, (u32)gva, (u32)(gva >> 32) | 3u << 21, 4u << 6, 1023u | 2u << 23, 1023u | 512u << 16, 0, 0};
+    u8 got[8] = {0};
+    if (vk_tic_format_3d(tic[0], 0).vk != VK_FORMAT_BC1_RGBA_UNORM_BLOCK) {
+        puts("big volume: the GPU has no 3D BC1 images (it would decode 2 GB), skipped");
+        return 0;
+    }
+    CHECK(mem_map(cpu, 0x10000, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(cpu), 0, 0x10000);
+    memcpy(GP(cpu), block, sizeof block);
+    gmmu_map(gva, cpu, 0x10000);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    VkBuffer buffer;
+    u8* result = t ? vk_readback_buffer(sizeof got, &buffer) : NULL;
+    if (result) {
+        VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {4, 4, 1}};
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+        memcpy(got, result, sizeof got);
+    }
+    vk_unlock();
+    if (!t || memcmp(got, block, sizeof got))
+        fprintf(stderr, "big volume: texture %d, first block %02x%02x%02x%02x%02x%02x%02x%02x\n", t != NULL, got[0],
+                got[1], got[2], got[3], got[4], got[5], got[6], got[7]);
+    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && t->w == 1024 && t->h == 1024 && t->depth3d == 513);
+    CHECK(!memcmp(got, block, sizeof got));
+    puts("big volume: a 1024x1024x513 BC1 texture is made, its first block from memory");
+    return 0;
+}
 static int check_depth_array(void) {
     GpuChannel* ch = calloc(1, sizeof *ch);
     CHECK(ch);
@@ -1783,6 +1823,7 @@ int main(int argc, char** argv) {
     CHECK(!check_packed_depth());
     CHECK(!check_depth_array());
     CHECK(!check_depth_writeback());
+    CHECK(!check_big_volume());
     CHECK(!check_srgb_write());
     CHECK(!check_clear_load_op());
     CHECK(!check_sparse_while_submitting());

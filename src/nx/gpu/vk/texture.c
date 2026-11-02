@@ -837,7 +837,6 @@ static Surf* tex_from_tic(const u32* tic, int raw, int storage) {
     }
     if (type == 6 && f.bpp && w <= UINT32_MAX / f.bpp) pitch = w * f.bpp;
     if (!f.bpp || !w || w > 16384 || h > 16384 || d > 2048) return NULL;
-    if ((u64)w * h * d * (f.bw > 1 ? 1 : f.bpp) > (512ull << 20)) return NULL;
     u32 gw = w << ds_msaa_log2_x(msaa), gh = h << ds_msaa_log2_y(msaa); /* the guest's texels: samples */
     if (!bl && pitch < (gw + f.bw - 1) / f.bw * f.bpp) {
         LOG_LIMIT(1, "vulkan: a pitch-linear texture's pitch (%u bytes) is shorter than its rows (not drawn)\n", pitch);
