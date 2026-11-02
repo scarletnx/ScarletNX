@@ -104,13 +104,18 @@ static SnxU64 game_title(void) {
     return snx_title_parse(g_gamename, &id) ? id : 0;
 }
 /* dump opened as snx_dump_open takes it (base, addon, either NULL) and each container mapped read-only for the whole
-   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read */
+   run: the base's into base_map, the add-on's into addon_map. Ends the run on a dump that cannot be read, and on one
+   whose keys the keys file lacks, which would read as garbage: no ExeFS, its modules missing */
 static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, const char* base, const char* addon,
                      const char* keys, const char* title_keys, const char* repo) {
     snx_hac_on_exit(dump_exit, NULL);
     if (snx_dump_open(dump, base, addon, keys, title_keys, repo, 0))
         fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
               addon ? addon : base);
+    if ((dump->program.found && snx_nca_keys(dump, &dump->program, "The game's Program NCA")) ||
+        (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
+        (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
+        fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);

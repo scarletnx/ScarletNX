@@ -63,9 +63,9 @@ SnxHacFs* snx_dump_fs(SnxDump* dump);
 SnxHacFs* snx_dump_aoc_fs(SnxDump* dump);
 /* the HtmlDocument NCA's RomFS read in place (html-document/ in it), or NULL without one */
 SnxHacFs* snx_dump_html_fs(SnxDump* dump);
-/* 0 when the keys an NCA picked needs are there, else nonzero with a line saying which are missing and where they come
-   from, what names it ("The game's Program NCA"); no key itself is said */
-int snx_nca_keys(const SnxNcaRef* nca, const char* what);
+/* 0 when the keys an NCA of dump picked needs are there, else nonzero with a line saying which are missing, how far
+   dump's keys file goes and its path, what names the NCA ("The game's Program NCA"); no key itself is said */
+int snx_nca_keys(const SnxDump* dump, const SnxNcaRef* nca, const char* what);
 /* bytes as a size the player reads: "512 bytes", "35 KB", "4.1 GB" */
 void snx_size_text(SnxU64 bytes, char* text, size_t size);
 /* a file of a RomFS read in place, by its path (control.nacp in the Control NCA's), malloc'd, or NULL */

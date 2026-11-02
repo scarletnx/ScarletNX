@@ -256,8 +256,8 @@ static int load_dump(const char* dump, const char* update, const SnxPaths* paths
     size_t nacp_size = 0;
     /* an update's ExeFS is whole: read without its game's, which only its RomFS is made of */
     int rc = snx_dump_open(&opened, update ? NULL : dump, update, paths->keys, paths->title_keys, paths->repo, !quiet);
-    if (!rc && opened.program.found) rc = snx_nca_keys(&opened.program, "The game's Program NCA");
-    if (!rc && opened.patch.found) rc = snx_nca_keys(&opened.patch, "The update's Program NCA");
+    if (!rc && opened.program.found) rc = snx_nca_keys(&opened, &opened.program, "The game's Program NCA");
+    if (!rc && opened.patch.found) rc = snx_nca_keys(&opened, &opened.patch, "The update's Program NCA");
     if (!rc && !(fs = snx_dump_fs(&opened))) rc = 1;
     if (!rc) {
         nacp = snx_dump_nacp(&opened, &nacp_size, &why);

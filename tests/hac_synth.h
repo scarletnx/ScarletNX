@@ -233,6 +233,28 @@ static inline blob_t dnca_build(uint8_t content_type, uint64_t title_id, const r
     return nca;
 }
 
+/* A dnca_build NCA turned into an encrypted one of master key generation: an NCA3 header encrypted with header_key
+   (AES-XTS, 0x200-byte sectors from 0, as nca.c decrypts it) whose sections are AES-CTR, its key area left zero. Only
+   its header can be read: it says what the keys file must have, which the tests' keys files lack */
+static inline void nca_encrypt(blob_t* nca, const unsigned char header_key[32], unsigned generation) {
+    nca_header_t header;
+    unsigned char sealed[0xC00];
+    CHECK(nca->size >= 0xC00 && sizeof(header) == 0xC00 && generation < 0xFF);
+    memcpy(&header, nca->data, sizeof(header));
+    nca_header_swap(&header); /* the host's order, then the file's again */
+    header.magic = MAGIC_NCA3;
+    header.crypto_type = 2;
+    header.crypto_type2 = (uint8_t)(generation + 1); /* 0 and 1 are both master key 0 */
+    header.kaek_ind = 0;
+    for (unsigned i = 0; i < 4; i++)
+        if (header.section_entries[i].media_start_offset) header.fs_headers[i].crypt_type = CRYPT_CTR;
+    nca_header_swap(&header);
+    aes_ctx_t* aes = new_aes_ctx(header_key, 32, AES_MODE_XTS);
+    aes_xts_encrypt(aes, sealed, &header, sizeof(sealed), 0, 0x200);
+    free_aes_ctx(aes);
+    memcpy(nca->data, sealed, sizeof(sealed));
+}
+
 /* A gamecard (DXCI) whose root partition holds a secure one of files, after the card's key area when key_area. */
 static inline blob_t gamecard_build(const romfs_file_t* files, unsigned count, int key_area) {
     blob_t secure = partition_build(MAGIC_HFS0, files, count, 0x203);
