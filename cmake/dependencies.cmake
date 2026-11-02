@@ -165,21 +165,23 @@ endif()
 # jemalloc as the scarletnx program's malloc, the whole process's (cmake/jemalloc.cmake): a recompile's LLVM threads
 # spend less time in malloc and free than with the C library's. On by default where the program's malloc is every
 # library's: Linux and FreeBSD (whose libc's is an older jemalloc), and Android's driver, the executable the menu runs
-# recompiles in (libscarletnx-run.so, src/nx), whose C library calls malloc through the program's as glibc does. macOS
-# takes it through jemalloc's zone, not by default yet. Windows' C runtime is a DLL with a heap of its own, which LLVM's
-# DLL and the C runtime's strdup allocate from, and an iOS app keeps the system's. The sanitizers bring their own malloc
+# recompiles in (libscarletnx-run.so, src/nx), whose C library calls malloc through the program's as glibc does, and
+# macOS through jemalloc's zone, which it puts in front of the system's. Windows' C runtime is a DLL with a heap of its
+# own, which LLVM's DLL and the C runtime's strdup allocate from, and an iOS app keeps the system's. The sanitizers
+# bring their own malloc
 # Android's program is the Switch driver's executable, which a build without the runtime does not make
 if(ANDROID AND (NOT SNX_BUILD_NX OR SNX_TOOLS_ONLY))
     set(snx_jemalloc_has_program OFF)
 else()
     set(snx_jemalloc_has_program ON)
 endif()
-if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android)$" AND snx_jemalloc_has_program AND NOT SNX_TEST_SANITIZERS)
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android|Darwin)$" AND snx_jemalloc_has_program AND
+   NOT SNX_TEST_SANITIZERS)
     set(snx_jemalloc_default ON)
 else()
     set(snx_jemalloc_default OFF)
 endif()
-option(SNX_JEMALLOC "Link jemalloc into scarletnx as its malloc (default ON on Linux, FreeBSD and Android)"
+option(SNX_JEMALLOC "Link jemalloc into scarletnx as its malloc (default ON on Linux, FreeBSD, Android and macOS)"
        ${snx_jemalloc_default})
 if(SNX_JEMALLOC)
     if(SNX_TEST_SANITIZERS)

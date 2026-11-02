@@ -348,9 +348,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux,
-  FreeBSD and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles, OFF on
-  macOS, where `ON` takes it too; refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's LLVM threads spend
-  less time in malloc with jemalloc.
+  FreeBSD, macOS and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles;
+  refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's LLVM threads spend less time in malloc with
+  jemalloc.
 - `-DSNX_TRACY=ON`: build the runtime with the pinned Tracy profiler client (default OFF). For development builds
   only; not available on iOS. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
   game; the `tracy` preset sets both. See [profiling](DEVELOPMENT.md#profiling).
