@@ -10,6 +10,7 @@
 #include <vulkan/vulkan.h> /* GPU Drivers' System driver row: the system's, asked (vk_system_ask) */
 #endif
 #include "common/utilities/common.h"
+#include "common/utilities/keybind.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/cheat_list.h"
 #include "common/utilities/mods.h"
@@ -540,6 +541,7 @@ typedef struct App {
     int peek_rows[GUI_VIEW_ROWS];
     int pad_map, pad_swap, pad_player; /* the button map's settings: its map's row and its swap's, for which player */
     int device_listen; /* a player's Controller row waiting for a press on the controller it takes, + 1; 0 for none */
+    int key_listen;    /* a hotkey row waiting for a key, + 1; 0 for none */
     SDL_Gamepad* listened[16]; /* the controllers open meanwhile: a press comes only from an open one */
     int listened_count;
     bool theme_from_app;       /* the theme editor goes back to the App's rows */
@@ -7844,8 +7846,8 @@ static unsigned group_icon(const char* name) {
                  {"Graphics", GUI_ICON_IMAGE},  {"3DS", GUI_ICON_MONITOR},
                  {"Performance", GUI_ICON_GAUGE},
                  {"Overlay", GUI_ICON_POINTER}, {"Controllers", GUI_ICON_GAMEPAD_2},
-                 {"Network", GUI_ICON_WIFI},    {"User", GUI_ICON_USER},
-                 {"Debug", GUI_ICON_BUG}};
+                 {"Hotkeys", GUI_ICON_KEY_ROUND}, {"Network", GUI_ICON_WIFI},
+                 {"User", GUI_ICON_USER},       {"Debug", GUI_ICON_BUG}};
     for (size_t i = 0; i < SDL_arraysize(icons); ++i)
         if (!strcmp(icons[i].name, name)) return icons[i].icon;
     return GUI_ICON_NONE;
@@ -9808,10 +9810,12 @@ static void leave_editor(App* app) {
 static void pad_close(App* app);
 /* ESC on a screen: a group's and the App's go back to the groups, the theme editor to where it was opened */
 static void device_stop(App* app);
+static void key_stop(App* app);
 static void list_games(App* app);
 static void leave_form(App* app) {
     int form = app->form;
     device_stop(app);
+    key_stop(app);
     leave_editor(app);
     if (form == GUI_FORM_PAD) pad_close(app);
     if ((form == GUI_FORM_GROUP || form == GUI_FORM_PAD) && app->page >= 0) { /* a page: back to its row */
@@ -10508,6 +10512,46 @@ static void device_take(App* app, SDL_JoystickID id) {
     app->editor.dirty = true;
     keep_settings(app);
 }
+/* a hotkey row: Enter waits for the next key, which is kept as ctrl+u or f13. ESC keeps the one it has */
+static const char* key_shown(const GuiSetting* v) {
+    return v->text[0] ? v->text : v->fallback ? v->fallback : "";
+}
+static void key_listen_start(App* app, int row) {
+    const GuiSetting* v = &app->settings.values[row];
+    app->key_listen = row + 1;
+    snprintf(app->editor.note, sizeof app->editor.note,
+             snx_tr("Press the key, with Ctrl, Shift or Alt held if you want them. ESC keeps %s"), key_shown(v));
+}
+static void key_stop(App* app) { app->key_listen = 0; }
+static bool key_event(App* app, const SDL_Event* e) {
+    GuiSetting* v;
+    char text[64];
+    int r;
+    if (!app->key_listen) return false;
+    if (e->type != SDL_EVENT_KEY_DOWN)
+        return e->type == SDL_EVENT_TEXT_INPUT || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+               e->type == SDL_EVENT_FINGER_DOWN || e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+               e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    v = &app->settings.values[app->key_listen - 1];
+    if (e->key.repeat) return true;
+    r = snx_keybind_name(&e->key, text, sizeof text);
+    if (r < 0) {
+        key_stop(app);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Keeps %s"), key_shown(v));
+    } else if (r > 0) {
+        if (gui_settings_set(&app->settings, v->key, text)) {
+            app->editor.dirty = true;
+            keep_settings(app);
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Upscaler cycle key: %s"), text);
+            key_stop(app);
+        } else
+            snprintf(app->editor.note, sizeof app->editor.note,
+                     snx_tr("That key name is too long. Press another key, or ESC"));
+    } else
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 snx_tr("Press the key, with Ctrl, Shift or Alt held if you want them. ESC keeps %s"), key_shown(v));
+    return true;
+}
 /* while a Controller row waits: a press takes its controller, ESC stops; every other event waits too */
 static bool device_event(App* app, const SDL_Event* e) {
     GuiKey key;
@@ -10666,6 +10710,14 @@ static void editor_key(App* app, GuiKey key) {
         player_key(app->settings.values[setting_of(app, app->editor.row)].key, "device")) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
+    }
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing) {
+        int row = setting_of(app, app->editor.row);
+        if (row >= 0 && row < app->settings.count && app->settings.values[row].key &&
+            !strcmp(app->settings.values[row].key, "upscaler_key")) {
+            key_listen_start(app, row);
+            return;
+        }
     }
     what = gui_editor_key(&app->editor, key);
     if (key == GUI_SELECT && was_typing && !app->editor.typing && app->form == GUI_FORM_GROUP &&
@@ -15529,6 +15581,7 @@ static void go_tab(App* app, int tab) {
         keep_settings(app);
         if (app->form == GUI_FORM_PAD) pad_close(app);
         device_stop(app);
+        key_stop(app);
         leave_editor(app);
         app->theme_from_app = app->folders_from_games = app->folders_from_menu = false;
     }
@@ -16488,7 +16541,9 @@ static bool files_key(App* app, SDL_Keycode code) {
 }
 #define GUI_PAD_TRAVEL 8.0f /* the pixels a mouse moves before it takes the menu back from a pad */
 /* the pages that read the pads themselves: the button map, and a Controller row waiting for a press */
-static bool pads_own(const App* app) { return app->device_listen || (app->editing && app->form == GUI_FORM_PAD); }
+static bool pads_own(const App* app) {
+    return app->device_listen || app->key_listen || (app->editing && app->form == GUI_FORM_PAD);
+}
 /* a pad pressed last, or the keyboard, the mouse or a finger: the cursor shows for the mouse alone */
 static void pad_drive(App* app, bool pad) {
     if (pad == app->pad_driven) return;
@@ -16681,6 +16736,7 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if (app->editing && app->form == GUI_FORM_PAD && pad_event(app, e)) return;
+    if (app->editing && key_event(app, e)) return;
     if (app->editing && device_event(app, e)) return;
     if (app->editing && (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_TEXT_INPUT)) {
         editor_input(app, e);

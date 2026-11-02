@@ -15,4 +15,7 @@ typedef struct {
 int snx_keybind_parse(const char* spec, SnxKeybind* out);
 /* whether e is that key with those modifiers (lock keys ignored) */
 int snx_keybind_match(const SnxKeybind* bind, const SDL_KeyboardEvent* e);
+/* the setting's text for the key event e (ctrl+u, shift+f13): 1 and out, 0 for a modifier key alone or a key that
+   cannot be written, -1 for Esc (the capture is cancelled) */
+int snx_keybind_name(const SDL_KeyboardEvent* e, char* out, size_t size);
 #endif

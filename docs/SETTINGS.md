@@ -123,7 +123,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs, as an SDL key name with `ctrl`, `shift`, `alt` and `gui` between `+`: `ctrl+u`, `alt+u`, `shift+f13`, `f13`. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
+| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs. Settings > Hotkeys takes the next key you press, with Ctrl, Shift, Alt or the system key held. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
 
 ## Network
 

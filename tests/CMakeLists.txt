@@ -1187,11 +1187,12 @@ snx_test_target(snx-test-upscale-select 99)
 target_include_directories(snx-test-upscale-select PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME upscale_select COMMAND snx-test-upscale-select)
 
-# a runtime hotkey's setting (platform/backend/keybind.c): its names, modifiers, spaces and the event that matches
-add_executable(snx-test-keybind keybind.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/keybind.c")
+# a runtime hotkey's setting (common/utilities/keybind.c): its names, modifiers, spaces, the event and the capture
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
+add_executable(snx-test-keybind keybind.c)
 snx_test_target(snx-test-keybind 11)
 target_include_directories(snx-test-keybind PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(snx-test-keybind PRIVATE SDL3::SDL3)
+target_link_libraries(snx-test-keybind PRIVATE snx_keybind SDL3::SDL3)
 add_test(NAME keybind COMMAND snx-test-keybind)
 
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test

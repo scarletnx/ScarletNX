@@ -67,6 +67,7 @@ endif()
 include("${PROJECT_SOURCE_DIR}/cmake/window_icon.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/keybind.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/splash.cmake")
 # the menu's pads, their presses its keys (pad_menu.h)
 add_library(snx_gui_pad STATIC pad_menu.c)
@@ -128,7 +129,7 @@ set_target_properties(scarletnx-gui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED
 target_compile_options(scarletnx-gui PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(scarletnx-gui PRIVATE SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}")
 target_link_libraries(scarletnx-gui PUBLIC snx_gui_support PRIVATE snx_gui_ui scarletnx-common SDL3::SDL3
-                      snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages snx_demangle)
+                      snx_window_icon snx_build_info snx_pad_sdl snx_keybind snx_gui_pad snx_splash snx_gui_languages snx_demangle)
 # GPU Drivers' Download Driver, where the build has OpenSSL (common/network/https.h)
 if(TARGET snx_https)
     target_link_libraries(scarletnx-gui PRIVATE snx_https)
@@ -261,7 +262,7 @@ if(BUILD_TESTING)
     # ui.txt read back: its phones' rows a finger's, as main.c's GUI_FINGER_ROW
     target_compile_definitions(snx-test-gui-sdl PRIVATE SNX_GUI_UI_TXT="${PROJECT_SOURCE_DIR}/src/gui/ui.txt")
     target_link_libraries(snx-test-gui-sdl PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
-                          snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
+                          snx_window_icon snx_build_info snx_pad_sdl snx_keybind snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE) # it compiles main.c itself, which calls the frontend (apple.m and its Swift), as scarletnx-gui links it
         target_sources(snx-test-gui-sdl PRIVATE apple.m)
         target_link_libraries(snx-test-gui-sdl PRIVATE snx_apple_frontend "-framework Foundation")
@@ -283,7 +284,7 @@ if(BUILD_TESTING)
     # the setup's pages (gui_setup.c), as gui_sdl's: the real renderer, a language of the tests' own, no picker
     add_executable(snx-test-gui-setup "${PROJECT_SOURCE_DIR}/tests/gui_setup.c")
     target_link_libraries(snx-test-gui-setup PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
-                          snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
+                          snx_window_icon snx_build_info snx_pad_sdl snx_keybind snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
     if(APPLE)
         target_sources(snx-test-gui-setup PRIVATE apple.m)
         target_link_libraries(snx-test-gui-setup PRIVATE snx_apple_frontend "-framework Foundation")
