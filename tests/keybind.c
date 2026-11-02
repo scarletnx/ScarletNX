@@ -71,6 +71,13 @@ int main(void) {
         assert(snx_keybind_name(&repeat, out, sizeof out) == 0);
     }
     assert(snx_keybind_parse("ctrl+shift+u", &b) && matches(&b, SDLK_U, SDL_KMOD_CTRL | SDL_KMOD_SHIFT));
+    { /* what the launcher captured is what the runtime matches */
+        SDL_KeyboardEvent e = {.type = SDL_EVENT_KEY_DOWN, .key = SDLK_T, .mod = SDL_KMOD_CTRL};
+        char out[128];
+        assert(snx_keybind_name(&e, out, sizeof out) == 1);
+        assert(snx_keybind_parse(out, &b));
+        assert(snx_keybind_match(&b, &e));
+    }
 
     puts("keybind: ok");
     return 0;
