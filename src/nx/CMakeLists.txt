@@ -152,6 +152,15 @@ if(ANDROID)
     add_executable(scarletnx-run runtime/platform/android_run.c)
     set_target_properties(scarletnx-run PROPERTIES OUTPUT_NAME libscarletnx-run.so RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_link_libraries(scarletnx-run PRIVATE ${CMAKE_DL_LIBS})
+    if(SNX_JEMALLOC)
+        # jemalloc's malloc for the driver's whole process, its recompiles' LLVM threads among it
+        # (cmake/jemalloc.cmake): the C library's own calls to malloc and free and libscarletnx.so's bind to the ones
+        # the program exports
+        target_link_libraries(scarletnx-run PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
+        list(TRANSFORM SNX_JEMALLOC_EXPORTS PREPEND "LINKER:--export-dynamic-symbol="
+             OUTPUT_VARIABLE snx_jemalloc_exports)
+        target_link_options(scarletnx-run PRIVATE ${snx_jemalloc_exports})
+    endif()
     install(TARGETS scarletnx-run RUNTIME DESTINATION lib/${ANDROID_ABI})
 endif()
 list(TRANSFORM components PREPEND snx_)

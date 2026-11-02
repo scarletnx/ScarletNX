@@ -3,9 +3,10 @@
 #
 # jemalloc as the malloc of the scarletnx program (SNX_JEMALLOC, cmake/dependencies.cmake): the static library built
 # from the release source in cmake/dependencies.cmake with jemalloc's own configure and make, as OpenSSL is, and
-# linked whole into the program (target snx_jemalloc). On Linux and FreeBSD it defines malloc, free and the rest, and
-# the dynamic linker binds every library's calls to the program's definitions, LLVM's and the GPU driver's among them;
-# on macOS, where its functions carry a je_ prefix, it puts its zone in front of the system's default one at startup.
+# linked whole into the program (target snx_jemalloc), on Android the driver's executable (libscarletnx-run.so, src/nx).
+# On Linux, FreeBSD and Android it defines malloc, free and the rest, and the dynamic linker binds every library's calls
+# to the program's definitions, the C library's own, LLVM's and the GPU driver's among them; on macOS, where its
+# functions carry a je_ prefix, it puts its zone in front of the system's default one at startup.
 # Only the library is built: no programs, docs or C++ operators (the C++ library's new calls malloc, which is
 # jemalloc's). jemalloc is BSD-2-Clause. It needs GNU make (gmake on the BSDs).
 # This file is included into the top-level scope: its variables carry the snx_jemalloc_ prefix.
@@ -20,8 +21,9 @@ endif()
 # The largest page the target's kernels use, as a power of two: a jemalloc made for smaller pages stops at startup on
 # a kernel with bigger ones ("Unsupported system page size"), and one made for bigger pages runs on smaller ones.
 # AArch64, PowerPC64 and MIPS64 kernels come with 4, 16 or 64 KiB pages and LoongArch's with 16 KiB by default; Apple's
-# arm64 Macs have 16 KiB, the most a Mac has
-if(APPLE)
+# arm64 Macs have 16 KiB, the most a Mac has, and Android's x86_64 system images come with 16 KiB pages too (the SDK's
+# ps16k)
+if(APPLE OR (ANDROID AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"))
     set(snx_jemalloc_lg_page 14)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|riscv64|s390x)$")
     set(snx_jemalloc_lg_page 12)
@@ -35,16 +37,21 @@ endif()
 # The huge page is named too, 2 MiB: configure would read it from the /proc/meminfo of the machine doing the build
 set(snx_jemalloc_args --with-lg-page=${snx_jemalloc_lg_page} --with-lg-hugepage=21 --disable-cxx)
 if(CMAKE_CROSSCOMPILING)
-    # a Linux cross build (cmake/cross.cmake): configure takes the target from --host and compiles for it with CC below
+    # a Linux cross build (cmake/cross.cmake) or Android's: configure takes the target from --host and compiles for it
+    # with CC below
     list(APPEND snx_jemalloc_args --host=${CMAKE_C_COMPILER_TARGET})
 endif()
 # The compiler with what CMake's own compiles get beyond CMAKE_C_FLAGS: Apple's architecture, SDK and oldest system
-# version (cmake/apple.cmake), a Linux cross build's target, sysroot and CPU baseline (cmake/cross.cmake). Configure's
-# tests link programs, so a cross build's linker (LLD) goes in LDFLAGS
+# version (cmake/apple.cmake), a Linux cross build's target, sysroot and CPU baseline (cmake/cross.cmake), and the NDK's
+# target, which carries the API level, and sysroot. Configure's tests link programs, so a cross build's linker (LLD)
+# goes in LDFLAGS
 set(snx_jemalloc_cc "${CMAKE_C_COMPILER}")
 foreach(flags IN LISTS SNX_APPLE_FLAGS SNX_TARGET_FLAGS)
     string(APPEND snx_jemalloc_cc " ${flags}")
 endforeach()
+if(ANDROID)
+    string(APPEND snx_jemalloc_cc " --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}")
+endif()
 list(JOIN SNX_TARGET_LDFLAGS " " snx_jemalloc_ldflags)
 list(APPEND snx_jemalloc_args "CC=${snx_jemalloc_cc}" "LDFLAGS=${snx_jemalloc_ldflags}" "AR=${CMAKE_AR}"
      "NM=${CMAKE_NM}" "RANLIB=${CMAKE_RANLIB}")
@@ -100,3 +107,7 @@ if(TARGET jemalloc_build)
     add_dependencies(snx_jemalloc jemalloc_build)
 endif()
 target_link_libraries(snx_jemalloc INTERFACE Threads::Threads ${CMAKE_DL_LIBS} m)
+# The allocator's functions Android's C library defines, which the program defines in its place and exports by name
+# there (src/nx): the linker exports only those the NDK's libc.so of the build's API level defines, and aligned_alloc
+# came in API 28, so a library calling it would get the system's. tests/jemalloc.cmake checks the program exports each
+set(SNX_JEMALLOC_EXPORTS malloc calloc realloc free posix_memalign aligned_alloc memalign malloc_usable_size)

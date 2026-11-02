@@ -21,7 +21,7 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | OpenSSL | Apache 2.0 |
 | libcurl (the launcher's downloads, `cmake/curl.cmake`) | curl license (MIT-like) |
 | Mozilla's root certificates, curl's extract of them (`cmake/cacert.cmake`, which the launcher's HTTPS trusts) | MPL-2.0 |
-| jemalloc (the `scarletnx` program's malloc, with `SNX_JEMALLOC`) | BSD-2-Clause |
+| jemalloc (the `scarletnx` program's malloc, on Android `libscarletnx-run.so`'s, with `SNX_JEMALLOC`) | BSD-2-Clause |
 | Noto Sans JP, SC, TC and KR Subsets (the shared fonts' stand-ins, fetched by `cmake/dependencies.cmake`, made by `tools/subset_fonts.py` from Google Fonts commit `e7db6ca603fd4862010383ff17ffd6cc4ffac1c0`) | SIL OFL 1.1 ([text](../dist/licenses/Noto/OFL.txt)) |
 | yuzu's controller button glyphs (`font_nintendo_extended.cpp`, as Eden carries it) | GPL-2.0-or-later |
 | The 3DS system archives' open stand-ins (`cmake/ctr_system_archives.cmake`): the Mii data, country list, shared font and bad word list B3n30/citra_system_archives makes (Weiyi Wang's generators), as Azahar carries them | GPL-2.0-or-later |

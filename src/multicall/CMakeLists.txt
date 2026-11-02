@@ -89,7 +89,9 @@ else()
                             "LINKER:--export-dynamic-symbol=__jit_debug_register_code")
     endif()
 endif()
-if(SNX_JEMALLOC)
+# Android's goes into the executable that loads this library (src/nx): the game's activity loads it into the app's own
+# process, whose malloc stays the system's
+if(SNX_JEMALLOC AND NOT ANDROID)
     # jemalloc's malloc for the whole process (cmake/jemalloc.cmake). Whole: on macOS nothing calls it by name, and
     # elsewhere all of its allocator comes in together
     target_link_libraries(scarletnx PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")
