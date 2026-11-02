@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch and MIPS64 relocatable objects, as LLVM and Clang write them:
-   what the AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same sections,
-   resolve symbols by the same rules and write every relocation through snx_elf_relocate (and an AArch64 branch beyond
-   B's reach through snx_elf_veneer), so code loaded into the process runs as the same code linked into a module. One
-   set of objects is one machine: the machines' relocation numbers mean different things (AArch64's ILP32 ones and the
-   others' overlap x86-64's), so every function that reads a type takes the machine too. The objects are in the host's
-   byte order, as they are linked or loaded where they run. Only the AOT linker takes PowerPC64's, RISC-V's,
-   LoongArch's and MIPS64's (code_loader.h). Not on Windows, whose objects are COFF (link_coff.c, code_loader_coff.c).
-   Darwin has no <elf.h>: its definitions are elf_defs.h's, for the JIT loader's ELF objects there (code_loader.c) */
+/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x relocatable objects, as LLVM and Clang write
+   them: what the AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same
+   sections, resolve symbols by the same rules and write every relocation through snx_elf_relocate (and an AArch64
+   branch beyond B's reach through snx_elf_veneer), so code loaded into the process runs as the same code linked into a
+   module. One set of objects is one machine: the machines' relocation numbers mean different things (AArch64's ILP32
+   ones and the others' overlap x86-64's), so every function that reads a type takes the machine too. The objects are in
+   the host's byte order, as they are linked or loaded where they run. Only the AOT linker takes PowerPC64's, RISC-V's,
+   LoongArch's, MIPS64's and s390x's (code_loader.h). Not on Windows, whose objects are COFF (link_coff.c,
+   code_loader_coff.c). Darwin has no <elf.h>: its definitions are elf_defs.h's, for the JIT loader's ELF objects there
+   (code_loader.c) */
 #ifndef SNX_RECOMPILER_LLVM_ELF_OBJECT_H
 #define SNX_RECOMPILER_LLVM_ELF_OBJECT_H
 #if !defined(_WIN32)
@@ -210,6 +211,25 @@ enum { SNX_SHT_MIPS_REGINFO = 0x70000006, SNX_SHT_MIPS_OPTIONS = 0x7000000d, SNX
    the GOT's first 64 KiB (the ABI's, which glibc assumes) */
 #define SNX_ELF_MIPS_GP_OFFSET 0x7FF0
 
+#ifndef EM_S390
+#define EM_S390 22
+#endif
+/* s390x's, by number (the s390x ELF ABI supplement). The DBL ones count halfwords, the unit of its instructions'
+   PC-relative fields: a call's brasl (PLT32DBL) and an address's larl (PC32DBL) reach 4 GiB either way, the whole of
+   any module, and a GOT slot's address (GOTENT) likewise */
+enum {
+    SNX_390_NONE = 0,
+    SNX_390_PC32 = 5,
+    SNX_390_RELATIVE = 12,
+    SNX_390_PC16DBL = 17,
+    SNX_390_PLT16DBL = 18,
+    SNX_390_PC32DBL = 19,
+    SNX_390_PLT32DBL = 20,
+    SNX_390_64 = 22,
+    SNX_390_PC64 = 23,
+    SNX_390_GOTENT = 26
+};
+
 /* A relocation's type and symbol, from its r_info: ELF64_R_TYPE and ELF64_R_SYM, but for MIPS64, whose r_info is the
    symbol (a 32-bit word in the object's byte order) and then four bytes: a special symbol and the third, second and
    first types. snx_elf_info writes one */
@@ -240,10 +260,10 @@ typedef struct {
 } SnxElfObject;
 
 /* Checks the object and classifies its sections. *machine is the set's (EM_X86_64, EM_AARCH64, EM_PPC64, EM_RISCV,
-   EM_LOONGARCH or EM_MIPS): 0 takes the object's, anything else refuses another machine's object. *abi likewise:
-   PowerPC64's ABI as the objects' e_flags say (snx_elf_ppc_abi), RISC-V's and LoongArch's e_flags whole (their float
-   ABI, which the module's own e_flags repeat for the loader), MIPS64's but noreorder (its ISA, PIC and NaN encoding),
-   0 for the other machines. 0, or -1 with the reason in error */
+   EM_LOONGARCH, EM_MIPS or EM_S390): 0 takes the object's, anything else refuses another machine's object. *abi
+   likewise: PowerPC64's ABI as the objects' e_flags say (snx_elf_ppc_abi), RISC-V's and LoongArch's e_flags whole
+   (their float ABI, which the module's own e_flags repeat for the loader), MIPS64's but noreorder (its ISA, PIC and NaN
+   encoding), 0 for the other machines. 0, or -1 with the reason in error */
 int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine, unsigned* abi, char* error,
                   size_t error_size);
 /* PowerPC64's ABI from an object's e_flags: SNX_ELF_PPC_ELFV2 (ppc64le, and big-endian musl), or SNX_ELF_PPC_ELFV1
@@ -286,8 +306,8 @@ int snx_elf_call_relocation(unsigned machine, unsigned type);
 /* 1 for the 64-bit absolute address, which a position-independent module rebases with the machine's R_*_RELATIVE.
    PowerPC64's R_PPC64_TOC is one too: the TOC's address, in an ELFv1 .opd descriptor */
 int snx_elf_absolute_relocation(unsigned machine, unsigned type);
-/* R_X86_64_RELATIVE, R_AARCH64_RELATIVE, R_PPC64_RELATIVE, R_RISCV_RELATIVE, R_LARCH_RELATIVE or MIPS64's
-   SNX_MIPS_RELATIVE */
+/* R_X86_64_RELATIVE, R_AARCH64_RELATIVE, R_PPC64_RELATIVE, R_RISCV_RELATIVE, R_LARCH_RELATIVE, MIPS64's
+   SNX_MIPS_RELATIVE or R_390_RELATIVE */
 unsigned snx_elf_relative_type(unsigned machine);
 /* RISC-V's low halves, R_RISCV_PCREL_LO12_I and _S: their symbol is the label of the AUIPC whose HI20 relocation
    (PCREL_HI20 or GOT_HI20) they complete, and their value that relocation's own displacement. 1 for them */
