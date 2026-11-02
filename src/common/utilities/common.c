@@ -54,6 +54,7 @@
 #include <libkern/OSCacheControl.h> /* sys_icache_invalidate */
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <sys/sysctl.h> /* sysctlbyname: the physical cores (snx_physical_cores) */
 #if TARGET_OS_IPHONE
 #include <os/proc.h>
 #endif
@@ -1447,6 +1448,72 @@ unsigned snx_cpu_count(void) {
     if (sysctl(mib, 2, &ncpu, &len, NULL, 0) == -1) return 1;
     return ncpu;
 #endif
+}
+/* The physical cores, where the system says them: how many a whole thread can use before two share one core's
+   throughput. 0 where it does not say (Windows, an ARM board's /proc/cpuinfo) */
+static unsigned snx_physical_cores(void) {
+#if defined(__APPLE__)
+    int cores = 0;
+    size_t len = sizeof(cores);
+    return sysctlbyname("hw.physicalcpu", &cores, &len, NULL, 0) ? 0 : cores > 0 ? (unsigned)cores : 0;
+#elif defined(__linux__)
+    /* /proc/cpuinfo names each processor in a block, blank lines between, its "physical id" and "core id": a pair
+       is one physical core, and the threads of a hyperthread share its pair. Where a block names neither id (ARM)
+       none count, and the caller takes the logical count instead */
+    unsigned pair[512][2], n = 0, cores = 0, phys = 0, core = 0;
+    char line[256];
+    int have = 0, saw = 0;
+    FILE* f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    for (;;) {
+        int full = fgets(line, sizeof line, f) != NULL;
+        char* colon = full ? strchr(line, ':') : NULL;
+        if (!colon) {
+            if (saw && have) { /* a processor's block ended, at a blank line or the file's end */
+                int found = 0, i;
+                for (i = 0; i < (int)n; ++i)
+                    if (pair[i][0] == phys && pair[i][1] == core) found = 1;
+                if (!found && n < sizeof pair / sizeof *pair) {
+                    pair[n][0] = phys;
+                    pair[n][1] = core;
+                    ++n;
+                    ++cores;
+                }
+            }
+            saw = 0;
+            have = 0;
+            if (!full) break;
+        } else {
+            char* field = line;
+            while (*field == ' ' || *field == '\t') ++field;
+            if (!strncmp(field, "physical id", 11)) {
+                phys = (unsigned)strtoul(colon + 1, NULL, 10);
+                saw = 1;
+            } else if (!strncmp(field, "core id", 7)) {
+                core = (unsigned)strtoul(colon + 1, NULL, 10);
+                have = 1;
+                saw = 1;
+            }
+        }
+    }
+    fclose(f);
+    return cores;
+#else
+    return 0;
+#endif
+}
+/* The threads an AOT pass (a game's recompile) is given when its count is left open, the recompile setting's Auto:
+   one per physical core where the system says them, else per processor, capped at 85% of that, so the last part of
+   the computer stays free for the rest of it: a pass that takes every core makes the machine it shares stutter, and
+   a hyperthread does an LLVM pass little good anyway, two threads on one physical core only split its throughput.
+   At most 85%, rounded down, leaves one whole core free on any machine of four or more, and a fifth of a large one.
+   Never 0, and never more than the online processors */
+unsigned snx_build_threads(void) {
+    unsigned logical = snx_cpu_count(), cores = snx_physical_cores();
+    unsigned jobs = (cores ? cores : logical) * 85u / 100u;
+    if (jobs < 1u) jobs = 1u;
+    if (jobs > logical) jobs = logical;
+    return jobs;
 }
 /* Code arenas (code_loader.c) reserve their address space once and give each page access only when it is used: the
    loader writes into read-write pages and makes them executable before anything jumps there */

@@ -212,6 +212,10 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* the threads an AOT pass (a game's recompile) is given when its count is left open: the physical cores where the
+   system says them, else the processors, capped at 85% of that, so the last part of the computer stays free (a pass
+   that takes every core makes a shared machine stutter); at least 1, never more than snx_cpu_count() */
+unsigned snx_build_threads(void);
 /* seconds on a monotonic clock, for durations */
 double snx_seconds(void);
 /* Address space for code the process writes and then runs: reserved without access, then given access in whole pages.

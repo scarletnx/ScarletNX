@@ -267,7 +267,7 @@ static void worker(void* arg) {
     snx_ir_free(ir);
 }
 static bool compile_chunks(Work* w) {
-    unsigned jobs = snx_cpu_count();
+    unsigned jobs = snx_build_threads();
     if (jobs > w->chunks) jobs = w->chunks;
     if (jobs < 1) jobs = 1;
     snx_work_lock_init(&w->lock);

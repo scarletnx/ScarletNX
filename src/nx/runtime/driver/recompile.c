@@ -35,7 +35,7 @@ static void usage(void) {
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2), the setting opt\n"
-         "  --jobs N               Parallel compiles (default: CPU count), the setting aot_threads");
+         "  --jobs N               Parallel compiles (default: cores, a fifth left free), the setting aot_threads");
     puts("  --jit-cache FILE       Link a profile run's .jitcache into the module as runtime code\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
          "                         a profile's hot functions, as tools/layout.py orders them\n"
@@ -527,7 +527,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0 runs none");
     compile.opt = g_settings.optimization_level;
     gen.chunk_instrs = (size_t)g_settings.unit_size;
-    compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_cpu_count();
+    compile.jobs = g_settings.aot_threads > 0 ? (unsigned)g_settings.aot_threads : snx_build_threads();
     if (!strcmp(target, "win64"))
         compile.target_win = 1;
     else if (!strcmp(target, "linux"))

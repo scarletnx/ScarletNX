@@ -13614,11 +13614,12 @@ static void job_speed(App* app, char* out, size_t size) {
     if (app->job_said[0] && !app->job_kept_low && n < size) /* the priority it could not have */
         snprintf(out + n, size - n, " (%s)", app->job_said);
 }
-/* the threads a recompile of the queue takes at full speed: the AOT threads picked, else one a core */
+/* the threads a recompile of the queue takes at full speed: the AOT threads picked, else the runtime's own Auto,
+   so a Gentle recompile (its half) leaves the machine the same room the queue's Full one would */
 static int job_cores(App* app) {
     const char* picked = gui_settings_value(settings_of(app), "aot_threads");
     int n = picked ? SDL_atoi(picked) : 0;
-    return n > 0 ? n : SDL_max(1, SDL_GetNumLogicalCPUCores());
+    return n > 0 ? n : (int)snx_build_threads();
 }
 /* the Compile tab, its focus on job i */
 static void queue_show(App* app, int i) {
