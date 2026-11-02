@@ -331,6 +331,17 @@ setting Prepare shaders
     help background, used once all are ready. Before starting = a loading screen waits for them and for the shader cache
     help of earlier sessions. Any key, button or tap starts the game at once and the rest is prepared while you play.
     help Esc quits (on Android, back opens the menu)
+setting NCE
+    key nce
+    int 0 1
+    default 1
+    startup
+    recompile
+    words Off|On
+    help On an AArch64 Linux host, 1 = the game's 64-bit code runs natively on the host's CPU (native code
+    help execution), with the words patched that cannot run as they are: SVCs, the TLS registers, the counter
+    help registers, and the exclusives made ordered, as Eden patches them. The recompile then makes no code ahead of
+    help time. 0 = the code is recompiled. Other hosts and 32-bit games always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4

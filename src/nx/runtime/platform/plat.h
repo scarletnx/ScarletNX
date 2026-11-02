@@ -92,6 +92,9 @@ void plat_vm_track(u8* p, u64 size);
    run that fails for want of it (a thread's stack, a mapping). Whether the system told it (Linux, macOS, iOS and
    Windows do) */
 int plat_address_space(u64* mapped, u64* largest_free);
+/* plat_vm_reserve at the host address addr, where the guest's addresses are the host's (NCE): all of the guest's
+   memory is then executable too. POSIX only. NULL when the range is taken, the reason in errno */
+u8* plat_vm_reserve_at(u64 addr, u64 size);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
 /* Calls cb for each run of pages in [p, p + size) written since they were last scanned, and watches them again.

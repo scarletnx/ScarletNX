@@ -161,7 +161,7 @@ void crash_report(void* host_pc, void* fault, int sig) {
         kernel_dump_regs(&t->cpu);
     } else
         WARN("  on one of the runtime's threads, not the game's\n");
-    if (g_mem) {
+    if (mem_reserved()) {
         mem_report(memory, sizeof memory);
         WARN("  memory: %s\n", memory);
     }

@@ -19,7 +19,7 @@
    holds the memory lock */
 static int readable(u64 a, u64 n) {
     u64 p = a, end;
-    if (!g_mem || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
+    if (!mem_reserved() || a < AS_BASE || a >= AS_END || n > AS_END - a) return 0;
     end = a + n;
     while (p < end) {
         MemBlock b;

@@ -1991,6 +1991,55 @@ snx_test_target(snx_codegen_test 99)
 target_link_libraries(snx_codegen_test PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME native_codegen COMMAND snx_codegen_test)
 
+# NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found
+# in the code and kept where the code reads them as data, and the words of their stubs. Words only, on any host
+add_executable(snx-test-nce-patch nce_patch.c)
+snx_test_target(snx-test-nce-patch 99)
+target_link_libraries(snx-test-nce-patch PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME nce_patch COMMAND snx-test-nce-patch "${CMAKE_CURRENT_BINARY_DIR}")
+
+# NCE's machine layer (src/nx/runtime/nce/nce_host.c): guest code, patched with the patcher's stubs, runs natively.
+# Its outcalls keep the guest's state, a hook runs its handler or the function's own code, the runs nest, a kick stops
+# a loop and BRK stops in the runtime. On an AArch64 Linux host it runs as it is. Elsewhere Clang builds it for
+# aarch64-linux-gnu against SNX_AARCH64_SYSROOT (a glibc sysroot; SNX_AARCH64_GCC_TOOLCHAIN gives its crt files), and
+# it runs under qemu-aarch64. Without them there is no such test
+set(SNX_AARCH64_SYSROOT "" CACHE PATH "A glibc sysroot of aarch64-linux-gnu, for the NCE test under qemu-aarch64")
+set(SNX_AARCH64_GCC_TOOLCHAIN "" CACHE PATH "The GCC toolchain of SNX_AARCH64_SYSROOT (Clang's --gcc-toolchain)")
+set(nce_host_sources "${CMAKE_CURRENT_SOURCE_DIR}/nce_host.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.c")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    add_executable(snx-test-nce-host ${nce_host_sources})
+    snx_test_target(snx-test-nce-host 99)
+    target_compile_definitions(snx-test-nce-host PRIVATE _GNU_SOURCE)
+    target_link_libraries(snx-test-nce-host PRIVATE snx_driver Threads::Threads)
+    add_test(NAME nce_host COMMAND snx-test-nce-host)
+else()
+    find_program(SNX_QEMU_AARCH64 qemu-aarch64)
+    if(SNX_QEMU_AARCH64 AND SNX_AARCH64_SYSROOT AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        set(nce_host_out "${CMAKE_CURRENT_BINARY_DIR}/nce_host_aarch64")
+        set(nce_host_toolchain "")
+        if(SNX_AARCH64_GCC_TOOLCHAIN)
+            set(nce_host_toolchain "--gcc-toolchain=${SNX_AARCH64_GCC_TOOLCHAIN}")
+        endif()
+        # the scanner's half of nce_patch.c is never called: --gc-sections drops it, with what it needs of the build
+        add_custom_command(OUTPUT "${nce_host_out}"
+            COMMAND "${CMAKE_C_COMPILER}" --target=aarch64-linux-gnu "--sysroot=${SNX_AARCH64_SYSROOT}"
+                    ${nce_host_toolchain} -fuse-ld=lld -static -O2 -std=c99 -pedantic -Wall -Wextra -Werror
+                    -ffunction-sections -fdata-sections -Wl,--gc-sections "-I${PROJECT_SOURCE_DIR}/src"
+                    "-I${PROJECT_BINARY_DIR}/src/common/a64dec" ${nce_host_sources}
+                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.c" -lpthread -o "${nce_host_out}"
+            DEPENDS ${nce_host_sources} "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.c"
+                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_patch.h"
+                    "${PROJECT_SOURCE_DIR}/src/nx/runtime/nce/nce_host.h" "${PROJECT_BINARY_DIR}/src/common/a64dec/a64_decode.h"
+            COMMENT "Building NCE's machine-layer test for AArch64" VERBATIM)
+        add_custom_target(snx-test-nce-host-aarch64 ALL DEPENDS "${nce_host_out}")
+        add_test(NAME nce_host COMMAND "${SNX_QEMU_AARCH64}" "${nce_host_out}")
+        set_tests_properties(nce_host PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    else()
+        message(STATUS "NCE machine-layer test skipped: not an AArch64 Linux host, and no qemu-aarch64 with "
+                       "SNX_AARCH64_SYSROOT")
+    endif()
+endif()
+
 # A64 cases ported from rEden's dynarmic tests (a64_ported_cases.h) through the LLVM backend's steps, loaded with the
 # JIT's loader (llvm_steps.c): their expected values on any host and, where qemu_ref runs, each run against QEMU
 # from the same state
