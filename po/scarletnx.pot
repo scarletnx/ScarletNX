@@ -5273,6 +5273,18 @@ msgstr ""
 msgid "the data folder's save/, by user and title: Move Old Files moves them"
 msgstr ""
 
+#: src/common/utilities/setup.c
+msgid "Environment variables"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "SNX_WW, SNX_HOST_PAGE, VITA_LOCKSTEP and others set for a run"
+msgstr ""
+
+#: src/common/utilities/setup.c
+msgid "settings and the drivers' options; a variable still set works, and the run says so"
+msgstr ""
+
 #: src/nx/runtime/settings.txt
 msgid "gdbstub"
 msgstr ""
