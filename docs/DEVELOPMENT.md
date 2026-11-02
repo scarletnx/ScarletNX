@@ -301,7 +301,44 @@ run gives the statistics more to work with. `TRACY_SAMPLING_HZ` in the environme
 build/snx-shaderc corpus --validate --out translated
 ```
 
-`--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons.
+`--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons. The runtime does not create the
+corpus folder, so create it first.
+Corpus version 2 stores up to 32 global-memory bindings. Earlier corpora have a different `ShaderInfo` layout and
+must be recorded again with this build.
+
+For the Switch 2's native programs, `--ampere` takes files and folders instead of a corpus:
+
+```sh
+build/snx-shaderc --ampere "$games/<id>/<id>_data/romfs" "$games/<id>/captures/native" "$games/<id>/captures/compute"
+```
+
+It reads the shader containers (`.bfsha` and `.bnsh`, zstd-compressed `.zs` too) and the runtime's captures (the
+`diag` setting writes `captures/native/gfx_*.bin` and `captures/compute/cs_*.bin`). It converts each program with
+`shader/ampere.c`, translates the result, and counts a program found twice only once. Then it lists the refusals by
+reason, each program's first, the most common first, with an example file and offset. The exit is 1 while any
+program is refused. `--verbose` gives each program's result, and `--validate` and `--out` work as for a corpus.
+Native compute capture normally saves the first 64 distinct program addresses per run. A failed native dispatch
+also saves its QMD and program when `diag` is enabled, even after that limit. A successful capture survey therefore
+does not cover every dispatched program.
+
+Program identities include forward branch bodies and called leaves after an early EXIT. Native compute reads and
+captures grow beyond the initial 64 KiB window when those references require it, with a 512 KiB input limit.
+The offline tool accepts that larger compute extent too. This input limit is separate from the lowered-output limit.
+
+Add `--diagnose` to list more than the first refusal in each program. It checks each instruction's form with the
+same lowering code, and reports both the number of affected programs and the number of instruction sites. Repeated
+sites in one program do not increase its program count. `--verbose` includes the individual diagnostic sites.
+
+These additional checks inspect bounded main bodies, using the lowerer's branch-aware end scan. Programs without
+a known end are counted but not scanned as instructions. Called leaf bodies are not scanned, and flow and return-link
+checks still stop at their first failure. The diagnostic pass preserves the program's use of uniform predicates
+when checking scratch-register conflicts. It never translates or executes its isolated instruction probes.
+The original lowering and SPIR-V results, exit status and first-refusal table remain separate from this inventory.
+An empty instruction-local table is not proof that a whole program can run.
+
+Offline translation assumes 32-lane subgroup operations are available. Native compute pipelines require 32 lanes
+through Vulkan subgroup-size control when supported. A native WARPSYNC is refused on a host that cannot provide
+that width. It is a subgroup execution and memory barrier, not a workgroup barrier or a no-op.
 
 The instruction decoder is generated at build time. `src/nx/gpu/shader/maxwell_opcodes.def` lists each encoding
 (opcode name, display name, 16-bit pattern), and `tools/shaderdec/shaderdec.c` (strict C99, built for the build
@@ -311,6 +348,37 @@ that one is tried first. A new opcode is a row there (its `O_` name then exists 
 `ctest -R 'shaderdec|shader_decode'` checks the spec and decodes every row back to itself.
 `[Debug] shader_corpus=` in the game's INI does the same for every run. Where the game gets no command line
 (Android), its INI's `[Debug] diag=1` keeps each shader's entry in `captures/shaders` beside the game, for the same `snx-shaderc`.
+
+### Checking a change against Switch 1 games
+
+After a change to the shader translator, the renderer or the GPU engines, `tools/switch1_check.py` compares a
+Switch 1 game against a base build:
+
+```sh
+tools/switch1_check.py gameplay          # the shaders: base against build/, in seconds
+tools/switch1_check.py gameplay --run    # and one scripted run of the scene
+```
+
+A scene is an entry of `switch1_check.json` in the data folder (`~/.local/share/scarletnx/` on Linux). It stays out
+of the repo because it names a game:
+
+```json
+{"gameplay": {"game": "<title id>", "seconds": 90, "script": "15000:400,16000:1,...", "note": "needs a save"}}
+```
+
+The script records the scene's shader corpus once and reuses it. The corpus holds the game's own shader code, which
+no translator changes. It translates the corpus with `snx-shaderc` built from the merge base with `main` (or
+`--base REF`) and from `build/`, including uncommitted changes, compares the SPIR-V byte for byte, and shows the
+start of a disassembly diff of the first shader that differs. The base is built in a worktree with `SNX_DEPLOY` off,
+so it never replaces a game's runtime.
+If the builds use different corpus formats, `--base-corpus DIR` supplies the base build's recording of the same
+programs. Each translator reads its own format. Keep the old recording before `--rerecord` replaces the scene corpus.
+
+With `--run`, the script plays the scene. It compares crashes, skipped draws and dispatches, and untranslated
+shaders with a reference run that `--set-reference` kept, and puts the screenshots in one `sheet.png`. Gameplay
+frames differ from run to run, so no frame hash is compared. The exit is 1 when a shader differs or the run is worse
+than the reference. `--allow-diff` accepts an intended difference. Everything it writes stays in
+`switch1_check/<scene>/` of the data folder.
 
 ## SVCs
 

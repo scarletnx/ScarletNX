@@ -31,6 +31,7 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
   - **[NRO files](./NRO.md)** and **[ldr:ro](./LDR_RO.md)**
   - **[Networking](./NETWORKING.md)**
   - **[Memory accounting](./MEMORY_ACCOUNTING.md)**
+  - **[Switch 2 titles](./SWITCH2.md)** - the state of the Switch 2 work, its design, and what the SDK expects
 - GPU:
   - **[ASTC compute uploads](./ASTC.md)**
   - **[Block linear surfaces and texture conversions on the GPU](./BLOCKLINEAR.md)**

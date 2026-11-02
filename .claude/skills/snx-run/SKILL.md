@@ -69,6 +69,10 @@ The default script of `run_game.py` is for the boot of one game to its first cut
 16 s, Plus at 18 s, then A at 21, 31, 36, 40 and 44 s. Any other game needs its own `--script`. With save data from
 earlier runs, the screens come in a different order. Thus check the screenshots before you trust a script.
 
+For a shader probe, inspect one instruction or one pass first. A probe after every arithmetic instruction made
+one shader large enough to stall the desktop. Use a frame limit such as `--fps_limit=15` for debug runs.
+Remove the probe before the next normal run.
+
 ## Read the log
 
 In a checkout, the log of the game is `recompiled/<id>/<id>.log`. A data folder keeps it in its state folder
@@ -92,7 +96,13 @@ In a checkout, the log of the game is `recompiled/<id>/<id>.log`. A data folder 
 
   RenderDoc has no Wayland surface. On Wayland, `vkCreateInstance` fails with VK_ERROR_EXTENSION_NOT_PRESENT. Thus
   run it with `SDL_VIDEO_DRIVER=x11`. The capture layer slows the game (to about 20 fps in one test). Thus pick
-  presents that the run gets to. Expect a few hundred MB for each capture.
+  presents that the run gets to. Check free memory and disk space before a large capture.
+
+  With a local RenderDoc build, set `LD_LIBRARY_PATH` to its `lib/` folder.
+  Set `VK_IMPLICIT_LAYER_PATH` to the folder with its layer manifest.
+  The application API and Vulkan layer must use the same build.
+  Different builds can report `0 capturers` and produce no capture.
+  One large scene produced more than 15 GiB of temporary files before its capture stopped.
 
   Captures hold the textures and buffers of the game. They stay on this machine. A capture stops the GPU thread for
   seconds. A game can wait only 1 s for its frame fences and then continue. Such a game can crash a short time after

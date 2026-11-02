@@ -120,6 +120,8 @@ not pay for. Build variants from one source with `snx_glsl_spirv(... DEFINES X)`
 - `vulkan_headless` (`-DSNX_TEST_VULKAN=ON`, lavapipe) runs the real SPIR-V through the real renderer. Make sure that
   a mutation fails there too. That proves that the build made the SPIR-V again (an edit to an include must cause a
   recompile).
+- Run `ctest --test-dir build -R '^vulkan_ampere$'` for the native Ampere checks.
+  The `vulkan_headless` test does not run these checks.
 - Write each identity that the shader uses, and how you checked it, in the header comment of the shader. Write them
   also in its doc (`docs/ASTC.md`, `docs/VIC.md`).
 

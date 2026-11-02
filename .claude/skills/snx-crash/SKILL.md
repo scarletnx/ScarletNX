@@ -61,6 +61,9 @@ Then use the GDB tools of the `scarletnx` MCP server:
 A crash stops at `crash_report`. Add `--gdb_jit=1` when the frames are in code that the JIT compiled. This causes a
 stop for each compile. The stub takes one connection per run.
 
+Compare `g_vk_drawn` and `g_vk_skipped` before and after `vk_render_draw` to confirm its result. In one optimized
+host trace, source-line breakpoints on both skip counters also stopped on successful draws.
+
 ## 3. Common shapes
 
 | Shape | Where to look |
