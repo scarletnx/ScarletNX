@@ -37,7 +37,8 @@ GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key) {
                 case GUI_LINUX:
                 case GUI_3DS:
                 case GUI_VITA: menu->view = GUI_LOAD_DROP; break;
-                case GUI_GBA: menu->view = GUI_LOAD_DROP; break;
+                case GUI_GBA:
+                case GUI_ANDROID: menu->view = GUI_LOAD_DROP; break;
                 case GUI_KEYS: menu->view = GUI_LOAD_KEYS; break;
                 case GUI_SETTINGS: return GUI_MENU_SETTINGS;
                 case GUI_LOG: return GUI_MENU_LOG;
@@ -57,6 +58,7 @@ const char* gui_driver_name(int item) {
         case GUI_3DS: return "scarletnx-3ds";
         case GUI_VITA: return "scarletnx-vita";
         case GUI_GBA: return "scarletnx-agb";
+        case GUI_ANDROID: return "scarletnx-android";
         default: return NULL;
     }
 }
@@ -64,7 +66,7 @@ unsigned gui_drivers_held(const char* names) {
     unsigned held = 0;
     for (const char* word = names + strspn(names, " "); *word; word += strspn(word, " ")) {
         size_t n = strcspn(word, " ");
-        for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+        for (int item = GUI_SWITCH; item <= GUI_ANDROID; ++item)
             if (strlen(gui_driver_name(item)) == n && !strncmp(word, gui_driver_name(item), n)) held |= 1u << item;
         word += n;
     }

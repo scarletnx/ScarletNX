@@ -2117,6 +2117,10 @@ msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Runs an Android app's .apk, .xapk or .apks"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installs prod.keys, which games are extracted with"
 msgstr "Instala o prod.keys, com o qual os jogos são extraídos"
 
@@ -2173,6 +2177,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Android app, run with scarletnx-android"
 msgstr ""
 
 #: src/gui/main.c
@@ -4209,6 +4217,10 @@ msgid "R recompiles games: a Linux program runs as it is."
 msgstr ""
 
 #: src/gui/main.c
+msgid "R recompiles games: an Android app runs as it is."
+msgstr ""
+
+#: src/gui/main.c
 msgid "No game in focus to play."
 msgstr "Nenhum jogo em foco para jogar."
 
@@ -5194,6 +5206,10 @@ msgstr ""
 
 #: src/gui/ui.txt
 msgid "Load GBA ROM"
+msgstr ""
+
+#: src/gui/ui.txt
+msgid "Load Android APK/XAPK"
 msgstr ""
 
 #: src/gui/ui.txt

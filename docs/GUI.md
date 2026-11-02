@@ -78,8 +78,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   focus again. A tap on a finished run returns to the menu, and one on a
   running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
   pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
-- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK** and
-  **Load GBA ROM** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
+- **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF**, **Load 3DS game**, **Load Vita VPK**, **Load GBA ROM** and
+  **Load Android APK/XAPK** open a screen as the keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once. A dump is read where it lies
   and takes no room, unless *Extract dump* is on. Then one not extracted yet takes about its size, a Switch
@@ -105,6 +105,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - **Load GBA ROM** uses `scarletnx-agb`, the AGB board runtime, with the menu's data folder as its `--data`: it makes
   the game's folder of `recompiled/` (named after the ROM's file), its module and its copy of the runtime, and plays
   it in a window. See [AGB board](AGB.md).
+- **Load Android APK/XAPK** uses `scarletnx-android` on an `.apk`, `.xapk` or `.apks` file, with no other argument.
+  The driver installs a bundle of split APKs itself. The app runs as it is, as a Linux program does: nothing is
+  compiled first, and its recent row shows at once. An APK in a games or dumps folder shows in Games, and Enter runs
+  it the same way. R on it says that it runs as it is. See [Android apps](android/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no keys are in use, the Switch's or the 3DS's. It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
@@ -498,7 +502,7 @@ cannot be read is named and the others still listed.
   at a time behind the screens: with none running it starts at once, the Compile tab showing it; else the tips say
   where it waits. A game of the queue says it on its row (`42%`, `next`, `3rd in queue`) and in the side box; Enter
   on it, or R again, shows it on the Compile tab, and it plays once its compile ended. On a Linux
-  program, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
+  program, an Android app, or another row, R says why it does nothing. **B** builds the focused game's AOT pack from its JIT cache
   ([AOT packs](AOT_PACKS.md)) through the same queue.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
