@@ -43,7 +43,12 @@ int snx_keybind_parse(const char* spec, SnxKeybind* out) {
     return 1;
 }
 int snx_keybind_match(const SnxKeybind* bind, const SDL_KeyboardEvent* e) {
-    return bind->key == e->key && (e->mod & KEYBIND_MODS) == bind->mods;
+    /* SDL_KMOD_CTRL is both Ctrl keys: an event has only the side that is down, so compare whether each modifier is
+       held, not its bits. The lock keys and the sides then do not matter. */
+    return bind->key == e->key && !!(e->mod & SDL_KMOD_CTRL) == !!(bind->mods & SDL_KMOD_CTRL) &&
+           !!(e->mod & SDL_KMOD_SHIFT) == !!(bind->mods & SDL_KMOD_SHIFT) &&
+           !!(e->mod & SDL_KMOD_ALT) == !!(bind->mods & SDL_KMOD_ALT) &&
+           !!(e->mod & SDL_KMOD_GUI) == !!(bind->mods & SDL_KMOD_GUI);
 }
 static int modifier_key(SDL_Keycode key) {
     return key == SDLK_LCTRL || key == SDLK_RCTRL || key == SDLK_LSHIFT || key == SDLK_RSHIFT || key == SDLK_LALT ||
