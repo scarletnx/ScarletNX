@@ -1572,6 +1572,24 @@ static const u8* guest_bytes(u64 gva, u64 len) {
     return g_tmp;
 }
 
+/* the guest bytes a draw reads, with the samples-passed reports queued over them read past (vk_release_read_counts):
+   their counts, *n of them, are for the GPU to write where the bytes go (vk_query_counts). Reading the bytes as they are
+   waited for the GPU to run everything recorded until the reports */
+static const u8* draw_bytes(u64 gva, u64 len, SamplesCount* counts, u32 max, u32* n) {
+    *n = 0;
+    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE) && len <= 0x10000) {
+        if (g_tmp_cap < len) {
+            u8* grown = realloc(g_tmp, len);
+            if (!grown) return NULL;
+            g_tmp = grown;
+            g_tmp_cap = len;
+        }
+        if (vk_release_read_counts(gva, g_tmp, len, counts, max, n) > 0 && *n) return g_tmp;
+        *n = 0;
+    }
+    return guest_bytes(gva, len);
+}
+
 int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     int src = gva ? gfx_gpu_src(gva, len, buf, off, 0, vk_stage_align()) : 0;
     if (src == 1) return 1;
@@ -2307,8 +2325,11 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
                      : ST_EPOCH;
     if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, buf, off);
     u32 wnow = vk_ww_now();
-    const u8* src = guest_bytes(gva, len);
+    SamplesCount counts[4];
+    u32 ncounts;
+    const u8* src = draw_bytes(gva, len, counts, 4, &ncounts);
     if (!src) return 0;
+    if (ncounts && e) drop_own(i); /* the counts are written into this frame's staging, which the draw reads */
     /* Data without a buffer of its own goes into this frame's staging ring whatever its hash says, so it is copied as
        it is hashed and read once: reading it twice, for the hash and then the copy, was half of one game's GPU thread */
     VkBuffer sb = VK_NULL_HANDLE;
@@ -2349,7 +2370,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             memcpy(staged, src, len);
         }
         /* a big range takes its own buffer at once when writes are tracked: changes then patch it (patch_own) */
-        if (!((e->stable >= 2 || (len >= PATCH_MIN && g_ww > 0)) && make_own(i, sb, so))) {
+        if (ncounts || !((e->stable >= 2 || (len >= PATCH_MIN && g_ww > 0)) && make_own(i, sb, so))) {
             /* changing (or new) data: read from this frame's staging ring */
             e->buf = sb;
             e->off = so;
@@ -2359,6 +2380,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             }
             e->frame = vk_submit_number();
         }
+    }
+    if (ncounts && !vk_query_counts(sb, so, counts, ncounts)) { /* not on the GPU: the reports performed, waited for */
+        const u8* performed = guest_bytes(gva, len);
+        if (!performed) return 0;
+        memcpy(staged, performed, len);
+        e->hash ^= 1; /* not the bytes the hash is of */
+        e->gw = gpu_mem_generation();
     }
     use(i, buf, off);
     return 1;

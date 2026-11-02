@@ -969,6 +969,15 @@ void vk_release_queued(u64* n, u64* gate, u64* cgate); /* the queue's length and
 void vk_release_submit(void); /* the GPFIFO submission ended or waits: a release gated on the recording submits */
 void vk_release_need(u64 gva, u64 len);
 int vk_release_read(u64 gva, void* dst, u64 len);
+/* a samples-passed report a draw reads before it is performed: its count, len bytes (4 or 8) at byte at of what was
+   read, is counter's segments [first, end), written there on the GPU (vk_query_counts) */
+typedef struct {
+    u32 counter, at, len;
+    u64 first, end;
+} SamplesCount;
+/* vk_release_read's, with the samples-passed reports queued over the range that the GPU can write there left out of dst
+   (zeros) and listed in counts, at most max of them, *n set: no wait for those */
+int vk_release_read_counts(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n);
 extern u64 g_vk_release_forwards;           /* statistics: reads vk_release_read answered */
 extern u64 g_vk_dset_new, g_vk_dset_reused; /* statistics: descriptor sets written, reused for the same contents */
 u32 vk_release_value(u32 id);
@@ -994,6 +1003,10 @@ int vk_query_report(u32 owner, u64 gva, u32 len, u64 ticks);
 /* a report performed (release.c): the count of counter's segments [first, end) */
 u64 vk_query_value(u32 counter, u64 first, u64 end);
 u64 vk_query_peek(u32 counter, u64 first, u64 end); /* the same, out of order, changing nothing */
+/* writes the n counts of reports not performed yet into buf, whose bytes from off on were read at their at: 1, or 0
+   when they can't be counted on the GPU (the caller then reads the reports performed) */
+int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n);
+extern u64 g_vk_counts_on_gpu; /* statistics: the counts vk_query_counts wrote */
 #define VK_QUERY_COUNTERS 8 /* query.c's samples-passed counters, a draw owner's each */
 /* render enable predicates (release.c's vk_render_predicate): a queued report of counter's segments [first, end) gets
    a predicate slot, held once, that the next vk_query_pred_flush writes (2, *slot set), or its count is known now: 1
