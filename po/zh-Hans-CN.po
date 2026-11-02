@@ -3337,12 +3337,16 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "数据、日志、缓存、提取和已重编译游戏库的主文件夹"
 
 #: src/gui/main.c
-msgid "For the next runs. [default]: as the game's .ini says"
-msgstr "用于之后的运行。[默认]：按游戏的 .ini"
-
-#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "运行时未列出任何设置"
+
+#: src/gui/main.c
+msgid "For the next runs, over the game's .ini"
+msgstr "用于之后的运行，优先于游戏的 .ini"
+
+#: src/gui/main.c
+msgid "For the next runs. [default]: as the game's .ini says"
+msgstr "用于之后的运行。[默认]：按游戏的 .ini"
 
 #: src/gui/main.c src/gui/settings.c
 msgid "[default]"
@@ -4701,6 +4705,11 @@ msgstr "独立的页面，如同游戏菜单中"
 #: src/gui/settings.c
 msgid "Every row of this page at once"
 msgstr "一次设置此页的所有行"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%s=.ini is no longer a value of %s: %s=%s now"
+msgstr "%s=.ini 已不再是 %s 的值：现在为 %s=%s"
 
 #: src/gui/settings.c
 msgid "Mixed"

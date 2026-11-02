@@ -4217,8 +4217,20 @@ int main(int argc, char** argv) {
     render(&app);
     shows(&app, "Display", normal);
     shows(&app, "- fullscreen 1", yellow); /* the launcher's choice was 0 */
+    hides(&app, "- fullscreen 1 [default]", yellow);
     /* Del puts a setting back as it started */
     key(&app, SDLK_DELETE);
+    assert(setting_is(&app, "fullscreen", "0"));
+    /* the launcher's own choice: 0 or 1, both passed, [default] on the one it starts with; no third, the .ini's */
+    render(&app);
+    shows(&app, "- fullscreen 0 [default]", yellow);
+    assert(!strcmp(form_note(&app), "For the next runs, over the game's .ini"));
+    key(&app, SDLK_RIGHT);
+    key(&app, SDLK_RIGHT);
+    assert(setting_is(&app, "fullscreen", "0"));
+    key(&app, SDLK_LEFT);
+    assert(setting_is(&app, "fullscreen", "1"));
+    key(&app, SDLK_LEFT);
     assert(setting_is(&app, "fullscreen", "0"));
     key(&app, SDLK_RIGHT);
     key(&app, SDLK_ESCAPE);
@@ -4227,6 +4239,7 @@ int main(int argc, char** argv) {
     /* a number typed; one equal to a whole number as that number; nothing typed the scale's default, shown */
     render(&app);
     shows(&app, "- resolution    1 [default]", yellow); /* right in its field, not picked: the default */
+    assert(!strcmp(form_note(&app), "For the next runs. [default]: as the game's .ini says"));
     key(&app, SDLK_RETURN);
     typed(&app, "0.5");
     render(&app);
@@ -4321,7 +4334,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Overlay", normal);
         /* the rows' text past the gutter of Buttons' icon */
-        snprintf(line, sizeof line, "-    %-13s %s", "Show controls", "Off"); /* the launcher's choice, 0 */
+        snprintf(line, sizeof line, "-    %-13s %s", "Show controls", "Off [default]"); /* the launcher's choice */
         shows(&app, line, yellow);
         snprintf(line, sizeof line, "- " ICON_LAYOUT_GRID " %-13s %s", "Buttons", ">");
         shows(&app, line, normal);
@@ -6520,6 +6533,36 @@ int main(int argc, char** argv) {
             free(app.drivers);
             app.drivers = drivers;
             assert(settings_of(&app) && setting_row(&app, "built_in") < 0 && setting_row(&app, "user") >= 0);
+            app.groups = 0;
+        }
+        /* an older version's fullscreen=.ini and controls=.ini, which passed nothing: each the launcher's choice, said
+           with it as the list is read, and settings.ini written so, the other picks kept: said once */
+        {
+            static const char older[] =
+                "[Display]\nfullscreen=.ini\n[Graphics]\nresolution=2\n[On-screen controls]\ncontrols=.ini\n";
+            char *before = (char*)snx_read_file(app.settings_file, &size), *said;
+            assert(before && !snx_write_file(app.settings_file, older, sizeof older - 1));
+            settings_forget(&app);
+            app.message[0] = 0;
+            assert(settings_of(&app) && setting_is(&app, "fullscreen", "0") && setting_is(&app, "controls", "0"));
+            assert(setting_is(&app, "resolution", "2"));
+            said = snx_format("%s: fullscreen=.ini is no longer a value of fullscreen: fullscreen=0 now; controls=.ini "
+                              "is no longer a value of Show controls: controls=0 now",
+                              app.settings_file);
+            assert(!strcmp(app.message, said));
+            free(said);
+            kept = (char*)snx_read_file(app.settings_file, &size);
+            assert(kept && strstr(kept, "[Graphics]\nresolution=2\n") && !strstr(kept, "fullscreen") &&
+                   !strstr(kept, "controls"));
+            free(kept);
+            settings_forget(&app);
+            app.message[0] = 0;
+            assert(settings_of(&app) && setting_is(&app, "fullscreen", "0") && !app.message[0]);
+            /* the picks as they were, for the runs below */
+            assert(!snx_write_file(app.settings_file, before, size = strlen(before)));
+            free(before);
+            settings_forget(&app);
+            assert(settings_of(&app) && setting_is(&app, "fullscreen", "1"));
             app.groups = 0;
         }
     }
