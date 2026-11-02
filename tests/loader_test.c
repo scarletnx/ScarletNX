@@ -417,6 +417,10 @@ static void test_nacp(const char* root, const char* exefs) {
     shown = snx_game_shown(NULL, &program);
     CHECK(!strcmp(shown, "Synthetic Loader"));
     free(shown);
+    strcpy(program.npdm.name, "Application"); /* no name of its own: the title ID, not the folder's name */
+    shown = snx_game_shown(NULL, &program);
+    CHECK(!strcmp(shown, "123456789ABCDEF0"));
+    free(shown);
     snx_free_program(&program);
     path = snx_path_join(root, "control.nacp");
     CHECK(!snx_write_file(path, nacp, sizeof nacp));

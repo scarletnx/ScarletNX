@@ -36,9 +36,15 @@ char* snx_game_title(const char* name, const SnxNpdm* npdm, const char* input) {
     return out;
 }
 char* snx_game_shown(const char* name, const SnxProgram* program) {
-    char shown[0x200];
-    if (!name && snx_nacp_name(program->nacp, program->nacp_size, shown, sizeof shown)) return snx_strdup(shown);
-    return snx_game_title(name, &program->npdm, program->entry_path);
+    char shown[0x200], id[17];
+    if (name) return snx_game_title(name, &program->npdm, program->entry_path);
+    if (snx_nacp_name(program->nacp, program->nacp_size, shown, sizeof shown)) return snx_strdup(shown);
+    /* no control.nacp and no name in the NPDM (a Switch 2 dump's ExeFS and RomFS): the title ID, not the name of the
+       folder that the recompiler read the files from */
+    if ((!program->npdm.name[0] || !strcmp(program->npdm.name, "Application")) &&
+        snx_title_text(program->npdm.title_id, id))
+        return snx_strdup(id);
+    return snx_game_title(NULL, &program->npdm, program->entry_path);
 }
 char* snx_game_name(const char* name, const SnxNpdm* npdm, const char* input) {
     char id[17];
