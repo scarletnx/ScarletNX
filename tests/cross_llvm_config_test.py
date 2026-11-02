@@ -14,13 +14,16 @@ import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / 'scripts' / 'cross-llvm-config.sh'
-QEMUS = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64')
-CASES = [  # e_machine, EI_DATA (1 little-endian, 2 big-endian), the qemu expected (None: refused)
-    (21, 1, 'ppc64le'),
-    (21, 2, 'ppc64'),
-    (243, 1, 'riscv64'),
-    (258, 1, 'loongarch64'),
-    (62, 1, None),
+QEMUS = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64', 'mips64el', 'mips64')
+CASES = [  # e_machine, EI_DATA (1 little-endian, 2 big-endian), EI_CLASS (2 64-bit), the qemu expected (None: refused)
+    (21, 1, 2, 'ppc64le'),
+    (21, 2, 2, 'ppc64'),
+    (243, 1, 2, 'riscv64'),
+    (258, 1, 2, 'loongarch64'),
+    (8, 1, 2, 'mips64el'),
+    (8, 2, 2, 'mips64'),
+    (8, 2, 1, None),  # 32-bit MIPS, the same e_machine
+    (62, 1, 2, None),
 ]
 
 
@@ -39,9 +42,9 @@ def main():
             executable(bin_dir / f'qemu-{q}', f'#!/bin/sh\necho "qemu-{q} $3 $4 $5" /usr/lib/llvm\n')
         config = root / 'usr' / 'bin' / 'llvm-config'
         env = dict(os.environ, PATH=f'{bin_dir}{os.pathsep}{os.environ.get("PATH", "")}', SNX_SYSROOT=str(root))
-        for machine, data, qemu in CASES:
+        for machine, data, elf_class, qemu in CASES:
             header = bytearray(64)
-            header[:6] = b'\x7fELF' + bytes([2, data])
+            header[:6] = b'\x7fELF' + bytes([elf_class, data])
             header[18:20] = struct.pack('<H' if data == 1 else '>H', machine)
             config.write_bytes(bytes(header))
             config.chmod(0o755)
@@ -56,7 +59,8 @@ def main():
                 ok = out.returncode != 0 and f'machine {machine}' in out.stderr
             if not ok:
                 print(
-                    f'FAIL: machine {machine}, EI_DATA {data}: {out.stdout.strip() or out.stderr.strip()!r}, '
+                    f'FAIL: machine {machine}, EI_DATA {data}, EI_CLASS {elf_class}: '
+                    f'{out.stdout.strip() or out.stderr.strip()!r}, '
                     f'want {want!r}'
                 )
                 failed += 1

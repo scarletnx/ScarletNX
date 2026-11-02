@@ -10,7 +10,7 @@ finishing every tool or redesign before the first measured change.
 Rosetta 2 translates x86-64 code into arm64 code for one host family, Apple silicon. ScarletNX translates A64 code into
 the code of every host it supports. The [README](../README.md) lists Linux, Windows, FreeBSD, Solaris and Android, and
 [Install](INSTALL.md) builds for x86-64, AArch64, PowerPC64 (little and big endian), RISC-V and LoongArch, and macOS
-and iOS built in CI.
+and iOS built in CI, and MIPS64 (little and big endian) built from its presets.
 This plan takes each part of Rosetta 2's design, finds the code in ScarletNX that does the same job, and describes
 how to adapt the technique to each host and to the Horizon behavior that ScarletNX must provide.
 Whoever implements it should start with the [guide](CPU_TRANSLATOR_GUIDE.md): setup, rules and how work is handed back.
@@ -59,15 +59,17 @@ guest for free, and each part below notes where that matters.
 | PowerPC64, little and big endian | Linux | ELF, ELFv1 or ELFv2 | 64 KiB on most ppc64le kernels | Yes | 32, less r1, r2 and r13 | Condition register fields and the carry in XER | Weaker: not multi-copy atomic |
 | RISC-V 64 | Linux | ELF | 4 KiB | No | 32, less zero, sp, gp and tp | No integer flags | Close (RVWMO) |
 | LoongArch 64 | Linux | ELF | Set by the kernel | No | 32, less zero, tp, sp and r21 | No integer flags | Weak, still to be compared with Arm's |
+| MIPS64, little and big endian | Linux | ELF, n64 with the ABI's GOT | 4, 16 or 64 KiB, set by the kernel | No | 32, less zero, at, k0, k1, gp and sp | No integer flags | Weak, still to be compared with Arm's |
 
 The object formats, page sizes and JIT support come from `docs/ARCHITECTURE.md`, `docs/APPLE.md`, `docs/PPC64.md`,
-`docs/RISCV-LOONGARCH.md` and `HOST_MACHINE` in `src/common/cpu/recompiler/llvm/code_loader.c`. `docs/INSTALL.md` says
-the PowerPC64, RISC-V and LoongArch builds are cross-built, that big-endian PowerPC64 has not run on a big-endian machine,
-and that no game runs on macOS yet. `docs/RISCV-LOONGARCH.md` says no real RISC-V or LoongArch machine has run them.
+`docs/RISCV-LOONGARCH.md`, `docs/MIPS64.md` and `HOST_MACHINE` in `src/common/cpu/recompiler/llvm/code_loader.c`.
+`docs/INSTALL.md` says the PowerPC64, RISC-V and LoongArch builds are cross-built, that big-endian PowerPC64 has not
+run on a big-endian machine, and that no game runs on macOS yet. `docs/RISCV-LOONGARCH.md` says no real RISC-V or
+LoongArch machine has run them, and `docs/MIPS64.md` no MIPS machine.
 
 Two rows matter most for this plan. x86-64 is the only host with 16 general registers, so it is the one where guest
-registers cannot all live in host registers. RISC-V and LoongArch have no runtime JIT, so a function the recompile
-missed cannot run there at all, and the game ends with the reason (`rt_miss` in `src/nx/runtime/rtapi.c`).
+registers cannot all live in host registers. RISC-V, LoongArch and MIPS64 have no runtime JIT, so a function the
+recompile missed cannot run there at all, and the game ends with the reason (`rt_miss` in `src/nx/runtime/rtapi.c`).
 
 ## What "as good as Rosetta 2" means
 
