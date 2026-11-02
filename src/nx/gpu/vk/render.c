@@ -1339,6 +1339,7 @@ typedef struct { /* the vertex and fragment programs' images, 8 each */
     Surf* surf[16];
     u8* original[16];
     u32 size[16];
+    u64 after[16]; /* vk_gfx_image_after's entry, with original NULL */
     int n;
 } DrawImages;
 static void draw_images_discard(DrawImages* images) {
@@ -1348,7 +1349,8 @@ static void draw_images_discard(DrawImages* images) {
 static void draw_images_commit(DrawImages* images) {
     for (int i = 0; i < images->n; i++) {
         vk_surf_wrote(images->surf[i]);
-        if (images->original[i]) vk_gfx_image_record(images->surf[i], images->original[i], images->size[i]);
+        if (images->original[i] || images->after[i])
+            vk_gfx_image_record(images->surf[i], images->original[i], images->size[i], images->after[i]);
     }
     images->n = 0;
 }
@@ -1847,9 +1849,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             if (images->surf[j] == surf) seen = 1;
         /* an earlier draw's writes to it wait for their copy (vk_gfx_image_unrecorded): that copy, recorded later,
            takes this draw's writes too, over the same bytes from before them. Reading guest memory for this draw's own
-           would land those writes first, waiting for the GPU (once a frame in one game). A landing during the setup
-           submits, and the setup starts over */
-        if (!seen && !vk_gfx_image_unrecorded(surf)) {
+           would land those writes first, waiting for the GPU (once a frame in one game). One whose copy is recorded
+           gives this draw those bytes as it lands (vk_gfx_image_after). A landing during the setup submits, and the
+           setup starts over */
+        images->after[images->n] = 0;
+        if (!seen && !vk_gfx_image_unrecorded(surf) &&
+            !(images->after[images->n] = vk_gfx_image_after(surf, (u32)size))) {
             u8* original = malloc((size_t)size);
             if (!original) return VK_NULL_HANDLE;
             gmem_read(surf->gva, original, size);

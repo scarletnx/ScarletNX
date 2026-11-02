@@ -614,8 +614,10 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
-   (the queue frees it) */
-void vk_gfx_image_record(Surf* s, u8* original, u32 size);
+   (the queue frees it), or over the bytes the write-back after leaves */
+void vk_gfx_image_record(Surf* s, u8* original, u32 size, u64 after);
+/* the write-back a draw's writes to s go on from (its landed bytes become their original, NULL until then), 0: none */
+u64 vk_gfx_image_after(Surf* s, u32 size);
 int vk_gfx_image_unrecorded(const Surf* s); /* s has a write-back whose copy isn't recorded: a draw's writes join it */
 void vk_gfx_image_mem_need(u64 gva, u64 size);
 int vk_gfx_image_pending(u64 gva, u64 size);
@@ -650,7 +652,8 @@ int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
-void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen);
+/* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
+void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size);
 void vk_tex_note_writeback(Surf* s);
 /* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
    byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
