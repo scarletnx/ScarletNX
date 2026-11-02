@@ -575,6 +575,7 @@ typedef struct Surf {
     int nsv;
     u64 size, hash, shash;
     int upload_valid; /* textures: every subresource was uploaded (a failed upload is retried) */
+    int piecewise;    /* textures: holes in its mapping when made, loaded a piece at a time (texture.c tex_patch) */
     u32 checked, next_check, stable, tfull;
     u32 wseen;    /* write-tracking clock when it last matched memory */
     u32 ww_epoch; /* the write epoch (vk_ww_epoch) of its last check for CPU writes */

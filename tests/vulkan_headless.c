@@ -1381,25 +1381,26 @@ static Surf* sv_frame(const u32* tic) {
     vk_unlock();
     return t;
 }
-/* one way in: after it, the next frame's texture is the one made and all of it is memory's. 1 when not, said with the
-   first texel or block that differs */
-static int sv_way(const SvCase* c, const char* way, Surf* t, const u32* tic) {
+/* one way in: after it, the next frame's texture is the one made, all of it is memory's, and it loaded at most most
+   bytes again (the blocks of the pages that changed, not the volume). 1 when not, said with the first texel or block
+   that differs */
+static int sv_way(const SvCase* c, const char* way, Surf* t, const u32* tic, u64 most) {
     u64 uploads, bytes, uploads2, bytes2, image_has = 0, memory_has = 0;
     u32 first[3] = {0};
     vk_tex_stats(&uploads, &bytes);
     Surf* now = sv_frame(tic);
     vk_tex_stats(&uploads2, &bytes2);
     int differ = now ? sv_differ(c, now, first, &image_has, &memory_has) : -1;
-    if (now == t && differ == 0) {
+    if (now == t && differ == 0 && bytes2 - bytes <= most) {
         printf("sparse volume %s, %s: all of it as memory has it, %llu bytes loaded again\n", c->name, way,
                (unsigned long long)(bytes2 - bytes));
         return 0;
     }
     fprintf(stderr,
-            "sparse volume %s, %s: the same texture %d, %llu bytes loaded again (%llu loads); %d texels or blocks of "
-            "the image differ from memory\n",
+            "sparse volume %s, %s: the same texture %d, %llu bytes loaded again (%llu loads, at most %llu wanted); %d "
+            "texels or blocks of the image differ from memory\n",
             c->name, way, now == t, (unsigned long long)(bytes2 - bytes), (unsigned long long)(uploads2 - uploads),
-            differ);
+            (unsigned long long)most, differ);
     if (differ > 0)
         fprintf(stderr, "  the first, (%u, %u) of slice %u: image %016llx, memory %016llx\n", first[0], first[1],
                 first[2], (unsigned long long)image_has, (unsigned long long)memory_has);
@@ -1422,21 +1423,31 @@ static int sparse_volume(const SvCase* c) {
     memset(GP(c->cpu + 2 * SV_TILE), 0, SV_TILE); /* tile 2 holds zeros until the DMA */
     gmmu_map(c->gva, c->cpu, SV_TILE);
     gmmu_map(c->gva + 2 * SV_TILE, c->cpu + 2 * SV_TILE, SV_TILE);
+    u64 uploads, bytes, uploads2, bytes2;
+    vk_tex_stats(&uploads, &bytes);
     vk_lock();
     Surf* t = vk_tex_from_tic(tic);
     vk_unlock();
+    vk_tex_stats(&uploads2, &bytes2);
     CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && t->w == w + 1 && t->h == h + 1 && t->depth3d == 32 &&
           t->size == SV_BYTES);
+    /* what is mapped, read: the holes are cleared, not read */
+    if (bytes2 - bytes != 2 * SV_TILE) {
+        fprintf(stderr, "sparse volume %s: %llu bytes loaded to make it, its 2 mapped tiles are %u\n", c->name,
+                (unsigned long long)(bytes2 - bytes), 2 * SV_TILE);
+        return 1;
+    }
     CHECK(sv_differ(c, t, first, &image_has, &memory_has) == 0);
     for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
-    /* (a) the game's MapVirtual: pages that hold the tile, mapped at its place in the pool */
+    /* (a) the game's MapVirtual: pages that hold the tile, mapped at its place in the pool: its 8 blocks of 8 KiB (a GOB
+       across, 8 rows, 16 slices) */
     gmmu_map(c->gva + SV_TILE, c->cpu + SV_TILE, SV_TILE);
-    int failed = sv_way(c, "a tile mapped", t, tic);
+    int failed = sv_way(c, "a tile mapped", t, tic, SV_TILE);
     for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
     /* (b) the CPU writes 8 bytes of the mapped tile */
     const u8 cpu_bytes[8] = {0x1F, 0x00, 0xE0, 0x07, 0x1B, 0x6C, 0xB1, 0xC6};
     memcpy(GP(c->cpu + sv_offset(576, 2, 3)), cpu_bytes, 8);
-    failed |= sv_way(c, "the CPU writing a tile", t, tic);
+    failed |= sv_way(c, "the CPU writing a tile", t, tic, 2 * 8192); /* a page's block, or two of a 16 KiB page's */
     for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
     /* (c) a DMA copy of 64 bytes into tile 2 (block 3 of the second row of blocks), from a page past the volume */
     GpuDmaOp o = {.width = 64, .line_in = 64, .line_out = 64, .lines = 1};
@@ -1446,7 +1457,7 @@ static int sparse_volume(const SvCase* c) {
     o.src = pitch_side(src + 0x340, 0);
     o.dst = pitch_side(c->gva + sv_offset(240, 10, 6), 0);
     CHECK(g_renderer->dma_copy(&o));
-    failed |= sv_way(c, "a DMA copy into a tile", t, tic);
+    failed |= sv_way(c, "a DMA copy into a tile", t, tic, 8192); /* the page's block */
     return failed;
 }
 static int check_sparse_volume(void) {
@@ -1511,8 +1522,11 @@ static int sparse_tiles(const StCase* c) {
         if (k < 3 || c->levels > 1)
             gmmu_map(c->gva + (k < 3 ? mapped[k] : tiles + 1) * SV_TILE, c->cpu + k * SV_TILE, SV_TILE);
     }
+    u64 uploads, bytes, uploads2, bytes2;
+    vk_tex_stats(&uploads, &bytes);
     vk_lock();
     Surf* t = vk_tex_from_tic(tic);
+    vk_tex_stats(&uploads2, &bytes2);
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {tex.d.width, tex.d.height, tex.d.depth}};
     u8* image = t ? vk_readback_buffer(lay.size, &buffer) : NULL;
@@ -1584,6 +1598,13 @@ static int sparse_tiles(const StCase* c) {
                     c->name, w1, h1, bad, across1 * down1, first[0], first[1]);
             return 1;
         }
+    }
+    /* what is mapped, read, and no hole: all of each mapped tile, but the padding past a cut row's texels */
+    const u64 mapped_bytes = (c->levels > 1 ? 4 : 3) * (u64)SV_TILE;
+    if (bytes2 - bytes > mapped_bytes || (!c->cut && bytes2 - bytes != mapped_bytes)) {
+        fprintf(stderr, "sparse tiles %s: %llu bytes loaded to make it, its mapped tiles are %llu\n", c->name,
+                (unsigned long long)(bytes2 - bytes), (unsigned long long)mapped_bytes);
+        return 1;
     }
     printf("sparse tiles %s: each of the %u mapped tiles fills its %ux%ux%u brick of a %ux%ux%u texture of %u levels, "
            "the holes are zeros\n",
@@ -1879,6 +1900,9 @@ static int check_resident_volume(void) {
            (unsigned long long)((took[1] - took[0]) >> 10), (unsigned long long)((bytes[1] - bytes[0]) >> 10));
     CHECK(!rv_check("made", t, tiles, from, 11, cpu));
     CHECK(t->bytes == 3 * RV_TILE && bytes[1] - bytes[0] == 3 * RV_TILE && took[1] - took[0] < (16ull << 20));
+    /* frames go by: write tracking's scans take in the bytes written before it was made, which it loads again once */
+    for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
+    vk_tex_stats(&loads[1], &bytes[1]);
     /* the game's MapVirtual: a tile mapped where it was a hole */
     gmmu_map(gva + (u64)tiles[10] * RV_TILE, cpu + 3 * RV_TILE, RV_TILE);
     at[2] = plat_ns();
@@ -1893,7 +1917,10 @@ static int check_resident_volume(void) {
            "allocated, %llu KiB loaded\n",
            (double)(at[3] - at[2]) / 1e6, (unsigned long long)(t->bytes >> 10),
            (unsigned long long)((took[2] - took[1]) >> 10), (unsigned long long)((bytes[2] - bytes[1]) >> 10));
-    CHECK(t->bytes == 4 * RV_TILE && took[2] - took[1] >= RV_TILE);
+    /* the new tile's brick alone loaded */
+    CHECK(t->bytes == 4 * RV_TILE && took[2] - took[1] >= RV_TILE && bytes[2] - bytes[1] == RV_TILE);
+    for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
+    vk_tex_stats(&loads[2], &bytes[2]);
     /* a tile unmapped: a hole again */
     gmmu_space_unmap(gva, RV_TILE);
     CHECK(sv_frame(tic) == t);
@@ -1905,7 +1932,7 @@ static int check_resident_volume(void) {
     printf("resident volume: a tile unmapped, its image %llu KiB, %lld KiB allocated since, %llu KiB loaded\n",
            (unsigned long long)(t->bytes >> 10), (long long)((i64)(took[3] - took[2]) >> 10),
            (unsigned long long)((bytes[3] - bytes[2]) >> 10));
-    CHECK(t->bytes == 3 * RV_TILE && took[3] - took[0] < (16ull << 20));
+    CHECK(t->bytes == 3 * RV_TILE && took[3] - took[0] < (16ull << 20) && bytes[3] == bytes[2]); /* nothing loaded */
     gmmu_space_unmap(gva, lay.size);
     CHECK(mem_unmap(cpu, 4 * RV_TILE) == 0);
     puts("resident volume: memory for the mapped tiles alone, their texels, zeros in the holes, bound and released as "
