@@ -142,6 +142,8 @@ u64 vk_cs_skipped(char* why, size_t size) {
     return total;
 }
 
+/* a compute program's bytes at most: an Ounce game's run to 250 KB */
+#define CS_CODE 0x80000u
 static u8 g_cb[QMD_NUM_CONST_BUFFERS][MAX_CONST_BUFFER_BYTES];
 static u32 g_cbn[QMD_NUM_CONST_BUFFERS];
 /* The constant buffers a pending write in place covers: g_cb doesn't hold them. The GPU copies them for the dispatch,
@@ -652,11 +654,11 @@ static CsPipe g_cs_alloc_failed = {.failed = 1}; /* out of memory: not cached, r
    tables read through read; *blen: the bytes of the window the program takes */
 static u64 cs_key(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, const CsKey* k, VkCbReader read,
                   u32* blen) {
-    u64 key = vk_shader_hash(code, 0x10000 + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
+    u64 key = vk_shader_hash(code, CS_CODE + 80, blen, read) ^ ((u64)lx << 40) ^ ((u64)ly << 48) ^ ((u64)lz << 56) ^
               ((u64)shm << 20) ^ ((u64)k->image << 32) ^ (u64)k->tex_int * 0x9E3779B97F4A7C15ull ^
               (u64)k->tex_sint * 0xC2B2AE3D27D4EB4Full ^ (u64)k->image_sint * 0xA24BAED4963EE407ull ^
               (u64)k->tex_rect * 0x165667B19E3779F9ull;
-    if (shader_absolute_flow(code, 0x10000 + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
+    if (shader_absolute_flow(code, CS_CODE + 80)) key ^= (u64)flow_base * 0xD6E8FEB86659FD93ull;
     for (u32 q = 0; q < SH_MAXTEX; q++) key ^= (u64)k->query[q] * (0x9E3779B97F4A7C15ull + 2 * q + 1) << (q & 15);
     return key;
 }
@@ -669,7 +671,7 @@ static void cs_keep(const CsPipe* p, const u8* code, u32 blen, u32 flow_base, u3
                     const CsKey* k) {
     const u32 launch[5] = {lx, ly, lz, shm, flow_base};
     u32 n = ((blen + 7u) & ~7u) + 64u;
-    if (n > 0x10000 + 80) n = 0x10000 + 80;
+    if (n > CS_CODE + 80) n = CS_CODE + 80;
     vk_pf_cspipe(p->key, launch, &p->cbr, k, sizeof *k, code, n);
 }
 static CsPipe* cs_pipe(const u8* code, u32 flow_base, u32 lx, u32 ly, u32 lz, u32 shm, CsKey k) {
@@ -701,7 +703,7 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
        otherwise: an access past the array would read and write another word */
     u32 shared_max = g_vk.props.limits.maxComputeSharedMemorySize, shared, reach;
     if (shm > shared_max) {
-        if (!shader_shared_fit(code, 0x10000 + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
+        if (!shader_shared_fit(code, CS_CODE + 80, p->si.cs_local, shm, shared_max, &shared, &reach)) {
             char upto[48];
             if (reach == SH_SHARED_ANY)
                 snprintf(upto, sizeof upto, "an address it can't bound");
@@ -726,9 +728,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     p->si.tex_rect_mask = k.tex_rect;
     memcpy(p->si.tex_query_hint, k.query, sizeof p->si.tex_query_hint);
     const char* corpus = vk_corpus_dir();
-    if (corpus) shader_corpus_save(corpus, code, blen, 0x10000 + 80, ST_CS, &p->si, key);
+    if (corpus) shader_corpus_save(corpus, code, blen, CS_CODE + 80, ST_CS, &p->si, key);
     size_t nw = 0;
-    u32* spv = vk_translate_spirv(code, 0x10000 + 80, ST_CS, &p->si, &nw, read, &p->cbr);
+    u32* spv = vk_translate_spirv(code, CS_CODE + 80, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
         LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
@@ -807,9 +809,9 @@ static int cs_reads_same(const VkCbReads* a, const VkCbReads* b) {
 int vk_cs_pipe_load(const u32 launch[5], const u32* cbr, u32 ncbr, const u8* vkey, u32 nkey, const u8* code, u32 ncode,
                     int record) {
     CsKey k;
-    if (nkey != sizeof k || ncode > 0x10000 + 80) return 0;
+    if (nkey != sizeof k || ncode > CS_CODE + 80) return 0;
     memcpy(&k, vkey, sizeof k);
-    u8* window = calloc(1, 0x10000 + 80);
+    u8* window = calloc(1, CS_CODE + 80);
     VkCbRead* reads = ncbr ? malloc(ncbr * sizeof *reads) : NULL;
     if (!window || (ncbr && !reads)) {
         free(window);
@@ -908,23 +910,23 @@ static int cs_code_unchanged(u64 pa, u32 len, u64 gw, u32 wseen) {
 /* Both the initial translation and format specialization use the same bounded program. Returns the bytes of guest
    memory it read from pa */
 static u32 cs_read_code(u64 pa, u8* dst) {
-    u32 code_size = 0x10000;
+    u32 code_size = CS_CODE;
     /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
        targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
        clients keep the whole window. */
     u8 header[8];
     if (pa >= 0x100 && gmem_read_code_cpu(pa - 0x100, header, 8) == 8) {
         u32 magic = snx_ld_le32(header), declared = snx_ld_le32(header + 4);
-        if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+        if (magic == 0x12345679 && declared >= 0x80 && declared <= CS_CODE && !(declared & 7) &&
             gmem_host(pa, declared))
             code_size = declared;
     }
-    memset(dst, 0, 0x10000 + 80);
+    memset(dst, 0, CS_CODE + 80);
     /* what the GPU holds in the window lands only when the program may reach it (gmem_code_cut) */
     u64 cpu = gmem_read_code_cpu(pa, dst + 80, code_size);
     if (cpu < code_size) {
         u32 len;
-        vk_shader_hash(dst, 0x10000 + 80, &len, cs_cb_read);
+        vk_shader_hash(dst, CS_CODE + 80, &len, cs_cb_read);
         if (gmem_code_cut(len, 80 + cpu, 80 + code_size)) gmem_read_code(pa, dst + 80, code_size);
     }
     return code_size;
@@ -1086,7 +1088,7 @@ void vk_dispatch(const DispatchState* d) {
         }
     }
     if (!same || fe->shader_generation != g_vk.shader_generation || fe->epoch != epoch) {
-        static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u8 code_buf[CS_CODE + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
         CsKey unkeyed = {0};
         u32 wseen = vk_ww_now();
         u64 gw = gpu_mem_generation(); /* both before the bytes are read */
@@ -1157,7 +1159,7 @@ void vk_dispatch(const DispatchState* d) {
             p->keyed->si.tex_sint_mask != ck.tex_sint || p->keyed->si.img_sint_mask != ck.image_sint ||
             p->keyed->si.tex_rect_mask != ck.tex_rect ||
             memcmp(p->keyed->si.tex_query_hint, ck.query, sizeof ck.query) != 0) {
-            static u8 keyed_code[0x10000 + 80];
+            static u8 keyed_code[CS_CODE + 80];
             cs_read_code(pa, keyed_code);
             p->keyed = cs_pipe(keyed_code, (u32)(pa - 80), lx, ly, lz, shm, ck);
         }
@@ -1174,21 +1176,21 @@ void vk_dispatch(const DispatchState* d) {
         g_cs_skips[CS_SKIP_FEATURE]++;
         return;
     }
-    /* storage buffers: {address, size} in constant buffer 0 */
+    /* storage buffers: {address, size} in constant buffer 0, or a bare address in the constant buffer the key names
+       (SH_GBUF_*) */
     u64 sa[16];
     u32 ss[16];
     int ng = p->si.ngbuf > 16 ? 16 : p->si.ngbuf;
     u64 need = 0;
     for (int i = 0; i < ng; i++) {
-        u32 v[3] = {0, 0, 0};
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i], &v[0]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 4, &v[1]);
-        cs_cb_read(0, p->si.gbuf_cbuf_off[i] + 8, &v[2]);
+        u32 v[3] = {0, 0, 0}, bank = SH_GBUF_BANK(p->si.gbuf_cbuf_off[i]), off = SH_GBUF_OFFSET(p->si.gbuf_cbuf_off[i]);
+        for (u32 w = 0; w < (bank ? 2u : 3u); w++) cs_cb_read(bank, off + 4 * w, &v[w]);
         ss[i] = vk_gbuf_desc(ST_CS, p->si.gbuf_cbuf_off[i], v, &sa[i]);
         need += ss[i] + vk_stage_align();
     }
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + vk_stage_align();
+    if (p->si.root_max) need += SH_ROOT_BYTES + vk_stage_align();
     /* buffer images: their headers from the compute engine's texture pool, handles from its texture bank */
     for (i = 0; i < p->si.nimg && i < 8; i++) {
         u64 tic_base;
@@ -1363,6 +1365,31 @@ rebind:
                                            .pBufferInfo = &bi[nw]};
             nw++;
         }
+    if (p->si.root_max) { /* an Ounce program's root tables, the bytes it reads (SNX_VKB_ROOT) */
+        u32 range = (p->si.root_max + 15u) & ~15u;
+        VkBuffer rbuf = g_ar;
+        u64 o;
+        u8* dst;
+        if (deferred) {
+            dst = vk_stage(range, vk_stage_align(), &rbuf, &o);
+            if (!dst) {
+                g_cs_skips[CS_SKIP_RESOURCES]++;
+                return;
+            }
+        } else {
+            o = arena_alloc(range);
+            dst = g_ar_ptr + o;
+        }
+        memcpy(dst, d->root, range);
+        bi[nw] = (VkDescriptorBufferInfo){rbuf, o, range};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_ROOT,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
+    }
     u64 so[16];
     VkBuffer bi_buf[16];
     int chained = 0;

@@ -166,10 +166,13 @@ int gmem_read(u64 gva, void* dst, u64 size) {
     memcpy(dst, GP(gva), size);
     return 1;
 }
+void gmem_read_code(u64 gva, void* dst, u64 size) { memcpy(dst, GP(gva), size); }
 int gmem_write(u64 gva, const void* src, u64 size) {
     memcpy(GP(gva), src, size);
     return 0;
 }
+int g_shader_sm86; /* shader.c's: Maxwell programs */
+const char* g_shader_sm86_dump; /* shader.c's: no dumps */
 u64 ds_generation_next(void) {
     static u64 g;
     return ++g;

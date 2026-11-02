@@ -12,6 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/sm86.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/gpu/vk/vk_common.h"
@@ -34,10 +35,10 @@
 #include "common/utilities/endian.h"
 #include <sys/stat.h>
 
-/* the bytes of a program vk_shader_get reads, from its SPH. The SPH has no size, so shader_hash ends the program at
-   its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past the
-   largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes), without going on into the next program */
-#define SH_CODE 0x20000u
+/* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
+   program at its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past
+   the largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without
+   going on into the next program */
 
 /* The caches live in shader_cache/ of the game's cache folder (g_cachedir), wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
@@ -143,6 +144,31 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
     return NULL;
 }
 
+/* An SM86 program in max_bytes at code (a graphics program from its header on, a compute one after the 80 zero bytes
+   of the compute path): 1 and *p, or 0 when no program starts there */
+static int sm86_program(const u8* code, u32 max_bytes, Sm86Program* p) {
+    return sm86_find_programs(code, max_bytes, p, 1) == 1;
+}
+static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words) {
+    Sm86Program p;
+    u32 sph[SM86_SPH_BYTES / 4];
+    if (!sm86_program(code, max_bytes, &p) || !p.complete) {
+        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                 "no complete SM86 program in %#x bytes (words %08x %08x %08x %08x)", max_bytes, snx_ld_le32(code),
+                 snx_ld_le32(code + 4), snx_ld_le32(code + 8), snx_ld_le32(code + 12));
+        si->unsupported = 1;
+        return NULL;
+    }
+    if (stage != ST_CS) {
+        if (p.code == p.header) {
+            snprintf(si->first_unsupported, sizeof si->first_unsupported, "an SM86 graphics program with no header");
+            si->unsupported = 1;
+            return NULL;
+        }
+        for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
+    }
+    return sm86_to_spirv(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words);
+}
 /* The translator's reader (g_shader_cb_read) and what rec_read records into are one for the process: the GPU thread's
    draws and dispatches and the pass over the programs the game ships, on the shader files' thread (ship_program),
    translate and hash one at a time */
@@ -162,8 +188,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                             VK_SHADER_STAGE_FRAGMENT_BIT,
                                             VK_SHADER_STAGE_COMPUTE_BIT};
     VkShaderStageFlagBits shader_stage = stages[stage];
-    u32* result = shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
-                                  g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
+    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
+                                : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
+                                                  g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
     g_rec = NULL;
     int failed = g_rec_failed;
@@ -187,6 +214,13 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
 /* shader_hash with the jump tables of BRX read through read, as the translation reads them: without a reader the
    length stops at the first EXIT and leaves out code only a jump table reaches */
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read) {
+    if (g_shader_sm86) { /* the program's bytes up to its end, from the start of code (its header, the zero bytes) */
+        Sm86Program p;
+        /* with no program there, the bytes of a header: each such program keeps a key of its own */
+        u32 len = sm86_program(code, max_bytes, &p) ? p.code + p.size : 0;
+        *out_len = len;
+        return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM86_SPH_BYTES ? max_bytes : SM86_SPH_BYTES);
+    }
     pm_lock(&g_xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
     g_shader_cb_read = read;
@@ -2426,6 +2460,10 @@ static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const
     /* a VertexA and its VertexB share one code area, whose constants the draws bind for the vertex stage */
     g_ship_consts = consts;
     g_ship_nconsts = nconsts;
+    /* an Ounce game's (SM86): its programs as a draw reads them, from their header. A VertexA, which no draw of the
+       Ounce path pairs, is left to its draws */
+    if (stage == SHIPPED_OUNCE_VERTEX_A) return SHIP_SKIPPED;
+    stage &= ~SHIPPED_OUNCE;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so
        no key made without a draw is one a draw asks for */
@@ -2474,7 +2512,7 @@ static void pf_ship_pass(void) {
         pf_open_mapped(&g_pf.scan, g_pf.scan_path, key, pf_scan_rec, NULL);
         pf_unseal(&g_pf.scan);
         __atomic_store_n(&g_pf.scanning, 1, __ATOMIC_RELAXED);
-        int rc = ship_walk(&sink, &g_pf.progress, g_settings.prepare_shaders == 2);
+        int rc = ship_walk(&sink, &g_pf.progress, g_settings.prepare_shaders == 2, g_ounce);
         __atomic_store_n(&g_pf.scanning, 0, __ATOMIC_RELAXED);
         pf_close(&g_pf.scan);
         LOG("vulkan: the game's own shaders: %u translated new, %u in %s, in %llu ms%s\n",

@@ -16,6 +16,7 @@
 int shipped_kind(const u8* head, size_t n) {
     if (n < 4) return SHIPPED_SKIP;
     if (!memcmp(head, "Yaz0", 4)) return SHIPPED_YAZ0;
+    if (snx_ld_le32(head) == 0xFD2FB528u) return SHIPPED_ZSTD; /* a zstd frame's magic */
     /* BNSH, BFSHA, agl's SHARCB, SARC, a program's own wrapper or a bare NVN file */
     if (!memcmp(head, "BNSH", 4) || !memcmp(head, "FSHA", 4) || !memcmp(head, "BAHS", 4) || !memcmp(head, "SARC", 4) ||
         snx_ld_le32(head) == NVN_WRAP || snx_ld_le32(head) == NVN_FILE)
@@ -37,6 +38,13 @@ int shipped_name_skips(const char* name) {
     for (size_t k = 0; k < sizeof ends / sizeof *ends; k++)
         if (ends_with(name, ends[k])) return 1;
     return 0;
+}
+int shipped_name_ounce(const char* name) {
+    static const char* const zs[] = {".bfsha.zs", ".bnsh.zs", ".sharcb.zs", ".sarc.zs", ".genvb.zs"};
+    for (size_t k = 0; k < sizeof zs / sizeof *zs; k++)
+        if (ends_with(name, zs[k])) return 1;
+    const char* last = strrchr(name, '/');
+    return ends_with(name, ".bin") && strstr(last ? last : name, "shader") ? 2 : 0;
 }
 size_t shipped_yaz0_size(const u8* in, size_t n) {
     return n >= 16 && !memcmp(in, "Yaz0", 4) ? (size_t)snx_ld_be32(in + 4) : 0;
@@ -139,15 +147,20 @@ int shipped_sarc_wants(const u8* d, size_t n) {
 }
 
 const char* shipped_stage_name(int stage) {
+    if (stage == SHIPPED_OUNCE_VERTEX_A)
+        stage = SHIPPED_VERTEX_A;
+    else if (stage != SHIPPED_VERTEX_A)
+        stage &= ~SHIPPED_OUNCE;
     static const char* const names[] = {
         "vertex", "tessellation control", "tessellation evaluation", "geometry", "fragment", "compute"};
     return stage == SHIPPED_VERTEX_A                                   ? "paired vertex"
            : stage >= 0 && stage < (int)(sizeof names / sizeof *names) ? names[stage]
                                                                        : "?";
 }
-int shipped_sph_stage(const u8* sph) {
+/* an SPH's stage, of the version given */
+static int sph_stage(const u8* sph, u32 want) {
     u32 w = snx_ld_le32(sph), type = w & 0x1Fu, version = w >> 5 & 0x1Fu, shader = w >> 10 & 0xFu;
-    if (version != 3) return -1;
+    if (version != want) return -1;
     if (type == 2) return shader == 5 ? ST_FS : -1;
     if (type != 1) return -1;
     /* type 0 a VertexA, as one game's runs showed: each of its programs of that type has a VertexB in a 256-byte slot
@@ -206,6 +219,13 @@ static Consts* all_consts(const u8* d, size_t n, size_t* count) {
     if (*count) qsort(c, *count, sizeof *c, snx_compare_u64);
     return c;
 }
+int shipped_sph_stage(const u8* sph) { return sph_stage(sph, 3); }
+int shipped_ounce_stage(const u8* sph) {
+    int stage = sph_stage(sph, 4);
+    for (u32 i = 0x50; stage >= 0 && i < 0x80; i++) /* the 48 bytes past Maxwell's layout are zero */
+        if (sph[i]) return -1;
+    return stage;
+}
 u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
     u32 handed = 0;
     if (n >= NVN_FILE_SPH + SPH_BYTES && snx_ld_le32(d) == NVN_FILE) { /* one program, after its control section */
@@ -228,5 +248,37 @@ u32 shipped_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
         handed++;
     }
     free(consts);
+    return handed;
+}
+
+/* an SM86 instruction's two words as they look: its control bits (the high word's 41-60, stall counts, barriers and
+   reuse, of which every instruction sets some) not all zero and its top bits clear. The SPH's last 48 bytes, zeros,
+   are none, so the walk back stops at the end of the header */
+static int insn_like(const u8* p) {
+    u64 hi = snx_ld_le64(p + 8);
+    return hi >> 61 == 0 && hi >> 41 != 0;
+}
+u32 shipped_ounce_programs(const u8* d, size_t n, ShippedEach each, void* ctx) {
+    u32 handed = 0;
+    const u8* last = NULL;
+    for (size_t at = 0; n >= 16 && at <= n - 16; at += 8) {
+        u64 lo = snx_ld_le64(d + at);
+        /* BRA to itself (-16, opcode 0x947), which ends every program after its EXIT */
+        if ((lo & 0xFFFu) != 0x947u || lo >> 32 != 0xFFFFFFF0u || !insn_like(d + at)) continue;
+        size_t s = at;
+        int stage = -1;
+        while (s >= 16 && insn_like(d + s - 16)) {
+            s -= 16;
+            if (s >= 0x80 && (stage = shipped_ounce_stage(d + s - 0x80)) != -1) break;
+        }
+        if (stage == -1) continue;
+        const u8* sph = d + s - 0x80;
+        if (sph == last) continue; /* another branch to itself in the same program */
+        last = sph;
+        if (each(ctx, sph, n - (size_t)(sph - d),
+                 stage == SHIPPED_VERTEX_A ? SHIPPED_OUNCE_VERTEX_A : stage | SHIPPED_OUNCE, NULL, 0))
+            return handed;
+        handed++;
+    }
     return handed;
 }

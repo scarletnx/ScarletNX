@@ -18,7 +18,7 @@ static int check_shader_read_windows(void) {
     CHECK(!mem_map(cpu, bytes, MS_NORMAL, PERM_RW));
     gmmu_map(gpu, cpu, bytes);
     u64* program = calloc(1, bytes);
-    u8 *actual = malloc(bytes), *full = malloc(bytes);
+    u8 *actual = malloc(SH_CODE), *full = malloc(bytes); /* vk_shader_read_code pads its whole window */
     CHECK(program && actual && full);
     vk_lock();
     for (u32 test = 0; test < 9; test++) {

@@ -53,7 +53,8 @@ extern volatile int g_quit; /* set to leave the main loop, which saves and exits
 void snx_program_end(void);
 extern int g_frames;        /* the frames shown so far, atomic: the presenting thread counts them */
 /* an Ounce game, as its NPDM tells (loader/ounce.h). main.c's npdm_layout sets it once at start, before anything
-   runs. The runtime JIT then decodes the extended CPU features (guest_jit.c) */
+   runs, with what follows from it: SM86 programs (g_shader_sm86) and the T239's GOB (g_gob_native). The runtime JIT
+   then decodes the extended CPU features (guest_jit.c) */
 extern int g_ounce;
 /* the crash handler's report (plat_posix.c, plat_win32.c): the faulting host pc, the address it touched (NULL when not
    a memory fault) and the signal, or the Windows exception code. Ends the process */

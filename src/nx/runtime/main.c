@@ -41,6 +41,8 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/gpu/shader/shader.h"
+#include "nx/gpu/texture/blocklinear.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/resources.h"
@@ -1217,7 +1219,9 @@ int snx_main(int argc, char** argv) {
     snx_ir_branch_profile(g_settings.ir_branch_profile);
 
     fs_init(keys, title_keys); /* the npdm is read through it, and mem_init's layout comes before */
+    if (!g_arm_mod && g_settings.memory_gb >= 12) mem_layout_large_heap();
     npdm_layout(); /* the address space type's layout, before mem_init sizes its blocks in it */
+    if (g_ounce) g_shader_sm86 = g_gob_native = 1; /* an Ounce game's programs are SM86, its GOBs the T239's */
     free(keys);
     free(title_keys);
     keys = title_keys = NULL;

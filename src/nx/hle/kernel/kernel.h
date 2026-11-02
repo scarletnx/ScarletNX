@@ -10,7 +10,7 @@
 
 /* the one application process's id, which IPC PID descriptors carry too */
 #define K_PROCESS_ID 0x51ull
-#define NCORES       4 /* guest CPU cores */
+#define NCORES       6 /* Ounce applications may use guest cores 0 through 5 */
 #define THREAD_MAX   96   /* the application's ThreadCountMax: creating one more answers SNX_RC_SVC_LIMIT_REACHED */
 #define H_MAX        1024 /* handles: the most the console's handle table holds */
 

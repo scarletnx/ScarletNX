@@ -1106,7 +1106,7 @@ snx_hookgen(snx-test-nvn-present-flip SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn
 add_test(NAME nvn_present_flip COMMAND snx-test-nvn-present-flip)
 # the NvRm sync conversions against the driver's sync layout: what they hand its code and take back
 add_executable(snx-test-nvn-nvrm-sync nvn_nvrm_sync.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-nvrm-sync 11)
 target_include_directories(snx-test-nvn-nvrm-sync PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-nvrm-sync PRIVATE m)
@@ -1124,7 +1124,8 @@ add_test(NAME nvn_queue_lifetime COMMAND snx-test-nvn-queue-lifetime)
 add_executable(snx-test-nvn-names nvn_names.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_cmd.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_object.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_queue.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tex.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_state.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/sm86_decode.c")
 snx_test_target(snx-test-nvn-names 11)
 target_include_directories(snx-test-nvn-names PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-names PRIVATE m)
@@ -1132,7 +1133,7 @@ snx_hookgen(snx-test-nvn-names SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.ho
 add_test(NAME nvn_names COMMAND snx-test-nvn-names)
 foreach(bad IN ITEMS
         unknown_type 2 "unknown type 'u128'"
-        stack_argument 2 "would be on the stack"
+        stack_buffer 2 "i is on the stack, which a buffer can't be"
         duplicate_symbol 4 "f is hooked on line 2 too"
         handler_mismatch 3 "h takes other arguments on line 2"
         argument_c 2 "'c' can't name an argument"
@@ -2631,7 +2632,8 @@ add_test(NAME astc_decode COMMAND snx-test-astc)
 # console's part list and layout, every part's zlib stream, its textures decoded by the CPU references against what
 # they were drawn from, its shapes' attributes and triangles, each file no bigger than the console's
 add_executable(snx-test-mii-model mii_model.c support/astc.c support/bcn.c
-               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c")
+               "${PROJECT_SOURCE_DIR}/src/common/utilities/mii_db.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c")
 snx_test_target(snx-test-mii-model 99)
 target_include_directories(snx-test-mii-model PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-mii-model PRIVATE snx_libdeflate) # mii_model.c deflates the parts, the test inflates
@@ -2830,7 +2832,7 @@ if(UNIX)
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/draw_state.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
         "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/mme.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/dma.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/blocklinear.c"
         support/dma_ref.c own_stub.c)
     snx_test_target(snx-test-gpu-park 23)
     target_link_libraries(snx-test-gpu-park PRIVATE scarletnx-common) # gpu.c says why a thread did not start
@@ -2846,6 +2848,7 @@ add_test(NAME shipped_shaders COMMAND snx-test-shipped-shaders)
 add_executable(snx-test-shipped-pass shipped_pass.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/shader/shipped.c")
 snx_test_target(snx-test-shipped-pass 99)
+target_link_libraries(snx-test-shipped-pass PRIVATE snx_zstd) # an Ounce game's .zs files
 include("${PROJECT_SOURCE_DIR}/cmake/ship_walk.cmake")
 snx_ship_walk("${PROJECT_SOURCE_DIR}/src/nx/gpu/shipped_pass.c")
 add_test(NAME shipped_pass COMMAND snx-test-shipped-pass)
@@ -3148,6 +3151,21 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-shader-structure PRIVATE m)
     endif()
     add_test(NAME shader_structure COMMAND snx-test-shader-structure)
+    # the SM86 frontend (gpu/shader/sm86.h): the decoder on words made by NAK's encoding rules, the search for
+    # programs, and small translations, which spirv-val checks when it is on PATH (shader_sm86_test.py, which passes it
+    # each module as an argument: cmd.exe refused the quoted command system() gave it)
+    add_executable(snx-test-shader-sm86 shader_sm86.c)
+    snx_test_target(snx-test-shader-sm86 23)
+    target_link_libraries(snx-test-shader-sm86 PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-sm86 PRIVATE m)
+    endif()
+    if(SNX_SPIRV_VAL AND Python3_Interpreter_FOUND)
+        add_test(NAME shader_sm86 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shader_sm86_test.py"
+                 --test $<TARGET_FILE:snx-test-shader-sm86> --validator "${SNX_SPIRV_VAL}")
+    else()
+        add_test(NAME shader_sm86 COMMAND snx-test-shader-sm86 "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     if(NOT CMAKE_CROSSCOMPILING)
         # the SVC registers tools/svcgen lays out from src/nx/hle/svc/hos.svc, in both ABIs
         include("${PROJECT_SOURCE_DIR}/cmake/svcgen.cmake")
