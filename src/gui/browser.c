@@ -34,6 +34,12 @@ bool gui_is_dump(const char* name) {
     return suffix(name, ".nro") || suffix(name, ".xci") || suffix(name, ".nsp") || suffix(name, ".dxci") ||
            suffix(name, ".dnsp");
 }
+bool gui_is_dump_folder(const char* path) {
+    char* npdm = path ? snx_path_join(path, "exefs/main.npdm") : NULL; /* a heading's row has none */
+    bool found = npdm && snx_is_file(npdm);
+    free(npdm);
+    return found;
+}
 bool gui_game_folder(const char* path) {
     char *folder = snx_dirname(path), *name, data[SNX_PATH_SIZE];
     const char *own = path + strlen(path), *leaf = folder + strlen(folder);
@@ -102,6 +108,13 @@ static bool playable(const char* directory, char* name, int kinds) {
         listed = path && snx_is_file(path);
         free(path);
         return listed;
+    }
+    /* a folder with an extracted dump, but not a game's <name>_data, which an older version's games/ holds */
+    if ((kinds & GUI_GAMES_DUMP) && !suffix(name, "_data")) {
+        path = snx_path_join(directory, name);
+        listed = gui_is_dump_folder(path);
+        free(path);
+        if (listed) return true;
     }
     if (!(kinds & GUI_GAMES_RUN)) return false;
 #if defined(__ANDROID__) || defined(SNX_IOS)
@@ -522,7 +535,7 @@ bool gui_games_add_deep(GuiGames* games, const char* directory, int kinds, int d
 bool gui_games_heading(const GuiGames* games, size_t i) { return i < games->count && !games->paths[i]; }
 static bool dump_entry(const GuiGames* games, size_t i) {
     return gui_is_dump(games->names[i]) || gui_is_cia(games->names[i]) || gui_is_vpk(games->names[i]) ||
-           gui_is_gba(games->names[i]);
+           gui_is_gba(games->names[i]) || gui_is_dump_folder(games->paths[i]);
 }
 bool gui_games_group(GuiGames* games, const char* ready, const char* dumps,
                      bool (*made)(const char* path, const void* user), const void* user) {

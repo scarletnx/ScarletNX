@@ -2273,6 +2273,10 @@ msgid "No home folder"
 msgstr ""
 
 #: src/gui/main.c
+msgid "F: pick a dump's folder (its exefs and romfs, as a Switch 2 dump comes)"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr ""
 

@@ -344,7 +344,7 @@ static int drop_extraction(const char* data, const char* source, int recorded, c
     char *part, *work, *exefs;
     size_t i, size;
     int rc = 0, extracted;
-    if (!recorded) return 0; /* made from no dump: an NRO, an ExeFS folder */
+    if (!recorded || snx_is_dir(source)) return 0; /* made from no dump file: an NRO, an ExeFS folder */
     if (!snx_is_file(source)) {
         exefs = snx_path_join(data, "exefs");
         extracted = snx_is_dir(exefs);
@@ -690,6 +690,26 @@ static int play_dump_at(const char* input, const SnxPaths* paths, unsigned flags
         source = snx_game_source(folder, name, NULL);
         owner = game_id(name);
         goto addon;
+    }
+    if (!prepared && !nro && !out && dump && snx_is_dir(dump)) {
+        /* a dump extracted already, its ExeFS and RomFS in one folder (a Switch 2 dump comes so): made from it as -r
+           makes it, in the folder of its title ID, its RomFS copied into the game's data folder (not into tmpfs) */
+        char text[17];
+        if (snx_load_npdm(dump, &npdm, error, sizeof error)) {
+            snx_error("%s is no dump: %s", input, error);
+            goto done;
+        }
+        name = snx_title_text(npdm.title_id, text) ? snx_strdup(text) : snx_dump_name(input);
+        folder = game_folder(outdir, paths->repo, name);
+        games = folder ? snx_dirname(folder) : NULL;
+        if (!games) goto done;
+        tmpfs = 0;
+        base = snx_path_join(folder, name);
+        source = snx_strdup(dump);
+        named = named_otherwise(source, name);
+        /* recorded as a file dump's is: the menu then lists the game made from it, not the folder again */
+        if (snx_mkdirs(folder) || snx_record_source(folder, name, dump)) goto done;
+        goto made;
     }
     if (!prepared && !nro && !out) {
         SnxU64 title, version;

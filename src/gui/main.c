@@ -5215,7 +5215,8 @@ static void states_focus(App* app) {
     const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
     if (r && r->driver == GUI_SWITCH && r->prepared)
         states_open(app, r->path, r->name);
-    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
+    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]) &&
+             !gui_is_dump_folder(app->games.paths[index]))
         states_open(app, app->games.paths[index], app->games.shown[index]);
     else
         snprintf(app->message, sizeof app->message, "%s",
@@ -6335,7 +6336,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                  gui_is_cia(name)    ? snx_tr("3DS game, opened with scarletnx-3ds")
                  : gui_is_vpk(name)  ? snx_tr("Vita VPK, opened with scarletnx-vita")
                  : gui_is_gba(name)  ? snx_tr("GBA ROM, played with scarletnx-agb")
-                 : gui_is_dump(name) ? snx_tr("A dump, prepared when it runs")
+                 : gui_is_dump(name) || gui_is_dump_folder(games->paths[i]) ? snx_tr("A dump, prepared when it runs")
                                      /* Games' own rows by what list_games read, another list's from its folder */
                                      : ready_kind(games == &app->games ? app->games_drivers[i] : row_driver(games, i)));
     n = strlen(kind);
@@ -6597,6 +6598,12 @@ static void draw_pick(App* app) {
                  app->keys_path ? app->keys_path : snx_tr("No home folder"));
         y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
     }
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+    if (!keys && app->menu.active == GUI_SWITCH)
+        y += wrap_in(app, r, r.x, y, snx_tr("F: pick a dump's folder (its exefs and romfs, as a Switch 2 dump comes)"), 1,
+                     rgb(app->theme.soft)) *
+             cell_h(app);
+#endif
     if (keys && keys_left(app)) { /* what the last try did, and when the menu comes back */
         GuiRgb said = app->keys_ok ? app->theme.focus : app->theme.failure;
         y += cell_h(app);
@@ -7817,11 +7824,12 @@ static bool games_game_focus(const App* app, bool* mods) {
     if (row < head && (int)row < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
         if (r->driver == GUI_LINUX) return false;
-        *mods = r->driver == GUI_SWITCH && !gui_is_dump(r->path);
+        *mods = r->driver == GUI_SWITCH && !gui_is_dump(r->path) && !gui_is_dump_folder(r->path);
         return true;
     }
     if (row < head || index >= app->games.count || gui_games_heading(&app->games, index)) return false;
-    *mods = !gui_is_dump(app->games.names[index]) && app->games_drivers[index] == GUI_SWITCH;
+    *mods = !gui_is_dump(app->games.names[index]) && !gui_is_dump_folder(app->games.paths[index]) &&
+            app->games_drivers[index] == GUI_SWITCH;
     return true;
 }
 /* Games' focused row one that plays, as Enter plays it: a recent run's (a Linux program's too) or a listed game's; a
@@ -14035,7 +14043,8 @@ static void open_game(App* app, size_t index, bool play) {
     }
     const char* name = app->games.names[index];
     app->menu.selected = app->games_drivers[index];
-    launch(app, snx_absolute(app->games.paths[index]), !gui_is_dump(name) && !package(name));
+    launch(app, snx_absolute(app->games.paths[index]),
+           !gui_is_dump(name) && !gui_is_dump_folder(app->games.paths[index]) && !package(name));
     if (!app->menu.running) app->menu.selected = item;
 }
 /* R on Games: the focused game recompiled where it is, or its dump or package made again, by its console's driver,
@@ -16344,6 +16353,14 @@ static void event_take(App* app, const SDL_Event* e) {
         SDL_free(clipboard);
         return;
     }
+#if !defined(SDL_PLATFORM_ANDROID) && !defined(SDL_PLATFORM_IOS)
+    /* F on the Switch's screen: an extracted dump's folder in place of a file, which the picker's answer plays */
+    if (e->key.key == SDLK_F && !e->key.repeat && app->menu.view == GUI_LOAD_DROP && app->menu.active == GUI_SWITCH) {
+        if (!app->picked) app->picked = SDL_RegisterEvents(1);
+        if (app->picked) SDL_ShowOpenFolderDialog(picker_done, &app->picked, app->window, NULL, false);
+        return;
+    }
+#endif
     if (e->key.key == SDLK_TAB && !e->key.repeat) {
         screen_tab(app, e->key.mod & SDL_KMOD_SHIFT ? -1 : 1);
         return;

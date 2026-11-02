@@ -50,6 +50,8 @@ void gui_games_free(GuiGames* games);
 uint64_t gui_tree_size(const char* path, const int* stop);
 /* An NRO, XCI or NSP (or a decrypted one) by its name: a dump the driver prepares, not a game ready to run */
 bool gui_is_dump(const char* name);
+/* A folder with an extracted dump's ExeFS (exefs/main.npdm), as a Switch 2 dump comes: also a dump the driver prepares */
+bool gui_is_dump_folder(const char* path);
 /* A game's program in a folder of its own beside its data (<name>/<name>, .exe on Windows, and <name>/<name>_data/),
    or an update's or a DLC's beside it (<name>/<name>_<its title ID>), as the recompile lays games out: the driver
    plays it, and recompiles it first when another build made it. A game an older version laid out beside the others

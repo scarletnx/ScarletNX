@@ -67,6 +67,12 @@ This forces recompilation, even if a cached executable exists, and extracts noth
 given. `scarletnx -r --outdir games -- "Game.xci"` recompiles straight from a dump the same way, reading its ExeFS in
 place. `-rx` (`-r -x` on Windows) prepares it extracted, as `-r --extract-container` does. `-x` alone only extracts.
 
+A dump that comes extracted already, a folder with its `exefs/` and `romfs/` (as a Switch 2 dump does), plays the same
+way: `./build/scarletnx DumpFolder` makes the game from it in `recompiled/<id>/`, its RomFS copied into
+`recompiled/<id>/<id>_data/`, and records the folder as `source=`. `--tmpfs` does not apply to it. The launcher lists
+such a folder in `dumps/` and its libraries, and F on the Switch screen picks one. A game whose dump has no
+`control.nacp` and whose NPDM has no name of its own is shown by its title ID.
+
 A game made already plays the same way, named by its folder or its program: `./build/scarletnx recompiled/<id>` (or
 `recompiled/<id>/<id>`) runs it, recompiled first where it is when a build of another ABI made it, from what its `<id>_data/`
 keeps (the ExeFS or the NRO: no dump, keys or extraction), or from the dump its `.ini` records when it was
