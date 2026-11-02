@@ -193,6 +193,17 @@ static void vkr_method_barrier(int kind)
 		return;
 
 	vk_lock();
+	if ((kind == 6 || kind == 7) && g_settings.nvn_storage_ordering == 2) {
+		vk_buf_order_request(kind == 7);
+		vk_unlock();
+		return;
+	}
+	/* Surface and copy consumers retain their own dependencies. NVN's points need an additional buffer
+	 * barrier only after a shader write or a pending read that a later in-place writer could overwrite. */
+	if ((kind == 6 || kind == 7) && !vk_buf_order_pending(kind == 7)) {
+		vk_unlock();
+		return;
+	}
 	if (kind == 5) {
 		/* Content caches keep their modules. Only address shortcuts expire. */
 		g_vk.shader_generation++;
@@ -202,6 +213,7 @@ static void vkr_method_barrier(int kind)
 	vk_render_end();
 	/* CPU-visible releases wait for completion in the release path. */
 	rec_CmdPipelineBarrier2(vk_cmd(), &di);
+	vk_buf_ordered();
 	vk_unlock();
 }
 static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
