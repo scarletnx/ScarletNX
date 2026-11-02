@@ -37,6 +37,20 @@ the machine its ELF header names.
 
 ## What differs from the other hosts
 
+- **The module's GOT is the ABI's.** n64 code reaches every function and global through the GOT, from gp, which each
+  function computes from its own address (`%hi(%neg(%gp_rel(f)))`). A game's units call more functions than a 16-bit
+  offset from gp reaches (8190 slots), so the recompiler builds for 32-bit GOT offsets (`+xgot`, `new_ir` in
+  `src/common/cpu/recompiler/llvm/ir.c`). The module's linker (`link_elf.c`, the relocations in `elf_object.c`) lays
+  the GOT out as glibc's loader relocates it: two reserved slots, the 64 KiB pages that `%got_page` loads (within
+  16 bits of gp, so they cover 512 MiB of a module), then the symbols' slots, all local (`DT_MIPS_LOCAL_GOTNO`), so
+  the loader adds the module's base to each. The only dynamic relocations are addresses in data, `R_MIPS_REL32` with
+  `R_MIPS_64`, and the module has no `DT_RELACOUNT`, as glibc's MIPS loader does nothing for the relocations it counts.
+- **Guest tail calls need LLVM's `-mips-tail-calls`**, which `snx_ir_init` sets on a MIPS64 host: without it LLVM's
+  MIPS backend makes no call a jump, and a `musttail` one is a fatal error. It jumps to a pointer, or to a function it
+  may take for the module's own, so every callee of a `musttail` call is made hidden (`mips_tail_callees` in
+  `ir.c`), as every function a module calls is linked into it.
+- **No runtime JIT.** The JIT loader's machines are x86-64, AArch64 and PowerPC64 (`HOST_MACHINE` in `code_loader.c`),
+  so MIPS64 runs only the code the AOT recompiler found, as RISC-V and LoongArch do.
 - **Big-endian `mips64` converts guest values** as big-endian PowerPC64 does ([Big-endian hosts](./PPC64.md#big-endian-hosts)),
   through the same code: what decides is the byte order, never the architecture.
 - **Kernels come with 4, 16 or 64 KiB pages.** jemalloc is built for 64 KiB (`cmake/jemalloc.cmake`), and the
