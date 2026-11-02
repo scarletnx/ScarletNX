@@ -105,9 +105,19 @@ PAudio* plat_audio_open(u32 rate, u32 channels) {
         return NULL;
     }
     a->stream = stream;
-    const char* name = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(stream));
-    LOG("audio: SDL %s output opened on %s (%u Hz, %u channels, signed 16-bit PCM)\n", SDL_GetCurrentAudioDriver(),
-        name ? name : "the system default", rate, channels);
+    /* the device by its format, never its name: the system names a headset after its owner ("<name>'s headphones"), and
+       players attach the log to public reports */
+    SDL_AudioSpec device;
+    int frames = 0;
+    if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device, &frames))
+        LOG("audio: SDL %s output opened on the system default, which plays %s at %d Hz, %d channels, %d-frame "
+            "buffer; the game gives %u Hz, %u channels, signed 16-bit PCM\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetAudioFormatName(device.format), device.freq, device.channels, frames,
+            rate, channels);
+    else
+        LOG("audio: SDL %s output opened on the system default, whose format SDL does not give (%s); the game gives "
+            "%u Hz, %u channels, signed 16-bit PCM\n",
+            SDL_GetCurrentAudioDriver(), SDL_GetError(), rate, channels);
     return a;
 }
 
