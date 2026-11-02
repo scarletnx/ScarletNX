@@ -61,7 +61,11 @@ typedef struct {
 
 static const TicFormat nvn_format(u32 format) {
     switch (format) {
-#define NVN_TIC_FORMAT(i, p0, p1, p2, p3, p4, name) case NVN_FORMAT_##name: { TicFormat f = {p0, p1, p2, p3}; return f; }
+#define NVN_TIC_FORMAT(i, p0, p1, p2, p3, p4, name)                                                                    \
+    case NVN_FORMAT_##name: {                                                                                          \
+        TicFormat f = {p0, p1, p2, p3, p4};                                                                            \
+        return f;                                                                                                      \
+    }
 #include "nx/gpu/nvn/nvn_tic_format.inc"
     default: fatal("invalid format %u", format);
     }
