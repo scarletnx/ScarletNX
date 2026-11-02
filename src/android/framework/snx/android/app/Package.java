@@ -143,7 +143,13 @@ public final class Package {
         String root = snx.android.Main.dataRoot().getPath();
         application.dataDir = root;
         application.deviceProtectedDataDir = root + "/de";
-        application.nativeLibraryDir = root + "/lib";
+        application.nativeLibraryDir = Apk.libraryDir();
+        String[] splits = Apk.splitPaths();
+        if (splits.length > 0) {
+            application.splitSourceDirs = application.splitPublicSourceDirs = splits;
+            application.splitNames = Apk.splitNames();
+            info.splitNames = application.splitNames;
+        }
         application.uid = android.os.Process.myUid();
         info.applicationInfo = application;
         info.activities = activities.toArray(new ActivityInfo[0]);

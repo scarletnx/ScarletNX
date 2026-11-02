@@ -187,6 +187,45 @@ unsigned char* snx_zip_read(SnxZip* zip, uint32_t index, size_t* size, char* err
     *size = m->size;
     return out;
 }
+bool snx_zip_extract(SnxZip* zip, uint32_t index, const char* path, char* error, size_t error_size) {
+    const Member* m = &zip->members[index];
+    const char* name = zip->names + m->name;
+    if (m->method != 0) {
+        size_t size;
+        unsigned char* data = snx_zip_read(zip, index, &size, error, error_size);
+        if (!data) return false;
+        bool ok = !snx_write_file(path, data, size);
+        free(data);
+        if (!ok) snprintf(error, error_size, "cannot write %s", path);
+        return ok;
+    }
+    unsigned char local[30];
+    if (m->packed != m->size || m->packed == 0xffffffffu || !read_at(zip->file, m->local, local, sizeof local) ||
+        snx_ld_le32(local) != LOCAL_SIGNATURE) {
+        snprintf(error, error_size, "%s: bad local header", name);
+        return false;
+    }
+    uint64_t data = (uint64_t)m->local + 30 + snx_ld_le16(local + 26) + snx_ld_le16(local + 28);
+    FILE* out = snx_fopen(path, "wb");
+    enum { PIECE = 1 << 20 };
+    unsigned char* buffer = malloc(PIECE);
+    uint32_t crc = 0;
+    bool ok = out && buffer && !snx_seek(zip->file, data);
+    for (uint32_t left = m->size; ok && left;) {
+        size_t n = left < PIECE ? left : PIECE;
+        ok = fread(buffer, 1, n, zip->file) == n && fwrite(buffer, 1, n, out) == n;
+        crc = libdeflate_crc32(crc, buffer, n);
+        left -= (uint32_t)n;
+    }
+    free(buffer);
+    if (out && fclose(out)) ok = false;
+    if (ok && crc != m->crc) ok = false;
+    if (!ok) {
+        snprintf(error, error_size, "%s: cannot copy it to %s, or its CRC doesn't match", name, path);
+        remove(path);
+    }
+    return ok;
+}
 unsigned char* snx_zip_member(const char* path, const char* name, size_t* size, char* error, size_t error_size) {
     SnxZip* zip = snx_zip_open(path, error, error_size);
     if (!zip) return NULL;

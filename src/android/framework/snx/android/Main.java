@@ -20,12 +20,12 @@ public final class Main {
 
     /**
      * The app's folder on the host, where its data, cache and storage folders are: snx.android.data, which the
-     * runtime sets, or android/PACKAGE in ScarletNX's data folder.
+     * runtime sets, or android/data/PACKAGE in ScarletNX's data folder.
      */
     public static java.io.File dataRoot() {
         String named = System.getProperty("snx.android.data");
         java.io.File root = named != null ? new java.io.File(named)
-            : new java.io.File(System.getProperty("user.home"), ".local/share/scarletnx/android/" + Package.get().name());
+            : new java.io.File(System.getProperty("user.home"), ".local/share/scarletnx/android/data/" + Package.get().name());
         root.mkdirs();
         return root;
     }
