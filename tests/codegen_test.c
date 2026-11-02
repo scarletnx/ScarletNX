@@ -8,6 +8,7 @@
 #include "common/cpu/recompiler/codegen.h"
 #include "nx/loader/codegen_view.h"
 #include <fenv.h>
+#include <llvm/Config/llvm-config.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -813,8 +814,14 @@ static void clean_test(void) {
     if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
         index = llvm_steps_add_function(&steps, &codegen, function);
         left = left_over(steps.fns[index], 0);
+#if LLVM_VERSION_MAJOR >= 20
         if (left) fprintf(stderr, "clean: %d allocas left in the emitted function\n", left);
         check(left == 0, "the function is emitted with its registers' slots made SSA values");
+#else /* no LLVMRunPassesOnFunction: the slots are the unit pipeline's to make SSA values */
+        printf("clean: LLVM %s, %d allocas left in the emitted function for its unit's pipeline\n", LLVM_VERSION_STRING,
+               left);
+        check(left > 0, "before LLVM 20 the function is emitted as it was promoted");
+#endif
         left = left_over(steps.fns[index], 1);
         if (left) fprintf(stderr, "clean: %d named blocks and instructions in the emitted function\n", left);
         check(left == 0, "the emitted function keeps no local name, its bitcode the same in every run");
