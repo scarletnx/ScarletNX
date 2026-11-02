@@ -118,6 +118,8 @@ if(APPLE)
     target_link_libraries(scarletnx-gui PUBLIC snx_apple_frontend "-framework Foundation" "-framework Metal")
     if(IOS)
         target_link_libraries(scarletnx-gui PUBLIC "-framework UIKit") # the battery state notification
+        # the reports of the system on the app's runs (apple.m's metrics_start)
+        target_link_libraries(scarletnx-gui PUBLIC "-framework MetricKit")
     endif()
     # not Swift's, which linking a Swift library made CMake pick: the archive was made by swiftc, given the C flags.
     # C++: the menu alone (no Switch runtime) is a program, and links the splash's C++ (lunasvg)

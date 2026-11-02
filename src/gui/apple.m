@@ -21,6 +21,7 @@
 #import <Metal/Metal.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
+#import <MetricKit/MetricKit.h>
 #endif
 
 /* dist/apple/Frontend.swift. window is the SDL window's UIWindow or NSWindow; done gets the path picked, NULL for none */
@@ -93,6 +94,83 @@ static void entitlement_lines(void) {
     fprintf(stderr, "entitlements in the provisioning profile (%lu bytes):\n", (unsigned long)data.length);
     for (i = 0; i < sizeof keys / sizeof *keys; ++i)
         fprintf(stderr, "  %s: %s\n", keys[i], memmem(data.bytes, data.length, keys[i], strlen(keys[i])) ? "yes" : "no");
+}
+
+/* MetricKit's payloads: what the system saw of the app's runs, a crash, a hang or an exit for memory among them, which
+   the app itself cannot log. Each goes as JSON into logs/metrickit-YYYY-MM-DD_HHMMSS.json, named by the end of the time
+   it covers, with -2, -3 and on for a different payload of the same name. A payload that a file already holds (iOS
+   gives the past ones again at each start) is not written again. A line in the console log names the file and what
+   it holds. The system calls the subscriber on a queue of its own, and it can give the payloads of a run at a later
+   start */
+static NSURL* metrics_folder;
+/* the file of json for the payload that ends at end, written when it is not there yet: its name, nil when it cannot be
+   written */
+static NSString* metrics_write(NSData* json, NSDate* end) {
+    NSDateFormatter* format = [[NSDateFormatter alloc] init];
+    format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    format.dateFormat = @"yyyy-MM-dd_HHmmss";
+    NSString* stem = [@"metrickit-" stringByAppendingString:[format stringFromDate:end ? end : [NSDate date]]];
+    for (int n = 1; json && metrics_folder && n < 100; n++) {
+        NSString* name = n == 1 ? [stem stringByAppendingString:@".json"]
+                                : [stem stringByAppendingFormat:@"-%d.json", n];
+        NSURL* file = [metrics_folder URLByAppendingPathComponent:name];
+        NSData* there = [NSData dataWithContentsOfURL:file];
+        if ([there isEqualToData:json]) return name;
+        if (!there) return [json writeToURL:file atomically:YES] ? name : nil;
+    }
+    return nil;
+}
+/* ", N type" for N diagnostics of type, nothing for none */
+static void metrics_count(NSMutableString* line, NSArray* diagnostics, const char* type) {
+    if (diagnostics.count) [line appendFormat:@", %lu %s", (unsigned long)diagnostics.count, type];
+}
+static void metrics_diagnostic(MXDiagnosticPayload* payload, const char* when) {
+    NSString* name = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    NSMutableString* line = [NSMutableString stringWithFormat:@"metrickit: %s diagnostic payload %@", when,
+                                                              name ? name : @"(not written)"];
+    metrics_count(line, payload.crashDiagnostics, "crash");
+    metrics_count(line, payload.hangDiagnostics, "hang");
+    metrics_count(line, payload.cpuExceptionDiagnostics, "CPU exception");
+    metrics_count(line, payload.diskWriteExceptionDiagnostics, "disk write exception");
+    metrics_count(line, payload.appLaunchDiagnostics, "app launch");
+    fprintf(stderr, "%s\n", line.UTF8String);
+}
+/* MetricKit has no diagnostic for an exit for memory: its count is in a metric payload's exit metrics */
+static void metrics_metric(MXMetricPayload* payload, const char* when) {
+    NSString* name = metrics_write(payload.JSONRepresentation, payload.timeStampEnd);
+    MXAppExitMetric* exits = payload.applicationExitMetrics;
+    fprintf(stderr,
+            "metrickit: %s metric payload %s, memory exit: %lu at the memory limit in the foreground, %lu at the "
+            "memory limit and %lu for memory pressure in the background\n",
+            when, name ? name.UTF8String : "(not written)",
+            (unsigned long)exits.foregroundExitData.cumulativeMemoryResourceLimitExitCount,
+            (unsigned long)exits.backgroundExitData.cumulativeMemoryResourceLimitExitCount,
+            (unsigned long)exits.backgroundExitData.cumulativeMemoryPressureExitCount);
+}
+@interface SnxMetrics : NSObject <MXMetricManagerSubscriber>
+@end
+@implementation SnxMetrics
+- (void)didReceiveMetricPayloads:(NSArray<MXMetricPayload*>*)payloads {
+    for (MXMetricPayload* payload in payloads) metrics_metric(payload, "new");
+}
+- (void)didReceiveDiagnosticPayloads:(NSArray<MXDiagnosticPayload*>*)payloads {
+    for (MXDiagnosticPayload* payload in payloads) metrics_diagnostic(payload, "new");
+}
+@end
+/* the subscriber, kept for the whole process (a static reference, so that the metric manager need not keep it); and
+   the payloads that the system gave before this start */
+static void metrics_start(NSURL* logs) {
+    static SnxMetrics* subscriber;
+    MXMetricManager* manager = MXMetricManager.sharedManager;
+    metrics_folder = logs;
+    subscriber = [[SnxMetrics alloc] init];
+    [manager addSubscriber:subscriber];
+    NSArray<MXDiagnosticPayload*>* diagnostics = manager.pastDiagnosticPayloads;
+    NSArray<MXMetricPayload*>* metrics = manager.pastPayloads;
+    fprintf(stderr, "metrickit: subscribed, %lu past diagnostic and %lu past metric payloads\n",
+            (unsigned long)diagnostics.count, (unsigned long)metrics.count);
+    for (MXDiagnosticPayload* payload in diagnostics) metrics_diagnostic(payload, "past");
+    for (MXMetricPayload* payload in metrics) metrics_metric(payload, "past");
 }
 #endif
 
@@ -179,6 +257,7 @@ void gui_apple_log_start(void) {
         entitlement_lines();
         fprintf(stderr, "app: %s\n", NSBundle.mainBundle.bundleIdentifier.UTF8String);
         fprintf(stderr, "documents: %s\n", documents.fileSystemRepresentation);
+        if (logs) metrics_start(logs);
     }
 #endif
 }
