@@ -1039,10 +1039,11 @@ if(TARGET OpenSSL::Crypto)
     set_tests_properties(ldn_lan ldn_service PROPERTIES RESOURCE_LOCK ldn_port)
 endif()
 
-# the Eden room of ldn=room (room.c): room='s address, users/online.ini's password, what stops the game before joining
+# the Eden room of ldn=room (room.c): room='s address, users/online.ini's password, what stops the game before joining,
+# and the stop when the room refuses it
 add_executable(snx-test-room-service room_service.c)
 snx_test_target(snx-test-room-service 23)
-target_link_libraries(snx-test-room-service PRIVATE scarletnx-ldn scarletnx-common)
+target_link_libraries(snx-test-room-service PRIVATE scarletnx-ldn scarletnx-common snx-test-fake-room)
 add_test(NAME room_service COMMAND snx-test-room-service)
 
 # the launcher's HTTPS client (common/network/https.c) against HTTP and TLS servers in the test

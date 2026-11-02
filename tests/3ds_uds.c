@@ -14,6 +14,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #define BUFFER  0x300000u
 #define NET     0x300900u
 #define DATA    0x300b00u
@@ -59,6 +63,34 @@ static void env(const char* key, const char* value) {
     assert(!setenv(key, value, 1));
 #endif
 }
+/* the init request, which joins the relay: the 3DS runtime says so on stderr, its log, which players attach to public
+   reports, so the nickname is never in it, nor in what the members already in say of the join. Read where fd 2 can be
+   swapped for a file */
+static void init_unnamed(SnxCtrProcess* p, uint32_t handle, const uint32_t* init, const char* nickname) {
+#ifndef _WIN32
+    static const char path[] = "3ds_uds_join.log";
+    char said[4096];
+    fflush(stderr);
+    int saved = dup(2), fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    assert(saved >= 0 && fd >= 0 && dup2(fd, 2) == 2);
+    close(fd);
+    request(p, handle, init, 15);
+    fflush(stderr);
+    assert(dup2(saved, 2) == 2);
+    close(saved);
+    FILE* f = fopen(path, "rb");
+    assert(f);
+    size_t n = fread(said, 1, sizeof said - 1, f);
+    fclose(f);
+    remove(path);
+    said[n] = 0;
+    fputs(said, stderr); /* where it would have gone */
+    assert(strstr(said, "3ds uds: joined the relay as ") && !strstr(said, nickname));
+#else
+    (void)nickname;
+    request(p, handle, init, 15);
+#endif
+}
 static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
     uint8_t code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {BUFFER, 1, 4096}},
@@ -78,7 +110,7 @@ static SnxCtrProcess* process(uint32_t* handle, const char* nickname) {
     init[12] = 0x400;
     init[14] = shared;
     env("SNX_3DS_NICKNAME", nickname);
-    request(p, *handle, init, 15);
+    init_unnamed(p, *handle, init, nickname);
     assert(ctr_word(p, CTR_COMMAND) == 0x1b0042);
     assert(ctr_word(p, CTR_COMMAND + 12));
     return p;

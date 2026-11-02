@@ -509,7 +509,8 @@ static int room_open(SnxCtrProcess* p) {
         snx_socket_setsockopt(u->socket, SNX_SOL_SOCKET, SNX_SO_BROADCAST, &enabled, 4) ||
         snx_socket_bind(u->socket, &a))
         return 0;
-    fprintf(stderr, "3ds uds: joined relay as %s, %u.%u.%u.%u\n", nickname, u->ip[0], u->ip[1], u->ip[2], u->ip[3]);
+    /* by its address in the room: the nickname can name the player, and players attach the log to public reports */
+    fprintf(stderr, "3ds uds: joined the relay as %u.%u.%u.%u\n", u->ip[0], u->ip[1], u->ip[2], u->ip[3]);
     return 1;
 }
 static int passphrase(SnxCtrIpc* c, unsigned id, uint32_t size, uint8_t hash[32]) {
