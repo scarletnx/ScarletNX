@@ -30,7 +30,7 @@ int main(void) {
     mz_zip_archive_file_stat stat;
     unsigned char* bytes;
     size_t size, i;
-    static const char said[] = "a run at /home/someone/games/x crashed\nC:\\Users\\Someone\\AppData\\x opened\n"
+    static const char said[] = "a run at /home/someone/games/x crashed\nC:\\Users\\Some One\\AppData\\x opened\n"
                                "/data/user/0/org.scarletnx/files/state left\n/homework stays\n";
     assert(dir);
     a = snx_path_join(dir, "a.log");

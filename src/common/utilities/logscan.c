@@ -170,29 +170,62 @@ static size_t utf8_len(const unsigned char* p, size_t n) {
     return len;
 }
 
-/* How long the home folder's part is at s: "/home/<user>", "/var/home/<user>" (Silverblue's), "/Users/<user>",
-   "/media/<user>" and "/run/media/<user>" (the drives a desktop mounts for its user, where games often are),
-   "C:\Users\<user>" (either slash, any case), Android's "/data/user/<n>/<package>"; 0 elsewhere. The player's account
-   name stays out of a public report */
+static int is_sep(char c) { return c == '/' || c == '\\'; }
+/* a drive at s, "C:\" or "C:/", or WSL's "/mnt/c/": the length before its separator, 0 for none */
+static size_t drive_at(Span s) {
+    if (s.n >= 3 && snx_is_alpha(s.p[0]) && s.p[1] == ':' && is_sep(s.p[2])) return 2;
+    if (s.n >= 7 && starts(s, "/mnt/") && snx_is_alpha(s.p[5]) && s.p[6] == '/') return 6;
+    return 0;
+}
+/* "\Users\" at s, either slash: its length, 0 for none. In any case after a drive, Windows' names having none;
+   elsewhere only as macOS and Windows write it, the data folder's own users/ being no home */
+static size_t users_at(Span s, int any_case) {
+    if (s.n < 7 || !is_sep(s.p[0]) || !is_sep(s.p[6])) return 0;
+    for (size_t k = 0; k < 5; k++)
+        if (any_case ? snx_to_lower(s.p[1 + k]) != "users"[k] : s.p[1 + k] != "Users"[k]) return 0;
+    return 7;
+}
+/* a byte no account's name holds on the systems the runtime runs on: a control, a line's end among them, or one that
+   Windows refuses in a name, passwd's ':' with them. A space is a name's: Windows' often hold one */
+static int ends_name(char c) { return (unsigned char)c < 0x20 || c == 0x7f || strchr("\"*+,:;<=>?[]|", c); }
+/* the length of the account's folder at s, past a home's prefix: up to the separator its path goes on with. A name
+   that no separator follows cannot be told from the words after it, which go with it to the line's end or the first
+   byte no name holds, its last blanks left out; a blank, then a separator or a drive, starts another path */
+static size_t name_len(Span s) {
+    size_t i, end = 0;
+    if (!s.n || s.p[0] == ' ') return 0;
+    for (i = 0; i < s.n && !ends_name(s.p[i]) && !is_sep(s.p[i]); i++) {
+        if (s.p[i] != ' ')
+            end = i + 1;
+        else if (i + 1 < s.n && (is_sep(s.p[i + 1]) || drive_at(skip(s, i + 1))))
+            break;
+    }
+    return end;
+}
+
+/* How long the home folder's part is at s: "/home/<user>", "/usr/home/<user>" (FreeBSD's), "/var/home/<user>"
+   (Silverblue's), "/Users/<user>", "/media/<user>" and "/run/media/<user>" (the drives a desktop mounts for its user,
+   where games often are), "C:\Users\<user>" (either slash) and WSL's "/mnt/c/Users/<user>", "\Users\<user>" on a
+   share or another volume, Android's "/data/user/<n>/<package>"; 0 elsewhere. The player's account name stays out of
+   a public report, spaces and all */
 static size_t home_at(Span s) {
-    static const char* const homes[] = {"/home/", "/var/home/", "/Users/", "/run/media/", "/media/"};
-    size_t i = 0, k;
-    if (!s.n || (s.p[0] != '/' && !snx_is_alpha(s.p[0]))) return 0;
-    for (k = 0; k < sizeof homes / sizeof homes[0] && !i; k++)
+    static const char* const homes[] = {"/home/", "/usr/home/", "/var/home/", "/run/media/", "/media/"};
+    size_t i = 0, k, drive;
+    if (!s.n || (!is_sep(s.p[0]) && !snx_is_alpha(s.p[0]))) return 0;
+    for (k = 0; k < sizeof homes / sizeof homes[0] && !i && s.p[0] == '/'; k++)
         if (starts(s, homes[k])) i = strlen(homes[k]);
-    if (!i && s.n > 9 && snx_is_alpha(s.p[0]) && s.p[1] == ':' && (s.p[2] == '\\' || s.p[2] == '/') &&
-        (s.p[8] == '\\' || s.p[8] == '/')) {
-        for (k = 0; k < 5 && snx_to_lower(s.p[3 + k]) == "users"[k]; k++) {}
-        if (k == 5) i = 9;
+    if (!i) {
+        drive = drive_at(s);
+        k = users_at(skip(s, drive), drive != 0);
+        if (k) i = drive + k;
     }
     if (!i && starts(s, "/data/user/")) {
         i = 11 + dec_run(skip(s, 11));
         if (i == 11 || i >= s.n || s.p[i] != '/') return 0;
         i++;
     }
-    if (!i || i >= s.n || s.p[i] == '/' || s.p[i] == '\\' || snx_is_blank(s.p[i])) return 0;
-    while (i < s.n && s.p[i] != '/' && s.p[i] != '\\' && !snx_is_blank(s.p[i])) i++;
-    return i;
+    k = i ? name_len(skip(s, i)) : 0;
+    return k ? i + k : 0;
 }
 
 /* room for n more bytes in the pool: 0, or -1 out of memory, the pool as it was. Its offsets are unsigned */

@@ -510,6 +510,29 @@ def main():
     )
     check(homes['game_output'][-1] == 'a ~/Games/x b ~/y c ~/z d ~\\w', f'home folders: {homes["game_output"][-1]}')
 
+    # an account's name whole on each system, spaces, accents and brackets in it: up to the separator after it, and
+    # with no separator after it, to the line's end or a byte no account name holds
+    for given, shown in [
+        ('/home/John Smith/games/x.nsp', '~/games/x.nsp'),
+        ('/usr/home/John Smith/x', '~/x'),
+        ('/Users/Ana Maria/Library/x', '~/Library/x'),
+        ('/Volumes/Data/Users/Ana Maria/x', '/Volumes/Data~/x'),
+        ('C:\\Users\\John Smith\\AppData\\x', '~\\AppData\\x'),
+        ('C:/Users/John Smith/AppData/x', '~/AppData/x'),
+        ('d:\\USERS/José (Trabalho) Ñandú\\x', '~\\x'),
+        ('\\\\pc\\C$\\Users\\John Smith\\x', '\\\\pc\\C$~\\x'),
+        ('/mnt/c/Users/John Smith/x', '~/x'),
+        ('/data/user/10/org.scarletnx/files/x', '~/files/x'),
+        ('saved in C:\\Users\\John Smith', 'saved in ~'),
+        ('"C:\\Users\\John Smith", then /home/Jane Doe: done', '"~", then ~: done'),
+        ('C:\\Users\\John Smith D:\\x and /home/Jane Doe /tmp/y', '~ D:\\x and ~ /tmp/y'),
+        # names nobody: the shared storage (where it is tells it from the app's own folder), the data folder's users/
+        ('/storage/emulated/0/Games/x', '/storage/emulated/0/Games/x'),
+        ('/home/John Smith/.local/share/scarletnx/users/online.ini', '~/.local/share/scarletnx/users/online.ini'),
+    ]:
+        out = scan(HEADER + '[game] ' + given + '\n')['game_output'][-1]
+        check(out == shown, f'home folder {given!r}: {out!r}, not {shown!r}')
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / 'game.log'
         path.write_text(SVC_BREAK)
