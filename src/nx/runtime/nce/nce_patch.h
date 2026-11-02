@@ -105,13 +105,15 @@ SnxU64 nce_pool_size(const NceSites* sites, SnxU64 lo, SnxU64 hi);
 /* the sites in [lo, hi) go up by delta: a module that the NCE recompile moves to make room for a pool */
 void nce_sites_move(NceSites* sites, SnxU64 lo, SnxU64 hi, SnxU64 delta);
 
-/* the file of an NCE recompile (<game>.nce, beside the module): the guest ranges of the pools, and the sites */
+/* the file of an NCE recompile (<game>.nce, beside the module): the guest ranges of the pools, and the sites, each
+   address kept as its distance from base, the first module's. The runtime reads them back from the base it loaded
+   that module at, which Android moves up (mem.c) */
 typedef struct {
     SnxU64 addr, size;
 } NceRange;
-int nce_file_write(const char* path, const NceRange* pools, size_t pool_count, const NceSites* sites);
+int nce_file_write(const char* path, SnxU64 base, const NceRange* pools, size_t pool_count, const NceSites* sites);
 /* 0, or -1 for a file that is missing or not of this version. *pools is malloc'd */
-int nce_file_read(const char* path, NceRange** pools, size_t* pool_count, NceSites* sites);
+int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_count, NceSites* sites);
 
 /* the stub layout that the runtime's outcall (nce.c) depends on: the stub lowers the guest's sp by NCE_FRAME and
    keeps x16 and x17 at sp + 0 and 8, x30 at sp + 16. The runtime keeps the stub's return address at sp + 24 */

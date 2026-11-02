@@ -243,7 +243,7 @@ void nce_init(void) {
         return;
     }
     file_path(path, sizeof path);
-    if (nce_file_read(path, &ranges, &count, &sites))
+    if (!g_mod->nmods || nce_file_read(path, g_mod->mods[0].base, &ranges, &count, &sites))
         fatal("NCE: %s is of another version or damaged. Recompile the game", path);
     if (nce_host_init(&config, &g_nce.env.tls, &g_nce.env.outcall, why, sizeof why)) {
         WARN("nce: %s, so the JIT compiles all of the game's code\n", why);

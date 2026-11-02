@@ -501,13 +501,13 @@ void nce_sites_move(NceSites* s, SnxU64 lo, SnxU64 hi, SnxU64 delta) {
 }
 
 /* "SNXNCE", the version, then the counts of pools and sites, the pools (address, size) and the sites (address,
-   word, imm, kind, reg, proven, 5 bytes of zero), all little-endian */
-static const unsigned char nce_magic[8] = {'S', 'N', 'X', 'N', 'C', 'E', 0, 1};
+   word, imm, kind, reg, proven, 5 bytes of zero), all little-endian, each address from the first module's base */
+static const unsigned char nce_magic[8] = {'S', 'N', 'X', 'N', 'C', 'E', 0, 2};
 #define NCE_HEADER 24u
 #define NCE_POOL   16u
 #define NCE_SITE   24u
 
-int nce_file_write(const char* path, const NceRange* pools, size_t pool_count, const NceSites* s) {
+int nce_file_write(const char* path, SnxU64 base, const NceRange* pools, size_t pool_count, const NceSites* s) {
     size_t size = NCE_HEADER + pool_count * NCE_POOL + s->count * NCE_SITE;
     unsigned char* out = (unsigned char*)snx_alloc(size);
     unsigned char* p = out + NCE_HEADER;
@@ -517,12 +517,12 @@ int nce_file_write(const char* path, const NceRange* pools, size_t pool_count, c
     snx_st_le64(out + 8, pool_count);
     snx_st_le64(out + 16, s->count);
     for (size_t i = 0; i < pool_count; i++, p += NCE_POOL) {
-        snx_st_le64(p, pools[i].addr);
+        snx_st_le64(p, pools[i].addr - base);
         snx_st_le64(p + 8, pools[i].size);
     }
     for (size_t i = 0; i < s->count; i++, p += NCE_SITE) {
         const NceSite* t = &s->site[i];
-        snx_st_le64(p, t->addr);
+        snx_st_le64(p, t->addr - base);
         snx_st_le32(p + 8, t->word);
         snx_st_le32(p + 12, t->imm);
         p[16] = t->kind;
@@ -534,7 +534,7 @@ int nce_file_write(const char* path, const NceRange* pools, size_t pool_count, c
     return r ? -1 : 0;
 }
 
-int nce_file_read(const char* path, NceRange** pools, size_t* pool_count, NceSites* s) {
+int nce_file_read(const char* path, SnxU64 base, NceRange** pools, size_t* pool_count, NceSites* s) {
     size_t size = 0;
     unsigned char* in = snx_read_file(path, &size);
     const unsigned char* p;
@@ -553,7 +553,7 @@ int nce_file_read(const char* path, NceRange** pools, size_t* pool_count, NceSit
     p = in + NCE_HEADER;
     *pools = (NceRange*)snx_alloc((size_t)(np ? np : 1) * sizeof **pools);
     for (size_t i = 0; i < np; i++, p += NCE_POOL) {
-        (*pools)[i].addr = snx_ld_le64(p);
+        (*pools)[i].addr = base + snx_ld_le64(p);
         (*pools)[i].size = snx_ld_le64(p + 8);
     }
     *pool_count = (size_t)np;
@@ -561,7 +561,7 @@ int nce_file_read(const char* path, NceRange** pools, size_t* pool_count, NceSit
     s->count = s->cap = (size_t)ns;
     for (size_t i = 0; i < ns; i++, p += NCE_SITE) {
         NceSite* t = &s->site[i];
-        t->addr = snx_ld_le64(p);
+        t->addr = base + snx_ld_le64(p);
         t->word = snx_ld_le32(p + 8);
         t->imm = snx_ld_le32(p + 12);
         t->kind = p[16];
