@@ -32,6 +32,9 @@ int nvn_tex_sparse_tile(const NvnTexDesc* d, u32 tile[3]);
 u64 nvn_tex_level_offset(const NvnTexDesc* d, unsigned level);
 /* the block height and depth level `level` is laid out with (log2 of the GOBs): they shrink with its rows and slices */
 void nvn_tex_level_tiles(const NvnTexDesc* d, unsigned level, unsigned* tile_h, unsigned* tile_d);
+/* the GOBs across a block-linear level's rows: its bytes in whole GOBs, or a sparse texture's whole tiles at a level at
+   least a tile wide, high and deep (tile_w). A target or a copy of the level is that wide in memory */
+u32 nvn_tex_level_gobs(const NvnTexDesc* d, unsigned level);
 /* the bytes from a block-linear volume level's start to its depth slice z */
 u64 nvn_tex_slice_offset(const NvnTexDesc* d, unsigned level, u32 z);
 /* the 3D engine's sample layout (gpu/draw_state.h DS_MSAA_) of NVN's sample count, as the game's driver writes it
