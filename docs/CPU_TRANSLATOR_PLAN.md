@@ -8,8 +8,9 @@ the active implementation scope. The sections below are the supporting backlog, 
 finishing every tool or redesign before the first measured change.
 
 Rosetta 2 translates x86-64 code into arm64 code for one host family, Apple silicon. ScarletNX translates A64 code into
-the code of every host it supports. The [README](../README.md) lists Linux, Windows, FreeBSD, Solaris and Android, with
-builds for x86-64, AArch64, PowerPC64 (little and big endian), RISC-V and LoongArch, and macOS and iOS built in CI.
+the code of every host it supports. The [README](../README.md) lists Linux, Windows, FreeBSD, Solaris and Android, and
+[Install](INSTALL.md) builds for x86-64, AArch64, PowerPC64 (little and big endian), RISC-V and LoongArch, and macOS
+and iOS built in CI.
 This plan takes each part of Rosetta 2's design, finds the code in ScarletNX that does the same job, and describes
 how to adapt the technique to each host and to the Horizon behavior that ScarletNX must provide.
 Whoever implements it should start with the [guide](CPU_TRANSLATOR_GUIDE.md): setup, rules and how work is handed back.
@@ -60,8 +61,8 @@ guest for free, and each part below notes where that matters.
 | LoongArch 64 | Linux | ELF | Set by the kernel | No | 32, less zero, tp, sp and r21 | No integer flags | Weak, still to be compared with Arm's |
 
 The object formats, page sizes and JIT support come from `docs/ARCHITECTURE.md`, `docs/APPLE.md`, `docs/PPC64.md`,
-`docs/RISCV-LOONGARCH.md` and `HOST_MACHINE` in `src/common/cpu/recompiler/llvm/code_loader.c`. The README says the
-PowerPC64, RISC-V and LoongArch builds are cross-built, that big-endian PowerPC64 has not run on a big-endian machine,
+`docs/RISCV-LOONGARCH.md` and `HOST_MACHINE` in `src/common/cpu/recompiler/llvm/code_loader.c`. `docs/INSTALL.md` says
+the PowerPC64, RISC-V and LoongArch builds are cross-built, that big-endian PowerPC64 has not run on a big-endian machine,
 and that no game runs on macOS yet. `docs/RISCV-LOONGARCH.md` says no real RISC-V or LoongArch machine has run them.
 
 Two rows matter most for this plan. x86-64 is the only host with 16 general registers, so it is the one where guest

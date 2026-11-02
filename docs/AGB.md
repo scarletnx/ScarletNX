@@ -5,7 +5,8 @@
 runs it with the same static recompiler the other system types use. The board
 library under `src/agb/` is CPU-only: it links `scarletnx-common` and nothing of
 `src/nx/` or `src/gnuabi/`, so the board builds without the Switch runtime's
-graphics and media packages.
+graphics and media packages. Its files whose header names the mGBA contributors
+are MPL-2.0 ([Licenses and credits](CREDITS.md)).
 
 ```sh
 cmake -S . -B build/agb -DSNX_BUILD_NX=OFF -DSNX_BUILD_AGB=ON
