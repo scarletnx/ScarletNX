@@ -232,8 +232,8 @@ setting Upscaler
     startup
     words off=None|bilinear=Bilinear|fsr1=AMD FSR 1|nis=NVIDIA NIS|sgsr=Qualcomm SGSR
     help The spatial filter the presented frame uses as the window grows it. AMD FSR 1 is the default and runs on
-    help every device. None blits the frame as it is. Bilinear blits it softly. NVIDIA NIS and Qualcomm SGSR are
-    help explicit choices
+    help every device. A frame at 1:1 or larger than the window keeps the plain blit. None blits the frame as it is.
+    help Bilinear blits it softly. NVIDIA NIS and Qualcomm SGSR are explicit choices
 setting Sharpness
     key upscaler_sharpness
     label Upscaler sharpness

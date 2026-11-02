@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The spatial upscaler of the presented frame. FSR 1 is the default. FSR 1, NIS and SGSR take the color image's shown
-   crop and write one image at the screen rectangle's size, which the presenter blits 1:1. None and Bilinear leave the
-   frame's blit as it was. Under vk_lock, in the frame being recorded. */
+/* The spatial upscaler of the presented frame. FSR 1 is the default. FSR 1, NIS and SGSR grow the color image's shown
+   crop to the screen rectangle's size and write one image there, which the presenter blits 1:1. A frame that does not
+   grow keeps its plain blit, as None and Bilinear always do. Under vk_lock, in the frame being recorded. */
 #ifndef SNX_GPU_VK_UPSCALE_H
 #define SNX_GPU_VK_UPSCALE_H
 #include "nx/gpu/vk/upscale_select.h"
@@ -14,8 +14,8 @@ void vk_upscale_configure(int filter, int sharpness);
 void vk_upscale_release(void);
 /* whether the device can run a filter: its output format has the features the filter's pipeline and copy need */
 int vk_upscale_available(int filter);
-/* the filter the frame runs: an unavailable filter is replaced by FSR 1, then Bilinear; -1 for a frame with no
-   source */
+/* the filter the frame runs: None when the frame does not grow, an unavailable filter replaced by FSR 1 then
+   Bilinear; -1 for a frame with no source */
 int vk_upscale_pick(u32 src_w, u32 src_h, u32 dst_w, u32 dst_h, u32 transform);
 /* the filter's shown source to the output extent: 1 with out and out_view set, 0 when it could not run. The source
    is in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; the output is left in VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL */
