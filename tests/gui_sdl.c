@@ -1148,9 +1148,10 @@ static void icons_named(void) {
     /* the User section is the users' form (users_fill), which shows its one setting: another row in its table would be
        shown nowhere */
     {
-        const char* table = strstr(text, "\ntable g_user_ini\n");
+        static const char head[] = "\ntable g_user_ini"; /* its line's end apart: a Windows checkout's is \r\n */
+        const char* table = strstr(text, head);
         int rows = 0;
-        assert(table);
+        assert(table && (table[sizeof head - 1] == '\r' || table[sizeof head - 1] == '\n'));
         for (line = strchr(table + 1, '\n') + 1; line && strncmp(line, "table ", 6) && strncmp(line, "section ", 8);
              line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL)
             rows += !strncmp(line, "setting ", 8);
