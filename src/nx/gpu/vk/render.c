@@ -1444,44 +1444,75 @@ static int is_target(Surf* s, Surf** rt, Surf* zt, u32 n) {
     return 0;
 }
 
+/* An indexed texture kind (shader_same_indexed_kind): how its elements are viewed, and its null element, the view
+   and sampler an element of the kind reads where it has no texture, with a shadow kind's depth view and compare
+   sampler. Its id is the element, TEX_NO_ENTRY until a table of the kind needs it. */
+enum { TEX_NO_ENTRY = 0xFFFFFFFFu };
+typedef struct {
+    VkImageViewType want;
+    int num;
+    VkImageView none;
+    VkDescriptorImageInfo info, depth;
+    u32 id;
+} TexKind;
+
+static int tex_kind_init(TexKind* tk, const ShaderInfo* si, int slot) {
+    const ShTex* kind = &si->tex[slot];
+    u32 null_tsc[8] = {0};
+    ShTex plain = *kind;
+    plain.shadow = 0;
+    tk->want = vk_tex_view_type(kind);
+    tk->num = kind->shadow || !((si->tex_int_mask >> slot) & 1) ? 0 : ((si->tex_sint_mask >> slot) & 1) ? 2 : 1;
+    tk->none = vk_null_view(tk->want, tk->num, 0);
+    tk->id = TEX_NO_ENTRY;
+    if (!tk->none) return 0;
+    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, tk->num, NULL, tk->want);
+    if (!null_sampler) return 0;
+    tk->info = (VkDescriptorImageInfo){null_sampler, tk->none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    if (!kind->shadow) return 1;
+    VkImageView farthest = vk_null_view(tk->want, 3, 0); /* not far: windef.h defines it away */
+    VkSampler null_compare = farthest ? vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, tk->want) : VK_NULL_HANDLE;
+    if (!null_compare) return 0;
+    tk->depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    return 1;
+}
+
 /* The elements of SNX_VKB_TEXARRAY, from an indexed texture slot: SNX_TEX_ARRAY handles from the slot's offset on,
    (1 << shift) bytes apart. A handle past the constant buffer's size, or with a header or sampler index past its
-   pool's limit (no texture on hardware either), reads as the null texture. So does a texture of another kind than
-   the slot's, and a target the draw renders to (the bound path's snapshot, for every element, would copy each
-   target the table names on every draw). */
+   pool's limit (no texture on hardware either), reads as its kind's null texture. So does a texture of another kind
+   than the slot's, and a target the draw renders to (the bound path's snapshot, for every element, would copy each
+   target the table names on every draw). Tables of different kinds share the binding, each element viewed as the
+   kind of the table that names it: a handle that two kinds name has an element for each. */
 static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int* first, int count, Surf** rt, Surf* zt,
                           u32 n, VkImageLayout layout, DescWrites* d, VkDescriptorSet set) {
-    const ShTex* kind = &s->si.tex[first[0]];
-    VkImageViewType want = vk_tex_view_type(kind);
-    int num = kind->shadow || !((s->si.tex_int_mask >> first[0]) & 1) ? 0
-              : ((s->si.tex_sint_mask >> first[0]) & 1)               ? 2
-                                                                      : 1;
-    ShTex plain = *kind;
-    if (kind->shadow) plain.shadow = 0;
-    VkImageView none = vk_null_view(want, num, 0);
-    /* not far: windef.h defines it away */
-    VkImageView farthest = kind->shadow ? vk_null_view(want, 3, 0) : VK_NULL_HANDLE;
-    if (!none || (kind->shadow && !farthest)) return 0;
+    /* each table's kind, named by the first table of that kind; a non-shadow kind's elements fill the depth binding
+       with a shadow kind's null element */
+    int kind_of[SH_INDEXED_TABLES] = {0};
+    TexKind kinds[SH_INDEXED_TABLES];
+    const TexKind* depth_fill = NULL;
+    for (int table = 0; table < count; table++) {
+        int k = 0;
+        while (k < table &&
+               !shader_same_indexed_kind(s->si.tex, s->si.tex_int_mask, s->si.tex_sint_mask, first[k], first[table]))
+            k++;
+        kind_of[table] = k;
+        if (k < table) continue;
+        if (!tex_kind_init(&kinds[table], &s->si, first[table])) return 0;
+        if (!depth_fill && s->si.tex[first[table]].shadow) depth_fill = &kinds[table];
+    }
     u32 handles[SNX_TEX_ARRAY] = {0};
-    u32 null_tsc[8] = {0};
+    u8 element_kind[SNX_TEX_ARRAY] = {0}; /* the table that names the element's kind, 255 for a null element */
     u32 funcs[SNX_TEX_ARRAY] = {0};
-    /* each element's entry, NO_ENTRY for one past its constant buffer: the null texture, given an entry only when an
-       element needs it, so a table of SNX_TEX_ARRAY real handles fits (edenprobe's bindless suite samples 256) */
-    enum { NO_ENTRY = 0xFFFFFFFFu };
+    /* each element's entry: the null texture is given an entry only when an element needs it, so a table of
+       SNX_TEX_ARRAY real handles fits (edenprobe's bindless suite samples 256) */
     u32 map[SH_INDEXED_TABLES * SNX_TEX_ARRAY] = {0};
     u32 used = 0;
-    int need_null = 0;
-    VkDescriptorImageInfo null_info, null_depth = {0};
-    VkSampler null_sampler = vk_tex_bind_sampler(null_tsc, NULL, &plain, num, NULL, want);
-    if (!null_sampler) return 0;
-    null_info = (VkDescriptorImageInfo){null_sampler, none, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    if (kind->shadow) {
-        VkSampler null_compare = vk_tex_bind_sampler(null_tsc, NULL, kind, 0, NULL, want);
-        if (!null_compare) return 0;
-        null_depth = (VkDescriptorImageInfo){null_compare, farthest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    }
     for (int table = 0; table < count; table++) {
         const ShTex* st = &s->si.tex[first[table]];
+        TexKind* tk = &kinds[kind_of[table]];
+        const ShTex* kind = &s->si.tex[first[kind_of[table]]];
+        ShTex plain = *kind;
+        plain.shadow = 0;
         u32 shift = (u32)st->flags >> 4, bank = st->bl_cbuf & 31;
         DsCbBlock in = ds_cb_inline(ds, stage, bank);
         u64 cba = bank < 18 ? ds->bind.cb_addr[stage][bank] : 0;
@@ -1492,26 +1523,39 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
             /* past the constant buffer: the null texture. A handle of 0 is header 0 with sampler 0, a texture like any
                other (edenprobe's bindless case samples it) */
             if ((!cba && !in.bytes) || at + 4 > size) {
-                map[table * SNX_TEX_ARRAY + k] = NO_ENTRY;
-                need_null = 1;
+                if (tk->id == TEX_NO_ENTRY) {
+                    if (used == SNX_TEX_ARRAY) {
+                        LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
+                        return 0;
+                    }
+                    tk->id = used++;
+                    element_kind[tk->id] = 255;
+                    d->table[tk->id] = tk->info;
+                    if (depth_fill) {
+                        d->depth_table[tk->id] = kind->shadow ? tk->depth : depth_fill->depth;
+                        funcs[tk->id] = 11; /* LEQUAL and null depth */
+                    }
+                }
+                map[table * SNX_TEX_ARRAY + k] = tk->id;
                 continue;
             }
             u32 handle = in.bytes ? ds_inline_word(in, at) : gmem_r32(cba + at);
             u32 id = 0;
-            while (id < used && handles[id] != handle) id++;
+            while (id < used && (handles[id] != handle || element_kind[id] != kind_of[table])) id++;
             if (id == used) {
                 if (used == SNX_TEX_ARRAY) {
                     LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
                     return 0;
                 }
                 handles[id] = handle;
+                element_kind[id] = (u8)kind_of[table];
                 used++;
                 TexRes x = {0};
                 VkImageView view = VK_NULL_HANDLE;
                 if ((handle & 0xFFFFF) <= ds->bind.tex_max && ((handle >> 20) & 0xFFF) <= ds->bind.smp_max) {
                     tex_resolve(ds, handle, &x);
                     if (x.t && (!kind->shadow || !x.t->f.is_int) && !is_target(x.t, rt, zt, n))
-                        view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
+                        view = vk_tex_bind_view(x.t, tk->want, x.tic, x.tsc, tk->num);
                 }
                 funcs[id] = x.have && (x.tsc[0] >> 9 & 1) ? (x.tsc[0] >> 10) & 7 : 3;
                 int depth = kind->shadow && (!view || x.t->f.depth);
@@ -1519,43 +1563,37 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                 if (view)
                     vk_surf_use(vk_cmd(), x.t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 else {
-                    view = none;
+                    view = tk->none;
                     /* an unused entry holds 0: a handle that names nothing else is the black-texture signal */
                     if (handle)
                         LOG_LIMIT(4, "vulkan: indexed texture reads the null texture (bank %u handle %08x)\n", bank,
                                   handle);
                 }
-                VkImageView color_view = depth ? none : view;
-                VkSampler smp = vk_tex_bind_sampler(x.tsc, x.tic, &plain, num, color_view != none ? x.t : NULL, want);
+                VkImageView color_view = depth ? tk->none : view;
+                VkSampler smp =
+                    vk_tex_bind_sampler(x.tsc, x.tic, &plain, tk->num, color_view != tk->none ? x.t : NULL, tk->want);
                 if (!smp) return 0;
                 d->table[id] = (VkDescriptorImageInfo){
-                    smp, color_view, color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                    smp, color_view, color_view == tk->none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
                 if (kind->shadow) {
-                    VkImageView depth_view = depth && view != none ? view : farthest;
-                    VkSampler compare =
-                        vk_tex_bind_sampler(x.tsc, x.tic, kind, 0, depth_view != farthest ? x.t : NULL, want);
+                    VkImageView depth_view = depth && view != tk->none ? view : tk->depth.imageView;
+                    VkSampler compare = vk_tex_bind_sampler(x.tsc, x.tic, kind, 0,
+                                                            depth_view != tk->depth.imageView ? x.t : NULL, tk->want);
                     if (!compare) return 0;
                     d->depth_table[id] = (VkDescriptorImageInfo){
                         compare, depth_view,
-                        depth_view == farthest ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
-                }
+                        depth_view == tk->depth.imageView ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+                } else if (depth_fill)
+                    d->depth_table[id] = depth_fill->depth;
             }
             map[table * SNX_TEX_ARRAY + k] = id;
         }
     }
-    if (need_null) {
-        if (used == SNX_TEX_ARRAY) {
-            LOG_LIMIT(4, "vulkan: indexed texture tables exceed %u unique handles\n", SNX_TEX_ARRAY);
-            return 0;
-        }
-        for (u32 e = 0; e < (u32)count * SNX_TEX_ARRAY; e++)
-            if (map[e] == NO_ENTRY) map[e] = used;
-    }
-    /* the null texture in every entry left, its own included: the binding is read whole */
+    /* the first kind's null texture in every entry left: the binding is read whole */
     for (u32 k = used; k < SNX_TEX_ARRAY; k++) {
-        d->table[k] = null_info;
-        if (kind->shadow) {
-            d->depth_table[k] = null_depth;
+        d->table[k] = kinds[0].info;
+        if (depth_fill) {
+            d->depth_table[k] = depth_fill->depth;
             funcs[k] = 11; /* LEQUAL and null depth */
         }
     }
@@ -1566,7 +1604,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
                                 .descriptorCount = SNX_TEX_ARRAY,
                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = d->table};
-    if (kind->shadow) {
+    if (depth_fill) {
         VkWriteDescriptorSet* depth_write = &d->w[d->n++];
         *depth_write = *w;
         depth_write->dstBinding = SNX_VKB_TEXDEPTH;

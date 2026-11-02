@@ -27,7 +27,7 @@ static const char* storage_volume_atomic_paths[4];
 static const char* storage_layer_load_paths[8];
 static const char* nro_paths[4];
 static const char* dc_color_path;
-static const char* audit_paths[6];
+static const char* audit_paths[7];
 static const char* issue126_paths[17];
 static const char* stage_paths[3];
 static const char* query_paths[2];
@@ -43,7 +43,7 @@ static const char* xfb_path;
 static const char* passthrough_paths[6];
 static const char* structured_paths[2];
 static const char* fswzadd_path;
-static char* fixture_paths[93];
+static char* fixture_paths[94];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -2971,6 +2971,31 @@ static void audit_shader_regressions(void) {
         save_fixture(audit_paths[5], code, words);
     }
     free(code);
+    /* One handle table read as a 2D texture, a cube and a 2D depth compare: one game's character programs index
+       tables of more than one kind. Each kind has its own array on the shared bindings, so the views of each array's
+       elements match its type. */
+    const u64 mixed[] = {
+        0xe003ff870ff7ff00ull, 0x5cb0118000070a00ull, 0x3848000000470000ull, 0xef94002000070004ull,
+        0x5c9807800ff70000ull, 0x5c9807800ff70001ull, 0x5c9807800ff70002ull,
+        0xdeb8000000070008ull | (2ull << 28) | (4ull << 20) | (1ull << 31),
+        0xdeb8000000070009ull | (6ull << 28) | (4ull << 20) | (1ull << 31),
+        0xdeb800000007000aull | (2ull << 28) | (1ull << 37) | (4ull << 20) | (1ull << 50) | (1ull << 31),
+    };
+    code = translate(mixed, 10, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "indexed textures of three kinds translate");
+    if (code) {
+        int arrays = 0, depth_arrays = 0;
+        for (size_t i = 5; i < words; i += code[i] >> 16) {
+            if (!(code[i] >> 16)) break;
+            if ((code[i] & 0xffff) != 71 || code[i + 2] != 33) continue; /* OpDecorate Binding */
+            arrays += code[i + 3] == SNX_VKB_TEXARRAY;
+            depth_arrays += code[i + 3] == SNX_VKB_TEXDEPTH;
+        }
+        check(info.ntex == 3 && arrays == 3 && depth_arrays == 1,
+              "each indexed kind declares its own array, and the shadow kind its depth array");
+        save_fixture(audit_paths[6], code, words);
+    }
+    free(code);
     g_shader_texture_arrays = 0;
     const u64 instance = 0xefd800000007ff00ull | (0x2f8ull << 20);
     /* without draw parameters the instance ID is InstanceIndex less the guest's base instance, pushed; with them
@@ -3412,7 +3437,7 @@ int main(int argc, char** argv) {
             passthrough_paths[i] = fixture_path(argv[1], name);
         }
         dc_color_path = fixture_path(argv[1], "dc_color");
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 7; i++) {
             snprintf(name, sizeof name, "audit_%d", i);
             audit_paths[i] = fixture_path(argv[1], name);
         }
@@ -3421,7 +3446,7 @@ int main(int argc, char** argv) {
             structured_paths[i] = fixture_path(argv[1], name);
         }
         fswzadd_path = fixture_path(argv[1], "fswzadd");
-        if (fixture_count != 93) {
+        if (fixture_count != sizeof fixture_paths / sizeof *fixture_paths) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
         }
