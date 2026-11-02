@@ -362,6 +362,21 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocati
     (void)ii, (void)img, (void)mem, (void)bytes;
     return 0;
 }
+/* images with memory only where it is bound: none here */
+int vk_resident_block(VkFormat f, VkImageUsageFlags usage, VkExtent3D* block) {
+    (void)f, (void)usage, (void)block;
+    return 0;
+}
+int vk_image_create_resident(const VkImageCreateInfo* ii, const VkExtent3D* block, VkImage* img) {
+    (void)ii, (void)block, (void)img;
+    return 0;
+}
+int vk_image_resident(VkImage img, const u8* want, u32 n, u64* bytes) {
+    (void)img, (void)want, (void)n, (void)bytes;
+    return 0;
+}
+void vk_surf_bytes(Surf* s, u64 bytes) { s->bytes = bytes; }
+void vk_mem_trim(u64 extra, int force) { (void)extra, (void)force; }
 /* the block linear layout: GOBs of 64 bytes by 8 rows in blocks of 1 << bh by 1 << bd GOBs, gob_w of them across a
    row of blocks, the GOB's 16 byte groups in their order */
 static u64 bl_offset_g(u32 x, u32 y, u32 z, u32 gob_w, u32 h, u32 bh_log2, u32 bd_log2) {

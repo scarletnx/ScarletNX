@@ -28,6 +28,8 @@ VkState g_vk;
 VkSemaphore g_vk_csem;
 u64 g_vk_cs_wait_value;
 static unsigned errors;
+/* compute.c isn't here: no compute batches for memory.c's binds to wait for */
+void vk_compute_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
 
 /* Only the window/game and guest pipeline services are stubbed. cmd.c and
    vk/astc.c are linked unchanged, including staging flushes and frame reuse. */

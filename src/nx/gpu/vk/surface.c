@@ -1765,6 +1765,11 @@ void vk_mem_trim(u64 extra, int force) {
                   short_of ? ", all that could go" : "");
 }
 
+void vk_surf_bytes(Surf* s, u64 bytes) {
+    if (s->lru) g_held[lru_kind(s)].bytes = g_held[lru_kind(s)].bytes - s->bytes + bytes;
+    s->bytes = bytes;
+}
+
 int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, VmaAllocation* mem, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
