@@ -18,7 +18,7 @@ static const StateFnTable g_ipc_state_fns = {IPC_FNS, 1};
 /* every table: a function's name is its table's entry, and two entries never share one */
 static const StateFnTable* const TABLES[] = {
     &g_swipc_fns,      &g_ipc_state_fns,  &g_am_state_fns,  &g_audio_state_fns, &g_audren_state_fns,
-    &g_fs_state_fns,   &g_ldr_state_fns,  &g_misc_state_fns, &g_vi_state_fns,
+    &g_fs_state_fns,   &g_ldr_state_fns,  &g_misc_state_fns, &g_nvdrv_state_fns, &g_vi_state_fns,
     &g_bsd_state_fns,  &g_ldn_state_fns,  &g_nifm_state_fns, &g_ssl_state_fns,
 };
 enum { NTABLES = sizeof TABLES / sizeof *TABLES };

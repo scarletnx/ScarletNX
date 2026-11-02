@@ -3,6 +3,7 @@
 /* What nvdrv shares with the GPU, host1x and vi: nvmap handles, the GPU's address space, and the syncpoints */
 #ifndef SNX_NVDRV_H
 #define SNX_NVDRV_H
+#include "nx/runtime/state_fns.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/runtime/platform/plat.h" /* PMutex, PCond */
 
@@ -81,9 +82,9 @@ void syncpt_events(void);
 u32 syncpt_promise(u32 id, u32 n);
 /* 1 once id reaches thresh (across the 32-bit wrap), 0 when the time runs out. 0 looks once, negative waits for good */
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns);
-/* Runs fn(arg) on the GPU thread once the fences (id[i], val[i]), i < n <= 4, are reached: each waited for here, for
-   at most 1 s */
-void nv_gpu_call_after(u32 n, const u32* id, const u32* val, void (*fn)(void*), void* arg);
+/* Runs fn(arg) on the GPU thread after the submissions that promised the fences (id[i], val[i]), i < n <= 4. A fence
+   nothing queued has promised is waited for here instead, for at most 1 s, and its id[i] is set to ~0 */
+void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg);
 /* ---- HLE state in g_hle (hle.h) */
 #define NVMAP_HANDLES 8192 /* nvmap's handles, numbered 1..8191 */
 #define NV_FDS        256  /* nvdrv's fds, numbered 1..255 */
@@ -206,6 +207,8 @@ typedef struct {
     u32 syncpt[SYNCPT_IDS];
     u32 syncpt_max[SYNCPT_IDS];
     u8 syncpt_used[SYNCPT_N];
+    u8 syncpt_gpu[SYNCPT_N]; /* a GPU channel's: submissions promise its increments (syncpt_max), the GPU thread makes
+                                them (sync_lk) */
     /* each ctrl fd's event slots, a table of ctrl_evt taken on first use and given back with the fd, under
        nvev_lk: 1 + its index, 0 for none. As on the console, the slots are the fd's (Ryujinx's NvHostCtrlDeviceFile
        keeps them per open). A game's GPU fence waits (one fd) and its movie player (another) both use slot 0,
@@ -229,6 +232,7 @@ typedef struct {
     PMutex alias_lock;
     PCond sync_cv;
     PMutex sync_lk;
+    PMutex submit_lk; /* a submission's promise and its place in the GPU queue, in the same order */
     PMutex nvev_lk;
     /* nv_first_use's (device, ioctl) pairs, under seen_lock */
     PMutex seen_lock;
@@ -239,5 +243,6 @@ typedef struct {
        have, so the same thread takes the kernel's lock, after vk_lock goes */
     int events_due;
 } TlsNvdrv;
+extern const StateFnTable g_nvdrv_state_fns; /* the functions a save state may hold of nvdrv.c */
 
 #endif

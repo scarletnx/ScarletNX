@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 
 /* the 4x4 RGBA32F target's x and y (red and green) after a triangle over all of it, at the end of a draw */
-static int frag_coord_draw(MxRegs* channel, u64 target, float out[4][4][2]) {
+static int frag_coord_draw(GpuChannel* channel, u64 target, float out[4][4][2]) {
     u64 drawn = g_vk_drawn;
     vk_lock();
     rt_clear_format(channel, target, 4, 4, 0, 0, 0xC0); /* RGBA32F */
@@ -30,7 +30,7 @@ static int frag_coord_draw(MxRegs* channel, u64 target, float out[4][4][2]) {
 
 /* every pixel's x and y as the fragment reads them: x + 0.5, and y + 0.5 counted down from the target's first row, or
    up from the bottom of a surface clip clip_height high (y_from_bottom) */
-static int frag_coord_expect(MxRegs* channel, u64 target, int y_from_bottom, u32 clip_height) {
+static int frag_coord_expect(GpuChannel* channel, u64 target, int y_from_bottom, u32 clip_height) {
     float got[4][4][2];
     CHECK(!frag_coord_draw(channel, target, got));
     for (u32 y = 0; y < 4; y++)
@@ -61,7 +61,7 @@ static int check_frag_coord_origin(void) {
                             0xe30000000007000full};
     const float position[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1};
     float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
-    MxRegs* channel = calloc(1, sizeof *channel);
+    GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 127;
     gmmu_map(address, cpu, 0x20000);

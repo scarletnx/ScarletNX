@@ -13,6 +13,7 @@
 #include <string.h>
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/maxwell/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/hle/services/nvdrv.h"
@@ -418,7 +419,7 @@ static void plain_state(VkCommandBuffer cb, VkRect2D sc) {
     if (g_vk.has_feedback_dynamic) rec_CmdSetAttachmentFeedbackLoopEnableEXT(cb, VK_IMAGE_ASPECT_NONE);
 }
 
-/* an owner's render enable predicate (DrawOwner.pred, 0 none) around one of its draws or clears, inside the
+/* a channel's render enable predicate (gpu.h render_pred, 0 none) around one of its draws or clears, inside the
    rendering pass they are in: on the GPU, the comparison it holds decides whether they run */
 static void pred_begin(VkCommandBuffer cb, u32 pred) {
     if (pred)
@@ -2788,7 +2789,7 @@ static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz
     u64 in_bytes = (u64)count * isz, align = vk_stage_align();
     VkBuffer src;
     u64 at;
-    if (inline_indices) { /* host words the front end gave, in the CPU's hands already: copied whole */
+    if (inline_indices) { /* host words the pushbuffer gave, in the CPU's hands already: copied whole */
         u8* p = vk_stage(in_bytes, align, &src, &at);
         if (!p) return 0;
         memcpy(p, dc->inline_indices + first, (size_t)in_bytes);
@@ -3462,7 +3463,7 @@ retry:
         DYN(restart, prim_restart, rec_CmdSetPrimitiveRestartEnable(cb, prim_restart));
         /* RASTERIZE_ENABLE (0xDF) off discards the primitives, after a capture or the vertex program's stores. One game
            draws points whose vertex program only stores to memory and writes no position: rasterized, they all lit
-           the pixel in the middle of the screen. A queue starts with it on, as the console's register defaults
+           the pixel in the middle of the screen. A channel starts with it on (reset_3d, as Eden's register defaults)
            (1 off, 2 on: 0 is a new command buffer's) */
         u32 discard = ds->dyn.discard ? 2 : 1;
         DYN(discard, discard, rec_CmdSetRasterizerDiscardEnable(cb, discard == 2));

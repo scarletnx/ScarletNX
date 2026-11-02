@@ -115,7 +115,7 @@ static u32 paced;
 static int hold;
 static void (*held_fn)(void*);
 static void* held_arg;
-void nv_gpu_call_after(u32 n, const u32* id, const u32* val, void (*fn)(void*), void* arg) {
+void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg) {
     fence_n = n;
     fence_id = n ? id[0] : 0;
     CHECK(!n || val[0] == 10);

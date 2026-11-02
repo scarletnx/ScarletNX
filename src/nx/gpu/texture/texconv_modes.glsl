@@ -34,13 +34,13 @@
 /* NVDEC's picture: FFmpeg's U and V planes (U from in_bias, V from st_bias, rows in_pitch and st_pitch apart)
    interleaved into NV12's chroma rows, U first, four pairs an invocation */
 #define TC_NV12_UV 20u
-/* the DMA copy engine's remap (gpu.h GpuDmaOp): each output word of a line from its bytes' sources, a word an
+/* the DMA copy engine's remap (maxwell/dma.c): each output word of a line from its bytes' sources, a word an
    invocation. remap packs the component size (cs, bits 0-3), the source's and the destination's components (ns,
    nd: 4-7, 8-11) and each destination component's source (12-15, 16-19, 20-23, 24-27: 0-3 a source component, 4
    constant A, 5 constant B, 6 and 7 the destination's own byte, which out holds already). in_pitch and in_bias count
    bytes here: lines can start anywhere in a word */
 #define TC_DMA_REMAP 21u
-/* the 2D engine's blit (gpu.h GpuBlit): a row of the destination rectangle's pixels, line_out bytes, each pixel's
+/* the 2D engine's blit (maxwell/fermi2d.c): a row of the destination rectangle's pixels, line_out bytes, each pixel's
    bpp bytes (remap) from the source pixel its column and row name in two tables in the input (words from const_a: a
    column's source column, from const_b: a row's source row). Source rows are in_pitch bytes apart from in_bias */
 #define TC_BLIT 22u

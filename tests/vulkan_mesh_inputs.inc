@@ -15,7 +15,7 @@ static int mesh_program(u64 address, const u64* ops, u32 count, int fragment) {
     return invalidate_write_code(address, code, 64);
 }
 
-static int mesh_pixel_check(MxRegs* channel, u64 target, u32 instance, const u8 expected[4], u32 mask) {
+static int mesh_pixel_check(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4], u32 mask) {
     u64 drawn = g_vk_drawn;
     vk_lock();
     rt_clear(channel, target, 4, 4, 0, 0);
@@ -48,7 +48,7 @@ static int mesh_pixel_check(MxRegs* channel, u64 target, u32 instance, const u8 
     return 0;
 }
 
-static int mesh_pixel(MxRegs* channel, u64 target, u32 instance, const u8 expected[4]) {
+static int mesh_pixel(GpuChannel* channel, u64 target, u32 instance, const u8 expected[4]) {
     return mesh_pixel_check(channel, target, instance, expected, 15);
 }
 
@@ -66,7 +66,7 @@ static int check_mesh_inputs(void) {
     const float position[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1};
     const float color[8] = {0, 1, 0, 1, 1, 0, 0, 1};
     const float transform[6] = {2, 2, 0.5f, 2, 2, 0.5f};
-    MxRegs* channel = calloc(1, sizeof *channel);
+    GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 126;
     gmmu_map(address, cpu, 0x20000);

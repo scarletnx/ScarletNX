@@ -3,7 +3,7 @@
 
 /* draws a triangle over the 4x4 viewport with four color targets of format 0 and no depth, the fragment program
    at code + 0x1000; *drawn and *skipped are whether the renderer recorded or skipped it */
-static void targetless_draw(MxRegs* channel, int* drawn, int* skipped) {
+static void targetless_draw(GpuChannel* channel, int* drawn, int* skipped) {
     u64 recorded = g_vk_drawn, dropped = g_vk_skipped;
     vk_lock();
     mx_draw_state_sync(channel);
@@ -35,7 +35,7 @@ static int check_targetless_stores(void) {
     const u32 descriptor[3] = {(u32)stored, (u32)(stored >> 32), 16};
     u8 bytes[48];
     int drawn, skipped;
-    MxRegs* channel = calloc(1, sizeof *channel);
+    GpuChannel* channel = calloc(1, sizeof *channel);
     CHECK(channel);
     channel->id = 125;
     gmmu_map(address, cpu, 0x8000);
@@ -87,7 +87,7 @@ static int check_targetless_stores(void) {
                 skipped, snx_ld_le32(word));
     CHECK(drawn && !skipped && snx_ld_le32(word) == 0x5eed);
     CHECK(mesh_program(address + 0x1000, nothing, 1, 1));
-    mx_invalidate_shaders(1); /* the program's memory changed */
+    maxwell3d_method(channel, 0x369, 1, 1); /* the program's memory changed */
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
     CHECK(!drawn && skipped);
@@ -108,7 +108,7 @@ static int check_targetless_stores(void) {
     CHECK(!storage_write_words(cbuf + 0x120, (const u32[1]){0}, 1));
     CHECK(!storage_write_words(texels, before, 8));
     CHECK(mesh_program(address + 0x1000, buffer_store, 5, 1));
-    mx_invalidate_shaders(1);
+    maxwell3d_method(channel, 0x369, 1, 1);
     r[0x55D] = (u32)(pool >> 32), r[0x55E] = (u32)pool, r[0x55F] = 0;
     channel->r3d_dirty = ~0u;
     targetless_draw(channel, &drawn, &skipped);
