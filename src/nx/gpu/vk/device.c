@@ -77,6 +77,35 @@ static void oom_report(VkResult r) {
     LOG("vulkan: out of memory with %u descriptor pools\n", vk_desc_pools());
 }
 
+/* set once the allocator exists, which lives to the end of the process: vk_memory_text's threads read g_vk.vma only
+   after they see it, atomic */
+static int g_vma_ready;
+/* Each heap and the descriptor pools in one part of a line, for a low memory warning from a thread that never calls
+   Vulkan. VMA's functions are safe on any thread (its own locks), and the budget it fetches again now and then comes
+   from vkGetPhysicalDeviceMemoryProperties2, which needs no external synchronization */
+void vk_memory_text(char* out, size_t size) {
+    VmaBudget b[VK_MAX_MEMORY_HEAPS];
+    const VkPhysicalDeviceMemoryProperties* mp;
+    size_t n = 0;
+    if (!size) return;
+    out[0] = 0;
+    if (!__atomic_load_n(&g_vma_ready, __ATOMIC_ACQUIRE)) {
+        snprintf(out, size, "no GPU heaps yet, %u descriptor pools", vk_desc_pools());
+        return;
+    }
+    vmaGetHeapBudgets(g_vk.vma, b);
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    for (u32 h = 0; h < mp->memoryHeapCount && n < size; h++) {
+        int w = snprintf(out + n, size - n, "GPU heap %u%s use %llu of %llu MiB (VMA blocks %llu MiB), ", h,
+                         mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " (device local)" : "",
+                         (unsigned long long)(b[h].usage >> 20), (unsigned long long)(b[h].budget >> 20),
+                         (unsigned long long)(b[h].statistics.blockBytes >> 20));
+        if (w < 0) return;
+        n += (size_t)w;
+    }
+    if (n < size) snprintf(out + n, size - n, "%u descriptor pools", vk_desc_pools());
+}
+
 int vk_ok_(VkResult r, const char* what, const char* file, int line) {
     if (r >= 0) return 1;
     WARN("vulkan: %s failed: %s (%d) at %s:%d\n", what, snx_vk_result_str(r), (int)r, file, line);
@@ -883,6 +912,7 @@ static int create_device(void) {
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
     vk_uma_init();
     {
         /* which driver runs, by its own name: the system's, or a package's (gpu_driver) */

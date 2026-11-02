@@ -185,9 +185,13 @@ void gui_apple_stats(char* out, size_t size) {
     if (getrusage(RUSAGE_SELF, &usage)) memset(&usage, 0, sizeof usage);
     /* what Metal holds for the app, which MoltenVK's descriptor pools, pipelines and buffers take from too, and
        VMA's heap budget does not count; past the working set Metal refuses allocations the footprint still has room
-       for. The system's default device is the one MoltenVK uses */
+       for. The system's default device is the one MoltenVK uses. The main loop and a memory warning's queue both
+       call this, so the device is got once for all */
     static id<MTLDevice> metal;
-    if (!metal) metal = MTLCreateSystemDefaultDevice();
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        metal = MTLCreateSystemDefaultDevice();
+    });
     snprintf(out, size,
              "resources: footprint %llu MiB, may still take %llu MiB, Metal %llu of %llu MiB, cpu %.1f s user %.1f s "
              "system, thermal %ld, low power %d",
