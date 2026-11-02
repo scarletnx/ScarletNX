@@ -18,6 +18,8 @@ static void* counted_malloc(size_t n) {
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers" /* texture.c builds without -Wextra */
 #include "nx/gpu/vk/texture.c"
 #undef malloc
+#include "nx/hle/services/nvdrv.h" /* gmmu_pieces, and g_mem, which the stubs below stand in for */
+#include "nx/memory/mem.h"
 
 static unsigned checks;
 #define CHECK(x)                                                                                                       \
@@ -49,7 +51,19 @@ void vk_guest_read(u64 gva, u64 size, u8* host, VkBuffer buf, u64 at) {
     gmem_read(gva, host, size);
 }
 void vk_guest_peek(u64 gva, void* dst, u64 size) { gmem_read(gva, dst, size); }
-u8* gmem_host(u64 gva, u64 size) { return gmem_ptr(gva, size); }
+/* a texture with holes in its mapping (a virtual pool's, mapped a tile at a time): the runs g_map lists are what the
+   GPU's page table maps, guest's bytes at the same offset (GP(cpu) is guest + cpu), and no texture is one host run */
+u8* g_mem = guest;
+static struct {
+    u64 gva[8], n[8];
+    u32 count;
+} g_map;
+void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) {
+    for (u32 i = 0; i < g_map.count; i++)
+        if (g_map.gva[i] < gva + size && g_map.gva[i] + g_map.n[i] > gva)
+            fn(ctx, g_map.gva[i], g_map.gva[i] - GVA, g_map.n[i]);
+}
+u8* gmem_host(u64 gva, u64 size) { return g_map.count ? NULL : gmem_ptr(gva, size); }
 #define STAGE (8u << 20)
 #define STAGE_BUF ((VkBuffer)(uintptr_t)0x5157)
 #define SCRATCH_BUF ((VkBuffer)(uintptr_t)0x5C2A)
@@ -313,13 +327,20 @@ VkImage vk_ms_unpack(VkCommandBuffer cb, Surf* s, u32 layer) {
     (void)cb, (void)s, (void)layer;
     return VK_NULL_HANDLE;
 }
+/* write tracking: the stamp is on guest's bytes [at, at + len), all of them when len is 0. As buffer.c's, it answers
+   only for a host range */
 static struct {
     int on;
     u32 clock, stamp, epoch;
+    u64 at, len;
 } g_tracking;
+static int stamped(u64 o, u64 n, u32 since) {
+    return g_tracking.stamp > since &&
+           (!g_tracking.len || (o < g_tracking.at + g_tracking.len && g_tracking.at < o + n));
+}
 int vk_written_since(const u8* host, u64 len, u32 since) {
-    (void)host, (void)len;
-    return g_tracking.on ? g_tracking.stamp > since : -1;
+    if (!g_tracking.on || !host || !len) return -1;
+    return stamped((u64)(host - guest), len, since);
 }
 u32 vk_ww_now(void) { return g_tracking.clock; }
 u32 vk_ww_epoch(void) { return g_tracking.epoch; }
@@ -413,6 +434,46 @@ static void upload_and_check(Surf* t, u64 limit, u32 bands) {
         at += lsz;
     }
     CHECK(first == nregs);
+}
+
+/* the 4 bytes a texel of level l at (x, y, z) was copied as, by the last region recorded over it; NULL when none was */
+static const u8* copied_texel(u32 l, u32 x, u32 y, u32 z) {
+    const u8* got = NULL;
+    for (u32 i = 0; i < nregs; i++) {
+        const VkBufferImageCopy* r = &regs[i];
+        u32 x0 = (u32)r->imageOffset.x, y0 = (u32)r->imageOffset.y, z0 = (u32)r->imageOffset.z;
+        if (r->imageSubresource.mipLevel == l && x - x0 < r->imageExtent.width && y - y0 < r->imageExtent.height &&
+            z - z0 < r->imageExtent.depth)
+            got = copied + r->bufferOffset +
+                  (((u64)(z - z0) * r->bufferImageHeight + (y - y0)) * r->bufferRowLength + (x - x0)) * 4;
+    }
+    return got;
+}
+/* the RGBA8 texel a texture of 4 byte texels has at (x, y, z) of a level at at in guest, its rows rowb bytes */
+static u32 guest_texel(u64 at, u32 x, u32 y, u32 z, u32 rowb, u32 lh, u32 lbh, u32 lbd) {
+    u32 v = 0;
+    for (u32 k = 0; k < 4; k++) v |= (u32)guest[at + bl_offset(x * 4 + k, y, z, rowb, lh, lbh, lbd)] << (8 * k);
+    return v;
+}
+/* a volume in a virtual pool's 64 KiB pages: RGBA8, 208x64x32 (13 GOBs a row) in blocks 1 GOB high and 16 deep, levels
+   levels; pages 0 and 2 mapped, and its checks settled. Its size */
+static Surf sparse_volume(u32 levels) {
+    Surf t = tex(208, 64, 32, levels, 4, 0, 4, 1);
+    for (u32 l = 0; l < levels; l++) t.size += bl_level_size(t.w, t.h, 32, &t.f, 0, 4, l, NULL, NULL);
+    g_map.count = 2;
+    g_map.gva[0] = GVA, g_map.n[0] = 0x10000;
+    g_map.gva[1] = GVA + 0x20000, g_map.n[1] = 0x10000;
+    copy_bpp = 4, copy_bw = copy_bh = 1;
+    t.upload_valid = 1;
+    t.hash = mem_hash(t.gva, t.size);
+    t.stable = 100;
+    t.shash = vk_sample_hash(t.gva, t.size);
+    t.tfull = t.checked = g_vk_present;
+    t.next_check = g_vk_present + 1000;
+    g_tracking.on = 1;
+    g_tracking.clock = t.wseen = 20;
+    t.ww_epoch = g_tracking.epoch;
+    return t;
 }
 
 int main(void) {
@@ -539,6 +600,28 @@ int main(void) {
             CHECK(nregs == 1 && copied[regs[0].bufferOffset] == guest[0]);
         }
         g_tracking.on = 0;
+    }
+    /* a texture with holes in its mapping is no one host run: write tracking over each mapped run sees the CPU write
+       a tile, where its settled checks would sample the texture (vk_sample_hash, which sees none of it here) */
+    {
+        Surf t = sparse_volume(1);
+        const u32 x = 3 * 16 + 1, y = 9, z = 6; /* in block 3 of the second row of blocks: tile 2 */
+        const u64 o = bl_offset(x * 4, y, z, 832, 64, 0, 4);
+        CHECK(o / 0x10000 == 2);
+        guest[o] ^= 0x5A;
+        g_tracking.stamp = ++g_tracking.clock;
+        g_tracking.at = o, g_tracking.len = 1;
+        g_vk_present++;
+        g_tracking.epoch++;
+        stage_used = copied_used = nregs = 0;
+        CHECK(tex_check(&t, t.gva) == &t);
+        const u8* got = copied_texel(0, x, y, z);
+        u32 want = guest_texel(0, x, y, z, 832, 64, 0, 4), have = 0;
+        if (got) memcpy(&have, got, 4);
+        CHECK(got && have == want);
+        guest[o] ^= 0x5A;
+        g_map.count = 0;
+        memset(&g_tracking, 0, sizeof g_tracking);
     }
     printf("tex_upload_rows: %u checks passed\n", checks);
     return 0;
