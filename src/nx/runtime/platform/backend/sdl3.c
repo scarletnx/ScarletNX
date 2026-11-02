@@ -12,6 +12,7 @@
 #include "nx/hle/services/services.h" /* am_keyboard_answered: the keyboard's box's answer */
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/runtime/platform/backend/keybind.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
@@ -889,12 +890,41 @@ static void title_paused(int paused) {
     snprintf(title, sizeof title, "%.*s%s", (int)n, t, paused ? mark : "");
     SDL_SetWindowTitle(g_win, title);
 }
+/* the help's runtime keys, with the upscaler's cycle key as the .ini has it */
+static const char* help_text(char* out, size_t size) {
+    const char* esc = strstr(HELP, "  Esc  quit");
+    if (esc)
+        snprintf(out, size, "%.*s  %s  cycle the spatial upscaler (upscaler_key)\n%s", (int)(esc - HELP), HELP,
+                 g_settings.upscaler_cycle_key, esc);
+    else
+        snprintf(out, size, "%s\n  %s  cycle the spatial upscaler (upscaler_key)", HELP, g_settings.upscaler_cycle_key);
+    return out;
+}
+/* the live upscaler cycle, at the key the .ini names: 1 when the event was that key (a repeat included, so the game
+   never sees it) */
+static int upscale_key_event(const SDL_KeyboardEvent* e) {
+    SnxKeybind bind;
+    if (!snx_keybind_parse(g_settings.upscaler_cycle_key, &bind) || !snx_keybind_match(&bind, e)) return 0;
+    if (!e->repeat) {
+        const char* label = g_renderer && g_renderer->cycle_upscale ? g_renderer->cycle_upscale() : NULL;
+        char text[64];
+        if (label) {
+            snprintf(text, sizeof text, "Upscaler: %s", label);
+            ui_lock();
+            overlay_toast(text, plat_ns());
+            ui_unlock();
+            LOG("upscaler: %s (%s)\n", label, g_settings.upscaler_cycle_key);
+        }
+    }
+    return 1;
+}
 static void hotkey(SDL_Keycode k) {
     switch (k) {
         case SDLK_F1: {
             int fs = g_fullscreen;
+            char help[2048];
             if (fs) set_fullscreen(0);
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", HELP, g_win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "ScarletNX", help_text(help, sizeof help), g_win);
             if (fs) set_fullscreen(1);
             break;
         }
@@ -1384,6 +1414,7 @@ void video_poll(void) {
                     if (!e.key.repeat) set_fullscreen(!g_fullscreen);
                     break;
                 }
+                if (upscale_key_event(&e.key)) break;
                 /* not with Ctrl, Alt or the system key: Alt+F4 also arrives as F4 on Windows */
                 if (!e.key.repeat && !(e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) hotkey(e.key.key);
                 /* a repeat doesn't press again: a key held as the menu closed (which cleared keys_held) stays from

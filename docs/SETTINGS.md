@@ -10,6 +10,7 @@
 * [Performance](#performance)
 * [On-screen controls](#on-screen-controls)
 * [Controllers](#controllers)
+* [Hotkeys](#hotkeys)
 * [Network](#network)
 * [User](#user)
 * [Debug](#debug)
@@ -118,6 +119,12 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | `gamepad_p<N>_connected` | `1` | `0`: the game never sees player N. It always sees player 1, which the keyboard drives |
 | `gamepad_p<N>_type` | `0` | The controller the game sees for player N: `0` as it is, `1` Pro Controller, `2` two Joy-Cons, `3` a left Joy-Con, `4` a right one |
 | `gamepad_p<N>_swap_ab`, `gamepad_p<N>_rumble`, `gamepad_p<N>_map` | `-1`, `-10`, empty | Player N's own `gamepad_swap_ab`, `gamepad_rumble` and `gamepad_map`; at these values, every player's |
+
+## Hotkeys
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `upscaler_key` | `ctrl+u` | The key that cycles the spatial upscaler while a game runs, as an SDL key name with `ctrl`, `shift`, `alt` and `gui` between `+`: `ctrl+u`, `alt+u`, `shift+f13`, `f13`. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not change the `.ini` |
 
 ## Network
 

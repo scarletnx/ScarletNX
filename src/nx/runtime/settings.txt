@@ -241,6 +241,14 @@ setting Sharpness
     default 25
     startup
     help The upscaler's sharpening, 0 the sharpest and 100 the softest. None and Bilinear leave it out
+setting Upscaler cycle key
+    key upscaler_key
+    label Upscaler cycle key
+    text 32
+    default ctrl+u
+    help The key that cycles the spatial upscaler while a game runs, as SDL's key names with modifiers: ctrl+u,
+    help alt+u, shift+f13, f13. The cycle goes AMD FSR 1, Bilinear, NVIDIA NIS, Qualcomm SGSR and None, and does not
+    help change the .ini
 setting Vulkan Video decode
     key vulkan_video
     label Vulkan Video decode (experimental)
