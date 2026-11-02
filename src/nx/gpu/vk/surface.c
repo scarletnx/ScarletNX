@@ -324,7 +324,55 @@ static void rtx_put(RtSlot* t, u32 mask, u64 gva, Surf* s) {
     t[i].gva = gva;
     t[i].s = s;
 }
+/* The same live targets in order of address, for the targets over a range (rt_pending_over), with the largest span
+   any of them had: one game reports a samples count dozens of times a frame, and each release walked every target it
+   kept, live or parked, twice (a twentieth of its GPU thread). Without it (an allocation failed) the lists are
+   walked */
+static u64 rt_bytes(const Surf* s);
+static Surf** g_rts;
+static u32 g_nrts, g_caprts;
+static u64 g_rts_span;
+static int g_rts_failed;
+/* the first live target at or past address a */
+static u32 rts_lower(u64 a) {
+    u32 lo = 0, hi = g_nrts;
+    while (lo < hi) {
+        u32 mid = lo + (hi - lo) / 2;
+        if (g_rts[mid]->gva < a)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+static void rts_add(Surf* s) {
+    if (g_rts_failed) return;
+    if (g_nrts == g_caprts) {
+        u32 cap = g_caprts ? g_caprts * 2 : 256;
+        Surf** n = realloc(g_rts, (size_t)cap * sizeof *n);
+        if (!n) {
+            g_rts_failed = 1;
+            return;
+        }
+        g_rts = n;
+        g_caprts = cap;
+    }
+    u32 at = rts_lower(s->gva);
+    memmove(&g_rts[at + 1], &g_rts[at], (size_t)(g_nrts - at) * sizeof *g_rts);
+    g_rts[at] = s;
+    g_nrts++;
+    if (rt_bytes(s) > g_rts_span) g_rts_span = rt_bytes(s);
+}
+static void rts_del(u64 gva) {
+    if (g_rts_failed) return;
+    u32 at = rts_lower(gva);
+    if (at < g_nrts && g_rts[at]->gva == gva) {
+        memmove(&g_rts[at], &g_rts[at + 1], (size_t)(g_nrts - at - 1) * sizeof *g_rts);
+        g_nrts--;
+    }
+}
 static void rtx_add(Surf* s) {
+    rts_add(s);
     if (g_rtx_failed) return;
     if ((g_rtx_n + 1) * 2 > (g_rtx ? g_rtx_mask + 1 : 0)) {
         u32 cap = g_rtx ? (g_rtx_mask + 1) * 2 : 1024;
@@ -347,6 +395,7 @@ static void rtx_add(Surf* s) {
 /* the live target at gva out of the table, the slots after it shifted back so that every probe still finds its own */
 static void rtx_del(u64 gva) {
     u32 i, j;
+    rts_del(gva);
     if (!g_rtx) return;
     for (i = rtx_home(gva); g_rtx[i].s && g_rtx[i].gva != gva; i = (i + 1) & g_rtx_mask) {}
     if (!g_rtx[i].s) return;
@@ -844,21 +893,34 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen) {
 static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out) {
     Surf** list = local;
     u32 n = 0, cap = nlocal;
-    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
-        for (Surf* s = g_lru[lru].head; s; s = s->lru_next) {
-            if ((s->gva >> 63) || s->gva >= gva + size || s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;
-            if (n == cap) {
-                Surf** grown = (Surf**)malloc((size_t)cap * 2 * sizeof *grown);
-                if (!grown) fatal("Out of memory listing the render targets over %llx", (unsigned long long)gva);
-                memcpy(grown, list, (size_t)n * sizeof *grown);
-                if (list != local) free(list);
-                list = grown;
-                cap *= 2;
-            }
-            u32 i = n++;
-            for (; i && list[i - 1]->wseq > s->wseq; i--) list[i] = list[i - 1];
-            list[i] = s;
+    /* the live targets that can reach gva, from the index, or every target the lists keep */
+    u32 at = g_rts_failed ? 0 : rts_lower(gva > g_rts_span ? gva - g_rts_span : 0);
+    Surf* walk = g_rts_failed ? g_lru[VK_LRU_RT].head : NULL;
+    int lru = VK_LRU_RT;
+    for (;;) {
+        Surf* s;
+        if (!g_rts_failed) {
+            if (at >= g_nrts || g_rts[at]->gva >= gva + size) break;
+            s = g_rts[at++];
+        } else {
+            while (!walk && lru < VK_LRU_RT + LRU_AGED) walk = g_lru[lru += LRU_AGED].head;
+            if (!walk) break;
+            s = walk;
+            walk = walk->lru_next;
         }
+        if ((s->gva >> 63) || s->gva >= gva + size || s->gva + rt_bytes(s) <= gva || !flush_bytes(s)) continue;
+        if (n == cap) {
+            Surf** grown = (Surf**)malloc((size_t)cap * 2 * sizeof *grown);
+            if (!grown) fatal("Out of memory listing the render targets over %llx", (unsigned long long)gva);
+            memcpy(grown, list, (size_t)n * sizeof *grown);
+            if (list != local) free(list);
+            list = grown;
+            cap *= 2;
+        }
+        u32 i = n++;
+        for (; i && list[i - 1]->wseq > s->wseq; i--) list[i] = list[i - 1];
+        list[i] = s;
+    }
     *out = list;
     return n;
 }
