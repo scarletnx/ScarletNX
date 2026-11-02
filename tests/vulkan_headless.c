@@ -1481,6 +1481,86 @@ static int check_dma_untracked_source(void) {
     return 0;
 }
 
+/* A job's checks see the CPU's writes from before it began (vk_ww_stream), not those a later submission makes while it
+   runs: those are the later job's to see. The program writes a range both jobs read (a big buffer bound whole, each
+   job reading its own part) and submits again while the first runs, which checks the range after the write: the
+   second must take the new bytes. Stamped with the newest epoch, the first job's check vouched for writes it never
+   looked for, and the second reused its copy unchecked (one game's compute inputs, with the tracking's own scans
+   saying nothing was written since the copy) */
+static u32 g_later_done;
+static u64 g_later_cpu, g_later_size;
+static void later_submission(void* arg) { /* the program's thread: its writes, then its submission */
+    (void)arg;
+    memset(GP(g_later_cpu), 0x22, g_later_size);
+    g_renderer->mem_may_have_changed();
+    __atomic_store_n(&g_later_done, 1, __ATOMIC_RELEASE);
+    plat_wake_word(&g_later_done);
+}
+/* whether the strict buffer of [gva, gva + size) holds want in every byte, read back from the GPU into *got (vk_lock
+   held) */
+static int strict_bytes(u64 gva, u64 size, u8 want, u8* got) {
+    VkBuffer b, rb;
+    u64 off;
+    u8* result;
+    if (!vk_buf_get_strict(gva, size, &b, &off) || !(result = vk_readback_buffer(size, &rb))) return 0;
+    VkBufferCopy c = {off, 0, size};
+    vk_render_end();
+    rec_CmdCopyBuffer(vk_cmd(), b, rb, 1, &c);
+    vk_finish();
+    vk_readback_ready();
+    *got = result[0];
+    return all_bytes(result, (u32)size, want);
+}
+static int check_stream_epoch(void) {
+    const u64 size = 0x40000, cpu = HEAP_BASE + 0x1800000, gva = 0x3a0000000ull;
+    VkBuffer b;
+    u64 off;
+    u8 got = 0;
+    CHECK(mem_map(cpu, size, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, size);
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int tracking = vk_written_since(gmem_host(gva, size), size, 0) >= 0;
+    /* big enough for a buffer of its own, which the tracking vouches for */
+    CHECK(vk_buf_get_strict(gva, size, &b, &off));
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: a job's write epoch needs write tracking\n");
+        CHECK(mem_unmap(cpu, size) == 0);
+        return 0;
+    }
+    /* the first job, in a new epoch, checks the range: the epoch's scan of it is taken in */
+    g_renderer->mem_may_have_changed();
+    g_renderer->stream_run(1);
+    vk_lock();
+    CHECK(strict_bytes(gva, size, 0x11, &got));
+    vk_unlock();
+    /* the program writes it and submits the second job, while the first runs */
+    g_later_cpu = cpu;
+    g_later_size = size;
+    __atomic_store_n(&g_later_done, 0, __ATOMIC_RELAXED);
+    CHECK(plat_thread(later_submission, NULL, 0) == 0);
+    while (!__atomic_load_n(&g_later_done, __ATOMIC_ACQUIRE)) plat_wait_word(&g_later_done, 0, -1);
+    /* the first job reads the range again */
+    vk_lock();
+    CHECK(vk_buf_get_strict(gva, size, &b, &off));
+    vk_unlock();
+    g_renderer->stream_run(0);
+    /* the second job, which the writes are for */
+    g_renderer->stream_run(1);
+    vk_lock();
+    int fresh = strict_bytes(gva, size, 0x22, &got);
+    vk_unlock();
+    g_renderer->stream_run(0);
+    if (!fresh)
+        fprintf(stderr, "stream epoch: the second job read %#x, the program wrote 0x22 before its submission\n", got);
+    CHECK(fresh);
+    CHECK(mem_unmap(cpu, size) == 0);
+    puts("stream epoch: a later job takes the writes made for it while an earlier one ran");
+    return 0;
+}
+
 /* Render targets over one another in the DMA test's region, as when a program frees an image and makes a bigger one
    there: a red 64 by 64 target 64 KiB into a blue 160 by 128 one cleared after it is its block columns 8 and 9 (pixels
    128 to 159 of every row). The newer one's pixels are on top in a DMA copy of it, and in guest memory once both are
@@ -1683,7 +1763,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     CHECK(!check_hash_copy());
-    CHECK(!check_staging_overflow());
+    CHECK(!check_staging_overflow()); /* first: it counts the staging blocks of a fresh device */
+    CHECK(!check_stream_epoch());
     CHECK(!check_owned_readback());
     CHECK(!check_owned_writable());
     CHECK(!check_owned_in_place_write());
@@ -1733,10 +1814,10 @@ int main(int argc, char** argv) {
     CHECK(!video_device == (g_vk.video_family == ~0u));
     av_buffer_unref(&video_device);
     CHECK(g_renderer->method_barrier);
-    u32 epoch = g_vk_epoch;
+    u32 epoch = vk_ww_epoch();
     u64 finishes = g_vk_finishes;
     for (int kind = 0; kind <= 4; kind++) g_renderer->method_barrier(kind);
-    CHECK(g_vk_epoch == epoch);       /* no barrier expires cached reads: their checks see writes (vkr_method_barrier) */
+    CHECK(vk_ww_epoch() == epoch); /* no barrier expires cached reads: their checks see writes (vkr_method_barrier) */
     CHECK(g_vk_finishes == finishes); /* method barriers order GPU work without forcing a host wait */
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */

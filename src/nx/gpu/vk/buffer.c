@@ -2191,7 +2191,7 @@ static int range_owned(u64 gva, u64 len) {
    owned bytes is stale) or given a buffer of its own: it is copied again when the GPU writes those bytes again
    (gpu_mem_dirty_since) or a later submit reads it. Draws over the results of the GPU's engines landed them, a wait
    for the GPU each */
-static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* buf, u64* off) {
+static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, VkBuffer* buf, u64* off) {
     VkBuffer sb;
     u64 so;
     if (!e) {
@@ -2211,8 +2211,8 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
     e->buf = sb;
     e->off = so;
     e->frame = vk_submit_number();
-    e->epoch = e->chk_epoch = g_vk_epoch;
-    if (strict) e->strict_epoch = g_vk_epoch;
+    e->epoch = e->chk_epoch = epoch;
+    if (strict) e->strict_epoch = epoch;
     e->gw = gpu_mem_generation();
     e->wseen = vk_ww_now();
     use(i, buf, off);
@@ -2223,7 +2223,7 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, VkBuffer* b
 enum { IN_NO, IN_TRY, IN_ONLY };
 static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 align, int inplace) {
     int pending;
-    u32 i = 0;
+    u32 i = 0, epoch = vk_ww_epoch(); /* before anything is checked or read */
     Vb* e = NULL;
     if (!len || len > 0xFFFFFFFFull) return 0; /* no buffer the GPU reads is 4 GB */
     if (g_vbi) {
@@ -2252,7 +2252,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
     /* valid: the data is where draws can read it this frame */
     int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
-        if (e->epoch == g_vk_epoch && (!strict || e->strict_epoch == g_vk_epoch)) {
+        if (e->epoch == epoch && (!strict || e->strict_epoch == epoch)) {
             use(i, buf, off);
             return 1;
         }
@@ -2271,29 +2271,29 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             }
         }
         if (w == 0) {
-            e->epoch = g_vk_epoch;
-            if (strict) e->strict_epoch = g_vk_epoch;
+            e->epoch = epoch;
+            if (strict) e->strict_epoch = epoch;
             use(i, buf, off);
             return 1;
         }
         /* without it: own buffers that stayed the same for long are checked every few submits, big ones sampled in
            between. A CPU write in between shows that many submits late; writes of the GPU front end always show at
            once (gpu_mem_dirty_since above) */
-        if (!strict && w < 0 && e->own && e->stable >= 16 && len >= (64u << 10) && g_vk_epoch - e->chk_epoch < 8) {
-            e->epoch = g_vk_epoch;
+        if (!strict && w < 0 && e->own && e->stable >= 16 && len >= (64u << 10) && epoch - e->chk_epoch < 8) {
+            e->epoch = epoch;
             use(i, buf, off);
             return 1;
         }
-        if (!strict && w < 0 && e->own && e->stable >= 32 && len < (64u << 10) && g_vk_epoch - e->chk_epoch < 4) {
-            e->epoch = g_vk_epoch;
+        if (!strict && w < 0 && e->own && e->stable >= 32 && len < (64u << 10) && epoch - e->chk_epoch < 4) {
+            e->epoch = epoch;
             use(i, buf, off);
             return 1;
         }
         if (!strict && w < 0 && e->own && e->stable >= 64 && len >= 4096 &&
-            g_vk_epoch - e->chk_epoch < (e->stable >= 256 ? 240u : 64u)) {
-            if (g_vk_epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
-                if (g_vk_epoch - e->schk >= 4) e->schk = g_vk_epoch;
-                e->epoch = g_vk_epoch;
+            epoch - e->chk_epoch < (e->stable >= 256 ? 240u : 64u)) {
+            if (epoch - e->schk < 4 || vk_sample_hash(gva, len) == e->shash) {
+                if (epoch - e->schk >= 4) e->schk = epoch;
+                e->epoch = epoch;
                 use(i, buf, off);
                 return 1;
             }
@@ -2309,8 +2309,8 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         if (host && patch_dirty(i, gva, host, e->gw, e->wseen)) {
             e->gw = gnow;
             e->wseen = wnow;
-            e->epoch = g_vk_epoch;
-            if (strict) e->strict_epoch = g_vk_epoch;
+            e->epoch = epoch;
+            if (strict) e->strict_epoch = epoch;
             use(i, buf, off);
             return 1;
         }
@@ -2323,7 +2323,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
             : gpu_mem_dirty_since(e->gw, gva, len) ? ST_DIRTY
             : e->own ? ST_WRITTEN
                      : ST_EPOCH;
-    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, buf, off);
+    if (range_owned(gva, len)) return buf_get_owned(i, e, gva, len, strict, epoch, buf, off);
     u32 wnow = vk_ww_now();
     SamplesCount counts[4];
     u32 ncounts;
@@ -2356,13 +2356,13 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 al
         e->stable = 0;
         drop_own(i);
     }
-    e->epoch = e->chk_epoch = g_vk_epoch;
-    if (strict) e->strict_epoch = g_vk_epoch;
+    e->epoch = e->chk_epoch = epoch;
+    if (strict) e->strict_epoch = epoch;
     e->gw = gpu_mem_generation();
     e->wseen = wnow;
     if (e->stable >= 63 && len >= 4096) {
         e->shash = vk_sample_hash(gva, len);
-        e->schk = g_vk_epoch;
+        e->schk = epoch;
     }
     if (!e->own) {
         if (!staged) { /* its own buffer was dropped above: the bytes changed */
