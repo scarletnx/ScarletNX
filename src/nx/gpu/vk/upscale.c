@@ -120,6 +120,8 @@ int vk_upscale_pick(u32 src_w, u32 src_h, u32 dst_w, u32 dst_h, u32 transform) {
     int f = __atomic_load_n(&g_up.configured, __ATOMIC_RELAXED);
     if (!src_w || !src_h || !dst_w || !dst_h) return -1;
     if (f == SNX_UPSCALE_OFF || f == SNX_UPSCALE_BILINEAR) return f;
+    /* the filters reconstruct an upscale: at 1:1 and on a downscale the plain blit is exact and cannot shimmer */
+    if (dst_w <= src_w && dst_h <= src_h) return SNX_UPSCALE_OFF;
     /* NIS samples the input itself and supports at most 2x each axis, and its coordinates have no flip: FSR 1's
        shaders do both, so they stand in for it there */
     if (f == SNX_UPSCALE_NIS &&
