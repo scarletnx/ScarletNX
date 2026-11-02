@@ -264,12 +264,13 @@ behind its core's holder runs on an idle core of its mask, and an idle core take
 
 `memory/mem.c`: one guest VA reservation; `GP(addr) = g_mem + addr`, accessed directly by generated code.
 
-NCE (`runtime/nce/`, the setting `nce`, AArch64 Linux): the game's code runs on the host's CPU. The recompile makes
-no code ahead of time. It finds the words to patch with the full analysis (`nce_patch.c`): SVC, the TLS registers,
-the counter registers, and the exclusives, which become their ordered forms. Each module moves up to leave a pool
-for its stubs after it, in the reach of a B. The pools and the sites go in `<game>.nce`. With that file, the
-runtime reserves the guest's address space at the guest's own addresses (`g_mem` is 0, and all of it is
-executable), and patches the code after the load (`nce.c`). A stub calls the outcall of `nce_host.c`. The outcall
+NCE (`runtime/nce/`, the setting `nce`, AArch64 Linux and Android 10 and later, [NCE](NCE.md)): the game's code
+runs on the host's CPU. The recompile makes no code ahead of time. It finds the words to patch with the full analysis
+(`nce_patch.c`): SVC, the TLS registers, the counter registers, and the exclusives, which become their ordered forms.
+Each module moves up to leave a pool for its stubs after it, in the reach of a B. The pools and the sites go in
+`<game>.nce`. With that file, the runtime reserves the guest's address space at the guest's own addresses (`g_mem` is
+0, and all of it is executable; on Android the whole layout first moves above 64 GiB), and patches the code after
+the load (`nce.c`). A stub calls the outcall of `nce_host.c`. The outcall
 puts the guest's state in its `CPU`, and calls the runtime on the host's stack through `RtAPI` (svcs, ticks, poll).
 A run of native code starts from the whole `CPU` through a signal that the thread sends to itself, and sigreturn
 loads it. The same signal resumes the guest after a kick (another signal) stopped it for `CPU.poll`, or after

@@ -46,6 +46,7 @@ ScarletNX yourself, see [Build](./BUILD.md).
 - [Architecture](./ARCHITECTURE.md): AArch64 to a native module, the runtimes' boundaries and what each owns
 - [The recompiler as a library](./LIBRARY.md): building, using and the limits of `libscarletnx-recompiler`
 - [Cortex-A57 divergences](./DIVERGENCES.md): where the recompiled code differs from the CPU
+- [NCE](./NCE.md): the game's code on an AArch64 host's own CPU, Android's design calls and their limits
 - [Hooks](./HOOKS.md): native handlers for functions a game exports, declaring and checking one
 - [CPU implementation plan](./CPU_TRANSLATOR_PLAN.md): Rosetta 2's design, part by part, applied to ScarletNX
   - [Working on the plan](./CPU_TRANSLATOR_GUIDE.md): setup, rules, and how work is handed back
