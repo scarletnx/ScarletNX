@@ -136,7 +136,7 @@ static void draw(Surf* s, u32 size, u32 at, u8 value) {
     u8* original = NULL;
     u64 after = 0;
     if (!vk_gfx_image_unrecorded(s) && !(after = vk_gfx_image_after(s, size))) {
-        original = malloc(size);
+        original = calloc(1, SIZE); /* the stand-in GPU lands whole images, whatever the draw's size */
         if (!original) exit(2);
         gmem_read(s->gva, original, size);
     }
