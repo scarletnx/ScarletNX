@@ -1101,6 +1101,26 @@ static void store_result(Method* m, uint32_t pc, const Insn* in, const char* ret
     }
 }
 
+/* Calls of the JDK that behave otherwise on Android, sent to the runtime's own. An instance method becomes a static
+   one with the receiver as its first parameter. System.loadLibrary must load the app's native libraries through the
+   native bridge (docs/android/NATIVE.md), not HotSpot's loader */
+typedef struct {
+    const char *owner, *name, *desc;
+    const char *to_owner, *to_name;
+} Remap;
+static const Remap remaps[] = {
+    {"Ljava/lang/System;", "loadLibrary", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "loadLibrary"},
+    {"Ljava/lang/System;", "load", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "load"},
+    {"Ljava/lang/Runtime;", "loadLibrary", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoadLibrary"},
+    {"Ljava/lang/Runtime;", "load", "(Ljava/lang/String;)V", "Lsnx/dalvik/Runtime;", "runtimeLoad"},
+};
+static const Remap* remap_of(const char* owner, const char* name, const char* desc) {
+    for (size_t i = 0; i < sizeof remaps / sizeof *remaps; ++i)
+        if (!strcmp(remaps[i].owner, owner) && !strcmp(remaps[i].name, name) && !strcmp(remaps[i].desc, desc))
+            return &remaps[i];
+    return NULL;
+}
+
 static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* s) {
     unsigned op = in->op >= 0x74 ? in->op - 6 : in->op;
     uint32_t class_idx, proto_idx;
@@ -1183,6 +1203,24 @@ static void emit_invoke(Method* m, uint32_t pc, const Insn* in, const uint32_t* 
         arg_slots += 2;
         free(desc);
         desc = redirect;
+    }
+    const Remap* remap = remap_of(dex_type(m->dex, class_idx), name, desc);
+    if (remap && !redirect) {
+        /* the receiver, loaded already, becomes the first parameter */
+        size_t n = strlen(desc) + strlen(remap->owner) + 1;
+        char* to = malloc(n);
+        if (!to) {
+            fail(m, "out of memory");
+            free(desc);
+            return;
+        }
+        snprintf(to, n, "(%s%s", is_static ? "" : remap->owner, desc + 1);
+        free(desc);
+        desc = to;
+        owner = remap->to_owner;
+        name = remap->to_name;
+        jop = J_INVOKESTATIC;
+        tag = CF_METHODREF;
     }
     const char* ret = desc + strlen(desc) - 1;
     while (ret > desc && ret[-1] != ')') --ret;
