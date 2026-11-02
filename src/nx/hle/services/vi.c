@@ -714,6 +714,7 @@ void vi_vsync_tick(void) {
         ev_signal(g_hle.vi.mode_changed);
         ev_signal(g_hle.vi.hotplug);
     }
+    gsv_vsync_tick(); /* the Ounce VI2 session's groups */
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }

@@ -294,11 +294,12 @@ setting FPS limit
     help 10 to 1000 = that many frames a second. F4 turns the limit off and on
 setting Memory (GB)
     key memory_gb
-    int 0 8
+    int 0 12
     default 0
     startup
     help The memory the game sees: below 6 the console's 3.2 GB, 6 = 4.8 GB, 8 = 6.8 GB. A game that runs out on
-    help the console's amount needs 6
+    help the console's amount needs 6. 12 is experimental: it gives a 10 GiB application budget and a larger heap
+    help region for newer games. It requires a host with enough available memory and address space
 setting Memory fit mode
     label Memory fit
     key memory_fit_mode
@@ -1081,6 +1082,14 @@ setting Shader corpus
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
     help translated, and none is kept for the next run. Empty: none, or captures/shaders with Shader captures
+setting SM86 dump
+    key sm86_dump
+    text 1024
+    default ""
+    startup
+    help A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of
+    help shader memory with no whole program in it, for tools/snx_sm86.c (the game's own code: keep it local). Empty:
+    help none
 setting GPU trace target
     key gpu_trace_target
     text 64

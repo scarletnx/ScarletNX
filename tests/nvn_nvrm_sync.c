@@ -86,6 +86,7 @@ void kthread_unblock(KThread* t) { (void)t; }
 void core_enter(KThread* t) { (void)t; }
 void core_leave(KThread* t) { (void)t; }
 u64 guest_ticks(void) { return 0; }
+const char* g_shader_sm86_dump; /* shader.c's: no dumps */
 void loader_segments(LoaderSegEach each, void* ctx) {
     (void)each;
     (void)ctx;
@@ -111,6 +112,10 @@ u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size;
     (void)align;
     return 0;
+}
+void gmem_read_code(u64 gva, void* dst, u64 size) {
+    (void)gva;
+    memset(dst, 0, size);
 }
 void gmmu_space_map(u64 gva, u64 cpu, u64 size) {
     (void)gva;

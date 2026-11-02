@@ -915,6 +915,7 @@ static void bind_program(NvnDraw* d, u64 payload) {
         d->dx.code = st->data ? st->data + st->off : 0;
         d->dx.block[0] = r.block[0], d->dx.block[1] = r.block[1], d->dx.block[2] = r.block[2];
         d->dx.shared = r.off_a;
+        memcpy(d->c0rec, r.c0, sizeof d->c0rec);
         /* bank 1: the program's constants, after its code */
         d->dx.cb_addr[1] = st->data && st->cb_size ? st->data + 256 * (u64)st->cb : 0;
         d->dx.cb_size[1] = 256 * (u32)st->cb_size;
@@ -1058,6 +1059,34 @@ static void clear_texture(NvnDraw* d, u64 payload) {
 }
 
 /* a compute dispatch: its grid (or the GPU's words at ind) in bank 0 at 0x200, and the compute stage's state */
+/* An Ounce compute program's packed c[0] (NVN_PROG_C0), as the driver's macro 0xeac writes it into x's bank 0 from
+   the tables the binds keep: the buffers in bank 0 from 0x210 and 0x310, the handles in bank 2. A grid the GPU reads
+   (indirect) is not in it yet */
+static void c0_packed(const NvnDraw* d, DispatchState* x) {
+    static const u16 handles[5] = {C2_TEX, C2_SEPTEX, C2_SAMP, C2_IMG, 0}; /* records 11-15; addresses have none */
+    const u8* rec = d->c0rec;
+    u8 c0[DS_INLINE_BANK0] = {0};
+    u32 at = 0x10, size = (u32)rec[18] | (u32)rec[19] << 8;
+    snx_st_le32(c0, (size + 15) & ~15u);
+    for (u32 k = 0; k < 3; k++) snx_st_le32(c0 + 4 + 4 * k, x->grid[k]);
+    for (u32 k = 0; k < NVN_ROOT_TABLES; k++) {
+        u32 n = rec[1 + k]; /* a byte: words of the table, within NVN_ROOT_WORDS */
+        for (u32 w = 0; w < n && w < NVN_ROOT_WORDS && at + 4 * w + 4 <= sizeof c0; w++)
+            memcpy(c0 + at + 4 * w, d->dx.root + 4 * NVN_ROOT_WORDS * k + 4 * w, 4);
+        at += (4 * n + 15) & ~15u;
+    }
+    for (u32 kind = 0; kind < 2; kind++) /* uniform, then storage buffers: {low, high, size, 0} */
+        for (u32 i = 0; i < (rec[9 + kind] & 0x3fu) && i < 16 && at + 16 <= sizeof c0; i++, at += 16)
+            memcpy(c0 + at, d->dx.bank0 + (kind ? 0x310 : 0x210) + 16 * i, 12);
+    for (u32 l = 0; l < 5; l++) {
+        u32 n = rec[11 + l];
+        if (l == 4 && n) LOG_LIMIT(1, "nvn: a compute program's c[0] has %u addresses, which the runtime gives as 0\n", n);
+        for (u32 i = 0; i < n && at + 8 <= sizeof c0; i++, at += 8)
+            if (handles[l] && handles[l] + 8 * i + 4 <= DS_INLINE_BANK2)
+                memcpy(c0 + at, d->dx.bank2 + handles[l] + 8 * i, 4);
+    }
+    memcpy(x->bank0, c0, sizeof c0);
+}
 static void dispatch(NvnDraw* d, u64 payload) {
     const NvnPDispatch* r = NVN_OBJ(const NvnPDispatch, payload);
     u32 g[3];
@@ -1070,6 +1099,12 @@ static void dispatch(NvnDraw* d, u64 payload) {
         snx_st_le32(d->dx.bank0 + 0x200, g[0]);
         snx_st_le32(d->dx.bank0 + 0x204, g[1]);
         snx_st_le32(d->dx.bank0 + 0x208, g[2]);
+    }
+    if (g_shader_sm86 && d->c0rec[0] == 1) {
+        DispatchState x = d->dx;
+        c0_packed(d, &x);
+        g_renderer->dispatch(&x);
+        return;
     }
     g_renderer->dispatch(&d->dx);
 }
@@ -1335,6 +1370,15 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
                                 bytes, written into guest memory as the 3D engine's LOAD_CONSTANT_BUFFER writes them */
             const NvnPUpdateUB* r = NVN_OBJ(const NvnPUpdateUB, payload);
             if (r->size && r->size <= (u64)size - sizeof *r) gmem_write(r->dst, GP(payload + sizeof *r), r->size);
+            return 1;
+        }
+        case OP_PUSH_CONSTANTS: { /* into the root table, cut at its end */
+            const NvnPPush* r = NVN_OBJ(const NvnPPush, payload);
+            u32 bytes = 4 * (r->words + 1u), at = r->offset & ~3u, room = 4 * NVN_ROOT_WORDS - at;
+            if (sizeof *r + (u64)bytes > (u64)size) return 1;
+            u8* to = (r->compute ? d->dx.root : d->inl.root) + 4 * NVN_ROOT_WORDS * r->table + at;
+            memcpy(to, GP(payload + sizeof *r), bytes < room ? bytes : room);
+            if (!r->compute) inl_wrote(d, to, bytes < room ? bytes : room);
             return 1;
         }
         case OP_BARRIER: {

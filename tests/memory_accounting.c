@@ -289,6 +289,17 @@ static void test_heap(void) {
     CHECK(used_memory() == 56 * MIB);
     CHECK(info(6) == 3285 * MIB && info(7) == 56 * MIB);
     CHECK(info(21) == info(6) && info(22) == info(7));
+    CHECK(info(33) == 0x1000);             /* guest page size, also on hosts with larger pages */
+    CHECK(info(29) == 0 && info(30) == 0); /* no remote address space */
+    CHECK(info(31) == 0 && info(32) == 0); /* no remote allocations */
+    static const u32 process_ids[] = {29, 30, 31, 32, 33};
+    for (size_t i = 0; i < sizeof process_ids / sizeof process_ids[0]; ++i) {
+        u32 id = process_ids[i];
+        u64 out = ~0ull;
+        CHECK(svc_get_info(id, H_CUR_PROC, 1, &out) == SNX_RC_SVC_INVALID_ENUM_VALUE);
+        CHECK(svc_get_info(id, 0, 0, &out) == SNX_RC_SVC_INVALID_HANDLE);
+        CHECK(svc_get_info(id, 0x1234, 0, &out) == SNX_RC_SVC_INVALID_HANDLE);
+    }
     CHECK(svc_set_heap_size(3200 * MIB) == 0); /* the reported startup failure */
     CHECK(g_heap_size == 3200 * MIB && used_memory() == 3256 * MIB);
     CHECK(state(HEAP_BASE) == MS_NORMAL);
@@ -317,6 +328,22 @@ static void test_heap(void) {
         CHECK(svc_set_heap_size(3200 * MIB) == 0);
         CHECK(svc_set_heap_size(0) == 0);
     }
+}
+static void test_large_heap(void) {
+    MemLayout saved = g_layout;
+    base_process();
+    g_settings.memory_gb = 12;
+    mem_layout_large_heap();
+    CHECK(g_layout.heap_size == 12ull << 30);
+    CHECK(g_layout.stack == saved.stack + (4ull << 30));
+    CHECK(g_layout.kern == saved.kern + (4ull << 30));
+    CHECK(mem_total() == 10ull << 30);
+    CHECK(info(5) == 12ull << 30 && info(6) == 10ull << 30);
+    CHECK(svc_set_heap_size(8500 * MIB) == 0);
+    CHECK(g_heap_size == 8500 * MIB && state(HEAP_BASE + 8499 * MIB) == MS_NORMAL);
+    CHECK(svc_set_heap_size(0) == 0);
+    CHECK(svc_set_heap_size(12ull << 30) == SNX_RC_SVC_INVALID_SIZE);
+    g_layout = saved;
 }
 /* a 32-bit process's GetInfo total is its heap region's size (2 GiB without an alias region), not the application
    pool's: a title that sets its heap to nearly the total it reads otherwise asks for 3.2 GiB and gets none */
@@ -528,6 +555,16 @@ static void test_map_memory(void) {
     CHECK(svc_set_mem_attr(src, 0x1000, 1, 1) == SNX_RC_SVC_INVALID_COMBINATION);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
     CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_SHARABLE, MA_GPU_SHARABLE) == 0);
+    {
+        MemBlock b;
+        mem_query(src, &b);
+        CHECK((b.attr & MA_GPU_SHARABLE) != 0);
+    }
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 8) == 0);
+    CHECK(svc_set_mem_attr(src, 0x1000, 8, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, MA_GPU_SHARABLE, 0) == 0);
+    CHECK(svc_set_gpu_mem_attr(src, 0x1000, 8, 8) == SNX_RC_SVC_INVALID_COMBINATION);
     CHECK(svc_set_mem_perm(src, 0x1000, PERM_RW) == 0);
     CHECK(mem_unmap(info, 0x1000) == 0);
     CHECK(svc_set_heap_size(0) == 0);
@@ -671,6 +708,20 @@ static int console_layout(u64 end) {
            g_layout.stack == 0x1300000000ull && g_layout.stack_size == 2ull << 30 && g_layout.kern == 0x1380000000ull &&
            g_layout.kern_end == 0x13C0000000ull;
 }
+/* mem_layout_large_heap on the layout mem_init made: the heap region 4 GiB larger and the stack region after it 4 GiB
+   up, with the kernel's pages where they follow the stack (the console's regions, whatever the reservation past
+   them) or kept at the end; nothing where the 4 GiB don't fit. The layout is put back after */
+static int large_heap(int grows, int kern_moves) {
+    MemLayout was = g_layout;
+    u64 up = grows ? 4ull << 30 : 0, kern_up = kern_moves ? up : 0;
+    mem_layout_large_heap();
+    int ok = g_layout.heap == was.heap && g_layout.heap_size == was.heap_size + up &&
+             g_layout.stack == was.stack + up && g_layout.stack_size == was.stack_size &&
+             g_layout.kern == was.kern + kern_up && g_layout.kern_end == was.kern_end + kern_up &&
+             g_layout.end == was.end;
+    g_layout = was;
+    return ok;
+}
 static void test_ladder(void) {
     int fds[2], status = 0;
     u64 got[2 * (LADDER_N + 2)];
@@ -680,6 +731,7 @@ static void test_ladder(void) {
     /* a host that gives it: the console's whole address space, asked first, and the game told so */
     reserve_again();
     CHECK(g_mem && g_as_size == 512ull << 30 && console_layout(512ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 1 && asked_watched(0, 1));
     CHECK(strstr(said, "memory: 512 GiB of address space reserved, the console's\n"));
     CHECK(info(12) == 0x8000000ull && info(13) == (512ull << 30) - 0x8000000ull);
@@ -688,6 +740,7 @@ static void test_ladder(void) {
     refuse_above = 256ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 256ull << 30 && console_layout(256ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 2 && asked_watched(0, 2));
     CHECK(strstr(said, "memory: 512 GiB of address space refused: "));
     CHECK(strstr(said, "memory: 256 GiB of address space reserved, of the console's 512: the game's address space ends "
@@ -697,6 +750,7 @@ static void test_ladder(void) {
     refuse_above = 128ull << 30;
     reserve_again();
     CHECK(g_mem && g_as_size == 128ull << 30 && console_layout(128ull << 30));
+    CHECK(large_heap(1, 1));
     CHECK(asked_n == 3 && asked_watched(0, 3));
     let_go();
     /* a Windows that gives no reservation with the write watch: every tier with it, then 512 and 256 GiB without */
@@ -768,6 +822,8 @@ static void test_alias_layouts(void) {
         CHECK(info(12) == 0x8000000ull && info(13) == size - 0x8000000ull);
         CHECK(info(14) == 28ull << 30 && info(15) == 2ull << 30);
         CHECK(STACK_BASE + STACK_SIZE + (1ull << 30) <= KERN_BASE);
+        /* the kernel's pages stay in the last GiB: 4 GiB more heap fit before them in 48 GiB, not in 32 */
+        CHECK(large_heap(size >= (48ull << 30), 0));
         /* the region's edges */
         CHECK(svc_map_physical(ALIAS_BASE + ALIAS_SIZE - 0x1000, 0x1000) == 0);
         CHECK(g_phys_mapped == 3 * 0x1000 && state(ALIAS_BASE + want - 0x1000) == MS_NORMAL);
@@ -934,6 +990,7 @@ int main(void) {
         mem_init();
         CHECK(mem_ww_probe(NULL) == -1 && scanned == g_mem && g_mem); /* the tracking starts at g_mem */
         test_heap();
+        test_large_heap();
         test_heap32();
         test_fit();
         test_system_resource();

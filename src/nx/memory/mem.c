@@ -150,6 +150,24 @@ void mem_layout36(void) {
     g_layout.kern_end = AS36;
 }
 
+void mem_layout_large_heap(void) {
+    u64 extra = 4 * GIB;
+    /* The console's regions (layout_for, from AS_MAX up, the reservation ending past them) place the kernel region
+       right after the stack, so it moves too. Smaller layouts keep it at the high end of the reservation, with free
+       space between them for this extension where there is room. */
+    int kern_follows = g_layout.kern == g_layout.stack + g_layout.stack_size;
+    if (g_as_size < 32 * GIB || g_layout.heap_size != 8 * GIB ||
+        (kern_follows ? g_layout.kern_end + extra > g_layout.end
+                      : g_layout.stack + g_layout.stack_size + extra > g_layout.kern))
+        return;
+    g_layout.heap_size += extra;
+    g_layout.stack += extra;
+    if (kern_follows) {
+        g_layout.kern += extra;
+        g_layout.kern_end += extra;
+    }
+}
+
 /* The 32-bit layouts (Eden's 32-bit entries in k_address_space_info.cpp): the code region from 2 MiB to 1 GiB, which
    is the stack region too, then from 1 GiB the 1 GiB alias region and the 1 GiB heap region, or a 2 GiB heap region
    without an alias region. The kernel's pages go in the last GiB, above both */

@@ -79,7 +79,7 @@ type, range and help, tab-separated. Every setting, the recompiler's too, is des
 | Key | Default | Effect |
 | --- | --- | --- |
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS. A 3DS game takes it too (`--fps_limit=N`): its clock runs at N/60 of the console's pace (the 3DS shows 60 frames a second), its sound with it; `0` skips every wait, its sound not played. F4 turns it off and on there too |
-| `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6` |
+| `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB need `6`. `12` is an experimental 10 GiB application budget with a 12 GiB heap region for newer games. It needs enough host memory and address space. |
 | `memory_fit_mode` | `0` | `0` (Auto) tells the game no more of `memory_gb`'s memory than the device can still give it, measured as the game starts, less what the rest of ScarletNX takes, so a device with less than the console has is not run out of memory, and one that can give it all tells it all of it. The log says what it measured. `1` (Off) tells it all of it. It takes the place of `memory_fit`, whose `0` was Off ([Deprecations](deprecations.md)) |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
 | `map_limit_mb` | `0` (iOS `256`) | The most of the game's RomFS and ExeFS files mapped into memory, in MB: the ExeFS and a `romfs.bin` at start, a `romfs` folder's files as the game first reads them. `0` is no limit. A file past it is read from disk when the game asks, which is slower and leaves address space for threads and graphics where a device has little |
@@ -201,6 +201,7 @@ the key (with its modifiers held); Esc cancels, Backspace puts the default back,
 | `hooks_off` | empty | The families of hooks (`hooks.hook`'s family lines, such as `libc`) whose functions run their own code, separated by commas or spaces, to tell which family a problem comes from. Empty, every family is on |
 | `hooks_verify` | empty | The families of hooks whose pure hooks are checked on every call: the function's own code runs on copies of the memory it writes, then the handler on the game's, and the log names each call whose result, registers or bytes differ ([Hooks](../platforms/nx/hooks.md#verify-mode)). Slow: for checking a hook, never for playing |
 | `shader_corpus` | empty | A folder that keeps each translated shader for `snx-shaderc`. With it every shader is translated, and none is kept for the next run |
+| `sm86_dump` | empty | A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of shader memory with no whole program in it, for `tools/snx_sm86.c` (the game's own code: keep it local) |
 | `gpu_trace_target` | empty | `address[:bytes]`: logs the clears and draws that write a render target starting in that GPU address range |
 | `vk_gpu_profile` | `0` | `1` logs the GPU's time per rendering pass every 10 seconds |
 | `vk_checkpoints` | `0` | `1` logs the work each queue reached when the device is lost (`VK_NV_device_diagnostic_checkpoints`) |

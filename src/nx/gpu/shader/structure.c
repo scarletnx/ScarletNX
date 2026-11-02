@@ -19,7 +19,15 @@
 #define NONE 0xffffffffu
 #define MAX_NESTING 1024 /* recursion of the placement, and so the stack it needs */
 
-enum { TERM_FALL, TERM_GOTO, TERM_COND, TERM_SWITCH, TERM_EXIT, TERM_END };
+/* how a block ends: translator.h's SHT_*, which shader_structure_graph takes from another frontend */
+enum {
+    TERM_FALL = SHT_FALL,
+    TERM_GOTO = SHT_GOTO,
+    TERM_COND = SHT_COND,
+    TERM_SWITCH = SHT_SWITCH,
+    TERM_EXIT = SHT_EXIT,
+    TERM_END = SHT_END
+};
 #define MAX_CASES 64 /* a jump table's entries, as shader_brx_targets reads them */
 
 /* the graph and the placement: one allocation, carved in shader_structure */
@@ -28,6 +36,7 @@ typedef struct {
     u32 n, nb, *start, *succ, *rpo, *order, *idom, *fwd_in, *loop_of, *loop_parent, *place, *kid_start,
         *kid_count, *kids, *pred_start, *preds, *work, *mark;
     u32 *sw_first, *sw_targets, nsw, sw_cap; /* a BRX block's distinct targets, sw_first[b] up to sw_first[b + 1] */
+    u32 nbrx;                                /* the jump tables that cfg_alloc made room for */
     u8 *term, *header, *by_branch, *outside;
     /* the scopes open where the placement is: scope index, and the block it ends before or the loop's header */
     u32 *ctx_scope, *ctx_block, nctx;
@@ -344,14 +353,8 @@ static void resolve_breaks(ShStructure* st, u8* tail) {
     }
 }
 
-ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u32* pop_targets) {
-    u32 nb = 0, nbrx = 0, reached, i, b;
-    for (i = 11; i < n; i++)
-        if (IDX_OK(i)) {
-            nb += leader[i];
-            nbrx += decode(insn[i]) && decode(insn[i])->id == O_BRX;
-        }
-    if (!nb || !leader[11]) return NULL;
+/* the graph of nb blocks of n instructions, and room for nbrx jump tables: NULL without memory */
+static Cfg* cfg_alloc(u32 n, u32 nb, u32 nbrx) {
     /* one allocation for the graph: its u32 arrays by block (two words a block for successors, predecessors, the
        walk's stack and the scopes open, two scopes a block at most), the jump tables' targets, and four flag arrays */
     size_t cases = (size_t)nbrx * MAX_CASES;
@@ -359,9 +362,9 @@ ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u3
     Cfg* g = calloc(1, sizeof *g + bytes);
     if (!g) return NULL;
     u32* p = (u32*)(g + 1);
-    g->insn = insn;
     g->n = n;
     g->nb = nb;
+    g->nbrx = nbrx;
     g->start = p, p += nb;
     g->succ = p, p += 2 * (size_t)nb;
     g->rpo = p, p += nb;
@@ -387,10 +390,14 @@ ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u3
     g->header = g->term + nb;
     g->by_branch = g->header + nb;
     g->outside = g->by_branch + nb;
-    for (i = 11, b = 0; i < n; i++)
-        if (IDX_OK(i) && leader[i]) g->start[b++] = i;
+    return g;
+}
+
+/* the placement of a graph whose blocks and terminators are set: the structure, or NULL. Frees g */
+static ShStructure* cfg_place(Cfg* g) {
+    u32 nb = g->nb, nbrx = g->nbrx, reached, i, b;
     ShStructure* st = NULL;
-    if (!terminators(g, pop_targets) || !(reached = (u32)number(g))) goto done;
+    if (!(reached = (u32)number(g))) goto done;
     /* predecessors among the blocks reached */
     for (u32 k = 0; k < reached; k++) {
         u32 x = g->order[k];
@@ -487,4 +494,61 @@ ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u3
 done:
     free(g);
     return st;
+}
+
+ShStructure* shader_structure(const u64* insn, u32 n, const u8* leader, const u32* pop_targets) {
+    u32 nb = 0, nbrx = 0, i, b;
+    for (i = 11; i < n; i++)
+        if (IDX_OK(i)) {
+            nb += leader[i];
+            nbrx += decode(insn[i]) && decode(insn[i])->id == O_BRX;
+        }
+    if (!nb || !leader[11]) return NULL;
+    Cfg* g = cfg_alloc(n, nb, nbrx);
+    if (!g) return NULL;
+    g->insn = insn;
+    for (i = 11, b = 0; i < n; i++)
+        if (IDX_OK(i) && leader[i]) g->start[b++] = i;
+    if (!terminators(g, pop_targets)) {
+        free(g);
+        return NULL;
+    }
+    return cfg_place(g);
+}
+
+ShStructure* shader_structure_graph(u32 n, u32 nb, const u32* start, const u8* term, const u32* succ,
+                                    const u32* sw_first, const u32* sw_targets) {
+    if (!nb || start[0]) return NULL;
+    u32 nswitch = 0;
+    for (u32 b = 0; b < nb; b++) {
+        if ((b && start[b] <= start[b - 1]) || start[b] >= n || term[b] > SHT_END) return NULL;
+        if (term[b] == SHT_SWITCH) {
+            if (!sw_first || sw_first[b + 1] <= sw_first[b] || sw_first[b + 1] - sw_first[b] > MAX_CASES) return NULL;
+            for (u32 k = sw_first[b]; k < sw_first[b + 1]; k++)
+                if (sw_targets[k] >= nb) return NULL;
+            nswitch++;
+            continue;
+        }
+        u32 count = term[b] == SHT_COND ? 2 : term[b] == SHT_FALL || term[b] == SHT_GOTO ? 1 : 0;
+        for (u32 k = 0; k < count; k++)
+            if (succ[2 * b + k] >= nb) return NULL;
+    }
+    Cfg* g = cfg_alloc(n, nb, nswitch);
+    if (!g) return NULL;
+    for (u32 b = 0; b < nb; b++) {
+        g->start[b] = start[b];
+        g->term[b] = term[b];
+        g->succ[2 * b] = term[b] == SHT_FALL || term[b] == SHT_GOTO || term[b] == SHT_COND ? succ[2 * b] : NONE;
+        g->succ[2 * b + 1] = term[b] == SHT_COND ? succ[2 * b + 1] : NONE;
+        /* a switch's distinct targets, as terminators() gathers a BRX's */
+        g->sw_first[b + 1] = g->sw_first[b];
+        if (term[b] != SHT_SWITCH) continue;
+        for (u32 k = sw_first[b]; k < sw_first[b + 1]; k++) {
+            u32 seen = 0;
+            for (u32 j = g->sw_first[b]; j < g->nsw; j++) seen |= g->sw_targets[j] == sw_targets[k];
+            if (!seen) g->sw_targets[g->nsw++] = sw_targets[k];
+        }
+        g->sw_first[b + 1] = g->nsw;
+    }
+    return cfg_place(g);
 }

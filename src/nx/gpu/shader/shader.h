@@ -76,6 +76,7 @@ typedef struct {
     u32 sph[20];             /* the shader program header, 80 bytes */
     u32 cbuf_mask;           /* constant buffers read */
     u32 cbuf_max[18];        /* bytes read of each, so only those are bound */
+    u32 root_max;            /* bytes read of the root tables (SNX_VKB_ROOT), 0 for none */
     ShTex tex[SH_MAXTEX];
     int ntex;
     u32 in_mask;       /* generic attributes 0-31 read */
@@ -185,7 +186,8 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 #define SNX_VKB_RS       (SNX_VKB_IMG + 8)         /* fragment: 1 / the resolution scale (SNX_RS) */
 #define SNX_VKB_FMT      (SNX_VKB_RS + 1)          /* compute: the images' format classes (SNX_FMT) */
 #define SNX_VKB_SMAP     (SNX_VKB_FMT + 1)         /* graphics: storage buffer page indices for aliased bindings */
-#define SNX_VKB_IMGBUF   (SNX_VKB_SMAP + 1)        /* 8 buffer images (compute, vertex, fragment) */
+#define SNX_VKB_ROOT     (SNX_VKB_SMAP + 1)        /* an Ounce program's root tables, banks 24 to 31 (SH_ROOT_BYTES) */
+#define SNX_VKB_IMGBUF   (SNX_VKB_ROOT + 1)        /* 8 buffer images (compute, vertex, fragment) */
 #define SNX_VKB_BLEND    SNX_VKB_IMG            /* fragment: ordered blend uses IMG+nimg, after the guest images */
 #define SNX_VKB_CAPTURE  (SNX_VKB_IMGBUF + 8)   /* fragment: sparse capture tile flags and dispatch list */
 #define SNX_VKB_TEXARRAY (SNX_VKB_CAPTURE + 1)  /* up to SNX_TEX_ARRAY distinct indexed handles */
@@ -202,6 +204,12 @@ static inline void shader_query_hint_unpack(const u32 words[SH_QUERY_WORDS], u8 
 /* An indexed texture loads its handle with an LDC whose address has a register in it: one of SNX_TEX_ARRAY handles
    from cbuf_off on, each (1 << shift) bytes after the last, with the shift in bits 4-7 of ShTex.flags. */
 #define SNX_TEX_ARRAY    256
+/* An Ounce program reads its root tables (push constants) as banks 24 to 31: 8 tables of 256 bytes, which the
+   renderer binds as one uniform buffer, table t at 256 t */
+#define SH_ROOT_BANK     24
+#define SH_ROOT_TABLES   8
+#define SH_ROOT_TABLE    256
+#define SH_ROOT_BYTES    (SH_ROOT_TABLES * SH_ROOT_TABLE)
 #define SNX_TEX_INDEXED  4
 /* Device capabilities the renderer sets before translating: */
 /* sampled image arrays indexed per invocation (non-uniform indexing) */
@@ -291,6 +299,11 @@ int shader_shared_fit(const u8* code, u32 max_bytes, const u32 local[3], u32 shm
 /* reads word off (bytes) of constant buffer idx for jump tables, into *out as a host number: 1 when it could. Set by
    whoever translates, NULL offline */
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
+/* The programs are SM86 (sm86.h), not Maxwell: an Ounce game's. nvn_direct sets it once, from the game's NVN API
+   version, before the game's first draw */
+extern int g_shader_sm86;
+/* a folder that sm86_debug_dump writes refused SM86 programs to (the sm86_dump setting), NULL for none */
+extern const char* g_shader_sm86_dump;
 /* the targets of the BRX at word index from its jump table, at most max_targets, or -1 */
 int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets);
 /* the program's hash, and its length in bytes in out_len */

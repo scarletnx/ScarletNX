@@ -84,8 +84,8 @@ _Static_assert(SH_MAXTEX <= 64, "the scaled textures' mask has a bit a slot");
 
 static const SpvGlsl450Op conversion_rounds[] = {SPV_GLSL_ROUND_EVEN, SPV_GLSL_FLOOR, SPV_GLSL_CEIL, SPV_GLSL_TRUNC};
 
-/* the words of a program: the 0x20000-byte window vk_shader_get reads it from (SH_CODE), which direct_can_reach's
-   reachability bitset holds */
+/* the words of a program that direct_can_reach's reachability bitset holds: 0x20000 bytes of the window vk_shader_get
+   reads it from (SH_CODE), and the checks give up on a program longer than that */
 #define DIRECT_WORDS_MAX 16384u
 
 /* gb_at's mark for an access whose buffer is found when it runs (shader_global_dynamic) */

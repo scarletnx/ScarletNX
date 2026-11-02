@@ -263,3 +263,14 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   set of each shader's own bindings did not stop it, and neither did `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0`
   (`docs/hosts/apple.md` has the rates). Count the draws that a run skips before you trust a workaround. The runs that did
   not lock up skipped the over-limit draws. Measure an intermittent GPU fault over 8 runs of one route on one save.
+- An Ounce game does not use Maxwell shaders. Its shaders are SM86 SASS, with 128-bit instructions.
+  A previous session matched Maxwell tables against the wrong bytes. It recorded "Maxwell SASS" as a fact, and that
+  was wrong.
+
+  Before you trust a match of an ISA, find the end of a program in the bytes. On SM86, EXIT is `0x794d`, and a BRA
+  to itself comes after it. `docs/platforms/nx/ounce.md` has the facts of the Ounce that the captures prove.
+- `g_frames` counts presents, not frames with content. A hash that changes does not show that a frame has content.
+  Look at the count of draws and skipped draws in the log, or take a screenshot.
+- An Ounce game calls about 170 NVN functions that the Switch does not have. `tools/nvn_missing.py work/Game`
+  lists the functions that `nvn.hook` does not implement for the API version of the game. Read the body of each
+  function in the driver before you write its handler. Many are setters that store at a fixed offset.
