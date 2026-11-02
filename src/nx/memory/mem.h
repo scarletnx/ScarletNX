@@ -15,7 +15,7 @@
 #define AS36 (1ull << 36)
 /* The host reservation, which a guest address of either width is an offset below: AS_MAX, or less where the system
    allows an app less address space (iOS without the paid extended-virtual-addressing entitlement), when mem_init picks
-   a smaller layout to fit it */
+   a smaller layout to fit it. Under NCE on Android the end of the layout it moved up (mem_layout_move) */
 extern u64 g_as_size;
 #define AS_SIZE (g_as_size)
 
@@ -101,6 +101,13 @@ void mem_reserve(void);
 int mem_reserved(void);
 /* 1 when the guest's addresses are the host's, for NCE: g_mem is 0 */
 int mem_identity(void);
+/* NCE's reservation at the guest's own addresses (mem.c says why), the layout moved up by from or more: 1, or 0 with
+   the reason logged. POSIX only */
+int mem_reserve_identity(u64 from);
+/* every region of the layout, and AS_SIZE, by more: the guest's addresses start that far up (NCE on Android) */
+void mem_layout_move(u64 by);
+/* how far mem_layout_move moved the layout, 0 when it stays at the console's addresses */
+u64 mem_moved(void);
 void mem_init(void);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0, MEM_BADSTATE when it isn't free, MEM_NOMEM */
 int mem_unmap(u64 addr, u64 size);

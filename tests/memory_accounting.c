@@ -13,6 +13,7 @@
 #include <sched.h>
 #include <stdarg.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define MIB (1ull << 20)
@@ -53,12 +54,28 @@ u8* plat_vm_reserve(u64 size) {
     reservation_size = size + host_page;
     return (u8*)(((uintptr_t)p + host_page - 1) & ~(uintptr_t)(host_page - 1));
 }
-void plat_vm_track(u8* p, u64 size) { (void)p, (void)size; } /* no tracking here */
-/* mem.c's reservation at the guest's own addresses, which nce_wanted's 0 never takes: an AArch64 Linux host links it */
+/* no tracking here: the range mem_init asks it of, which test_moved holds to the reservation */
+static u8* tracked;
+static u64 tracked_size;
+void plat_vm_track(u8* p, u64 size) { tracked = p, tracked_size = size; }
+/* mem.c's reservation at the guest's own addresses (NCE), which test_moved asks for: at addr or nowhere */
+static int reserve_at_on;
 u8* plat_vm_reserve_at(u64 addr, u64 size) {
-    (void)addr, (void)size;
-    errno = ENOSYS;
-    return NULL;
+    void* p;
+    if (!reserve_at_on) {
+        errno = ENOSYS;
+        return NULL;
+    }
+    p = mmap((void*)(uintptr_t)addr, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+    if (p != (void*)(uintptr_t)addr) {
+        munmap(p, size);
+        errno = EEXIST;
+        return NULL;
+    }
+    reservation = (u8*)p;
+    reservation_size = size;
+    return (u8*)p;
 }
 /* nce.c, whose NCE no game here is of: mem.c's reservation asks it first */
 int nce_wanted(void) { return 0; }
@@ -489,6 +506,58 @@ static void test_shared_memory(void) {
     kshmem_destroy(&s->o);
 }
 
+/* NCE on Android (mem_reserve_identity from 64 GiB): the guest's addresses are the host's, above what the app's process
+   holds, so the whole layout moves up to the first base from 64 GiB, in 2 MiB steps, where a tier is free. A page held
+   at 65 GiB takes the 64 GiB tier's one base and the 48 GiB tier's first 449; the 48 GiB layout then lies from 64 GiB
+   + 898 MiB, each region moved alike, and guest memory there is the host's. A layout of fixed addresses (36-bit) then
+   ends the game. Linux only, and not under ASan, whose shadow holds those addresses */
+static void test_moved(void) {
+#if defined(__linux__) && !defined(__SANITIZE_ADDRESS__)
+    const u64 from = 64ull << 30, held_at = 65ull << 30, by = from + 898 * MIB, size = 48ull << 30;
+    void* held = mmap((void*)(uintptr_t)held_at, 2 * MIB, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    pid_t child;
+    int status = 0;
+    u8* p;
+    if (held != (void*)(uintptr_t)held_at) {
+        printf("moved layout: 65 GiB is taken in this process, skipped\n");
+        if (held != MAP_FAILED) munmap(held, 2 * MIB);
+        return;
+    }
+    mapping_begins = mapping_ends = 0; /* test_mapping_boundary's */
+    reserve_at_on = 1;
+    CHECK(mem_reserve_identity(from) == 1);
+    CHECK(mem_identity() && mem_moved() == by && g_mem == NULL);
+    CHECK(g_layout.base == by + 0x8000000ull && g_layout.end == by + size && g_as_size == by + size);
+    CHECK(g_layout.alias == by + (4ull << 30) && g_layout.alias_size == 8ull << 30 &&
+          g_layout.heap == by + (12ull << 30) && g_layout.heap_size == 8ull << 30 &&
+          g_layout.stack == by + (20ull << 30) && g_layout.stack_size == 2ull << 30 &&
+          g_layout.kern == by + (47ull << 30) && g_layout.kern_end == by + size);
+    CHECK((u64)(uintptr_t)reservation == g_layout.base && reservation_size == size - 0x8000000ull);
+    mem_init();
+    CHECK(tracked == reservation && tracked_size == reservation_size);
+    CHECK(mem_map(HEAP_BASE, 0x1000, MS_NORMAL, PERM_RW) == 0 && state(HEAP_BASE) == MS_NORMAL);
+    p = GP(HEAP_BASE);
+    CHECK((u64)(uintptr_t)p == HEAP_BASE);
+    p[0] = 0x5A;
+    CHECK(*(volatile u8*)(uintptr_t)(by + (12ull << 30)) == 0x5A);
+    CHECK(mem_unmap(HEAP_BASE, 0x1000) == 0);
+    fflush(stdout);
+    child = fork();
+    if (!child) {
+        fclose(stderr); /* fatal's message is the parent's to check, not the log's */
+        mem_layout36();
+        _exit(0);
+    }
+    CHECK(child > 0 && waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    CHECK(munmap(reservation, reservation_size) == 0);
+    CHECK(munmap(held, 2 * MIB) == 0);
+    reserve_at_on = 0;
+    printf("moved layout: the 48 GiB tier from %#llx, %u checks passed\n", (unsigned long long)by, checks);
+#else
+    printf("moved layout: skipped, as it takes the host's addresses from 64 GiB (Linux, without ASan)\n");
+#endif
+}
+
 int main(void) {
     hle_init();
     /* this host's pages, then those of hosts with larger ones (16 KiB: Apple silicon, some Android kernels; 64 KiB:
@@ -531,5 +600,6 @@ int main(void) {
     CHECK(munmap(reservation, reservation_size) == 0);
     g_mem = NULL;
     refuse_above = 0;
+    test_moved(); /* last: it leaves the layout moved */
     return 0;
 }

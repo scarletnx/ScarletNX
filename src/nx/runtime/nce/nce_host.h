@@ -20,6 +20,13 @@
 #else
 #define SNX_NCE_HOST 0
 #endif
+/* how far up the guest's addresses move under NCE at least (mem_reserve_identity): Android's app process holds the low
+   4 GiB, and Eden takes its base above 36 bits there too */
+#if defined(__ANDROID__)
+#define SNX_NCE_MOVE_FROM (64ull << 30)
+#else
+#define SNX_NCE_MOVE_FROM 0
+#endif
 /* C11's _Noreturn, which the C99 recompile (it reads SNX_NCE_HOST here) has not: plat.h's SNX_NORETURN */
 #ifndef SNX_NORETURN
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L

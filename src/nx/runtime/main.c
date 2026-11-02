@@ -923,7 +923,7 @@ int snx_main(int argc, char** argv) {
     hints_init();
     plat_install_crash_handler();
     clock_start();
-    g_mod = mod; /* from here the log is a file, in the state folder */
+    g_mod = nce_module(mod); /* from here the log is a file, in the state folder */
     title = mod->title && mod->title[0] ? mod->title : g_exename;
 #if defined(SNX_TRACY)
     if (g_settings.tracy_profiler) g_opt_tracy_client = 1; /* the .ini's Debug section asks for the client */

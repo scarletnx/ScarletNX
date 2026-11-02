@@ -67,6 +67,7 @@ static u8 memory[0x8000];
 /* the guest address space is that memory: vk_write_changed refuses to compare bytes inside it */
 u8* g_mem = memory;
 u64 g_as_size = sizeof memory;
+MemLayout g_layout; /* the space from its start: AS_BASE 0 */
 static u64 mapping = 4096;
 static int writeback_direct;
 void pm_lock(PMutex* m) { (void)m; }
