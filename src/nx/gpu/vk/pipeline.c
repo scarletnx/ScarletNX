@@ -12,6 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/sm70.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
@@ -128,6 +129,31 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
     return NULL;
 }
 
+/* An SM70+ program in max_bytes at code (a graphics program from its header on, a compute one after the 80 zero bytes
+   of the compute path): 1 and *p, or 0 when no program starts there */
+static int sm70_program(const u8* code, u32 max_bytes, Sm70Program* p) {
+    return sm70_find_programs(code, max_bytes, p, 1) == 1;
+}
+static u32* sm70_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words) {
+    Sm70Program p;
+    u32 sph[SM70_SPH_BYTES / 4];
+    if (!sm70_program(code, max_bytes, &p) || !p.complete) {
+        snprintf(si->first_unsupported, sizeof si->first_unsupported,
+                 "no complete SM70+ program in %#x bytes (words %08x %08x %08x %08x)", max_bytes, snx_ld_le32(code),
+                 snx_ld_le32(code + 4), snx_ld_le32(code + 8), snx_ld_le32(code + 12));
+        si->unsupported = 1;
+        return NULL;
+    }
+    if (stage != ST_CS) {
+        if (p.code == p.header) {
+            snprintf(si->first_unsupported, sizeof si->first_unsupported, "an SM70+ graphics program with no header");
+            si->unsupported = 1;
+            return NULL;
+        }
+        for (u32 i = 0; i < SM70_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
+    }
+    return sm70_to_spirv(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words);
+}
 /* The translator's reader (g_shader_cb_read) and what rec_read records into are one for the process: the GPU thread's
    draws and dispatches and the pass over the programs the game ships, on the shader files' thread (ship_program),
    translate and hash one at a time */
@@ -147,8 +173,9 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
                                             VK_SHADER_STAGE_FRAGMENT_BIT,
                                             VK_SHADER_STAGE_COMPUTE_BIT};
     VkShaderStageFlagBits shader_stage = stages[stage];
-    u32* result = shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
-                                  g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
+    u32* result = g_shader_sm70 ? sm70_translate(code, max_bytes, stage, si, words)
+                                : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
+                                                  g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
     g_rec = NULL;
     int failed = g_rec_failed;
@@ -172,6 +199,13 @@ u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si
 /* shader_hash with the jump tables of BRX read through read, as the translation reads them: without a reader the
    length stops at the first EXIT and leaves out code only a jump table reaches */
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read) {
+    if (g_shader_sm70) { /* the program's bytes up to its end, from the start of code (its header, the zero bytes) */
+        Sm70Program p;
+        /* with no program there, the bytes of a header: each such program keeps a key of its own */
+        u32 len = sm70_program(code, max_bytes, &p) ? p.code + p.size : 0;
+        *out_len = len;
+        return snx_fnv1a(SNX_FNV_BASIS, code, len ? len : max_bytes < SM70_SPH_BYTES ? max_bytes : SM70_SPH_BYTES);
+    }
     pm_lock(&g_xlate_lock);
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
     g_shader_cb_read = read;

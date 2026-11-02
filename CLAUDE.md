@@ -254,8 +254,23 @@ flourishes. This rule does not apply to code comments. The Claude files follow A
   not the tag that you check out after it. The libraries are now CPM packages (`cmake/dependencies.cmake`), each a
   release URL with its SHA-256. A bump changes both, and the build checks the hash against the download. The
   `OPTIONS` of CPM become cache variables of the whole build.
+<<<<<<< HEAD
 - A check of `tests/gui_sdl.c` can fail on Windows alone because of the state that an `#ifdef SNX_XDG` block
   leaves. Those blocks run on Linux only. One of them presses ESC on the Keys page, and ESC clears `app->message`
   before the next check reads the tips. CMake registers `gui_sdl_events` only when `NOT APPLE`, so the Mac builds
   `snx-test-gui-sdl` and runs it in no test. Run it by hand (`snx-build`, "The screen tests"). Then look at the frame
   that the check failed on.
+||||||| parent of 83d85a5 ([nvn] Bring up an Ounce game on the NVN loader, with an SM70+ shader frontend)
+=======
+- A Switch 2 game does not use Maxwell shaders. Its shaders are SM70+ SASS, with 128-bit instructions.
+  A previous session matched Maxwell tables against the wrong bytes. It recorded "Maxwell SASS" as a fact, and that
+  was wrong.
+
+  Before you trust a match of an ISA, find the end of a program in the bytes. On SM70+, EXIT is `0x794d`, and a BRA
+  to itself comes after it. `docs/SWITCH2.md` has the facts of the Switch 2 that the captures prove.
+- `g_frames` counts presents, not frames with content. A hash that changes does not show that a frame has content.
+  Look at the count of draws and skipped draws in the log, or take a screenshot.
+- A Switch 2 game calls about 170 NVN functions that the Switch 1 does not have. `tools/nvn_missing.py work/Game`
+  lists the functions that `nvn.hook` does not implement for the API version of the game. Read the body of each
+  function in the driver before you write its handler. Many are setters that store at a fixed offset.
+>>>>>>> 83d85a5 ([nvn] Bring up an Ounce game on the NVN loader, with an SM70+ shader frontend)

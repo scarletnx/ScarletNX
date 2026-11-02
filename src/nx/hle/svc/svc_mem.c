@@ -85,8 +85,8 @@ static int user_writable(u64 a, u64 size) {
 }
 
 /* ============================================================ accounting */
-/* The application pool for each memory_gb (Mesosphere's KSystemControl application pool sizes for the 4, 6 and 8 GiB
-   boards), see docs/MEMORY_ACCOUNTING.md */
+/* The 4, 6 and 8 GiB application pools follow Mesosphere's KSystemControl. The 12 GiB setting is an experimental
+   10 GiB application budget for guests that need more than the older console's pool. See docs/MEMORY_ACCOUNTING.md. */
 static u64 pool(void) {
     /* A Switch 2 program is a 12 GiB board's, whatever memory_gb is set to for a Switch 1 title (g_guest_features is
        SNX_A64_TARGET_SWITCH2): the console has 12 GiB of DRAM beside the graphics server's own 8 GiB, and a Switch 2
@@ -225,7 +225,7 @@ static int attr_blocked(u64 addr, u64 size, MemBlock* b) {
     while (addr < end) {
         mem_query(addr, b);
         if (b->addr > addr || b->addr + b->size <= addr) return 1;
-        if (!(b->state & MSF_CAN_CHANGE_ATTR) || (b->attr & ~MA_SET_MASK)) return 1;
+        if (!(b->state & MSF_CAN_CHANGE_ATTR) || (b->attr & ~(MA_SET_MASK | MA_GPU_SHARABLE))) return 1;
         addr = b->addr + b->size;
     }
     return 0;
@@ -347,11 +347,12 @@ int svc_mem_range_locked(u64 addr, u64 size) {
    PermissionLocked; the memory's state must allow it and it must be neither locked nor shared with a device */
 static u32 set_mem_attr_locked(u64 addr, u64 size, u32 mask, u32 attr) {
     MemBlock b;
-    if (!in_region(addr, size, 0, AS_END) || !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+    if (!in_region(addr, size, 0, AS_END) ||
+        !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~(MA_SET_MASK | MA_GPU_SHARABLE), 0)) {
         /* a lock with no owner is this runtime's alone: the console would never have it, so release it and try once
            more before refusing as the console would */
         if (in_region(addr, size, 0, AS_END) && release_unowned(addr, size) &&
-            range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~MA_SET_MASK, 0)) {
+            range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~(MA_SET_MASK | MA_GPU_SHARABLE), 0)) {
             mem_set_attr(addr, size, mask, attr);
             R_SUCCEED();
         }
@@ -375,6 +376,22 @@ u32 svc_set_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
     R_UNLESS((mask | attr) == mask && (mask | attr | MA_SET_MASK) == MA_SET_MASK, R_BADCOMBO);
     pm_lock(&g_host.svcmem.map_lk);
     r = set_mem_attr_locked(addr, size, mask, attr);
+    pm_unlock(&g_host.svcmem.map_lk);
+    return r;
+}
+/* Switch 2's GPU attribute SVC makes already mapped memory available to GSV. Keep its bits separate from
+   SetMemoryAttribute, which only accepts Uncached and PermissionLocked. */
+u32 svc_set_gpu_mem_attr(u64 addr, u64 size, u32 mask, u32 attr) {
+    u32 r = 0;
+    const u32 gpu_mask = MA_GPU_SHARABLE | MA_GPU_SHARED;
+    R_TRY(check_range(addr, size));
+    R_UNLESS((mask | attr) == mask && (mask | gpu_mask) == gpu_mask, R_BADCOMBO);
+    pm_lock(&g_host.svcmem.map_lk);
+    if (!in_region(addr, size, 0, AS_END) ||
+        !range_ok(addr, size, 0, MSF_CAN_CHANGE_ATTR, ANY, ~(MA_SET_MASK | gpu_mask), 0))
+        r = R_BADMEMSTATE;
+    else
+        mem_set_attr(addr, size, mask, attr);
     pm_unlock(&g_host.svcmem.map_lk);
     return r;
 }
@@ -858,6 +875,12 @@ static u32 process_info(u32 id, u64* out) {
             R_SUCCEED();
         }
         case 28: *out = 0; R_SUCCEED(); /* AliasRegionExtraSize: no extra alias region */
+        /* No remote region or remote allocations in this runtime. */
+        case 29:
+        case 30:
+        case 31:
+        case 32: *out = 0; R_SUCCEED();
+        case 33: *out = 0x1000; R_SUCCEED(); /* ProcessPageSize: guest pages, independent of host pages */
         default: R_THROW(R_BADENUM);
     }
 }
@@ -882,7 +905,19 @@ static u32 switch2_info(u32 id, u64* out) {
 u32 svc_get_info(u32 id0, u32 h, u64 id1, u64* out) {
     switch (id0) {
         case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 12: case 13: case 14: case 15: case 16:
-        case 17: case 18: case 20: case 21: case 22: case 23: case 24: case 28: {
+        case 17:
+        case 18:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+        case 24:
+        case 28:
+        case 29:
+        case 30:
+        case 31:
+        case 32:
+        case 33: {
             KObj* p;
             R_UNLESS(!id1, R_BADENUM);
             if (h != H_CUR_PROC) {

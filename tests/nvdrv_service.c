@@ -68,6 +68,11 @@ void fatal(const char* format, ...) {
     va_end(args);
     exit(1);
 }
+void gsv_syncpt_changed(void) {} /* the gsv syncpoint supervisor, which this test does not link */
+u64 kmem_alloc(u64 size, u32 state, u32 perm) {
+    (void)size, (void)state, (void)perm;
+    return 0x8000; /* a fixed guest address, within this test's g_mem */
+}
 
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
     SvcObj* obj = calloc(1, sizeof *obj);
@@ -495,6 +500,32 @@ static void test_ioctl3(u32 ctrlgpu) {
     ctx.c[1] = buf(OUT1, 0x10);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
     CHECK(gr32(OUT1) == 0x120 && GP(OUT1)[0x10] == 0xCC);
+    /* The Switch 2 variant uses a larger request and returns Ampere data only in Ioctl3's inline output. */
+    memset(GP(OUT1), 0xCC, 0xE0);
+    gw64(IN0, 0xD0);
+    request(12, ctrlgpu, 0xC0E04705u);
+    ctx.a[0] = buf(IN0, 0xE0);
+    ctx.b[0] = buf(OUT0, 0xE0);
+    ctx.b[1] = buf(OUT1, 0xD0);
+    CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
+    CHECK(gr64(OUT0) == 0xD0 && gr32(OUT1) == 0x170 && gr32(OUT1 + 4) == 0xE);
+    CHECK(gr32(OUT1 + 0x5C) == 0xC797 && gr64(OUT1 + 0xA8) == 0x6761313066ull);
+    CHECK(GP(OUT1)[0xD0] == 0xCC);
+    CHECK(g_hle.nvdrv.nvf[ctrlgpu].s2);
+    memset(GP(OUT1), 0xCC, 24);
+    request(12, ctrlgpu, 0xC0084713u);
+    ctx.a[0] = buf(IN0, 8);
+    ctx.b[0] = buf(OUT0, 8);
+    ctx.b[1] = buf(OUT1, 24);
+    CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
+    CHECK(gr64(OUT1) == 0x0100010000000000ull);
+    CHECK(GP(OUT1)[22] == 0 && GP(OUT1)[23] == 5);
+    request(12, ctrlgpu, 0xC010471Fu);
+    ctx.a[0] = buf(IN0, 16);
+    ctx.b[0] = buf(OUT0, 16);
+    ctx.b[1] = buf(OUT1, 48);
+    CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && reply(0) == 0);
+    CHECK(gr32(OUT0) == 48 && gr32(OUT1) == 0 && gr32(OUT1 + 16) == 1 && gr32(OUT1 + 32) == 2);
     /* Ioctl2's inline buffer is an input: ctrl-gpu writes nothing to it */
     memset(GP(IN1), 0xCC, 0xA0);
     request(11, ctrlgpu, GET_CHARACTERISTICS);
@@ -507,9 +538,9 @@ static void test_ioctl3(u32 ctrlgpu) {
     const u8 sms[4] = {0, 0, 0, 1};
     memset(d, 0xCC, sizeof d);
     memset(mapping, 0xCC, sizeof mapping);
-    CHECK(ioctl_ctrlgpu(0xC0044714u, d, 4, mapping, 4) == 0 && !memcmp(d, sms, 4) && !memcmp(mapping, sms, 4));
+    CHECK(ioctl_ctrlgpu(0xC0044714u, d, 4, mapping, 4, 0) == 0 && !memcmp(d, sms, 4) && !memcmp(mapping, sms, 4));
     CHECK(d[4] == 0xCC);
-    CHECK(ioctl_ctrlgpu(0xC0084714u & ~0x40000000u, d, 8, NULL, 0) == 0 && d[0] == 7 && d[4] == 1); /* slot mask */
+    CHECK(ioctl_ctrlgpu(0xC0084714u & ~0x40000000u, d, 8, NULL, 0, 0) == 0 && d[0] == 7 && d[4] == 1); /* slot mask */
 }
 
 /* QueryEvent (4) {fd, event id}: the NvError, then the event as a copy handle */
@@ -686,8 +717,20 @@ static void test_nvmap_as(void) {
     memset(d, 0, sizeof d);
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 17);
     v = 0x10000;
-    snx_st_le32(d + 8, v);
+    snx_st_le32(d, v);
     CHECK(as_call(0x09, d, 24) == 0 && g_hle.nvdrv.big_page_bits == 16);
+    /* NVN2 requests a 128 MiB..768 GiB space with no big-page split. */
+    memset(d, 0, sizeof d);
+    snx_st_le32(d, 0x10000);
+    snx_st_le64(d + 16, 0x8000000ull);
+    snx_st_le64(d + 24, 0xc000000000ull);
+    CHECK(as_call(0x09, d, 40) == 0);
+    memset(d, 0, sizeof d);
+    CHECK(as_call(0x08, d, 64) == 0);
+    CHECK(snx_ld_le64(d + 16) == 0x8000000ull && snx_ld_le64(d + 32) ==
+          ((0xc000000000ull - 0x8000000ull) >> 12));
+    CHECK(snx_ld_le64(d + 40) == 0xc000000000ull && snx_ld_le32(d + 48) == 0x10000 &&
+          snx_ld_le64(d + 56) == 0);
 
     /* a GPU mapping pins the handle, as the console's nvmap does: FREE reports no memory and leaves it alive, and
        UNMAP_BUFFER of the last mapping ends it */
@@ -976,6 +1019,21 @@ int main(void) {
     CHECK(!error && ctrlgpu == 2);
     u32 ctrl = nv_open("/dev/nvhost-ctrl", &error);
     CHECK(!error && ctrl == 3);
+    u32 tsg = nv_open("/dev/nvhost-tsg-gpu", &error);
+    CHECK(!error && tsg == 4);
+    memset(GP(IN0), 0, 24);
+    gw32(IN0, gpu);
+    gw32(IN0 + 4, 7);
+    CHECK(nv_ioctl1(tsg, 0xc018540bu, 24) == 0);
+    CHECK(g_hle.nvdrv.nvf[gpu].tsg_fd == tsg + 1 && g_hle.nvdrv.nvf[gpu].tsg_subcontext == 7);
+    CHECK(nv_ioctl1(tsg, 0xc018540bu, 24) == 8);
+    gw32(IN0 + 4, 64);
+    CHECK(nv_ioctl1(tsg, 0xc018540bu, 24) == 4);
+    gw32(IN0 + 4, 7);
+    CHECK(nv_ioctl1(tsg, 0xc0045402u, 4) == 0);
+    CHECK(!g_hle.nvdrv.nvf[gpu].tsg_fd);
+    CHECK(nv_ioctl1(tsg, 0xc018540bu, 24) == 0);
+    CHECK(nv_close(tsg) == 0 && !g_hle.nvdrv.nvf[gpu].tsg_fd);
     test_ioctl2(gpu);
     test_ioctl3(ctrlgpu);
     test_ctrl_syncpoints(ctrl);

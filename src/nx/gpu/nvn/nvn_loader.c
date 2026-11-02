@@ -334,6 +334,7 @@ static void version_find(CPU* c, u64 entry) {
 static void version_read(void) {
     char version[32], described_text[64];
     g_nvn.loader.api = nvn_device_api();
+    g_shader_sm70 = g_nvn.loader.api >= 231u << 16; /* the Switch 2's GPU runs SM70+ programs */
     hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
     nvn_api_described_text(described_text, sizeof described_text);
     g_nvn.loader.decided = 1;

@@ -133,6 +133,7 @@ interface nn::am::service::ISelfController {
     @stub [100] SetAlbumImageTakenNotificationEnabled(b8 enabled);
     @stub [110] SetApplicationAlbumUserData(buffer<u8, 0x21> data);
     @stub [120] SaveCurrentScreenshot(i32 option);
+    [2000] GetGraphicsSupervisor() -> handle<copy, session> session;
 }
 
 interface nn::am::service::IWindowController {
@@ -167,6 +168,11 @@ interface nn::am::service::IGraphicsScaleController {
 interface nn::am::service::IProcessWindingController {
 }
 interface nn::am::service::IDebugFunctions {
+}
+
+interface nn::am::service::IGraphicsScalingParametersFunctions {
+    [10] GetGraphicsScalingParameters() -> (u32 graphics_scale, u32 screen_ratio_numerator, u32 screen_ratio_denominator);
+    [1050] SetGraphicsScaleChangedNotificationEnabled(b8 enabled);
 }
 
 interface nn::am::service::IApplicationFunctions {

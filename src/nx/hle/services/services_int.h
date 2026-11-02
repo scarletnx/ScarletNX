@@ -53,6 +53,7 @@ extern const u64 g_user_id[2];
 void am_init(void); /* the applet events, and the messages queued at startup */
 SvcObj* new_appletoe(void);
 SvcObj* new_appletae(void);
+SvcObj* new_gsv_session(void); /* the TIPC graphics supervisor session that am returns */
 
 /* ---- nvdrv.c (nvdrv.h declares nv_init) */
 /* an INvDrvServices object besides the one nvdrv's own service handle gives: a Switch 2 title's gsv hands its nvsrv
@@ -90,6 +91,8 @@ void audio_clock(void* arg);
 SvcObj* new_audren(void);
 SvcObj* new_audren2(void); /* the Switch 2 SDK's manager, which its aud:u hands back (audio.c) */
 SvcObj* new_audout(void);
+SvcObj* new_audin(void); /* audin:u: no microphone to open */
+SvcObj* new_aud(void);   /* aud:u, the Switch 2 native audio manager */
 SvcObj* new_hwopus(void);
 
 /* ---- misc.c: the small services */
@@ -114,7 +117,6 @@ SvcObj* new_mii(void);
 SvcObj* new_ectx(void);
 SvcObj* new_spl(void);
 SvcObj* new_btmu(void);
-SvcObj* new_audin(void);
 u32 apm_configuration(u32 mode); /* apm's performance configuration of a mode, Normal (0) or Boost */
 void apm_set_configuration(u32 mode, u32 config);
 void apm_cpu_boost(u32 boost); /* am's SetCpuBoostMode: Boost mode's configuration for it */

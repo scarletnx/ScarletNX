@@ -154,6 +154,23 @@ typedef struct {
     char reserved[0xC0];
 } NVNprogramBuilder;
 
+/* the Switch 2's objects (API 231): the bytes its driver uses */
+typedef struct {
+    char reserved[0xC0];
+} NVNdlssNetworkBuilder;
+
+typedef struct {
+    char reserved[0xC8];
+} NVNdlssParameters;
+
+typedef struct {
+    char reserved[0x30];
+} NVNdeviceCommandBuffer;
+
+typedef struct {
+    char reserved[0x28];
+} NVNdeviceMessageBuffer;
+
 typedef struct {
     NVNbufferAddress data;
     const void* control;

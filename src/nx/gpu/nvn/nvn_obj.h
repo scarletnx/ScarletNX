@@ -52,7 +52,7 @@ typedef struct {
     u64 memory;
     u32 memory_size;
     u8 set, pad[3];
-    u64 device, primary;
+    u64 device, primary; /* primary: the Switch 2's primary queue (nvnQueueBuilderSetPrimaryQueue), 0 for none */
 } NvnQueueBuilder;
 #define NVN_QB_SET_COMMAND 0x01u
 #define NVN_QB_SET_COMPUTE 0x02u
@@ -264,6 +264,16 @@ typedef struct {
     i32 interval;
 } NvnWindowBuilder; /* SDK 5's builder is 0x2c bytes: no device or native window (nvn_queue.c keeps the last one) */
 NVN_FITS(NvnWindowBuilder, 0x2c);
+/* The Switch 2's builder (API 231) also has the color space and the HDR metadata, at the offsets of its driver. Only
+   API 231's handlers touch them, past the bytes of the older builder: hdr[0-9] the display's primaries (x, y of red,
+   green, blue, the white point) and its minimum and maximum luminance, hdr[10-11] the content's maximum and average
+   light levels */
+typedef struct {
+    i32 color_space; /* +0x24 in the driver's builder, inside NvnWindowBuilder: kept at +0x2c */
+    f32 hdr[12];     /* +0x30 */
+} NvnWindowBuilderHdr;
+#define NVN_WB_HDR(b) NVN_OBJ(NvnWindowBuilderHdr, (b) + 0x2c)
+NVN_FITS(NvnWindowBuilderHdr, 0x60 - 0x2c);
 /* pace: when the last present was shown on the pacer's clock; available[i]: when texture i can be acquired again,
    its last present's slot plus one period (0: at once); syncpt[i], value[i]: the point the replay reaches once texture
    i is off the display (0: none), the present after its own, or its own while none came yet (shown: those);
@@ -281,6 +291,9 @@ typedef struct {
     u64 native;           /* the native window the builder named */
 } NvnWindow;
 NVN_FITS(NvnWindow, 0x148);
+/* the Switch 2's window (API 231): the builder's color space and HDR metadata, past NvnWindow */
+#define NVN_WIN_HDR(w) NVN_OBJ(NvnWindowBuilderHdr, (w) + 0x148)
+typedef char nvn_fits_NvnWindowHdr[sizeof(NvnWindowBuilderHdr) <= 0x180 - 0x148 ? 1 : -1];
 
 /* ---- command buffers ---- */
 /* cur: where the next record goes (a guest address). begin: the recording's first record, its handle; last: its last
@@ -364,6 +377,7 @@ typedef struct {
 #define NVN_MS_COV_TO_COLOR 0x02u
 #define NVN_MS_LOCATIONS    0x04u /* SetSampleLocationsEnable */
 #define NVN_MS_GRID         0x08u /* SetSampleLocationsGridEnable */
+#define NVN_MS_COV_TRUNC    0x10u /* the Switch 2's SetCoverageTruncationEnable */
 NVN_FITS(NvnMultisample, 0x18);
 /* NVNvertexStreamState (8 bytes) */
 typedef struct {
@@ -393,7 +407,7 @@ enum {
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG,
     OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_CLEAR_BUF, OP_DEPTH_CLAMP, OP_RENDER_COND, OP_FENCE_SYNC,
     OP_TF_BIND, OP_TF_STATE, OP_RAST_DISCARD, OP_VP_SWIZZLE, OP_BIND_TEX1, OP_PRIM_RESTART, OP_WAIT_SYNC,
-    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_COUNT_
+    OP_SAMPLE_MASK, OP_LINE_WIDTH, OP_CONSERVATIVE, OP_PROVOKING, OP_DRAW_TEXTURE, OP_BIND_BUFS, OP_PUSH_CONSTANTS, OP_COUNT_
 };
 /* the payloads, right after the header. Where nxnative held a host pointer, these hold a guest address */
 /* OP_JUMP and OP_CALL: u64 target. OP_FENCE_SYNC and OP_WAIT_SYNC: u64 sync. OP_RESET_COUNTER: u64 type.
@@ -566,6 +580,13 @@ typedef struct {
 typedef struct {
     u64 dst, size;
 } NvnPUpdateUB;
+/* OP_PUSH_CONSTANTS: the Switch 2's push constants, words of a root table (NVN_ROOT_TABLES of NVN_ROOT_WORDS each,
+   for graphics and for compute), then the words, copied at record time */
+#define NVN_ROOT_TABLES 8
+#define NVN_ROOT_WORDS  256
+typedef struct {
+    u8 compute, table, offset, words;
+} NvnPPush;
 typedef struct {
     u64 src, dst, size;
 } NvnPCopyB2B;

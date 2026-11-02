@@ -36,6 +36,8 @@ struct NvnDraw {
     NvnVertexStream stream[16];
     u32 nstream;
     NVNbufferRange vbuf[16];
+    /* the push constants' root tables, graphics then compute, as the records loaded them (OP_PUSH_CONSTANTS) */
+    u32 root[2][NVN_ROOT_TABLES][NVN_ROOT_WORDS];
     u64 code[DS_PROGRAM_SLOTS];
     u32 prog_on;
     ShXfb xfb;            /* the bound program's capture layout (zero: none) */

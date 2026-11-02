@@ -567,6 +567,7 @@ static void ipc_add(SnxLogScan* s, int kind, Span iface, unsigned cmd) {
         s->ipc[s->nipc].iface = add(s, iface);
         s->ipc[s->nipc].command = cmd;
         s->ipc[s->nipc].count = 1;
+        s->ipc[s->nipc].line = s->seen;
         s->nipc++;
     }
 }
@@ -636,22 +637,6 @@ static int ctr_ipc_line(SnxLogScan* s, Span rest) {
     if (kind < 0 && find(after, " has a form the runtime does not take") >= 0) kind = SNX_IPC_BAD_REQUEST;
     if (kind < 0) return 0;
     ipc_add(s, kind, iface, cmd);
-||||||| parent of 0472698 ([logscan] Every finding names the log line it came from)
-    for (int k = 0; k < s->nipc; k++) {
-        const char* name = snx_logscan_text(s, s->ipc[k].iface);
-        if (s->ipc[k].kind == kind && s->ipc[k].command == cmd && strlen(name) == iface.n &&
-            !memcmp(name, iface.p, iface.n)) {
-            s->ipc[k].count++;
-            return 1;
-        }
-    }
-    if (s->nipc < SNX_LOGSCAN_IPC) {
-        s->ipc[s->nipc].kind = kind;
-        s->ipc[s->nipc].iface = add(s, iface);
-        s->ipc[s->nipc].command = cmd;
-        s->ipc[s->nipc].count = 1;
-        s->nipc++;
-    }
     return 1;
 }
 

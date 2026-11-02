@@ -193,6 +193,9 @@ registers come from the CPU's fields.
 ## Limits
 
 - The host is x86-64 (the memory ordering of the generated code relies on it, `cpu.h`).
+- PAuth support uses disabled instruction/data authentication controls. Signing and authentication preserve
+  pointers, and XPAC strips them for 39-bit virtual addresses without top-byte ignore. No PAC keys or
+  authentication protection are implemented, including with the MAX target.
 - Guest memory is flat (`cpu->mem + address`), with no page tables: the caller lays out
   the guest address space and keeps the code in it.
 - One thread uses a given `snx_recompiler` or `snx_recompiled` object at a time (binding

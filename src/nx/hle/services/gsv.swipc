@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The Switch 2 graphics supervisor's TIPC bootstrap. The returned nvdrv2 session is separate from the older nvdrv.
+type nn::gsv::DisplayName = bytes<0xc>;
+
+@fallback(gsv_user_unknown)
+interface nn::gsv::UserSession {
+    [4] BootWithRemoteMemory(u64 aruid, u64 version, u64 reserved0, u64 reserved1, u64 reserved2, u64 usage,
+                             handle<copy, process> process);
+    [11] SetCurrentProcessHandle(handle<copy, process> process);
+    [101] CreateContext();
+    [111] CreateNativeMemory(bytes<0xc> request) -> u32 memory_handle;
+    [112] DestroyNativeMemory(u32 memory_handle);
+    [115] BootNativeMemoryManagement(u32 mode);
+    [201] CreateSyncptContext();
+    [202] InitializeSyncptContext() -> handle<copy, session> session;
+    [204] BindSyncpointMemory(handle<copy, transfer_memory> rw, handle<copy, transfer_memory> ro, bytes<0x24> request)
+        -> (handle<move, event> request_event, handle<move, event> completed_event);
+    [301] CreateDisplayContext();
+    [303] FinalizeDisplayContext();
+    [305] InitializeDisplayContext(u64 version) -> handle<copy, session> session;
+    [315] SetDisplayLayerImage(u32 layer_id, u32 image_handle);
+    [401] CreateGpuContext();
+    [402] InitializeGpuContext();
+    [423] BindNativeMemory(bytes<0x30> request);
+    [429] CreateNativeImage(bytes<0x48> request) -> u32 image_handle;
+    [434] ExistsAddressSpace(u32 address_space);
+    [435] CalculateNativeImageSize(bytes<0x44> preference) -> u64 size;
+    [497] CreateGpuSessionWithRemoteMemory(u64 version) -> handle<copy, session> session;
+    [1101] CreateGraphicsFrameContext();
+    [1102] InitializeGraphicsFrameContext();
+    [1402] CreateNvDrv2UserSessionWithRemoteMemory() -> handle<copy, session> session;
+}
+
+@fallback(ipc_unknown)
+interface nn::gsv::SyncptSession {
+    [0] Ping(u64 tick) -> u64 echoed_tick;
+    [1] AllocateSyncpoint() -> u32 id;
+    [21] SetSyncpointLimit(u32 id);
+    [22] GetEvent(u32 slot) -> handle<copy, event> event;
+    [103] QueryCounter(u32 id) -> (u64 value, u32 reserved);
+    [201] ArmWait(bytes<0x14> request);
+    [202] CancelWait(u32 slot);
+}
+
+@fallback(ipc_unknown)
+interface nn::gsv::GpuSession {
+    [11] GetEventIdRange() -> (u32 min_id, u32 max_id);
+    [12] CreateEvent(u32 id) -> handle<copy, event> event;
+    [21] RequestKUserWorkerSession(u32 id);
+    [22] GetKUserWorkerSession() -> handle<copy, session> session;
+    [33] CreateGpuAddressSpace() -> u32 address_space;
+    [41] CreateGraphicsDevice(u64 name, u64 flags, u64 sdk_label) -> u8 device_type;
+    [201] GetUserPartitionGpuAddress(u32 address_space) -> (u64 min_address, u64 max_address);
+    [202] GetGsvPartitionGpuAddress(u32 address_space) -> (u64 min_address, u64 max_address);
+}
+
+@fallback(gsv_kuser_unknown)
+interface nn::gsv::KUserWorkerSession {
+    [101] CreateGpuMemory(bytes<0x18> request) -> u32 memory_handle;
+    [102] DestroyGpuMemory(u32 memory_handle, u32 event_id);
+    [211] NormalMapGpuMemory4K(bytes<0x40> request);
+    [212] NormalModifyGpuMemory4K(bytes<0x24> request);
+    [213] NormalUnmapGpuMemory4K(bytes<0x1c> request);
+    [214] CreateSparseRegion(bytes<0x28> request);
+    [215] DestroySparseRegion(bytes<0x1c> request);
+    [216] ExecuteSparseMapRequests(bytes<0x1c> request, buffer<u8, 5> in, buffer<u8, 6> out) -> u64 processed;
+}
+
+# The Switch 2 display session (Eden's IVi2Session, reached through gsv InitializeDisplayContext). A TIPC session:
+# the raw packet is [type, word count, data...], so each command reads its token and fields from its raw bytes.
+@fallback(ipc_unknown)
+interface nn::vi2::IVi2Session {
+    [1] GetNotificationLimit() -> u32 limit;
+    [3] GetSessionLimit() -> u32 limit;
+    [5] GetRequestGroupLimit() -> u32 limit;
+    [11] GetNotificationEvent(bytes<0x4> request) -> handle<copy, event> event;
+    [13] ReleaseNotificationEvent(bytes<0x4> request);
+    [21] GetNotifications(buffer<u8, 6> out);
+    [31] CreateRequestGroupEvent(bytes<0x4> request) -> handle<copy, event> event;
+    [32] DuplicateRequestGroupEvent(bytes<0x4> request, handle<copy, event> copied) -> handle<copy, event> event;
+    [51] ConfigureRequestGroups(bytes<0x4> request);
+    [101] OpenDisplay(bytes<0xc> request);
+    [102] CloseDisplay(bytes<0x8> request);
+    [104] GetHdrStatus(bytes<0x8> request) -> (u64 format, u32 reserved);
+    [105] GetDisplayState105(bytes<0x8> request) -> u32 value;
+    [106] GetBufferMaxResolution(bytes<0x8> request) -> u64 resolution;
+    [107] GetDisplayState107(bytes<0x8> request) -> (u64 a, u64 b, u64 c);
+    [111] OpenEndpoint(bytes<0x18> request);
+    [112] CloseEndpoint(bytes<0x10> request);
+    [201] RegisterClientState(bytes<0x10> request);
+    [202] UnregisterClientState(bytes<0x8> request);
+    [212] GetClientAvailability(bytes<0x8> request) -> u64 available;
+    [228] CancelClientBuffer(bytes<0x4c> request) -> (u64 available, u64 reserved);
+    [229] PresentClientBuffer(bytes<0x60> request) -> (u64 available, u64 reserved);
+    [251] BindClientDisplay(bytes<0x10> request);
+    [252] UnbindClientDisplay(bytes<0x8> request);
+    [261] RegisterDisplayEventMonitor(bytes<0xc> request);
+    [262] UnregisterDisplayEventMonitor(bytes<0xc> request);
+    [263] RegisterDisplayMonitor263(bytes<0xc> request);
+    [264] UnregisterDisplayMonitor264(bytes<0xc> request);
+    [265] RegisterHdrStatusMonitor(bytes<0xc> request);
+    [266] UnregisterHdrStatusMonitor(bytes<0xc> request);
+    [267] RegisterDisplayMonitor267(bytes<0xc> request);
+    [268] UnregisterDisplayMonitor268(bytes<0xc> request);
+    [269] RegisterBufferMaxResolutionMonitor(bytes<0xc> request);
+    [270] UnregisterBufferMaxResolutionMonitor(bytes<0xc> request);
+    [271] RegisterDisplayMonitor271(bytes<0xc> request);
+    [272] UnregisterDisplayMonitor272(bytes<0xc> request);
+    [301] SetDisplayParameter301(bytes<0x8> request);
+    [351] SetClientOutputEncoding(bytes<0x10> request);
+    [352] SetClientOutputLevels(bytes<0x14> request);
+    [354] GetDisplayState354(bytes<0x8> request) -> u64 value;
+}

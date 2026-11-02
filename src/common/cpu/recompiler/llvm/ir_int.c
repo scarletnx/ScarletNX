@@ -649,6 +649,20 @@ void snx_ir_int(SnxIr* ir, const SnxA64Insn* insn, SnxU32 word, SnxU64 pc) {
     const SnxA64Args* a = &insn->args;
     SnxA64Op op = insn->op;
     switch (op) {
+        case SNX_A64_OP_XPACLRI:
+        case SNX_A64_OP_XPACI:
+        case SNX_A64_OP_XPACD: {
+            /* The extended HLE profile has 39-bit virtual addresses and no top-byte ignore. XPAC always
+               strips authentication bits, even with SCTLR authentication disabled. Bit 55 selects the
+               address range: restore that bit throughout [63:39], keeping the low address bits. */
+            unsigned rd = op == SNX_A64_OP_XPACLRI ? 30 : (unsigned)a->rd;
+            V pointer = ir_rx(ir, rd);
+            const SnxU64 low = (1ull << 39) - 1;
+            V upper = LLVMBuildSelect(B, nonzero(ir, LLVMBuildAnd(B, pointer, ir_i64(ir, 1ull << 55), "")),
+                                      ir_i64(ir, ~low), ir_i64(ir, 0), "");
+            set_reg(ir, rd, LLVMBuildOr(B, LLVMBuildAnd(B, pointer, ir_i64(ir, low), ""), upper, ""));
+            break;
+        }
         case SNX_A64_OP_ADR: set_reg(ir, (unsigned)a->rd, ir_i64(ir, pc + (SnxU64)(int64_t)a->imm)); break;
         case SNX_A64_OP_ADRP:
             set_reg(ir, (unsigned)a->rd, ir_i64(ir, (pc & ~0xFFFull) + ((SnxU64)(int64_t)a->imm << 12)));

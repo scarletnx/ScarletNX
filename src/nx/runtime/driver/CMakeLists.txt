@@ -10,9 +10,7 @@ target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hook_routes(snx_nx_module)
 add_library(snx_driver STATIC driver.c container.c extract.c game_name.c recompile.c setup.c toolchain.c mcp.c
-                              mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c)
-||||||| parent of fff3e16 ([mcp] Build and run a game unattended with its update, DLCs, mods and cheats)
-                              mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c)
+                              mcp_edenprobe.c mcp_game.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c)
 set_target_properties(snx_driver PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(snx_driver PRIVATE
     SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}" _CRT_SECURE_NO_WARNINGS
