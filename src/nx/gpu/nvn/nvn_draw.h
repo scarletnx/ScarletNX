@@ -42,6 +42,7 @@ struct NvnDraw {
     NVNbufferRange tf[4]; /* the transform feedback buffers */
     u8 tf_on;             /* between Begin (or Resume) and End (or Pause) */
     u32 dirty;
+    u32 inl_lo, inl_hi; /* the bytes of inl written since the renderer's copy was last made the same (D_INLINE) */
     DsState scratch;  /* a texture's clear, as a target of its own (OP_CLEAR_TEX) */
     DispatchState dx; /* the compute stage's program and bindings, a dispatch's state */
 };
