@@ -11,40 +11,6 @@ the examples name its folders on Linux, and `--data DIR` keeps a run's files in 
 games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ```
 
-## Measure host scheduling
-
-`cpu_scheduling=2` is the default. It applies once to each guest thread, GPU worker and Vulkan recording worker,
-including guest threads restored from a save state. The guest core scheduler keeps its priority and affinity rules.
-The option changes only the calling host thread and does not change system scheduler settings or CPU governors.
-
-On Linux, mode 1 requests `UCLAMP_MIN=UCLAMP_MAX=1024`. Mode 2 also requests a 100 microsecond fair scheduling
-slice and the best nice value the user's existing resource limit permits. Linux 6.12 added custom fair slices.
-These requests can increase power use or context switches. Kernel and cgroup limits still apply. The runtime keeps
-externally selected nonstandard scheduling policies. It logs accepted values and unsupported controls once per worker
-kind, so an accepted but ignored request cannot be mistaken for an active feature. Mode 0 keeps the host defaults.
-
-On FreeBSD, modes 1 and 2 request the highest normal per-thread priority with `rtprio_thread`, keeping the native
-timeshare class. A denied request leaves the existing priority in place. This backend has not been run on FreeBSD.
-Other systems retain their host scheduling policy.
-
-```sh
-python3 tools/bench_cpu_scheduling.py --out /local/scratch/scheduler-probe
-```
-
-This Linux x86-64/AArch64 probe compares modes 0, 1 and 2 in shuffled serial rounds. A competing process shares the
-same CPU. Each candidate performs identical fixed work after repeated wakes. The report records accepted controls,
-wake-to-completion percentiles, throughput, CPU time and context switches. Children own every policy change and exit
-after each measurement. The probe stops its owned process group on errors and timeouts, including when the worker
-exits before its competitor. No root access or system changes are needed. The probe rejects unchanged controls as an
-optimization win. Its recommendation requires better p95 latency in every paired round without a material throughput
-loss. Synthetic latency is not game FPS. Short samples can produce a different recommendation from longer runs. Keep
-the same workload, repeat the paired rounds, and report conflicting results. Check the same game scene and camera
-before claiming a gameplay improvement.
-
-References: [Linux utilization clamping](https://docs.kernel.org/scheduler/sched-util-clamp.html),
-[custom fair slices](https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/3055b8bf92c5f438275cfdbf8f32cb864b9f841d),
-and [FreeBSD per-thread priority](https://man.freebsd.org/cgi/man.cgi?query=rtprio&sektion=2).
-
 ## Measure descriptor submission
 
 `VK_EXT_descriptor_buffer` is an optional graphics path (`--vk_descriptors=1`). It writes descriptor tables into
@@ -210,6 +176,40 @@ beside it:
 - The log names each NVN function the game resolves that the runtime does not implement (`nvn: the game resolved
   NAME, which nvn doesn't implement`), and the game stops with its name when it calls one. [NVN_HLE.md](NVN_HLE.md)
   has what the SDK does.
+
+## Measure host scheduling
+
+`cpu_scheduling=2` is the default. It applies once to each guest thread, GPU worker and Vulkan recording worker,
+including guest threads restored from a save state. The guest core scheduler keeps its priority and affinity rules.
+The option changes only the calling host thread and does not change system scheduler settings or CPU governors.
+
+On Linux, mode 1 requests `UCLAMP_MIN=UCLAMP_MAX=1024`. Mode 2 also requests a 100 microsecond fair scheduling
+slice and the best nice value the user's existing resource limit permits. Linux 6.12 added custom fair slices.
+These requests can increase power use or context switches. Kernel and cgroup limits still apply. The runtime keeps
+externally selected nonstandard scheduling policies. It logs accepted values and unsupported controls once per worker
+kind, so an accepted but ignored request cannot be mistaken for an active feature. Mode 0 keeps the host defaults.
+
+On FreeBSD, modes 1 and 2 request the highest normal per-thread priority with `rtprio_thread`, keeping the native
+timeshare class. A denied request leaves the existing priority in place. This backend has not been run on FreeBSD.
+Other systems retain their host scheduling policy.
+
+```sh
+python3 tools/bench_cpu_scheduling.py --out /local/scratch/scheduler-probe
+```
+
+This Linux x86-64/AArch64 probe compares modes 0, 1 and 2 in shuffled serial rounds. A competing process shares the
+same CPU. Each candidate performs identical fixed work after repeated wakes. The report records accepted controls,
+wake-to-completion percentiles, throughput, CPU time and context switches. Children own every policy change and exit
+after each measurement. The probe stops its owned process group on errors and timeouts, including when the worker
+exits before its competitor. No root access or system changes are needed. The probe rejects unchanged controls as an
+optimization win. Its recommendation requires better p95 latency in every paired round without a material throughput
+loss. Synthetic latency is not game FPS. Short samples can produce a different recommendation from longer runs. Keep
+the same workload, repeat the paired rounds, and report conflicting results. Check the same game scene and camera
+before claiming a gameplay improvement.
+
+References: [Linux utilization clamping](https://docs.kernel.org/scheduler/sched-util-clamp.html),
+[custom fair slices](https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/3055b8bf92c5f438275cfdbf8f32cb864b9f841d),
+and [FreeBSD per-thread priority](https://man.freebsd.org/cgi/man.cgi?query=rtprio&sektion=2).
 
 ## Profiling
 
