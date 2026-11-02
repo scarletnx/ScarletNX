@@ -76,6 +76,9 @@ void nvn_draw_free(NvnDraw* d) {
 void nvn_draw_init(NvnDraw* d, u32 owner) {
     int i, s;
     d->ds.owner = owner;
+    /* the game's driver writes the window origin register once, as it initializes the queue: the flip when the
+       device's origin is lower left then. A game that sets an upper left origin after it keeps the flip */
+    d->flip = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED) == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
     /* NVN's state before anything is bound: the state objects' defaults (nvn_object.c's SetDefaults) */
     for (i = 0; i < DS_TARGETS_MAX; i++) {
         u64 w = 0;
@@ -416,20 +419,10 @@ static void make_dynamic(NvnDraw* d, u32 base_instance) {
     y.stencil_test = (u8)nvn_field(s, NVN_DS_STENCIL);
     y.alpha_test = alpha != NVN_ALPHA_FUNC_ALWAYS;
     y.alpha_func = from1(alpha, DS_CMP_ALWAYS, DS_CMP_ALWAYS);
-    /* the window origin register as the game's driver writes it (measured in 43 games of NVN 53.5 to 55.15): the
-       flip, which reverses the facing, for a lower left origin whatever the depth mode, and never the lower left bit,
-       so y counts from the top of the targets as on the driver's. A driver older than 53.105 (53.13) flips for
-       near = -w too, unless the origin is lower left */
-    u32 origin = __atomic_load_n(&g_nvn.draw.origin, __ATOMIC_RELAXED);
+    /* the window origin register as the game's driver writes it: the flip the queue took when it was initialized
+       (nvn_draw_init), and never the lower left bit, so y counts from the top of the targets as on the driver's */
     u32 depth_mode = __atomic_load_n(&g_nvn.draw.depth_mode, __ATOMIC_RELAXED);
-    int flip = origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
-    if (g_nvn.loader.api && g_nvn.loader.api < (53u << 16 | 105) && depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W) {
-        flip = !flip;
-        /* that flip reverses the facing (vk_render_front_face), and the front face the driver writes with it is the
-           other one: the two keep the game's facing, as two games of these drivers draw it */
-        y.front_cw = !y.front_cw;
-    }
-    y.window_origin = flip ? DS_ORIGIN_FLIP_Y : 0;
+    y.window_origin = d->flip ? DS_ORIGIN_FLIP_Y : 0;
     y.depth_mode = depth_mode == NVN_DEPTH_MODE_NEAR_IS_ZERO;
     y.sprite_origin = 1; /* the game's driver's sprite origin bit, set whatever the window origin */
     y.point_nudge = 1; /* the game's driver leaves the OpenGL point center and half-integer pixel centers on (0x597
