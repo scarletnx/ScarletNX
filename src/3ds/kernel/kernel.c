@@ -698,6 +698,45 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x03: return SNX_CTR_SVC_EXIT;
+        case 0x04:   /* GetProcessAffinityMask: mask r0, process r1, count r2. The application runs on the processor of
+                        its main thread, which the one byte of the mask names */
+        case 0x0d: { /* GetThreadAffinityMask: mask r0, thread r1, count r2 */
+            uint32_t id = snx_ctr_handle_object(p, r[1]);
+            bool thread = number == 0x0d;
+            if (!id || p->objects[id].type != (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS)) {
+                r[0] = INVALID_HANDLE;
+                return SNX_CTR_SVC_RETURN;
+            }
+            uint32_t core = thread ? p->objects[id].data.thread.core : 0, result = OK;
+            for (uint32_t i = 0; i < r[2] && !result; ++i) {
+                unsigned char bit = i == core;
+                result = snx_ctr_write_ram(p->space, r[0] + i, &bit, 1) == SNX_CTR_MEM_OK ? OK : 0xe0e01bf5u;
+            }
+            r[0] = result;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x05:   /* SetProcessAffinityMask: process r0, mask r1, count r2. The processors are fixed, as the idle
+                        scheduling is: the mask is accepted and nothing moves */
+        case 0x07:   /* SetProcessIdealProcessor: process r0, processor r1 */
+        case 0x0e:   /* SetThreadAffinityMask: thread r0, mask r1, count r2 */
+        case 0x10: { /* SetThreadIdealProcessor: thread r0, processor r1 */
+            uint32_t id = snx_ctr_handle_object(p, r[0]);
+            bool thread = number == 0x0e || number == 0x10;
+            r[0] = id && p->objects[id].type == (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS) ? OK : INVALID_HANDLE;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x06:   /* GetProcessIdealProcessor: process r1, the processor out at r1 */
+        case 0x0f: { /* GetThreadIdealProcessor: thread r1, the processor out at r1 */
+            uint32_t id = snx_ctr_handle_object(p, r[1]);
+            bool thread = number == 0x0f;
+            bool good = id && p->objects[id].type == (thread ? CTR_OBJ_THREAD : CTR_OBJ_PROCESS);
+            r[0] = good ? OK : INVALID_HANDLE;
+            r[1] = good && thread ? p->objects[id].data.thread.core : 0;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x11: /* GetCurrentProcessorNumber */
+            r[0] = p->objects[p->current_thread].data.thread.core;
+            return SNX_CTR_SVC_RETURN;
         case 0x0b: { /* GetThreadPriority: handle r1, the priority the thread runs at (inherited included, Azahar's
                         GetPriority) out at r1, 0 on failure (libctru stores r1 either way) */
             uint32_t id = snx_ctr_handle_object(p, r[1]);
