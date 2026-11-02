@@ -149,6 +149,16 @@ LAUNCHER_OTHER = (
     + HEADER.replace('Some Game', 'Other Game')
 )
 
+# the other frontends' header on one line: the 3DS's with its title ID (3ds/aot/run.c), the Vita's without
+THREEDS = (
+    '$ /tmp/.mount_x/bin/scarletnx-3ds --game=/home/someone/Games/0004000000179400\n'
+    "The title's folder is /home/someone/Games/0004000000179400\n"
+    'Game: Some 3DS Game (0004000000179400) - ScarletNX main d22bbab (clang 23.1.4, Linux x86_64)\n'
+    '3ds gpu: the driver cannot import the VRAM region\n'
+    'No Vulkan device: no frames will be drawn, shown or saved\n'
+)
+VITA = 'Game: Some Vita Game - ScarletNX main 1234abc (clang 23.1.3, Linux x86_64)\n'
+
 # the renderer's frame lines (gpu/vk/renderer.c): each frame over 50 ms, and every 600 presents the counts with the
 # frames over 50 ms since the last such line (two counted there, then one more after it)
 FRAMES = HEADER + (
@@ -369,6 +379,16 @@ def main():
         f"the launcher's build: {la['build']}",
     )
     check(la['signature'] == r['signature'] and la['ipc'] == [], "only the game log's section is scanned")
+    t3 = scan(THREEDS)
+    check(
+        (t3['title'], t3['title_id'], t3['commit'], t3['branch']) == ('Some 3DS Game', '0004000000179400', 'd22bbab', 'main'),
+        f"the 3DS's header: {t3['title']} {t3['title_id']} {t3['commit']}",
+    )
+    vi = scan(VITA)
+    check(
+        (vi['title'], vi['title_id'], vi['commit']) == ('Some Vita Game', None, '1234abc'),
+        f"the Vita's header: {vi['title']} {vi['title_id']} {vi['commit']}",
+    )
     lo = scan(LAUNCHER_OTHER)
     check(
         lo['title'] == 'Some Game' and lo['title_id'] == '0100CCCC00000000' and lo['outcome'] == 'svcBreak',
