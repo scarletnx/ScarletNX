@@ -3863,7 +3863,8 @@ int main(int argc, char** argv) {
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
-    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb"};
+    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb",
+                           "scarletnx-android"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -3996,6 +3997,10 @@ int main(int argc, char** argv) {
     assert(app.menu.selected == GUI_GBA);
     render(&app);
     shows(&app, "- " ICON_GAMEPAD " Load GBA ROM", yellow);
+    key(&app, SDLK_RIGHT);
+    assert(app.menu.selected == GUI_ANDROID);
+    render(&app);
+    shows(&app, "- " ICON_PACKAGE_PLUS " Load Android APK/XAPK", yellow);
     /* a load whose driver is neither beside the menu nor on PATH (on iOS the four the app leaves out) is greyed, still
        there, as soon as the folder or PATH it is looked for in changes, and Enter on it says which driver rather than
        opening its screen; put back, Enter looks again and opens it; gone again, the row greys within a second (#640) */
@@ -4036,7 +4041,7 @@ int main(int argc, char** argv) {
         free(vita);
         app.menu.activated = false;
         app.menu.active = GUI_SWITCH;
-        app.menu.selected = GUI_GBA;
+        app.menu.selected = GUI_ANDROID;
         app.message[0] = 0;
     }
     key(&app, SDLK_RIGHT);
@@ -6835,6 +6840,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
+    key(&app, SDLK_LEFT);
     /* a load opens the screen its file is picked on at once: games/ is Games' now, not an option under it */
     assert(app.menu.selected == GUI_SWITCH);
     pump(&app);
@@ -7320,6 +7326,7 @@ int main(int argc, char** argv) {
                     const char* kind;
                 } unlisted[] = {{"far away.nsp", GUI_SWITCH, "A dump, prepared when it runs"},
                                 {"tool.elf", GUI_LINUX, "Linux ARM ELF, run with scarletnx-gnuabi"},
+                                {"app.apk", GUI_ANDROID, "Android app, run with scarletnx-android"},
                                 {"homebrew.cia", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"card.3ds", GUI_3DS, "3DS game, opened with scarletnx-3ds"},
                                 {"homebrew.vpk", GUI_VITA, "Vita VPK, opened with scarletnx-vita"},
@@ -7344,7 +7351,7 @@ int main(int argc, char** argv) {
                 for (k = 0; k < sizeof unlisted / sizeof unlisted[0]; ++k) {
                     char* path = snx_path_join(temporary, unlisted[k].file);
                     int shown = recent_shown(&app), count = app.recent.count;
-                    bool linux_one = unlisted[k].driver == GUI_LINUX;
+                    bool linux_one = unlisted[k].driver == GUI_LINUX || unlisted[k].driver == GUI_ANDROID;
                     assert(!gui_recent_add(&app.recent, path, unlisted[k].driver, 0));
                     recent_changed(&app);
                     app.browser.selected = 0;
@@ -7919,6 +7926,67 @@ int main(int argc, char** argv) {
         free(program);
         free(folder);
         free(rom);
+        free(recent_file);
+    }
+    /* Android: an app's XAPK through scarletnx-android, which installs it itself. It runs as it is, as a Linux
+       program: no -r, no --data, nothing made, its recent row shown; R on it says so */
+    {
+        char* original_games = app.games_dir;
+        char* recent_file = snx_path_join(temporary, "prefs/android-recent.txt");
+        app.games_dir = snx_path_join(temporary, "apk-games");
+        char* apk = snx_path_join(app.games_dir, "app input.XAPK");
+        char kind[160];
+        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(apk, "fixture", 7));
+        assert(gui_is_apk("a.apk") && gui_is_apk("a.APKS") && gui_is_apk("a.xapk") && !gui_is_apk("a.apkx") &&
+               !gui_is_apk("apk"));
+        char *got = snx_path_join(temporary, "driver argv"), *argv_got;
+        recent_open(&app, snx_strdup(recent_file));
+        launcher(&app, true);
+        driver_will(got, 0, "the app ran");
+        point(&app, entry_box(&app, GUI_ANDROID), true);
+        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_ANDROID);
+        e.type = SDL_EVENT_DROP_FILE;
+        e.drop.data = apk;
+        event(&app, &e);
+        assert(app.menu.running && app.menu.selected == GUI_ANDROID && !app.native && !app.queue.count);
+        argv_got = ran(&app, 0);
+        assert(strstr(argv_got, "scarletnx-android") < strchr(argv_got, '\n') && has_arg(argv_got, apk, NULL) &&
+               !has_arg(argv_got, "-r", NULL) && !has_arg(argv_got, "--data", NULL) &&
+               !has_arg(argv_got, "--outdir", NULL) && !has_arg(argv_got, "--fullscreen=1", NULL));
+        free(argv_got);
+        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_ANDROID && !app.recent.game[0].prepared);
+        GuiRecent kept;
+        gui_recent_load(&kept, recent_file);
+        assert(kept.count == 1 && kept.game[0].driver == GUI_ANDROID && !kept.game[0].prepared);
+        assert(recent_shown(&app) == 1);
+        /* the XAPK in the games folder is one of Games', which Enter runs through scarletnx-android again */
+        leave_run(&app);
+        go_tab(&app, GUI_TAB_GAMES);
+        focus_game(&app, "app input.XAPK");
+        game_kind(&app, &app.games, app.browser.page * app.browser.page_size + app.browser.selected - app.browser.head,
+                  kind, sizeof kind);
+        assert(!strcmp(kind, "Android app, run with scarletnx-android"));
+        key(&app, SDLK_R);
+        assert(!app.menu.running && !app.queue.count &&
+               !strcmp(app.message, "R recompiles games: an Android app runs as it is."));
+        key(&app, SDLK_RETURN);
+        assert(app.menu.running && !app.native && app.menu.selected == GUI_ANDROID && !app.queue.count);
+        argv_got = ran(&app, 0);
+        assert(has_arg(argv_got, apk, NULL) && !has_arg(argv_got, "-r", NULL) && !has_arg(argv_got, "--data", NULL));
+        free(argv_got);
+        leave_run(&app);
+        driver_will(NULL, 0, NULL);
+        free(got);
+        app.recent = (GuiRecent){0};
+        recent_changed(&app);
+        free(app.recent_file);
+        app.recent_file = NULL;
+        launcher(&app, false);
+        app.menu.selected = GUI_LINUX;
+        free(app.games_dir);
+        app.games_dir = original_games;
+        app.games_stamp = stamp_now(&app);
+        free(apk);
         free(recent_file);
     }
 

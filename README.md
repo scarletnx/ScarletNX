@@ -37,7 +37,7 @@ and **Load Switch NSP/XCI/NRO** picks a dump, recompiles it and starts the game.
   [RISC-V and LoongArch](docs/RISCV-LOONGARCH.md), [MIPS64](docs/MIPS64.md), [s390x](docs/S390X.md),
   [NetBSD](docs/NETBSD.md)
 - Other systems: [3DS](docs/3DS.md), [PS Vita](docs/VITA.md), [Game Boy Advance](docs/AGB.md),
-  [Linux AArch64 programs](docs/GNUABI.md)
+  [Linux AArch64 programs](docs/GNUABI.md), [Android apps](docs/android/README.md) (**Load Android APK/XAPK**)
 - [Every document](docs/README.md), by subject
 
 ## License and credits

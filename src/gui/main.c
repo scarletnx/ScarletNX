@@ -768,6 +768,7 @@ typedef char gui_entries_in_order[GUI_ENTRY(GUI_LINUX) == UI_MENU_ENTRIES_LOAD_L
                                           GUI_ENTRY(GUI_3DS) == UI_MENU_ENTRIES_LOAD_3DS_GAME &&
                                           GUI_ENTRY(GUI_VITA) == UI_MENU_ENTRIES_LOAD_VITA_VPK &&
                                           GUI_ENTRY(GUI_GBA) == UI_MENU_ENTRIES_LOAD_GBA_ROM &&
+                                          GUI_ENTRY(GUI_ANDROID) == UI_MENU_ENTRIES_LOAD_ANDROID_APK_XAPK &&
                                           GUI_ENTRY(GUI_KEYS) == UI_MENU_ENTRIES_INSTALL_KEYS &&
                                           GUI_ENTRY(GUI_SETTINGS) == UI_MENU_ENTRIES_SETTINGS &&
                                           GUI_ENTRY(GUI_LOG) == UI_MENU_ENTRIES_SHARE_LOG &&
@@ -1735,9 +1736,12 @@ static void recent_note(App* app) {
         memmove(at, at + cut, strlen(at + cut) + 1);
     }
 }
-/* a recent game Games shows: a game made, or a Linux program, which runs as it is. A dump not made yet stays in the
-   list, so that its game takes its place once made (recent_as_games), but is not shown: opening it would recompile it */
-static bool recent_game(const GuiRecentGame* r) { return r->prepared || r->driver == GUI_LINUX; }
+/* a load whose file runs as it is, with no game made of it: a Linux program, an Android app */
+static bool runs_as_is(int driver) { return driver == GUI_LINUX || driver == GUI_ANDROID; }
+/* a recent game Games shows: a game made, or a Linux program or an Android app, which runs as it is. A dump not made
+   yet stays in the list, so that its game takes its place once made (recent_as_games), but is not shown: opening it
+   would recompile it */
+static bool recent_game(const GuiRecentGame* r) { return r->prepared || runs_as_is(r->driver); }
 static int recent_games(const App* app) {
     int n = 0;
     for (int i = 0; i < app->recent.count; ++i) n += recent_game(&app->recent.game[i]);
@@ -6327,8 +6331,9 @@ static const char* item_about(const App* app, int item) {
                                         SNX_TR_NOOP("Runs a Linux ARM program, 64 or 32-bit"),
                                         SNX_TR_NOOP("Recompiles a 3DS game, then runs it"),
                                         SNX_TR_NOOP("Recompiles a PS Vita homebrew .vpk, then runs it"),
-                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board")};
-    if (item >= GUI_SWITCH && item <= GUI_GBA) return snx_tr(loads[item - GUI_SWITCH]);
+                                        SNX_TR_NOOP("Runs a GBA ROM on the emulated AGB board"),
+                                        SNX_TR_NOOP("Runs an Android app's .apk, .xapk or .apks")};
+    if (item >= GUI_SWITCH && item <= GUI_ANDROID) return snx_tr(loads[item - GUI_SWITCH]);
     if (item == GUI_KEYS) return snx_tr("Installs prod.keys, which games are extracted with");
     if (item == GUI_EXIT) return snx_tr("Closes ScarletNX");
     {
@@ -6388,7 +6393,7 @@ unsigned ui_menu_entries_attr_cb(App* app, size_t row) {
         free(in_use);
     }
     if (row == GUI_LOG && app->log_due) attr |= UI_ATTR_FAILURE | UI_ATTR_BLINK;
-    if (row <= GUI_GBA && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
+    if (row <= GUI_ANDROID && (loads_off(app) >> row & 1u)) attr |= UI_ATTR_OFF;
     return attr;
 }
 static void draw_menu(App* app) {
@@ -6770,8 +6775,10 @@ void ui_games_grid_tiles_row_action_cb(App* app, size_t row, uint32_t hit) {
 /* the focused row of Games: what it is, about it, and a line more for a recent game's or a game's kind */
 static bool game_was_old(const App* app, const char* path);
 static int row_driver(const GuiGames* games, size_t i);
-/* a 3DS game, a Vita VPK or a GBA ROM: a console's package its driver makes a game of */
-static bool package(const char* name) { return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name); }
+/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
+static bool package(const char* name) {
+    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_apk(name);
+}
 /* a made game's kind, by the console its folder says */
 static const char* ready_kind(int driver) {
     return driver == GUI_3DS    ? snx_tr("3DS game, ready to run")
@@ -6798,6 +6805,7 @@ static void game_kind(const App* app, const GuiGames* games, size_t i, char* kin
                  gui_is_cia(name)    ? snx_tr("3DS game, opened with scarletnx-3ds")
                  : gui_is_vpk(name)  ? snx_tr("Vita VPK, opened with scarletnx-vita")
                  : gui_is_gba(name)  ? snx_tr("GBA ROM, played with scarletnx-agb")
+                 : gui_is_apk(name)  ? snx_tr("Android app, run with scarletnx-android")
                  : gui_is_dump(name) ? snx_tr("A dump, prepared when it runs")
                                      /* Games' own rows by what list_games read, another list's from its folder */
                                      : ready_kind(games == &app->games ? app->games_drivers[i] : row_driver(games, i)));
@@ -6816,9 +6824,11 @@ static void recent_kind(const App* app, const GuiRecentGame* r, char* kind, size
             game_kind(app, &app->games, i, kind, size);
             return;
         }
-    /* shown, it is a game made or a Linux program (recent_game) */
+    /* shown, it is a game made, a Linux program or an Android app (recent_game) */
     snprintf(kind, size, "%s",
-             r->driver == GUI_LINUX ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi") : ready_kind(r->driver));
+             r->driver == GUI_LINUX     ? snx_tr("Linux ARM ELF, run with scarletnx-gnuabi")
+             : r->driver == GUI_ANDROID ? snx_tr("Android app, run with scarletnx-android")
+                                        : ready_kind(r->driver));
 }
 static const char* games_focus(App* app, const GuiGamesBoxes* g, const char** about, char* kind, size_t size) {
     size_t selected = app->browser.selected, head = app->browser.head;
@@ -7345,7 +7355,7 @@ static unsigned drivers_held(void) {
     return gui_drivers_held(SNX_GUI_PROGRAM_DRIVERS);
 #else
     unsigned held = 0;
-    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+    for (int item = GUI_SWITCH; item <= GUI_ANDROID; ++item)
         if (snx_menu_has_driver && snx_menu_has_driver(gui_driver_name(item))) held |= 1u << item;
     return held;
 #endif
@@ -7406,7 +7416,7 @@ static unsigned loads_off(App* app) {
     Uint64 now = SDL_GetTicks();
     if (app->loads_at && key == app->loads_key && now - app->loads_at < 1000) return app->loads_off;
     app->loads_off = 0;
-    for (int item = GUI_SWITCH; item <= GUI_GBA; ++item)
+    for (int item = GUI_SWITCH; item <= GUI_ANDROID; ++item)
         if (!driver_there(app, item)) app->loads_off |= 1u << item;
     app->loads_key = key;
     app->loads_at = SDL_max(now, 1);
@@ -8289,19 +8299,20 @@ static int folder_entry_row(const App* app, int e, int* group) {
 /* the key Folders' focused row takes, in parts, when it does something there: a place picks another, and one picked
    goes back to its default; an Extra is taken off; Add a folder adds one; Reset to Defaults resets a place picked.
    How many (0 or 1, 2 for a place picked) */
-/* Games' focused row a game's of any console (a recent run's or a listed one's; a heading none, a Linux program none),
-   which R recompiles; *mods when it is a made Switch game, whose mods M opens */
+/* Games' focused row a game's of any console (a recent run's or a listed one's; a heading none, a Linux program or an
+   Android app none), which R recompiles; *mods when it is a made Switch game, whose mods M opens */
 static bool games_game_focus(const App* app, bool* mods) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     *mods = false;
     if (row < head && (int)row < recent_shown(app)) {
         const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
-        if (r->driver == GUI_LINUX) return false;
+        if (runs_as_is(r->driver)) return false;
         *mods = r->driver == GUI_SWITCH && !gui_is_dump(r->path);
         return true;
     }
     if (row < head || index >= app->games.count || gui_games_heading(&app->games, index)) return false;
+    if (gui_is_apk(app->games.names[index])) return false;
     *mods = !gui_is_dump(app->games.names[index]) && app->games_drivers[index] == GUI_SWITCH;
     return true;
 }
@@ -14263,7 +14274,7 @@ static void launch(App* app, char* absolute, bool prepared) {
 #endif
     /* a dump, package or ROM a game was made from already: played or recompiled, as the player answers (made_answer;
        DraVee, 2026-10-24) */
-    if (!app->recompile && !app->made_ok && !prepared && app->menu.selected != GUI_LINUX && made_from(app, absolute)) {
+    if (!app->recompile && !app->made_ok && !prepared && !runs_as_is(app->menu.selected) && made_from(app, absolute)) {
         made_ask(app, absolute);
         return;
     }
@@ -15013,6 +15024,7 @@ static int named_driver(const char* name) {
     return gui_is_cia(name)    ? GUI_3DS
            : gui_is_vpk(name)  ? GUI_VITA
            : gui_is_gba(name)  ? GUI_GBA
+           : gui_is_apk(name)  ? GUI_ANDROID
            : gui_is_dump(name) ? GUI_SWITCH
                                : -1;
 }
@@ -15061,6 +15073,9 @@ static void recompile_focus(App* app) {
         snprintf(app->message, sizeof app->message, "%s", snx_tr("No game in focus to recompile."));
     else if (recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_LINUX)
         snprintf(app->message, sizeof app->message, "%s", snx_tr("R recompiles games: a Linux program runs as it is."));
+    else if ((recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_ANDROID) ||
+             (game && gui_is_apk(app->games.names[index])))
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("R recompiles games: an Android app runs as it is."));
     else {
         app->recompile = true;
         if (recent)
@@ -15134,7 +15149,8 @@ static int aot_focus_game(App* app, AotFocus* f) {
         path = app->recent.game[recent_index(app, (int)row)].path;
     } else if (game) {
         if (gui_games_heading(&app->games, index) || gui_is_cia(app->games.names[index]) ||
-            gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]))
+            gui_is_vpk(app->games.names[index]) || gui_is_gba(app->games.names[index]) ||
+            gui_is_apk(app->games.names[index]))
             return 0; /* no path */
         path = app->games.paths[index];
     } else {
@@ -16254,7 +16270,8 @@ static void menu_key(App* app, GuiKey key) {
     }
     if (pick_screen(app) && key != GUI_SELECT && key != GUI_CANCEL) return; /* nothing there to move to */
     /* a load whose driver is not there opens no screen: it says which driver, looked for again now (#640) */
-    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running && app->menu.selected <= GUI_GBA) {
+    if (key == GUI_SELECT && app->menu.view == GUI_LOAD_NONE && !app->menu.running &&
+        app->menu.selected <= GUI_ANDROID) {
         app->loads_at = 0;
         if (loads_off(app) >> app->menu.selected & 1u) {
             driver_missing(app, app->menu.selected, app->message, sizeof app->message);
@@ -16482,6 +16499,7 @@ void ui_menu_entries_load_linux_arm_elf_action_cb(App* app, uint32_t hit) { menu
 void ui_menu_entries_load_3ds_game_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_3DS, hit); }
 void ui_menu_entries_load_vita_vpk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_VITA, hit); }
 void ui_menu_entries_load_gba_rom_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_GBA, hit); }
+void ui_menu_entries_load_android_apk_xapk_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_ANDROID, hit); }
 void ui_menu_entries_install_keys_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_KEYS, hit); }
 void ui_menu_entries_settings_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_SETTINGS, hit); }
 void ui_menu_entries_share_log_action_cb(App* app, uint32_t hit) { menu_entry(app, GUI_LOG, hit); }

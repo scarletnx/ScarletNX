@@ -104,6 +104,11 @@ int main(void) {
     assert(menu.active == GUI_GBA && menu.view == GUI_LOAD_DROP);
     gui_menu_key(&menu, GUI_CANCEL);
     gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_ANDROID);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_ANDROID && menu.view == GUI_LOAD_DROP);
+    gui_menu_key(&menu, GUI_CANCEL);
+    gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_KEYS);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.view == GUI_LOAD_KEYS && !menu.running);

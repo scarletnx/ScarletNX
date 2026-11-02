@@ -94,8 +94,9 @@ size_t gui_game_cheats(const char* path, char** folder, char*** names);
    copied in part, and taken away when a file fails. from is left as it is. True; false with why naming the file that
    failed, or the link a mod cannot hold, and the system's reason */
 bool gui_copy_mod(const char* from, const char* to, char* why, size_t size);
-/* A 3DS CIA, a Vita VPK, a GBA ROM, by its name */
+/* A 3DS CIA, a Vita VPK, a GBA ROM, an Android APK, XAPK or APKS, by its name */
 bool gui_is_cia(const char* name);
 bool gui_is_vpk(const char* name);
 bool gui_is_gba(const char* name);
+bool gui_is_apk(const char* name);
 #endif

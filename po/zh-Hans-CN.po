@@ -2117,6 +2117,10 @@ msgid "Runs a GBA ROM on the emulated AGB board"
 msgstr "在模拟的 AGB 主板上运行 GBA ROM"
 
 #: src/gui/main.c
+msgid "Runs an Android app's .apk, .xapk or .apks"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installs prod.keys, which games are extracted with"
 msgstr "安装用于提取游戏的 prod.keys"
 
@@ -2174,6 +2178,10 @@ msgstr "Vita VPK，用 scarletnx-vita 打开"
 #: src/gui/main.c
 msgid "GBA ROM, played with scarletnx-agb"
 msgstr "GBA ROM，用 scarletnx-agb 运行"
+
+#: src/gui/main.c
+msgid "Android app, run with scarletnx-android"
+msgstr ""
 
 #: src/gui/main.c
 msgid "A dump, prepared when it runs"
@@ -4209,6 +4217,10 @@ msgid "R recompiles games: a Linux program runs as it is."
 msgstr "R 重新编译游戏：Linux 程序直接运行。"
 
 #: src/gui/main.c
+msgid "R recompiles games: an Android app runs as it is."
+msgstr ""
+
+#: src/gui/main.c
 msgid "No game in focus to play."
 msgstr ""
 
@@ -5195,6 +5207,10 @@ msgstr "载入 Vita VPK"
 #: src/gui/ui.txt
 msgid "Load GBA ROM"
 msgstr "载入 GBA ROM"
+
+#: src/gui/ui.txt
+msgid "Load Android APK/XAPK"
+msgstr ""
 
 #: src/gui/ui.txt
 msgid "Install Keys"
