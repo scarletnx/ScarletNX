@@ -239,6 +239,21 @@ size_t snx_hac_entries(SnxHac *hac, int container, const SnxHacEntry **entries) 
     return hac->containers[container].count;
 }
 
+int snx_hac_size(SnxHac *hac, int container, uint64_t *size) {
+    FILE *file = hac->containers[container].file;
+#ifdef _WIN32 /* the size from the open file: Windows tells a link's own size by its path */
+    __int64 at = _ftelli64(file), end = -1;
+    if (at >= 0 && !_fseeki64(file, 0, SEEK_END)) end = _ftelli64(file);
+    if (at >= 0) _fseeki64(file, at, SEEK_SET);
+#else
+    off_t at = ftello(file), end = -1;
+    if (at >= 0 && !fseeko(file, 0, SEEK_END)) end = ftello(file);
+    if (at >= 0) fseeko(file, at, SEEK_SET);
+#endif
+    *size = end < 0 ? 0 : (uint64_t)end;
+    return end < 0 ? -1 : 0;
+}
+
 int snx_hac_read(SnxHac *hac, int container, size_t entry, void *buffer, size_t size) {
     Container *c = &hac->containers[container];
     if (size > c->entries[entry].size || fseeko64(c->file, c->entries[entry].offset, SEEK_SET) ||

@@ -49,6 +49,9 @@ int snx_hac_newest_generation(SnxHac* hac);
 /* a container to read NCAs in place from, XCI or NSP: its number for the calls below, or -1. Two at most */
 int snx_hac_open(SnxHac* hac, const char* path, int xci);
 size_t snx_hac_entries(SnxHac* hac, int container, const SnxHacEntry** entries);
+/* the size of the file the container was opened from, a link's target's, which its entries must lie in, into *size:
+   0, or -1 when the system can't tell it */
+int snx_hac_size(SnxHac* hac, int container, uint64_t* size);
 /* the first size bytes of an entry: 0, or -1 */
 int snx_hac_read(SnxHac* hac, int container, size_t entry, void* buffer, size_t size);
 /* 0, or -1 when its header cannot be decrypted (the keys are wrong or missing) */

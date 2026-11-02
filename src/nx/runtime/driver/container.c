@@ -684,6 +684,29 @@ static int select_addon(SnxDump* dump, int container) {
     }
 }
 
+/* 0, else nonzero, said with both sizes, when the file of a container is shorter than its table says: a copy or a
+   download cut short, which would otherwise extract as if whole, or fail to be mapped with no reason given */
+static int dump_cut(SnxDump* dump, int container, const char* path) {
+    const SnxHacEntry* entries;
+    size_t count = snx_hac_entries(dump->hac, container, &entries), i;
+    SnxU64 size = 0, end = 0;
+    char has[32], needs[32], why[256];
+    if (snx_hac_size(dump->hac, container, &size))
+        return snx_error("cannot tell the size of %s: %s", path, snx_os_error(why, sizeof why));
+    for (i = 0; i < count; i++) {
+        SnxU64 last =
+            entries[i].size > ~(SnxU64)0 - entries[i].offset ? ~(SnxU64)0 : entries[i].offset + entries[i].size;
+        if (last > end) end = last;
+    }
+    if (end <= size) return 0;
+    snx_size_text(size, has, sizeof has);
+    snx_size_text(end, needs, sizeof needs);
+    return snx_error("%s is %s (%llu bytes), and its table puts its files up to %s (%llu bytes): the dump is "
+                     "incomplete, %llu bytes short. Copy or dump it again",
+                     path, has, (unsigned long long)size, needs, (unsigned long long)end,
+                     (unsigned long long)(end - size));
+}
+
 static int open_container(SnxDump* dump, const char* path, int say) {
     int xci, container;
     unsigned tickets, personal;
@@ -698,7 +721,8 @@ static int open_container(SnxDump* dump, const char* path, int say) {
     container = snx_hac_open(dump->hac, path, xci);
     if (container >= 0 && container < (int)(sizeof dump->opened / sizeof *dump->opened)) dump->opened[container] = path;
     if (container < 0) snx_hac_error(xci ? "cannot read the XCI's secure partition" : "cannot read the NSP");
-    if (container < 0 || read_tickets(dump, container, &tickets, &personal)) return -1;
+    if (container < 0 || dump_cut(dump, container, path) || read_tickets(dump, container, &tickets, &personal))
+        return -1;
     if (say) { /* what it holds: its NCAs, said each as they are read, and its tickets */
         count = snx_hac_entries(dump->hac, container, &entries);
         for (i = 0; i < count; i++) /* the content meta's left out, as the reading leaves it */

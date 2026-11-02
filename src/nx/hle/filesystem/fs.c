@@ -923,6 +923,25 @@ static int rnode_image(RNode* root, u64 total) {
     return rc;
 }
 
+/* The dump's RomFS image read to its last byte at startup, which a dump cut short or damaged can't give: said here, not
+   first where the game reads there. The image's size against the dump's tells nothing alone: compressed blocks and
+   blocks of zeros make an image bigger than its dump */
+static void dump_romfs_end(void) {
+    char image[32], dump[32];
+    u8 last;
+    int rc;
+    pm_lock(&g_host.fs.dlock);
+    rc = snx_hac_fs_read_romfs(g_hle.fs.dfs, g_hle.fs.rtotal - 1, &last, 1);
+    pm_unlock(&g_host.fs.dlock);
+    if (!rc) return;
+    snx_size_text(g_hle.fs.rtotal, image, sizeof image);
+    snx_size_text(g_hle.fs.dmap.size + g_hle.fs.amap.size, dump, sizeof dump);
+    WARN("RomFS: the dump's image is %s, and its last byte, at %llx, can't be read from the dump's %s (hactool: %s): "
+         "the dump is incomplete or damaged\n",
+         image, (unsigned long long)(g_hle.fs.rtotal - 1), dump,
+         snx_hac_message()[0] ? snx_hac_message() : "no reason given");
+}
+
 /* The RomFS the game reads: the game's own image, else the image made up from its romfs/ folder; with mods played, made
    up from either with the mods' romfs/ folders laid over it (mods_open grafts them as mods.<i>) */
 void romfs_init(void) {
@@ -950,12 +969,14 @@ void romfs_init(void) {
         image = 1;
         LOG("RomFS: the update's over the game's dump, read in place (%.1f MB)\n",
             (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs:/", &node) && node->is_dir) {
         folder = node;
     } else if (g_hle.fs.dfs && snx_hac_fs_romfs_size(g_hle.fs.dfs)) {
         g_hle.fs.rtotal = snx_hac_fs_romfs_size(g_hle.fs.dfs);
         image = 1;
         LOG("RomFS: the dump's, read in place (%.1f MB)\n", (double)g_hle.fs.rtotal / 1048576.0);
+        dump_romfs_end();
     } else if (g_hle.fs.dfs) {
         LOG("RomFS: none in the game's dump\n");
     } else {

@@ -321,6 +321,12 @@ static int scenario(const char* scratch, const char* mode) {
         if (strcmp(mode, "no-control") && strcmp(mode, "dlc-alone")) game_add(&game, "control.nca", control(TITLE));
         write_container(base, &game, kind);
     }
+    if (!strcmp(mode, "cut-short")) { /* a copy that stopped 1024 bytes before its table's end */
+        size_t size = 0;
+        unsigned char* nsp = snx_read_file(base, &size);
+        CHECK(nsp && pfs0_files_end(nsp) <= size && !snx_write_file(base, nsp, pfs0_files_end(nsp) - 1024));
+        free(nsp);
+    }
     if (!strcmp(mode, "hactool-exit")) { /* a gamecard whose root partition is not what its header hashed */
         blob_t card = gamecard_build(NULL, 0, 0);
         card.data[0xF000 + 0xC] ^= 1;
@@ -440,6 +446,7 @@ int main(int argc, char** argv) {
         {"keys-too-old", "The game's Program NCA is encrypted with master key 20 (a firmware newer than 20.0.0), and ",
          1},
         {"explicit-missing-keys", "prod.keys is not a file", 1},
+        {"cut-short", "the dump is incomplete, 1024 bytes short. Copy or dump it again", 1}, /* sizes below */
         {"unmatched-update", "has no Program NCA of the game 0100000000AB0000", 1},
         {"update-alone", "is an update, which goes over its game", 1},
         {"dlc-alone", "Extracting the DLC 0100000000AB1001", 0},
@@ -520,6 +527,18 @@ int main(int argc, char** argv) {
             free(named);
             free(keys);
             free(repo);
+        }
+        if (!strcmp(scenarios[i].mode, "cut-short")) { /* the file's size, and its table's 1024 bytes past it */
+            char *base = snx_path_join(directory, "Base Game (&).NSP"), has[32], needs[32], *named;
+            SnxU64 size = snx_file_size(base);
+            snx_size_text(size, has, sizeof has);
+            snx_size_text(size + 1024, needs, sizeof needs);
+            named = snx_format("%s is %s (%llu bytes), and its table puts its files up to %s (%llu bytes): the dump is "
+                               "incomplete, 1024 bytes short",
+                               base, has, (unsigned long long)size, needs, (unsigned long long)(size + 1024));
+            CHECK(size > 0 && strstr(output, named) != NULL);
+            free(named);
+            free(base);
         }
         CHECK(strstr(output, SECRET) == NULL); /* no key, whatever hactool said */
         CHECK(strstr(output, "extracted ") == NULL); /* a quick one says nothing */
