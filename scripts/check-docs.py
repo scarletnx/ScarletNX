@@ -132,12 +132,17 @@ def links(text):
     return sorted(out)
 
 
+def in_order(paths):
+    """paths in the code point order of their names, as on Linux: Windows compares its paths case folded"""
+    return sorted(paths, key=lambda p: p.parts)
+
+
 def documents(root):
     out = []
     for name in DOCS:
         path = root / name
         if path.is_dir():
-            out += sorted(p for p in path.rglob('*.md') if p.is_file())
+            out += in_order(p for p in path.rglob('*.md') if p.is_file())
         elif path.is_file():
             out.append(path)
     return out
@@ -283,7 +288,7 @@ def check_docs_index(root, failures):
         path = unquote(target.partition('#')[0])
         if path and not SCHEME.match(path):
             linked.add((index.parent / path).resolve())
-    for doc in sorted((root / 'docs').rglob('*.md')):
+    for doc in in_order((root / 'docs').rglob('*.md')):
         if doc != index and doc.resolve() not in linked:
             failures.add('docs/README.md', 0, f'does not link {doc.relative_to(root / "docs").as_posix()}')
 
