@@ -61,6 +61,11 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     lent += size;
     return at;
 }
+/* all of the guest memory is mapped */
+u64 mem_mapped_run(u64 addr, u64 size) {
+    (void)addr;
+    return size;
+}
 /* a 64-bit game's: no 32-bit thread runs the game's callbacks */
 /* no GPU thread: each submission is read at once */
 u64 nvn_replay_submitted(void) { return 0; }

@@ -281,8 +281,9 @@ typedef struct {
     u64 device, used;
     u32 lent, seen_serial;
     u64 origin;
-    u64 game_end;           /* the end of the memory the game last added (the getters' size and room) */
-    u32 ctl, ctl_pad;       /* its control memory's slot in nvn_cmd.c's g_nvn.cmd.ctl, plus 1 (0 none) */
+    u64 game_end; /* the end of the memory the game last added (the getters' size and room) */
+    u32 ctl;      /* its control memory's slot in nvn_cmd.c's g_nvn.cmd.ctl, plus 1 (0 none) */
+    u32 piece;    /* the piece the open recording starts in (nvn_cmd.c's PIECE_MORE once past it), 0 none */
     i64 row_stride, image_stride; /* SetCopyRowStride's and SetCopyImageStride's, for their getters */
     u64 game_cur, last, seen;
 } NvnCmdBuf;
