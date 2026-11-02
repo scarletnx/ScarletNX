@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* NCE's machine layer, on an AArch64 Linux host: the game's code runs on the host's CPU, with the guest's registers
+/* NCE's machine layer, on an AArch64 Linux host or Android 10 and later on arm64: the game's code runs on the host's CPU, with the guest's registers
    in the host's registers and the guest's addresses as the host's. The stubs of the patcher (nce_patch.h) call the
    outcall here, which puts the guest's registers in its CPU and calls the runtime on the host's stack. A run of native
    code starts from the whole of a CPU, through a signal that the thread sends to itself: sigreturn loads each
@@ -13,9 +13,9 @@
 #include "common/cpu/aarch64/cpu.h"
 #include <stddef.h>
 
-/* the hosts that run NCE, and the only ones the recompile makes an NCE recompile for (recompile.c). Not Android: its
-   runtime is a library that the app loads, and bionic refuses the initial-exec TLS of the stubs in such a library */
-#if defined(__aarch64__) && defined(__linux__) && !defined(__ANDROID__)
+/* the hosts that run NCE, and the only ones the recompile makes an NCE recompile for (recompile.c). Android from API 29
+   only (nce_host_check, nce_refused): its stubs reach the thread's CPU through bionic's TLS_SLOT_APP (nce_host.c) */
+#if defined(__aarch64__) && defined(__linux__)
 #define SNX_NCE_HOST 1
 #else
 #define SNX_NCE_HOST 0
@@ -50,13 +50,17 @@ typedef struct {
     u64 lo, hi;
 } NceHostConfig;
 
-/* once, before any thread runs native code: the signal handlers, and the two values that the stubs need (NceEnv):
-   *tls, the distance from the host's TPIDR_EL0 to the thread's CPU pointer, and *outcall, the outcall's address.
-   0, or -1 with the reason in why */
-int nce_host_init(const NceHostConfig* config, u64* tls, u64* outcall, char* why, size_t size);
+/* once, before any thread runs native code: the signal handlers, and the values that the stubs need (NceEnv): *tls,
+   the distance from the host's TPIDR_EL0 to the thread's CPU pointer, or to a pointer to it when *indirect is 1
+   (Android), and *outcall, the outcall's address. 0, or -1 with the reason in why */
+int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* outcall, char* why, size_t size);
 #if SNX_NCE_HOST
-/* this host thread runs c's guest code from here: before its first nce_host_run */
-void nce_host_attach(CPU* c);
+/* whether this thread can run NCE, before anything is reserved for it: on Android the API level (29 or later) and the
+   thread's word that the stubs read (TLS_SLOT_APP: 0, or this layer's). 0, or -1 with what was found in why */
+int nce_host_check(char* why, size_t size);
+/* this host thread runs c's guest code from here: before its first nce_host_run. 0, or -1 with the reason in why when
+   another library of the process holds the thread's word that the stubs read */
+int nce_host_attach(CPU* c, char* why, size_t size);
 /* this host thread's id, which nce_host_kick takes */
 int nce_host_tid(void);
 /* the guest code that thread tid runs, if it runs any, stops and calls preempted. Any thread */

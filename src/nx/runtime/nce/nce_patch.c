@@ -8,6 +8,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -487,6 +488,23 @@ int nce_trap(NcePool* pools, size_t count, const NceEnv* env, unsigned index, Sn
 }
 
 /* ---- the pools and the file ---- */
+
+int nce_refused(char* why, size_t size, unsigned aspace, int android, int api) {
+    if (android && api < NCE_ANDROID_API) {
+        snprintf(why, size,
+                 "Android's API level is %d, and NCE needs %d (Android 10), where the app owns the thread's "
+                 "word that its stubs read (TLS_SLOT_APP)",
+                 api, NCE_ANDROID_API);
+        return -1;
+    }
+    if (android && aspace == 1) {
+        snprintf(why, size,
+                 "the game's address space is the 36-bit one (its NPDM's type 1), which has to lie below "
+                 "64 GiB with its code at 128 MiB, and NCE on Android moves the guest's addresses above 64 GiB");
+        return -1;
+    }
+    return 0;
+}
 
 SnxU64 nce_pool_size(const NceSites* s, SnxU64 lo, SnxU64 hi) {
     SnxU64 size = NCE_HOOK_ROOM;

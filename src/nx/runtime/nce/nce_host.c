@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* NCE's machine layer (nce_host.h): the outcall, the runs of native code, and the signals that stop and resume the
-   guest's code. AArch64 Linux only */
+   guest's code. AArch64 Linux and Android only */
 #if defined(__aarch64__) && defined(__linux__) && !defined(__ANDROID__)
 /* Command line often defines (ppc64be linux) */
 #ifndef _GNU_SOURCE
@@ -13,9 +13,10 @@
 #include <stdio.h>
 
 #if !SNX_NCE_HOST
-int nce_host_init(const NceHostConfig* config, u64* tls, u64* outcall, char* why, size_t size) {
+int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* outcall, char* why, size_t size) {
     (void)config;
     *tls = *outcall = 0;
+    *indirect = 0;
     snprintf(why, size, "the host is not AArch64 Linux");
     return -1;
 }
@@ -26,6 +27,9 @@ int nce_host_init(const NceHostConfig* config, u64* tls, u64* outcall, char* why
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <android/api-level.h>
+#endif
 
 /* where a run of native code came from on the host: the registers that the C code of nce_host_run keeps (x19 to x30,
    d8 to d15), its sp and its FPCR. The runtime's functions run on the host's stack below sp. The asm below reads
@@ -48,20 +52,68 @@ typedef struct {
     CPU* cpu;
     NceHost* host;
 } NceTls;
+/* Where the stubs and the outcall find the thread's NceTls: the word g_nce_tls bytes from TPIDR_EL0, the same in each
+   thread. Direct (glibc): t_nce itself, in the executable's static TLS. Indirect: a pointer to t_nce. Android's
+   runtime is a library that the app loads, whose TLS is emulated below API 29 and whose initial-exec TLS bionic
+   refuses from API 29, so the word is bionic's TLS_SLOT_APP, the app's from Android 10 (API 29) and errno's before.
+   SNX_NCE_INDIRECT builds the indirect form on glibc too, with an initial-exec pointer as the word, for its test */
+#if defined(__ANDROID__) || (defined(SNX_NCE_INDIRECT) && SNX_NCE_INDIRECT)
+#define NCE_INDIRECT 1
+static _Thread_local NceTls t_nce;
+#if defined(__ANDROID__)
+#define NCE_SLOT_APP 16 /* TLS_SLOT_APP (2) from TPIDR_EL0, in bytes */
+#else
+static _Thread_local NceTls* t_word __attribute__((tls_model("initial-exec")));
+#endif
+#else
+#define NCE_INDIRECT 0
 static _Thread_local NceTls t_nce __attribute__((tls_model("initial-exec")));
-/* the distance from TPIDR_EL0 to t_nce, which is the same in each thread: static TLS. Only the asm reads it, so it
-   is external: clang takes a static one that C code never reads as unused (-Wunused-but-set-global) */
+#endif
+/* the word's distance from TPIDR_EL0. Only the asm reads it, so it is external: clang takes a static one that C code
+   never reads as unused (-Wunused-but-set-global) */
 extern u64 g_nce_tls __attribute__((visibility("hidden")));
 u64 g_nce_tls;
 static NceHostConfig g_config;
 static struct sigaction g_old_ill, g_old_trap;
 static int g_sig_enter, g_sig_kick;
 
+#if NCE_INDIRECT
+/* the word at off from this thread's TPIDR_EL0 */
+static NceTls** word_at(u64 off) { return (NceTls**)(void*)((u8*)__builtin_thread_pointer() + off); }
+#endif
+/* this thread's NceTls: NULL (indirect) in a thread that never attached */
+static NceTls* nce_tls(void) {
+#if NCE_INDIRECT
+    return *word_at(g_nce_tls);
+#else
+    return &t_nce;
+#endif
+}
+static u64 word_offset(void) {
+#if defined(__ANDROID__)
+    return NCE_SLOT_APP;
+#elif NCE_INDIRECT
+    return (u64)((uintptr_t)&t_word - (uintptr_t)__builtin_thread_pointer());
+#else
+    return (u64)((uintptr_t)&t_nce - (uintptr_t)__builtin_thread_pointer());
+#endif
+}
+
 /* the asm's entries, local to this file */
 void nce_outcall(void) __attribute__((visibility("hidden")));
 int nce_host_save(NceHost* h) __attribute__((visibility("hidden"), returns_twice));
 _Noreturn void nce_host_jump(NceHost* h) __attribute__((visibility("hidden")));
 CPU* nce_outcall_c(CPU* c, u64 code, u64 ret, u64 nzcv) __attribute__((visibility("hidden")));
+
+/* the thread's NceTls into x17 (then its CPU pointer) and x9 from the word at x30 and x10: the word, or what it
+   points to (indirect) */
+#if NCE_INDIRECT
+#define NCE_ASM_CPU   "    ldr x17, [x17]\n"
+#define NCE_ASM_BLOCK "    ldr x9, [x9, x10]\n"
+#else
+#define NCE_ASM_CPU   ""
+#define NCE_ASM_BLOCK "    add x9, x9, x10\n"
+#endif
 
 /* The outcall. The stub comes here with BLR X17 and the outcall's code in x16. It lowered the guest's sp by NCE_FRAME
    and keeps x16, x17 and x30 at sp + 0, 8 and 16; x30 is now the stub's next word, kept at sp + 24. The guest's state
@@ -76,8 +128,7 @@ __asm__(".text\n"
         "    mrs x17, tpidr_el0\n"
         "    adrp x30, g_nce_tls\n"
         "    ldr x30, [x30, :lo12:g_nce_tls]\n"
-        "    ldr x17, [x17, x30]\n"
-        "    stp x0, x1, [x17, #0]\n"
+        "    ldr x17, [x17, x30]\n" NCE_ASM_CPU "    stp x0, x1, [x17, #0]\n"
         "    stp x2, x3, [x17, #16]\n"
         "    stp x4, x5, [x17, #32]\n"
         "    stp x6, x7, [x17, #48]\n"
@@ -121,9 +172,7 @@ __asm__(".text\n"
         "    ldr x2, [sp, #24]\n"
         "    mrs x9, tpidr_el0\n"
         "    adrp x10, g_nce_tls\n"
-        "    ldr x10, [x10, :lo12:g_nce_tls]\n"
-        "    add x9, x9, x10\n"
-        "    ldr x9, [x9, #8]\n"
+        "    ldr x10, [x10, :lo12:g_nce_tls]\n" NCE_ASM_BLOCK "    ldr x9, [x9, #8]\n"
         "    ldr x10, [x9, #96]\n"
         "    mov sp, x10\n"
         "    ldr x10, [x9, #168]\n"
@@ -313,8 +362,8 @@ static void trapped(CPU* c, int sig) {
 /* the stopped guest's state into its CPU, and sigreturn into fn(c, sig) on the host's stack of the innermost run,
    with the host's FPCR. fn never returns: x30 and the frame pointer are 0 */
 static void redirect(ucontext_t* uc, void (*fn)(CPU*, int), int sig) {
-    CPU* c = t_nce.cpu;
-    const NceHost* h = t_nce.host;
+    CPU* c = nce_tls()->cpu;
+    const NceHost* h = nce_tls()->host;
     mcontext_t* m = &uc->uc_mcontext;
     struct fpsimd_context* f;
     context_load(uc, c);
@@ -328,12 +377,15 @@ static void redirect(ucontext_t* uc, void (*fn)(CPU*, int), int sig) {
     if (f) f->fpcr = (u32)h->fpcr;
 }
 
-static int stopped_guest(const ucontext_t* uc) { return t_nce.cpu && t_nce.host && in_guest(uc->uc_mcontext.pc); }
+static int stopped_guest(const ucontext_t* uc) {
+    const NceTls* n = nce_tls();
+    return n && n->cpu && n->host && in_guest(uc->uc_mcontext.pc);
+}
 
 static void enter_signal(int sig, siginfo_t* si, void* ctx) {
     (void)sig;
     (void)si;
-    context_store((ucontext_t*)ctx, t_nce.cpu);
+    context_store((ucontext_t*)ctx, nce_tls()->cpu);
 }
 static void kick_signal(int sig, siginfo_t* si, void* ctx) {
     (void)si;
@@ -367,12 +419,40 @@ static int handle(int sig, void (*fn)(int, siginfo_t*, void*), struct sigaction*
     return sigaction(sig, &sa, old);
 }
 
-int nce_host_init(const NceHostConfig* config, u64* tls, u64* outcall, char* why, size_t size) {
-    u64 off = (u64)((uintptr_t)&t_nce - (uintptr_t)__builtin_thread_pointer());
+int nce_host_check(char* why, size_t size) {
+#if NCE_INDIRECT
+    const NceTls* held = *word_at(word_offset());
+#if defined(__ANDROID__)
+    int api = android_get_device_api_level();
+    if (api < NCE_ANDROID_API) {
+        snprintf(why, size,
+                 "Android's API level is %d, and the thread's word that NCE's stubs read (bionic's TLS_SLOT_APP) is "
+                 "the app's from API %d (Android 10), errno's before",
+                 api, NCE_ANDROID_API);
+        return -1;
+    }
+#endif
+    if (held && held != &t_nce) {
+        snprintf(why, size,
+                 "the thread's word that NCE's stubs read (TPIDR_EL0 + %llu) holds %#llx, which another library of the "
+                 "process put there",
+                 (unsigned long long)word_offset(), (unsigned long long)(uintptr_t)held);
+        return -1;
+    }
+#endif
+    (void)why;
+    (void)size;
+    return 0;
+}
+
+int nce_host_init(const NceHostConfig* config, u64* tls, int* indirect, u64* outcall, char* why, size_t size) {
+    u64 off = word_offset();
     void (*entry)(void) = nce_outcall;
     *tls = *outcall = 0;
-    /* the stubs reach t_nce with ADD #imm12, LSL #12 and LDR #imm12, scaled by 8 */
-    if (off >= 1u << 24 || (off & 7)) {
+    *indirect = 0;
+    if (nce_host_check(why, size)) return -1;
+    /* the stubs reach the word with ADD #imm12, LSL #12 and LDR #imm12, or with the LDR alone (indirect), scaled by 8 */
+    if (off >= (NCE_INDIRECT ? 1u << 15 : 1u << 24) || (off & 7)) {
         snprintf(why, size, "the thread's CPU pointer is %#llx bytes from the thread pointer, out of the stubs' reach",
                  (unsigned long long)off);
         return -1;
@@ -387,11 +467,22 @@ int nce_host_init(const NceHostConfig* config, u64* tls, u64* outcall, char* why
         return -1;
     }
     *tls = off;
+    *indirect = NCE_INDIRECT;
     memcpy(outcall, &entry, sizeof *outcall); /* ISO C has no conversion from a function pointer to an integer */
     return 0;
 }
 
-void nce_host_attach(CPU* c) { t_nce.cpu = c; }
+int nce_host_attach(CPU* c, char* why, size_t size) {
+#if NCE_INDIRECT
+    NceTls** word = word_at(g_nce_tls);
+    if (nce_host_check(why, size)) return -1; /* another library took the word in this thread */
+    *word = &t_nce;
+#endif
+    (void)why;
+    (void)size;
+    t_nce.cpu = c;
+    return 0;
+}
 
 int nce_host_tid(void) { return (int)syscall(SYS_gettid); }
 
@@ -400,26 +491,27 @@ void nce_host_kick(int tid) {
 }
 
 void nce_host_resume(CPU* c) {
-    t_nce.cpu = c;
+    nce_tls()->cpu = c;
     syscall(SYS_tgkill, (long)getpid(), (long)nce_host_tid(), (long)g_sig_enter);
     abort(); /* enter_signal's sigreturn went to the guest */
 }
 
 void nce_host_run(CPU* c) {
     NceHost h;
-    h.prev = t_nce.host;
+    h.prev = nce_tls()->host;
     if (!nce_host_save(&h)) {
-        t_nce.host = &h;
+        nce_tls()->host = &h;
         nce_host_resume(c);
     }
-    t_nce.host = h.prev;
+    nce_tls()->host = h.prev;
 }
 
-void nce_host_leave(void) { nce_host_jump(t_nce.host); }
+void nce_host_leave(void) { nce_host_jump(nce_tls()->host); }
 
 int nce_host_context(const void* context, CPU* c) {
     ucontext_t* uc = (ucontext_t*)(uintptr_t)context;
-    if (!t_nce.cpu || !in_guest(uc->uc_mcontext.pc)) return 0;
+    const NceTls* n = nce_tls();
+    if (!n || !n->cpu || !in_guest(uc->uc_mcontext.pc)) return 0;
     context_load(uc, c);
     return 1;
 }

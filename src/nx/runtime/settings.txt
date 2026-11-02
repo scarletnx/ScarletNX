@@ -338,10 +338,11 @@ setting NCE
     startup
     recompile
     words Off|On
-    help On an AArch64 Linux host, 1 = the game's 64-bit code runs natively on the host's CPU (native code
-    help execution), with the words patched that cannot run as they are: SVCs, the TLS registers, the counter
-    help registers, and the exclusives made ordered, as Eden patches them. The recompile then makes no code ahead of
-    help time. 0 = the code is recompiled. Other hosts and 32-bit games always recompile, whatever this says
+    help On an AArch64 Linux host or Android 10 and later on arm64, 1 = the game's 64-bit code runs natively on the
+    help host's CPU (native code execution), with the words patched that cannot run as they are: SVCs, the TLS
+    help registers, the counter registers, and the exclusives made ordered, as Eden patches them. The recompile then
+    help makes no code ahead of time. 0 = the code is recompiled. Other hosts, 32-bit games and, on Android, games of
+    help the 36-bit address space always recompile, whatever this says
 setting JIT threads
     key jit_threads
     int 0 4

@@ -27,7 +27,8 @@
 #define NCE_KICK_AGAIN_NS 2000000
 
 static struct {
-    int checked, wanted, on;
+    int checked, file, wanted, on;
+    char why[240]; /* why a game of an NCE recompile does not get it on this host (nce_host_check) */
     NceEnv env;
     PMutex lock; /* the pools and the diverts, which a guest thread changes (ldr:ro, NVN's resolver) */
     NcePool* pool;
@@ -101,7 +102,8 @@ int nce_wanted(void) {
     if (!g_nce.checked) {
         char path[sizeof g_exedir + sizeof g_exename + 8];
         file_path(path, sizeof path);
-        g_nce.wanted = snx_is_file(path);
+        g_nce.file = snx_is_file(path);
+        g_nce.wanted = g_nce.file && !nce_host_check(g_nce.why, sizeof g_nce.why);
         g_nce.checked = 1;
     }
     return g_nce.wanted;
@@ -214,8 +216,9 @@ static void kicker(void* arg) {
 void nce_thread_run(struct KThread* t, u64 pc) {
     CPU* c = &t->cpu;
     u32 ix = kt_ix(t);
+    char why[240];
     __atomic_store_n(&g_nce.tid[ix], nce_host_tid(), __ATOMIC_RELEASE);
-    nce_host_attach(c);
+    if (nce_host_attach(c, why, sizeof why)) fatal("NCE: thread %u cannot run the game's code natively: %s", ix, why);
     if (!c->x[30]) c->x[30] = g_nce.trap; /* the entry function returns to 0: the end of the thread */
     c->pc = pc;
     set_guest(c, 1);
@@ -267,7 +270,11 @@ void nce_init(void) {
     NceRange* ranges;
     NceSites sites;
     size_t count;
-    if (!nce_wanted() || g_arm_mod) return;
+    if (g_arm_mod) return;
+    if (!nce_wanted()) {
+        if (g_nce.file) WARN("nce: %s, so the JIT compiles all of the game's code\n", g_nce.why);
+        return;
+    }
     if (!g_settings.nce) {
         WARN("nce: the game is of an NCE recompile and nce=0, so the JIT compiles all of its code: recompile it\n");
         return;
@@ -279,7 +286,7 @@ void nce_init(void) {
     file_path(path, sizeof path);
     if (!g_mod->nmods || nce_file_read(path, g_mod->mods[0].base, &ranges, &count, &sites))
         fatal("NCE: %s is of another version or damaged. Recompile the game", path);
-    if (nce_host_init(&config, &g_nce.env.tls, &g_nce.env.outcall, why, sizeof why)) {
+    if (nce_host_init(&config, &g_nce.env.tls, &g_nce.env.indirect, &g_nce.env.outcall, why, sizeof why)) {
         WARN("nce: %s, so the JIT compiles all of the game's code\n", why);
         free(ranges);
         nce_sites_free(&sites);
