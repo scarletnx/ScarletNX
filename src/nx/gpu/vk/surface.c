@@ -1799,8 +1799,11 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
                       double sdx, double sdy) {
     u32 fmt = st->fkey & 0xFFFF, tile = (d->linear ? 0x1000u : 0) | (d->bh << 4);
     Surf* dt;
+    /* one to one it is a copy, which every depth format takes: RADV blits no D32_SFLOAT_S8_UINT */
+    int same = sdx == 1.0 && sdy == 1.0;
     if (vk_rt_format(s->format).bpp != vk_zt_format(fmt).bpp || s->format != d->format || s->width != st->w ||
-        s->height < st->h || !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        s->height < st->h ||
+        (!same && !blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)))
         return 0;
     vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
     dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
@@ -1822,15 +1825,29 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
                 VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, dt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
-    VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                         .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
-                         .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                         .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
-    b[1] = b[0];
-    b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-    rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     st->f.stencil ? 2 : 1, b, VK_FILTER_NEAREST);
+    if (same) { /* the region both sides hold */
+        u32 w = (u32)(x1 - x0 < X1 - dx ? x1 - x0 : X1 - dx), h = (u32)(y1 - y0 < Y1 - dy ? y1 - y0 : Y1 - dy);
+        VkImageCopy c = {
+            .srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0), 0, 0, 1},
+            .srcOffset = {x0, y0, 0},
+            .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT | (st->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0), 0, 0, 1},
+            .dstOffset = {dx, dy, 0},
+            .extent = {w, h, 1}};
+        rec_CmdCopyImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        X1 = dx + (i32)w;
+        Y1 = dy + (i32)h;
+    } else {
+        /* one aspect a region; nearest, as filtering packed depth and stencil bits as color would only mix them */
+        VkImageBlit b[2] = {{.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                             .srcOffsets = {{x0, y0, 0}, {x1, y1, 1}},
+                             .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                             .dstOffsets = {{dx, dy, 0}, {X1, Y1, 1}}}};
+        b[1] = b[0];
+        b[1].srcSubresource.aspectMask = b[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        rec_CmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, st->f.stencil ? 2 : 1, b, VK_FILTER_NEAREST);
+    }
     vk_surf_wrote(dt);
     if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
         vk_rt_drawn_full(dt);
