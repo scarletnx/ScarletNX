@@ -370,18 +370,24 @@ static void say_nca(const SnxHacNca* nca, const SnxHacEntry* entry) {
                nca->keys ? "" : ", and prod.keys has no key of that master key");
     }
 }
-int snx_nca_keys(const SnxNcaRef* nca, const char* what) {
-    char keys[96];
+int snx_nca_keys(const SnxDump* dump, const SnxNcaRef* nca, const char* what) {
+    char needs[96], newest[96];
     if (nca->info.decrypted) return 0;
-    generation_text(nca->info.generation, keys);
-    if (!nca->info.keys)
-        return snx_error("%s is encrypted with %s, which prod.keys has no key of: it needs the keys of a console on "
-                         "that firmware or later",
-                         what, keys);
+    generation_text(nca->info.generation, needs);
+    if (!nca->info.keys && nca->info.newest < 0)
+        return snx_error("%s is encrypted with %s, and %s has the keys of no master key: it needs the keys of a "
+                         "console on that firmware or a later one",
+                         what, needs, dump->keys);
+    if (!nca->info.keys) {
+        generation_text(nca->info.newest, newest);
+        return snx_error("%s is encrypted with %s, and %s goes up to %s: it needs the keys of a console with master "
+                         "key %d, on its firmware or a later one",
+                         what, needs, dump->keys, newest, nca->info.generation);
+    }
     if (nca->info.title_key < 0)
-        return snx_error("%s needs a title key that no ticket in the dump and no title.keys has: a personalized "
+        return snx_error("%s needs a title key that no ticket in the dump and no line of %s has: a personalized "
                          "ticket's key is its console's, so dump that console's title.keys",
-                         what);
+                         what, dump->title_keys);
     return 0;
 }
 

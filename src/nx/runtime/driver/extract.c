@@ -290,7 +290,7 @@ static int extract_aoc(ExtractState* state) {
     }
     printf("Extracting the DLC %s\n", text);
     fflush(stdout);
-    if (!failed && snx_nca_keys(aoc, "The DLC's Data NCA")) failed = 1;
+    if (!failed && snx_nca_keys(&state->dump, aoc, "The DLC's Data NCA")) failed = 1;
     if (failed || snx_mkdirs(folder) || !(fs = snx_dump_aoc_fs(&state->dump))) {
         failed = 1;
         goto done;
@@ -346,8 +346,8 @@ static int extract_files(ExtractState* state, const ExtractOptions* options, con
     if (!program->found) return extract_aoc(state);
     if (state->dump.aoc.found && extract_aoc(state)) return 1;
     /* the keys each NCA picked needs, said before anything is written */
-    if (snx_nca_keys(program, "The game's Program NCA") ||
-        (patch->found && snx_nca_keys(patch, "The update's Program NCA")))
+    if (snx_nca_keys(&state->dump, program, "The game's Program NCA") ||
+        (patch->found && snx_nca_keys(&state->dump, patch, "The update's Program NCA")))
         return 1;
     /* the base's program NCA: its RomFS is most of it, and an update's RomFS is about as big */
     state->total = program->size;

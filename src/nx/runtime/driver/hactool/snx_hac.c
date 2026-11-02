@@ -284,6 +284,14 @@ static int patches_romfs(const nca_ctx_t *nca) {
     return 0;
 }
 
+/* 1 when the keyset has the key of generation (below 0x20) that opens nca's title key (rights) or its key area */
+static int has_key(SnxHac *hac, const nca_ctx_t *nca, int rights, int generation) {
+    static const unsigned char zero[0x10];
+    const nca_keyset_t *keys = &hac->tool.settings.keyset;
+    if (rights) return memcmp(keys->titlekeks[generation], zero, 0x10) != 0;
+    return nca->header.kaek_ind < 3 && memcmp(keys->key_area_keys[generation][nca->header.kaek_ind], zero, 0x10) != 0;
+}
+
 int snx_hac_nca(SnxHac *hac, int container, size_t entry, SnxHacNca *out) {
     nca_ctx_t nca;
     memset(out, 0, sizeof *out);
@@ -304,13 +312,10 @@ int snx_hac_nca(SnxHac *hac, int container, size_t entry, SnxHacNca *out) {
     {
         static const unsigned char zero[0x10];
         int rights = memcmp(nca.header.rights_id, zero, 0x10) != 0;
-        const nca_keyset_t *keys = &hac->tool.settings.keyset;
         out->title_key = !rights ? 0 : settings_has_titlekey(&hac->tool.settings, nca.header.rights_id) ? 1 : -1;
-        int generation = out->generation < 0x20 ? out->generation : 0x1F; /* past the keyset's: never given */
-        out->keys = out->generation < 0x20 &&
-                    (rights ? memcmp(keys->titlekeks[generation], zero, 0x10) != 0
-                            : nca.header.kaek_ind < 3 &&
-                                  memcmp(keys->key_area_keys[generation][nca.header.kaek_ind], zero, 0x10) != 0);
+        out->keys = out->generation < 0x20 && has_key(hac, &nca, rights, out->generation); /* past 0x1F: never given */
+        /* how far the keys file reaches, which a generation it lacks is said against */
+        for (out->newest = 0x1F; out->newest >= 0 && !has_key(hac, &nca, rights, out->newest); out->newest--) continue;
     }
     /* a Patch RomFS, as nca_process tells one: BKTR encryption, or a decrypted dump's kept indirect tables */
     out->patch = patches_romfs(&nca);

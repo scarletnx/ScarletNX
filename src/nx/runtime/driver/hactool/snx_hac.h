@@ -31,6 +31,7 @@ typedef struct {
     int title_key;    /* encrypted with a title key: 1 when a ticket of the dump or title.keys gives it, -1 when none
                          does; 0 for an NCA with its keys in its key area */
     int keys;         /* 1 when prod.keys gave the key of its generation that opens its key area or title key */
+    int newest;       /* the newest generation whose key of that kind prod.keys gave, -1 for none */
     uint32_t sdk;     /* the SDK it was built with, major.minor.micro.relstep a byte each from the top */
 } SnxHacNca;
 

@@ -1146,7 +1146,17 @@ static blob_t dump_npdm(void) {
     b.data[0x40] = 0x2A; /* told apart from a blank one */
     return b;
 }
-static void dump_write(int source) {
+/* synthetic keys, never a console's: a header_key (dump_header_key as bytes, its XTS halves apart as OpenSSL requires)
+   and key area keys up to master key 19 */
+#define DUMP_SECRET "0123456789abcdef0123456789abcdef"
+static const char dump_keys[] = "header_key = " DUMP_SECRET "fedcba9876543210fedcba9876543210\n"
+                                "key_area_key_application_00 = " DUMP_SECRET "\n"
+                                "key_area_key_application_13 = " DUMP_SECRET "\n";
+static const unsigned char dump_header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                                                  0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+                                                  0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
+/* sealed: the program NCA encrypted with master key 20, past what dump-data/prod.keys (dump_keys) has */
+static void dump_write_nsp(int source, int sealed) {
     blob_t code = {zalloc(sizeof dump_code - 1), sizeof dump_code - 1}, asset = {zalloc(sizeof dump_asset - 1), 0};
     blob_t meta = dump_npdm(), nsp;
     asset.size = sizeof dump_asset - 1;
@@ -1155,6 +1165,10 @@ static void dump_write(int source) {
     romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{"asset.bin", asset}};
     romfs_file_t ncas[1] = {
         {"program.nca", dnca_build(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2, romfs, 1)}};
+    if (sealed) {
+        nca_encrypt(&ncas[0].content, dump_header_key, 20);
+        CHECK(!snx_mkdirs("dump-data") && !snx_write_file("dump-data/prod.keys", dump_keys, sizeof dump_keys - 1));
+    }
     nsp = partition_build(MAGIC_PFS0, ncas, 1, 0x200);
     CHECK(!snx_mkdirs("dump-data/Game_data") && !snx_write_file("dump-data/Game.nsp", nsp.data, nsp.size));
     if (source)
@@ -1167,6 +1181,10 @@ static void dump_write(int source) {
     free(asset.data);
     free(meta.data);
 }
+static void dump_write(int source) { dump_write_nsp(source, 0); }
+/* the error lines the dump's reading says (snx_error_sink), the last in test_error_text */
+static char test_error_text[2048];
+static void test_error_line(const char* line) { snprintf(test_error_text, sizeof test_error_text, "%s", line); }
 static void test_dump(SvcObj* proxy) {
     blob_t meta = dump_npdm();
     PFileMap map;
@@ -2113,6 +2131,42 @@ int main(int argc, char** argv) {
         free(g_mem);
         printf("PASS %u add-on checks\n", test_checks);
         return 0;
+    }
+    /* a dump whose program NCA needs master key 20 and a keys file that goes up to 19: the game stops before reading
+       it, naming both and the keys file, where it would read garbage and miss its modules */
+    if (argc == 4 && !strcmp(argv[3], "dump-keys")) {
+        jmp_buf jump;
+        char *keys, *named;
+        dump_write_nsp(0, 1);
+        keys = snx_absolute("dump-data/prod.keys");
+        named =
+            snx_format("and %s goes up to master key 19 (firmware 20.0.0 and later): it needs the keys of a console "
+                       "with master key 20, on its firmware or a later one",
+                       keys);
+        strcpy(g_datadir, "dump-data/Game_data/");
+        snx_error_sink(test_error_line);
+        test_fatal_text[0] = 0;
+        test_fatal_jump = &jump;
+        if (!setjmp(jump)) {
+            fs_init("dump-data/prod.keys", NULL);
+            CHECK(!"a dump its keys can't read did not stop the game");
+        }
+        test_fatal_jump = NULL;
+        snx_error_sink(NULL);
+        if (!strstr(test_error_text, named)) fprintf(stderr, "said: %s\nfatal: %s\n", test_error_text, test_fatal_text);
+        CHECK(!strcmp(
+            test_fatal_text,
+            "A dump the game reads in place needs keys its keys file does not have: the line before says which"));
+        CHECK(strstr(test_error_text, "The game's Program NCA is encrypted with master key 20 (a firmware newer than "
+                                      "20.0.0), and ") == test_error_text);
+        CHECK(strstr(test_error_text, named) != NULL);
+        CHECK(g_hle.fs.dfs == NULL); /* nothing read out of it */
+        free(named);
+        free(keys);
+        free(g_mem);
+        printf("PASS %u checks: a dump its keys file stops short of names the master key it needs and the file\n",
+               test_checks);
+        return 0; /* the fatal left the tree locked: nothing more of it */
     }
     /* a game read from its dump that finds none: where it looked, its .ini and the link an older version made */
     if (argc == 4 && (!strcmp(argv[3], "dump-none") || !strcmp(argv[3], "dump-gone"))) {
