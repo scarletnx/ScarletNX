@@ -2,6 +2,14 @@
 # Copyright 2026 the ScarletNX contributors
 # pl:u and pl:s, the shared fonts (pl.c)
 
+# Switch 2's built-in font: its type, a flag (bit 0 of the second byte) and where it is in 2000's memory
+type nn::pl::BuiltInFontDescriptor = struct {
+    u8 type;
+    u8 flags;
+    u16 reserved;
+    u32 offset;
+    u32 size;
+};
 interface nn::pl::detail::IPlatformServiceManager is pl:u, pl:s {
     [0] RequestLoad(u32 font_type);
     [1] GetLoadState(u32 font_type) -> u32 state;
@@ -12,4 +20,6 @@ interface nn::pl::detail::IPlatformServiceManager is pl:u, pl:s {
                                        array<u32, 6> offsets, array<u32, 6> sizes) -> (b8 loaded, u32 count);
     [6] GetSharedFontInOrderOfPriorityForSystem(nn::settings::LanguageCode language_code, array<u32, 6> font_codes,
                                                 array<u32, 6> offsets, array<u32, 6> sizes) -> (b8 loaded, u32 count);
+    [2000] GetBuiltInFontSharedMemory() -> (handle<copy, shared_memory> shared_memory, u32 size);
+    [2010] GetBuiltInFontData(u8 font_type, b8 option) -> (b8 available, nn::pl::BuiltInFontDescriptor descriptor);
 }

@@ -21,6 +21,7 @@
 #include "nx/hle/hle.h"
 #include "nx/hle/hle_walk.h"
 #include "nx/hle/services/audren_dsp.h"
+#include "nx/hle/services/nvdrv_tsg.h"
 #include "nx/hle/services/services.h"
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
@@ -911,11 +912,141 @@ static int hle_check(const Hle* h) {
     for (i = 0; i < KHANDLED_MAX; i++)
         if (h->svc.wevents[i].o.type == KO_WEVENT && (!h->svc.wevents[i].r || !id_ok(h, h->svc.wevents[i].r, KO_EVENT)))
             return -1;
+    if (!id_ok(h, h->am.graphics_session, KO_SESSION)) return -1;
+    const NvGsvCache* cache = &h->nvdrv.gsv_cache;
+    if (!id_ok(h, cache->rw, KO_TMEM) || !id_ok(h, cache->ro, KO_TMEM) ||
+        !id_ok(h, cache->request, KO_EVENT) || !id_ok(h, cache->completed, KO_EVENT))
+        return -1;
+    if (cache->rw) {
+        const KTmem* rw = (const KTmem*)obj_in(h, cache->rw);
+        const KTmem* ro = (const KTmem*)obj_in(h, cache->ro);
+        if (!ro || rw == ro || !cache->request || !cache->completed || rw->size != 0x1000 || ro->size != 0x2000 ||
+            rw->addr > g_as_size - 0x1000 || ro->addr > g_as_size - 0x2000)
+            return -1;
+    } else if (cache->ro || cache->request || cache->completed) {
+        return -1;
+    }
+    /* GSV event-delivery membership, slot counts and the event references used by the GPU thread. */
+    if (h->nvdrv.gsv_sync_active >> NV_GSV_SYNCS) return -1;
+    for (i = 0; i < NV_GSV_SYNCS; ++i) {
+        const NvGsvSync* s = &h->nvdrv.gsv_sync[i];
+        if (((h->nvdrv.gsv_sync_active >> i) & 1) != (s->obj != 0) || s->count > NV_GSV_EVENTS) return -1;
+        for (k = 0; k < NV_GSV_EVENTS; ++k) {
+            const NvEvent* e = &s->events[k];
+            if (!id_ok(h, e->ev, KO_EVENT) ||
+                (e->armed && (!e->ev || k >= s->count || e->id >= SYNCPT_IDS)))
+                return -1;
+        }
+    }
+    u32 device_refs[NV_GSV_GPUS] = {0};
+    for (i = 0; i < NV_GSV_GPUS; ++i) {
+        const NvGsvGpu* gpu = &h->nvdrv.gsv_gpu[i];
+        const NvGsvWorker* worker = &h->nvdrv.gsv_workers[i];
+        if ((gpu->obj != 0) != (gpu->devices != 0) || gpu->devices > NV_GSV_GPUS ||
+            (worker->obj != 0) != (worker->devices != 0) || worker->devices > NV_GSV_GPUS ||
+            !id_ok(h, gpu->worker, KO_SESSION) || (!gpu->obj && gpu->worker))
+            return -1;
+        if (gpu->devices) ++device_refs[gpu->devices - 1];
+        if (worker->devices) ++device_refs[worker->devices - 1];
+        if (gpu->worker) {
+            const KSession* session = (const KSession*)obj_in(h, gpu->worker);
+            if (!session->obj || !ELEM_OK(session->obj, g_hle.ipc.svcobjs)) return -1;
+            u32 object_index = (u32)(((uintptr_t)session->obj - (uintptr_t)g_hle.ipc.svcobjs) / sizeof(SvcObj));
+            const SvcObj* object = &h->ipc.svcobjs[object_index];
+            if (!object->data || !ELEM_OK((NvGsvWorker*)object->data, g_hle.nvdrv.gsv_workers) ||
+                object->datasize != sizeof(NvGsvWorker))
+                return -1;
+            u32 index = (u32)(((uintptr_t)object->data - (uintptr_t)g_hle.nvdrv.gsv_workers) / sizeof(NvGsvWorker));
+            const NvGsvWorker* retained = &h->nvdrv.gsv_workers[index];
+            if (retained->obj != object_index + 1 || retained->devices != gpu->devices) return -1;
+        }
+    }
+    for (i = 0; i < NV_GSV_GPUS; ++i) {
+        const NvGsvDevices* devices = &h->nvdrv.gsv_devices[i];
+        if (devices->refs != device_refs[i]) return -1;
+        if (devices->graphics[0] & 1) return -1; /* device id 0 is never allocated */
+        for (k = 0; k < NV_GSV_GRAPHICS_DEVICES / 32; ++k)
+            if (!devices->refs && devices->graphics[k]) return -1;
+        for (k = 0; k < NV_GSV_GPU_EVENTS; ++k)
+            if (!id_ok(h, devices->events[k], KO_EVENT) || (!devices->refs && devices->events[k])) return -1;
+    }
+    for (i = 0; i < NV_GSV_ADDRESS_SPACES; ++i) {
+        const NvGsvAs* as = &h->nvdrv.gsv_as[i];
+        if (as->devices > NV_GSV_GPUS || (as->registered != 0 && as->registered != 1) ||
+            (!as->devices && as->registered) || (!!as->devices != !!as->id) || as->id > h->nvdrv.gsv_as_last ||
+            (as->devices && !device_refs[as->devices - 1]))
+            return -1;
+    }
+    for (i = 0; i < NV_GSV_MEMORIES; ++i) {
+        const NvGsvMemory* m = &h->nvdrv.gsv_mem[i];
+        if (m->devices > NV_GSV_GPUS) return -1;
+        if (!m->devices) {
+            if (m->addr || m->size) return -1;
+        } else if (!device_refs[m->devices - 1] || !m->size || ((m->addr | m->size) & GMMU_PAGE_MASK) ||
+                   m->size > AS_SIZE || m->addr > AS_SIZE - m->size) {
+            return -1;
+        }
+    }
+    for (i = 0; i < NV_GSV_SPARSE_REGIONS; ++i) {
+        const NvGsvSparse* r = &h->nvdrv.gsv_sparse[i];
+        if (r->devices > NV_GSV_GPUS) return -1;
+        if (!r->devices) {
+            if (r->first || r->size) return -1;
+        } else if (!device_refs[r->devices - 1] || !r->size || ((r->first | r->size) & GMMU_PAGE_MASK) ||
+                   r->first < NV_GSV_USER_FIRST || r->first >= NV_GSV_USER_END ||
+                   r->size > NV_GSV_USER_END - r->first) {
+            return -1;
+        }
+    }
+    /* an image's memory is a live native nvmap handle, which its destruction indexes */
+    for (i = 0; i < NV_GSV_IMAGES; ++i) {
+        const NvGsvImage* im = &h->nvdrv.gsv_images[i];
+        if (!im->handle) {
+            if (im->count || im->memory || im->window_pool || im->shape.extent || im->shape.pitch_gobs ||
+                im->shape.block_height_log2 || im->shape.pixel_format)
+                return -1;
+        } else if (!im->count || im->handle > h->nvdrv.gsv_image_last ||
+                   im->count - 1 > h->nvdrv.gsv_image_last - im->handle || (im->window_pool & ~1) ||
+                   !im->memory || im->memory >= NVMAP_HANDLES || !h->nvdrv.nvh[im->memory].alive ||
+                   !h->nvdrv.nvh[im->memory].native || !h->nvdrv.nvh[im->memory].refs || !im->shape.pitch_gobs ||
+                   im->shape.block_height_log2 < 3 || im->shape.block_height_log2 > 8) {
+            return -1;
+        }
+    }
+    for (i = 0; i < NV_FDS; ++i) {
+        const NvFile* f = &h->nvdrv.nvf[i];
+        if (f->tsg >= NV_FDS || f->subcontext >= NV_TSG_SUBCONTEXTS ||
+            (!f->tsg && f->subcontext) ||
+            (f->tsg && (!f->dev || f->closed || !h->nvdrv.nvf[f->tsg].dev || h->nvdrv.nvf[f->tsg].closed)))
+            return -1;
+        if (f->tsg_id > h->nvdrv.tsg_last || (f->tsg && !h->nvdrv.nvf[f->tsg].tsg_id)) return -1;
+        if (!f->view_end) {
+            if (f->view_first || f->view_as) return -1;
+        } else if (!f->view_as || f->view_as > h->nvdrv.gsv_as_last || f->view_first < NV_GSV_USER_FIRST ||
+                   f->view_first >= f->view_end || f->view_end > NV_GSV_USER_END ||
+                   ((f->view_first | f->view_end) & GMMU_PAGE_MASK)) {
+            return -1;
+        }
+    }
+    /* the display sessions: their event ids here, their indices and bits in vi.c */
+    if (!vi2_state_valid(&h->vi)) return -1;
+    for (i = 0; i < VI2_SESSIONS; ++i) {
+        const Vi2Session* s = &h->vi.vi2[i];
+        if (!id_ok(h, s->event, KO_EVENT) || (!s->obj && s->event)) return -1;
+        for (k = 0; k < VI2_GROUPS; ++k)
+            if (!id_ok(h, s->group_events[k], KO_EVENT) || (!s->obj && s->group_events[k])) return -1;
+    }
     /* the shared memories the services write into */
     if (!id_ok(h, h->hid.shm, KO_SHMEM) || !id_ok(h, h->hid.xpad_shm, KO_SHMEM) ||
         !id_ok(h, h->hid.six_shm, KO_SHMEM) || !id_ok(h, h->hid.joysix_shm, KO_SHMEM) ||
         !id_ok(h, h->time.shm, KO_SHMEM) || !id_ok(h, h->pl.shm, KO_SHMEM) || !id_ok(h, h->misc.irs_shm, KO_SHMEM))
         return -1;
+    for (i = 0; i < STPL_SHIMS; ++i) {
+        const StplShim* s = &h->misc.stpl_shims[i];
+        if (!id_ok(h, s->hid_shm, KO_SHMEM) || !id_ok(h, s->connection_event, KO_EVENT) ||
+            (!s->obj && (s->hid_shm || s->connection_event)))
+            return -1;
+    }
     /* the pointers, as unswz made them */
     for (i = 0; i < SVCOBJ_MAX; i++) {
         const SvcObj* o = &h->ipc.svcobjs[i];

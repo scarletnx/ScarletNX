@@ -70,6 +70,7 @@ static int copy_runs(u64 gva, u8* in, const u8* out, u64 size) {
         if (!n) {
             n = GMEM_PAGE - (gva & (GMEM_PAGE - 1));
             if (n > size) n = size;
+            if (in && nv_syncpoint_shim_read(gva, in, n)) goto next;
             if (in) memset(in, 0, (size_t)n);
             all = 0;
             goto next;

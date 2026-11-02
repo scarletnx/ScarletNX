@@ -707,9 +707,576 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
 }
 
 /* ============================================================ the display */
-/* the main loop's 60 Hz: the display's vsync */
+/* the main loop's 60 Hz: the display's vsync, also for the Switch 2 display sessions' vsync monitors */
 void vi_vsync_tick(void) {
     if (g_hle.vi.vsync) ev_signal(g_hle.vi.vsync);
+    u32 events[VI2_SESSIONS * VI2_GROUPS], n = 0;
+    pm_lock(&g_host.vi.lock);
+    for (u32 live = g_hle.vi.vi2_live; live; live &= live - 1) {
+        const Vi2Session* s = &g_hle.vi.vi2[snx_ctz32(live)];
+        for (u32 k = 0; k < VI2_GROUPS; ++k)
+            if (s->monitor_display[k] && !s->monitor_kind[k] && s->group_events[k]) {
+                events[n++] = s->group_events[k];
+                kobj_ref(kobj_at(s->group_events[k])); /* vi2_destroy may let go of it once the lock is free */
+            }
+    }
+    pm_unlock(&g_host.vi.lock);
+    for (u32 i = 0; i < n; ++i) {
+        kevent_signal(kev(events[i]));
+        kobj_unref(kobj_at(events[i]));
+    }
+}
+
+/* ============================================================ the Switch 2 display session */
+/* nn::vi2's user library (the same in the three SDKs at hand) asks for the last notification index (1), the last
+   session group (3) and the last request group (5), and caps them at 0x3FF, 7 and 7. It sizes its notification bits
+   from 1 (VI2_NOTIFICATIONS), hands that index back to 11 and 13, and hands 5 back to 51. It keeps min(3, 7) + 1, but
+   no code of its display library reads that count: its request groups come from a bitmap of its own, of 8 groups.
+   The answers are eden-ns2's (0, 0, 7); Eglantine's 1 and 1 give the guest the same notification bits. Neither is
+   measured on a console. */
+static int nn_gsv_IVi2Session_GetNotificationLimit(SvcObj* self, u32* last) {
+    (void)self;
+    *last = VI2_LAST_NOTIFICATION;
+    return 0;
+}
+static int nn_gsv_IVi2Session_GetSessionLimit(SvcObj* self, u32* last) {
+    (void)self, (void)last;
+    return 0;
+}
+static int nn_gsv_IVi2Session_GetRequestGroupLimit(SvcObj* self, u32* last) {
+    (void)self;
+    *last = 7;
+    return 0;
+}
+/* One event for the session, signaled while a notification is pending. The SDK attaches it with manual clear. */
+static int nn_gsv_IVi2Session_GetNotificationEvent(SvcObj* self, u32 last, u32* event) {
+    Vi2Session* s = self->data;
+    R_UNLESS(last == VI2_LAST_NOTIFICATION, RC(1, 116));
+    pm_lock(&g_host.vi.lock);
+    if (!s->event) {
+        KEvent* e = kevent_new("vi2 notification");
+        kobj_ref(&e->o);
+        s->event = kobj_id(&e->o);
+    }
+    u32 id = s->event, pending = 0;
+    for (u32 i = 0; i < VI2_NOTIFICATION_WORDS; ++i) pending |= s->notifications[i];
+    pm_unlock(&g_host.vi.lock);
+    if (pending) kevent_signal(kev(id));
+    *event = h_new(kobj_at(id));
+    return *event ? 0 : RC(1, 105);
+}
+static int nn_gsv_IVi2Session_ReleaseNotificationEvent(SvcObj* self, u32 last) {
+    (void)self;
+    R_UNLESS(last == VI2_LAST_NOTIFICATION, RC(1, 116));
+    return 0;
+}
+/* The pending bits, as many words as the buffer holds. The words given are no longer pending. */
+static int nn_gsv_IVi2Session_GetNotifications(SvcObj* self, IpcBuf out) {
+    Vi2Session* s = self->data;
+    u32 words =
+        out.size / sizeof(u32) < VI2_NOTIFICATION_WORDS ? (u32)(out.size / sizeof(u32)) : VI2_NOTIFICATION_WORDS;
+    u32 taken[VI2_NOTIFICATION_WORDS];
+    pm_lock(&g_host.vi.lock);
+    for (u32 i = 0; i < words; ++i) {
+        taken[i] = s->notifications[i];
+        s->notifications[i] = 0;
+    }
+    pm_unlock(&g_host.vi.lock);
+    memcpy(GP(out.addr), taken, words * sizeof(u32)); /* outside the lock: the write can trap */
+    return 0;
+}
+/* the display's name as 8 bytes, "default" */
+#define VI2_DEFAULT_DISPLAY 0x00746C7561666564ull
+/* Stream-play initializes its output resources before a guest connects. These are distinct display identities,
+   not aliases of the main display. Only the default display has a local presentation endpoint. */
+static int vi2_display_index(u64 name) {
+    static const u64 names[VI2_DISPLAYS] = {VI2_DEFAULT_DISPLAY, 0x0031726579616c70ull,
+                                           0x0032726579616c70ull, 0x0033726579616c70ull};
+    for (u32 i = 0; i < VI2_DISPLAYS; ++i)
+        if (name == names[i]) return (int)i;
+    return -1;
+}
+_Static_assert(VI2_NOTIFICATIONS <= 32, "Vi2Session.client_slots holds a bit for each notification");
+/* A notification for the guest: its bit, then the session's event. Called under HostVi.lock, which the caller
+   releases before it signals the returned event (0 for none). */
+static u32 vi2_notify_nl(Vi2Session* s, u32 bit) {
+    s->notifications[bit / 32] |= 1u << (bit % 32);
+    return s->event;
+}
+/* The notification bit tells the guest when that display's last reference has closed. */
+static int nn_gsv_IVi2Session_OpenDisplay(SvcObj* self, u64 name, u32 notification) {
+    Vi2Session* s = self->data;
+    int display = vi2_display_index(name);
+    R_UNLESS(display >= 0, RC(1, 121));
+    R_UNLESS(notification < VI2_NOTIFICATIONS, RC(1, 116));
+    pm_lock(&g_host.vi.lock);
+    int rc = s->display_refs[display] < 1024 ? 0 : RC(1, 103);
+    if (!rc) {
+        s->display_notification[display] = notification;
+        ++s->display_refs[display];
+    }
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+static int nn_gsv_IVi2Session_CloseDisplay(SvcObj* self, u64 name) {
+    Vi2Session* s = self->data;
+    int display = vi2_display_index(name);
+    R_UNLESS(display >= 0, RC(1, 121));
+    u32 event = 0;
+    pm_lock(&g_host.vi.lock);
+    int rc = s->display_refs[display] ? 0 : RC(1, 121);
+    if (!rc && !--s->display_refs[display]) event = vi2_notify_nl(s, s->display_notification[display]);
+    pm_unlock(&g_host.vi.lock);
+    if (event) kevent_signal(kev(event));
+    return rc;
+}
+/* the client with the token, NULL for none; under HostVi.lock */
+static Vi2Client* vi2_client_nl(Vi2Session* s, u64 token) {
+    for (u32 i = 0; token && i < VI2_CLIENTS; ++i)
+        if (s->clients[i].token == token) return &s->clients[i];
+    return NULL;
+}
+/* A client names two distinct notification bits, for its retirement and its availability. No two clients share a
+   bit or a token. Its buffer slots start free. */
+static int nn_gsv_IVi2Session_RegisterClientState(SvcObj* self, u64 token, u32 retire, u32 available) {
+    Vi2Session* s = self->data;
+    R_UNLESS(token && retire < VI2_NOTIFICATIONS && available < VI2_NOTIFICATIONS && retire != available, RC(1, 116));
+    u32 bits = 1u << retire | 1u << available;
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* free_client = NULL;
+    for (u32 i = VI2_CLIENTS; i-- > 0;)
+        if (!s->clients[i].token) free_client = &s->clients[i];
+    int rc = s->client_slots & bits || vi2_client_nl(s, token) ? RC(1, 125) : free_client ? 0 : RC(1, 103);
+    if (!rc) {
+        *free_client = (Vi2Client){.token = token,
+                                   .retire_bit = retire,
+                                   .available_bit = available,
+                                   .free_slots = (1u << VI2_BUFFER_SLOTS) - 1};
+        s->client_slots |= bits;
+    }
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+/* The client's retirement bit tells the guest that it is gone. */
+static int nn_gsv_IVi2Session_UnregisterClientState(SvcObj* self, u64 token) {
+    Vi2Session* s = self->data;
+    R_UNLESS(token, RC(1, 116));
+    u32 event = 0;
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    if (client) {
+        event = vi2_notify_nl(s, client->retire_bit);
+        s->client_slots &= ~(1u << client->retire_bit | 1u << client->available_bit);
+        if (s->endpoint == token) s->endpoint = 0;
+        *client = (Vi2Client){0};
+    }
+    pm_unlock(&g_host.vi.lock);
+    R_UNLESS(client, RC(1, 121));
+    if (event) kevent_signal(kev(event));
+    return 0;
+}
+/* the buffer slots the client may fill */
+static int nn_gsv_IVi2Session_GetClientAvailability(SvcObj* self, u64 token, u64* free_slots) {
+    Vi2Session* s = self->data;
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    if (client) *free_slots = client->free_slots;
+    pm_unlock(&g_host.vi.lock);
+    return client ? 0 : RC(1, 121);
+}
+/* Only the local display has a presentation endpoint. Stream-play output resources can be initialized, but guest
+   streaming and presentation are not supported. */
+static int nn_gsv_IVi2Session_BindClientDisplay(SvcObj* self, u64 token, u64 name) {
+    Vi2Session* s = self->data;
+    int display = vi2_display_index(name);
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    int rc = !client || display < 0 || !s->display_refs[display] ? RC(1, 121) : client->bound ? RC(1, 125) : 0;
+    if (!rc) client->bound = (u8)(display + 1);
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+static int nn_gsv_IVi2Session_UnbindClientDisplay(SvcObj* self, u64 token) {
+    Vi2Session* s = self->data;
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    int rc = client && client->bound ? 0 : RC(1, 121);
+    if (!rc) client->bound = 0;
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+/* The default display has one endpoint, which a client bound to it opens */
+static int nn_gsv_IVi2Session_OpenEndpoint(SvcObj* self, u64 name, u64 display, u64 token) {
+    Vi2Session* s = self->data;
+    R_UNLESS(name == VI2_DEFAULT_DISPLAY && display == name, RC(1, 121));
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    int rc = !client || client->bound != 1 ? RC(1, 121) : s->endpoint ? RC(1, 125) : 0;
+    if (!rc) s->endpoint = token;
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+static int nn_gsv_IVi2Session_CloseEndpoint(SvcObj* self, u64 name, u64 display) {
+    Vi2Session* s = self->data;
+    R_UNLESS(name == VI2_DEFAULT_DISPLAY && display == name, RC(1, 121));
+    pm_lock(&g_host.vi.lock);
+    int rc = s->endpoint ? 0 : RC(1, 121);
+    s->endpoint = 0;
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+/* ---- the display's state. The values are eden-ns2's, which reads them from the display service while no driver record
+   of the display exists: the runtime's display is SDR at a fixed 60 Hz, so the game is offered no HDR and no
+   variable refresh rate */
+#define VI2_INVALID_NAME RC(114, 4) /* a name of all zero bytes */
+static int vi2_display_name(u64 name) { return !name ? VI2_INVALID_NAME : vi2_display_index(name) >= 0 ? 0 : VI_NOT_FOUND; }
+/* the output format (1, SDR), while the session holds the display open */
+static int nn_gsv_IVi2Session_QueryHdrStatus(SvcObj* self, u64 name, u64* format, u16* value) {
+    Vi2Session* s = self->data;
+    int display = vi2_display_index(name);
+    pm_lock(&g_host.vi.lock);
+    int open = display >= 0 && s->display_refs[display] != 0;
+    pm_unlock(&g_host.vi.lock);
+    R_UNLESS(open, VI_NOT_FOUND);
+    *format = 1;
+    *value = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_IVi2Session_QueryHdrPaperWhite(SvcObj* self, u64 name, u16* paper_white) {
+    (void)self;
+    R_TRY(vi2_display_name(name));
+    *paper_white = 0;
+    R_SUCCEED();
+}
+/* one refresh rate, one output format and no rate the display can vary to */
+static int nn_gsv_IVi2Session_QueryModeCapability(SvcObj* self, u64 name, u64* refresh_rates, u64* hdr_formats,
+                                                   u64* variable_refresh_rates) {
+    (void)self;
+    R_TRY(vi2_display_name(name));
+    *refresh_rates = 1;
+    *hdr_formats = 1;
+    *variable_refresh_rates = 0;
+    R_SUCCEED();
+}
+/* ---- presents */
+/* The output encoding the SDK's native window sets before its first present. After the display reported SDR, an 8-bit
+   RGBA window of one game sends 0x14 (what eden-ns2 sees by default) and another's 0x5, and the display shows either as
+   it is. What the values name is not known: another one, as an HDR window's could be, needs a conversion the
+   presenter does not have, and is refused */
+static int vi2_encoding_shown(u64 encoding) { return encoding == 0x5 || encoding == 0x14; }
+static int nn_gsv_IVi2Session_SetClientOutputEncoding(SvcObj* self, u64 token, u64 encoding) {
+    Vi2Session* s = self->data;
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    int rc = !client ? RC(1, 121) : !vi2_encoding_shown(encoding) ? RC(1, 33) : 0;
+    if (!rc) client->encoded = 1;
+    pm_unlock(&g_host.vi.lock);
+    if (client && rc) WARN_LIMIT(4, "vi2: output encoding %#llx is not supported\n", (unsigned long long)encoding);
+    return rc;
+}
+/* the GPU thread's callback for a present, after its fence: session, client and slot in the low bits, the present's
+   number above them */
+_Static_assert(sizeof(uintptr_t) >= 8, "a present's callback key holds its number and its slot");
+_Static_assert(VI2_SESSIONS <= 16 && VI2_CLIENTS <= 16 && VI2_BUFFER_SLOTS <= 16, "four bits each in the key");
+static uintptr_t vi2_key(u32 session, u32 client, u32 slot, u32 present) {
+    return (uintptr_t)present << 32 | (uintptr_t)session << 8 | (uintptr_t)client << 4 | slot;
+}
+/* The image is drawn: shown when the client is on the display, and its slot stays the display's until the next
+   frame replaces it. The slot it replaces comes free, and the client's availability bit tells the guest */
+static void vi2_present(void* arg) {
+    uintptr_t key = (uintptr_t)arg;
+    u32 si = (u32)(key >> 8 & 0xf), ci = (u32)(key >> 4 & 0xf), slot = (u32)(key & 0xf), present = (u32)(key >> 32);
+    /* a save state's key is checked as the handler made it */
+    if (si >= VI2_SESSIONS || ci >= VI2_CLIENTS || slot >= VI2_BUFFER_SLOTS || !present) return;
+    Vi2Session* s = &g_hle.vi.vi2[si];
+    Vi2Client* c = &s->clients[ci];
+    pm_lock(&g_host.vi.lock);
+    /* a session no longer live is cleared by IPC outside this lock: nothing of it is read */
+    if (!(g_hle.vi.vi2_live >> si & 1) || c->queued[slot].present != present) {
+        pm_unlock(&g_host.vi.lock);
+        return;
+    }
+    Vi2Queued q = c->queued[slot];
+    int shown = c->bound == 1 && s->endpoint == c->token;
+    pm_unlock(&g_host.vi.lock);
+    u32 memory;
+    NvGsvImageShape shape;
+    if (shown && !nv_native_window_image(q.image, &memory, &shape)) {
+        u32 w = (shape.extent & 0xffff) + 1, h = (shape.extent >> 16) + 1;
+        const i32 crop[4] = {0, 0, (i32)(q.extent & 0xffff) + 1, (i32)(q.extent >> 16) + 1};
+        /* RGBA8, block linear with the image's block height in GOBs */
+        vi_show_buffer(memory, 0, w, h, shape.pitch_gobs * 64, 3, shape.block_height_log2 - 3, 1, crop, 0, (int)slot);
+    }
+    u32 event = 0;
+    pm_lock(&g_host.vi.lock);
+    if ((g_hle.vi.vi2_live >> si & 1) && c->queued[slot].present == present) {
+        c->queued[slot].present = 0;
+        /* the frame on the display before this one comes free; with no display, this one and that one */
+        u64 freed = c->shown ? 1ull << (c->shown - 1) : 0;
+        if (shown) c->shown = (u8)(slot + 1);
+        else {
+            freed |= 1ull << slot;
+            c->shown = 0;
+        }
+        if (freed) {
+            c->free_slots |= freed;
+            event = vi2_notify_nl(s, c->available_bit);
+            if (event) kobj_ref(kobj_at(event)); /* vi2_destroy may let go of it once the lock is free */
+        }
+    }
+    pm_unlock(&g_host.vi.lock);
+    if (event) {
+        kevent_signal(kev(event));
+        kobj_unref(kobj_at(event));
+    }
+}
+/* The image goes to the display once the GPU reaches its fence. Only what the presenter shows is taken: an RGBA8
+   window image of 16-GOB blocks, block linear, from its start, at most its size, in the SDR encoding. Like a Switch 1
+   frame, the present then holds the game to the display's refresh */
+static int nn_gsv_IVi2Session_PresentClientBuffer(SvcObj* self, u64 token, u8 slot, u32 image,
+                                                  const nn_gsv_Vi2BufferInfo* info,
+                                                  const nn_gsv_NativeSyncHandle* fence, u64* free_slots,
+                                                  nn_gsv_NativeSyncHandle* release) {
+    (void)release; /* the display gives no fence back: a slot comes free only after the display let go of it */
+    Vi2Session* s = self->data;
+    u32 id = ~fence->inverted_id;
+    R_UNLESS(slot < VI2_BUFFER_SLOTS && !fence->reserved && fence->value <= UINT32_MAX, RC(1, 116));
+    R_UNLESS(id == ~0u || id < SYNCPT_IDS, RC(1, 116));
+    u32 memory;
+    NvGsvImageShape shape;
+    R_TRY(nv_native_window_image(image, &memory, &shape));
+    u32 ew = info->extent & 0xffff, eh = info->extent >> 16;
+    if (info->offset || info->layout != 3 || ew > (shape.extent & 0xffff) || eh > shape.extent >> 16 ||
+        shape.pixel_format != 1 || shape.block_height_log2 != 7) {
+        WARN_LIMIT(4, "vi2: a present of offset %u, layout %u, format %u and blocks of 2^%u rows is not supported\n",
+                   info->offset, info->layout, shape.pixel_format, shape.block_height_log2);
+        return RC(1, 33);
+    }
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    int rc = !client                                ? RC(1, 121)
+             : !client->encoded                     ? RC(1, 33)
+             : !(client->free_slots >> slot & 1)    ? RC(1, 125)
+                                                    : 0;
+    uintptr_t key = 0;
+    if (!rc) {
+        if (!++g_hle.vi.vi2_presents) ++g_hle.vi.vi2_presents;
+        client->queued[slot] = (Vi2Queued){g_hle.vi.vi2_presents, image, info->extent};
+        client->free_slots &= ~(1ull << slot);
+        *free_slots = client->free_slots;
+        key = vi2_key((u32)(s - g_hle.vi.vi2), (u32)(client - s->clients), slot, g_hle.vi.vi2_presents);
+    }
+    pm_unlock(&g_host.vi.lock);
+    R_TRY(rc);
+    /* the slot is queued and the reply known: a game pause lets the present finish */
+    kthread_commit();
+    u32 value = (u32)fence->value;
+    nv_gpu_call_after(id == ~0u ? 0 : 1, &id, &value, vi2_present, (void*)key);
+    present_pace(1, slot);
+    R_SUCCEED();
+}
+/* The client gives a slot back without an image: it is free again, and a present queued in it is not shown */
+static int nn_gsv_IVi2Session_CancelClientBuffer(SvcObj* self, u64 token, u8 slot, const nn_gsv_Vi2BufferInfo* info,
+                                                 u64* free_slots, nn_gsv_NativeSyncHandle* release) {
+    (void)info, (void)release;
+    Vi2Session* s = self->data;
+    R_UNLESS(slot < VI2_BUFFER_SLOTS, RC(1, 116));
+    pm_lock(&g_host.vi.lock);
+    Vi2Client* client = vi2_client_nl(s, token);
+    if (client) {
+        client->queued[slot].present = 0;
+        if (client->shown == slot + 1) client->shown = 0;
+        client->free_slots |= 1ull << slot;
+        *free_slots = client->free_slots;
+    }
+    pm_unlock(&g_host.vi.lock);
+    return client ? 0 : RC(1, 121);
+}
+/* Request groups, as eden-ns2 answers them: vi's result 4 for a group out of range, 5 for one already made or configured,
+   7 for a missing event */
+#define VI2_GROUP_RANGE  RC(114, 4)
+#define VI2_GROUP_EXISTS RC(114, 5)
+/* The group keeps its event only once the caller has a handle to it: a caller without one could neither make the
+   group again nor duplicate its event */
+static int nn_gsv_IVi2Session_CreateRequestGroupEvent(SvcObj* self, u32 group, u32* event) {
+    Vi2Session* s = self->data;
+    R_UNLESS(group < VI2_GROUPS, VI2_GROUP_RANGE);
+    pm_lock(&g_host.vi.lock);
+    int busy = s->group_events[group] != 0;
+    pm_unlock(&g_host.vi.lock);
+    R_UNLESS(!busy, VI2_GROUP_EXISTS);
+    KEvent* e = kevent_new("vi2 request group");
+    kobj_ref(&e->o); /* the session's reference, once the group holds the event */
+    u32 handle = h_new(&e->o);
+    pm_lock(&g_host.vi.lock);
+    int rc = !handle ? RC(1, 105) : s->group_events[group] ? VI2_GROUP_EXISTS : 0;
+    if (!rc) s->group_events[group] = kobj_id(&e->o);
+    pm_unlock(&g_host.vi.lock);
+    if (rc) { /* no handle, or another thread made the group meanwhile */
+        if (handle) h_close(handle);
+        kobj_unref(&e->o);
+        return rc;
+    }
+    *event = handle;
+    return 0;
+}
+/* Another handle to a group's event, for a caller that shows it has one */
+static int nn_gsv_IVi2Session_DuplicateRequestGroupEvent(SvcObj* self, u32 group, u32 handle, u32* event) {
+    Vi2Session* s = self->data;
+    R_UNLESS(group < VI2_GROUPS, VI2_GROUP_RANGE);
+    pm_lock(&g_host.vi.lock);
+    u32 id = s->group_events[group];
+    pm_unlock(&g_host.vi.lock);
+    R_UNLESS(id, VI_NOT_FOUND);
+    KObj* shown = h_get_ref(handle, KO_EVENT);
+    R_UNLESS(shown, RC(1, 114));
+    int same = kobj_id(shown) == id;
+    kobj_unref(shown);
+    R_UNLESS(same, RC(1, 114));
+    *event = h_new(kobj_at(id));
+    return *event ? 0 : RC(1, 105);
+}
+static int nn_gsv_IVi2Session_ConfigureRequestGroups(SvcObj* self, u32 limit) {
+    Vi2Session* s = self->data;
+    R_UNLESS(limit < VI2_GROUPS, VI2_GROUP_RANGE);
+    pm_lock(&g_host.vi.lock);
+    int rc = s->groups_configured ? VI2_GROUP_EXISTS : 0;
+    if (!rc) {
+        s->group_limit = limit;
+        s->groups_configured = 1;
+    }
+    pm_unlock(&g_host.vi.lock);
+    return rc;
+}
+/* 261 to 272 register (odd) and unregister (even) a group's event for one of six kinds of display change on a
+   display, kind (command - 261) / 2. Kind 0 is the vsync: the display's refresh signals the event. For the other
+   kinds the event is signaled at once, so that the guest reads the state it watches, which never changes here. */
+static int vi2_monitor(SvcObj* self, u64 name, u32 group, u32 kind) {
+    Vi2Session* s = self->data;
+    R_UNLESS(group < VI2_GROUPS && name, VI2_GROUP_RANGE);
+    pm_lock(&g_host.vi.lock);
+    u32 event = s->group_events[group];
+    int rc = vi2_display_index(name) < 0 || !event ? VI_NOT_FOUND : s->monitor_display[group] ? VI2_GROUP_EXISTS : 0;
+    if (!rc) {
+        s->monitor_display[group] = name;
+        s->monitor_kind[group] = (u8)kind;
+    }
+    pm_unlock(&g_host.vi.lock);
+    if (!rc && kind) kevent_signal(kev(event));
+    return rc;
+}
+/* Unregistering never fails, as in eden-ns2: only a registration of that display, group and kind goes */
+static int vi2_unmonitor(SvcObj* self, u64 name, u32 group, u32 kind) {
+    Vi2Session* s = self->data;
+    u32 event = 0;
+    pm_lock(&g_host.vi.lock);
+    if (group < VI2_GROUPS && name && s->monitor_display[group] == name && s->monitor_kind[group] == kind) {
+        s->monitor_display[group] = 0;
+        event = s->group_events[group];
+    }
+    pm_unlock(&g_host.vi.lock);
+    if (event) kevent_signal(kev(event));
+    return 0;
+}
+static int nn_gsv_IVi2Session_RegisterVsyncMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 0);
+}
+static int nn_gsv_IVi2Session_UnregisterVsyncMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 0);
+}
+static int nn_gsv_IVi2Session_RegisterRefreshRateMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 1);
+}
+static int nn_gsv_IVi2Session_UnregisterRefreshRateMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 1);
+}
+static int nn_gsv_IVi2Session_RegisterHdrStatusMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 2);
+}
+static int nn_gsv_IVi2Session_UnregisterHdrStatusMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 2);
+}
+static int nn_gsv_IVi2Session_RegisterHdrPaperWhiteMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 3);
+}
+static int nn_gsv_IVi2Session_UnregisterHdrPaperWhiteMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 3);
+}
+static int nn_gsv_IVi2Session_RegisterBufferMaxResolutionMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 4);
+}
+static int nn_gsv_IVi2Session_UnregisterBufferMaxResolutionMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 4);
+}
+static int nn_gsv_IVi2Session_RegisterModeCapabilityMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_monitor(self, name, group, 5);
+}
+static int nn_gsv_IVi2Session_UnregisterModeCapabilityMonitor(SvcObj* self, u64 name, u32 group) {
+    return vi2_unmonitor(self, name, group, 5);
+}
+static int vi2_dispatch(SvcObj* self, IpcCtx* c) {
+    R_UNLESS(c->tipc, RC(1, 33));
+    /* the SDK reads the event's slot before the result */
+    c->tipc_error_moves = c->cmd == 11 || c->cmd == 31 || c->cmd == 32 ? 1 : 0;
+    return nn_gsv_IVi2Session_dispatch(self, c);
+}
+static void vi2_destroy(SvcObj* self) {
+    Vi2Session* s = self->data;
+    /* Stop vsync delivery before IPC releases the pool slot, which it zeroes outside this lock */
+    pm_lock(&g_host.vi.lock);
+    g_hle.vi.vi2_live &= ~(1u << (u32)(s - g_hle.vi.vi2));
+    pm_unlock(&g_host.vi.lock);
+    kobj_unref(kobj_at(s->event));
+    for (u32 i = 0; i < VI2_GROUPS; ++i) kobj_unref(kobj_at(s->group_events[i]));
+}
+int vi2_state_valid(const HleVi* v) {
+    if (v->vi2_live >> VI2_SESSIONS) return 0;
+    for (u32 i = 0; i < VI2_SESSIONS; ++i) {
+        const Vi2Session* s = &v->vi2[i];
+        if (((v->vi2_live >> i) & 1) != (s->obj != 0)) return 0;
+        if (s->group_limit >= VI2_GROUPS || s->groups_configured > 1) return 0;
+        for (u32 display = 0; display < VI2_DISPLAYS; ++display)
+            if (s->display_notification[display] >= VI2_NOTIFICATIONS || s->display_refs[display] > 1024) return 0;
+        for (u32 k = 0; k < VI2_GROUPS; ++k)
+            if (s->monitor_kind[k] >= VI2_MONITOR_KINDS ||
+                (s->monitor_display[k] && (!s->group_events[k] || vi2_display_index(s->monitor_display[k]) < 0))) return 0;
+        u32 bits = 0;
+        int endpoint_found = !s->endpoint;
+        for (u32 k = 0; k < VI2_CLIENTS; ++k) {
+            const Vi2Client* c = &s->clients[k];
+            if (!c->token) {
+                if (c->retire_bit || c->available_bit || c->free_slots || c->bound || c->encoded || c->shown)
+                    return 0;
+                for (u32 q = 0; q < VI2_BUFFER_SLOTS; ++q)
+                    if (c->queued[q].present || c->queued[q].image || c->queued[q].extent) return 0;
+                continue;
+            }
+            if (c->retire_bit >= VI2_NOTIFICATIONS || c->available_bit >= VI2_NOTIFICATIONS ||
+                c->retire_bit == c->available_bit || c->free_slots >> VI2_BUFFER_SLOTS || c->bound > VI2_DISPLAYS ||
+                c->encoded > 1 || c->shown > VI2_BUFFER_SLOTS || (c->shown && c->free_slots >> (c->shown - 1) & 1))
+                return 0;
+            /* a slot queued for the display is the display's, not the client's */
+            for (u32 q = 0; q < VI2_BUFFER_SLOTS; ++q)
+                if (c->queued[q].present && (c->free_slots >> q & 1)) return 0;
+            u32 own = 1u << c->retire_bit | 1u << c->available_bit;
+            if (bits & own) return 0;
+            bits |= own;
+            for (u32 j = 0; j < k; ++j)
+                if (s->clients[j].token == c->token) return 0;
+            if (c->token == s->endpoint && c->bound == 1) endpoint_found = 1;
+        }
+        if (bits != s->client_slots || !endpoint_found) return 0;
+    }
+    return 1;
+}
+SvcObj* vi2_session_new(void) {
+    SvcObj* o = SVCOBJ_NEW_DATA("nn::gsv::IVi2Session", vi2_dispatch, g_hle.vi.vi2, g_hle.vi.vi2_next,
+                                "Switch 2 display sessions");
+    o->destroy = vi2_destroy;
+    pm_lock(&g_host.vi.lock);
+    g_hle.vi.vi2_live |= 1u << (u32)((Vi2Session*)o->data - g_hle.vi.vi2);
+    pm_unlock(&g_host.vi.lock);
+    return o;
 }
 
 static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(); }
@@ -725,4 +1292,7 @@ void svc_vi_init(void) {
 }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_vi_state_fns,
-               STATE_FN("vi", vi_present));
+               STATE_FN("vi", vi_present),
+               STATE_FN("vi", vi2_present),
+               STATE_FN("vi", vi2_dispatch),
+               STATE_FN("vi", vi2_destroy));

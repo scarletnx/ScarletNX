@@ -93,9 +93,11 @@ only read):
 - Copy handles in come in declaration order. Out copy and move handles too, each kind numbered on its own, and out
   objects become move handles (sessions) ahead of the declared move handles on a plain session, and object ids after the
   data on a domain. An out object a handler leaves NULL is handle 0 or id 0 (`respond` in `ipc.c`).
-- A failed request answers no data, handles or objects. The generated code puts a command's objects and handles in the
-  reply whatever its result, and `ipc.c` closes and drops a failed request's (`drop_outputs`) once the dispatcher has
-  returned, outside any lock a service's own dispatcher holds.
+- A failed request answers no data or live handles or objects. `ipc.c` closes and drops outputs already emitted
+  (`drop_outputs`) after the dispatcher returns, outside any lock the service's dispatcher holds.
+  Some TIPC clients read handle slots before the result even on failure. Their dispatcher sets
+  `c->tipc_error_moves` to the required slot count. After dropping live outputs, `ipc.c` emits that many null move
+  handles so the result remains at the SDK's expected offset. CMIF error replies do not retain these slots.
 - A CMIF request is measured as sf measures it: its data region starts at the data words aligned to 16 and is 16
   bytes shorter than they are, and a domain request's data ends where its domain header says. A TIPC request's ends
   with its data words.

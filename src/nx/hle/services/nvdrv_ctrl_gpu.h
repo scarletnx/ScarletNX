@@ -51,6 +51,7 @@ enum { CTRL_GPU_PMU_GPU_LOAD = 0, CTRL_GPU_GPU_TIME = 0 };
 #define NVGPU_NUM_GPCS  1u
 #define NVGPU_NUM_SMS   2u
 #define NVGPU_TPC_MASK  0x3u
+#define NVGPU_SWITCH2_SMS      4u /* the same GPC and TPCs with an Ampere chip's two SMs to a TPC */
 #define NVGPU_SM_WARPS  0x80u /* the characteristics' sm_arch_warp_count */
 /* Eden's GetActiveSlotMask and PmuGetGpuLoad answers: slot 7 with mask 1, and a load of 100 */
 #define NVGPU_ACTIVE_SLOT      0x07u
@@ -72,6 +73,12 @@ typedef struct {
     u64 chipname, gr_compbit_store_base_hw;
 } NvgpuGpuCharacteristics;
 #define NVGPU_CHARACTERISTICS_BYTES 0xA0u
+/* A Switch 2 driver asks for 0xD0 bytes. The first 0x70 are laid out as above. From 0x70, each nvhost device's
+   interface level is a signed 16-bit number (-1 for a device that is not there), in this order: ctrl-gpu, TSG,
+   debugger, channel, address space. At 0xB4 is the count of subcontexts. The layout is eden-ns2's
+   (native_gpu_characteristics.h), and the SDK's driver reads it so */
+#define NVGPU_NATIVE_CHARACTERISTICS_BYTES 0xD0u
+enum { NVGPU_NATIVE_LEVELS = 0x70, NVGPU_NATIVE_SUBCONTEXTS = 0xB4 };
 
 /* IoctlNvgpuGpuZcullGetInfoArgs (40 bytes, ten u32s in this order). Values: nvdrv.c's ctrlgpu_zcull_info */
 typedef struct {

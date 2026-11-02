@@ -1082,7 +1082,8 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-misc-service misc_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_touch.c"
         "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_motion.c")
     snx_test_target(snx-test-misc-service 23)
-        snx_service_swipc(snx-test-misc-service hle/services/hid.swipc hle/services/misc.swipc hle/services/acc.swipc)
+        snx_service_swipc(snx-test-misc-service hle/services/hid.swipc hle/services/audio.swipc hle/services/misc.swipc
+                          hle/services/acc.swipc)
     target_link_libraries(snx-test-misc-service PRIVATE OpenSSL::Crypto snx_splash scarletnx-common)
     if(NOT WIN32)
         target_link_libraries(snx-test-misc-service PRIVATE m)

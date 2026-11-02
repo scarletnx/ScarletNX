@@ -71,6 +71,7 @@ typedef struct IpcCtx {
     u32 out_size;
     u32 out_copy[8], out_move[8];
     int nout_copy, nout_move;
+    int tipc_error_moves; /* null move slots retained on failure when the SDK reads handles before the result */
     struct SvcObj* out_objs[8];
     int nout_objs;
     struct KSession* sess;

@@ -112,6 +112,7 @@ void kobj_unref(KObj* o) {
     CHECK(o->refs > 0);
     if (--o->refs) return;
     if (o->type == KO_SHMEM) free(((KShmem*)o)->host); /* as kshmem_destroy lets go of its pages */
+    if (o->type == KO_SESSION) svcobj_unref(((KSession*)o)->obj);
     free(o);
     test_kobjs--;
 }
@@ -169,9 +170,26 @@ SvcObj* ipc_in_obj(IpcCtx* c, int index) {
 }
 void kevent_clear(KEvent* e) { e->signaled = 0; }
 KObj* h_get_ref(u32 h, int type) {
-    (void)h;
-    (void)type;
+    if (h == 0xffff8001u && type == KO_PROCESS) {
+        kobj_ref(&g_hle.kernel.process);
+        return &g_hle.kernel.process;
+    }
+    if (h >= 0x100 && h < test_next_handle) {
+        KObj* o = test_handles[h - 0x100];
+        if (o->type == type) {
+            kobj_ref(o);
+            return o;
+        }
+    }
     return NULL;
+}
+u32 session_new(SvcObj* obj) {
+    KSession* s = calloc(1, sizeof *s);
+    CHECK(s != NULL);
+    s->o.type = KO_SESSION;
+    s->obj = obj;
+    test_kobjs++;
+    return h_new(&s->o);
 }
 volatile int g_quit;
 void set_language_code(int lang, u8 code[8]) {
@@ -812,6 +830,124 @@ static void test_am_command_replies(void) {
     CHECK(nn_am_service_IApplicationFunctions_NotifyRunning(NULL, &running) == 0 && running == 1);
 }
 
+/* Every SelfController shares one retained GSV session. Closing guest copies and their SelfControllers must not
+   reset the application's bootstrap state. */
+static void test_graphics_bootstrap(void) {
+    SvcObj *controller, *peer;
+    u32 first, second;
+    nn_gsv_Bootstrap bootstrap = {.applet_resource_user_id = K_PROCESS_ID, .flags = 0x8000000000000006ull};
+    u32 session = 0;
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    CHECK(nn_am_service_IApplicationProxy_GetSelfController(NULL, &controller) == 0);
+    CHECK(nn_am_service_IApplicationProxy_GetSelfController(NULL, &peer) == 0);
+    CHECK(controller != peer);
+    CHECK(nn_am_service_ISelfController_GetGraphicsSupervisor(controller, &first) == 0);
+    CHECK(nn_am_service_ISelfController_GetGraphicsSupervisor(peer, &second) == 0);
+    KSession* kept = (KSession*)kobj_at(g_hle.am.graphics_session);
+    CHECK(kept && kept->o.type == KO_SESSION && kept->o.refs == 3);
+    CHECK(test_handles[first - 0x100] == &kept->o && test_handles[second - 0x100] == &kept->o);
+    SvcObj* self = kept->obj;
+    AmGraphics* state = &g_hle.am.graphics;
+    u64 modes = ~0ull;
+    CHECK(nn_gsv_IGraphicsSupervisor_ConfigureNativeMemory(self, 2, &modes) == RC(1, 125));
+    /* 2880 by 1620 RGBA8 in blocks of 16 GOBs, as one game's window texture asks: rows padded to 1664 */
+    nn_gsv_BlockImagePreference image = {.kind = 2, .extent = 2879u | 1619u << 16, .block_height_log2 = 7,
+                                         .pitch_gobs = 180, .pixel_format = 1, .block_format = 1};
+    u64 size = 0, alignment = 0;
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateRequirements(self, &image, 1, &size, &alignment) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeFrameContext(self) == RC(1, 125) && !state->frame_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateFrameContext(self) == RC(1, 125) && !state->frame_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeGpuContext(self) == RC(1, 125) && !state->gpu_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateGpuContext(self) == RC(1, 125) && !state->gpu_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenGpuSession(self, 3, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenGpuSession(self, 4, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenGpuSession(self, 2, &session) == RC(1, 116) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeDisplayContext(self) == RC(1, 125) && !state->display_context);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenDisplaySession(self, 0x300020000ull, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_CompleteBootstrap(self) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_BindProcess(self, 0xffff8001u) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(self, 0, &bootstrap) == RC(1, 114));
+    bootstrap.parameter0 = 0x10000;
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(self, 0xffff8001u, &bootstrap) == RC(1, 33) && !state->phase);
+    bootstrap.parameter0 = 0;
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(self, 0xffff8001u, &bootstrap) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(self, 0xffff8001u, &bootstrap) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_CompleteBootstrap(self) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_GetNvidiaDriver(self, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_BindProcess(self, 0xffff8001u) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_CompleteBootstrap(self) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateFrameContext(self) == RC(1, 125) && !state->frame_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeFrameContext(self) == 0 && state->frame_phase == 1);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateFrameContext(self) == 0 && state->frame_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeFrameContext(self) == 0 && state->frame_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateFrameContext(self) == 0 && state->frame_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateGpuContext(self) == RC(1, 125) && !state->gpu_phase);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeGpuContext(self) == 0 && state->gpu_phase == 1);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateGpuContext(self) == 0 && state->gpu_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeGpuContext(self) == 0 && state->gpu_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_ActivateGpuContext(self) == 0 && state->gpu_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenGpuSession(self, 4, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenGpuSession(self, 3ull | (1ull << 32), &session) == RC(1, 116));
+    /* the display session needs the display context, which 303 ends; its flags are the user library's protocol */
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenDisplaySession(self, 0x300010000ull, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeDisplayContext(self) == 0 && state->display_context);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenDisplaySession(self, 0x300050000ull, &session) == RC(1, 116) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenDisplaySession(self, 0x400020000ull, &session) == RC(1, 116) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_FinalizeDisplayContext(self) == 0 && !state->display_context);
+    CHECK(nn_gsv_IGraphicsSupervisor_OpenDisplaySession(self, 0x300020000ull, &session) == RC(1, 125) && !session);
+    CHECK(nn_gsv_IGraphicsSupervisor_ConfigureNativeMemory(self, 2, &modes) == 0 && modes == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_ConfigureNativeMemory(self, 1, &modes) == RC(1, 116));
+    CHECK(nn_gsv_IGraphicsSupervisor_ConfigureNativeMemory(self, 2ull | (1ull << 32), &modes) == RC(1, 116));
+    u32 request = 0, completed = 0;
+    CHECK(nn_gsv_IGraphicsSupervisor_BindSyncpointMemory(self, 0, 0x1FF, 0x1000, 0x2000, 0, 0,
+                                                       &request, &completed) == RC(1, 116));
+    CHECK(nn_gsv_IGraphicsSupervisor_BindSyncpointMemory(self, 1, 0x1FF, 0x1000, 0x2000, 0, 0,
+                                                       &request, &completed) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_GetSyncpointSession(self, &session) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeSyncpointContext(self) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeImageFormats(self) == RC(1, 125));
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeImageContext(self) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_InitializeImageFormats(self) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateRequirements(self, &image, 1, &size, &alignment) == 0 &&
+          size == 180ull * 64 * 1664 && alignment == 0x1000);
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateRequirements(self, &image, 3, &size, &alignment) == 0 &&
+          size == 3 * 180ull * 64 * 1664);
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateNativeImageSize(self, &image, 1, &size) == RC(1, 33));
+    image.kind = 1;
+    image.extent = 2559u | 1439u << 16;
+    image.pitch_gobs = 160;
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateNativeImageSize(self, &image, 1, &size) == 0 &&
+          size == 160ull * 64 * 1536);
+    image.block_height_log2 = 9; /* 64 GOBs, past the largest block */
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateNativeImageSize(self, &image, 1, &size) == RC(1, 33));
+    /* 4096 GOBs by 65536 rows is 2^34 bytes: 2^30 of them would wrap to zero */
+    image = (nn_gsv_BlockImagePreference){.kind = 2, .extent = 0xffffffffu, .block_height_log2 = 3, .pitch_gobs = 4096};
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateRequirements(self, &image, 1u << 30, &size, &alignment) == RC(1, 101));
+    CHECK(nn_gsv_IGraphicsSupervisor_CalculateRequirements(self, &image, 1u << 29, &size, &alignment) == 0 &&
+          size == 1ull << 63);
+    svcobj_unref(controller);
+    svcobj_unref(peer);
+    close_handles();
+    CHECK(kept->o.refs == 1);
+    CHECK(nn_am_service_IApplicationProxy_GetSelfController(NULL, &controller) == 0);
+    CHECK(nn_am_service_ISelfController_GetGraphicsSupervisor(controller, &session) == 0);
+    CHECK(test_handles[session - 0x100] == &kept->o && state->phase == 3 &&
+          state->frame_phase == 2 && state->gpu_phase == 2);
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(kept->obj, 0xffff8001u, &bootstrap) == RC(1, 125));
+    close_handles();
+    svcobj_unref(controller);
+    kobj_unref(&kept->o);
+    g_hle.am.graphics_session = 0;
+    *state = (AmGraphics){0};
+    bootstrap.flags = 0x8000000000000001ull;
+    CHECK(nn_gsv_IGraphicsSupervisor_Initialize(NULL, 0xffff8001u, &bootstrap) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_BindProcess(NULL, 0xffff8001u) == 0);
+    CHECK(nn_gsv_IGraphicsSupervisor_CompleteBootstrap(NULL) == 0);
+    *state = (AmGraphics){0};
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+    CHECK(g_hle.kernel.process.refs == 1);
+}
+
 int main(void) {
     g_settings.tv_mode = 0; /* handheld, as the test was written for */
     hle_init();
@@ -830,6 +966,7 @@ int main(void) {
     test_lock_event();
     test_cpu_boost();
     test_am_command_replies();
+    test_graphics_bootstrap();
     test_applets();
     CHECK(test_objects == 0 && test_kobjs == 0);
     test_messages();

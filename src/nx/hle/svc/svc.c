@@ -10,6 +10,7 @@
    entry and exit (its core, pausing), and the SVCs that aren't memory or synchronization */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/hle/hle.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
@@ -385,6 +386,7 @@ static u32 signal_event(u32 h) {
     KWEvent* w = (KWEvent*)h_get_ref(h, KO_WEVENT);
     R_UNLESS(w, R_BADHANDLE);
     kevent_signal((KEvent*)kobj_at(w->r));
+    if (g_hle.kernel.hw == SNX_HW_SWITCH2) nv_syncpoint_cache_request(w->r);
     kobj_unref(&w->o);
     R_SUCCEED();
 }

@@ -31,6 +31,15 @@
     X(AmVolumes, (h).am.volumes[0])                                                                                    \
     X(AmLock, (h).am.lock_objs[0])                                                                                     \
     X(LibApplet, (h).am.applets[0])                                                                                    \
+    X(AmGraphics, (h).am.graphics)                                                                                     \
+    X(NvGsvCache, (h).nvdrv.gsv_cache)                                                                                 \
+    X(NvGsvGpu, (h).nvdrv.gsv_gpu[0])                                                                                  \
+    X(NvGsvWorker, (h).nvdrv.gsv_workers[0])                                                                           \
+    X(NvGsvDevices, (h).nvdrv.gsv_devices[0])                                                                          \
+    X(NvGsvAs, (h).nvdrv.gsv_as[0])                                                                                    \
+    X(NvGsvMemory, (h).nvdrv.gsv_mem[0])                                                                               \
+    X(NvGsvSparse, (h).nvdrv.gsv_sparse[0])                                                                            \
+    X(NvGsvImage, (h).nvdrv.gsv_images[0])                                                                             \
     X(AudOut, (h).audio.outs_pool[0])                                                                                  \
     X(AudRen, (h).audio.rens[0])                                                                                       \
     X(AudDevice, (h).audio.devices[0])                                                                                 \
@@ -45,17 +54,22 @@
     X(RoNro, (h).ldr.states[0].nro[0])                                                                                 \
     X(RoNrr, (h).ldr.states[0].nrr[0])                                                                                 \
     X(MmRequest, (h).misc.mms[0].req[0])                                                                               \
+    X(Vi2Queued, (h).vi.vi2[0].clients[0].queued[0])                                                                   \
     X(NvEvent, (h).nvdrv.ctrl_evt[0].slot[0])                                                                          \
     X(ViSlot, (h).vi.layer[0].slot[0])                                                                                 \
     X(BsdFd, (h).bsd.bsds[0].fd[0])                                                                                    \
     X(Mm, (h).misc.mms[0])                                                                                             \
     X(NfcUser, (h).misc.nfc_users[0])                                                                                  \
+    X(StplShim, (h).misc.stpl_shims[0])                                                                                \
     X(NvMapH, (h).nvdrv.nvh[0])                                                                                        \
     X(NvEventTable, (h).nvdrv.ctrl_evt[0])                                                                             \
+    X(NvGsvSync, (h).nvdrv.gsv_sync[0])                                                                                \
     X(NvFile, (h).nvdrv.nvf[0])                                                                                        \
     X(NvSeen, (h).nvdrv.seen[0])                                                                                       \
     X(TimeObj, (h).time.objs[0])                                                                                       \
     X(ViLayer, (h).vi.layer[0])                                                                                        \
+    X(Vi2Session, (h).vi.vi2[0])                                                                                       \
+    X(Vi2Client, (h).vi.vi2[0].clients[0])                                                                             \
     X(Bsd, (h).bsd.bsds[0])                                                                                            \
     X(Ldn, (h).ldn.ldn[0])                                                                                             \
     X(NifmRequest, (h).nifm.reqs[0])                                                                                   \

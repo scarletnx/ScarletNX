@@ -1422,8 +1422,99 @@ SvcObj* new_ectx(void) { return nn_err_context_IWriterForApplication_new(); }
 SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(); }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(); }
 SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(); }
+/* aud:u gives the managers that audin:u, audout:u and audren:u give a Switch 1 game, as eden-ns2's INativeAudioManager
+   (copyright 2026 Eden Emulator Project, GPL-3.0-or-later) does */
+static int nn_audio_IUserClientSession_GetAudioInManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audin();
+    R_SUCCEED();
+}
+static int nn_audio_IUserClientSession_GetAudioOutManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audout();
+    R_SUCCEED();
+}
+static int nn_audio_IUserClientSession_GetAudioRendererManager(SvcObj* self, SvcObj** manager) {
+    (void)self;
+    *manager = new_audren();
+    R_SUCCEED();
+}
+
+/* ============================================================ stpl:u: GameShare, with no guest */
+#define STPL_INVALID_GUEST_COUNT RC(287, 6001)
+#define STPL_INVALID_MODE        RC(287, 6004)
+#define STPL_INVALID_TYPE        RC(287, 6013)
+#define STPL_INVALID_VERSION     RC(287, 6503)
+/* nn::streamplay::detail::HidSharedMemoryFormat: the SDK's accessor reads three guests' pad blocks, then their touch
+   rings from 0x6c000 (0x6000 each) and their JCMS rings from 0x7e000 (0x2000 each) */
+#define STPL_HID_SHM_SIZE 0x84000
+/* the work memory the service asks of the game for each guest: one page of session state, as nothing streams. The
+   SDK only needs it linear in the guest count, since Initialize takes the count back as size / the size for one */
+#define STPL_GUEST_MEMORY 0x1000
+
+/* the client versions the service takes, as eden-ns2's ngc.cpp checks them: a major in bits 16 to 23 and a minor in bits
+   8 to 15, both zero (the SDK's client sends 3) or 1.0 to 1.4. 0x100 is the old way to write 1.0. (eden-ns2's checks for
+   majors 2 and 3 compare against values no version reaches, so they take nothing more) */
+static int stpl_version_ok(u32 version) {
+    u32 mid = (version == 0x100 ? 0x10000 : version) >> 8 & 0xffff;
+    return !mid || (mid >= 0x100 && mid < 0x105);
+}
+static StplShim* stpl_shim(SvcObj* o) { return (StplShim*)o->data; }
+static void stpl_shim_destroy(SvcObj* o) {
+    kobj_unref(kobj_at(stpl_shim(o)->hid_shm));
+    kobj_unref(kobj_at(stpl_shim(o)->connection_event));
+}
+static int nn_streamplay_detail_IUserService_CreateUserShimScopedObject(SvcObj* self, u32 version, SvcObj** shim) {
+    (void)self;
+    R_UNLESS(stpl_version_ok(version), STPL_INVALID_VERSION);
+    SvcObj* o = nn_streamplay_detail_IUserShimScopedObject_new_data(g_hle.misc.stpl_shims, g_hle.misc.stpl_shim_next,
+                                                                    "stpl:u shim objects");
+    KShmem* shm = kshmem_new(STPL_HID_SHM_SIZE, "stpl guest hid");
+    kobj_ref(&shm->o);
+    stpl_shim(o)->hid_shm = kobj_id(&shm->o);
+    stpl_shim(o)->connection_event = owned_event("stpl connection state");
+    o->destroy = stpl_shim_destroy;
+    *shim = o;
+    R_SUCCEED();
+}
+static int nn_streamplay_detail_IUserShimScopedObject_GetRequiredMemorySize(SvcObj* self, u8 type, u8 mode, i32 guests,
+                                                                            u32* size) {
+    (void)self;
+    R_UNLESS(type <= 1, STPL_INVALID_TYPE);
+    R_UNLESS(mode <= 1, STPL_INVALID_MODE);
+    /* the service has no bound on the count here, and works in 64 bits */
+    *size = (u32)((u64)(i64)guests * STPL_GUEST_MEMORY);
+    R_SUCCEED();
+}
+static int nn_streamplay_detail_IUserShimScopedObject_Initialize(SvcObj* self, u8 type, u8 mode, i32 guests, u64 pid) {
+    (void)self, (void)pid;
+    /* the count is checked first, signed */
+    R_UNLESS(guests <= 3, STPL_INVALID_GUEST_COUNT);
+    R_UNLESS(type <= 1, STPL_INVALID_TYPE);
+    R_UNLESS(mode <= 1, STPL_INVALID_MODE);
+    R_SUCCEED();
+}
+static int nn_streamplay_detail_IUserShimScopedObject_GetConnectionStateChangedEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(stpl_shim(self)->connection_event);
+    R_SUCCEED();
+}
+static int nn_streamplay_detail_IUserShimScopedObject_GetGuestHidSharedMemory(SvcObj* self,
+                                                                              nn_streamplay_HidSharedMemoryConfig* config,
+                                                                              u32* shared_memory) {
+    *config = (nn_streamplay_HidSharedMemoryConfig){.size = STPL_HID_SHM_SIZE, .offset = 0};
+    *shared_memory = h_new(kobj_at(stpl_shim(self)->hid_shm));
+    R_SUCCEED();
+}
+/* the volumes of a stream: there is none */
+static int nn_streamplay_detail_IUserShimScopedObject_SetAudioOutputState(
+    SvcObj* self, const nn_streamplay_detail_AudioOutputState* state) {
+    (void)self, (void)state;
+    R_SUCCEED();
+}
+SvcObj* new_audu(void) { return nn_audio_IUserClientSession_new(); }
+SvcObj* new_stpl(void) { return nn_streamplay_detail_IUserService_new(); }
 SvcObj* new_ngc(void) { return nn_ngc_detail_IService_new(); }
 SvcObj* new_ngct(void) { return nn_ngct_detail_IService_new(); }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_misc_state_fns,
-               STATE_FN("misc", nfc_user_destroy));
+               STATE_FN("misc", nfc_user_destroy), STATE_FN("misc", stpl_shim_destroy));

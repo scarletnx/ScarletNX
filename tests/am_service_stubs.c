@@ -4,6 +4,7 @@
    users.c has it without users.ini */
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/services/services_int.h"
+#include "nx/hle/services/nvdrv.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,4 +62,37 @@ const SnxUser* snx_users_selected(void) {
     static SnxUser first = {.nickname = "Nadia"}; /* not users.c's "Player": a keyboard that answers it says which */
     memcpy(first.uid, g_user_id, 16);
     return &first;
+}
+
+/* Child GPU services are outside these tests. Kernel sessions are modelled in am_service.c. */
+SvcObj* nv_syncpoint_new(void) { abort(); }
+SvcObj* nv_gpu_new(void) { abort(); }
+SvcObj* vi2_session_new(void) { abort(); }
+/* nvdrv's side of 434: address space 1 is the one a GPU session made */
+int nv_gsv_register_as(u32 id) { return id == 1 ? 0 : RC(1, 121); }
+/* nvdrv's native memory and images, which nvdrv_service tests */
+int nv_native_memory_create(u64 size, u32* memory) { (void)size, (void)memory; abort(); }
+int nv_native_memory_bind(u32 memory, u64 addr, u64 size, u32 parent, u64 offset) {
+    (void)memory, (void)addr, (void)size, (void)parent, (void)offset;
+    abort();
+}
+int nv_native_memory_destroy(u32 memory) { (void)memory; abort(); }
+int nv_native_image_create(u32 memory, u64 size, u32 count, const NvGsvImageShape* shape, u32* image) {
+    (void)memory, (void)size, (void)count, (void)shape, (void)image;
+    abort();
+}
+int nv_native_image_destroy(u32 image) { (void)image; abort(); }
+int nv_native_image_window_pool(u32 image, u32 count, int create) {
+    (void)image, (void)count, (void)create;
+    abort();
+}
+int nv_syncpoint_cache_bind(u32 rw, u32 ro, u32* request, u32* completed) {
+    (void)rw, (void)ro, (void)request, (void)completed;
+    abort();
+}
+SvcObj* svc_open(const char* name) { (void)name; abort(); }
+int ipc_unknown(SvcObj* obj, IpcCtx* c) { (void)obj; (void)c; return RC(10, 221); }
+void out_move_h(IpcCtx* c, u32 handle) {
+    if (c->nout_move == 8) abort();
+    c->out_move[c->nout_move++] = handle;
 }

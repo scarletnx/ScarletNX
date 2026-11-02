@@ -31,3 +31,99 @@ interface nns::nvdrv::INvDrvServices is nvdrv, nvdrv:a, nvdrv:s, nvdrv:t {
     # Switchbrew's name and input
     @stub [13] SetGraphicsFirmwareMemoryMarginEnabled(u64 enabled);
 }
+
+@fallback(ipc_unknown)
+interface nn::gsv::ISyncpointSupervisor {
+    [0] Handshake(u64 token) -> u64 echoed_token;
+    [1] GetMaximumEventCount() -> u32 count;
+    [21] SetEventCount(u32 count);
+    [22] GetEvent(u32 slot) -> handle<move, event> event;
+    @unsorted [103] QueryCounter(u32 encoded_id) -> (u64 value, u8 wide);
+    @unsorted [201] ArmWait(u32 slot, u32 encoded_id, u64 threshold, u8 wide);
+    [202] CancelWait(u32 slot);
+}
+
+# the newer SDK's user partition: how many of the four ranges hold, then each range's first and last address
+type nn::gsv::GpuPartitionRanges = u64[8];
+
+@fallback(ipc_unknown)
+interface nn::gsv::IGpuSession {
+    [11] GetNotificationRange() -> (u32 first, u32 last);
+    [12] GetNotificationEvent(u32 index) -> handle<move, event> event;
+    [21] RequestWorker(u32 index);
+    [22] AcquireWorker() -> handle<move, session> worker;
+    [33] CreateAddressSpace(u32 flags) -> u32 id;
+    [41] CreateGraphicsDevice(u64 name, u64 flags, u64 debug_label) -> u32 id;
+    [42] DestroyGraphicsDevice(u8 id);
+    # the older SDK's user partition, one range
+    [201] GetUserPartition(u32 id) -> (u64 first, u64 last);
+    [202] GetGsvPartition(u32 id) -> (u64 first, u64 last);
+    [203] GetUserPartitions(u32 id) -> (u64 count, nn::gsv::GpuPartitionRanges ranges);
+}
+
+# The worker's requests put a u64 at every fourth byte, and each u8 in a word of its own, whose padding the SDK
+# leaves as it was
+type nn::gsv::GpuMapRequest = struct {
+    u32 address_space;
+    bytes<8, 4> first;
+    bytes<8, 4> last;
+    u32 memory;
+    bytes<8, 4> offset;
+    u32 read_only;
+    u32 cache;
+    u32 kind;
+    u32 fallback_kind;
+    u32 mode;
+    u32 device;
+    u32 sync;
+    u32 notification;
+};
+type nn::gsv::GpuModifyRequest = struct {
+    u32 address_space;
+    bytes<8, 4> first;
+    bytes<8, 4> last;
+    u32 kind;
+    u32 fallback_kind;
+    u32 sync;
+    u32 notification;
+};
+type nn::gsv::GpuUnmapRequest = struct {
+    u32 address_space;
+    bytes<8, 4> first;
+    bytes<8, 4> last;
+    u32 sync;
+    u32 notification;
+};
+# CreateSparseRegion's: the GPU page size as its shift (12 or 16), and the SDK's PageTableAllocMode (0 or 1)
+type nn::gsv::GpuSparseRegionRequest = struct {
+    u32 address_space;
+    bytes<8, 4> first;
+    bytes<8, 4> last;
+    u32 page_shift;
+    u32 mode;
+    u32 device;
+    u32 sync;
+    u32 notification;
+};
+# ExecuteSparseMapRequests's: the SDK sends 1 first and then the size of one request, 0x28. The count comes from the
+# size of the buffer
+type nn::gsv::GpuSparseMapArguments = struct {
+    bytes<8, 4> one;
+    u32 address_space;
+    bytes<8, 4> request_size;
+    u32 sync;
+    u32 notification;
+};
+
+@fallback(ipc_unknown)
+interface nn::gsv::IGpuWorker {
+    @unsorted [101] CreateGpuAccessibleMemory(u64 first, u64 last, u32 flags, u32 device) -> u32 memory;
+    [102] DestroyGpuAccessibleMemory(u32 memory, u32 notification);
+    [211] NormalMapGpuMemory4K(nn::gsv::GpuMapRequest request) -> u32 kind;
+    [212] NormalModifyGpuMemory4K(nn::gsv::GpuModifyRequest request) -> u32 kind;
+    [213] NormalUnmapGpuMemory4K(nn::gsv::GpuUnmapRequest request) -> u64 size;
+    [214] CreateSparseRegion(nn::gsv::GpuSparseRegionRequest request);
+    [215] DestroySparseRegion(nn::gsv::GpuUnmapRequest request);
+    [216] ExecuteSparseMapRequests(buffer<u8, 5> requests, buffer<u8, 6> kinds, nn::gsv::GpuSparseMapArguments args)
+        -> u64 processed;
+}

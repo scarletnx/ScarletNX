@@ -420,7 +420,10 @@ static void respond(IpcCtx* c) {
     u8* m = c->msg;
     int dom = c->is_domain == IPC_DOMAIN_MESSAGE, i, nmove = 0;
     u32 moves[16], ids[8], nids = 0, off, start, words, limit, hdrs = 16 + (dom ? 16u : 0u), size;
-    if (c->rc) drop_outputs(c);
+    if (c->rc) {
+        drop_outputs(c);
+        for (i = 0; c->tipc && i < c->tipc_error_moves; ++i) out_move_h(c, 0);
+    }
     for (i = 0; i < c->nout_objs; i++) {
         SvcObj* o = c->out_objs[i];
         if (dom)

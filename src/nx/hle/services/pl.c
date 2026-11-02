@@ -205,3 +205,26 @@ static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityFo
     (void)self, (void)language_code;
     return pl_in_order(font_codes, offsets, sizes, loaded, count);
 }
+/* Switch 2 (nn::pl::GetBuiltInFontData): the built-in fonts, which the SDK maps from 2000's memory and finds by 2010's
+   offset in it. The fonts are the shared fonts, a built-in font type taken as the shared font type of the same
+   number, as eden-ns2 does (nn::pl::BuiltInFontTypeOunce's own list is not known). A type past them is not available */
+static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontSharedMemory(SvcObj* self, u32* shared_memory,
+                                                                          u32* size) {
+    (void)self;
+    *shared_memory = h_new(kobj_at(g_hle.pl.shm));
+    *size = PL_SHM_SIZE;
+    R_SUCCEED();
+}
+/* option is read as one bit and changes nothing (eden-ns2) */
+static int nn_pl_detail_IPlatformServiceManager_GetBuiltInFontData(SvcObj* self, u8 font_type, u8 option,
+                                                                   u8* available,
+                                                                   nn_pl_BuiltInFontDescriptor* descriptor) {
+    (void)self, (void)option;
+    if (font_type < PL_FONTS && g_hle.pl.font_size[font_type]) {
+        *available = 1;
+        *descriptor = (nn_pl_BuiltInFontDescriptor){.type = font_type,
+                                                    .offset = g_hle.pl.font_off[font_type],
+                                                    .size = g_hle.pl.font_size[font_type]};
+    }
+    R_SUCCEED();
+}

@@ -22,6 +22,31 @@
 #define SYNCPT_N     128u
 
 void nv_init(void);
+/* The GSV syncpoint session shares the existing counters and increment-driven event delivery. */
+struct SvcObj* nv_syncpoint_new(void);
+/* GSV 497's GPU control session shares notification state with its worker. */
+struct SvcObj* nv_gpu_new(void);
+/* IGraphicsSupervisor 434: lets the worker of the GPU session that made address space id map into it. 0, or the
+   kernel's NotFound for an id no session holds */
+int nv_gsv_register_as(u32 id);
+/* IGraphicsSupervisor 111, 423 and 112: GSV native memory of size bytes as an nvmap handle, backed by the guest
+   memory at offset in the GPU-accessible memory parent (worker 101), and freed. 0 or a kernel result */
+int nv_native_memory_create(u64 size, u32* memory);
+int nv_native_memory_bind(u32 memory, u64 addr, u64 size, u32 parent, u64 offset);
+int nv_native_memory_destroy(u32 memory);
+/* a native image's surface, from the SDK's block preference: the extent ((width - 1) | (height - 1) << 16), the pitch
+   in 64-byte GOBs, the block height as log2 rows with the GOB's 8 (3 to 8) and the pixel format */
+typedef struct {
+    u32 extent, pitch_gobs, block_height_log2, pixel_format;
+} NvGsvImageShape;
+/* IGraphicsSupervisor 429 and 430: count images of size bytes in all over the native memory, and their end. 315 and
+   314 (create 0): the image as a native window's alias image pool of count images, and its end */
+int nv_native_image_create(u32 memory, u64 size, u32 count, const NvGsvImageShape* shape, u32* image);
+int nv_native_image_destroy(u32 image);
+int nv_native_image_window_pool(u32 image, u32 count, int create);
+/* a native window's image (an alias pool of one): its memory's nvmap handle and its surface. 0, or the kernel's
+   NotFound for a handle that is no window image */
+int nv_native_window_image(u32 image, u32* memory, NvGsvImageShape* shape);
 /* an ioctl on fd that a restored thread makes again (svc_service_retry): the use of the fd the old one counted goes */
 void nv_ioctl_abandon(u32 fd);
 
@@ -66,7 +91,12 @@ void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 
    Running out is fatal. A freed id can be handed out again */
 u32 syncpt_alloc(void);
 void syncpt_free(u32 id);
+/* GSV's shared counter cache retains both transfer memories for the application. Its request is a writable event. */
+int nv_syncpoint_cache_bind(u32 rw_handle, u32 ro_handle, u32* request, u32* completed);
+void nv_syncpoint_cache_request(u32 event);
 u32 syncpt_read(u32 id);
+/* Read the native AS ioctl's read-only GPU syncpoint page. 1 when the whole read is in the page, else 0. */
+int nv_syncpoint_shim_read(u64 gva, void* dst, u64 size);
 void syncpt_incr(u32 id);
 void syncpt_add(u32 id, u32 n); /* n increments, one wakeup */
 /* syncpt_add for a thread holding the renderer's lock (vk_lock), and only inside such a hold: the event slots waiting
@@ -114,22 +144,26 @@ void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* 
 
 /* an nvmap handle (nvh, by handle number). CREATE and each FROM_ID take a reference, FREE gives one back; a GPU
    mapping pins it, as the console's nvmap does, and the last reference and pin ends it. allocated: ALLOC gave it guest
-   memory at addr */
+   memory at addr. native: GSV native memory (IGraphicsSupervisor 111), which 423 backs and 112 frees */
 typedef struct {
     u64 addr;
     u32 size, align, heap, flags;
     u32 id;
     u32 refs, pins;
     int alive, allocated;
-    u8 kind;
+    u8 kind, native;
 } NvMapH;
 /* what MAP_BUFFER_EX mapped, for UNMAP_BUFFER: [gva, gva+size) maps cpu of nvmap handle h. base is the address
    UNMAP_BUFFER names; a modify (NVHOST_AS_MAP_REMAP) or FREE_SPACE splits a mapping into pieces that keep it. va is the
-   VA the mapping took from the allocator (0 when the game placed it), given back when it is unmapped */
+   VA the mapping took from the allocator (0 when the game placed it), given back when it is unmapped. gsv is the GPU
+   session state (1 + its index) whose worker mapped it (with h 0), 0 for nvhost-as-gpu's. sparse is the sparse region
+   (1 + its index) that a worker's sparse map put it in, with base 0: only that region's maps and its destruction
+   remove it */
 typedef struct {
     u64 gva, size, cpu;
     u64 base, va;
-    u32 h;
+    u32 h, gsv, memory; /* memory: GSV registration id, 0 for nvmap mappings */
+    u32 sparse;
 } GMap;
 typedef struct {
     u64 a, e;
@@ -164,11 +198,84 @@ typedef struct {
     u32 fd; /* 1 + the fd whose slots these are, set while it's taken */
     NvEvent slot[NV_CTRL_EVENT_SLOTS];
 } NvEventTable;
+#define NV_GSV_SYNCS 16
+#define NV_GSV_EVENTS 63
+typedef struct {
+    u32 obj, count;
+    NvEvent events[NV_GSV_EVENTS];
+} NvGsvSync;
+#define NV_GSV_GPUS 16
+#define NV_GSV_GPU_EVENTS 64
+/* a GPU session's graphics devices (CreateGraphicsDevice): ids 1 to 255, as the SDK keeps an id in a byte */
+#define NV_GSV_GRAPHICS_DEVICES 256
+/* Shared by the control session and its worker. refs is also the pool allocation marker, under nvev_lk. */
+typedef struct {
+    u32 refs;
+    u32 events[NV_GSV_GPU_EVENTS]; /* retained KO_EVENT ids */
+    u32 graphics[NV_GSV_GRAPHICS_DEVICES / 32]; /* bit i: graphics device i is live, under aslock */
+} NvGsvDevices;
+/* GPU address spaces (GPU session 33). There is one because the runtime has one GPU page table (gmmu_*). IDs are
+   nonzero and never reused within a process, so an old DEV_AS view cannot attach to a later session's address space.
+   Under aslock, which comes before nvev_lk. */
+#define NV_GSV_ADDRESS_SPACES 1
+typedef struct {
+    u32 devices;    /* 1 + the owner's shared-state index, 0 while free */
+    u32 id;         /* the opaque id given to ALLOC_AS_EX as as_fd */
+    int registered; /* IGraphicsSupervisor 434 registered it: its worker can map into it */
+} NvGsvAs;
+/* The GPU addresses a GSV address space gives the SDK, its user partition [NV_GSV_USER_FIRST, NV_GSV_USER_END): the
+   small-page range the Switch 2 driver then asks ALLOC_AS_EX for (0x8000000 up to 768 GiB), as Eglantine answers.
+   eden-ns2's goes on to the end of the 40-bit space. Not measured on a console */
+#define NV_GSV_USER_FIRST    0x8000000ull
+#define NV_GSV_USER_END      0xC000000000ull
+/* The syncpoint shim (GetSyncpointShimInfo): the last page of the GPU address space, past every address the SDK
+   allocates (Eglantine puts it on the last page of its range), a u32 for each of eden-ns2's 192 syncpoints */
+#define NV_SYNCPT_SHIM_GVA   ((1ull << GMMU_ADDRESS_SPACE_BITS) - GMMU_PAGE_SIZE)
+#define NV_SYNCPT_SHIM_COUNT 192u
+/* GPU-accessible memory a GPU worker registered (worker 101): guest memory with the GpuAccessible attribute, which
+   its maps (worker 211) then show at GPU addresses. Its id is 1 + its index. One game holds more than 4096 while it
+   loads, and frees few; the console's limit is not known. Under aslock */
+#define NV_GSV_MEMORIES      65536
+typedef struct {
+    u64 addr, size;
+    u32 devices; /* 1 + the owner's shared-state index, 0 while free */
+} NvGsvMemory;
+/* Sparse regions that a GPU worker reserved (worker 214): GPU addresses without memory, whose pages the worker's
+   sparse maps (216) point at registered memory or at nothing again, until the worker frees the region (215). Nothing
+   else maps into a region. Its id is 1 + its index. Under aslock */
+#define NV_GSV_SPARSE_REGIONS 1024
+typedef struct {
+    u64 first, size;
+    u32 devices; /* 1 + the owner's shared-state index, 0 while free */
+} NvGsvSparse;
+/* GSV native images (IGraphicsSupervisor 429): each holds a reference on its native memory. An image array takes
+   count consecutive handles from handle on (the SDK's CalculateNativeImageHandle adds the index). Handles are nonzero
+   and never reused. window_pool: 315 made the image a native window's alias image pool, until 314. Under nv.lock */
+#define NV_GSV_IMAGES 256
+typedef struct {
+    u32 handle, count; /* handle 0 while free */
+    u32 memory;        /* the native memory's nvmap handle */
+    int window_pool;
+    NvGsvImageShape shape;
+} NvGsvImage;
+typedef struct {
+    u32 obj, devices; /* 1 + shared-state pool index */
+    u32 worker;       /* retained KO_SESSION id */
+} NvGsvGpu;
+typedef struct {
+    u32 obj, devices;
+} NvGsvWorker;
 /* an fd (nvf, by number) */
 typedef struct {
     int dev;       /* a DEV_* value, DEV_NONE while the entry is free */
     u32 syncpt;    /* DEV_GPU: the channel's syncpoint, 0 until its first use */
     u64 user_data; /* DEV_GPU: SET_USER_DATA's value, for GET_USER_DATA */
+    u32 tsg, subcontext; /* DEV_GPU: TSG fd (0 when unbound) and its subcontext */
+    u64 tsg_id; /* DEV_TSG: lifetime identity, never reused when its fd closes */
+    /* DEV_AS of a Switch 2 driver: the small-page view [view_first, view_end) of view_as. Bounds remain after that
+       AS is destroyed, but requests fail because view_as is no longer live. All zero before ALLOC_AS_EX. */
+    u64 view_first, view_end;
+    u32 view_as;
     /* QueryEvent's events of a channel (NV_CHANNEL_EVENTS), made on first query and never signaled: nothing here
        raises them */
     u32 ev[NV_CHANNEL_EVENTS];
@@ -183,6 +290,12 @@ typedef struct {
     int dev;
     u32 cmd;
 } NvSeen;
+#define NV_GSV_COUNTERS 192
+typedef struct {
+    u32 rw, ro; /* retained KO_TMEM ids */
+    u32 request, completed; /* retained readable KO_EVENT ids, under nvev_lk */
+    u64 previous[NV_GSV_COUNTERS]; /* last allocated observation, extended across 32-bit counter wrap */
+} NvGsvCache;
 /* nv_init sets the two fields that don't start at 0 (nvh_next, big_page_bits) and the locks */
 typedef struct {
     NvMapH nvh[NVMAP_HANDLES];
@@ -217,11 +330,29 @@ typedef struct {
     u32 ctrl_ev[NV_FDS];
     NvEventTable ctrl_evt[NV_CTRL_TABLES];
     u32 ctrl_evt_next;
+    NvGsvSync gsv_sync[NV_GSV_SYNCS];
+    u32 gsv_sync_next;
+    u32 gsv_sync_active; /* event-delivery membership under nvev_lk, separate from IPC pool allocation */
+    NvGsvCache gsv_cache;
+    NvGsvGpu gsv_gpu[NV_GSV_GPUS];
+    u32 gsv_gpu_next;
+    NvGsvWorker gsv_workers[NV_GSV_GPUS];
+    u32 gsv_worker_next;
+    NvGsvDevices gsv_devices[NV_GSV_GPUS];
+    u32 gsv_devices_next;
+    NvGsvAs gsv_as[NV_GSV_ADDRESS_SPACES];
+    u32 gsv_as_last; /* last id issued, never wrapped or reused */
+    NvGsvMemory gsv_mem[NV_GSV_MEMORIES];
+    u32 gsv_mem_next; /* where the search for a free registration starts */
+    NvGsvSparse gsv_sparse[NV_GSV_SPARSE_REGIONS];
+    NvGsvImage gsv_images[NV_GSV_IMAGES];
+    u32 gsv_image_last; /* the last image handle issued */
     /* a game thread arms a slot while GPU and video threads run nv_events_check after their increments: syncpt_add's
        at once, syncpt_add_quiet's at the outermost vk_unlock, after vk_lock goes (syncpt_events). Arming clears the
        event first and does both in one hold: an increment between a separate arm and clear would signal and then
        lose its wakeup, leaving the game waiting for good. A mutex, not a spin: kevent_signal runs under it */
     NvFile nvf[NV_FDS];
+    u64 tsg_last;
     NvSeen seen[256];
     u32 nseen;
 } HleNvdrv;

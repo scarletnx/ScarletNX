@@ -3,9 +3,7 @@
    Ported from Eden (src/core/hle/service/nvdrv/nvdata.h):
    SPDX-FileCopyrightText: 2021 yuzu Emulator Project
    SPDX-FileCopyrightText: 2021 Skyline Team and Contributors */
-/* What every nvdrv device shares: how an ioctl number is built, and the NvResult values the devices answer. Only
-   nvdrv.c and the device headers beside it (nvdrv_nvmap.h, nvdrv_as_gpu.h, nvdrv_ctrl.h, nvdrv_ctrl_gpu.h,
-   nvdrv_gpu.h) include it */
+/* What the nvdrv device headers share: the ioctl encoding and the NvResult values the devices answer. */
 #ifndef SNX_NVDRV_IOCTL_H
 #define SNX_NVDRV_IOCTL_H
 #include "common/cpu/aarch64/cpu.h"
@@ -49,10 +47,12 @@ enum {
     /* also what nvdrv's lookups of a handle or id that isn't there answer, as they did before these names. Eden's
        nvmap answers BadValue (0xB) there; which of the two nvservices gives was not checked against the SDK */
     NV_RESULT_NOT_IMPLEMENTED = 0x1,
+    NV_RESULT_NOT_SUPPORTED = 0x2, /* Open of /dev/nvhost-prof-gpu, which a production console refuses */
     NV_RESULT_BAD_PARAMETER = 0x4,
     NV_RESULT_TIMEOUT = 0x5,
     NV_RESULT_INSUFFICIENT_MEMORY = 0x6,
     NV_RESULT_INVALID_STATE = 0x8,             /* an fd that isn't open (Eden's nvdrv.cpp answers it for a bad fd) */
+    NV_RESULT_BUSY = 0xE,                    /* a channel already belongs to a TSG */
     NV_RESULT_FILE_OPERATION_FAILED = 0x30003, /* Open with every fd taken */
     NV_RESULT_CONFIG_VAR_NOT_FOUND = 0x30006   /* GET_CONFIG: a production console has none of the settings */
 };

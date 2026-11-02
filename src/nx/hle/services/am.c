@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    Ported from Eden (src/core/hle/service/am/lifecycle_manager.cpp, applet_manager.cpp, am_types.h, am_results.h,
    service/common_state_getter.cpp, service/lock_accessor.cpp, service/application_functions.cpp,
-   service/storage_accessor.cpp, frontend/applet_controller.h, frontend/applet_profile_select.h,
+   service/storage_accessor.cpp, service/graphics_scaling_parameters_functions.cpp,
+   frontend/applet_controller.h, frontend/applet_profile_select.h,
    frontend/applet_software_keyboard.cpp, frontend/applet_software_keyboard.h,
    frontend/applet_software_keyboard_types.h):
    SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
@@ -17,8 +18,10 @@
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/hid.h"
+#include "nx/hle/services/nvdrv.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/runtime/platform/backend.h"
+#include "nx/hle/services/vi.h"
 
 #include "hle/services/am.swipc.inc"
 
@@ -171,6 +174,12 @@ static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* s
     *proxy = am_proxy();
     R_SUCCEED();
 }
+/* the Switch 2 SDK's open: the same proxy, and the flags in the log, as nothing here depends on them yet */
+static int nn_am_service_IApplicationProxyService_OpenApplicationProxyWithFlags(SvcObj* self, u32 flags, u64 pid,
+                                                                               u32 process, SvcObj** proxy) {
+    LOG_LIMIT(4, "am: OpenApplicationProxyWithFlags, flags %x\n", flags);
+    return nn_am_service_IApplicationProxyService_OpenApplicationProxy(self, pid, process, proxy);
+}
 static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid,
                                                                                   u32 process, SvcObj** proxy) {
     (void)self, (void)pid, (void)process;
@@ -225,10 +234,321 @@ static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self,
     *functions = nn_am_service_IApplicationFunctions_new();
     R_SUCCEED();
 }
+static int nn_am_service_IApplicationProxy_GetPerformanceFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IPerformanceFunctions_new();
+    R_SUCCEED();
+}
+static int nn_am_service_IApplicationProxy_GetGraphicsScalingParametersFunctions(SvcObj* self, SvcObj** functions) {
+    (void)self;
+    *functions = nn_am_service_IGraphicsScalingParametersFunctions_new();
+    R_SUCCEED();
+}
 static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
     (void)self;
     *functions = nn_am_service_IDebugFunctions_new();
     R_SUCCEED();
+}
+
+/* eden-ns2's fixed-scale policy: SDK scale 10, with a unit screen ratio. The ratio's interpretation is inferred, not
+   measured on a console. No dynamic scale changes or notifications are generated. */
+static int nn_am_service_IGraphicsScalingParametersFunctions_GetGraphicsScalingParameters(
+    SvcObj* self, nn_am_service_GraphicsScalingParameters* parameters) {
+    (void)self;
+    *parameters = (nn_am_service_GraphicsScalingParameters){10, 1, 1};
+    R_SUCCEED();
+}
+
+/* GSV bootstrap, from the SDK's TIPC packets and eden-ns2's graphics_supervisor.cpp/protocol.h (copyright 2026
+   Eden Emulator Project, GPL-3.0-or-later). The application owns its phase. Unknown commands never auto-succeed. */
+static int am_graphics_dispatch(SvcObj* self, IpcCtx* c) {
+    R_UNLESS(c->tipc, RC(1, 33));
+    /* These SDK clients read the move slots before the result, including on failure. */
+    c->tipc_error_moves = c->cmd == 497 || c->cmd == 305 ? 1 : c->cmd == 204 ? 2 : 0;
+    return nn_gsv_IGraphicsSupervisor_dispatch(self, c);
+}
+static int am_graphics_process(u32 handle) {
+    KObj* process = h_get_ref(handle, KO_PROCESS);
+    R_UNLESS(process, RC(1, 114));
+    kobj_unref(process);
+    R_SUCCEED();
+}
+/* All SelfControllers copy the application's retained session. Creation and publication are one locked operation. */
+static int nn_am_service_ISelfController_GetGraphicsSupervisor(SvcObj* self, u32* session) {
+    (void)self;
+    R_UNLESS(g_hle.kernel.hw == SNX_HW_SWITCH2, RC(1, 33));
+    pm_lock(&g_host.am.lock);
+    if (g_hle.am.graphics_session) {
+        *session = h_new(kobj_at(g_hle.am.graphics_session));
+    } else {
+        *session = session_new(svcobj_new("nn::gsv::IGraphicsSupervisor", am_graphics_dispatch));
+        if (*session)
+            g_hle.am.graphics_session = kobj_id(h_get_ref(*session, KO_SESSION));
+    }
+    pm_unlock(&g_host.am.lock);
+    return *session ? 0 : RC(1, 105);
+}
+static int nn_gsv_IGraphicsSupervisor_Initialize(SvcObj* self, u32 process, const nn_gsv_Bootstrap* bootstrap) {
+    (void)self;
+    R_TRY(am_graphics_process(process));
+    R_UNLESS(bootstrap->applet_resource_user_id == K_PROCESS_ID, RC(1, 14));
+    /* The older SDK sends mode 1, newer SDKs 5 to 7. All observed local bootstraps have zero parameters. */
+    R_UNLESS(bootstrap->flags == 0x8000000000000001ull ||
+             (bootstrap->flags >= 0x8000000000000005ull && bootstrap->flags <= 0x8000000000000007ull),
+             RC(1, 33));
+    R_UNLESS(!(bootstrap->parameter0 | bootstrap->parameter1 | bootstrap->parameter2 | bootstrap->parameter3),
+             RC(1, 33)); /* local memory only */
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase ? RC(1, 125) : 0;
+    if (!rc) g_hle.am.graphics.phase = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_BindProcess(SvcObj* self, u32 process) {
+    (void)self;
+    R_TRY(am_graphics_process(process));
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 1 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.phase = 2;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_CompleteBootstrap(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 2 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.phase = 3;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeImageContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.image_phase = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeImageFormats(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 && g_hle.am.graphics.image_phase == 1 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.image_phase = 2;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int am_graphics_ready(void) {
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.phase == 3;
+    pm_unlock(&g_host.am.lock);
+    return ready;
+}
+/* 435 (nn::gpu::sdk::CalculateNativeImageSize, count 1) and 1510 (nn::gsv::shim::CalculateRequirements) size one
+   2D block-linear surface without mips: rows of 64-byte GOBs, the height padded to whole blocks, times the count.
+   The SDK writes the block height as log2 rows (the GOB's 8 rows included). Pitch images use another word layout
+   and are refused, as are block heights outside 1 to 32 GOBs. */
+static int am_graphics_image_size(const nn_gsv_BlockImagePreference* p, u32 kind, u32 count, u64* size) {
+    R_UNLESS(am_graphics_ready(), RC(1, 125));
+    R_UNLESS(p->kind == kind && p->block_height_log2 >= 3 && p->block_height_log2 <= 8 && p->pitch_gobs && count,
+             RC(1, 33));
+    /* below 2^55 bytes: a 32-bit pitch of 64-byte GOBs, and at most 2^16 + 255 rows */
+    u64 image = (u64)p->pitch_gobs * 64 * snx_align_up((p->extent >> 16) + 1, 1ull << p->block_height_log2);
+    R_UNLESS(count <= UINT64_MAX / image, RC(1, 101)); /* InvalidSize */
+    *size = image * count;
+    R_SUCCEED();
+}
+static int nn_gsv_IGraphicsSupervisor_CalculateNativeImageSize(SvcObj* self, const nn_gsv_BlockImagePreference* preference,
+                                                               u32 count, u64* size) {
+    (void)self;
+    return am_graphics_image_size(preference, 1, count, size);
+}
+/* The SDK raises the alignment to at least a page and pads the size to it. */
+static int nn_gsv_IGraphicsSupervisor_CalculateRequirements(SvcObj* self, const nn_gsv_BlockImagePreference* preference,
+                                                            u32 count, u64* size, u64* alignment) {
+    (void)self;
+    R_TRY(am_graphics_image_size(preference, 2, count, size));
+    *alignment = 0x1000;
+    R_SUCCEED();
+}
+static int nn_gsv_IGraphicsSupervisor_CreateNativeMemory(SvcObj* self, u8 mode, const u8* size, u32* memory) {
+    (void)self;
+    R_UNLESS(am_graphics_ready(), RC(1, 125));
+    R_UNLESS(mode <= 3, RC(1, 116));
+    return nv_native_memory_create(snx_ld_le64(size), memory);
+}
+static int nn_gsv_IGraphicsSupervisor_DestroyNativeMemory(SvcObj* self, u32 memory) {
+    (void)self;
+    return nv_native_memory_destroy(memory);
+}
+static int nn_gsv_IGraphicsSupervisor_BindNativeGpuMemory(SvcObj* self, u32 memory, const u8* address, const u8* size,
+                                                          u32 parent, const u8* offset, const u8* reserved0,
+                                                          const u8* reserved1) {
+    (void)self;
+    R_UNLESS(!snx_ld_le64(reserved0) && !snx_ld_le64(reserved1), RC(1, 33));
+    return nv_native_memory_bind(memory, snx_ld_le64(address), snx_ld_le64(size), parent, snx_ld_le64(offset));
+}
+/* The SDK's CreateNativeImage sends a block preference and a count of 1 */
+static int nn_gsv_IGraphicsSupervisor_CreateNativeImage(SvcObj* self, const nn_gsv_BlockImagePreference* preference,
+                                                        u32 count, u32 memory, u32* image) {
+    (void)self;
+    u64 size;
+    R_TRY(am_graphics_image_size(preference, 1, count, &size));
+    NvGsvImageShape shape = {preference->extent, preference->pitch_gobs, preference->block_height_log2,
+                             preference->pixel_format};
+    int rc = nv_native_image_create(memory, size, count, &shape, image);
+    if (!rc)
+        LOGV("gsv: native image %u: %u x %u, %u GOBs a row, blocks of 2^%u rows, format %u, block format %#x\n", *image,
+            (preference->extent & 0xffff) + 1, (preference->extent >> 16) + 1, preference->pitch_gobs,
+            preference->block_height_log2, preference->pixel_format, preference->block_format);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_DestroyNativeImage(SvcObj* self, u32 image) {
+    (void)self;
+    return nv_native_image_destroy(image);
+}
+static int nn_gsv_IGraphicsSupervisor_CreateNativeWindowAliasImagePool(SvcObj* self, u32 image, u32 count) {
+    (void)self;
+    return nv_native_image_window_pool(image, count, 1);
+}
+static int nn_gsv_IGraphicsSupervisor_DestroyNativeWindowAliasImagePool(SvcObj* self, u32 image) {
+    (void)self;
+    return nv_native_image_window_pool(image, 0, 0);
+}
+/* BootGraphicsFrameManagement sends empty TIPC 1101 then 1102, reading only each result.
+   eden-ns2's InitializeFrameContext preserves activation when initialization is repeated. */
+static int nn_gsv_IGraphicsSupervisor_InitializeFrameContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 ? 0 : RC(1, 125);
+    if (!rc && !g_hle.am.graphics.frame_phase) g_hle.am.graphics.frame_phase = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_ActivateFrameContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 && g_hle.am.graphics.frame_phase ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.frame_phase = 2;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeGpuContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 ? 0 : RC(1, 125);
+    if (!rc && !g_hle.am.graphics.gpu_phase) g_hle.am.graphics.gpu_phase = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_ActivateGpuContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 && g_hle.am.graphics.gpu_phase ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.gpu_phase = 2;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+/* The SDK registers each GPU address space it creates on its user session, before it maps into it. eden-ns2's
+   RegisterGpuAddressSpace asks for an initialized GPU context first */
+static int nn_gsv_IGraphicsSupervisor_RegisterGpuAddressSpace(SvcObj* self, u32 id) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.phase == 3 && g_hle.am.graphics.gpu_phase;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    return nv_gsv_register_as(id);
+}
+/* nn::vi2's user library sends an empty 301, then 305 for its one display session, and 303 when 305 fails. */
+static int nn_gsv_IGraphicsSupervisor_InitializeDisplayContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.display_context = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_FinalizeDisplayContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    g_hle.am.graphics.display_context = 0;
+    pm_unlock(&g_host.am.lock);
+    return 0;
+}
+/* The flags name the user library's protocol: 0x3'0001'0000 and 0x3'0002'0000 in the local SDKs, and eden-ns2 also
+   accepts 0x3'0003'0000 and 0x3'0004'0000. */
+static int nn_gsv_IGraphicsSupervisor_OpenDisplaySession(SvcObj* self, u64 flags, u32* session) {
+    (void)self;
+    R_UNLESS(flags >> 32 == 3 && (u32)flags >= 0x10000 && (u32)flags <= 0x40000 && !(flags & 0xFFFF), RC(1, 116));
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.display_context;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    *session = session_new(vi2_session_new());
+    return *session ? 0 : RC(1, 105);
+}
+static int nn_gsv_IGraphicsSupervisor_OpenGpuSession(SvcObj* self, u64 flags, u32* session) {
+    (void)self;
+    /* The older SDK requests mode 3, the newer SDKs mode 4, with the same notification-session protocol. */
+    R_UNLESS(flags == 3 || flags == 4, RC(1, 116));
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.phase == 3 && g_hle.am.graphics.nvdrv_opened;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    *session = session_new(nv_gpu_new());
+    return *session ? 0 : RC(1, 105);
+}
+static int nn_gsv_IGraphicsSupervisor_GetNvidiaDriver(SvcObj* self, u32* session) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.phase == 3;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    *session = session_new(svc_open("nvdrv:s"));
+    if (*session) {
+        pm_lock(&g_host.am.lock);
+        g_hle.am.graphics.nvdrv_opened = 1;
+        pm_unlock(&g_host.am.lock);
+    }
+    return *session ? 0 : RC(1, 105);
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeSyncpointContext(SvcObj* self) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int rc = g_hle.am.graphics.phase == 3 ? 0 : RC(1, 125);
+    if (!rc) g_hle.am.graphics.syncpoint_context = 1;
+    pm_unlock(&g_host.am.lock);
+    return rc;
+}
+static int nn_gsv_IGraphicsSupervisor_GetSyncpointSession(SvcObj* self, u32* session) {
+    (void)self;
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.syncpoint_context;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    *session = session_new(nv_syncpoint_new());
+    return *session ? 0 : RC(1, 105);
+}
+/* A zero result mask selects the SDK's existing NVDRV-backed native-memory path, without optional Gpuk memory. */
+static int nn_gsv_IGraphicsSupervisor_ConfigureNativeMemory(SvcObj* self, u64 mode, u64* enabled_modes) {
+    (void)self;
+    R_UNLESS(mode == 0 || mode == 2, RC(1, 116));
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.phase == 3;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    *enabled_modes = 0;
+    R_SUCCEED();
+}
+static int nn_gsv_IGraphicsSupervisor_BindSyncpointMemory(SvcObj* self, u32 version, u32 counter_mask,
+                                                        u64 rw_size, u64 ro_size, u32 rw, u32 ro,
+                                                        u32* request, u32* completed) {
+    (void)self;
+    R_UNLESS(version == 1 && counter_mask == 0x1FF && rw_size == 0x1000 && ro_size == 0x2000, RC(1, 116));
+    pm_lock(&g_host.am.lock);
+    int ready = g_hle.am.graphics.syncpoint_context && g_hle.am.graphics.nvdrv_opened;
+    pm_unlock(&g_host.am.lock);
+    R_UNLESS(ready, RC(1, 125));
+    return nv_syncpoint_cache_bind(rw, ro, request, completed);
 }
 
 /* ============================================================ ICommonStateGetter */
@@ -1613,6 +1933,7 @@ static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* sel
 }
 /* the functions a save state may hold of this file (state_fns.h) */
 STATE_FN_TABLE(g_am_state_fns,
+               STATE_FN("am", am_graphics_dispatch),
                STATE_FN("am", am_storage_destroy),
                STATE_FN("am", am_accessor_destroy),
                STATE_FN("am", am_lock_destroy),

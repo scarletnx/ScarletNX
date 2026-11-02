@@ -364,6 +364,9 @@ static int test_dispatch(SvcObj* self, IpcCtx* c) {
             c->out_size += 8;
             return 0;
         }
+        case 9:
+            c->tipc_error_moves = snx_ld_le32(c->raw);
+            /* fall through */
         case 2:
             out_copy_h(c, event_handle());
             out_move_h(c, event_handle());
@@ -740,6 +743,29 @@ static void failed_command(u32 h, int domain) {
     CHECK(resp.result == RC_FAIL && !resp.num_out_objects && !get32(resp.data));
     CHECK(g_hle.ipc.ring_n == ring + 1 && !strcmp(last_ring(), "test:p cmd 2 (in 0 0) -> e05"));
 }
+/* Handle-first TIPC clients still need their null move slots on failure. Live outputs are dropped, not leaked.
+   The opt-in does not change CMIF error replies. */
+static void failed_tipc_handles(u32 h) {
+    int events = events_live, objects = objects_live;
+    for (u32 count = 0; count <= 2; ++count) {
+        clear();
+        u8* data = tipc_make_request(msg(), 9, 4, 0);
+        put32(data, count);
+        CHECK(send(h) == 0);
+        HipcResponse resp = hipc_parse_response(msg());
+        CHECK(resp.num_copy_handles == 0 && resp.num_move_handles == count && resp.num_data_words == 1);
+        for (u32 i = 0; i < count; ++i) CHECK(get32(resp.move_handles + 4 * i) == 0);
+        CHECK(get32(resp.data_words) == RC_FAIL);
+        CHECK(events_live == events && objects_live == objects);
+    }
+    clear();
+    CmifRequest request = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 9, .data_size = 4});
+    put32(request.data, 2);
+    CHECK(send(h) == 0);
+    CmifResponse resp = cmif_parse_response(msg(), 0, 0);
+    CHECK(resp.result == RC_FAIL && !resp.hipc.special);
+    CHECK(events_live == events && objects_live == objects);
+}
 
 /* a domain request's header (sf_cmif_domain_service_object.cpp): InvalidHeaderSize before the target is looked up,
    TargetNotFound, then the sizes, the number of objects and the object's CmifInHeader */
@@ -1050,6 +1076,7 @@ int main(void) {
     receive_lists(h, root);
     tipc_request(h, root);
     failed_command(h, 0);
+    failed_tipc_handles(h);
     domain_requests(h, root);
     failed_command(h, 1);
     clones();

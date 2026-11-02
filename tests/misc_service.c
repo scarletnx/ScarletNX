@@ -58,6 +58,9 @@ u64 am_aoc_base_id(void) { return test_aoc_base ? test_aoc_base : snx_nacp_aoc_b
 /* a DLC read in place from its dump (fs.c's), 0 for none */
 static u64 test_aoc_dump;
 int fs_aoc_has(u64 id) { return id && id == test_aoc_dump; }
+/* aud:u's managers come from audio.c, which this test doesn't build */
+SvcObj* new_audout(void) { return NULL; }
+SvcObj* new_audren(void) { return NULL; }
 void logf_(int level, const char* format, ...) {
     (void)level;
     (void)format;
@@ -116,6 +119,7 @@ int stub_ok(SvcObj* o, IpcCtx* c) {
     return -1;
 }
 int quiet_ok(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
+int ipc_unknown(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
 void svc_register(const char* name, SvcCtor ctor) {
     (void)name;
     (void)ctor;
@@ -1404,6 +1408,83 @@ static void test_pctl_play_timer(void) {
     svcobj_unref(factory);
 }
 
+/* stpl:u in the SDK's layout: command 0 {u32 version} gives the shim for the versions the service takes, and the
+   shim's GetRequiredMemorySize (1) {u8 type, u8 mode, i32 guests} grows with the count, as Initialize divides it
+   back. Initialize (2) {type, mode, guests, pid} checks the count before the type. 300 gives {size, offset} and the
+   HID memory the size names, the same one each time, and 7 the event no guest signals */
+static void test_stpl(void) {
+    static const struct {
+        u32 version;
+        int ok;
+    } versions[] = {{3, 1}, {0x100, 1}, {0x10000, 1}, {0x10400, 1}, {0x10500, 0}, {0x200, 0}, {0x20000, 0}};
+    SvcObj *stpl = new_stpl(), *shim = NULL;
+    Request r;
+    for (u32 i = 0; i < sizeof versions / sizeof *versions; i++) {
+        request(&r, 0);
+        argument32(&r, 0, versions[i].version);
+        CHECK(stpl->dispatch(stpl, &r.c) == (versions[i].ok ? 0 : (int)RC(287, 6503)));
+        if (!versions[i].ok) continue; /* ipc.c drops what a failed command emitted */
+        CHECK(r.c.nout_objs == 1 && r.c.out_objs[0]);
+        if (shim) svcobj_unref(r.c.out_objs[0]);
+        else shim = r.c.out_objs[0];
+    }
+    CHECK(shim != NULL);
+    u32 one = 0;
+    for (i32 guests = 1; guests <= 3; guests++) {
+        request(&r, 1);
+        r.raw[0] = 1, r.raw[1] = 1;
+        argument32(&r, 4, (u32)guests);
+        call(shim, &r);
+        CHECK(r.c.out_size == 4);
+        if (guests == 1) one = reply32(&r, 0);
+        CHECK(one && reply32(&r, 0) == (u32)guests * one);
+    }
+    request(&r, 1);
+    r.raw[0] = 2;
+    CHECK(shim->dispatch(shim, &r.c) == (int)RC(287, 6013));
+    request(&r, 1);
+    r.raw[1] = 2;
+    CHECK(shim->dispatch(shim, &r.c) == (int)RC(287, 6004));
+    static const struct {
+        u8 type, mode;
+        i32 guests;
+        u32 rc;
+    } inits[] = {{1, 0, 3, 0}, {0, 1, -1, 0}, {2, 0, 4, RC(287, 6001)}, {2, 0, 3, RC(287, 6013)},
+                 {0, 2, 1, RC(287, 6004)}};
+    for (u32 i = 0; i < sizeof inits / sizeof *inits; i++) {
+        request(&r, 2);
+        r.c.has_pid = 1;
+        r.raw[0] = inits[i].type, r.raw[1] = inits[i].mode;
+        argument32(&r, 4, (u32)inits[i].guests);
+        argument64(&r, 8, 0);
+        CHECK(shim->dispatch(shim, &r.c) == (int)inits[i].rc);
+    }
+    request(&r, 300);
+    call(shim, &r);
+    CHECK(r.c.out_size == 0x10 && r.c.nout_copy == 1);
+    KShmem* shm = (KShmem*)handle_object(r.c.out_copy[0]);
+    CHECK(shm->o.type == KO_SHMEM && shm->size == snx_ld_le64(r.c.out) && snx_ld_le64(r.c.out + 8) == 0);
+    CHECK(shm->size >= 0x84000);
+    u8 any = 0;
+    for (u64 i = 0; i < shm->size; i++) any |= kshmem_ptr(shm)[i];
+    CHECK(!any); /* no guest's style set */
+    request(&r, 300);
+    call(shim, &r);
+    CHECK((KShmem*)handle_object(r.c.out_copy[0]) == shm);
+    request(&r, 7);
+    call(shim, &r);
+    CHECK(r.c.nout_copy == 1);
+    KObj* event = handle_object(r.c.out_copy[0]);
+    CHECK(event->type == KO_EVENT && !((KEvent*)event)->signaled);
+    request(&r, 510);
+    r.raw[0] = 1;
+    call(shim, &r);
+    CHECK(r.c.out_size == 0);
+    close_handles();
+    svcobj_unref(shim);
+    svcobj_unref(stpl);
+}
+
 /* nim:eca: the server a game opens on its transfer memory and the accessor it takes from it, then whether large
    resources are available */
 static void test_nim(void) {
@@ -1458,6 +1539,7 @@ int main(void) {
     test_prepo_reports();
     test_mii_latest();
     test_pctl_play_timer();
+    test_stpl();
     test_nim();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);

@@ -68,6 +68,7 @@ void svc_core_init(void) {
     svc_register("ro:1", new_ro1);
     nn_audio_detail_IAudioRendererManager_register(new_audren);
     nn_audio_detail_IAudioOutManager_register(new_audout);
+    nn_audio_IUserClientSession_register(new_audu);
     nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);
 
     /* bsd:u and bsd:a are the application's and the applets' sessions, bsd:s the system's (bsd.c) */
@@ -105,6 +106,7 @@ void svc_core_init(void) {
     nn_audio_detail_IAudioInManager_register(new_audin);
     nn_ngc_detail_IService_register(new_ngc);
     nn_ngct_detail_IService_register(new_ngct);
+    nn_streamplay_detail_IUserService_register(new_stpl);
 
     /* the audio renderer's 5 ms frames and the audio outs' buffers (audio.c), from the start as on the console */
     if (plat_thread(audio_clock, NULL, (size_t)8 << 20)) fatal("Could not start the audio clock's thread");

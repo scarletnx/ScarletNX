@@ -110,6 +110,11 @@ static void no_surface(u64 addr) { (void)addr; }
 
 static u32 syncpt[SYNCPT_IDS];
 u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? __atomic_load_n(&syncpt[id], __ATOMIC_SEQ_CST) : 0; }
+/* These fixtures use ordinary GPU mappings, with no native AS syncpoint page. */
+int nv_syncpoint_shim_read(u64 gva, void* dst, u64 size) {
+    (void)gva, (void)dst, (void)size;
+    return 0;
+}
 void syncpt_add(u32 id, u32 n) {
     if (id >= SYNCPT_IDS) return;
     __atomic_add_fetch(&syncpt[id], n, __ATOMIC_SEQ_CST);

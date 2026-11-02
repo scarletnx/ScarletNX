@@ -82,3 +82,63 @@ interface nns::hosbinder::IHOSBinderDriver {
     [2] GetNativeHandle(i32 binder_id, u32 type_id) -> handle<copy, event> event;
     [3] TransactParcelAuto(i32 binder_id, u32 code, buffer<u8, 0x21> parcel, buffer<u8, 0x22> reply, u32 flags);
 }
+
+# nn::vi2's present: the 64 bytes that describe the image shown (offset, extent and layout first, as eden-ns2 reads
+# them) and the fence the GPU signals when the image is drawn, a syncpoint id written inverted (0 for none) and its
+# value. The reply's fence is the one the display gives back for the slot, never one here
+type nn::gsv::Vi2BufferInfo = struct {
+    u32 offset;
+    u32 extent; # (width - 1) | (height - 1) << 16 of the part shown
+    u32 layout;
+    u32[13] reserved;
+};
+type nn::gsv::NativeSyncHandle = struct {
+    u32 inverted_id;
+    u32 reserved;
+    u64 value;
+};
+# The Switch 2 display session that IGraphicsSupervisor 305 opens, TIPC only (nn::vi2's user library)
+@fallback(ipc_unknown)
+interface nn::gsv::IVi2Session {
+    [1] GetNotificationLimit() -> u32 last;
+    [3] GetSessionLimit() -> u32 last;
+    [5] GetRequestGroupLimit() -> u32 last;
+    [11] GetNotificationEvent(u32 last) -> handle<move, event> event;
+    [13] ReleaseNotificationEvent(u32 last);
+    [21] GetNotifications(buffer<u8, 6> out);
+    [31] CreateRequestGroupEvent(u32 group) -> handle<move, event> event;
+    [32] DuplicateRequestGroupEvent(u32 group, handle<copy, event> event) -> handle<move, event> duplicate;
+    [51] ConfigureRequestGroups(u32 limit);
+    @unsorted [101] OpenDisplay(u64 name, u32 notification);
+    [102] CloseDisplay(u64 name);
+    # the display's state, which the monitors of the same kind tell changes of (nn::vi2::QueryDisplayHdrStatus,
+    # QueryDisplayHdrPaperWhite and QueryDisplayModeCapability)
+    @unsorted [104] QueryHdrStatus(u64 name) -> (u64 format, u16 value);
+    [105] QueryHdrPaperWhite(u64 name) -> u16 paper_white;
+    @unsorted [107] QueryModeCapability(u64 name) -> (u64 refresh_rates, u64 hdr_formats, u64 variable_refresh_rates);
+    [111] OpenEndpoint(u64 name, u64 display, u64 token);
+    [112] CloseEndpoint(u64 name, u64 display);
+    @unsorted [201] RegisterClientState(u64 token, u32 retire, u32 available);
+    [202] UnregisterClientState(u64 token);
+    [212] GetClientAvailability(u64 token) -> u64 free_slots;
+    @unsorted [228] CancelClientBuffer(u64 token, u8 slot, nn::gsv::Vi2BufferInfo info)
+        -> (u64 free_slots, nn::gsv::NativeSyncHandle release);
+    @unsorted [229] PresentClientBuffer(u64 token, u8 slot, u32 image, nn::gsv::Vi2BufferInfo info,
+                                        nn::gsv::NativeSyncHandle fence)
+        -> (u64 free_slots, nn::gsv::NativeSyncHandle release);
+    [251] BindClientDisplay(u64 token, u64 name);
+    [252] UnbindClientDisplay(u64 token);
+    @unsorted [261] RegisterVsyncMonitor(u64 name, u32 group);
+    @unsorted [262] UnregisterVsyncMonitor(u64 name, u32 group);
+    @unsorted [263] RegisterRefreshRateMonitor(u64 name, u32 group);
+    @unsorted [264] UnregisterRefreshRateMonitor(u64 name, u32 group);
+    @unsorted [265] RegisterHdrStatusMonitor(u64 name, u32 group);
+    @unsorted [266] UnregisterHdrStatusMonitor(u64 name, u32 group);
+    @unsorted [267] RegisterHdrPaperWhiteMonitor(u64 name, u32 group);
+    @unsorted [268] UnregisterHdrPaperWhiteMonitor(u64 name, u32 group);
+    @unsorted [269] RegisterBufferMaxResolutionMonitor(u64 name, u32 group);
+    @unsorted [270] UnregisterBufferMaxResolutionMonitor(u64 name, u32 group);
+    @unsorted [271] RegisterModeCapabilityMonitor(u64 name, u32 group);
+    @unsorted [272] UnregisterModeCapabilityMonitor(u64 name, u32 group);
+    [351] SetClientOutputEncoding(u64 token, u64 encoding);
+}

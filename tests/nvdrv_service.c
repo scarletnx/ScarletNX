@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nvdrv's IPC side (nvdrv.c) through its generated dispatcher: Ioctl2's and Ioctl3's inline buffers reaching the
-   device, the NvError of a bad fd, QueryEvent, and a Close that comes while an ioctl is running on the fd. The GPU and
-   host1x are stand-ins that record what nvdrv asks of them */
+   device, the NvError of a bad fd, QueryEvent, TSG membership, preemption modes, and a Close during an ioctl.
+   The GPU and host1x are stand-ins that record what nvdrv asks of them */
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/kernel/ipc.h"
 #include "nx/runtime/platform/log.h"
@@ -23,6 +23,15 @@ void (*g_gpu_mapping_begin)(u64, u64, int);
 void (*g_gpu_mapping_end)(void);
 static unsigned test_checks, test_kobjs;
 static u32 test_next_handle = 0x100;
+static int test_handles_full;
+/* A mapped page run for the worker's registration checks. Other addresses are inaccessible. */
+static MemBlock test_gpu_memory;
+void mem_query(u64 addr, MemBlock* out) {
+    if (addr >= test_gpu_memory.addr && addr - test_gpu_memory.addr < test_gpu_memory.size)
+        *out = test_gpu_memory;
+    else
+        *out = (MemBlock){.addr = addr, .size = 0x1000, .state = MS_INACCESSIBLE};
+}
 
 static void test_fail(const char* expression, int line) {
     fprintf(stderr, "nvdrv_service.c:%d: check failed: %s\n", line, expression);
@@ -81,12 +90,17 @@ SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*)) {
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 void svcobj_unref(SvcObj* obj) {
     if (!obj || --obj->refs) return;
+    if (obj->destroy) obj->destroy(obj);
     test_svcobj_data_free(obj);
     free(obj);
 }
 void out_copy_h(IpcCtx* c, u32 handle) {
     CHECK(c->nout_copy < 8);
     c->out_copy[c->nout_copy++] = handle;
+}
+void out_move_h(IpcCtx* c, u32 handle) {
+    CHECK(c->nout_move < 8);
+    c->out_move[c->nout_move++] = handle;
 }
 void ipc_out_overflow(IpcCtx* c) {
     (void)c;
@@ -107,6 +121,7 @@ int stub_ok(SvcObj* o, IpcCtx* c) {
     test_fail("a command without a handler", __LINE__);
     return -1;
 }
+int ipc_unknown(SvcObj* obj, IpcCtx* c) { (void)obj; (void)c; return RC(10, 221); }
 void svc_register(const char* name, SvcCtor ctor) {
     (void)name;
     (void)ctor;
@@ -115,8 +130,11 @@ void svc_register(const char* name, SvcCtor ctor) {
 /* kernel objects, counted; a handle takes a reference and names its object */
 void kobj_ref(KObj* o) { o->refs++; }
 void kobj_unref(KObj* o) {
+    if (!o) return;
     CHECK(o->refs > 0);
     if (--o->refs) return;
+    if (o->type == KO_WEVENT) kobj_unref(kobj_at(((KWEvent*)o)->r));
+    if (o->type == KO_SESSION) svcobj_unref(((KSession*)o)->obj);
     free(o);
     test_kobjs--;
 }
@@ -132,6 +150,7 @@ void kevent_signal(KEvent* e) { e->signaled = 1; }
 void kevent_clear(KEvent* e) { e->signaled = 0; }
 static KObj* test_handles[64];
 u32 h_new(KObj* o) {
+    if (test_handles_full) return 0;
     CHECK(test_next_handle - 0x100 < 64);
     kobj_ref(o);
     test_handles[test_next_handle - 0x100] = o;
@@ -140,6 +159,39 @@ u32 h_new(KObj* o) {
 static KObj* handle_object(u32 h) {
     CHECK(h >= 0x100 && h < test_next_handle);
     return test_handles[h - 0x100];
+}
+KObj* h_get_ref(u32 handle, int type) {
+    if (handle < 0x100 || handle >= test_next_handle) return NULL;
+    KObj* o = test_handles[handle - 0x100];
+    if (!o || (type && o->type != type)) return NULL;
+    kobj_ref(o);
+    return o;
+}
+int h_close(u32 handle) {
+    KObj* o = test_handles[handle - 0x100];
+    test_handles[handle - 0x100] = NULL;
+    kobj_unref(o);
+    return 0;
+}
+u32 kevent_write_handle(KEvent* event) {
+    KWEvent* w = calloc(1, sizeof *w);
+    CHECK(w != NULL);
+    w->o.type = KO_WEVENT;
+    w->r = kobj_id(&event->o);
+    kobj_ref(&event->o);
+    test_kobjs++;
+    return h_new(&w->o);
+}
+u32 session_new(SvcObj* obj) {
+    KSession* s = calloc(1, sizeof *s);
+    CHECK(s != NULL);
+    s->o.type = KO_SESSION;
+    s->o.refs = 1;
+    s->obj = obj;
+    ++test_kobjs;
+    u32 handle = h_new(&s->o);
+    kobj_unref(&s->o);
+    return handle;
 }
 
 /* the GPU: submissions, calls, kicks and retired channels, recorded */
@@ -167,6 +219,11 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     test_gpu.ncall_chans = nchans;
     fn(arg); /* the GPU thread has nothing queued before it */
 }
+void gpu_call_tsg(void (*fn)(void*), void* arg, u64 tsg) {
+    (void)tsg;
+    fn(arg);
+}
+void mme_tu104_tsg_close(u64 tsg) { (void)tsg; }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
 void gpu_release_retire(u32 channel) { (void)channel; }
 void gpu_kick(void) { test_gpu.kicks++; }
@@ -258,6 +315,76 @@ static u32 nv_ioctl1(u32 fd, u32 cmd, u64 size) {
     ctx.b[0] = buf(OUT0, size);
     CHECK(nvdrv->dispatch(nvdrv, &ctx) == 0 && ctx.out_size == 4);
     return reply(0);
+}
+
+static void test_tsg(void) {
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    u32 error, a = nv_open("/dev/nvhost-tsg-gpu", &error);
+    CHECK(!error);
+    u32 b = nv_open("/dev/nvhost-tsg-gpu", &error);
+    CHECK(!error);
+    u32 gpu = nv_open("/dev/nvhost-gpu", &error);
+    CHECK(!error);
+    memset(GP(IN0), 0, 24);
+    gw32(IN0, gpu);
+    gw32(IN0 + 4, NV_TSG_SUBCONTEXTS);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL_EX, 24) == NV_RESULT_BAD_PARAMETER);
+    gw32(IN0 + 4, NV_TSG_SUBCONTEXTS - 1);
+    gw32(IN0 + 8, 1);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL_EX, 24) == NV_RESULT_BAD_PARAMETER);
+    gw32(IN0 + 8, 0);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL_EX, 4) == NV_RESULT_BAD_PARAMETER);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL_EX, 24) == 0);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) == NV_RESULT_BUSY);
+    CHECK(nv_ioctl1(b, NV_TSG_BIND_CHANNEL, 4) == NV_RESULT_BUSY);
+    CHECK(nv_ioctl1(b, NV_TSG_UNBIND_CHANNEL, 4) == NV_RESULT_BAD_PARAMETER);
+    CHECK(nv_ioctl1(a, NV_TSG_UNBIND_CHANNEL, 4) == 0);
+    CHECK(nv_ioctl1(b, NV_TSG_BIND_CHANNEL, 4) == 0);
+    CHECK(nv_close(b) == 0);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) == 0); /* group close released its channels */
+    b = nv_open("/dev/nvhost-tsg-gpu", &error); /* occupy the group's freed fd before recycling the channel */
+    CHECK(!error);
+    CHECK(nv_close(gpu) == 0);
+    gpu = nv_open("/dev/nvhost-gpu", &error);
+    CHECK(!error && gr32(IN0) == gpu);
+    CHECK(nv_ioctl1(a, NV_TSG_UNBIND_CHANNEL, 4) == NV_RESULT_BAD_PARAMETER); /* fd reuse is not membership */
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) == 0);
+    CHECK(nv_ioctl1(a, NV_TSG_UNBIND_CHANNEL, 4) == 0);
+    gw32(IN0, a);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) == NV_RESULT_BAD_PARAMETER);
+    gw32(IN0, NV_FDS);
+    CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) == NV_RESULT_BAD_PARAMETER);
+    gw32(IN0, 0);
+    CHECK(nv_ioctl1(a, NV_TSG_SET_TIMESLICE, 4) == NV_RESULT_BAD_PARAMETER);
+    gw32(IN0, 1000);
+    CHECK(nv_ioctl1(a, NV_TSG_SET_TIMESLICE, 4) == 0);
+    CHECK(nv_ioctl1(a, NV_IOCTL(NV_IOCTL_DIR_RW, 'T', 0x7F, 4), 4) == NV_RESULT_NOT_IMPLEMENTED);
+    u32 channels[NV_TSG_CHANNELS + 1];
+    for (u32 i = 0; i < NV_TSG_CHANNELS + 1; ++i) {
+        channels[i] = nv_open("/dev/nvhost-gpu", &error);
+        CHECK(!error);
+        gw32(IN0, channels[i]);
+        CHECK(nv_ioctl1(a, NV_TSG_BIND_CHANNEL, 4) ==
+              (i < NV_TSG_CHANNELS ? NV_RESULT_SUCCESS : NV_RESULT_INSUFFICIENT_MEMORY));
+    }
+    for (u32 i = 0; i < NV_TSG_CHANNELS + 1; ++i) CHECK(nv_close(channels[i]) == 0);
+
+    gw32(IN0, 1);
+    gw32(IN0 + 4, 2);
+    u32 preempt = NV_IOCTL(NV_IOCTL_DIR_RW, 'H', NVHOST_GPU_SET_PREEMPTION_MODES, 8);
+    CHECK(nv_ioctl1(gpu, preempt, 8) == NV_RESULT_INVALID_STATE);
+    memset(GP(IN0), 0, 0x20);
+    CHECK(nv_ioctl1(gpu, NV_IOCTL(NV_IOCTL_DIR_RW, 'H', NVHOST_GPU_ALLOC_GPFIFO_EX2, 0x20), 0x20) == 0);
+    gw32(IN0, 1);
+    gw32(IN0 + 4, 2);
+    CHECK(nv_ioctl1(gpu, preempt, 8) == 0); /* WFI graphics and CTA compute */
+    gw32(IN0, 2);
+    CHECK(nv_ioctl1(gpu, preempt, 8) == NV_RESULT_NOT_SUPPORTED);
+    gw32(IN0, 0);
+    gw32(IN0 + 4, 3);
+    CHECK(nv_ioctl1(gpu, preempt, 8) == NV_RESULT_NOT_SUPPORTED);
+    CHECK(nv_close(gpu) == 0 && nv_close(a) == 0 && nv_close(b) == 0);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
 }
 
 /* Ioctl2 (11): SUBMIT_GPFIFO_EX's header in A0 or X0, the GPFIFO entries inline in A1 or X1 */
@@ -513,6 +640,33 @@ static void test_ioctl3(u32 ctrlgpu) {
     CHECK(ioctl_ctrlgpu(0xC0084714u & ~0x40000000u, d, 8, NULL, 0) == 0 && d[0] == 7 && d[4] == 1); /* slot mask */
 }
 
+/* A Switch 2 driver's GET_CHARACTERISTICS (0xD0 bytes) and VSMS_MAPPING. Its device setup fails on an address space
+   level below 6 at 0x78, and on a last {gpc, tpc} pair left at its 0xC0 fill */
+static void test_ctrlgpu_switch2(void) {
+    u8 d[0xE0], c[0xD8], mapping[8];
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    memset(d, 0xCC, sizeof d);
+    memset(c, 0xCC, sizeof c);
+    CHECK(ioctl_ctrlgpu(0xC0E04705u, d, sizeof d, c, sizeof c) == 0);
+    CHECK(snx_ld_le64(d) == 0xD0 && !memcmp(d + 16, c, 0xD0) && c[0xD0] == 0xCC);
+    CHECK(snx_ld_le32(c) == 0x170 && snx_ld_le32(c + 4) == 0xE); /* the driver's chip 0x17E */
+    /* SM 8.8 in both version fields: one launch title's driver has its GPU programs for no other version */
+    CHECK(snx_ld_le32(c + 0x3C) == 0x808 && snx_ld_le32(c + 0x40) == 0x808);
+    CHECK(snx_ld_le32(c + 0x28) == 0x1000 && snx_ld_le32(c + 0x34) == 0x11000);
+    CHECK((snx_ld_le64(c + 0x50) >> 8 & 1) && (snx_ld_le64(c + 0x50) >> 22 & 1) && snx_ld_le32(c + 0xB4) == 64);
+    CHECK((i16)snx_ld_le16(c + 0x78) >= 6); /* the address space level */
+    CHECK(snx_ld_le16(c + 0x70) == 0x1C && snx_ld_le16(c + 0x72) == 0xB && snx_ld_le16(c + 0x74) == 0xFFFF);
+    CHECK(snx_ld_le16(c + 0x76) >= 0x1F); /* NvRmGpuChannelSetPreemptionModes rejects older interfaces */
+    /* VSMS_MAPPING: a pair for each of the four SMs, the argument left as it came */
+    const u8 pairs[8] = {0, 0, 0, 0, 0, 1, 0, 1};
+    memset(d, 0xCC, 8);
+    memset(mapping, 0xC0, sizeof mapping);
+    CHECK(ioctl_ctrlgpu(0xC0084713u, d, 8, mapping, sizeof mapping) == 0 && !memcmp(mapping, pairs, 8));
+    CHECK(d[0] == 0xCC && d[7] == 0xCC);
+    CHECK(ioctl_ctrlgpu(0xC0084713u, d, 8, mapping, 6) == NV_RESULT_BAD_PARAMETER);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+}
+
 /* QueryEvent (4) {fd, event id}: the NvError, then the event as a copy handle */
 static KEvent* query_event(u32 fd, u32 id) {
     request(4, fd, id);
@@ -579,7 +733,8 @@ static u32 nvmap_param(u32 h, u32 param, u32* value) {
     *value = snx_ld_le32(d + 8);
     return r;
 }
-static u32 as_call(u32 cmd, u8* d, u32 n) { return ioctl_as(cmd, d, n, NULL, 0); }
+static NvFile as_file; /* an nvhost-as-gpu fd with no Switch 2 view */
+static u32 as_call(u32 cmd, u8* d, u32 n) { return ioctl_as(&as_file, cmd, d, n, NULL, 0); }
 static u64 as_map(u32 flags, u32 h, u64 size, u64 gva) {
     u8 d[40] = {0};
     snx_st_le32(d, flags);
@@ -868,12 +1023,12 @@ static void test_gmmu_aliases(void) {
         memcpy(request + 4, &big, 4);
         memcpy(request + 8, &one, 4);
         memcpy(request + 16, &gva, 8);
-        CHECK(ioctl_as(0x02, request, sizeof request, NULL, 0) == 0); /* ALLOC_SPACE there */
+        CHECK(as_call(0x02, request, sizeof request) == 0); /* ALLOC_SPACE there */
         memcpy(remap + 4, &handle, 4);
         memcpy(remap + 8, &one, 4); /* the handle's second big page */
         memcpy(remap + 12, &gpu_offset, 4);
         memcpy(remap + 16, &pages, 4);
-        CHECK(ioctl_as(0x14, remap, sizeof remap, NULL, 0) == 0);
+        CHECK(as_call(0x14, remap, sizeof remap) == 0);
         CHECK(gmmu_translate(gva) == ALIAS_C + 0x10000);
         memset(&alias_seen, 0, sizeof alias_seen);
         alias_query(ALIAS_C + 0xF000, 0x3000);
@@ -883,12 +1038,578 @@ static void test_gmmu_aliases(void) {
         memcpy(request, &gva, 8);
         memcpy(request + 8, &pages, 4);
         memcpy(request + 12, &big, 4);
-        CHECK(ioctl_as(0x03, request, sizeof request, NULL, 0) == 0); /* FREE_SPACE */
+        CHECK(as_call(0x03, request, sizeof request) == 0); /* FREE_SPACE */
         CHECK(!gmmu_translate(gva));
         alias_query(ALIAS_C, 0x20000);
         CHECK(alias_seen.count[0x100] == 0);
         alias_check();
     }
+}
+/* GSV waits use the same counters as nvhost. Verify wraparound, cancellation, shrinking the slot set and
+   destruction while the guest still holds an event handle. */
+static void test_gsv_syncpoints(void) {
+    SvcObj* s = nv_syncpoint_new();
+    u32 handle, count;
+    u8 wide;
+    u64 value;
+    u32 id = syncpt_alloc();
+    u32 initial = syncpt_read(id);
+    CHECK(nn_gsv_ISyncpointSupervisor_GetMaximumEventCount(s, &count) == 0 && count == 63);
+    CHECK(nn_gsv_ISyncpointSupervisor_SetEventCount(s, 64) == RC(1, 14));
+    CHECK(nn_gsv_ISyncpointSupervisor_SetEventCount(s, 2) == 0);
+    CHECK(nn_gsv_ISyncpointSupervisor_GetEvent(s, 2, &handle) == RC(1, 14));
+    CHECK(nn_gsv_ISyncpointSupervisor_GetEvent(s, 0, &handle) == 0);
+    KEvent* event = (KEvent*)handle_object(handle);
+    u8 wait_raw[20];
+    memset(wait_raw, 0xA5, sizeof wait_raw);
+    snx_st_le32(wait_raw, 0);
+    snx_st_le32(wait_raw + 4, ~id);
+    snx_st_le64(wait_raw + 8, (u32)(initial + 2));
+    wait_raw[16] = 0; /* the SDK writes one mode byte, leaving the three padding bytes unspecified */
+    IpcCtx wait = {.cmd = 201, .tipc = 1, .raw = wait_raw, .raw_size = sizeof wait_raw};
+    CHECK(s->dispatch(s, &wait) == 0 && !event->signaled);
+    syncpt_incr(id);
+    CHECK(!event->signaled);
+    syncpt_incr(id);
+    CHECK(event->signaled);
+    CHECK(nn_gsv_ISyncpointSupervisor_QueryCounter(s, ~id, &value, &wide) == 0 &&
+          value == (u32)(initial + 2) && wide == 0);
+    CHECK(nn_gsv_ISyncpointSupervisor_ArmWait(s, 0, ~id, (u32)(initial + 3), 0) == 0 && !event->signaled);
+    CHECK(nn_gsv_ISyncpointSupervisor_CancelWait(s, 0) == 0 && event->signaled);
+    g_hle.nvdrv.syncpt[id] = 0xfffffffeu;
+    CHECK(nn_gsv_ISyncpointSupervisor_ArmWait(s, 0, ~id, 1, 0) == 0 && !event->signaled);
+    syncpt_add(id, 2);
+    CHECK(!event->signaled);
+    syncpt_incr(id);
+    CHECK(event->signaled);
+    CHECK(nn_gsv_ISyncpointSupervisor_ArmWait(s, 0, ~id, 2, 0) == 0);
+    CHECK(nn_gsv_ISyncpointSupervisor_SetEventCount(s, 0) == 0);
+    syncpt_incr(id);
+    CHECK(!event->signaled);
+    CHECK(nn_gsv_ISyncpointSupervisor_SetEventCount(s, 1) == 0);
+    CHECK(nn_gsv_ISyncpointSupervisor_ArmWait(s, 0, ~id, 3, 0) == 0);
+    svcobj_unref(s);
+    syncpt_incr(id);
+    CHECK(!event->signaled && event->o.refs == 1);
+    syncpt_free(id);
+}
+/* The native submission's fence is driver-owned. A Maxwell submission with the same flag still needs its stream
+   increment, otherwise the driver would count the game's completion twice. Exercise the event the SDK waits on. */
+static void test_submission_completion(void) {
+    for (u32 native = 0; native < 2; ++native) {
+        g_hle.kernel.hw = native ? SNX_HW_SWITCH2 : SNX_HW_SWITCH;
+        u32 error, fd = nv_open("/dev/nvhost-gpu", &error);
+        CHECK(!error);
+        u8 d[GPU_SUBMIT_HEADER_BYTES] = {0};
+        snx_st_le32(d + GPU_SUBMIT_FLAGS, GPU_SUBMIT_INCREMENT_VALUE);
+        snx_st_le32(d + GPU_SUBMIT_FENCE_VALUE, 1);
+        CHECK(gpu_submit_gpfifo(&g_hle.nvdrv.nvf[fd], SUBMIT_GPFIFO_EX, d, sizeof d, NULL, 0) == 0);
+        u32 id = snx_ld_le32(d + GPU_SUBMIT_FENCE_ID), threshold = snx_ld_le32(d + GPU_SUBMIT_FENCE_VALUE);
+        SvcObj* s = nv_syncpoint_new();
+        u32 handle;
+        CHECK(nn_gsv_ISyncpointSupervisor_SetEventCount(s, 1) == 0);
+        CHECK(nn_gsv_ISyncpointSupervisor_GetEvent(s, 0, &handle) == 0);
+        KEvent* event = (KEvent*)handle_object(handle);
+        CHECK(nn_gsv_ISyncpointSupervisor_ArmWait(s, 0, ~id, threshold, 0) == 0 && !event->signaled);
+        syncpt_add(id, test_gpu.incs); /* the queued job's completion */
+        CHECK(event->signaled == (int)native);
+        if (!native) {
+            syncpt_incr(id); /* Maxwell's stream-owned completion */
+            CHECK(event->signaled);
+        }
+        svcobj_unref(s);
+        CHECK(nv_close(fd) == 0);
+    }
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+}
+/* Legacy ioctls must not replace or retire worker pages, even on a different fd. */
+static void test_gsv_legacy_isolation(NvFile* view, u64 gva) {
+    u8 d[64] = {0};
+    const u32 mutations[] = {NVHOST_AS_GPU_ALLOC_SPACE, NVHOST_AS_GPU_FREE_SPACE, NVHOST_AS_GPU_UNMAP_BUFFER,
+                             NVHOST_AS_GPU_MAP_BUFFER_EX, NVHOST_AS_GPU_REMAP};
+    for (u32 i = 0; i < sizeof mutations / sizeof mutations[0]; ++i)
+        CHECK(ioctl_as(view, mutations[i], d, sizeof d, NULL, 0) == NV_RESULT_NOT_SUPPORTED);
+    wr64(d, AS_UNMAP_BUFFER_OFFSET, gva);
+    CHECK(as_call(NVHOST_AS_GPU_UNMAP_BUFFER, d, 8) == 0);
+    CHECK(gmmu_translate(gva) == test_gpu_memory.addr + 0x1000);
+
+    u32 h = nvmap_new(0x1000, 0x9000);
+    const u64 protected[] = {gva, NV_SYNCPT_SHIM_GVA};
+    for (u32 i = 0; i < sizeof protected / sizeof protected[0]; ++i) {
+        memset(d, 0, sizeof d);
+        wr32(d, AS_ALLOC_SPACE_PAGES, 1);
+        wr32(d, AS_ALLOC_SPACE_PAGE_SIZE, 0x1000);
+        wr32(d, AS_ALLOC_SPACE_FLAGS, NVHOST_AS_MAP_FIXED);
+        wr64(d, AS_ALLOC_SPACE_OFFSET, protected[i]);
+        CHECK(as_call(NVHOST_AS_GPU_ALLOC_SPACE, d, 24) == NV_RESULT_BAD_PARAMETER);
+        memset(d, 0, sizeof d);
+        wr32(d, AS_MAP_BUFFER_FLAGS, NVHOST_AS_MAP_FIXED);
+        wr32(d, AS_MAP_BUFFER_HANDLE, h);
+        wr64(d, AS_MAP_BUFFER_OFFSET, protected[i]);
+        CHECK(as_call(NVHOST_AS_GPU_MAP_BUFFER_EX, d, 40) == NV_RESULT_BAD_PARAMETER);
+        wr32(d, AS_MAP_BUFFER_FLAGS, NVHOST_AS_MAP_REMAP);
+        CHECK(as_call(NVHOST_AS_GPU_MAP_BUFFER_EX, d, 40) == NV_RESULT_BAD_PARAMETER);
+        memset(d, 0, sizeof d);
+        wr64(d, AS_FREE_SPACE_OFFSET, protected[i]);
+        wr32(d, AS_FREE_SPACE_PAGES, 1);
+        wr32(d, AS_FREE_SPACE_PAGE_SIZE, 0x1000);
+        CHECK(as_call(NVHOST_AS_GPU_FREE_SPACE, d, 16) == NV_RESULT_BAD_PARAMETER);
+        memset(d, 0, sizeof d);
+        wr32(d, AS_REMAP_ENTRY_AS_OFFSET, (u32)(protected[i] >> g_hle.nvdrv.big_page_bits));
+        wr32(d, AS_REMAP_ENTRY_BIG_PAGES, 1);
+        CHECK(as_call(NVHOST_AS_GPU_REMAP, d, AS_REMAP_ENTRY_BYTES) == NV_RESULT_BAD_PARAMETER);
+        CHECK(gmmu_translate(gva) == test_gpu_memory.addr + 0x1000);
+    }
+    CHECK(!gmmu_translate(NV_SYNCPT_SHIM_GVA));
+
+    /* Earlier cases used a Switch 1 allocator. Start a fresh fixture for the Switch 2 profile. */
+    free(g_hle.nvdrv.vafree);
+    g_hle.nvdrv.vafree = NULL;
+    g_hle.nvdrv.nvafree = g_hle.nvdrv.capvafree = 0;
+    g_hle.nvdrv.va_ready = 0;
+    memset(d, 0, sizeof d);
+    wr32(d, AS_ALLOC_SPACE_PAGES, 1);
+    wr32(d, AS_ALLOC_SPACE_PAGE_SIZE, 0x1000);
+    CHECK(as_call(NVHOST_AS_GPU_ALLOC_SPACE, d, 24) == 0);
+    u64 allocated = rd64(d, AS_ALLOC_SPACE_OFFSET);
+    CHECK(allocated == NV_GSV_USER_END);
+    u64 mapped = as_map(0, h, 0, 0);
+    CHECK(mapped == allocated + VA_UNIT && gmmu_translate(mapped) == 0x9000);
+    CHECK(as_unmap_buffer(mapped) == 0 && !gmmu_translate(mapped));
+    memset(d, 0, sizeof d);
+    wr64(d, AS_FREE_SPACE_OFFSET, allocated);
+    wr32(d, AS_FREE_SPACE_PAGES, 1);
+    wr32(d, AS_FREE_SPACE_PAGE_SIZE, 0x1000);
+    CHECK(as_call(NVHOST_AS_GPU_FREE_SPACE, d, 16) == 0);
+
+    /* Fill the legacy interval. The last allocator granule includes the shim and must stay unavailable. */
+    u64 end = NV_SYNCPT_SHIM_GVA & ~(VA_UNIT - 1);
+    u32 pages = (u32)((end - NV_GSV_USER_END) / VA_UNIT);
+    memset(d, 0, sizeof d);
+    wr32(d, AS_ALLOC_SPACE_PAGES, pages);
+    wr32(d, AS_ALLOC_SPACE_PAGE_SIZE, (u32)VA_UNIT);
+    CHECK(as_call(NVHOST_AS_GPU_ALLOC_SPACE, d, 24) == 0 && rd64(d, AS_ALLOC_SPACE_OFFSET) == NV_GSV_USER_END);
+    wr32(d, AS_ALLOC_SPACE_PAGES, 1);
+    wr64(d, AS_ALLOC_SPACE_OFFSET, 0);
+    CHECK(as_call(NVHOST_AS_GPU_ALLOC_SPACE, d, 24) == NV_RESULT_INSUFFICIENT_MEMORY);
+    memset(d, 0, sizeof d);
+    wr64(d, AS_FREE_SPACE_OFFSET, NV_GSV_USER_END);
+    wr32(d, AS_FREE_SPACE_PAGES, pages);
+    wr32(d, AS_FREE_SPACE_PAGE_SIZE, (u32)VA_UNIT);
+    CHECK(as_call(NVHOST_AS_GPU_FREE_SPACE, d, 16) == 0);
+    memset(d, 0, sizeof d);
+    wr32(d, 0, h);
+    CHECK(nvmap_call(0x05, d) == 0);
+}
+/* a sparse map request of 216, as the SDK's util::ExecuteVirtualMachineRemap writes it into IN1 */
+static void test_sparse_request(u32 i, u64 gva, u64 size, u32 memory, u64 offset, u8 fallback_kind) {
+    u8* q = GP(IN1) + i * 0x28;
+    memset(q, 0, 0x28);
+    snx_st_le64(q, gva);
+    snx_st_le64(q + 8, size);
+    q[0x13] = 0xE0;
+    q[0x14] = fallback_kind;
+    snx_st_le32(q + 0x18, memory);
+    snx_st_le64(q + 0x20, offset);
+}
+/* 216 through the worker's dispatcher, in the SDK's TIPC layout */
+static int test_sparse_map(SvcObj* worker, u32 as, u32 count, u64* processed) {
+    u8 args[28] = {0};
+    snx_st_le64(args, 1);
+    snx_st_le32(args + 8, as);
+    snx_st_le64(args + 12, 0x28);
+    snx_st_le32(args + 20, 0xAABBCC01); /* sync, with the padding the SDK leaves */
+    IpcCtx c = {.tipc = 1, .cmd = 216, .raw = args, .raw_size = sizeof args, .na = 1, .nb = 1};
+    c.a[0] = buf(IN1, (u64)count * 0x28);
+    c.b[0] = buf(OUT1, count);
+    int rc = worker->dispatch(worker, &c);
+    if (!rc) *processed = snx_ld_le64(c.out);
+    return rc;
+}
+/* A sparse region (214) reserves GPU addresses that only its sparse maps (216) fill, all requests of a batch or none,
+   until 215 frees it. The SDK waits for the notification after each */
+static void test_gsv_sparse(SvcObj* worker, KEvent* event, u32 as, u32 device, u32 memory, u64 mapped) {
+    u64 region = VA_BASE + 0x800000, processed = 0;
+    u8 raw[40] = {0};
+    snx_st_le32(raw, as);
+    snx_st_le64(raw + 4, region);
+    snx_st_le64(raw + 12, region + 0xFFFF);
+    snx_st_le32(raw + 20, 0x60C); /* page shift 12, and a byte the SDK leaves dirty */
+    snx_st_le32(raw + 28, 0xAABBCC00 | device);
+    IpcCtx c = {.tipc = 1, .cmd = 214, .raw = raw, .raw_size = sizeof raw};
+    kevent_clear(event);
+    CHECK(worker->dispatch(worker, &c) == 0 && event->signaled);
+    kevent_clear(event);
+    CHECK(worker->dispatch(worker, &c) == RC(1, 106) && event->signaled); /* the same addresses again */
+    snx_st_le64(raw + 4, mapped);
+    snx_st_le64(raw + 12, mapped + 0xFFFF);
+    CHECK(worker->dispatch(worker, &c) == RC(1, 106)); /* over a normal map */
+    snx_st_le64(raw + 4, region + 0x10000);
+    snx_st_le64(raw + 12, region + 0x17FFF);
+    snx_st_le32(raw + 20, 16);
+    CHECK(worker->dispatch(worker, &c) == RC(1, 101)); /* not whole 64 KiB pages */
+    nn_gsv_GpuMapRequest map = {.address_space = as, .memory = memory, .device = device, .fallback_kind = 6};
+    snx_st_le64(map.first, region + 0x4000);
+    snx_st_le64(map.last, region + 0x4FFF);
+    u32 selected = 0;
+    CHECK(nn_gsv_IGpuWorker_NormalMapGpuMemory4K(worker, &map, &selected) == RC(1, 106));
+
+    /* the later request of a batch wins where they overlap */
+    test_sparse_request(0, region + 0x4000, 0x2000, memory, 0x1000, 6);
+    test_sparse_request(1, region + 0x5000, 0x1000, 0, 0, 0);
+    memset(GP(OUT1), 0xCC, 2);
+    kevent_clear(event);
+    CHECK(test_sparse_map(worker, as, 2, &processed) == 0 && processed == 2 && event->signaled);
+    CHECK(GP(OUT1)[0] == 6 && GP(OUT1)[1] == 0);
+    CHECK(gmmu_translate(region + 0x4000) == test_gpu_memory.addr + 0x1000 && !gmmu_translate(region + 0x5000));
+    CHECK(!gmmu_translate(region) && !gmmu_translate(region + 0x6000));
+    /* a request outside the region fails the batch before the first request changes anything */
+    test_sparse_request(0, region + 0x8000, 0x1000, memory, 0, 6);
+    test_sparse_request(1, region + 0xF000, 0x2000, memory, 0, 6);
+    kevent_clear(event);
+    CHECK(test_sparse_map(worker, as, 2, &processed) == RC(1, 106) && event->signaled);
+    CHECK(!gmmu_translate(region + 0x8000));
+    test_sparse_request(1, region + 0xF000, 0x1000, memory, test_gpu_memory.size, 6);
+    CHECK(test_sparse_map(worker, as, 2, &processed) == RC(1, 101) && !gmmu_translate(region + 0x8000));
+    test_sparse_request(0, region + 0x8000, 0x1000, memory, 0, 6);
+    GP(IN1)[0x10] = 1; /* read-only: the page table can't keep it */
+    CHECK(test_sparse_map(worker, as, 1, &processed) == RC(1, 33) && !gmmu_translate(region + 0x8000));
+
+    /* a piece of a region is no normal map, and the region's destruction takes its pieces */
+    nn_gsv_GpuUnmapRequest unmap = {.address_space = as};
+    snx_st_le64(unmap.first, region + 0x4000);
+    snx_st_le64(unmap.last, region + 0x4FFF);
+    u64 unmapped = 0;
+    CHECK(nn_gsv_IGpuWorker_NormalUnmapGpuMemory4K(worker, &unmap, &unmapped) == RC(1, 121));
+    CHECK(nn_gsv_IGpuWorker_DestroySparseRegion(worker, &unmap) == RC(1, 121));
+    CHECK(gmmu_translate(region + 0x4000) == test_gpu_memory.addr + 0x1000);
+    snx_st_le64(unmap.first, region);
+    snx_st_le64(unmap.last, region + 0xFFFF);
+    kevent_clear(event);
+    CHECK(nn_gsv_IGpuWorker_DestroySparseRegion(worker, &unmap) == 0 && event->signaled);
+    CHECK(!gmmu_translate(region + 0x4000));
+    CHECK(nn_gsv_IGpuWorker_DestroySparseRegion(worker, &unmap) == RC(1, 121));
+    test_sparse_request(0, region + 0x4000, 0x1000, memory, 0, 6);
+    CHECK(test_sparse_map(worker, as, 1, &processed) == RC(1, 106));
+    /* one region and its piece stay for the worker's teardown */
+    snx_st_le64(raw + 4, region);
+    snx_st_le64(raw + 12, region + 0xFFFF);
+    snx_st_le32(raw + 20, 12);
+    CHECK(worker->dispatch(worker, &c) == 0);
+    CHECK(test_sparse_map(worker, as, 1, &processed) == 0 && gmmu_translate(region + 0x4000) == test_gpu_memory.addr);
+}
+/* Exercise the worker's memory lifetime and VA bounds. The SDK leaves high bytes of its byte arguments dirty. */
+static void test_gsv_worker_memory(SvcObj* control, SvcObj* worker, KEvent* event, NvFile* retained_view) {
+    u32 device = 0, as = 0, selected = 0;
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    CHECK(nn_gsv_IGpuSession_CreateGraphicsDevice(control, 1, 0, 0, &device) == 0);
+    CHECK(nn_gsv_IGpuSession_CreateAddressSpace(control, 0, &as) == 0);
+    CHECK(nv_gsv_register_as(as + 1) == RC(1, 121));
+    CHECK(nv_gsv_register_as(as) == 0);
+    u64 lo, hi, count;
+    nn_gsv_GpuPartitionRanges ranges;
+    CHECK(nn_gsv_IGpuSession_GetUserPartition(control, as, &lo, &hi) == 0 && lo < hi);
+    CHECK(nn_gsv_IGpuSession_GetUserPartitions(control, as, &count, &ranges) == 0);
+    CHECK(count == 1 && ranges.v[0] == lo && ranges.v[1] == hi);
+    CHECK(nn_gsv_IGpuSession_GetGsvPartition(control, as, &lo, &hi) == 0 && lo > hi);
+
+    NvFile view = {0};
+    u8 arg[64] = {0}, regions[48] = {0};
+    wr32(arg, AS_ALLOC_AS_EX_FLAGS, 5);
+    wr32(arg, AS_ALLOC_AS_EX_AS_FD, as);
+    wr32(arg, AS_ALLOC_AS_EX_BIG_PAGE_SIZE, 0x1000);
+    wr64(arg, AS_ALLOC_AS_EX_VA_START, NV_GSV_USER_FIRST);
+    wr64(arg, AS_ALLOC_AS_EX_VA_END, NV_GSV_USER_END);
+    CHECK(ioctl_as(&view, 0x40284109, arg, 40, NULL, 0) == 0);
+    CHECK(ioctl_as(&view, 0xC0404108, arg, 64, regions, sizeof regions) == 0);
+    CHECK(rd32(arg, AS_GET_VA_REGIONS_BUF_SIZE) == 24);
+    CHECK(rd64(regions, AS_VA_REGION_OFFSET) == NV_GSV_USER_FIRST);
+    CHECK(rd64(regions, AS_VA_REGION_PAGES) * 0x1000 == NV_GSV_USER_END - NV_GSV_USER_FIRST);
+    CHECK(ioctl_as(&view, 0x8010410B, arg, 16, NULL, 0) == 0);
+    CHECK(rd64(arg, 0) >= NV_GSV_USER_END && rd32(arg, 8) == 4 && rd32(arg, 12) == NV_SYNCPT_SHIM_COUNT);
+    g_hle.nvdrv.syncpt[191] = 0x12345678;
+    CHECK(nv_syncpoint_shim_read(rd64(arg, 0) + 191 * 4 + 1, regions, 6));
+    CHECK(regions[0] == 0x56 && regions[1] == 0x34 && regions[2] == 0x12 && regions[3] == 0 && regions[5] == 0);
+
+    test_gpu_memory = (MemBlock){.addr = 0x30000, .size = 0x6000, .state = MS_NORMAL, .perm = PERM_RW};
+    u8 raw[24] = {0};
+    snx_st_le64(raw, test_gpu_memory.addr);
+    snx_st_le64(raw + 8, test_gpu_memory.addr + test_gpu_memory.size - 1);
+    snx_st_le32(raw + 16, 0xAABBCC00);
+    snx_st_le32(raw + 20, 0xAABBCC00 | device);
+    IpcCtx c = {.tipc = 1, .cmd = 101, .raw = raw, .raw_size = sizeof raw};
+    CHECK(worker->dispatch(worker, &c) == RC(1, 106));
+    test_gpu_memory.attr = MA_GPU_ACCESSIBLE;
+    CHECK(worker->dispatch(worker, &c) == 0);
+    u32 memory = snx_ld_le32(c.out);
+    u64 gva = VA_BASE + 0x500000;
+    nn_gsv_GpuMapRequest map = {.address_space = as, .memory = memory, .device = device, .kind = 8, .fallback_kind = 6};
+    snx_st_le64(map.first, gva);
+    snx_st_le64(map.last, gva + 0x1FFF);
+    snx_st_le64(map.offset, 0x1000);
+    kevent_clear(event);
+    CHECK(nn_gsv_IGpuWorker_NormalMapGpuMemory4K(worker, &map, &selected) == 0 && selected == 6);
+    CHECK(event->signaled && gmmu_translate(gva) == test_gpu_memory.addr + 0x1000 &&
+          gmmu_translate(gva + 0x1FFF) == test_gpu_memory.addr + 0x2FFF);
+    test_gsv_legacy_isolation(&view, gva);
+    kevent_clear(event);
+    CHECK(nn_gsv_IGpuWorker_DestroyGpuAccessibleMemory(worker, memory, 0) == RC(1, 122) && !event->signaled);
+    map.address_space = as + 1;
+    CHECK(nn_gsv_IGpuWorker_NormalMapGpuMemory4K(worker, &map, &selected) == RC(1, 121));
+    CHECK(gmmu_translate(gva) == test_gpu_memory.addr + 0x1000);
+    map.address_space = as;
+    snx_st_le64(map.offset, test_gpu_memory.size);
+    CHECK(nn_gsv_IGpuWorker_NormalMapGpuMemory4K(worker, &map, &selected) == RC(1, 101));
+
+    nn_gsv_GpuModifyRequest modify = {.address_space = as, .kind = 9, .fallback_kind = 6};
+    snx_st_le64(modify.first, gva);
+    snx_st_le64(modify.last, gva + 0xFFF);
+    CHECK(nn_gsv_IGpuWorker_NormalModifyGpuMemory4K(worker, &modify, &selected) == 0 && selected == 6);
+    nn_gsv_GpuUnmapRequest unmap = {.address_space = as};
+    snx_st_le64(unmap.first, gva);
+    snx_st_le64(unmap.last, gva + 0xFFF);
+    u64 unmapped = 0;
+    CHECK(nn_gsv_IGpuWorker_NormalUnmapGpuMemory4K(worker, &unmap, &unmapped) == RC(1, 121));
+    CHECK(gmmu_translate(gva) != 0);
+    snx_st_le64(unmap.last, gva + 0x1FFF);
+    CHECK(nn_gsv_IGpuWorker_NormalUnmapGpuMemory4K(worker, &unmap, &unmapped) == 0 && unmapped == 0x2000);
+    CHECK(!gmmu_translate(gva) && !gmmu_translate(gva + 0x1FFF));
+    CHECK(nn_gsv_IGpuWorker_DestroyGpuAccessibleMemory(worker, memory, 0) == 0 && event->signaled);
+    kevent_clear(event);
+    CHECK(nn_gsv_IGpuWorker_DestroyGpuAccessibleMemory(worker, memory, 0) == RC(1, 121) && !event->signaled);
+    /* Leave a live registration and map for worker teardown after the control closes. */
+    c = (IpcCtx){.tipc = 1, .cmd = 101, .raw = raw, .raw_size = sizeof raw};
+    CHECK(worker->dispatch(worker, &c) == 0);
+    map.memory = snx_ld_le32(c.out);
+    snx_st_le64(map.offset, 0);
+    CHECK(nn_gsv_IGpuWorker_NormalMapGpuMemory4K(worker, &map, &selected) == 0);
+    test_gsv_sparse(worker, event, as, device, map.memory, gva);
+    /* Native memory over that registration: backed at the guest address of its offset, held while an image lives */
+    u32 native = 0, image = 0, second = 0, plain = nvmap_new(0x2000, 0x8000), shown = 0;
+    const NvGsvImageShape shape = {0x003f003f, 4, 7, 1}; /* 64 x 64, 4 GOBs a row, 16-GOB blocks, format 1 */
+    NvGsvImageShape got;
+    CHECK(nv_native_memory_create(0x2000, &native) == 0);
+    CHECK(nv_native_image_create(native, 0x2000, 1, &shape, &image) == RC(1, 121)); /* not backed yet */
+    CHECK(nv_native_memory_bind(plain, test_gpu_memory.addr + 0x1000, 0x2000, map.memory, 0x1000) == RC(1, 121));
+    CHECK(nv_native_memory_bind(native, test_gpu_memory.addr + 0x2000, 0x2000, map.memory, 0x1000) == RC(1, 106));
+    CHECK(nv_native_memory_bind(native, test_gpu_memory.addr + 0x5000, 0x2000, map.memory, 0x5000) == RC(1, 106));
+    CHECK(nv_native_memory_bind(native, test_gpu_memory.addr + 0x1000, 0x2000, map.memory, 0x1000) == 0);
+    CHECK(nvmap_addr_by_id(native) == test_gpu_memory.addr + 0x1000);
+    CHECK(nv_native_memory_bind(native, test_gpu_memory.addr + 0x1000, 0x2000, map.memory, 0x1000) == RC(1, 125));
+    CHECK(nv_native_image_create(native, 0x2001, 1, &shape, &image) == RC(1, 101));
+    CHECK(nv_native_image_create(native, 0x2000, 2, &shape, &image) == 0);
+    CHECK(nv_native_image_create(native, 0x1000, 1, &shape, &second) == 0 && second == image + 2);
+    CHECK(nv_native_memory_destroy(native) == RC(1, 122));
+    CHECK(nv_native_image_destroy(image + 1) == RC(1, 121));
+    /* a window's alias pool keeps its image until the window gives it back */
+    CHECK(nv_native_image_window_pool(second, 2, 1) == RC(1, 33));
+    CHECK(nv_native_image_window_pool(second, 0, 0) == RC(1, 125));
+    CHECK(nv_native_window_image(second, &shown, &got) == RC(1, 121)); /* no window's yet */
+    CHECK(nv_native_image_window_pool(second, 1, 1) == 0);
+    CHECK(nv_native_window_image(second, &shown, &got) == 0 && shown == native && got.extent == shape.extent &&
+          got.pitch_gobs == 4 && got.block_height_log2 == 7 && got.pixel_format == 1);
+    CHECK(nv_native_image_window_pool(second, 1, 1) == RC(1, 125));
+    CHECK(nv_native_image_destroy(second) == RC(1, 122));
+    CHECK(nv_native_image_window_pool(second, 0, 0) == 0);
+    CHECK(nv_native_image_destroy(image) == 0 && nv_native_image_destroy(second) == 0);
+    /* the last handles: a range past them is refused, so no image gets handle 0 */
+    u32 last = g_hle.nvdrv.gsv_image_last;
+    g_hle.nvdrv.gsv_image_last = UINT32_MAX - 1;
+    CHECK(nv_native_image_create(native, 0x1000, 2, &shape, &image) == RC(1, 103));
+    CHECK(nv_native_image_create(native, 0x1000, 1, &shape, &image) == 0 && image == UINT32_MAX);
+    CHECK(nv_native_image_create(native, 0x1000, 1, &shape, &second) == RC(1, 103));
+    CHECK(nv_native_image_destroy(image) == 0);
+    g_hle.nvdrv.gsv_image_last = last;
+    CHECK(nv_native_memory_destroy(native) == 0 && !nvmap_addr_by_id(native));
+    CHECK(nv_native_memory_destroy(native) == RC(1, 121));
+    CHECK(nn_gsv_IGpuSession_DestroyGraphicsDevice(control, (u8)device) == 0);
+    test_gpu_memory = (MemBlock){0};
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+    CHECK(!nv_syncpoint_shim_read(NV_SYNCPT_SHIM_GVA, regions, 4));
+    *retained_view = view;
+}
+/* GPU controls retain one worker session. Both share notification state, which lives until the last owner closes. */
+static void test_gsv_gpu(void) {
+    SvcObj* s = nv_gpu_new();
+    SvcObj* other = nv_gpu_new();
+    u32 first, last, handle, duplicate, peer, upper;
+    CHECK(nn_gsv_IGpuSession_GetNotificationRange(s, &first, &last) == 0);
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(s, last + 1, &handle) == RC(1, 116));
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(s, first, &handle) == 0);
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(s, first, &duplicate) == 0);
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(s, last, &upper) == 0);
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(other, first, &peer) == 0);
+    KEvent* event = (KEvent*)handle_object(handle);
+    CHECK(handle_object(duplicate) == &event->o && handle_object(peer) != &event->o);
+    CHECK(!event->signaled && !((KEvent*)handle_object(upper))->signaled);
+    u8 raw[4];
+    snx_st_le32(raw, first);
+    IpcCtx c = {.tipc = 1, .cmd = 22};
+    CHECK(s->dispatch(s, &c) == RC(1, 125) && c.tipc_error_moves == 1 && !event->signaled);
+    c = (IpcCtx){.tipc = 1, .cmd = 21, .raw = raw, .raw_size = sizeof raw};
+    snx_st_le32(raw, last + 1);
+    CHECK(s->dispatch(s, &c) == RC(1, 116) && !event->signaled);
+    snx_st_le32(raw, first + 1);
+    CHECK(s->dispatch(s, &c) == RC(1, 125) && !event->signaled);
+    snx_st_le32(raw, first);
+    NvGsvGpu* gpu = s->data;
+    u32 devices = gpu->devices;
+    test_handles_full = 1;
+    CHECK(s->dispatch(s, &c) == RC(1, 105) && !event->signaled && !gpu->worker);
+    CHECK(g_hle.nvdrv.gsv_devices[devices - 1].refs == 1);
+    for (u32 i = 0; i < NV_GSV_GPUS; ++i) CHECK(!g_hle.nvdrv.gsv_workers[i].obj);
+    test_handles_full = 0;
+    CHECK(s->dispatch(s, &c) == 0 && event->signaled);
+    CHECK(g_hle.nvdrv.gsv_devices[devices - 1].refs == 2);
+    c = (IpcCtx){.tipc = 1, .cmd = 22};
+    CHECK(s->dispatch(s, &c) == 0 && c.nout_move == 1);
+    u32 worker_handle = c.out_move[0];
+    KSession* worker = (KSession*)handle_object(worker_handle);
+    CHECK(worker->o.type == KO_SESSION && kobj_id(&worker->o) == gpu->worker);
+    CHECK(((NvGsvWorker*)worker->obj->data)->devices == devices);
+    kevent_clear(event);
+    c = (IpcCtx){.tipc = 1, .cmd = 21, .raw = raw, .raw_size = sizeof raw};
+    CHECK(s->dispatch(s, &c) == 0 && event->signaled && kobj_at(gpu->worker) == &worker->o);
+    c = (IpcCtx){.tipc = 1, .cmd = 22};
+    CHECK(s->dispatch(s, &c) == 0 && handle_object(c.out_move[0]) == &worker->o);
+    h_close(c.out_move[0]);
+    test_handles_full = 1;
+    c = (IpcCtx){.tipc = 1, .cmd = 22};
+    CHECK(s->dispatch(s, &c) == RC(1, 105) && kobj_at(gpu->worker) == &worker->o);
+    test_handles_full = 0;
+    NvFile view = {0};
+    test_gsv_worker_memory(s, worker->obj, event, &view);
+    kevent_clear(event);
+    svcobj_unref(s);
+    svcobj_unref(other);
+    CHECK(worker->o.refs == 1 && g_hle.nvdrv.gsv_devices[devices - 1].refs == 1);
+    CHECK(event->o.refs == 3 && !event->signaled);
+    CHECK(handle_object(upper)->refs == 2 && handle_object(peer)->refs == 1);
+    c = (IpcCtx){.cmd = 101};
+    CHECK(worker->obj->dispatch(worker->obj, &c) == RC(1, 33) && !event->signaled);
+    c = (IpcCtx){.tipc = 1, .cmd = 999};
+    CHECK(worker->obj->dispatch(worker->obj, &c) == RC(10, 221) && !event->signaled);
+    h_close(worker_handle);
+    CHECK(!g_hle.nvdrv.gsv_devices[devices - 1].refs);
+    CHECK(!gmmu_translate(VA_BASE + 0x500000) && !gmmu_translate(VA_BASE + 0x804000));
+    for (u32 i = 0; i < NV_GSV_SPARSE_REGIONS; ++i) CHECK(!g_hle.nvdrv.gsv_sparse[i].devices);
+    CHECK(!g_hle.nvdrv.gsv_as[0].devices);
+    for (u32 i = 0; i < NV_GSV_MEMORIES; ++i) CHECK(!g_hle.nvdrv.gsv_mem[i].devices);
+    CHECK(event->o.refs == 2 && handle_object(upper)->refs == 1);
+    s = nv_gpu_new();
+    devices = ((NvGsvGpu*)s->data)->devices;
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    u8 view_arg[64] = {0};
+    CHECK(ioctl_as(&view, NVHOST_AS_GPU_GET_VA_REGIONS, view_arg, sizeof view_arg, NULL, 0) == NV_RESULT_INVALID_STATE);
+    CHECK(ioctl_as(&view, NVHOST_AS_GPU_SYNCPOINT_SHIM, view_arg, sizeof view_arg, NULL, 0) == NV_RESULT_INVALID_STATE);
+    /* Exercise the last nonzero ID, then exhaustion rather than wrapping to the old view's ID. */
+    g_hle.nvdrv.gsv_as_last = UINT32_MAX - 1;
+    u32 next_as = 0;
+    CHECK(nn_gsv_IGpuSession_CreateAddressSpace(s, 0, &next_as) == 0 && next_as == UINT32_MAX);
+    CHECK(nv_gsv_register_as(view.view_as) == RC(1, 121));
+    CHECK(nv_gsv_register_as(next_as) == 0);
+    CHECK(ioctl_as(&view, NVHOST_AS_GPU_GET_VA_REGIONS, view_arg, sizeof view_arg, NULL, 0) == NV_RESULT_INVALID_STATE);
+    NvFile new_view = {0};
+    wr32(view_arg, AS_ALLOC_AS_EX_FLAGS, 5);
+    wr32(view_arg, AS_ALLOC_AS_EX_AS_FD, next_as);
+    wr32(view_arg, AS_ALLOC_AS_EX_BIG_PAGE_SIZE, 0x1000);
+    wr64(view_arg, AS_ALLOC_AS_EX_VA_START, NV_GSV_USER_FIRST);
+    wr64(view_arg, AS_ALLOC_AS_EX_VA_END, NV_GSV_USER_END);
+    CHECK(ioctl_as(&new_view, NVHOST_AS_GPU_ALLOC_AS_EX, view_arg, 40, NULL, 0) == 0);
+    CHECK(ioctl_as(&new_view, NVHOST_AS_GPU_SYNCPOINT_SHIM, view_arg, 16, NULL, 0) == 0);
+    CHECK(nn_gsv_IGpuSession_GetNotificationEvent(s, first, &handle) == 0);
+    event = (KEvent*)handle_object(handle);
+    c = (IpcCtx){.tipc = 1, .cmd = 21, .raw = raw, .raw_size = sizeof raw};
+    CHECK(s->dispatch(s, &c) == 0 && event->signaled);
+    svcobj_unref(s); /* no client acquired the worker, so the control owned its last session reference */
+    CHECK(!g_hle.nvdrv.gsv_devices[devices - 1].refs && event->o.refs == 1);
+    CHECK(ioctl_as(&new_view, NVHOST_AS_GPU_SYNCPOINT_SHIM, view_arg, 16, NULL, 0) == NV_RESULT_INVALID_STATE);
+    s = nv_gpu_new();
+    CHECK(nn_gsv_IGpuSession_CreateAddressSpace(s, 0, &next_as) == RC(1, 103));
+    svcobj_unref(s);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
+}
+static u32 test_tmem(u64 addr, u64 size) {
+    KTmem* t = calloc(1, sizeof *t);
+    CHECK(t != NULL);
+    t->o.type = KO_TMEM;
+    t->addr = addr;
+    t->size = size;
+    test_kobjs++;
+    return h_new(&t->o);
+}
+/* The SDK toggles slot/group bits, signals the writable request and waits for completion before reading counters.
+   An allocation must replace the all-complete sentinel without waiting for a request. */
+static void test_gsv_cache(void) {
+    u32 rw_handle = test_tmem(0x8000, 0x1000), ro_handle = test_tmem(0x9000, 0x2000);
+    u32 request = 0, completed = 0;
+    u32 id = syncpt_alloc(), group = id / 64;
+    g_hle.kernel.hw = SNX_HW_SWITCH2;
+    g_hle.nvdrv.syncpt[id] = 0xFFFFFFFEu;
+    CHECK(nv_syncpoint_cache_bind(0, ro_handle, &request, &completed) == RC(1, 114));
+    CHECK(nv_syncpoint_cache_bind(rw_handle, rw_handle, &request, &completed) == RC(1, 114));
+    CHECK(nv_syncpoint_cache_bind(ro_handle, rw_handle, &request, &completed) == RC(1, 101));
+    CHECK(!g_hle.nvdrv.gsv_cache.rw);
+    CHECK(nv_syncpoint_cache_bind(rw_handle, ro_handle, &request, &completed) == 0);
+    CHECK(gr32(0x9000) == 1 && gr32(0x9008) == NV_GSV_COUNTERS - 1);
+    CHECK(gr64(0x9040 + id * 8) == 0xFFFFFFFEull && gr64(0x9040 + 191 * 8) == ~0ull);
+    KWEvent* write_event = (KWEvent*)handle_object(request);
+    KEvent* req = (KEvent*)kobj_at(write_event->r);
+    KEvent* done = (KEvent*)handle_object(completed);
+    CHECK(write_event->o.type == KO_WEVENT && done->o.type == KO_EVENT);
+    u32 duplicate_request = 0, duplicate_completed = 0;
+    CHECK(nv_syncpoint_cache_bind(rw_handle, ro_handle, &duplicate_request, &duplicate_completed) == RC(1, 125));
+    kevent_signal(req); /* even an unchanged request must finish the event handshake */
+    nv_syncpoint_cache_request(g_hle.nvdrv.gsv_cache.request);
+    CHECK(!req->signaled && done->signaled);
+    kevent_clear(done);
+    h_close(rw_handle);
+    h_close(ro_handle); /* the application still owns both mappings */
+    nv_syncpoint_cache_request(kobj_id(&done->o));
+    CHECK(!done->signaled);
+    syncpt_add(id, 3);
+    CHECK(gr64(0x9040 + id * 8) == 0xFFFFFFFEull); /* stale until the requested observation */
+    gw64(0x8008 + group * 8, 1ull << (id % 64));
+    gw64(0x8000, 1ull << group);
+    kevent_signal(req);
+    nv_syncpoint_cache_request(kobj_id(&req->o));
+    CHECK(!req->signaled && done->signaled);
+    CHECK(gr64(0x9040 + id * 8) == 0x100000001ull);
+    CHECK(gr64(0x9640) == (1ull << group) && gr64(0x9648 + group * 8) == (1ull << (id % 64)));
+    kevent_clear(done);
+    syncpt_incr(id);
+    for (u32 repeat = 0; repeat < 2; ++repeat) {
+        u64 requests = gr64(0x8000);
+        if (repeat) {
+            gw64(0x8000, requests ^ (1ull << group));
+            gw64(0x8000, requests); /* two toggles cancel before the request is processed */
+        }
+        kevent_signal(req);
+        nv_syncpoint_cache_request(kobj_id(&req->o));
+        CHECK(!req->signaled && done->signaled);
+        CHECK(gr64(0x9640) == requests && gr64(0x9648 + group * 8) == (1ull << (id % 64)));
+        CHECK(gr64(0x9040 + id * 8) == 0x100000001ull); /* no requested observation */
+        kevent_clear(done);
+    }
+    gw64(0x8008 + group * 8, 0);
+    gw64(0x8000, 0);
+    nv_syncpoint_cache_request(kobj_id(&req->o));
+    CHECK(done->signaled && gr64(0x9040 + id * 8) == 0x100000002ull && !gr64(0x9640));
+    syncpt_free(id);
+    CHECK(gr64(0x9040 + id * 8) == ~0ull);
+    CHECK(syncpt_alloc() == id && gr64(0x9040 + id * 8) == 0x100000002ull);
+    gw64(0x8018, 1ull << 63);
+    gw64(0x8000, 4);
+    nv_syncpoint_cache_request(kobj_id(&req->o));
+    CHECK(gr64(0x9658) == (1ull << 63) && gr64(0x9040 + 191 * 8) == ~0ull);
+    NvGsvCache* c = &g_hle.nvdrv.gsv_cache;
+    kobj_unref(kobj_at(c->rw));
+    kobj_unref(kobj_at(c->ro));
+    kobj_unref(kobj_at(c->request));
+    kobj_unref(kobj_at(c->completed));
+    memset(c, 0, sizeof *c);
+    syncpt_free(id);
+    g_hle.kernel.hw = SNX_HW_SWITCH;
 }
 int main(void) {
     hle_init();
@@ -937,22 +1658,22 @@ int main(void) {
         snx_st_le64(request + 16, offset);
         snx_st_le64(request + 24, bytes);
         snx_st_le64(request + 32, gva);
-        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        CHECK(as_call(0x06, request, sizeof request) == 4);
         CHECK(!gmmu_translate(gva) && !gmmu_translate(gva + 0xFFF));
         offset = 0;
         snx_st_le64(request + 16, offset);
         gva++;
         snx_st_le64(request + 32, gva);
-        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        CHECK(as_call(0x06, request, sizeof request) == 4);
         gva--;
         snx_st_le64(request + 32, gva);
         bytes = 0x1001;
         snx_st_le64(request + 24, bytes);
-        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        CHECK(as_call(0x06, request, sizeof request) == 4);
         CHECK(!gmmu_translate(gva));
         bytes = 1;
         snx_st_le64(request + 24, bytes);
-        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 0);
+        CHECK(as_call(0x06, request, sizeof request) == 0);
         CHECK(gmmu_translate(gva) == addr && gmmu_translate(gva + 0xFFF) == AS_SIZE - 1);
     }
     test_nvmap_as();
@@ -979,6 +1700,7 @@ int main(void) {
     CHECK(!error && ctrl == 3);
     test_ioctl2(gpu);
     test_ioctl3(ctrlgpu);
+    test_ctrlgpu_switch2();
     test_ctrl_syncpoints(ctrl);
     test_ctrl_get_config(ctrl);
     test_ctrl_event_fds(ctrl);
@@ -1006,11 +1728,17 @@ int main(void) {
     test_close_during_ioctl();
 
     CHECK(nv_close(ctrlgpu) == 0 && nv_close(ctrl) == 0);
+    test_tsg();
+    test_gsv_syncpoints();
+    test_submission_completion();
+    test_gsv_cache();
+    test_gsv_gpu();
     for (u32 h = 0x100; h < test_next_handle; h++) kobj_unref(test_handles[h - 0x100]);
     CHECK(test_kobjs == 0 && test_locks == 0);
     svcobj_unref(nvdrv);
     for (u32 i = 0; i < NV_GMMU_L1; i++) free(g_hle.nvdrv.gmmu[i]);
     free(g_hle.nvdrv.gmaps);
+    free(g_hle.nvdrv.vafree);
     free(g_mem);
     printf("nvdrv_service: %u checks passed\n", test_checks);
     return 0;

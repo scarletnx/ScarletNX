@@ -30,7 +30,8 @@ enum {
     NVHOST_GPU_ALLOC_GPFIFO_EX = 0x18,       /* AllocGPFIFOEx: not served here */
     NVHOST_GPU_ALLOC_GPFIFO_EX2 = 0x1A,      /* AllocGPFIFOEx2 */
     NVHOST_GPU_SUBMIT_GPFIFO_EX = 0x1B,      /* SubmitGPFIFOBase1/2: Ioctl2's form, the entries in its second input */
-    NVHOST_GPU_SET_TIMESLICE = 0x1D          /* ChannelSetTimeslice */
+    NVHOST_GPU_SET_TIMESLICE = 0x1D,        /* ChannelSetTimeslice */
+    NVHOST_GPU_SET_PREEMPTION_MODES = 0x1F  /* Switch 2: SetPreemptionModes */
 };
 
 /* IoctlSubmitGpfifo {u64 address, u32 num_entries, u32 flags; NvFence fence (in: the wait, out: the fence)}, then
@@ -49,7 +50,7 @@ enum {
     GPU_SUBMIT_FENCE_INCREMENT = 1u << 1, /* fence_increment: the host increments the syncpoint after them */
     GPU_SUBMIT_NEW_HW_FORMAT = 1u << 2,   /* new_hw_format: ignored */
     GPU_SUBMIT_SUPPRESS_WFI = 1u << 4,    /* suppress_wfi: ignored */
-    GPU_SUBMIT_INCREMENT_VALUE = 1u << 8  /* increment_value: the entries make fence.value increments themselves */
+    GPU_SUBMIT_INCREMENT_VALUE = 1u << 8  /* increment_value: fence.value increments, stream-owned on Maxwell */
 };
 /* the increments fence_increment adds after the entries: two syncpoint increments, as Eden's
    BuildIncrementCommandList pushes them (and Eden's SubmitGPFIFOImpl promises them) */
@@ -63,4 +64,7 @@ enum { GPU_ALLOC_OBJ_CTX_CLASS_NUM = 0, GPU_ALLOC_OBJ_CTX_OBJ_ID = 8 };
 enum { GPU_USER_DATA = 0 };
 /* IoctlAllocGpfifoEx {u32 num_entries, num_jobs, flags; out NvFence fence; u32 reserved[3]} */
 enum { GPU_ALLOC_GPFIFO_FENCE_ID = 12, GPU_ALLOC_GPFIFO_FENCE_VALUE = 16 };
+/* SetPreemptionModes {u32 graphics, compute}: 0 retains the mode, graphics 1 is WFI,
+   compute 1 is WFI and 2 is CTA. Commands finish before the runtime switches channels. */
+enum { GPU_PREEMPTION_GRAPHICS = 0, GPU_PREEMPTION_COMPUTE = 4 };
 #endif

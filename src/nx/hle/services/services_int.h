@@ -105,6 +105,8 @@ SvcObj* new_ectx(void);
 SvcObj* new_spl(void);
 SvcObj* new_btmu(void);
 SvcObj* new_audin(void);
+SvcObj* new_audu(void);
+SvcObj* new_stpl(void);
 u32 apm_configuration(u32 mode); /* apm's performance configuration of a mode, Normal (0) or Boost */
 void apm_set_configuration(u32 mode, u32 config);
 void apm_cpu_boost(u32 boost); /* am's SetCpuBoostMode: Boost mode's configuration for it */
@@ -207,6 +209,13 @@ typedef struct {
     u32 kb_len;
     u16 kb_text[SWKBD_TEXT_CHARS];
 } LibApplet;
+/* The application's GSV bootstrap and image/frame/GPU/syncpoint/display context transitions, under HostAm.lock. */
+typedef struct {
+    u32 phase, image_phase, frame_phase, gpu_phase;
+    u8 syncpoint_context;
+    u8 nvdrv_opened;
+    u8 display_context;
+} AmGraphics;
 typedef struct {
     /* the application's message queue: a message stays queued until ReceiveMessage takes it, and the event is
        signaled while one is */
@@ -237,6 +246,8 @@ typedef struct {
     AmVolumes volumes[AM_VOLUMES];
     AmLock lock_objs[AM_LOCKS];
     LibApplet applets[AM_APPLETS];
+    AmGraphics graphics;
+    u32 graphics_session; /* retained KO_SESSION, shared by all SelfControllers for this application */
     u32 storage_next, accessor_next, volume_next, lock_obj_next, applet_next;
 } HleAm;
 /* am's host side: locks and condition variables, which a save state never holds (hle.h's g_host). And under lock, the
@@ -406,6 +417,14 @@ typedef struct {
     u32 state;
     u32 availability;
 } NfcUser;
+#define STPL_SHIMS 4 /* stpl:u's shim objects: the SDK keeps one for the process */
+/* a stpl:u shim object: the guest HID shared memory and the connection-state event it hands out, both never written
+   to or signaled, since no GameShare guest connects */
+typedef struct {
+    u32 obj;
+    u32 hid_shm;
+    u32 connection_event;
+} StplShim;
 typedef struct {
     u32 apm_config[APM_MODES]; /* each mode's configuration, as a session or SetCpuBoostMode last set it */
     Mm mms[MM_SESSIONS];
@@ -415,6 +434,8 @@ typedef struct {
     int aoc_scanned;
     i32 aoc_count, aoc_index[AOC_MAX];
     u32 irs_shm;
+    StplShim stpl_shims[STPL_SHIMS];
+    u32 stpl_shim_next;
 } HleMisc;
 /* misc's host side: locks and condition variables, which a save state never holds (hle.h's g_host) */
 typedef struct {

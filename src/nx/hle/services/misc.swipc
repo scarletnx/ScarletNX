@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The smaller services (misc.c): apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, nim, aoc,
-# irs, mii, ectx, spl, btm, audin. Names and argument types from Switchbrew, libnx and the SDK's own symbols
+# irs, mii, ectx, spl, btm, audin, aud:u. Names and argument types from Switchbrew, libnx and the SDK's own symbols
 
 # ================================================================ apm
 type nn::apm::PerformanceMode = i32;
@@ -445,6 +445,46 @@ interface nn::audio::detail::IAudioInManager is audin:u {
         -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
 }
 interface nn::audio::detail::IAudioIn {
+}
+
+# ================================================================ aud:u
+# Switch 2: the SDK's nn::audio::CreateUserClientSessionByHipc opens aud:u, and ListAudioIns, ListAudioOuts,
+# CreateAudioRendererManager and SetSpatialDownmixOutputMode take their managers from it (commands 0 to 3, each with
+# no input). The runtime has no spatial downmix manager, so command 3 stays unknown
+@fallback(ipc_unknown)
+interface nn::audio::IUserClientSession is aud:u {
+    [0] GetAudioInManager() -> object<nn::audio::detail::IAudioInManager> manager;
+    [1] GetAudioOutManager() -> object<nn::audio::detail::IAudioOutManager> manager;
+    [2] GetAudioRendererManager() -> object<nn::audio::detail::IAudioRendererManager> manager;
+}
+
+# ================================================================ stpl:u: GameShare (stream play), with no guest
+# Switch 2: nn::streamplay::detail::CreateUserServiceByHipc opens stpl:u, and command 0 (the client's version) gives
+# the shim object every nn::streamplay call goes through. Its client sends the commands below as the SDK's proxy
+# does. No guest ever connects: the guest HID memory stays zero (no style set) and the event is never signaled
+type nn::streamplay::HidSharedMemoryConfig = struct {
+    u64 size;
+    u64 offset;
+};
+# what the SDK's audio callbacks report: a flag (the system's, set by an audio change callback) and the volume of
+# the built-in speaker, the TV and the external output
+type nn::streamplay::detail::AudioOutputState = struct {
+    b8 flag;
+    f32 speaker_volume;
+    f32 tv_volume;
+    f32 external_volume;
+};
+interface nn::streamplay::detail::IUserService is stpl:u {
+    [0] CreateUserShimScopedObject(u32 version) -> object<nn::streamplay::detail::IUserShimScopedObject> shim;
+}
+@fallback(ipc_unknown)
+interface nn::streamplay::detail::IUserShimScopedObject {
+    [1] GetRequiredMemorySize(u8 type, u8 mode, i32 guests) -> u32 size;
+    [2] Initialize(u8 type, u8 mode, i32 guests, pid);
+    [7] GetConnectionStateChangedEvent() -> handle<copy, event> event;
+    [300] GetGuestHidSharedMemory() -> (nn::streamplay::HidSharedMemoryConfig config,
+                                        handle<copy, shared_memory> shared_memory);
+    [510] SetAudioOutputState(nn::streamplay::detail::AudioOutputState state);
 }
 
 # ================================================================ ngc:u and ngct:u: the profanity filter, with no word
