@@ -13,6 +13,8 @@
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/hle/services/nvdrv.h"
+#include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
 
@@ -692,6 +694,38 @@ static VkImageViewType tic_view_type(u32 type, u32 d) {
     return VK_IMAGE_VIEW_TYPE_2D; /* 1D textures are 2D images one texel high */
 }
 
+/* a texture's memory where it isn't one host run, over the runs the GPU's page table maps of it (gmmu_pieces, which
+   clips them to it): first the bytes they cover, then what vk_written_since says of them, -1 once a run can't tell */
+typedef struct {
+    u64 mapped;
+    u32 since;
+    int ask, written;
+} TexRuns;
+static void tex_run(void* ctx, u64 gva, u64 cpu, u64 n) {
+    TexRuns* r = ctx;
+    (void)gva;
+    if (!r->ask) {
+        r->mapped += n;
+        return;
+    }
+    if (r->written < 0) return;
+    int w = vk_written_since(GP(cpu), n, r->since);
+    r->written = w < 0 ? -1 : r->written | w;
+}
+/* vk_written_since for the texture's memory: its one host run, or each mapped run of a texture with holes in its
+   mapping (a virtual pool's, mapped a 64 KiB tile at a time), whose tiles the CPU writes in place. -1 for memory in
+   several runs and no holes (hashed, as before), and where write tracking is off */
+static int tex_written_since(const Surf* t, u64 gva) {
+    u8* host = gmem_host(gva, t->size);
+    TexRuns r = {0, t->wseen, 0, 0};
+    if (host) return vk_written_since(host, t->size, t->wseen);
+    gmmu_pieces(gva, t->size, tex_run, &r);
+    if (r.mapped >= t->size) return -1;
+    r.ask = 1;
+    gmmu_pieces(gva, t->size, tex_run, &r);
+    return r.written;
+}
+
 static u32 g_bud_frame;
 static i64 g_bud;
 /* a texture that stayed the same over its last 40 frames' checks: the schedule below checks it by samples */
@@ -735,7 +769,7 @@ static Surf* tex_check(Surf* t, u64 gva) {
     u32 ww_epoch = vk_ww_epoch(); /* before the check */
     if (t->checked != g_vk_present || t->ww_epoch != ww_epoch) {
         u32 wnow = vk_ww_now();
-        int wr = vk_written_since(gmem_host(gva, t->size), t->size, t->wseen);
+        int wr = tex_written_since(t, gva);
         int epoch = t->ww_epoch != ww_epoch;
         t->ww_epoch = ww_epoch;
         if (wr >= 0) {
@@ -933,7 +967,7 @@ texture_from_memory:
     t->size = stride * (layers - 1) + sz;
     t->ww_epoch = vk_ww_epoch(); /* hashed in this epoch: read before the hash */
     t->wseen = vk_ww_now();
-    vk_written_since(gmem_host(gva, t->size), t->size, 0); /* starts tracking it */
+    tex_written_since(t, gva); /* starts tracking it */
     t->wseen = vk_ww_now();
     t->gw = gpu_mem_generation();
     t->hash = mem_hash(gva, t->size);

@@ -1318,6 +1318,147 @@ static int check_dma_texture(void) {
     puts("dma into a texture: its image takes the lines, nothing loads again, memory matches the reference");
     return 0;
 }
+/* A volume in a virtual pool, mapped a 64 KiB page at a time: 1664 KiB in blocks 1 GOB high and 16 deep, 13 GOBs a
+   row, so a page runs on into the next row of blocks; BC1 416x256x32, and RGBA8 208x64x32, which every device samples
+   in 3D. Pages 0 and 2 are mapped when it is made. After 60 frames of it unchanged (its checks settled), a page's bytes
+   reach it each way they can: (a) page 1 mapped over memory that holds it already, (b) the CPU writing mapped page 1,
+   (c) a DMA copy into page 2. After the frame that follows (a submission, a present), every texel or block of the
+   image is the one memory has (zeros in the holes) */
+#define SV_TILE  0x10000u
+#define SV_BYTES (26 * SV_TILE) /* 832 bytes by 64 rows (of texels or blocks) in 32 slices, none of them padding */
+typedef struct {
+    const char* name;
+    u32 tic0;     /* the header's format word */
+    u32 eb, bw;   /* bytes of a texel or block, and its texels across and down */
+    VkFormat vk;  /* what the device has to sample it as, or the check is skipped */
+    u64 gva, cpu; /* the volume, and the tiles behind it then the DMA's source */
+} SvCase;
+/* the byte offset in the volume of byte xb of row y (of texels or blocks) of slice z */
+static u64 sv_offset(u32 xb, u32 y, u32 z) { return bl_offset(xb, y, z, 832, 64, 0, 4); }
+/* the texels or blocks of t's image that differ from memory's: how many, and the first of them in *first (x, row,
+   slice) with its bytes in the image and in memory. -1 when the image couldn't be read */
+static int sv_differ(const SvCase* c, Surf* t, u32 first[3], u64* image_has, u64* memory_has) {
+    static u8 memory[SV_BYTES];
+    const u32 across = 832 / c->eb;
+    VkBuffer buffer;
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {across * c->bw, 64 * c->bw, 32}};
+    vk_lock();
+    u8* image = vk_readback_buffer(SV_BYTES, &buffer);
+    if (image) {
+        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+        vk_finish();
+        vk_readback_ready();
+    }
+    vk_unlock();
+    if (!image) return -1;
+    gmem_read(c->gva, memory, SV_BYTES); /* -1 for the holes, which read as zeros */
+    int n = 0;
+    for (u32 z = 0; z < 32; z++)
+        for (u32 y = 0; y < 64; y++)
+            for (u32 x = 0; x < across; x++) {
+                const u8 *in = image + (((u64)z * 64 + y) * across + x) * c->eb,
+                         *mem = memory + sv_offset(x * c->eb, y, z);
+                if (!memcmp(in, mem, c->eb)) continue;
+                if (!n++) {
+                    first[0] = x, first[1] = y, first[2] = z;
+                    *image_has = c->eb == 8 ? snx_ld_le64(in) : snx_ld_le32(in);
+                    *memory_has = c->eb == 8 ? snx_ld_le64(mem) : snx_ld_le32(mem);
+                }
+            }
+    return n;
+}
+/* what comes between two frames' draws of the volume: a submission (a new epoch for the caches' checks) and a present */
+static Surf* sv_frame(const u32* tic) {
+    g_renderer->mem_may_have_changed();
+    g_vk_present++;
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    vk_unlock();
+    return t;
+}
+/* one way in: after it, the next frame's texture is the one made and all of it is memory's. 1 when not, said with the
+   first texel or block that differs */
+static int sv_way(const SvCase* c, const char* way, Surf* t, const u32* tic) {
+    u64 uploads, bytes, uploads2, bytes2, image_has = 0, memory_has = 0;
+    u32 first[3] = {0};
+    vk_tex_stats(&uploads, &bytes);
+    Surf* now = sv_frame(tic);
+    vk_tex_stats(&uploads2, &bytes2);
+    int differ = now ? sv_differ(c, now, first, &image_has, &memory_has) : -1;
+    if (now == t && differ == 0) {
+        printf("sparse volume %s, %s: all of it as memory has it, %llu bytes loaded again\n", c->name, way,
+               (unsigned long long)(bytes2 - bytes));
+        return 0;
+    }
+    fprintf(stderr,
+            "sparse volume %s, %s: the same texture %d, %llu bytes loaded again (%llu loads); %d texels or blocks of "
+            "the image differ from memory\n",
+            c->name, way, now == t, (unsigned long long)(bytes2 - bytes), (unsigned long long)(uploads2 - uploads),
+            differ);
+    if (differ > 0)
+        fprintf(stderr, "  the first, (%u, %u) of slice %u: image %016llx, memory %016llx\n", first[0], first[1],
+                first[2], (unsigned long long)image_has, (unsigned long long)memory_has);
+    return 1;
+}
+static int sparse_volume(const SvCase* c) {
+    const u32 across = 832 / c->eb, w = across * c->bw - 1, h = 64 * c->bw - 1;
+    const u32 tic[8] = {c->tic0, (u32)c->gva, (u32)(c->gva >> 32) | 3u << 21, 4u << 6, w | 2u << 23, h | 31u << 16, 0,
+                        0};
+    u32 first[3];
+    u64 image_has, memory_has;
+    if (vk_tic_format_3d(tic[0], 0).vk != c->vk) {
+        printf("sparse volume %s: the GPU has no such 3D images, skipped\n", c->name);
+        return 0;
+    }
+    /* tile 1 is blocks 8 to 15 of the first row of blocks: 8 to 12 of it, then 0 to 2 of the next one (rows 8 to 15) */
+    CHECK(sv_offset(512, 0, 0) == SV_TILE && sv_offset(8, 9, 4) / SV_TILE == 1 && sv_offset(831, 7, 15) / SV_TILE == 1);
+    CHECK(mem_map(c->cpu, 4 * SV_TILE, MS_NORMAL, PERM_RW) == 0);
+    for (u32 i = 0; i < 4 * SV_TILE; i++) GP(c->cpu)[i] = (u8)(i * 29 + (i >> 16) * 71 + 3);
+    memset(GP(c->cpu + 2 * SV_TILE), 0, SV_TILE); /* tile 2 holds zeros until the DMA */
+    gmmu_map(c->gva, c->cpu, SV_TILE);
+    gmmu_map(c->gva + 2 * SV_TILE, c->cpu + 2 * SV_TILE, SV_TILE);
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    vk_unlock();
+    CHECK(t && t->type == VK_IMAGE_VIEW_TYPE_3D && t->w == w + 1 && t->h == h + 1 && t->depth3d == 32 &&
+          t->size == SV_BYTES);
+    CHECK(sv_differ(c, t, first, &image_has, &memory_has) == 0);
+    for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
+    /* (a) the game's MapVirtual: pages that hold the tile, mapped at its place in the pool */
+    gmmu_map(c->gva + SV_TILE, c->cpu + SV_TILE, SV_TILE);
+    int failed = sv_way(c, "a tile mapped", t, tic);
+    for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
+    /* (b) the CPU writes 8 bytes of the mapped tile */
+    const u8 cpu_bytes[8] = {0x1F, 0x00, 0xE0, 0x07, 0x1B, 0x6C, 0xB1, 0xC6};
+    memcpy(GP(c->cpu + sv_offset(576, 2, 3)), cpu_bytes, 8);
+    failed |= sv_way(c, "the CPU writing a tile", t, tic);
+    for (int i = 0; i < 60; i++) CHECK(sv_frame(tic) == t);
+    /* (c) a DMA copy of 64 bytes into tile 2 (block 3 of the second row of blocks), from a page past the volume */
+    GpuDmaOp o = {.width = 64, .line_in = 64, .line_out = 64, .lines = 1};
+    const u64 src = c->gva + 0x200000;
+    gmmu_map(src, c->cpu + 3 * SV_TILE, SV_TILE);
+    CHECK(sv_offset(240, 10, 6) / SV_TILE == 2);
+    o.src = pitch_side(src + 0x340, 0);
+    o.dst = pitch_side(c->gva + sv_offset(240, 10, 6), 0);
+    CHECK(g_renderer->dma_copy(&o));
+    failed |= sv_way(c, "a DMA copy into a tile", t, tic);
+    return failed;
+}
+static int check_sparse_volume(void) {
+    const SvCase cases[] = {
+        {"BC1", 0x58D24924u, 8, 4, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, 0x240000000ull, HEAP_BASE + 0xC00000},
+        {"RGBA8", 0x08 | 2u << 7 | 2u << 10 | 2u << 13 | 2u << 16, 4, 1, VK_FORMAT_R8G8B8A8_UNORM, 0x250000000ull,
+         HEAP_BASE + 0xC40000},
+    };
+    int failed = 0;
+    for (u32 i = 0; i < sizeof cases / sizeof *cases; i++) failed |= sparse_volume(&cases[i]);
+    CHECK(!failed);
+    puts("sparse volume: a tile mapped, written by the CPU or by DMA shows in the next frame");
+    return 0;
+}
 static int check_dma(void) {
     GpuDmaOp o;
     gmmu_map(DMA_GA, DMA_A, DMA_SPAN);
@@ -1839,6 +1980,7 @@ int main(int argc, char** argv) {
     CHECK(!check_nvdec_vic());
     CHECK(!check_dma());
     CHECK(!check_dma_texture());
+    CHECK(!check_sparse_volume());
     CHECK(!check_dma_untracked_source());
     CHECK(!check_blit());
     CHECK(!check_rt_overlap());
