@@ -1501,15 +1501,16 @@ static unsigned snx_physical_cores(void) {
     return 0;
 #endif
 }
-/* The threads an AOT pass (a game's recompile) is given when its count is left open, the recompile setting's Auto:
-   one per physical core where the system says them, else per processor, capped at 85% of that, so the last part of
-   the computer stays free for the rest of it: a pass that takes every core makes the machine it shares stutter, and
-   a hyperthread does an LLVM pass little good anyway, two threads on one physical core only split its throughput.
-   At most 85%, rounded down, leaves one whole core free on any machine of four or more, and a fifth of a large one.
-   Never 0, and never more than the online processors */
+/* The threads an AOT pass (a game's recompile) is given when its count is left open, the recompile setting's Auto: a
+   core each, the physical cores where the system says them, else the processors, capped so a part of the machine
+   stays free for the rest of it. A pass that took every core would make the computer it shares stutter for the
+   minutes a large game's recompile runs and heat a phone, and an LLVM pass gains little from a hyperthread anyway:
+   two threads on one physical core only split its throughput. The cap is a reserve of one whole core, or a quarter
+   of the machine where that is more, which is at most 75% rounded down: a machine of 4 keeps a thread off, 6 and 8
+   keep two, 16 keep four, 32 keep eight. Never 0, and never more than the online processors */
 unsigned snx_build_threads(void) {
     unsigned logical = snx_cpu_count(), cores = snx_physical_cores();
-    unsigned jobs = (cores ? cores : logical) * 85u / 100u;
+    unsigned jobs = (cores ? cores : logical) * 75u / 100u;
     if (jobs < 1u) jobs = 1u;
     if (jobs > logical) jobs = logical;
     return jobs;
