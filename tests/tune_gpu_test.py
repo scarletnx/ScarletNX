@@ -73,6 +73,13 @@ class TunerTest(unittest.TestCase):
         self.assertNotIn('pipeline_threads', axes)
         self.assertNotIn('jit_threads', axes)
 
+    def test_storage_ordering_only_competes_when_nvn_loader_is_active(self):
+        baseline = {'vk_memory': '0'}
+        self.assertNotIn('nvn_storage_order', tuner.active_axes('', baseline))
+        for prefix in ('nvn: ', 'nvn: nvn_direct: '):
+            active = tuner.active_axes(prefix + 'the runtime implements 1 NVN functions', baseline)
+            self.assertEqual(set(active['nvn_storage_order']), {'0', '1', '2'})
+
     def test_timeout_stops_only_its_owned_process(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = tuner.run_command([sys.executable, '-c', 'import time; time.sleep(30)'], tmp,

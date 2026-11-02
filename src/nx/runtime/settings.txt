@@ -882,6 +882,15 @@ setting Buffer copy stats
     startup
     words Off|On
     help 1 = logs what the renderer copies between guest memory and its buffers, and why it waits for their results
+setting NVN storage ordering
+    key nvn_storage_order
+    int 0 2
+    default 2
+    startup
+    words Conservative|Explicit|Deferred
+    help NVN draws use their explicit storage barriers, allowing independent writes through overlapping views.
+    help Deferred records the ordering requirement and emits a Vulkan barrier at the next dependent buffer use.
+    help 0 keeps conservative per-draw dependencies for comparisons or command recordings from older builds.
 setting Descriptor buffers
     key vk_descriptors
     int 0 1
