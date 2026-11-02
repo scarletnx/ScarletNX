@@ -463,6 +463,13 @@ the window scales the larger image to its size. Bounded PPM snapshots land in
 unavailable and frames are only recorded; without a Vulkan device the presenter
 reports unavailability and no frame is fabricated.
 
+The separate windows and the two render resolutions are **not verified on the
+development host**. Its Vulkan driver cannot import the board's shared RAM
+(`VK_EXT_external_memory_host`), so the 3DS device cannot start and no game frame
+is drawn. A host whose driver imports that memory is needed to check the windows,
+the scales and the presentation. The CPU side, the AOT modules and the settings
+still run there.
+
 Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
 dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
 semaphore and component loads. Initialize answers on the audio pipe with the DSP RAM
