@@ -5,7 +5,10 @@
    the flags and FPCR while the host's code changes them. A hook runs its handler, or the function's own code from
    its moved first word. A handler runs guest code again (a nested run). A kick stops a loop of guest code that makes
    no outcall, and the loop goes on with its registers. A BRK stops in the runtime, which steps past it */
-#define _GNU_SOURCE
+/* the native build defines it (tests/CMakeLists.txt), the qemu one does not */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/nce/nce_host.h"
