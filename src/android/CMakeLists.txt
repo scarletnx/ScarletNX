@@ -9,7 +9,7 @@
 #   snx_android_framework   ScarletNX's android.* and the runtime's Java side (framework/), a jar beside the program
 set(snx_android_c_options -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes
                           -Werror=missing-variable-declarations)
-add_library(snx_android_dex STATIC dex/dex.c dex/classfile.c dex/translate.c)
+add_library(snx_android_dex STATIC dex/dex.c dex/classfile.c dex/translate.c dex/annotations.c)
 target_link_libraries(snx_android_dex PUBLIC scarletnx-common)
 set_target_properties(snx_android_dex PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_android_dex PRIVATE ${snx_android_c_options})
