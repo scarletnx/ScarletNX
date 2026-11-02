@@ -9,6 +9,8 @@
 Hle g_hle;
 HleHost g_host;
 _Thread_local HleTls t_hle;
+/* the one program's CPU features (hle.h), until its npdm says (main.c's read_npdm) */
+u64 g_guest_features;
 
 void hle_init(void) {
     int i;
