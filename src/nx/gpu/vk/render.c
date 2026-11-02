@@ -1975,8 +1975,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         int sten_w = zt && zt->f.stencil && ds->dyn.stencil_test &&
                      ((ds->dyn.face[0].wmask & 0xFF) || (ds->dyn.face[1].wmask & 0xFF));
         int depth_ro = t && t == zt && !ds->dyn.depth_write && !sten_w;
-        u32 slots = 0; /* the color slots t is bound to, when the fragment shader may sample it in place */
-        if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED)
+        /* the color slots t is bound to, when the fragment shader may sample it in place: only where each fragment
+           reads its own pixel. Other pixels may be the draw's own writes already, in any order the GPU's tiles take,
+           where the guest's texture reads see what was there before the draw: those read a copy */
+        u32 slots = 0;
+        if (t && fb && g_vk.has_feedback && t->layout != VK_IMAGE_LAYOUT_UNDEFINED &&
+            (s->si.tex_own_pixel_mask >> i & 1))
             for (u32 j = 0; j < n; j++)
                 if (rt[j] == t) slots |= 1u << j;
         if (slots) {

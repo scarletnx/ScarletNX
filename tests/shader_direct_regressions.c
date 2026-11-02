@@ -3214,6 +3214,53 @@ static u32 quad_operand(const u32* code, size_t words, u32 opcode) {
     return found;
 }
 
+/* ShaderInfo.tex_own_pixel_mask: a slot every read of which fetches the fragment's own pixel, TLDS 2D.LZ or TLD.LZ at
+   F2I.TRUNC of IPA's a[0x70] and a[0x74], is one a draw may sample in place while rendering to it. A fetch one row
+   off, a filtered TEXS, or both kinds of read of one slot leave it out: those read other pixels, which the draw
+   itself may have written already */
+#define OWN_TEXS(encoding, a, b)                                                                                       \
+    (0xd000000000000000ull | 1ull << 59 | (u64)(encoding) << 53 | 0x10ull << 36 | 0xffull << 28 | (u64)(b) << 20 |     \
+     7ull << 16 | (u64)(a) << 8)
+static void feedback_own_pixel(void) {
+    const u64 ipa_x = 0xe003ff870ff7ff00ull;                /* IPA R0, a[0x70] */
+    const u64 ipa_y = 0xe003ff874ff7ff01ull;                /* IPA R1, a[0x74] */
+    const u64 f2i_x = F2I, f2i_y = F2I | 1ull << 20 | 1ull; /* F2I.TRUNC R0, R0 and R1, R1 */
+    const u64 tlds = OWN_TEXS(2, 0, 1) | 1ull << 57;        /* TLDS 2D.LZ R0, R0, R1 */
+    const u64 tld = 0xdc00000000000004ull | 7ull << 51 | 0xfull << 31 | 2ull << 28 | 0x10ull << 36 | 0xffull << 20 |
+                    7ull << 16;                  /* TLD.LZ R4, R0 on a 2D texture */
+    const u64 texs = OWN_TEXS(2, 0, 1);          /* TEXS 2D.LZ R0, R0, R1 */
+    const u64 row_below = 0x1c00000000170101ull; /* IADD32I R1, R1, 1 */
+    const u64 own_tlds[] = {ipa_x, ipa_y, f2i_x, f2i_y, tlds};
+    const u64 own_tld[] = {ipa_x, ipa_y, f2i_x, f2i_y, tld};
+    const u64 shifted[] = {ipa_x, ipa_y, f2i_x, f2i_y, row_below, tlds};
+    const u64 sampled[] = {ipa_x, ipa_y, texs};
+    const u64 both[] = {ipa_x, ipa_y, f2i_x, f2i_y, tlds, texs};
+    struct {
+        const u64* instructions;
+        int count;
+        u64 own;
+        const char* what;
+    } cases[] = {{own_tlds, 5, 1, "TLDS at gl_FragCoord's integer x and y reads the fragment's own pixel"},
+                 {own_tld, 5, 1, "TLD at gl_FragCoord's integer x and y reads the fragment's own pixel"},
+                 {shifted, 6, 0, "TLDS a row below gl_FragCoord reads another pixel"},
+                 {sampled, 3, 0, "TEXS at gl_FragCoord reads through the sampler, not the own pixel"},
+                 {both, 6, 0, "a slot read by TLDS at its own pixel and by TEXS reads another pixel"}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(cases[i].instructions, cases[i].count, ST_FS, &info, &words, 0);
+        check_translated(code, &info, cases[i].what);
+        if (code) {
+            if (info.ntex != 1 || info.tex_own_pixel_mask != cases[i].own)
+                fprintf(stderr, "  %d slots, own pixel mask %#llx, expected %#llx\n", info.ntex,
+                        (unsigned long long)info.tex_own_pixel_mask, (unsigned long long)cases[i].own);
+            check(info.ntex == 1 && info.tex_own_pixel_mask == cases[i].own, cases[i].what);
+        }
+        free(code);
+    }
+}
+#undef OWN_TEXS
+
 /* A fragment program's SHFL within its quad (mask 0x1c03) from a lane known when translated is a quad operation:
    the quad's helper lanes, which a triangle's edge leaves out, take part in it, as the console's lanes do in SHFL. One
    game's edge pass read its upper left lane so and drew blue lines along every edge. Other SHFL stay shuffles */
@@ -3423,6 +3470,7 @@ int main(int argc, char** argv) {
     fswzadd_forms();
     shfl_quad_forms();
     shfl_predicate();
+    feedback_own_pixel();
     for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
     return failures ? 1 : 0;
 }
