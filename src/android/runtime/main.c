@@ -6,6 +6,7 @@
 #include "android/db/sqlite_jni.h"
 #include "android/bridge/jni.h"
 #include "android/bridge/native.h"
+#include "android/bridge/hle_assets.h"
 #include "android/hwui/render.h"
 #include "android/hwui/text.h"
 #include "android/res/xml_jni.h"
@@ -207,6 +208,7 @@ static int run_apk(const char* argv0, const char* apk, char** options, size_t op
         fprintf(stderr, "scarletnx-android: %s\n", error);
         return 1;
     }
+    hle_android_set_assets(android_app_assets());
     if (!android_app_open(&install, error, sizeof error)) {
         fprintf(stderr, "scarletnx-android: %s\n", error);
         android_app_close();

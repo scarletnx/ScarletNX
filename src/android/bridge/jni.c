@@ -154,6 +154,9 @@ static GuestEnv* guest_env(JNIEnv* host) {
 static JNIEnv* host_env(uint64_t guest) {
     return ((const GuestEnv*)(uintptr_t)guest)->host;
 }
+JNIEnv* bridge_jni_host(uint64_t guest_env) {
+    return host_env(guest_env);
+}
 
 /* ---- method signatures ---- */
 

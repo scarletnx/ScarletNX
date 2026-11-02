@@ -92,6 +92,8 @@ Each package's plan, by how apps use it.
   exception that Android's JNI throws for its code.
 - **`android.util`, `android.icu`.** Plain Java. `android.icu` maps onto `java.text` and `java.util` where an
   app reaches it.
+- **`android.webkit`.** Off: no web engine. A `WebView` keeps its settings and clients, and a page that it loads
+  starts and finishes blank, so an app's flow goes on. The cookie manager keeps cookies in memory.
 - **Off.** `android.view.accessibility`, `android.view.autofill`, `android.view.contentcapture`,
   `android.view.translation`, `android.telephony`, `android.location`, `android.hardware`.
 
