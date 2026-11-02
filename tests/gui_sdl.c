@@ -1229,6 +1229,21 @@ static void set_env(const char* name, const char* value) {
 #endif
     assert(!(value ? SDL_setenv_unsafe(name, value, 1) : SDL_unsetenv_unsafe(name)));
 }
+/* name set to base/sub, base itself with no sub */
+static void set_env_path(const char* name, const char* base, const char* sub) {
+    char* path = sub ? snx_path_join(base, sub) : snx_strdup(base);
+    set_env(name, path);
+    free(path);
+}
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the data folder is XDG's */
+/* path is base/sub, as the code joins them */
+static bool joined_is(const char* path, const char* base, const char* sub) {
+    char* expected = snx_path_join(base, sub);
+    bool same = path && !strcmp(path, expected);
+    free(expected);
+    return same;
+}
+#endif
 /* Settings > App's UI scale, its row in focus, made size through its dialog's OK, then kept or not */
 static void pick_size(App* app, int size, bool keep) {
     key(app, SDLK_RETURN);
@@ -3633,10 +3648,15 @@ int main(int argc, char** argv) {
     set_env("APPDATA", own_home);
     set_env("USERPROFILE", own_home);
     assert(getenv("APPDATA") && !strcmp(getenv("APPDATA"), own_home));
-    set_env("XDG_DATA_HOME", "/nonexistent/snx-gui-test");
-    set_env("XDG_CONFIG_HOME", "/nonexistent/snx-gui-test/config");
-    set_env("XDG_STATE_HOME", "/nonexistent/snx-gui-test/state");
-    set_env("XDG_CACHE_HOME", "/nonexistent/snx-gui-test/cache");
+    /* XDG's under a file, where no one can make a folder, root either (a CI container, a jail): the menu's writes there
+       fail for whoever runs this, and none is left for the next run's Disk count */
+    char* xdg_file = snx_path_join(own_home, "a file");
+    char* xdg_root = snx_path_join(xdg_file, "snx-gui-test");
+    assert(!snx_write_file(xdg_file, "", 0));
+    set_env_path("XDG_DATA_HOME", xdg_root, NULL);
+    set_env_path("XDG_CONFIG_HOME", xdg_root, "config");
+    set_env_path("XDG_STATE_HOME", xdg_root, "state");
+    set_env_path("XDG_CACHE_HOME", xdg_root, "cache");
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
     app.open_url = record_url; /* no file manager opens on the machine */
@@ -3648,11 +3668,11 @@ int main(int argc, char** argv) {
     app.animations_off = true;
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID)
     /* no checkout and no games/ beside the test: recompiled/ and themes/ come from the user's data folder */
-    assert(!strcmp(app.data_dir, "/nonexistent/snx-gui-test/scarletnx"));
-    assert(!strcmp(app.games_dir, "/nonexistent/snx-gui-test/scarletnx/recompiled"));
-    assert(!strcmp(app.themes_dirs[0], "/nonexistent/snx-gui-test/scarletnx/themes"));
+    assert(joined_is(app.data_dir, xdg_root, "scarletnx"));
+    assert(joined_is(app.games_dir, xdg_root, "scarletnx/recompiled"));
+    assert(joined_is(app.themes_dirs[0], xdg_root, "scarletnx/themes"));
     /* and the keys go in it, where the driver reads them first, not in ~/.switch */
-    assert(!strcmp(app.keys_path, "/nonexistent/snx-gui-test/scarletnx/prod.keys"));
+    assert(joined_is(app.keys_path, xdg_root, "scarletnx/prod.keys"));
 #endif
     /* the themes that come with the GUI: beside it in a build tree, else in share/scarletnx beside its bin/ */
     {
@@ -3746,8 +3766,8 @@ int main(int argc, char** argv) {
     app.settings_file = snx_path_join(temporary, "config/settings.ini"); /* the Settings' picks, kept */
     app.folders_file = snx_path_join(temporary, "config/folders.txt");   /* the player's game folders */
     app.app_file = snx_path_join(temporary, "config/app.ini");           /* Settings > App's picks */
-    /* a start's failure is said in the box over the menu: /nonexistent's dumps/ cannot be made here, but a root that
-       can make it (a CI container) has none */
+    /* a start's failure is said in the box over the menu: XDG's data folder, under a file, gets no dumps/; the one in
+       the test's home (APPDATA, Application Support) does, and has none */
     while (app.confirm.shown) {
         assert(app.confirm.ask == GUI_ASK_ERROR);
         key(&app, SDLK_RETURN);
@@ -6313,8 +6333,8 @@ int main(int argc, char** argv) {
         free(kept);
         app.message[0] = 0;
         app_load(&app);
-        /* what app.ini has that it does not take, named; and first, where /nonexistent cannot be made (a root CI container
-           can), that the data folder's dumps/ could not be */
+        /* what app.ini has that it does not take, named; and first, where it cannot be made (XDG's data folder, under a
+           file), that the data folder's dumps/ could not be */
         {
             char* dumps = snx_path_join(app.data_dir, "dumps");
             char* unmade = snx_is_dir(dumps) ? snx_strdup("") : snx_format("Could not make %s ", dumps);
@@ -12414,8 +12434,8 @@ int main(int argc, char** argv) {
                     app.drivers = drivers;
                 }
             }
-            set_env("XDG_CONFIG_HOME", "/nonexistent/snx-gui-test/config");
-            set_env("XDG_CACHE_HOME", "/nonexistent/snx-gui-test/cache");
+            set_env_path("XDG_CONFIG_HOME", xdg_root, "config");
+            set_env_path("XDG_CACHE_HOME", xdg_root, "cache");
             free(app.recent_file);
             app.recent_file = NULL;
             free(app.games_dir);
@@ -12436,7 +12456,7 @@ int main(int argc, char** argv) {
         folder = menu_folder(&app, SNX_USER_STATE, true);
         assert(folder && snx_is_dir(folder));
         free(folder);
-        set_env("XDG_DATA_HOME", "/nonexistent/snx-gui-test");
+        set_env_path("XDG_DATA_HOME", xdg_root, NULL);
         free(expected);
         free(run);
         free(recent);
@@ -12624,7 +12644,9 @@ int main(int argc, char** argv) {
     cleanup(&app);
     assert(!snx_remove_tree(temporary));
     free(temporary);
-    assert(!snx_remove_tree(own_home));
+    assert(!snx_remove_tree(own_home)); /* the file over XDG's too */
+    free(xdg_root);
+    free(xdg_file);
     free(own_home);
     free(self);
     free(input);
