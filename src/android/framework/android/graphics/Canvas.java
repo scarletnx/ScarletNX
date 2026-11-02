@@ -242,7 +242,6 @@ public class Canvas {
         w.i32(p.verbCount);
         w.i32(p.pointCount);
         w.bytes(p.verbs, 0, p.verbCount);
-        w.pad4();
         for (int i = 0; i < p.pointCount; ++i) w.f32(p.points[i]);
     }
 

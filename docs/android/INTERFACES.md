@@ -43,13 +43,13 @@ wrapper over it through JNI, not a copy of the library in Java.
 | Binder (`android.os.Binder`, `Parcel`) | `/dev/binder`, libbinder | Local binders only; `Parcel` a Java byte buffer for the apps that marshal through it | HLE | Planned |
 | libandroid_runtime (the JNI of the framework) | C++ in the framework | Natives that the runtime registers (`android_jvm_register`) | HLE | XML parser, assets, text, SQLite done |
 | libandroidfw (resources, binary XML, assets) | `AssetManager2`, `ResXMLParser` | `src/android/res/` (C): binary XML, resource table, configuration match | HLE | Done: binary XML, `resources.arsc`, themes, style resolution |
-| libhwui (`Canvas`, `RenderNode`, `HardwareRenderer`, `Paint`, `Path`) | Skia over Vulkan or GLES, a RenderThread | Display lists that the Java side records in a byte format, drawn with Vulkan by ScarletNX's renderer | HLE | Recording done; the renderer next |
+| libhwui (`Canvas`, `RenderNode`, `HardwareRenderer`, `Paint`, `Path`) | Skia over Vulkan or GLES, a RenderThread | Display lists that the Java side records in a byte format, drawn with Vulkan by ScarletNX's renderer ([HWUI](HWUI.md)) | HLE | Shapes, paths, strokes and text drawn; bitmaps, gradients and layers next |
 | minikin (text measure and shaping) | minikin and HarfBuzz | HarfBuzz behind `snx.android.hwui.Text` (`src/android/hwui/text.c`), which `Paint` and `Canvas` call | HLE | Shaping and metrics done |
 | Fonts (`/system/fonts`, `fonts.xml`) | System font files | Noto Sans JP (the subset the Switch runtime already uses), which the build copies beside the program into `android-fonts/` | Abstract | Done, one family for every typeface |
-| SurfaceFlinger, BufferQueue, gralloc, HWC | Composer process and buffer allocator | A window's surface is an SDL window's Vulkan swapchain | Abstract | Planned |
-| Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread | Abstract | Planned |
-| Native `Looper` (epoll) | libutils | The main `MessageQueue` waits on SDL's event queue, which other threads wake | HLE | Planned |
-| `Choreographer` vsync | `DisplayEventReceiver` from SurfaceFlinger | The swapchain's present pace | Abstract | Planned |
+| SurfaceFlinger, BufferQueue, gralloc, HWC | Composer process and buffer allocator | A window's surface is an SDL window's Vulkan swapchain, or an image of its own without a display | Abstract | Done |
+| Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread: the left mouse button as a finger, a US keyboard | Abstract | First version |
+| Native `Looper` (epoll) | libutils | The main `MessageQueue` waits in steps of 4 ms and reads SDL's event queue between them | HLE | Done |
+| `Choreographer` vsync | `DisplayEventReceiver` from SurfaceFlinger | A 60 Hz timer; the swapchain's FIFO present holds the main thread to the display | Abstract | Done |
 | SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's amalgamation, a CPM package (`src/android/db/sqlite_jni.c`) | HLE | Done |
 | `SharedPreferences`, files, databases folders | `/data/data/<package>` | A folder of the app in the data folder (`snx.android.data`, or `android/<package>` in ScarletNX's data folder), with Android's XML format for preferences | Abstract | Done |
 | Settings provider (`Settings.Global`, `Secure`, `System`) | A content provider in `system_server` | A table of defaults | HLE | Planned |
