@@ -16,6 +16,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0 /* FreeBSD never reserves swap for a mapping */
+#endif
 #define MIB (1ull << 20)
 static unsigned checks;
 static int fail_commit_after, commit_calls, decommit_calls;
