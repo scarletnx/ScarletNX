@@ -4062,25 +4062,73 @@ static bool show_folder(App* app, const char* folder) {
     free(url);
     return opened;
 }
-/* the game's folder and name, owned, from its program's path */
-static void addons_where(const App* app, char** folder, char** name) {
+/* the folder and name, owned, of the game whose program is game */
+static void game_where(const char* game, char** folder, char** name) {
     const char* leaf;
-    *folder = snx_dirname(app->addons_game);
+    *folder = snx_dirname(game);
     for (leaf = *folder + strlen(*folder); leaf > *folder && leaf[-1] != '/' && leaf[-1] != '\\'; --leaf) continue;
     *name = snx_strdup(leaf);
 }
-/* addons' i's entry, its name after <game>_ */
-static const char* addon_entry(const App* app, size_t i) {
-    const char* under = strchr(app->addons.names[i], '_');
-    return under ? under + 1 : app->addons.names[i];
+/* the box's game's folder and name, owned */
+static void addons_where(const App* app, char** folder, char** name) { game_where(app->addons_game, folder, name); }
+/* the entry of the add-on named name (<game>_<entry>): its name after <game>_ */
+static const char* entry_of(const char* name) {
+    const char* under = strchr(name, '_');
+    return under ? under + 1 : name;
 }
-/* what addons' i is to its game: SNX_ADDON_UPDATE or SNX_ADDON_DLC */
-static int addon_kind(const App* app, size_t i) {
+/* what the add-on named name is to its game: SNX_ADDON_UPDATE or SNX_ADDON_DLC */
+static int kind_of(const char* name) {
     char game[17];
     SnxU64 own = 0, id = 0;
-    snprintf(game, sizeof game, "%s", app->addons.names[i]);
-    if (!snx_title_parse(game, &own) || !snx_addon_entry_id(own, addon_entry(app, i), &id)) return SNX_ADDON_NONE;
+    snprintf(game, sizeof game, "%s", name);
+    if (!snx_title_parse(game, &own) || !snx_addon_entry_id(own, entry_of(name), &id)) return SNX_ADDON_NONE;
     return snx_addon_kind(own, id);
+}
+/* addons' i's entry, its name after <game>_ */
+static const char* addon_entry(const App* app, size_t i) { return entry_of(app->addons.names[i]); }
+/* what addons' i is to its game: SNX_ADDON_UPDATE or SNX_ADDON_DLC */
+static int addon_kind(const App* app, size_t i) { return kind_of(app->addons.names[i]); }
+/* which of addons (gui_game_addons's, of the game named name in folder) its addons= checks, into checked */
+static void addons_checked_read(const char* folder, const char* name, const GuiGames* addons, bool* checked) {
+    char *ini = snx_game_ini(folder, name), *text = snx_ini_value(ini, "addons");
+    SnxAddon* list = (SnxAddon*)snx_alloc(SNX_ADDONS_MAX * sizeof *list);
+    size_t count = snx_addons_parse(text, name, list, SNX_ADDONS_MAX);
+    for (size_t i = 0; i < addons->count; ++i) {
+        checked[i] = false;
+        for (size_t j = 0; j < count && !checked[i]; ++j)
+            checked[i] = !strcmp(entry_of(addons->names[i]), list[j].entry);
+    }
+    free(list);
+    free(text);
+    free(ini);
+}
+/* the program of the update checked among addons, absolute and owned; NULL with none checked */
+static char* update_program(const GuiGames* addons, const bool* checked) {
+    char* program = NULL;
+    for (size_t i = 0; i < addons->count; ++i)
+        if (checked[i] && kind_of(addons->names[i]) == SNX_ADDON_UPDATE) {
+            free(program);
+            program = snx_absolute(addons->paths[i]);
+        }
+    return program;
+}
+/* the program Play runs for the game whose program is game (open_game, open_recent): its checked update's, which
+   addons_play runs in its place, else its own. Owned */
+static char* played_program(const char* game) {
+    GuiGames addons = {0};
+    char* program = NULL;
+    if (gui_game_addons(game, &addons)) {
+        bool* checked = (bool*)snx_alloc(addons.count * sizeof *checked);
+        char *folder, *name;
+        game_where(game, &folder, &name);
+        addons_checked_read(folder, name, &addons, checked);
+        program = update_program(&addons, checked);
+        free(name);
+        free(folder);
+        free(checked);
+    }
+    gui_games_free(&addons);
+    return program ? program : snx_strdup(game);
 }
 /* the updates, first in addons (gui_game_addons lists them so) */
 static size_t addons_updates(const App* app) {
@@ -4290,8 +4338,7 @@ static void caches_delete(App* app) {
 /* the box of game, shown as title: with always (M) even when it has nothing beside it, its Add rows to give it some */
 static void addons_open(App* app, const char* game, const char* title, bool always) {
     char *folder, *name, *ini, *text;
-    SnxAddon* list;
-    size_t count, i, j;
+    size_t i;
     addons_close(app);
     gui_game_addons(game, &app->addons);
     app->mods_count = gui_game_mods(game, &app->mods_folder, &app->mods);
@@ -4306,20 +4353,13 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     app->addons_checked = (bool*)calloc(app->addons.count + 1, sizeof *app->addons_checked);
     app->mods_on = (bool*)calloc(app->mods_count + 1, sizeof *app->mods_on);
     app->cheats_on = (bool*)calloc(app->cheats_count + 1, sizeof *app->cheats_on);
-    list = (SnxAddon*)malloc(SNX_ADDONS_MAX * sizeof *list);
-    if (!app->addons_checked || !app->mods_on || !app->cheats_on || !list) {
-        free(list);
+    if (!app->addons_checked || !app->mods_on || !app->cheats_on) {
         addons_close(app);
         return;
     }
     addons_where(app, &folder, &name);
+    addons_checked_read(folder, name, &app->addons, app->addons_checked);
     ini = snx_game_ini(folder, name);
-    text = snx_ini_value(ini, "addons");
-    count = snx_addons_parse(text, name, list, SNX_ADDONS_MAX);
-    for (i = 0; i < app->addons.count; ++i)
-        for (j = 0; j < count; ++j)
-            if (!strcmp(addon_entry(app, i), list[j].entry)) app->addons_checked[i] = true;
-    free(text);
     text = snx_ini_value(ini, "mods_off");
     for (i = 0; i < app->mods_count; ++i) app->mods_on[i] = !snx_mod_off(text, app->mods[i]);
     free(text);
@@ -4339,7 +4379,6 @@ static void addons_open(App* app, const char* game, const char* title, bool alwa
     free(ini);
     free(folder);
     free(name);
-    free(list);
     app->addons_recompile = app->recompile;
     app->addons_focus = 0;
     app->addons_shown = true;
@@ -4463,15 +4502,7 @@ static void render_addons(App* app) {
     ui_addons_draw(app, d.rects, app->scale, d.lists);
 }
 /* the picked update's program, absolute and owned; NULL with no update picked */
-static char* addons_program(const App* app) {
-    char* program = NULL;
-    for (size_t i = 0; i < app->addons.count; ++i)
-        if (app->addons_checked[i] && addon_kind(app, i) == SNX_ADDON_UPDATE) {
-            free(program);
-            program = snx_absolute(app->addons.paths[i]);
-        }
-    return program;
-}
+static char* addons_program(const App* app) { return update_program(&app->addons, app->addons_checked); }
 /* what is picked kept as the game's addons=, mods_off= and cheats_off=: 1, else 0 with app->message saying why. Once
    kept, the picked update's program in *program when it is not NULL (addons_program) */
 static int addons_save(App* app, char** program) {
@@ -8231,12 +8262,17 @@ static bool made_from(const App* app, const char* file) {
 /* a Switch game's program in its folder (<folder>/<name>, a game's or its update's, .exe on Windows) that this build
    made with the mods its game plays now: its driver plays it as it is. One another build made, or this one with other
    mods, its driver recompiles first */
-static bool made_here(const char* program) {
-    char *base = snx_strdup(program), *made, *expected;
-    bool here;
+/* a program's path without its .exe on Windows: what its <base>.abi is named by, owned */
+static char* program_base(const char* program) {
+    char* base = snx_strdup(program);
 #ifdef _WIN32
     if (strlen(base) > 4 && !SDL_strcasecmp(base + strlen(base) - 4, ".exe")) base[strlen(base) - 4] = 0;
 #endif
+    return base;
+}
+static bool made_here(const char* program) {
+    char *base = program_base(program), *made, *expected;
+    bool here;
     made = snx_game_mods_stamp(base);
     expected = snx_game_stamp_for(SNX_ABI, made);
     here = snx_game_stamp_is(base, expected);
@@ -14257,12 +14293,13 @@ static void aot_status_update(App* app) {
     app->aot_info = info;
     app->aot_state = state;
     app->aot_match = 0;
-    {
-        char* base = snx_path_join(f.folder, f.name);
+    { /* of the program Play runs, its checked update's when it has one: the one a recompile from its box remade */
+        char *played = played_program(f.path), *base = program_base(played);
         snx_game_made_read(base, &app->made);
+        app->made_here = made_here(played);
         free(base);
+        free(played);
     }
-    app->made_here = made_here(f.path);
     if (state == GUI_AOT_CACHE) {
         opt = aot_build_opt(app);
         app->aot_build_opt = opt && opt[0] ? opt[0] : '2';

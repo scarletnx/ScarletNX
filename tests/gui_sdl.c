@@ -9049,6 +9049,52 @@ int main(int argc, char** argv) {
                 free(text);
                 free(stamp);
             }
+            { /* an update checked: Play runs the update's program (addons_play), so the side panel says how that one was
+                 made and whether Play compiles it first, whatever the game's own stamp. The box's Recompile with an
+                 update checked remakes the update's program alone: the game's own may still be an older build's */
+                char *game = snx_path_join(own, "0100ABCD12340000.abi"),
+                     *update = snx_path_join(own, "0100ABCD12340000_0100ABCD12340800v0.abi"),
+                     *other = snx_format("%u", (unsigned)SNX_ABI + 1),
+                     *made = snx_format("%u\nmade opt=3 aot=1 found=1 code=2\n", (unsigned)SNX_ABI),
+                     *ran = snx_absolute(older);
+                assert(ran && !snx_ini_record(ini, "addons", "0100ABCD12340800v0,0100ABCD12341001"));
+                assert(!snx_write_file(game, other, strlen(other)) && !snx_write_file(update, made, strlen(made)));
+                go_tab(&app, GUI_TAB_GAMES);
+                focus_game(&app, "0100ABCD12340000");
+                aot_clear_focus(&app);
+                render(&app);
+                assert(app.made_here && app.made.opt == '3' && app.made.code == 2);
+                assert(find_text(&app, "Made with: O3", rgb(app.theme.soft), 1, &nx, &ny));
+                assert(!find_text(&app, "Needs Recompile", rgb(app.theme.failure), 1, &nx, &ny));
+                /* the update's stamp another build's, the game's this one's: Needs Recompile, and Play compiles the
+                   update's program first */
+                assert(!snx_write_file(update, other, strlen(other)));
+                stamp_here(own, "0100ABCD12340000");
+                aot_clear_focus(&app);
+                render(&app);
+                assert(!app.made_here && !app.made.opt);
+                assert(find_text(&app, "Needs Recompile", rgb(app.theme.failure), 1, &nx, &ny));
+                key(&app, SDLK_L);
+                assert(!app.menu.running && app.menu.view == GUI_LOAD_RECOMPILE && gui_queue_running(&app.queue) == 0 &&
+                       !strcmp(gui_queue_file(&app.queue, 0), ran));
+                go_tab(&app, GUI_TAB_GAMES); /* away from its compile: once made, it waits for Enter (job_play) */
+                job_done(&app, 0);
+                /* No update checked: the game's own program, made here */
+                assert(!snx_ini_record(ini, "addons", "0100ABCD12341001"));
+                go_tab(&app, GUI_TAB_GAMES);
+                focus_game(&app, "0100ABCD12340000");
+                aot_clear_focus(&app);
+                render(&app);
+                assert(app.made_here);
+                assert(!find_text(&app, "Needs Recompile", rgb(app.theme.failure), 1, &nx, &ny));
+                stamp_here(own, "0100ABCD12340000_0100ABCD12340800v0");
+                aot_clear_focus(&app);
+                free(ran);
+                free(made);
+                free(other);
+                free(update);
+                free(game);
+            }
             { /* its box's Open Folder: the game's folders a row each, on every system; one not known or not there
                  greyed, and pressed it says why and opens nothing; Back goes back to the box's rows, at Open Folder */
                 char why[1024], *saves = snx_path_join(dirs[0], "save"), want[2048];

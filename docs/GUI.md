@@ -491,7 +491,8 @@ cannot be read is named and the others still listed.
   own takes the launcher's. On
   another row, a dump, a package or another console's game, it says what it opens. The side panel of a recompiled
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
-  colour, `Needs Recompile` when Play compiles it first.
+  colour, `Needs Recompile` when Play compiles it first: of the program Play runs, the checked update's when it has
+  one.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
   and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDown move it a screen of rows,

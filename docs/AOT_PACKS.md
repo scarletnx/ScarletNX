@@ -75,7 +75,7 @@ later session adds to it.
    ```
 
    `Needs Recompile` in the failure colour in the first line's place means another build made the game, or with other
-   mods: Play compiles it first.
+   mods: Play compiles it first. The first line is of the program Play runs, its checked update's when it has one.
 
    `levels differ` in the failure colour means the cache and the current AOT level do not match; the build is
    refused until they do. `JIT cache: none yet` means the game has not been played with the current runtime;
