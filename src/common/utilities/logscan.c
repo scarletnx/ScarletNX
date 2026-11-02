@@ -456,7 +456,8 @@ static int marker(Span line, Marker* m) {
 /* A game log is all of itself. The launcher's Share Log file (src/gui/main.c's share_log) starts with snx_build_info's
    line, "ScarletNX <branch> <commit> (<compiler>, <system>)", then its message and sections: the last run's output
    under "== the last run: <path> ==" and the newest game log under "== <path> ==". The game log's lines are scanned,
-   else the run's output when it had none */
+   else the run's output when it had none. The newest game log can be another game's, one played before: the run's
+   output is kept while it is read, and stands for itself when its title ID is not the game log's */
 enum { PHASE_START, PHASE_LOG, PHASE_HEAD, PHASE_RUN, PHASE_GAME, PHASE_DONE };
 
 /* "ScarletNX - <title>", what an older build followed with " (<folder>)", which is cut */
@@ -959,12 +960,16 @@ static void keep_raw(char (*raw)[SNX_LOGSCAN_RAW], unsigned* len, unsigned long*
 static void restart(SnxLogScan* s) {
     unsigned build = s->launcher_build, message = s->launcher_message;
     char* pool = s->pool;
-    size_t cap = s->cap, mark = s->mark;
+    size_t cap = s->cap, mark = s->mark, used = s->used;
     unsigned long seen = s->seen;
+    SnxLogScan* run = malloc(sizeof *run); /* the run's scan, NULL out of memory: the game log's alone, as before */
+    if (run) *run = *s;
     memset(s, 0, sizeof *s);
     s->pool = pool;
     s->cap = cap;
-    s->used = s->mark = mark;
+    s->used = run ? used : mark; /* the run's texts kept for it */
+    s->mark = mark;
+    s->run = run;
     s->seen = seen;
     s->launcher_build = build;
     s->launcher_message = message;
@@ -1113,6 +1118,18 @@ static int from_ring(SnxLogScan* s, char (*raw)[SNX_LOGSCAN_RAW], const unsigned
 }
 
 void snx_logscan_end(SnxLogScan* s) {
+    SnxLogScan* run = s->run;
+    s->run = NULL;
+    if (run && run->title_id &&
+        (!s->title_id || strcmp(snx_logscan_text(run, run->title_id), snx_logscan_text(s, s->title_id)))) {
+        char* pool = s->pool; /* the game log is another game's: the run's scan, its texts in the pool */
+        size_t cap = s->cap, used = s->used;
+        *s = *run;
+        s->pool = pool;
+        s->cap = cap;
+        s->used = used;
+    }
+    free(run);
     sort_ipc(s);
     sort_gaps(s);
     /* the macro calls' line only when some were interpreted: "..., <n> compiled and <n> interpreted" */
@@ -1178,6 +1195,7 @@ int snx_logscan_file(SnxLogScan* s, FILE* f) {
 }
 
 void snx_logscan_free(SnxLogScan* s) {
+    free(s->run);
     free(s->pool);
     memset(s, 0, sizeof *s);
 }
