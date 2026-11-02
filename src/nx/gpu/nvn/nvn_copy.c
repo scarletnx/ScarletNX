@@ -166,18 +166,16 @@ static GpuDmaSide blit_plane(const Surf2D* s, u32 bpp) {
     p.bh = s->bh;
     return p;
 }
-/* slice k of the copy r as the renderer's image blit, on the GPU: 1 when it did it. 0 when either texture takes no
-   target, or the renderer can't (the source isn't a render target): s and d are the slice's surfaces then, with
-   their bytes a pixel in *bs and *bd, else their formats are 0. raw: only between surfaces of one format, whose
-   blit copies the bytes as they are */
-static int blit_gpu(const NvnPCopyT2T* r, i32 k, int raw, Surf2D* s, Surf2D* d, u32* bs, u32* bd) {
+/* slice k of the copy r as the renderer's image blit, on the GPU, which converts between two formats as the 2D engine
+   does: 1 when it did it. 0 when either texture takes no target, or the renderer can't (the source isn't a render
+   target): s and d are the slice's surfaces then, with their bytes a pixel in *bs and *bd, else their formats are 0 */
+static int blit_gpu(const NvnPCopyT2T* r, i32 k, Surf2D* s, Surf2D* d, u32* bs, u32* bd) {
     *bs = *bd = 0;
     if (!surf2d(r->src, &r->sv, r->has_sv, r->sr.zoffset + k, s, bs) ||
         !surf2d(r->dst, &r->dv, r->has_dv, r->dr.zoffset + k, d, bd)) {
         s->format = d->format = 0;
         return 0;
     }
-    if (raw && s->format != d->format) return 0;
     double sdx = (double)r->sr.width / r->dr.width;
     double sdy = (double)r->sr.height / r->dr.height;
     return g_renderer_up && g_renderer->blit &&
@@ -197,7 +195,7 @@ static void blit_texture(const NvnPCopyT2T* r) {
         Surf2D s, d;
         u32 bs, bd;
         /* the destination target holds the pixels: nothing to load from memory (fermi2d.c's too) */
-        if (blit_gpu(r, k, 0, &s, &d, &bs, &bd)) continue;
+        if (blit_gpu(r, k, &s, &d, &bs, &bd)) continue;
         if (!s.format) {
             LOG_LIMIT(4, "nvn: a texture blit of a texture no render target takes isn't replayed\n");
             return;
@@ -267,11 +265,12 @@ static void copy_texture_texture(const NvnPCopyT2T* r, const NvnTexture* s, cons
     for (i32 k = 0; k < depth; k++) {
         /* The game's driver copies between textures with the 2D engine, whose blit the renderer does between its
            images. A render target over the source has pixels that guest memory doesn't (a packed depth and stencil
-           target never goes to memory), so a copy between targets of one format is that blit. Else it is the DMA
-           engine's, through memory */
+           target never goes to memory), and between two formats of the same bytes a pixel the engine converts each
+           pixel (a scene's R11G11B10F copied into its RGBA8 window texture), so a copy between targets is that blit.
+           Else it is the DMA engine's, through memory */
         Surf2D s2, d2;
         u32 bs, bd;
-        if (blit_gpu(r, k, 1, &s2, &d2, &bs, &bd)) continue;
+        if (blit_gpu(r, k, &s2, &d2, &bs, &bd)) continue;
         tex_side(&ps, r->sr.xoffset, r->sr.yoffset, r->sr.zoffset + k, &o.src);
         tex_side(&pd, r->dr.xoffset, r->dr.yoffset, r->dr.zoffset + k, &o.dst);
         launch(&o);
