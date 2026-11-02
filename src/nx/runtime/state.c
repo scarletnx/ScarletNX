@@ -643,6 +643,10 @@ static int heap_put(StateIo* io, u32 kind, u32 slot, const void* p, u64 n) {
 /* what the state can't hold: a game with these going is refused a save, as nothing could make them again */
 static int savable(char* why, size_t whysize) {
     u32 i, k;
+    if (native_video_busy(&g_hle.native_video)) {
+        snprintf(why, whysize, "the game has native video decoding or image pools active");
+        return -1;
+    }
     for (i = 0; i < BSD_MAX; i++)
         for (k = 0; k < BSD_MAX_FD; k++)
             if (g_hle.bsd.bsds[i].fd[k].s) {
@@ -837,6 +841,7 @@ static int save_hle(Buf* hle, Buf* heap, Names* names) {
 static void drop_host(void) {
     u32 i, k;
     audio_state_drop();
+    native_video_state_drop();
     audren_state_drop();
     fs_state_drop();
     for (i = 0; i < AM_STORAGES; i++)
@@ -888,6 +893,7 @@ static int id_ok(const Hle* h, u32 id, int type) {
       ((uintptr_t)(p) - (uintptr_t)(arr)) % sizeof *(arr) == 0))
 static int hle_check(const Hle* h) {
     u32 i, k;
+    if (native_video_busy(&h->native_video)) return -1;
     /* the handle table */
     if (h->kernel.htop < 0 || h->kernel.htop > H_MAX || h->kernel.hfree < -1 || h->kernel.hfree >= H_MAX) return -1;
     for (i = 0; i < H_MAX; i++)

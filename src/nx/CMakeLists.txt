@@ -52,6 +52,7 @@ snx_component(hle hle/services/services.c hle/services/audren.c hle/services/aud
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
               hle/hook/hook.c hle/hook/libc.c hle/hook/verify.c hle/hook/version.c)
+target_sources(snx_hle PRIVATE hle/services/native_video.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which hle/services/pl.c hands out
 target_sources(snx_hle PRIVATE "${PROJECT_BINARY_DIR}/generated/shared_fonts.c")
 # the hooks' adapters and table, generated from hle/hook/hooks.hook
@@ -63,7 +64,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
 snx_swipc(snx_hle FNS ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
           hle/services/types.swipc hle/services/sm.swipc hle/services/set.swipc hle/services/acc.swipc
           hle/services/audio.swipc hle/services/ldr.swipc hle/services/pl.swipc hle/services/time.swipc
-          hle/services/misc.swipc hle/services/am.swipc hle/services/hid.swipc
+          hle/services/misc.swipc hle/services/native_video.swipc hle/services/am.swipc hle/services/hid.swipc
           hle/services/vi.swipc hle/services/nvdrv.swipc hle/services/network/bsd.swipc
           hle/services/network/dns.swipc hle/services/network/nifm.swipc hle/services/network/ssl.swipc
           hle/services/network/ldn.swipc

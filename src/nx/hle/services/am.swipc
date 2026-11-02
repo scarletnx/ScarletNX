@@ -166,6 +166,8 @@ interface nn::gsv::IGraphicsSupervisor {
     # Native memory: mode 3 from the SDK's CreateNativeMemoryWithGpukMemHandle, then 423 backs it
     [111] CreateNativeMemory(u8 mode, bytes<8, 4> size) -> u32 memory;
     [112] DestroyNativeMemory(u32 memory);
+    @unsorted [114] BindNativeMemory(u32 memory, bytes<8, 4> address, bytes<8, 4> size,
+                                     bytes<8, 4> flags, bytes<8, 4> offset);
     [115] ConfigureNativeMemory(u64 mode) -> u64 enabled_modes;
     [201] InitializeSyncpointContext();
     [202] GetSyncpointSession() -> handle<move, session> session;
@@ -183,11 +185,28 @@ interface nn::gsv::IGraphicsSupervisor {
     # The reserved words are 0 from CreateNativeMemoryWithGpukMemHandle
     @unsorted [423] BindNativeGpuMemory(u32 memory, bytes<8, 4> address, bytes<8, 4> size, u32 parent,
                                         bytes<8, 4> offset, bytes<8, 4> reserved0, bytes<8, 4> reserved1);
+    @unsorted [426] MapVideoGpuImage(u32 image, u32 one, u32 address_space, u32 mode)
+        -> (u64 first, u64 last, nn::gsv::VideoDescriptor descriptor, u32 reserved);
+    @unsorted [427] UnmapVideoGpuImage(u32 image, u32 address_space, bytes<8, 4> first, bytes<8, 4> last);
+    @unsorted [428] QueryVideoGpuImage(u32 image)
+        -> (u64 first, u64 last, nn::gsv::VideoDescriptor descriptor, u32 reserved);
     [429] CreateNativeImage(nn::gsv::BlockImagePreference preference, u32 count, u32 memory) -> u32 image;
     [430] DestroyNativeImage(u32 image);
     [434] RegisterGpuAddressSpace(u32 id);
     [435] CalculateNativeImageSize(nn::gsv::BlockImagePreference preference, u32 count) -> u64 size;
     [497] OpenGpuSession(u64 flags) -> handle<move, session> session;
+    [901] InitializeVideoDecoder();
+    [902] OpenVideoDecoderContext() -> handle<move, session> session;
+    [903] FinalizeVideoDecoder();
+    [905] OpenVideoDecoderContextLegacy(u32 remote) -> handle<move, session> session;
+    @unsorted [906] OpenVideoDecoderContextVersion(u32 remote, bytes<8, 4> version) -> handle<move, session> session;
+    [911] CreateVideoImagePool(nn::gsv::VideoImagePreference preference, u32 count, u32 memory) -> u32 image;
+    [912] DestroyVideoImagePool(u32 image);
+    [961] QueryVideoImage(u32 image) -> nn::gsv::VideoDescriptor descriptor;
+    [991] CalculateVideoImageRequirements(nn::gsv::VideoImagePreference preference, u32 count) -> (u64 size, u64 alignment);
+    [1001] InitializeVideoEncoder();
+    [1002] OpenVideoEncoderContext() -> handle<move, session> session;
+    [1003] FinalizeVideoEncoder();
     [1101] InitializeFrameContext();
     [1102] ActivateFrameContext();
     [1402] GetNvidiaDriver() -> handle<move, session> session;

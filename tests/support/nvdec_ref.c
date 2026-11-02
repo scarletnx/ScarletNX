@@ -13,6 +13,16 @@ void nvdec_write_ref(const NvdecPic* p) {
     u64 col[4096 / 16];
     u8 line[4096 + 2], *py = GP(p->luma), *pc = GP(p->chroma);
     u32 w = p->w, h = p->h, pairs = (w + 1) / 2, cw = 2 * pairs, ch = (h + 1) / 2, runs = (cw + 15) / 16, i, x, y;
+    if (p->pitch_linear) {
+        for (y = 0; y < h; ++y)
+            memcpy(py + (u64)y * p->pitch_y, p->plane[0] + (size_t)y * (size_t)p->stride[0], w);
+        for (y = 0; y < ch; ++y)
+            for (x = 0; x < pairs; ++x) {
+                pc[(u64)y * p->pitch_c + 2 * x] = p->plane[1][(size_t)y * (size_t)p->stride[1] + x];
+                pc[(u64)y * p->pitch_c + 2 * x + 1] = p->plane[2][(size_t)y * (size_t)p->stride[2] + x];
+            }
+        return;
+    }
     for (i = 0; i < runs; i++) col[i] = bl_offset(16 * i, 0, 0, p->pitch_y, p->surf_h, p->bh, 0);
     for (y = 0; y < h; y++) {
         u64 row = bl_offset(0, y, 0, p->pitch_y, p->surf_h, p->bh, 0);

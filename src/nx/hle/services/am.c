@@ -264,7 +264,8 @@ static int nn_am_service_IGraphicsScalingParametersFunctions_GetGraphicsScalingP
 static int am_graphics_dispatch(SvcObj* self, IpcCtx* c) {
     R_UNLESS(c->tipc, RC(1, 33));
     /* These SDK clients read the move slots before the result, including on failure. */
-    c->tipc_error_moves = c->cmd == 497 || c->cmd == 305 ? 1 : c->cmd == 204 ? 2 : 0;
+    c->tipc_error_moves = c->cmd == 497 || c->cmd == 305 || c->cmd == 902 || c->cmd == 905 ||
+                                 c->cmd == 906 || c->cmd == 1002 ? 1 : c->cmd == 204 ? 2 : 0;
     return nn_gsv_IGraphicsSupervisor_dispatch(self, c);
 }
 static int am_graphics_process(u32 handle) {
@@ -380,6 +381,13 @@ static int nn_gsv_IGraphicsSupervisor_DestroyNativeMemory(SvcObj* self, u32 memo
     (void)self;
     return nv_native_memory_destroy(memory);
 }
+/* The video allocator uses ordinary CPU pages (114), not a GPU worker's registered parent (423). */
+static int nn_gsv_IGraphicsSupervisor_BindNativeMemory(SvcObj* self, u32 memory, const u8* address, const u8* size,
+                                                       const u8* flags, const u8* offset) {
+    (void)self;
+    return nv_native_memory_bind_cpu(memory, snx_ld_le64(address), snx_ld_le64(size),
+                                      snx_ld_le64(flags), snx_ld_le64(offset));
+}
 static int nn_gsv_IGraphicsSupervisor_BindNativeGpuMemory(SvcObj* self, u32 memory, const u8* address, const u8* size,
                                                           u32 parent, const u8* offset, const u8* reserved0,
                                                           const u8* reserved1) {
@@ -414,6 +422,90 @@ static int nn_gsv_IGraphicsSupervisor_DestroyNativeWindowAliasImagePool(SvcObj* 
     (void)self;
     return nv_native_image_window_pool(image, 0, 0);
 }
+static int am_video_service(int encoder, int enable) {
+    R_UNLESS(am_graphics_ready(), RC(1, 125));
+    return native_video_service(encoder, enable);
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeVideoDecoder(SvcObj* self) {
+    (void)self;
+    return am_video_service(0, 1);
+}
+static int nn_gsv_IGraphicsSupervisor_FinalizeVideoDecoder(SvcObj* self) {
+    (void)self;
+    return am_video_service(0, 0);
+}
+static int nn_gsv_IGraphicsSupervisor_InitializeVideoEncoder(SvcObj* self) {
+    (void)self;
+    return am_video_service(1, 1);
+}
+static int nn_gsv_IGraphicsSupervisor_FinalizeVideoEncoder(SvcObj* self) {
+    (void)self;
+    return am_video_service(1, 0);
+}
+static int am_video_open(int encoder, u32* session) {
+    SvcObj* obj = native_video_context_new(encoder);
+    R_UNLESS(obj, RC(1, 125));
+    *session = session_new(obj);
+    return *session ? 0 : RC(1, 103);
+}
+static int nn_gsv_IGraphicsSupervisor_OpenVideoDecoderContext(SvcObj* self, u32* session) {
+    (void)self;
+    return am_video_open(0, session);
+}
+static int nn_gsv_IGraphicsSupervisor_OpenVideoDecoderContextLegacy(SvcObj* self, u32 remote, u32* session) {
+    (void)self;
+    R_UNLESS(!remote, RC(1, 33));
+    return am_video_open(0, session);
+}
+static int nn_gsv_IGraphicsSupervisor_OpenVideoDecoderContextVersion(SvcObj* self, u32 remote, const u8* version,
+                                                                    u32* session) {
+    R_UNLESS(snx_ld_le64(version) == 0x300030000ull, RC(1, 33));
+    return nn_gsv_IGraphicsSupervisor_OpenVideoDecoderContextLegacy(self, remote, session);
+}
+static int nn_gsv_IGraphicsSupervisor_OpenVideoEncoderContext(SvcObj* self, u32* session) {
+    (void)self;
+    return am_video_open(1, session);
+}
+static int nn_gsv_IGraphicsSupervisor_CalculateVideoImageRequirements(
+    SvcObj* self, const nn_gsv_VideoImagePreference* pref, u32 count, u64* size, u64* alignment) {
+    (void)self;
+    u32 words[16];
+    memcpy(words, pref, sizeof words);
+    return native_video_requirements(words, count, size, alignment);
+}
+static int nn_gsv_IGraphicsSupervisor_CreateVideoImagePool(
+    SvcObj* self, const nn_gsv_VideoImagePreference* pref, u32 count, u32 memory, u32* image) {
+    (void)self;
+    u32 words[16];
+    memcpy(words, pref, sizeof words);
+    return native_video_pool_create(words, count, memory, image);
+}
+static int nn_gsv_IGraphicsSupervisor_DestroyVideoImagePool(SvcObj* self, u32 image) {
+    (void)self;
+    return native_video_pool_destroy(image);
+}
+static int nn_gsv_IGraphicsSupervisor_QueryVideoImage(SvcObj* self, u32 image, nn_gsv_VideoDescriptor* descriptor) {
+    (void)self;
+    return native_video_query(image, descriptor->v);
+}
+static int nn_gsv_IGraphicsSupervisor_QueryVideoGpuImage(
+    SvcObj* self, u32 image, u64* first, u64* last, nn_gsv_VideoDescriptor* descriptor, u32* reserved) {
+    (void)self; (void)first; (void)last; (void)reserved;
+    return native_video_query_gpu(image, descriptor->v);
+}
+static int nn_gsv_IGraphicsSupervisor_MapVideoGpuImage(
+    SvcObj* self, u32 image, u32 one, u32 address_space, u32 mode,
+    u64* first, u64* last, nn_gsv_VideoDescriptor* descriptor, u32* reserved) {
+    (void)self; (void)reserved;
+    R_UNLESS(one == 1 && (mode == 1 || mode == 3), RC(1, 33));
+    return native_video_map(image, address_space, first, last, descriptor->v);
+}
+static int nn_gsv_IGraphicsSupervisor_UnmapVideoGpuImage(
+    SvcObj* self, u32 image, u32 address_space, const u8* first, const u8* last) {
+    (void)self;
+    return native_video_unmap(image, address_space, snx_ld_le64(first), snx_ld_le64(last));
+}
+
 /* BootGraphicsFrameManagement sends empty TIPC 1101 then 1102, reading only each result.
    eden-ns2's InitializeFrameContext preserves activation when initialization is repeated. */
 static int nn_gsv_IGraphicsSupervisor_InitializeFrameContext(SvcObj* self) {

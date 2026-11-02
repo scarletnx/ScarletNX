@@ -1152,11 +1152,12 @@ static int check_vic_chain(const char* shot) {
    bytes */
 #define NV_GPU (HEAP_BASE + 0x40000)
 #define NV_REF (HEAP_BASE + 0xC0000)
-static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
+static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh, int linear) {
     static u8 y[64 * 48], u[32 * 24], v[32 * 24];
     u32 pairs = (w + 1) / 2;
     u64 gob_rows = 8u << bh, ext_y = (u64)(pitch + 63) / 64 * 64 * ((sh + gob_rows - 1) / gob_rows * gob_rows);
     u64 ext_c = (u64)(pitch + 63) / 64 * 64 * (((sh + 1) / 2 + gob_rows - 1) / gob_rows * gob_rows);
+    if (linear) { ext_y = (u64)pitch * sh; ext_c = (u64)pitch * ((sh + 1) / 2); }
     u64 out_size = (u64)w * 4 * h;
     for (u32 i = 0; i < w * h; i++) y[i] = (u8)(i * 7 + 3);
     for (u32 i = 0; i < pairs * ((h + 1) / 2); i++) u[i] = (u8)(i * 3 + 1), v[i] = (u8)(i * 5 + 2);
@@ -1167,6 +1168,7 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
     }
     NvdecPic p = {{y, u, v}, {(int)w, (int)pairs, (int)pairs}, w, h, NV_GPU, NV_GPU + 0x10000, ext_y, ext_c,
                   pitch, pitch, sh, bh};
+    p.pitch_linear = linear;
     NvdecPic q = p;
     q.luma = NV_REF;
     q.chroma = NV_REF + 0x10000;
@@ -1184,8 +1186,8 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
         job.tw = w;
         job.th = h;
         job.slots[0] = (VicSlot){.on = 1, .w = w & ~1u, .h = h & ~1u, .alpha = 0x3FF, .clamp_hi = 0x3FF};
-        job.slots[0].iy = (VicPlane){GP(at), ext_y, pitch, sh, 1, bh};
-        job.slots[0].ic = (VicPlane){GP(at + 0x10000), ext_c, pitch, (sh + 1) / 2, 1, bh};
+        job.slots[0].iy = (VicPlane){GP(at), ext_y, pitch, sh, !linear, bh};
+        job.slots[0].ic = (VicPlane){GP(at + 0x10000), ext_c, pitch, (sh + 1) / 2, !linear, bh};
         if (k)
             vic_compose_ref(&job);
         else
@@ -1199,11 +1201,13 @@ static int nvdec_vic_case(u32 w, u32 h, u32 pitch, u32 sh, u32 bh) {
 }
 static int check_nvdec_vic(void) {
     u64 lands = own_landings();
-    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1));
-    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0)); /* rows ending inside a run, padding rows, blocks of one GOB */
-    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2)); /* a wider surface than the picture */
+    CHECK(!nvdec_vic_case(64, 32, 64, 32, 1, 0));
+    CHECK(!nvdec_vic_case(33, 17, 64, 24, 0, 0)); /* rows ending inside a run, padding rows, blocks of one GOB */
+    CHECK(!nvdec_vic_case(54, 40, 128, 48, 2, 0)); /* a wider surface than the picture */
+    CHECK(!nvdec_vic_case(53, 41, 256, 48, 0, 1)); /* native NV12 rows, including chroma and kept padding */
+    CHECK(!nvdec_vic_case(2, 2, 256, 4, 0, 1)); /* a small native pool with padding rows */
     /* each case lands its three ranges when read, nothing before */
-    CHECK(!own_traps() || own_landings() <= lands + 9);
+    CHECK(!own_traps() || own_landings() <= lands + 15);
     return 0;
 }
 

@@ -5,6 +5,7 @@
 #include "nx/hle/kernel/ipc.h"
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/hle/services/native_video.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/vi.h"
 #include "nx/runtime/platform/log.h"
@@ -20,6 +21,7 @@ static const StateFnTable* const TABLES[] = {
     &g_swipc_fns,      &g_ipc_state_fns,  &g_am_state_fns,  &g_audio_state_fns, &g_audren_state_fns,
     &g_fs_state_fns,   &g_ldr_state_fns,  &g_misc_state_fns, &g_nvdrv_state_fns, &g_vi_state_fns,
     &g_bsd_state_fns,  &g_ldn_state_fns,  &g_nifm_state_fns, &g_ssl_state_fns,
+    &g_native_video_state_fns,
 };
 enum { NTABLES = sizeof TABLES / sizeof *TABLES };
 

@@ -253,6 +253,7 @@ typedef struct NvdecPic {
     u64 luma, chroma, ext_y, ext_c;
     u32 pitch_y, pitch_c, surf_h, bh;
     const void* hw;
+    int pitch_linear; /* native video pools: ordinary NV12 rows, not block-linear surfaces */
 } NvdecPic;
 /* A launch of the DMA copy engine (maxwell/dma.c), for the renderer, which does it on the GPU: lines of width
    elements from src to dst, each side pitch linear (rows pitch bytes apart from addr) or block linear (a surface wb

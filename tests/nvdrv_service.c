@@ -1422,6 +1422,27 @@ static void test_gsv_worker_memory(SvcObj* control, SvcObj* worker, KEvent* even
     g_hle.nvdrv.gsv_image_last = last;
     CHECK(nv_native_memory_destroy(native) == 0 && !nvmap_addr_by_id(native));
     CHECK(nv_native_memory_destroy(native) == RC(1, 121));
+    /* The video library binds CPU memory directly with 114, without a worker's GPU-accessible registration. */
+    u32 attr = test_gpu_memory.attr;
+    test_gpu_memory.attr = 0;
+    CHECK(nv_native_memory_create(0x2000, &native) == 0);
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x2000, 2, 0) == RC(1, 106));
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1001, 0x2000, 0, 0) == RC(1, 102));
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x1000, 0, 0) == RC(1, 101));
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x2000, 1, 0) == RC(1, 33));
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x2000, 0, 1) == RC(1, 33));
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x2000, 0, 0) == 0);
+    CHECK(nv_native_memory_bind_cpu(native, test_gpu_memory.addr + 0x1000, 0x2000, 0, 0) == RC(1, 125));
+    CHECK(nvmap_addr_by_id(native) == test_gpu_memory.addr + 0x1000);
+    CHECK(nv_native_image_create(native, 0x2000, 1, &shape, &image) == 0);
+    u64 video_gva = 0;
+    CHECK(nv_native_image_map(map.address_space, native, 0x1011, 0x700, &video_gva) == 0);
+    CHECK(video_gva >= NV_GSV_USER_END && gmmu_translate(video_gva) == test_gpu_memory.addr + 0x2011);
+    CHECK(nv_native_image_destroy(image) == 0 && nv_native_memory_destroy(native) == 0);
+    CHECK(gmmu_translate(video_gva) == test_gpu_memory.addr + 0x2011); /* the mapping retains its backing */
+    CHECK(nv_native_image_unmap(video_gva, 0x700) == 0 && !gmmu_translate(video_gva));
+    CHECK(!nvmap_addr_by_id(native)); /* the final pin is gone */
+    test_gpu_memory.attr = attr;
     CHECK(nn_gsv_IGpuSession_DestroyGraphicsDevice(control, (u8)device) == 0);
     test_gpu_memory = (MemBlock){0};
     g_hle.kernel.hw = SNX_HW_SWITCH;

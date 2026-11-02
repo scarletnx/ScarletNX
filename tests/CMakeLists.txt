@@ -1101,14 +1101,14 @@ endif()
 # Inline software keyboard protocol and applet completion events.
 add_executable(snx-test-am-service am_service.c am_service_stubs.c)
 snx_test_target(snx-test-am-service 23)
-snx_service_swipc(snx-test-am-service hle/services/am.swipc)
+snx_service_swipc(snx-test-am-service hle/services/native_video.swipc hle/services/am.swipc)
 target_link_libraries(snx-test-am-service PRIVATE snx_test_common) # snx_nacp_aoc_base
 add_test(NAME am_service COMMAND snx-test-am-service)
 
 # am.c with a control.nacp: the desired language against its supported languages, its version and save sizes
 add_executable(snx-test-am-nacp am_nacp.c am_service_stubs.c)
 snx_test_target(snx-test-am-nacp 23)
-snx_service_swipc(snx-test-am-nacp hle/services/am.swipc)
+snx_service_swipc(snx-test-am-nacp hle/services/native_video.swipc hle/services/am.swipc)
 target_link_libraries(snx-test-am-nacp PRIVATE snx_test_common) # snx_nacp_aoc_base
 add_test(NAME am_nacp COMMAND snx-test-am-nacp)
 

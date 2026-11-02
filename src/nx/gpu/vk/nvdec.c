@@ -119,7 +119,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     u32 ly = (u32)up(p->pitch_y, 16), lc = (u32)up(p->pitch_c, 16); /* the deswizzled rows' pitches */
     u32 up4 = (u32)up(pairs, 4), uv_pitch = up4 * 2;                /* staged U/V rows, interleaved rows */
     u64 lin_y = (u64)ly * h, lin_c = (u64)lc * ch, cap;
-    u64 at_c = up(lin_y, 16), at_uv = at_c + up(lin_c, 16);
+    u64 at_c = up(lin_y, 16), at_uv = p->pitch_linear ? 0 : at_c + up(lin_c, 16);
     /* a Vulkan Video picture's rows go after the surfaces' rows: luma w apart, then chroma cw apart */
     u64 at_hy = at_uv, at_hc = up(at_hy + (u64)w * h, 16);
     u64 used = p->hw ? at_hc + (u64)cw * ch : at_uv + (u64)uv_pitch * ch;
@@ -159,7 +159,8 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     if (ok) {
         vk_all_barrier(cb);
         /* the surfaces as rows, and a CPU picture's NV12 chroma from U and V */
-        ok = vk_bl_move(cb, &my, 0, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 0, rc->buf, 0, scratch, at_c);
+        ok = p->pitch_linear ||
+             (vk_bl_move(cb, &my, 0, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 0, rc->buf, 0, scratch, at_c));
         if (ok && !p->hw) {
             ok = vk_tc_nv12_uv(cb, pairs, ch, rows, at_crows, at_crows + (u64)up4 * ch, up4, scratch, at_uv, uv_pitch);
             at_crows = at_uv;
@@ -168,10 +169,12 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     if (ok) {
         vk_all_barrier(cb);
         /* the picture's rows over the surfaces' */
-        vk_copy_rows(cb, rows, at_rows, w, scratch, 0, ly, w, h);
-        vk_copy_rows(cb, scratch, at_crows, crow_pitch, scratch, at_c, lc, cw, ch);
+        vk_copy_rows(cb, rows, at_rows, w, p->pitch_linear ? ry->buf : scratch, 0, ly, w, h);
+        vk_copy_rows(cb, scratch, at_crows, crow_pitch, p->pitch_linear ? rc->buf : scratch,
+                     p->pitch_linear ? 0 : at_c, lc, cw, ch);
         vk_all_barrier(cb);
-        ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
+        if (!p->pitch_linear)
+            ok = vk_bl_move(cb, &my, 1, ry->buf, 0, scratch, 0) && vk_bl_move(cb, &mc, 1, rc->buf, 0, scratch, at_c);
         vk_all_barrier(cb);
     }
     if (ok) {

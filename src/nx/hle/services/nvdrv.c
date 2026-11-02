@@ -2706,6 +2706,22 @@ int nv_native_memory_bind(u32 memory, u64 addr, u64 size, u32 parent, u64 offset
     pm_unlock(&g_host.nvdrv.aslock);
     return rc;
 }
+/* GSV 114, as the SDK's native video allocator sends it: ordinary CPU memory with flags 0, or memory already
+   marked GpuAccessible with flags 2. Unlike 423, this request does not name a worker registration. */
+int nv_native_memory_bind_cpu(u32 memory, u64 addr, u64 size, u64 flags, u64 offset) {
+    R_UNLESS((flags == 0 || flags == 2) && !offset, RC(1, 33));
+    R_UNLESS(addr && size && cpu_ok(addr, size), RC(1, 101));
+    R_UNLESS(page_aligned(addr), RC(1, 102));
+    R_UNLESS(mem_mapped_run(addr, size) == size && (!flags || nv_gpu_accessible(addr, size)), RC(1, 106));
+    pm_lock(&g_host.nvdrv.lock);
+    NvMapH* m = nvmap_live(memory);
+    int rc = !m || !m->native ? RC(1, 121)
+             : m->allocated   ? RC(1, 125)
+             : size != m->size ? RC(1, 101) : 0;
+    if (!rc) { m->addr = addr; m->allocated = 1; }
+    pm_unlock(&g_host.nvdrv.lock);
+    return rc;
+}
 /* Busy while an image holds the memory */
 int nv_native_memory_destroy(u32 memory) {
     int retire = 0;
@@ -2782,6 +2798,52 @@ int nv_native_window_image(u32 image, u32* memory, NvGsvImageShape* shape) {
     pm_unlock(&g_host.nvdrv.lock);
     return rc;
 }
+/* Video images use the supervisor partition, outside the SDK's user VA allocator. The pool retains the native
+   image, and each mapping pins the backing until the decoder library unmaps that image. */
+int nv_native_image_map(u32 address_space, u32 memory, u64 offset, u64 size, u64* address) {
+    pm_lock(&g_host.nvdrv.aslock);
+    const NvGsvAs* as = nv_gsv_as(0, address_space);
+    u64 cpu = 0;
+    u32 bytes = 0;
+    int rc = as && as->registered && nvmap_get(memory, &cpu, &bytes) ? 0 : RC(1, 121);
+    if (!rc && (!size || offset > bytes || size > bytes - offset)) rc = RC(1, 101);
+    if (!rc) {
+        u64 prefix = offset & GMMU_PAGE_MASK;
+        u64 span = (prefix + size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK;
+        u64 gva = va_alloc(span, 0);
+        if (!gva) rc = RC(1, 103);
+        else {
+            cpu += offset - prefix;
+            gmmu_map(gva, cpu, span);
+            GMap* g = gmap_new(memory);
+            g->gva = g->base = gva;
+            g->size = g->va = span;
+            g->cpu = cpu;
+            *address = gva + prefix;
+        }
+    }
+    pm_unlock(&g_host.nvdrv.aslock);
+    return rc;
+}
+int nv_native_image_unmap(u64 address, u64 size) {
+    pm_lock(&g_host.nvdrv.aslock);
+    u64 base = address & ~GMMU_PAGE_MASK;
+    u64 span = ((address - base) + size + GMMU_PAGE_MASK) & ~GMMU_PAGE_MASK;
+    int rc = RC(1, 121);
+    for (u32 i = 0; i < g_hle.nvdrv.ngmaps; ++i) {
+        GMap g = g_hle.nvdrv.gmaps[i];
+        if (!g.h || g.gsv || g.base != base || g.gva != base || g.size != span || !g.va) continue;
+        gmmu_unmap(g.gva, g.size, 1, g.cpu);
+        va_free(g.base, g.va);
+        g_hle.nvdrv.gmaps[i] = g_hle.nvdrv.gmaps[--g_hle.nvdrv.ngmaps];
+        nvmap_unpin(g.h);
+        rc = 0;
+        break;
+    }
+    pm_unlock(&g_host.nvdrv.aslock);
+    return rc;
+}
+
 /* The address spaces and graphics devices are under aslock, the events and shares under nvev_lk */
 static int nv_gsv_gpu_dispatch(SvcObj* self, IpcCtx* c) {
     R_UNLESS(c->tipc, RC(1, 33));

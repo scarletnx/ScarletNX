@@ -33,6 +33,7 @@ int nv_gsv_register_as(u32 id);
    memory at offset in the GPU-accessible memory parent (worker 101), and freed. 0 or a kernel result */
 int nv_native_memory_create(u64 size, u32* memory);
 int nv_native_memory_bind(u32 memory, u64 addr, u64 size, u32 parent, u64 offset);
+int nv_native_memory_bind_cpu(u32 memory, u64 addr, u64 size, u64 flags, u64 offset);
 int nv_native_memory_destroy(u32 memory);
 /* a native image's surface, from the SDK's block preference: the extent ((width - 1) | (height - 1) << 16), the pitch
    in 64-byte GOBs, the block height as log2 rows with the GOB's 8 (3 to 8) and the pixel format */
@@ -47,6 +48,9 @@ int nv_native_image_window_pool(u32 image, u32 count, int create);
 /* a native window's image (an alias pool of one): its memory's nvmap handle and its surface. 0, or the kernel's
    NotFound for a handle that is no window image */
 int nv_native_window_image(u32 image, u32* memory, NvGsvImageShape* shape);
+/* A native image's slice mapped in the supervisor partition. The mapping pins its nvmap backing. */
+int nv_native_image_map(u32 address_space, u32 memory, u64 offset, u64 size, u64* address);
+int nv_native_image_unmap(u64 address, u64 size);
 /* an ioctl on fd that a restored thread makes again (svc_service_retry): the use of the fd the old one counted goes */
 void nv_ioctl_abandon(u32 fd);
 

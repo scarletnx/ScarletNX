@@ -5,6 +5,7 @@
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/hle/services/nvdrv.h"
+#include "nx/hle/services/native_video.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,6 +78,9 @@ int nv_native_memory_bind(u32 memory, u64 addr, u64 size, u32 parent, u64 offset
     abort();
 }
 int nv_native_memory_destroy(u32 memory) { (void)memory; abort(); }
+int nv_native_memory_bind_cpu(u32 memory, u64 addr, u64 size, u64 flags, u64 offset) {
+    (void)memory; (void)addr; (void)size; (void)flags; (void)offset; abort();
+}
 int nv_native_image_create(u32 memory, u64 size, u32 count, const NvGsvImageShape* shape, u32* image) {
     (void)memory, (void)size, (void)count, (void)shape, (void)image;
     abort();
@@ -95,4 +99,22 @@ int ipc_unknown(SvcObj* obj, IpcCtx* c) { (void)obj; (void)c; return RC(10, 221)
 void out_move_h(IpcCtx* c, u32 handle) {
     if (c->nout_move == 8) abort();
     c->out_move[c->nout_move++] = handle;
+}
+/* Native video is outside the keyboard and applet tests, as the child GPU services above are. */
+SvcObj* native_video_context_new(int encoder) { (void)encoder; abort(); }
+int native_video_service(int encoder, int enable) { (void)encoder; (void)enable; abort(); }
+int native_video_requirements(const u32 pref[16], u32 count, u64* size, u64* alignment) {
+    (void)pref; (void)count; (void)size; (void)alignment; abort();
+}
+int native_video_pool_create(const u32 pref[16], u32 count, u32 memory, u32* image) {
+    (void)pref; (void)count; (void)memory; (void)image; abort();
+}
+int native_video_pool_destroy(u32 image) { (void)image; abort(); }
+int native_video_query(u32 image, u64 descriptor[16]) { (void)image; (void)descriptor; abort(); }
+int native_video_query_gpu(u32 image, u64 descriptor[16]) { (void)image; (void)descriptor; abort(); }
+int native_video_map(u32 image, u32 as, u64* address, u64* last, u64 descriptor[16]) {
+    (void)image; (void)as; (void)address; (void)last; (void)descriptor; abort();
+}
+int native_video_unmap(u32 image, u32 as, u64 address, u64 last) {
+    (void)image; (void)as; (void)address; (void)last; abort();
 }

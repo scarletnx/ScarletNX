@@ -34,6 +34,7 @@ void hle_init(void) {
     pm_init(&g_host.ldn.ldns_lk);
     pm_init(&g_host.ssl.init_lk);
     pm_init(&g_host.sm.lk);
+    pm_init(&g_host.native_video.lock);
     /* the kernel: the title until the module names its own, the first thread id, the handle table's empty free list,
        and the process and resource limit objects, which live as long as the program */
     g_hle.kernel.title_id = 0x0100000000001000ull;

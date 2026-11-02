@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# Native GSV video protocol, after eden-ns2's graphics_supervisor_protocol.h and native_video_decoder.cpp.
+type nn::gsv::VideoImagePreference = struct { u32 reserved; u32 kind; u32 extent; u32[13] zero; };
+type nn::gsv::VideoDescriptor = u64[16];
+type nn::gsv::VideoFence = struct { u32 encoded_id; u32 mode; u64 value; u64 reserved0; u64 reserved1; };
+type nn::gsv::VideoConfiguration = struct {
+    u32 width; u32 height; u32 frame_rate; u32 input_capacity; u32[4] reserved;
+};
+@fallback(ipc_unknown)
+interface nn::gsv::INativeVideoContext {
+    [1] CreateCodec() -> handle<move, session> codec;
+}
+@fallback(ipc_unknown)
+interface nn::gsv::INativeVideoCodec {
+    [3] GetSubmissionEvent() -> handle<copy, event> event;
+    [6] Start();
+    [8] Flush();
+    [101] Configure(buffer<u8, 5> mime, nn::gsv::VideoConfiguration configuration) -> u64 reserved;
+    # SubmitVp9DecoderInputBuffer writes one EOS byte. The rest of that TLS word is not initialized.
+    @unsorted [109] Submit(buffer<u8, 5> input, bytes<8, 4> timestamp, u8 eos) -> u64 consumed;
+    [115] Finalize();
+    @unsorted [200] Initialize200(handle<copy, transfer_memory> memory, bytes<8, 4> size,
+                                  u32 codec, u32 input_format, u32 output_format);
+    @unsorted [201] Initialize201(handle<copy, transfer_memory> memory, bytes<8, 4> size,
+                                  u32 codec, u32 input_format, u32 output_format, u32 output_mode);
+    [207] Stop();
+    [212] UnregisterImage(u32 image, u32[7] reserved);
+    [213] GetOutputProperties() -> u32[16] properties;
+    [311] RegisterImage(u32 image, u32[3] reserved) -> nn::gsv::VideoFence fence;
+    @unsorted [314] ReleaseImage(u32 image, u32 reserved, bytes<24, 4> release) -> nn::gsv::VideoFence fence;
+}
