@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "android/dex/translate.h"
+#include "android/dex/annotations.h"
 #include "android/dex/classfile.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -1038,11 +1039,16 @@ static bool direct_interface(const Method* m, const char* iface) {
 }
 /* the class a receiver is cast to for a member of owner. R8 rebinds a reference to the class that declares the
    member, and the JVM allows a protected member of a class of another package only on the current class or its
-   subclasses: the receiver's own static type, when the dataflow knows it and it is a class of the program below
-   owner */
+   subclasses: the receiver's own static type, when the dataflow knows it and it is a class of the program. ART
+   verified that the type is assignable to owner, also when the chain between them leaves the program (an app's
+   ViewGroup, a View member), so a class of the program below owner or below a class outside it is safe */
 static const char* receiver_type(const Method* m, uint32_t kind, const char* owner) {
     const char* t = type_of(m, kind);
-    return t && t[0] == 'L' && strcmp(t, owner) && program_subclass(m->program, t, owner) ? t : owner;
+    if (!t || t[0] != 'L' || !strcmp(t, owner)) return owner;
+    uint32_t dex, index;
+    if (program_subclass(m->program, t, owner)) return t;
+    return dex_program_find(m->program, t, &dex, &index) && !is_interface(m, t) && !dex_program_find(m->program, owner, &dex, &index)
+               ? t : owner;
 }
 /* A call of ancestor's <init> of descriptor desc on an instance of start, which the JVM only allows of start's own
    constructor (a new instance's) or its superclass's (a constructor's this): the descriptor of start's synthetic
@@ -2065,6 +2071,22 @@ static void write_string_value(CfPool* pool, CfBuffer* out, const Dex* dex, cons
     cf_u2(out, cf_string(pool, dex_string(dex, (uint32_t)v.bits)));
 }
 
+/* more attributes after a member's or the class's: its attributes count at at, raised by count */
+static void add_attributes(CfBuffer* body, size_t at, unsigned count) {
+    if (!count || body->failed) return;
+    cf_put_u2(body, at, ((unsigned)body->data[at] << 8 | body->data[at + 1]) + count);
+}
+/* a method's annotations after its other attributes: its own, its parameters', and its default as an annotation
+   class's element */
+static void method_attributes(CfPool* pool, CfBuffer* body, size_t at, const DexAnnotations* a, uint32_t method_idx,
+                              uint32_t proto_idx, const char* name) {
+    unsigned params = dex_proto_param_count(a->dex, proto_idx);
+    unsigned count = cf_annotation_attributes(pool, body, a->dex, dex_method_annotations(a, method_idx));
+    count += cf_parameter_attributes(pool, body, a->dex, dex_parameter_annotations(a, method_idx), params);
+    count += cf_annotation_default(pool, body, a->dex, a->class_set, name);
+    add_attributes(body, at, count);
+}
+
 /* the types of a descriptor's parameters, through *p: the next one's length, 0 at its end */
 static size_t next_param(const char** p) {
     const char* t = *p;
@@ -2226,6 +2248,8 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         values = dex->data + def.static_values_off;
         value_count = dex_uleb(&values, end);
     }
+    DexAnnotations annotations;
+    dex_annotations(dex, def.annotations_off, &annotations);
     for (uint32_t i = 0; i < field_count; ++i) {
         uint32_t class_idx, type_idx;
         const char* name;
@@ -2234,6 +2258,7 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         cf_u2(&body, data.fields[i].access & 0x50dfu);
         cf_u2(&body, cf_utf8(&pool, name));
         cf_u2(&body, cf_utf8(&pool, type));
+        size_t attributes_at = body.size;
         if (i < data.static_count && i < value_count) {
             const unsigned char* at = values;
             DexValue v = dex_read_value(&values, end);
@@ -2248,6 +2273,8 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         } else {
             cf_u2(&body, 0);
         }
+        add_attributes(&body, attributes_at,
+                       cf_annotation_attributes(&pool, &body, dex, dex_field_annotations(&annotations, data.fields[i].field_idx)));
     }
 
     const char* super_desc = def.super_idx == DEX_NO_INDEX ? NULL : dex_type(dex, def.super_idx);
@@ -2280,8 +2307,10 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         cf_u2(&body, method_access);
         cf_u2(&body, cf_utf8(&pool, name));
         cf_u2(&body, cf_utf8(&pool, method_descriptor(&m, proto_idx)));
+        size_t attributes_at = body.size;
         if (!dm->code_off) {
             cf_u2(&body, 0);
+            method_attributes(&pool, &body, attributes_at, &annotations, dm->method_idx, proto_idx, name);
             method_free(&m);
             continue;
         }
@@ -2299,10 +2328,12 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
         }
         cf_bytes(&body, code.data, code.size);
         cf_free(&code);
+        method_attributes(&pool, &body, attributes_at, &annotations, dm->method_idx, proto_idx, name);
         method_free(&m);
     }
 
-    /* the class's attributes: its source file */
+    /* the class's attributes: its source file and its annotations */
+    size_t attributes_at = body.size;
     if (def.source_file_idx != DEX_NO_INDEX) {
         cf_u2(&body, 1);
         cf_u2(&body, cf_utf8(&pool, "SourceFile"));
@@ -2311,6 +2342,7 @@ unsigned char* dex_translate_class(const DexProgram* program, uint32_t dex_index
     } else {
         cf_u2(&body, 0);
     }
+    add_attributes(&body, attributes_at, cf_annotation_attributes(&pool, &body, dex, annotations.class_set));
     dex_class_data_free(&data);
 
     unsigned char* result = NULL;
