@@ -363,8 +363,9 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
                    const unsigned char* image, const Run* plain) {
     char *dir = snx_path_join(root, "layout"), *file = snx_path_join(root, "order.layout"), *text = NULL;
     char *module = snx_path_join(dir, "Program/Program_code.so"), *order;
+    /* the code made ahead of time, as main's builds (--nce=0) */
     const char* args[16] = {scarletnx,   "--repo", repo,      "-r", input,      "Program", "--outdir", dir,
-                            "--runtime", self,     "--chunk", "4",  "--layout", file,      NULL};
+                            "--runtime", self,     "--chunk", "4",  "--layout", file,      "--nce=0",  NULL};
     unsigned char* elf;
     size_t size = 0;
     u64 func_at, entry_at, library_at;
@@ -443,6 +444,9 @@ int main(int argc, char** argv) {
         args[k++] = self;
         args[k++] = "--chunk";
         args[k++] = "4";
+        /* the code made ahead of time is what runs here: an NCE recompile (nce=1, the default where the runtime runs
+           NCE) has none */
+        args[k++] = "--nce=0";
         if (b) args[k++] = "--hook-direct-calls";
         args[k++] = "-q";
         args[k] = NULL;
@@ -512,6 +516,7 @@ int main(int argc, char** argv) {
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = b ? "--unit_instructions=1000000" : "--unit_instructions=1";
+        args[k++] = "--nce=0";                 /* code units, which an NCE recompile makes none of */
         if (stats) args[k++] = "--ir_stats=1"; /* the setting, as -r takes a recompile setting */
         args[k] = NULL;
         check(!snx_run(args, root, NULL, &text), "a build sized by unit_instructions");
