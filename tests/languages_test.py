@@ -125,6 +125,12 @@ class Formats(unittest.TestCase):
         self.refused('Cannot open %s: %s', 'N\u00e3o abre %2$s: %1$s')  # numbered: ISO C's printf has none
         self.refused('Cannot open %s: %s', 'N\u00e3o abre %s: %s%n')
 
+    def test_named_placeholders(self):
+        self.ok('{count} games in {folder}', '{folder}: {count} jogos')  # by name, so in any order
+        self.refused('{count} games', '{n} jogos')
+        self.refused('{count} games', 'jogos')
+        self.refused('Settings', 'Ajustes {x}')
+
     def test_a_percent_the_english_does_not_have(self):
         self.refused('Settings', 'Ajustes %s')
         self.refused('Settings', 'Ajustes %d')
@@ -260,6 +266,42 @@ class Files(unittest.TestCase):
             self.assertEqual(self.compile(entry('Settings', 'Ajustes'), code=code)[0], code)
         with self.assertRaises(bl.Refused):
             self.compile(entry('Settings', 'Configura\u00e7\u00f5es').encode('latin-1'))
+
+    def test_a_po_is_held_to_the_pot(self):
+        # a phrase of the .pot the .po has no entry for, and an entry of a phrase the .pot no longer has, each named
+        # with its line; one untranslated or fuzzy is an entry
+        phrases = {'Settings': (set(), ['src/gui/a.c']), 'Back': ({'snx-key'}, ['src/gui/a.c'])}
+        phrases['Load %s'] = (set(), ['src/gui/b.c'])
+        folder = Path(Po(self, '').path).parent / 'po'
+        folder.mkdir()
+        pot = folder / 'scarletnx.pot'
+        pot.write_text(bl.pot_text(phrases))
+        po = folder / 'pt-BR.po'
+        body = entry('Settings', 'Ajustes') + '#, fuzzy\n' + entry('Back', 'Voltar') + entry('Share log', 'Partilhar')
+        po.write_text(HEADER.format(code='pt-BR', name='Português (Brasil)') + body)
+        self.assertEqual(
+            bl.po_drift(po, pot),
+            [
+                "po/pt-BR.po: 'Load %s' (po/scarletnx.pot:22) has no entry",
+                "po/pt-BR.po:14: 'Share log' is no phrase of po/scarletnx.pot",
+            ],
+        )
+        # --pot's merge: the .pot's order and comments, the fuzzy mark kept, the phrase it lacked untranslated, the one
+        # the code dropped obsolete; read again, the same
+        merged = bl.merged_po(po, phrases)
+        self.assertIn('#: src/gui/a.c\nmsgid "Settings"\nmsgstr "Ajustes"\n', merged)
+        self.assertIn('#, fuzzy, snx-key\nmsgid "Back"\nmsgstr "Voltar"\n', merged)
+        self.assertIn('#: src/gui/b.c\n#, c-format\nmsgid "Load %s"\nmsgstr ""\n', merged)
+        self.assertTrue(merged.endswith('#~ msgid "Share log"\n#~ msgstr "Partilhar"\n'))
+        self.assertTrue(merged.startswith(HEADER.format(code='pt-BR', name='Português (Brasil)')))
+        po.write_text(merged)
+        self.assertEqual(bl.po_drift(po, pot), [])
+        self.assertEqual(bl.merged_po(po, phrases), merged)
+        # the phrase back in the code takes its obsolete translation back
+        phrases['Share log'] = (set(), ['src/gui/c.c'])
+        again = bl.merged_po(po, phrases)
+        self.assertIn('msgid "Share log"\nmsgstr "Partilhar"\n', again)
+        self.assertNotIn('#~', again)
 
     def test_the_c_source(self):
         mo = bl.mo_bytes({'': 'h', 'a': 'b'})
