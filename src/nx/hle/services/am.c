@@ -71,6 +71,18 @@ void am_init(void) {
     ev_signal(g_hle.am.launchable_event);
 }
 
+/* The TV mode changed while the game runs (docked's Auto): the display resolution change event is signaled, and the
+   applet is told the performance mode changed, as a console that was put in its dock or taken out of it */
+void am_display_mode_changed(void) {
+    pm_lock(&g_host.am.lock);
+    if (g_hle.am.count < AM_MESSAGES) {
+        g_hle.am.msgs[(g_hle.am.head + g_hle.am.count++) % AM_MESSAGES] = AM_MSG_PERFORMANCE_MODE_CHANGED;
+        ev_signal(g_hle.am.msg_event);
+    }
+    pm_unlock(&g_host.am.lock);
+    ev_signal(g_hle.am.resolution_event);
+}
+
 /* ============================================================ storages */
 /* IStorage's data is a StorageData, the accessors' an AmAccessor (services_int.h) */
 static void am_storage_destroy(SvcObj* o) {
@@ -254,12 +266,12 @@ static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_A
 }
 static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
+    *mode = snx_tv_mode() ? 1 : 0; /* nn::oe::OperationMode: Handheld, Console */
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
     (void)self;
-    *mode = g_settings.tv_mode ? 1 : 0; /* Boost when docked, as apm says */
+    *mode = snx_tv_mode() ? 1 : 0; /* Boost when docked, as apm says */
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
@@ -362,8 +374,8 @@ static int nn_am_service_ICommonStateGetter_EndVrModeEx(SvcObj* self) {
 
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
     (void)self;
-    *width = g_settings.tv_mode ? 1920 : 1280;
-    *height = g_settings.tv_mode ? 1080 : 720;
+    *width = snx_tv_mode() ? 1920 : 1280;
+    *height = snx_tv_mode() ? 1080 : 720;
     R_SUCCEED();
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
@@ -385,7 +397,7 @@ static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationState(SvcObj* s
 /* apm's configuration of the mode the console runs in */
 static int nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(SvcObj* self, u32* configuration) {
     (void)self;
-    *configuration = apm_configuration(g_settings.tv_mode ? 1 : 0);
+    *configuration = apm_configuration(snx_tv_mode() ? 1 : 0);
     R_SUCCEED();
 }
 /* the clocks a game asks for around its loading screens, which apm keeps as Boost mode's configuration */

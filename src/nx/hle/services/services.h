@@ -34,6 +34,8 @@ void audio_state_rebuild(void);
    one again */
 void am_keyboard_answered(u32 ticket, int cancelled, const char* text);
 void am_state_loaded(void);
+/* the TV mode changed while the game runs: am's display resolution change event, and the performance mode message */
+void am_display_mode_changed(void);
 /* the functions a save state may hold of each file (nx/runtime/state_fns.h) */
 extern const StateFnTable g_am_state_fns;     /* am.c */
 extern const StateFnTable g_audio_state_fns;  /* audio.c */

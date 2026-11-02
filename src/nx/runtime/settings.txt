@@ -133,11 +133,13 @@ setting Save layout
 table g_display_ini
 setting TV mode
     key docked
-    int 0 1
+    int 0 2
     default 1
     startup
-    words Off|On
-    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720)
+    set options_tv_mode_set
+    words Off|On|Auto
+    help 1 = TV mode (the console in its dock), 0 = handheld mode (1280x720), 2 = Auto: TV mode while the
+    help host is on its charger, handheld mode on its battery. Auto switches while the game runs
 setting Fullscreen
     key fullscreen
     int 0 1

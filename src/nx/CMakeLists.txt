@@ -172,7 +172,10 @@ include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/pad_sdl.cmake")
 target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info snx_pad_sdl snx_splash)
 if(WIN32)
-    target_link_libraries(snx_platform PUBLIC synchronization) # plat_wait_word's WaitOnAddress
+    target_link_libraries(snx_platform PUBLIC synchronization powrprof) # plat_wait_word's WaitOnAddress, the power notification
+endif()
+if(APPLE AND NOT IOS)
+    target_link_libraries(snx_platform PUBLIC "-framework IOKit") # plat_posix.c's power source run loop
 endif()
 # the build is part of the key of the shader files, .vkshaders and .vkshipped (gpu/vk/pipeline.c)
 target_link_libraries(snx_vk PRIVATE snx_build_info FFmpeg::avutil) # vk/nvdec.c: FFmpeg's Vulkan device and pictures
@@ -300,6 +303,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     target_include_directories(snx-test-astc-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests/glsl")
     target_link_libraries(snx-test-astc-vulkan PRIVATE snx_nx_flags scarletnx-filesystem snx_xxhash Threads::Threads
                                                       SDL3::SDL3 ${CMAKE_DL_LIBS})
+    if(WIN32)
+        target_link_libraries(snx-test-astc-vulkan PRIVATE powrprof)
+    endif()
+    if(APPLE AND NOT IOS)
+        target_link_libraries(snx-test-astc-vulkan PRIVATE "-framework IOKit")
+    endif()
     set_target_properties(snx-test-astc-vulkan PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME astc_vulkan COMMAND snx-test-astc-vulkan)
     add_test(NAME astc_vulkan_pieces COMMAND snx-test-astc-vulkan --vk_max_allocation_mb=4)

@@ -220,7 +220,7 @@ typedef struct {
     u32 msg_event;
     u32 sleep_lock_event; /* the sleep lock is granted at once, so this is signaled from the first request on */
     u32 launchable_event; /* library applets can be launched from the start */
-    u32 resolution_event; /* the default display resolution and HDCP state never change while running */
+    u32 resolution_event; /* signaled when docked's Auto changes the display resolution while the game runs */
     SvcObj* user_channel[AM_USER_CHANNEL]; /* copies of the storages unpopped, the last one on top */
     u32 user_count;
     u8 vr_mode; /* as the game turned it: the screen is not split for it */

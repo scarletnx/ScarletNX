@@ -602,6 +602,7 @@ static void frontend_loop(void) {
         int shown, paused;
         SNX_ZONE(z_frontend, "frontend tick");
         video_poll();
+        options_tv_mode_update();
         /* the game's input and its display's vsync are guest work, which a pause holds back with the rest */
         paused = game_paused();
         if (!paused) {
@@ -1050,6 +1051,8 @@ int snx_main(int argc, char** argv) {
         if (addons[0]) LOG("game: played with %s\n", addons);
         video_init(title, addons);
     }
+    /* the log's line on the host's power state, and the mode docked's Auto picks, before the game's first thread */
+    options_tv_mode_start();
     if (g_settings.profiler) {
 #if defined(_WIN32)
         plat_prof_start();
