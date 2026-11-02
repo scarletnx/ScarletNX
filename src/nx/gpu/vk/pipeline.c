@@ -24,6 +24,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include <sys/stat.h>
 
 /* the bytes of a program vk_shader_get reads, from its SPH. The SPH has no size, so shader_hash ends the program at
@@ -445,8 +446,9 @@ static void sh_key_info(ShaderInfo* si, int stage, const u32 mask[20], const ShX
 /* s for its key, from code (SH_CODE bytes: the merged program, for VertexA and VertexB) whose whole code hashes to h,
    each part with its length and hash, translated: its SPIR-V (malloc'd, nw words), the constant buffers the
    translation read through read in s->cbr. NULL when it can't be (si.first_unsupported says why). shipped: a program
-   the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer: a
-   draw's lookup checks those reads against its own buffers, which no read without them matches */
+   the game ships, translated before any draw (ship_make), which fails when its translation read a constant buffer
+   word that its own constants don't hold: a draw's lookup checks the reads against its own buffers, which a read
+   that failed never matches */
 static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a,
                      u64 qh_a, const ShXfb* xfb, VkCbReader read, int shipped, size_t* nw) {
     s->shipped = shipped;
@@ -465,10 +467,12 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
     SNX_ZONE_VALUE(z_translate, *nw);
     SNX_ZONE_END(z_translate);
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
-    if (spv && shipped && s->cbr.n) {
+    int unread = 0;
+    for (u32 i = 0; shipped && i < s->cbr.n; i++) unread |= !s->cbr.r[i].ok;
+    if (spv && unread) {
         free(spv);
         spv = NULL;
-        snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "a jump table in a constant buffer");
+        snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "a jump table outside the program constants");
     }
     if (spv && s->si.nimg) {
         u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
@@ -1658,24 +1662,27 @@ static int ship_key_only_clip(const u32 mask[20]) {
         if (i != 6 && mask[i]) return 0;
     return 1;
 }
-/* a shader record of the shipped file (len bytes at p) into r, and its SPIR-V: NULL unless sh_from_record can make it
-   (no constant buffer reads, a stage a draw binds, its words within it). They are 8-byte aligned in the view: a
-   record, its header and its fixed part are multiples of 8 */
-static const u32* ship_record(const u8* p, u32 len, PfShader* r) {
+/* a shader record of the shipped file (len bytes at p) into r, its constant buffer reads (*cbr, the program's own
+   constants that its jump tables were read from) and its SPIR-V: NULL unless sh_from_record can make it (a stage a
+   draw binds, its words within it). They are 8-byte aligned in the view: a record, its header and its fixed part are
+   multiples of 8 */
+static const u32* ship_record(const u8* p, u32 len, PfShader* r, const u32** cbr) {
     if (!p || len < sizeof *r) return NULL;
     memcpy(r, p, sizeof *r);
-    if (r->ncbr || r->stage > ST_FS || r->nspv < 5 || (u64)r->nspv * 4 > len - sizeof *r) return NULL;
-    return (const u32*)(const void*)(p + sizeof *r);
+    if (r->stage > ST_FS || r->nspv < 5 || (u64)r->ncbr * 16 + (u64)r->nspv * 4 > len - sizeof *r) return NULL;
+    *cbr = (const u32*)(const void*)(p + sizeof *r);
+    return (const u32*)(const void*)(p + sizeof *r + (size_t)r->ncbr * 16);
 }
 /* on the reading thread: a record of the shipped file, into the index (a shader) or the scans' set */
 static void pf_ship_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
     PfShader r;
+    const u32* cbr;
     (void)ctx;
     if (type == PF_SCAN && len == 16) {
         u64 w[2];
         memcpy(w, p, sizeof w);
         scan_add(w[0], w[1]);
-    } else if (type == PF_SHADER && ship_record(p, len, &r) && ship_key_only_clip(r.mask))
+    } else if (type == PF_SHADER && ship_record(p, len, &r, &cbr) && ship_key_only_clip(r.mask))
         idx_add(r.hash, (int)r.stage, r.mask[6], r.clen, r.qh, r.clen_a, r.qh_a, at);
 }
 /* on the reading thread: a record of the scan file, into the scans' set */
@@ -1687,19 +1694,20 @@ static void pf_scan_rec(void* ctx, u32 type, const u8* p, u32 len, u64 at) {
     memcpy(w, p, sizeof w);
     if (w[0] == SHIP_NONE) scan_add(w[0], w[1]);
 }
-/* the shipped file's record that starts at at, into r, its check and its SPIR-V: NULL when it isn't one */
-static const u32* ship_payload(u64 at, PfShader* r, u64* check) {
+/* the shipped file's record that starts at at, into r, its check, its reads and its SPIR-V: NULL when it isn't one */
+static const u32* ship_payload(u64 at, PfShader* r, u64* check, const u32** cbr) {
     u32 n = 0;
     const u8* p = pf_payload(&g_pf.ship, at, &n, check);
-    return ship_record(p, n, r);
+    return ship_record(p, n, r, cbr);
 }
 /* on the reading thread: a PF_SHIPREF of the main file, a shader of the shipped file that an earlier run's draw found,
    made into a module as the main file's own shaders are */
 static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
     PfShader r;
     u64 c = 0;
-    const u32* spv = ship_payload(at, &r, &c);
-    VkSh* s = spv && c == check ? sh_from_record(&r, NULL, spv) : NULL;
+    const u32* cbr;
+    const u32* spv = ship_payload(at, &r, &c, &cbr);
+    VkSh* s = spv && c == check ? sh_from_record(&r, cbr, spv) : NULL;
     (void)ctx;
     if (!s) return 0;
     pf_sh_append(s);
@@ -1708,35 +1716,45 @@ static u64 pf_load_shipref(void* ctx, u64 at, u64 check) {
 /* A draw's shader the game ships, from the shipped file (vk_shader_get, after the tables had none, vk_lock), once the
    pass is done with it (ship_ready): a key of zeros but its clip word, the way the pass translated it (ship_clip). Its
    record is made into a module now, and named in the main file by a PF_SHIPREF, so that the pipelines made with it
-   are kept too. NULL when the file has none */
+   are kept too. One whose jump tables the pass read from the program's constants is taken only while the draw's
+   constant buffer 1 holds the same words, as every shader with reads is. NULL when the file has none */
 static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[20], u32 len, u64 qh, u32 len_a, u64 qh_a) {
     const ShipIdx* e;
-    const u32* spv;
+    const u32 *spv, *cbr;
     PfShader r;
     u64 check = 0;
     VkSh* s;
     if (!g_pf.on || !__atomic_load_n(&g_pf.ship_ready, __ATOMIC_ACQUIRE) || !ship_key_only_clip(mask) ||
         !(e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a)) || !e->at)
         return NULL;
-    spv = ship_payload(e->at, &r, &check);
+    spv = ship_payload(e->at, &r, &check, &cbr);
     /* the record there is the one indexed, unless another process rewrote the file before it was mapped again */
     if (!spv || r.hash != h || r.stage != (u32)stage || r.clen != len || r.qh != qh || r.clen_a != len_a ||
         r.qh_a != qh_a || memcmp(r.mask, mask, sizeof r.mask))
         return NULL;
-    s = sh_from_record(&r, NULL, spv);
+    s = sh_from_record(&r, cbr, spv);
     if (!s) return NULL;
+    if (!vk_cb_reads_hold(&s->cbr, sh_cb_read)) {
+        vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
+        free(s->cbr.r);
+        free(s);
+        return NULL;
+    }
     pf_shipref(&g_pf.file, mod_bits(s->mod), e->at, check);
     pf_ship_found(s);
     return s;
 }
 
-/* What the pass hands each program to (a ShipSink's, on the reading thread). No constant buffer is read: a program
-   without a draw has none, and a translation that reads one fails (sh_spirv's shipped) */
-static int ship_no_read(u32 idx, u32 off, u32* out) {
-    (void)idx;
-    (void)off;
-    (void)out;
-    return 0;
+/* What the pass hands each program to (a ShipSink's, on the reading thread). A program without a draw has no constant
+   buffer but its own constants, which its draws bind as buffer 1 (shipped_programs finds them in a BNSH): the
+   compiler's jump tables of BRX are read from them, and a translation that reads anything else fails (sh_spirv's
+   shipped). g_ship_consts: the constants of the program the pass translates now, the reading thread's alone */
+static const u8* g_ship_consts;
+static size_t g_ship_nconsts;
+static int ship_read(u32 idx, u32 off, u32* out) {
+    if (idx != 1 || g_ship_nconsts < 4 || off > g_ship_nconsts - 4) return 0;
+    *out = snx_ld_le32(g_ship_consts + off);
+    return 1;
 }
 /* SH_CODE bytes from p (avail of them), as vk_shader_get reads a program from guest memory: zeros past them */
 static u8* ship_window(const u8* p, size_t avail) {
@@ -1757,7 +1775,7 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
     mask[6] = ship_clip(stage);
     e = idx_slot(h, stage, mask[6], len, qh, len_a, qh_a);
     if (e && e->at) return SHIP_KNOWN;
-    u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_no_read, 1, &nw);
+    u32* spv = sh_spirv(&s, code, h, stage, mask, len, qh, len_a, qh_a, NULL, ship_read, 1, &nw);
     int translated = spv != NULL;
     if (spv) at = pf_shader_into(&g_pf.ship, &s, 0, spv, nw, NULL, 0, NULL);
     free(spv);
@@ -1785,7 +1803,7 @@ static int ship_dual(const u8* sph, size_t avail) {
     int rc = SHIP_SKIPPED;
     u64 qh_a;
     if (!a) return SHIP_LACKED;
-    vk_shader_hash(a, SH_CODE, &len_a, ship_no_read);
+    vk_shader_hash(a, SH_CODE, &len_a, ship_read);
     qh_a = vk_hash(a, len_a);
     for (at = ((size_t)len_a + 255) & ~(size_t)255; at < SH_CODE && avail >= 0x50 && at <= avail - 0x50; at += 256)
         if (shipped_sph_stage(sph + at) == ST_VS) break;
@@ -1795,9 +1813,9 @@ static int ship_dual(const u8* sph, size_t avail) {
         if (!b || !m)
             rc = SHIP_LACKED;
         else {
-            vk_shader_hash(b, SH_CODE, &len, ship_no_read);
-            if (sh_merge_dual(a, b, m, ship_no_read)) {
-                u64 h = vk_shader_hash(m, SH_CODE, &mlen, ship_no_read);
+            vk_shader_hash(b, SH_CODE, &len, ship_read);
+            if (sh_merge_dual(a, b, m, ship_read)) {
+                u64 h = vk_shader_hash(m, SH_CODE, &mlen, ship_read);
                 rc = ship_make(m, h, ST_VS, len, vk_hash(b, len), len_a, qh_a);
             }
         }
@@ -1807,18 +1825,21 @@ static int ship_dual(const u8* sph, size_t avail) {
     free(a);
     return rc;
 }
-static int ship_program(void* ctx, const u8* sph, size_t avail, int stage) {
+static int ship_program(void* ctx, const u8* sph, size_t avail, int stage, const u8* consts, size_t nconsts) {
     u8* code;
     u32 len;
     u64 h;
     int rc;
     (void)ctx;
+    /* a VertexA and its VertexB share one code area, whose constants the draws bind for the vertex stage */
+    g_ship_consts = consts;
+    g_ship_nconsts = nconsts;
     if (stage == SHIPPED_VERTEX_A) return ship_dual(sph, avail);
     /* their keys hold the draw's state (geometry's input primitive and passthrough words, the evaluation's domain), so
        no key made without a draw is one a draw asks for */
     if (stage == ST_GS || stage == ST_TES) return SHIP_SKIPPED;
     if (!(code = ship_window(sph, avail))) return SHIP_LACKED;
-    h = vk_shader_hash(code, SH_CODE, &len, ship_no_read);
+    h = vk_shader_hash(code, SH_CODE, &len, ship_read);
     rc = ship_make(code, h, stage, len, vk_hash(code, len), 0, 0);
     free(code);
     return rc;

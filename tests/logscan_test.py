@@ -216,8 +216,8 @@ MISSED = HEADER.replace('[   0.', '[   0,') + (
     'earlier runs queued\n'
     '[   2,00] vulkan: shader 0123456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
     '[   2,10] vulkan: shader 1111456789abcdef (stage 4) not translated: TEXS encoding 3, fp32 1\n'
-    '[   2,11] vulkan: vertex 3333456789abcdef not translated: a jump table in a constant buffer\n'
-    '[   2,12] vulkan: paired vertex 4444456789abcdef not translated: a jump table in a constant buffer\n'
+    '[   2,11] vulkan: vertex 3333456789abcdef not translated: a jump table outside the program constants\n'
+    '[   2,12] vulkan: paired vertex 4444456789abcdef not translated: a jump table outside the program constants\n'
     '[   2,13] vulkan: fragment 5555456789abcdef not translated: TEXS encoding 3, fp32 1\n'
     '[   2,14] vulkan: unsupported render target format c4, drawn as RGBA8\n'
     '[   2,15] vulkan: unsupported depth format 11, using D32F\n'
@@ -340,7 +340,7 @@ def main():
         missed
         == {
             ('gpu', 'shader', 'TEXS encoding 3, fp32 1'): 2,
-            ('gpu', 'shipped shader', 'a jump table in a constant buffer'): 2,
+            ('gpu', 'shipped shader', 'a jump table outside the program constants'): 2,
             ('gpu', 'shipped shader', 'TEXS encoding 3, fp32 1'): 1,
             ('gpu', 'compute shader', 'global memory base R4 not tracked at 1a0: no write before'): 1,
             ('gpu', 'class', 'b1c0'): 2,
@@ -371,7 +371,7 @@ def main():
     for want in (
         '**What else the runtime missed:**',
         '- **GPU:**\n  - shader not translated: `TEXS encoding 3, fp32 1` (2 shaders)',
-        "  - a program in the game's files not translated before it ran: `a jump table in a constant buffer` (2 shaders)",
+        "  - a program in the game's files not translated before it ran: `a jump table outside the program constants` (2 shaders)",
         '  - methods of class `b1c0`, which no engine runs (2x)',
         "  - texture format `3f`, which the runtime doesn't map (not drawn)",
         "  - render target format `c4`, which the runtime doesn't map (drawn as RGBA8)",

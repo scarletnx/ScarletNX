@@ -293,8 +293,10 @@ The shader programs a game ships are translated at startup, on the renderer's sh
 thread, into `<id>.vkshipped` (`prepare_shaders`: before the game's first thread runs, behind main.c's loading screen,
 or in the background as it runs). `gpu/shipped_pass.c` walks the RomFS and the executables' segments, and
 `gpu/shader/shipped.c` finds the programs by NVN's code wrapper (or a bare NVN shader file's layout) in their bytes,
-and in the Yaz0 SARCs whose names list a shader container. `gpu/vk/pipeline.c` translates each into the file, which a
-draw's lookup reads from when it has no shader of its own. The files the walk found nothing in are kept in
+and in the Yaz0 SARCs whose names list a shader container. In a BNSH, a program's code record names its control
+section, which gives where its constants (the bank 1 that its draws bind) start in its code area. The translation
+reads the jump tables of BRX from them, and a draw takes such a shader only while its bank 1 holds the same words.
+`gpu/vk/pipeline.c` translates each into the file, which a draw's lookup reads from when it has no shader of its own. The files the walk found nothing in are kept in
 `<id>.vkscan` by their name, place and size, under the hash of the walk's sources (`cmake/ship_walk.cmake`) rather than
 the build, so a new build or driver reads only the files that hold programs again.
 
